@@ -447,15 +447,16 @@ enum pkg_error pkg_bootstrap_build_image(void);
 enum pkg_error pkg_bootstrap_from_toolchain(const char *toolchain_path);
 
 /*
- * Real sha256 of a real on-disk file (forks/execs sha256sum, captures
- * its stdout) -- exported so main.c's own bootstrap-fetch mechanism
+ * Real sha256 of a real on-disk file, computed in-process against the
+ * already-linked libcrypto (EVP_sha256(), #352 -- no forked sha256sum
+ * any more) -- exported so main.c's own bootstrap-fetch mechanism
  * (ADR-0065: fetching the toolchain artifact itself over HTTP, not
  * just importing an already-local one) can verify a freshly curl'd
  * artifact the same way pkg_fetch_completed() already verifies every
  * recipe source, one real implementation, not a second copy of it.
  * out_size must be at least 65 (64 hex chars + NUL); returns 0 with
- * out null-terminated on success, -1 on any failure (spawn, short
- * read, non-hex-looking output).
+ * out null-terminated on success, -1 on any failure (open, read,
+ * digest).
  */
 int pkg_run_capture_sha256(const char *path, char *out, size_t out_size);
 
@@ -853,12 +854,15 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
  *
  * extra_config_symbols (ADR-0159 Phase B): NULL or "" for every caller
  * except POST /v1/system/kmod-build -- a pre-validated, space-joined
- * string of bare CONFIG_* symbol names, passed through unmodified as
- * the build container's own CIX_KMOD_EXTRA_SYMBOLS environment
- * variable. Recipe-agnostic at this layer (pkg.c has no notion of
- * "the kernel recipe" specifically) -- only kernel.recipe's own
- * pkg_build() actually reads that variable; any other recipe simply
- * ignores it. PKG_ERR_INVALID_NAME if it doesn't fit
+ * string of bare CONFIG_* symbol names. Written by cixd itself, as
+ * "<SYMBOL>=m" lines, to /build/extra/kmod-extra.config (#412 --
+ * previously passed through as the build container's own
+ * CIX_KMOD_EXTRA_SYMBOLS environment variable for the recipe to
+ * re-derive the same file from; cixd already owns /build/extra,
+ * ADR-0036, so it writes the file directly now). Recipe-agnostic at
+ * this layer (pkg.c has no notion of "the kernel recipe" specifically)
+ * -- only kernel.recipe's own pkg_build() actually reads that file;
+ * any other recipe simply never looks for it. PKG_ERR_INVALID_NAME if it doesn't fit
  * PKG_HOSTBUILD_EXTRA_SYMBOLS_MAX.
  *
  * out_chain_idx (ADR-0157 Phase 2): same contract as pkg_install_

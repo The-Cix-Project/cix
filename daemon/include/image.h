@@ -281,9 +281,10 @@ enum image_error image_record_version(const char *name, const char *version);
 
 /*
  * Hashes s (a canonical, caller-constructed "package@version,..."
- * manifest string, sorted by package name -- ADR-0108) via the real
- * sha256sum binary (pkg_run_capture_sha256(), never hand-rolled
- * crypto) -- the one shared primitive both image_create()'s own
+ * manifest string, sorted by package name -- ADR-0108) via
+ * pkg_run_capture_sha256() -- the linked libcrypto's own EVP_sha256()
+ * since #352, never a hand-rolled digest -- the one shared primitive
+ * both image_create()'s own
  * initial empty-manifest version and pkg.c's own post-install
  * version-recording use, so there is exactly one hashing code path
  * for "what identifies an image version." Returns 0 on success.

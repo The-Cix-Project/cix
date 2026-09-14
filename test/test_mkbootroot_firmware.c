@@ -293,7 +293,6 @@ int main(void)
 		static const char *const exempt[] = {
 			"/usr/bin/modprobe", /* comes from the operator's own kmod_bin_dir, asserted above */
 			"/usr/bin/modinfo",  /* same */
-			"/usr/bin/sha256sum", /* ADR-0078: staged from host_tools_dir, not this fixed table */
 		};
 		size_t si, ei;
 		int checked = 0;

@@ -8511,7 +8511,8 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
 
 /*
  * ADR-0078: the well-known name of the shared "host tools" image --
- * cp/rm/sha256sum/gzip (coreutils.recipe/gzip.recipe) plus openssl/
+ * cp/gzip (coreutils.recipe/gzip.recipe; rm/sha256sum retired by #352,
+ * both in-process in daemon/src/pkg.c now) plus openssl/
  * curl/tar/bzip2/xz/squashfs-tools/e2fsprogs, one real `pkg install
  * --image=cix-hosttools` per recipe -- an operator builds this
  * exactly like "cix-builder"/"iso-builder" (docs/guides/building-cix.md),

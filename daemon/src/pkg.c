@@ -23,6 +23,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <openssl/evp.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -58,8 +59,6 @@ extern char **environ;
  * image (its own host_tool_bins list, from gzip.recipe).
  */
 #define PKG_GZIP_BIN TARGZ_GZIP_BIN
-#define PKG_SHA256SUM_BIN "/usr/bin/sha256sum"
-#define PKG_RM_BIN "/bin/rm"
 #define PKG_UNSQUASHFS_BIN "/usr/bin/unsquashfs"
 
 /* Left with headroom under LOGSTORE_MSG_MAX (4096) once the surrounding
@@ -140,12 +139,11 @@ struct pkg_entry {
 	char build_workdir[PATH_MAX], build_merged[PATH_MAX];
 	char build_argv_cmd[512];
 	char *build_argv[4];
+	/* #412: build_envp's own 4th entry (ADR-0159 Phase B) used to carry
+	 * an optional CIX_KMOD_EXTRA_SYMBOLS=<value> for the recipe to loop
+	 * over; cixd now writes /build/extra/kmod-extra.config itself
+	 * (write_kmod_extra_config()), so entry [3] stays NULL always. */
 	char *build_envp[5];
-	/* Backing storage for build_envp's own optional 4th entry (ADR-0159
-	 * Phase B) -- "CIX_KMOD_EXTRA_SYMBOLS=<value>", built once
-	 * g_chains[chain_idx].hostbuild_extra_config_symbols is known, in
-	 * pkg_fetch_completed(). */
-	char build_envp_extra[PKG_HOSTBUILD_EXTRA_SYMBOLS_MAX + 32];
 	/* See pkg_fetch_completed()'s own comment for why this is a pipe
 	 * at all (ADR-0087). -1 when this entry has no build output pipe
 	 * currently open. */
@@ -2289,55 +2287,58 @@ static int stage_main_source(const char *src_path, const char *dest_dir, const c
  */
 static int reset_build_container_dir(const char *container_base)
 {
-	char *argv[] = { (char *)PKG_RM_BIN, "-rf", (char *)container_base, NULL };
-
-	return run_subprocess(PKG_RM_BIN, argv);
+	return cix_btrfs_subvol_delete_or_rmtree(container_base);
 }
 
+/*
+ * #352: cixd already links -lcrypto (Makefile), so this forked no
+ * subprocess to get a hash the linked library computes directly --
+ * every call site's contract (out_size >= 65, a lowercase 64-hex-char
+ * digest, 0/-1) is unchanged, so none of them needed to move.
+ */
 int pkg_run_capture_sha256(const char *path, char *out, size_t out_size)
 {
-	int pipefd[2];
-	pid_t pid;
-	int status;
-	char buf[256] = { 0 };
-	size_t total = 0;
+	unsigned char digest[EVP_MAX_MD_SIZE];
+	unsigned int digest_len = 0;
+	EVP_MD_CTX *ctx;
+	int fd;
+	unsigned char buf[65536];
 	ssize_t n;
+	unsigned int i;
 
 	if (out_size < 65)
 		return -1;
-	if (pipe2(pipefd, O_CLOEXEC) != 0)
+
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
 		return -1;
 
-	pid = fork();
-	if (pid < 0) {
-		close(pipefd[0]);
-		close(pipefd[1]);
+	ctx = EVP_MD_CTX_new();
+	if (ctx == NULL) {
+		close(fd);
 		return -1;
 	}
-	if (pid == 0) {
-		char *argv[] = { (char *)PKG_SHA256SUM_BIN, (char *)path, NULL };
+	if (EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) != 1) {
+		EVP_MD_CTX_free(ctx);
+		close(fd);
+		return -1;
+	}
+	while ((n = read(fd, buf, sizeof(buf))) > 0) {
+		if (EVP_DigestUpdate(ctx, buf, (size_t)n) != 1) {
+			EVP_MD_CTX_free(ctx);
+			close(fd);
+			return -1;
+		}
+	}
+	close(fd);
+	if (n < 0 || EVP_DigestFinal_ex(ctx, digest, &digest_len) != 1 || digest_len != 32) {
+		EVP_MD_CTX_free(ctx);
+		return -1;
+	}
+	EVP_MD_CTX_free(ctx);
 
-		dup2(pipefd[1], STDOUT_FILENO);
-		close(pipefd[0]);
-		close(pipefd[1]);
-		execve(PKG_SHA256SUM_BIN, argv, environ);
-		_exit(127);
-	}
-	close(pipefd[1]);
-	while (total + 1 < sizeof(buf)) {
-		n = read(pipefd[0], buf + total, sizeof(buf) - total - 1);
-		if (n <= 0)
-			break;
-		total += (size_t)n;
-	}
-	buf[total] = '\0';
-	close(pipefd[0]);
-	if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
-		return -1;
-
-	if (total < 64)
-		return -1;
-	memcpy(out, buf, 64);
+	for (i = 0; i < digest_len; i++)
+		snprintf(out + i * 2, 3, "%02x", digest[i]);
 	out[64] = '\0';
 	return 0;
 }
@@ -6817,6 +6818,58 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
  * child was forked -- out_compose_pid/out_compose_pidfd then name it,
  * and pkg_buildenv_completed() continues from there.
  */
+
+/*
+ * #412: cixd already chooses these symbols (kmod-build --symbol=) and
+ * already owns /build/extra (ADR-0036, the directory both call sites
+ * below stage every other extra source into) -- writes the file
+ * kernel.recipe's own merge_config.sh call reads directly, rather than
+ * handing the recipe a space-separated CIX_KMOD_EXTRA_SYMBOLS env var
+ * to loop over and re-derive the identical "<symbol>=m" lines from.
+ *
+ * Empty symbols UNLINKS the file rather than merely skipping the
+ * write. A fresh build never sees a stale one (reset_build_container_dir()
+ * wipes container_base first), but pkg_resume_build() deliberately
+ * preserves /build/extra across a resume -- so a resume that drops the
+ * symbols an earlier attempt had must remove what that attempt wrote,
+ * or the recipe would merge a file this call never asked for. ENOENT
+ * on the unlink is not a failure; there being nothing to remove is the
+ * common case.
+ *
+ * strtok_r splits on " \t\n" (the shell's own IFS default), matching
+ * exactly what the retired `for sym in $CIX_KMOD_EXTRA_SYMBOLS` word
+ * splitting did -- space alone was narrower than the field it replaced.
+ */
+static int write_kmod_extra_config(const char *extra_dir, const char *symbols)
+{
+	char path[PATH_MAX];
+	char copy[PKG_HOSTBUILD_EXTRA_SYMBOLS_MAX];
+	char *sym, *saveptr;
+	FILE *f;
+
+	snprintf(path, sizeof(path), "%s/kmod-extra.config", extra_dir);
+
+	if (symbols == NULL || symbols[0] == '\0') {
+		if (unlink(path) != 0 && errno != ENOENT)
+			return -1;
+		return 0;
+	}
+	if (persist_mkdir_p(extra_dir) != 0)
+		return -1;
+	f = fopen(path, "w");
+	if (f == NULL)
+		return -1;
+	snprintf(copy, sizeof(copy), "%s", symbols);
+	for (sym = strtok_r(copy, " \t\n", &saveptr); sym != NULL; sym = strtok_r(NULL, " \t\n", &saveptr)) {
+		if (fprintf(f, "%s=m\n", sym) < 0) {
+			fclose(f);
+			return -1;
+		}
+	}
+	fclose(f);
+	return 0;
+}
+
 static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
                                         const struct pkg_recipe *recipe_in,
                                         int is_final_upgrade, const char *recipe_path,
@@ -7165,18 +7218,20 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	e->build_envp[0] = "PKG_DESTDIR=/build/pkg-dest";
 	e->build_envp[1] = "PATH=/usr/bin:/bin";
 	e->build_envp[2] = "HOME=/build";
-	/* ADR-0159 Phase B: only kernel.recipe's own pkg_build() actually
-	 * reads this -- every other recipe simply never references it.
-	 * Omitted entirely (not just empty) when g_chains[chain_idx] carried nothing,
-	 * matching this project's own "no env var an ordinary recipe would
-	 * ever need to guard against seeing" posture. */
-	if (g_chains[chain_idx].hostbuild_extra_config_symbols[0] != '\0') {
-		snprintf(e->build_envp_extra, sizeof(e->build_envp_extra),
-		         "CIX_KMOD_EXTRA_SYMBOLS=%s", g_chains[chain_idx].hostbuild_extra_config_symbols);
-		e->build_envp[3] = e->build_envp_extra;
-		e->build_envp[4] = NULL;
-	} else {
-		e->build_envp[3] = NULL;
+	/* ADR-0159 Phase B, #412: only kernel.recipe's own pkg_build() ever
+	 * looks for /build/extra/kmod-extra.config -- every other recipe
+	 * simply never references it. build_envp[3] is retired (kept at
+	 * NULL) now that the symbols travel as a file, not an env var. */
+	e->build_envp[3] = NULL;
+	if (write_kmod_extra_config(extra_dir, g_chains[chain_idx].hostbuild_extra_config_symbols) != 0) {
+		logstore_write("cixd", "error",
+		                "pkg %s@%s: could not prepare build container (write kmod-extra.config): %s",
+		                e->name, g_chains[chain_idx].image, strerror(errno));
+		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
+		         "could not prepare the build container (write kmod-extra.config failed)");
+		g_chains[chain_idx].name[0] = '\0';
+		g_chains[chain_idx].dep_queue_count = 0;
+		return 0;
 	}
 
 	return start_build_container_spec(chain_idx, e, spec_out, out_stdio_write_fd,
@@ -7625,7 +7680,7 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	struct pkg_recipe recipe;
 	char recipe_path[PATH_MAX];
 	struct pkg_entry *e;
-	char dest_dir[PATH_MAX], recipe_dst[PATH_MAX];
+	char dest_dir[PATH_MAX], recipe_dst[PATH_MAX], extra_dir[PATH_MAX];
 	int chain_idx;
 
 	if (!pkg_name_is_valid(name))
@@ -7653,6 +7708,7 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 
 	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe.sh", e->build_upperdir);
 	snprintf(dest_dir, sizeof(dest_dir), "%s/build/pkg-dest", e->build_upperdir);
+	snprintf(extra_dir, sizeof(extra_dir), "%s/build/extra", e->build_upperdir);
 
 	if (copy_file_simple(recipe_path, recipe_dst) != 0)
 		return PKG_ERR_PERSIST_FAILED;
@@ -7660,12 +7716,8 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	 * disagree about whether the policy ran. */
 	if (write_finalize_script(e->build_upperdir) != 0)
 		return PKG_ERR_PERSIST_FAILED;
-	{
-		char *rmargv[] = { (char *)PKG_RM_BIN, "-rf", dest_dir, NULL };
-
-		if (run_subprocess(PKG_RM_BIN, rmargv) != 0)
-			return PKG_ERR_PERSIST_FAILED;
-	}
+	if (cix_btrfs_subvol_delete_or_rmtree(dest_dir) != 0)
+		return PKG_ERR_PERSIST_FAILED;
 	if (persist_mkdir_p(dest_dir) != 0)
 		return PKG_ERR_PERSIST_FAILED;
 
@@ -7679,16 +7731,9 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	e->build_envp[0] = "PKG_DESTDIR=/build/pkg-dest";
 	e->build_envp[1] = "PATH=/usr/bin:/bin";
 	e->build_envp[2] = "HOME=/build";
-	/* See pkg_fetch_completed()'s own identical block -- omitted
-	 * entirely (not just empty) when no extra symbols are given. */
-	if (extra_config_symbols != NULL && extra_config_symbols[0] != '\0') {
-		snprintf(e->build_envp_extra, sizeof(e->build_envp_extra),
-		         "CIX_KMOD_EXTRA_SYMBOLS=%s", extra_config_symbols);
-		e->build_envp[3] = e->build_envp_extra;
-		e->build_envp[4] = NULL;
-	} else {
-		e->build_envp[3] = NULL;
-	}
+	e->build_envp[3] = NULL;
+	if (write_kmod_extra_config(extra_dir, extra_config_symbols) != 0)
+		return PKG_ERR_PERSIST_FAILED;
 
 	g_chains[chain_idx].is_hostbuild = (strcmp(e->image, PKG_HOSTBUILD_IMAGE) == 0);
 	g_chains[chain_idx].build_image[0] = '\0'; /* only meaningful while is_hostbuild; unused
@@ -10868,11 +10913,7 @@ int pkg_sync_extract(void)
 
 	sync_state_path(tarball_path, sizeof(tarball_path));
 	snprintf(extract_dir, sizeof(extract_dir), "%s/sync-extract", g_pkg_dir);
-	{
-		char *rm_argv[] = { (char *)PKG_RM_BIN, "-rf", extract_dir, NULL };
-
-		run_subprocess(PKG_RM_BIN, rm_argv);
-	}
+	cix_btrfs_subvol_delete_or_rmtree(extract_dir);
 	if (persist_mkdir_p(extract_dir) != 0)
 		return -1;
 	if (extract_tarball(tarball_path, extract_dir) != 0)
@@ -11083,11 +11124,7 @@ int pkg_sync_merge(void)
 			                adopted, adopted == 1 ? "" : "s");
 	}
 
-	{
-		char *rm_argv[] = { (char *)PKG_RM_BIN, "-rf", extract_dir, NULL };
-
-		run_subprocess(PKG_RM_BIN, rm_argv);
-	}
+	cix_btrfs_subvol_delete_or_rmtree(extract_dir);
 
 	/* One-shot: cleared here so the periodic background sync can never
 	 * inherit a refetch an operator asked for once. */
