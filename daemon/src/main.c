@@ -20223,6 +20223,10 @@ static void handle_boot_next_clear(int fd)
  * reference in this file before adding this). A fix landing in
  * image/src/cix-boot.c had nowhere to go on a live host without this.
  */
+/* Defined below, alongside handle_esp_get/handle_esp_put -- forward
+ * declared here since this section comes first in the file. */
+static void respond_esp_error(int fd, enum esp_error err, const char *what);
+
 #define ESP_BOOT_MANAGER_MIN_BYTES 4096
 #define ESP_BOOT_MANAGER_MAX_BYTES (8 * 1024 * 1024)
 
