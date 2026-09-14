@@ -3778,7 +3778,7 @@ paths:
         backup exists. The only way to see this on a real install, no
         SSH/general shell.
       operationId: getBootManager
-      x-cix-expose: [cli, web]
+      x-cix-expose: [cli]
       responses:
         "200":
           description: The installed binary's identity
@@ -3818,7 +3818,7 @@ paths:
         applies to its own build output (cix-boot.efi must be a PE
         image or the firmware will not load it).
       operationId: setBootManager
-      x-cix-expose: [cli, web]
+      x-cix-expose: [cli]
       requestBody:
         required: true
         content:
