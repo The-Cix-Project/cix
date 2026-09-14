@@ -18,6 +18,8 @@
 #include "releasekey.h"
 #include "test_image_fixture.h"
 
+#include <archive.h>
+#include <archive_entry.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
@@ -48,17 +50,6 @@ extern char **environ;
 
 /* PKG_CURL_BIN now lives in pkg.h -- shared with main.c's own
  * bootstrap-fetch mechanism (ADR-0065), one real definition. */
-#define PKG_TAR_BIN TARGZ_TAR_BIN
-/*
- * Issue #125: tar's own -z shells out to a BARE "gzip", resolved
- * through PATH -- and this daemon runs as PID 1 from the kernel, whose
- * environment carries no PATH at all, so that lookup fails and tar
- * exits 2. Every cache save on a real installed host failed this way,
- * silently, for months. Naming the compressor absolutely removes the
- * lookup; mkbootroot stages this exact path into the control-plane
- * image (its own host_tool_bins list, from gzip.recipe).
- */
-#define PKG_GZIP_BIN TARGZ_GZIP_BIN
 #define PKG_UNSQUASHFS_BIN "/usr/bin/unsquashfs"
 
 /* Left with headroom under LOGSTORE_MSG_MAX (4096) once the surrounding
@@ -2042,142 +2033,172 @@ static int run_subprocess(const char *bin, char *const argv[])
  * Blindly stripping one component there silently drops or misplaces
  * real top-level content instead of failing loudly.
  *
- * Captures up to a bounded listing (64KB -- comfortably thousands of
- * short path entries) via `tar -tf`; a mismatch found anywhere within
- * that capture is conclusive (git-archive-without-prefix's own
- * top-level entries diverge immediately -- Makefile, daemon/, docs/,
- * ... -- never needs the full listing to detect). A capture that's
- * still fully consistent when it ends (whether by EOF or by filling
- * the buffer) is treated as "has a common top dir" -- the buffer is
- * sized generously enough that truncation without ever having seen a
- * mismatch is itself strong evidence, not a real gap in practice.
+ * #411: walks the archive's own header stream via libarchive (no size
+ * cap, no forked tar -tf/pipe-drain dance -- reading a header costs
+ * nothing regardless of how many entries a real release tarball has).
+ * A mismatch found anywhere is conclusive, exactly as before
+ * (git-archive-without-prefix's own top-level entries diverge
+ * immediately -- Makefile, daemon/, docs/, ... -- never needs the
+ * whole archive to detect); an entry whose own path starts with '/'
+ * (slash_len == 0) is treated the same as the old code's identical
+ * case -- no real top-level component to agree on, not a common dir.
  */
 static int tarball_has_common_top_dir(const char *tarball_path)
 {
-	int pipefd[2];
-	pid_t pid;
-	int status;
-	char buf[65536];
-	size_t total = 0;
-	ssize_t n;
+	struct archive *a;
+	struct archive_entry *entry;
 	char top[PATH_MAX] = { 0 };
 	size_t top_len = 0;
-	size_t line_start = 0;
-	size_t i;
+	int rc = 0;
 
-	if (pipe2(pipefd, O_CLOEXEC) != 0)
+	a = archive_read_new();
+	if (a == NULL)
 		return 0;
-
-	pid = fork();
-	if (pid < 0) {
-		close(pipefd[0]);
-		close(pipefd[1]);
+	archive_read_support_filter_all(a);
+	archive_read_support_format_all(a);
+	if (archive_read_open_filename(a, tarball_path, 262144) != ARCHIVE_OK) {
+		archive_read_free(a);
 		return 0;
 	}
-	if (pid == 0) {
-		char *argv[] = { (char *)PKG_TAR_BIN, "-tf", (char *)tarball_path, NULL };
+	for (;;) {
+		const char *name;
+		const char *slash;
+		size_t slash_len;
+		int r = archive_read_next_header(a, &entry);
 
-		dup2(pipefd[1], STDOUT_FILENO);
-		close(pipefd[0]);
-		close(pipefd[1]);
-		execve(PKG_TAR_BIN, argv, environ);
-		_exit(127);
-	}
-	close(pipefd[1]);
-	while (total + 1 < sizeof(buf)) {
-		n = read(pipefd[0], buf + total, sizeof(buf) - total - 1);
-		if (n <= 0)
+		if (r == ARCHIVE_EOF) {
+			rc = top_len > 0;
 			break;
-		total += (size_t)n;
-	}
-	buf[total] = '\0';
-	/*
-	 * Drain and reap even if the buffer filled before EOF -- otherwise
-	 * a large listing leaves tar blocked writing to a full pipe,
-	 * leaking a zombie child. A real, previously-undiscovered bug this
-	 * pass found and fixed alongside the truncation trim below: this
-	 * drain used to reuse `buf` itself (starting back at index 0) as
-	 * its own scratch space, silently overwriting the very capture the
-	 * mismatch scan below still needed to read -- invisible for any
-	 * tarball whose listing fits inside 64KB (nothing left to drain,
-	 * this loop never touches `buf` at all), but real and reproducible
-	 * for one that doesn't (confirmed directly on coreutils-9.11.tar.xz:
-	 * the drain's own reads landed arbitrary tail fragments like
-	 * "thanks-gen" at buf[0], clobbering the real captured head). A
-	 * small, separate discard buffer fixes it -- the drained bytes are
-	 * never needed for anything, only their being read off the pipe is.
-	 */
-	{
-		char discard[4096];
-
-		while ((n = read(pipefd[0], discard, sizeof(discard))) > 0)
-			;
-	}
-	close(pipefd[0]);
-	if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
-		return 0;
-
-	/*
-	 * A real, previously-undiscovered gap: when the buffer fills before
-	 * EOF (a large listing -- coreutils-9.11.tar.xz's own `tar -tf`
-	 * output is 137KB, well over this 64KB cap), the trailing captured
-	 * bytes are an arbitrary mid-line cut, not a real, complete entry.
-	 * Confirmed exactly: a real capture ending "...coreutils-9.11/lib/
-	 * stdio-read.c\ncoreuti" -- that dangling "coreuti" fragment has no
-	 * '/' within it, so the slash-scan below treats it as a short,
-	 * mismatched top-level component against the already-established
-	 * "coreutils-9.11", false-positiving the whole tarball as having no
-	 * common top dir and silently breaking every subsequent pkg_build()
-	 * (extract lands one directory level too deep). Only a genuinely
-	 * complete, newline-terminated line is real signal -- trim the
-	 * dangling fragment off entirely before scanning when truncated.
-	 */
-	if (total + 1 >= sizeof(buf)) {
-		size_t trimmed = total;
-
-		while (trimmed > 0 && buf[trimmed - 1] != '\n')
-			trimmed--;
-		total = trimmed;
-	}
-
-	for (i = 0; i <= total; i++) {
-		if (i == total || buf[i] == '\n') {
-			size_t line_len = i - line_start;
-			size_t slash;
-
-			if (line_len > 0) {
-				for (slash = 0; slash < line_len && buf[line_start + slash] != '/'; slash++)
-					;
-				if (slash == 0 || slash >= sizeof(top))
-					return 0; /* an entry with no top-level component at all */
-				if (top_len == 0) {
-					memcpy(top, buf + line_start, slash);
-					top[slash] = '\0';
-					top_len = slash;
-				} else if (slash != top_len || memcmp(top, buf + line_start, slash) != 0) {
-					return 0; /* real mismatch -- no common top dir */
-				}
-			}
-			line_start = i + 1;
+		}
+		if (r != ARCHIVE_OK) {
+			rc = 0;
+			break;
+		}
+		name = archive_entry_pathname(entry);
+		if (name == NULL || name[0] == '\0')
+			continue;
+		slash = strchr(name, '/');
+		slash_len = slash != NULL ? (size_t)(slash - name) : strlen(name);
+		if (slash_len == 0 || slash_len >= sizeof(top)) {
+			rc = 0; /* no real top-level component, or one too long to compare */
+			break;
+		}
+		if (top_len == 0) {
+			memcpy(top, name, slash_len);
+			top[slash_len] = '\0';
+			top_len = slash_len;
+		} else if (slash_len != top_len || memcmp(top, name, slash_len) != 0) {
+			rc = 0; /* real mismatch -- no common top dir */
+			break;
 		}
 	}
-	return top_len > 0;
+	archive_read_close(a);
+	archive_read_free(a);
+	return rc;
+}
+
+/*
+ * #411: extracts archive_path into dest_dir in-process via libarchive
+ * (replacing the forked `tar -xf`/`-xzf`), which autodetects both
+ * container format and compression from the archive's own bytes, the
+ * same as tar's own autodetection -- callers never distinguish -xf
+ * from -xzf.
+ *
+ * strip_first_component mirrors tar's own --strip-components=1: an
+ * entry's first '/'-separated segment is dropped, and an entry with
+ * nothing to strip to (no '/' at all) is skipped entirely, exactly
+ * tar's own documented behavior for that flag.
+ *
+ * ARCHIVE_EXTRACT_SECURE_NODOTDOT/SECURE_SYMLINKS/SECURE_NOABSOLUTEPATHS
+ * make libarchive itself refuse a member that would escape dest_dir --
+ * a ../ path, a symlink pointing outside the tree, an absolute path.
+ * This project's own recipes fetch source archives from third-party
+ * upstreams, so this is untrusted input, not merely unfamiliar input.
+ */
+static int extract_archive_to(const char *archive_path, const char *dest_dir,
+                               int strip_first_component)
+{
+	struct archive *a;
+	struct archive *ext;
+	struct archive_entry *entry;
+	int rc = -1;
+
+	a = archive_read_new();
+	if (a == NULL)
+		return -1;
+	archive_read_support_filter_all(a);
+	archive_read_support_format_all(a);
+
+	ext = archive_write_disk_new();
+	if (ext == NULL) {
+		archive_read_free(a);
+		return -1;
+	}
+	archive_write_disk_set_options(ext, ARCHIVE_EXTRACT_TIME | ARCHIVE_EXTRACT_PERM |
+	                                        ARCHIVE_EXTRACT_ACL | ARCHIVE_EXTRACT_FFLAGS |
+	                                        ARCHIVE_EXTRACT_SECURE_NODOTDOT |
+	                                        ARCHIVE_EXTRACT_SECURE_SYMLINKS |
+	                                        ARCHIVE_EXTRACT_SECURE_NOABSOLUTEPATHS);
+	archive_write_disk_set_standard_lookup(ext);
+
+	if (archive_read_open_filename(a, archive_path, 262144) != ARCHIVE_OK)
+		goto out;
+
+	for (;;) {
+		char full[PATH_MAX];
+		int r = archive_read_next_header(a, &entry);
+
+		if (r == ARCHIVE_EOF)
+			break;
+		if (r != ARCHIVE_OK)
+			goto out;
+
+		if (strip_first_component) {
+			const char *name = archive_entry_pathname(entry);
+			const char *slash = name != NULL ? strchr(name, '/') : NULL;
+
+			if (slash == NULL)
+				continue; /* nothing to strip to -- tar skips these too */
+			archive_entry_set_pathname(entry, slash + 1);
+		}
+
+		if ((size_t)snprintf(full, sizeof(full), "%s/%s", dest_dir,
+		                      archive_entry_pathname(entry)) >= sizeof(full))
+			goto out;
+		archive_entry_set_pathname(entry, full);
+
+		if (archive_write_header(ext, entry) != ARCHIVE_OK)
+			goto out;
+		if (archive_entry_size(entry) > 0) {
+			const void *buf;
+			size_t size;
+			int64_t offset;
+
+			for (;;) {
+				r = archive_read_data_block(a, &buf, &size, &offset);
+				if (r == ARCHIVE_EOF)
+					break;
+				if (r != ARCHIVE_OK)
+					goto out;
+				if (archive_write_data_block(ext, buf, size, offset) != ARCHIVE_OK)
+					goto out;
+			}
+		}
+		if (archive_write_finish_entry(ext) != ARCHIVE_OK)
+			goto out;
+	}
+	rc = 0;
+out:
+	archive_write_close(ext);
+	archive_write_free(ext);
+	archive_read_close(a);
+	archive_read_free(a);
+	return rc;
 }
 
 static int extract_tarball(const char *tarball_path, const char *dest_dir)
 {
-	if (tarball_has_common_top_dir(tarball_path)) {
-		char *argv[] = { (char *)PKG_TAR_BIN, "-C",           (char *)dest_dir,
-			          "--strip-components=1", "-xf", (char *)tarball_path, NULL };
-
-		return run_subprocess(PKG_TAR_BIN, argv);
-	}
-	{
-		char *argv[] = { (char *)PKG_TAR_BIN, "-C", (char *)dest_dir, "-xf",
-			          (char *)tarball_path, NULL };
-
-		return run_subprocess(PKG_TAR_BIN, argv);
-	}
+	return extract_archive_to(tarball_path, dest_dir, tarball_has_common_top_dir(tarball_path));
 }
 
 /* Last '/'-separated segment of a source URL -- where an extra
@@ -11600,16 +11621,9 @@ static void warn_unexecutable_binaries(const char *root, const char *pkg_name, i
 static int pkg_cache_extract(const char *name, const char *version, const char *out_dir)
 {
 	char path[PATH_MAX];
-	char *argv[6];
 
 	cache_tarball_path(name, version, path, sizeof(path));
-	argv[0] = (char *)PKG_TAR_BIN;
-	argv[1] = "-C";
-	argv[2] = (char *)out_dir;
-	argv[3] = "-xzf";
-	argv[4] = path;
-	argv[5] = NULL;
-	return run_subprocess(PKG_TAR_BIN, argv);
+	return extract_archive_to(path, out_dir, 0);
 }
 
 void pkg_cache_write_json_status(struct json_writer *w)
