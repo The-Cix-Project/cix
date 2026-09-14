@@ -2980,6 +2980,27 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		if (read(src, magic4, 4) != 4 || memcmp(magic4, "hsqs", 4) != 0) {
 			close(src);
 			json_free(root);
+			/* #435: the file opened but carries no squashfs magic. The
+			 * common real cause is not a wrong path -- it is a bootroot
+			 * assembly still writing this very file. Assembly runs AFTER
+			 * a hostbuild reports "installed", so a client acting on
+			 * that status races it (measured on 192.168.15.95,
+			 * 2026-09-14: a deploy hit this exact case mid-assembly and
+			 * the identical call succeeded seconds later, unchanged).
+			 * Say that with a 409 -- the request is valid and the file
+			 * is the right one, the resource is simply busy -- instead
+			 * of "not a squashfs image", which reads as a typo, a wrong
+			 * path or a corrupt build and sends the reader looking in
+			 * the wrong place. When no assembly is running the file
+			 * really is not a squashfs and the 400 stands. */
+			if (g_bootroot_assembly_running) {
+				snprintf(out_errmsg, out_errmsg_size,
+				         "a bootroot assembly is in progress (generation %ld) -- it is still "
+				         "writing this image; poll GET /v1/system/assembly until running:false "
+				         "and retry",
+				         g_bootroot_assembly_started);
+				return 409;
+			}
 			snprintf(out_errmsg, out_errmsg_size, "image_path is not a squashfs image");
 			return 400;
 		}

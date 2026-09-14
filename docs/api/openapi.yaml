@@ -732,7 +732,25 @@ paths:
             kernel_path given, either path missing/unreadable, or
             either file fails its own on-disk magic check -- the
             inactive slot is left completely untouched in every 400
-            case (both files are validated before either is written)
+            case (both files are validated before either is written).
+            Note the specific case of image_path existing but not yet
+            carrying squashfs magic *while a bootroot assembly is
+            running* is a 409, not a 400 (see below), because the
+            honest cause is "wait", not "wrong path".
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            image_path exists but does not yet carry squashfs magic and
+            a bootroot assembly is in progress -- assembly runs after a
+            hostbuild reports "installed", so a client acting on that
+            status can read the image while it is still being written
+            (#435). The request is valid and the file is the right one;
+            it is simply not finished. The message names the assembly
+            generation; poll GET /v1/system/assembly until running:false
+            and retry. The inactive slot is left untouched.
           content:
             application/json:
               schema:
