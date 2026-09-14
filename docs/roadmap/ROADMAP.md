@@ -2800,6 +2800,18 @@ Verified on 192.168.15.95: nine builds, `SELFTEST: PASS` including `test_blockin
 
 Left open against the supervisor: #297 (a restart orphans build containers and other undefined children — the ADR said "interrupted", which is wrong), #298 (a slowly crash-looping worker never trips the fast-fail rollback), #299 (the status port binds `INADDR_ANY` unauthenticated).
 
+## Part 213 follow-up (done): the platform's five lifecycle domains are named where an operator meets them (#182, ADR-0230)
+
+Recorded late: the two surfaces below shipped 2026-09-02 (the assembly status endpoint) and 2026-09-06 (the dashboard tree), between Parts 213 and 215, and were missed when the surrounding entries were written.
+
+ADR-0230 gave the self-hosting pipeline a *shape*: five lifecycle domains — **Catalogue** (what software exists), **CI** (how it gets built), **CD/Delivery** (how it gets delivered), **Host lifecycle** (how this machine changes), **Media** (how new machines are made) — named in the CLI, the dashboard and the docs, deliberately **not** as URL prefixes. The prefix was rejected on measurement, not taste: it is a breaking change to 275 operations and every generated route/helper/CLI-tree entry, for a gain confined to the least operator-visible surface there is, and because a lifecycle domain is a *view* over resources (assembly touches packages, artifacts, the ESP and the slots at once) a prefix would have to lie in the URL rather than merely be ambiguous in the docs.
+
+Two concrete surfaces shipped under it, and the taxonomy was recorded before the rest of the work per #182's own ask (the shape outlives the implementation beneath it):
+- **`GET /v1/system/assembly`** — the first per-domain status surface, and #182's sharpest symptom. Control-plane assembly progress had been two generation counters on `GET /system/boot`, an endpoint whose subject is *what booted* reporting on *what is being built*. The fields moved to their own endpoint in a clean cut-over, its one CLI consumer updated in the same change (no compatibility shim) — the rule ADR-0230 states as "status belongs to the thing that is happening, never to a neighbour that happens to know about it."
+- **The dashboard tree** — `renderTree()` had hidden all five domains behind a single **Software** leaf while **Devices** got its own; it now names the five, each tagged with ADR-0230, deep-linking the existing tab routes without a path changing.
+
+Verified: `GET /v1/system/assembly` answered live on 192.168.15.95 (`running`/`started_generation`/`completed_generation`/`image_path`); the tree's five ADR-0230-tagged domain labels are in `web/app.js`'s `renderTree()`. The #182 EPIC stays open by design — the URL question is answered ("no"), and its remaining symptoms (which image can build what; the ISO's three input sources; kernel-as-a-package) are now placeable as CI/Media/host-lifecycle questions rather than unstructured gaps.
+
 ## Part 213 (done): a partition can be appended to a live boot disk (#140)
 
 The OS disk's reserved free space was unusable, and fixing the policy only got as far as the daemon: `sfdisk` then refused on its own, with a pre-flight `BLKRRPART` check that rejects any disk carrying a mounted filesystem. Correct for a *repartition*, wrong for an *append*, which by construction does not read, move or modify an existing entry.
