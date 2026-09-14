@@ -110,6 +110,13 @@ static const struct cli_node n_boot_next_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
+static const char *const n_boot_manager_flags[] = {
+	"--path=",
+	"--url=",
+	"--sha256=",
+	NULL
+};
+
 static const char *const n_backup_flags[] = {
 	"--output=",
 	NULL
@@ -1428,7 +1435,7 @@ static const struct cli_node n_ksm_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
-/* The 62 top-level commands, in dispatcher order. */
+/* The 63 top-level commands, in dispatcher order. */
 static const struct cli_node CLI_TREE[] = {
 	{ "health", NULL, NULL },
 	{ "login", n_login_flags, NULL },
@@ -1438,6 +1445,7 @@ static const struct cli_node CLI_TREE[] = {
 	{ "reboot", NULL, NULL },
 	{ "update", n_update_flags, NULL },
 	{ "boot-next", NULL, n_boot_next_subs },
+	{ "boot-manager", n_boot_manager_flags, NULL },
 	{ "backup", n_backup_flags, NULL },
 	{ "restore", n_restore_flags, NULL },
 	{ "site", NULL, n_site_subs },

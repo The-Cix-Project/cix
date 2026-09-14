@@ -1,0 +1,39 @@
+# 0290 — The boot manager is updated in place, with no fallback of its own
+
+## Status
+
+Accepted. Fixes a gap in [ADR-0215](0215-our-own-efi-boot-manager.md) (Cix's own freestanding UEFI boot manager) and [ADR-0014](0014-squashfs-ab-root-with-native-boot-counting.md)'s own A/B slot model, and is exercised alongside the one-shot rollback tool from [issue #154](https://git.home.arpa/itdlabs/cix/issues/154).
+
+## Context
+
+Found while recovering 192.168.15.95 from a real production incident (an extraction bug in v2.57.168, unrelated to this ADR) that needed `POST /v1/system/boot-next` to roll the host back to its previous slot. It didn't work: the endpoint reported success, a real reboot happened (confirmed via `kmsg`), and the machine came back on the slot it was already running.
+
+Reading `image/src/cix-boot.c` — Cix's own from-scratch UEFI boot manager, which ADR-0215 substituted for systemd-boot — showed why: it imitates systemd-boot's on-disk *entry* format (the Boot Loader Specification files under `/loader/entries`) but never read `LoaderEntryOneShot`, the EFI *variable* systemd-boot also defines and `esp_boot_next_set()` genuinely, correctly writes. `git log` confirms this document's own narrative predates the swap by two days — the mechanism was built and tested against real systemd-boot, and nobody revisited it when ADR-0215 replaced the bootloader under it. Fixed in `image/src/cix-boot.c` and `include/uefi.h` (a real `EFI_RUNTIME_SERVICES` struct, `GetVariable`/`SetVariable` typed, everything else a named `void *` placeholder in the same style `EFI_BOOT_SERVICES` already uses) — tracked as issue #467, not the subject of this ADR.
+
+That fix exposed a second, more consequential gap: **there was no way to get a fixed `cix-boot.efi` onto an already-installed host at all.** `POST /v1/system/update` — the daemon's one mechanism for updating what a host boots — writes a fresh root squashfs and/or kernel onto the *inactive* A/B slot and stages a loader entry for it. It has never touched `\EFI\BOOT\BOOTX64.EFI`. Grepping every reference to that path and to `cix-boot.efi` in the whole daemon found exactly two: `image/src/cix-install.c`, which writes it once at first install, and the ISO-build code (`main.c`'s `iso_build_start()`), which bundles it into a fresh installer image. Neither runs against a live, already-installed host. So a corrected `cix-boot.c`, once built, would sit in the artifact cache forever, changing nothing about what any existing host actually boots.
+
+This is a different risk shape from everything else `update` touches, and that difference is the reason this got its own ADR rather than a quiet addition to `update`'s own request body:
+
+- The root squashfs and kernel are **per-slot**. A bad one lands on the *inactive* slot; the active slot keeps running until an operator deliberately reboots onto it, and Automatic Boot Assessment (ADR-0014) falls back to the other slot if the new one fails to reach a healthy state across several attempts.
+- The boot manager is **not per-slot**. There is exactly one `\EFI\BOOT\BOOTX64.EFI` on the ESP, shared by both `cix-a.conf` and `cix-b.conf`. A binary that faults before it can even parse a loader entry has no fallback to fall back to — every future boot, on either slot, depends on this one file.
+
+## Decision
+
+**A new, separate endpoint — `GET`/`POST /v1/system/boot-manager` (`cixctl boot-manager`) — updates the ESP's boot manager binary, and is never folded into `update`.** Keeping it distinct keeps the two risk profiles visible at the API surface rather than hidden behind one shared "stage an update" call.
+
+Safety measures, in the order they matter:
+
+1. **Written staged-then-renamed, never truncated in place.** The new binary is written to a temp file on the ESP (`BOOTX64.EFI.new`), `fsync`'d, then swapped in by two same-filesystem renames: the outgoing binary to `BOOTX64.EFI.bak`, then the temp file to `BOOTX64.EFI`. Each rename alone is atomic even though the pair is not; the one partial-failure case (backup rename succeeds, live rename fails) is put back by the same code path rather than left with neither a live binary nor its backup.
+2. **The outgoing binary is kept, not deleted.** `BOOTX64.EFI.bak` is not restorable through this API — recovering it needs the ESP mounted outside the running host, the same offline recovery #467 itself needed once (`qemu-nbd` against the underlying LV, editing a plain FAT32 filesystem) — but it means that recovery path, once reached, has something correct to restore rather than nothing.
+3. **A shallow but real validation gate before any write happens at all.** The resolved file must start with the PE `MZ` magic and fall within a plausible size range (4 KiB–8 MiB) — the same check `cix`'s own recipe already applies to its own build output (`cix-boot.efi is not a PE image` in `pkg_install()`). This is not a PE parse and cannot catch a binary that is malformed in a way that still starts with a valid header; it catches the class of mistake that actually happens (an empty file, a text error page fetched instead of a binary, a wrong artifact entirely).
+4. **Never reboots.** Matching `update`'s own contract exactly: the write takes effect only on the next boot, and `GET /system/boot-manager` reports what is now installed (size, sha256, whether a backup exists) so an operator can verify before separately calling `reboot`.
+5. **Sourced the same way `update`'s own `image_url`/`image_sha256` already are.** `path` (already on the box — typically a `cix` hostbuild's own harvested `cix-boot.efi`) or `url`+`sha256` (fetched and checksum-verified by the daemon, reusing `fetch_update_image()` verbatim rather than a second fetch-and-verify implementation).
+
+What this ADR deliberately does not do: a real PE/COFF parse, a staged-rollout or canary mechanism, or a second software fallback for a corrupted boot manager. A canary is not meaningful for a file with no second copy to fall back to short of the offline ESP-mount path; building one would be complexity spent on a problem the shallow validation gate already reduces to "did an operator hand this endpoint something that isn't even a PE image," which is the failure mode actually seen (an empty or truncated fetch), not "a correctly-shaped PE image with a subtle logic bug" (which no gate short of exhaustive testing catches, and which the QEMU boot tests already in this repo — `test_boot`, `test_boot_ab` — exist to catch before a build is ever trusted with real hardware).
+
+## Consequences
+
+- A `cix-boot.c` fix (like #467's) now has a real path to an already-installed host, closing the gap that made this ADR necessary in the first place.
+- The boot manager join the small set of things this platform can update live without a full reinstall — but it is the first thing in that set with no A/B fallback, so it is the first thing where a bad write is a genuinely harder outage to recover from than any other `update` call. The `.bak` file and the offline recovery path are the mitigation; they are not as strong a guarantee as "the other slot still works," and this ADR does not claim otherwise.
+- Operators (and any future tooling) should treat `boot-manager` as meaningfully higher-stakes than `update`'s own root/kernel staging, and the two-step "set, verify with GET, then reboot separately" shape is deliberate friction against doing this casually.
+- `PUT /v1/system/esp {"default": ...}` remains dead code against `cix-boot.c` for the same root cause #467 fixed for `boot-next` — `cix-boot.c` has never parsed `loader.conf` at all. Not fixed here; tracked as a separate, smaller gap since it is not on any rollback-critical path.

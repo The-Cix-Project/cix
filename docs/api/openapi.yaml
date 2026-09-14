@@ -3769,6 +3769,104 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  /system/boot-manager:
+    get:
+      summary: >
+        The ESP's installed boot manager binary (\EFI\BOOT\BOOTX64.EFI,
+        issue #467) -- its size and sha256, and whether a pre-update
+        backup exists. The only way to see this on a real install, no
+        SSH/general shell.
+      operationId: getBootManager
+      x-cix-expose: [cli, web]
+      responses:
+        "200":
+          description: The installed binary's identity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BootManager"
+        "404":
+          description: No boot manager binary is present at the expected path
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: No EFI System Partition is mounted on this host
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: >
+        Install a new boot manager binary (issue #467). This is the ONE
+        file every future boot depends on for BOTH A/B slots -- there is
+        no per-slot fallback for it the way there is for the root
+        squashfs and kernel, so it is written atomically (staged
+        alongside the target, then renamed over it) and the outgoing
+        binary is kept as \EFI\BOOT\BOOTX64.EFI.bak rather than deleted.
+        Deliberately synchronous and deliberately does NOT reboot --
+        call GET first to compare against what is about to be replaced,
+        and reboot separately once ready to actually exercise the new
+        binary.
+
+        Refused outright unless the resolved file starts with the PE
+        "MZ" magic and falls within a plausible size range for this
+        program -- a real parse of the PE format is not attempted, this
+        is the same shallow-but-real gate `cix`'s own recipe already
+        applies to its own build output (cix-boot.efi must be a PE
+        image or the firmware will not load it).
+      operationId: setBootManager
+      x-cix-expose: [cli, web]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path:
+                  type: string
+                  description: >
+                    A file already on this host, e.g. the cix-boot.efi
+                    a "cix" hostbuild just produced
+                    (/var/lib/cix/rebuildable/pkg/artifacts/cix/cix-boot.efi).
+                url:
+                  type: string
+                  description: Fetched by the daemon instead of `path`. Requires `sha256`.
+                sha256:
+                  type: string
+                  description: Required with `url`; 64 hex characters.
+      responses:
+        "200":
+          description: Installed; the response names the newly-installed binary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BootManager"
+        "400":
+          description: >
+            Neither path nor url given, url given without sha256, the
+            resolved file is not a plausible PE image, or the fetched
+            file does not match sha256
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The ESP is mounted read-only
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: No EFI System Partition is mounted on this host
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/boot-console:
     get:
       summary: The installed system's own boot console parameters (issue #24)
@@ -18935,6 +19033,24 @@ components:
             ".conf" kept and any boot counter stripped, which is how
             systemd-boot itself identifies an entry. null when nothing is
             armed.
+
+    BootManager:
+      type: object
+      required: [size, sha256, has_backup]
+      properties:
+        size:
+          type: integer
+          description: Size in bytes of the currently-installed \EFI\BOOT\BOOTX64.EFI.
+        sha256:
+          type: string
+          description: Its sha256, lowercase hex.
+        has_backup:
+          type: boolean
+          description: >
+            Whether \EFI\BOOT\BOOTX64.EFI.bak exists -- the binary a
+            previous POST here replaced. Not itself restorable through
+            this API; recovering it needs the ESP's filesystem mounted
+            outside the running host (issue #467's own recovery path).
 
     Error:
       type: object

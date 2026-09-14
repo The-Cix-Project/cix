@@ -56,6 +56,13 @@ static void print_usage(FILE *out)
 	        "               This is the rollback tool: pinning the loader default to a slot\n"
 	        "               instead is sticky and breaks the NEXT update, which stages the\n"
 	        "               other slot and would then match nothing\n"
+	        "  boot-manager [--path=FILE | --url=URL --sha256=HEX]  -- report or replace\n"
+	        "               \\EFI\\BOOT\\BOOTX64.EFI (issue #467), the boot manager BOTH A/B\n"
+	        "               slots share -- there is no per-slot fallback for this one file\n"
+	        "               the way there is for the root squashfs and kernel, so this is\n"
+	        "               its own operation rather than a field on `update`. No argument\n"
+	        "               reports what is currently installed. Does NOT reboot -- call\n"
+	        "               reboot separately once ready to actually exercise the new binary\n"
 	        "  update [--image=PATH | --image-url=URL --image-sha256=HEX] [--kernel=PATH]\n"
 	        "            -- writes a fresh control-plane squashfs and/or a fresh kernel onto\n"
 	        "               this daemon's own inactive A/B slot and stages a fresh loader\n"
@@ -11973,6 +11980,81 @@ static int cmd_boot_next(const struct cix_client *c, int json_mode, int argc, ch
 	return emit(&r, json_mode, fmt_boot_next);
 }
 
+/*
+ * boot-manager: report or replace \EFI\BOOT\BOOTX64.EFI (#467).
+ *
+ * Unlike update's root/kernel pair, there is no A/B fallback for this
+ * one file -- both slots share it -- so a set here does not reboot, the
+ * same way update's own does not: check `boot-manager` again to see
+ * what is now installed, then `reboot` separately once satisfied.
+ */
+static void fmt_boot_manager(const struct json_value *v)
+{
+	long size = (long)json_as_number(json_object_get(v, "size"));
+	const char *sha256 = json_str_or(v, "sha256");
+	int has_backup = json_bool_field(v, "has_backup");
+
+	printf("boot manager: %ld bytes, sha256 %s%s\n", size, sha256,
+	       has_backup ? " (a pre-update backup exists)" : "");
+}
+
+static int cmd_boot_manager(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	struct json_writer w;
+	const char *path = NULL;
+	const char *url = NULL;
+	const char *sha256 = NULL;
+	int i;
+
+	if (argc == 0) {
+		if (cix_client_request(c, CIX_API_getBootManager_METHOD, CIX_API_getBootManager, NULL,
+		                       &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_boot_manager);
+	}
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--path=", 7) == 0)
+			path = argv[i] + 7;
+		else if (strncmp(argv[i], "--url=", 6) == 0)
+			url = argv[i] + 6;
+		else if (strncmp(argv[i], "--sha256=", 9) == 0)
+			sha256 = argv[i] + 9;
+		else {
+			fprintf(stderr, "usage: cixctl boot-manager [--path=FILE | --url=URL "
+			                "--sha256=HEX]\n");
+			return 2;
+		}
+	}
+	if ((path == NULL) == (url == NULL)) {
+		fprintf(stderr, "cixctl: give exactly one of --path= or --url=\n");
+		return 2;
+	}
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (path != NULL) {
+		jw_key(&w, "path");
+		jw_str(&w, path);
+	} else {
+		jw_key(&w, "url");
+		jw_str(&w, url);
+		jw_key(&w, "sha256");
+		jw_str(&w, sha256 != NULL ? sha256 : "");
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	if (cix_client_request(c, CIX_API_setBootManager_METHOD, CIX_API_setBootManager, w.buf, &r) !=
+	    0) {
+		jw_free(&w);
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_boot_manager);
+}
+
 static int cmd_dns_provision(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct json_writer w;
@@ -17113,6 +17195,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_update(client, json_mode, argc, argv);
 	if (strcmp(cmd, "boot-next") == 0)
 		return cmd_boot_next(client, json_mode, argc, argv);
+	if (strcmp(cmd, "boot-manager") == 0)
+		return cmd_boot_manager(client, json_mode, argc, argv);
 	if (strcmp(cmd, "backup") == 0)
 		return cmd_backup(client, json_mode, argc, argv);
 	if (strcmp(cmd, "restore") == 0)

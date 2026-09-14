@@ -259,6 +259,40 @@ typedef struct {
 	void *CreateEventEx;
 } EFI_BOOT_SERVICES;
 
+/*
+ * EFI_RUNTIME_SERVICES. Same posture as EFI_BOOT_SERVICES above: every
+ * member present in spec order, typed only where cix-boot actually
+ * calls it (GetVariable/SetVariable, for the boot-loader-interface
+ * LoaderEntryOneShot variable -- #467), the rest void * placeholders
+ * carrying their real names so the offsets stay right.
+ */
+typedef struct {
+	EFI_TABLE_HEADER Hdr;
+
+	void *GetTime;
+	void *SetTime;
+	void *GetWakeupTime;
+	void *SetWakeupTime;
+
+	void *SetVirtualAddressMap;
+	void *ConvertPointer;
+
+	EFI_STATUS(EFIAPI *GetVariable)
+	(CHAR16 *VariableName, EFI_GUID *VendorGuid, UINT32 *Attributes, UINTN *DataSize,
+	 void *Data);
+	void *GetNextVariableName;
+	EFI_STATUS(EFIAPI *SetVariable)
+	(CHAR16 *VariableName, EFI_GUID *VendorGuid, UINT32 Attributes, UINTN DataSize,
+	 void *Data);
+
+	void *GetNextHighMonotonicCount;
+	void *ResetSystem;
+
+	void *UpdateCapsule;
+	void *QueryCapsuleCapabilities;
+	void *QueryVariableInfo;
+} EFI_RUNTIME_SERVICES;
+
 typedef struct {
 	EFI_TABLE_HEADER Hdr;
 	CHAR16 *FirmwareVendor;
@@ -269,7 +303,7 @@ typedef struct {
 	EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *ConOut;
 	EFI_HANDLE StandardErrorHandle;
 	EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *StdErr;
-	void *RuntimeServices;
+	EFI_RUNTIME_SERVICES *RuntimeServices;
 	EFI_BOOT_SERVICES *BootServices;
 	UINTN NumberOfTableEntries;
 	void *ConfigurationTable;
