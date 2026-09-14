@@ -103,12 +103,12 @@ static const struct budget g_budgets[] = {
 	 * file is -- it runs inside the FORKED fetch child (start_fetch_for
 	 * has already forked by then), so no request handler and no reactor
 	 * pass can reach it, and the wait it blocks is the child's own. */
-	{ "daemon/src/pkg.c", 11, "build helpers and fetch intermediates" },
+	{ "daemon/src/pkg.c", 10, "build helpers and fetch intermediates; #352 dropped one -- pkg_run_capture_sha256() no longer forks sha256sum" },
 	{ "daemon/src/targz.c", 4, "tar/gzip pipeline, bounded by the archive" },
 	{ "daemon/src/diskpart.c", 4, "sfdisk/blkid, bounded external tools" },
 	{ "daemon/src/exec.c", 2, "namespace-join intermediates" },
 	{ "daemon/src/diskformat.c", 2, "mkfs intermediate" },
-	{ "daemon/src/websocket.c", 2, "openssl digest, bounded" },
+	{ "daemon/src/websocket.c", 0, "#351: the SHA-1+base64 handshake digest moved in-process (EVP), no forked child left to wait on" },
 	{ "daemon/src/opensslrun.c", 1, "openssl, bounded" },
 	{ "daemon/src/kmod.c", 1, "modprobe, bounded" },
 	{ "daemon/src/storagemigrate.c", 1, "double-fork intermediate" },
@@ -126,8 +126,10 @@ static const struct budget g_budgets[] = {
  * would rise on its own whenever a per-file budget did, which is the
  * one thing a ceiling must not do. Raising it is a separate, visible
  * act -- 60 -> 61 here for ADR-0279's signature fetch in pkg.c, the
- * same wait the per-file entry above explains. */
-#define TOTAL_ALLOWED 61
+ * same wait the per-file entry above explains. Lowered 61 -> 58 for
+ * #351/#352: websocket.c's two forked-openssl waits and pkg.c's one
+ * forked-sha256sum wait are gone. */
+#define TOTAL_ALLOWED 58
 
 static int is_comment(const char *line)
 {
