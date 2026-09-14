@@ -2,6 +2,14 @@
 # v2.57.167: retire rm/sha256sum shell-outs, one openssl call, and the
 # kmod-extra.config env var (#352, #351, #412). See CHANGELOG.md.
 #
+# Also declares sed in pkg_build_depends -- the build failed with
+# '/bin/sh: sed: command not found' at build/generated/pkg_finalize.h
+# (ADR-0251, Makefile:714) despite sed being installed into cix-builder
+# (6.1.0's own image_packages). Cause not fully established -- whatever
+# let earlier builds reach an ambient sed stopped holding; declaring it
+# is correct regardless (#168/ADR-0199: composed from declared tools,
+# not from whatever an image happens to carry).
+#
 # v2.57.166: fix a use-after-free in the #446 ping_group_range 400
 # message (it read freed JSON memory). The 400 logic itself was correct.
 #
@@ -9,7 +17,7 @@ pkg_name="cix"
 pkg_version="v2.57.167"
 pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.57.167.tar.gz"
 pkg_sha256="7e4e74a6f2b82d34697098808c6394d8d00cb7aaad7d82ce0987838cf10e2c40"
-pkg_build_depends="bash coreutils make tcc linux-headers openssl gcc binutils minisign"
+pkg_build_depends="bash coreutils make tcc linux-headers openssl gcc binutils minisign sed"
 pkg_build_caps="CAP_SYS_ADMIN"
 # ADR-0208: cix-builder's one job is building Cix. This said
 # "toolchain" -- an image no recipe in this repo describes, which
