@@ -2800,6 +2800,14 @@ Verified on 192.168.15.95: nine builds, `SELFTEST: PASS` including `test_blockin
 
 Left open against the supervisor: #297 (a restart orphans build containers and other undefined children — the ADR said "interrupted", which is wrong), #298 (a slowly crash-looping worker never trips the fast-fail rollback), #299 (the status port binds `INADDR_ANY` unauthenticated).
 
+## Part 213 follow-up (done): build capacity is derived from package state, not from a cleared field (#246, ADR-0235)
+
+Recorded late: this shipped 2026-09-02, between Parts 213 and 214, and was missed when the surrounding entries were written.
+
+A build job owns one entry in `g_chains[]`, and "is there room for another job" was derived from one field: a slot was free when its `name` was the empty string. Releasing a slot was therefore an action someone had to remember, in better than twenty scattered `g_chains[i].name[0] = '\0'` assignments across the fetch, build-environment-compose, build and resume paths — several nested three branches deep in an exit-status decode, with no `chain_free()` counterpart for the compiler to enforce, and two paths (a forked compose returning 2, a chain advancing to its next dependency) that legitimately hold their slot, so a path returning without clearing was indistinguishable from one intending to. A missed clear was permanent and silent: capacity degraded one slot at a time until the box abruptly refused all package work with 409, with nothing linking the refusal to the builds that caused it. Measured, not theorised — repeated failed builds of one package took a host to `active_jobs: 9`/10 with no job running anywhere, one short of refusing everything until a reboot on a shell-less box. The fix: a slot is busy iff its owning package is in a transient state (`PKG_STATE_FETCHING`/`BUILDING`); `chain_reap_stale()` runs at the two points the answer is consumed (`chain_alloc()` hands out capacity, `pkg_active_chain_names()` reports it) and releases any slot whose owner is terminal (`INSTALLED`/`FAILED`) or gone, logging each reclaim at `warn` — a missed clear now costs a log line, not a slot, and a self-heal that stayed silent would conceal the defect it compensates for. This reuses issue #98's own stale-slot discriminator (an entry no longer FETCHING cannot be the one whose child just exited), so the fact has one source rather than two representations that can disagree — the condition the leak lived in.
+
+Verified: `chain_reap_stale()` at `daemon/src/pkg.c:670`, called from `chain_alloc()` and `pkg_active_chain_names()`, with the reclaim `warn` naming the slot and its holder. Recorded late from the shipped code.
+
 ## Part 213 follow-up (done): a snapshot container migrates across disks, subvolume preserved (ADR-0234)
 
 Recorded late: this shipped 2026-09-02, between Parts 213 and 214, and was missed when the surrounding entries were written.
