@@ -29,6 +29,7 @@
 #include <sched.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2109,11 +2110,23 @@ static int tarball_has_common_top_dir(const char *tarball_path)
  * nothing to strip to (no '/' at all) is skipped entirely, exactly
  * tar's own documented behavior for that flag.
  *
- * ARCHIVE_EXTRACT_SECURE_NODOTDOT/SECURE_SYMLINKS/SECURE_NOABSOLUTEPATHS
- * make libarchive itself refuse a member that would escape dest_dir --
- * a ../ path, a symlink pointing outside the tree, an absolute path.
- * This project's own recipes fetch source archives from third-party
- * upstreams, so this is untrusted input, not merely unfamiliar input.
+ * ARCHIVE_EXTRACT_SECURE_NODOTDOT/SECURE_SYMLINKS refuse a member that
+ * would escape dest_dir via a ../ path or a symlink already on disk
+ * that redirects a later write outside the tree -- this project's own
+ * recipes fetch source archives from third-party upstreams, so this is
+ * untrusted input, not merely unfamiliar input.
+ *
+ * NOT ARCHIVE_EXTRACT_SECURE_NOABSOLUTEPATHS -- confirmed live (a real
+ * failed extraction on 192.168.15.95, every entry refused with no
+ * diagnostic until this was traced): that flag refuses ANY absolute
+ * pathname on the entry libarchive is about to write, and dest_dir
+ * itself is always absolute, so it refused every single entry outright
+ * the moment `full` (below) replaced the archive's own relative name.
+ * The actual property that flag is for -- an archive entry that names
+ * an absolute path itself, e.g. claiming to write "/etc/passwd" -- is
+ * checked explicitly instead, against the archive's own name BEFORE
+ * dest_dir is prefixed onto it, which is the only place that check is
+ * meaningful.
  */
 static int extract_archive_to(const char *archive_path, const char *dest_dir,
                                int strip_first_component)
@@ -2134,41 +2147,74 @@ static int extract_archive_to(const char *archive_path, const char *dest_dir,
 		archive_read_free(a);
 		return -1;
 	}
+	/*
+	 * ARCHIVE_EXTRACT_OWNER: GNU tar's own default when the process is
+	 * real root (cixd always is) is to restore the archive's declared
+	 * uid/gid -- "same-owner" needs no flag to enable as root, only
+	 * --no-same-owner disables it, which the old `tar -xf` call never
+	 * passed. Matched here rather than left to this write's own
+	 * default (the current process's uid/gid) so this is parity with
+	 * the old behavior, not a silent change to it.
+	 */
 	archive_write_disk_set_options(ext, ARCHIVE_EXTRACT_TIME | ARCHIVE_EXTRACT_PERM |
 	                                        ARCHIVE_EXTRACT_ACL | ARCHIVE_EXTRACT_FFLAGS |
+	                                        ARCHIVE_EXTRACT_OWNER |
 	                                        ARCHIVE_EXTRACT_SECURE_NODOTDOT |
-	                                        ARCHIVE_EXTRACT_SECURE_SYMLINKS |
-	                                        ARCHIVE_EXTRACT_SECURE_NOABSOLUTEPATHS);
+	                                        ARCHIVE_EXTRACT_SECURE_SYMLINKS);
 	archive_write_disk_set_standard_lookup(ext);
 
-	if (archive_read_open_filename(a, archive_path, 262144) != ARCHIVE_OK)
+	if (archive_read_open_filename(a, archive_path, 262144) != ARCHIVE_OK) {
+		logstore_write("cixd", "error", "extract %s: open failed: %s", archive_path,
+		                archive_error_string(a));
 		goto out;
+	}
 
 	for (;;) {
+		const char *name;
 		char full[PATH_MAX];
 		int r = archive_read_next_header(a, &entry);
 
 		if (r == ARCHIVE_EOF)
 			break;
-		if (r != ARCHIVE_OK)
+		if (r != ARCHIVE_OK) {
+			logstore_write("cixd", "error", "extract %s: read header failed: %s", archive_path,
+			                archive_error_string(a));
 			goto out;
+		}
+
+		/*
+		 * Only the absolute-path case needs its own check here --
+		 * ARCHIVE_EXTRACT_SECURE_NODOTDOT (above) already refuses a
+		 * real ".." path COMPONENT once it's written into `full`
+		 * below, correctly, since dest_dir itself never contains one.
+		 * A plain substring check for ".." would also reject a
+		 * legitimate name that merely contains two consecutive dots
+		 * without ever being a traversal.
+		 */
+		name = archive_entry_pathname(entry);
+		if (name == NULL || name[0] == '/') {
+			logstore_write("cixd", "error", "extract %s: refusing absolute member path \"%s\"",
+			                archive_path, name != NULL ? name : "(null)");
+			goto out;
+		}
 
 		if (strip_first_component) {
-			const char *name = archive_entry_pathname(entry);
-			const char *slash = name != NULL ? strchr(name, '/') : NULL;
+			const char *slash = strchr(name, '/');
 
 			if (slash == NULL)
 				continue; /* nothing to strip to -- tar skips these too */
-			archive_entry_set_pathname(entry, slash + 1);
+			name = slash + 1;
 		}
 
-		if ((size_t)snprintf(full, sizeof(full), "%s/%s", dest_dir,
-		                      archive_entry_pathname(entry)) >= sizeof(full))
+		if ((size_t)snprintf(full, sizeof(full), "%s/%s", dest_dir, name) >= sizeof(full))
 			goto out;
 		archive_entry_set_pathname(entry, full);
 
-		if (archive_write_header(ext, entry) != ARCHIVE_OK)
+		if (archive_write_header(ext, entry) != ARCHIVE_OK) {
+			logstore_write("cixd", "error", "extract %s: write header for \"%s\" failed: %s",
+			                archive_path, full, archive_error_string(ext));
 			goto out;
+		}
 		if (archive_entry_size(entry) > 0) {
 			const void *buf;
 			size_t size;
@@ -2178,14 +2224,24 @@ static int extract_archive_to(const char *archive_path, const char *dest_dir,
 				r = archive_read_data_block(a, &buf, &size, &offset);
 				if (r == ARCHIVE_EOF)
 					break;
-				if (r != ARCHIVE_OK)
+				if (r != ARCHIVE_OK) {
+					logstore_write("cixd", "error", "extract %s: read data for \"%s\" failed: %s",
+					                archive_path, full, archive_error_string(a));
 					goto out;
-				if (archive_write_data_block(ext, buf, size, offset) != ARCHIVE_OK)
+				}
+				if (archive_write_data_block(ext, buf, size, offset) != ARCHIVE_OK) {
+					logstore_write("cixd", "error",
+					                "extract %s: write data for \"%s\" failed: %s", archive_path,
+					                full, archive_error_string(ext));
 					goto out;
+				}
 			}
 		}
-		if (archive_write_finish_entry(ext) != ARCHIVE_OK)
+		if (archive_write_finish_entry(ext) != ARCHIVE_OK) {
+			logstore_write("cixd", "error", "extract %s: finish entry \"%s\" failed: %s",
+			                archive_path, full, archive_error_string(ext));
 			goto out;
+		}
 	}
 	rc = 0;
 out:
