@@ -682,7 +682,7 @@ enum pkg_error pkg_recipe_get(const char *name, const char *version, struct json
  * PKG_ERR_INVALID_NAME / PKG_ERR_INVALID_RECIPE / PKG_ERR_DUPLICATE /
  * PKG_ERR_PERSIST_FAILED on failure.
  */
-enum pkg_error pkg_recipe_add(const char *name, const char *content);
+enum pkg_error pkg_recipe_add(const char *name, const char *content, int *out_was_approval);
 
 /*
  * Removes recipe version(s) for name. version NULL or "" removes every

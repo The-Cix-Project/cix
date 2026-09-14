@@ -153,7 +153,7 @@ int main(void)
 	}
 
 	expect(&client, "POST", "/v1/networks",
-	        "{\"name\":\"dhcplab\",\"subnet\":\"172.30.7.0\",\"prefix_len\":24,"
+	        "{\"name\":\"selftest-dhcp\",\"subnet\":\"172.30.7.0\",\"prefix_len\":24,"
 	        "\"address\":\"172.30.7.1\"}",
 	        201, "create the lab network");
 	/*
@@ -167,7 +167,7 @@ int main(void)
 	 * at creation is what a real multi-segment DHCP server does anyway.
 	 */
 	expect(&client, "POST", "/v1/networks",
-	        "{\"name\":\"dhcplab2\",\"subnet\":\"172.30.8.0\",\"prefix_len\":24,"
+	        "{\"name\":\"selftest-dhcp2\",\"subnet\":\"172.30.8.0\",\"prefix_len\":24,"
 	        "\"address\":\"172.30.8.1\"}",
 	        201, "create the second lab network");
 
@@ -175,7 +175,7 @@ int main(void)
 	 * rather than a 404 -- and it reports the same default lease a PUT
 	 * would start from, so reading and enabling agree on the number. */
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "GET", "/v1/dhcp/networks/dhcplab", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/dhcp/networks/selftest-dhcp", NULL, &r) != 0 ||
 	    r.status != 200 || json_object_get(r.json, "enabled") == NULL ||
 	    json_object_get(r.json, "enabled")->u.boolean ||
 	    (long)json_as_number(json_object_get(r.json, "lease_seconds")) != 3600) {
@@ -190,13 +190,13 @@ int main(void)
 	/* 2. Every way of enabling DHCP that could not actually serve is
 	 * refused at the point of asking, not discovered later by a client
 	 * that never got an address. */
-	expect(&client, "PUT", "/v1/dhcp/networks/dhcplab",
+	expect(&client, "PUT", "/v1/dhcp/networks/selftest-dhcp",
 	        "{\"enabled\":true,\"range_start\":\"172.30.7.100\",\"range_end\":\"172.30.7.200\"}",
 	        400, "enabling with no server named");
-	expect(&client, "PUT", "/v1/dhcp/networks/dhcplab",
+	expect(&client, "PUT", "/v1/dhcp/networks/selftest-dhcp",
 	        "{\"enabled\":true,\"range_start\":\"10.0.0.1\",\"range_end\":\"10.0.0.9\"}",
 	        400, "a range outside the network's own subnet");
-	expect(&client, "PUT", "/v1/dhcp/networks/dhcplab",
+	expect(&client, "PUT", "/v1/dhcp/networks/selftest-dhcp",
 	        "{\"enabled\":true,\"range_start\":\"172.30.7.200\",\"range_end\":\"172.30.7.100\"}",
 	        400, "a range that runs backwards");
 
@@ -230,12 +230,12 @@ int main(void)
 	expect(&client, "POST", "/v1/containers",
 	        "{\"name\":\"dhcpsrv\",\"image\":\"dhcptest\","
 	        "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"]}],"
-	        "\"networks\":[\"dhcplab\",\"dhcplab2\"],"
+	        "\"networks\":[\"selftest-dhcp\",\"selftest-dhcp2\"],"
 	        "\"restart\":\"always\"}",
 	        201, "create the first serving container, on both segments");
 	expect(&client, "POST", "/v1/containers",
 	        "{\"name\":\"dhcpsrv2\",\"image\":\"dhcptest\","
-	        "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"]}],\"networks\":[\"dhcplab\"],"
+	        "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"]}],\"networks\":[\"selftest-dhcp\"],"
 	        "\"restart\":\"always\"}",
 	        201, "create the second serving container");
 	expect(&client, "POST", "/v1/dhcp/servers", "{\"container\":\"dhcpsrv\"}", 201,
@@ -250,12 +250,12 @@ int main(void)
 	/* A range with fewer addresses than servers cannot be split, and
 	 * rounding one server down to nothing would quietly make it not a
 	 * server at all. */
-	expect(&client, "PUT", "/v1/dhcp/networks/dhcplab",
+	expect(&client, "PUT", "/v1/dhcp/networks/selftest-dhcp",
 	        "{\"enabled\":true,\"range_start\":\"172.30.7.100\",\"range_end\":\"172.30.7.100\","
 	        "\"servers\":[\"dhcpsrv\",\"dhcpsrv2\"]}",
 	        400, "one address between two servers");
 
-	expect(&client, "PUT", "/v1/dhcp/networks/dhcplab",
+	expect(&client, "PUT", "/v1/dhcp/networks/selftest-dhcp",
 	        "{\"enabled\":true,\"range_start\":\"172.30.7.100\",\"range_end\":\"172.30.7.200\","
 	        "\"router\":\"172.30.7.1\",\"servers\":[\"dhcpsrv\",\"dhcpsrv2\"]}",
 	        200, "enabling DHCP across both servers");
@@ -263,7 +263,7 @@ int main(void)
 	/* The two slices are reported, adjacent, and cover the whole range
 	 * with nothing shared: 101 addresses over two servers is 51 + 50. */
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "GET", "/v1/dhcp/networks/dhcplab", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/dhcp/networks/selftest-dhcp", NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET the split, status=%d\n", r.status);
 		ok = 0;
@@ -294,7 +294,7 @@ int main(void)
 	 * the split is real in the file dnsmasq reads, not just in the
 	 * answer we give about it. */
 	if (!wait_for_file(&client, "/v1/containers/dhcpsrv2/files?path=/etc/dnsmasq-dhcp.conf",
-	                    "dhcp-range=set:dhcplab,172.30.7.151,172.30.7.200,3600s"))
+	                    "dhcp-range=set:selftest-dhcp,172.30.7.151,172.30.7.200,3600s"))
 		fprintf(stderr, "FAIL: the second server did not get its own slice\n");
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "GET",
@@ -326,7 +326,7 @@ int main(void)
 	/* Naming a server that is not on this wire is refused: it has no
 	 * interface in the subnet, so its slice would be addresses handed
 	 * to something that cannot answer for them. */
-	expect(&client, "PUT", "/v1/dhcp/networks/dhcplab",
+	expect(&client, "PUT", "/v1/dhcp/networks/selftest-dhcp",
 	        "{\"enabled\":true,\"range_start\":\"172.30.7.100\",\"range_end\":\"172.30.7.200\","
 	        "\"servers\":[\"dhcpsrv\",\"dhcpelsewhere\"]}",
 	        400, "naming a server that is not on this network");
@@ -341,7 +341,7 @@ int main(void)
 	cix_response_free(&r);
 	/* And it did not change the split on the network it is not on. */
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "GET", "/v1/dhcp/networks/dhcplab", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/dhcp/networks/selftest-dhcp", NULL, &r) != 0 ||
 	    r.status != 200 || json_object_get(r.json, "slices") == NULL ||
 	    json_object_get(r.json, "slices")->u.array.count != 2) {
 		fprintf(stderr, "FAIL: an unrelated server changed this network's split\n");
@@ -360,10 +360,10 @@ int main(void)
 	 * rendered conf ends up there, not how quickly.
 	 */
 	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
-	                    "dhcp-range=set:dhcplab,172.30.7.100,172.30.7.150,3600s"))
+	                    "dhcp-range=set:selftest-dhcp,172.30.7.100,172.30.7.150,3600s"))
 		fprintf(stderr, "FAIL: the rendered dhcp conf did not reach the first server\n");
 	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
-	                    "dhcp-option=tag:dhcplab,3,172.30.7.1"))
+	                    "dhcp-option=tag:selftest-dhcp,3,172.30.7.1"))
 		fprintf(stderr, "FAIL: the router option did not reach the first server\n");
 
 	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp-hosts",
@@ -405,26 +405,26 @@ int main(void)
 	 * otherwise point every client at the container serving DHCP, which
 	 * does not route.
 	 */
-	expect(&client, "PUT", "/v1/dhcp/networks/dhcplab2",
+	expect(&client, "PUT", "/v1/dhcp/networks/selftest-dhcp2",
 	        "{\"enabled\":true,\"range_start\":\"172.30.8.100\",\"range_end\":\"172.30.8.150\","
 	        "\"servers\":[\"dhcpsrv\"]}",
 	        200, "the same server also serves the second network, with no router");
 	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
-	                    "dhcp-option=tag:dhcplab2,option:router"))
+	                    "dhcp-option=tag:selftest-dhcp2,option:router"))
 		fprintf(stderr, "FAIL: a network with no router did not suppress the router option -- "
 		                "dnsmasq would advertise itself as the gateway\n");
 
 	/* Now give it one, and the tagged value replaces the suppression. */
-	expect(&client, "PUT", "/v1/dhcp/networks/dhcplab2",
+	expect(&client, "PUT", "/v1/dhcp/networks/selftest-dhcp2",
 	        "{\"enabled\":true,\"range_start\":\"172.30.8.100\",\"range_end\":\"172.30.8.150\","
 	        "\"router\":\"172.30.8.254\",\"servers\":[\"dhcpsrv\"]}",
 	        200, "give the second network a router");
 
 	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
-	                    "dhcp-range=set:dhcplab2,172.30.8.100,172.30.8.150,3600s"))
+	                    "dhcp-range=set:selftest-dhcp2,172.30.8.100,172.30.8.150,3600s"))
 		fprintf(stderr, "FAIL: the second network's range did not reach the shared server\n");
 	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
-	                    "dhcp-option=tag:dhcplab2,3,172.30.8.254"))
+	                    "dhcp-option=tag:selftest-dhcp2,3,172.30.8.254"))
 		fprintf(stderr, "FAIL: the second network's router option is not tagged to it\n");
 
 	memset(&r, 0, sizeof(r));
@@ -437,7 +437,7 @@ int main(void)
 			                "every client on every range would receive it\n");
 			ok = 0;
 		}
-		if (strstr(r.body, "dhcp-option=tag:dhcplab,3,172.30.7.1") == NULL) {
+		if (strstr(r.body, "dhcp-option=tag:selftest-dhcp,3,172.30.7.1") == NULL) {
 			fprintf(stderr, "FAIL: the first network's tagged router option went missing when "
 			                "a second network was added\n");
 			ok = 0;
@@ -448,7 +448,7 @@ int main(void)
 	}
 	cix_response_free(&r);
 
-	expect(&client, "DELETE", "/v1/dhcp/networks/dhcplab2", NULL, 204,
+	expect(&client, "DELETE", "/v1/dhcp/networks/selftest-dhcp2", NULL, 204,
 	        "turn the second network's DHCP back off");
 
 	/*
@@ -486,7 +486,7 @@ int main(void)
 			if (cix_client_request(&client, "GET",
 			                       "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
 			                       NULL, &r) == 0 && r.status == 200 && r.body != NULL &&
-			    strstr(r.body, "dhcp-range=set:dhcplab,172.30.7.100,172.30.7.150,3600s") != NULL) {
+			    strstr(r.body, "dhcp-range=set:selftest-dhcp,172.30.7.100,172.30.7.150,3600s") != NULL) {
 				cix_response_free(&r);
 				break;
 			}
@@ -544,7 +544,7 @@ int main(void)
 
 	/* 8. Deleting the network takes its DHCP config with it: a range
 	 * for a network that no longer exists is one nothing can serve. */
-	expect(&client, "DELETE", "/v1/dhcp/networks/dhcplab", NULL, 204, "disable DHCP");
+	expect(&client, "DELETE", "/v1/dhcp/networks/selftest-dhcp", NULL, 204, "disable DHCP");
 	expect(&client, "DELETE", "/v1/containers/dhcpsrv", NULL, 204, "remove the first container");
 	expect(&client, "DELETE", "/v1/containers/dhcpsrv2", NULL, 204, "remove the second container");
 	/*
@@ -565,13 +565,13 @@ int main(void)
 	 * hand-rolled versions of this with three different budgets; this
 	 * is one of them stopping.
 	 */
-	if (test_cleanup_containers_and_network(&client, "dhcplab") != 0)
+	if (test_cleanup_containers_and_network(&client, "selftest-dhcp") != 0)
 		ok = 0;
 	expect(&client, "DELETE", "/v1/networks/dhcpother", NULL, 204, "remove the unrelated network");
-	/* dhcplab2 is this test's own second segment (the one-server,
+	/* selftest-dhcp2 is this test's own second segment (the one-server,
 	 * two-networks case). Removing its DHCP config above does not
 	 * remove the network, and a leaked bridge breaks the next run. */
-	expect(&client, "DELETE", "/v1/networks/dhcplab2", NULL, 204, "remove the second network");
+	expect(&client, "DELETE", "/v1/networks/selftest-dhcp2", NULL, 204, "remove the second network");
 
 	kill(daemon_pid, SIGTERM);
 	waitpid(daemon_pid, NULL, 0);

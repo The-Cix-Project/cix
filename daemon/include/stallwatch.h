@@ -79,6 +79,12 @@ void stallwatch_write_loop_json(struct json_writer *w);
  */
 void stallwatch_activity(const char *what);
 void stallwatch_activity_clear(void);
+/* #303: read the current in-flight activity (into shared memory), for the
+ * crash handler's trace. NULL if the watchdog never started; a caller must
+ * bound its read to STALL_ACTIVITY_MAX (a torn write may leave it
+ * unterminated). Async-signal-safe under that discipline. */
+const char *stallwatch_current_activity(void);
+#define STALLWATCH_ACTIVITY_MAX 192 /* mirrors stallwatch.c's STALL_ACTIVITY_MAX for the crash handler's bound */
 
 /* Writes the most recent records (newest first) as a JSON array. */
 /*

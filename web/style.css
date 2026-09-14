@@ -566,18 +566,49 @@ header {
 	border: none;
 	padding: 0;
 	font: inherit;
-	color: inherit;
+	color: var(--muted);
 	cursor: pointer;
 }
 
 .status-version:hover {
 	text-decoration: underline;
+	text-decoration-color: var(--muted);
 	filter: none;
 }
 
+/*
+ * Attention, not alarm (owner request, 2026-09-14). When a newer build
+ * is running than the page was loaded from, the version text stays GRAY
+ * -- never the accent colour -- and a light sweeps through it to signal
+ * "reload to catch up". The band is --text over the --muted base, so it
+ * reads as a shine in both themes; the text still shows the running
+ * "Cix <ver> - slot <x>" and stays clickable. Reduced-motion turns the
+ * sweep off and leaves plain gray.
+ */
 .status-version-skew {
-	color: var(--accent);
-	font-weight: 600;
+	background: linear-gradient(100deg,
+		var(--muted) 0%, var(--muted) 42%,
+		var(--text) 50%,
+		var(--muted) 58%, var(--muted) 100%);
+	background-size: 250% 100%;
+	-webkit-background-clip: text;
+	background-clip: text;
+	-webkit-text-fill-color: transparent;
+	color: transparent;
+	animation: status-version-shine 2.8s linear infinite;
+}
+
+@keyframes status-version-shine {
+	from { background-position: 130% 0; }
+	to   { background-position: -130% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.status-version-skew {
+		animation: none;
+		-webkit-text-fill-color: var(--muted);
+		color: var(--muted);
+	}
 }
 
 .status-meta {

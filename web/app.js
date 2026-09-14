@@ -1467,10 +1467,14 @@ function renderStatusMeta() {
 		statusVersionEl.hidden = false;
 		statusVersionEl.textContent = "Cix " + statusVersion.version +
 		    (statusVersion.slot !== null ? " \u00b7 slot " + statusVersion.slot : "");
+		/* Attention, not alarm (owner request): when a newer build is
+		 * running than this page was loaded from, the version text stays
+		 * gray and shines (see .status-version-skew) rather than turning
+		 * accent + popping a verbose tooltip. The text still shows the
+		 * running "Cix <ver> - slot <x>"; the tooltip is a one-liner. */
 		statusVersionEl.classList.toggle("status-version-skew", versionIsSkewed());
 		statusVersionEl.title = versionIsSkewed()
-		    ? "This page was loaded from Cix " + loadedVersion + ", but the daemon is now " +
-		      "running " + statusVersion.version + ". Click to reload the dashboard."
+		    ? "A newer build is running — click to reload the dashboard."
 		    : "Click to reload the dashboard.";
 	} else {
 		statusVersionEl.hidden = true;

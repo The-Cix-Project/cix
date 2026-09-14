@@ -18337,7 +18337,19 @@ components:
           description: Unix epoch seconds the most recent sync was started; null if one has never run.
         added:
           type: integer
-          description: Recipe versions newly added by the most recent completed sync.
+          description: >
+            Recipe versions NEWLY ADDED by the most recent completed sync -- a
+            (name, version) that did not exist here before. Does NOT include an
+            approval applied to an already-published version; that is counted in
+            "approved" (#404), so a sync that only propagates approvals reports
+            added: 0.
+        approved:
+          type: integer
+          description: >
+            Already-published recipe versions to which the sync applied a
+            pkg_artifact_sha256 approval -- the one in-place edit ADR-0107
+            permits. Split from "added" so an approval is never miscounted as a
+            new recipe (#404).
         skipped:
           type: integer
           description: >

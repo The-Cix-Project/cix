@@ -1096,6 +1096,20 @@ void stallwatch_activity(const char *what)
 	snprintf(g_shared->pass_activity, STALL_ACTIVITY_MAX, "%s", what);
 }
 
+/*
+ * #303: the current in-flight activity, for cixd's crash handler to name
+ * in its trace. Returns a pointer into the shared buffer (fixed
+ * STALL_ACTIVITY_MAX) or NULL if the watchdog never started. Read-only
+ * and async-signal-safe FOR A CALLER THAT BOUNDS ITS OWN READ to
+ * STALL_ACTIVITY_MAX -- a torn concurrent write may leave it briefly
+ * unterminated, which is why the crash handler writes a bounded length
+ * rather than treating it as a C string.
+ */
+const char *stallwatch_current_activity(void)
+{
+	return g_shared != NULL ? g_shared->activity : NULL;
+}
+
 void stallwatch_activity_clear(void)
 {
 	if (g_shared == NULL)
