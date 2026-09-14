@@ -17710,15 +17710,25 @@ components:
           type: string
           nullable: true
           description: >
-            The cixd version this ISO was built by, read back from the
-            trusted comment inside its own signature -- so it describes
-            the artifact rather than whatever is running now.
-            This matters because state is recovered from disk (#205): a
-            surviving ISO may predate the running daemon, and it is
-            still a real, bootable, correctly signed artifact. Reporting
-            which version it carries lets an operator notice a stale one
-            before publishing it as current, rather than hiding the
-            situation by pretending the ISO is not there.
+            The version of the `cix` artifact this ISO was assembled
+            from -- the `cix` hostbuild version whose `mkinstalleriso`
+            and `web`/`cixd` bytes the installer actually carries -- read
+            back from the trusted comment inside its own signature, so it
+            describes the artifact rather than whatever daemon is running
+            now. Before #434 this was stamped with the running daemon's
+            own compiled-in version (CIX_BUILD_VERSION), which on any box
+            that had built a release it had not yet deployed labelled the
+            ISO with a version it did not contain -- and the published
+            `cix-installer-{version}-...iso` name inherited that wrong
+            version, so different bytes could land under a name already
+            in the cache. It is now the artifact's version, and the
+            published name is derived from it.
+            This also matters because state is recovered from disk
+            (#205): a surviving ISO may predate the running daemon, and
+            it is still a real, bootable, correctly signed artifact.
+            Reporting which version it carries lets an operator notice a
+            stale one before publishing it as current, rather than
+            hiding the situation by pretending the ISO is not there.
             Null for an unsigned ISO, which has no signature to read it
             from.
 
