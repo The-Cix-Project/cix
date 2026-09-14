@@ -10228,7 +10228,11 @@ paths:
       summary: >
         Cancels an in-flight package build. A build that will never finish -- one whose
         own configure script is waiting on stdin, say -- otherwise holds its slot until
-        the daemon restarts, because nothing else can stop it.
+        the daemon restarts, because nothing else can stop it. This also recovers a slot
+        left held with nothing behind it: if the build's container has already vanished
+        from the registry (a leaked slot -- the job's own state is stuck while its
+        container is gone), cancel now releases that slot directly rather than signalling
+        a container that no longer exists and returning 200 having done nothing (#339).
 
         Deliberately operator-initiated rather than an automatic timeout on silence.
         "No output for N minutes" does not mean "hung": gcc's bootstrap goes quiet for
