@@ -21940,6 +21940,38 @@ static void handle_pkg_cancel(int fd, const char *body, size_t body_len)
 			else
 				try_start_queued_pkg_rebuild();
 			artifact_push_pump(); /* issue #129 -- see the other call sites */
+		} else {
+			/*
+			 * #339: the build container is gone from the registry
+			 * entirely -- registry_find() returned NULL. Neither branch
+			 * above ran, so pkg_cancel() set cancel_requested and
+			 * nothing honoured it: no exit event is still coming for a
+			 * container that no longer exists, so the chain slot leaked
+			 * forever while cancel returned 200 having done nothing (the
+			 * measured state on 192.168.15.95: a successful build stuck
+			 * in "building", its slot held, cancel a no-op signalling a
+			 * __pkgbuild-N that was already gone, recoverable only by a
+			 * reboot). This is the build-container twin of the fetch fix
+			 * in pkg_cancel() (#239): drive the completion directly,
+			 * exactly as the exited branch above does, minus the
+			 * registry_remove() there is nothing to remove.
+			 * pkg_build_container_chain_index() derives the slot from
+			 * the container's own name suffix, so it finds the leaked
+			 * slot without the registry, and cancel_requested makes
+			 * pkg_build_completed() record the cancellation and release
+			 * it regardless of the synthetic status.
+			 */
+			logstore_write("cixd", "info",
+			                "pkg %s@%s: cancel target %s already gone from the registry -- "
+			                "releasing its leaked build slot directly (#339)",
+			                name, image[0] != '\0' ? image : "(default)",
+			                build_container_name);
+			if (pkg_build_completed(build_container_name, -1, &pkg_pid, &pkg_pidfd,
+			                        &pkg_chain_idx, hostbuild_done_name, &kept_ignored))
+				register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
+			else
+				try_start_queued_pkg_rebuild();
+			artifact_push_pump();
 		}
 	}
 
