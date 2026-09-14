@@ -28521,7 +28521,6 @@ static int cixd_main(int argc, char **argv)
 	const char *test_update_kernel = NULL;
 	const char *test_bootstrap_toolchain = NULL;
 	int i;
-	int listen_fd;
 	struct sigaction sa;
 
 	/* Stamped before anything else so a slow startup (image scan, state
@@ -29353,7 +29352,6 @@ static int cixd_main(int argc, char **argv)
 		                "start\n", g_bind_addr, DEFAULT_BIND);
 		return 1;
 	}
-	listen_fd = g_listener_conn.fd;
 	start_kmsg_watch(); /* needs g_epfd, only just created above -- best-effort, see its own comment */
 	start_default_image_libc_seed(); /* #189 -- same posture; no-op once the image has a runtime */
 	start_uevent_watch(); /* ADR-0161 Phase C -- same g_epfd/best-effort posture as start_kmsg_watch() */
@@ -29653,11 +29651,30 @@ static int cixd_main(int argc, char **argv)
 		stallwatch_pass_end();
 	}
 
-	if (listen_fd >= 0)
-		close(listen_fd);
-	if (g_https_listener_conn.fd >= 0) {
-		close(g_https_listener_conn.fd);
-		SSL_CTX_free(g_tls_ctx);
+	/*
+	 * #444: close all four listeners symmetrically. cixd binds four --
+	 * the public HTTP/HTTPS pair and the ADR-0284 loopback HTTP/HTTPS
+	 * pair -- and shutdown used to close only the public two, through a
+	 * local `listen_fd` that held exactly one of the four and read as
+	 * "the" listener. The kernel reaps the rest as the process exits, so
+	 * this was never a real leak, but the asymmetry looked like one; the
+	 * misleading local is gone and the close is now from the globals by
+	 * name. g_tls_ctx is shared by both HTTPS listeners, so it is freed
+	 * once, only if HTTPS was actually up.
+	 */
+	{
+		int had_https = (g_https_listener_conn.fd >= 0 || g_lo_https_listener_conn.fd >= 0);
+
+		if (g_listener_conn.fd >= 0)
+			close(g_listener_conn.fd);
+		if (g_lo_listener_conn.fd >= 0)
+			close(g_lo_listener_conn.fd);
+		if (g_https_listener_conn.fd >= 0)
+			close(g_https_listener_conn.fd);
+		if (g_lo_https_listener_conn.fd >= 0)
+			close(g_lo_https_listener_conn.fd);
+		if (had_https)
+			SSL_CTX_free(g_tls_ctx);
 	}
 	close(g_epfd);
 	/* #375: a build in flight will not finish, and "it was building
