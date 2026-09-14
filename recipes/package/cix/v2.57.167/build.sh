@@ -29,7 +29,16 @@ pkg_build_caps="CAP_SYS_ADMIN"
 # existed only on one host and died with it. cix-builder is what the
 # guide documents and what the taxonomy names (#305).
 pkg_build_image="cix-builder"
-pkg_depends=""
+# cixd links -lssl -lcrypto (Makefile) and always has -- pkg_depends
+# stayed empty regardless, so elfcheck's install-time gate (never
+# exercised against a real `cix` install until this session, cause not
+# established) correctly refused: "cixd links libssl.so.3, which
+# nothing it declares provides". The control-plane root itself gets
+# libssl bundled via mkbootroot's own separate CIX_LIB_DIRS_PLATFORM
+# staging, unrelated to pkg_depends -- this declaration is for the
+# ordinary `pkg install --image=X` path, where nothing else guarantees
+# openssl is already present in X.
+pkg_depends="openssl"
 
 pkg_build() {
 	make CIX_VERSION="$pkg_version" \
