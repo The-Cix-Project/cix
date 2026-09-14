@@ -16596,6 +16596,7 @@ static int token_file_path(char *out, size_t out_size)
  * afterwards -- the whole point of having scrolled it.
  */
 static pid_t g_pager_pid = -1;
+static int g_pager_saved_stdout = -1; /* #439: real stdout while a pager is active, so the shell can restore it */
 
 static int pager_pref_path(char *out, size_t out_size)
 {
@@ -16666,10 +16667,28 @@ static void pager_begin(int json_mode)
 	if (pipe(fds) != 0)
 		return;
 
+	/*
+	 * #439: save the real stdout so pager_end() can put it back. The
+	 * one-shot path (main()) exits right after and never needed this,
+	 * but the interactive shell calls pager_begin()/pager_end() once per
+	 * command in a loop -- closing stdout at the end (the old behaviour)
+	 * would leave the shell with no output for every command after the
+	 * first. Restored via dup2 in pager_end(), which also gives the
+	 * pager its EOF.
+	 */
+	g_pager_saved_stdout = dup(STDOUT_FILENO);
+	if (g_pager_saved_stdout < 0) {
+		close(fds[0]);
+		close(fds[1]);
+		return;
+	}
+
 	pid = fork();
 	if (pid < 0) {
 		close(fds[0]);
 		close(fds[1]);
+		close(g_pager_saved_stdout);
+		g_pager_saved_stdout = -1;
 		return; /* no pager is a fine outcome; failing the command is not */
 	}
 	if (pid == 0) {
@@ -16697,7 +16716,20 @@ static void pager_end(void)
 	if (g_pager_pid == -1)
 		return;
 	fflush(stdout);
-	close(STDOUT_FILENO);
+	if (g_pager_saved_stdout >= 0) {
+		/*
+		 * #439: restoring the real stdout over the pipe's write end
+		 * (dup2 closes its target first) is what gives the pager EOF,
+		 * AND leaves this process with a working stdout for the next
+		 * command -- which the interactive shell needs and the one-shot
+		 * path is unharmed by.
+		 */
+		dup2(g_pager_saved_stdout, STDOUT_FILENO);
+		close(g_pager_saved_stdout);
+		g_pager_saved_stdout = -1;
+	} else {
+		close(STDOUT_FILENO);
+	}
 	waitpid(g_pager_pid, NULL, 0);
 	g_pager_pid = -1;
 }
@@ -17779,10 +17811,17 @@ static int run_shell_fallback(const struct cix_client *client, int json_mode)
 		if (strcmp(tokens[0], "exit") == 0 || strcmp(tokens[0], "quit") == 0)
 			break;
 		if (strcmp(tokens[0], "help") == 0) {
+			/* #439: the interactive shell's own output goes through the
+			 * pager too, exactly as a one-shot command's does -- help
+			 * (435 lines) and long list/log output were the report. */
+			pager_begin(json_mode);
 			print_usage(stdout);
+			pager_end();
 			continue;
 		}
+		pager_begin(json_mode);
 		dispatch_command(client, json_mode, tokens[0], n - 1, tokens + 1);
+		pager_end();
 		if (strcmp(tokens[0], "login") == 0 || strcmp(tokens[0], "logout") == 0)
 			shell_prompt_init(client); /* auth state just changed -- reflect it immediately */
 	}
@@ -17909,10 +17948,17 @@ static int run_shell(const struct cix_client *client, int json_mode)
 		if (strcmp(tokens[0], "exit") == 0 || strcmp(tokens[0], "quit") == 0)
 			break;
 		if (strcmp(tokens[0], "help") == 0) {
+			/* #439: the interactive shell's own output goes through the
+			 * pager too, exactly as a one-shot command's does -- help
+			 * (435 lines) and long list/log output were the report. */
+			pager_begin(json_mode);
 			print_usage(stdout);
+			pager_end();
 			continue;
 		}
+		pager_begin(json_mode);
 		dispatch_command(client, json_mode, tokens[0], n - 1, tokens + 1);
+		pager_end();
 		if (strcmp(tokens[0], "login") == 0 || strcmp(tokens[0], "logout") == 0)
 			shell_prompt_init(client); /* auth state just changed -- reflect it immediately */
 	}
