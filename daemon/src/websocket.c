@@ -10,117 +10,37 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-extern char **environ;
+#include <openssl/evp.h>
+#include <openssl/sha.h>
 
-#define WS_OPENSSL_BIN "/usr/bin/openssl"
 #define WS_MAGIC_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 /*
- * Forks argv (argv[0] conventionally "openssl"; NULL-terminated),
- * feeds input_len bytes of input into its stdin, and reads its stdout
- * back into out (raw bytes, not assumed text -- SHA-1 output is
- * binary). Tiny inputs only (a WS key+GUID, or a 20-byte SHA-1
- * digest) -- well under the kernel pipe buffer, so writing the whole
- * input before reading any output back cannot deadlock. Mirrors
- * daemon/src/pki.c's run_openssl(), which never needs stdin input;
- * this one does, so it isn't simply reused as-is.
+ * #351: the handshake needs one SHA-1 of a fixed-format string and its
+ * base64 -- cixd already links -lcrypto, so this computed it in-process
+ * against the linked library instead of forking two openssl CLI
+ * invocations (dgst -sha1, then base64) to get there. EVP_EncodeBlock()
+ * is openssl's own "no line wrapping" encoder, the in-process twin of
+ * the CLI's -A flag this replaced.
  */
-static int run_openssl_stdin(char *const argv[], const void *input, size_t input_len,
-                              unsigned char *out, size_t out_cap, size_t *out_len)
-{
-	int inpipe[2], outpipe[2];
-	pid_t pid;
-	int status;
-	size_t total = 0;
-	ssize_t n;
-
-	if (pipe2(inpipe, O_CLOEXEC) != 0)
-		return -1;
-	if (pipe2(outpipe, O_CLOEXEC) != 0) {
-		close(inpipe[0]);
-		close(inpipe[1]);
-		return -1;
-	}
-
-	pid = fork();
-	if (pid < 0) {
-		close(inpipe[0]);
-		close(inpipe[1]);
-		close(outpipe[0]);
-		close(outpipe[1]);
-		return -1;
-	}
-	if (pid == 0) {
-		dup2(inpipe[0], STDIN_FILENO);
-		dup2(outpipe[1], STDOUT_FILENO);
-		close(inpipe[0]);
-		close(inpipe[1]);
-		close(outpipe[0]);
-		close(outpipe[1]);
-		execve(WS_OPENSSL_BIN, argv, environ);
-		_exit(127);
-	}
-
-	close(inpipe[0]);
-	close(outpipe[1]);
-
-	if (cix_write_all(inpipe[1], input, input_len) != 0) {
-		close(inpipe[1]);
-		close(outpipe[0]);
-		waitpid(pid, &status, 0);
-		return -1;
-	}
-	close(inpipe[1]);
-
-	while (total < out_cap) {
-		n = read(outpipe[0], out + total, out_cap - total);
-		if (n < 0) {
-			if (errno == EINTR)
-				continue;
-			break;
-		}
-		if (n == 0)
-			break;
-		total += (size_t)n;
-	}
-	close(outpipe[0]);
-
-	if (waitpid(pid, &status, 0) != pid)
-		return -1;
-	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
-		return -1;
-
-	*out_len = total;
-	return 0;
-}
-
 int ws_compute_accept(const char *client_key, char *out, size_t out_size)
 {
 	char concat[256];
 	int clen;
-	unsigned char sha1[64];
-	size_t sha1_len;
-	unsigned char b64[128];
-	size_t b64_len;
-	char *dgst_argv[] = { "openssl", "dgst", "-sha1", "-binary", NULL };
-	char *b64_argv[] = { "openssl", "base64", "-A", NULL };
+	unsigned char sha1[SHA_DIGEST_LENGTH];
+	unsigned char b64[64]; /* SHA_DIGEST_LENGTH (20) -> base64 is exactly 28 chars, plenty of slack */
+	int b64_len;
 
 	clen = snprintf(concat, sizeof(concat), "%s%s", client_key, WS_MAGIC_GUID);
 	if (clen < 0 || (size_t)clen >= sizeof(concat))
 		return -1;
 
-	if (run_openssl_stdin(dgst_argv, concat, (size_t)clen, sha1, sizeof(sha1), &sha1_len) != 0)
-		return -1;
-	if (sha1_len != 20) /* SHA-1 is always exactly 20 raw bytes -- anything else means openssl misbehaved */
-		return -1;
+	SHA1((const unsigned char *)concat, (size_t)clen, sha1);
 
-	if (run_openssl_stdin(b64_argv, sha1, sha1_len, b64, sizeof(b64), &b64_len) != 0)
+	b64_len = EVP_EncodeBlock(b64, sha1, sizeof(sha1));
+	if (b64_len < 0 || (size_t)b64_len + 1 > out_size)
 		return -1;
-	while (b64_len > 0 && (b64[b64_len - 1] == '\n' || b64[b64_len - 1] == '\r'))
-		b64_len--;
-	if (b64_len + 1 > out_size)
-		return -1;
-	memcpy(out, b64, b64_len);
+	memcpy(out, b64, (size_t)b64_len);
 	out[b64_len] = '\0';
 	return 0;
 }

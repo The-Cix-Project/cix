@@ -3,20 +3,24 @@
  * ordinary hostbuild against the "kernel" recipe (the exact existing
  * pkg_hostbuild_start() mechanism test_pkg.c's own step 17 already
  * proves generically) gaining an optional config_symbols parameter
- * threaded through as the build container's own real
- * CIX_KMOD_EXTRA_SYMBOLS environment variable.
+ * cixd writes into the build container as /build/extra/kmod-extra.config
+ * (#412 -- previously threaded through as a CIX_KMOD_EXTRA_SYMBOLS
+ * environment variable for the recipe to re-derive the same file
+ * from; cixd owns /build/extra already, ADR-0036, and writes it
+ * directly now).
  *
  * Not a real kernel build (far too slow for this suite, and the real
- * 6.18.40 kernel.recipe lives in this project's own git-tracked
+ * 7.2.3 kernel.recipe lives in this project's own git-tracked
  * recipes/, entirely outside this test's isolated --data-dir=
  * recipes_dir) -- a tiny fixture recipe literally named "kernel"
  * (isolated to this test's own recipes_dir, no collision with the real
- * one) whose pkg_build() writes the env var's own value straight to a
- * file, proving the daemon-side plumbing (pkg_hostbuild_start()'s new
- * parameter, pkg_fetch_completed()'s build_envp construction) actually
- * carries the REST-supplied symbols through to the real build
- * container, unmodified -- the one thing kernel.recipe's own build.sh
- * change can't be proven any other way in this sandbox.
+ * one) whose pkg_build() copies whatever cixd staged at
+ * /build/extra/kmod-extra.config straight to a file, proving the
+ * daemon-side plumbing (pkg_hostbuild_start()'s new parameter,
+ * write_kmod_extra_config()) actually carries the REST-supplied
+ * symbols through to the real build container's own filesystem --
+ * the one thing kernel.recipe's own build.sh change can't be proven
+ * any other way in this sandbox.
  */
 #include "httpclient.h"
 #include "json.h"
@@ -165,10 +169,13 @@ static int stage_fixture_tarball(const char *scratch_dir, char *out_tarball_path
 	return compute_file_sha256(out_tarball_path, out_sha256, sha256_size);
 }
 
-/* pkg_build() writes $CIX_KMOD_EXTRA_SYMBOLS to symbols.txt --
- * unset/empty just produces an empty file, exactly mirroring the real
+/* pkg_build() copies whatever cixd staged at /build/extra/kmod-extra.config
+ * to symbols.txt -- unset/empty means cixd wrote no file at all (#412's
+ * write_kmod_extra_config() unlinks rather than leaves a stale one), so
+ * this produces an empty symbols.txt, exactly mirroring the real
  * kernel.recipe's own "strictly additive, unset changes nothing" shape
- * (its own merge_config.sh branch is skipped the same way). */
+ * (its own merge_config.sh branch is skipped the same way, on the
+ * file's absence rather than an env var's). */
 static int write_kernel_fixture_recipe(const char *tarball_path, const char *sha256)
 {
 	char name_dir[256];
@@ -185,8 +192,8 @@ static int write_kernel_fixture_recipe(const char *tarball_path, const char *sha
 		return -1;
 	fprintf(f, "pkg_name=kernel\npkg_version=1.0\npkg_source=file://%s\n", tarball_path);
 	fprintf(f, "pkg_sha256=%s\npkg_depends=\"\"\n\n", sha256);
-	fprintf(f, "pkg_build() {\n\tgcc -o hello hello.c\n\techo -n \"$CIX_KMOD_EXTRA_SYMBOLS\" "
-	           "> symbols.txt\n}\n\n");
+	fprintf(f, "pkg_build() {\n\tgcc -o hello hello.c\n\tif [ -f /build/extra/kmod-extra.config ]; "
+	           "then cp /build/extra/kmod-extra.config symbols.txt; else : > symbols.txt; fi\n}\n\n");
 	fprintf(f, "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n\tcp symbols.txt "
 	           "\"$PKG_DESTDIR/symbols.txt\"\n}\n");
 	fclose(f);
@@ -325,7 +332,8 @@ int main(void)
 	cix_response_free(&r);
 
 	/* 2. The real payoff: config_symbols actually reaches the build
-	 * container as CIX_KMOD_EXTRA_SYMBOLS, space-joined. */
+	 * container as /build/extra/kmod-extra.config, one "<SYMBOL>=m"
+	 * line per entry (#412). */
 	memset(&r, 0, sizeof(r));
 	if (ok && (cix_client_request(&client, "POST", "/v1/system/kmod-build",
 	                              "{\"build_image\":\"hbimage\","
@@ -399,10 +407,10 @@ int main(void)
 		if (read_file_string(symbols_path, symbols_content, sizeof(symbols_content)) != 0) {
 			fprintf(stderr, "FAIL: could not read symbols.txt at '%s'\n", symbols_path);
 			ok = 0;
-		} else if (strcmp(symbols_content, "CONFIG_FOO CONFIG_BAR") != 0) {
+		} else if (strcmp(symbols_content, "CONFIG_FOO=m\nCONFIG_BAR=m\n") != 0) {
 			fprintf(stderr,
-			        "FAIL: CIX_KMOD_EXTRA_SYMBOLS did not reach the build container "
-			        "correctly -- got '%s', expected 'CONFIG_FOO CONFIG_BAR'\n",
+			        "FAIL: kmod-extra.config did not reach the build container "
+			        "correctly -- got '%s', expected 'CONFIG_FOO=m\\nCONFIG_BAR=m\\n'\n",
 			        symbols_content);
 			ok = 0;
 		}

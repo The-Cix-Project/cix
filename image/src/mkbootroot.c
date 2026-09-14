@@ -590,8 +590,9 @@ int main(int argc, char **argv)
 	 * Part D (from-source host-tools bootstrap, ADR-0078): the rootfs of
 	 * a real pkg-installed image carrying coreutils.recipe + gzip.recipe
 	 * (an operator-built "host tools" image, not this dev sandbox's own
-	 * pre-existing /usr/bin) -- when given, cp/rm/sha256sum/gzip below
-	 * are copied from THIS tree instead of the dev build host, closing
+	 * pre-existing /usr/bin) -- when given, cp/gzip below (#352 retired
+	 * rm/sha256sum, both now in-process, daemon/src/pkg.c) are copied
+	 * from THIS tree instead of the dev build host, closing
 	 * the "control-plane squashfs ships a raw copy of this sandbox's own
 	 * pre-compiled binaries" gap for the tools that already have a real
 	 * from-source recipe. "" (the default, every existing call site
@@ -731,7 +732,7 @@ int main(int argc, char **argv)
 			{ "/usr/bin/openssl", "usr/bin/openssl" },     /* PKI_OPENSSL_BIN, daemon/src/pki.c */
 			{ "/usr/bin/curl", "usr/bin/curl" },           /* PKG_CURL_BIN, daemon/src/pkg.c */
 			{ "/usr/bin/tar", "usr/bin/tar" },             /* PKG_TAR_BIN */
-			/* sha256sum/cp/rm/gzip: NOT here -- staged from host_tools_dir
+			/* cp/gzip: NOT here -- staged from host_tools_dir
 			 * (coreutils.recipe/gzip.recipe) when given, see below. */
 			{ "/usr/bin/unsquashfs", "usr/bin/unsquashfs" }, /* PKG_UNSQUASHFS_BIN -- the
 			                                                   * pkg_bootstrap_from_toolchain()
@@ -927,9 +928,12 @@ int main(int argc, char **argv)
 		}
 		{
 			/*
-			 * cp/rm/sha256sum/gzip -- the 4 shelled-out tools this
+			 * cp/gzip -- the 2 remaining shelled-out tools this
 			 * project already has a real from-source recipe for
-			 * (coreutils.recipe, gzip.recipe). host_tools_dir, when
+			 * (coreutils.recipe, gzip.recipe) -- rm/sha256sum retired
+			 * by #352, both computed in-process now (daemon/src/pkg.c:
+			 * cix_btrfs_subvol_delete_or_rmtree(), EVP_sha256()).
+			 * host_tools_dir, when
 			 * given, is that recipe's own installed image rootfs (a
 			 * real `pkg install --image=<name>` result); each binary
 			 * is sourced from THERE instead of this dev build host.
@@ -944,22 +948,7 @@ int main(int argc, char **argv)
 				const char *host_tools_rel; /* relative to host_tools_dir */
 				const char *rootfs_path;    /* relative to image_root, matching the _BIN macro */
 			} host_tool_bins[] = {
-				{ "/usr/bin/sha256sum", "usr/bin/sha256sum", "usr/bin/sha256sum" }, /* PKG_SHA256SUM_BIN */
-				{ "/usr/bin/cp", "usr/bin/cp", "usr/bin/cp" },                       /* PKG_CP_BIN */
-				/*
-				 * PKG_RM_BIN is "/bin/rm" -- rm's own rootfs_path below
-				 * is "bin/rm", not "usr/bin/rm" like its three siblings
-				 * here, so its dev_host_path fallback has to match: "/bin/rm",
-				 * not "/usr/bin/rm" (which doesn't exist at all on this
-				 * project's own non-merged-usr roots -- confirmed via
-				 * strace against a genuinely non-merged-usr chroot,
-				 * the same real-root-only gap ADR-0085 already found
-				 * and fixed for test_image_fixture_build()'s own
-				 * ld-linux/libc.so.6 source reads). "/bin/rm" resolves
-				 * correctly on the dev sandbox too (bin -> usr/bin
-				 * there), same reasoning as ADR-0085.
-				 */
-				{ "/bin/rm", "usr/bin/rm", "bin/rm" }, /* coreutils.recipe itself installs rm under usr/bin/rm */
+				{ "/usr/bin/cp", "usr/bin/cp", "usr/bin/cp" },                       /* main.c's ADR-0179 phase-2b non-btrfs userns fallback */
 				{ "/usr/bin/gzip", "usr/bin/gzip", "usr/bin/gzip" },
 				/*
 				 * btrfs -- DISKPART_BTRFS_BIN, daemon/src/diskpart.c
