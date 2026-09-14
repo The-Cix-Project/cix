@@ -5,13 +5,26 @@
  * It replaces systemd-boot, and does only what this platform actually
  * used systemd-boot for:
  *
- *   1. read /loader/loader.conf and the /loader/entries files off the ESP
- *      it was itself loaded from
- *   2. pick the best entry -- highest version, and an entry that has
- *      run out of boot attempts only ever as a last resort
- *   3. decrement that entry's Automatic Boot Assessment counter by
- *      renaming its file (cix-a+3.conf -> cix-a+2-1.conf)
- *   4. load the kernel it names and start it, with the entry's own
+ *   1. read the /loader/entries files off the ESP it was itself loaded
+ *      from. NOT loader.conf -- this program has never parsed it, so
+ *      neither its "default" pattern nor its "timeout" apply here; an
+ *      earlier version of this comment claimed otherwise, and PUT
+ *      /v1/system/esp {"default": ...} is dead code against this
+ *      bootloader for the same reason boot-next was (next bullet).
+ *   2. honor an operator's one-shot override (LoaderEntryOneShot, #467)
+ *      when one is armed and names a real entry, overriding step 3 for
+ *      exactly one boot; consumed (deleted) the instant it is read,
+ *      whether or not it matched, so a stale value can never stick.
+ *      Before #467 this program read no EFI variable at all, so
+ *      POST /v1/system/boot-next armed a real NVRAM variable that
+ *      nothing here ever looked at -- confirmed dead end to end on
+ *      192.168.15.95, 2026-09-14.
+ *   3. failing that, pick the best entry -- highest version, and an
+ *      entry that has run out of boot attempts only ever as a last
+ *      resort
+ *   4. decrement the chosen entry's Automatic Boot Assessment counter
+ *      by renaming its file (cix-a+3.conf -> cix-a+2-1.conf)
+ *   5. load the kernel it names and start it, with the entry's own
  *      "options" line as the kernel command line
  *
  * The entry format is the Boot Loader Specification, unchanged --
@@ -251,6 +264,87 @@ static void parse_entry_text(char *text, UINTN len, struct entry *e)
 	}
 }
 
+/*
+ * ---- LoaderEntryOneShot: an operator-selected slot, once (#467) ----
+ *
+ * cixd's esp_boot_next_set() (POST /v1/system/boot-next) already wrote
+ * a real UEFI variable -- Linux's efivarfs is just the kernel's own
+ * file view onto this same NVRAM store, so what it persisted is
+ * exactly what GetVariable() below reads back. What was missing was a
+ * reader: this program used to imitate systemd-boot's on-disk entry
+ * format without imitating this half of its interface, so the REST
+ * endpoint documented "boot the given slot once" while nothing here
+ * ever looked at the variable it wrote. Confirmed dead end to end on
+ * 192.168.15.95, 2026-09-14: boot_next read back armed for slot b
+ * after a real reboot (kmsg showed a fresh boot), and the machine
+ * still came up on slot a.
+ */
+#define CIX_LOADER_GUID                                                                           \
+	{                                                                                          \
+		0x4a67b082, 0x0a4c, 0x41cf, { 0xb6, 0xc7, 0x44, 0x0b, 0x29, 0xbb, 0x8c, 0x4f }    \
+	}
+
+/*
+ * Returns the bare entry id ("cix-b") the variable names, or an empty
+ * string if it was absent, empty, or too long to fit -- any of which
+ * means "nothing armed", never an error worth stopping boot for.
+ *
+ * Always consumes the variable when present, whether or not it goes on
+ * to match a real entry: a one-shot that firmware read but did not
+ * clear would arm forever, which is worse than falling through to
+ * ordinary version-based selection for one boot.
+ */
+static int read_oneshot_id(char *out, UINTN out_size)
+{
+	EFI_GUID guid = CIX_LOADER_GUID;
+	CHAR16 buf[NAME_MAX_CHARS];
+	UINTN size = sizeof(buf);
+	UINTN chars, i;
+	EFI_STATUS st;
+
+	out[0] = '\0';
+	st = ST->RuntimeServices->GetVariable(L16("LoaderEntryOneShot"), &guid, 0, &size, buf);
+	if (EFI_ERROR(st))
+		return 0;
+
+	ST->RuntimeServices->SetVariable(L16("LoaderEntryOneShot"), &guid, 0, 0, 0);
+
+	chars = size / sizeof(CHAR16);
+	/* esp_boot_next_set() writes a trailing UTF-16 NUL; drop it, then
+	 * strip ".conf" -- parse_entry_name()'s own e->id never carries
+	 * either, and that is what this gets compared against. */
+	if (chars > 0 && buf[chars - 1] == 0)
+		chars--;
+	if (chars >= 5 && buf[chars - 5] == '.' && buf[chars - 4] == 'c' && buf[chars - 3] == 'o' &&
+	    buf[chars - 2] == 'n' && buf[chars - 1] == 'f')
+		chars -= 5;
+
+	for (i = 0; i < chars && i + 1 < out_size; i++)
+		out[i] = (char)buf[i];
+	out[i] = '\0';
+	return out[0] != '\0';
+}
+
+/*
+ * The armed id names an entry by id, counter suffix and all stripped
+ * (parse_entry_name() already did the same to list[]), so an operator
+ * override finds its entry whether or not that entry currently carries
+ * an Automatic Boot Assessment counter -- and matches even one whose
+ * counter has reached zero, deliberately bypassing pick_entry()'s
+ * exhausted-entry filter: forcing a slot the accounting has given up on
+ * is the entire point of a manual override.
+ */
+static int find_entry_by_id(struct entry *list, int n, const char *id)
+{
+	int i;
+
+	for (i = 0; i < n; i++) {
+		if (list[i].linux_path[0] != '\0' && str_eq(list[i].id, id))
+			return i;
+	}
+	return -1;
+}
+
 /* ---- ESP access ---- */
 
 static EFI_STATUS open_esp_root(EFI_HANDLE image, EFI_FILE_PROTOCOL **root)
@@ -480,7 +574,15 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 	}
 	entries->Close(entries);
 
-	chosen = pick_entry(list, count);
+	{
+		char oneshot_id[NAME_MAX_CHARS];
+
+		chosen = -1;
+		if (read_oneshot_id(oneshot_id, sizeof(oneshot_id)))
+			chosen = find_entry_by_id(list, count, oneshot_id);
+	}
+	if (chosen < 0)
+		chosen = pick_entry(list, count);
 	if (chosen < 0) {
 		print(L16("cix-boot: no bootable entry found\r\n"));
 		return EFI_NOT_FOUND;

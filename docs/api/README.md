@@ -37,6 +37,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/system/boot-next` | Boot a slot **once**, then revert to normal selection (#154) |
 | — | container `userns` field | User namespaces by default; opt-out per container or platform-wide (ADR-0207) |
 | DELETE | `/system/boot-next` | Disarm |
+| GET | `/system/boot-manager` | The ESP's installed boot manager binary -- size, sha256, whether a backup exists (#467) |
+| POST | `/system/boot-manager` | Replace it -- the one file both A/B slots share, with no per-slot fallback |
 | GET | `/system/backup` | Bundle platform configuration state (container defs, networks, DNS, package state, site config) |
 | POST | `/system/restore` | Write a previously-backed-up bundle back to its real state files |
 | GET | `/system/backup-config` | Which disk (if any) automatic backup snapshots write to, whether enabled, interval |
@@ -3352,14 +3354,31 @@ Before this existed, the answer to "this update is bad, go back" was to wait for
 
 A one-shot has the property that matters for rollback: it **self-clears**. A machine that fails to come back falls back to ordinary selection on its own rather than staying pinned to a broken slot.
 
-- Sets systemd-boot's `LoaderEntryOneShot` EFI variable. The value is the entry id as systemd-boot itself spells it — `.conf` kept, any boot counter stripped, so a file named `cix-b+3.conf` is armed as `cix-b.conf`.
+- Sets the same `LoaderEntryOneShot` EFI variable systemd-boot itself defines. The value is the entry id in the same spelling — `.conf` kept, any boot counter stripped, so a file named `cix-b+3.conf` is armed as `cix-b.conf`.
 - **A slot with no loader entry is refused (`409`), not armed.** Booting into an entry that does not exist needs a console to recover from — precisely the situation this endpoint exists to avoid.
 - `DELETE` is idempotent: disarming an already-disarmed machine is the desired state, so it is safe to call blindly.
 - Needs a real EFI system. Where `efivarfs` is absent or read-only — including a dev sandbox, which mounts `/sys` read-only — arming returns `409` saying so rather than failing obscurely.
 - Distinct from `PUT /system/esp`, which sets the *persistent* default. Use that to fix a wrong pattern; use this to steer one boot.
-- `GET /system/esp` reports an armed one-shot in `boot_next`, and its `selected_entry` follows it. It has to: a one-shot overrides the default pattern entirely, so reporting the pattern's choice while one is armed names the wrong entry — which happened on a real host that said `cix-a.conf` and then booted `cix-b`.
+- `GET /system/esp` reports an armed one-shot in `boot_next`, and its `selected_entry` follows it. It has to: a one-shot overrides the default pattern entirely, so reporting the pattern's choice while one is armed would name the wrong entry.
+
+**This endpoint's own boot manager support has a real history worth knowing before trusting it.** It was written and tested against real systemd-boot, which does read `LoaderEntryOneShot`. Two days later, ADR-0215 replaced systemd-boot with this project's own freestanding `cix-boot.efi` (`image/src/cix-boot.c`) — a from-scratch UEFI boot manager that imitates systemd-boot's on-disk *entry* format but, until issue #467, imitated none of its EFI-variable interface. The daemon side kept writing a real, correctly-formed NVRAM variable; nothing on the machine ever read it back. Confirmed dead end to end on 192.168.15.95, 2026-09-14: armed `cix-b.conf`, rebooted (a genuinely fresh boot, not a stale response — `kmsg` showed the reset), and the machine came back on the slot it was already running. #467 fixed `cix-boot.c` to read and consume the variable, matching what this section always documented — but `PUT /system/esp {"default": ...}` remains dead by the same root cause: `cix-boot.c` has never parsed `loader.conf` at all, so that endpoint's `default`/`timeout` fields currently affect nothing on a real boot. Not yet fixed; tracked separately from #467.
 
 `cixctl boot-next [a|b|clear]` is the CLI surface; with no argument it reports what is armed.
+
+## Replacing the boot manager itself
+
+```
+POST /v1/system/boot-manager
+{"path": "/var/lib/cix/rebuildable/pkg/artifacts/cix/cix-boot.efi"}
+```
+
+or `{"url": "...", "sha256": "..."}` for the daemon to fetch it instead — the same shape as `update`'s own `image_url`/`image_sha256`.
+
+This is the one file every future boot depends on, for **both** A/B slots at once — unlike the root squashfs and kernel, there is no per-slot fallback if a bad binary lands here. So it is never touched by `update`, and the write itself is staged (written to a temp file on the ESP, fsync'd) then swapped in with two renames rather than truncated in place; the outgoing binary is kept as `\EFI\BOOT\BOOTX64.EFI.bak` (not restorable through this API — that needs the ESP mounted outside the running host, the same recovery path #467 itself needed once).
+
+Refused (`400`) unless the resolved file starts with the PE `MZ` magic and falls in a plausible size range — a shallow check, not a real PE parse, matching the same gate `cix`'s own recipe already applies to its own build output. Deliberately does **not** reboot, same as `update`: `GET /system/boot-manager` reports what is now installed (size, sha256, whether a backup exists) so an operator can verify before committing to a reboot that actually exercises it.
+
+`cixctl boot-manager [--path=FILE | --url=URL --sha256=HEX]` is the CLI surface; with no argument it reports what is currently installed.
 
 ## Host + package updates
 

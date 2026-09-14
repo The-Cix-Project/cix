@@ -20202,6 +20202,273 @@ static void handle_boot_next_clear(int fd)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+/*
+ * GET/POST /v1/system/boot-manager (issue #467) -- the ESP's own
+ * \EFI\BOOT\BOOTX64.EFI, the one file every future boot depends on for
+ * BOTH A/B slots.
+ *
+ * Everything else this daemon updates in place (the root squashfs, the
+ * kernel) has a fallback: the OTHER slot. This does not -- there is
+ * exactly one boot manager on the ESP, so a bad write here is not
+ * "the next reboot picks the other slot", it is "the next reboot may
+ * not happen at all". That asymmetry is why this is its own endpoint
+ * rather than a third field on POST /v1/system/update, and why the
+ * write below goes staged-then-renamed with the outgoing binary kept
+ * as a same-directory backup, never a truncate-in-place.
+ *
+ * Until this existed there was no way to change this file on an
+ * already-installed host at all -- cix-install.c writes it once, at
+ * first install, and nothing else in the daemon's own update path ever
+ * touched it (confirmed by grepping every BOOTX64/cix-boot.efi
+ * reference in this file before adding this). A fix landing in
+ * image/src/cix-boot.c had nowhere to go on a live host without this.
+ */
+#define ESP_BOOT_MANAGER_MIN_BYTES 4096
+#define ESP_BOOT_MANAGER_MAX_BYTES (8 * 1024 * 1024)
+
+static void boot_manager_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/EFI/BOOT/BOOTX64.EFI", ESP_DIR);
+}
+
+static void boot_manager_backup_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/EFI/BOOT/BOOTX64.EFI.bak", ESP_DIR);
+}
+
+static void boot_manager_tmp_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/EFI/BOOT/BOOTX64.EFI.new", ESP_DIR);
+}
+
+/* Reports what is currently installed. sha256/has_backup are best-effort
+ * -- a stat()-only success (size >= 0) is still worth reporting even if
+ * hashing somehow fails, so out_sha256 starts empty rather than the call
+ * failing outright. */
+static enum esp_error boot_manager_info(char *out_sha256, size_t out_sha256_size,
+                                        long long *out_size, int *out_has_backup)
+{
+	char target[PATH_MAX];
+	char backup[PATH_MAX];
+	struct stat st;
+
+	if (out_sha256 != NULL && out_sha256_size > 0)
+		out_sha256[0] = '\0';
+	if (out_size != NULL)
+		*out_size = -1;
+	if (out_has_backup != NULL)
+		*out_has_backup = 0;
+
+	if (access(ESP_DIR, F_OK) != 0)
+		return ESP_ERR_NO_ESP;
+
+	boot_manager_path(target, sizeof(target));
+	if (stat(target, &st) != 0)
+		return ESP_ERR_NOT_FOUND;
+	if (out_size != NULL)
+		*out_size = (long long)st.st_size;
+	if (out_sha256 != NULL)
+		pkg_run_capture_sha256(target, out_sha256, out_sha256_size);
+
+	boot_manager_backup_path(backup, sizeof(backup));
+	if (out_has_backup != NULL)
+		*out_has_backup = (access(backup, F_OK) == 0);
+	return ESP_OK;
+}
+
+/*
+ * Validates src_path (PE "MZ" magic, plausible size -- the same shallow
+ * gate cix's own recipe already applies to its own build output, not a
+ * real PE parse) and installs it as the ESP's boot manager.
+ *
+ * Written to a same-directory temp file, fsync'd, THEN swapped in by
+ * two renames (outgoing -> .bak, temp -> live) -- both same-filesystem
+ * renames, so each one alone is atomic even though the pair is not; the
+ * worst partial-failure case is "the rename to .bak succeeded and the
+ * rename to live did not", which this puts back itself rather than
+ * leaving the host with neither a live binary nor its backup.
+ */
+static enum esp_error boot_manager_install(const char *src_path)
+{
+	char target[PATH_MAX];
+	char backup[PATH_MAX];
+	char tmp[PATH_MAX];
+	char buf[65536];
+	unsigned char magic[2];
+	struct stat st;
+	int sfd, dfd;
+	ssize_t n;
+
+	if (src_path == NULL || src_path[0] == '\0')
+		return ESP_ERR_INVALID;
+	if (stat(src_path, &st) != 0 || !S_ISREG(st.st_mode))
+		return ESP_ERR_INVALID;
+	if (st.st_size < ESP_BOOT_MANAGER_MIN_BYTES || st.st_size > ESP_BOOT_MANAGER_MAX_BYTES)
+		return ESP_ERR_INVALID;
+
+	sfd = open(src_path, O_RDONLY);
+	if (sfd < 0)
+		return ESP_ERR_INVALID;
+	if (read(sfd, magic, 2) != 2 || magic[0] != 'M' || magic[1] != 'Z') {
+		close(sfd);
+		return ESP_ERR_INVALID;
+	}
+	if (lseek(sfd, 0, SEEK_SET) != 0) {
+		close(sfd);
+		return ESP_ERR_INVALID;
+	}
+
+	if (access(ESP_DIR, F_OK) != 0) {
+		close(sfd);
+		return ESP_ERR_NO_ESP;
+	}
+
+	boot_manager_path(target, sizeof(target));
+	boot_manager_backup_path(backup, sizeof(backup));
+	boot_manager_tmp_path(tmp, sizeof(tmp));
+
+	dfd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (dfd < 0) {
+		close(sfd);
+		return (errno == EROFS || errno == EACCES || errno == EPERM) ? ESP_ERR_READ_ONLY
+		                                                             : ESP_ERR_PERSIST_FAILED;
+	}
+	while ((n = read(sfd, buf, sizeof(buf))) > 0) {
+		if (write(dfd, buf, (size_t)n) != n) {
+			n = -1;
+			break;
+		}
+	}
+	close(sfd);
+	if (n < 0 || fsync(dfd) != 0) {
+		close(dfd);
+		unlink(tmp);
+		return ESP_ERR_PERSIST_FAILED;
+	}
+	close(dfd);
+
+	unlink(backup); /* best effort: a stale backup from a prior install is fine to replace */
+	rename(target, backup); /* best effort: no preexisting target on a first install */
+	if (rename(tmp, target) != 0) {
+		rename(backup, target); /* put the original back rather than leave neither */
+		unlink(tmp);
+		return ESP_ERR_PERSIST_FAILED;
+	}
+
+	{
+		char boot_dir[PATH_MAX];
+		int dirfd;
+
+		snprintf(boot_dir, sizeof(boot_dir), "%s/EFI/BOOT", ESP_DIR);
+		dirfd = open(boot_dir, O_RDONLY | O_DIRECTORY);
+		if (dirfd >= 0) {
+			fsync(dirfd); /* best-effort directory-entry durability for the renames above */
+			close(dirfd);
+		}
+	}
+	return ESP_OK;
+}
+
+static void write_boot_manager_json(struct json_writer *w)
+{
+	char sha256[65];
+	long long size = -1;
+	int has_backup = 0;
+
+	boot_manager_info(sha256, sizeof(sha256), &size, &has_backup);
+	jw_obj_open(w);
+	jw_key(w, "size");
+	jw_int(w, size);
+	jw_key(w, "sha256");
+	jw_str(w, sha256);
+	jw_key(w, "has_backup");
+	jw_bool(w, has_backup);
+	jw_obj_close(w);
+}
+
+static void handle_boot_manager_get(int fd)
+{
+	char sha256[65];
+	long long size = -1;
+	int has_backup = 0;
+	enum esp_error err = boot_manager_info(sha256, sizeof(sha256), &size, &has_backup);
+	struct json_writer w;
+
+	if (err == ESP_ERR_NOT_FOUND) {
+		respond_error(fd, 404, "Not Found", "no boot manager binary at \\EFI\\BOOT\\BOOTX64.EFI");
+		return;
+	}
+	if (err != ESP_OK) {
+		respond_esp_error(fd, err, NULL);
+		return;
+	}
+	jw_init(&w);
+	write_boot_manager_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_boot_manager_post(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = NULL;
+	const char *path;
+	const char *url;
+	const char *sha256_in;
+	char fetched_path[PATH_MAX];
+	char fetch_err[256];
+	const char *src;
+	enum esp_error err;
+	struct json_writer w;
+
+	if (body == NULL || body_len == 0 || (root = json_parse(body, body_len)) == NULL) {
+		respond_error(fd, 400, "Bad Request", "body must be JSON");
+		json_free(root);
+		return;
+	}
+	path = json_as_string(json_object_get(root, "path"));
+	url = json_as_string(json_object_get(root, "url"));
+	sha256_in = json_as_string(json_object_get(root, "sha256"));
+
+	if ((path == NULL || path[0] == '\0') && (url == NULL || url[0] == '\0')) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "give either \"path\" or \"url\"+\"sha256\"");
+		return;
+	}
+
+	if (url != NULL && url[0] != '\0') {
+		if (fetch_update_image(url, sha256_in, fetched_path, sizeof(fetched_path), fetch_err,
+		                       sizeof(fetch_err)) != 0) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", fetch_err);
+			return;
+		}
+		src = fetched_path;
+	} else {
+		src = path;
+	}
+
+	err = boot_manager_install(src);
+	if (url != NULL && url[0] != '\0')
+		unlink(fetched_path);
+	json_free(root);
+
+	if (err == ESP_ERR_INVALID) {
+		respond_error(fd, 400, "Bad Request",
+		               "not a plausible boot manager binary (must start with the PE \"MZ\" "
+		               "magic and be a few KB to a few MB)");
+		return;
+	}
+	if (err != ESP_OK) {
+		respond_esp_error(fd, err, NULL);
+		return;
+	}
+
+	jw_init(&w);
+	write_boot_manager_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_dns_provision(int fd, const char *body, size_t body_len)
 {
 	char replicas[DNS_PROVISION_MAX_REPLICAS][REGISTRY_NAME_MAX];
@@ -23218,6 +23485,18 @@ static void op_setBootNext(const struct api_ctx *ctx)
 static void op_clearBootNext(const struct api_ctx *ctx)
 {
 	handle_boot_next_clear(ctx->fd);
+}
+
+/* GET /v1/system/boot-manager */
+static void op_getBootManager(const struct api_ctx *ctx)
+{
+	handle_boot_manager_get(ctx->fd);
+}
+
+/* POST /v1/system/boot-manager */
+static void op_setBootManager(const struct api_ctx *ctx)
+{
+	handle_boot_manager_post(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
 /* GET /v1/system/boot-console */
