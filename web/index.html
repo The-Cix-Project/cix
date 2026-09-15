@@ -2253,6 +2253,28 @@
 						<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
 					</tbody>
 				</table>
+
+				<h3>Boot Manager Binary</h3>
+				<p class="hint">
+					<strong>The one file both slots share.</strong> Unlike the entries above,
+					there is no A/B fallback for this &mdash; a bad write here affects every
+					future boot, on either slot (ADR-0290). Installing a new one does
+					<strong>not</strong> reboot: check the values below, then reboot
+					separately once satisfied.
+				</p>
+				<table class="detail-table" id="boot-manager-table">
+					<tbody id="boot-manager-body">
+						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+				<form id="boot-manager-form">
+					<label class="wide">
+						Path on this host
+						<input type="text" id="boot-manager-path"
+							value="/var/lib/cix/rebuildable/artifacts/cix/cix-boot.efi">
+					</label>
+					<button type="submit" class="button-danger">Install boot manager</button>
+				</form>
 			</div>
 		</div>
 <div class="tab-panel" data-tab="signing-keys" hidden>
