@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The refresh tick stops rebuilding unchanged tables (#432)
+
+Opening a build log threw the reader back to the top of the page. The button was innocent: the periodic tick blanks and rebuilds every table on the page, the document collapses to a fraction of its height while they are empty, the browser clamps `scrollTop` to the new maximum, and the rebuilt-taller table cannot give the offset back.
+
+`refreshBuildLogs()` and `renderImages()` already carried the `unchangedAndRendered()` guard. The reported page runs a third renderer, `renderPackagesView(null)` → `renderPackagesList()`, which did not — so it kept collapsing on every tick regardless of the two that were fixed. That one is guarded now, along with the other tick-path list renderers: sysctl, kmod, routes, and the Pipeline's three recipe tables.
+
+**Deliberately not applied to "the other 45 sites" mechanically, because three of these would have been broken by it.** `renderRecipesList`, `renderImageRecipesTable` and `renderContainerRecipesTable` each read a search box, so a signature over the fetched payload alone would have frozen the table while someone typed in the filter — a worse bug than the one being fixed. Their signatures carry the filter as well as the rows, because the filter is an input to the render as much as the data is. `renderRecipesList` additionally carries the raw recipe rows: the filtered names alone would miss a new version published for a name already listed, which is precisely what that table exists to show.
+
 ### Container stats no longer walks the filesystem on the event loop (#474, ADR-0293)
 
 `GET /containers/{name}/stats` called `overlay_upperdir_size()` — an `nftw()` walk, O(files) and unbounded — **inline, on every request, with no shortcut**, on a path the dashboard polls. `cixd` is pid 1 on a host with no shell, and its one event loop is the only way in: for as long as a pass is inside that walk, nothing is served. Found while investigating #402, which named the *least*-exercised of three call sites.
