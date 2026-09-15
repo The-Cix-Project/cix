@@ -200,9 +200,18 @@ int main(void)
 		                "[{\"name\":\"a\"},{\"other\":\"b\"}]", "name", 1);
 	}
 	{
-		static const char *const want[] = { "(section) replace" };
+		static const char *const want[] = { " replace" };
 
-		expect("a section whose whole type changed", "{\"a\":1}", "[1]", "", want, 1);
+		/*
+		 * A difference at the ROOT has an empty path, and that is the
+		 * layer boundary: this engine knows nothing about
+		 * configuration, so naming the root "(section)" is
+		 * api_config.c's job when it renders the change. Asserted here
+		 * because the two layers agreeing about it is what makes a
+		 * root-level difference readable at all -- and they did not
+		 * agree the first time this ran.
+		 */
+		expect("a difference at the root has an empty path", "{\"a\":1}", "[1]", "", want, 1);
 	}
 	{
 		static const char *const want[] = { "[x].nets[1] add" };
