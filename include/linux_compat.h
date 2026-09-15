@@ -540,4 +540,33 @@ struct cix_btrfs_qgroup_status_item {
  * locality rather than pulled from a system header inconsistently. */
 #define CIX_BTRFS_SUPER_MAGIC 0x9123683e
 
+/*
+ * The inode flags chattr(1) sets, and the two ioctls that read and
+ * write them: the x86_64 encodings of _IOR('f', 1, long) and
+ * _IOW('f', 2, long). Self-declared rather than via <linux/fs.h>,
+ * which clashes with glibc headers under TCC the same way
+ * <linux/sched.h> does.
+ *
+ * Here rather than in the files that use them because there are now
+ * two: daemon/src/esp.c clears IMMUTABLE to write an efivarfs file,
+ * and daemon/src/swap.c sets NOCOW so btrfs will accept a swap file
+ * (#472). Two hand-copied magic numbers that must agree is exactly
+ * the duplicate state `One Source of Truth` is about, and a
+ * transcription error in one of them would fail as an ioctl that
+ * quietly does nothing.
+ *
+ * Hold the value in a ZERO-INITIALISED long. The ioctl numbers encode
+ * sizeof(long), but the kernel reads and writes an int at that address
+ * (`get_user`/`put_user` on an `int __user *`), so on little-endian
+ * x86_64 the value lands in the low four bytes and the rest must
+ * already be zero. That is what esp.c has always done; it is written
+ * down here because it looks like a type mismatch and is not.
+ */
+#define CIX_FS_IOC_GETFLAGS 0x80086601UL
+#define CIX_FS_IOC_SETFLAGS 0x40086602UL
+#define CIX_FS_COMPR_FL 0x00000004L
+#define CIX_FS_IMMUTABLE_FL 0x00000010L
+#define CIX_FS_NOCOMP_FL 0x00000400L
+#define CIX_FS_NOCOW_FL 0x00800000L
+
 #endif /* LINUX_COMPAT_H */
