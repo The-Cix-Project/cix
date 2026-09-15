@@ -1596,9 +1596,29 @@ static int build_plan(const struct json_value *doc, const char *containers_dir,
 			continue;
 		}
 		if (config_section_apply_mode(idx) == CONFIG_APPLY_RECONCILE) {
+			const struct cfg_elem_ops *ops = reconciler_for(config_section_name(idx));
+
+			/*
+			 * Both come from the same schema pass, so this cannot
+			 * disagree -- except it did: a generator edit silently
+			 * failed to apply, every non-replace section was
+			 * emitted as `reconcile`, and the eleven with no
+			 * operations reached this call with a NULL to
+			 * dereference. Caught before it ran on a real host, and
+			 * the lesson is that "cannot happen by construction" is
+			 * worth one branch when the alternative is a segfault
+			 * in the control plane.
+			 */
+			if (ops == NULL) {
+				snprintf(p->reason, sizeof(p->reason),
+				         "\"%s\" has no element operations -- the generated section "
+				         "table and the generated reconcile list disagree, which is a "
+				         "build fault, not something this document did",
+				         config_section_name(idx));
+				continue;
+			}
 			if (reconcile_list(p->live, sup, config_section_key(idx),
-			                   config_section_state_fields(idx),
-			                   reconciler_for(config_section_name(idx)), 1, p->reason,
+			                   config_section_state_fields(idx), ops, 1, p->reason,
 			                   sizeof(p->reason)) != 0)
 				continue;
 			p->appliable = 1;
@@ -1811,9 +1831,19 @@ void handle_config_apply(int fd, const char *containers_dir, const char *body, s
 		if (p->diff.count == 0)
 			continue;
 		if (config_section_apply_mode(p->index) == CONFIG_APPLY_RECONCILE) {
+			const struct cfg_elem_ops *ops = reconciler_for(config_section_name(p->index));
+
+			/* Unreachable: build_plan() refuses such a section
+			 * above, so an apply never gets here with one. */
+			if (ops == NULL) {
+				snprintf(p->error, sizeof(p->error),
+				         "\"%s\" has no element operations",
+				         config_section_name(p->index));
+				applied_ok = 0;
+				break;
+			}
 			if (reconcile_list(p->live, p->sup, config_section_key(p->index),
-			                   config_section_state_fields(p->index),
-			                   reconciler_for(config_section_name(p->index)), 0,
+			                   config_section_state_fields(p->index), ops, 0,
 			                   p->error, sizeof(p->error)) != 0) {
 				applied_ok = 0;
 				break;

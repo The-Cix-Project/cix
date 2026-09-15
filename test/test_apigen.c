@@ -262,6 +262,61 @@ int main(void)
 	 * fine at the call site and produce a literal brace in the URL.
 	 */
 	{
+		/*
+		 * The generated section table and the generated reconcile
+		 * list must agree about which sections are applied element by
+		 * element. They come from the same pass over the same schema,
+		 * so they "cannot" disagree -- and they did: an edit to the
+		 * mode the table emits silently failed to apply, every
+		 * non-replace section came out as CONFIG_APPLY_RECONCILE, and
+		 * the eleven with no element operations would have reached a
+		 * NULL dereference in the daemon. A count nobody checks is a
+		 * count that can drift; this is the check.
+		 */
+		char hdr_path[256];
+		char buf[1024];
+		FILE *f;
+		int mode_reconcile = 0, listed = 0, in_list = 0;
+
+		snprintf(hdr_path, sizeof(hdr_path), "/tmp/apigen_cfg_%d.h", (int)getpid());
+		snprintf(buf, sizeof(buf), "--emit-config-sections %s", hdr_path);
+		status = run_apigen("docs/api/openapi.yaml", buf, out, sizeof(out));
+		if (status != 0)
+			fail("apigen --emit-config-sections failed: %.200s", out);
+		f = fopen(hdr_path, "r");
+		if (f == NULL) {
+			fail("apigen --emit-config-sections wrote no header");
+		} else {
+			while (fgets(buf, sizeof(buf), f) != NULL) {
+				if (strstr(buf, "#define CIX_CONFIG_SECTIONS_RECONCILE") != NULL) {
+					in_list = 1;
+					continue;
+				}
+				if (in_list) {
+					if (strstr(buf, "\tX(") == buf)
+						listed++;
+					else if (strstr(buf, "X(") == NULL)
+						in_list = 0;
+					continue;
+				}
+				if (strstr(buf, "CONFIG_APPLY_RECONCILE") != NULL)
+					mode_reconcile++;
+			}
+			fclose(f);
+			unlink(hdr_path);
+			if (mode_reconcile != listed)
+				fail("%d sections are CONFIG_APPLY_RECONCILE in the section table but "
+				     "%d are in CIX_CONFIG_SECTIONS_RECONCILE -- a section applied "
+				     "element by element with no element operations is a NULL "
+				     "dereference in the daemon",
+				     mode_reconcile, listed);
+			if (listed == 0)
+				fail("no section is applied element by element -- the reconcile list "
+				     "is empty, which no schema in this repo should produce");
+		}
+	}
+
+	{
 		char hdr_path[256];
 		char buf[512];
 		FILE *f;
