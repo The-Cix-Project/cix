@@ -1,5 +1,5 @@
 #
-# v2.57.170: cix-boot.efi reads LoaderEntryOneShot (#467) -- it never
+# v2.57.170: cix-boot.efi reads LoaderEntryOneShot (#469) -- it never
 # did, despite esp_boot_next_set() genuinely writing it, confirmed dead
 # end to end on 192.168.15.95 (armed cix-b.conf, real reboot per kmsg,
 # came back on the running slot). New GET/POST /system/boot-manager
