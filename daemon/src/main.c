@@ -17564,23 +17564,45 @@ static void handle_container_file_write(int fd, const char *name, const char *re
  * nobody should be walking every minute, and `upper_measured_at` is
  * how a caller sees that rather than having to assume it.
  *
+ * TIMED IN MILLISECONDS, and that is not a detail. The first version
+ * timed with time(), whose one-second granularity rounds every walk
+ * under a second down to a cost of ZERO -- so the window collapsed to
+ * the floor and a 1.25 GB tree was re-walked every single second for
+ * as long as anything polled. Measured on 192.168.15.95: fourteen
+ * distinct measurements in fourteen seconds. A backoff computed from a
+ * cost that is usually zero is not a backoff.
+ *
  * Found by a test rather than by reasoning: the first version used a
  * flat 60 seconds, and test_container_stats -- which appends to a file
  * and requires the reported size to advance -- failed exactly as a
  * user watching a container fill up would have noticed it.
  */
-#define CONTAINER_DISK_MIN_SECONDS 1
+#define CONTAINER_DISK_MIN_MS 1000
 #define CONTAINER_DISK_COST_FACTOR 10
 
 struct container_disk_entry {
 	char name[REGISTRY_NAME_MAX];
 	long long bytes;
-	time_t measured_at;   /* 0 = never measured */
-	time_t started_at;    /* of the measurement in flight */
-	time_t cost_seconds;  /* how long the last walk took */
+	time_t measured_at;      /* 0 = never measured; what a caller is told */
+	long long started_ms;    /* of the measurement in flight */
+	long long done_ms;       /* when the last one finished */
+	long long cost_ms;       /* how long the last walk took */
 	int in_flight;
 	int used;
 };
+
+/* Monotonic milliseconds: the backoff must not be perturbed by the
+ * host clock being stepped, which this platform's own NTP sync does
+ * (ntp_time_set()). `measured_at` stays wall-clock, because it is a
+ * timestamp a caller reads rather than an interval. */
+static long long monotonic_ms(void)
+{
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+		return 0;
+	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 
 static struct container_disk_entry g_container_disk[REGISTRY_MAX_CONTAINERS];
 
@@ -17663,13 +17685,14 @@ static void container_disk_measure_done(int status, void *ctx)
 	 */
 	if (status == 0 && read(m->pipe_r, &bytes, sizeof(bytes)) == (ssize_t)sizeof(bytes) &&
 	    e != NULL) {
-		time_t now = time(NULL);
+		long long now_ms = monotonic_ms();
 
 		e->bytes = bytes;
-		e->measured_at = now;
+		e->measured_at = time(NULL);
+		e->done_ms = now_ms;
 		/* Timed in the parent, so it covers the fork and the exit as
 		 * well as the walk -- which is the real cost of asking. */
-		e->cost_seconds = now > e->started_at ? now - e->started_at : 0;
+		e->cost_ms = now_ms > e->started_ms ? now_ms - e->started_ms : 0;
 	}
 	if (e != NULL)
 		e->in_flight = 0;
@@ -17689,11 +17712,11 @@ static void container_disk_measure_start(const char *name, const char *upperdir)
 	if (e == NULL || e->in_flight)
 		return;
 	if (e->measured_at != 0) {
-		time_t window = e->cost_seconds * CONTAINER_DISK_COST_FACTOR;
+		long long window_ms = e->cost_ms * CONTAINER_DISK_COST_FACTOR;
 
-		if (window < CONTAINER_DISK_MIN_SECONDS)
-			window = CONTAINER_DISK_MIN_SECONDS;
-		if (time(NULL) - e->measured_at < window)
+		if (window_ms < CONTAINER_DISK_MIN_MS)
+			window_ms = CONTAINER_DISK_MIN_MS;
+		if (monotonic_ms() - e->done_ms < window_ms)
 			return;
 	}
 	m = calloc(1, sizeof(*m));
@@ -17708,7 +17731,7 @@ static void container_disk_measure_start(const char *name, const char *upperdir)
 	m->pipe_r = fds[0];
 	m->pipe_w = fds[1];
 	e->in_flight = 1;
-	e->started_at = time(NULL);
+	e->started_ms = monotonic_ms();
 	if (helper_run(container_disk_measure_work, m, container_disk_measure_done, m,
 	               "a container's disk usage") != 0) {
 		e->in_flight = 0;

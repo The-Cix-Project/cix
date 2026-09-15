@@ -16780,9 +16780,20 @@ components:
               type: integer
               nullable: true
               description: >
-                Real space consumed by this container's own overlay
-                upperdir (its content diff from the shared image) --
-                content only, not directory-tree overhead.
+                The size of this container's own writable tree, content
+                only, not directory-tree overhead.
+
+
+                This field used to say "its content diff from the shared
+                image", and that is measurably not what it reports:
+                containers built from the same image agree to the byte
+                (two on 192.168.15.95 both read 29360580), which a real
+                per-container diff cannot do. On the btrfs substrate a
+                container's writable tree is a subvolume SEEDED from its
+                image (ADR-0207) rather than an overlay upperdir over
+                it, so the tree already contains the whole rootfs.
+                Tracked as #475; the wording is corrected here rather
+                than left asserting something a caller can disprove.
 
 
                 MEASURED IN THE BACKGROUND, not while answering this
