@@ -57,7 +57,7 @@ static void print_usage(FILE *out)
 	        "               instead is sticky and breaks the NEXT update, which stages the\n"
 	        "               other slot and would then match nothing\n"
 	        "  boot-manager [--path=FILE | --url=URL --sha256=HEX]  -- report or replace\n"
-	        "               \\EFI\\BOOT\\BOOTX64.EFI (issue #467), the boot manager BOTH A/B\n"
+	        "               \\EFI\\BOOT\\BOOTX64.EFI (issue #469), the boot manager BOTH A/B\n"
 	        "               slots share -- there is no per-slot fallback for this one file\n"
 	        "               the way there is for the root squashfs and kernel, so this is\n"
 	        "               its own operation rather than a field on `update`. No argument\n"
@@ -11981,7 +11981,7 @@ static int cmd_boot_next(const struct cix_client *c, int json_mode, int argc, ch
 }
 
 /*
- * boot-manager: report or replace \EFI\BOOT\BOOTX64.EFI (#467).
+ * boot-manager: report or replace \EFI\BOOT\BOOTX64.EFI (#469).
  *
  * Unlike update's root/kernel pair, there is no A/B fallback for this
  * one file -- both slots share it -- so a set here does not reboot, the

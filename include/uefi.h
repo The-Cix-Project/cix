@@ -263,7 +263,7 @@ typedef struct {
  * EFI_RUNTIME_SERVICES. Same posture as EFI_BOOT_SERVICES above: every
  * member present in spec order, typed only where cix-boot actually
  * calls it (GetVariable/SetVariable, for the boot-loader-interface
- * LoaderEntryOneShot variable -- #467), the rest void * placeholders
+ * LoaderEntryOneShot variable -- #469), the rest void * placeholders
  * carrying their real names so the offsets stay right.
  */
 typedef struct {

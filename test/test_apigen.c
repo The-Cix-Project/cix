@@ -192,7 +192,7 @@ int main(void)
 	 * 304 as of ADR-0287: /system/management-network (GET+PUT) removed,
 	 *     /system/management-address (GET+PUT+DELETE) added: -2 +3 = +1.
 	 * 305 as of the interface flap: POST /system/interfaces/{name}/flap.
-	 * 307 as of #467: GET and POST /system/boot-manager.
+	 * 307 as of #469: GET and POST /system/boot-manager.
 	 */
 	status = run_apigen("docs/api/openapi.yaml", NULL, out, sizeof(out));
 	if (status != 0)

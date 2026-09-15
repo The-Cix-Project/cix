@@ -11,11 +11,11 @@
  *      earlier version of this comment claimed otherwise, and PUT
  *      /v1/system/esp {"default": ...} is dead code against this
  *      bootloader for the same reason boot-next was (next bullet).
- *   2. honor an operator's one-shot override (LoaderEntryOneShot, #467)
+ *   2. honor an operator's one-shot override (LoaderEntryOneShot, #469)
  *      when one is armed and names a real entry, overriding step 3 for
  *      exactly one boot; consumed (deleted) the instant it is read,
  *      whether or not it matched, so a stale value can never stick.
- *      Before #467 this program read no EFI variable at all, so
+ *      Before #469 this program read no EFI variable at all, so
  *      POST /v1/system/boot-next armed a real NVRAM variable that
  *      nothing here ever looked at -- confirmed dead end to end on
  *      192.168.15.95, 2026-09-14.
@@ -265,7 +265,7 @@ static void parse_entry_text(char *text, UINTN len, struct entry *e)
 }
 
 /*
- * ---- LoaderEntryOneShot: an operator-selected slot, once (#467) ----
+ * ---- LoaderEntryOneShot: an operator-selected slot, once (#469) ----
  *
  * cixd's esp_boot_next_set() (POST /v1/system/boot-next) already wrote
  * a real UEFI variable -- Linux's efivarfs is just the kernel's own

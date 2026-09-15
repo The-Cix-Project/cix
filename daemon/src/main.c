@@ -20203,7 +20203,7 @@ static void handle_boot_next_clear(int fd)
 }
 
 /*
- * GET/POST /v1/system/boot-manager (issue #467) -- the ESP's own
+ * GET/POST /v1/system/boot-manager (issue #469) -- the ESP's own
  * \EFI\BOOT\BOOTX64.EFI, the one file every future boot depends on for
  * BOTH A/B slots.
  *
