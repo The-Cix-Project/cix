@@ -533,7 +533,7 @@ static int glob_match(const char *pattern, const char *s)
  * pattern this platform writes already matches the id form and a
  * second spelling here is complexity with nothing real to justify it.
  */
-static void read_default_pattern(EFI_FILE_PROTOCOL *root, char *out, size_t out_size)
+static void read_default_pattern(EFI_FILE_PROTOCOL *root, char *out, UINTN out_size)
 {
 	CHAR16 path[] = { '\\', 'l', 'o', 'a', 'd', 'e', 'r', '\\', 'l', 'o', 'a',
 		          'd', 'e', 'r', '.', 'c', 'o', 'n', 'f', 0 };
