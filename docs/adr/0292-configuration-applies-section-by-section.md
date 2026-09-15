@@ -50,6 +50,17 @@ So the contract is: **apply operates on the sections you supply, and supplying o
 
 **Secrets have no spelling in this document, which is what makes applying one safe.** The document renders a token or password as a set/not-set boolean. Every applier reaching a setter that takes a secret passes NULL, and all three such setters define NULL as "leave this field unchanged" (`pkg_repo_set_config`, `pkg_artifact_set_config`, `ldap_config_set_client` — checked in their headers before this was written, because the alternative reading, that an omitted secret clears it, would mean changing a repo URL through this document silently broke every fetch through it). Sending back a redaction marker that differs from live is refused by name, rather than interpreted.
 
+## What was measured
+
+Verified live on 192.168.15.95 (v2.57.177), because "eleven sections apply" is a statement about the code and not, on its own, evidence:
+
+- The whole live 33-section document diffed against itself: **zero changes, zero blocked** — which exercises every renderer, the keyed array matching for all 22 array sections, and the round-trip the whole design rests on.
+- **Eight of the eleven appliers ran for real**, each confirmed through its own subsystem's endpoint and then restored: `resolver`, `time`, `dns_forwarders`, `backup`, `site`, `package_repo`, `package_artifacts`, `zswap`. `package_repo`'s `auth_token_set` was still true afterwards, which is the secret-preservation claim above measured rather than reasoned.
+- **Three were deliberately not exercised on the live host**: `daemon` rebinds the listener the request arrives on (and that host has no shell to recover through), `ldap` reloads the directory server this session authenticates against, and `swap` cannot be enabled on that host at all — btrfs refuses a copy-on-write swapfile ([#472](https://git.home.arpa/itdlabs/cix/issues/472); `POST /v1/system/swap` fails identically, so it is not this endpoint's doing). The swap applier's disabled-branch guard is verified; its enabled-branch guard is not reachable there.
+- All-or-nothing, proven rather than asserted: a **changed** `resolver` sent in the same body as an edited `containers` section returned 400 with `applied: false` on both, and `GET /v1/system/resolv` confirmed the resolver was untouched afterwards.
+- The refusals are specific and were each produced on the box: unknown section, a missing field, a derived field (`zswap.supported`), a redaction marker (`auth_token_set`), an unknown field.
+- The "an apply can fail after its plan validated" path was exercised for real, unintentionally: the swap enable above validated, then failed in the setter, and came back 500 with `applied: false` and the subsystem's reason on that section — which is exactly what this ADR says happens.
+
 ## Consequences
 
 - An operator can now ask what a configuration document means before anything acts on it, and can apply the eleven sections one setter owns — identity, resolver, time, sysctl-adjacent kernel settings, swap, backup destination, directory configuration and the package repo/artifact locations.
