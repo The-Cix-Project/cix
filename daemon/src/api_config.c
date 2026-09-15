@@ -1587,11 +1587,22 @@ static int build_plan(const struct json_value *doc, const char *containers_dir,
 			continue;
 		}
 		if (config_section_apply_mode(idx) == CONFIG_APPLY_MANUAL) {
+			/*
+			 * One sentence, because the reason differs per section
+			 * and belongs where it can be argued: removing an
+			 * element destroys state this document cannot describe
+			 * well enough to recreate (`volumes`, `containers`),
+			 * or the section is an observation with no setter
+			 * (`routes`), or the thing already has a better
+			 * distribution mechanism than this one
+			 * (`image_recipes`, `container_recipes`, which
+			 * `pkg sync` brings from git). The message used to
+			 * assert the first two reasons for all eleven, which
+			 * was simply untrue for the recipe sections.
+			 */
 			snprintf(p->reason, sizeof(p->reason),
 			         "\"%s\" is changed through its own endpoints, not through this "
-			         "document -- removing an element here would destroy state this "
-			         "document cannot describe well enough to recreate, or the section "
-			         "is an observation with no setter at all (ADR-0292)",
+			         "document -- see ADR-0292 for why this section in particular",
 			         config_section_name(idx));
 			continue;
 		}

@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Recipes stay out of config apply, because they already have a better mechanism (#473)
+
+`image_recipes` and `container_recipes` were the two `manual` sections whose stated reason was weakest — deleting a recipe destroys no data and stops no process, unlike a volume or a container. Investigated, and the answer is still no, for a reason that turns out to be stronger than the original one.
+
+**Recipes already arrive through `pkg sync`**, from the git repository named by `package_repo` — a section this document carries and can apply. Reconciling the recipes themselves here would be a second path to the same place: unversioned, unsigned, and **in direct conflict with the first**. Measured on 192.168.15.95: `pkg sync` never prunes (`daemon/src/pkg.c` says so in its own comment), and all twelve of the repository's deployment recipes are present on the box — so any removal this endpoint made would be undone by the next sync. The document would not be authoritative; it would lose an argument with git.
+
+**And making creations meaningful would cost the read side.** Both sections render only `{"name": ...}` today, so reconciling them would create empty definitions — the same defect that keeps `ldap_users` out. Carrying the text instead was measured: 50,520 bytes today against 140,263 with both sections' content, **178% larger**, turning `show running-config` into mostly recipe source for source that already has a home in git. (The text is safe to render — a container recipe stores `{{SECRET:KEY}}` placeholders, never values, and 5 of 14 have them — so this is a cost decision, not a secrecy one.)
+
+The refusal message is corrected in the same change. It asserted that removing an element "would destroy state this document cannot describe well enough to recreate, or the section is an observation with no setter at all" — true for nine sections and simply untrue for these two. It now states the one thing true of all eleven and points at the ADR, which argues each section on its own terms.
+
 ### A generator edit that silently did not apply, and the gate that now catches it
 
 Found by reading the live plan rather than the code: `POST /v1/config/diff` on a whole document reported **22 reconcile sections and no `manual` ones**, when the schema says eleven of each. The edit that teaches `apigen` to emit `CONFIG_APPLY_MANUAL` had not matched its anchor and was silently dropped, so every non-replace section came out as `CONFIG_APPLY_RECONCILE` -- while `CIX_CONFIG_SECTIONS_RECONCILE`, computed from the same schema in the same pass, correctly listed eleven.
