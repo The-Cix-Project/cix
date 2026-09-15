@@ -17044,7 +17044,22 @@ static int cmd_show(const struct cix_client *c, int json_mode, int argc, char **
 	struct cix_response r;
 
 	if (argc < 1 || strcmp(argv[0], "running-config") != 0) {
-		fprintf(stderr, "usage: cixctl show running-config [--json]\n");
+		fprintf(stderr, "usage: cixctl [--json] show running-config\n");
+		return 2;
+	}
+	/*
+	 * `--json` is a global flag, parsed before the command. Typing it
+	 * here used to be accepted and silently ignored, which prints
+	 * Cisco-style text to something expecting a document -- measured
+	 * against a real box while writing the config-apply workflow,
+	 * where the whole point is that this output is fed back in. Say
+	 * where the flag goes rather than quietly doing the other thing.
+	 */
+	if (argc > 1) {
+		fprintf(stderr,
+		        "cixctl: '%s' is not a `show running-config` option -- --json is a "
+		        "global flag: cixctl --json show running-config\n",
+		        argv[1]);
 		return 2;
 	}
 	if (cix_client_request(c, CIX_API_getConfig_METHOD, CIX_API_getConfig, NULL, &r) != 0) {
