@@ -6,22 +6,30 @@
  * used systemd-boot for:
  *
  *   1. read the /loader/entries files off the ESP it was itself loaded
- *      from. NOT loader.conf -- this program has never parsed it, so
- *      neither its "default" pattern nor its "timeout" apply here; an
- *      earlier version of this comment claimed otherwise, and PUT
- *      /v1/system/esp {"default": ...} is dead code against this
- *      bootloader for the same reason boot-next was (next bullet).
+ *      from, and loader.conf's own "default" pattern (#467) -- but not
+ *      its "timeout": that bounds how long an interactive menu waits
+ *      before auto-booting, and this program has no menu at all, so
+ *      there is nothing for a timeout to bound. Two earlier versions
+ *      of this comment got "default" wrong in both directions: one
+ *      claimed it worked when nothing here read loader.conf at all,
+ *      the next correctly said so but then said PUT /v1/system/esp
+ *      {"default": ...} was dead code for the SAME reason boot-next
+ *      was (next bullet) -- it wasn't the same reason, and #467 is
+ *      what actually closes this one.
  *   2. honor an operator's one-shot override (LoaderEntryOneShot, #469)
- *      when one is armed and names a real entry, overriding step 3 for
- *      exactly one boot; consumed (deleted) the instant it is read,
- *      whether or not it matched, so a stale value can never stick.
- *      Before #469 this program read no EFI variable at all, so
+ *      when one is armed and names a real entry, overriding steps 3-4
+ *      for exactly one boot; consumed (deleted) the instant it is
+ *      read, whether or not it matched, so a stale value can never
+ *      stick. Before #469 this program read no EFI variable at all, so
  *      POST /v1/system/boot-next armed a real NVRAM variable that
  *      nothing here ever looked at -- confirmed dead end to end on
  *      192.168.15.95, 2026-09-14.
- *   3. failing that, pick the best entry -- highest version, and an
- *      entry that has run out of boot attempts only ever as a last
- *      resort
+ *   3. failing that, narrow to whatever loader.conf's "default"
+ *      pattern matches (or the full set, if it names nothing that
+ *      exists any more -- a stale pattern must not mean the machine
+ *      refuses to boot) and pick the best entry within it -- highest
+ *      version, and an entry that has run out of boot attempts only
+ *      ever as a last resort
  *   4. decrement the chosen entry's Automatic Boot Assessment counter
  *      by renaming its file (cix-a+3.conf -> cix-a+2-1.conf)
  *   5. load the kernel it names and start it, with the entry's own
@@ -464,12 +472,128 @@ static void decrement_tries(EFI_FILE_PROTOCOL *entries, struct entry *e)
 }
 
 /*
- * Best entry: highest version wins. An entry whose counter has reached
- * zero is chosen only when nothing else is available -- it is a failed
- * slot, but a machine with two failed slots should still try to boot
- * rather than sit at firmware.
+ * ---- loader.conf's "default" pattern (#467) ----
+ *
+ * The other half of what PUT /v1/system/esp writes. Before this,
+ * cix-boot.c never opened loader.conf at all -- confirmed by grepping
+ * the whole file during #469's own investigation -- so "default" and
+ * "timeout" both silently did nothing on a real boot despite esp.c
+ * genuinely, correctly persisting them. "timeout" stays that way,
+ * deliberately, not by oversight: it controls how long systemd-boot's
+ * interactive menu waits before auto-booting, and this program has no
+ * menu at all (no keypress handling exists anywhere in this file) --
+ * there is nothing for a timeout to bound. Implementing it would be
+ * motion without effect. "default" is different: it genuinely narrows
+ * which entry gets chosen, so it gets implemented.
  */
-static int pick_entry(struct entry *list, int n)
+
+/*
+ * A minimal glob: '*' matches any run of characters (including none),
+ * '?' matches exactly one character, anything else matches itself.
+ * No character classes ([...]) -- no pattern this platform's own
+ * tooling ever writes uses one (every real default value written here
+ * is "cix-*"), and esp_pattern_matches() (daemon/src/esp.c), which
+ * this mirrors, is a thin wrapper over glibc's real fnmatch() with no
+ * flags -- there is no libc here to call, so this is deliberately a
+ * subset rather than a hand-rolled reimplementation of the whole
+ * thing. Classic backtracking match, not a novel algorithm.
+ */
+static int glob_match(const char *pattern, const char *s)
+{
+	const char *star_p = 0, *star_s = 0;
+
+	while (*s != '\0') {
+		if (*pattern == '*') {
+			star_p = pattern + 1;
+			star_s = s;
+			pattern++;
+		} else if (*pattern == '?' || *pattern == *s) {
+			pattern++;
+			s++;
+		} else if (star_p != 0) {
+			pattern = star_p;
+			star_s++;
+			s = star_s;
+		} else {
+			return 0;
+		}
+	}
+	while (*pattern == '*')
+		pattern++;
+	return *pattern == '\0';
+}
+
+/*
+ * Reads loader.conf's "default" value, or leaves out[0] a NUL if the
+ * file is absent or carries none -- both ordinary (a fresh install's
+ * loader.conf may not exist yet, and PUT /v1/system/esp's own default
+ * is optional). Matched against each entry's id (list[].id, counter
+ * already stripped) only -- not also the raw filename the way
+ * esp_pattern_matches() tries as a second spelling, since every
+ * pattern this platform writes already matches the id form and a
+ * second spelling here is complexity with nothing real to justify it.
+ */
+static void read_default_pattern(EFI_FILE_PROTOCOL *root, char *out, size_t out_size)
+{
+	CHAR16 path[] = { '\\', 'l', 'o', 'a', 'd', 'e', 'r', '\\', 'l', 'o', 'a',
+		          'd', 'e', 'r', '.', 'c', 'o', 'n', 'f', 0 };
+	void *buf = 0;
+	UINTN size = 0;
+	UINTN i = 0;
+	char *text;
+
+	out[0] = '\0';
+	if (EFI_ERROR(read_whole_file(root, path, &buf, &size)))
+		return;
+	if (size > ENTRY_TEXT_MAX)
+		size = ENTRY_TEXT_MAX;
+	text = (char *)buf;
+
+	while (i < size) {
+		UINTN start = i, key_end, val_start, val_end, vlen, k;
+
+		while (i < size && text[i] != '\n')
+			i++;
+		key_end = start;
+		while (key_end < i && text[key_end] != ' ' && text[key_end] != '\t')
+			key_end++;
+		val_start = key_end;
+		while (val_start < i && (text[val_start] == ' ' || text[val_start] == '\t'))
+			val_start++;
+		val_end = i;
+		if (val_end > val_start && text[val_end - 1] == '\r')
+			val_end--;
+
+		if (key_end - start == 7 && text[start] == 'd' && text[start + 1] == 'e' &&
+		    text[start + 2] == 'f' && text[start + 3] == 'a' && text[start + 4] == 'u' &&
+		    text[start + 5] == 'l' && text[start + 6] == 't') {
+			vlen = val_end - val_start;
+			if (vlen + 1 > out_size)
+				vlen = out_size - 1;
+			for (k = 0; k < vlen; k++)
+				out[k] = text[val_start + k];
+			out[vlen] = '\0';
+			break;
+		}
+		i++; /* step over the newline */
+	}
+	BS->FreePool(buf);
+}
+
+/*
+ * Best entry: pattern first (empty pattern is "no restriction"), then
+ * highest version wins among what the pattern allows. An entry whose
+ * counter has reached zero is chosen only when nothing else within the
+ * pattern is available -- it is a failed slot, but a machine with two
+ * failed slots should still try to boot rather than sit at firmware.
+ *
+ * A pattern matching nothing at all returns -1 rather than silently
+ * falling back to the unrestricted set itself -- that fallback is the
+ * CALLER's decision (efi_main() makes it explicitly), not something to
+ * bury inside the one function whose whole job is "does the pattern
+ * apply".
+ */
+static int pick_entry(struct entry *list, int n, const char *pattern)
 {
 	int best = -1, i;
 
@@ -477,6 +601,8 @@ static int pick_entry(struct entry *list, int n)
 		if (list[i].linux_path[0] == '\0')
 			continue;
 		if (list[i].tries_left == 0)
+			continue;
+		if (pattern[0] != '\0' && !glob_match(pattern, list[i].id))
 			continue;
 		if (best < 0 || list[i].version > list[best].version)
 			best = i;
@@ -486,6 +612,8 @@ static int pick_entry(struct entry *list, int n)
 
 	for (i = 0; i < n; i++) {
 		if (list[i].linux_path[0] == '\0')
+			continue;
+		if (pattern[0] != '\0' && !glob_match(pattern, list[i].id))
 			continue;
 		if (best < 0 || list[i].version > list[best].version)
 			best = i;
@@ -581,8 +709,21 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 		if (read_oneshot_id(oneshot_id, sizeof(oneshot_id)))
 			chosen = find_entry_by_id(list, count, oneshot_id);
 	}
-	if (chosen < 0)
-		chosen = pick_entry(list, count);
+	if (chosen < 0) {
+		char default_pattern[NAME_MAX_CHARS];
+
+		read_default_pattern(root, default_pattern, sizeof(default_pattern));
+		chosen = pick_entry(list, count, default_pattern);
+		if (chosen < 0 && default_pattern[0] != '\0')
+			/* The pattern matched nothing -- an entry it named was
+			 * deleted, or it was never valid for what is actually on
+			 * this ESP. A stale pattern must not mean the machine
+			 * refuses to boot; esp_loader_set() already refuses to
+			 * WRITE a pattern matching zero entries (ESP_ERR_WOULD_
+			 * ORPHAN), but that does not protect against an entry
+			 * being removed afterward. */
+			chosen = pick_entry(list, count, "");
+	}
 	if (chosen < 0) {
 		print(L16("cix-boot: no bootable entry found\r\n"));
 		return EFI_NOT_FOUND;
