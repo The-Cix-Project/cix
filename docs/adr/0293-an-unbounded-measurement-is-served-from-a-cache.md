@@ -42,6 +42,14 @@ That is not what was written first. The first version used a flat 60 seconds, an
 
 **`GET /volumes/{name}/usage` and `image gc --measure` are contained rather than converted.** The first is unreachable on the platform's own substrate; the second is an operator asking for an expensive thing once. Both are now counted by `test_blocking_waits`, alongside the blocking waits it already counts, so a fourth caller is a deliberate act that shows up in review rather than an accident.
 
+## What the walk actually costs here, measured
+
+Stated because the byte figures in this ADR invite the wrong conclusion. On 192.168.15.95 (2026-09-15), a stats request that triggers a measurement sees it land in **6 ms for `jump` and 3 ms for `syslog-1`** — despite `jump`'s tree holding 1.25 GB. `nftw()` walks inodes, not bytes, and these images have few files with a warm page cache.
+
+So on this host this was a **latent** risk rather than an active stall: the inline walk cost single-digit milliseconds per request, not seconds. What makes it worth removing anyway is that the cost is decided by the data and not by the code — a container holding a real dataset, a build tree, a mail spool, is millions of inodes and seconds of walking, on the one event loop of a pid-1 daemon with no shell behind it. The fix removes a class of failure, and it should not be read as having removed one that was firing.
+
+The same measurement explains something else honestly: the millisecond timing described above changes **nothing observable on this host**, because a 6 ms walk lands under the floor either way. It matters for the middle of the range — a walk of a few hundred milliseconds, which `time()` rounded to a cost of zero and which therefore re-ran continuously. That case is real and was reachable; it simply is not what this box does today.
+
 ## Consequences
 
 - The stats endpoint no longer walks anything. Its cost is now bounded by the cache lookup, whatever the container holds.
