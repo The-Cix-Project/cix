@@ -3977,7 +3977,7 @@ function dataChanged(key, data) {
 /*
  * True when a panel can be left exactly as it is: the payload is
  * identical to what it was last rendered from, AND it actually has
- * rows to keep (#432).
+ * content to keep (#432).
  *
  * Both halves matter. Without the payload check a refresh tick blanks
  * and rebuilds a table that has not changed, which costs the reader
@@ -3999,7 +3999,14 @@ function unchangedAndRendered(tbody, key, data)
 {
 	const changed = dataChanged(key, data);
 
-	return !changed && tbody !== null && tbody.querySelector("tr") !== null;
+	/* firstElementChild rather than querySelector("tr"): the same guard
+	 * has to serve panels that are not tables. Boot Console, Control
+	 * Plane Reservation, Signing Keys and the release-key box render
+	 * <p>/<pre> into a div, and Backup rebuilds a <select> of <option>s
+	 * -- a tr-only check would answer "never rendered" for all of them
+	 * and the guard would never fire. Identical answer for every tbody
+	 * that already used it. */
+	return !changed && tbody !== null && tbody.firstElementChild !== null;
 }
 
 /*
@@ -5542,10 +5549,10 @@ async function removeImage(name) {
 	}
 }
 
-function renderImageDetail(name) {
-	const usingContainers = cache.containers.filter((c) => c.image === name);
-	const containersBody = document.querySelector("#imgd-containers tbody");
-
+/* The table half of renderImageDetail(), split out so it can be skipped
+ * when nothing about it changed (#432) without skipping the handler
+ * wiring and recipe panels that follow it. */
+function renderImageDetailContainers(containersBody, usingContainers) {
 	containersBody.textContent = "";
 	if (usingContainers.length === 0) {
 		const row = document.createElement("tr");
@@ -5556,19 +5563,37 @@ function renderImageDetail(name) {
 		cell.textContent = "No containers use this image";
 		row.appendChild(cell);
 		containersBody.appendChild(row);
-	} else {
-		for (const c of usingContainers) {
-			const row = document.createElement("tr");
-			const nameCell = document.createElement("td");
-			const statusCell = document.createElement("td");
-
-			nameCell.appendChild(treeLink("#containers/" + encodeURIComponent(c.name), c.name, ""));
-			statusCell.textContent = c.status;
-			row.appendChild(nameCell);
-			row.appendChild(statusCell);
-			containersBody.appendChild(row);
-		}
+		return;
 	}
+	for (const c of usingContainers) {
+		const row = document.createElement("tr");
+		const nameCell = document.createElement("td");
+		const statusCell = document.createElement("td");
+
+		nameCell.appendChild(treeLink("#containers/" + encodeURIComponent(c.name), c.name, ""));
+		statusCell.textContent = c.status;
+		row.appendChild(nameCell);
+		row.appendChild(statusCell);
+		containersBody.appendChild(row);
+	}
+}
+
+function renderImageDetail(name) {
+	const usingContainers = cache.containers.filter((c) => c.image === name);
+	const containersBody = document.querySelector("#imgd-containers tbody");
+
+	/*
+	 * #432, and deliberately NARROW: the rest of this function wires
+	 * click handlers and fills the recipe panels from caches this
+	 * signature does not cover, so guarding the whole of it would skip
+	 * renders that should happen. Only the table that gets blanked is
+	 * guarded. The image NAME is in the key because navigating from one
+	 * image to another with an identical container list must still
+	 * redraw.
+	 */
+	if (!unchangedAndRendered(containersBody, "image-detail-containers",
+	                          { name: name, containers: usingContainers }))
+		renderImageDetailContainers(containersBody, usingContainers);
 
 	renderImageDetailPackages(name);
 	renderImageDetailRecipes(name);
@@ -6467,6 +6492,12 @@ function renderDisks() {
 	const body = document.getElementById("disks-body");
 	const disks = wholeDisks();
 
+	/* #432: the rows carry each disk's assigned role, so the roles are
+	 * an input to this render as much as the disks are -- a signature
+	 * over the disks alone would leave a stale role on screen after an
+	 * assignment changed. */
+	if (unchangedAndRendered(body, "disks", { disks: disks, roles: cache.storageRoles }))
+		return;
 	body.textContent = "";
 	if (disks.length === 0) {
 		const row = document.createElement("tr");
@@ -8421,6 +8452,10 @@ async function refreshStalls() {
 		const data = await apiRequest("GET", CIX_API.getStalls());
 		const stalls = data.stalls || [];
 
+		/* #432: an unchanged panel is left alone -- rebuilding it on every
+		 * tick collapses the page and costs the reader their place. */
+		if (unchangedAndRendered(body, "stalls", stalls))
+			return;
 		body.textContent = "";
 		if (stalls.length === 0) {
 			const tr = document.createElement("tr");
@@ -8555,6 +8590,10 @@ async function refreshBootConsole() {
 			document.getElementById("bcf-consoles").value = (cfg.consoles || []).join(" ");
 			document.getElementById("bcf-extra").value = cfg.extra || "";
 		}
+		/* #432: an unchanged panel is left alone -- rebuilding it on every
+		 * tick collapses the page and costs the reader their place. */
+		if (unchangedAndRendered(body, "boot-console", data))
+			return;
 		grid.textContent = "";
 		grid.appendChild(fieldBlock("Rendered", cfg.rendered || "(none)"));
 
@@ -8629,6 +8668,10 @@ async function refreshControlPlaneReservation() {
 			document.getElementById("cpr-cpu-percent").value = c.cpu_percent;
 			document.getElementById("cpr-memory-bytes").value = c.memory_bytes;
 		}
+		/* #432: an unchanged panel is left alone -- rebuilding it on every
+		 * tick collapses the page and costs the reader their place. */
+		if (unchangedAndRendered(grid, "control-plane-reservation", c))
+			return;
 		grid.textContent = "";
 		grid.appendChild(fieldBlock("This host", (c.host_cpus || 0) + " CPUs, " + formatBytes(c.host_memory_bytes || 0)));
 		grid.appendChild(fieldBlock("Workload cgroup", c.cgroup || "-"));
@@ -8791,6 +8834,10 @@ async function refreshSigningKeys() {
 	try {
 		const data = await apiRequest("GET", CIX_API.getSystemSigningKeys());
 
+		/* #432: an unchanged panel is left alone -- rebuilding it on every
+		 * tick collapses the page and costs the reader their place. */
+		if (unchangedAndRendered(box, "signing-keys", data))
+			return;
 		box.textContent = "";
 		if (!data.key_set && !data.cert_set) {
 			const p = document.createElement("p");
@@ -8884,6 +8931,10 @@ async function refreshReleaseKey() {
 	try {
 		const data = await apiRequest("GET", CIX_API.getSystemReleaseKey());
 
+		/* #432: an unchanged panel is left alone -- rebuilding it on every
+		 * tick collapses the page and costs the reader their place. */
+		if (unchangedAndRendered(box, "release-key", data))
+			return;
 		box.textContent = "";
 		if (!data.key_set) {
 			const p = document.createElement("p");
@@ -8954,6 +9005,14 @@ async function refreshEsp() {
 		const box = document.getElementById("esp-summary");
 
 		cache.esp = data;
+		/* #432: the ESP summary is rebuilt on every tick. Guarded on
+		 * the payload; refreshBootManager() below is deliberately
+		 * OUTSIDE it, because that is a separate fetch with its own
+		 * freshness and skipping it here would freeze that panel. */
+		if (unchangedAndRendered(box, "esp", data)) {
+			await refreshBootManager();
+			return;
+		}
 		box.textContent = "";
 		if (!data.present) {
 			const p = document.createElement("p");
@@ -13484,6 +13543,17 @@ function renderBackupConfig() {
 	const select = document.getElementById("bc-disk");
 	const prevValue = select.value;
 
+	/*
+	 * #432: this one rebuilds a <select> on every tick, which is worse
+	 * than losing a scroll position -- it also overwrites the enabled
+	 * checkbox, so a toggle made between ticks was reverted before it
+	 * could be saved. All four inputs are in the signature; the roles
+	 * decide which disks are even listed.
+	 */
+	if (unchangedAndRendered(select, "backup-config", {
+		    storage: cache.storage, roles: cache.storageRoles,
+		    config: cache.backupConfig, status: cache.backupStatus }))
+		return;
 	select.textContent = "";
 	{
 		const opt = document.createElement("option");
