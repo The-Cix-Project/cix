@@ -484,6 +484,14 @@ static int cfg_apply_swap(const struct json_value *live, const struct json_value
 	 * this plan was computed from": a false diagnosis of a document
 	 * that was perfectly current.
 	 */
+	/*
+	 * Measured on 192.168.15.95, 2026-09-15: the DISABLED branch below
+	 * is verified live; the enabled branch is not reachable on that
+	 * host, because host swap cannot be enabled there at all -- btrfs
+	 * refuses a copy-on-write swapfile and swap.c does not set
+	 * NODATACOW (#472, and `POST /v1/system/swap` fails identically,
+	 * so it is not this file's doing).
+	 */
 	if (!changed(live, sup, "enabled") && changed(live, sup, "size_mb")) {
 		if (enabled)
 			snprintf(err, errsz,
