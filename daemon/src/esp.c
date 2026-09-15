@@ -20,6 +20,7 @@
 #include "esp.h"
 
 #include "json.h"
+#include "linux_compat.h"
 #include "persist.h"
 
 #include <dirent.h>
@@ -752,13 +753,6 @@ int esp_entry_to_confirm(const char *entries_dir, const char *slot, char *out, s
 #define ESP_ONESHOT_VAR "LoaderEntryOneShot-" ESP_LOADER_GUID
 #define ESP_EFI_ATTRS 0x00000007u /* NON_VOLATILE|BOOTSERVICE_ACCESS|RUNTIME_ACCESS */
 
-/* Self-declared rather than via <linux/fs.h>, which clashes with glibc
- * headers under TCC the same way <linux/sched.h> does (see
- * include/linux_compat.h). These are the x86_64 encodings of
- * _IOR('f', 1, long) / _IOW('f', 2, long). */
-#define ESP_FS_IOC_GETFLAGS 0x80086601UL
-#define ESP_FS_IOC_SETFLAGS 0x40086602UL
-#define ESP_FS_IMMUTABLE_FL 0x00000010L
 
 static char g_efivars_dir[PATH_MAX] = "/sys/firmware/efi/efivars";
 
@@ -781,9 +775,9 @@ static void clear_immutable(const char *path)
 
 	if (fd < 0)
 		return;
-	if (ioctl(fd, ESP_FS_IOC_GETFLAGS, &flags) == 0 && (flags & ESP_FS_IMMUTABLE_FL) != 0) {
-		flags &= ~ESP_FS_IMMUTABLE_FL;
-		(void)ioctl(fd, ESP_FS_IOC_SETFLAGS, &flags);
+	if (ioctl(fd, CIX_FS_IOC_GETFLAGS, &flags) == 0 && (flags & CIX_FS_IMMUTABLE_FL) != 0) {
+		flags &= ~CIX_FS_IMMUTABLE_FL;
+		(void)ioctl(fd, CIX_FS_IOC_SETFLAGS, &flags);
 	}
 	close(fd);
 }

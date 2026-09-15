@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Host swap works on btrfs: the swap file is created no-COW (#472)
+
+Host swap could not be enabled on 192.168.15.95 **at all** — `POST /v1/system/swap {"size_mb":64}` returned 500 and the kernel logged `BTRFS warning (device vdb5): swapfile must not be copy-on-write`. Found while verifying ADR-0292 (the config-apply path reported it correctly, as a 500 with `applied: false`), and it is ADR-0069's subsystem rather than anything in that work. `swap_enable()` now sets `FS_NOCOW_FL` on the freshly created, still-empty file, between the `open(O_TRUNC)` and the allocation.
+
+**Read out of the kernel rather than inferred, because the widely repeated advice about this is wrong in a way that would have cost real performance.** `btrfs_swap_activate()` (`fs/btrfs/inode.c`) refuses a swapfile that is compressed, not `NODATACOW`, not `NODATASUM`, holed, inline, or built on shared extents — and its extent loop rejects only inline, compressed and `disk_bytenr == 0`. **It does not reject preallocated extents**, so `fallocate()` stays. The common recipe of writing the file with `dd` instead would have meant writing every byte of a multi-gigabyte file synchronously inside a single-threaded event loop, for nothing.
+
+Two properties of `btrfs_ioctl_setflags()` (`fs/btrfs/ioctl.c`) shape the fix, and both are silent failures if ignored. `FS_NOCOW_FL` sets `NODATACOW` **and** `NODATASUM` — exactly the pair swapon requires — but only while `i_size == 0`; on a file that already has extents it is ignored without error. And setting it is refused with `EINVAL` when the inode already carries `FS_COMPR_FL`/`FS_NOCOMP_FL` (inheritable from a directory), with clearing them in the same call not helping, because the check is against the *old* flags — so they are cleared in their own call first.
+
+The failure paths in `swap_enable()` now also write to the log store instead of returning a bare `SWAP_ERR_IO`, and the `swapon()` one says explicitly that a filesystem's reason for refusing is in the **kernel** log rather than in `errno` — which is what made this need a cross-reference against `logs --source=kernel` to diagnose at all.
+
+The two `chattr`-flag ioctl numbers had been hand-copied into `daemon/src/esp.c` (immutable) and would have been copied again here; they now have one definition in `include/linux_compat.h` alongside this project's other self-declared kernel constants, with the reason a zero-initialised `long` holds a value the kernel reads as an `int`.
+
 ### `cixctl`: a misplaced `--json` is an error, not silently ignored
 
 `cixctl show running-config --json` printed Cisco-style text and dropped the flag: `--json` is global and parsed before the command, and `cmd_show` ignored everything past its subcommand. Found against a real box while building the config-apply workflow, where that output is meant to be fed straight back in -- so the silent version produces a file the next command refuses to read. `cmd_show` now rejects a trailing argument and says where the flag goes. The three places the documentation spelled it the broken way -- `docs/guides/cli-reference.md`, which has said it since `running-config` shipped, and the two examples added with ADR-0292 -- are corrected to `cixctl --json show running-config`.

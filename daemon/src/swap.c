@@ -1,4 +1,6 @@
 #include "swap.h"
+#include "linux_compat.h"
+#include "logstore.h"
 #include "persist.h"
 
 #include <errno.h>
@@ -6,8 +8,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/swap.h>
 #include <unistd.h>
+
 
 static char g_state_path[512];
 static char g_file_path[512];
@@ -137,6 +141,83 @@ int swap_is_enabled(void)
 	return g_enabled;
 }
 
+/*
+ * btrfs refuses a copy-on-write swapfile outright: measured on
+ * 192.168.15.95 on 2026-09-15, swapon(2) returned EINVAL and the
+ * kernel logged "BTRFS warning (device vdb5): swapfile must not be
+ * copy-on-write" -- so host swap could not be enabled on this platform
+ * at all, through this module or through POST /v1/system/swap, which
+ * failed identically (#472).
+ *
+ * Read from the kernel source rather than inferred, because the
+ * folklore around this is wrong in a way that costs real time.
+ * `btrfs_swap_activate()` (fs/btrfs/inode.c) refuses a swapfile that
+ * is compressed, that is not NODATACOW, that is not NODATASUM, that
+ * has holes, that is inline, or whose extents are shared. It does NOT
+ * refuse PREALLOCATED extents -- its loop rejects only inline,
+ * compressed and `disk_bytenr == 0` -- which is why fallocate() stays
+ * below rather than being replaced by a zero-fill, as the widely
+ * repeated advice would have it. A zero-fill would have meant writing
+ * every byte of a multi-gigabyte file synchronously inside a
+ * single-threaded event loop, for nothing.
+ *
+ * Two properties of the ioctl decide the shape of this function, both
+ * from `btrfs_ioctl_setflags()` (fs/btrfs/ioctl.c):
+ *
+ *   The file must be EMPTY. FS_NOCOW_FL sets NODATACOW *and*
+ *   NODATASUM -- the exact pair swapon needs -- but only when
+ *   `i_size == 0`; on a file with extents it is silently ignored.
+ *   Hence this sits between open(O_TRUNC) and the allocation below.
+ *
+ *   A compression flag blocks it. Setting NOCOW is refused with EINVAL
+ *   when the file already carries FS_COMPR_FL or FS_NOCOMP_FL (which
+ *   an inode can inherit from its directory), and clearing them in the
+ *   same call does not help -- the check is against the OLD flags. So
+ *   they are cleared first, in their own call.
+ *
+ * Best-effort against a filesystem with no such flags at all: ext4,
+ * where host swap has always worked, has no NOCOW to set and answers
+ * the GETFLAGS with a flags word this simply leaves alone. What is NOT
+ * best-effort is silence -- if the flag was settable and did not
+ * take, that is said here, because the alternative is a swapon failure
+ * whose only explanation is in the kernel log (#472 again).
+ */
+static void set_nocow(int fd)
+{
+	long flags = 0;
+
+	if (ioctl(fd, CIX_FS_IOC_GETFLAGS, &flags) != 0)
+		return; /* no inode flags on this filesystem */
+	if ((flags & CIX_FS_NOCOW_FL) != 0)
+		return;
+	if ((flags & (CIX_FS_COMPR_FL | CIX_FS_NOCOMP_FL)) != 0) {
+		long cleared = flags & ~(CIX_FS_COMPR_FL | CIX_FS_NOCOMP_FL);
+
+		if (ioctl(fd, CIX_FS_IOC_SETFLAGS, &cleared) != 0) {
+			logstore_write("cixd", "warn",
+			               "swap: %s inherits a compression flag that could not be "
+			               "cleared, so it cannot be made no-COW: %s",
+			               g_file_path, strerror(errno));
+			return;
+		}
+		flags = cleared;
+	}
+	flags |= CIX_FS_NOCOW_FL;
+	if (ioctl(fd, CIX_FS_IOC_SETFLAGS, &flags) != 0) {
+		logstore_write("cixd", "warn",
+		               "swap: could not make %s no-COW: %s -- a btrfs swap file will be "
+		               "refused by the kernel without it",
+		               g_file_path, strerror(errno));
+		return;
+	}
+	flags = 0;
+	if (ioctl(fd, CIX_FS_IOC_GETFLAGS, &flags) == 0 && (flags & CIX_FS_NOCOW_FL) == 0)
+		logstore_write("cixd", "warn",
+		               "swap: the no-COW flag did not take on %s -- the file was expected "
+		               "to be empty at this point",
+		               g_file_path);
+}
+
 enum swap_error swap_enable(int64_t size_mb)
 {
 	int64_t size_bytes;
@@ -156,18 +237,27 @@ enum swap_error swap_enable(int64_t size_mb)
 	size_bytes -= size_bytes % page_size;
 
 	fd = open(g_file_path, O_CREAT | O_RDWR | O_TRUNC, 0600);
-	if (fd < 0)
+	if (fd < 0) {
+		logstore_write("cixd", "error", "swap: cannot create %s: %s", g_file_path,
+		               strerror(errno));
 		return SWAP_ERR_IO;
+	}
+
+	set_nocow(fd);
 
 	/* fallocate(), not ftruncate() -- a swap file must have every
 	 * block genuinely backed on disk (no holes); ftruncate() alone
 	 * would leave it sparse and swapon(2) would reject it. */
 	if (fallocate(fd, 0, 0, size_bytes) != 0) {
+		logstore_write("cixd", "error", "swap: cannot allocate %lld bytes for %s: %s",
+		               (long long)size_bytes, g_file_path, strerror(errno));
 		close(fd);
 		unlink(g_file_path);
 		return SWAP_ERR_IO;
 	}
 	if (write_swap_header(fd, size_bytes, page_size) != 0) {
+		logstore_write("cixd", "error", "swap: cannot write the swap header to %s: %s",
+		               g_file_path, strerror(errno));
 		close(fd);
 		unlink(g_file_path);
 		return SWAP_ERR_IO;
@@ -175,6 +265,18 @@ enum swap_error swap_enable(int64_t size_mb)
 	close(fd);
 
 	if (swapon(g_file_path, 0) != 0) {
+		/*
+		 * The filesystem's own reason goes to the KERNEL log, not to
+		 * errno -- btrfs answers a plain EINVAL and writes "swapfile
+		 * must not be copy-on-write" (or "must not have holes", or
+		 * "must not be compressed") to dmesg. That cost a full
+		 * cross-reference against `logs --source=kernel` to diagnose
+		 * (#472), so say here that the reason is over there.
+		 */
+		logstore_write("cixd", "error",
+		               "swap: swapon(%s) failed: %s -- if this is EINVAL, the filesystem "
+		               "refused the file and said why in the kernel log",
+		               g_file_path, strerror(errno));
 		unlink(g_file_path);
 		return SWAP_ERR_IO;
 	}
