@@ -82,6 +82,19 @@ static CURLcode perform_one(CURL *curl, const struct curlfetch_opts *opts, long 
 	 * as "no change". */
 	curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 50L);
 	curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
+	/*
+	 * libcurl sends NO User-Agent header unless told to -- unlike the
+	 * curl(1) CLI tool every one of these call sites used to be, which
+	 * always sends "curl/<version>". Confirmed live on 192.168.15.95,
+	 * 2026-09-15: fetching a real GNU mirror URL without this returned
+	 * a bare HTTP 403, where the same URL through the old curl
+	 * subprocess always succeeded -- some servers (this one included)
+	 * treat a missing User-Agent as a bot signal. Matching the CLI
+	 * tool's own default exactly is the correct fix, not inventing a
+	 * new identity: it is the identity every one of these fetches has
+	 * presented since this project existed.
+	 */
+	curl_easy_setopt(curl, CURLOPT_USERAGENT, "curl/" LIBCURL_VERSION);
 	curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
 	curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
 	if (opts->connect_timeout > 0)
