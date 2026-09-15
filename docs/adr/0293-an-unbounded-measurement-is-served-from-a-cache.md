@@ -36,7 +36,9 @@ The walk runs in a `helper_run()` child, which is exactly what ADR-0278 is for: 
 
 Staleness is not new to this API: `GET /volumes/{name}/usage` on btrfs reads a qgroup that settles at transaction commit, roughly 30 seconds behind, and that endpoint already reports which source answered. What changes here is that the age is *stated* rather than assumed.
 
-The freshness window (60 s) is deliberately longer than a dashboard poll: **polling harder must not mean walking harder.** One measurement per container is in flight at a time.
+**The freshness window is proportional to what the walk cost, not a constant.** A fixed window has to be wrong in one direction or the other: long enough to protect a huge tree means a small container's size visibly lags its own growth, and short enough to track growth means a huge tree is walked over and over. So each measurement is timed and the next is allowed no sooner than ten times that, with a one-second floor. A trivial tree refreshes at the floor; an expensive one backs itself off without anyone choosing a number for it. "Polling harder must not mean walking harder" becomes a bound on **cost** rather than on frequency. One measurement per container is in flight at a time.
+
+That is not what was written first. The first version used a flat 60 seconds, and `test_container_stats` failed it — the test appends to a file and requires the reported size to *advance*, which a minute-long window makes impossible. The failure is exactly what a user watching a container fill up would have seen, and it was worth more than the reasoning that produced the constant.
 
 **`GET /volumes/{name}/usage` and `image gc --measure` are contained rather than converted.** The first is unreachable on the platform's own substrate; the second is an operator asking for an expensive thing once. Both are now counted by `test_blocking_waits`, alongside the blocking waits it already counts, so a fourth caller is a deliberate act that shows up in review rather than an accident.
 
@@ -44,6 +46,7 @@ The freshness window (60 s) is deliberately longer than a dashboard poll: **poll
 
 - The stats endpoint no longer walks anything. Its cost is now bounded by the cache lookup, whatever the container holds.
 - A caller sees `null` on the first request for a container the daemon has not measured yet — normally one poll. Clients must handle it; the dashboard shows "measuring…" rather than a fabricated number.
+- **The figure is eventually consistent, and a test that needed it to be immediate had to change.** `test_container_stats` now polls for the first measurement and for growth, with a bounded timeout, rather than demanding both from the next response. That is a weaker assertion in exactly the way the API is weaker — and writing the test to pass by measuring inline would have been the bug back again.
 - **The daemon still cannot defer an HTTP response**, and two request paths still walk. That is stated rather than fixed, and it is the honest position: the walk that was actually being hit is gone, and the remaining two are counted so they cannot quietly become three.
 - A deleted container leaves a cache entry behind, reclaimed oldest-first when the table fills. Evicting on delete would mean another cleanup path to keep correct, for 80 bytes.
 - The general rule this sets, and the reason it is an ADR rather than a comment: **a measurement whose cost is decided by the data, not by the code, does not belong inside a request on this daemon.** The next one gets a cache and a timestamp too.

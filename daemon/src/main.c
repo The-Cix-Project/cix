@@ -17549,15 +17549,35 @@ static void handle_container_file_write(int fd, const char *name, const char *re
  * transaction commit, ~30 seconds behind -- but it is now SAID, which
  * that endpoint also does.
  *
- * The freshness window is deliberately longer than a dashboard poll:
- * polling harder must not mean walking harder.
+ * THE FRESHNESS WINDOW IS PROPORTIONAL TO WHAT THE WALK COST, not a
+ * constant. A fixed window has to be wrong in one direction or the
+ * other: long enough to protect a huge tree means a small container's
+ * size visibly lags behind its own growth, and short enough to track
+ * growth means a huge tree is walked over and over. So each
+ * measurement is timed, and the next one is allowed no sooner than ten
+ * times that -- a trivial tree refreshes at the floor below, and an
+ * expensive one backs itself off without anyone choosing a number for
+ * it. "Polling harder must not mean walking harder" is then a bound on
+ * COST rather than on frequency.
+ *
+ * Deliberately not capped. A tree that takes a minute to walk is one
+ * nobody should be walking every minute, and `upper_measured_at` is
+ * how a caller sees that rather than having to assume it.
+ *
+ * Found by a test rather than by reasoning: the first version used a
+ * flat 60 seconds, and test_container_stats -- which appends to a file
+ * and requires the reported size to advance -- failed exactly as a
+ * user watching a container fill up would have noticed it.
  */
-#define CONTAINER_DISK_FRESH_SECONDS 60
+#define CONTAINER_DISK_MIN_SECONDS 1
+#define CONTAINER_DISK_COST_FACTOR 10
 
 struct container_disk_entry {
 	char name[REGISTRY_NAME_MAX];
 	long long bytes;
-	time_t measured_at; /* 0 = never measured */
+	time_t measured_at;   /* 0 = never measured */
+	time_t started_at;    /* of the measurement in flight */
+	time_t cost_seconds;  /* how long the last walk took */
 	int in_flight;
 	int used;
 };
@@ -17643,8 +17663,13 @@ static void container_disk_measure_done(int status, void *ctx)
 	 */
 	if (status == 0 && read(m->pipe_r, &bytes, sizeof(bytes)) == (ssize_t)sizeof(bytes) &&
 	    e != NULL) {
+		time_t now = time(NULL);
+
 		e->bytes = bytes;
-		e->measured_at = time(NULL);
+		e->measured_at = now;
+		/* Timed in the parent, so it covers the fork and the exit as
+		 * well as the walk -- which is the real cost of asking. */
+		e->cost_seconds = now > e->started_at ? now - e->started_at : 0;
 	}
 	if (e != NULL)
 		e->in_flight = 0;
@@ -17663,8 +17688,14 @@ static void container_disk_measure_start(const char *name, const char *upperdir)
 
 	if (e == NULL || e->in_flight)
 		return;
-	if (e->measured_at != 0 && time(NULL) - e->measured_at < CONTAINER_DISK_FRESH_SECONDS)
-		return;
+	if (e->measured_at != 0) {
+		time_t window = e->cost_seconds * CONTAINER_DISK_COST_FACTOR;
+
+		if (window < CONTAINER_DISK_MIN_SECONDS)
+			window = CONTAINER_DISK_MIN_SECONDS;
+		if (time(NULL) - e->measured_at < window)
+			return;
+	}
 	m = calloc(1, sizeof(*m));
 	if (m == NULL)
 		return;
@@ -17677,6 +17708,7 @@ static void container_disk_measure_start(const char *name, const char *upperdir)
 	m->pipe_r = fds[0];
 	m->pipe_w = fds[1];
 	e->in_flight = 1;
+	e->started_at = time(NULL);
 	if (helper_run(container_disk_measure_work, m, container_disk_measure_done, m,
 	               "a container's disk usage") != 0) {
 		e->in_flight = 0;
