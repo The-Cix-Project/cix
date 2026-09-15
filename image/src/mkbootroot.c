@@ -599,8 +599,8 @@ int main(int argc, char **argv)
 	 * before this argument was added) keeps today's dev-host-sourced
 	 * behavior -- the same tolerant-default shape firmware_dir/
 	 * modules_dir/kmod_bin_dir above already established. The remaining
-	 * shelled-out tools (openssl/curl/tar/bzip2/xz/unsquashfs/mkfs.ext4)
-	 * have no such recipe yet and still come from the dev host either
+	 * shelled-out tools (openssl/tar/bzip2/xz/unsquashfs/mkfs.ext4) have
+	 * no such recipe yet and still come from the dev host either
 	 * way -- a real, tracked gap (tasks #688-693), not silently masked
 	 * by this argument's presence.
 	 */
@@ -730,8 +730,14 @@ int main(int argc, char **argv)
 			const char *rootfs_path; /* relative to image_root, matching the _BIN macro exactly */
 		} shelled_bins[] = {
 			{ "/usr/bin/openssl", "usr/bin/openssl" },     /* PKI_OPENSSL_BIN, daemon/src/pki.c */
-			{ "/usr/bin/curl", "usr/bin/curl" },           /* PKG_CURL_BIN, daemon/src/pkg.c */
-			{ "/usr/bin/tar", "usr/bin/tar" },             /* PKG_TAR_BIN */
+			/* curl: NOT here any more (#410) -- cixd's own fetches all
+			 * moved in-process to libcurl (daemon/src/curlfetch.c),
+			 * and nothing else in the control plane ever execve()s
+			 * curl. Staging the binary itself had no consumer left. */
+			{ "/usr/bin/tar", "usr/bin/tar" },             /* TARGZ_TAR_BIN, daemon/src/targz.c --
+			                                                 * the tar+gzip CREATION pipeline only;
+			                                                 * extraction moved to libarchive (#411)
+			                                                 * and never execve()s this binary. */
 			/* cp/gzip: NOT here -- staged from host_tools_dir
 			 * (coreutils.recipe/gzip.recipe) when given, see below. */
 			{ "/usr/bin/unsquashfs", "usr/bin/unsquashfs" }, /* PKG_UNSQUASHFS_BIN -- the
