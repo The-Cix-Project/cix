@@ -438,6 +438,83 @@ networks
 
 `--json` gives the document itself, unrendered.
 
+### Writing it back (ADR-0292)
+
+```
+POST /v1/config/diff    -- what this document would change; changes nothing
+POST /v1/config         -- change it
+```
+
+Both take the document itself as the body, the same shape `GET /config`
+returns, so the workflow is fetch, edit, send back:
+
+```
+$ cixctl --host=... show running-config --json > c.json
+$ vi c.json
+$ cixctl --host=... config diff --file=c.json --section=resolver
+resolver             changed    appliable
+  replace  nameservers[1]               192.168.15.100 -> 9.9.9.9
+1 supplied, 1 changed, 1 appliable, 0 blocked
+$ cixctl --host=... config apply --file=c.json --section=resolver
+```
+
+**Send only the sections you are changing.** That is a real constraint,
+not tidiness. The document carries running state alongside configuration
+-- a container's `pid` and `status`, a volume's `created_at`, a
+network's current `address`, a DHCP server's `running` -- so a whole
+document fetched a minute ago can differ from live for reasons that have
+nothing to do with what you edited. `--section=NAME` rebuilds the body
+with just those sections; a name that is not in the file is an error
+rather than a silently narrower request.
+
+**A section is replaced whole.** Every field it renders must be present
+and nothing else may be. An absent field is an error, never "leave this
+one alone" -- that is what keeps the document you fetch and the document
+you send the same language.
+
+**Only some sections can be applied.** Each section declares in the
+schema whether one setter replaces it (`replace`) or whether applying it
+means creating, updating and deleting individual live resources
+(`reconcile`). Eleven sections are `replace` and are applied; the other
+twenty-two are diffed and **refuse the whole request** if they carry real
+changes, with nothing touched -- use those sections' own endpoints. The
+plan comes back with the refusal, so the reason arrives with the evidence
+for it:
+
+```json
+{
+  "sections": [
+    { "name": "containers", "apply": "reconcile", "status": "changed",
+      "appliable": false,
+      "reason": "applying \"containers\" means creating, updating and deleting individual resources, which this endpoint does not do yet (ADR-0292) -- use that section's own endpoints",
+      "changes": [ { "path": "[web].image", "op": "replace", "from": "base", "to": "dev" } ] }
+  ],
+  "summary": { "sections_supplied": 1, "sections_changed": 1, "appliable": 0, "blocked": 1 }
+}
+```
+
+An array element is named by its identity key (`[web]`) rather than its
+index, because comparing by position reports one insertion at the front
+as "everything after it changed". Where a declared key does not uniquely
+name the elements in the document at hand, the comparison falls back to
+position and says so in `compared_by_position` rather than answering
+confidently from a wrong pairing.
+
+**Secrets cannot be set here.** The document never carried the value, so
+there is no spelling for one -- sending back a `..._set` marker that
+differs from live is refused by name. Applying a section that has a
+secret behind it (the repo URL, the artifact base URL, the LDAP client
+settings) leaves that secret exactly as it was.
+
+**What `appliable` promises, precisely.** It comes from running the real
+apply code in dry-run, so it checks the document's shape: fields present,
+types right, nothing derived or redacted being changed. It cannot check
+whether a subsystem will accept the *values*, because none of them offer
+a way to ask without doing. So an apply can still fail after its plan
+validated -- the response says per section what was applied and which one
+stopped it, and returns `500` rather than pretending the whole thing was
+atomic.
+
 ## A container's consoles are declared, not assumed (issue #248)
 
 A console used to be the same thing for every container: `/usr/bin/bash`, with an argv of exactly one token. That was wrong in both directions. A container built from a minimal image without bash got a console session that opened and instantly died — a `101 Switching Protocols` followed by nothing, which looks like a broken daemon rather than a missing binary. And a console that genuinely needed arguments (`tail -F /var/log/messages`, `chronyc tracking`) could not be expressed at all, because the argv had room for one string.

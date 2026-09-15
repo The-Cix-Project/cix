@@ -193,12 +193,13 @@ int main(void)
 	 *     /system/management-address (GET+PUT+DELETE) added: -2 +3 = +1.
 	 * 305 as of the interface flap: POST /system/interfaces/{name}/flap.
 	 * 307 as of #469: GET and POST /system/boot-manager.
+	 * 309 as of ADR-0292: POST /config and POST /config/diff.
 	 */
 	status = run_apigen("docs/api/openapi.yaml", NULL, out, sizeof(out));
 	if (status != 0)
 		fail("apigen rejected the real spec: %.300s", out);
-	else if (atoi(out) != 307)
-		fail("apigen found %d operations in the real spec, expected 307 -- if the spec "
+	else if (atoi(out) != 309)
+		fail("apigen found %d operations in the real spec, expected 309 -- if the spec "
 		     "genuinely changed, update this number deliberately; a silently different "
 		     "count is how a lost route hides",
 		     atoi(out));
@@ -298,10 +299,10 @@ int main(void)
 			fclose(f);
 			unlink(hdr_path);
 		}
-		if (defines != 307)
-			fail("CLI header has %d path defines, expected one per operation (307)", defines);
-		if (methods != 307)
-			fail("CLI header has %d method defines, expected one per operation (307)", methods);
+		if (defines != 309)
+			fail("CLI header has %d path defines, expected one per operation (309)", defines);
+		if (methods != 309)
+			fail("CLI header has %d method defines, expected one per operation (309)", methods);
 		if (braces != 0)
 			fail("%d CLI path define(s) still contain '{' -- a parameter was not converted "
 			     "to %%s and would put a literal brace in the URL",

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, and partially implemented: parts 1 (`GET /v1/config`), 4 (`cixctl show running-config`) and 5 (the schema generating the section vocabulary) are built. Parts 2 (`POST /v1/config`, apply) and 3 (`GET /v1/config/diff`) are not yet -- they are the half that changes state, and are deliberately separate work.
+Accepted, and implemented for the sections one setter owns. Parts 1 (`GET /v1/config`), 4 (`cixctl show running-config`) and 5 (the schema generating the section vocabulary) were built first. Parts 2 (apply) and 3 (diff) followed in [ADR-0292](0292-configuration-applies-section-by-section.md), which builds both for the eleven sections a single setter replaces and diffs -- but deliberately does not apply -- the twenty-two whose application means reconciling individual live resources. Part 3 landed as `POST /v1/config/diff` rather than the `GET` named below: a GET cannot carry the document being compared. See that ADR for what remains and why it is a separate decision rather than remaining work of the same kind.
 
 Originally proposed. Requested by the owner: *"I want to be able to do a show running-config type of thing? Old school Cisco-ey... think of 2000s Cisco style configuration, and I think we need the exact same style but much more enhanced since we're 2026."*
 

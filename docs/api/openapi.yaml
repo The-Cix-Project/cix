@@ -83,6 +83,112 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConfigDocument"
+    post:
+      summary: Apply a configuration document to this host
+      description: >
+        Takes the same document `GET /v1/config` returns -- fetch it,
+        edit it, send it back (ADR-0292). A PARTIAL document is normal
+        and is the recommended way to use this: only the sections
+        present in the body are considered at all, and the sections you
+        are not changing are better left out than sent back unchanged.
+
+
+        That recommendation is not stylistic. The document mixes
+        configuration with running state -- a container's `pid` and
+        `status`, a volume's `created_at`, a network's current
+        `address` -- so a whole document fetched a minute ago can
+        differ from live for reasons that have nothing to do with
+        configuration, and a section whose difference cannot be applied
+        refuses the entire request.
+
+
+        A section is replaced WHOLE: every field it renders must be
+        present, and nothing else may be. An absent field is an error,
+        never "leave this one alone" -- that rule is what makes the
+        document you fetch and the document you send the same language.
+
+
+        Derived values and redacted secrets may be sent back but not
+        changed: `zswap.supported` is a property of the kernel,
+        `package_repo.auth_token_set` is a marker for a token this
+        document never carried. Changing either is refused by name.
+
+
+        ALL OR NOTHING, as far as that is honestly achievable. Every
+        supplied section is validated before any of them is applied,
+        and a section whose changes cannot be applied at all --
+        anything in `reconcile` mode -- refuses the whole request with
+        nothing touched. What validation cannot promise is that a
+        setter will succeed: subsystems validate values only as they
+        apply them, so an apply can still fail partway. The response
+        reports per section what was applied and where it stopped.
+      operationId: applyConfig
+      x-cix-expose: [cli]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigDocument"
+      responses:
+        "200":
+          description: Every changed section was applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigPlan"
+        "400":
+          description: >
+            The document is not applicable -- an unknown section, a
+            malformed section, or a change this endpoint cannot make.
+            Nothing was touched; the body is the plan, so the reason
+            arrives with the evidence for it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigPlan"
+        "500":
+          description: >
+            A setter failed after the plan validated. The body says
+            which sections were applied and which one stopped it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigPlan"
+
+  /config/diff:
+    post:
+      summary: What a configuration document would change, changing nothing
+      description: >
+        The plan `POST /v1/config` would run, computed by the same code
+        and returned without applying any of it (ADR-0292). Takes the
+        same body, answers the same shape, and touches nothing -- so it
+        is the safe way to find out what a document means before
+        sending it anywhere that acts on it.
+
+
+        `appliable` per section is the verdict apply itself would
+        reach: it comes from running every applier in dry-run, which
+        checks the document's shape but cannot check what a subsystem
+        will make of the values, since none of them offer a way to ask
+        without doing.
+      operationId: diffConfig
+      x-cix-expose: [cli]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigDocument"
+      responses:
+        "200":
+          description: The plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigPlan"
+        "400":
+          description: The body is not a configuration document
 
   /login:
     post:
@@ -13257,73 +13363,273 @@ components:
         renderer, or a renderer without an entry here, fails the build
         rather than shipping a quietly partial document. Adding a
         configurable subsystem to this platform means adding it here.
+
+
+        Each section also declares how it may be WRITTEN (ADR-0292),
+        because the same generated table drives `POST /v1/config`:
+
+          `x-cix-config-kind` -- `object` or `array`, which the differ
+          needs before it can compare anything.
+
+          `x-cix-config-key` (arrays only) -- the field, or
+          comma-separated fields, that NAME an element. The differ
+          matches elements by this rather than by position, so one
+          insertion does not report every later element as changed.
+          `""` means compare by position, which is right only for an
+          ordered list of scalars.
+
+          `x-cix-config-apply` -- `replace` when one setter replaces
+          the whole section, `reconcile` when applying it means
+          creating, updating and deleting individual live resources.
+          Only `replace` sections can be applied today; a `reconcile`
+          section with real changes refuses the whole request rather
+          than applying half of it.
       properties:
         site:
           description: Host identity -- instance, site, domain. First because everything else is named relative to it.
+          x-cix-config-kind: object
+          x-cix-config-apply: replace
         daemon:
           description: "The daemon's own settings: bind address, TLS and connection throttle."
+          x-cix-config-kind: object
+          x-cix-config-apply: replace
         resolver:
           description: The host's own /etc/resolv.conf nameservers (ADR-0076).
+          x-cix-config-kind: object
+          x-cix-config-apply: replace
         time:
           description: NTP configuration -- upstream sources and whether stepping is allowed.
+          x-cix-config-kind: object
+          x-cix-config-apply: replace
         ntp_servers:
           description: Containers registered as NTP servers for this site.
+          x-cix-config-kind: array
+          x-cix-config-key: "container"
+          x-cix-config-apply: reconcile
         sysctl:
           description: Persisted kernel parameters applied at boot.
+          x-cix-config-kind: array
+          x-cix-config-key: "key"
+          x-cix-config-apply: reconcile
         kernel_modules:
           description: Modules configured to load, distinct from those merely loaded now.
+          x-cix-config-kind: array
+          x-cix-config-key: "name"
+          x-cix-config-apply: reconcile
         zswap:
           description: Compressed-swap intent (ADR-0196) -- configured intent, not only what the kernel currently has.
+          x-cix-config-kind: object
+          x-cix-config-apply: replace
         swap:
           description: Swap placement and size.
+          x-cix-config-kind: object
+          x-cix-config-apply: replace
         disk_roles:
           description: Persisted disk-name-to-role bindings. Before storage consumers, which resolve through them.
+          x-cix-config-kind: array
+          x-cix-config-key: "disk_name"
+          x-cix-config-apply: reconcile
         volumes:
           description: Named volumes containers mount.
+          x-cix-config-kind: array
+          x-cix-config-key: "name"
+          x-cix-config-apply: reconcile
         backup:
           description: Backup destination and schedule (ADR-0141), not the backup contents.
+          x-cix-config-kind: object
+          x-cix-config-apply: replace
         routes:
           description: Host routing table entries.
+          x-cix-config-kind: array
+          x-cix-config-key: "dest,prefix,interface"
+          x-cix-config-apply: reconcile
         networks:
           description: Virtual networks. Before containers, which attach to them.
+          x-cix-config-kind: array
+          x-cix-config-key: "name"
+          x-cix-config-apply: reconcile
         dhcp:
           description: DHCP ranges and static reservations.
+          x-cix-config-kind: object
+          x-cix-config-apply: reconcile
         dhcp_servers:
           description: Containers registered as DHCP servers.
+          x-cix-config-kind: array
+          x-cix-config-key: "container"
+          x-cix-config-apply: reconcile
         dns_forwarders:
           description: Upstream resolvers the DNS servers forward to.
+          x-cix-config-kind: array
+          x-cix-config-key: ""
+          x-cix-config-apply: replace
         dns_servers:
           description: Containers registered as DNS servers. Before records, which they serve.
+          x-cix-config-kind: array
+          x-cix-config-key: "container"
+          x-cix-config-apply: reconcile
         dns_records:
           description: Zone records.
+          x-cix-config-kind: array
+          x-cix-config-key: "name,ip"
+          x-cix-config-apply: reconcile
         pki:
           description: CA and certificate metadata. Private key material is NEVER rendered.
+          x-cix-config-kind: array
+          x-cix-config-key: "name"
+          x-cix-config-apply: reconcile
         ldap:
           description: LDAP directory configuration. The bind password renders as a set/not-set boolean.
+          x-cix-config-kind: object
+          x-cix-config-apply: replace
         ldap_servers:
           description: Containers registered as LDAP servers.
+          x-cix-config-kind: array
+          x-cix-config-key: "container"
+          x-cix-config-apply: reconcile
         ldap_groups:
           description: Directory groups. Before users, which reference them.
+          x-cix-config-kind: array
+          x-cix-config-key: "name"
+          x-cix-config-apply: reconcile
         ldap_users:
           description: Directory users. Passwords are never rendered.
+          x-cix-config-kind: array
+          x-cix-config-key: "name"
+          x-cix-config-apply: reconcile
         syslog_targets:
           description: Remote syslog destinations.
+          x-cix-config-kind: array
+          x-cix-config-key: "container"
+          x-cix-config-apply: reconcile
         package_repo:
           description: Recipe source repository. The auth token renders as a set/not-set boolean.
+          x-cix-config-kind: object
+          x-cix-config-apply: replace
         package_artifacts:
           description: Prebuilt-artifact server (ADR-0122). The auth token renders as a set/not-set boolean.
+          x-cix-config-kind: object
+          x-cix-config-apply: replace
         package_policies:
           description: Per-package install and update policy.
+          x-cix-config-kind: array
+          x-cix-config-key: "name"
+          x-cix-config-apply: reconcile
         packages:
           description: Installed packages per image.
+          x-cix-config-kind: array
+          x-cix-config-key: "image,name"
+          x-cix-config-apply: reconcile
         images:
           description: Images. Before the containers built from them.
+          x-cix-config-kind: array
+          x-cix-config-key: "name"
+          x-cix-config-apply: reconcile
         image_recipes:
           description: Declarative image manifests (ADR-0123).
+          x-cix-config-kind: array
+          x-cix-config-key: "name"
+          x-cix-config-apply: reconcile
         container_recipes:
           description: Declarative container definitions.
+          x-cix-config-kind: array
+          x-cix-config-key: "name"
+          x-cix-config-apply: reconcile
         containers:
           description: "Provisioned containers. Last: they depend on networks, images, volumes and devices above."
+          x-cix-config-kind: array
+          x-cix-config-key: "name"
+          x-cix-config-apply: reconcile
+    ConfigPlan:
+      type: object
+      description: >
+        What a supplied configuration document means against this host
+        (ADR-0292) -- returned identically by `POST /v1/config/diff`,
+        which stops there, and by `POST /v1/config`, which then runs
+        it. One entry per SUPPLIED section, in schema order rather than
+        body order, because a section never depends on one below it.
+      properties:
+        sections:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              kind:
+                type: string
+                enum: [object, array]
+              apply:
+                type: string
+                enum: [replace, reconcile]
+              status:
+                type: string
+                enum: [unchanged, changed]
+              appliable:
+                type: boolean
+                description: >
+                  Whether this section's changes can be applied. True
+                  for an unchanged section, since applying nothing
+                  always succeeds.
+              reason:
+                type: string
+                description: Present only when `appliable` is false -- why not.
+              truncated:
+                type: boolean
+                description: >
+                  The change list hit its bound and is partial. Present
+                  only when true, and never silently omitted -- a
+                  partial diff presented as complete would be the worst
+                  possible answer for a caller about to apply it.
+              compared_by_position:
+                type: string
+                description: >
+                  Present when an array's declared identity key did not
+                  uniquely name its elements in this document, so the
+                  comparison fell back to position. Named because a
+                  positional comparison of a reordered list reports
+                  every element as changed.
+              applied:
+                type: boolean
+                description: Present only on `POST /v1/config`.
+              error:
+                type: string
+                description: Why this section's apply failed, when it did.
+              changes:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    path:
+                      type: string
+                      description: >
+                        Where the difference is, relative to the
+                        section -- `nameservers[1]`, `[web].image`, or
+                        `(section)` for the section value itself. An
+                        array element is named by its identity key
+                        rather than its index wherever the schema
+                        declares one.
+                    op:
+                      type: string
+                      enum: [add, remove, replace]
+                    from:
+                      description: The live value. Absent for `add`.
+                    to:
+                      description: The supplied value. Absent for `remove`.
+        summary:
+          type: object
+          properties:
+            sections_supplied:
+              type: integer
+            sections_changed:
+              type: integer
+            appliable:
+              type: integer
+            blocked:
+              type: integer
+            applied:
+              type: boolean
+              description: Present only on `POST /v1/config`.
+
     ServerHealth:
       type: object
       properties:

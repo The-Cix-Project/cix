@@ -554,15 +554,53 @@ static void emit_web(const char *out_path, const char *spec)
  * exactly that. Same posture as the rest of this tool: anything
  * unrecognised inside the block is a hard error naming the line.
  */
+/*
+ * Strips a trailing newline and, if the value is quoted, the quotes --
+ * so `x-cix-config-key: "image,name"` and `x-cix-config-key: name`
+ * both yield exactly the field list, and a comma inside a key cannot
+ * be mistaken for YAML structure.
+ */
+static void scalar_value(const char *line, char *out, size_t out_size)
+{
+	size_t n;
+
+	snprintf(out, out_size, "%s", value_of(line));
+	strip_eol(out);
+	n = strlen(out);
+	if (n >= 2 && out[0] == '"' && out[n - 1] == '"') {
+		memmove(out, out + 1, n - 2);
+		out[n - 2] = '\0';
+	}
+}
+
+/*
+ * The ConfigDocument schema is the single source of the configuration
+ * vocabulary (ADR-0206) and, since ADR-0292, of how each section may
+ * be written. Each section declares:
+ *
+ *   x-cix-config-kind   object | array
+ *   x-cix-config-key    arrays only -- the identity field(s)
+ *   x-cix-config-apply  replace | reconcile
+ *
+ * All of it is REQUIRED, and anything else under a section is a hard
+ * error. A section whose write semantics are unstated would otherwise
+ * default to something, and a default here is a decision nobody made
+ * about how an operator's document is allowed to change a live host.
+ */
 static void emit_config_sections(const char *out_path, const char *spec)
 {
 	FILE *f = fopen(spec, "r");
 	FILE *o;
 	char line[4096];
 	char names[256][APIGEN_ID_MAX];
+	char kinds[256][16];
+	char keys[256][128];
+	char modes[256][16];
+	int has_key[256];
 	int count = 0;
 	int lineno = 0;
 	int in_doc = 0, in_props = 0;
+	int replace_count = 0;
 	int i;
 
 	if (f == NULL) {
@@ -592,8 +630,35 @@ static void emit_config_sections(const char *out_path, const char *spec)
 				in_props = 1;
 			continue;
 		}
+		if (ind > 10)
+			continue; /* a folded description's continuation lines */
+		if (ind == 10) {
+			if (count == 0)
+				die_at(spec, lineno, "a section attribute before any section");
+			if (!key_at(line, 10, key, sizeof(key)))
+				die_at(spec, lineno, "expected a section attribute here, got: %.60s",
+				       line + ind);
+			if (strcmp(key, "description") == 0)
+				continue;
+			if (strcmp(key, "x-cix-config-kind") == 0) {
+				scalar_value(line, kinds[count - 1], sizeof(kinds[0]));
+				continue;
+			}
+			if (strcmp(key, "x-cix-config-key") == 0) {
+				scalar_value(line, keys[count - 1], sizeof(keys[0]));
+				has_key[count - 1] = 1;
+				continue;
+			}
+			if (strcmp(key, "x-cix-config-apply") == 0) {
+				scalar_value(line, modes[count - 1], sizeof(modes[0]));
+				continue;
+			}
+			die_at(spec, lineno,
+			       "unrecognised attribute \"%s\" under config section \"%s\"", key,
+			       names[count - 1]);
+		}
 		if (ind != 8)
-			continue; /* the description under each section */
+			continue;
 		if (!key_at(line, 8, key, sizeof(key)))
 			die_at(spec, lineno,
 			       "expected a config section name here, got: %.60s", line + ind);
@@ -606,6 +671,10 @@ static void emit_config_sections(const char *out_path, const char *spec)
 		if (count >= (int)(sizeof(names) / sizeof(names[0])))
 			die_at(spec, lineno, "too many config sections");
 		snprintf(names[count], sizeof(names[count]), "%s", key);
+		kinds[count][0] = '\0';
+		keys[count][0] = '\0';
+		modes[count][0] = '\0';
+		has_key[count] = 0;
 		count++;
 	}
 	fclose(f);
@@ -616,6 +685,30 @@ static void emit_config_sections(const char *out_path, const char *spec)
 	if (count == 0)
 		die_at(spec, 0, "ConfigDocument has no properties -- a config document with "
 		                "no sections would be a silently empty view");
+
+	for (i = 0; i < count; i++) {
+		int is_array = strcmp(kinds[i], "array") == 0;
+
+		if (!is_array && strcmp(kinds[i], "object") != 0)
+			die_at(spec, 0,
+			       "config section \"%s\": x-cix-config-kind must be \"object\" or "
+			       "\"array\" (got \"%s\")", names[i], kinds[i]);
+		if (strcmp(modes[i], "replace") != 0 && strcmp(modes[i], "reconcile") != 0)
+			die_at(spec, 0,
+			       "config section \"%s\": x-cix-config-apply must be \"replace\" or "
+			       "\"reconcile\" (got \"%s\")", names[i], modes[i]);
+		if (is_array && !has_key[i])
+			die_at(spec, 0,
+			       "config section \"%s\" is an array and must declare "
+			       "x-cix-config-key -- \"\" to compare it by position, which is "
+			       "right only for an ordered list of scalars", names[i]);
+		if (!is_array && has_key[i])
+			die_at(spec, 0,
+			       "config section \"%s\" is an object, so x-cix-config-key means "
+			       "nothing for it", names[i]);
+		if (strcmp(modes[i], "replace") == 0)
+			replace_count++;
+	}
 
 	o = fopen(out_path, "w");
 	if (o == NULL) {
@@ -629,7 +722,22 @@ static void emit_config_sections(const char *out_path, const char *spec)
 	fprintf(o, " * below it. See the ConfigDocument schema for why. */\n");
 	fprintf(o, "#define CIX_CONFIG_SECTIONS(X) \\\n");
 	for (i = 0; i < count; i++)
-		fprintf(o, "\tX(%s)%s\n", names[i], i + 1 < count ? " \\" : "");
+		fprintf(o, "\tX(%s, CONFIG_KIND_%s, \"%s\", CONFIG_APPLY_%s)%s\n", names[i],
+		        strcmp(kinds[i], "array") == 0 ? "ARRAY" : "OBJECT", keys[i],
+		        strcmp(modes[i], "replace") == 0 ? "REPLACE" : "RECONCILE",
+		        i + 1 < count ? " \\" : "");
+	fprintf(o, "\n/* The sections one setter can replace outright. Expanded on its\n");
+	fprintf(o, " * own so the apply functions are declared, defined and tabulated\n");
+	fprintf(o, " * from this list and nothing else -- a section declared\n");
+	fprintf(o, " * \"replace\" with no apply function does not link, and an apply\n");
+	fprintf(o, " * function for a section that is not is an unused-function error. */\n");
+	fprintf(o, "#define CIX_CONFIG_SECTIONS_REPLACE(X) \\\n");
+	for (i = 0; i < count; i++) {
+		if (strcmp(modes[i], "replace") != 0)
+			continue;
+		replace_count--;
+		fprintf(o, "\tX(%s)%s\n", names[i], replace_count > 0 ? " \\" : "");
+	}
 	fprintf(o, "\n#define CIX_CONFIG_SECTION_COUNT %d\n\n", count);
 	fprintf(o, "#endif\n");
 	fclose(o);

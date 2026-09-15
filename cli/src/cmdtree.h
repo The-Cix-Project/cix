@@ -1420,6 +1420,18 @@ static const struct cli_node n_show_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
+static const char *const n_config_flags[] = {
+	"--file=",
+	"--section=",
+	NULL,
+};
+
+static const struct cli_node n_config_subs[] = {
+	{ "diff", n_config_flags, NULL },
+	{ "apply", n_config_flags, NULL },
+	{ NULL, NULL, NULL },
+};
+
 
 static const char *const n_ksm_flags[] = {
 	"--disable",
@@ -1435,7 +1447,7 @@ static const struct cli_node n_ksm_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
-/* The 63 top-level commands, in dispatcher order. */
+/* The 64 top-level commands, in dispatcher order. */
 static const struct cli_node CLI_TREE[] = {
 	{ "health", NULL, NULL },
 	{ "login", n_login_flags, NULL },
@@ -1504,6 +1516,7 @@ static const struct cli_node CLI_TREE[] = {
 	{ "schedule", NULL, n_schedule_subs },
 	{ "pkg", NULL, n_pkg_subs },
 	{ "show", NULL, n_show_subs },
+	{ "config", NULL, n_config_subs },
 	{ NULL, NULL, NULL },
 };
 

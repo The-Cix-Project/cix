@@ -480,7 +480,16 @@ static void print_usage(FILE *out)
 	        "  logs config [--max-bytes=N] [--min-level=LEVEL]  -- show or set the log's\n"
 	        "               total size cap and/or its minimum severity floor\n"
 	        "               (emerg/alert/crit/err|error/warning|warn/notice/info/debug,\n"
-	        "               default debug -- log everything)\n");
+	        "               default debug -- log everything)\n"
+	        "  show running-config [--json]  -- everything this host is configured to do,\n"
+	        "               as one ordered document (ADR-0206). Secrets are never in it.\n"
+	        "  config diff --file=PATH [--section=NAME ...]  -- what that document would\n"
+	        "               change if applied, computed by the daemon, changing nothing\n"
+	        "  config apply --file=PATH [--section=NAME ...]  -- apply it. Send only the\n"
+	        "               sections you are changing: the document also carries running\n"
+	        "               state (a container's pid, a volume's creation time), so a\n"
+	        "               whole one sent back can differ for reasons that are not\n"
+	        "               configuration -- and one unappliable section refuses the lot\n");
 }
 
 static const char *json_str_field(const struct json_value *obj, const char *key)
@@ -17045,6 +17054,226 @@ static int cmd_show(const struct cix_client *c, int json_mode, int argc, char **
 	return emit(&r, json_mode, fmt_running_config);
 }
 
+/*
+ * config diff / config apply -- the write side of the running-config
+ * document (ADR-0292).
+ *
+ * Both post the document as-is, so the workflow is literally `cixctl
+ * show running-config --json > c.json`, edit, `cixctl config diff
+ * --file=c.json`. The daemon decides everything; this renders what it
+ * decided, the same posture `show running-config` already has -- the
+ * text below is presentation and is never parsed back by anything.
+ *
+ * --section= is not a convenience. The document mixes configuration
+ * with running state (a container's pid, a volume's creation time), so
+ * a whole document sent back can differ from live for reasons that
+ * have nothing to do with configuration, and one unappliable section
+ * refuses the request. Sending only the sections being changed is the
+ * normal way to use this, and this flag is what makes that one step
+ * rather than hand-editing JSON.
+ */
+static void plan_print_value(const struct json_value *v)
+{
+	if (v == NULL) {
+		fputs("-", stdout);
+		return;
+	}
+	if (v->type == JSON_OBJECT) {
+		printf("{%d field%s}", (int)v->u.object.count,
+		       v->u.object.count == 1 ? "" : "s");
+		return;
+	}
+	if (v->type == JSON_ARRAY) {
+		printf("[%d item%s]", (int)v->u.array.count, v->u.array.count == 1 ? "" : "s");
+		return;
+	}
+	show_scalar(v);
+}
+
+static void fmt_config_plan(const struct json_value *v)
+{
+	const struct json_value *sections = json_object_get(v, "sections");
+	const struct json_value *summary = json_object_get(v, "summary");
+	size_t i, j;
+
+	if (sections == NULL || sections->type != JSON_ARRAY) {
+		printf("no plan returned\n");
+		return;
+	}
+	for (i = 0; i < sections->u.array.count; i++) {
+		const struct json_value *sec = sections->u.array.items[i];
+		const struct json_value *changes = json_object_get(sec, "changes");
+		const struct json_value *applied = json_object_get(sec, "applied");
+		const struct json_value *appliable = json_object_get(sec, "appliable");
+		const char *name = json_str_field(sec, "name");
+		const char *status = json_str_field(sec, "status");
+		const char *reason = json_str_field(sec, "reason");
+		const char *error = json_str_field(sec, "error");
+		const char *positional = json_str_field(sec, "compared_by_position");
+		const char *verdict;
+
+		if (applied != NULL && applied->type == JSON_BOOL)
+			verdict = applied->u.boolean ? "applied" : "NOT APPLIED";
+		else if (status != NULL && strcmp(status, "unchanged") == 0)
+			verdict = "";
+		else if (appliable != NULL && appliable->type == JSON_BOOL && appliable->u.boolean)
+			verdict = "appliable";
+		else
+			verdict = "BLOCKED";
+
+		printf("%-20s %-10s %s\n", name != NULL ? name : "?",
+		       status != NULL ? status : "?", verdict);
+		if (reason != NULL)
+			printf("  reason: %s\n", reason);
+		if (error != NULL)
+			printf("  error: %s\n", error);
+		if (positional != NULL)
+			printf("  note: %s was compared by position -- its identity key does not "
+			       "name its elements uniquely here\n", positional);
+		if (json_object_get(sec, "truncated") != NULL)
+			printf("  note: too many differences to list them all\n");
+		if (changes == NULL || changes->type != JSON_ARRAY)
+			continue;
+		for (j = 0; j < changes->u.array.count; j++) {
+			const struct json_value *ch = changes->u.array.items[j];
+			const char *op = json_str_field(ch, "op");
+			const char *path = json_str_field(ch, "path");
+
+			printf("  %-8s %-28s ", op != NULL ? op : "?", path != NULL ? path : "?");
+			plan_print_value(json_object_get(ch, "from"));
+			fputs(" -> ", stdout);
+			plan_print_value(json_object_get(ch, "to"));
+			fputs("\n", stdout);
+		}
+	}
+	if (summary == NULL)
+		return;
+	printf("%lld supplied, %lld changed, %lld appliable, %lld blocked\n",
+	       (long long)json_as_number(json_object_get(summary, "sections_supplied")),
+	       (long long)json_as_number(json_object_get(summary, "sections_changed")),
+	       (long long)json_as_number(json_object_get(summary, "appliable")),
+	       (long long)json_as_number(json_object_get(summary, "blocked")));
+}
+
+#define CLI_CONFIG_MAX_SECTIONS 64
+
+/*
+ * Rebuilds the document with only the named sections. Every name must
+ * be in it -- a typo silently narrowing the document to nothing would
+ * report a clean "no changes" for an edit that was never sent.
+ */
+static int config_filter_sections(const char *text, size_t len, const char *const *want,
+                                  int want_n, struct json_writer *w)
+{
+	struct json_value *doc = json_parse(text, len);
+	int i;
+
+	if (doc == NULL || doc->type != JSON_OBJECT) {
+		fprintf(stderr, "cixctl: the file is not a configuration document\n");
+		json_free(doc);
+		return -1;
+	}
+	for (i = 0; i < want_n; i++) {
+		if (json_object_get(doc, want[i]) == NULL) {
+			fprintf(stderr, "cixctl: the document has no section '%s'\n", want[i]);
+			json_free(doc);
+			return -1;
+		}
+	}
+	jw_init(w);
+	jw_obj_open(w);
+	for (i = 0; i < want_n; i++) {
+		jw_key(w, want[i]);
+		jw_value(w, json_object_get(doc, want[i]));
+	}
+	jw_obj_close(w);
+	json_free(doc);
+	return 0;
+}
+
+static int cmd_config(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sections[CLI_CONFIG_MAX_SECTIONS];
+	struct json_writer filtered;
+	struct cix_response r;
+	const char *file = NULL;
+	const char *sub;
+	char *content = NULL;
+	size_t content_len = 0;
+	const char *body;
+	int section_count = 0;
+	int applying;
+	int filtered_built = 0;
+	int rc;
+	int i;
+
+	if (argc < 1 || (strcmp(argv[0], "diff") != 0 && strcmp(argv[0], "apply") != 0)) {
+		fprintf(stderr, "usage: cixctl config diff|apply --file=PATH [--section=NAME ...]\n");
+		return 2;
+	}
+	sub = argv[0];
+	applying = strcmp(sub, "apply") == 0;
+	for (i = 1; i < argc; i++) {
+		if (strncmp(argv[i], "--file=", 7) == 0) {
+			file = argv[i] + 7;
+		} else if (strncmp(argv[i], "--section=", 10) == 0) {
+			if (section_count >= CLI_CONFIG_MAX_SECTIONS) {
+				fprintf(stderr, "cixctl: too many --section= flags (max %d)\n",
+				        CLI_CONFIG_MAX_SECTIONS);
+				return 2;
+			}
+			sections[section_count++] = argv[i] + 10;
+		} else {
+			fprintf(stderr, "cixctl: unknown config %s option '%s'\n", sub, argv[i]);
+			return 2;
+		}
+	}
+	if (file == NULL) {
+		fprintf(stderr,
+		        "usage: cixctl config %s --file=PATH [--section=NAME ...]\n"
+		        "       PATH holds a configuration document -- what `cixctl show "
+		        "running-config --json` writes.\n",
+		        sub);
+		return 2;
+	}
+	if (read_local_file(file, &content, &content_len) != 0) {
+		fprintf(stderr, "cixctl: could not read %s\n", file);
+		return 1;
+	}
+	body = content;
+	if (section_count > 0) {
+		if (config_filter_sections(content, content_len, sections, section_count,
+		                           &filtered) != 0) {
+			free(content);
+			return 1;
+		}
+		filtered_built = 1;
+		filtered.buf[filtered.len] = '\0';
+		body = filtered.buf;
+	}
+	if (applying)
+		rc = cix_client_request(c, CIX_API_applyConfig_METHOD, CIX_API_applyConfig, body, &r);
+	else
+		rc = cix_client_request(c, CIX_API_diffConfig_METHOD, CIX_API_diffConfig, body, &r);
+	free(content);
+	if (filtered_built)
+		jw_free(&filtered);
+	if (rc != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	/*
+	 * A refusal answers with the plan rather than a one-line error, so
+	 * that the reason arrives with the evidence for it -- print it the
+	 * same way and let the exit status carry the failure.
+	 */
+	if (r.status >= 400 && r.json != NULL && json_object_get(r.json, "sections") != NULL) {
+		emit(&r, json_mode, fmt_config_plan);
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_config_plan);
+}
+
 static int cmd_login(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *username = NULL;
@@ -17351,6 +17580,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_schedule(client, json_mode, argc, argv);
 	if (strcmp(cmd, "show") == 0)
 		return cmd_show(client, json_mode, argc, argv);
+	if (strcmp(cmd, "config") == 0)
+		return cmd_config(client, json_mode, argc, argv);
 
 	fprintf(stderr, "cixctl: unknown command '%s'\n", cmd);
 	print_usage(stderr);
