@@ -116,47 +116,41 @@
 #define PKG_VERSION_MAX 64
 #define PKG_URL_MAX 512
 #define PKG_SHA256_MAX 65
-/* Shared with main.c's own bootstrap-fetch mechanism (ADR-0065) -- the
- * exact same host-side curl binary every recipe source fetch already
- * uses, one real path, not two copies of the literal string. */
-#define PKG_CURL_BIN "/usr/bin/curl"
 /*
- * Stall guards every curl this daemon forks carries (#285).
+ * Stall guards every fetch this daemon performs carries (#285, #410).
  *
- * curl waits forever by default once a connection is established, so a
- * peer that accepts the TCP connection and then says nothing hangs the
- * fetch indefinitely. That is not hypothetical here: ftp.gnu.org did
- * exactly it to this site's egress for several days -- connected on
- * both 443 and 80, then answered nothing -- and a package job stuck in
+ * A connection can be accepted and then never answered, so a peer that
+ * accepts the TCP connection and then says nothing hangs the fetch
+ * indefinitely. That is not hypothetical here: ftp.gnu.org did exactly
+ * it to this site's egress for several days -- connected on both 443
+ * and 80, then answered nothing -- and a package job stuck in
  * `state: building` that neither completed nor failed has been seen on
  * 192.168.15.95.
  *
- * SPEED rather than a blanket --max-time, which is the important
- * choice. A hard total-time ceiling is wrong for the transfers that
- * matter most here: a 1.4 GB toolchain over a slow link is legitimate
- * and would be killed by any ceiling short enough to be useful against
- * a silent peer. --speed-limit/--speed-time abort only when throughput
- * STAYS below the floor, so a transfer that is genuinely progressing is
- * never interrupted no matter how long it takes, while one that has
- * stopped is cut off promptly. It is the precise shape of the failure.
+ * SPEED rather than a blanket max-time, which is the important choice.
+ * A hard total-time ceiling is wrong for the transfers that matter most
+ * here: a 1.4 GB toolchain over a slow link is legitimate and would be
+ * killed by any ceiling short enough to be useful against a silent
+ * peer. The low-speed guards abort only when throughput STAYS below
+ * the floor, so a transfer that is genuinely progressing is never
+ * interrupted no matter how long it takes, while one that has stopped
+ * is cut off promptly. It is the precise shape of the failure.
  *
  * 512 bytes/sec sustained for 60s is far under any real link and far
  * over "nothing", so it cannot fire on a slow-but-alive transfer. The
  * connect timeout bounds the handshake separately, since a peer that
  * never completes TLS never reaches the speed check at all.
  *
- * Callers that also pass --retry multiply these: the guards bound one
- * attempt, not the retry loop.
+ * Every curlfetch_opts a call site builds sets connect_timeout to this
+ * and, unless it has its own reason not to (kernel_releases_fetch_start
+ * uses a flat max_time instead -- a release index is a few KB, so any
+ * long duration is pathological rather than merely slow), low_speed_
+ * limit/low_speed_time too. A caller that also sets retry_count
+ * multiplies these: the guards bound one attempt, not the retry loop.
  */
-#define PKG_CURL_CONNECT_TIMEOUT "20"
-#define PKG_CURL_SPEED_LIMIT "512"
-#define PKG_CURL_SPEED_TIME "60"
-/* The six argv entries above, in the order every call site passes them.
- * A macro rather than six literals at ten sites: a guard that is easy
- * to forget on a new call site is a guard that will be forgotten. */
-#define PKG_CURL_STALL_GUARD_ARGS                                                                  \
-	"--connect-timeout", PKG_CURL_CONNECT_TIMEOUT, "--speed-limit", PKG_CURL_SPEED_LIMIT,      \
-	    "--speed-time", PKG_CURL_SPEED_TIME
+#define PKG_CURL_CONNECT_TIMEOUT_SECS 20L
+#define PKG_CURL_LOW_SPEED_LIMIT 512L
+#define PKG_CURL_LOW_SPEED_TIME_SECS 60L
 /* Space-separated capability names a recipe may request for its build
  * container (#224) -- room for a handful, not a policy surface. */
 #define PKG_BUILD_CAPS_MAX 128

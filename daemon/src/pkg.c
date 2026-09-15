@@ -1,5 +1,6 @@
 #include "libdirs.h"
 #include "pkg.h"
+#include "curlfetch.h"
 #include "osrelease.h"
 #include "version.h"
 #include "targz.h"
@@ -49,8 +50,6 @@ extern char **environ;
  * happened. Chosen outside curl's own range of documented codes. */
 #define PKG_FETCH_EXIT_PRECONDITION 91
 
-/* PKG_CURL_BIN now lives in pkg.h -- shared with main.c's own
- * bootstrap-fetch mechanism (ADR-0065), one real definition. */
 #define PKG_UNSQUASHFS_BIN "/usr/bin/unsquashfs"
 
 /* Left with headroom under LOGSTORE_MSG_MAX (4096) once the surrounding
@@ -6171,8 +6170,6 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			 * than after it writes a garbage "cache served ..." note.
 			 */
 			char sha_out[128] = "";
-			pid_t sub;
-			int status = -1;
 			int sha_ok = 0;
 			int sig_ok = 0;
 
@@ -6183,26 +6180,23 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			                        sizeof(artifact_path));
 			unlink(artifact_path);
 
-			sub = fork();
-			if (sub == 0) {
-				if (artifact_header[0] != '\0') {
-					char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL",
-						          PKG_CURL_STALL_GUARD_ARGS, "-H", artifact_header,
-						          "-o", artifact_path, artifact_url, NULL };
+			/* No inner fork any more (#410): this whole function
+			 * already runs inside start_fetch_for()'s own forked
+			 * child, and curlfetch_perform() is a synchronous library
+			 * call, not a subprocess needing its own fork+waitpid. */
+			{
+				struct curlfetch_opts opts;
 
-					execve(PKG_CURL_BIN, argv, environ);
-				} else {
-					char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL",
-						          PKG_CURL_STALL_GUARD_ARGS, "-o", artifact_path,
-						          artifact_url, NULL };
-
-					execve(PKG_CURL_BIN, argv, environ);
-				}
-				_exit(127);
+				memset(&opts, 0, sizeof(opts));
+				opts.url = artifact_url;
+				opts.path = artifact_path;
+				opts.header1 = artifact_header[0] != '\0' ? artifact_header : NULL;
+				opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
+				opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
+				opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
+				if (curlfetch_perform(&opts, NULL, NULL, 0) == 0)
+					sha_ok = pkg_run_capture_sha256(artifact_path, sha_out, sizeof(sha_out)) == 0;
 			}
-			if (sub > 0 && waitpid(sub, &status, 0) == sub && WIFEXITED(status) &&
-			    WEXITSTATUS(status) == 0)
-				sha_ok = pkg_run_capture_sha256(artifact_path, sha_out, sizeof(sha_out)) == 0;
 
 			/*
 			 * The signature gate (ADR-0279).
@@ -6226,31 +6220,20 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 				char sig_url[832];
 				char comment[PKG_NAME_MAX + PKG_VERSION_MAX + 96];
 				char want[PKG_NAME_MAX + PKG_VERSION_MAX + 96];
-				pid_t ssub;
-				int sstatus = -1;
+				struct curlfetch_opts sig_opts;
 
 				snprintf(sig_path, sizeof(sig_path), "%s.minisig", artifact_path);
 				snprintf(sig_url, sizeof(sig_url), "%s.minisig", artifact_url);
 				unlink(sig_path);
-				ssub = fork();
-				if (ssub == 0) {
-					if (artifact_header[0] != '\0') {
-						char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL",
-							          PKG_CURL_STALL_GUARD_ARGS, "-H", artifact_header,
-							          "-o", sig_path, sig_url, NULL };
 
-						execve(PKG_CURL_BIN, argv, environ);
-					} else {
-						char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL",
-							          PKG_CURL_STALL_GUARD_ARGS, "-o", sig_path, sig_url,
-							          NULL };
-
-						execve(PKG_CURL_BIN, argv, environ);
-					}
-					_exit(127);
-				}
-				if (ssub > 0 && waitpid(ssub, &sstatus, 0) == ssub && WIFEXITED(sstatus) &&
-				    WEXITSTATUS(sstatus) == 0 &&
+				memset(&sig_opts, 0, sizeof(sig_opts));
+				sig_opts.url = sig_url;
+				sig_opts.path = sig_path;
+				sig_opts.header1 = artifact_header[0] != '\0' ? artifact_header : NULL;
+				sig_opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
+				sig_opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
+				sig_opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
+				if (curlfetch_perform(&sig_opts, NULL, NULL, 0) == 0 &&
 				    releasekey_verify_file(artifact_path, sig_path, g_trusted_keys_dir, comment,
 				                            sizeof(comment)) == RELEASEKEY_OK) {
 					snprintf(want, sizeof(want), "cix pkg %s@%s sha256=%s", recipe.name,
@@ -6396,43 +6379,37 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 
 		for (j = 0; j < recipe.source_count; j++) {
 			char src_tarball_path[PATH_MAX];
-			pid_t sub;
-			int status;
-			int errpipe[2];
+			struct curlfetch_opts opts;
+			char curl_err[256];
 			/*
-			 * --retry/--retry-all-errors/-C -: large sources
+			 * retry_count/retry_all_errors/resume: large sources
 			 * (e.g. kernel.recipe's ~150MB tarball) hit real,
 			 * reproducible mid-transfer connection resets in
 			 * this project's own dev sandbox (ADR-0056) --
 			 * confirmed independent of HTTP version (both
 			 * default HTTP/2 and --http1.1 reset at different
-			 * offsets). Plain --retry alone is not enough: curl
-			 * only auto-retries a curated list of transient
-			 * conditions (timeouts, HTTP 5xx/408/429) and does
-			 * NOT cover a raw connection reset (curl exit 56)
-			 * by default -- confirmed the hard way when a
-			 * --retry-only run still failed outright on the
-			 * first reset. --retry-all-errors (curl >= 7.71)
-			 * widens that to every failure. sha256 verification
-			 * downstream in pkg_fetch_completed() still catches
-			 * any corrupt resume, so this only ever helps, never
-			 * masks a bad download.
+			 * offsets). A curated retry set alone is not enough:
+			 * it covers timeouts and HTTP 5xx/408/429, and does
+			 * NOT cover a raw connection reset by default --
+			 * confirmed the hard way when a curated-only run
+			 * still failed outright on the first reset.
+			 * retry_all_errors widens that to every failure.
+			 * sha256 verification downstream in
+			 * pkg_fetch_completed() still catches any corrupt
+			 * resume, so this only ever helps, never masks a bad
+			 * download.
 			 */
-			char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", PKG_CURL_STALL_GUARD_ARGS,
-				          "--retry", "8", "--retry-all-errors", "--retry-delay", "3",
-				          "-C", "-", "-o", src_tarball_path, recipe.source[j], NULL };
-
 			snprintf(src_tarball_path, sizeof(src_tarball_path), "%s/%s-%s-%d.src",
 			         g_sources_dir, recipe.name, recipe.version, j);
 
 			/*
-			 * -C - only makes sense resuming *this* attempt's
+			 * resume only makes sense continuing *this* attempt's
 			 * own partial download (recovering from a transient
-			 * mid-transfer reset within curl's own retry loop
-			 * above). A stale, already-fully-downloaded file left
-			 * over from an earlier, separate fetch attempt at
-			 * this same fixed path makes curl request a byte
-			 * range starting past EOF, which the server correctly
+			 * mid-transfer reset within curlfetch_perform()'s own
+			 * retry loop). A stale, already-fully-downloaded file
+			 * left over from an earlier, separate fetch attempt at
+			 * this same fixed path makes it request a byte range
+			 * starting past EOF, which the server correctly
 			 * answers with HTTP 416 -- confirmed the hard way
 			 * (ADR-0056): every retry hit the identical 416 since
 			 * the file never changed. Starting every fresh
@@ -6441,59 +6418,34 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			 */
 			unlink(src_tarball_path);
 
-			/*
-			 * curl's own -S text (whatever real reason it failed
-			 * for -- unsupported protocol, TLS, DNS, a bad status
-			 * code) is the only thing that can tell those apart;
-			 * see fetch_error_sidecar_path()'s own comment. Best
-			 * effort only: if pipe2() itself fails, fall back to
-			 * the old behavior (curl inherits this process's own
-			 * stderr) rather than aborting the fetch over a
-			 * diagnostics-only setup failure.
-			 */
-			if (pipe2(errpipe, O_CLOEXEC) != 0) {
-				errpipe[0] = -1;
-				errpipe[1] = -1;
-			}
+			memset(&opts, 0, sizeof(opts));
+			opts.url = recipe.source[j];
+			opts.path = src_tarball_path;
+			opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
+			opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
+			opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
+			opts.retry_count = 8;
+			opts.retry_all_errors = 1;
+			opts.retry_delay = 3;
+			opts.resume = 1;
+			if (curlfetch_perform(&opts, NULL, curl_err, sizeof(curl_err)) != 0) {
+				int fd;
 
-			sub = fork();
-			if (sub < 0) {
-				if (errpipe[0] >= 0)
-					close(errpipe[0]);
-				if (errpipe[1] >= 0)
-					close(errpipe[1]);
-				_exit(1);
-			}
-			if (sub == 0) {
-				if (errpipe[1] >= 0)
-					dup2(errpipe[1], STDERR_FILENO);
-				execve(PKG_CURL_BIN, argv, environ);
-				_exit(127);
-			}
-			if (errpipe[1] >= 0)
-				close(errpipe[1]);
-			if (waitpid(sub, &status, 0) != sub || !WIFEXITED(status) ||
-			    WEXITSTATUS(status) != 0) {
-				if (errpipe[0] >= 0) {
-					char errbuf[512];
-					ssize_t n = read(errpipe[0], errbuf, sizeof(errbuf) - 1);
-					int fd;
+				/* recipe.source[j] can carry the real repo token
+				 * (gitea's token-in-URL convention) after {{REPO_
+				 * TOKEN}} substitution -- redact before this ever
+				 * reaches a sidecar file, same discipline as
+				 * pkg_sync_start's own child (#405/#410). */
+				redact_repo_token(curl_err, sizeof(curl_err));
+				fd = open(fetch_err_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+				if (fd >= 0) {
+					ssize_t written = write(fd, curl_err, strlen(curl_err));
 
-					close(errpipe[0]);
-					if (n > 0) {
-						errbuf[n] = '\0';
-						fd = open(fetch_err_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-						if (fd >= 0) {
-							ssize_t written = write(fd, errbuf, (size_t)n);
-							(void)written;
-							close(fd);
-						}
-					}
+					(void)written;
+					close(fd);
 				}
 				_exit(1);
 			}
-			if (errpipe[0] >= 0)
-				close(errpipe[0]);
 		}
 		_exit(0);
 	}
@@ -10764,11 +10716,22 @@ int pkg_sync_set_refetch(const char *name, const char *version)
 	return 0;
 }
 
+/* Sidecar the child writes its curlfetch_perform() error to on failure
+ * (#410) -- pkg_sync_fetch_done() otherwise has only an exit code. */
+static void sync_fetch_err_path(char *out, size_t out_size)
+{
+	char tarball_path[PATH_MAX];
+
+	sync_state_path(tarball_path, sizeof(tarball_path));
+	snprintf(out, out_size, "%s.err", tarball_path);
+}
+
 enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd)
 {
 	char url[PKGREPO_URL_MAX + PKGREPO_TOKEN_MAX + 64];
 	char header[320];
 	char tarball_path[PATH_MAX];
+	char err_path[PATH_MAX];
 	pid_t pid;
 	int pidfd;
 
@@ -10779,21 +10742,44 @@ enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd)
 
 	sync_state_path(tarball_path, sizeof(tarball_path));
 	unlink(tarball_path);
+	sync_fetch_err_path(err_path, sizeof(err_path));
+	unlink(err_path);
 
 	pid = fork();
 	if (pid < 0)
 		return PKG_ERR_SPAWN_FAILED;
 	if (pid == 0) {
-		if (header[0] != '\0') {
-			char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", PKG_CURL_STALL_GUARD_ARGS,
-				          "-H", header, "-o", tarball_path, url, NULL };
-			execve(PKG_CURL_BIN, argv, environ);
-		} else {
-			char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", PKG_CURL_STALL_GUARD_ARGS,
-				          "-o", tarball_path, url, NULL };
-			execve(PKG_CURL_BIN, argv, environ);
+		struct curlfetch_opts opts;
+		char curl_err[256];
+
+		memset(&opts, 0, sizeof(opts));
+		opts.url = url;
+		opts.path = tarball_path;
+		opts.header1 = header[0] != '\0' ? header : NULL;
+		opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
+		opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
+		opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
+		if (curlfetch_perform(&opts, NULL, curl_err, sizeof(curl_err)) != 0) {
+			int efd;
+
+			/* url carries the real repo token in its own userinfo
+			 * (gitea's token-in-URL convention, above) -- a libcurl
+			 * error string can legitimately echo the URL back
+			 * (CURLE_URL_MALFORMAT and friends), so this must be
+			 * redacted before it reaches a file at all, the same
+			 * "both sides of persistence" discipline #405/#60 already
+			 * established for recipe content. */
+			redact_repo_token(curl_err, sizeof(curl_err));
+			efd = open(err_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+			if (efd >= 0) {
+				ssize_t ignored = write(efd, curl_err, strlen(curl_err));
+
+				(void)ignored;
+				close(efd);
+			}
+			_exit(1);
 		}
-		_exit(127);
+		_exit(0);
 	}
 
 	pidfd = sys_pidfd_open(pid, 0);
@@ -11052,9 +11038,25 @@ int pkg_sync_fetch_done(int exit_status)
 	g_sync_pid = -1;
 	sync_state_path(tarball_path, sizeof(tarball_path));
 	if (exit_status != 0) {
+		char err_path[PATH_MAX];
+		char curl_err[256] = "";
+		int efd;
+
+		sync_fetch_err_path(err_path, sizeof(err_path));
+		efd = open(err_path, O_RDONLY);
+		if (efd >= 0) {
+			ssize_t n = read(efd, curl_err, sizeof(curl_err) - 1);
+
+			curl_err[n > 0 ? n : 0] = '\0';
+			close(efd);
+			unlink(err_path);
+		}
 		g_sync_last_state = SYNC_FAILED;
-		snprintf(g_sync_last_error, sizeof(g_sync_last_error), "fetch failed (curl exit %d)",
-		         exit_status);
+		if (curl_err[0] != '\0')
+			snprintf(g_sync_last_error, sizeof(g_sync_last_error), "fetch failed: %s", curl_err);
+		else
+			snprintf(g_sync_last_error, sizeof(g_sync_last_error), "fetch failed (exit %d)",
+			         exit_status);
 		unlink(tarball_path);
 		return 0;
 	}
@@ -12902,36 +12904,41 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 			_exit(PKG_PUSH_EXIT_SHA_FAILED);
 		snprintf(sha_header, sizeof(sha_header), "X-Cix-Sha256: %s", sha);
 		{
-			/* --upload-file is a real PUT and sets Content-Length
-			 * from the file itself, which is what the receiver
-			 * requires (it refuses chunked encoding). The HTTP status
-			 * is written to stdout, redirected to the status file
-			 * below, so the reaper can report what the server said
-			 * rather than a bare exit code. */
-			char *argv[] = { (char *)PKG_CURL_BIN,
-				         (char *)"-s",
-				         PKG_CURL_STALL_GUARD_ARGS,
-				         (char *)"--upload-file",
-				         tarball,
-				         (char *)"-H",
-				         auth_header,
-				         (char *)"-H",
-				         sha_header,
-				         (char *)"--output",
-				         (char *)"/dev/null",
-				         (char *)"--write-out",
-				         (char *)"%{http_code}",
-				         url,
-				         NULL };
-			int sfd = open(status_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+			/* A real PUT with Content-Length set from the file
+			 * itself (CURLOPT_INFILESIZE_LARGE inside curlfetch_
+			 * perform()), which is what the receiver requires (it
+			 * refuses chunked encoding) -- #410. The HTTP status is
+			 * written to the status file below regardless of what
+			 * libcurl itself calls success, so the reaper can report
+			 * what the server said rather than a bare exit code, the
+			 * same contract --write-out "%{http_code}" gave it. */
+			struct curlfetch_opts opts;
+			long http_status = 0;
+			int upload_rc;
+			int sfd;
 
+			memset(&opts, 0, sizeof(opts));
+			opts.url = url;
+			opts.path = tarball;
+			opts.upload = 1;
+			opts.header1 = auth_header;
+			opts.header2 = sha_header;
+			opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
+			opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
+			opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
+			upload_rc = curlfetch_perform(&opts, &http_status, NULL, 0);
+
+			sfd = open(status_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 			if (sfd >= 0) {
-				dup2(sfd, STDOUT_FILENO);
+				char buf[16];
+				int n = snprintf(buf, sizeof(buf), "%ld", http_status);
+				ssize_t ignored = write(sfd, buf, (size_t)n);
+
+				(void)ignored;
 				close(sfd);
 			}
-			execve(PKG_CURL_BIN, argv, environ);
+			_exit(upload_rc == 0 ? 0 : 1);
 		}
-		_exit(127);
 	}
 	pidfd = sys_pidfd_open(pid, 0);
 	if (pidfd < 0) {

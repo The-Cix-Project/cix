@@ -96,14 +96,23 @@ static const struct budget g_budgets[] = {
 	 * The three genuinely blocking waits the first draft of that
 	 * primitive had were NOT in budget, this gate caught those too, and
 	 * they were removed rather than accommodated. */
-	{ "daemon/src/main.c", 24, "pidfd callbacks + double-fork intermediates" },
+	/* 24 -> 23 (#410): fetch_update_image() no longer forks a curl
+	 * child to wait on at all -- curlfetch_perform() is a synchronous
+	 * library call, so the fork()+waitpid() pair around it had nothing
+	 * left to isolate. */
+	{ "daemon/src/main.c", 23, "pidfd callbacks + double-fork intermediates" },
 	/* 10 -> 11 for ADR-0279's signature fetch: the artifact tier now
 	 * pulls <artifact>.minisig alongside the artifact and waits for
 	 * that curl. In budget for the same reason every other one in this
 	 * file is -- it runs inside the FORKED fetch child (start_fetch_for
 	 * has already forked by then), so no request handler and no reactor
 	 * pass can reach it, and the wait it blocks is the child's own. */
-	{ "daemon/src/pkg.c", 9, "build helpers and fetch intermediates; #352 dropped one (pkg_run_capture_sha256(), no more forked sha256sum), #411 dropped another (tarball_has_common_top_dir(), no more forked tar -tf)" },
+	/* 9 -> 6 (#410): start_fetch_for()'s own artifact-sha, signature and
+	 * main-source-tarball fetches each used to fork a curl child and
+	 * wait on it (a double-fork intermediate, in budget); all three now
+	 * call curlfetch_perform() directly inside the function's own
+	 * already-forked child, with no inner fork left to wait on. */
+	{ "daemon/src/pkg.c", 6, "build helpers and fetch intermediates; #352 dropped one (pkg_run_capture_sha256(), no more forked sha256sum), #411 dropped another (tarball_has_common_top_dir(), no more forked tar -tf), #410 dropped three more (start_fetch_for()'s curl children, replaced by in-process curlfetch_perform())" },
 	{ "daemon/src/targz.c", 4, "tar/gzip pipeline, bounded by the archive" },
 	{ "daemon/src/diskpart.c", 4, "sfdisk/blkid, bounded external tools" },
 	{ "daemon/src/exec.c", 2, "namespace-join intermediates" },
@@ -129,8 +138,12 @@ static const struct budget g_budgets[] = {
  * same wait the per-file entry above explains. Lowered 61 -> 58 for
  * #351/#352 (websocket.c's two forked-openssl waits and pkg.c's
  * forked-sha256sum wait), then 58 -> 57 for #411 (pkg.c's forked
- * tar -tf listing wait, replaced by libarchive's own header stream). */
-#define TOTAL_ALLOWED 57
+ * tar -tf listing wait, replaced by libarchive's own header stream),
+ * then 57 -> 53 for #410 (main.c's fetch_update_image() dropped one,
+ * pkg.c's start_fetch_for() dropped three -- every remaining curl
+ * subprocess across both files replaced by in-process libcurl calls
+ * via curlfetch_perform()). */
+#define TOTAL_ALLOWED 53
 
 static int is_comment(const char *line)
 {
