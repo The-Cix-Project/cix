@@ -33,6 +33,15 @@
  *
  * Crude on purpose, in the spirit of test_api_surfaces: it looks for
  * the text, not for syntax. There is no parse to get wrong.
+ *
+ * A SECOND COUNTED SET, same idea (#402/#474): a blocking wait is not
+ * the only way to stop the reactor. `overlay_upperdir_size()` is an
+ * nftw() walk, O(files) and unbounded, and three request paths called
+ * it inline -- one of them, container stats, on every request with no
+ * shortcut, on a path the dashboard polls. That is a stalled control
+ * plane on a pid-1 daemon with no shell behind it, for as long as the
+ * walk takes. The call sites are counted here so a fourth is a
+ * deliberate act rather than an accident.
  */
 #include <stdio.h>
 #include <string.h>
@@ -174,6 +183,87 @@ static int count_blocking_waits(const char *path, int *found)
 	return 0;
 }
 
+/*
+ * Every place that walks a tree with overlay_upperdir_size(), and
+ * whether it does so on the reactor. Measured 2026-09-15.
+ *
+ * Mentions in comments count too -- the scan is textual, and a number
+ * that moved because prose moved is a number someone has to look at,
+ * which is the point. Each entry below says what its count is made of.
+ */
+struct walk_budget {
+	const char *path;
+	int allowed;
+	const char *why;
+};
+
+static const struct walk_budget g_walk_budgets[] = {
+	{ "daemon/src/main.c", 2,
+	  "one call, and it is the RIGHT one: container_disk_measure_work() runs in a "
+	  "helper child (ADR-0278), off the reactor. Plus one mention in that block's own "
+	  "comment." },
+	{ "daemon/src/api_volume.c", 2,
+	  "one call on the reactor (#402) and one comment. GET /volumes/{name}/usage walks "
+	  "only as a FALLBACK, when the btrfs qgroup query fails -- so on the platform's own "
+	  "substrate it does not run at all, and #161 is retiring the substrate where it "
+	  "would. Contained rather than fixed, deliberately: fixing it properly needs either "
+	  "a cache like the one container stats grew, or deferred HTTP responses, which this "
+	  "daemon does not have." },
+	{ "daemon/src/api_image.c", 1,
+	  "one call on the reactor: `image gc --measure` walks every unreferenced image "
+	  "version in one request. An operator-initiated, deliberately expensive call rather "
+	  "than something polled, and it is bounded by what gc found -- but it is still the "
+	  "reactor, and it is counted so that stays visible." },
+	{ "src/overlay.c", 2, "the definition and its own comment, not calls." },
+};
+
+#define WALK_BUDGET_COUNT ((int)(sizeof(g_walk_budgets) / sizeof(g_walk_budgets[0])))
+
+static int count_walks(const char *path)
+{
+	char line[4096];
+	FILE *f = fopen(path, "r");
+	int n = 0;
+
+	if (f == NULL)
+		return -1;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		if (strstr(line, "overlay_upperdir_size(") != NULL)
+			n++;
+	}
+	fclose(f);
+	return n;
+}
+
+static int check_walk_budgets(void)
+{
+	int failures = 0;
+	int i;
+
+	for (i = 0; i < WALK_BUDGET_COUNT; i++) {
+		int n = count_walks(g_walk_budgets[i].path);
+
+		if (n < 0) {
+			fprintf(stderr, "FAIL: cannot read %s\n", g_walk_budgets[i].path);
+			failures++;
+			continue;
+		}
+		if (n != g_walk_budgets[i].allowed) {
+			fprintf(stderr,
+			        "FAIL: %s mentions overlay_upperdir_size() %d times, expected %d.\n"
+			        "      That walk is O(files) and unbounded. What the expected count "
+			        "is made of: %s\n"
+			        "      A NEW CALL on the reactor stalls the control plane for as long "
+			        "as the tree takes to walk; measure it in a helper child instead "
+			        "(container_disk_measure_work() is the worked example).\n",
+			        g_walk_budgets[i].path, n, g_walk_budgets[i].allowed,
+			        g_walk_budgets[i].why);
+			failures++;
+		}
+	}
+	return failures;
+}
+
 int main(void)
 {
 	int i, ok = 1, total = 0;
@@ -222,9 +312,13 @@ int main(void)
 		ok = 0;
 	}
 
+	if (check_walk_budgets() != 0)
+		ok = 0;
+
 	if (!ok)
 		return 1;
-	printf("test_blocking_waits: %d blocking waits across %d files, all within budget\n",
-	       total, BUDGET_COUNT);
+	printf("test_blocking_waits: %d blocking waits across %d files, all within budget; "
+	       "%d files counted for unbounded tree walks\n",
+	       total, BUDGET_COUNT, WALK_BUDGET_COUNT);
 	return 0;
 }

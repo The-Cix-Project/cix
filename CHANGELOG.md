@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Container stats no longer walks the filesystem on the event loop (#474, ADR-0293)
+
+`GET /containers/{name}/stats` called `overlay_upperdir_size()` — an `nftw()` walk, O(files) and unbounded — **inline, on every request, with no shortcut**, on a path the dashboard polls. `cixd` is pid 1 on a host with no shell, and its one event loop is the only way in: for as long as a pass is inside that walk, nothing is served. Found while investigating #402, which named the *least*-exercised of three call sites.
+
+**The fix #402 proposed is not available, and establishing that is most of the work.** Running the walk through `helper_run()` (ADR-0278) needs the response written when the helper finishes, and this daemon cannot defer one — `dispatch()` is followed immediately by `client_conn_finish()`, which drains whatever was buffered and closes. A handler that returns without writing loses its connection; there is no pending-response state (the WebSocket upgrades return early and *repurpose* the conn, which is a different mechanism). Adding one is a new connection state in the core of a process where a crash is a kernel panic — possibly worth doing one day, not the price of fixing a stats field.
+
+So the measurement is decoupled from the request instead: a request serves the last figure and starts a new measurement when that one has aged out. The walk runs in a `helper_run()` child, which is what ADR-0278 is for, and the single number comes back through a pipe because a fork sees a copy of every global and can change none the parent will read. One measurement per container in flight; the freshness window is deliberately longer than a dashboard poll, so **polling harder does not mean walking harder**.
+
+**Contract change, taken deliberately:** `disk.upper_bytes` is now `null` until the first measurement lands (normally one poll), and `disk.upper_measured_at` says when the figure was taken. Reporting `0` for "not measured yet" was the alternative and is a lie a caller cannot detect — it reads as an empty container. The dashboard shows "measuring…" rather than a fabricated number. Staleness is not new here: `GET /volumes/{name}/usage` on btrfs already reads a qgroup that settles ~30 s behind; what changes is that the age is stated.
+
+**The other two walks are contained rather than converted,** and said out loud instead of quietly left: `GET /volumes/{name}/usage` (#402) walks only as a fallback when the btrfs qgroup query fails, so on the platform's own substrate it never runs and #161 is retiring the substrate where it would; `image gc --measure` is an operator asking once for an expensive thing. Both are now counted by `test_blocking_waits`, alongside the blocking waits it already counts, so a fourth caller is a deliberate act that shows up in review.
+
 ### Recipes stay out of config apply, because they already have a better mechanism (#473)
 
 `image_recipes` and `container_recipes` were the two `manual` sections whose stated reason was weakest — deleting a recipe destroys no data and stops no process, unlike a volume or a container. Investigated, and the answer is still no, for a reason that turns out to be stronger than the original one.
