@@ -9726,6 +9726,10 @@ async function removePkiCert(name) {
 function renderPackagesList() {
 	const body = document.getElementById("packages-body");
 
+	/* #432: an unchanged table is left alone. Blanking and rebuilding
+	 * it on every tick costs the reader their scroll position. */
+	if (unchangedAndRendered(body, "packages", cache.pkgList))
+		return;
 	body.textContent = "";
 	if (cache.pkgList.length === 0) {
 		const row = document.createElement("tr");
@@ -9824,6 +9828,11 @@ function renderRecipesList() {
 
 	const names = [...groups.keys()].filter((n) => n.toLowerCase().includes(filter));
 
+	/* #432: the signature is the filtered NAMES plus the recipe rows --
+	 * the names alone would miss a new version published for a name
+	 * already listed, which is exactly what this table exists to show. */
+	if (unchangedAndRendered(body, "recipes", { names: names, rows: cache.pkgRecipes }))
+		return;
 	body.textContent = "";
 	if (names.length === 0) {
 		const row = document.createElement("tr");
@@ -10221,6 +10230,12 @@ function renderImageRecipesTable() {
 	const filter = document.getElementById("recipes-image-search").value.trim().toLowerCase();
 	const rows = cache.imageRecipes.filter((r) => r.name.toLowerCase().includes(filter));
 
+	/* #432: unchanged tables are left alone -- but the FILTER is an
+	 * input to this render as much as the data is, so it goes in the
+	 * signature. Guarding on the payload alone would freeze the table
+	 * while someone typed in the search box. */
+	if (unchangedAndRendered(body, "image-recipes", { filter: filter, rows: rows }))
+		return;
 	body.textContent = "";
 	if (rows.length === 0) {
 		const row = document.createElement("tr");
@@ -10315,6 +10330,12 @@ function renderContainerRecipesTable() {
 	const filter = document.getElementById("recipes-container-search").value.trim().toLowerCase();
 	const rows = cache.containerRecipes.filter((r) => r.name.toLowerCase().includes(filter));
 
+	/* #432: unchanged tables are left alone -- but the FILTER is an
+	 * input to this render as much as the data is, so it goes in the
+	 * signature. Guarding on the payload alone would freeze the table
+	 * while someone typed in the search box. */
+	if (unchangedAndRendered(body, "container-recipes", { filter: filter, rows: rows }))
+		return;
 	body.textContent = "";
 	if (rows.length === 0) {
 		const row = document.createElement("tr");
@@ -11817,6 +11838,10 @@ async function removeRoute(route) {
 function renderRoutesList() {
 	const tbody = document.getElementById("routes-body");
 
+	/* #432: an unchanged table is left alone. Blanking and rebuilding
+	 * it on every tick costs the reader their scroll position. */
+	if (unchangedAndRendered(tbody, "routes", cache.routes))
+		return;
 	tbody.textContent = "";
 	if (cache.routes.length === 0) {
 		tbody.innerHTML = '<tr><td colspan="4" class="empty">No routes.</td></tr>';
@@ -11859,6 +11884,10 @@ async function removeSysctl(key) {
 function renderSysctlList() {
 	const tbody = document.getElementById("sysctl-body");
 
+	/* #432: an unchanged table is left alone. Blanking and rebuilding
+	 * it on every tick costs the reader their scroll position. */
+	if (unchangedAndRendered(tbody, "sysctl", cache.sysctls))
+		return;
 	tbody.textContent = "";
 	if (cache.sysctls.length === 0) {
 		tbody.innerHTML = '<tr><td colspan="3" class="empty">No sysctls persisted.</td></tr>';
@@ -12062,6 +12091,10 @@ async function removeKmodConfig(name) {
 function renderKmodList() {
 	const tbody = document.getElementById("kmod-body");
 
+	/* #432: an unchanged table is left alone. Blanking and rebuilding
+	 * it on every tick costs the reader their scroll position. */
+	if (unchangedAndRendered(tbody, "kmod", cache.kmodModules))
+		return;
 	tbody.textContent = "";
 	if (cache.kmodModules.length === 0) {
 		tbody.innerHTML = '<tr><td colspan="5" class="empty">No modules loaded.</td></tr>';
