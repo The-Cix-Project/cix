@@ -8965,6 +8965,7 @@ async function refreshEsp() {
 		}
 		renderEspEntries(data);
 		await refreshBootNext();
+		await refreshBootManager();
 	} catch (e) {
 		/* Best-effort, same posture as the other config panels. */
 	}
@@ -9052,6 +9053,65 @@ document.getElementById("esp-loader-form").addEventListener("submit", async (eve
 		 * the whole point of the endpoint, so surface it as-is rather
 		 * than a generic failure. */
 		showStatus("Failed to save loader config: " + e.message, true);
+	}
+});
+
+/*
+ * The ESP's own \EFI\BOOT\BOOTX64.EFI (#467/#468, ADR-0290). Unlike
+ * every other control on this page, there is no per-slot fallback for
+ * what this writes -- both A/B slots share the one boot manager binary
+ * -- so this is the one action on this tab styled and confirmed as
+ * destructive even though the daemon itself keeps a same-directory
+ * backup (issue #468: "an explicit, hard-to-misclick confirm step
+ * given the stakes ADR-0290 describes").
+ */
+async function refreshBootManager() {
+	const body = document.getElementById("boot-manager-body");
+
+	try {
+		const r = await apiRequest("GET", CIX_API.getBootManager());
+
+		body.textContent = "";
+		body.appendChild(fieldBlock("Size", r.size + " bytes"));
+		body.appendChild(fieldBlock("SHA-256", r.sha256));
+		body.appendChild(fieldBlock("Backup exists", r.has_backup ? "yes" : "no"));
+	} catch (e) {
+		body.textContent = "";
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 2;
+		cell.className = "empty";
+		cell.textContent = "No boot manager binary found at the expected ESP path.";
+		row.appendChild(cell);
+		body.appendChild(row);
+	}
+}
+
+document.getElementById("boot-manager-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const path = document.getElementById("boot-manager-path").value.trim();
+
+	if (path === "") {
+		showStatus("Give a path to install from", true);
+		return;
+	}
+	if (!confirm("Install " + path + " as this host's boot manager?\n\n" +
+	             "This is the one file both A/B slots share -- there is no per-slot " +
+	             "fallback if it is wrong. It does not reboot; you choose when to.")) {
+		return;
+	}
+
+	try {
+		const r = await apiRequest("POST", CIX_API.setBootManager(), { path: path });
+
+		clearStatus();
+		showStatus("Boot manager installed (" + r.size + " bytes, sha256 " +
+		           r.sha256.slice(0, 16) + "…) -- reboot separately to exercise it", false);
+		await refreshBootManager();
+	} catch (e) {
+		showStatus("Failed to install boot manager: " + e.message, true);
 	}
 });
 
