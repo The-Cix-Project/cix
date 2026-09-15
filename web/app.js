@@ -6498,12 +6498,30 @@ function renderDisks() {
 	const body = document.getElementById("disks-body");
 	const disks = wholeDisks();
 
-	/* #432: the rows carry each disk's assigned role, so the roles are
-	 * an input to this render as much as the disks are -- a signature
-	 * over the disks alone would leave a stale role on screen after an
-	 * assignment changed. */
-	if (unchangedAndRendered(body, "disks", { disks: disks, roles: cache.storageRoles }))
-		return;
+	/*
+	 * #432, and this table is the one the plain guard could not fix.
+	 * Its payload moves on every tick by itself -- measured on
+	 * 192.168.15.95: reads_completed 230 -> 234, sectors_read
+	 * 4480 -> 4560, io_time_ms 268 -> 272 across two ticks with the
+	 * host otherwise idle -- and those counters are DISPLAYED, so the
+	 * rows must show the new numbers. The guard was right not to fire
+	 * and the table was rebuilt anyway.
+	 *
+	 * So the question the signature asks is narrowed to the one it can
+	 * answer usefully: has anything STRUCTURAL changed? If not, the
+	 * moving numbers are written into their own cells and no row is
+	 * touched, which is what preserves the scroll position. The roles
+	 * stay in the signature -- a row shows its disk's assigned role, so
+	 * an assignment must still redraw.
+	 */
+	if (unchangedAndRendered(body, "disks",
+	                         { disks: diskStructuralSignature(disks),
+	                           roles: cache.storageRoles })) {
+		if (updateDiskLiveCells(body, disks))
+			return;
+		/* A row went missing under us -- fall through and rebuild
+		 * rather than leave the table half-stale. */
+	}
 	body.textContent = "";
 	if (disks.length === 0) {
 		const row = document.createElement("tr");
@@ -6520,12 +6538,87 @@ function renderDisks() {
 		body.appendChild(diskListRow(d));
 }
 
+/*
+ * The two cells of a disk row that move on their own (#432).
+ *
+ * A disk record carries live counters -- the kernel's I/O totals and
+ * statvfs usage -- so this table's payload genuinely changes on almost
+ * every 2s tick. The guard every other table uses cannot help here:
+ * the data really did change and the rows really must show the new
+ * numbers. But REBUILDING the tbody to do it is what costs the reader
+ * their scroll position, so these two cells are written in place and
+ * the rest of the row is left untouched.
+ *
+ * One definition of each cell's text, shared by diskListRow() and
+ * updateDiskLiveCells(): two ways to render the same cell is how a
+ * live update and a rebuilt row come to disagree.
+ */
+const DISK_VOLATILE_FIELDS = ["used_bytes", "free_bytes", "reads_completed",
+                              "writes_completed", "sectors_read", "sectors_written",
+                              "io_time_ms"];
+
+function diskUsageText(d) {
+	return d.mounted
+		? formatBytes(d.used_bytes) + " used / " + formatBytes(d.free_bytes) + " free"
+		: "-";
+}
+
+function diskIoText(d) {
+	return "r=" + d.reads_completed + " w=" + d.writes_completed;
+}
+
+/*
+ * The rows' payload minus the fields that move by themselves, so the
+ * signature answers "has anything STRUCTURAL changed" -- a disk added
+ * or removed, a role assigned, a filesystem appearing, a mount.
+ *
+ * Subtractive rather than a positive list of the fields the static
+ * cells use: forgetting to list a new volatile field here means the
+ * table rebuilds too often, which is merely the old behaviour, where
+ * forgetting to add a new static field to a positive list would leave
+ * a stale cell on screen.
+ */
+function diskStructuralSignature(disks) {
+	return disks.map((d) => {
+		const copy = {};
+
+		for (const k of Object.keys(d))
+			if (!DISK_VOLATILE_FIELDS.includes(k))
+				copy[k] = d[k];
+		return copy;
+	});
+}
+
+/*
+ * Writes the moving numbers straight into the cells diskListRow()
+ * tagged, touching no structure. Returns false when a row it expected
+ * is missing, so the caller falls back to a full rebuild rather than
+ * silently leaving the table stale.
+ */
+function updateDiskLiveCells(body, disks) {
+	for (const d of disks) {
+		const row = body.querySelector('tr[data-disk="' + CSS.escape(d.name) + '"]');
+		const usage = row && row.querySelector('[data-cell="usage"]');
+		const io = row && row.querySelector('[data-cell="io"]');
+
+		if (!usage || !io)
+			return false;
+		usage.textContent = diskUsageText(d);
+		io.textContent = diskIoText(d);
+	}
+	return true;
+}
+
 /* One row in the disks list: identity and state only. Every action
  * lives on the disk's own page, so a destructive button is never one
  * stray click away in a list. */
 function diskListRow(d) {
 	const row = document.createElement("tr");
 	const role = storageRoleFor(d.name);
+
+	/* Tagged so updateDiskLiveCells() can find this row and its two
+	 * moving cells without rebuilding anything (#432). */
+	row.dataset.disk = d.name;
 	const parts = partitionsOf(d.name);
 	const nameCell = document.createElement("td");
 	const link = document.createElement("a");
@@ -6588,14 +6681,14 @@ function diskListRow(d) {
 	/* ADR-0142: real statvfs(2) usage, only meaningful while mounted. */
 	const usageCell = document.createElement("td");
 
-	usageCell.textContent = d.mounted
-		? formatBytes(d.used_bytes) + " used / " + formatBytes(d.free_bytes) + " free"
-		: "-";
+	usageCell.dataset.cell = "usage";
+	usageCell.textContent = diskUsageText(d);
 	row.appendChild(usageCell);
 
 	const ioCell = document.createElement("td");
 
-	ioCell.textContent = "r=" + d.reads_completed + " w=" + d.writes_completed;
+	ioCell.dataset.cell = "io";
+	ioCell.textContent = diskIoText(d);
 	row.appendChild(ioCell);
 
 	return row;
