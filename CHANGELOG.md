@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### `pkg cancel` can reach a build-environment composition (#339)
+
+#339's build-container half was already fixed: the branch in `handle_pkg_cancel()` that drives the completion directly when the container has gone from the registry. This is the remaining child cancel could not see.
+
+`fetch_pid` is zeroed the moment the fetch child is reaped, and a **composer** is then forked while the entry stays in `FETCHING`. So for the whole of a build-environment composition — which is not quick — there is a real running child with a real pid that `pkg cancel` had no way to find: no build container, no fetch pid, so it logged "nothing running" and returned `200` having done nothing. The chain slot stays held for as long as the composer runs, and forever if it hangs. Ten such slots is a host that cannot install or hostbuild anything at all.
+
+The slot now records `compose_pid` where the composer is forked, clears it when the composer is reaped, and cancel kills it — which drives the ordinary completion path, which honours `cancel_requested`. Exactly the shape #239 established for the fetch: the existing machinery finishes the job, and cancel only has to end the child. `chain_alloc()` also clears both pids when handing out a slot, because slots are reused constantly and a cancel matches on name and image — so a slot that came back round to the same target could otherwise have signalled a pid from a job that finished long ago, which is the rule `fetch_pid` already states for itself.
+
+**The residual "nothing at all to end" path is deliberately left as a flag plus a warning rather than being made to end the job, and that is the more interesting half.** I wrote that version first and reverted it: it would release a chain slot that an untracked child still owns — the #98 hazard — and during a composition it would have done exactly that, because a composing job is `FETCHING` with no container and no fetch pid, which is precisely the branch it would have fired in. A cancel that needs a second look is better than a slot handed to two jobs.
+
 ### The refresh tick stops rebuilding unchanged tables (#432)
 
 Opening a build log threw the reader back to the top of the page. The button was innocent: the periodic tick blanks and rebuilds every table on the page, the document collapses to a fraction of its height while they are empty, the browser clamps `scrollTop` to the new maximum, and the rebuilt-taller table cannot give the offset back.
