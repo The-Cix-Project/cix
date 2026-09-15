@@ -4593,7 +4593,12 @@ function renderContainerDetail(name) {
 	);
 	optionsFields.appendChild(fieldBlock("Pinned image version", c.image_version || "-"));
 	optionsFields.appendChild(fieldBlock("Depends on", (c.depends_on || []).join(", ") || "-"));
-	optionsFields.appendChild(fieldBlock("DNS servers", (c.dns_servers || []).join(", ") || "-"));
+	/* #451: a dash here read as "nothing configured" when it means the
+	 * container cannot resolve a name at all -- no /etc/resolv.conf is
+	 * staged when the field is empty. The operator-visible symptom was
+	 * a jump box where `ssh somehost` failed for no stated reason. */
+	optionsFields.appendChild(fieldBlock("DNS servers",
+		(c.dns_servers || []).join(", ") || "none - cannot resolve names"));
 	simpleTableRows(
 		document.querySelector("#cd-sysctls tbody"),
 		Object.entries(c.sysctls || {}).map(([k, v]) => [k, v]),
