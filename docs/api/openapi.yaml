@@ -16774,14 +16774,39 @@ components:
               description: This container's own memory.pressure.
         disk:
           type: object
-          required: [upper_bytes, read_bytes, write_bytes, read_ios, write_ios, pressure]
+          required: [upper_bytes, upper_measured_at, read_bytes, write_bytes, read_ios, write_ios, pressure]
           properties:
             upper_bytes:
               type: integer
+              nullable: true
               description: >
                 Real space consumed by this container's own overlay
                 upperdir (its content diff from the shared image) --
                 content only, not directory-tree overhead.
+
+
+                MEASURED IN THE BACKGROUND, not while answering this
+                request (#474). Measuring it is an `nftw()` walk, O(files)
+                and unbounded, and it used to run inline on every stats
+                request -- on a pid-1 daemon whose one event loop is the
+                only way into the host. A request now serves the last
+                figure and starts a new measurement when that one has
+                aged out.
+
+
+                **`null` until the first measurement lands**, which is
+                normally the request after the first. Reporting `0` for
+                "not measured yet" was the alternative and it is a lie a
+                caller cannot detect. `upper_measured_at` says how old
+                the figure is.
+            upper_measured_at:
+              type: integer
+              nullable: true
+              description: >
+                Unix time the `upper_bytes` figure was taken, or `null`
+                when it has never been measured. Present so a caller can
+                tell a current number from one that has aged out, rather
+                than having to assume it is live.
             read_bytes:
               type: integer
               description: Cumulative bytes read, from cgroup v2 io.stat (0 if no tracked block I/O has happened yet).

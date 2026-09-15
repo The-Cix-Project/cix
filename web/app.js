@@ -3596,14 +3596,22 @@ function renderStatsCharts() {
 			formatBytes(last.memCurrent) + " (limit " + limit + ")";
 	}
 
-	const diskValues = h.map((s) => s.diskBytes);
+	/* #474: upper_bytes is null until the first background measurement
+	 * lands. Zero keeps the series well-formed and self-corrects on the
+	 * next poll; the label below says the truth rather than showing a
+	 * number nobody measured. */
+	const diskValues = h.map((s) => (s.diskBytes === null || s.diskBytes === undefined ? 0 : s.diskBytes));
 
 	drawChart(document.getElementById("cd-stats-disk"), [{ values: diskValues, color: seriesColor(1) }], {
 		times: gaugeTimes,
 		formatY: formatBytes,
 	});
+	const lastDisk = h[h.length - 1].diskBytes;
+
 	document.getElementById("cd-stats-disk-label").textContent =
-		formatBytes(h[h.length - 1].diskBytes) + " (overlay diff)";
+		lastDisk === null || lastDisk === undefined
+			? "measuring…"
+			: formatBytes(lastDisk) + " (overlay diff)";
 
 	const rxRates = [];
 	const txRates = [];

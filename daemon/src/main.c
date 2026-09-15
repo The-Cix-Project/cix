@@ -17522,6 +17522,176 @@ static void handle_container_file_write(int fd, const char *name, const char *re
 }
 
 /*
+ * A container's upperdir size, measured OFF the reactor (#474).
+ *
+ * `overlay_upperdir_size()` is an nftw() walk: O(files) and unbounded.
+ * It used to run inline in handle_container_stats(), on EVERY request,
+ * with no shortcut -- and the dashboard polls stats. On a container
+ * holding a real dataset that is the control plane not answering for
+ * as long as the walk takes, on a pid-1 daemon with no shell behind it
+ * (ADR-0247).
+ *
+ * WHY A CACHE RATHER THAN A DEFERRED RESPONSE. The obvious fix is to
+ * run the walk in a helper and answer when it finishes, and this
+ * daemon cannot do that: dispatch() is followed immediately by
+ * client_conn_finish(), which drains whatever was buffered and closes.
+ * There is no pending-response state, and adding one is a new
+ * connection state in the core of a process where a crash is a kernel
+ * panic. So the measurement is decoupled from the request instead: a
+ * request serves the last figure and starts a new measurement if the
+ * one it served is stale.
+ *
+ * WHAT A CALLER GETS. `upper_bytes` is null until the first
+ * measurement lands, and `upper_measured_at` says when the figure is
+ * from. Reporting 0 for "not measured yet" was the alternative and it
+ * is a lie a caller cannot detect. Staleness is not new to this API --
+ * `GET /volumes/{name}/usage` on btrfs reads a qgroup that settles at
+ * transaction commit, ~30 seconds behind -- but it is now SAID, which
+ * that endpoint also does.
+ *
+ * The freshness window is deliberately longer than a dashboard poll:
+ * polling harder must not mean walking harder.
+ */
+#define CONTAINER_DISK_FRESH_SECONDS 60
+
+struct container_disk_entry {
+	char name[REGISTRY_NAME_MAX];
+	long long bytes;
+	time_t measured_at; /* 0 = never measured */
+	int in_flight;
+	int used;
+};
+
+static struct container_disk_entry g_container_disk[REGISTRY_MAX_CONTAINERS];
+
+/*
+ * Entries are keyed by name and never explicitly freed: a deleted
+ * container leaves one behind, which costs a table slot and is
+ * overwritten by the oldest-first reuse below. Evicting on delete
+ * would mean another cleanup path to keep correct for a saving of 80
+ * bytes.
+ */
+static struct container_disk_entry *container_disk_entry(const char *name, int create)
+{
+	struct container_disk_entry *oldest = NULL;
+	int i;
+
+	for (i = 0; i < REGISTRY_MAX_CONTAINERS; i++) {
+		if (g_container_disk[i].used && strcmp(g_container_disk[i].name, name) == 0)
+			return &g_container_disk[i];
+	}
+	if (!create)
+		return NULL;
+	for (i = 0; i < REGISTRY_MAX_CONTAINERS; i++) {
+		if (!g_container_disk[i].used) {
+			memset(&g_container_disk[i], 0, sizeof(g_container_disk[i]));
+			snprintf(g_container_disk[i].name, sizeof(g_container_disk[i].name), "%s",
+			         name);
+			g_container_disk[i].used = 1;
+			return &g_container_disk[i];
+		}
+		if (g_container_disk[i].in_flight)
+			continue;
+		if (oldest == NULL || g_container_disk[i].measured_at < oldest->measured_at)
+			oldest = &g_container_disk[i];
+	}
+	if (oldest == NULL)
+		return NULL; /* every slot is mid-measurement; try again next request */
+	memset(oldest, 0, sizeof(*oldest));
+	snprintf(oldest->name, sizeof(oldest->name), "%s", name);
+	oldest->used = 1;
+	return oldest;
+}
+
+struct container_disk_measure {
+	char name[REGISTRY_NAME_MAX];
+	char upperdir[PATH_MAX];
+	int pipe_r;
+	int pipe_w;
+};
+
+/*
+ * Runs in the forked child. ADR-0278's rule is that a helper's effect
+ * must be on disk or in its return, because the parent never sees the
+ * child's memory -- so the one number this produces goes back through
+ * a pipe, and the cache is updated in the completion below.
+ */
+static int container_disk_measure_work(void *arg)
+{
+	struct container_disk_measure *m = arg;
+	long long bytes = 0;
+
+	close(m->pipe_r);
+	if (overlay_upperdir_size(m->upperdir, &bytes) != 0)
+		return -1;
+	if (write(m->pipe_w, &bytes, sizeof(bytes)) != (ssize_t)sizeof(bytes))
+		return -1;
+	return 0;
+}
+
+static void container_disk_measure_done(int status, void *ctx)
+{
+	struct container_disk_measure *m = ctx;
+	struct container_disk_entry *e = container_disk_entry(m->name, 0);
+	long long bytes = 0;
+
+	/*
+	 * Cannot block: the write end was closed in the parent as soon as
+	 * the helper was running, and the child writes its eight bytes
+	 * before exiting 0 -- so a successful child means the data is
+	 * already in the pipe, and any other outcome means EOF.
+	 */
+	if (status == 0 && read(m->pipe_r, &bytes, sizeof(bytes)) == (ssize_t)sizeof(bytes) &&
+	    e != NULL) {
+		e->bytes = bytes;
+		e->measured_at = time(NULL);
+	}
+	if (e != NULL)
+		e->in_flight = 0;
+	close(m->pipe_r);
+	free(m);
+}
+
+/* Best-effort by design: a measurement that cannot be started leaves
+ * the previous figure in place and will be retried by the next
+ * request. Nothing here may fail a request. */
+static void container_disk_measure_start(const char *name, const char *upperdir)
+{
+	struct container_disk_entry *e = container_disk_entry(name, 1);
+	struct container_disk_measure *m;
+	int fds[2];
+
+	if (e == NULL || e->in_flight)
+		return;
+	if (e->measured_at != 0 && time(NULL) - e->measured_at < CONTAINER_DISK_FRESH_SECONDS)
+		return;
+	m = calloc(1, sizeof(*m));
+	if (m == NULL)
+		return;
+	if (pipe(fds) != 0) {
+		free(m);
+		return;
+	}
+	snprintf(m->name, sizeof(m->name), "%s", name);
+	snprintf(m->upperdir, sizeof(m->upperdir), "%s", upperdir);
+	m->pipe_r = fds[0];
+	m->pipe_w = fds[1];
+	e->in_flight = 1;
+	if (helper_run(container_disk_measure_work, m, container_disk_measure_done, m,
+	               "a container's disk usage") != 0) {
+		e->in_flight = 0;
+		close(fds[0]);
+		close(fds[1]);
+		free(m);
+		return;
+	}
+	/* The child has its own copy; the parent must let go of the write
+	 * end or the read in the completion would never see EOF. */
+	close(m->pipe_w);
+	m->pipe_w = -1;
+}
+
+/*
  * GET /v1/containers/{name}/stats (ADR-0054): real, host-side CPU/
  * memory/disk/network usage for one container, gathered entirely from
  * kernel interfaces the daemon already has open (cgroup_fd) or can
@@ -17547,6 +17717,8 @@ static void handle_container_stats(int fd, const char *name)
 	int swap_current_unlimited = 0;
 	int mem_max_unlimited;
 	long long disk_bytes = 0;
+	time_t disk_measured_at = 0;
+	int disk_known = 0;
 	long long io_rbytes, io_wbytes, io_rios, io_wios;
 	struct cgroup_pressure cpu_pressure, io_pressure, mem_pressure;
 	int i;
@@ -17576,10 +17748,19 @@ static void handle_container_stats(int fd, const char *name)
 	{
 		char container_root[PATH_MAX];
 		char upperdir[PATH_MAX];
+		struct container_disk_entry *de;
 
 		container_root_for(e->disk_name, container_root, sizeof(container_root));
 		container_writable_path(container_root, name, "", upperdir, sizeof(upperdir));
-		overlay_upperdir_size(upperdir, &disk_bytes);
+		/* Serve what was last measured, then start a new measurement
+		 * if that figure has aged out. Never walks here (#474). */
+		de = container_disk_entry(name, 0);
+		if (de != NULL && de->measured_at != 0) {
+			disk_bytes = de->bytes;
+			disk_measured_at = de->measured_at;
+			disk_known = 1;
+		}
+		container_disk_measure_start(name, upperdir);
 	}
 
 	jw_init(&w);
@@ -17623,7 +17804,15 @@ static void handle_container_stats(int fd, const char *name)
 	jw_key(&w, "disk");
 	jw_obj_open(&w);
 	jw_key(&w, "upper_bytes");
-	jw_int(&w, disk_bytes);
+	if (disk_known)
+		jw_int(&w, disk_bytes);
+	else
+		jw_null(&w); /* not measured yet -- 0 would be a lie (#474) */
+	jw_key(&w, "upper_measured_at");
+	if (disk_known)
+		jw_int(&w, (long long)disk_measured_at);
+	else
+		jw_null(&w);
 	jw_key(&w, "read_bytes");
 	jw_int(&w, io_rbytes);
 	jw_key(&w, "write_bytes");
