@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A generator edit that silently did not apply, and the gate that now catches it
+
+Found by reading the live plan rather than the code: `POST /v1/config/diff` on a whole document reported **22 reconcile sections and no `manual` ones**, when the schema says eleven of each. The edit that teaches `apigen` to emit `CONFIG_APPLY_MANUAL` had not matched its anchor and was silently dropped, so every non-replace section came out as `CONFIG_APPLY_RECONCILE` -- while `CIX_CONFIG_SECTIONS_RECONCILE`, computed from the same schema in the same pass, correctly listed eleven.
+
+That mismatch is a **NULL dereference in the control plane**: `reconciler_for("containers")` finds nothing, and `reconcile_list()` calls through it. Any `POST /v1/config` *or* `/v1/config/diff` carrying a changed `containers`, `volumes`, `networks`, `pki`, `packages`, `images`, `dhcp`, `routes`, `ldap_users`, `image_recipes` or `container_recipes` section would have crashed `cixd` on a host with no shell to recover through. It never ran: the round-trip test that exposed it supplies an unchanged document, and an unchanged section returns before the call.
+
+Three things came out of it. The generator emits the mode correctly. `build_plan()` refuses a reconcile section whose operations are missing, with a message saying it is a build fault rather than something the document did -- "cannot happen by construction" is worth one branch when the alternative is a segfault in the control plane. And `test_apigen` now asserts the two generated lists agree, which is the invariant that broke: a count nobody checks is a count that can drift.
+
 ### Element-wise config apply, for the eleven sections where an element is a record (#470)
 
 `POST /v1/config` now applies `ntp_servers`, `dhcp_servers`, `dns_servers`, `ldap_servers`, `syslog_targets`, `sysctl`, `kernel_modules`, `dns_records`, `ldap_groups`, `package_policies` and `disk_roles`. **What the document names is created or updated; what it does not name is removed** — the same thing `replace` already means for the sections one setter owns (a shorter `resolver.nameservers` list removes one), because one endpoint speaking two languages would be worse than either. The safety is that `POST /v1/config/diff` shows every removal before anything runs.

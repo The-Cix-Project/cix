@@ -740,7 +740,10 @@ static void emit_config_sections(const char *out_path, const char *spec)
 	for (i = 0; i < count; i++)
 		fprintf(o, "\tX(%s, CONFIG_KIND_%s, \"%s\", CONFIG_APPLY_%s, \"%s\")%s\n", names[i],
 		        strcmp(kinds[i], "array") == 0 ? "ARRAY" : "OBJECT", keys[i],
-		        strcmp(modes[i], "replace") == 0 ? "REPLACE" : "RECONCILE", states[i],
+		        strcmp(modes[i], "replace") == 0     ? "REPLACE"
+		        : strcmp(modes[i], "reconcile") == 0 ? "RECONCILE"
+		                                             : "MANUAL",
+		        states[i],
 		        i + 1 < count ? " \\" : "");
 	fprintf(o, "\n/* The sections one setter can replace outright. Expanded on its\n");
 	fprintf(o, " * own so the apply functions are declared, defined and tabulated\n");
