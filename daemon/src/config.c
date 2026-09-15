@@ -190,6 +190,7 @@ struct config_section {
 	enum config_kind kind;
 	const char *key;
 	enum config_apply_mode apply_mode;
+	const char *state_fields;
 	void (*render)(struct json_writer *w);
 };
 
@@ -201,7 +202,7 @@ struct config_section {
  * same schema property, so the differ and the applier cannot be
  * working from a different idea of a section's shape than the renderer.
  */
-#define X(name, kind, key, mode) { #name, kind, key, mode, cfg_##name },
+#define X(name, kind, key, mode, state) { #name, kind, key, mode, state, cfg_##name },
 static const struct config_section g_sections[] = { CIX_CONFIG_SECTIONS(X) };
 #undef X
 
@@ -260,6 +261,11 @@ const char *config_section_key(int i)
 enum config_apply_mode config_section_apply_mode(int i)
 {
 	return g_sections[i].apply_mode;
+}
+
+const char *config_section_state_fields(int i)
+{
+	return g_sections[i].state_fields;
 }
 
 void config_render_section(int i, const char *containers_dir, struct json_writer *w)

@@ -74,8 +74,25 @@ struct jsondiff {
  * Returns 0 on success, -1 on allocation failure. A zero `count` means
  * the two trees are identical.
  */
+/*
+ * `ignore_fields` names object members to leave out of the comparison
+ * entirely, comma-separated, matched AT ANY DEPTH within the trees.
+ *
+ * Any depth is deliberate rather than convenient: an observed value
+ * and its mirror usually appear at more than one level -- `zswap`
+ * reports what the kernel currently has under `kernel` as well as the
+ * intent beside it, and a container reports a service's `state` and
+ * `pid` nested inside its own. Naming the member once covers both, and
+ * the blast radius is one section, since the list is declared per
+ * section rather than globally.
+ */
 int jsondiff_compute(const struct json_value *live, const struct json_value *supplied,
-                     const char *array_key, struct jsondiff *out);
+                     const char *array_key, const char *ignore_fields, struct jsondiff *out);
+
+/* Whether `name` appears in a comma-separated field list. Exported
+ * because the caller applies the same rule when deciding which
+ * members a supplied section is allowed to omit. */
+int jsondiff_field_listed(const char *list, const char *name);
 
 void jsondiff_free(struct jsondiff *d);
 

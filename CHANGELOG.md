@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A config section declares what it observes, so a document can be replayed (#471)
+
+`GET /v1/config` renders running state alongside configuration — a container's `pid` and `status`, a volume's `created_at`, what the kernel currently has under `zswap.kernel`, and the whole of `routes`, which is the kernel's own table. That is useful to read and was actively harmful to send back: a member nobody can set counted as a difference, and since a `reconcile` section with changes refuses the **whole** request, one container restarting between fetch and apply made a whole document unusable. Measured, not theorised: raising `zswap.max_pool_percent` and then replaying the document fetched beforehand was refused, naming `kernel` when the operator had edited `max_pool_percent`.
+
+A fourth schema attribute, `x-cix-config-state`, now names those members per section (13 sections declare one). They are left out of the comparison entirely and may be omitted from a supplied section — so a document survives a change to itself, and a hand-written one no longer has to recite fields the kernel decides. `apigen` carries the list into the generated section table; nothing hand-maintains a second copy.
+
+Matched **at any depth** within the section, deliberately: an observed value and its mirror usually appear at more than one level — a container's own `pid` and, two levels down, each service's `state` and `pid`. Whole members only, so `pid` does not silence `pids_max`. Both are pinned by `test_jsondiff`.
+
+**A redaction marker keeps its refusal, and the asymmetry is deliberate.** A stale observation is an accident of timing and means nothing, so it is ignored; `auth_token_set: false` against a host that has a token reads as an instruction to clear it, and quietly doing nothing about that is worse than refusing. The three `require_unchanged` guards that covered observed members (`zswap.supported`/`kernel`/`available_compressors`, `swap.path`/`disk`, `ldap.listeners_managed`) are gone, replaced by the declaration; the two secret markers keep theirs.
+
+The plan reports `observed_fields` per section, so "no changes" is never mistaken for "nothing about this section moved".
+
 ### Host swap works on btrfs: the swap file is created no-COW (#472)
 
 Host swap could not be enabled on 192.168.15.95 **at all** — `POST /v1/system/swap {"size_mb":64}` returned 500 and the kernel logged `BTRFS warning (device vdb5): swapfile must not be copy-on-write`. Found while verifying ADR-0292 (the config-apply path reported it correctly, as a 500 with `applied: false`), and it is ADR-0069's subsystem rather than anything in that work. `swap_enable()` now sets `FS_NOCOW_FL` on the freshly created, still-empty file, between the `open(O_TRUNC)` and the allocation.
