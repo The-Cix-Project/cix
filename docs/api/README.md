@@ -449,7 +449,7 @@ Both take the document itself as the body, the same shape `GET /config`
 returns, so the workflow is fetch, edit, send back:
 
 ```
-$ cixctl --host=... show running-config --json > c.json
+$ cixctl --host=... --json show running-config > c.json
 $ vi c.json
 $ cixctl --host=... config diff --file=c.json --section=resolver
 resolver             changed    appliable

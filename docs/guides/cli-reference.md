@@ -90,7 +90,7 @@ flex and zlib with it.
 
 ```
 cixctl show running-config          # the whole configuration, Cisco-style
-cixctl show running-config --json   # the document itself
+cixctl --json show running-config   # the document itself
 ```
 
 One ordered, redacted view of every configurable subsystem (ADR-0206) --
@@ -108,7 +108,7 @@ cixctl config apply --file=c.json [--section=NAME ...]   # change it
 ```
 
 The write direction (ADR-0292). Both take a configuration document --
-what `show running-config --json` writes -- so the workflow is fetch,
+what `cixctl --json show running-config` writes -- so the workflow is fetch,
 edit, send back. `diff` changes nothing and is the safe way to find out
 what an edit means.
 
@@ -119,7 +119,7 @@ that are not configuration, and one unappliable section refuses the
 request. `--section=NAME` rebuilds the body with just those sections.
 
 ```
-$ cixctl show running-config --json > c.json
+$ cixctl --json show running-config > c.json
 $ vi c.json
 $ cixctl config diff --file=c.json --section=resolver
 resolver             changed    appliable
