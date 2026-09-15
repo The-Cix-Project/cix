@@ -472,6 +472,24 @@ and nothing else may be. An absent field is an error, never "leave this
 one alone" -- that is what keeps the document you fetch and the document
 you send the same language.
 
+**Except what the section OBSERVES.** A container's `pid` and `status`,
+a volume's `created_at`, what the kernel currently has under
+`zswap.kernel`, the whole of `routes` -- those are reported, not set.
+Each section declares them in the schema (`x-cix-config-state`), they
+are left out of the comparison entirely, and they may be omitted from
+what you send. So a document survives a change to itself (before this,
+raising `zswap.max_pool_percent` and replaying the document you fetched
+beforehand was refused, because its `kernel` mirror had gone stale), a
+container restarting between fetch and apply no longer makes a whole
+document unusable, and a hand-written section need not recite fields
+the kernel decides. The plan reports them as `observed_fields`, so "no
+changes" is never read as "nothing here moved".
+
+A **redaction marker** is different and is still refused: a stale
+observation means nothing, but `auth_token_set: false` against a host
+that has a token reads as an instruction to clear it, and quietly doing
+nothing about that would be worse than saying no.
+
 **Only some sections can be applied.** Each section declares in the
 schema whether one setter replaces it (`replace`) or whether applying it
 means creating, updating and deleting individual live resources

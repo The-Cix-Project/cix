@@ -21,6 +21,35 @@
 static int diff_walk(struct jsondiff *d, const char *base, const struct json_value *live,
                      const struct json_value *sup, const char *array_key);
 
+/*
+ * The ignored-member list, carried on the struct rather than threaded
+ * through every recursion -- it is a property of the whole comparison,
+ * not of a level within it.
+ */
+static const char *g_ignore;
+
+int jsondiff_field_listed(const char *list, const char *name)
+{
+	const char *p = list;
+	size_t n = strlen(name);
+
+	if (list == NULL || list[0] == '\0')
+		return 0;
+	while (*p != '\0') {
+		const char *start = p;
+		size_t len;
+
+		while (*p != '\0' && *p != ',')
+			p++;
+		len = (size_t)(p - start);
+		if (len == n && strncmp(start, name, n) == 0)
+			return 1;
+		if (*p == ',')
+			p++;
+	}
+	return 0;
+}
+
 static int values_equal(const struct json_value *a, const struct json_value *b)
 {
 	size_t i;
@@ -326,8 +355,11 @@ static int diff_objects(struct jsondiff *d, const char *base, const struct json_
 	char p[JSONDIFF_PATH_MAX];
 
 	for (i = 0; i < live->u.object.count; i++) {
-		const struct json_value *sv = json_object_get(sup, live->u.object.keys[i]);
+		const struct json_value *sv;
 
+		if (jsondiff_field_listed(g_ignore, live->u.object.keys[i]))
+			continue;
+		sv = json_object_get(sup, live->u.object.keys[i]);
 		path_field(p, sizeof(p), base, live->u.object.keys[i]);
 		if (sv == NULL) {
 			if (add_change(d, p, JSONDIFF_REMOVE, live->u.object.values[i], NULL) != 0)
@@ -339,6 +371,8 @@ static int diff_objects(struct jsondiff *d, const char *base, const struct json_
 	}
 	for (i = 0; i < sup->u.object.count; i++) {
 		if (json_object_get(live, sup->u.object.keys[i]) != NULL)
+			continue;
+		if (jsondiff_field_listed(g_ignore, sup->u.object.keys[i]))
 			continue;
 		path_field(p, sizeof(p), base, sup->u.object.keys[i]);
 		if (add_change(d, p, JSONDIFF_ADD, NULL, sup->u.object.values[i]) != 0)
@@ -364,10 +398,15 @@ static int diff_walk(struct jsondiff *d, const char *base, const struct json_val
 }
 
 int jsondiff_compute(const struct json_value *live, const struct json_value *supplied,
-                     const char *array_key, struct jsondiff *out)
+                     const char *array_key, const char *ignore_fields, struct jsondiff *out)
 {
+	int rc;
+
 	memset(out, 0, sizeof(*out));
-	if (diff_walk(out, "", live, supplied, array_key) != 0) {
+	g_ignore = ignore_fields;
+	rc = diff_walk(out, "", live, supplied, array_key);
+	g_ignore = NULL;
+	if (rc != 0) {
 		jsondiff_free(out);
 		return -1;
 	}

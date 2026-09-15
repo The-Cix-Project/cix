@@ -13420,20 +13420,24 @@ components:
           description: Compressed-swap intent (ADR-0196) -- configured intent, not only what the kernel currently has.
           x-cix-config-kind: object
           x-cix-config-apply: replace
+          x-cix-config-state: "supported,kernel,available_compressors"
         swap:
           description: Swap placement and size.
           x-cix-config-kind: object
           x-cix-config-apply: replace
+          x-cix-config-state: "path,disk"
         disk_roles:
           description: Persisted disk-name-to-role bindings. Before storage consumers, which resolve through them.
           x-cix-config-kind: array
           x-cix-config-key: "disk_name"
           x-cix-config-apply: reconcile
+          x-cix-config-state: "present,fs_type"
         volumes:
           description: Named volumes containers mount.
           x-cix-config-kind: array
           x-cix-config-key: "name"
           x-cix-config-apply: reconcile
+          x-cix-config-state: "created_at,backup_last_at,host_path"
         backup:
           description: Backup destination and schedule (ADR-0141), not the backup contents.
           x-cix-config-kind: object
@@ -13443,11 +13447,13 @@ components:
           x-cix-config-kind: array
           x-cix-config-key: "dest,prefix,interface"
           x-cix-config-apply: reconcile
+          x-cix-config-state: "dest,prefix,gateway,interface,protocol,scope"
         networks:
           description: Virtual networks. Before containers, which attach to them.
           x-cix-config-kind: array
           x-cix-config-key: "name"
           x-cix-config-apply: reconcile
+          x-cix-config-state: "has_address,address,interfaces"
         dhcp:
           description: DHCP ranges and static reservations.
           x-cix-config-kind: object
@@ -13457,6 +13463,7 @@ components:
           x-cix-config-kind: array
           x-cix-config-key: "container"
           x-cix-config-apply: reconcile
+          x-cix-config-state: "running,resolves_leases"
         dns_forwarders:
           description: Upstream resolvers the DNS servers forward to.
           x-cix-config-kind: array
@@ -13472,15 +13479,18 @@ components:
           x-cix-config-kind: array
           x-cix-config-key: "name,ip"
           x-cix-config-apply: reconcile
+          x-cix-config-state: "owner"
         pki:
           description: CA and certificate metadata. Private key material is NEVER rendered.
           x-cix-config-kind: array
           x-cix-config-key: "name"
           x-cix-config-apply: reconcile
+          x-cix-config-state: "serial,not_after,owner"
         ldap:
           description: LDAP directory configuration. The bind password renders as a set/not-set boolean.
           x-cix-config-kind: object
           x-cix-config-apply: replace
+          x-cix-config-state: "listeners_managed"
         ldap_servers:
           description: Containers registered as LDAP servers.
           x-cix-config-kind: array
@@ -13496,6 +13506,7 @@ components:
           x-cix-config-kind: array
           x-cix-config-key: "name"
           x-cix-config-apply: reconcile
+          x-cix-config-state: "owner"
         syslog_targets:
           description: Remote syslog destinations.
           x-cix-config-kind: array
@@ -13519,6 +13530,7 @@ components:
           x-cix-config-kind: array
           x-cix-config-key: "image,name"
           x-cix-config-apply: reconcile
+          x-cix-config-state: "state"
         images:
           description: Images. Before the containers built from them.
           x-cix-config-kind: array
@@ -13539,6 +13551,7 @@ components:
           x-cix-config-kind: array
           x-cix-config-key: "name"
           x-cix-config-apply: reconcile
+          x-cix-config-state: "status,paused,pid,exit_status,term_signal,exit_reason,procfuse_bound,captured_output,ready,pending_devices,image_version,live,state,restarts,last_exit,failure"
     ConfigPlan:
       type: object
       description: >

@@ -170,13 +170,18 @@ static int need_string_list(const struct json_value *arr, const char **out, int 
  * become "no change" instead of an error.
  */
 static int require_whole_section(const struct json_value *live, const struct json_value *sup,
-                                 char *err, size_t errsz)
+                                 const char *state_fields, char *err, size_t errsz)
 {
 	size_t i;
 
 	if (need_object(sup, "a replace section", err, errsz) != 0)
 		return -1;
 	for (i = 0; i < live->u.object.count; i++) {
+		/* An observed member is not something the sender chose, so
+		 * requiring it back would make a hand-written document
+		 * impossible and a stale one wrong. */
+		if (jsondiff_field_listed(state_fields, live->u.object.keys[i]))
+			continue;
 		if (json_object_get(sup, live->u.object.keys[i]) == NULL) {
 			snprintf(err, errsz,
 			         "\"%s\" is missing -- this section is replaced whole, so send it "
@@ -195,19 +200,16 @@ static int require_whole_section(const struct json_value *live, const struct jso
 }
 
 /*
- * A field that may be sent back but not changed: an observation, or a
- * redaction marker for a secret this document never carried.
+ * A redaction marker: a field standing in for a secret this document
+ * never carried, so there is no spelling of "set it" for it to be.
  *
- * `why` carries the whole explanation INCLUDING what to do about it,
- * rather than a fixed suffix, because the two cases need different
- * advice and the difference is not cosmetic. Measured on 192.168.15.95
- * while verifying this: raising `zswap.max_pool_percent` and then
- * replaying the document fetched BEFORE that change is refused --
- * correctly, the document's `kernel` mirror is stale -- but the
- * refusal names `kernel` when the operator edited `max_pool_percent`,
- * and without "re-fetch" in the message there is nothing to act on.
- * This is #471 (the document mixes configuration with running state)
- * showing up inside a section that is otherwise straightforward.
+ * Refused rather than ignored, which is the opposite of how an
+ * OBSERVED field is treated a few lines below -- and the difference is
+ * deliberate. Sending back a stale observation is an accident of
+ * timing and means nothing, so it is ignored. Sending back
+ * `auth_token_set: false` against a host that has a token looks like
+ * an instruction to clear it, and quietly doing nothing about that
+ * would be the worst of the three available behaviours.
  */
 static int require_unchanged(const struct json_value *live, const struct json_value *sup,
                              const char *field, const char *why, char *err, size_t errsz)
@@ -217,10 +219,6 @@ static int require_unchanged(const struct json_value *live, const struct json_va
 	snprintf(err, errsz, "\"%s\" %s", field, why);
 	return -1;
 }
-
-/* The advice every derived field's refusal ends with: the usual reason
- * one differs is a document fetched before something else changed. */
-#define CFG_REFETCH " -- re-fetch the document if yours predates a change made elsewhere"
 
 static int changed(const struct json_value *live, const struct json_value *sup, const char *field)
 {
@@ -237,16 +235,18 @@ static int changed(const struct json_value *live, const struct json_value *sup, 
  */
 #define X(name)                                                                                \
 	static int cfg_apply_##name(const struct json_value *live, const struct json_value *sup,   \
-	                            int dry_run, char *err, size_t errsz);
+	                            const char *state_fields, int dry_run, char *err,              \
+	                            size_t errsz);
 CIX_CONFIG_SECTIONS_REPLACE(X)
 #undef X
 
-static int cfg_apply_site(const struct json_value *live, const struct json_value *sup, int dry_run,
-                          char *err, size_t errsz)
+static int cfg_apply_site(const struct json_value *live, const struct json_value *sup,
+                          const char *state_fields, int dry_run, char *err,
+                          size_t errsz)
 {
 	const char *instance, *site, *domain;
 
-	if (require_whole_section(live, sup, err, errsz) != 0)
+	if (require_whole_section(live, sup, state_fields, err, errsz) != 0)
 		return -1;
 	if (need_string(sup, "instance_name", &instance, err, errsz) != 0 ||
 	    need_string(sup, "site_name", &site, err, errsz) != 0 ||
@@ -306,12 +306,13 @@ static int daemon_set_err(enum daemon_config_error e, const char *field, char *e
  * through for momentarily having none.
  */
 static int cfg_apply_daemon(const struct json_value *live, const struct json_value *sup,
-                            int dry_run, char *err, size_t errsz)
+                            const char *state_fields, int dry_run, char *err,
+                            size_t errsz)
 {
 	long long port, https_port;
 	int http_enabled, https_enabled;
 
-	if (require_whole_section(live, sup, err, errsz) != 0)
+	if (require_whole_section(live, sup, state_fields, err, errsz) != 0)
 		return -1;
 	if (need_int(sup, "port", &port, err, errsz) != 0 ||
 	    need_int(sup, "https_port", &https_port, err, errsz) != 0 ||
@@ -347,12 +348,13 @@ static int cfg_apply_daemon(const struct json_value *live, const struct json_val
 }
 
 static int cfg_apply_resolver(const struct json_value *live, const struct json_value *sup,
-                              int dry_run, char *err, size_t errsz)
+                              const char *state_fields, int dry_run, char *err,
+                              size_t errsz)
 {
 	const char *ns[RESOLV_MAX_NAMESERVERS];
 	int count = 0;
 
-	if (require_whole_section(live, sup, err, errsz) != 0)
+	if (require_whole_section(live, sup, state_fields, err, errsz) != 0)
 		return -1;
 	if (need_string_list(json_object_get(sup, "nameservers"), ns, RESOLV_MAX_NAMESERVERS, &count,
 	                     "\"nameservers\"", err, errsz) != 0)
@@ -374,13 +376,14 @@ static int cfg_apply_resolver(const struct json_value *live, const struct json_v
 	}
 }
 
-static int cfg_apply_time(const struct json_value *live, const struct json_value *sup, int dry_run,
-                          char *err, size_t errsz)
+static int cfg_apply_time(const struct json_value *live, const struct json_value *sup,
+                          const char *state_fields, int dry_run, char *err,
+                          size_t errsz)
 {
 	const char *addrs[NTP_MAX_UPSTREAM];
 	int count = 0;
 
-	if (require_whole_section(live, sup, err, errsz) != 0)
+	if (require_whole_section(live, sup, state_fields, err, errsz) != 0)
 		return -1;
 	if (need_string_list(json_object_get(sup, "upstream"), addrs, NTP_MAX_UPSTREAM, &count,
 	                     "\"upstream\"", err, errsz) != 0)
@@ -403,26 +406,23 @@ static int cfg_apply_time(const struct json_value *live, const struct json_value
 }
 
 static int cfg_apply_zswap(const struct json_value *live, const struct json_value *sup,
-                           int dry_run, char *err, size_t errsz)
+                           const char *state_fields, int dry_run, char *err,
+                           size_t errsz)
 {
 	struct zswap_config next;
 	const char *compressor;
 	long long pct;
 	int enabled;
 
-	if (require_whole_section(live, sup, err, errsz) != 0)
+	if (require_whole_section(live, sup, state_fields, err, errsz) != 0)
 		return -1;
-	/* What the kernel has, and what it could have, are observations. */
-	if (require_unchanged(live, sup, "supported",
-	                      "is a property of this kernel and cannot be set" CFG_REFETCH, err,
-	                      errsz) != 0 ||
-	    require_unchanged(live, sup, "kernel",
-	                      "is what the kernel currently has, not the configured intent, and "
-	                      "cannot be set" CFG_REFETCH, err, errsz) != 0 ||
-	    require_unchanged(live, sup, "available_compressors",
-	                      "is the set this kernel offers and cannot be set" CFG_REFETCH, err,
-	                      errsz) != 0)
-		return -1;
+	/*
+	 * `supported`, `kernel` and `available_compressors` are observed,
+	 * declared as such in the schema, and therefore ignored rather
+	 * than refused: this section used to reject a document fetched
+	 * before its own last change, because the `kernel` mirror in it
+	 * had gone stale (#471).
+	 */
 	if (need_bool(sup, "enabled", &enabled, err, errsz) != 0 ||
 	    need_int(sup, "max_pool_percent", &pct, err, errsz) != 0 ||
 	    need_string(sup, "compressor", &compressor, err, errsz) != 0)
@@ -456,21 +456,18 @@ static int cfg_apply_zswap(const struct json_value *live, const struct json_valu
 	}
 }
 
-static int cfg_apply_swap(const struct json_value *live, const struct json_value *sup, int dry_run,
-                          char *err, size_t errsz)
+static int cfg_apply_swap(const struct json_value *live, const struct json_value *sup,
+                          const char *state_fields, int dry_run, char *err,
+                          size_t errsz)
 {
 	enum swap_error e;
 	long long size_mb;
 	int enabled;
 
-	if (require_whole_section(live, sup, err, errsz) != 0)
+	if (require_whole_section(live, sup, state_fields, err, errsz) != 0)
 		return -1;
-	if (require_unchanged(live, sup, "path", "is where the swap file lives and cannot be set"
-	                                         CFG_REFETCH, err, errsz) != 0 ||
-	    require_unchanged(live, sup, "disk",
-	                      "follows the disk holding swap -- assign that with POST "
-	                      "/v1/storage-roles", err, errsz) != 0)
-		return -1;
+	/* `path` and `disk` are observed (the file's location, and the
+	 * disk carrying it, which POST /v1/storage-roles decides). */
 	if (need_bool(sup, "enabled", &enabled, err, errsz) != 0 ||
 	    need_int(sup, "size_mb", &size_mb, err, errsz) != 0)
 		return -1;
@@ -529,12 +526,13 @@ static int cfg_apply_swap(const struct json_value *live, const struct json_value
 }
 
 static int cfg_apply_backup(const struct json_value *live, const struct json_value *sup,
-                            int dry_run, char *err, size_t errsz)
+                            const char *state_fields, int dry_run, char *err,
+                            size_t errsz)
 {
 	const char *disk;
 	int enabled;
 
-	if (require_whole_section(live, sup, err, errsz) != 0)
+	if (require_whole_section(live, sup, state_fields, err, errsz) != 0)
 		return -1;
 	if (need_string_or_null(sup, "disk", &disk, err, errsz) != 0 ||
 	    need_bool(sup, "enabled", &enabled, err, errsz) != 0)
@@ -574,20 +572,18 @@ static int ldap_set_err(enum ldap_record_error e, char *err, size_t errsz)
  * document that did not change a listener would restart a service for
  * no reason.
  */
-static int cfg_apply_ldap(const struct json_value *live, const struct json_value *sup, int dry_run,
-                          char *err, size_t errsz)
+static int cfg_apply_ldap(const struct json_value *live, const struct json_value *sup,
+                          const char *state_fields, int dry_run, char *err,
+                          size_t errsz)
 {
 	const char *client_uri, *base_dn, *bind_dn;
 	long long start_uid, start_gid, plain_port, tls_port;
 	int client_tls, server_plaintext, server_tls;
 	char server_container[64];
 
-	if (require_whole_section(live, sup, err, errsz) != 0)
+	if (require_whole_section(live, sup, state_fields, err, errsz) != 0)
 		return -1;
-	if (require_unchanged(live, sup, "listeners_managed",
-	                      "records whether the listeners have ever been set and cannot be set"
-	                      CFG_REFETCH, err, errsz) != 0 ||
-	    require_unchanged(live, sup, "bind_password_set",
+	if (require_unchanged(live, sup, "bind_password_set",
 	                      "is a redaction marker: this document never carried the password, "
 	                      "so it cannot set one -- use PUT /v1/ldap/config", err, errsz) != 0)
 		return -1;
@@ -640,11 +636,12 @@ static int cfg_apply_ldap(const struct json_value *live, const struct json_value
 }
 
 static int cfg_apply_package_repo(const struct json_value *live, const struct json_value *sup,
-                                  int dry_run, char *err, size_t errsz)
+                                  const char *state_fields, int dry_run, char *err,
+                                  size_t errsz)
 {
 	const char *url, *kind, *ref;
 
-	if (require_whole_section(live, sup, err, errsz) != 0)
+	if (require_whole_section(live, sup, state_fields, err, errsz) != 0)
 		return -1;
 	if (require_unchanged(live, sup, "auth_token_set",
 	                      "is a redaction marker: this document never carried the token, so "
@@ -671,12 +668,13 @@ static int cfg_apply_package_repo(const struct json_value *live, const struct js
 }
 
 static int cfg_apply_package_artifacts(const struct json_value *live, const struct json_value *sup,
-                                       int dry_run, char *err, size_t errsz)
+                                       const char *state_fields, int dry_run, char *err,
+                                       size_t errsz)
 {
 	const char *base_url;
 	int push_enabled;
 
-	if (require_whole_section(live, sup, err, errsz) != 0)
+	if (require_whole_section(live, sup, state_fields, err, errsz) != 0)
 		return -1;
 	if (require_unchanged(live, sup, "auth_token_set",
 	                      "is a redaction marker: this document never carried the token, so it "
@@ -701,7 +699,8 @@ static int cfg_apply_package_artifacts(const struct json_value *live, const stru
  * not about how a section is written.
  */
 static int cfg_apply_dns_forwarders(const struct json_value *live, const struct json_value *sup,
-                                    int dry_run, char *err, size_t errsz)
+                                    const char *state_fields, int dry_run, char *err,
+                                    size_t errsz)
 {
 	char list[DNS_FORWARDERS_MAX][DNS_FORWARDER_LEN];
 	const char *ptrs[DNS_FORWARDERS_MAX];
@@ -709,6 +708,7 @@ static int cfg_apply_dns_forwarders(const struct json_value *live, const struct 
 	int i;
 
 	(void)live;
+	(void)state_fields; /* a list of addresses has no observed members */
 	if (need_string_list(sup, ptrs, DNS_FORWARDERS_MAX, &count, "dns_forwarders", err, errsz) !=
 	    0)
 		return -1;
@@ -741,8 +741,8 @@ static int cfg_apply_dns_forwarders(const struct json_value *live, const struct 
 
 struct config_applier {
 	const char *name;
-	int (*fn)(const struct json_value *live, const struct json_value *sup, int dry_run,
-	          char *err, size_t errsz);
+	int (*fn)(const struct json_value *live, const struct json_value *sup,
+	          const char *state_fields, int dry_run, char *err, size_t errsz);
 };
 
 #define X(name) { #name, cfg_apply_##name },
@@ -845,7 +845,8 @@ static int build_plan(const struct json_value *doc, const char *containers_dir,
 			return -1;
 		}
 		n++;
-		if (jsondiff_compute(p->live, sup, config_section_key(idx), &p->diff) != 0) {
+		if (jsondiff_compute(p->live, sup, config_section_key(idx),
+		                     config_section_state_fields(idx), &p->diff) != 0) {
 			snprintf(err, errsz, "out of memory computing the difference for \"%s\"",
 			         config_section_name(idx));
 			plans_free(plans, n);
@@ -864,7 +865,8 @@ static int build_plan(const struct json_value *doc, const char *containers_dir,
 			continue;
 		}
 		ap = applier_for(config_section_name(idx));
-		if (ap->fn(p->live, sup, 1, p->reason, sizeof(p->reason)) != 0)
+		if (ap->fn(p->live, sup, config_section_state_fields(idx), 1, p->reason,
+		           sizeof(p->reason)) != 0)
 			continue;
 		p->appliable = 1;
 	}
@@ -928,6 +930,13 @@ static void write_plan(struct json_writer *w, const struct section_plan *plans, 
 		if (p->reason[0] != '\0') {
 			jw_key(w, "reason");
 			jw_str(w, p->reason);
+		}
+		if (config_section_state_fields(p->index)[0] != '\0') {
+			/* Named so "no changes" is never mistaken for "nothing
+			 * about this section moved" -- these members were not
+			 * compared at all. */
+			jw_key(w, "observed_fields");
+			jw_str(w, config_section_state_fields(p->index));
 		}
 		if (p->diff.truncated) {
 			jw_key(w, "truncated");
@@ -1061,7 +1070,8 @@ void handle_config_apply(int fd, const char *containers_dir, const char *body, s
 		if (p->diff.count == 0)
 			continue;
 		ap = applier_for(config_section_name(p->index));
-		if (ap->fn(p->live, p->sup, 0, p->error, sizeof(p->error)) != 0) {
+		if (ap->fn(p->live, p->sup, config_section_state_fields(p->index), 0, p->error,
+		           sizeof(p->error)) != 0) {
 			applied_ok = 0;
 			break;
 		}

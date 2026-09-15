@@ -50,6 +50,24 @@ So the contract is: **apply operates on the sections you supply, and supplying o
 
 **Secrets have no spelling in this document, which is what makes applying one safe.** The document renders a token or password as a set/not-set boolean. Every applier reaching a setter that takes a secret passes NULL, and all three such setters define NULL as "leave this field unchanged" (`pkg_repo_set_config`, `pkg_artifact_set_config`, `ldap_config_set_client` — checked in their headers before this was written, because the alternative reading, that an omitted secret clears it, would mean changing a repo URL through this document silently broke every fetch through it). Sending back a redaction marker that differs from live is refused by name, rather than interpreted.
 
+## Amendment: a section declares what it OBSERVES
+
+The "what this does not promise" note above described the document mixing configuration with running state, and left it as [#471](https://git.home.arpa/itdlabs/cix/issues/471). The harmful half of that is now closed, without changing what the document renders.
+
+A fourth schema attribute, `x-cix-config-state`, names the members of a section that are observations — a container's `pid` and `status`, a volume's `created_at`, what the kernel currently has under `zswap.kernel`, the whole of `routes`, which is the kernel's own table. They are **left out of the comparison entirely** and **may be omitted from a supplied section**.
+
+Three consequences, in order of how much they matter:
+
+1. **A document can be replayed across a change to itself.** Measured before this: raise `zswap.max_pool_percent`, then send back the document fetched beforehand, and it is refused — its `kernel` mirror has gone stale. That refusal is gone, because the mirror is no longer compared.
+2. **One container restarting no longer makes a whole document unusable.** `containers` is a `reconcile` section, a `reconcile` section with changes refuses the whole request, and `pid` moving was enough to be a change. This is the prerequisite [#470](https://git.home.arpa/itdlabs/cix/issues/470) needs, and it is why that issue named this one rather than treating it as tidying.
+3. **A hand-written document is possible.** Sending `{"zswap": {"enabled": true, "max_pool_percent": 25, "compressor": "lzo"}}` no longer requires reciting three fields the kernel decides.
+
+The list is matched **at any depth** within a section, deliberately: an observed value and its mirror usually appear at more than one level — a container's own `pid` and, nested two levels inside it, each service's `state` and `pid`. Naming a member once covers both, and the blast radius stays one section because the declaration is per section rather than global. Whole members only, so `pid` does not silence `pids_max`; `test_jsondiff` pins that.
+
+**A redaction marker is still refused rather than ignored, and the asymmetry is the point.** Sending back a stale observation is an accident of timing and means nothing. Sending back `auth_token_set: false` against a host that has a token reads as an instruction to clear it, and silently doing nothing about that would be worse than either refusing or obeying. The two secret markers (`package_repo`/`package_artifacts` `auth_token_set`, `ldap.bind_password_set`) keep the refusal; every observed member lost it.
+
+The plan reports `observed_fields` per section, so "no changes" is never read as "nothing about this section moved" — those members were not compared at all.
+
 ## What was measured
 
 Verified live on 192.168.15.95 (v2.57.177), because "eleven sections apply" is a statement about the code and not, on its own, evidence:

@@ -581,9 +581,13 @@ static void scalar_value(const char *line, char *out, size_t out_size)
  *   x-cix-config-kind   object | array
  *   x-cix-config-key    arrays only -- the identity field(s)
  *   x-cix-config-apply  replace | reconcile
+ *   x-cix-config-state  optional -- the members that are OBSERVED
  *
- * All of it is REQUIRED, and anything else under a section is a hard
- * error. A section whose write semantics are unstated would otherwise
+ * The first three are REQUIRED, and anything else under a section is a
+ * hard error. x-cix-config-state is optional because "this section
+ * reports nothing back" is a real and common answer, and writing an
+ * empty string for it everywhere would be noise rather than a
+ * decision. A section whose write semantics are unstated would otherwise
  * default to something, and a default here is a decision nobody made
  * about how an operator's document is allowed to change a live host.
  */
@@ -596,6 +600,7 @@ static void emit_config_sections(const char *out_path, const char *spec)
 	char kinds[256][16];
 	char keys[256][128];
 	char modes[256][16];
+	char states[256][320];
 	int has_key[256];
 	int count = 0;
 	int lineno = 0;
@@ -653,6 +658,10 @@ static void emit_config_sections(const char *out_path, const char *spec)
 				scalar_value(line, modes[count - 1], sizeof(modes[0]));
 				continue;
 			}
+			if (strcmp(key, "x-cix-config-state") == 0) {
+				scalar_value(line, states[count - 1], sizeof(states[0]));
+				continue;
+			}
 			die_at(spec, lineno,
 			       "unrecognised attribute \"%s\" under config section \"%s\"", key,
 			       names[count - 1]);
@@ -674,6 +683,7 @@ static void emit_config_sections(const char *out_path, const char *spec)
 		kinds[count][0] = '\0';
 		keys[count][0] = '\0';
 		modes[count][0] = '\0';
+		states[count][0] = '\0';
 		has_key[count] = 0;
 		count++;
 	}
@@ -719,12 +729,14 @@ static void emit_config_sections(const char *out_path, const char *spec)
 	fprintf(o, "#ifndef CIX_GENERATED_CONFIG_SECTIONS_H\n");
 	fprintf(o, "#define CIX_GENERATED_CONFIG_SECTIONS_H\n\n");
 	fprintf(o, "/* Section order is the contract: a section never depends on one\n");
-	fprintf(o, " * below it. See the ConfigDocument schema for why. */\n");
+	fprintf(o, " * below it. The last field is the section's OBSERVED members --\n");
+	fprintf(o, " * what the host reports rather than what it was told. See the\n");
+	fprintf(o, " * ConfigDocument schema for why both are declared there. */\n");
 	fprintf(o, "#define CIX_CONFIG_SECTIONS(X) \\\n");
 	for (i = 0; i < count; i++)
-		fprintf(o, "\tX(%s, CONFIG_KIND_%s, \"%s\", CONFIG_APPLY_%s)%s\n", names[i],
+		fprintf(o, "\tX(%s, CONFIG_KIND_%s, \"%s\", CONFIG_APPLY_%s, \"%s\")%s\n", names[i],
 		        strcmp(kinds[i], "array") == 0 ? "ARRAY" : "OBJECT", keys[i],
-		        strcmp(modes[i], "replace") == 0 ? "REPLACE" : "RECONCILE",
+		        strcmp(modes[i], "replace") == 0 ? "REPLACE" : "RECONCILE", states[i],
 		        i + 1 < count ? " \\" : "");
 	fprintf(o, "\n/* The sections one setter can replace outright. Expanded on its\n");
 	fprintf(o, " * own so the apply functions are declared, defined and tabulated\n");

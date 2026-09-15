@@ -47,8 +47,9 @@ static struct json_value *parse(const char *text)
  * diff must produce -- order-independent, so a change to how the walk
  * is ordered does not fail a test about what it found.
  */
-static void expect(const char *what, const char *live_text, const char *sup_text, const char *key,
-                   const char *const *want, int want_n)
+static void expect_ignoring(const char *what, const char *live_text, const char *sup_text,
+                            const char *key, const char *ignore, const char *const *want,
+                            int want_n)
 {
 	struct json_value *live = parse(live_text);
 	struct json_value *sup = parse(sup_text);
@@ -57,7 +58,7 @@ static void expect(const char *what, const char *live_text, const char *sup_text
 
 	if (live == NULL || sup == NULL)
 		return;
-	if (jsondiff_compute(live, sup, key, &d) != 0) {
+	if (jsondiff_compute(live, sup, key, ignore, &d) != 0) {
 		fail(what, "jsondiff_compute() failed");
 		json_free(live);
 		json_free(sup);
@@ -98,6 +99,12 @@ static void expect(const char *what, const char *live_text, const char *sup_text
 	json_free(sup);
 }
 
+static void expect(const char *what, const char *live_text, const char *sup_text, const char *key,
+                   const char *const *want, int want_n)
+{
+	expect_ignoring(what, live_text, sup_text, key, "", want, want_n);
+}
+
 static void expect_fallback(const char *what, const char *live_text, const char *sup_text,
                             const char *key, int want_fallback)
 {
@@ -107,7 +114,7 @@ static void expect_fallback(const char *what, const char *live_text, const char 
 
 	if (live == NULL || sup == NULL)
 		return;
-	if (jsondiff_compute(live, sup, key, &d) != 0) {
+	if (jsondiff_compute(live, sup, key, "", &d) != 0) {
 		fail(what, "jsondiff_compute() failed");
 		json_free(live);
 		json_free(sup);
@@ -229,6 +236,59 @@ int main(void)
 		       want, 1);
 		expect("the same number written differently is not a change", "{\"n\":1}",
 		       "{\"n\":1.0}", "", NULL, 0);
+	}
+	{
+		/*
+		 * An observed member is left out of the comparison entirely
+		 * (ADR-0292/#471). Without this, a document fetched before
+		 * something else moved differs in a field nobody can set --
+		 * and since a section that cannot be applied refuses the
+		 * whole request, one container restarting made a whole
+		 * document unusable.
+		 */
+		expect_ignoring("an observed member is not a difference",
+		                "{\"enabled\":true,\"kernel\":{\"enabled\":true}}",
+		                "{\"enabled\":true,\"kernel\":{\"enabled\":false}}", "",
+		                "kernel", NULL, 0);
+		expect_ignoring("an observed member may be absent entirely",
+		                "{\"enabled\":true,\"pid\":41}", "{\"enabled\":true}", "", "pid",
+		                NULL, 0);
+	}
+	{
+		static const char *const want[] = { "enabled replace" };
+
+		expect_ignoring("ignoring one member does not hide the others",
+		                "{\"enabled\":true,\"pid\":41}", "{\"enabled\":false,\"pid\":9}",
+		                "", "pid", want, 1);
+	}
+	{
+		/* Matched at any depth: a service's own `state` and `pid` are
+		 * nested two levels inside a container element, and naming
+		 * them once has to cover both. */
+		expect_ignoring("an observed member is ignored at any depth",
+		                "[{\"name\":\"web\",\"services\":[{\"name\":\"sshd\",\"state\":"
+		                "\"running\",\"pid\":7}]}]",
+		                "[{\"name\":\"web\",\"services\":[{\"name\":\"sshd\",\"state\":"
+		                "\"exited\",\"pid\":9}]}]",
+		                "name", "state,pid", NULL, 0);
+	}
+	{
+		static const char *const want[] = { "[web].services[0].cmd replace" };
+
+		expect_ignoring("and the declaration does not swallow its siblings",
+		                "[{\"name\":\"web\",\"services\":[{\"name\":\"sshd\",\"state\":"
+		                "\"running\",\"cmd\":\"a\"}]}]",
+		                "[{\"name\":\"web\",\"services\":[{\"name\":\"sshd\",\"state\":"
+		                "\"exited\",\"cmd\":\"b\"}]}]",
+		                "name", "state", want, 1);
+	}
+	{
+		/* A prefix is not a match: "pid" must not silence "pids_max". */
+		static const char *const want[] = { "pids_max replace" };
+
+		expect_ignoring("a listed name matches whole members only",
+		                "{\"pid\":1,\"pids_max\":10}", "{\"pid\":2,\"pids_max\":20}", "",
+		                "pid", want, 1);
 	}
 	if (g_fail) {
 		fprintf(stderr, "test_jsondiff: FAILED\n");

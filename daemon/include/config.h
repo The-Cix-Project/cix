@@ -57,6 +57,18 @@ enum config_kind config_section_kind(int i);
 const char *config_section_key(int i);
 enum config_apply_mode config_section_apply_mode(int i);
 
+/*
+ * The section's OBSERVED members, comma-separated, or "" -- what the
+ * host reports rather than what it was told: a container's `pid`, a
+ * volume's `created_at`, what the kernel currently has under
+ * `zswap.kernel`. They are left out of the comparison entirely and may
+ * be omitted from a supplied section, because a document fetched
+ * before something else moved is otherwise unusable: it differs in a
+ * field nobody can set, and a section that cannot be applied refuses
+ * the whole request.
+ */
+const char *config_section_state_fields(int i);
+
 /* Writes just section `i`'s value -- the same bytes
  * config_write_document() would put under that key. */
 void config_render_section(int i, const char *containers_dir, struct json_writer *w);
