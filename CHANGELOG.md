@@ -6,6 +6,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Element-wise config apply, for the eleven sections where an element is a record (#470)
+
+`POST /v1/config` now applies `ntp_servers`, `dhcp_servers`, `dns_servers`, `ldap_servers`, `syslog_targets`, `sysctl`, `kernel_modules`, `dns_records`, `ldap_groups`, `package_policies` and `disk_roles`. **What the document names is created or updated; what it does not name is removed** — the same thing `replace` already means for the sections one setter owns (a shorter `resolver.nameservers` list removes one), because one endpoint speaking two languages would be worse than either. The safety is that `POST /v1/config/diff` shows every removal before anything runs.
+
+One walk serves all eleven; a section supplies only what creating, updating and deleting ONE element means. Elements are paired through `jsondiff_element_name()` and compared with `jsondiff_equal_ignoring()` — the differ's own functions — so the pairing an operator saw in the plan is the pairing that runs. Creates and updates go before removals, so a renamed element is never absent in between. An element that cannot be named, or a name appearing twice, refuses the section before anything runs.
+
+**`x-cix-config-apply` gains a third value, `manual`**, for the eleven sections this document must not apply: `containers`, `volumes`, `images`, `packages`, `networks`, `pki`, `dhcp`, `image_recipes`, `container_recipes`, `routes` and `ldap_users`. Removing an element there destroys something the document cannot describe well enough to recreate (a volume's data, a container's processes), or the section is an observation with no setter at all (`routes` is the kernel's own table).
+
+**`ldap_users` is `manual` for a reason only visible once you try to write the applier:** a password renders as `has_password`, a marker, because secrets are never in this document — so reconciling that section could only ever create accounts nobody can log in as, while its removals would delete real ones. Creations that are useless and deletions that are not is precisely the shape that should not be automated.
+
+**Three renderer shapes that would each have refused a document fetched from the host itself**, found by reading every renderer instead of assuming the obvious type: a `sysctl` value renders as a string for one token and an **array** for a tuple (`net.ipv4.tcp_wmem`); `kernel_modules.default_options` renders as an **object** of parameter/value pairs rather than the stored `"k=v k=v"` string; and `dns_records.owner` records which container's lifecycle a record follows, which no operator can assert, so a record created from this document is owned by nobody rather than by whatever the document carried.
+
+The generated-list guard extends unchanged: `apigen` emits `CIX_CONFIG_SECTIONS_RECONCILE(X)`, so a `reconcile` section with no element operations does not compile and leftover operations are an unused static.
+
 ### A config section declares what it observes, so a document can be replayed (#471)
 
 `GET /v1/config` renders running state alongside configuration — a container's `pid` and `status`, a volume's `created_at`, what the kernel currently has under `zswap.kernel`, and the whole of `routes`, which is the kernel's own table. That is useful to read and was actively harmful to send back: a member nobody can set counted as a difference, and since a `reconcile` section with changes refuses the **whole** request, one container restarting between fetch and apply made a whole document unusable. Measured, not theorised: raising `zswap.max_pool_percent` and then replaying the document fetched beforehand was refused, naming `kernel` when the operator had edited `max_pool_percent`.

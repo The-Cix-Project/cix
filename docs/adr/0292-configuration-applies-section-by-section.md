@@ -68,6 +68,22 @@ The list is matched **at any depth** within a section, deliberately: an observed
 
 The plan reports `observed_fields` per section, so "no changes" is never read as "nothing about this section moved" — those members were not compared at all.
 
+## Amendment: element-wise apply, and a third mode for what this document must not do
+
+The decision above split sections into `replace` and `reconcile` and applied only the first. Reconcile is now built for the sections where an element is a small record, and the split has a third value.
+
+**`reconcile` (11 sections)** — `ntp_servers`, `dhcp_servers`, `dns_servers`, `ldap_servers`, `syslog_targets`, `sysctl`, `kernel_modules`, `dns_records`, `ldap_groups`, `package_policies`, `disk_roles`. **What the document names is created or updated; what it does not name is removed.** That is what `replace` already means for the sections one setter owns — sending a shorter `resolver.nameservers` list removes one — and having element-wise sections mean something else would make one endpoint speak two languages. The safety is that `POST /v1/config/diff` shows every removal before anything runs, not that removals are quietly skipped.
+
+**`manual` (11 sections)** — `containers`, `volumes`, `images`, `packages`, `networks`, `pki`, `dhcp`, `image_recipes`, `container_recipes`, `routes`, `ldap_users`. Rendered for reading, changed through their own endpoints. Two different reasons, and both are real: for most of them, removing an element destroys something this document cannot describe well enough to recreate — a volume's data, a container's processes and upper directory — and `routes` is the kernel's own table, an observation with no setter at all.
+
+**`ldap_users` is `manual` for a third reason, and it is the interesting one: the document deliberately cannot describe a user well enough to create one.** A user's password renders as `has_password`, a marker, because secrets are never in this document. Reconciling that section could therefore only ever create accounts with no password — accounts nobody can log in as — while its removals would delete real ones. A section whose creations are useless and whose deletions are not is exactly the shape that should not be automated, and the asymmetry only becomes visible when you try to write the applier.
+
+One walk serves all eleven (`reconcile_list()`); a section supplies only what creating, updating and deleting ONE element means. Elements are paired through `jsondiff_element_name()` and compared with `jsondiff_equal_ignoring()` — the differ's own functions — so the pairing an operator saw in the plan is the pairing that runs. Creates and updates go before removals, so a rename never leaves the thing it describes absent in between. A supplied element that cannot be named, or a name appearing twice, refuses the section before anything runs.
+
+The same generated-list guard applies: `apigen` emits `CIX_CONFIG_SECTIONS_RECONCILE(X)`, so a `reconcile` section with no element operations does not compile, and operations left behind for a section that is no longer `reconcile` are an unused static.
+
+**Three renderer shapes that would each have refused a document fetched from the host itself**, found by reading every renderer rather than assuming the obvious type: a `sysctl` value renders as a string for one token and an ARRAY for a tuple (`net.ipv4.tcp_wmem`); `kernel_modules.default_options` renders as an OBJECT of parameter/value pairs, not the stored "k=v k=v" string; and `dns_records.owner` records which container's lifecycle a record follows, which no operator can assert, so a record created from this document is owned by nobody rather than by whatever the document happened to carry.
+
 ## What was measured
 
 Verified live on 192.168.15.95 (v2.57.177), because "eleven sections apply" is a statement about the code and not, on its own, evidence:

@@ -42,9 +42,18 @@ enum config_kind {
 enum config_apply_mode {
 	/* One setter replaces the whole section. */
 	CONFIG_APPLY_REPLACE,
-	/* Applying means creating, updating and deleting individual live
-	 * resources in dependency order -- not implemented (ADR-0292). */
-	CONFIG_APPLY_RECONCILE
+	/* Applied element by element: what the document names is created
+	 * or updated, and what it does not name is removed. */
+	CONFIG_APPLY_RECONCILE,
+	/*
+	 * Rendered for reading, changed through the section's own
+	 * endpoints. Either deleting an element destroys something this
+	 * document cannot describe well enough to recreate (a volume's
+	 * data, a container's processes), or the section is an
+	 * observation with no setter at all (`routes` is the kernel's own
+	 * table).
+	 */
+	CONFIG_APPLY_MANUAL
 };
 
 int config_section_count(void);

@@ -490,19 +490,27 @@ observation means nothing, but `auth_token_set: false` against a host
 that has a token reads as an instruction to clear it, and quietly doing
 nothing about that would be worse than saying no.
 
-**Only some sections can be applied.** Each section declares in the
-schema whether one setter replaces it (`replace`) or whether applying it
-means creating, updating and deleting individual live resources
-(`reconcile`). Eleven sections are `replace` and are applied; the other
-twenty-two are diffed and **refuse the whole request** if they carry real
-changes, with nothing touched -- use those sections' own endpoints. The
-plan comes back with the refusal, so the reason arrives with the evidence
-for it:
+**Each section declares how it may be written.** `replace` (11
+sections) means one setter replaces it whole. `reconcile` (11) means it
+is applied element by element: **what the document names is created or
+updated, and what it does not name is removed** -- the same thing
+`replace` already means for a list like `resolver.nameservers`. `manual`
+(11) means it is changed through its own endpoints only: removing an
+element there would destroy something this document cannot describe
+well enough to recreate (a volume's data, a container's processes), or
+the section is an observation with no setter at all (`routes` is the
+kernel's own table). `ldap_users` is `manual` for a subtler reason --
+a password renders as a marker, so a user created from this document
+would be one nobody can log in as.
+
+A `manual` section carrying real changes **refuses the whole request**
+with nothing touched. The plan comes back with the refusal, so the
+reason arrives with the evidence for it:
 
 ```json
 {
   "sections": [
-    { "name": "containers", "apply": "reconcile", "status": "changed",
+    { "name": "containers", "apply": "manual", "status": "changed",
       "appliable": false,
       "reason": "applying \"containers\" means creating, updating and deleting individual resources, which this endpoint does not do yet (ADR-0292) -- use that section's own endpoints",
       "changes": [ { "path": "[web].image", "op": "replace", "from": "base", "to": "dev" } ] }
