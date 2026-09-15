@@ -580,7 +580,7 @@ static void scalar_value(const char *line, char *out, size_t out_size)
  *
  *   x-cix-config-kind   object | array
  *   x-cix-config-key    arrays only -- the identity field(s)
- *   x-cix-config-apply  replace | reconcile
+ *   x-cix-config-apply  replace | reconcile | manual
  *   x-cix-config-state  optional -- the members that are OBSERVED
  *
  * The first three are REQUIRED, and anything else under a section is a
@@ -606,6 +606,7 @@ static void emit_config_sections(const char *out_path, const char *spec)
 	int lineno = 0;
 	int in_doc = 0, in_props = 0;
 	int replace_count = 0;
+	int reconcile_count = 0;
 	int i;
 
 	if (f == NULL) {
@@ -703,10 +704,11 @@ static void emit_config_sections(const char *out_path, const char *spec)
 			die_at(spec, 0,
 			       "config section \"%s\": x-cix-config-kind must be \"object\" or "
 			       "\"array\" (got \"%s\")", names[i], kinds[i]);
-		if (strcmp(modes[i], "replace") != 0 && strcmp(modes[i], "reconcile") != 0)
+		if (strcmp(modes[i], "replace") != 0 && strcmp(modes[i], "reconcile") != 0 &&
+		    strcmp(modes[i], "manual") != 0)
 			die_at(spec, 0,
-			       "config section \"%s\": x-cix-config-apply must be \"replace\" or "
-			       "\"reconcile\" (got \"%s\")", names[i], modes[i]);
+			       "config section \"%s\": x-cix-config-apply must be \"replace\", "
+			       "\"reconcile\" or \"manual\" (got \"%s\")", names[i], modes[i]);
 		if (is_array && !has_key[i])
 			die_at(spec, 0,
 			       "config section \"%s\" is an array and must declare "
@@ -718,6 +720,8 @@ static void emit_config_sections(const char *out_path, const char *spec)
 			       "nothing for it", names[i]);
 		if (strcmp(modes[i], "replace") == 0)
 			replace_count++;
+		if (strcmp(modes[i], "reconcile") == 0)
+			reconcile_count++;
 	}
 
 	o = fopen(out_path, "w");
@@ -749,6 +753,16 @@ static void emit_config_sections(const char *out_path, const char *spec)
 			continue;
 		replace_count--;
 		fprintf(o, "\tX(%s)%s\n", names[i], replace_count > 0 ? " \\" : "");
+	}
+	fprintf(o, "\n/* The sections applied element by element. Same guard as above:\n");
+	fprintf(o, " * the element operations are declared and tabulated from this\n");
+	fprintf(o, " * list alone. */\n");
+	fprintf(o, "#define CIX_CONFIG_SECTIONS_RECONCILE(X) \\\n");
+	for (i = 0; i < count; i++) {
+		if (strcmp(modes[i], "reconcile") != 0)
+			continue;
+		reconcile_count--;
+		fprintf(o, "\tX(%s)%s\n", names[i], reconcile_count > 0 ? " \\" : "");
 	}
 	fprintf(o, "\n#define CIX_CONFIG_SECTION_COUNT %d\n\n", count);
 	fprintf(o, "#endif\n");

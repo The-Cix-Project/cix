@@ -45,6 +45,14 @@
 
 #include "apiresp.h"
 #include "backupconfig.h"
+#include "dhcp.h"
+#include "diskrole.h"
+#include "kmod.h"
+#include "kmodconfig.h"
+#include "pkgpolicy.h"
+#include "registry.h"
+#include "syslogfwd.h"
+#include "sysctlconfig.h"
 #include "config.h"
 #include "daemon_config.h"
 #include "dns.h"
@@ -60,11 +68,19 @@
 
 #include "generated/config_sections.h"
 
+#include <arpa/inet.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define CFG_ERR_MAX 320
+
+/*
+ * diskrole needs to know where containers live, which is main.c's to
+ * know and arrives with the request. Same split config.c already has
+ * for the renderers.
+ */
+static const char *g_containers_dir;
 
 /* ---- reading fields out of a supplied section ---- */
 
@@ -739,6 +755,719 @@ static int cfg_apply_dns_forwarders(const struct json_value *live, const struct 
 	return 0;
 }
 
+
+/* ---- reconcile: sections applied element by element ----
+ *
+ * ONE walk, and per section only the three things that differ: what
+ * creating, updating and deleting ONE element means. Writing the walk
+ * eleven times would be eleven chances to order it differently.
+ *
+ * WHAT THE DOCUMENT NAMES IS CREATED OR UPDATED; WHAT IT DOES NOT NAME
+ * IS REMOVED. That is what `replace` already means for the sections a
+ * single setter owns -- sending a shorter `resolver.nameservers` list
+ * removes one -- and having element-wise sections mean something
+ * different would make one endpoint speak two languages. The safety is
+ * that `POST /v1/config/diff` shows every removal before anything runs,
+ * not that removals are quietly skipped.
+ *
+ * Elements are paired by the identity key the schema declares, through
+ * jsondiff_element_name(), and compared with jsondiff_equal_ignoring()
+ * -- both the differ's own functions, so the pairing an operator saw in
+ * the plan is the pairing that happens here.
+ *
+ * Creates and updates run BEFORE removals. A document that renames an
+ * element is a removal and an addition; doing the addition first means
+ * the service it describes is never absent in between.
+ *
+ * `dry_run` runs the same code with every mutating call skipped, the
+ * same discipline the replace appliers use -- so what the plan reports
+ * as appliable is what this function will attempt.
+ */
+
+typedef int (*cfg_elem_fn)(const struct json_value *el, int dry_run, char *err, size_t errsz);
+typedef int (*cfg_elem_upd)(const struct json_value *live_el, const struct json_value *sup_el,
+                            int dry_run, char *err, size_t errsz);
+
+struct cfg_elem_ops {
+	cfg_elem_fn create;
+	/* NULL when the subsystem has no in-place update: a changed
+	 * element is then removed and recreated, which is visible in the
+	 * plan as exactly that. */
+	cfg_elem_upd update;
+	cfg_elem_fn remove;
+};
+
+static const struct json_value *find_named(const struct json_value *arr, const char *key,
+                                           const char *name)
+{
+	char other[JSONDIFF_PATH_MAX];
+	size_t i;
+
+	for (i = 0; i < arr->u.array.count; i++) {
+		if (jsondiff_element_name(arr->u.array.items[i], key, other, sizeof(other)) != 0)
+			continue;
+		if (strcmp(other, name) == 0)
+			return arr->u.array.items[i];
+	}
+	return NULL;
+}
+
+static int reconcile_list(const struct json_value *live, const struct json_value *sup,
+                          const char *key, const char *state_fields,
+                          const struct cfg_elem_ops *ops, int dry_run, char *err, size_t errsz)
+{
+	char name[JSONDIFF_PATH_MAX];
+	char other[JSONDIFF_PATH_MAX];
+	size_t i, j;
+
+	if (sup->type != JSON_ARRAY) {
+		snprintf(err, errsz, "this section is a list");
+		return -1;
+	}
+	/*
+	 * Every element must be nameable, and no two may share a name --
+	 * checked before anything runs, because a document that names the
+	 * same element twice says two things about it and there is no
+	 * defensible order in which to do both.
+	 */
+	for (i = 0; i < sup->u.array.count; i++) {
+		if (jsondiff_element_name(sup->u.array.items[i], key, name, sizeof(name)) != 0) {
+			snprintf(err, errsz, "element %d has no usable \"%s\"", (int)i, key);
+			return -1;
+		}
+		for (j = 0; j < i; j++) {
+			if (jsondiff_element_name(sup->u.array.items[j], key, other,
+			                          sizeof(other)) == 0 &&
+			    strcmp(name, other) == 0) {
+				snprintf(err, errsz, "\"%s\" appears twice", name);
+				return -1;
+			}
+		}
+	}
+
+	for (i = 0; i < sup->u.array.count; i++) {
+		const struct json_value *el = sup->u.array.items[i];
+		const struct json_value *cur;
+		int same;
+
+		(void)jsondiff_element_name(el, key, name, sizeof(name));
+		cur = find_named(live, key, name);
+		if (cur == NULL) {
+			if (ops->create(el, dry_run, err, errsz) != 0)
+				return -1;
+			continue;
+		}
+		same = jsondiff_equal_ignoring(cur, el, state_fields);
+		if (same < 0) {
+			snprintf(err, errsz, "out of memory comparing \"%s\"", name);
+			return -1;
+		}
+		if (same)
+			continue;
+		if (ops->update != NULL) {
+			if (ops->update(cur, el, dry_run, err, errsz) != 0)
+				return -1;
+			continue;
+		}
+		if (ops->remove(cur, dry_run, err, errsz) != 0)
+			return -1;
+		if (ops->create(el, dry_run, err, errsz) != 0)
+			return -1;
+	}
+
+	for (i = 0; i < live->u.array.count; i++) {
+		const struct json_value *el = live->u.array.items[i];
+
+		if (jsondiff_element_name(el, key, name, sizeof(name)) != 0)
+			continue; /* nothing live that cannot be named can be matched */
+		if (find_named(sup, key, name) != NULL)
+			continue;
+		if (ops->remove(el, dry_run, err, errsz) != 0)
+			return -1;
+	}
+	return 0;
+}
+
+/* --- the per-section element operations --- */
+
+/*
+ * The five "this container provides this service" registrations. An
+ * element is the container's name and nothing else the operator
+ * chooses, so there is no update: a difference can only be in an
+ * observed member, which is never compared.
+ */
+#define CFG_REGISTRATION_OPS(section, field, reg_call, unreg_call, what)                        \
+	static int cfg_##section##_create(const struct json_value *el, int dry_run, char *err,      \
+	                                  size_t errsz)                                             \
+	{                                                                                           \
+		const char *name;                                                                      \
+                                                                                                \
+		if (need_string(el, field, &name, err, errsz) != 0)                                    \
+			return -1;                                                                         \
+		if (dry_run)                                                                           \
+			return 0;                                                                          \
+		if (reg_call != 0) {                                                                   \
+			snprintf(err, errsz, "could not register %s as " what, name);                      \
+			return -1;                                                                         \
+		}                                                                                       \
+		return 0;                                                                               \
+	}                                                                                           \
+	static int cfg_##section##_remove(const struct json_value *el, int dry_run, char *err,      \
+	                                  size_t errsz)                                             \
+	{                                                                                           \
+		const char *name;                                                                      \
+                                                                                                \
+		if (need_string(el, field, &name, err, errsz) != 0)                                    \
+			return -1;                                                                         \
+		if (dry_run)                                                                           \
+			return 0;                                                                          \
+		if (unreg_call != 0) {                                                                 \
+			snprintf(err, errsz, "could not unregister %s as " what, name);                    \
+			return -1;                                                                         \
+		}                                                                                       \
+		return 0;                                                                               \
+	}
+
+CFG_REGISTRATION_OPS(ntp_servers, "container", ntp_server_register(name),
+                     ntp_server_unregister(name), "an NTP server")
+CFG_REGISTRATION_OPS(syslog_targets, "container", syslogfwd_target_register(name),
+                     syslogfwd_target_unregister(name), "a syslog target")
+CFG_REGISTRATION_OPS(dhcp_servers, "container", dhcp_server_register(name),
+                     dhcp_server_unregister(name), "a DHCP server")
+
+static const struct cfg_elem_ops cfg_ops_ntp_servers = { cfg_ntp_servers_create, NULL,
+                                                         cfg_ntp_servers_remove };
+static const struct cfg_elem_ops cfg_ops_syslog_targets = { cfg_syslog_targets_create, NULL,
+                                                            cfg_syslog_targets_remove };
+static const struct cfg_elem_ops cfg_ops_dhcp_servers = { cfg_dhcp_servers_create, NULL,
+                                                          cfg_dhcp_servers_remove };
+
+/* An LDAP server carries the path to the config it serves, so it has a
+ * settable member and a difference is real. No in-place update exists,
+ * so a changed one is re-registered. */
+static int cfg_ldap_servers_create(const struct json_value *el, int dry_run, char *err,
+                                   size_t errsz)
+{
+	const char *name, *config_path;
+
+	if (need_string(el, "container", &name, err, errsz) != 0 ||
+	    need_string(el, "config_path", &config_path, err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	if (ldap_server_register(name, config_path) != LDAP_SERVER_OK) {
+		snprintf(err, errsz, "could not register %s as an LDAP server", name);
+		return -1;
+	}
+	return 0;
+}
+
+static int cfg_ldap_servers_remove(const struct json_value *el, int dry_run, char *err,
+                                   size_t errsz)
+{
+	const char *name;
+
+	if (need_string(el, "container", &name, err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	if (ldap_server_unregister(name) != LDAP_SERVER_OK) {
+		snprintf(err, errsz, "could not unregister the LDAP server %s", name);
+		return -1;
+	}
+	return 0;
+}
+
+static const struct cfg_elem_ops cfg_ops_ldap_servers = { cfg_ldap_servers_create, NULL,
+                                                          cfg_ldap_servers_remove };
+
+/*
+ * A DNS server registration binds to the container's RUNNING process
+ * (the daemon writes the hosts file through /proc/<pid>/root and
+ * signals it), so this resolves the same pid/pidfd the REST handler
+ * does and refuses a container that is not running -- the same refusal,
+ * for the same reason.
+ */
+static int cfg_dns_servers_create(const struct json_value *el, int dry_run, char *err,
+                                  size_t errsz)
+{
+	struct registry_entry *entry;
+	const char *name, *hosts_path;
+
+	if (need_string(el, "container", &name, err, errsz) != 0 ||
+	    need_string(el, "hosts_path", &hosts_path, err, errsz) != 0)
+		return -1;
+	entry = registry_find(name);
+	if (entry == NULL || !entry->running) {
+		snprintf(err, errsz, "%s is not a running container", name);
+		return -1;
+	}
+	if (dry_run)
+		return 0;
+	if (dns_server_register(name, entry->handle.pid, entry->handle.pidfd, hosts_path) !=
+	    DNS_SERVER_OK) {
+		snprintf(err, errsz, "could not register %s as a DNS server", name);
+		return -1;
+	}
+	return 0;
+}
+
+static int cfg_dns_servers_remove(const struct json_value *el, int dry_run, char *err,
+                                  size_t errsz)
+{
+	const char *name;
+
+	if (need_string(el, "container", &name, err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	if (dns_server_unregister(name) != DNS_SERVER_OK) {
+		snprintf(err, errsz, "could not unregister the DNS server %s", name);
+		return -1;
+	}
+	return 0;
+}
+
+static const struct cfg_elem_ops cfg_ops_dns_servers = { cfg_dns_servers_create, NULL,
+                                                         cfg_dns_servers_remove };
+
+/* A persisted kernel parameter: setting is the same call for a new one
+ * and a changed one. */
+/*
+ * A sysctl value renders as a STRING when it is one token and as an
+ * ARRAY when it is a tuple -- `sysctl_value_write_json()` splits on
+ * whitespace, so a real tuple-shaped parameter like
+ * net.ipv4.tcp_wmem comes back as three strings. Both shapes have to
+ * be accepted here or a document fetched from this very host would be
+ * refused for a sysctl nobody edited. Joined back with single spaces,
+ * which is what the subsystem stores.
+ */
+static int sysctl_value_text(const struct json_value *el, char *out, size_t out_size, char *err,
+                             size_t errsz)
+{
+	const struct json_value *v = json_object_get(el, "value");
+	size_t used = 0;
+	size_t i;
+
+	if (v != NULL && v->type == JSON_STRING) {
+		if (snprintf(out, out_size, "%s", v->u.string) >= (int)out_size) {
+			snprintf(err, errsz, "\"value\" is too long");
+			return -1;
+		}
+		return 0;
+	}
+	if (v == NULL || v->type != JSON_ARRAY) {
+		snprintf(err, errsz, "\"value\" must be a string, or an array of them for a "
+		                     "tuple-shaped parameter");
+		return -1;
+	}
+	out[0] = '\0';
+	for (i = 0; i < v->u.array.count; i++) {
+		int written;
+
+		if (v->u.array.items[i]->type != JSON_STRING) {
+			snprintf(err, errsz, "\"value\" must hold strings");
+			return -1;
+		}
+		written = snprintf(out + used, out_size - used, "%s%s", used > 0 ? " " : "",
+		                   v->u.array.items[i]->u.string);
+		if (written < 0 || (size_t)written >= out_size - used) {
+			snprintf(err, errsz, "\"value\" is too long");
+			return -1;
+		}
+		used += (size_t)written;
+	}
+	return 0;
+}
+
+static int cfg_sysctl_create(const struct json_value *el, int dry_run, char *err, size_t errsz)
+{
+	char value[SYSCTL_VALUE_MAX];
+	const char *key;
+
+	if (need_string(el, "key", &key, err, errsz) != 0 ||
+	    sysctl_value_text(el, value, sizeof(value), err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	if (sysctlconfig_set(key, value) != SYSCTLCONFIG_OK) {
+		snprintf(err, errsz, "%s could not be set to \"%s\"", key, value);
+		return -1;
+	}
+	return 0;
+}
+
+static int cfg_sysctl_update(const struct json_value *live_el, const struct json_value *sup_el,
+                             int dry_run, char *err, size_t errsz)
+{
+	(void)live_el;
+	return cfg_sysctl_create(sup_el, dry_run, err, errsz);
+}
+
+static int cfg_sysctl_remove(const struct json_value *el, int dry_run, char *err, size_t errsz)
+{
+	const char *key;
+
+	if (need_string(el, "key", &key, err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	if (sysctlconfig_delete(key) != SYSCTLCONFIG_OK) {
+		snprintf(err, errsz, "%s could not be removed", key);
+		return -1;
+	}
+	return 0;
+}
+
+static const struct cfg_elem_ops cfg_ops_sysctl = { cfg_sysctl_create, cfg_sysctl_update,
+                                                    cfg_sysctl_remove };
+
+/*
+ * `default_options` renders as an OBJECT of parameter=value pairs
+ * (`kmod_options_write_json()` splits the stored string on whitespace
+ * and again on '='), so it has to be folded back into the "k=v k=v"
+ * form the subsystem stores. Reading the renderer rather than assuming
+ * a string is what caught this: a document fetched from this host
+ * would otherwise have been refused for a module nobody edited.
+ */
+static int kmod_options_text(const struct json_value *el, char *out, size_t out_size, char *err,
+                             size_t errsz)
+{
+	const struct json_value *v = json_object_get(el, "default_options");
+	size_t used = 0;
+	size_t i;
+
+	out[0] = '\0';
+	if (v == NULL || v->type != JSON_OBJECT) {
+		snprintf(err, errsz, "\"default_options\" must be an object of parameter/value "
+		                     "pairs");
+		return -1;
+	}
+	for (i = 0; i < v->u.object.count; i++) {
+		const char *val = json_as_string(v->u.object.values[i]);
+		int written;
+
+		if (val == NULL) {
+			snprintf(err, errsz, "\"default_options.%s\" must be a string",
+			         v->u.object.keys[i]);
+			return -1;
+		}
+		written = snprintf(out + used, out_size - used, "%s%s=%s", used > 0 ? " " : "",
+		                   v->u.object.keys[i], val);
+		if (written < 0 || (size_t)written >= out_size - used) {
+			snprintf(err, errsz, "\"default_options\" is too long");
+			return -1;
+		}
+		used += (size_t)written;
+	}
+	return 0;
+}
+
+static int cfg_kernel_modules_create(const struct json_value *el, int dry_run, char *err,
+                                     size_t errsz)
+{
+	char options[KMOD_OPTIONS_MAX];
+	const struct json_value *jauto;
+	const char *name;
+	int autoload = 0;
+
+	if (need_string(el, "name", &name, err, errsz) != 0 ||
+	    kmod_options_text(el, options, sizeof(options), err, errsz) != 0)
+		return -1;
+	jauto = json_object_get(el, "autoload");
+	if (jauto == NULL || jauto->type != JSON_BOOL) {
+		snprintf(err, errsz, "\"autoload\" must be true or false");
+		return -1;
+	}
+	autoload = jauto->u.boolean;
+	if (dry_run)
+		return 0;
+	if (kmodconfig_set(name, options, 1, autoload) != KMODCONFIG_OK) {
+		snprintf(err, errsz, "the configuration for module %s was refused", name);
+		return -1;
+	}
+	return 0;
+}
+
+static int cfg_kernel_modules_update(const struct json_value *live_el,
+                                     const struct json_value *sup_el, int dry_run, char *err,
+                                     size_t errsz)
+{
+	(void)live_el;
+	return cfg_kernel_modules_create(sup_el, dry_run, err, errsz);
+}
+
+static int cfg_kernel_modules_remove(const struct json_value *el, int dry_run, char *err,
+                                     size_t errsz)
+{
+	const char *name;
+
+	if (need_string(el, "name", &name, err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	if (kmodconfig_delete(name) != KMODCONFIG_OK) {
+		snprintf(err, errsz, "the configuration for module %s could not be removed", name);
+		return -1;
+	}
+	return 0;
+}
+
+static const struct cfg_elem_ops cfg_ops_kernel_modules = { cfg_kernel_modules_create,
+                                                            cfg_kernel_modules_update,
+                                                            cfg_kernel_modules_remove };
+
+static int cfg_package_policies_create(const struct json_value *el, int dry_run, char *err,
+                                       size_t errsz)
+{
+	enum pkg_policy_kind kind;
+	const char *name, *policy, *version;
+
+	if (need_string(el, "name", &name, err, errsz) != 0 ||
+	    need_string(el, "policy", &policy, err, errsz) != 0 ||
+	    need_string_or_null(el, "version", &version, err, errsz) != 0)
+		return -1;
+	if (!pkgpolicy_kind_parse(policy, &kind)) {
+		snprintf(err, errsz, "\"%s\" is not a package policy", policy);
+		return -1;
+	}
+	if (dry_run)
+		return 0;
+	if (pkgpolicy_set(name, kind, version) != 0) {
+		snprintf(err, errsz, "the policy for %s was refused", name);
+		return -1;
+	}
+	return 0;
+}
+
+static int cfg_package_policies_update(const struct json_value *live_el,
+                                       const struct json_value *sup_el, int dry_run, char *err,
+                                       size_t errsz)
+{
+	(void)live_el;
+	return cfg_package_policies_create(sup_el, dry_run, err, errsz);
+}
+
+static int cfg_package_policies_remove(const struct json_value *el, int dry_run, char *err,
+                                       size_t errsz)
+{
+	const char *name;
+
+	if (need_string(el, "name", &name, err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	if (pkgpolicy_clear(name) != 0) {
+		snprintf(err, errsz, "the policy for %s could not be removed", name);
+		return -1;
+	}
+	return 0;
+}
+
+static const struct cfg_elem_ops cfg_ops_package_policies = { cfg_package_policies_create,
+                                                              cfg_package_policies_update,
+                                                              cfg_package_policies_remove };
+
+static int cfg_disk_roles_create(const struct json_value *el, int dry_run, char *err, size_t errsz)
+{
+	const char *disk, *role;
+
+	if (need_string(el, "disk_name", &disk, err, errsz) != 0 ||
+	    need_string(el, "role", &role, err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	if (diskrole_create(disk, role, g_containers_dir) != DISKROLE_OK) {
+		snprintf(err, errsz, "the role \"%s\" was refused for %s", role, disk);
+		return -1;
+	}
+	return 0;
+}
+
+static int cfg_disk_roles_remove(const struct json_value *el, int dry_run, char *err, size_t errsz)
+{
+	const char *disk;
+
+	if (need_string(el, "disk_name", &disk, err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	if (diskrole_delete(disk) != DISKROLE_OK) {
+		snprintf(err, errsz, "the role assignment for %s could not be removed", disk);
+		return -1;
+	}
+	return 0;
+}
+
+static const struct cfg_elem_ops cfg_ops_disk_roles = { cfg_disk_roles_create, NULL,
+                                                        cfg_disk_roles_remove };
+
+static int record_ip(const struct json_value *el, uint32_t *out, char *err, size_t errsz)
+{
+	struct in_addr a;
+	const char *ip;
+
+	if (need_string(el, "ip", &ip, err, errsz) != 0)
+		return -1;
+	if (inet_pton(AF_INET, ip, &a) != 1) {
+		snprintf(err, errsz, "\"%s\" is not a dotted-quad IPv4 address", ip);
+		return -1;
+	}
+	*out = (uint32_t)a.s_addr;
+	return 0;
+}
+
+/*
+ * `owner` is observed -- it records which container's lifecycle a
+ * record is tied to, which only the creating container can establish.
+ * A record created from this document belongs to the operator, so the
+ * owner is NULL rather than anything copied out of the document.
+ */
+static int cfg_dns_records_create(const struct json_value *el, int dry_run, char *err,
+                                  size_t errsz)
+{
+	const char *name;
+	uint32_t ip;
+
+	if (need_string(el, "name", &name, err, errsz) != 0 ||
+	    record_ip(el, &ip, err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	if (dns_record_create(name, ip, NULL, NULL) != DNS_OK) {
+		snprintf(err, errsz, "the record %s was refused", name);
+		return -1;
+	}
+	return 0;
+}
+
+static int cfg_dns_records_update(const struct json_value *live_el,
+                                  const struct json_value *sup_el, int dry_run, char *err,
+                                  size_t errsz)
+{
+	const char *name;
+	uint32_t ip;
+
+	(void)live_el;
+	if (need_string(sup_el, "name", &name, err, errsz) != 0 ||
+	    record_ip(sup_el, &ip, err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	if (dns_record_update(name, ip, NULL) != DNS_OK) {
+		snprintf(err, errsz, "the record %s could not be updated", name);
+		return -1;
+	}
+	return 0;
+}
+
+static int cfg_dns_records_remove(const struct json_value *el, int dry_run, char *err,
+                                  size_t errsz)
+{
+	const char *name;
+
+	if (need_string(el, "name", &name, err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	if (dns_record_delete(name) != DNS_OK) {
+		snprintf(err, errsz, "the record %s could not be removed", name);
+		return -1;
+	}
+	return 0;
+}
+
+static const struct cfg_elem_ops cfg_ops_dns_records = { cfg_dns_records_create,
+                                                         cfg_dns_records_update,
+                                                         cfg_dns_records_remove };
+
+static int cfg_ldap_groups_create(const struct json_value *el, int dry_run, char *err,
+                                  size_t errsz)
+{
+	const char *name;
+	long long gid;
+
+	if (need_string(el, "name", &name, err, errsz) != 0 ||
+	    need_int(el, "gidnumber", &gid, err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	if (ldap_group_create(name, (int)gid, NULL) != LDAP_RECORD_OK) {
+		snprintf(err, errsz, "the group %s was refused", name);
+		return -1;
+	}
+	return 0;
+}
+
+static int cfg_ldap_groups_update(const struct json_value *live_el,
+                                  const struct json_value *sup_el, int dry_run, char *err,
+                                  size_t errsz)
+{
+	const char *name;
+	long long gid;
+
+	(void)live_el;
+	if (need_string(sup_el, "name", &name, err, errsz) != 0 ||
+	    need_int(sup_el, "gidnumber", &gid, err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	/* The name is the identity this element was matched by, so it is
+	 * never the thing being changed here -- a renamed group is an
+	 * addition and a removal, which is what the plan shows. */
+	if (ldap_group_update(name, name, (int)gid, NULL) != LDAP_RECORD_OK) {
+		snprintf(err, errsz, "the group %s could not be updated", name);
+		return -1;
+	}
+	return 0;
+}
+
+static int cfg_ldap_groups_remove(const struct json_value *el, int dry_run, char *err,
+                                  size_t errsz)
+{
+	const char *name;
+
+	if (need_string(el, "name", &name, err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	if (ldap_group_delete(name) != LDAP_RECORD_OK) {
+		snprintf(err, errsz, "the group %s could not be removed", name);
+		return -1;
+	}
+	return 0;
+}
+
+static const struct cfg_elem_ops cfg_ops_ldap_groups = { cfg_ldap_groups_create,
+                                                         cfg_ldap_groups_update,
+                                                         cfg_ldap_groups_remove };
+
+/*
+ * The table, generated. Same guard the replace appliers have: a
+ * section the schema calls `reconcile` with no operations here does
+ * not compile, and operations for a section that is no longer
+ * `reconcile` are an unused static, which -Werror rejects.
+ */
+struct config_reconciler {
+	const char *name;
+	const struct cfg_elem_ops *ops;
+};
+
+#define X(name) { #name, &cfg_ops_##name },
+static const struct config_reconciler g_reconcilers[] = { CIX_CONFIG_SECTIONS_RECONCILE(X) };
+#undef X
+
+static const struct cfg_elem_ops *reconciler_for(const char *name)
+{
+	size_t i;
+
+	for (i = 0; i < sizeof(g_reconcilers) / sizeof(g_reconcilers[0]); i++) {
+		if (strcmp(g_reconcilers[i].name, name) == 0)
+			return g_reconcilers[i].ops;
+	}
+	return NULL;
+}
+
 struct config_applier {
 	const char *name;
 	int (*fn)(const struct json_value *live, const struct json_value *sup,
@@ -822,6 +1551,7 @@ static int build_plan(const struct json_value *doc, const char *containers_dir,
 			return -1;
 		}
 	}
+	g_containers_dir = containers_dir;
 	plans = calloc((size_t)config_section_count(), sizeof(*plans));
 	if (plans == NULL) {
 		snprintf(err, errsz, "out of memory");
@@ -856,12 +1586,22 @@ static int build_plan(const struct json_value *doc, const char *containers_dir,
 			p->appliable = 1;
 			continue;
 		}
-		if (config_section_apply_mode(idx) == CONFIG_APPLY_RECONCILE) {
+		if (config_section_apply_mode(idx) == CONFIG_APPLY_MANUAL) {
 			snprintf(p->reason, sizeof(p->reason),
-			         "applying \"%s\" means creating, updating and deleting individual "
-			         "resources, which this endpoint does not do yet (ADR-0292) -- use "
-			         "that section's own endpoints",
+			         "\"%s\" is changed through its own endpoints, not through this "
+			         "document -- removing an element here would destroy state this "
+			         "document cannot describe well enough to recreate, or the section "
+			         "is an observation with no setter at all (ADR-0292)",
 			         config_section_name(idx));
+			continue;
+		}
+		if (config_section_apply_mode(idx) == CONFIG_APPLY_RECONCILE) {
+			if (reconcile_list(p->live, sup, config_section_key(idx),
+			                   config_section_state_fields(idx),
+			                   reconciler_for(config_section_name(idx)), 1, p->reason,
+			                   sizeof(p->reason)) != 0)
+				continue;
+			p->appliable = 1;
 			continue;
 		}
 		ap = applier_for(config_section_name(idx));
@@ -922,7 +1662,8 @@ static void write_plan(struct json_writer *w, const struct section_plan *plans, 
 		jw_str(w, config_section_kind(p->index) == CONFIG_KIND_ARRAY ? "array" : "object");
 		jw_key(w, "apply");
 		jw_str(w, config_section_apply_mode(p->index) == CONFIG_APPLY_REPLACE ? "replace"
-		                                                                      : "reconcile");
+		       : config_section_apply_mode(p->index) == CONFIG_APPLY_RECONCILE ? "reconcile"
+		                                                                       : "manual");
 		jw_key(w, "status");
 		jw_str(w, p->diff.count == 0 ? "unchanged" : "changed");
 		jw_key(w, "appliable");
@@ -1069,6 +1810,17 @@ void handle_config_apply(int fd, const char *containers_dir, const char *body, s
 
 		if (p->diff.count == 0)
 			continue;
+		if (config_section_apply_mode(p->index) == CONFIG_APPLY_RECONCILE) {
+			if (reconcile_list(p->live, p->sup, config_section_key(p->index),
+			                   config_section_state_fields(p->index),
+			                   reconciler_for(config_section_name(p->index)), 0,
+			                   p->error, sizeof(p->error)) != 0) {
+				applied_ok = 0;
+				break;
+			}
+			p->applied = 1;
+			continue;
+		}
 		ap = applier_for(config_section_name(p->index));
 		if (ap->fn(p->live, p->sup, config_section_state_fields(p->index), 0, p->error,
 		           sizeof(p->error)) != 0) {

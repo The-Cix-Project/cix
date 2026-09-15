@@ -20,6 +20,7 @@
 
 static int diff_walk(struct jsondiff *d, const char *base, const struct json_value *live,
                      const struct json_value *sup, const char *array_key);
+static int element_name(const struct json_value *el, const char *array_key, char *out, size_t n);
 
 /*
  * The ignored-member list, carried on the struct rather than threaded
@@ -171,6 +172,12 @@ static int scalar_text(const struct json_value *v, char *out, size_t n)
  * comma-separated in the schema and joined the same way here, so the
  * name that appears in a diff path is the one an operator would write.
  */
+int jsondiff_element_name(const struct json_value *el, const char *array_key, char *out,
+                          size_t out_size)
+{
+	return element_name(el, array_key, out, out_size);
+}
+
 static int element_name(const struct json_value *el, const char *array_key, char *out, size_t n)
 {
 	const char *p = array_key;
@@ -417,6 +424,19 @@ void jsondiff_free(struct jsondiff *d)
 {
 	free(d->changes);
 	memset(d, 0, sizeof(*d));
+}
+
+int jsondiff_equal_ignoring(const struct json_value *a, const struct json_value *b,
+                            const char *ignore_fields)
+{
+	struct jsondiff d;
+	int eq;
+
+	if (jsondiff_compute(a, b, "", ignore_fields, &d) != 0)
+		return -1;
+	eq = d.count == 0;
+	jsondiff_free(&d);
+	return eq;
 }
 
 int jsondiff_equal(const struct json_value *a, const struct json_value *b)

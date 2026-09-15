@@ -99,6 +99,25 @@ void jsondiff_free(struct jsondiff *d);
 /* "add" / "remove" / "replace" -- the wire spelling. */
 const char *jsondiff_op_name(enum jsondiff_op op);
 
+/*
+ * The name a declared identity key gives an element -- the same name
+ * that appears in a diff path. Exported so an applier reconciling a
+ * list pairs elements exactly the way the plan the operator saw did.
+ * Returns -1 when the element cannot be named (not an object, or a
+ * key field missing or not scalar).
+ */
+int jsondiff_element_name(const struct json_value *el, const char *array_key, char *out,
+                          size_t out_size);
+
+/*
+ * Whether two values are equal IGNORING the named members -- i.e.
+ * whether a diff between them would be empty. Returns 1, 0, or -1 on
+ * allocation failure. Defined in terms of the diff rather than beside
+ * it, so "unchanged" cannot come to mean two different things.
+ */
+int jsondiff_equal_ignoring(const struct json_value *a, const struct json_value *b,
+                            const char *ignore_fields);
+
 /* Deep equality, the same comparison the diff itself uses -- exported
  * so a caller checking one field against its live value asks the same
  * question the plan did, rather than a second implementation of it. */

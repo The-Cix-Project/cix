@@ -13436,7 +13436,7 @@ components:
           description: Named volumes containers mount.
           x-cix-config-kind: array
           x-cix-config-key: "name"
-          x-cix-config-apply: reconcile
+          x-cix-config-apply: manual
           x-cix-config-state: "created_at,backup_last_at,host_path"
         backup:
           description: Backup destination and schedule (ADR-0141), not the backup contents.
@@ -13446,18 +13446,18 @@ components:
           description: Host routing table entries.
           x-cix-config-kind: array
           x-cix-config-key: "dest,prefix,interface"
-          x-cix-config-apply: reconcile
+          x-cix-config-apply: manual
           x-cix-config-state: "dest,prefix,gateway,interface,protocol,scope"
         networks:
           description: Virtual networks. Before containers, which attach to them.
           x-cix-config-kind: array
           x-cix-config-key: "name"
-          x-cix-config-apply: reconcile
+          x-cix-config-apply: manual
           x-cix-config-state: "has_address,address,interfaces"
         dhcp:
           description: DHCP ranges and static reservations.
           x-cix-config-kind: object
-          x-cix-config-apply: reconcile
+          x-cix-config-apply: manual
         dhcp_servers:
           description: Containers registered as DHCP servers.
           x-cix-config-kind: array
@@ -13484,7 +13484,7 @@ components:
           description: CA and certificate metadata. Private key material is NEVER rendered.
           x-cix-config-kind: array
           x-cix-config-key: "name"
-          x-cix-config-apply: reconcile
+          x-cix-config-apply: manual
           x-cix-config-state: "serial,not_after,owner"
         ldap:
           description: LDAP directory configuration. The bind password renders as a set/not-set boolean.
@@ -13505,7 +13505,7 @@ components:
           description: Directory users. Passwords are never rendered.
           x-cix-config-kind: array
           x-cix-config-key: "name"
-          x-cix-config-apply: reconcile
+          x-cix-config-apply: manual
           x-cix-config-state: "owner"
         syslog_targets:
           description: Remote syslog destinations.
@@ -13529,28 +13529,28 @@ components:
           description: Installed packages per image.
           x-cix-config-kind: array
           x-cix-config-key: "image,name"
-          x-cix-config-apply: reconcile
+          x-cix-config-apply: manual
           x-cix-config-state: "state"
         images:
           description: Images. Before the containers built from them.
           x-cix-config-kind: array
           x-cix-config-key: "name"
-          x-cix-config-apply: reconcile
+          x-cix-config-apply: manual
         image_recipes:
           description: Declarative image manifests (ADR-0123).
           x-cix-config-kind: array
           x-cix-config-key: "name"
-          x-cix-config-apply: reconcile
+          x-cix-config-apply: manual
         container_recipes:
           description: Declarative container definitions.
           x-cix-config-kind: array
           x-cix-config-key: "name"
-          x-cix-config-apply: reconcile
+          x-cix-config-apply: manual
         containers:
           description: "Provisioned containers. Last: they depend on networks, images, volumes and devices above."
           x-cix-config-kind: array
           x-cix-config-key: "name"
-          x-cix-config-apply: reconcile
+          x-cix-config-apply: manual
           x-cix-config-state: "status,paused,pid,exit_status,term_signal,exit_reason,procfuse_bound,captured_output,ready,pending_devices,image_version,live,state,restarts,last_exit,failure"
     ConfigPlan:
       type: object
