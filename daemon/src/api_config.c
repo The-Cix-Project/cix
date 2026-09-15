@@ -194,14 +194,33 @@ static int require_whole_section(const struct json_value *live, const struct jso
 	return 0;
 }
 
+/*
+ * A field that may be sent back but not changed: an observation, or a
+ * redaction marker for a secret this document never carried.
+ *
+ * `why` carries the whole explanation INCLUDING what to do about it,
+ * rather than a fixed suffix, because the two cases need different
+ * advice and the difference is not cosmetic. Measured on 192.168.15.95
+ * while verifying this: raising `zswap.max_pool_percent` and then
+ * replaying the document fetched BEFORE that change is refused --
+ * correctly, the document's `kernel` mirror is stale -- but the
+ * refusal names `kernel` when the operator edited `max_pool_percent`,
+ * and without "re-fetch" in the message there is nothing to act on.
+ * This is #471 (the document mixes configuration with running state)
+ * showing up inside a section that is otherwise straightforward.
+ */
 static int require_unchanged(const struct json_value *live, const struct json_value *sup,
                              const char *field, const char *why, char *err, size_t errsz)
 {
 	if (jsondiff_equal(json_object_get(live, field), json_object_get(sup, field)))
 		return 0;
-	snprintf(err, errsz, "\"%s\" %s and cannot be set through this document", field, why);
+	snprintf(err, errsz, "\"%s\" %s", field, why);
 	return -1;
 }
+
+/* The advice every derived field's refusal ends with: the usual reason
+ * one differs is a document fetched before something else changed. */
+#define CFG_REFETCH " -- re-fetch the document if yours predates a change made elsewhere"
 
 static int changed(const struct json_value *live, const struct json_value *sup, const char *field)
 {
@@ -394,12 +413,15 @@ static int cfg_apply_zswap(const struct json_value *live, const struct json_valu
 	if (require_whole_section(live, sup, err, errsz) != 0)
 		return -1;
 	/* What the kernel has, and what it could have, are observations. */
-	if (require_unchanged(live, sup, "supported", "is a property of this kernel", err, errsz) !=
-	        0 ||
-	    require_unchanged(live, sup, "kernel", "is what the kernel currently has, not the "
-	                                           "configured intent", err, errsz) != 0 ||
+	if (require_unchanged(live, sup, "supported",
+	                      "is a property of this kernel and cannot be set" CFG_REFETCH, err,
+	                      errsz) != 0 ||
+	    require_unchanged(live, sup, "kernel",
+	                      "is what the kernel currently has, not the configured intent, and "
+	                      "cannot be set" CFG_REFETCH, err, errsz) != 0 ||
 	    require_unchanged(live, sup, "available_compressors",
-	                      "is the set this kernel offers", err, errsz) != 0)
+	                      "is the set this kernel offers and cannot be set" CFG_REFETCH, err,
+	                      errsz) != 0)
 		return -1;
 	if (need_bool(sup, "enabled", &enabled, err, errsz) != 0 ||
 	    need_int(sup, "max_pool_percent", &pct, err, errsz) != 0 ||
@@ -443,13 +465,34 @@ static int cfg_apply_swap(const struct json_value *live, const struct json_value
 
 	if (require_whole_section(live, sup, err, errsz) != 0)
 		return -1;
-	if (require_unchanged(live, sup, "path", "is where the swap file lives", err, errsz) != 0 ||
-	    require_unchanged(live, sup, "disk", "follows the disk holding swap (PUT /v1/disks/"
-	                                         "{name}/role)", err, errsz) != 0)
+	if (require_unchanged(live, sup, "path", "is where the swap file lives and cannot be set"
+	                                         CFG_REFETCH, err, errsz) != 0 ||
+	    require_unchanged(live, sup, "disk",
+	                      "follows the disk holding swap -- assign that with POST "
+	                      "/v1/storage-roles", err, errsz) != 0)
 		return -1;
 	if (need_bool(sup, "enabled", &enabled, err, errsz) != 0 ||
 	    need_int(sup, "size_mb", &size_mb, err, errsz) != 0)
 		return -1;
+	/*
+	 * There are only two operations behind this section, swap_enable()
+	 * and swap_disable(), and neither resizes. So a size change with
+	 * `enabled` staying put is refused HERE, by shape, where it can be
+	 * described accurately -- rather than reaching swap_enable() on
+	 * already-enabled swap and coming back ALREADY_ENABLED, which this
+	 * function would then have reported as "no longer in the state
+	 * this plan was computed from": a false diagnosis of a document
+	 * that was perfectly current.
+	 */
+	if (!changed(live, sup, "enabled") && changed(live, sup, "size_mb")) {
+		if (enabled)
+			snprintf(err, errsz,
+			         "\"size_mb\" cannot be changed while swap stays enabled -- "
+			         "disable it and enable it again at the new size");
+		else
+			snprintf(err, errsz, "\"size_mb\" means nothing while swap is disabled");
+		return -1;
+	}
 	if (dry_run)
 		return 0;
 	e = enabled ? swap_enable(size_mb) : swap_disable();
@@ -458,9 +501,10 @@ static int cfg_apply_swap(const struct json_value *live, const struct json_value
 		return 0;
 	case SWAP_ERR_ALREADY_ENABLED:
 	case SWAP_ERR_NOT_ENABLED:
-		/* The plan said this field changed, so the subsystem
-		 * disagreeing with it means something else moved swap in
-		 * between -- worth saying, not worth pretending succeeded. */
+		/* The plan said `enabled` was flipping and the shape check
+		 * above passed, so reaching here means something else moved
+		 * swap between the plan and the apply. That is now the only
+		 * way to get this message, which is what makes it true. */
 		snprintf(err, errsz, "swap is no longer in the state this plan was computed from");
 		return -1;
 	case SWAP_ERR_INVALID_SIZE:
@@ -532,10 +576,11 @@ static int cfg_apply_ldap(const struct json_value *live, const struct json_value
 	if (require_whole_section(live, sup, err, errsz) != 0)
 		return -1;
 	if (require_unchanged(live, sup, "listeners_managed",
-	                      "records whether the listeners have ever been set", err, errsz) != 0 ||
+	                      "records whether the listeners have ever been set and cannot be set"
+	                      CFG_REFETCH, err, errsz) != 0 ||
 	    require_unchanged(live, sup, "bind_password_set",
-	                      "is a redaction marker for a secret (PUT /v1/ldap/config)", err,
-	                      errsz) != 0)
+	                      "is a redaction marker: this document never carried the password, "
+	                      "so it cannot set one -- use PUT /v1/ldap/config", err, errsz) != 0)
 		return -1;
 	if (need_int(sup, "start_uid", &start_uid, err, errsz) != 0 ||
 	    need_int(sup, "start_gid", &start_gid, err, errsz) != 0 ||
@@ -593,8 +638,8 @@ static int cfg_apply_package_repo(const struct json_value *live, const struct js
 	if (require_whole_section(live, sup, err, errsz) != 0)
 		return -1;
 	if (require_unchanged(live, sup, "auth_token_set",
-	                      "is a redaction marker for a secret (PUT /v1/pkg/repo)", err,
-	                      errsz) != 0)
+	                      "is a redaction marker: this document never carried the token, so "
+	                      "it cannot set one -- use PUT /v1/pkg/repo-config", err, errsz) != 0)
 		return -1;
 	if (need_string(sup, "repo_url", &url, err, errsz) != 0 ||
 	    need_string(sup, "repo_kind", &kind, err, errsz) != 0 ||
@@ -604,12 +649,16 @@ static int cfg_apply_package_repo(const struct json_value *live, const struct js
 		return 0;
 	/* NULL for the token: the document never carried it, and passing
 	 * anything else here would clear a working one. */
-	if (pkg_repo_set_config(url, kind, ref, NULL) != PKG_OK) {
-		snprintf(err, errsz, "the repository configuration was refused -- repo_kind must be "
-		                     "gitea, github or gitlab");
+	switch (pkg_repo_set_config(url, kind, ref, NULL)) {
+	case PKG_OK:
+		return 0;
+	case PKG_ERR_INVALID_NAME:
+		snprintf(err, errsz, "\"repo_kind\" must be gitea, github or gitlab");
+		return -1;
+	default:
+		snprintf(err, errsz, "the repository configuration could not be persisted");
 		return -1;
 	}
-	return 0;
 }
 
 static int cfg_apply_package_artifacts(const struct json_value *live, const struct json_value *sup,
@@ -621,8 +670,8 @@ static int cfg_apply_package_artifacts(const struct json_value *live, const stru
 	if (require_whole_section(live, sup, err, errsz) != 0)
 		return -1;
 	if (require_unchanged(live, sup, "auth_token_set",
-	                      "is a redaction marker for a secret (PUT /v1/pkg/artifacts)", err,
-	                      errsz) != 0)
+	                      "is a redaction marker: this document never carried the token, so it "
+	                      "cannot set one -- use PUT /v1/pkg/artifact-config", err, errsz) != 0)
 		return -1;
 	if (need_string(sup, "base_url", &base_url, err, errsz) != 0 ||
 	    need_bool(sup, "push_enabled", &push_enabled, err, errsz) != 0)
@@ -665,6 +714,15 @@ static int cfg_apply_dns_forwarders(const struct json_value *live, const struct 
 	memset(list, 0, sizeof(list));
 	for (i = 0; i < count; i++)
 		snprintf(list[i], DNS_FORWARDER_LEN, "%s", ptrs[i]);
+	/*
+	 * One message for the one failure: read before writing it,
+	 * dns_forwarders_set() returns non-OK only for a count out of
+	 * range or an address inet_pton() rejects (both spelled
+	 * DNS_SERVER_ERR_INVALID_PATH, reusing an existing code), and the
+	 * count is already bounded above. It does not report a persist
+	 * failure at all. So naming the address is accurate here, where
+	 * for the other setters a single message would not have been.
+	 */
 	if (dns_forwarders_set(list, count) != DNS_SERVER_OK) {
 		snprintf(err, errsz, "a forwarder is not a dotted-quad IPv4 address");
 		return -1;
