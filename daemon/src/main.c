@@ -65,6 +65,7 @@
 #include "persist.h"
 #include "pki.h"
 #include "pkg.h"
+#include "curlfetch.h"
 #include "quotamap.h"
 #include "registry.h"
 #include "containerpath.h"
@@ -3326,10 +3327,8 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 static int fetch_update_image(const char *url, const char *sha256, char *out_path,
                               size_t out_path_size, char *err, size_t err_size)
 {
-	char *argv[16];
-	char url_buf[PKG_URL_MAX];
-	pid_t pid;
-	int status;
+	struct curlfetch_opts opts;
+	char curl_err[256];
 	char got[128];
 
 	if (sha256 == NULL || strlen(sha256) != 64) {
@@ -3338,27 +3337,30 @@ static int fetch_update_image(const char *url, const char *sha256, char *out_pat
 		         "this writes a boot slot, so an unverified image is not accepted");
 		return -1;
 	}
-	snprintf(url_buf, sizeof(url_buf), "%s", url);
 	snprintf(out_path, out_path_size, "%s", SYSTEM_UPDATE_FETCH_PATH);
 	unlink(out_path);
 
 	/*
 	 * #285: this one runs on the EVENT LOOP, which makes its guards a
-	 * different question from every other curl here.
+	 * different question from every other fetch here.
 	 *
 	 * The rest are forked job children -- an unbounded fetch stalls
 	 * that job and nothing else. This is called straight from the
-	 * POST /v1/system/update handler and waited on with waitpid(), so
-	 * a peer that accepts the connection and then says nothing does
-	 * not stall a job, it stalls the whole control plane, for as long
-	 * as it likes, from one unauthenticated-shaped API call. Nothing
-	 * about the "synchronous on purpose" reasoning above is wrong; it
-	 * reasoned about SIZE (~10 MB on a LAN) and not about a peer that
-	 * never answers.
+	 * POST /v1/system/update handler and blocks the reactor for as
+	 * long as it runs (#410 removed the fork()+waitpid() this used to
+	 * do around curl -- there was nothing left for the fork to
+	 * isolate once the fetch itself no longer risks the double
+	 * exec/subprocess failure modes an external binary has, so this
+	 * calls curlfetch_perform() directly), so a peer that accepts the
+	 * connection and then says nothing does not stall a job, it stalls
+	 * the whole control plane, for as long as it likes, from one
+	 * unauthenticated-shaped API call. Nothing about the "synchronous
+	 * on purpose" reasoning above is wrong; it reasoned about SIZE
+	 * (~10 MB on a LAN) and not about a peer that never answers.
 	 *
-	 * So the retry count comes down as well. The shared guards bound
-	 * one attempt at roughly 20s of connect plus 60s of silence, and
-	 * --retry multiplies that: eight attempts is ten minutes of dead
+	 * So the retry count stays down. The shared guards bound one
+	 * attempt at roughly 20s of connect plus 60s of silence, and a
+	 * retry multiplies that: eight attempts is ten minutes of dead
 	 * control plane, which is not a bound worth having. Two attempts
 	 * is one real retry for a transient blip and a worst case of a
 	 * few minutes.
@@ -3369,33 +3371,16 @@ static int fetch_update_image(const char *url, const char *sha256, char *out_pat
 	 * comment points at next door remains the real answer if update
 	 * images stop being small and local.
 	 */
-	argv[0] = (char *)PKG_CURL_BIN;
-	argv[1] = "-fsSL";
-	argv[2] = "--connect-timeout";
-	argv[3] = PKG_CURL_CONNECT_TIMEOUT;
-	argv[4] = "--speed-limit";
-	argv[5] = PKG_CURL_SPEED_LIMIT;
-	argv[6] = "--speed-time";
-	argv[7] = PKG_CURL_SPEED_TIME;
-	argv[8] = "--retry";
-	argv[9] = "2";
-	argv[10] = "-o";
-	argv[11] = out_path;
-	argv[12] = url_buf;
-	argv[13] = NULL;
+	memset(&opts, 0, sizeof(opts));
+	opts.url = url;
+	opts.path = out_path;
+	opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
+	opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
+	opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
+	opts.retry_count = 2;
 
-	pid = fork();
-	if (pid < 0) {
-		snprintf(err, err_size, "fork failed: %s", strerror(errno));
-		return -1;
-	}
-	if (pid == 0) {
-		execve(PKG_CURL_BIN, argv, environ);
-		_exit(127);
-	}
-	if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-		snprintf(err, err_size, "could not fetch image_url (curl exit %d)",
-		         WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+	if (curlfetch_perform(&opts, NULL, curl_err, sizeof(curl_err)) != 0) {
+		snprintf(err, err_size, "could not fetch image_url: %s", curl_err);
 		unlink(out_path);
 		return -1;
 	}
@@ -10326,6 +10311,10 @@ static int start_iso_publish_upload(enum iso_publish_step step)
 	if (pid == 0) {
 		char sha[65];
 		char sha_header[96];
+		struct curlfetch_opts opts;
+		long http_status = 0;
+		int upload_rc;
+		int sfd;
 
 		/* Digest in the child. An ISO is hundreds of megabytes and
 		 * hashing it on the event-loop thread would stall every other
@@ -10334,31 +10323,35 @@ static int start_iso_publish_upload(enum iso_publish_step step)
 		if (pkg_run_capture_sha256(local, sha, sizeof(sha)) != 0)
 			_exit(90);
 		snprintf(sha_header, sizeof(sha_header), "X-Cix-Sha256: %s", sha);
-		{
-			char *argv[] = { (char *)PKG_CURL_BIN,
-				         (char *)"-s",
-				         PKG_CURL_STALL_GUARD_ARGS,
-				         (char *)"--upload-file",
-				         local,
-				         (char *)"-H",
-				         auth,
-				         (char *)"-H",
-				         sha_header,
-				         (char *)"--output",
-				         (char *)"/dev/null",
-				         (char *)"--write-out",
-				         (char *)"%{http_code}",
-				         url,
-				         NULL };
-			int sfd = open(g_iso_publish_status_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 
-			if (sfd >= 0) {
-				dup2(sfd, STDOUT_FILENO);
-				close(sfd);
-			}
-			execve(PKG_CURL_BIN, argv, environ);
+		/* --upload-file was a real PUT with Content-Length set from
+		 * the file itself (the receiver refuses chunked encoding) --
+		 * CURLOPT_INFILESIZE_LARGE inside curlfetch_perform() is the
+		 * same requirement, kept (#410). No CURLOPT_FAILONERROR: the
+		 * caller decides success from the HTTP status written below,
+		 * same as --write-out "%{http_code}" always reported it
+		 * regardless of what curl itself called success. */
+		memset(&opts, 0, sizeof(opts));
+		opts.url = url;
+		opts.path = local;
+		opts.upload = 1;
+		opts.header1 = auth;
+		opts.header2 = sha_header;
+		opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
+		opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
+		opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
+		upload_rc = curlfetch_perform(&opts, &http_status, NULL, 0);
+
+		sfd = open(g_iso_publish_status_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+		if (sfd >= 0) {
+			char buf[16];
+			int n = snprintf(buf, sizeof(buf), "%ld", http_status);
+			ssize_t ignored = write(sfd, buf, (size_t)n);
+
+			(void)ignored;
+			close(sfd);
 		}
-		_exit(127);
+		_exit(upload_rc == 0 ? 0 : 1);
 	}
 	pidfd = sys_pidfd_open(pid, 0);
 	if (pidfd < 0) {
@@ -10685,12 +10678,19 @@ static void handle_pkg_sync_fetch_event(struct conn *cc)
  * responsible for the "already fetching" check, same split as
  * iso_build_start()'s own doc comment explains.
  */
+/* Sidecar the child writes its curlfetch_perform() error to on failure
+ * (#410) -- same reasoning as kernel_releases_fetch_err_path(). */
+static void bootstrap_fetch_err_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s.err", PKGBUILD_TOOLCHAIN_FETCH_PATH);
+}
+
 static int bootstrap_fetch_start(const char *url, const char *sha256, char *err_msg,
                                   size_t err_msg_size)
 {
 	static char out_path[PATH_MAX];
 	static char url_buf[PKG_URL_MAX];
-	char *argv[16];
+	char err_path[PATH_MAX];
 	pid_t pid;
 	int pidfd;
 
@@ -10705,27 +10705,8 @@ static int bootstrap_fetch_start(const char *url, const char *sha256, char *err_
 
 	snprintf(out_path, sizeof(out_path), "%s", PKGBUILD_TOOLCHAIN_FETCH_PATH);
 	snprintf(url_buf, sizeof(url_buf), "%s", url);
-
-	/* #285. Asynchronous (pidfd), so an unbounded fetch would stall
-	 * this job rather than the loop -- but a bootstrap that never
-	 * finishes and never fails is still a job nothing can resolve.
-	 * --retry stays at 8: this is a 1.4 GB toolchain over whatever
-	 * link the operator has, and the speed guard is what makes the
-	 * retries safe rather than a way to wait eight times forever. */
-	argv[0] = (char *)PKG_CURL_BIN;
-	argv[1] = "-fsSL";
-	argv[2] = "--connect-timeout";
-	argv[3] = PKG_CURL_CONNECT_TIMEOUT;
-	argv[4] = "--speed-limit";
-	argv[5] = PKG_CURL_SPEED_LIMIT;
-	argv[6] = "--speed-time";
-	argv[7] = PKG_CURL_SPEED_TIME;
-	argv[8] = "--retry";
-	argv[9] = "8";
-	argv[10] = "-o";
-	argv[11] = out_path;
-	argv[12] = url_buf;
-	argv[13] = NULL;
+	bootstrap_fetch_err_path(err_path, sizeof(err_path));
+	unlink(err_path);
 
 	pid = fork();
 	if (pid < 0) {
@@ -10733,9 +10714,35 @@ static int bootstrap_fetch_start(const char *url, const char *sha256, char *err_
 		return -1;
 	}
 	if (pid == 0) {
-		execve(PKG_CURL_BIN, argv, environ);
-		perror("child: execve curl (bootstrap fetch)");
-		_exit(127);
+		/* #285. Asynchronous (pidfd), so an unbounded fetch would
+		 * stall this job rather than the loop -- but a bootstrap
+		 * that never finishes and never fails is still a job nothing
+		 * can resolve. retry_count stays at 8: this is a 1.4 GB
+		 * toolchain over whatever link the operator has, and the
+		 * speed guard is what makes the retries safe rather than a
+		 * way to wait eight times forever. */
+		struct curlfetch_opts opts;
+		char curl_err[256];
+
+		memset(&opts, 0, sizeof(opts));
+		opts.url = url_buf;
+		opts.path = out_path;
+		opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
+		opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
+		opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
+		opts.retry_count = 8;
+		if (curlfetch_perform(&opts, NULL, curl_err, sizeof(curl_err)) != 0) {
+			int efd = open(err_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+
+			if (efd >= 0) {
+				ssize_t ignored = write(efd, curl_err, strlen(curl_err));
+
+				(void)ignored;
+				close(efd);
+			}
+			_exit(1);
+		}
+		_exit(0);
 	}
 
 	pidfd = sys_pidfd_open(pid, 0);
@@ -10946,10 +10953,27 @@ static void handle_bootstrap_fetch_event(struct conn *cc)
 	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) != cc->pkg_fetch_pid || !WIFEXITED(status) ||
 	    WEXITSTATUS(status) != 0) {
+		char err_path[PATH_MAX];
+		char curl_err[256] = "";
+		int efd;
+
+		bootstrap_fetch_err_path(err_path, sizeof(err_path));
+		efd = open(err_path, O_RDONLY);
+		if (efd >= 0) {
+			ssize_t n = read(efd, curl_err, sizeof(curl_err) - 1);
+
+			curl_err[n > 0 ? n : 0] = '\0';
+			close(efd);
+			unlink(err_path);
+		}
 		g_bootstrap_fetch_state = BOOTSTRAP_FETCH_FAILED;
-		snprintf(g_bootstrap_fetch_error, sizeof(g_bootstrap_fetch_error), "curl fetch failed (status 0x%x)",
-		         (unsigned)status);
-		fprintf(stderr, "bootstrap fetch: curl failed\n");
+		if (curl_err[0] != '\0')
+			snprintf(g_bootstrap_fetch_error, sizeof(g_bootstrap_fetch_error), "fetch failed: %s",
+			         curl_err);
+		else
+			snprintf(g_bootstrap_fetch_error, sizeof(g_bootstrap_fetch_error),
+			         "fetch failed (status 0x%x)", (unsigned)status);
+		fprintf(stderr, "bootstrap fetch: %s\n", g_bootstrap_fetch_error);
 		close(cc->fd);
 		free(cc);
 		return;
@@ -19723,10 +19747,19 @@ static void register_kernel_releases_pidfd(pid_t pid, int pidfd)
  * box whose resolvers are not configured (ADR-0076, and exactly the
  * class of wedge ADR-0189's watchdog exists to catch).
  */
+/* Sidecar the child writes its curlfetch_perform() error to on failure
+ * (#410) -- kernel_releases_fetch_start's own child has no other way
+ * to hand back more than an exit code, and "curl exit %d" is exactly
+ * the limited-error-reporting problem #410 exists to fix. */
+static void kernel_releases_fetch_err_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s.err", KERNEL_RELEASES_PATH);
+}
+
 static int kernel_releases_fetch_start(char *err_msg, size_t err_msg_size)
 {
 	static char out_path[PATH_MAX];
-	char *argv[10];
+	char err_path[PATH_MAX];
 	pid_t pid;
 	int pidfd;
 
@@ -19735,22 +19768,8 @@ static int kernel_releases_fetch_start(char *err_msg, size_t err_msg_size)
 		return -1;
 	}
 	snprintf(out_path, sizeof(out_path), "%s", KERNEL_RELEASES_PATH);
-
-	/* #285: --max-time already bounded this one, and it is the right
-	 * tool here -- a release list is a few KB, so any long duration is
-	 * pathological rather than merely slow. The connect timeout is
-	 * added because a handshake that never completes is a separate
-	 * wait from a transfer that never progresses. */
-	argv[0] = (char *)PKG_CURL_BIN;
-	argv[1] = "-fsSL";
-	argv[2] = "--connect-timeout";
-	argv[3] = PKG_CURL_CONNECT_TIMEOUT;
-	argv[4] = "--max-time";
-	argv[5] = "30";
-	argv[6] = "-o";
-	argv[7] = out_path;
-	argv[8] = (char *)KERNEL_RELEASES_URL;
-	argv[9] = NULL;
+	kernel_releases_fetch_err_path(err_path, sizeof(err_path));
+	unlink(err_path);
 
 	pid = fork();
 	if (pid < 0) {
@@ -19758,9 +19777,32 @@ static int kernel_releases_fetch_start(char *err_msg, size_t err_msg_size)
 		return -1;
 	}
 	if (pid == 0) {
-		execve(PKG_CURL_BIN, argv, environ);
-		perror("child: execve curl (kernel releases fetch)");
-		_exit(127);
+		/* #285: max_time already bounded this one, and it is the
+		 * right tool here -- a release list is a few KB, so any long
+		 * duration is pathological rather than merely slow. The
+		 * connect timeout is added because a handshake that never
+		 * completes is a separate wait from a transfer that never
+		 * progresses. */
+		struct curlfetch_opts opts;
+		char curl_err[256];
+
+		memset(&opts, 0, sizeof(opts));
+		opts.url = KERNEL_RELEASES_URL;
+		opts.path = out_path;
+		opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
+		opts.max_time = 30;
+		if (curlfetch_perform(&opts, NULL, curl_err, sizeof(curl_err)) != 0) {
+			int efd = open(err_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+
+			if (efd >= 0) {
+				ssize_t ignored = write(efd, curl_err, strlen(curl_err));
+
+				(void)ignored;
+				close(efd);
+			}
+			_exit(1);
+		}
+		_exit(0);
 	}
 	pidfd = sys_pidfd_open(pid, 0);
 	if (pidfd < 0) {
@@ -19787,12 +19829,33 @@ static void handle_kernel_releases_fetch_event(struct conn *cc)
 		 * A box with no resolvers configured cannot reach kernel.org
 		 * at all, and that is by far the likeliest cause here -- say
 		 * so, rather than leaving an operator to guess at a bare exit
-		 * code (CLAUDE.md, ADR-0076).
+		 * code (CLAUDE.md, ADR-0076). The real libcurl error (#410),
+		 * when the child managed to write one, is worth more than
+		 * that guess, so it leads.
 		 */
-		snprintf(g_kernel_releases_error, sizeof(g_kernel_releases_error),
-		         "could not fetch %s (curl exit status %d) -- a host with no upstream "
-		         "resolvers set cannot resolve it at all, see PUT /v1/system/resolv",
-		         KERNEL_RELEASES_URL, WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+		char err_path[PATH_MAX];
+		char curl_err[256] = "";
+		int efd;
+
+		kernel_releases_fetch_err_path(err_path, sizeof(err_path));
+		efd = open(err_path, O_RDONLY);
+		if (efd >= 0) {
+			ssize_t n = read(efd, curl_err, sizeof(curl_err) - 1);
+
+			curl_err[n > 0 ? n : 0] = '\0';
+			close(efd);
+			unlink(err_path);
+		}
+		if (curl_err[0] != '\0')
+			snprintf(g_kernel_releases_error, sizeof(g_kernel_releases_error),
+			         "could not fetch %s: %s -- a host with no upstream resolvers set "
+			         "cannot resolve it at all, see PUT /v1/system/resolv",
+			         KERNEL_RELEASES_URL, curl_err);
+		else
+			snprintf(g_kernel_releases_error, sizeof(g_kernel_releases_error),
+			         "could not fetch %s (exit status %d) -- a host with no upstream "
+			         "resolvers set cannot resolve it at all, see PUT /v1/system/resolv",
+			         KERNEL_RELEASES_URL, WIFEXITED(status) ? WEXITSTATUS(status) : -1);
 		fprintf(stderr, "kernel releases: %s\n", g_kernel_releases_error);
 		close(cc->fd);
 		free(cc);
