@@ -6025,6 +6025,12 @@ function renderDevices() {
 		const tbody = document.getElementById(DEVICE_BUS_BODIES[bus]);
 		const entries = cache.devices.filter((d) => d.bus === bus);
 
+		/* #432: per BUS, since each has its own table. The mapped
+		 * names are an input too -- a row shows whether a device is
+		 * claimed by a mapping, so a new mapping must redraw it. */
+		if (unchangedAndRendered(tbody, "devices-" + bus,
+		                         { entries: entries, mapped: mappedNames }))
+			continue;
 		tbody.textContent = "";
 		if (entries.length === 0) {
 			const row = document.createElement("tr");
@@ -8243,6 +8249,9 @@ async function refreshSchedules() {
 		const data = await apiRequest("GET", CIX_API.listSchedules());
 		const rows = data.schedules || [];
 
+		/* #432: an unchanged schedule table is left alone. */
+		if (unchangedAndRendered(body, "schedules", rows))
+			return;
 		body.textContent = "";
 		if (rows.length === 0) {
 			const tr = document.createElement("tr");
@@ -12392,6 +12401,10 @@ async function refreshSoftwareReconcile() {
 		summary.textContent = "Could not read: " + e.message;
 		return;
 	}
+	/* #432: the summary line is computed from the same list, so one
+	 * signature covers both halves of this panel. */
+	if (unchangedAndRendered(body, "software-reconcile", list))
+		return;
 	body.textContent = "";
 	let drift = 0;
 
@@ -12814,6 +12827,17 @@ async function renderVolumeDetail(name) {
 	);
 	const running = users.filter((c) => c.status === "running" || c.status === "paused");
 
+	/*
+	 * #432: keyed on the NAME as well as the payload, or navigating
+	 * between two volumes with identical records would not redraw.
+	 * `holder` and `users` are derived from other caches, so they are
+	 * in the signature too rather than assumed to follow the volume.
+	 * volumeDetailFresh below is untouched: it is about arriving at
+	 * the page, which a skipped re-render does not change.
+	 */
+	if (unchangedAndRendered(fields, "volume-detail",
+	                         { name: name, volume: v, holder: holder, users: users }))
+		return;
 	fields.textContent = "";
 	fields.appendChild(fieldBlock("Placement", v.disk || "default OS-disk placement"));
 	fields.appendChild(fieldBlock("Held on", holder ? holder.name : "unknown"));
