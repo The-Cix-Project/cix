@@ -102,6 +102,42 @@ It is a view of live state, not a stored file, so it always matches what
 the daemon is actually doing. The section list comes from the API schema,
 so a new subsystem appears here without any CLI change.
 
+```
+cixctl config diff  --file=c.json [--section=NAME ...]   # what it would change
+cixctl config apply --file=c.json [--section=NAME ...]   # change it
+```
+
+The write direction (ADR-0292). Both take a configuration document --
+what `show running-config --json` writes -- so the workflow is fetch,
+edit, send back. `diff` changes nothing and is the safe way to find out
+what an edit means.
+
+**Send only the sections you changed.** The document carries running
+state alongside configuration (a container's `pid`, a volume's creation
+time), so a whole document sent back can differ from live for reasons
+that are not configuration, and one unappliable section refuses the
+request. `--section=NAME` rebuilds the body with just those sections.
+
+```
+$ cixctl show running-config --json > c.json
+$ vi c.json
+$ cixctl config diff --file=c.json --section=resolver
+resolver             changed    appliable
+  replace  nameservers[1]               192.168.15.100 -> 9.9.9.9
+1 supplied, 1 changed, 1 appliable, 0 blocked
+$ cixctl config apply --file=c.json --section=resolver
+```
+
+Eleven sections can be applied -- the ones a single setter owns (site,
+daemon, resolver, time, zswap, swap, backup, dns_forwarders, ldap,
+package_repo, package_artifacts). The rest are shown in a diff but
+refuse an apply, because applying them means creating and deleting live
+resources; use those sections' own commands (`container`, `network`,
+`dns`, `pkg`, …). A section is replaced whole: send back every field it
+renders. Secrets cannot be set this way at all -- the document never
+carried them, and applying a section that has one behind it leaves it
+untouched.
+
 ## System
 
 | Command | |

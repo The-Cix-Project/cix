@@ -46,6 +46,7 @@
  * iterate without a daemon rebuild, an A/B slot write and a reboot.
  */
 #include <stddef.h>
+#include <string.h>
 
 #include "config.h"
 
@@ -186,15 +187,21 @@ static void cfg_containers(struct json_writer *w) { registry_write_json_list(w, 
 
 struct config_section {
 	const char *name;
+	enum config_kind kind;
+	const char *key;
+	enum config_apply_mode apply_mode;
 	void (*render)(struct json_writer *w);
 };
 
 /*
  * The table, generated. Every entry names cfg_<section>, so a schema
  * section without a renderer is an undeclared-identifier error here,
- * with the section's own name in the message.
+ * with the section's own name in the message. Since ADR-0292 each
+ * entry also carries how the section may be written -- read from the
+ * same schema property, so the differ and the applier cannot be
+ * working from a different idea of a section's shape than the renderer.
  */
-#define X(name) { #name, cfg_##name },
+#define X(name, kind, key, mode) { #name, kind, key, mode, cfg_##name },
 static const struct config_section g_sections[] = { CIX_CONFIG_SECTIONS(X) };
 #undef X
 
@@ -212,9 +219,51 @@ void config_write_document(struct json_writer *w, const char *containers_dir)
 
 	g_containers_dir = containers_dir;
 	jw_obj_open(w);
-	for (i = 0; i < (int)(sizeof(g_sections) / sizeof(g_sections[0])); i++) {
+	for (i = 0; i < CIX_CONFIG_SECTION_COUNT; i++) {
 		jw_key(w, g_sections[i].name);
 		g_sections[i].render(w);
 	}
 	jw_obj_close(w);
+}
+
+int config_section_count(void)
+{
+	return CIX_CONFIG_SECTION_COUNT;
+}
+
+int config_section_index(const char *name)
+{
+	int i;
+
+	for (i = 0; i < CIX_CONFIG_SECTION_COUNT; i++) {
+		if (strcmp(g_sections[i].name, name) == 0)
+			return i;
+	}
+	return -1;
+}
+
+const char *config_section_name(int i)
+{
+	return g_sections[i].name;
+}
+
+enum config_kind config_section_kind(int i)
+{
+	return g_sections[i].kind;
+}
+
+const char *config_section_key(int i)
+{
+	return g_sections[i].key;
+}
+
+enum config_apply_mode config_section_apply_mode(int i)
+{
+	return g_sections[i].apply_mode;
+}
+
+void config_render_section(int i, const char *containers_dir, struct json_writer *w)
+{
+	g_containers_dir = containers_dir;
+	g_sections[i].render(w);
 }

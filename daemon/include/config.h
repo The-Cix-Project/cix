@@ -24,4 +24,41 @@
  */
 void config_write_document(struct json_writer *w, const char *containers_dir);
 
+/* ---- The section table, for callers that need one section at a time ----
+ *
+ * POST /v1/config and POST /v1/config/diff (ADR-0292) work section by
+ * section: each supplied section is rendered here, compared against
+ * what the caller sent, and -- for a `replace` section -- applied.
+ * They read the same table `config_write_document()` renders from, so
+ * the document an operator fetches and the document they can send back
+ * are the same vocabulary by construction, not by agreement.
+ */
+
+enum config_kind {
+	CONFIG_KIND_OBJECT,
+	CONFIG_KIND_ARRAY
+};
+
+enum config_apply_mode {
+	/* One setter replaces the whole section. */
+	CONFIG_APPLY_REPLACE,
+	/* Applying means creating, updating and deleting individual live
+	 * resources in dependency order -- not implemented (ADR-0292). */
+	CONFIG_APPLY_RECONCILE
+};
+
+int config_section_count(void);
+/* -1 when no section has that name. */
+int config_section_index(const char *name);
+const char *config_section_name(int i);
+enum config_kind config_section_kind(int i);
+/* The identity field(s) of an array section, comma-separated; "" for
+ * an object section or an array compared by position. */
+const char *config_section_key(int i);
+enum config_apply_mode config_section_apply_mode(int i);
+
+/* Writes just section `i`'s value -- the same bytes
+ * config_write_document() would put under that key. */
+void config_render_section(int i, const char *containers_dir, struct json_writer *w);
+
 #endif

@@ -102,6 +102,7 @@
 #include "apiresp.h"
 #include "daemonpaths.h"
 #include "apiroute.h"
+#include "api_config.h"
 #include "config.h"
 #include "websocket.h"
 
@@ -22892,6 +22893,21 @@ static void op_getConfig(const struct api_ctx *ctx)
 	config_write_document(&w, CONTAINERS_DIR);
 	respond_json(ctx->fd, 200, "OK", &w);
 	jw_free(&w);
+}
+
+/*
+ * POST /v1/config and POST /v1/config/diff -- the other direction
+ * (ADR-0292). Same shape as the GET above: api_config.c owns the
+ * work, and all this hands over is the containers directory.
+ */
+static void op_applyConfig(const struct api_ctx *ctx)
+{
+	handle_config_apply(ctx->fd, CONTAINERS_DIR, ctx->req->body, ctx->req->body_len);
+}
+
+static void op_diffConfig(const struct api_ctx *ctx)
+{
+	handle_config_diff(ctx->fd, CONTAINERS_DIR, ctx->req->body, ctx->req->body_len);
 }
 
 /* GET /v1/health */
