@@ -489,8 +489,18 @@ $(BUILD)/test_disk_quota: test/test_disk_quota.c test/test_image_fixture.c $(CLI
 $(BUILD)/test_osrelease: test/test_osrelease.c daemon/src/osrelease.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@
 
+#
+# -lquickjs -lm and nothing else. quickjs's pthread_cond_*/mutex_*
+# references resolve out of libc.so.6 (glibc folded libpthread in at
+# 2.34), and the quickjs package drops the one archive member that
+# wanted dlopen -- which matters because cix-builder's glibc ships
+# libdl.so.2/libpthread.so.0 with no .so linker stub and no .a, so
+# `-ldl`/`-lpthread` fail with "library not found" there even though
+# the symbols exist. Measured on 192.168.15.95, 2026-09-17: the
+# v2.57.191 build failed on exactly that -ldl.
+#
 $(BUILD)/test_web_syntax: test/test_web_syntax.c | $(BUILD)
-	$(CC) $(CFLAGS) test/test_web_syntax.c -lquickjs -lm -ldl -lpthread -o $@
+	$(CC) $(CFLAGS) test/test_web_syntax.c -lquickjs -lm -o $@
 
 $(BUILD)/test_json: test/test_json.c daemon/src/json.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@
