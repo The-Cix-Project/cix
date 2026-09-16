@@ -6,6 +6,32 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The dashboard JavaScript goes through a real parser (#340)
+
+`web/*.js` was the only surface this project ships that no compiler ever read. `cixd`, `cixctl`, `netplane`, the host tools, the installer, every test and every recipe go through `tcc -Wall -Werror`; the dashboard went through nothing. On 2026-09-08 a refactor removed one arm of an `if`/`else` in `web/app.js` and left the `else` behind:
+
+```
+app.js:2967 Uncaught SyntaxError: Unexpected token 'else'
+```
+
+A file that does not parse runs **no** script at all, so that was a blank dashboard on a deployed release, found by the owner opening the page.
+
+`test/test_web_syntax.c` now links `libquickjs.a` and compiles every file the dashboard serves -- `web/api.js`, `web/vt.js`, `web/app.js`, and `web/index.html`'s own inline block (the pre-paint theme apply) -- with `JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY`: parsed and turned into bytecode, none of it executed. It is in `SELFTESTS`, so it runs inside the build container on the box, which is the half `make web-syntax` (node, dev sandbox only) could never cover. An absent file is a failure, not a skip: `web/api.js` is generated and is a prerequisite of `build/cixd`, so it exists by the time selftest runs, and a note there would be a pass that checked half the surface.
+
+**A textual check was considered and rejected on evidence**, which is the load-bearing decision here. The broken shape was an `else` whose preceding token is `;` -- legal after a braceless `if`, which this codebase uses freely -- and `app.js` carries regex literals, where hand-rolled JS tokenizers go wrong. A release gate with false positives is worse than no gate. node is packaged but has never been built (a V8 compile, hours, for a syntax check) and duktape was ruled out by measurement: no `async`/`await` against 258 async functions and 401 awaits, so it would report errors on valid code.
+
+`recipes/package/quickjs/2026-06-04-3` is a normal Cix package, built on the box with Cix's gcc, library and header only, declared in the cix recipe's `pkg_build_depends`. It ships in no artifact. `pkg_toolchain="gcc"` with its reason recorded (quickjs's Makefile adds `-fwrapv` unconditionally, which TCC does not implement) and counted by `test_toolchain_policy`.
+
+**Three things had to be fixed before it built, and two were found by reading rather than by the box.**
+
+`v2.57.191` did not build. Its link line carried `-ldl -lpthread`, and cix-builder's glibc 2.44-14 ships `libdl.so.2`/`libpthread.so.0` with no `.so` linker stub and no `.a` -- so `tcc: error: library 'dl' not found`, even though every symbol those flags name has been in `libc.so.6` since glibc 2.34. `quickjs 2026-06-04-2` drops `quickjs-libc.o`, the only archive member referencing `dlopen`/`fork`/`execve` (measured with `nm`: 11 references there, 0 in the other five), because a gate that parses text and runs nothing has no use for a module loader.
+
+`quickjs.o` -- always pulled in -- referenced `__udivti3` and `__udivmodti4`, libgcc's TImode division helpers, which `tcc` cannot resolve because it links `libtcc1.a`. **The same `__SIZEOF_INT128__` also selects `JS_LIMB_BITS` in the public header**, which sets the width of a `JSValueUnion` member: built with gcc the library chose 64, while the gate compiles that header under tcc and chose 32 -- library and consumer disagreeing about a public type passed by value. `-U__SIZEOF_INT128__` closes both, and `2026-06-04-3` gates it with `nm -u` showing no `__*ti[0-9]*` symbol, which is simultaneously the link gate and the ABI gate.
+
+The self-check's two snippets had hand-written lengths that were both off by one, so the "valid JavaScript is accepted" half would have parsed a function with its closing brace cut off and failed for a reason unrelated to the gate. `strlen` now, with the reason in a comment.
+
+See [ADR-0294](docs/adr/0294-the-dashboard-javascript-goes-through-a-parser.md).
+
 ### `pkg cancel` during a build-environment composition: measured, and the fix withdrawn (#339)
 
 #339's build-container half was already fixed: the branch in `handle_pkg_cancel()` that drives the completion directly when the container has gone from the registry. Looking for what was left, I reasoned that a job sitting in a build-environment **composition** is `FETCHING` with no build container and no fetch pid -- `fetch_pid` is zeroed the moment the fetch child is reaped, and the composer is forked after that -- so cancel could not see it. I added a `compose_pid` to the chain slot so cancel could kill it, in the shape #239 established for the fetch.
