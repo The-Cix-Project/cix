@@ -6,15 +6,27 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
-### `pkg cancel` can reach a build-environment composition (#339)
+### `pkg cancel` during a build-environment composition: measured, and the fix withdrawn (#339)
 
-#339's build-container half was already fixed: the branch in `handle_pkg_cancel()` that drives the completion directly when the container has gone from the registry. This is the remaining child cancel could not see.
+#339's build-container half was already fixed: the branch in `handle_pkg_cancel()` that drives the completion directly when the container has gone from the registry. Looking for what was left, I reasoned that a job sitting in a build-environment **composition** is `FETCHING` with no build container and no fetch pid -- `fetch_pid` is zeroed the moment the fetch child is reaped, and the composer is forked after that -- so cancel could not see it. I added a `compose_pid` to the chain slot so cancel could kill it, in the shape #239 established for the fetch.
 
-`fetch_pid` is zeroed the moment the fetch child is reaped, and a **composer** is then forked while the entry stays in `FETCHING`. So for the whole of a build-environment composition — which is not quick — there is a real running child with a real pid that `pkg cancel` had no way to find: no build container, no fetch pid, so it logged "nothing running" and returned `200` having done nothing. The chain slot stays held for as long as the composer runs, and forever if it hangs. Ten such slots is a host that cannot install or hostbuild anything at all.
+**Then I tried to verify it, and the reasoning was wrong.** Cancelling into three real compositions on 192.168.15.95:
 
-The slot now records `compose_pid` where the composer is forked, clears it when the composer is reaped, and cancel kills it — which drives the ordinary completion path, which honours `cancel_requested`. Exactly the shape #239 established for the fetch: the existing machinery finishes the job, and cancel only has to end the child. `chain_alloc()` also clears both pids when handing out a slot, because slots are reused constantly and a cancel matches on name and image — so a slot that came back round to the same target could otherwise have signalled a pid from a job that finished long ago, which is the rule `fetch_pid` already states for itself.
+```
+composing build environment __buildenv-680316166c9cf488 from 18 declared tool(s)
+probe-cancel-compose@base: cancelling build container __pkgbuild-0
+probe-cancel-compose@base: cancel target __pkgbuild-0 already gone from the registry
+    -- releasing its leaked build slot directly (#339)
+probe-cancel-compose@base: build cancelled by operator
+```
 
-**The residual "nothing at all to end" path is deliberately left as a flag plus a warning rather than being made to end the job, and that is the more interesting half.** I wrote that version first and reverted it: it would release a chain slot that an untracked child still owns — the #98 hazard — and during a composition it would have done exactly that, because a composing job is `FETCHING` with no container and no fetch pid, which is precisely the branch it would have fired in. A cancel that needs a second look is better than a slot handed to two jobs.
+`build_container_name` is assigned in `pkg_fetch_completed()` **before** `start_build_container_spec()` runs, and it is that call which forks the composer. So a composing job always has a container name, always takes the container branch, and the existing path ends it — with no `__buildenv-*` image left behind and no further slot activity, both checked afterwards. The branch could never execute, so it is gone rather than shipped: a field, three assignments and a twenty-line comment for code that cannot run, and a comment describing a mechanism that does not exist is what the next reader believes instead of reading the code.
+
+**What the exercise did establish**, none of which was in the issue: cancel of a running build takes `building` to `failed`/`cancelled`; **slots are genuinely released** (ten install+cancel cycles back to back, all accepted, no `409`, nothing non-terminal left, and an eleventh install still accepted); the composition window on that host is about two seconds, and reaching it at all requires deleting the composed `__buildenv-*` image first, because otherwise the environment is reused and no composer is forked.
+
+Two changes survive, because they stand on their own. `chain_alloc()` clears `fetch_pid` when handing out a slot — slots are reused and cancel matches on name+image, so a slot that came back round to the same target could have signalled a pid from a job that finished long ago. And the residual "nothing to end" path warns rather than informs, with its comment recording what that case actually is (a `FETCHING` entry whose fetch child is already gone) instead of the composition case it does not cover.
+
+**And one thing I wrote first and reverted before it ever ran**, which is the more useful lesson: I had made that residual path *end the job and release the slot*, which is what the issue's title asks for. A composing job would have matched it exactly, so cancelling during a composition would have released a slot whose child was still running — the #98 double-owner hazard. `recipes/package/probe-cancel-compose/1` exists to force a real composition, and is how all of this was measured.
 
 ### The refresh tick stops rebuilding unchanged tables (#432)
 
