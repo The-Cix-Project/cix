@@ -490,14 +490,20 @@ $(BUILD)/test_osrelease: test/test_osrelease.c daemon/src/osrelease.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@
 
 #
-# -lquickjs -lm and nothing else. quickjs's pthread_cond_*/mutex_*
-# references resolve out of libc.so.6 (glibc folded libpthread in at
-# 2.34), and the quickjs package drops the one archive member that
-# wanted dlopen -- which matters because cix-builder's glibc ships
-# libdl.so.2/libpthread.so.0 with no .so linker stub and no .a, so
-# `-ldl`/`-lpthread` fail with "library not found" there even though
-# the symbols exist. Measured on 192.168.15.95, 2026-09-17: the
-# v2.57.191 build failed on exactly that -ldl.
+# -lquickjs -lm and nothing else. Each omission is deliberate.
+#
+# No -ldl: quickjs 2026-06-04-2 drops quickjs-libc.o, the only member
+# that wanted dlopen. cix-builder's glibc ships libdl.so.2 with no
+# libdl.so linker stub and no libdl.a, so -ldl fails there with
+# "library 'dl' not found" even though the symbols are in libc.so.6 --
+# measured on 192.168.15.95, 2026-09-17, as the v2.57.191 build failure.
+#
+# No -lgcc: quickjs 2026-06-04-3 builds with -U__SIZEOF_INT128__, so
+# gcc emits no __udivti3/__udivmodti4 for its bigint limbs. tcc links
+# libtcc1.a, which has no TImode helpers.
+#
+# No -lpthread: quickjs.o's pthread_cond_*/mutex_* references resolve
+# out of libc.so.6, which has carried them since glibc 2.34.
 #
 $(BUILD)/test_web_syntax: test/test_web_syntax.c | $(BUILD)
 	$(CC) $(CFLAGS) test/test_web_syntax.c -lquickjs -lm -o $@
