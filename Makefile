@@ -499,8 +499,12 @@ $(BUILD)/test_osrelease: test/test_osrelease.c daemon/src/osrelease.c | $(BUILD)
 # measured on 192.168.15.95, 2026-09-17, as the v2.57.191 build failure.
 #
 # No -lgcc: quickjs 2026-06-04-3 builds with -U__SIZEOF_INT128__, so
-# gcc emits no __udivti3/__udivmodti4 for its bigint limbs. tcc links
-# libtcc1.a, which has no TImode helpers.
+# gcc emits no __udivti3/__udivmodti4 for its bigint limbs. Measured
+# 2026-09-17: nm over every archive in tcc-0.9.28rc-29 finds no
+# TImode symbol, so nothing tcc links could supply them. The link
+# was never observed to fail on one -- v2.57.191 died earlier, at
+# -ldl -- so that is reasoning from the measurement, not a failure
+# anyone saw.
 #
 # No -lpthread: quickjs.o's pthread_cond_*/mutex_* references resolve
 # out of libc.so.6, which has carried them since glibc 2.34.

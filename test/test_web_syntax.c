@@ -34,6 +34,29 @@
 
 #include "quickjs.h"
 
+/*
+ * The consumer's half of the ABI gate (#340, ADR-0294). quickjs.h picks
+ * JS_LIMB_BITS off __SIZEOF_INT128__, and that choice sets the width of
+ * a JSValueUnion member -- a public type passed by value. The library
+ * is built with -U__SIZEOF_INT128__ so gcc takes the 32 arm; this
+ * asserts the arm THIS compiler takes is the same one.
+ *
+ * The recipe already gates the library side (nm -u finds no TImode
+ * helper). That gate alone would stay green if tcc ever grew
+ * __SIZEOF_INT128__ while the two sides silently diverged, which is
+ * why both arms are gated and not just the one that broke.
+ *
+ * Measured on the tcc-0.9.28rc-29 artifact, 2026-09-17: the binary
+ * contains the string __SIZEOF_INT128__ zero times, against
+ * __x86_64__, __linux__, __SIZEOF_POINTER__ and __SIZEOF_LONG__ at
+ * exactly one each -- so this assertion is expected to hold today, and
+ * is here to fail loudly on the day it stops.
+ */
+_Static_assert(JS_LIMB_BITS == 32,
+               "quickjs.h took the __int128 arm under this compiler, but the library is "
+               "built with -U__SIZEOF_INT128__ on the other one -- see "
+               "recipes/package/quickjs/2026-06-04-3");
+
 static int g_fail;
 
 static char *read_file(const char *path, size_t *out_len)
