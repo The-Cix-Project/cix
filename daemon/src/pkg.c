@@ -597,23 +597,6 @@ struct pkg_chain {
 	 * existing machinery finishes the job once something ends the child.
 	 */
 	pid_t fetch_pid;
-	/*
-	 * The build-environment COMPOSER's pid, for the same reason and
-	 * with the same rule (#339).
-	 *
-	 * fetch_pid is zeroed the moment the fetch child is reaped, and a
-	 * composer is then forked while the entry STAYS in FETCHING -- so
-	 * for the whole of a composition there is a real running child that
-	 * cancel could not see. Composing a build image is not quick, and
-	 * during it `pkg cancel` found no container and no fetch pid,
-	 * logged "nothing running" and returned 200 having done nothing.
-	 *
-	 * Killing it drives the ordinary completion path, which honours
-	 * cancel_requested -- the existing machinery finishes the job, and
-	 * cancel only has to end the child. Exactly the shape #239
-	 * established for the fetch.
-	 */
-	pid_t compose_pid;
 	/* ADR-0175/issue #35: this chain's own copy of pkg_install_start()'s/
 	 * pkg_hostbuild_start()'s keep_on_failure argument -- read by
 	 * pkg_build_completed() at the moment a failure is decided, before
@@ -739,16 +722,15 @@ static int chain_alloc(void)
 	for (i = 0; i < max_jobs; i++) {
 		if (g_chains[i].name[0] == '\0') {
 			/*
-			 * Both child pids belong to the job that just ended, and
-			 * slots are reused constantly. Clearing them here is what
-			 * makes "a stale pid must never be signalled" true of a
-			 * REUSED slot and not only of a completed one: a cancel
-			 * matches on name and image, so a slot that came back
-			 * round to the same target could otherwise have signalled
-			 * a pid belonging to a job that finished long ago.
+			 * fetch_pid belongs to the job that just ended, and slots
+			 * are reused constantly. Clearing it here is what makes
+			 * "a stale pid must never be signalled" true of a REUSED
+			 * slot and not only of a completed one: a cancel matches
+			 * on name and image, so a slot that came back round to the
+			 * same target could otherwise have signalled a pid
+			 * belonging to a job that finished long ago.
 			 */
 			g_chains[i].fetch_pid = 0;
-			g_chains[i].compose_pid = 0;
 			/* ADR-0272: requested unless a caller says otherwise, so
 			 * a hostbuild and every other direct entry point are
 			 * right without having to remember to say so. */
@@ -7019,10 +7001,6 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 
 		envr = buildenv_image_for(recipe.build_depends, env_image, sizeof(env_image), env_err,
 		                          sizeof(env_err), out_compose_pid, out_compose_pidfd);
-		/* #339: so a cancel can reach the composer, the same way #239
-		 * made it able to reach the fetch. */
-		if (*out_compose_pid > 0)
-			g_chains[chain_idx].compose_pid = *out_compose_pid;
 		if (envr < 0) {
 			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD, "%s", env_err);
 			logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
@@ -7643,11 +7621,6 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 
 	*out_compose_pid = -1;
 	*out_compose_pidfd = -1;
-
-	/* The composer has been reaped by the caller -- nothing left to
-	 * kill, and a stale pid must never be signalled (the rule
-	 * fetch_pid states for itself, #239/#339). */
-	g_chains[chain_idx].compose_pid = 0;
 
 	/* Same stale-slot discriminator pkg_fetch_completed() uses (issue
 	 * #98): an entry that is no longer FETCHING cannot be the one whose
@@ -9317,40 +9290,28 @@ enum pkg_error pkg_cancel(const char *name, const char *image,
 	}
 
 	/*
-	 * Still nothing? Then the entry is FETCHING across a build-
-	 * environment COMPOSITION, whose child is neither a container nor
-	 * the fetch (#339). Same treatment, same reason: end the child and
-	 * let the ordinary completion path honour the flag.
-	 */
-	{
-		int i;
-
-		for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
-			if (g_chains[i].compose_pid > 0 && strcmp(g_chains[i].name, e->name) == 0 &&
-			    strcmp(g_chains[i].image, e->image) == 0) {
-				logstore_write("cixd", "info",
-				               "pkg %s@%s: cancelling build-environment composition "
-				               "(pid %d)",
-				               e->name, e->image, (int)g_chains[i].compose_pid);
-				kill(g_chains[i].compose_pid, SIGKILL);
-				return PKG_OK;
-			}
-		}
-	}
-
-	/*
-	 * Genuinely nothing to end. The flag is set and the next completion
-	 * path will honour it -- but nothing is guaranteed to run one, so
-	 * this is a warning rather than an info: if it recurs, it is a
-	 * child this function still cannot reach, which is the shape of
-	 * #239 and #339 both. Deliberately NOT ending the job here: doing
-	 * that would release a chain slot that some untracked child still
-	 * owns, which is the #98 hazard, and getting it wrong is worse
-	 * than a cancel that needs a second look.
+	 * Genuinely nothing to end, and measured to be a narrow case rather
+	 * than the common one it was once thought to be (#339).
+	 *
+	 * A job past its fetch always has a build_container_name -- it is
+	 * assigned in pkg_fetch_completed() BEFORE start_build_container_
+	 * spec() runs -- so even a job sitting in a build-environment
+	 * composition takes the container branch above, and main.c's own
+	 * "already gone from the registry" path ends it. Measured on
+	 * 192.168.15.95: cancelling during a real composition logs
+	 * "cancelling build container __pkgbuild-0" followed by that path,
+	 * and the composition stops with no image left behind.
+	 *
+	 * So reaching here means a FETCHING entry whose fetch child is
+	 * already gone. The flag is recorded and the next completion path
+	 * will honour it, but nothing is guaranteed to run one -- hence a
+	 * warning rather than an info. Deliberately NOT ending the job
+	 * here: that would release a chain slot some child may still own,
+	 * which is the #98 hazard.
 	 */
 	logstore_write("cixd", "warn",
-	               "pkg %s@%s: cancel requested with no fetch, composer or build container "
-	               "running -- the flag is recorded but nothing was ended (#339)",
+	               "pkg %s@%s: cancel requested with no fetch or build container running -- "
+	               "the flag is recorded but nothing was ended (#339)",
 	               e->name, e->image);
 	return PKG_OK;
 }
