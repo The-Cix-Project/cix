@@ -73,6 +73,15 @@ static const char *const g_gcc_recipes[] = {
 	 * one honest line with a reason attached.
 	 */
 	"probe-wifi-driver", "python",
+	/*
+	 * quickjs: a JS engine's Makefile adds -fwrapv unconditionally --
+	 * its signed-overflow behaviour is load-bearing for JavaScript's
+	 * integer semantics -- and TCC does not implement it. Build-only,
+	 * and its consumer is test_web_syntax, which is Cix's own code and
+	 * therefore still TCC: the exception is the third-party library,
+	 * not the gate that links it (#340).
+	 */
+	"quickjs",
 };
 #define GCC_RECIPE_COUNT ((int)(sizeof(g_gcc_recipes) / sizeof(g_gcc_recipes[0])))
 
