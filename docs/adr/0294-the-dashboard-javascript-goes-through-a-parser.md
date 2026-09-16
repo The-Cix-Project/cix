@@ -1,8 +1,8 @@
-# ADR-0294: The dashboard JavaScript goes through a parser
+# 0294 — The dashboard JavaScript goes through a real parser
 
-- **Status:** Accepted
-- **Date:** 2026-09-17
-- **Issue:** [#340](https://git.home.arpa/itdlabs/cix/issues/340)
+## Status
+
+Accepted. Closes [#340](https://git.home.arpa/itdlabs/cix/issues/340), whose own option 1 this is. Extends the release gate to the one surface no compiler read, and records why the cheaper answer — a textual check in C — was rejected on evidence rather than on taste, so it is not re-proposed.
 
 ## Context
 
