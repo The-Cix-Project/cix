@@ -91,22 +91,39 @@ and both are recorded here because the second one is the dangerous shape.**
 
 - `quickjs.o`, which is always pulled in, referenced `__udivti3` and
   `__udivmodti4` — libgcc's TImode division helpers, emitted for
-  `unsigned __int128`. `tcc` links `libtcc1.a`, which has none, so the link
-  failed.
+  `unsigned __int128`. `nm` over every archive in `tcc-0.9.28rc-29`, the build
+  cix-builder uses, finds no TImode symbol at all, so nothing `tcc` links
+  provides them.
 - The *same* `__SIZEOF_INT128__` selects `JS_LIMB_BITS` in the **public
   header**, which sets the width of a `JSValueUnion` member. Built with gcc the
-  library chose 64; the gate compiles that header under tcc, which predefines
-  no `__SIZEOF_INT128__` and chose 32. Library and consumer disagreeing about a
-  public type passed by value. Benign as it happens — the union also holds a
-  `uint64_t`, a `double` and a `void *`, so `sizeof(JSValue)` is 16 either way,
-  and only `__JS_NewShortBigInt`'s store width differs, which a parse-only
-  consumer never calls — but it is the class of divergence that fails as wrong
-  data rather than as an error.
+  library chose 64. The tcc binary contains the string `__SIZEOF_INT128__`
+  zero times, while `__x86_64__`, `__linux__`, `__SIZEOF_POINTER__` and
+  `__SIZEOF_LONG__` each appear exactly once — so tcc does not predefine it and
+  the gate compiled that same header on the 32 arm: library and consumer
+  disagreeing about a public type passed by value. Benign as it happens — the
+  union also holds a `uint64_t`, a `double` and a `void *`, so `sizeof(JSValue)`
+  is 16 either way, and only `__JS_NewShortBigInt`'s store width differs, which
+  a parse-only consumer never calls — but it is the class of divergence that
+  fails as wrong data rather than as an error.
+
+**What was not observed, stated plainly: the link never failed on a TImode
+symbol.** v2.57.191 died earlier, at `-ldl`, and never reached symbol
+resolution; the helpers were removed before anything tried to resolve them. The
+two measurements above say nothing tcc links could have provided them, which is
+reasoning rather than a failure anyone saw. An earlier draft of this ADR, of
+the recipe header and of the changelog all asserted the failure and even quoted
+its error message. Note also that `__int128` itself appears in the tcc binary
+three times, so "tcc has no `__int128`" — which those drafts also said — is not
+established either; what is established is that it does not predefine the
+macro and ships no TImode runtime.
 
 `-U__SIZEOF_INT128__` closes both: gcc takes the arm tcc takes, so the header
-means one thing on both sides and no helper is emitted. The recipe gates it
-with `nm -u` showing no `__*ti[0-9]*` symbol, which is simultaneously the link
-gate and the ABI gate. The cost is 32-bit bigint limbs, in a library that
+means one thing on both sides and no helper is emitted. **Both sides are
+gated.** The recipe checks the library's arm (`nm -u` shows no `__*ti[0-9]*`
+symbol); `test_web_syntax.c` checks the consumer's with a
+`_Static_assert(JS_LIMB_BITS == 32, ...)`, because the recipe's gate alone
+would stay green if tcc ever grew `__SIZEOF_INT128__` while the ABI silently
+diverged. The cost is 32-bit bigint limbs, in a library that
 exists to parse and never runs a line.
 
 **The general rule this yielded:** when a gcc-built archive is destined for a
