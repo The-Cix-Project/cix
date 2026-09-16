@@ -99,15 +99,22 @@ static int parses(JSContext *ctx, const char *src, size_t len, const char *name,
  */
 static void self_check(JSContext *ctx)
 {
+	/*
+	 * strlen, never a literal count: a hand-written length that is
+	 * one short truncates the snippet's closing brace, and the good
+	 * case then fails as a syntax error for a reason that has
+	 * nothing to do with the gate. Both counts here were off by one
+	 * when first written.
+	 */
+	static const char GOOD[] = "function f(a) { if (a) g(); else h(); }";
+	static const char BAD[] = "function f(a) { if (a) g(); else h(); else }";
 	char err[512];
 
-	if (parses(ctx, "function f(a) { if (a) g(); else h(); }", 38, "<good>", err, sizeof(err)) !=
-	    0) {
+	if (parses(ctx, GOOD, strlen(GOOD), "<good>", err, sizeof(err)) != 0) {
 		fprintf(stderr, "FAIL: self-check: valid JavaScript was rejected: %s\n", err);
 		g_fail = 1;
 	}
-	if (parses(ctx, "function f(a) { if (a) g(); else h(); else }", 43, "<bad>", err,
-	           sizeof(err)) == 0) {
+	if (parses(ctx, BAD, strlen(BAD), "<bad>", err, sizeof(err)) == 0) {
 		fprintf(stderr, "FAIL: self-check: a dangling `else` was ACCEPTED -- this gate "
 		                "would not have caught the outage it was written for\n");
 		g_fail = 1;

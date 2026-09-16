@@ -316,10 +316,12 @@ aggressive: $(BUILD)/test_aggressive $(BUILD)/cixd $(BUILD)/daemon_child $(BUILD
 #
 # A textual check cannot catch this class. The broken shape was an
 # `else` preceded by `;`, which is perfectly legal after a braceless
-# `if` -- so telling the two apart needs a real JavaScript parser, and
-# no JS runtime is packaged for a Cix host (see the issue this target
-# links to). So this runs where a parser exists and says plainly when
-# it does not, rather than pretending to be a gate everywhere.
+# `if` -- so telling the two apart needs a real JavaScript parser.
+# The gate that runs on the box is build/test_web_syntax, which links
+# the quickjs package (built into cix-builder 2026-09-17) and is in
+# SELFTESTS. This target is the dev-sandbox convenience form: node,
+# when the sandbox happens to have it, over every web/*.js at once.
+# It says plainly when it checked nothing rather than reporting a pass.
 #
 .PHONY: web-syntax
 web-syntax:
