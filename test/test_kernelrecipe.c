@@ -169,8 +169,17 @@ int main(void)
 			fail("pkg_build() no longer appears exactly once%s", "");
 		if (count(gen, "merge_config.sh") != count(cur, "merge_config.sh"))
 			fail("the config merge step was altered%s", "");
-		if (strstr(gen, "pkg_build_image=\"kernel-builder\"") == NULL)
-			fail("pkg_build_image was lost%s", "");
+		/*
+		 * The declaration is what a generated recipe must not lose,
+		 * and since ADR-0304 (#482) that is pkg_build_depends rather
+		 * than pkg_build_image: the build container is composed from
+		 * the declared tools, so losing this line leaves a recipe
+		 * that composes nothing and cannot build at all. This
+		 * asserted pkg_build_image until then, a field the daemon no
+		 * longer reads.
+		 */
+		if (strstr(gen, "pkg_build_depends=\"bash bc binutils") == NULL)
+			fail("pkg_build_depends was lost%s", "");
 	}
 	free(gen);
 	gen = NULL;

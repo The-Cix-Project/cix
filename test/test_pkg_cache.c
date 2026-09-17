@@ -721,7 +721,7 @@ int main(void)
 
 				memset(&r, 0, sizeof(r));
 				CHECK(cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
-				                         "{\"name\":\"cix\",\"build_image\":\"imgD\"}",
+				                         "{\"name\":\"cix\"}",
 				                         &r) == 0 &&
 				              r.status == 202,
 				      "POST /v1/pkg/hostbuild cix (artifact tier, no build container)");
@@ -921,10 +921,6 @@ int main(void)
 				int hb_ok = 1;
 				FILE *hf;
 
-				if (test_image_fixture_stage_build_image(g_data_dir, "hbimage") != 0)
-					hb_ok = 0;
-				CHECK(hb_ok, "stage a resolvable hostbuild build_image");
-
 				if (hb_ok && stage_source_tarball(scratch_dir, "hbpush", "1.0", hb_tarball,
 				                                   sizeof(hb_tarball), hb_sha256,
 				                                   sizeof(hb_sha256)) != 0)
@@ -960,8 +956,7 @@ int main(void)
 				if (hb_ok) {
 					memset(&r, 0, sizeof(r));
 					CHECK(cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
-					                          "{\"name\":\"hbpush\","
-					                          "\"build_image\":\"hbimage\"}",
+					                          "{\"name\":\"hbpush\"}",
 					                          &r) == 0 &&
 					              r.status == 202,
 					      "POST /v1/pkg/hostbuild hbpush");

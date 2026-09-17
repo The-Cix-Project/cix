@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted. Refines the image-recipe mechanism (ADR-0122/ADR-0123) by
+Accepted, and largely spent: [ADR-0304](0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md) (issue #482) made a hostbuild compose its build environment from the recipe's own `pkg_build_depends`, so nothing resolves a build through a named build image any more. The images described below remain as ordinary images; the "one job" each was given now lives in the declaration of the recipe that needs it.
+
+Refines the image-recipe mechanism (ADR-0122/ADR-0123) by
 saying what the build images *are*, which no document has ever stated.
 Prompted by [issue #167](https://git.home.arpa/itdlabs/cix/issues/167)
 and the drift found alongside it.

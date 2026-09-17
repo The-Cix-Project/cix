@@ -2454,14 +2454,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [build_image]
               properties:
-                build_image:
-                  type: string
-                  description: >
-                    An already-existing image with a working GCC
-                    toolchain and kmod installed -- same requirement
-                    as any other kernel hostbuild.
                 version:
                   type: string
                   description: Hostbuilds exactly this published kernel recipe version. Omitted resolves to the highest available.
@@ -2490,13 +2483,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/PkgEntry"
         "400":
-          description: build_image missing, config_symbols malformed (not an array of bare CONFIG_* names), or the recipe/depends checks POST /pkg/hostbuild itself would also reject
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "404":
-          description: build_image does not exist
+          description: config_symbols malformed (not an array of bare CONFIG_* names), or the recipe checks POST /pkg/hostbuild itself would also reject
           content:
             application/json:
               schema:
@@ -10577,14 +10564,18 @@ paths:
     post:
       summary: >
         Starts a hostbuild job (ADR-0056): a second mode of the same fetch/build
-        pipeline /pkg/install uses, except the build container's lowerdir is
-        build_image's own rootfs (not the shared toolchain sandbox), and the
-        completed output is harvested to a host artifact directory instead of
-        being merged into any image. The named recipe's pkg_depends= must be
-        empty -- dependency resolution has no meaning for a one-shot artifact
-        harvest; every prerequisite must already be present in build_image's own
-        rootfs. Subject to the same v1 single-job-in-flight constraint as
-        /pkg/install (they share one job slot).
+        pipeline /pkg/install uses, except the completed output is harvested to
+        a host artifact directory instead of being merged into any image. The
+        build container is composed from the recipe's own pkg_build_depends=,
+        exactly as it is for an ordinary install (ADR-0199) -- it used to be
+        rooted on a named build image instead, and that field is retired
+        (ADR-0304, issue #482), because testing it first meant a hostbuild
+        never read its own declared build tools at all. The named recipe MAY
+        declare pkg_depends=, which is carried onto the entry and never
+        resolved here (ADR-0303, issue #465): resolution installs a closure
+        into an image and a hostbuild has none. Subject to the same v1
+        single-job-in-flight constraint as /pkg/install (they share one job
+        slot).
       operationId: pkgHostbuild
       x-cix-expose: [cli]
       requestBody:
@@ -10598,21 +10589,6 @@ paths:
                 name:
                   type: string
                   description: The recipe to build.
-                build_image:
-                  type: string
-                  description: >
-                    The image to build in. OPTIONAL when the recipe
-                    declares `pkg_build_image=`, in which case that is
-                    used and a caller naming a DIFFERENT image is
-                    refused with 400 (issue #182, ADR-0230's CI domain).
-                    Which image can build what used to be convention
-                    rather than contract -- cix-builder builds the
-                    control plane, kernel-builder builds kernels --
-                    enforced by nothing, so naming the wrong one passed
-                    every check and then failed minutes later inside a
-                    build container with a compiler error rather than
-                    "that is not what that image is for". Still required
-                    for a recipe that declares none.
                 version:
                   type: string
                   description: >
@@ -10649,16 +10625,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/PkgEntry"
         "400":
-          description: name/build_image missing, or no such recipe / it failed to parse
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "404":
-          description: >
-            build_image does not exist. #317: this is now its own answer rather than the
-            generic "no such package", which said the package was missing while the
-            package was present and current and the BUILD IMAGE was the thing absent
+          description: name missing, or no such recipe / it failed to parse
           content:
             application/json:
               schema:

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, with one part superseded: the "a hostbuild recipe must have empty `pkg_depends`" rule below was reversed by [ADR-0303](0303-a-hostbuild-carries-pkg-depends-it-does-not-resolve-it.md) (issue #465). A hostbuild now accepts the declaration and carries it onto the entry without resolving it. Everything else here stands.
+Accepted, with two parts superseded. Its **lowerdir selection** — a hostbuild builds inside a named `--build-image`'s rootfs — is replaced by [ADR-0304](0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md) (issue #482): a hostbuild composes its build container from `pkg_build_depends` like every other build, and `pkg_build_image` is retired. Its **empty-`pkg_depends` rule** was reversed by [ADR-0303](0303-a-hostbuild-carries-pkg-depends-it-does-not-resolve-it.md) (issue #465). A hostbuild now accepts the declaration and carries it onto the entry without resolving it. Everything else here stands.
 
 ## Context
 

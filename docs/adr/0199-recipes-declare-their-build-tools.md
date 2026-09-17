@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted, and extended by [ADR-0304](0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md) (issue #482) to the one path that was exempt from it: a hostbuild tested `is_hostbuild` first and so never reached this ADR's composition arm, which meant `cix` and `kernel` — the two recipes this platform most depends on — had their declared build tools read by nothing at all.
 
 Supersedes the direction of [ADR-0198](0198-build-sandbox-is-a-real-image.md), which made the shared build sandbox observable while leaving it fungible. Measurement showed that was the wrong target.
 

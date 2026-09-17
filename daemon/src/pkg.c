@@ -287,19 +287,6 @@ struct pkg_recipe {
 	 * confined root may do to ITSELF, not what it may do to the host.
 	 */
 	char build_caps[PKG_BUILD_CAPS_MAX];
-	/*
-	 * The image this recipe is meant to be hostbuilt in (#182,
-	 * ADR-0230's CI domain). Empty means the recipe does not say, and
-	 * the caller's choice stands unchecked as it always did.
-	 *
-	 * Which image can build what was convention and not contract:
-	 * cix-builder builds the control plane, kernel-builder builds
-	 * kernels, iso-builder builds ISO tooling -- enforced by nothing,
-	 * so a hostbuild naming the wrong one passed every check here and
-	 * failed deep inside a build container, with a compiler error
-	 * rather than "that is not what that image is for".
-	 */
-	char build_image[PKG_IMAGE_NAME_MAX];
 	/* ADR-0122: optional -- empty means this recipe never opts into
 	 * precompiled-artifact fetch, always builds from source. When set,
 	 * it's the ONLY thing that makes a fetched artifact trustworthy: a
@@ -525,29 +512,25 @@ struct pkg_chain {
 	 * dependency it pulls in) merges into -- always normalized (never
 	 * empty; see normalize_image()), valid exactly when name is
 	 * non-empty. For a hostbuild job this is always
-	 * PKG_HOSTBUILD_IMAGE (where the resulting pkg_entry is filed, not
-	 * where the build container's own lowerdir comes from -- see
-	 * build_image below). */
+	 * PKG_HOSTBUILD_IMAGE, where the resulting pkg_entry is filed. It is
+	 * not where the build container comes from: that is composed from
+	 * pkg_build_depends for every job alike (ADR-0304). */
 	char image[PKG_IMAGE_NAME_MAX];
 	/* True exactly while this chain's job is a hostbuild (ADR-0056) --
 	 * set explicitly at the start of every job (pkg_install_start()
 	 * clears it, pkg_hostbuild_start() sets it), never left stale from
 	 * a prior job, so it's safe to read any time name is non-empty. */
 	int is_hostbuild;
-	/* Only meaningful while is_hostbuild is true: the real image whose
-	 * rootfs supplies the build container's own lowerdir (e.g.
-	 * "cix-builder"), as opposed to the always-shared
-	 * shared build-sandbox image every ordinary install uses
-	 * (PKG_BUILD_SANDBOX_IMAGE). */
-	char build_image[PKG_IMAGE_NAME_MAX];
 	/*
 	 * Issue #168: the composed build environment this chain is using
-	 * (a "__buildenv-<hash>" image), empty for a hostbuild or a
-	 * cache hit, which need none. Recorded so it can be torn down when
-	 * the build finishes: a build environment exists for one build and
-	 * should not outlive it. Kept here rather than derived again later
-	 * because the recipe it was composed from may have been superseded
-	 * by then.
+	 * (a "__buildenv-<hash>" image), empty only for a cache hit, which
+	 * needs none. This said "empty for a hostbuild or a cache hit"
+	 * until ADR-0304 (#482) made a hostbuild compose like every other
+	 * build; a hostbuild now has one exactly like an ordinary install.
+	 * Recorded so it can be torn down when the build finishes: a build
+	 * environment exists for one build and should not outlive it. Kept
+	 * here rather than derived again later because the recipe it was
+	 * composed from may have been superseded by then.
 	 */
 	char buildenv_image[PKG_IMAGE_NAME_MAX];
 	/* ADR-0107: the caller-requested explicit version pin for the
@@ -1661,7 +1644,6 @@ static int parse_recipe(const char *path, struct pkg_recipe *out)
 	extract_line_value(buf, "pkg_depends=", out->depends, sizeof(out->depends));
 	extract_line_value(buf, "pkg_build_depends=", out->build_depends, sizeof(out->build_depends));
 	extract_line_value(buf, "pkg_build_caps=", out->build_caps, sizeof(out->build_caps));
-	extract_line_value(buf, "pkg_build_image=", out->build_image, sizeof(out->build_image));
 	extract_line_value(buf, "pkg_artifact_sha256=", out->artifact_sha256,
 	                    sizeof(out->artifact_sha256));
 	extract_line_value(buf, "pkg_upstream=", out->upstream, sizeof(out->upstream));
@@ -6796,7 +6778,7 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
 	return PKG_OK;
 }
 
-enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, const char *version,
+enum pkg_error pkg_hostbuild_start(const char *name, const char *version,
                                     int upgrade, const char *extra_config_symbols,
                                     int keep_on_failure, pid_t *out_pid, int *out_pidfd,
                                     int *out_chain_idx)
@@ -6804,20 +6786,10 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 	struct pkg_recipe recipe;
 	char recipe_path[PATH_MAX];
 	struct pkg_entry *e;
-	char build_image_version[IMAGE_VERSION_MAX];
 	enum pkg_error perr;
 	int chain_idx;
 
 	if (!pkg_name_is_valid(name))
-		return PKG_ERR_INVALID_NAME;
-	/*
-	 * An empty build_image is no longer an error here: the recipe may
-	 * declare one, and that resolution happens below once the recipe
-	 * has been parsed (#182). A NAME that is present but malformed is
-	 * still rejected immediately -- that is a bad request whatever the
-	 * recipe says.
-	 */
-	if (build_image != NULL && build_image[0] != '\0' && !pkg_image_is_valid(build_image))
 		return PKG_ERR_INVALID_NAME;
 	if (extra_config_symbols != NULL &&
 	    strlen(extra_config_symbols) >= PKG_HOSTBUILD_EXTRA_SYMBOLS_MAX)
@@ -6863,51 +6835,60 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 	 */
 
 	/*
-	 * If the recipe says which image it is built in, that is the
-	 * contract and the caller is held to it (#182).
+	 * No build image is resolved, validated or recorded here, because
+	 * a hostbuild no longer has one (ADR-0304, issue #482).
 	 *
-	 * An empty caller argument now RESOLVES to the declared image
-	 * rather than failing, so `pkg hostbuild cix` works without the
-	 * operator having to remember. A caller that names a different one
-	 * is refused here, at the API boundary, with a reason -- instead of
-	 * the build starting, running for minutes and dying inside a
-	 * container with an error about a missing header.
+	 * What this function used to do: take a caller's --build-image=,
+	 * fall back to the recipe's own pkg_build_image= (#182), refuse a
+	 * mismatch between the two (PKG_ERR_WRONG_BUILD_IMAGE), refuse an
+	 * absent choice (PKG_ERR_NO_BUILD_IMAGE), and refuse a named image
+	 * with no current version (PKG_ERR_NO_SUCH_BUILD_IMAGE, #317). All
+	 * five are gone with the field.
+	 *
+	 * The build container is now composed from pkg_build_depends by
+	 * the ADR-0199 arm of pkg_build_container_spec(), the same one
+	 * every ordinary install has used since #109 -- so a hostbuild's
+	 * environment is what its recipe declares rather than whatever an
+	 * operator-curated image happens to contain. That image was the
+	 * last place in this platform where a declaration could be
+	 * decorative: kernel-builder carried wireless-regdb, the kernel
+	 * build embedded it via CONFIG_EXTRA_FIRMWARE, and the recipe
+	 * declared it nowhere -- measured by composing the declared set
+	 * and watching the build fail on the missing database.
 	 */
-	if (recipe.build_image[0] != '\0') {
-		if (build_image == NULL || build_image[0] == '\0') {
-			build_image = recipe.build_image;
-		} else if (strcmp(build_image, recipe.build_image) != 0) {
+
+	/*
+	 * The sentinel image is created here if it does not exist, and
+	 * that is load-bearing rather than tidiness.
+	 *
+	 * A cache-hit job takes the #144 no-op arm of
+	 * pkg_build_container_spec(), which roots its container on the
+	 * chain's TARGET image -- PKG_HOSTBUILD_IMAGE for a hostbuild.
+	 * That arm wants a real rootfs path even though the container is a
+	 * deliberate no-op, because an empty build_lowerdir fails the
+	 * overlay mount. While a hostbuild had a build image, the build
+	 * image supplied it and this never came up; without one, the
+	 * sentinel has to be a real (empty) image.
+	 *
+	 * It exists on any host that has ever completed a hostbuild, so
+	 * the case this covers is narrow and specifically the one that
+	 * matters: a FRESH host deploying cix straight from a
+	 * checksum-verified artifact, which is the documented recovery
+	 * route for a box whose resolver is broken and therefore cannot
+	 * build from source (#138). IMAGE_ERR_DUPLICATE is the
+	 * already-exists answer and is not a failure, the same way
+	 * image_produce_new_version() treats it. A real failure here is a
+	 * disk/state failure, hence PKG_ERR_PERSIST_FAILED.
+	 */
+	{
+		enum image_error ierr = image_create(PKG_HOSTBUILD_IMAGE);
+
+		if (ierr != IMAGE_OK && ierr != IMAGE_ERR_DUPLICATE) {
 			logstore_write("cixd", "error",
-			               "pkg hostbuild %s: recipe declares build image \"%s\", caller asked "
-			               "for \"%s\"",
-			               name, recipe.build_image, build_image);
-			return PKG_ERR_WRONG_BUILD_IMAGE;
+			               "pkg hostbuild %s: could not create the %s sentinel image", name,
+			               PKG_HOSTBUILD_IMAGE);
+			return PKG_ERR_PERSIST_FAILED;
 		}
-	}
-
-	if (build_image == NULL || build_image[0] == '\0') {
-		logstore_write("cixd", "error",
-		               "pkg hostbuild %s: no build image given and the recipe declares none -- "
-		               "pass one, or add pkg_build_image= to the recipe",
-		               name);
-		return PKG_ERR_NO_BUILD_IMAGE;
-	}
-
-	/* build_image must already exist -- there is no sane default the
-	 * way PKG_DEFAULT_IMAGE is for an ordinary install. Resolved via
-	 * its own current version (ADR-0107/0108) -- a hostbuild's own
-	 * hermetic environment is always build_image's latest built state,
-	 * matching pkg_fetch_completed()'s own resolution below. */
-	if (image_current_version(build_image, build_image_version, sizeof(build_image_version)) !=
-	    IMAGE_OK) {
-		/* #317: the BUILD IMAGE is what is missing, not the package.
-		 * This used to return PKG_ERR_NOT_FOUND, i.e. "no such
-		 * package", about a package that is present and current. */
-		logstore_write("cixd", "error",
-		                "pkg hostbuild %s: build image \"%s\" does not exist -- create it "
-		                "first",
-		                name, build_image);
-		return PKG_ERR_NO_SUCH_BUILD_IMAGE;
 	}
 
 	/*
@@ -6928,7 +6909,6 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 		return PKG_ERR_DUPLICATE;
 
 	snprintf(g_chains[chain_idx].image, sizeof(g_chains[chain_idx].image), "%s", PKG_HOSTBUILD_IMAGE);
-	snprintf(g_chains[chain_idx].build_image, sizeof(g_chains[chain_idx].build_image), "%s", build_image);
 	snprintf(g_chains[chain_idx].target_version, sizeof(g_chains[chain_idx].target_version), "%s",
 	         (version != NULL) ? version : "");
 	snprintf(g_chains[chain_idx].hostbuild_extra_config_symbols,
@@ -6937,8 +6917,12 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 	g_chains[chain_idx].is_hostbuild = 1;
 	g_chains[chain_idx].keep_on_failure = keep_on_failure;
 
-	/* A hostbuild job is always a single, standalone entry -- no
-	 * resolve_chain(), pkg_depends is required empty above. */
+	/* A hostbuild job is always a single, standalone entry: no
+	 * resolve_chain(), because a declared pkg_depends is carried and
+	 * never resolved here (ADR-0303) -- there is no image to install a
+	 * dependency closure into. This comment said "pkg_depends is
+	 * required empty above" and was left false by that change; the
+	 * requirement it named is gone. */
 	g_chains[chain_idx].dep_queue_count = 0;
 	strncpy(g_chains[chain_idx].dep_queue[0], name, PKG_NAME_MAX - 1);
 	g_chains[chain_idx].dep_queue[0][PKG_NAME_MAX - 1] = '\0';
@@ -7206,25 +7190,27 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 
 	snprintf(container_base, sizeof(container_base), "%s/%s", g_containers_dir,
 	         e->build_container_name);
-	/* A hostbuild job's own build container is rooted on build_image's
-	 * own current version's rootfs (ADR-0107/0108, built up via
-	 * ordinary `pkg install` beforehand), never the shared toolchain
-	 * sandbox every regular install uses (ADR-0056). */
-	if (g_chains[chain_idx].is_hostbuild) {
-		char build_image_version[IMAGE_VERSION_MAX];
-
-		/* pkg_hostbuild_start() already validated build_image has a
-		 * current version before this job was ever queued -- a
-		 * failure here is unreachable in practice; an empty lowerdir
-		 * fails the subsequent overlay mount cleanly instead of
-		 * silently reusing a stale path. */
-		if (image_current_version(g_chains[chain_idx].build_image, build_image_version,
-		                           sizeof(build_image_version)) == IMAGE_OK)
-			image_version_rootfs_path(g_chains[chain_idx].build_image, build_image_version,
-			                           e->build_lowerdir, sizeof(e->build_lowerdir));
-		else
-			e->build_lowerdir[0] = '\0';
-	} else if (e->cache_hit) {
+	/*
+	 * ADR-0304 (#482): there is no hostbuild arm here any more.
+	 *
+	 * A hostbuild used to root its build container on
+	 * --build-image's own current rootfs, and because that test came
+	 * FIRST in this chain, a hostbuild never reached the ADR-0199 arm
+	 * below -- so a hostbuild recipe's pkg_build_depends was read by
+	 * nothing at all. The kernel recipe's own changelog records the
+	 * consequence in as many words, having moved wireless-regdb into
+	 * kernel-builder's manifest rather than its own declaration
+	 * "because a host build sandbox is the build image rootfs and
+	 * build_depends composes nothing there".
+	 *
+	 * Now a hostbuild falls through exactly like an ordinary install:
+	 * a cache hit takes the no-op arm (#144), and anything that
+	 * actually builds composes its environment from what the recipe
+	 * declares. One answer to "what does a build run inside", which
+	 * is what ADR-0199 decided and what this had been quietly
+	 * exempt from.
+	 */
+	if (e->cache_hit) {
 		/*
 		 * Issue #144: a precompiled package needs NO build environment.
 		 *
@@ -8069,9 +8055,6 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 		return PKG_ERR_PERSIST_FAILED;
 
 	g_chains[chain_idx].is_hostbuild = (strcmp(e->image, PKG_HOSTBUILD_IMAGE) == 0);
-	g_chains[chain_idx].build_image[0] = '\0'; /* only meaningful while is_hostbuild; unused
-	                                              * again here -- build_lowerdir is already
-	                                              * final from the original attempt. */
 	snprintf(g_chains[chain_idx].target_version, sizeof(g_chains[chain_idx].target_version), "%s",
 	         (version != NULL) ? version : "");
 	snprintf(g_chains[chain_idx].hostbuild_extra_config_symbols,

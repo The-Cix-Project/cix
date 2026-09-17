@@ -320,25 +320,6 @@ enum pkg_error {
 	PKG_ERR_FULL,
 	PKG_ERR_SPAWN_FAILED,
 	PKG_ERR_PERSIST_FAILED,
-	/*
-	 * The caller named a build image and the recipe declares a
-	 * different one (#182). Distinct from INVALID_RECIPE because the
-	 * recipe is fine -- reporting "no such recipe, or it failed to
-	 * parse" for a correct recipe sends the reader somewhere wrong,
-	 * which is the failure this project keeps having to unpick.
-	 */
-	PKG_ERR_WRONG_BUILD_IMAGE,
-	/*
-	 * No build image was given and the recipe declares none. Its own
-	 * code because it was reported as PKG_ERR_INVALID_NAME, which is
-	 * a lie about a perfectly valid name: `POST /pkg/hostbuild
-	 * {"name":"isotools"}` answered "invalid package name" while the
-	 * real reason -- that isotools declares no pkg_build_image= and
-	 * so needs one passed -- sat only in the daemon log. The reader is
-	 * then debugging the wrong field. Same failure this enum's own
-	 * WRONG_BUILD_IMAGE comment above exists to prevent.
-	 */
-	PKG_ERR_NO_BUILD_IMAGE,
 	PKG_ERR_INVALID_TOOLCHAIN, /* toolchain_path missing, unreadable, or not a regular file */
 	/*
 	 * Issue #213: pkg_cancel() found the entry, but it has no build in
@@ -347,18 +328,6 @@ enum pkg_error {
 	 * would say the package does not exist when it plainly does.
 	 */
 	PKG_ERR_NOT_BUILDING,
-	/*
-	 * #317: a hostbuild's BUILD IMAGE does not exist. The package and
-	 * its recipe are both fine, and reporting PKG_ERR_NOT_FOUND said
-	 * "no such package" about a package that is present and current --
-	 * which sends the reader to check the recipe, the version and the
-	 * catalogue, none of which is wrong. Measured on 192.168.15.95:
-	 * `POST /pkg/hostbuild {"name":"kernel","version":"6.18.40-24"}`
-	 * answered 404 "no such package" while the real cause was a missing
-	 * `kernel-builder`. Same failure the two build-image codes above
-	 * already exist to prevent, one step further along.
-	 */
-	PKG_ERR_NO_SUCH_BUILD_IMAGE,
 	/*
 	 * #318: a DEPENDENCY could not be resolved. The package asked for
 	 * is fine, and reporting PKG_ERR_INVALID_RECIPE said "no such
@@ -831,13 +800,14 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
  * exact same offline, no-network isolation every ordinary install
  * already gets. Two real differences from pkg_install_start():
  *
- *   - The build container's own lowerdir is build_image's rootfs
- *     (an ordinary image, built up via completely normal `pkg install
- *     --image=<build_image>` calls beforehand -- e.g. installing
- *     "tcc"/"make" into a "cix-builder" image), never the shared
- *     g_pkgbuild_rootfs toolchain sandbox every ordinary install uses.
- *     build_image must already exist (PKG_ERR_NOT_FOUND if its rootfs
- *     doesn't).
+ *   - The build container is composed from the recipe's own
+ *     pkg_build_depends, exactly like an ordinary install's
+ *     (ADR-0199). It used to be rooted on a named build image's
+ *     rootfs instead, chosen by the caller or by the recipe's
+ *     pkg_build_image=; ADR-0304 (#482) retired that field and every
+ *     error it had, because testing it FIRST meant a hostbuild never
+ *     reached the composition arm and so read its own declared build
+ *     tools not at all.
  *   - On success the build's $PKG_DESTDIR contents are copied
  *     (recursively, verbatim, no manifest) to a plain host directory
  *     under BASE_DIR/artifacts/<name>/ instead of being merged into
@@ -846,12 +816,10 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
  *     ordinary local path (no new deploy mechanism -- that endpoint
  *     already accepts any local image_path/kernel_path).
  *
- * name's own recipe must have an EMPTY pkg_depends -- dependency
- * resolution targets "merge into an image," a concept with no meaning
- * for a one-shot artifact harvest; every prerequisite the build needs
- * must already be baked into build_image's own rootfs, which is
- * exactly why that image gets built up via the ordinary install path
- * first (PKG_ERR_INVALID_RECIPE if pkg_depends is non-empty). Same
+ * name's own recipe MAY declare pkg_depends, and it is carried onto
+ * the entry without being resolved (ADR-0303, #465): resolving means
+ * installing a closure into an image, and a hostbuild has none. It
+ * used to be refused outright with PKG_ERR_INVALID_RECIPE. Same
  * PKG_ERR_BUSY serialization as every other install -- a hostbuild
  * job occupies the one v1 in-flight slot exactly like an ordinary one.
  * PKG_ERR_DUPLICATE if name is already a hostbuild entry in
@@ -891,7 +859,7 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
  * only way to get the crashing binary/object files off the box for
  * real inspection afterward.
  */
-enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, const char *version,
+enum pkg_error pkg_hostbuild_start(const char *name, const char *version,
                                     int upgrade, const char *extra_config_symbols,
                                     int keep_on_failure, pid_t *out_pid, int *out_pidfd,
                                     int *out_chain_idx);

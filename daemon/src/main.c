@@ -19362,27 +19362,10 @@ static void handle_container_recipe_apply(int fd, const char *name, const char *
 static void respond_pkg_error(int fd, enum pkg_error err)
 {
 	switch (err) {
-	case PKG_ERR_WRONG_BUILD_IMAGE:
-		respond_error(fd, 400, "Bad Request",
-		              "this recipe declares the image it is built in, and it is not the one "
-		              "requested -- omit build_image to use the declared one, or check the "
-		              "recipe's pkg_build_image= (the daemon log names both)");
-		break;
 	case PKG_ERR_DEP_UNRESOLVABLE:
 		respond_error(fd, 400, "Bad Request",
 		              "a dependency of this package could not be resolved -- the package and "
 		              "its own recipe are fine; the daemon log names the dependency and why");
-		break;
-	case PKG_ERR_NO_SUCH_BUILD_IMAGE:
-		respond_error(fd, 404, "Not Found",
-		              "the build image this hostbuild needs does not exist -- the package and "
-		              "its recipe are fine; create the build image first (the daemon log "
-		              "names it)");
-		break;
-	case PKG_ERR_NO_BUILD_IMAGE:
-		respond_error(fd, 400, "Bad Request",
-		              "this recipe declares no pkg_build_image=, so a build_image must be "
-		              "given -- pass one, or add pkg_build_image= to the recipe");
 		break;
 	case PKG_ERR_INVALID_NAME:
 		respond_error(fd, 400, "Bad Request", "invalid package name");
@@ -22730,7 +22713,6 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
 	const char *name;
-	const char *build_image;
 	const char *version;
 	const struct json_value *jupgrade;
 	const struct json_value *jkeep;
@@ -22748,10 +22730,6 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 		return;
 	}
 	name = json_as_string(json_object_get(root, "name"));
-	build_image = json_as_string(json_object_get(root, "build_image"));
-	/* build_image is optional here: the recipe may declare one, and
-	 * pkg_hostbuild_start() resolves it (#182). Its absence is only an
-	 * error if the recipe declares none, which it reports itself. */
 	if (name == NULL) {
 		json_free(root);
 		respond_error(fd, 400, "Bad Request", "name is required");
@@ -22789,7 +22767,7 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 		return;
 	}
 
-	perr = pkg_hostbuild_start(name, build_image, version, upgrade, NULL, keep_on_failure, &pid,
+	perr = pkg_hostbuild_start(name, version, upgrade, NULL, keep_on_failure, &pid,
 	                            &pidfd, &chain_idx);
 	if (perr != PKG_OK) {
 		json_free(root);
@@ -23286,14 +23264,12 @@ static int kmod_build_symbol_is_valid(const char *s)
 static void handle_kmod_build_post(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const char *build_image_raw;
 	const char *version_raw;
-	/* Copied out of root before it's freed below -- build_image/version
-	 * are pkg_hostbuild_start()'s own arguments, needed after json_free()
+	/* Copied out of root before it's freed below -- version is
+	 * pkg_hostbuild_start()'s own argument, needed after json_free()
 	 * has already run (config_symbols validation below can fail deep
 	 * into the array and needs to free root at that point too, so root
 	 * can't simply be kept alive until the end). */
-	char build_image[PKG_IMAGE_NAME_MAX];
 	char version[PKG_VERSION_MAX];
 	const struct json_value *jupgrade;
 	const struct json_value *jsymbols;
@@ -23313,13 +23289,6 @@ static void handle_kmod_build_post(int fd, const char *body, size_t body_len)
 		respond_error(fd, 400, "Bad Request", "invalid JSON body");
 		return;
 	}
-	build_image_raw = json_as_string(json_object_get(root, "build_image"));
-	if (build_image_raw == NULL) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "build_image is required");
-		return;
-	}
-	snprintf(build_image, sizeof(build_image), "%s", build_image_raw);
 	version_raw = json_as_string(json_object_get(root, "version"));
 	snprintf(version, sizeof(version), "%s", version_raw != NULL ? version_raw : "");
 	jupgrade = json_object_get(root, "upgrade");
@@ -23365,7 +23334,7 @@ static void handle_kmod_build_post(int fd, const char *body, size_t body_len)
 	}
 	json_free(root);
 
-	perr = pkg_hostbuild_start("kernel", build_image, version[0] != '\0' ? version : NULL, upgrade,
+	perr = pkg_hostbuild_start("kernel", version[0] != '\0' ? version : NULL, upgrade,
 	                            symbols[0] != '\0' ? symbols : NULL, keep_on_failure, &pid, &pidfd,
 	                            &chain_idx);
 	if (perr != PKG_OK) {

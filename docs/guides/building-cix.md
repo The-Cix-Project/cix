@@ -88,7 +88,7 @@ The committed recipe carries a placeholder in place of a real token — substitu
 ### 3. Run the hostbuild
 
 ```
-cixctl pkg hostbuild cix --build-image=cix-builder --wait --deploy
+cixctl pkg hostbuild cix --wait --deploy
 ```
 
 This fetches the tagged source (host-side, before the build container starts — the build container itself has no network access, same as every other install), builds `cixd`/`cixctl`/`web/` **and** `mkbootroot` itself with the just-installed TCC, then hands off to the daemon's own server-side assembly step: `cixd` forks and execs the freshly-built `mkbootroot` (the same non-blocking, pidfd-tracked pattern it already uses for `curl` fetches) to package those artifacts into a fresh `cixd-root.squashfs` — never the CLI invoking `mkbootroot` itself, which the API-First Mandate rules out. `mkbootroot` is built by this same hostbuild round, not reused from any earlier one, so a box that's never had a self-build before (every real deployed box, since `mkbootroot` was previously only ever a dev-machine tool) has everything it needs in one self-contained round.
@@ -102,10 +102,10 @@ If you are driving this by hand rather than through `--deploy`, read the `image_
 The same round above also produces `cix-install` and `mkinstalleriso` — enough to assemble a brand-new installer ISO (see [`installing.md`](installing.md) for what that ISO actually contains and how an operator boots it) without a separate dev machine at all, via `POST /system/iso` (ADR-0064). That endpoint also needs `grub-mkrescue`/`sbsign`/`xorriso`/`mformat`/`mcopy`, plus the pieces that go *inside* the ISO rather than assemble it — `shim`/`MokManager`/`mokutil` for the Secure Boot chain, and `fdisk`/`mkfs.fat` for the installer's own partitioning and ESP formatting. All of them are self-built the same hostbuild way rather than borrowed from whatever happens to be installed on the box, which for the last five was not a preference but a correctness fix: they were read from absolute paths that exist on a Debian development machine and on no Cix control-plane root, so an ISO could only ever be built on a dev box.
 
 ```
-cixctl pkg hostbuild isotools --build-image=iso-builder
+cixctl pkg hostbuild isotools
 ```
 
-(`iso-builder` is the image whose one job this is — its manifest names `grub`/`sbsigntools`/`xorriso`/`mtools`/`shim`/`mokutil`/`fdisk`/`dosfstools` directly, so none of them has to be installed by hand first; see [ADR-0208](../adr/0208-build-image-taxonomy.md). It was called `dev` until that ADR renamed it: a name meaning "general" had it prescribed for kernel builds it could not do. It carries the full toolchain those four recipes need to build from source — gcc/binutils/autotools, see [`writing-recipes.md`](writing-recipes.md); `isotools.recipe` itself doesn't rebuild them, it harvests those binaries + their real shared-library closure the installs above just produced into a single, portable, host-executable artifact.) Then, with a real Secure Boot signing key pair installed on the host at `<data-dir>/keys/cix-signing.{key,crt,cer}`:
+(No image is named: the build container is composed from `isotools.recipe`'s own `pkg_build_depends` ([ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md)), so what it builds inside is what the recipe declares. The `iso-builder` image still exists as an ordinary image and its manifest still names `grub`/`sbsigntools`/`xorriso`/`mtools`/`shim`/`mokutil`/`fdisk`/`dosfstools`; see [ADR-0208](../adr/0208-build-image-taxonomy.md), which created it after a `dev` image meaning "general" was prescribed for kernel builds it could not do. The declaration carries the full toolchain those four recipes need to build from source — gcc/binutils/autotools, see [`writing-recipes.md`](writing-recipes.md); `isotools.recipe` itself doesn't rebuild them, it harvests those binaries + their real shared-library closure the installs above just produced into a single, portable, host-executable artifact.) Then, with a real Secure Boot signing key pair installed on the host at `<data-dir>/keys/cix-signing.{key,crt,cer}`:
 
 ```
 cixctl signing-keys set --key=image/keys/cix-signing.key --cert=image/keys/cix-signing.crt
