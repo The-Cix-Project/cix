@@ -32,6 +32,8 @@ The messages changed too, for the same reason the bug was hard to read. A 404 ab
 
 The image-crossing case is **not gated by a test that runs**. `test_pkg_build_log` is not in `SELFTESTS` (it creates a real build container, which a composed build container cannot — #224), and reproducing it there would need a second image bootstrapped with its own toolchain for a three-line lookup rule. It gains a case that gates the name-only path and the new 404 text; the image-crossing half is measured on a real host by `recipes/package/probe-buildlog-image/1`, the established convention for a gate that cannot run where the tests do.
 
+And **that file is compiled by no target any release runs** — it is not in `SELFTESTS`, and the `cix` recipe builds named targets plus `make selftest`, never `make all`. So `recipes/package/probe-buildlog-compile/1` measures the one thing that claim rests on: on 192.168.15.95, `make build/test_pkg_build_log` compiles and links clean under Cix's own `tcc -Wall -Werror`, and the built binary contains `?name=slowbuild`, `?name=nosuchpackage` and `no build in progress`, so the new cases are real code and not a file nobody reads. What it does not do is run in any gate.
+
 All four paths measured on 192.168.15.95, 2026-09-17, under v2.57.197 — the probe installs into `cix-builder`, sleeps 90 seconds and then fails deliberately, so no image manifest is touched:
 
 ```
