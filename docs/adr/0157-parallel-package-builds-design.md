@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — all four phases are implemented and verified: Phase 1 (the pure refactor below), Phase 2 (raising `PKG_MAX_CONCURRENT_JOBS` to 2, plus the per-build-container-identity and fetch-side conn/entry threading Phase 2's own "Correction found" paragraph identified as real prerequisites), Phase 3 (the real ceiling of 10, the `GET`/`PUT /v1/system/pkg-build-config` config surface, CLI/web/docs), and Phase 4 (the N-way stress test + byte-identical merge-back proof this design called for from the start). See "Phase 1 implementation" through "Phase 4 implementation" at the end of this document for what actually shipped. ADR-0157 is now fully closed — task #841's own scope is complete.
+Accepted — all four phases are implemented and verified: Phase 1 (the pure refactor below), Phase 2 (raising `PKG_MAX_CONCURRENT_JOBS` to 2, plus the per-build-container-identity and fetch-side conn/entry threading Phase 2's own "Correction found" paragraph identified as real prerequisites), Phase 3 (the real ceiling of 10, the `GET`/`PUT /v1/system/pkg-build-config` config surface, CLI/web/docs), and Phase 4 (the N-way stress test + byte-identical merge-back proof this design called for from the start). See "Phase 1 implementation" through "Phase 4 implementation" at the end of this document for what actually shipped. ADR-0157 is now fully closed — task #841's own scope is complete. Refined in one detail by [ADR-0297](0297-a-query-about-a-running-job-defaults-nothing.md): Phase 2's `?name=`/`?image=` on `GET /pkg/build/log` does not default an absent `image` to `base`, because a query about a job that already exists must not choose an image the job already chose (#476).
 
 ## Context
 

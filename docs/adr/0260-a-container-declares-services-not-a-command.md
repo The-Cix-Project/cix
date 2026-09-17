@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Refined in one detail by [ADR-0298](0298-a-readiness-probe-tries-every-address-the-container-has.md): a `ready: {tcp_port: N}` probe tries every address the container has rather than one, and the address list moved from `cixinit_service` onto `cixinit_hello` (#477).
 Decided by the owner after reading the proposal: *"i want to remove cmd and make it service, and I
 want to be able to make services depend on other services right? so cmd gets dropped"*, together
 with the four follow-up answers recorded in the Decision below.
@@ -167,7 +167,7 @@ of its own. Its whole vocabulary stays: start this, stop that, wait this long, r
         after: [hostkeys, nslcd]
 
 **`after` waits for readiness, not for spawn.** A service may declare a `ready` probe: a listening
-TCP port, a **unix socket path**, or a command that exits 0. A dependent waits for the probe to pass
+TCP port (on any of the container's own addresses — see [ADR-0298](0298-a-readiness-probe-tries-every-address-the-container-has.md), which refines this one detail), a **unix socket path**, or a command that exits 0. A dependent waits for the probe to pass
 when one is declared, and for "started" when it is not. The unix-socket form exists because it is
 jump's real case — its script polls `/run/nslcd/socket` for up to six seconds today, and a model
 that could not express that would have pushed the same retry loop back into a wrapper.

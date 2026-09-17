@@ -49,7 +49,7 @@ Trying each candidate dissolves the issue's own open question — "is 'first add
 
 A service that binds only its container's network address is reported ready. A service that binds only loopback still is. A multi-network container's service is found on whichever interface it chose.
 
-Worst-case detection latency for an *N*-address container is *N*+1 turns of 250 ms per round — 750 ms for the two-network containers this platform actually runs, against a 30-second default probe timeout. The common case is unchanged, because loopback is first.
+Worst-case detection latency for an *N*-address container is *N*+1 turns of 250 ms per round — 1 second for the widest container 192.168.15.95 actually runs (`cr-1`/`cr-2`, on `management`, `services` and `access`, so four candidates), against a 30-second default probe timeout. The common case is unchanged, because loopback is first.
 
 Moving the table build past the attachment loop changes one thing beyond the probe: a body with both invalid networks and invalid services now reports the network error first. Nothing else between the old and new positions reads `init_table` — it is consumed by `init_transport_open()` and `registry_set_services()` much further down.
 
