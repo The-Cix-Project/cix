@@ -604,6 +604,29 @@ struct pkg_chain {
 	 * pkg_build_completed() at the moment a failure is decided, before
 	 * this chain slot is cleared for reuse. */
 	int keep_on_failure;
+	/*
+	 * What start_fetch_for() RESOLVED this job's recipe to, captured at
+	 * the one moment it is known for certain (#326).
+	 *
+	 * pkg_build_completed() used to re-derive this at the end by
+	 * re-reading the recipe off disk, and wrote e->version and
+	 * e->depends only `if` that lookup and parse both succeeded --
+	 * while marking the entry INSTALLED unconditionally a few lines
+	 * later. A recipe revision withdrawn while its build was in flight
+	 * therefore produced an entry that was INSTALLED with no version at
+	 * all, which is how `state=installed version="" error=...` was
+	 * measured on 192.168.15.95: three fields that cannot all be true
+	 * at once, and no operation short of uninstalling a working
+	 * package that would reset them.
+	 *
+	 * Deciding it once at the start and reading it at the end is the
+	 * One Source of Truth answer: the version a job is installing
+	 * cannot change halfway through, so it must not be looked up twice.
+	 * Memory-only, like the rest of this struct -- nothing here is
+	 * persisted, so the entry's own on-disk shape is unchanged.
+	 */
+	char fetch_resolved_version[PKG_VERSION_MAX];
+	char fetch_resolved_depends[PKG_DEPENDS_MAX];
 };
 
 static struct pkg_chain g_chains[PKG_MAX_CONCURRENT_JOBS];
@@ -811,6 +834,17 @@ static int chain_alloc(void)
 			 * belonging to a job that finished long ago.
 			 */
 			g_chains[i].fetch_pid = 0;
+			/*
+			 * #326: and for the same reason -- the captured version
+			 * belongs to the job that just ended. Cleared on handout
+			 * so a path that forgets to set it produces a MISSING
+			 * version (the old, visible failure) rather than another
+			 * package's version written confidently onto this entry.
+			 * Both real start paths set it; this is what keeps a
+			 * future third one from being silently wrong.
+			 */
+			g_chains[i].fetch_resolved_version[0] = '\0';
+			g_chains[i].fetch_resolved_depends[0] = '\0';
 			/* ADR-0272: requested unless a caller says otherwise, so
 			 * a hostbuild and every other direct entry point are
 			 * right without having to remember to say so. */
@@ -1233,6 +1267,27 @@ static void pkg_record_outcome(struct pkg_entry *e, int keep_installed,
 	e->stage = stage;
 	e->status = status;
 	vsnprintf(e->error, sizeof(e->error), fmt, ap);
+	/*
+	 * The invariant #326 was a violation of, asserted rather than
+	 * assumed: an entry that says INSTALLED must name what is
+	 * installed. Three fields that cannot all be true at once is a
+	 * second source of truth about the host, and the measured case --
+	 * state=installed, version="", a stale error -- had no operation
+	 * that would reset it short of uninstalling a working package.
+	 *
+	 * The cause is fixed upstream of here (the version is captured once
+	 * at fetch start instead of re-read at completion), so this should
+	 * be unreachable. It logs rather than repairs: a silent correction
+	 * would hide whichever new path reopened the hole, and this
+	 * function is the one funnel every failure reaches (ADR-0272), so
+	 * it is the right place to notice.
+	 */
+	if (e->state == PKG_STATE_INSTALLED && e->version[0] == '\0')
+		logstore_write("cixd", "error",
+		               "pkg %s@%s: recorded INSTALLED with no version -- a failed attempt kept "
+		               "an install this entry cannot name (#326); the record is inconsistent "
+		               "and how it got here is a bug",
+		               e->name, e->image);
 	/*
 	 * ADR-0272: the one funnel every failure and cancellation reaches,
 	 * so the run is closed here rather than at each of the two dozen
@@ -6246,6 +6301,15 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	}
 	e->state = PKG_STATE_FETCHING;
 	/*
+	 * #326: the recipe is parsed and present RIGHT NOW, so what this
+	 * job is installing is settled here rather than re-read at
+	 * completion, where the revision may since have been withdrawn.
+	 */
+	snprintf(g_chains[chain_idx].fetch_resolved_version,
+	         sizeof(g_chains[chain_idx].fetch_resolved_version), "%s", recipe.version);
+	snprintf(g_chains[chain_idx].fetch_resolved_depends,
+	         sizeof(g_chains[chain_idx].fetch_resolved_depends), "%s", recipe.depends);
+	/*
 	 * ADR-0272: a run opens here, at the single place a job begins --
 	 * so every atom of a chain gets one, not just the package that was
 	 * asked for. What caused it is the CHAIN's, read rather than
@@ -6940,7 +7004,19 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
 	e->toolscan_len = 0;            /* issue #302 */
 	e->missing_tool[0] = '\0';
 	e->missing_tool_count = 0;
-	pkg_build_log_open(e, current_fetch_effective_version(chain_idx)); /* issue #57 */
+	/*
+	 * The chain's resolved version, not current_fetch_effective_
+	 * version() (#326). That helper returns NULL for anything but an
+	 * explicit top-level pin, so the overwhelmingly common unpinned
+	 * build passed NULL, fell through to a first install's still-empty
+	 * e->version, and landed on the literal "unknown" -- which is the
+	 * exact outcome pkg_build_log_open()'s own comment says it exists
+	 * to prevent, for "exactly the builds most worth finding again".
+	 * The comment was right about the goal and the argument did not
+	 * reach it. fetch_resolved_version is set in start_fetch_for() and
+	 * is never empty for a job that got this far.
+	 */
+	pkg_build_log_open(e, g_chains[chain_idx].fetch_resolved_version); /* issue #57 */
 	/* ADR-0157 Phase 1: this entry is now the one owning the open
 	 * build-output pipe, regardless of whether pipe2()/fcntl() below
 	 * actually succeed (both failure branches still explicitly set
@@ -7921,6 +7997,22 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 		return PKG_ERR_PERSIST_FAILED;
 
 	e->kept_build_container[0] = '\0';
+
+	/*
+	 * #326: this reuses a chain slot by index and never goes through
+	 * start_fetch_for(), so the slot's captured version is whatever
+	 * the last job to use it left there -- empty, or another
+	 * package's. pkg_build_completed() reads it to decide what this
+	 * entry installed, so a resume has to set it from its own parsed
+	 * recipe, which is the same recipe the resumed build will run.
+	 * Without this the fix for #326 would be a worse bug than the one
+	 * it replaced: a confidently-written wrong version rather than a
+	 * missing one.
+	 */
+	snprintf(g_chains[chain_idx].fetch_resolved_version,
+	         sizeof(g_chains[chain_idx].fetch_resolved_version), "%s", recipe.version);
+	snprintf(g_chains[chain_idx].fetch_resolved_depends,
+	         sizeof(g_chains[chain_idx].fetch_resolved_depends), "%s", recipe.depends);
 
 	snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), "%s", PKG_BUILD_CMD);
 	e->build_argv[0] = "/usr/bin/bash";
@@ -9851,19 +9943,26 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	         e->build_container_name);
 	snprintf(dest_dir, sizeof(dest_dir), "%s/upper/build/pkg-dest", container_base);
 
-	/* Refresh version from the recipe -- for a fresh install this is
-	 * the first time it's set; for an upgrade this is where the entry
-	 * finally moves from the old version to the new one. */
-	{
-		char recipe_path[PATH_MAX];
-		struct pkg_recipe recipe;
-
-		if (find_recipe_path(e->name, current_fetch_effective_version(chain_idx), recipe_path,
-		                      sizeof(recipe_path)) == 0 &&
-		    parse_recipe(recipe_path, &recipe) == 0) {
-			strncpy(e->version, recipe.version, sizeof(e->version) - 1);
-			strncpy(e->depends, recipe.depends, sizeof(e->depends) - 1);
-		}
+	/*
+	 * Move the entry to the version this job installed -- for a fresh
+	 * install the first time it is set, for an upgrade the point where
+	 * it finally leaves the old version.
+	 *
+	 * Read from the chain, which captured it in start_fetch_for() when
+	 * the recipe was parsed, rather than re-read off disk here (#326).
+	 * The old code did the latter and wrote version/depends only `if`
+	 * the lookup and parse both succeeded, immediately above an
+	 * UNCONDITIONAL `e->state = PKG_STATE_INSTALLED` -- so a revision
+	 * withdrawn while its build was in flight left an entry INSTALLED
+	 * with no version, which is the wreckage #326 measured. A job's
+	 * own version cannot change halfway through; looking it up twice
+	 * was the whole defect.
+	 */
+	if (g_chains[chain_idx].fetch_resolved_version[0] != '\0') {
+		snprintf(e->version, sizeof(e->version), "%s",
+		         g_chains[chain_idx].fetch_resolved_version);
+		snprintf(e->depends, sizeof(e->depends), "%s",
+		         g_chains[chain_idx].fetch_resolved_depends);
 	}
 
 	/*
