@@ -313,6 +313,15 @@ int test_image_fixture_clear_floor_cache(const char *data_dir);
  * corrected to what the design actually guarantees -- and put in one
  * place so the next test cannot quietly guess again.
  */
+/*
+ * mkdir -p, exported because it was already the fixture's own and a
+ * fifth file-local copy (four test files carry a "mkdir_p1") is the
+ * duplication "No Parallel Implementations" forbids. First needed
+ * outside this file by test_system_update.c, which has to create the
+ * bootroot directory the assembly endpoint reports (#481).
+ */
+int test_mkdir_p(const char *path);
+
 #define TEST_SETTLE_ATTEMPTS 200
 #define TEST_SETTLE_INTERVAL_US (100 * 1000)
 

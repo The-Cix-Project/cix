@@ -1,5 +1,6 @@
 #include "libdirs.h"
 #include "pkg.h"
+#include "squashfsimg.h"
 #include "nsswitch.h"
 #include "curlfetch.h"
 #include "osrelease.h"
@@ -4053,8 +4054,6 @@ static int toolchain_seed_mutate(const char *staging_rootfs, void *ctx_v)
 
 enum pkg_error pkg_bootstrap_from_toolchain(const char *toolchain_path)
 {
-	int src;
-	unsigned char magic[4];
 	/*
 	 * -no-xattrs: the pkgbuild rootfs is build tooling, not something
 	 * needing POSIX capabilities/ACLs preserved on its own binaries --
@@ -4067,28 +4066,22 @@ enum pkg_error pkg_bootstrap_from_toolchain(const char *toolchain_path)
 	struct toolchain_seed_ctx seed_ctx;
 
 	/*
-	 * Real, on-disk squashfs magic check ("hsqs", the little-endian
-	 * bytes of 0x73717368) via a plain open()+read() -- the same
-	 * precedent do_system_update()'s own image_path validation
-	 * already established, deliberately not stat()+S_ISREG: a squashfs
-	 * image's own bytes are equally valid whether backing a regular
-	 * file (the real, intended operator usage -- scp'd onto a real
-	 * filesystem path) or a raw block device (unsquashfs itself
-	 * neither knows nor cares), so this also naturally supports the
-	 * same "write to a raw scratch partition, point cixd at the
-	 * device path" self-test technique test_boot_update.c's own
-	 * --test-update-image= already uses for do_system_update().
+	 * Real, on-disk squashfs magic check via squashfs_image_check()
+	 * (squashfsimg.h) -- which is where the open()+read() this used to
+	 * carry inline now lives, along with the reasoning this comment
+	 * used to hold: it is deliberately not stat()+S_ISREG, because a
+	 * squashfs image's bytes are equally valid backing a regular file
+	 * (the real, intended operator usage -- scp'd onto a real
+	 * filesystem path) or a raw block device, which is what
+	 * test_boot_update.c's --test-update-image= relies on.
+	 *
+	 * This comment named do_system_update()'s copy as its precedent,
+	 * which is exactly the shape "No Parallel Implementations"
+	 * forbids; a third copy in the ISO builder was not this check at
+	 * all, and shipped the bug (#481).
 	 */
-	if (toolchain_path == NULL || toolchain_path[0] == '\0')
+	if (squashfs_image_check(toolchain_path) != 1)
 		return PKG_ERR_INVALID_TOOLCHAIN;
-	src = open(toolchain_path, O_RDONLY);
-	if (src < 0)
-		return PKG_ERR_INVALID_TOOLCHAIN;
-	if (read(src, magic, 4) != 4 || memcmp(magic, "hsqs", 4) != 0) {
-		close(src);
-		return PKG_ERR_INVALID_TOOLCHAIN;
-	}
-	close(src);
 
 	seed_ctx.toolchain_path = toolchain_path;
 	if (image_produce_new_version(PKG_BUILD_SANDBOX_IMAGE, toolchain_seed_mutate, &seed_ctx,

@@ -62,6 +62,7 @@
 #include "linux_compat.h"
 #include "cixinit_table.h"
 #include "namecheck.h"
+#include "squashfsimg.h"
 #include "network.h"
 #include "persist.h"
 #include "pki.h"
@@ -1610,14 +1611,24 @@ static int g_port;
  * only one that ever succeeded." g_bootroot_assembly_running covers the
  * third state (attempted but not yet resolved either way) so a client
  * polling this can also tell "still working" from "gave up, that
- * attempt failed" instead of spinning forever on a failure. Reported via
- * GET /system/boot (handle_system_boot() below) -- not a new resource of
- * its own, since this is squarely "state about the currently/most-
- * recently-assembled boot image," the same subject that endpoint already
- * owns; keeping it there (rather than folding it into pkg.c's own
- * generic pkg_get_one() JSON) keeps pkg.c fully agnostic to what any
- * hostbuild name *means*, exactly the separation ADR-0057's own "cix"
- * special-case comment in this file already established.
+ * attempt failed" instead of spinning forever on a failure.
+ *
+ * Reported via GET /system/assembly (op_getSystemAssembly() below).
+ * These lived on GET /system/boot until #182/ADR-0230 moved them to an
+ * endpoint whose subject is the thing that is happening; this comment
+ * said /system/boot for ten releases after they left it. Either way
+ * they are not folded into pkg.c's generic pkg_get_one() JSON, which
+ * keeps pkg.c fully agnostic to what any hostbuild name *means* --
+ * exactly the separation ADR-0057's own "cix" special-case comment in
+ * this file already established.
+ *
+ * All three are in memory only, so a restart resets them, and
+ * deploying an assembled root ends in a reboot -- meaning the normal
+ * state of a freshly deployed host is "0, 0, not running", identical
+ * to a host that has never assembled anything (#481). That is why
+ * /system/assembly also reports the artifact's own stat(): a client
+ * asking "is the root at image_path the one I just built" needs an
+ * answer that outlives the process, and the file has one.
  */
 static long g_bootroot_assembly_started;
 static long g_bootroot_assembly_completed;
@@ -3056,15 +3067,15 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 	 * written, so a bad kernel_path never leaves a real image_path
 	 * partially applied. */
 	if (image_path != NULL && image_path[0] != '\0') {
-		src = open(image_path, O_RDONLY);
-		if (src < 0) {
+		int whole = squashfs_image_check(image_path);
+
+		if (whole < 0) {
 			json_free(root);
 			snprintf(out_errmsg, out_errmsg_size,
 			         "image_path does not exist or is not readable");
 			return 400;
 		}
-		if (read(src, magic4, 4) != 4 || memcmp(magic4, "hsqs", 4) != 0) {
-			close(src);
+		if (!whole) {
 			json_free(root);
 			/* #435: the file opened but carries no squashfs magic. The
 			 * common real cause is not a wrong path -- it is a bootroot
@@ -3078,7 +3089,16 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 			 * of "not a squashfs image", which reads as a typo, a wrong
 			 * path or a corrupt build and sends the reader looking in
 			 * the wrong place. When no assembly is running the file
-			 * really is not a squashfs and the 400 stands. */
+			 * really is not a squashfs and the 400 stands.
+			 *
+			 * Since #481 an assembly writes to a temporary name and
+			 * renames on success, so a file at the final path is
+			 * never a fragment of a *current* build -- but a host
+			 * upgraded from an older build can still be carrying one
+			 * an interrupted assembly left behind, and an
+			 * operator-supplied path can be anything at all, so both
+			 * answers stay reachable and the 409 stays the right one
+			 * while an assembly runs. */
 			if (g_bootroot_assembly_running) {
 				snprintf(out_errmsg, out_errmsg_size,
 				         "a bootroot assembly is in progress (generation %ld) -- it is still "
@@ -3090,7 +3110,6 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 			snprintf(out_errmsg, out_errmsg_size, "image_path is not a squashfs image");
 			return 400;
 		}
-		close(src);
 	}
 	if (kernel_path != NULL && kernel_path[0] != '\0') {
 		src = open(kernel_path, O_RDONLY);
@@ -9812,20 +9831,36 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	pid_t pid;
 	int pidfd;
 	int output_pipe[2];
+	/*
+	 * whole: also require squashfs's own on-disk magic, not merely a
+	 * readable path (#481).
+	 *
+	 * Everything else here is either a binary or a directory, whose
+	 * presence is all this check can usefully establish. The
+	 * control-plane root is different in kind: it is the one input
+	 * that another process is periodically rewriting, and it is the
+	 * payload this ISO installs. Checking only access(R_OK) meant the
+	 * media path validated LESS than POST /system/update, which
+	 * refuses exactly these bytes -- so an assembly interrupted
+	 * part-way could be baked into an installer image, signed, and
+	 * published, and the first thing to notice would be a machine
+	 * that does not boot.
+	 */
 	struct {
 		const char *path;
 		const char *what;
+		int whole;
 	} required[] = {
-	    {mkinstalleriso_bin, "mkinstalleriso (from a \"cix\" hostbuild)"},
-	    {cix_install_bin, "cix-install (from a \"cix\" hostbuild)"},
-	    {cix_recover_bin, "cix-recover (from a \"cix\" hostbuild, ADR-0146)"},
-	    {cix_boot_bin, "cix-boot.efi (from a \"cix\" hostbuild, ADR-0215)"},
-	    {bzimage_path, "bzImage (from a \"kernel\" hostbuild)"},
-	    {squashfs_path, "cixd-root.squashfs (assembled after a \"cix\" hostbuild)"},
-	    {isotools_root, "isotools artifact directory (from an \"isotools\" hostbuild)"},
-	    {signing_key, "signing key (operator-provided at SIGNING_KEYS_DIR)"},
-	    {signing_cert_pem, "signing cert .crt (operator-provided at SIGNING_KEYS_DIR)"},
-	    {signing_cert_der, "signing cert .cer (operator-provided at SIGNING_KEYS_DIR)"},
+	    {mkinstalleriso_bin, "mkinstalleriso (from a \"cix\" hostbuild)", 0},
+	    {cix_install_bin, "cix-install (from a \"cix\" hostbuild)", 0},
+	    {cix_recover_bin, "cix-recover (from a \"cix\" hostbuild, ADR-0146)", 0},
+	    {cix_boot_bin, "cix-boot.efi (from a \"cix\" hostbuild, ADR-0215)", 0},
+	    {bzimage_path, "bzImage (from a \"kernel\" hostbuild)", 0},
+	    {squashfs_path, "cixd-root.squashfs (assembled after a \"cix\" hostbuild)", 1},
+	    {isotools_root, "isotools artifact directory (from an \"isotools\" hostbuild)", 0},
+	    {signing_key, "signing key (operator-provided at SIGNING_KEYS_DIR)", 0},
+	    {signing_cert_pem, "signing cert .crt (operator-provided at SIGNING_KEYS_DIR)", 0},
+	    {signing_cert_der, "signing cert .cer (operator-provided at SIGNING_KEYS_DIR)", 0},
 	};
 	size_t i;
 
@@ -9846,6 +9881,17 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	for (i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
 		if (access(required[i].path, R_OK) != 0) {
 			snprintf(err_msg, err_msg_size, "missing %s: %s", required[i].what, required[i].path);
+			return -1;
+		}
+		if (required[i].whole && squashfs_image_check(required[i].path) != 1) {
+			snprintf(err_msg, err_msg_size,
+			         "%s is not a whole squashfs image: %s -- %s", required[i].what,
+			         required[i].path,
+			         g_bootroot_assembly_running
+			             ? "an assembly is writing it right now; poll GET "
+			               "/v1/system/assembly until running:false and retry"
+			             : "an assembly was interrupted while writing it; POST "
+			               "/v1/system/assembly to build it again");
 			return -1;
 		}
 	}
@@ -23448,6 +23494,8 @@ static void op_getSystemAssembly(const struct api_ctx *ctx)
 {
 	struct json_writer w;
 	char bootroot_image[PATH_MAX];
+	struct stat st;
+	int present;
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -23466,6 +23514,39 @@ static void op_getSystemAssembly(const struct api_ctx *ctx)
 	snprintf(bootroot_image, sizeof(bootroot_image), "%s/cixd-root.squashfs", BOOTROOT_DIR);
 	jw_key(&w, "image_path");
 	jw_str(&w, bootroot_image);
+	/*
+	 * What is actually at that path, read from the filesystem on every
+	 * request rather than remembered (#481).
+	 *
+	 * The two generation counters above live in this process's memory,
+	 * so a restart -- and deploying a control plane ends in a reboot,
+	 * so a restart is the normal next event -- resets both to 0. That
+	 * is indistinguishable from a host that has never assembled
+	 * anything, on a host whose whole boot came from an assembly
+	 * minutes earlier. Both readings are honest about what this daemon
+	 * has done; neither says anything about the file, which is the
+	 * thing a client is about to stage.
+	 *
+	 * So the file answers for itself. mtime is the freshness fact that
+	 * outlives a restart: an operator who knows when they started a
+	 * build can compare. image_complete asks the same question POST
+	 * /system/update will ask before staging it, so a client learns
+	 * here whether that call can succeed instead of discovering it
+	 * from a 409.
+	 *
+	 * Derived, never persisted, for the reason recover_iso_state()
+	 * gives for built_version: a stored claim about a file is a second
+	 * source of truth able to disagree with the file.
+	 */
+	present = (stat(bootroot_image, &st) == 0 && S_ISREG(st.st_mode));
+	jw_key(&w, "image_present");
+	jw_bool(&w, present);
+	jw_key(&w, "image_complete");
+	jw_bool(&w, squashfs_image_check(bootroot_image) == 1);
+	jw_key(&w, "image_bytes");
+	jw_int(&w, present ? (long)st.st_size : 0);
+	jw_key(&w, "image_mtime");
+	jw_int(&w, present ? (long)st.st_mtime : 0);
 	jw_obj_close(&w);
 	respond_json(ctx->fd, 200, "OK", &w);
 	jw_free(&w);
