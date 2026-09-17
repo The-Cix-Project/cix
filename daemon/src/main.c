@@ -26934,41 +26934,102 @@ static enum console_route_result try_pkg_build_log_upgrade(struct conn *cc, cons
 	}
 
 	/*
-	 * ADR-0157 Phase 2: ?name= (required if given; ?image= optional,
-	 * defaults like every other image-optional entry point) picks which
-	 * of the now-possibly-several concurrent builds to attach to. A
-	 * caller supplying neither (every client predating this phase, and
-	 * the common real-world case even now: PKG_MAX_CONCURRENT_JOBS
-	 * being > 1 doesn't mean an operator usually has more than one
-	 * build actually running at once) falls back to "the one build in
+	 * ADR-0157 Phase 2: ?name= and an optional ?image= pick which of
+	 * the now-possibly-several concurrent builds to attach to. A caller
+	 * supplying neither (every client predating this phase, and the
+	 * common real-world case even now: PKG_MAX_CONCURRENT_JOBS being
+	 * > 1 doesn't mean an operator usually has more than one build
+	 * actually running at once) falls back to "the one build in
 	 * progress" when that's unambiguous.
+	 *
+	 * ?image= is NOT defaulted here the way the image-optional entry
+	 * points in pkg.c default it (#476). Everywhere else an absent
+	 * image means PKG_DEFAULT_IMAGE, because an install has to pick a
+	 * destination; here it means "whichever image is building that
+	 * package", because the caller is asking about a job that already
+	 * exists and picked its own. Defaulting it made a running
+	 * hostbuild unreachable by name.
 	 */
 	if (url_query_param(req->path, "name", target_name, sizeof(target_name)) == 0) {
 		if (url_query_param(req->path, "image", target_image, sizeof(target_image)) != 0)
 			target_image[0] = '\0';
 		chain_idx = pkg_chain_index_for_target(target_name, target_image);
+		/*
+		 * #476: a name with no image means "whichever image is
+		 * building it", not "the default image". A chain is filed
+		 * under the image it builds for, so `?name=cix` during a cix
+		 * hostbuild looked for cix@base and found nothing while
+		 * cix@__hostbuild was running -- and __hostbuild is the one
+		 * image name an operator has no reason to know. Answered here
+		 * rather than inside pkg_chain_index_for_target(), whose
+		 * default-to-"base" is correct for every other caller.
+		 */
+		if (chain_idx < 0 && target_image[0] == '\0') {
+			int matches = 0;
+
+			chain_idx = pkg_chain_index_for_name(target_name, &matches);
+			if (matches > 1) {
+				respond_error(cc->fd, 400, "Bad Request",
+				              "several images are building that package -- specify ?image=");
+				return CONSOLE_FAILED;
+			}
+		}
+		if (chain_idx < 0) {
+			/*
+			 * Name what IS building. The old text made a claim
+			 * about the system ("no build in progress") from the
+			 * result of one lookup, which is how #476 read as a
+			 * dead endpoint rather than as a miss -- the operator
+			 * had a build running and was told there was none.
+			 */
+			char busy[256];
+			char msg[512];
+
+			if (pkg_active_chain_names(busy, sizeof(busy)) == 0)
+				snprintf(msg, sizeof(msg), "no build in progress");
+			else
+				snprintf(msg, sizeof(msg),
+				         "no build in progress for '%s' -- building now: %s",
+				         target_name, busy);
+			respond_error(cc->fd, 404, "Not Found", msg);
+			return CONSOLE_FAILED;
+		}
 	} else {
 		int active[PKG_MAX_CONCURRENT_JOBS];
 		int active_count = pkg_active_chain_indices(active);
 
-		if (active_count == 0) {
-			chain_idx = -1;
-		} else if (active_count == 1) {
+		if (active_count == 1) {
 			chain_idx = active[0];
+		} else if (active_count == 0) {
+			respond_error(cc->fd, 404, "Not Found", "no build in progress");
+			return CONSOLE_FAILED;
 		} else {
-			respond_error(cc->fd, 400, "Bad Request",
-			              "multiple builds in progress -- specify ?name=&image=");
+			char busy[256];
+			char msg[512];
+
+			pkg_active_chain_names(busy, sizeof(busy));
+			snprintf(msg, sizeof(msg),
+			         "multiple builds in progress (%s) -- specify ?name=", busy);
+			respond_error(cc->fd, 400, "Bad Request", msg);
 			return CONSOLE_FAILED;
 		}
-	}
-	if (chain_idx < 0) {
-		respond_error(cc->fd, 404, "Not Found", "no build in progress");
-		return CONSOLE_FAILED;
 	}
 	pkg_build_container_name(chain_idx, build_container_name, sizeof(build_container_name));
 	entry = registry_find(build_container_name);
 	if (entry == NULL || !entry->running) {
-		respond_error(cc->fd, 404, "Not Found", "no build in progress");
+		/*
+		 * The chain is real -- it just has no build container to
+		 * attach to at this instant, which is a different state from
+		 * "nothing is building" and used to share its message. It is
+		 * what an operator hits attaching in the first second of a
+		 * job (the fetch runs before any container exists) and in the
+		 * last, after the build container is gone and the artifact is
+		 * being finalized. Both are transient, and saying so is the
+		 * difference between "wait" and "give up".
+		 */
+		respond_error(cc->fd, 404, "Not Found",
+		              "that build has no live output right now -- it is fetching, "
+		              "finalizing, or between steps; retry shortly");
 		return CONSOLE_FAILED;
 	}
 	if (g_build_log_ws_conn_count >= PKG_BUILD_LOG_WS_MAX) {

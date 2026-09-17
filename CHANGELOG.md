@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### `pkg build-log --name=cix` reaches a running host build (#476)
+
+`cixctl pkg build-log --name=cix` answered `404 {"error":"no build in progress"}` for the whole of a running `cix` host build. Measured on 192.168.15.95, 2026-09-16, during the v2.57.195 host build: the 404 came back on every attempt while `GET /v1/pkg` reported the `cix` job in `building`.
+
+A build chain is filed under the image it builds for, and the lookup normalised an absent `?image=` to `base` — correct for every caller in `pkg.c`, which are all *installing* something and have to pick a destination, and wrong for a query about a job that already exists and already chose. A host build's chain is `cix@__hostbuild`, so `?name=cix` asked for `cix@base`, found nothing, and reported that as a fact about the platform. `--name=cix --image=__hostbuild` does work; `__hostbuild` is internal bookkeeping an operator has no reason to know, and nothing documents it.
+
+ADR-0297: on a query, an absent `image` means "whichever image is building that package". `pkg_chain_index_for_name()` answers that and returns the match count, so two images building the same package is a 400 naming `image` rather than an arbitrary pick; `pkg_chain_index_for_target()` and `normalize_image()` are untouched, because changing either would change what `pkg install` with no image installs into.
+
+The messages changed too, for the same reason the bug was hard to read. A 404 about a failed lookup now names the builds that *are* running rather than asserting "no build in progress" — the operator had a build running and was told there was none. And the second 404 the endpoint can return, where the chain exists but has no build container at that instant (during the source fetch, between chain steps, while the artifact is finalized), no longer shares the first one's words: it says to retry, because it is transient.
+
+The image-crossing case is **not gated by a test that runs**. `test_pkg_build_log` is not in `SELFTESTS` (it creates a real build container, which a composed build container cannot — #224), and reproducing it there would need a second image bootstrapped with its own toolchain for a three-line lookup rule. It gains a case that gates the name-only path and the new 404 text; the image-crossing half is verified live against a real host build, which is how it was found.
+
 ### `nsswitch.conf` names the dns backend, and the platform keeps it correct (#478)
 
 ADR-0295 gave containers a real `/etc/resolv.conf`. Verifying it showed glibc never reading it. Measured on 192.168.15.95, 2026-09-17, inside a `jumpbox` container on `services`:

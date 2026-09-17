@@ -361,6 +361,62 @@ static int recv_ws_frame(int fd, int *out_opcode, unsigned char *out_buf, size_t
 #define TEST_WS_KEY "dGhlIHNhbXBsZSBub25jZQ=="
 #define TEST_WS_ACCEPT "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
 
+/*
+ * One handshake attempt against an arbitrary query string, returning
+ * the HTTP status the daemon answered with and (for a non-101) the
+ * response text, so a test can assert on the message and not only on
+ * the code (#476: the two 404s this endpoint can return mean
+ * different things and used to carry the same words).
+ *
+ * Closes the connection before returning -- nothing here relays
+ * frames, and leaving a 101 attached would count against the
+ * endpoint's own four-viewer cap for the rest of the run.
+ *
+ * Returns the status code, or -1 if nothing parseable came back.
+ */
+static int attach_once(const char *query, char *out_resp, size_t out_cap)
+{
+	int fd, status = -1;
+	char req[512];
+	char resp[2048];
+	size_t got = 0;
+	int rlen;
+
+	if (out_cap > 0)
+		out_resp[0] = '\0';
+	fd = raw_connect(TEST_PORT);
+	if (fd < 0)
+		return -1;
+	rlen = snprintf(req, sizeof(req),
+	                 "GET /v1/pkg/build/log%s HTTP/1.1\r\n"
+	                 "Host: 127.0.0.1\r\n"
+	                 "Upgrade: websocket\r\n"
+	                 "Connection: Upgrade\r\n"
+	                 "Sec-WebSocket-Key: %s\r\n"
+	                 "Sec-WebSocket-Version: 13\r\n"
+	                 "\r\n",
+	                 query, TEST_WS_KEY);
+	if (rlen > 0 && (size_t)rlen < sizeof(req) &&
+	    write_all_raw(fd, req, (size_t)rlen) == 0) {
+		while (got < sizeof(resp) - 1) {
+			ssize_t n = read(fd, resp + got, sizeof(resp) - 1 - got);
+
+			if (n <= 0)
+				break;
+			got += (size_t)n;
+			resp[got] = '\0';
+			if (strstr(resp, "\r\n\r\n") != NULL)
+				break;
+		}
+		if (got > 12 && strncmp(resp, "HTTP/1.1 ", 9) == 0)
+			status = atoi(resp + 9);
+		if (out_cap > 0)
+			snprintf(out_resp, out_cap, "%s", resp);
+	}
+	close(fd);
+	return status;
+}
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -527,6 +583,40 @@ int main(void)
 		}
 		cix_response_free(&r);
 		g_failures++;
+	}
+
+	/*
+	 * --- scenario 3a: a ?name= with no ?image= resolves, and a ?name=
+	 * that matches nothing says what IS building (#476). ---
+	 *
+	 * The bug #476 records is that an absent ?image= was normalised to
+	 * PKG_DEFAULT_IMAGE, so a job filed under any other image -- a host
+	 * build's PKG_HOSTBUILD_IMAGE above all -- could not be reached by
+	 * name. THIS TEST CANNOT REPRODUCE THAT HALF: slowbuild installs
+	 * into "base", so `?name=slowbuild` matched before the fix too.
+	 * Standing that up here would mean bootstrapping a second image
+	 * with its own toolchain, which is disproportionate, and the real
+	 * reproduction is a host build -- verified on 192.168.15.95 rather
+	 * than here, and recorded in #476. What these two DO gate is the
+	 * name-only lookup path staying alive, and the message: the old
+	 * text asserted "no build in progress" from one failed lookup,
+	 * which is why an operator with a running build was told there was
+	 * none.
+	 */
+	{
+		char aresp[2048];
+		int st = attach_once("?name=slowbuild", aresp, sizeof(aresp));
+
+		CHECK(st == 101, "?name= with no ?image= attaches to the running build");
+		if (st != 101)
+			fprintf(stderr, "      got: %.300s\n", aresp);
+
+		st = attach_once("?name=nosuchpackage", aresp, sizeof(aresp));
+		CHECK(st == 404, "?name= matching nothing -> 404");
+		CHECK(strstr(aresp, "slowbuild") != NULL,
+		      "that 404 names the build that IS running (#476)");
+		if (strstr(aresp, "slowbuild") == NULL)
+			fprintf(stderr, "      got: %.300s\n", aresp);
 	}
 
 	fd = raw_connect(TEST_PORT);
