@@ -10649,7 +10649,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/PkgEntry"
         "400":
-          description: name/build_image missing; no such recipe / it failed to parse; or the recipe has a non-empty pkg_depends=
+          description: name/build_image missing, or no such recipe / it failed to parse
           content:
             application/json:
               schema:

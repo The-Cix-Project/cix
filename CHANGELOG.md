@@ -6,6 +6,31 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A hostbuild carries `pkg_depends` instead of refusing it (#465, ADR-0303)
+
+`cix`'s own recipe could not satisfy both of the paths that build it, and the field they disagreed about was the same one.
+
+`cixd` links `-lssl -lcrypto -larchive -lcurl` (`Makefile:418`). An ordinary `pkg install cix` into an image runs the #389 undeclared-link gate, which walks `pkg_depends`' closure and refuses an install whose binaries link a library no declared package provides — so it needs `pkg_depends="openssl libarchive curl"`. Declaring exactly that made `pkg hostbuild cix` — the only way this platform builds itself — reject the recipe outright:
+
+```c
+/* Dependency resolution targets "merge into an image" -- meaningless
+ * for a one-shot artifact harvest. Every prerequisite must already
+ * be baked into build_image's own rootfs (built up via ordinary
+ * `pkg install` first). */
+if (recipe.depends[0] != '\0')
+	return PKG_ERR_INVALID_RECIPE;
+```
+
+Both sentences of that comment are true, and neither is about `pkg_depends`. What composes a hostbuild's build container is `build_image` and nothing else: `pkg_build_container_spec()` opens with `if (g_chains[chain_idx].is_hostbuild)`, the first arm of its if-chain, and the arm that builds an environment out of a recipe's declared tools (`buildenv_image_for(recipe.build_depends, ...)`, ADR-0199) is two branches further down and unreachable for a hostbuild. So a hostbuild consulted neither depends field when deciding what it built inside — `pkg_build_depends` ignored, `pkg_depends` refused — and the refusal's justification described the field it was not checking.
+
+The refusal is deleted. Nothing else changed, because nothing else had to: `pkg_build_completed()` already records the declaration onto the entry from the chain's captured copy (ADR-0302) **before** the hostbuild/install split, so a hostbuild entry now reports it through `GET /v1/pkg` like any other; and the hostbuild path already builds a single-entry `dep_queue` with no `resolve_chain()`, so there was no resolution to disable. The one reader that walks the closure, `declared_provided_sonames()`, sits in the non-hostbuild arm of `pkg_build_completed()` and is never reached from here — checked, along with the other three readers of `e->depends`, before removing the check rather than after.
+
+The distinction is the decision: **resolution is skipped because resolving means "install the closure into an image" and a hostbuild has no image to merge into, not because the declaration is meaningless.** A field accepted and silently ignored is a trap; a field whose meaning is stated per mode is a contract. Deleting the refusal also collapses the two indistinguishable `PKG_ERR_INVALID_RECIPE` returns in `pkg_hostbuild_start()` to one, so that 400 now means what it says.
+
+`test_pkg.c` step 17's fixture asserted the 400 and now asserts acceptance. The dependency it declares is deliberately a name no recipe in the fixture set has, which makes one build prove three things: reaching `installed` proves nothing resolved it (resolution could only have failed), the recorded `depends` field proves it was not discarded, and a 404 for the name proves nothing installed it. `test_pkg` is in none of the `SELFTESTS` lists (#224), so this is not a release gate.
+
+**This lands over two steps and cannot land in one.** A recipe declaring `pkg_depends` cannot be published until a daemon that accepts it is running — publishing one against the daemon being replaced gets the very 400 this removes. So the deploy carrying the fix uses a recipe with `pkg_depends=""`, and `cix`'s declaration is published against the daemon it deploys.
+
 ### A package job's version is decided once, not re-derived at the end (#326, ADR-0302)
 
 `GET /v1/pkg` reported a record whose three fields could not all be true at once:
