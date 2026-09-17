@@ -960,6 +960,13 @@ int pkg_chain_index_for_target(const char *name, const char *image)
 	const char *norm_image = normalize_image(image);
 	int i;
 
+	/* A slot can still carry a name after its job ended, when some
+	 * path failed to release it -- #246 exists because six did. Every
+	 * "what is in flight" question reaps first (pkg_job_in_flight_for()
+	 * and pkg_active_chain_names() already did), or the three of them
+	 * answer differently about the same slot. It costs a warn log the
+	 * one time a leak is reclaimed, which is the point. */
+	chain_reap_stale();
 	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
 		if (g_chains[i].name[0] != '\0' &&
 		    strcmp(g_chains[i].name, name) == 0 &&
@@ -996,6 +1003,11 @@ int pkg_chain_index_for_name(const char *name, int *out_match_count)
 {
 	int i, found = -1, count = 0;
 
+	/* Reaped for the same reason pkg_chain_index_for_target() is, and
+	 * it matters more here: matching a slot whose job has finished
+	 * would send the caller to the "no live output right now, retry"
+	 * 404, which asserts transience about a build that is over. */
+	chain_reap_stale();
 	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
 		if (g_chains[i].name[0] == '\0' || strcmp(g_chains[i].name, name) != 0)
 			continue;
@@ -1061,6 +1073,10 @@ int pkg_active_chain_indices(int *out_indices)
 {
 	int i, count = 0;
 
+	/* Same reap as its two siblings above. POST /images/gc refuses to
+	 * run while this returns > 0, so a leaked slot used to block image
+	 * collection with no way to clear it short of a restart. */
+	chain_reap_stale();
 	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
 		if (g_chains[i].name[0] != '\0')
 			out_indices[count++] = i;

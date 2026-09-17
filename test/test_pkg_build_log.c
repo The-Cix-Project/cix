@@ -713,6 +713,28 @@ int main(void)
 		close(fd);
 	}
 
+	/*
+	 * And by NAME after the build has finished, asserting the words and
+	 * not only the code (#476). The endpoint has two 404s now and they
+	 * mean different things: "no build in progress", and "that build
+	 * has no live output right now ... retry shortly". A finished build
+	 * must get the first. The second would be a claim of transience
+	 * about a job that is over, which is what happens if a chain slot
+	 * its job failed to release is still matched by name -- so this is
+	 * the gate on chain_reap_stale() being reached from the name
+	 * lookup, not decoration on the status code.
+	 */
+	{
+		char aresp[2048];
+		int st = attach_once("?name=slowbuild", aresp, sizeof(aresp));
+
+		CHECK(st == 404, "?name= after the build finished -> 404");
+		CHECK(strstr(aresp, "no build in progress") != NULL,
+		      "that 404 says no build in progress, not \"retry shortly\" (#476)");
+		if (strstr(aresp, "no build in progress") == NULL)
+			fprintf(stderr, "      got: %.300s\n", aresp);
+	}
+
 	stop_daemon(daemon_pid);
 	reset_state();
 	test_data_dir_cleanup(g_data_dir);

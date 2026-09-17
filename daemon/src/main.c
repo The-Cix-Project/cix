@@ -26969,8 +26969,18 @@ static enum console_route_result try_pkg_build_log_upgrade(struct conn *cc, cons
 
 			chain_idx = pkg_chain_index_for_name(target_name, &matches);
 			if (matches > 1) {
-				respond_error(cc->fd, 400, "Bad Request",
-				              "several images are building that package -- specify ?image=");
+				char busy[256];
+				char msg[512];
+
+				/* Name them, like the no-?name= 400 below does --
+				 * "specify ?image=" without saying which images are
+				 * candidates leaves the operator guessing at the
+				 * value this refusal is asking for. */
+				pkg_active_chain_names(busy, sizeof(busy));
+				snprintf(msg, sizeof(msg),
+				         "several images are building '%s' -- specify ?image=; "
+				         "building now: %s", target_name, busy);
+				respond_error(cc->fd, 400, "Bad Request", msg);
 				return CONSOLE_FAILED;
 			}
 		}
