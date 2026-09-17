@@ -755,11 +755,16 @@ static int probe_connect_unix(const void *addr, long addrlen)
  * The fd is carried in probe_fd rather than the answer being taken
  * inline, the same way probe_pid carries a command probe across turns.
  * Both measurements above show the handshake finished inside connect()
- * for a local peer, so an inline poll would have worked for loopback --
- * but ready_addr_be is the container's own non-loopback address
- * (cixinit_table.c), that case could not be measured in a build
- * container, which has no such address, and carrying the fd is correct
- * for any address without assuming anything about timing.
+ * for a local peer, so an inline poll would have worked for loopback.
+ * Carrying the fd is still correct for any address without assuming
+ * anything about timing, which is why it stays.
+ *
+ * This used to say "ready_addr_be is the container's own non-loopback
+ * address (cixinit_table.c)". In practice it is always 0 and this
+ * probe always goes to 127.0.0.1: the daemon computes that argument
+ * before it has parsed the container's networks, so the value it
+ * passes is unconditionally 0 (main.c, #477). The fallback below is
+ * therefore the only path taken today, not the exception it reads as.
  */
 static int probe_tcp(struct svc *s, const struct sockaddr_in *a)
 {

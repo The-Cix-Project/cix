@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted, with one decision in it superseded by [ADR-0295](0295-a-container-in-the-directory-can-read-it.md): an OMITTED `dns_servers` now defaults to the registered DNS servers sharing a network with the container, so the "deliberately explicit, no auto-wiring" paragraph below no longer describes the system. An explicit `[]` still means none. The field itself, its 3-entry cap, the `400` against a conflicting `files` entry, and the pre-`clone3()` staging mechanism all stand.
 
 ## Context
 

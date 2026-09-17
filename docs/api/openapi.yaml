@@ -13851,15 +13851,26 @@ components:
             directly into the upperdir pre-clone3()" mechanism `files`
             above already uses, a dedicated field rather than requiring
             hand-constructed resolv.conf content via `files`. Up to 3
-            (matches glibc's own resolv.conf MAXNS). Deliberately
-            explicit -- no automatic discovery of a registered internal
-            DNS server container (see `dns server register`); point
-            this at that container's own real IP directly if `.internal`
-            resolution is wanted. 400 if combined with a `files` entry
-            whose path is "/etc/resolv.conf" -- an unresolvable
-            ambiguity about which one should apply. Omit for no
-            resolver config staged (a container brings its own, or has
-            none).
+            (matches glibc's own resolv.conf MAXNS). 400 if combined
+            with a `files` entry whose path is "/etc/resolv.conf" -- an
+            unresolvable ambiguity about which one should apply.
+            OMIT to get the default (ADR-0295, #451): the registered
+            DNS server containers (see `dns server register`) that
+            share a network with this container, in registration order,
+            read from their own persisted definitions and so
+            independent of whether they are currently running. Send an
+            explicit `[]` to ask for NO resolver -- that is the only
+            way to say it. An operator-supplied `files` entry for
+            "/etc/resolv.conf" also suppresses the default, being the
+            same question already answered. A container that is itself
+            a DNS server gets no default: a resolver's upstream is
+            `PUT /v1/dns/forwarders`, not its own resolv.conf. A
+            registered server whose definition gives no explicit `ip`
+            on the shared network contributes nothing, because an
+            auto-allocated resolver address is not stable across boots
+            -- that case is logged, naming the server. The default is
+            recomputed on every replay, so adding a DNS server later
+            reaches containers created before it existed.
         networks:
           type: array
           items:
@@ -15319,6 +15330,10 @@ components:
             ADR-0143) staged into this container's own /etc/resolv.conf
             at creation time, id-only like `files` above (not the
             resolv.conf content itself, already implied by the list).
+            This is the EFFECTIVE list: a container that named none
+            reports the servers ADR-0295 defaulted it to, which is what
+            its resolv.conf actually contains. Empty means no resolver
+            config was staged.
             Empty if none were given.
         restart:
           type: string

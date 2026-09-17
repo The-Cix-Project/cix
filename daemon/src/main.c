@@ -12195,6 +12195,145 @@ static void name_conflict_msg(const char *name, char *err_msg, size_t err_msg_si
 		snprintf(err_msg, err_msg_size, "a container with this name already exists");
 }
 
+/*
+ * #451, ADR-0295: the resolvers a container gets when it names none.
+ *
+ * ADR-0143 made dns_servers deliberately explicit, on ADR-0076's
+ * no-auto-discovery precedent. That was coherent for an arbitrary
+ * container and incoherent for one the platform publishes in its own
+ * DNS: `jump` carried dns_register:true, so its name resolved for
+ * everyone else while it had no /etc/resolv.conf at all (measured on
+ * 192.168.15.103, 2026-09-13: no such file, `getent hosts` rc=2). A
+ * container that is IN the directory and cannot READ it is the
+ * inconsistency this closes.
+ *
+ * READS THE PERSISTED DEFINITION, NEVER THE LIVE REGISTRY, and that is
+ * the whole of the design. Autostart runs in containerdef_resolve_
+ * order()'s depends_on order, and every definition on 192.168.15.95
+ * declares depends_on: [] (measured 2026-09-17) -- so the order among
+ * them is arbitrary, and a registry-backed lookup would find dns-1 on
+ * the boots where it happened to start first and nothing on the
+ * others. That is #451's own symptom made intermittent, which is worse
+ * than deterministic. dns_init() and containerdef_init() both run
+ * before autostart, so the definition is readable at the moment any
+ * container is created, and gives the same answer on every replay.
+ *
+ * Only an EXPLICIT ip in the definition counts. A registered server
+ * whose address was auto-allocated contributes nothing, because that
+ * address is not stable across boots either -- a resolv.conf pinned to
+ * a previous allocation would be confidently wrong rather than absent.
+ * Those names come back in skipped[] so the caller can say so.
+ *
+ * Returns the number written to out[] (0..max), first match first: the
+ * container's own networks in declared order, and within each the
+ * registration order. One entry per server -- dns-1 is attached to both
+ * `services` and `access` on the real box and would otherwise take two
+ * of the three slots with the same host reached twice.
+ */
+/*
+ * Whether this create body declares the DNS-server role. Mirrors
+ * register_declared_server_roles()'s own test exactly -- a real object,
+ * so a literal "dns_server": null is not a declaration. Two readings of
+ * one field would be two sources of truth about what this container is.
+ */
+static int declares_dns_server_role(const struct json_value *root)
+{
+	const struct json_value *v = json_object_get(root, "dns_server");
+
+	return v != NULL && v->type == JSON_OBJECT;
+}
+
+static int default_dns_servers_for(const struct registry_network_attachment *nets, int net_count,
+                                    char out[][RESOLV_IP_STRLEN], int max, char *skipped,
+                                    size_t skipped_size)
+{
+	char servers[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
+	int shared[DNS_SERVER_MAX];  /* shares a network with this container */
+	int used[DNS_SERVER_MAX];    /* and contributed an address */
+	int server_count = dns_server_list_containers(servers, DNS_SERVER_MAX);
+	int taken_count = 0;
+	size_t skipped_len = 0;
+	int ni, si, i;
+
+	if (skipped_size > 0)
+		skipped[0] = '\0';
+	for (i = 0; i < DNS_SERVER_MAX; i++) {
+		shared[i] = 0;
+		used[i] = 0;
+	}
+
+	for (ni = 0; ni < net_count && taken_count < max; ni++) {
+		for (si = 0; si < server_count && taken_count < max; si++) {
+			struct container_def *def;
+			struct json_value *droot;
+			const struct json_value *jnets;
+			size_t k;
+
+			if (used[si])
+				continue;
+			def = containerdef_find(servers[si]);
+			if (def == NULL || def->body == NULL)
+				continue;
+			droot = json_parse(def->body, def->body_len);
+			if (droot == NULL)
+				continue;
+			jnets = json_object_get(droot, "networks");
+			if (jnets == NULL || jnets->type != JSON_ARRAY) {
+				json_free(droot);
+				continue;
+			}
+			for (k = 0; k < jnets->u.array.count; k++) {
+				char n[NETWORK_NAME_MAX];
+				uint32_t ip_be;
+				int has_ip;
+				char ifn[16];
+				char br[16];
+
+				if (parse_network_entry(jnets->u.array.items[k], n, sizeof(n), &ip_be,
+				                         &has_ip, ifn, sizeof(ifn), br, sizeof(br)) != 0)
+					continue;
+				if (strcmp(n, nets[ni].name) != 0)
+					continue;
+				shared[si] = 1;
+				/*
+				 * The shared network is this one. An address here
+				 * only counts if the definition states it -- see the
+				 * auto-allocation note above.
+				 */
+				if (!has_ip)
+					break;
+				{
+					struct in_addr a4;
+
+					a4.s_addr = ip_be;
+					if (inet_ntop(AF_INET, &a4, out[taken_count], RESOLV_IP_STRLEN) !=
+					    NULL) {
+						used[si] = 1;
+						taken_count++;
+					}
+				}
+				break;
+			}
+			json_free(droot);
+		}
+	}
+
+	/*
+	 * Reported after the whole walk, never during it: a server can
+	 * share two networks with this container and have an explicit
+	 * address on only one of them, and naming it as skipped while it
+	 * is also in use would be a message contradicting itself.
+	 */
+	for (si = 0; si < server_count && skipped_size > 0 && taken_count < max; si++) {
+		if (!shared[si] || used[si])
+			continue;
+		skipped_len += (size_t)snprintf(skipped + skipped_len,
+		                                 skipped_len < skipped_size ? skipped_size - skipped_len : 0,
+		                                 "%s%s", skipped_len > 0 ? ", " : "", servers[si]);
+	}
+	return taken_count;
+}
+
 static int create_container_from_body(const char *body, size_t body_len,
                                        struct registry_entry **out_entry,
                                        char out_restart_policy[16], int *out_restart_delay_seconds,
@@ -12293,6 +12432,15 @@ static int create_container_from_body(const char *body, size_t body_len,
 	const struct json_value *jdns_servers;
 	char dns_server_ips[RESOLV_MAX_NAMESERVERS][RESOLV_IP_STRLEN];
 	int dns_server_count = 0;
+	/*
+	 * #451: an explicit files[] entry for /etc/resolv.conf is a
+	 * deliberate answer to the same question ADR-0295's default
+	 * answers, so it suppresses the default rather than racing it.
+	 * Combining it with an explicit dns_servers is still the 400 that
+	 * ADR-0143 established -- an operator who wrote both said two
+	 * things at once; one who wrote only the file said one.
+	 */
+	int files_have_resolv_conf = 0;
 	const struct json_value *jdns_register;
 	int dns_register = 0;
 	const struct json_value *jpki_issue, *jpki_cert_dir, *jpki_days, *jpki_cert;
@@ -13179,6 +13327,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 				snprintf(err_msg, err_msg_size, "files group must be a non-negative gid");
 				return 400;
 			}
+			if (strcmp(path, "/etc/resolv.conf") == 0)
+				files_have_resolv_conf = 1;
 			if (jdns_servers != NULL && strcmp(path, "/etc/resolv.conf") == 0) {
 				json_free(root);
 				snprintf(err_msg, err_msg_size,
@@ -13226,12 +13376,19 @@ static int create_container_from_body(const char *body, size_t body_len,
 
 	/*
 	 * ADR-0143: optional real /etc/resolv.conf staged into the
-	 * container's own upperdir, same shape files[] already uses --
-	 * deliberately explicit (no auto-wiring to any registered internal
-	 * DNS server), same posture ADR-0076 already established for the
-	 * host's own equivalent PUT /system/resolv. RESOLV_MAX_NAMESERVERS
-	 * is resolv.c's own cap (matches glibc's real resolv.conf MAXNS),
-	 * reused here rather than a second invented limit.
+	 * container's own upperdir, same shape files[] already uses.
+	 * RESOLV_MAX_NAMESERVERS is resolv.c's own cap (matches glibc's
+	 * real resolv.conf MAXNS), reused here rather than a second
+	 * invented limit.
+	 *
+	 * This comment used to say "deliberately explicit (no auto-wiring
+	 * to any registered internal DNS server)". ADR-0295 (#451) reversed
+	 * that one decision: an OMITTED field now defaults to the
+	 * registered DNS servers sharing a network with this container
+	 * (default_dns_servers_for(), below the networks loop, where the
+	 * attachments are known). An explicit [] still means none, which is
+	 * why the two cases are distinguished by jdns_servers being NULL
+	 * rather than by dns_server_count being 0.
 	 */
 	if (jdns_servers != NULL) {
 		if (jdns_servers->type != JSON_ARRAY || jdns_servers->u.array.count > RESOLV_MAX_NAMESERVERS) {
@@ -13253,27 +13410,6 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 		dns_server_count = (int)jdns_servers->u.array.count;
 	}
-	/*
-	 * #451: a container that registers its own name in DNS but is given
-	 * no resolver of its own cannot look anything up -- including the
-	 * very directory it just published itself into. ADR-0143's posture
-	 * is deliberate (no auto-wiring of dns_servers, so this is not an
-	 * error), but the silent form of it is a jump box where `ssh <name>`
-	 * fails for no stated reason (measured on 192.168.15.103,
-	 * 2026-09-13: no /etc/resolv.conf, `getent hosts` rc=2). Say it once,
-	 * at creation, where an operator scanning the log will find it. The
-	 * posture question -- whether an omitted dns_servers should DEFAULT
-	 * to a registered resolver on one of the container's own networks --
-	 * is ADR-0143's to answer; this only makes the current behaviour
-	 * visible instead of mute.
-	 */
-	if (dns_register && dns_server_count == 0)
-		logstore_write("cixd", "warn",
-		                "container %s sets dns_register but no dns_servers -- it is published "
-		                "in DNS yet cannot resolve names itself (no /etc/resolv.conf is "
-		                "staged). Set dns_servers to a resolver reachable on one of its "
-		                "networks if it needs to look up names.",
-		                name);
 	if (jsysctls != NULL) {
 		if (jsysctls->type != JSON_OBJECT || jsysctls->u.object.count > CONTAINER_MAX_SYSCTLS) {
 			json_free(root);
@@ -13355,8 +13491,19 @@ static int create_container_from_body(const char *body, size_t body_len,
 
 	/*
 	 * ADR-0260: what the container runs is its services[], translated
-	 * once into cix-init's table. A tcp probe connects to the
-	 * container's own first address.
+	 * once into cix-init's table.
+	 *
+	 * This comment used to end "a tcp probe connects to the
+	 * container's own first address". It does not, and the argument
+	 * is right here in the line below: net_count is still 0 at this
+	 * point -- it is assigned from jnetworks in the attachment loop
+	 * FURTHER DOWN -- so the ternary always takes its 0 arm, every
+	 * service gets ready_addr_be == 0, and cix_init.c falls back to
+	 * 127.0.0.1. A service listening only on its network address is
+	 * therefore never seen as ready. Established by reading, 2026-09-17;
+	 * not measured against a real such service, and filed rather than
+	 * fixed here because moving this call past the loop is its own
+	 * change with its own blast radius. See #477.
 	 */
 	if (cixinit_table_from_json(jservices, net_count > 0 ? net_attachments[0].ip_be : 0, &init_table,
 	                            err_msg, err_msg_size) != 0) {
@@ -13510,6 +13657,86 @@ static int create_container_from_body(const char *body, size_t body_len,
 			/* veth_host stays empty -- only a live attachment (task #861)
 			 * ever needs a standalone detach path; see its own comment
 			 * in registry.h. */
+		}
+	}
+
+	/*
+	 * ADR-0295 (#451): an OMITTED dns_servers defaults to the registered
+	 * DNS servers this container shares a network with. Here, rather
+	 * than beside the field's own parse, because it needs
+	 * net_attachments[] -- which the loop directly above is what
+	 * populates.
+	 *
+	 * Three things do NOT get a default, each for its own reason:
+	 *
+	 *   jdns_servers != NULL -- an explicit list, [] included. An empty
+	 *   array is an operator saying "no resolver", and ADR-0295 keeps
+	 *   that meaning; it is the only way to ask for one.
+	 *
+	 *   files_have_resolv_conf -- the operator wrote the file itself.
+	 *
+	 *   a DNS server itself. Checked from the request body's own
+	 *   dns_server field rather than dns_server_is_registered(), because
+	 *   registration happens AFTER creation (register_declared_server_
+	 *   roles(), post-pidfd) -- so on first creation the binding does not
+	 *   exist yet and only the body knows. Both are consulted: the body
+	 *   covers first creation, the binding covers every replay after it.
+	 *   The reason for the rule is One Source of Truth, not loop
+	 *   avoidance: a resolver's upstream is dns_forwarders_set() and its
+	 *   own --servers-file, and a staged resolv.conf would be a second,
+	 *   conflicting answer to "where does this resolver send queries".
+	 *   Measured 2026-09-17, dns-1 and dns-2 both omit dns_servers and
+	 *   both run dnsmasq with -R (--no-resolv), so they would have
+	 *   pointed at each other while ignoring the file -- harmless by
+	 *   accident, via a flag in a deployment recipe this daemon does not
+	 *   control, which is exactly the coupling not to rely on.
+	 */
+	if (jdns_servers == NULL && !files_have_resolv_conf && net_count > 0 &&
+	    !declares_dns_server_role(root) && !dns_server_is_registered(name)) {
+		char skipped[256];
+
+		dns_server_count = default_dns_servers_for(net_attachments, net_count, dns_server_ips,
+		                                            RESOLV_MAX_NAMESERVERS, skipped,
+		                                            sizeof(skipped));
+		if (dns_server_count > 0) {
+			char joined[RESOLV_MAX_NAMESERVERS * (RESOLV_IP_STRLEN + 2)];
+			size_t jl = 0;
+
+			joined[0] = '\0';
+			for (i = 0; i < (size_t)dns_server_count; i++)
+				jl += (size_t)snprintf(joined + jl, sizeof(joined) - jl, "%s%s",
+				                        jl > 0 ? ", " : "", dns_server_ips[i]);
+			logstore_write("cixd", "info",
+			                "container %s named no dns_servers -- defaulted to %s, the "
+			                "registered DNS server(s) on its own network(s) (ADR-0295). "
+			                "Send dns_servers: [] to ask for no resolver.",
+			                name, joined);
+		} else if (skipped[0] != '\0') {
+			/*
+			 * A shared network was found and still produced nothing.
+			 * Naming the server and the reason matters: the operator's
+			 * fix is one explicit ip in that server's definition, and
+			 * without this the symptom is an absent resolv.conf with
+			 * no stated cause -- which is the whole of #451.
+			 */
+			logstore_write("cixd", "warn",
+			                "container %s named no dns_servers and got none: %s share a "
+			                "network with it but their definitions give no explicit ip, "
+			                "and an auto-allocated resolver address is not stable across "
+			                "boots. Give that server an explicit ip, or set this "
+			                "container's dns_servers by hand.",
+			                name, skipped);
+		} else if (dns_register) {
+			/*
+			 * #451's original symptom, now the genuinely empty case:
+			 * published in DNS, no registered server on any of its
+			 * networks to ask.
+			 */
+			logstore_write("cixd", "warn",
+			                "container %s sets dns_register but no registered DNS server "
+			                "shares a network with it -- it is published in DNS yet cannot "
+			                "resolve names itself (no /etc/resolv.conf is staged).",
+			                name);
 		}
 	}
 
