@@ -6,6 +6,36 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A package job's version is decided once, not re-derived at the end (#326, ADR-0302)
+
+`GET /v1/pkg` reported a record whose three fields could not all be true at once:
+
+```
+name=glibc  image=jumpbox  state=installed  version=""  error="build failed (exit status 1)
+(build container preserved for debugging: __pkgbuild-0 ...)"
+```
+
+The package really was installed — `image materialize jumpbox` said `glibc already present` and returned ready — so only the record was wrong, and nothing would clear it: re-materializing does not touch an already-present package, `pkg install` answers `409 package is already installed`, and deleting the container the error names removes the container but not the sentence citing it. The only reset was uninstalling a working package.
+
+**The cause is that the version a job installs was decided twice.** `start_fetch_for()` parses the recipe and knows it at fetch time; `pkg_build_completed()` threw that away and looked it up again, writing `version`/`depends` only `if` the lookup and parse both succeeded — a dozen lines above an **unconditional** `e->state = PKG_STATE_INSTALLED`. Two defects in that pair, and the second does not need the first:
+
+- **Conditional write, unconditional state.** A failed lookup left the fields as they were while the entry was marked INSTALLED anyway. An earlier `memset()` in `start_fetch_for()` (taken whenever the entry was not INSTALLED at chain start, i.e. after any previous failed attempt) had already emptied `version`. A later failed *upgrade* of that entry then took the `keep_installed` branch — `state = INSTALLED`, error written, version still empty — which is exactly the measured record.
+- **The second lookup asked a different question.** `current_fetch_effective_version()` returns NULL for everything but an explicit top-level pin, and NULL means *resolve to highest available*. So completion asked "what is the highest revision now?", not "what did this job build" — and a revision published while a build was in flight would have been recorded as what that job installed. A confidently wrong version, not a missing one.
+
+That second defect is what makes the analysis hold: #326's reproduction needs a recipe revision *withdrawn*, and no API withdraws one (a published `(name, version)` is immutable under ADR-0107, and `/pkg/recipes/{name}` carries only a GET). Re-derivation is wrong whenever the answer can change, and publishing is enough to change it.
+
+Fixed by capturing the resolved version and depends once, on `struct pkg_chain` (memory-only, so the entry's persisted shape is unchanged), and reading them at completion. Three details that matter more than the capture itself:
+
+- **`pkg_resume_build()` sets them too.** It reuses a chain slot *by index*, deliberately, because `pkg_build_completed()` keys on the index the container name encodes — so it never goes through `start_fetch_for()`. Without setting them from its own parsed recipe, this change would have been a worse bug than the one it fixes: a stale version from a previous job in that slot, written confidently. Found by checking the resume path rather than assuming the two start paths were all of them.
+- **`chain_alloc()` clears them on handout**, for the reason it already clears `fetch_pid`: slots are reused constantly, so a future third start path that forgets should produce the old *visible* failure (a missing version) rather than another package's version on this entry.
+- **The invariant is asserted, not assumed.** `pkg_record_outcome()` — ADR-0272's single funnel every failure reaches — logs an error if it ever records INSTALLED with an empty version. It logs rather than repairs, because a silent correction would hide whichever new path reopened the hole.
+
+**Also fixes build logs named `<name>-unknown-<time>.log`.** `pkg_build_log_open()`'s own comment says the version must be passed in rather than read off the entry, because naming it from `e->version` produced `unknown` "for exactly the builds most worth finding again" — and it was then passed `current_fetch_effective_version()`, which is NULL for every unpinned build, so the fallback still landed on `unknown` for the common case. The comment was right about the goal and the argument never reached it; it now gets the captured version.
+
+**Not folded in:** #326's "Expected" also asks that the error be attached to the *attempt* rather than the package. ADR-0272 already made the run the home for per-attempt outcomes, so it is plausible — but it is a contract change altering what `GET /pkg` shows for every failed package on every host, and the issue itself names "an operator and the dashboard read this to decide whether a host is healthy", which is the correct workflow for a package that failed and was never installed. It needs its own assessment, not a ride-along.
+
+**No automated gate covers this**, stated rather than implied: `test_pkg` is not in `SELFTESTS` (#224, #480), and `test_pkg_recipe_approval` — which is — tests recipe immutability rather than install outcomes (read, not assumed). The reproduction additionally needs a withdrawal no API performs. The verification is that the platform's own hostbuild exercises the capture path end to end on every deploy: a captured version that failed to reach the entry would leave the `cix` package reporting an empty version after installing.
+
 ### A container's disk usage is named for the question it answers: `disk.usage` (#475, ADR-0301)
 
 `GET /containers/{name}/stats` reported `disk.upper_bytes`, `disk.upper_measured_at` and `disk.upper_source`. Those three are now one nested object, `disk.usage`, with `bytes`, `source` and `measured_at`.
