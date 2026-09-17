@@ -3625,13 +3625,14 @@ skip_pin_isolation:
 	 * toolchain sandbox. Proves: a real artifact lands on disk at the
 	 * documented path; PKG_ERR_BUSY is enforced against hostbuild the
 	 * same way it already is between two ordinary installs (step 4);
-	 * a hostbuild recipe with a non-empty pkg_depends is rejected
-	 * outright (dependency resolution has no meaning for a one-shot
-	 * artifact harvest -- every prerequisite must already be in
-	 * build_image's own rootfs). Not a kernel build (far too slow for
-	 * this suite) -- the same trivial gcc-a-hello-world fixture every
-	 * other step here already uses, just routed through the hostbuild
-	 * entry point instead of an ordinary install.
+	 * a hostbuild recipe with a non-empty pkg_depends is accepted and
+	 * carries the declaration onto its entry without resolving it
+	 * (#465 -- resolving means "install the closure into an image",
+	 * and a hostbuild has no image to merge into). Not a kernel build
+	 * (far too slow for this suite) -- the same trivial
+	 * gcc-a-hello-world fixture every other step here already uses,
+	 * just routed through the hostbuild entry point instead of an
+	 * ordinary install.
 	 */
 	{
 		char hb_recipe_path[PATH_MAX];
@@ -4235,11 +4236,25 @@ skip_pin_isolation:
 			cix_response_free(&r);
 		}
 
-		/* a hostbuild recipe with a non-empty pkg_depends must be
-		 * rejected outright -- dependency resolution targets "merge
-		 * into an image," meaningless for a one-shot harvest. The
-		 * prior job is done by now (not busy), so this genuinely
-		 * exercises the depends check, not PKG_ERR_BUSY. */
+		/*
+		 * A hostbuild recipe declaring a non-empty pkg_depends is
+		 * ACCEPTED, and the declaration is carried onto the entry
+		 * without being resolved (#465). This step asserted a 400
+		 * until then, which is what made cix's own recipe
+		 * unsatisfiable in both directions at once.
+		 *
+		 * The dependency named here is deliberately a name no recipe
+		 * in this fixture set has: anything on the hostbuild path
+		 * that tried to RESOLVE it could only fail the job ("no such
+		 * recipe"). So reaching `installed` proves it was not
+		 * resolved, the recorded depends field proves it was not
+		 * silently discarded either, and a 404 for the name itself
+		 * proves nothing installed it -- one fixture covering all three
+		 * parts of "carried, never resolved, never installed".
+		 *
+		 * The prior job is done by now (not busy), so this genuinely
+		 * exercises the depends path rather than PKG_ERR_BUSY.
+		 */
 		{
 			char hb_recipe_dir[PATH_MAX];
 
@@ -4259,7 +4274,7 @@ skip_pin_isolation:
 			goto skip_hostbuild;
 		}
 		fprintf(f, "pkg_name=hbdepstest\npkg_version=1.0\npkg_source=file://%s\n"
-		           "pkg_sha256=%s\npkg_depends=\"badsum\"\n\n"
+		           "pkg_sha256=%s\npkg_depends=\"nosuchdep\"\n\n"
 		           "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
 		           "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n}\n",
 		        tarball_path, sha256);
@@ -4268,13 +4283,72 @@ skip_pin_isolation:
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
 		                       "{\"name\":\"hbdepstest\",\"build_image\":\"hbimage\"}", &r) != 0 ||
-		    r.status != 400) {
+		    r.status != 202) {
 			fprintf(stderr,
-			        "FAIL: hostbuild with non-empty pkg_depends expected 400, got %d\n",
+			        "FAIL: hostbuild with non-empty pkg_depends expected 202, got %d\n",
 			        r.status);
 			ok = 0;
 		}
 		cix_response_free(&r);
+
+		hb_state[0] = '\0';
+		for (i = 0; i < 100; i++) {
+			const char *state;
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/hostbuild/hbdepstest", NULL, &r) != 0 ||
+			    r.status != 200) {
+				cix_response_free(&r);
+				break;
+			}
+			state = json_str_field(r.json, "state");
+			if (state == NULL) {
+				cix_response_free(&r);
+				break;
+			}
+			snprintf(hb_state, sizeof(hb_state), "%s", state);
+			cix_response_free(&r);
+			if (strcmp(hb_state, "fetching") != 0 && strcmp(hb_state, "building") != 0)
+				break;
+			usleep(300000);
+		}
+		if (strcmp(hb_state, "installed") != 0) {
+			fprintf(stderr,
+			        "FAIL: hbdepstest ended in state '%s', expected installed -- a declared "
+			        "pkg_depends must not be resolved on the hostbuild path\n",
+			        hb_state);
+			ok = 0;
+		} else {
+			const char *dep;
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/hostbuild/hbdepstest", NULL, &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: could not re-read hbdepstest, status=%d\n", r.status);
+				ok = 0;
+			} else {
+				dep = json_str_field(r.json, "depends");
+				if (dep == NULL || strcmp(dep, "nosuchdep") != 0) {
+					fprintf(stderr,
+					        "FAIL: hbdepstest recorded depends=\"%s\", expected \"nosuchdep\" "
+					        "-- the declaration is carried, not discarded\n",
+					        dep != NULL ? dep : "(null)");
+					ok = 0;
+				}
+			}
+			cix_response_free(&r);
+
+			/* and nothing installed it */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/nosuchdep", NULL, &r) == 0 &&
+			    r.status == 200) {
+				fprintf(stderr,
+				        "FAIL: nosuchdep is installed -- a hostbuild resolved a declared "
+				        "dependency it must only have recorded\n");
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
 
 		/* an unknown build_image -> 404, not a silent fall-through */
 		memset(&r, 0, sizeof(r));

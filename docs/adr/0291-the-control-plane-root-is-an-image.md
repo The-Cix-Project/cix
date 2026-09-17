@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. Answers [issue #350](https://git.home.arpa/itdlabs/cix/issues/350). Depends on and composes with [#184](https://git.home.arpa/itdlabs/cix/issues/184) (the library-directory sprawl inside the root) and [#182](https://git.home.arpa/itdlabs/cix/issues/182) (lifecycle domains); references [issue #465](https://git.home.arpa/itdlabs/cix/issues/465) (`pkg_hostbuild_start()` refuses non-empty `pkg_depends`, which this design runs directly into — see Open Question below). This document is a design proposal for the owner's review, not yet a decision to build from: unlike every other ADR in this corpus, it is being written *before* the work it describes, at #350's own explicit request ("Needs an ADR before code"), and its own sizing is "days of work, not a session."
+Proposed. Answers [issue #350](https://git.home.arpa/itdlabs/cix/issues/350). Depends on and composes with [#184](https://git.home.arpa/itdlabs/cix/issues/184) (the library-directory sprawl inside the root) and [#182](https://git.home.arpa/itdlabs/cix/issues/182) (lifecycle domains); references [issue #465](https://git.home.arpa/itdlabs/cix/issues/465) (`pkg_hostbuild_start()` refused non-empty `pkg_depends`, which this design ran directly into — resolved by [ADR-0303](0303-a-hostbuild-carries-pkg-depends-it-does-not-resolve-it.md)). This document is a design proposal for the owner's review, not yet a decision to build from: unlike every other ADR in this corpus, it is being written *before* the work it describes, at #350's own explicit request ("Needs an ADR before code"), and its own sizing is "days of work, not a session."
 
 ## Context
 
@@ -41,7 +41,9 @@ Concretely, what this buys:
 - **No absolute paths into the build host** for anything that has a recipe — the Build Provenance Mandate is enforced by the mechanism, not by convention and a wholesale-copy-was-a-real-incident memory (#168, the `cix-builder`-image-shipped-as-`cix-builder` postmortem this file already documents).
 - **A capability cannot be implemented and left uncalled**, because there is no positional `argv[]] slot to leave as `""`. Both ADR-0029 and #347 were exactly that failure shape, twice; a manifest has no equivalent gap — a package either is or is not in it, visibly, in one document `GET /v1/images/cix-boot` returns.
 
-## Open question this ADR does not resolve on its own: the hostbuild / elfcheck tension (#465)
+## The hostbuild / elfcheck tension (#465) — RESOLVED by ADR-0303, after this was written
+
+**Shape 1 below was taken.** [ADR-0303](0303-a-hostbuild-carries-pkg-depends-it-does-not-resolve-it.md) deleted the refusal: a hostbuild now accepts `pkg_depends` and carries it onto the entry without resolving it, so `cix`'s recipe can declare what `cixd` links (`openssl libarchive curl`) and remain buildable by `pkg hostbuild`. Phase 2 of the migration order below is therefore done, and the rest of this section is kept as the reasoning that led there rather than as an open question.
 
 Making `cix-boot`'s manifest declare `cix` as an ordinary manifest entry means `cix` gets installed into it the ordinary way — `pkg_install_start()`, which runs `elfcheck`'s install-time linkage gate. That gate needs `cix`'s own `pkg_depends` to truthfully list what `cixd` actually links (`openssl`, and since tonight, `libarchive` and `curl` too) or it refuses the install.
 

@@ -6813,12 +6813,38 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0 ||
 	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
 		return PKG_ERR_INVALID_RECIPE;
-	/* Dependency resolution targets "merge into an image" -- meaningless
-	 * for a one-shot artifact harvest. Every prerequisite must already
-	 * be baked into build_image's own rootfs (built up via ordinary
-	 * `pkg install` first). */
-	if (recipe.depends[0] != '\0')
-		return PKG_ERR_INVALID_RECIPE;
+	/*
+	 * pkg_depends is CARRIED here, never resolved (#465).
+	 *
+	 * This used to refuse any non-empty pkg_depends outright, on the
+	 * stated grounds that "every prerequisite must already be baked
+	 * into build_image's own rootfs" -- which is true, and is a
+	 * statement about pkg_build_depends, a different field. A
+	 * hostbuild's build container is rooted on build_image's current
+	 * version (the is_hostbuild branch of
+	 * pkg_build_container_spec(), which is the first arm of that
+	 * if-chain and is why pkg_build_depends is not consulted for a
+	 * hostbuild either), so pkg_depends never had any part in
+	 * composing this build.
+	 *
+	 * What pkg_depends describes is what the finished artifact needs
+	 * in order to RUN, and that outlives the harvest:
+	 * pkg_build_completed() records it onto the entry from the
+	 * chain's captured copy BEFORE the hostbuild/install split, so it
+	 * reaches GET /v1/pkg and the persisted record either way.
+	 * Resolution is skipped because resolving means "install the
+	 * closure into an image" and a hostbuild has no image to merge
+	 * into -- not because the declaration is meaningless. The one
+	 * reader that walks the closure, declared_provided_sonames() for
+	 * the #389 undeclared-link gate, sits in the non-hostbuild arm of
+	 * pkg_build_completed() and is never reached from here.
+	 *
+	 * Refusing it made cix's own recipe unsatisfiable in both
+	 * directions at once: cixd links libssl, so an ordinary
+	 * `pkg install cix` needs pkg_depends="openssl" to pass that same
+	 * gate, and declaring it made `pkg hostbuild cix` -- the only way
+	 * this platform builds itself -- refuse the recipe as invalid.
+	 */
 
 	/*
 	 * If the recipe says which image it is built in, that is the

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted, with one part superseded: the "a hostbuild recipe must have empty `pkg_depends`" rule below was reversed by [ADR-0303](0303-a-hostbuild-carries-pkg-depends-it-does-not-resolve-it.md) (issue #465). A hostbuild now accepts the declaration and carries it onto the entry without resolving it. Everything else here stands.
 
 ## Context
 
