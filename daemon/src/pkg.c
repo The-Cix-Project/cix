@@ -970,6 +970,45 @@ int pkg_chain_index_for_target(const char *name, const char *image)
 }
 
 /*
+ * The same lookup when the caller named a package and NO image (#476).
+ *
+ * pkg_chain_index_for_target() cannot answer this, and deliberately:
+ * normalize_image() turns an absent image into PKG_DEFAULT_IMAGE,
+ * which is the right default for every other image-optional entry
+ * point (an install with no image installs into "base"). But a chain
+ * is filed under the image it builds for, and a hostbuild's is
+ * PKG_HOSTBUILD_IMAGE -- so `?name=cix` alone matched nothing while a
+ * hostbuild of cix was running, and the endpoint answered "no build in
+ * progress" about a build that was in progress. Measured on
+ * 192.168.15.95, 2026-09-16, during the v2.57.195 hostbuild:
+ * `cixctl pkg build-log --name=cix` returned 404 "no build in
+ * progress" throughout, while GET /v1/pkg reported the cix job
+ * building. The same hole applies to any non-default image, not just
+ * hostbuild; hostbuild is only how it was found, since it is the one
+ * image an operator never types.
+ *
+ * "No image" means "whichever image, as long as that is unambiguous",
+ * so the count comes back too: the caller turns 0 into a 404 and >1
+ * into a 400 asking for ?image=, rather than picking one arbitrarily.
+ * Returns the index on exactly one match, -1 otherwise.
+ */
+int pkg_chain_index_for_name(const char *name, int *out_match_count)
+{
+	int i, found = -1, count = 0;
+
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+		if (g_chains[i].name[0] == '\0' || strcmp(g_chains[i].name, name) != 0)
+			continue;
+		count++;
+		if (found < 0)
+			found = i;
+	}
+	if (out_match_count != NULL)
+		*out_match_count = count;
+	return (count == 1) ? found : -1;
+}
+
+/*
  * ADR-0157 Phase 2: how many chains are genuinely in flight right now,
  * and which ones -- lets a caller with no explicit target (e.g. a
  * pre-Phase-3 CLI/web client hitting GET /v1/pkg/build/log with no

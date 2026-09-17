@@ -10752,9 +10752,9 @@ paths:
 
         Up to 4 clients may be attached to the same in-flight build at
         once; a 5th attempt gets a 503, not silently dropped. 404 if
-        no build is currently in progress at all -- this endpoint has
-        nothing to do with a completed/failed build's own logged
-        output (see GET /pkg/{name}'s `error` field for that).
+        nothing matching is in progress -- this endpoint has nothing
+        to do with a completed/failed build's own logged output (see
+        GET /pkg/{name}'s `error` field for that).
 
 
         ADR-0157 Phase 2: several package builds can genuinely be in
@@ -10762,12 +10762,23 @@ paths:
         /v1/system/pkg-build-config, 10 by default), and a recipe
         publish reaches that state on its own by queueing a rebuild for
         every image tracking the package rolling. `name` (and
-        optionally `image`, defaulting like
-        every other image-optional endpoint) picks which one to attach
-        to. Omitting `name` falls back to "the one build in progress"
-        when that's unambiguous (zero or one build running); with two
-        builds running at once, omitting `name` gets a 400 asking for
-        an explicit one rather than guessing.
+        optionally `image`) picks which one to attach to. Omitting
+        `name` falls back to "the one build in progress" when that's
+        unambiguous (zero or one build running); with two builds
+        running at once, omitting `name` gets a 400 asking for an
+        explicit one rather than guessing.
+
+
+        `image` is NOT defaulted to "base" here, unlike every
+        image-optional endpoint that installs something (#476). A
+        `name` with no `image` means "whichever image is building that
+        package": the caller is asking about a job that already exists
+        and already picked its own target. Defaulting it made a
+        running host build unreachable, since a host build's chain is
+        filed under the internal `__hostbuild` image an operator has
+        no reason to name. If two images are building the same package
+        at once, a bare `name` gets a 400 asking for `image` rather
+        than attaching to an arbitrary one.
       operationId: pkgBuildLog
       x-cix-expose: [cli]
       parameters:
@@ -10785,8 +10796,9 @@ paths:
           schema:
             type: string
           description: >
-            The target image of the build named by `name` (defaults to
-            "base" like every other image-optional endpoint). Ignored
+            The target image of the build named by `name`. Omitting it
+            means "whichever image is building that package", NOT
+            "base" -- see this endpoint's description (#476). Ignored
             if `name` is omitted.
         - name: term
           in: query
@@ -10861,13 +10873,27 @@ paths:
         "101":
           description: Switching Protocols -- the connection is now a WebSocket streaming the build's own output live, per this endpoint's own description above.
         "400":
-          description: Missing/invalid Upgrade, Connection, Sec-WebSocket-Key, or Sec-WebSocket-Version header, OR two builds are genuinely in progress and `name` was omitted.
+          description: >
+            Missing/invalid Upgrade, Connection, Sec-WebSocket-Key, or
+            Sec-WebSocket-Version header; OR two builds are genuinely
+            in progress and `name` was omitted (the message names
+            them); OR `name` was given without `image` and more than
+            one image is building that package (the message says to
+            supply `image`).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
-          description: No package build matching `name`/`image` (or, if omitted, no package build at all) is currently in progress.
+          description: >
+            Either nothing matching is building, or what is building
+            has no live output to attach to right now -- two distinct
+            states with distinct messages (#476). When `name` matched
+            no in-flight build the message names the builds that ARE
+            running, so a miss is never reported as "no build in
+            progress" while one is. When the build exists but its build
+            container does not (during the fetch, between steps, or
+            while the artifact is finalized) the message says to retry.
           content:
             application/json:
               schema:

@@ -1063,6 +1063,19 @@ int pkg_build_container_chain_index(const char *container_name);
 int pkg_chain_index_for_target(const char *name, const char *image);
 
 /*
+ * The same resolution when the caller named a package and no image
+ * (#476). A chain is filed under the image it builds for, and a
+ * hostbuild's is PKG_HOSTBUILD_IMAGE, which an operator never types --
+ * so pkg_chain_index_for_target()'s default-to-"base" normalisation
+ * could never match one, and `?name=cix` 404'd during a running cix
+ * hostbuild. Returns the index when exactly one in-flight chain
+ * carries that name, -1 otherwise, and writes how many matched to
+ * out_match_count (may be NULL) so the caller can tell "nothing is
+ * building that" from "several images are, say which".
+ */
+int pkg_chain_index_for_name(const char *name, int *out_match_count);
+
+/*
  * ADR-0157 Phase 2: fills out_indices (room for at least
  * PKG_MAX_CONCURRENT_JOBS ints) with every currently-busy chain's
  * index, returning how many. Used by main.c's own GET /v1/pkg/build/
