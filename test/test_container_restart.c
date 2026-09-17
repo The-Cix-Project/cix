@@ -1318,10 +1318,20 @@ int main(void)
 	 *
 	 * Asserted the way depR/neverready above are, and for the reason
 	 * svc_fail_reason()'s own comment gives: a timed-out probe is
-	 * REPORTED and then treated as ready, so "state": "ready" alone
-	 * proves nothing. The pair is the assertion -- ready, AND no
+	 * REPORTED and then treated as ready, so the state alone proves
+	 * nothing. The pair is the assertion -- reached ready, AND no
 	 * probe-timeout failure within a window longer than the declared
 	 * 2-second timeout.
+	 *
+	 * The state to expect is "running", not "ready": the API has no
+	 * "ready" service state. registry.c maps CIXINIT_EV_READY to
+	 * REGISTRY_SVC_RUNNING and CIXINIT_EV_STARTED to
+	 * REGISTRY_SVC_STARTING, so "starting" is a service whose probe
+	 * has not passed and "running" is one whose has -- which is why
+	 * jump's nslcd and sshd both report "running" on 192.168.15.95
+	 * despite declaring probes. An earlier revision of this test
+	 * expected "ready" and failed a build against a daemon that was
+	 * answering correctly.
 	 */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
@@ -1371,9 +1381,11 @@ int main(void)
 				const struct json_value *svc = service_at(&r, si);
 
 				if (!str_eq(json_str_field(svc, "name"), bs_names[si]) ||
-				    !str_eq(json_str_field(svc, "state"), "ready")) {
+				    !str_eq(json_str_field(svc, "state"), "running")) {
 					fprintf(stderr,
-					        "FAIL: bindsplit's services[%d] is %s/%s, expected %s/ready\n",
+					        "FAIL: bindsplit's services[%d] is %s/%s, expected "
+					        "%s/running -- \"starting\" means its probe never passed "
+					        "(#477)\n",
 					        si, json_str_field(svc, "name"), json_str_field(svc, "state"),
 					        bs_names[si]);
 					ok = 0;
