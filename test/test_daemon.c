@@ -734,6 +734,20 @@ int main(void)
 	    r.status != 200 || r.body == NULL || strstr(r.body, "files ldap") == NULL) {
 		fprintf(stderr, "FAIL: ldap_client nsswitch.conf not staged (status=%d)\n", r.status);
 		ok = 0;
+	} else if (strstr(r.body, "hosts:") == NULL || strstr(r.body, "files dns") == NULL) {
+		/*
+		 * #478: this file REPLACES the image baseline, and it used to
+		 * carry no hosts line at all -- so a container that joined the
+		 * directory resolved names only because glibc's compiled-in
+		 * default took over. The files API is the right reader here
+		 * (unlike the general case in CLAUDE.md) because the container
+		 * was just created and this file is in its own upperdir, so
+		 * there is no lowerdir copy to fall through to.
+		 */
+		fprintf(stderr, "FAIL: ldap_client nsswitch.conf has no \"hosts: files dns\" line "
+		                "(#478) -- a container that joins the directory would resolve "
+		                "names only by way of a glibc default\n");
+		ok = 0;
 	}
 	cix_response_free(&r);
 	memset(&r, 0, sizeof(r));

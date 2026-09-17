@@ -254,6 +254,28 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	/*
+	 * #478/ADR-0296: the baseline pkg_seed_image_baseline() writes into
+	 * a freshly created image's rootfs must name the dns backend. Until
+	 * this, it said "hosts: files" -- so glibc never consulted DNS and
+	 * any resolv.conf staged into a container from that image was
+	 * inert, measured on 192.168.15.95 with libnss_dns.so.2 present and
+	 * `getent hosts` rc=2.
+	 *
+	 * Read off disk rather than through an API, because no endpoint
+	 * exposes an image's rootfs and this file is the image's, not a
+	 * container's. test_nsswitch gates the content and the convergence
+	 * rule as pure logic; this gates that the seeder actually wrote it.
+	 */
+	if (run_cmd("grep -qE '^hosts:[[:space:]]+files[[:space:]]+dns$' "
+	            "'%s'/imgtest_empty/*/rootfs/etc/nsswitch.conf",
+	            g_images_dir) != 0) {
+		fprintf(stderr, "FAIL: a new image's baseline /etc/nsswitch.conf has no "
+		                "\"hosts: files dns\" (#478)\n");
+		run_cmd("cat '%s'/imgtest_empty/*/rootfs/etc/nsswitch.conf >&2", g_images_dir);
+		ok = 0;
+	}
+
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "GET", "/v1/images", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/images, status=%d\n", r.status);

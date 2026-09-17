@@ -1,5 +1,6 @@
 #include "libdirs.h"
 #include "pkg.h"
+#include "nsswitch.h"
 #include "curlfetch.h"
 #include "osrelease.h"
 #include "version.h"
@@ -5098,34 +5099,57 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 	}
 
 	/*
-	 * A minimal, real /etc/nsswitch.conf so the libnss_files.so.2
-	 * staged above actually gets consulted -- glibc's own compiled-in
-	 * default database list is used when this file is missing, but
-	 * that default is a moving target across glibc versions and this
-	 * project has no reason to depend on it being correct. "files"
-	 * only for every database this platform's own containers could
-	 * plausibly need (no "ldap"/"dns" backend entries -- this project
-	 * always pushes rendered files into a container's own filesystem
-	 * rather than having the container's own NSS talk to a remote
-	 * service directly, the same "Cix owns the durable record,
-	 * renders into the consumer's own format" posture dns.c/ldap.c
-	 * already established for DNS/LDAP).
+	 * A real /etc/nsswitch.conf, so glibc consults the NSS backends it
+	 * has rather than whatever its compiled-in default names -- that
+	 * default is a moving target across glibc versions and this
+	 * project has no reason to depend on it being correct.
+	 *
+	 * The backends come from the glibc PACKAGE, not from here:
+	 * measured 2026-09-17, glibc 2.44-16 in jumpbox ships 13 libnss
+	 * files including libnss_files.so.2 and libnss_dns.so.2. (ADR-0111
+	 * once staged libnss_files.so.2 from this function; nothing in the
+	 * tree does now -- `grep -rn libnss` over the C sources finds only
+	 * these comments. So every image with glibc already has the dns
+	 * backend, and #478 was purely that the file never named it.)
+	 *
+	 * Content comes from nsswitch.c, which is also where the
+	 * ldap_client variant comes from, so the two cannot disagree the
+	 * way they did in #478.
+	 *
+	 * WRITTEN WHENEVER THE CONTENT DIFFERS, not merely when the file
+	 * is absent, and that is the load-bearing half. ADR-0111 wrote it
+	 * only when absent, which was harmless while the content never
+	 * changed and became the reason every image already built kept
+	 * "hosts: files" -- and would have kept it forever, since nothing
+	 * else ever rewrites it. A file whose content the platform
+	 * declares is a file the platform has to converge (ADR-0296).
+	 *
+	 * Reaching an image still depends on ADR-0155: this runs against a
+	 * staging rootfs whose new version is discarded if the package
+	 * manifest is unchanged, so convergence arrives with the next real
+	 * install or rolling rebuild, not with the daemon that carries it.
 	 */
 	{
-		static const char nsswitch_content[] =
-		    "passwd: files\ngroup: files\nshadow: files\nhosts: files\n";
+		const char *nsswitch_content = nsswitch_baseline_content();
 		char nsswitch_dst[PATH_MAX];
-		struct stat dst_st;
+		char have[512];
+		size_t have_len = 0;
+		FILE *nf;
 
 		snprintf(nsswitch_dst, sizeof(nsswitch_dst), "%s/etc/nsswitch.conf", target_rootfs);
-		if (stat(nsswitch_dst, &dst_st) != 0) {
+		nf = fopen(nsswitch_dst, "rb");
+		if (nf != NULL) {
+			have_len = fread(have, 1, sizeof(have), nf);
+			fclose(nf);
+		}
+		if (nsswitch_needs_write(nf != NULL ? have : NULL, have_len, nsswitch_content)) {
 			char etc_dir[PATH_MAX];
 
 			snprintf(etc_dir, sizeof(etc_dir), "%s/etc", target_rootfs);
 			if (persist_mkdir_p(etc_dir) != 0)
 				return PKG_ERR_PERSIST_FAILED;
 			if (persist_atomic_write(nsswitch_dst, nsswitch_content,
-			                          sizeof(nsswitch_content) - 1) != 0)
+			                          strlen(nsswitch_content)) != 0)
 				return PKG_ERR_PERSIST_FAILED;
 		}
 	}
