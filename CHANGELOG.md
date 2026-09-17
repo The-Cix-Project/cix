@@ -53,6 +53,10 @@ Four tests changed, two of them interestingly. `test_kmod_build`'s fixture compi
 
 The remaining exception is filed as #483 rather than papered over: an empty declaration still falls back to the shared build sandbox. That is 2 of 149 recipes, and `lldap` is the one that matters — it needs a Rust toolchain staged from the build host, and this platform has no `rust` package for it to declare.
 
+**Deployed and verified live on 192.168.15.95, 2026-09-17.** v2.57.206 was built by the last daemon that reads `pkg_build_image` and is the first that does not; the box came up on it in slot b with `health` ok. `GET /v1/pkg` reports the hostbuild entry carrying `"depends": "openssl libarchive curl"`, which is ADR-0303 (#465) working in production — the field a hostbuild used to be refused for.
+
+One measurement corrected a note that had been carried in the project's own deploy memory: **a hostbuild does not skip the local package cache.** Re-running the hostbuild for an already-built version, after `DELETE /v1/pkg/cix@__hostbuild`, installed in seconds with `"artifact_cached": true` and a **0-byte build log** — `cache_hit = pkg_cache_has(recipe.name, recipe.version)` at `pkg.c:6276` reads the local cache, and the #144 no-op arm then runs no container at all. So proving that a composed hostbuild *builds* needs a version the local cache has never seen, which is why the composition proof is v2.57.207 and not a re-run.
+
 ### A hostbuild carries `pkg_depends` instead of refusing it (#465, ADR-0303)
 
 `cix`'s own recipe could not satisfy both of the paths that build it, and the field they disagreed about was the same one.
