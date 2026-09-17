@@ -348,7 +348,10 @@ static void print_usage(FILE *out)
 	        "               kernel route (ADR-0067 Part 3); or --default --gateway=A.B.C.D\n"
 	        "  routes rm --dest=A.B.C.D --prefix=N  -- remove one; or --default\n"
 	        "  assembly status  -- what control-plane assembly is doing, and where the\n"
-	        "               assembled root is (image_path, ready for update --image=)\n"
+	        "               assembled root is (image_path, ready for update --image=),\n"
+	        "               plus that file's own size/mtime/completeness -- the\n"
+	        "               generation counters reset on restart and a deploy ends in a\n"
+	        "               reboot, so the file is what stays true across one (#481)\n"
 	        "  assembly start  -- assemble a fresh control-plane root now (#308). Until\n"
 	        "               this existed, assembly happened only as a side effect of a\n"
 	        "               hostbuild named cix completing, so re-assembling meant\n"
@@ -7963,11 +7966,20 @@ static int cmd_stalls(const struct cix_client *c, int json_mode)
  * asks for one. Both print image_path, because the next thing an
  * operator does with a fresh root is `cixctl update --image=<that>`.
  */
+static int assembly_flag(const struct json_value *v, const char *key)
+{
+	const struct json_value *f = json_object_get(v, key);
+
+	return f != NULL && f->type == JSON_BOOL && f->u.boolean;
+}
+
 static void fmt_assembly(const struct json_value *v)
 {
-	const struct json_value *running = json_object_get(v, "running");
 	const char *image_path = json_str_field(v, "image_path");
-	int is_running = running != NULL && running->type == JSON_BOOL && running->u.boolean;
+	int is_running = assembly_flag(v, "running");
+	int present = assembly_flag(v, "image_present");
+	long mtime = (long)json_as_number(json_object_get(v, "image_mtime"));
+	char when[64];
 
 	printf("running:              %s\n", is_running ? "yes" : "no");
 	printf("started_generation:   %ld\n",
@@ -7975,6 +7987,33 @@ static void fmt_assembly(const struct json_value *v)
 	printf("completed_generation: %ld\n",
 	       (long)json_as_number(json_object_get(v, "completed_generation")));
 	printf("image_path:           %s\n", image_path != NULL ? image_path : "-");
+	/*
+	 * The generation counters are this daemon's memory of what it has
+	 * done and reset to 0 on restart, which -- since deploying a root
+	 * ends in a reboot -- is the normal state of a host that has just
+	 * booted the thing it assembled (#481). So print what is actually
+	 * at the path too: it is the file the operator's next command
+	 * stages, and its own mtime is the only freshness fact here that
+	 * survives the reboot.
+	 */
+	if (!present) {
+		printf("image:                absent\n");
+		return;
+	}
+	when[0] = '\0';
+	if (mtime > 0) {
+		time_t t = (time_t)mtime;
+		struct tm tmv;
+
+		if (gmtime_r(&t, &tmv) != NULL)
+			strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%SZ", &tmv);
+	}
+	printf("image:                %s, %ld bytes%s%s\n",
+	       assembly_flag(v, "image_complete") ? "whole"
+	                                          : "INCOMPLETE (an assembly is writing it, or "
+	                                            "was interrupted while writing it)",
+	       (long)json_as_number(json_object_get(v, "image_bytes")),
+	       when[0] != '\0' ? ", written " : "", when);
 }
 
 static int cmd_assembly(const struct cix_client *c, int json_mode, int argc, char **argv)

@@ -32,6 +32,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
@@ -215,13 +216,51 @@ static int host_tools_lib_path(const char *host_tools_dir, char *out, size_t out
  * so its own liblzma.so.5 is what actually gets linked, not whatever
  * the bare host happens to already have lying around.
  */
+/*
+ * Written to a temporary name and renamed onto out_path only once
+ * mksquashfs has exited successfully (#481).
+ *
+ * mksquashfs used to be pointed straight at the final path, so that
+ * path WAS the write target for the whole multi-minute xz
+ * compression, and anything that interrupted it -- a reboot, a
+ * failure, a killed daemon -- left a fragment sitting where the
+ * platform's most consequential artifact belongs. That fragment is
+ * what an operator then stages and boots.
+ *
+ * POST /system/update refuses it (it checks squashfs magic), and that
+ * refusal is the only reason this never shipped a dead machine. But
+ * the ISO builder consumed the same file behind an access(R_OK) check
+ * and would have baked the fragment into signed installer media; and
+ * after a reboot the daemon's assembly counters are back to 0, so
+ * nothing distinguishes a fragment from a root that was never built.
+ *
+ * rename(2) within one directory is atomic, so the final path only
+ * ever holds a whole image: this build's, or -- if this build fails --
+ * the previous one's, untouched. The previous root surviving a failed
+ * assembly is the point and not a side effect; it is the root the
+ * machine is currently running from.
+ *
+ * fsync of the file before the rename and of the directory after it,
+ * because a rename is atomic in the namespace but not durable until
+ * both are on the medium -- and the failure this guards is a machine
+ * that does not boot.
+ */
 static int run_mksquashfs(const char *mksquashfs_bin, const char *image_root,
                            const char *out_path, const char *host_tools_dir)
 {
 	pid_t pid;
 	int status;
 	struct stat st;
-	char *argv[] = { (char *)mksquashfs_bin, (char *)image_root, (char *)out_path,
+	char partial_path[PATH_MAX];
+	char out_dir[PATH_MAX];
+	char *slash;
+	int fd;
+	/*
+	 * partial_path is the buffer, not its contents: this initializer
+	 * captures the address, and snprintf() below fills it long before
+	 * the execve().
+	 */
+	char *argv[] = { (char *)mksquashfs_bin, (char *)image_root, partial_path,
 		          "-noappend", "-comp", "xz", "-quiet", NULL };
 	/*
 	 * Invoked THROUGH the host-tools image's own dynamic loader, when
@@ -268,10 +307,17 @@ static int run_mksquashfs(const char *mksquashfs_bin, const char *image_root,
 		return -1;
 	}
 
-	/* A stale image from a prior run must not silently linger under a
-	 * new build -- mksquashfs itself refuses to overwrite without
-	 * -noappend, so any leftover has to go first. */
-	unlink(out_path);
+	if (snprintf(partial_path, sizeof(partial_path), "%s.partial", out_path) >=
+	    (int)sizeof(partial_path)) {
+		fprintf(stderr, "path too long: %s.partial\n", out_path);
+		return -1;
+	}
+	/* A fragment from a prior interrupted run must not be appended to
+	 * or mistaken for this build's output. Note this unlinks the
+	 * PARTIAL, never out_path: the root already there stays valid and
+	 * bootable until this build has produced a whole one to replace
+	 * it. */
+	unlink(partial_path);
 
 	envc = 0;
 	if (host_tools_dir != NULL && host_tools_dir[0] != '\0') {
@@ -321,7 +367,7 @@ static int run_mksquashfs(const char *mksquashfs_bin, const char *image_root,
 			ld_argv[2] = lib_path;
 			ld_argv[3] = (char *)mksquashfs_bin;
 			ld_argv[4] = (char *)image_root;
-			ld_argv[5] = (char *)out_path;
+			ld_argv[5] = partial_path;
 			ld_argv[6] = (char *)"-noappend";
 			ld_argv[7] = (char *)"-comp";
 			ld_argv[8] = (char *)"xz";
@@ -348,6 +394,43 @@ static int run_mksquashfs(const char *mksquashfs_bin, const char *image_root,
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
 		fprintf(stderr, "mksquashfs failed (status %d)\n", status);
 		return -1;
+	}
+
+	fd = open(partial_path, O_RDONLY);
+	if (fd < 0) {
+		fprintf(stderr, "open %s: %s\n", partial_path, strerror(errno));
+		return -1;
+	}
+	if (fsync(fd) != 0) {
+		fprintf(stderr, "fsync %s: %s\n", partial_path, strerror(errno));
+		close(fd);
+		return -1;
+	}
+	close(fd);
+	if (rename(partial_path, out_path) != 0) {
+		fprintf(stderr, "rename %s -> %s: %s\n", partial_path, out_path, strerror(errno));
+		return -1;
+	}
+	/*
+	 * The directory entry itself, so the rename survives a power loss:
+	 * without this the name can still point at the old inode after a
+	 * crash, which is the one case where "atomic" is not enough.
+	 */
+	snprintf(out_dir, sizeof(out_dir), "%s", out_path);
+	slash = strrchr(out_dir, '/');
+	if (slash != NULL) {
+		*slash = '\0';
+		fd = open(out_dir[0] != '\0' ? out_dir : "/", O_RDONLY | O_DIRECTORY);
+		if (fd < 0) {
+			fprintf(stderr, "open %s: %s\n", out_dir, strerror(errno));
+			return -1;
+		}
+		if (fsync(fd) != 0) {
+			fprintf(stderr, "fsync %s: %s\n", out_dir, strerror(errno));
+			close(fd);
+			return -1;
+		}
+		close(fd);
 	}
 	return 0;
 }

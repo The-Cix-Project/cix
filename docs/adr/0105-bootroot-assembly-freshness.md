@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Completed by [ADR-0299](0299-the-control-plane-root-is-written-atomically.md): the counters decided here are in-memory, and deploying an assembled root ends in a reboot, so they read as "nothing has ever been assembled" on a host whose whole running system came from an assembly minutes earlier. `GET /system/assembly` now also `stat()`s the artifact, which is the freshness answer that survives the restart. Nothing in the decision below is reversed -- within one client invocation the counters remain the right signal, and `--deploy` still uses them.
 
 ## Context
 

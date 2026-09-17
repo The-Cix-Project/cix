@@ -531,14 +531,53 @@ paths:
                       can wait for it to pass that baseline to know the
                       fresh artifact is on disk, rather than trusting
                       that the file exists (which is also true of a
-                      stale leftover from an earlier round).
+                      stale leftover from an earlier round). Held in
+                      memory, so a restart resets it to 0 -- which a
+                      client cannot tell apart from "no assembly has
+                      ever run here". `image_mtime` is the freshness
+                      answer that outlives a restart (#481).
                   image_path:
                     type: string
                     nullable: true
                     description: >
                       Where the assembled control-plane image is, so a
                       client that wants to deploy it need not know this
-                      daemon's filesystem layout.
+                      daemon's filesystem layout. Reported whether or
+                      not anything is there yet; the four fields below
+                      say what actually is.
+                  image_present:
+                    type: boolean
+                    description: >
+                      Whether a file exists at `image_path` right now.
+                  image_complete:
+                    type: boolean
+                    description: >
+                      Whether the file at `image_path` carries
+                      squashfs's own on-disk magic, and so is a whole
+                      image rather than a fragment. Assembly writes to
+                      a temporary name and renames on success (#481),
+                      so on a current build this is true whenever
+                      `image_present` is -- it stays reported because a
+                      host upgraded from an older build can still have
+                      a half-written root sitting at that path, and
+                      because it is the same question `POST
+                      /system/update` will ask before staging it.
+                  image_bytes:
+                    type: integer
+                    description: >
+                      Size in bytes of the file at `image_path`, 0 when
+                      absent.
+                  image_mtime:
+                    type: integer
+                    description: >
+                      When the file at `image_path` was last written,
+                      Unix seconds, 0 when absent. Read from the
+                      filesystem rather than remembered, so unlike the
+                      generation counters it survives a restart: an
+                      operator who knows when they started a build can
+                      tell whether this root is that build's or an
+                      older one, on a daemon that has just rebooted
+                      into it (#481).
     post:
       summary: Assemble a control-plane root now (issue #308)
       description: >

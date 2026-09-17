@@ -19,6 +19,7 @@
 #include "json.h"
 #include "test_image_fixture.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
@@ -281,6 +282,180 @@ int main(void)
 		}
 
 		unlink(not_squashfs_path);
+	}
+
+	/*
+	 * 3. GET /v1/system/assembly reports what is actually at
+	 *    image_path, not only what this daemon remembers doing (#481).
+	 *
+	 *    The generation counters next to these fields are in-memory,
+	 *    so a restart resets them to 0 -- and deploying an assembled
+	 *    root ends in a reboot, which makes "0, 0, not running" the
+	 *    normal state of a host that just booted the root it built.
+	 *    Indistinguishable, from the counters alone, from a host that
+	 *    has never assembled anything. These four fields are the part
+	 *    of the answer that comes from the filesystem, so they still
+	 *    mean something after the reboot.
+	 *
+	 *    Asserted here rather than in a test of mkbootroot itself
+	 *    because the atomic write that guarantees "present implies
+	 *    whole" lives in mkbootroot, which needs a real mksquashfs and
+	 *    so runs in no gate (#480's neighbourhood) -- that half is
+	 *    verified live. What IS gateable is that the endpoint tells
+	 *    the truth about all three states of the file, and that
+	 *    image_complete predicts what POST /system/update will do with
+	 *    it, which is the whole reason a client would read it.
+	 */
+	{
+		char image_path[PATH_MAX];
+		char image_dir[PATH_MAX];
+		char *slash;
+		int have_path = 0;
+
+		image_path[0] = '\0';
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/system/assembly", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET /v1/system/assembly expected 200, got %d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *jp = json_object_get(r.json, "image_path");
+			const struct json_value *present = json_object_get(r.json, "image_present");
+			const struct json_value *whole = json_object_get(r.json, "image_complete");
+			long bytes = (long)json_as_number(json_object_get(r.json, "image_bytes"));
+			long mtime = (long)json_as_number(json_object_get(r.json, "image_mtime"));
+
+			if (jp == NULL || jp->type != JSON_STRING || jp->u.string == NULL) {
+				fprintf(stderr, "FAIL: /system/assembly did not report image_path\n");
+				ok = 0;
+			} else {
+				snprintf(image_path, sizeof(image_path), "%s", jp->u.string);
+				have_path = 1;
+			}
+			/* Nothing has been assembled in this fresh data dir. */
+			if (present == NULL || present->type != JSON_BOOL || present->u.boolean) {
+				fprintf(stderr, "FAIL: image_present should be false on a fresh data dir\n");
+				ok = 0;
+			}
+			if (whole == NULL || whole->type != JSON_BOOL || whole->u.boolean) {
+				fprintf(stderr, "FAIL: image_complete should be false with no image\n");
+				ok = 0;
+			}
+			if (bytes != 0 || mtime != 0) {
+				fprintf(stderr,
+				        "FAIL: image_bytes/image_mtime should be 0 with no image, got %ld/%ld\n",
+				        bytes, mtime);
+				ok = 0;
+			}
+		}
+		cix_response_free(&r);
+
+		if (have_path) {
+			snprintf(image_dir, sizeof(image_dir), "%s", image_path);
+			slash = strrchr(image_dir, '/');
+			if (slash != NULL) {
+				*slash = '\0';
+				test_mkdir_p(image_dir);
+			}
+
+			/*
+			 * A whole image: four bytes of real squashfs magic is
+			 * enough, for the same reason case 2f's fixture is --
+			 * nothing here reads squashfs structure.
+			 */
+			fd = open(image_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+			if (fd < 0) {
+				fprintf(stderr, "FAIL: could not create %s: %s\n", image_path,
+				        strerror(errno));
+				ok = 0;
+			} else {
+				write(fd, "hsqs", 4);
+				close(fd);
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/system/assembly", NULL, &r) != 0 ||
+				    r.status != 200) {
+					fprintf(stderr, "FAIL: GET /system/assembly (whole) got %d\n", r.status);
+					ok = 0;
+				} else {
+					const struct json_value *present =
+					    json_object_get(r.json, "image_present");
+					const struct json_value *whole =
+					    json_object_get(r.json, "image_complete");
+					long bytes = (long)json_as_number(json_object_get(r.json, "image_bytes"));
+					long mtime = (long)json_as_number(json_object_get(r.json, "image_mtime"));
+
+					if (present == NULL || present->type != JSON_BOOL || !present->u.boolean ||
+					    whole == NULL || whole->type != JSON_BOOL || !whole->u.boolean) {
+						fprintf(stderr,
+						        "FAIL: a squashfs at image_path should read present+complete\n");
+						ok = 0;
+					}
+					if (bytes != 4) {
+						fprintf(stderr, "FAIL: image_bytes expected 4, got %ld\n", bytes);
+						ok = 0;
+					}
+					/* The freshness fact that outlives a restart. */
+					if (mtime <= 0) {
+						fprintf(stderr, "FAIL: image_mtime should be set, got %ld\n", mtime);
+						ok = 0;
+					}
+				}
+				cix_response_free(&r);
+			}
+
+			/*
+			 * A fragment -- what an interrupted assembly used to leave
+			 * at this exact path before #481 made the write atomic,
+			 * and what a host upgraded from such a build can still be
+			 * carrying. Reported as present-but-not-complete, and the
+			 * update path must refuse the same bytes: image_complete
+			 * is only useful to a client if it predicts that.
+			 */
+			fd = open(image_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+			if (fd >= 0) {
+				write(fd, "\0\0\0\0partial", 12);
+				close(fd);
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/system/assembly", NULL, &r) != 0 ||
+				    r.status != 200) {
+					fprintf(stderr, "FAIL: GET /system/assembly (fragment) got %d\n", r.status);
+					ok = 0;
+				} else {
+					const struct json_value *present =
+					    json_object_get(r.json, "image_present");
+					const struct json_value *whole =
+					    json_object_get(r.json, "image_complete");
+
+					if (present == NULL || present->type != JSON_BOOL || !present->u.boolean) {
+						fprintf(stderr, "FAIL: a fragment at image_path should read present\n");
+						ok = 0;
+					}
+					if (whole == NULL || whole->type != JSON_BOOL || whole->u.boolean) {
+						fprintf(stderr,
+						        "FAIL: a fragment at image_path must NOT read complete\n");
+						ok = 0;
+					}
+				}
+				cix_response_free(&r);
+
+				{
+					char body[PATH_MAX + 32];
+
+					snprintf(body, sizeof(body), "{\"image_path\":\"%s\"}", image_path);
+					memset(&r, 0, sizeof(r));
+					if (cix_client_request(&client, "POST", "/v1/system/update", body, &r) != 0 ||
+					    r.status != 400) {
+						fprintf(stderr,
+						        "FAIL: staging the fragment image_complete rejected expected "
+						        "400, got %d\n",
+						        r.status);
+						ok = 0;
+					}
+					cix_response_free(&r);
+				}
+			}
+			unlink(image_path);
+		}
 	}
 
 	if (stop_daemon(daemon_pid) != 0) {

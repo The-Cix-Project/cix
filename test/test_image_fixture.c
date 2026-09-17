@@ -20,7 +20,7 @@ extern char **environ;
 
 #define TOOLCHAIN_CP_BIN "/usr/bin/cp"
 
-static int mkdir_p(const char *path)
+int test_mkdir_p(const char *path)
 {
 	char tmp[PATH_MAX];
 	size_t len;
@@ -89,25 +89,25 @@ int test_image_fixture_build(const char *image_root, const char *child_binary_pa
 {
 	char path[PATH_MAX];
 
-	if (mkdir_p(image_root) != 0)
+	if (test_mkdir_p(image_root) != 0)
 		return -1;
 
 	snprintf(path, sizeof(path), "%s/bin", image_root);
-	if (mkdir_p(path) != 0)
+	if (test_mkdir_p(path) != 0)
 		return -1;
 	snprintf(path, sizeof(path), "%s/bin/%s", image_root, child_basename);
 	if (test_image_fixture_copy_file(child_binary_path, path) != 0)
 		return -1;
 
 	snprintf(path, sizeof(path), "%s/lib64", image_root);
-	if (mkdir_p(path) != 0)
+	if (test_mkdir_p(path) != 0)
 		return -1;
 	snprintf(path, sizeof(path), "%s/lib64/ld-linux-x86-64.so.2", image_root);
 	if (test_image_fixture_copy_file("/" CIX_LIB_DIR_RUNTIME "/ld-linux-x86-64.so.2", path) != 0)
 		return -1;
 
 	snprintf(path, sizeof(path), "%s/" CIX_LIB_DIR_RUNTIME, image_root);
-	if (mkdir_p(path) != 0)
+	if (test_mkdir_p(path) != 0)
 		return -1;
 	snprintf(path, sizeof(path), "%s/" CIX_LIB_DIR_RUNTIME "/libc.so.6", image_root);
 	if (test_image_fixture_copy_file("/" CIX_LIB_DIR_RUNTIME "/libc.so.6", path) != 0)
@@ -239,7 +239,7 @@ int test_image_fixture_add_lib(const char *image_root, const char *host_lib_abs_
 	if (slash != NULL)
 		*slash = '\0';
 
-	if (mkdir_p(dst_dir) != 0)
+	if (test_mkdir_p(dst_dir) != 0)
 		return -1;
 	return test_image_fixture_copy_file(resolved, dst_path);
 }
@@ -411,10 +411,10 @@ int test_image_fixture_stage_toolchain(const char *image_root)
 	char usr_dst[PATH_MAX];
 	size_t i;
 
-	if (mkdir_p(image_root) != 0)
+	if (test_mkdir_p(image_root) != 0)
 		return -1;
 	snprintf(usr_dst, sizeof(usr_dst), "%s/usr", image_root);
-	if (mkdir_p(usr_dst) != 0)
+	if (test_mkdir_p(usr_dst) != 0)
 		return -1;
 
 	for (i = 0; i < sizeof(subdirs) / sizeof(subdirs[0]); i++) {
@@ -452,7 +452,7 @@ int test_image_fixture_stage_toolchain(const char *image_root)
 		if (slash != NULL)
 			*slash = '\0';
 
-		if (mkdir_p(dst_parent) != 0 || run_cp_a(extras[i].src, dst) != 0)
+		if (test_mkdir_p(dst_parent) != 0 || run_cp_a(extras[i].src, dst) != 0)
 			return -1;
 	}
 
@@ -470,7 +470,7 @@ int test_image_fixture_stage_toolchain(const char *image_root)
 		char dev_dir[PATH_MAX];
 
 		snprintf(dev_dir, sizeof(dev_dir), "%s/dev", image_root);
-		if (mkdir_p(dev_dir) != 0)
+		if (test_mkdir_p(dev_dir) != 0)
 			return -1;
 		for (i = 0; i < sizeof(dev_nodes) / sizeof(dev_nodes[0]); i++) {
 			char path[PATH_MAX];
@@ -485,7 +485,7 @@ int test_image_fixture_stage_toolchain(const char *image_root)
 		char tmp_dir[PATH_MAX];
 
 		snprintf(tmp_dir, sizeof(tmp_dir), "%s/tmp", image_root);
-		if (mkdir_p(tmp_dir) != 0)
+		if (test_mkdir_p(tmp_dir) != 0)
 			return -1;
 		if (chmod(tmp_dir, 01777) != 0)
 			return -1;
@@ -576,7 +576,7 @@ int test_image_fixture_write_manifest(const char *image_dir, const char *version
 	int n;
 	FILE *f;
 
-	if (mkdir_p(image_dir) != 0) {
+	if (test_mkdir_p(image_dir) != 0) {
 		perror("mkdir_p (image_dir)");
 		return -1;
 	}
@@ -804,7 +804,7 @@ int test_image_fixture_seed_floor_packages(const char *data_dir, const char *art
 	snprintf(pkg_dir, sizeof(pkg_dir), "%s/rebuildable/pkg", data_dir);
 	snprintf(cache_dir, sizeof(cache_dir), "%s/cache", pkg_dir);
 	snprintf(recipes_dir, sizeof(recipes_dir), "%s/recipes", pkg_dir);
-	if (mkdir_p(cache_dir) != 0 || mkdir_p(recipes_dir) != 0)
+	if (test_mkdir_p(cache_dir) != 0 || test_mkdir_p(recipes_dir) != 0)
 		return -1;
 
 	for (i = 0; i < sizeof(floor_packages) / sizeof(floor_packages[0]); i++) {
@@ -1081,7 +1081,7 @@ static int stage_closure_rec(const char *image_root, const char *binary_path,
 			char libdir[PATH_MAX];
 
 			snprintf(libdir, sizeof(libdir), "%s/" CIX_LIB_DIR_RUNTIME, image_root);
-			if (mkdir_p(libdir) != 0)
+			if (test_mkdir_p(libdir) != 0)
 				return -1;
 		}
 		snprintf(dst, sizeof(dst), "%s/" CIX_LIB_DIR_RUNTIME "/%s", image_root, needed[i]);
