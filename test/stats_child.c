@@ -7,7 +7,7 @@
  * fresh memory buffer (keeps memory.current genuinely nonzero, not
  * just a one-time peak), burns real CPU in a tight loop (so
  * cpu.usage_usec keeps advancing across two samples), and appends to a
- * real on-disk file (so disk.upper_bytes grows across two samples too).
+ * real on-disk file (so disk.usage.bytes grows across two samples too).
  */
 #include <stdio.h>
 #include <string.h>

@@ -3596,7 +3596,7 @@ function renderStatsCharts() {
 			formatBytes(last.memCurrent) + " (limit " + limit + ")";
 	}
 
-	/* #474: upper_bytes is null until the first background measurement
+	/* #474: usage.bytes is null until the first background measurement
 	 * lands. Zero keeps the series well-formed and self-corrects on the
 	 * next poll; the label below says the truth rather than showing a
 	 * number nobody measured. */
@@ -3699,13 +3699,20 @@ async function pollStatsOnce(name) {
 		cpuUsageUsec: stats.cpu.usage_usec,
 		memCurrent: stats.memory.current,
 		memMax: stats.memory.max,
-		diskBytes: stats.disk.upper_bytes,
+		/*
+		 * disk.usage (ADR-0301), not the old flat disk.upper_*. No
+		 * guard for a missing `usage` here, unlike cixctl's: the
+		 * dashboard is served BY the daemon it queries, so the two are
+		 * always the same build -- a locally built CLI is the one that
+		 * can run ahead (#476).
+		 */
+		diskBytes: stats.disk.usage.bytes,
 		/* #475: the number alone does not say what it measured, and the
 		 * label below used to assert "overlay diff" for a figure that
 		 * was often the whole writable tree. Carried through so the
 		 * label reads what the API reported rather than re-deriving a
 		 * claim about it. */
-		diskSource: stats.disk.upper_source,
+		diskSource: stats.disk.usage.source,
 		netRx: netRx,
 		netTx: netTx,
 		cpuPressure: stats.cpu.pressure.some.avg10,

@@ -6079,21 +6079,35 @@ static void fmt_container_stats(const struct json_value *v)
 	print_pressure_line("memory", json_object_get(mem, "pressure"));
 
 	/*
-	 * upper_source alongside upper_bytes, because the two possible
+	 * usage.source alongside usage.bytes, because the two possible
 	 * sources do not measure the same thing (#475): "qgroup" is what
 	 * this container has written that its image does not hold, "walk"
 	 * is the size of its whole writable tree, which on a seeded-
 	 * subvolume substrate includes the image content. A number without
 	 * its source is the state the issue was filed about.
+	 *
+	 * A missing `usage` object means a daemon older than ADR-0301,
+	 * which is an ordinary state for a locally built cixctl -- it is
+	 * routinely one deploy ahead of the box it is talking to (#476).
+	 * Said rather than printed as 0, for the same reason "absent" and
+	 * "not reported" had to be separated on assembly status (#481).
 	 */
 	{
-		const char *src = json_str_field(disk, "upper_source");
+		const struct json_value *usage = json_object_get(disk, "usage");
+		const char *src;
 
-		printf("disk.upper_source=%s\n", src != NULL ? src : "unmeasured");
+		if (usage == NULL) {
+			printf("disk.usage=not reported -- this daemon predates the field "
+			       "(ADR-0301)\n");
+		} else {
+			src = json_str_field(usage, "source");
+			printf("disk.usage.source=%s disk.usage.bytes=%lld\n",
+			       src != NULL ? src : "unmeasured",
+			       (long long)json_as_number(json_object_get(usage, "bytes")));
+		}
 	}
-	printf("disk.upper_bytes=%lld disk.read_bytes=%lld disk.write_bytes=%lld "
+	printf("disk.read_bytes=%lld disk.write_bytes=%lld "
 	       "disk.read_ios=%lld disk.write_ios=%lld\n",
-	       (long long)json_as_number(json_object_get(disk, "upper_bytes")),
 	       (long long)json_as_number(json_object_get(disk, "read_bytes")),
 	       (long long)json_as_number(json_object_get(disk, "write_bytes")),
 	       (long long)json_as_number(json_object_get(disk, "read_ios")),
