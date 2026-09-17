@@ -635,7 +635,6 @@ static const struct cli_node n_kmod_config_subs[] = {
 };
 
 static const char *const n_kmod_build_flags[] = {
-	"--build-image=",
 	"--keep-on-failure",
 	"--symbol=",
 	"--upgrade",
@@ -1283,7 +1282,6 @@ static const char *const n_pkg_cancel_flags[] = {
 };
 
 static const char *const n_pkg_hostbuild_flags[] = {
-	"--build-image=",
 	"--deploy",
 	"--keep-on-failure",
 	"--upgrade",

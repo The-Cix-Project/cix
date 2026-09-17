@@ -12396,16 +12396,17 @@ document.getElementById("kmcf-set-form").addEventListener("submit", async (event
 document.getElementById("kmod-build-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
-	const buildImage = document.getElementById("kbf-build-image").value.trim();
 	const version = document.getElementById("kbf-version").value.trim();
 	const symbolsText = document.getElementById("kbf-symbols").value.trim();
 	const upgrade = document.getElementById("kbf-upgrade").checked;
 	const statusEl = document.getElementById("kbf-status");
 
-	if (buildImage === "")
-		return;
 	try {
-		const body = { build_image: buildImage };
+		/* No build image to ask for: the build container is composed
+		 * from the kernel recipe's own pkg_build_depends (ADR-0304,
+		 * issue #482), so this form had one required field that the
+		 * endpoint no longer accepts. */
+		const body = {};
 
 		if (version !== "")
 			body.version = version;

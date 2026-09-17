@@ -191,8 +191,22 @@ static int write_kernel_fixture_recipe(const char *tarball_path, const char *sha
 	if (f == NULL)
 		return -1;
 	fprintf(f, "pkg_name=kernel\npkg_version=1.0\npkg_source=file://%s\n", tarball_path);
-	fprintf(f, "pkg_sha256=%s\npkg_depends=\"\"\n\n", sha256);
-	fprintf(f, "pkg_build() {\n\tgcc -o hello hello.c\n\tif [ -f /build/extra/kmod-extra.config ]; "
+	/*
+	 * Declares its build tools, because ADR-0304 (#482) made a
+	 * hostbuild compose its build container from pkg_build_depends
+	 * like every other build -- this fixture used to rely on the
+	 * hbimage build image supplying a toolchain, which is exactly the
+	 * mechanism that retired. The four names are the ADR-0209 test
+	 * floor's own seeded set, so they resolve here.
+	 *
+	 * tcc rather than gcc for the same reason: gcc is not in the floor
+	 * and cannot be composed. What this test is about is whether
+	 * config_symbols reaches /build/extra/kmod-extra.config, not which
+	 * compiler builds a five-line hello.c.
+	 */
+	fprintf(f, "pkg_sha256=%s\npkg_depends=\"\"\n", sha256);
+	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n");
+	fprintf(f, "pkg_build() {\n\ttcc -o hello hello.c\n\tif [ -f /build/extra/kmod-extra.config ]; "
 	           "then cp /build/extra/kmod-extra.config symbols.txt; else : > symbols.txt; fi\n}\n\n");
 	fprintf(f, "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n\tcp symbols.txt "
 	           "\"$PKG_DESTDIR/symbols.txt\"\n}\n");
@@ -286,19 +300,18 @@ int main(void)
 		return 1;
 	}
 
-	/* 1. Error paths first (no job in flight yet for any of these). */
-	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "POST", "/v1/system/kmod-build", "{}", &r) != 0 ||
-	    r.status != 400) {
-		fprintf(stderr, "FAIL: POST kmod-build with no build_image: expected 400, got %d\n",
-		        r.status);
-		ok = 0;
-	}
-	cix_response_free(&r);
+	/* 1. Error paths first (no job in flight yet for any of these).
+	 *
+	 * An empty body used to be a 400 here, for a missing build_image;
+	 * ADR-0304 (#482) retired that field, so there is nothing left for
+	 * this endpoint to require and an empty body is a valid request.
+	 * It is deliberately NOT exercised as a success case here -- it
+	 * would start a real build and the symbol-passing case below is
+	 * the one worth spending a build on. */
 
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/system/kmod-build",
-	                       "{\"build_image\":\"hbimage\",\"config_symbols\":[\"not_a_config_symbol\"]}",
+	                       "{\"config_symbols\":[\"not_a_config_symbol\"]}",
 	                       &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr,
@@ -311,21 +324,11 @@ int main(void)
 
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/system/kmod-build",
-	                       "{\"build_image\":\"hbimage\",\"config_symbols\":\"CONFIG_FOO\"}", &r) !=
+	                       "{\"config_symbols\":\"CONFIG_FOO\"}", &r) !=
 	        0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: POST kmod-build with non-array config_symbols: expected 400, "
 		                "got %d\n",
-		        r.status);
-		ok = 0;
-	}
-	cix_response_free(&r);
-
-	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "POST", "/v1/system/kmod-build",
-	                       "{\"build_image\":\"no-such-image\"}", &r) != 0 ||
-	    r.status != 404) {
-		fprintf(stderr, "FAIL: POST kmod-build with unknown build_image: expected 404, got %d\n",
 		        r.status);
 		ok = 0;
 	}
@@ -336,11 +339,10 @@ int main(void)
 	 * line per entry (#412). */
 	memset(&r, 0, sizeof(r));
 	if (ok && (cix_client_request(&client, "POST", "/v1/system/kmod-build",
-	                              "{\"build_image\":\"hbimage\","
-	                              "\"config_symbols\":[\"CONFIG_FOO\",\"CONFIG_BAR\"]}",
+	                              "{\"config_symbols\":[\"CONFIG_FOO\",\"CONFIG_BAR\"]}",
 	                              &r) != 0 ||
 	           r.status != 202)) {
-		fprintf(stderr, "FAIL: POST kmod-build hbimage: expected 202, got %d\n", r.status);
+		fprintf(stderr, "FAIL: POST kmod-build: expected 202, got %d\n", r.status);
 		ok = 0;
 	}
 	cix_response_free(&r);

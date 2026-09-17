@@ -3643,25 +3643,20 @@ skip_pin_isolation:
 		struct stat st;
 
 		/*
-		 * ADR-0107/0108: build_image must resolve via a real
-		 * manifest.json + versioned rootfs, same as any other image
-		 * -- pkg_hostbuild_start()/pkg_fetch_completed() now reach it
-		 * through image_current_version()/image_version_rootfs_path(),
-		 * not a flat "<image>/rootfs" path. This fixture bypasses the
-		 * daemon's own image_create()/pkg install pipeline (staging
-		 * a toolchain via a real install would be far too slow for
-		 * this suite), so it hand-writes the same manifest.json shape
-		 * image.c itself produces, pointed at a fixed, made-up version
-		 * hash -- image.c's own load_state() only ever reads this
-		 * field back as an opaque string, never re-derives or
-		 * validates it as a real sha256, so a fixture-chosen literal
-		 * is exactly as valid as a real one.
+		 * No build image is staged: ADR-0304 (#482) retired the field,
+		 * and a hostbuild now composes its build container from the
+		 * recipe's own pkg_build_depends like every other build. The
+		 * fixture recipes below declare the ADR-0209 test floor's own
+		 * seeded set (tcc/linux-headers/bash/coreutils), which is what
+		 * makes them composable here.
+		 *
+		 * What used to be here: a hand-written manifest.json plus a
+		 * versioned rootfs for an "hbimage", because a hostbuild's
+		 * lowerdir resolved through image_current_version()/
+		 * image_version_rootfs_path() and staging one through a real
+		 * `pkg install` would have been far too slow for this suite.
+		 * That whole mechanism is gone.
 		 */
-		if (test_image_fixture_stage_build_image(g_data_dir, "hbimage") != 0) {
-			fprintf(stderr, "FAIL: could not stage hostbuild build_image\n");
-			ok = 0;
-			goto skip_hostbuild;
-		}
 
 		/* A plain hand-written recipe (not stage_fixture_tarball(), no
 		 * DESTDIR/usr/bin convention needed -- pkg_install() below
@@ -3750,7 +3745,7 @@ skip_pin_isolation:
 
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
-		                       "{\"name\":\"hbtest\",\"build_image\":\"hbimage\"}", &r) != 0 ||
+		                       "{\"name\":\"hbtest\"}", &r) != 0 ||
 		    r.status != 202) {
 			fprintf(stderr, "FAIL: POST hostbuild hbtest, status=%d\n", r.status);
 			ok = 0;
@@ -4113,7 +4108,6 @@ skip_pin_isolation:
 					memset(&r, 0, sizeof(r));
 					if (cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
 					                        "{\"name\":\"hbtest\","
-					                        "\"build_image\":\"hbimage\","
 					                        "\"version\":\"1.1\",\"upgrade\":true}",
 					                        &r) == 0 &&
 					    r.status == 202) {
@@ -4274,7 +4268,8 @@ skip_pin_isolation:
 			goto skip_hostbuild;
 		}
 		fprintf(f, "pkg_name=hbdepstest\npkg_version=1.0\npkg_source=file://%s\n"
-		           "pkg_sha256=%s\npkg_depends=\"nosuchdep\"\n\n"
+		           "pkg_sha256=%s\npkg_depends=\"nosuchdep\"\n"
+		           "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
 		           "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
 		           "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n}\n",
 		        tarball_path, sha256);
@@ -4282,7 +4277,7 @@ skip_pin_isolation:
 
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
-		                       "{\"name\":\"hbdepstest\",\"build_image\":\"hbimage\"}", &r) != 0 ||
+		                       "{\"name\":\"hbdepstest\"}", &r) != 0 ||
 		    r.status != 202) {
 			fprintf(stderr,
 			        "FAIL: hostbuild with non-empty pkg_depends expected 202, got %d\n",
@@ -4350,16 +4345,14 @@ skip_pin_isolation:
 			cix_response_free(&r);
 		}
 
-		/* an unknown build_image -> 404, not a silent fall-through */
-		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
-		                       "{\"name\":\"hbtest\",\"build_image\":\"no-such-image\"}", &r) != 0 ||
-		    r.status != 404) {
-			fprintf(stderr, "FAIL: hostbuild with unknown build_image expected 404, got %d\n",
-			        r.status);
-			ok = 0;
-		}
-		cix_response_free(&r);
+		/* There is no unknown-build_image case to assert any more:
+		 * ADR-0304 (#482) retired the field, so a hostbuild composes
+		 * its environment from pkg_build_depends and names no image.
+		 * What used to be checked here -- a 404 for an image that does
+		 * not exist -- has no request that can produce it. The
+		 * equivalent failure is now a declared build tool that is
+		 * installed nowhere, which the ADR-0199 composition path
+		 * already refuses with the tool named. */
 	}
 skip_hostbuild:
 

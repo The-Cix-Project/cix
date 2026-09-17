@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted, with one part superseded: the `pkg_build_image=` recipe field this ADR's CI domain introduced is retired by [ADR-0304](0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md) (issue #482). A hostbuild composes its build container from `pkg_build_depends`, so there is no build image for a recipe to name. The domain model itself stands.
 
 Issue [#182](https://git.home.arpa/itdlabs/cix/issues/182). Decided 2026-09-02.
 

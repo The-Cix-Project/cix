@@ -446,7 +446,7 @@ static void print_usage(FILE *out)
 	        "  kmod-config set NAME [--option=KEY=VALUE ...] [--autoload|--no-autoload]  --\n"
 	        "               read-modify-write, only the fields given are touched\n"
 	        "  kmod-config rm NAME  -- clears both fields\n"
-	        "  kmod-build --build-image=IMAGE [--version=VERSION] [--symbol=CONFIG_FOO ...]\n"
+	        "  kmod-build [--version=VERSION] [--symbol=CONFIG_FOO ...]\n"
 	        "               [--upgrade] [--wait] [--keep-on-failure]  -- an ordinary\n"
 	        "               `pkg hostbuild kernel` under the hood, gaining extra =m module\n"
 	        "               symbols merged into the same curated kernel config; needs a\n"
@@ -14945,7 +14945,6 @@ static int wait_for_fresh_bootroot_assembly(const struct cix_client *c, long bas
 static int cmd_pkg_hostbuild(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
-	const char *build_image = NULL;
 	const char *version = NULL;
 	int wait = 0, deploy = 0, upgrade = 0, keep_on_failure = 0;
 	int i;
@@ -14954,9 +14953,7 @@ static int cmd_pkg_hostbuild(const struct cix_client *c, int json_mode, int argc
 	long bootroot_baseline_completed = 0;
 
 	for (i = 0; i < argc; i++) {
-		if (strncmp(argv[i], "--build-image=", 14) == 0)
-			build_image = argv[i] + 14;
-		else if (strncmp(argv[i], "--version=", 10) == 0)
+		if (strncmp(argv[i], "--version=", 10) == 0)
 			version = argv[i] + 10;
 		else if (strcmp(argv[i], "--wait") == 0)
 			wait = 1;
@@ -14974,14 +14971,13 @@ static int cmd_pkg_hostbuild(const struct cix_client *c, int json_mode, int argc
 		}
 	}
 	/*
-	 * --build-image is optional when the recipe declares one (#182):
-	 * the daemon resolves it, and refuses a caller that names a
-	 * different image rather than letting the mismatch fail minutes
-	 * later inside a build container.
+	 * No --build-image: a hostbuild composes its build container from
+	 * the recipe's own pkg_build_depends now, so there is no image for
+	 * a caller to name (ADR-0304, issue #482).
 	 */
 	if (name == NULL) {
 		fprintf(stderr,
-		        "usage: cixctl pkg hostbuild NAME [--build-image=IMAGE] [--version=VERSION] "
+		        "usage: cixctl pkg hostbuild NAME [--version=VERSION] "
 		        "[--wait] [--deploy] [--upgrade] [--keep-on-failure]\n");
 		return 2;
 	}
@@ -15010,12 +15006,6 @@ static int cmd_pkg_hostbuild(const struct cix_client *c, int json_mode, int argc
 	jw_obj_open(&w);
 	jw_key(&w, "name");
 	jw_str(&w, name);
-	/* Omitted entirely when not given, so the daemon applies the
-	 * recipe's own declaration rather than receiving an empty string. */
-	if (build_image != NULL) {
-		jw_key(&w, "build_image");
-		jw_str(&w, build_image);
-	}
 	if (version != NULL) {
 		jw_key(&w, "version");
 		jw_str(&w, version);
@@ -15122,7 +15112,7 @@ static int cmd_pkg_hostbuild(const struct cix_client *c, int json_mode, int argc
 	}
 }
 
-/* cixctl kmod-build --build-image=IMAGE [--version=VERSION]
+/* cixctl kmod-build [--version=VERSION]
  * [--symbol=CONFIG_FOO ...] [--upgrade] [--wait]  -- ADR-0159 Phase B:
  * an ordinary `pkg hostbuild kernel` under the hood, reusing
  * poll_hostbuild()/fmt_pkg_line() completely unmodified (this is the
@@ -15132,7 +15122,6 @@ static int cmd_pkg_hostbuild(const struct cix_client *c, int json_mode, int argc
 
 static int cmd_kmod_build(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	const char *build_image = NULL;
 	const char *version = NULL;
 	const char *symbols[CLI_KMOD_BUILD_MAX_SYMBOLS];
 	int symbol_count = 0;
@@ -15142,9 +15131,7 @@ static int cmd_kmod_build(const struct cix_client *c, int json_mode, int argc, c
 	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
-		if (strncmp(argv[i], "--build-image=", 14) == 0)
-			build_image = argv[i] + 14;
-		else if (strncmp(argv[i], "--version=", 10) == 0)
+		if (strncmp(argv[i], "--version=", 10) == 0)
 			version = argv[i] + 10;
 		else if (strncmp(argv[i], "--symbol=", 9) == 0) {
 			if (symbol_count >= CLI_KMOD_BUILD_MAX_SYMBOLS) {
@@ -15164,16 +15151,8 @@ static int cmd_kmod_build(const struct cix_client *c, int json_mode, int argc, c
 			return 2;
 		}
 	}
-	if (build_image == NULL) {
-		fprintf(stderr, "usage: cixctl kmod-build --build-image=IMAGE [--version=VERSION] "
-		                "[--symbol=CONFIG_FOO ...] [--upgrade] [--wait] [--keep-on-failure]\n");
-		return 2;
-	}
-
 	jw_init(&w);
 	jw_obj_open(&w);
-	jw_key(&w, "build_image");
-	jw_str(&w, build_image);
 	if (version != NULL) {
 		jw_key(&w, "version");
 		jw_str(&w, version);
@@ -16406,7 +16385,7 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "       cixctl pkg recipe rm NAME [--version=VERSION]\n"
 		                "       cixctl pkg install --name=NAME [--image=IMAGE] [--version=VERSION] "
 		                "[--upgrade] [--keep-on-failure]\n"
-		                "       cixctl pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] "
+		                "       cixctl pkg hostbuild NAME [--version=VERSION] "
 		                "[--wait] [--deploy] [--upgrade] [--keep-on-failure]\n"
 		                "       cixctl pkg resume --name=NAME [--image=IMAGE] [--version=VERSION] "
 		                "[--keep-on-failure]\n"
