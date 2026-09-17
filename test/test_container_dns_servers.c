@@ -272,6 +272,254 @@ int main(void)
 		}
 	}
 
+	/*
+	 * 7-13: ADR-0295 (#451) -- an OMITTED dns_servers defaults to the
+	 * registered DNS servers sharing a network with this container.
+	 *
+	 * Case 6 above is the guard for the other half: a container with NO
+	 * networks still gets nothing, because there is no shared network to
+	 * find a server on.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/networks",
+	                       "{\"name\":\"dnsnet\",\"subnet\":\"172.43.0.0\",\"prefix_len\":24}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST dnsnet, status=%d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/networks",
+	                       "{\"name\":\"dnsnet2\",\"subnet\":\"172.44.0.0\",\"prefix_len\":24}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST dnsnet2, status=%d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/* 7. A registered DNS server on dnsnet, with an EXPLICIT ip -- the
+	 * only kind the default will use, since an auto-allocated resolver
+	 * address is not stable across boots. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"srvdns\",\"image\":\"dnstest\","
+	                       "\"networks\":[{\"name\":\"dnsnet\",\"ip\":\"172.43.0.5\"}],"
+	                       "\"dns_server\":{\"hosts_path\":\"/etc/hosts-dns\"},"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST srvdns, status=%d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/* 8. A SECOND DNS server on the same network gets no default, even
+	 * though srvdns is registered and shares that network. A resolver's
+	 * upstream is dns_forwarders_set() and its own --servers-file; a
+	 * staged resolv.conf would be a second answer to the same question,
+	 * and dns-1/dns-2 on the real box would point at each other. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"srvdns2\",\"image\":\"dnstest\","
+	                       "\"networks\":[{\"name\":\"dnsnet\",\"ip\":\"172.43.0.6\"}],"
+	                       "\"dns_server\":{\"hosts_path\":\"/etc/hosts-dns\"},"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST srvdns2, status=%d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+	{
+		char resolv_path[PATH_MAX];
+		FILE *f;
+
+		snprintf(resolv_path, sizeof(resolv_path), "%s/containers/srvdns2/upper/etc/resolv.conf",
+		         g_data_dir);
+		f = fopen(resolv_path, "r");
+		if (f != NULL) {
+			fclose(f);
+			fprintf(stderr, "FAIL: a DNS server must not be given a default resolver\n");
+			ok = 0;
+		}
+	}
+
+	/* 9. The case #451 is about: omitted, so defaulted. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"defclient\",\"image\":\"dnstest\","
+	                       "\"networks\":[\"dnsnet\"],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST defclient, status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const struct json_value *jarr = json_object_get(r.json, "dns_servers");
+
+		/*
+		 * BOTH registered servers, in registration order (each fills
+		 * the first free binding slot, so srvdns then srvdns2). This
+		 * is the real box's shape -- dns-1 and dns-2 -- and it is also
+		 * the dedupe check: a server attached to two of this
+		 * container's networks must contribute one entry, not two.
+		 */
+		if (jarr == NULL || jarr->type != JSON_ARRAY || jarr->u.array.count != 2 ||
+		    !str_eq(json_as_string(jarr->u.array.items[0]), "172.43.0.5") ||
+		    !str_eq(json_as_string(jarr->u.array.items[1]), "172.43.0.6")) {
+			fprintf(stderr, "FAIL: defclient should report both defaulted resolvers\n");
+			ok = 0;
+		}
+	}
+	cix_response_free(&r);
+	{
+		char resolv_path[PATH_MAX];
+		char content[256];
+
+		snprintf(resolv_path, sizeof(resolv_path), "%s/containers/defclient/upper/etc/resolv.conf",
+		         g_data_dir);
+		if (read_whole_file(resolv_path, content, sizeof(content)) != 0) {
+			fprintf(stderr, "FAIL: defclient has no staged resolv.conf -- #451 is not fixed\n");
+			ok = 0;
+		} else if (!str_eq(content, "nameserver 172.43.0.5\nnameserver 172.43.0.6\n")) {
+			fprintf(stderr, "FAIL: defclient resolv.conf content: %s\n", content);
+			ok = 0;
+		}
+	}
+
+	/* 10. An explicit [] still means none. It is the only way to ask
+	 * for no resolver, so it has to keep working. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"emptyclient\",\"image\":\"dnstest\","
+	                       "\"networks\":[\"dnsnet\"],\"dns_servers\":[],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST emptyclient, status=%d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+	{
+		char resolv_path[PATH_MAX];
+		FILE *f;
+
+		snprintf(resolv_path, sizeof(resolv_path),
+		         "%s/containers/emptyclient/upper/etc/resolv.conf", g_data_dir);
+		f = fopen(resolv_path, "r");
+		if (f != NULL) {
+			fclose(f);
+			fprintf(stderr, "FAIL: dns_servers:[] must still mean no resolver\n");
+			ok = 0;
+		}
+	}
+
+	/* 11. An operator-written files[] entry wins, and is NOT the 400
+	 * that combining it with an explicit dns_servers is (case 3). */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"fileclient\",\"image\":\"dnstest\","
+	                       "\"networks\":[\"dnsnet\"],"
+	                       "\"files\":[{\"path\":\"/etc/resolv.conf\",\"content\":\"nameserver 9.9.9.9\\n\"}],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST fileclient (files[] + omitted dns_servers), status=%d\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+	{
+		char resolv_path[PATH_MAX];
+		char content[256];
+
+		snprintf(resolv_path, sizeof(resolv_path), "%s/containers/fileclient/upper/etc/resolv.conf",
+		         g_data_dir);
+		if (read_whole_file(resolv_path, content, sizeof(content)) != 0 ||
+		    !str_eq(content, "nameserver 9.9.9.9\n")) {
+			fprintf(stderr, "FAIL: fileclient's own files[] resolv.conf must win, got: %s\n",
+			        content);
+			ok = 0;
+		}
+	}
+
+	/* 12. A container on a network with no registered server on it gets
+	 * nothing -- the default is per-network, not per-box. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"otherclient\",\"image\":\"dnstest\","
+	                       "\"networks\":[\"dnsnet2\"],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST otherclient, status=%d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+	{
+		char resolv_path[PATH_MAX];
+		FILE *f;
+
+		snprintf(resolv_path, sizeof(resolv_path),
+		         "%s/containers/otherclient/upper/etc/resolv.conf", g_data_dir);
+		f = fopen(resolv_path, "r");
+		if (f != NULL) {
+			fclose(f);
+			fprintf(stderr, "FAIL: a container sharing no network with a DNS server must "
+			                "get no default\n");
+			ok = 0;
+		}
+	}
+
+	/*
+	 * 13. THE DESIGN PROPERTY, and the reason this is not a
+	 * registry lookup: the default reads the persisted DEFINITION, so a
+	 * server that is not running still supplies it. Autostart order is
+	 * containerdef_resolve_order()'s depends_on order and every
+	 * definition on the real box declares depends_on: [] -- a
+	 * registry-backed default would therefore find the server on the
+	 * boots where it happened to start first and nothing on the others,
+	 * turning #451's symptom intermittent instead of fixing it.
+	 *
+	 * Stopping srvdns keeps its binding (dns_server_forget() is called
+	 * on DELETE, never on stop) and drops its registry entry, which is
+	 * exactly the split this asserts.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/containers/srvdns/stop", NULL, &r) != 0 ||
+	    (r.status != 200 && r.status != 204)) {
+		fprintf(stderr, "FAIL: POST srvdns/stop, status=%d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"afterstop\",\"image\":\"dnstest\","
+	                       "\"networks\":[\"dnsnet\"],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST afterstop, status=%d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+	{
+		char resolv_path[PATH_MAX];
+		char content[256];
+
+		snprintf(resolv_path, sizeof(resolv_path), "%s/containers/afterstop/upper/etc/resolv.conf",
+		         g_data_dir);
+		if (read_whole_file(resolv_path, content, sizeof(content)) != 0 ||
+		    !str_eq(content, "nameserver 172.43.0.5\nnameserver 172.43.0.6\n")) {
+			fprintf(stderr, "FAIL: the default must come from the DEFINITION, so a stopped "
+			                "server still supplies it -- got: %s\n",
+			        content);
+			ok = 0;
+		}
+	}
+
 	/* Cleanup. */
 	memset(&r, 0, sizeof(r));
 	cix_client_request(&client, "DELETE", "/v1/containers/realdns", NULL, &r);
@@ -279,6 +527,20 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	cix_client_request(&client, "DELETE", "/v1/containers/nodns", NULL, &r);
 	cix_response_free(&r);
+	{
+		static const char *const made[] = { "srvdns", "srvdns2", "defclient", "emptyclient",
+			                            "fileclient", "otherclient", "afterstop" };
+		size_t ci;
+
+		for (ci = 0; ci < sizeof(made) / sizeof(made[0]); ci++) {
+			char path[128];
+
+			snprintf(path, sizeof(path), "/v1/containers/%s", made[ci]);
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "DELETE", path, NULL, &r);
+			cix_response_free(&r);
+		}
+	}
 
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM\n");

@@ -6,6 +6,33 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container in the directory can read it: omitted `dns_servers` now defaults (#451)
+
+Measured inside the running `jump` on 192.168.15.103, 2026-09-13:
+
+```
+claude@jump:~$ cat /etc/resolv.conf
+cat: /etc/resolv.conf: No such file or directory
+claude@jump:~$ getent hosts git.home.arpa
+rc=2
+```
+
+`ping 8.8.8.8` worked, `ping anything.by.name` could not. Documented behaviour, not a regression -- ADR-0143 staged a `/etc/resolv.conf` only for a non-empty `dns_servers`, deliberately. **What made it worth reopening is that `jump`'s definition carries `dns_register: true`:** the platform published that container's name into its own DNS, on a box running `dns-1` and `dns-2` on the very network it is attached to, and handed it no way to query them. A container that is *in* the directory and cannot *read* it is an inconsistent default, not a conservative one.
+
+An OMITTED `dns_servers` now defaults to the registered DNS server containers sharing a network with the container, in registration order, capped at the same 3. An explicit `[]` still means no resolver and is now the only way to say it. On the real box a container on `services` gets 192.168.150.101 and .102 -- the same two values `recipes/deployment/jump/1.13.0` had to set by hand.
+
+**The default reads each server's persisted DEFINITION, never the live registry, and that is the design rather than an implementation detail.** Autostart runs in `containerdef_resolve_order()`'s `depends_on` order and every definition on 192.168.15.95 declares `depends_on: []` (measured 2026-09-17), so the order among them is arbitrary: a registry-backed lookup would find `dns-1` on the boots where it started first and nothing on the others -- #451's own symptom made intermittent, which is worse than deterministic. `test_container_dns_servers` asserts the property directly by stopping the server and then creating a container that still gets it.
+
+Only an explicit `ip` in the server's definition counts; an auto-allocated resolver address is not stable across boots, so a `resolv.conf` pinned to a previous allocation would be confidently wrong rather than honestly absent. That case is logged naming the server, because the fix is one explicit `ip`.
+
+Three things get no default: an explicit `dns_servers` of any length; an operator-supplied `files` entry for `/etc/resolv.conf` (the same question, already answered -- combining *that* with an explicit `dns_servers` is still ADR-0143's `400`, supplying only the file is not); and a container that is itself a DNS server, checked from the request body's own `dns_server` field as well as `dns_server_is_registered()` because registration happens after creation. That last rule is One Source of Truth, not loop-avoidance: a resolver's upstream is `dns_forwarders_set()` and its own `--servers-file`. Worth recording what the measurement showed, since it argues the rule is right for a different reason than the obvious one -- `dns-1` and `dns-2` both omit `dns_servers` *and* both run dnsmasq with `-R` (`--no-resolv`), so without the rule they would have pointed at each other and ignored the file anyway. Harmless by accident, via a flag in a deployment recipe the daemon does not control.
+
+Two things checked before shipping rather than after. Both first-party clients already omit the field when empty instead of sending `[]` (`cli/src/main.c`'s `if (dns_server_count > 0)`, `web/app.js`'s `if (dnsServersText !== "")`) -- had either serialised `[]`, every container created through that surface would have silently opted out and the feature would never have reached an operator. And `GET /containers/{name}` reports the EFFECTIVE list, rendered from the registry, so the field says what the container's `resolv.conf` contains rather than what the request said.
+
+The creation-time `warn` added earlier for this issue (option 1 of the three it listed) is replaced: it now fires only when defaulting found nothing, and says which registered servers were skipped and why.
+
+See [ADR-0295](docs/adr/0295-a-container-in-the-directory-can-read-it.md); [ADR-0143](docs/adr/0143-container-dns-servers-field.md) keeps everything except its no-auto-wiring paragraph.
+
 ### The dashboard JavaScript goes through a real parser (#340)
 
 `web/*.js` was the only surface this project ships that no compiler ever read. `cixd`, `cixctl`, `netplane`, the host tools, the installer, every test and every recipe go through `tcc -Wall -Werror`; the dashboard went through nothing. On 2026-09-08 a refactor removed one arm of an `if`/`else` in `web/app.js` and left the `else` behind:
