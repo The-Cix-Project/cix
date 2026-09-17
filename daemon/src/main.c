@@ -22858,6 +22858,33 @@ static enum registry_error spawn_pkgbuild_container(int chain_idx, const char *w
 }
 
 /*
+ * Whether a build container still has a completion coming (#339).
+ *
+ * Registered with pkg.c at startup, because pkg.c cannot see the
+ * registry and should not: main.c owns every registry_* call, which is
+ * the same division handle_pkg_cancel() below relies on.
+ *
+ * Absence from the registry is the answer, and it is sound because of
+ * the ORDER in container_exit_finalize(): pkg_build_completed() is
+ * called there BEFORE registry_remove(). A container that is gone has
+ * therefore already driven its completion, so there is no window in
+ * which it is absent while an exit event for it is still in flight --
+ * without that ordering, reclaiming on absence could hand a slot back
+ * from under a job that still owned it (#98).
+ *
+ * A present-but-not-running entry is deliberately treated as LIVE: its
+ * exit event has not been finalized yet, and finalization is what will
+ * release the slot properly. Judging it dead here would race the very
+ * path that does the job.
+ */
+static int pkg_build_container_is_live(const char *container_name)
+{
+	const struct registry_entry *re = registry_find(container_name);
+
+	return re != NULL;
+}
+
+/*
  * POST /v1/pkg/cancel -- issue #213.
  *
  * pkg_cancel() marks the entry and hands back the build container's
@@ -30084,6 +30111,15 @@ static int cixd_main(int argc, char **argv)
 	reconcile_instance_dns_record();
 	if (boot_subsystem_init(init_mode, "pkg", pkg_init(PKG_DIR, PKG_INSTALLED_STATE_PATH, CONTAINERS_DIR, IMAGES_DIR, ARTIFACTS_DIR)) != 0)
 		return 1;
+	/*
+	 * #339: pkg.c's slot reap judged a job by the entry's own state, so
+	 * an entry stuck in BUILDING pinned its slot forever. This is how it
+	 * asks the registry instead, and it is registered immediately after
+	 * pkg_init() so no allocation can run before the answer exists --
+	 * with no function registered the reap keeps its pre-#339 behaviour,
+	 * which is correct but cannot recover a leak.
+	 */
+	pkg_set_build_container_live_fn(pkg_build_container_is_live);
 	if (boot_subsystem_init(init_mode, "pkg_repo", pkg_repo_init(PKG_REPO_CONFIG_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "pkg_cache", pkg_cache_init(PKG_CACHE_DIR, PKG_CACHE_CONFIG_PATH)) != 0)

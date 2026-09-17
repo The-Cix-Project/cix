@@ -286,6 +286,27 @@ int pkg_positions(const char *name, struct pkg_position *out, int max);
  * pkg_fail() path. Recording it here as well would mean two writers for
  * one outcome, racing over which description survives.
  */
+/*
+ * How pkg.c asks whether a build container is still live (#339).
+ *
+ * A chain slot is held by a job, and chain_reap_stale() decided whether
+ * a job was over by reading the ENTRY's own state -- so an entry stuck
+ * in BUILDING pinned its slot forever, and the reap trusted exactly the
+ * field that was wrong. Ten such slots blocked every install and
+ * hostbuild on 192.168.15.95 with no recovery but a reboot.
+ *
+ * The real question is not what the entry says, it is whether any
+ * completion path is still coming. main.c owns every registry_* call
+ * and every pidfd, so it owns the answer; pkg.c is given the means to
+ * ask rather than the registry itself, which keeps the ownership the
+ * cancel path's own comment describes.
+ *
+ * Registered once at startup. NULL is the safe default and means "do
+ * not judge liveness", i.e. exactly the pre-#339 behaviour -- which is
+ * what a binary linking pkg.c without main.c gets.
+ */
+void pkg_set_build_container_live_fn(int (*fn)(const char *container_name));
+
 enum pkg_error pkg_cancel(const char *name, const char *image,
                           char *out_container, size_t out_container_size);
 

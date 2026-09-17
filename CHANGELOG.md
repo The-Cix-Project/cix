@@ -6,6 +6,26 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A build slot is validated against the registry, not against the entry that holds it (#339)
+
+Ten chain slots were pinned on 192.168.15.95 and every `pkg install` and `pkg hostbuild` was refused with `409 all 10 package job slots are in use` — all ten naming `rtw88-firmware@cix-firmware`. The measured recovery was a reboot, on a host with no shell.
+
+The reap that exists for exactly this (#246) could not help, and the reason is the point: `chain_reap_stale()` decided whether a job was over by reading `e->state`, the entry's own account of what it was doing. Those entries said `building`. One had a build log reporting success — `installed 150984 bytes to /lib/firmware/rtw88/rtw8822b_fw.bin` — while its entry stayed `building` with `version: ""` and its image stayed at the empty-manifest hash, so nothing was installed despite the log saying it had been. `GET /v1/containers` showed `__pkgbuild-2` did not exist at all. **An entry claiming BUILDING is a claim, not evidence, and the one thing that could contradict it was never consulted.**
+
+Two things were already fixed and are not what this changes. `POST /v1/pkg/cancel` gained a branch in v2.57.161 that drives completion directly when the build container is gone, which does recover the slot — so #339's "recoverable only by a reboot" has been stale since that tag, and this entry says so rather than re-announcing that fix as new. And `pkg_build_completed()` already clears the slot for a container it cannot match to an entry. What remained is that **an operator had to know to call cancel**: the recovery existed and nothing reached for it unprompted.
+
+`chain_reap_stale()` now reclaims a slot whose entry says BUILDING when that entry's build container is absent from the registry, and calls `pkg_fail()` on the entry so it stops claiming to build — freeing the slot alone would unwedge the box and leave the report wrong for as long as the daemon ran.
+
+main.c answers the liveness question through a predicate registered at startup (`pkg_set_build_container_live_fn()`, immediately after `pkg_init()`). pkg.c has never linked `registry.h` and does not start now; main.c owns every `registry_*` call, the same division `handle_pkg_cancel()` already depends on. A NULL predicate means "do not judge liveness" — the pre-#339 behaviour — which is what a binary linking pkg.c without main.c gets.
+
+**Absence is sound as the test because of an ordering fact**, and it is the fact the whole change rests on: `container_exit_finalize()` calls `pkg_build_completed()` *before* `registry_remove()`, so a container gone from the registry has already driven its completion and there is no window in which it is absent while an exit event for it is still in flight. Without that ordering, reclaiming on absence could hand a slot back from under a job that still owned it — the #98 hazard. Present-but-not-running counts as **live**, deliberately: its exit has not been finalized, and finalization is what releases the slot correctly, so judging it dead would race the path that does the job.
+
+The cause of the original stuck entry is still not established, and this does not wait for it. What it changes is that a recurrence self-heals and **says so** — the reclaim writes a warning naming the slot, the package and the reason — instead of presenting as a box that refuses every install. That is the part most likely to establish the cause.
+
+ADR-0300 records the decision and four rejected alternatives, including extending the same validation to fetches (a fetch's liveness is its `fetch_pid`, which pkg.c can read itself, but no leak of that kind has been measured since #239) and holding the recovery back until the root cause is known.
+
+**The recovery path has no automated gate and cannot have one yet:** fabricating the state needs a build container that vanishes without its exit reaching the handler, which is precisely the unestablished cause. The normal path — slot allocated, build completed, slot released — is exercised by every build the platform does, including the one that ships this. `test_pkg` is in no gate anyway (#224, #480).
+
 ### The control-plane root is written atomically, and its own bytes answer for its freshness (#481)
 
 `mkbootroot` was pointed straight at its final output path. `run_mksquashfs()` `unlink()`ed `<data-dir>/rebuildable/bootroot/cixd-root.squashfs` and handed that same path to `mksquashfs` as `argv[2]`, so the platform's most consequential artifact was the *write target* for the whole multi-minute xz compression. Anything that interrupted it destroyed the root that was there and left a fragment in its place.
