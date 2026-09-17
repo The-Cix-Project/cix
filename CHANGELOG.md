@@ -31,7 +31,22 @@ The dashboard label said `(overlay diff)` for every figure — the false claim r
 
 **Not renamed.** #475 also asks that the field name agree with its meaning, and `upper_` is overlay vocabulary on a subvolume substrate. With the qgroup answering, the name is *more* accurate than it was, not less — exclusive extents are what an upper layer would have held — and a rename touches 14 files including three append-only ADRs, which belongs in its own reviewable change rather than bundled into a correctness fix.
 
-`test_container_stats` is in no gate (#480's neighbourhood), so this is verified live: after deploy, `upper_source` per container says which path each takes, and two containers from one image must no longer agree to the byte.
+`test_container_stats` is in no gate (#480's neighbourhood), so this is verified live on 192.168.15.95, v2.57.201, and the control is what makes it conclusive:
+
+```
+                    before (walk)      after (qgroup)
+dns-1                  29361116              368640
+dns-2                  29361116              368640
+ldap-1                 72625435              335872
+ldap-2                 72625431              335872
+ntp-1 (userns:false)   33112343              548864
+ntp-2 (userns:false)   33112331              548864
+u475probe (fresh, same dns image)            106496
+```
+
+Every container reports `upper_source: "qgroup"`, including the two that are `userns: false` — so the qgroup answers on both paths, not only the userns one. The figures drop ~80×, from image-sized to diff-sized.
+
+**Same-image pairs still agree exactly, and that is no longer the defect** — which needed proving rather than asserting, since byte-identical pairs are the evidence #475 was filed on. A throwaway container created from the *same* `dns` image reads `106496` against dns-1's `368640`: same image, 3.5× apart, which is impossible if the number were image-derived. What remains is that a qgroup counts *allocated extents* rather than apparent bytes, so two containers doing an identical job on near-identical content land on the same count of 4 KiB-quantised extents — where the walk's byte-granular sum had them 4 and 12 bytes apart. The probe container was deleted afterwards.
 
 ### A build slot is validated against the registry, not against the entry that holds it (#339)
 
