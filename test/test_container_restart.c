@@ -47,7 +47,7 @@ extern char **environ;
  */
 #define BINDSPLIT_LOOPBACK_PORT 9101
 #define BINDSPLIT_NETADDR_PORT 9102
-#define BINDSPLIT_IP "172.60.0.50"
+#define BINDSPLIT_IP "172.60.0.200"
 #define STR_(x) #x
 #define STR(x) STR_(x)
 
