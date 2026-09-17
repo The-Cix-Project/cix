@@ -23534,7 +23534,7 @@ static void op_getSystemAssembly(const struct api_ctx *ctx)
 	 * here whether that call can succeed instead of discovering it
 	 * from a 409.
 	 *
-	 * Derived, never persisted, for the reason recover_iso_state()
+	 * Derived, never persisted, for the reason iso_recover_state()
 	 * gives for built_version: a stored claim about a file is a second
 	 * source of truth able to disagree with the file.
 	 */

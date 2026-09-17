@@ -3433,7 +3433,7 @@ GET /v1/system/boot
 
 GET /v1/system/assembly
 {"running": false, "started_generation": 3, "completed_generation": 3, "image_path": "/var/lib/cix/rebuildable/bootroot/cixd-root.squashfs",
- "image_present": true, "image_complete": true, "image_bytes": 10403840, "image_mtime": 1789251600}
+ "image_present": true, "image_complete": true, "image_bytes": 20434944, "image_mtime": 1789644673}
 ```
 
 `GET /health` is deliberately minimal -- both `cixctl` and the web dashboard poll it every few seconds purely for a status dot, and it's excluded from the audit trail (see [A consolidated log](#a-consolidated-log) above) as low-value polling noise. Build/slot/kernel identity is a separate, lower-frequency check: `GET /system/boot` reports `build_version` (`git describe --tags --always --dirty` at build time), `build_time`, `slot` (`"a"`/`"b"`, or `null` for a dev/test daemon started without `--slot=`), and `kernel_version` (the running `uname(2)` release string). This is the deploy/reboot verification signal referenced throughout [`docs/guides/kernel-build-and-ab-updates.md`](../guides/kernel-build-and-ab-updates.md) -- a `200` from `health` alone only proves *some* daemon answered, not that it's the one you just wrote; `slot`/`kernel_version` from `boot` are the direct answer to "did I actually boot into what I just wrote."
