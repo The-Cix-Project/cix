@@ -39,4 +39,16 @@ The asymmetry is deliberate and is the whole of this ADR: **defaulting is for a 
 
 A caller that relied on `?name=X` with no `?image=` meaning `X@base` specifically would now attach to `X` in some other image if that is the only one building. Nothing does: the only callers are `cixctl pkg build-log` and the dashboard, both of which forward what the operator typed, and both of which want the running build.
 
-**The image-crossing half of this is not gated by a test that runs.** `test_pkg_build_log` is not in `SELFTESTS` — it creates a real build container, which a composed build container cannot do (#224) — and reproducing the actual bug there would need a second image bootstrapped with its own toolchain, for a lookup rule three lines long. What that test does gate, for anyone who runs it, is that the name-only path resolves and that the 404 names what is building. The image-crossing case is verified on 192.168.15.95 against a real host build, which is also how it was found.
+**The image-crossing half of this is not gated by a test that runs.** `test_pkg_build_log` is not in `SELFTESTS` — it creates a real build container, which a composed build container cannot do (#224) — and reproducing the actual bug there would need a second image bootstrapped with its own toolchain, for a lookup rule three lines long. What that test does gate, for anyone who runs it, is that the name-only path resolves and that the 404 names what is building.
+
+The image-crossing case is measured on a real host instead, by `recipes/package/probe-buildlog-image/1` — the convention this project already uses for a gate that cannot run where the tests do (`probe-missing-tool/1`, `probe-build-clock/1`). It installs into `cix-builder`, sleeps 90 seconds so there is a window to attach to, and then fails deliberately so no image manifest is touched. Measured on 192.168.15.95, 2026-09-17, under v2.57.197:
+
+```
+nothing building,  --name=probe-buildlog-image  -> 404 no build in progress
+fetching,          --name=probe-buildlog-image  -> 404 that build has no live output right now ...
+building,          --name=probe-buildlog-image  -> 101, streaming "marker-0 ... marker-4"
+building,          --name=nosuchpackage         -> 404 ... building now: probe-buildlog-image@cix-builder
+build finished,    --name=probe-buildlog-image  -> 404 no build in progress
+```
+
+The third line is this decision: the chain is filed under `cix-builder` and the request named no image. The last line is the stale-slot case — a finished job gets the plain 404, not the transient one.

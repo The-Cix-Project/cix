@@ -30,7 +30,22 @@ ADR-0297: on a query, an absent `image` means "whichever image is building that 
 
 The messages changed too, for the same reason the bug was hard to read. A 404 about a failed lookup now names the builds that *are* running rather than asserting "no build in progress" — the operator had a build running and was told there was none. And the second 404 the endpoint can return, where the chain exists but has no build container at that instant (during the source fetch, between chain steps, while the artifact is finalized), no longer shares the first one's words: it says to retry, because it is transient.
 
-The image-crossing case is **not gated by a test that runs**. `test_pkg_build_log` is not in `SELFTESTS` (it creates a real build container, which a composed build container cannot — #224), and reproducing it there would need a second image bootstrapped with its own toolchain for a three-line lookup rule. It gains a case that gates the name-only path and the new 404 text; the image-crossing half is verified live against a real host build, which is how it was found.
+The image-crossing case is **not gated by a test that runs**. `test_pkg_build_log` is not in `SELFTESTS` (it creates a real build container, which a composed build container cannot — #224), and reproducing it there would need a second image bootstrapped with its own toolchain for a three-line lookup rule. It gains a case that gates the name-only path and the new 404 text; the image-crossing half is measured on a real host by `recipes/package/probe-buildlog-image/1`, the established convention for a gate that cannot run where the tests do.
+
+All four paths measured on 192.168.15.95, 2026-09-17, under v2.57.197 — the probe installs into `cix-builder`, sleeps 90 seconds and then fails deliberately, so no image manifest is touched:
+
+```
+nothing building,  --name=probe-buildlog-image  -> 404 no build in progress
+fetching,          --name=probe-buildlog-image  -> 404 that build has no live output right now --
+                                                       it is fetching, finalizing, or between steps;
+                                                       retry shortly
+building,          --name=probe-buildlog-image  -> 101, streaming: "marker-0 ... marker-4"
+building,          --name=nosuchpackage         -> 404 no build in progress for 'nosuchpackage' --
+                                                       building now: probe-buildlog-image@cix-builder
+build finished,    --name=probe-buildlog-image  -> 404 no build in progress
+```
+
+The third line is the fix: the chain is filed under `cix-builder` and the request named no image. The reproduction is on record too — the same command against v2.57.195 during the `cix` host build that produced v2.57.196 returned `404 no build in progress` while `GET /v1/pkg` reported `cix@__hostbuild` in `building`. The last line is the stale-slot case: a finished job must get the plain 404, not the transient one.
 
 ### `nsswitch.conf` names the dns backend, and the platform keeps it correct (#478)
 
