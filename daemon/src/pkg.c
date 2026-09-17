@@ -3677,6 +3677,22 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 	jw_str(w, e->image);
 	jw_key(w, "version");
 	jw_str(w, e->version);
+	/*
+	 * What the recipe declared this needs in order to RUN, as captured
+	 * once at fetch time (ADR-0302) -- not re-read from whatever recipe
+	 * revision is highest now.
+	 *
+	 * Added with ADR-0303 (#465), which turns on this field being
+	 * observable: a hostbuild now carries a declared pkg_depends
+	 * without resolving it, and "carried" is only distinguishable from
+	 * "silently ignored" if something can read it back. It was already
+	 * persisted by save_state() and already read by the install path's
+	 * own gate -- measured on 192.168.15.95, 2026-09-17: the REST
+	 * entry had no `depends` key at all, so the declaration was
+	 * invisible to every client of the API.
+	 */
+	jw_key(w, "depends");
+	jw_str(w, e->depends);
 	jw_key(w, "state");
 	jw_str(w, state_str);
 	/* is_hostbuild/artifact_path are derived from e->image, never
