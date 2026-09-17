@@ -11325,8 +11325,11 @@ paths:
         every call: cpu.*_usec and network rx/tx counters are
         cumulative since the container started, not a rate -- compute a
         rate by calling this twice and dividing by the wall-clock delta
-        between calls. disk.upper_bytes is a gauge (current space
-        consumed by this container's own overlay diff, content only).
+        between calls. disk.upper_bytes is a gauge, and disk.upper_source
+        says which of two measurements produced it -- the writable
+        subvolume's exclusive extents (what this container has written
+        beyond its image) or a walk of its whole writable tree, which on
+        the btrfs substrate includes the image content (#475).
         disk.read/write_bytes/ios reflect whatever the cgroup v2 io
         controller has recorded since it was enabled at this daemon's
         own startup -- genuinely empty/zero for a container that hasn't
@@ -16864,50 +16867,103 @@ components:
               description: This container's own memory.pressure.
         disk:
           type: object
-          required: [upper_bytes, upper_measured_at, read_bytes, write_bytes, read_ios, write_ios, pressure]
+          required: [upper_bytes, upper_measured_at, upper_source, read_bytes, write_bytes, read_ios, write_ios, pressure]
           properties:
             upper_bytes:
               type: integer
               nullable: true
               description: >
-                The size of this container's own writable tree, content
-                only, not directory-tree overhead.
+                How much this container has written beyond its image --
+                **when `upper_source` is `qgroup`**. Read
+                `upper_source` before using this number; the two
+                sources do not measure the same thing.
 
 
-                This field used to say "its content diff from the shared
-                image", and that is measurably not what it reports:
-                containers built from the same image agree to the byte
-                (two on 192.168.15.95 both read 29360580), which a real
-                per-container diff cannot do. On the btrfs substrate a
-                container's writable tree is a subvolume SEEDED from its
-                image (ADR-0207) rather than an overlay upperdir over
-                it, so the tree already contains the whole rootfs.
-                Tracked as #475; the wording is corrected here rather
-                than left asserting something a caller can disprove.
+                This field used to report the size of the container's
+                whole writable tree while documenting itself as the
+                diff from the shared image, and containers built from
+                the same image proved it: two on 192.168.15.95 both
+                read exactly 29360580, which a real per-container diff
+                cannot do. On the btrfs substrate a container's
+                writable tree is a subvolume SEEDED from its image
+                (ADR-0207) rather than an overlay upperdir over it, so
+                a walk of that tree sums the whole rootfs. Fixed in
+                #475 by preferring the subvolume's qgroup, which counts
+                EXCLUSIVE allocated extents -- exactly the data this
+                subvolume holds that its image snapshot does not. That
+                is the same accounting, and the same preference order,
+                as `GET /volumes/{name}/usage`.
 
 
-                MEASURED IN THE BACKGROUND, not while answering this
-                request (#474). Measuring it is an `nftw()` walk, O(files)
-                and unbounded, and it used to run inline on every stats
-                request -- on a pid-1 daemon whose one event loop is the
-                only way into the host. A request now serves the last
-                figure and starts a new measurement when that one has
-                aged out.
+                Where no qgroup answers -- container storage not on
+                btrfs, quotas disabled, or a writable tree that is not
+                a subvolume -- the walk is still the only figure
+                available, and on the seeded-subvolume layout it is
+                still the whole tree. `upper_source` is `walk` then,
+                and says so rather than leaving a caller to find out
+                the way this issue was found.
 
 
-                **`null` until the first measurement lands**, which is
-                normally the request after the first. Reporting `0` for
-                "not measured yet" was the alternative and it is a lie a
-                caller cannot detect. `upper_measured_at` says how old
-                the figure is.
+                ON THE WALK PATH ONLY, MEASURED IN THE BACKGROUND
+                rather than while answering this request (#474). The
+                walk is `nftw()`, O(files) and unbounded, and it used to
+                run inline on every stats request -- on a pid-1 daemon
+                whose one event loop is the only way into the host. A
+                request serves the last figure and starts a new
+                measurement when that one has aged out. The `qgroup`
+                path has none of that cost: it is a single ioctl, so it
+                is read live on every request, forks nothing and is
+                never stale for want of a measurement.
+
+
+                **`null` until the first measurement lands** on the walk
+                path, which is normally the request after the first.
+                Reporting `0` for "not measured yet" was the alternative
+                and it is a lie a caller cannot detect.
             upper_measured_at:
               type: integer
               nullable: true
               description: >
-                Unix time the `upper_bytes` figure was taken, or `null`
+                Unix time the `upper_bytes` figure was READ, or `null`
                 when it has never been measured. Present so a caller can
                 tell a current number from one that has aged out, rather
                 than having to assume it is live.
+
+
+                On the `qgroup` path this is the time of the request, and
+                the figure can still be up to ~30 s behind reality
+                because btrfs settles qgroup accounting at transaction
+                commit -- the same caveat `GET /volumes/{name}/usage`
+                carries, and the reason this says READ rather than
+                measured.
+            upper_source:
+              type: string
+              enum: [qgroup, walk]
+              nullable: true
+              description: >
+                Which measurement produced `upper_bytes`, because the
+                two do not answer the same question (#475).
+
+
+                `qgroup` -- the writable subvolume's EXCLUSIVE allocated
+                extents: what this container has written that its image
+                snapshot does not hold. This is the number the field
+                name and its description promise. Allocated space
+                rather than apparent size, so sparse, compressed and
+                reflinked data all read smaller than a walk would
+                report.
+
+
+                `walk` -- the summed content of the container's whole
+                writable tree. On the btrfs seeded-subvolume substrate
+                that INCLUDES the image content, so it is not a
+                per-container diff; it is the only figure available
+                where no qgroup answers, and it is reported with this
+                label rather than silently.
+
+
+                `null` when nothing has been measured yet, which pairs
+                with `upper_bytes` being `null`.
             read_bytes:
               type: integer
               description: Cumulative bytes read, from cgroup v2 io.stat (0 if no tracked block I/O has happened yet).

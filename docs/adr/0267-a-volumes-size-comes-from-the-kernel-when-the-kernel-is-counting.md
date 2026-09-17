@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Extended to container disk stats by [#475](https://git.home.arpa/itdlabs/cix/issues/475): `GET /containers/{name}/stats` now prefers the writable subvolume's qgroup over a walk and reports `disk.upper_source`, for the reason decided here. That endpoint had been documenting its walk as the container's diff from its image, which the seeded-subvolume substrate makes false -- so this was not a new decision, only one that had not been applied where it was equally true.
 
 Issue [#369](https://git.home.arpa/itdlabs/cix/issues/369). Extends
 [ADR-0103](0103-btrfs-quota-backend.md)'s qgroup enforcement with the read side it

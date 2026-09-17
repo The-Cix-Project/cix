@@ -6,6 +6,33 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### disk.upper_bytes reports what the container wrote, not what its image already held (#475)
+
+`GET /containers/{name}/stats` documented `disk.upper_bytes` as the container's own footprint, "not including the shared, read-only image layer beneath it". It was the size of the whole writable tree, image content included, and the containers proved it — measured on 192.168.15.95:
+
+```
+dns-1   dns      29360580
+dns-2   dns      29360580     <- identical
+ldap-1  ldap     72624845
+ldap-2  ldap     72624841     <- 4 bytes apart
+```
+
+Two containers with different names, addresses, configs and logs cannot agree to the byte on what each has written. Those are image-sized figures, so a 30 MB service container read as having written 30 MB, and anything built on the field — a disk view, an alert, a quota decision — inherited it.
+
+The cause is the substrate: on btrfs (ADR-0207) a container's writable tree is a **subvolume seeded from its image**, not an overlay upperdir with the image as a lower layer, so `overlay_upperdir_size()` faithfully measured a tree that already contained the whole rootfs.
+
+Fixed by preferring the subvolume's qgroup, which counts **exclusive allocated extents** — precisely the data this subvolume holds that its image snapshot does not. That is the number the field name and its documentation always promised, and it is free: one ioctl, so no walk, no fork, no cache and no staleness window on any host where it answers. **This is not a new decision** — ADR-0267 made it for `GET /volumes/{name}/usage` ("a volume's size comes from the kernel when the kernel is already counting"); it simply had not been applied where it was equally true, so that ADR is extended rather than a new one written. Two endpoints answering "how big is this tree" now agree on what counts, and use the same helper to do it.
+
+**`disk.upper_source` is new and says which measurement answered**, because the two do not mean the same thing. `qgroup` is the exclusive diff. `walk` is the whole writable tree — the only figure available where no qgroup answers (storage not on btrfs, quotas disabled, or a writable tree that is not a subvolume), still including image content on the seeded-subvolume layout, and now **labelled** rather than passed off as a diff. That makes the remaining gap measurable instead of hidden. Two properties of `cix_btrfs_qgroup_query()` make this safe: it refuses a plain directory with `EINVAL` rather than resolving to the containing subvolume's accounting — a wrong answer would be worse than an error — so a non-subvolume tree falls through to the walk; and its figure settles at transaction commit, so `upper_measured_at` is documented as when the number was *read*, not when it was true.
+
+Measured before writing any of it, rather than assumed: `/var/lib/cix` on 192.168.15.95 is `vdb5`, `fs_type: btrfs`, and `GET /v1/volumes/jump-home/usage` returns `"source": "qgroup", "accounting": "ok"` — so quotas are enabled and the qgroup path actually answers on the box where the bug was measured. Without that check the fix could have been inert exactly there.
+
+The dashboard label said `(overlay diff)` for every figure — the false claim rendered to the operator — and now names the source that answered. `cixctl container stats` prints `disk.upper_source`.
+
+**Not renamed.** #475 also asks that the field name agree with its meaning, and `upper_` is overlay vocabulary on a subvolume substrate. With the qgroup answering, the name is *more* accurate than it was, not less — exclusive extents are what an upper layer would have held — and a rename touches 14 files including three append-only ADRs, which belongs in its own reviewable change rather than bundled into a correctness fix.
+
+`test_container_stats` is in no gate (#480's neighbourhood), so this is verified live: after deploy, `upper_source` per container says which path each takes, and two containers from one image must no longer agree to the byte.
+
 ### A build slot is validated against the registry, not against the entry that holds it (#339)
 
 Ten chain slots were pinned on 192.168.15.95 and every `pkg install` and `pkg hostbuild` was refused with `409 all 10 package job slots are in use` — all ten naming `rtw88-firmware@cix-firmware`. The measured recovery was a reboot, on a host with no shell.

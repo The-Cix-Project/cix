@@ -18067,6 +18067,7 @@ static void handle_container_stats(int fd, const char *name)
 	long long disk_bytes = 0;
 	time_t disk_measured_at = 0;
 	int disk_known = 0;
+	const char *disk_source = NULL;
 	long long io_rbytes, io_wbytes, io_rios, io_wios;
 	struct cgroup_pressure cpu_pressure, io_pressure, mem_pressure;
 	int i;
@@ -18098,17 +18099,79 @@ static void handle_container_stats(int fd, const char *name)
 		char upperdir[PATH_MAX];
 		struct container_disk_entry *de;
 
+		unsigned long long qgroup_used = 0, qgroup_limit = 0;
+		enum cix_btrfs_qgroup_state qstate = CIX_BTRFS_QGROUP_OK;
+
 		container_root_for(e->disk_name, container_root, sizeof(container_root));
 		container_writable_path(container_root, name, "", upperdir, sizeof(upperdir));
-		/* Serve what was last measured, then start a new measurement
-		 * if that figure has aged out. Never walks here (#474). */
-		de = container_disk_entry(name, 0);
-		if (de != NULL && de->measured_at != 0) {
-			disk_bytes = de->bytes;
-			disk_measured_at = de->measured_at;
+
+		/*
+		 * The qgroup first, because it is the only one of the two that
+		 * answers the question this field asks (#475).
+		 *
+		 * On the btrfs substrate (ADR-0207) a container's writable
+		 * tree is a SUBVOLUME SEEDED FROM THE IMAGE, not an overlay
+		 * upperdir with the image as a lower layer. So the walk below
+		 * -- which faithfully measures the tree it is pointed at --
+		 * sums the whole rootfs, image content included, while this
+		 * field documents itself as "not including the shared,
+		 * read-only image layer beneath it". Measured on
+		 * 192.168.15.95: dns-1 and dns-2 both reported exactly
+		 * 29360580 bytes, and ldap-1/ldap-2 were 4 bytes apart. Two
+		 * containers with different names, addresses, configs and logs
+		 * cannot agree to the byte on what each has written; those
+		 * were image-sized figures, and an operator reading a 30 MB
+		 * service container was being told it had written 30 MB.
+		 *
+		 * A qgroup counts EXCLUSIVE allocated extents -- precisely the
+		 * data this subvolume holds that its image snapshot does not
+		 * -- which is the number the name and the documentation have
+		 * always promised. It is also free: no walk, so no fork, no
+		 * cache and no staleness window on any host where it answers.
+		 * Same helper and same preference order as GET
+		 * /volumes/{name}/usage, which chose the qgroup over a walk
+		 * for its own reasons; two endpoints answering "how big is
+		 * this tree" now agree on what counts.
+		 *
+		 * The walk remains the fallback for a host whose container
+		 * storage is not btrfs or has quotas disabled, where it is
+		 * still the only answer available -- and on the seeded-
+		 * subvolume layout it is still the whole tree. That is why
+		 * upper_source is reported rather than left implicit: the two
+		 * numbers mean different things, and a caller that cannot tell
+		 * them apart is the state this issue was filed about. It also
+		 * makes the remaining gap MEASURABLE instead of hidden: a
+		 * container whose writable tree is not a subvolume still gets
+		 * the whole-tree figure, and now says so.
+		 *
+		 * Two properties of the helper this relies on. It REFUSES a
+		 * plain directory with EINVAL rather than resolving to the
+		 * containing subvolume's accounting -- so a non-subvolume
+		 * writable tree falls through to the walk instead of being
+		 * answered with the parent's numbers, which would be a wrong
+		 * answer rather than an error. And its figure settles at
+		 * transaction commit, so it can be up to ~30 s behind; that is
+		 * the same caveat GET /volumes/{name}/usage carries, and
+		 * upper_measured_at is when it was READ, as it is there.
+		 */
+		if (cix_btrfs_qgroup_query(upperdir, &qgroup_used, &qgroup_limit, &qstate) == 0) {
+			disk_bytes = (long long)qgroup_used;
+			disk_measured_at = time(NULL);
 			disk_known = 1;
+			disk_source = "qgroup";
+		} else {
+			/* Serve what was last measured, then start a new
+			 * measurement if that figure has aged out. Never walks
+			 * here (#474). */
+			de = container_disk_entry(name, 0);
+			if (de != NULL && de->measured_at != 0) {
+				disk_bytes = de->bytes;
+				disk_measured_at = de->measured_at;
+				disk_known = 1;
+				disk_source = "walk";
+			}
+			container_disk_measure_start(name, upperdir);
 		}
-		container_disk_measure_start(name, upperdir);
 	}
 
 	jw_init(&w);
@@ -18159,6 +18222,19 @@ static void handle_container_stats(int fd, const char *name)
 	jw_key(&w, "upper_measured_at");
 	if (disk_known)
 		jw_int(&w, (long long)disk_measured_at);
+	else
+		jw_null(&w);
+	/*
+	 * Which of the two measurements answered, because they do not mean
+	 * the same thing (#475). "qgroup" is this container's exclusive
+	 * extents -- what it has written that its image does not hold.
+	 * "walk" is the size of its whole writable tree, which on a
+	 * seeded-subvolume substrate includes the image content, and is
+	 * the only figure available where no qgroup answers.
+	 */
+	jw_key(&w, "upper_source");
+	if (disk_source != NULL)
+		jw_str(&w, disk_source);
 	else
 		jw_null(&w);
 	jw_key(&w, "read_bytes");
