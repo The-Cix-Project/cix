@@ -7977,7 +7977,7 @@ static void fmt_assembly(const struct json_value *v)
 {
 	const char *image_path = json_str_field(v, "image_path");
 	int is_running = assembly_flag(v, "running");
-	int present = assembly_flag(v, "image_present");
+	const struct json_value *jpresent = json_object_get(v, "image_present");
 	long mtime = (long)json_as_number(json_object_get(v, "image_mtime"));
 	char when[64];
 
@@ -7996,7 +7996,20 @@ static void fmt_assembly(const struct json_value *v)
 	 * stages, and its own mtime is the only freshness fact here that
 	 * survives the reboot.
 	 */
-	if (!present) {
+	/*
+	 * Absent and not-reported are different answers and must not print
+	 * the same. A daemon older than #481 sends none of these fields, and
+	 * calling that "absent" would assert something about a file this
+	 * response says nothing about -- on a box whose running root came
+	 * from exactly that file. Same shape as --deploy's own "it predates
+	 * the field" below, and the same reason: a locally built cixctl is
+	 * routinely one deploy ahead of the daemon it is talking to (#476).
+	 */
+	if (jpresent == NULL) {
+		printf("image:                not reported -- this daemon predates the field (#481)\n");
+		return;
+	}
+	if (jpresent->type != JSON_BOOL || !jpresent->u.boolean) {
 		printf("image:                absent\n");
 		return;
 	}
