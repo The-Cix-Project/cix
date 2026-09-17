@@ -19343,6 +19343,17 @@ components:
             against. "base" unless a non-default image was given at install time.
         version:
           type: string
+        depends:
+          type: string
+          description: >
+            What this entry declared in its recipe's pkg_depends= -- what the
+            installed thing needs in order to RUN, recorded as it was when this
+            entry was built (ADR-0302 captures it once, at fetch time).
+
+            Empty string when the recipe declared nothing. For a hostbuild entry
+            this is carried and never resolved: a hostbuild has no image to merge
+            a dependency closure into, so the declaration describes the artifact
+            rather than anything the hostbuild installed (ADR-0303, issue #465).
         state:
           type: string
           enum: [fetching, building, installed, failed]
