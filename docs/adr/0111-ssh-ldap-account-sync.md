@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted, with one decision in it superseded by [ADR-0296](0296-the-platform-keeps-nsswitch-correct.md): the baseline `/etc/nsswitch.conf` this ADR introduced said `hosts: files` and was written only when the file was absent. Both changed -- the hosts line now names the `dns` backend, and the file converges whenever its content differs -- because a container given a resolver (ADR-0143, ADR-0295) could never use it. The account-database decision below, rendered Unix accounts rather than real NSS/PAM against a directory, is unchanged and is why the `passwd`/`group`/`shadow` lines still say `files`.
 
 ## Context
 

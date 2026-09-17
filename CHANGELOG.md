@@ -6,6 +6,34 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### `nsswitch.conf` names the dns backend, and the platform keeps it correct (#478)
+
+ADR-0295 gave containers a real `/etc/resolv.conf`. Verifying it showed glibc never reading it. Measured on 192.168.15.95, 2026-09-17, inside a `jumpbox` container on `services`:
+
+```
+--- /etc/resolv.conf ---
+nameserver 192.168.150.101
+nameserver 192.168.150.102
+--- getent hosts dns-1 ---
+getent rc=2
+```
+
+and in the same container: `hosts: files`, with `/lib/x86_64-linux-gnu/libnss_dns.so.2` present. Correct resolver, installed backend, never asked.
+
+**What makes this a design fault rather than a missing line is which containers DID resolve.** `jump` resolves everything tried (`git.home.arpa` -> 192.168.15.15, `jump` -> 192.168.150.109, `cix.internal` -> 192.168.15.95, all rc=0) -- and its nsswitch is the `ldap_client` replacement, which carried **no `hosts` line at all**, so glibc's compiled-in default supplied one. The container handed an explicit, pinned file could not resolve; the container handed an incomplete one could, by way of precisely the default ADR-0111 wrote the file to stop depending on.
+
+ADR-0111's `files`-only reasoning was coherent -- "this project always pushes rendered files into a container's own filesystem rather than having the container's own NSS talk to a remote service directly" -- and it holds for accounts, where Cix really does render `/etc/passwd`. It does not hold for hosts, because there is no file Cix renders a container's view of DNS into. ADR-0143 added `dns_servers` and ADR-0295 made it a default without anyone noticing NSS was configured never to use it: two parts of the platform answering one question differently, the same shape as #451's `dns_register` and found the same way, by verifying a fix rather than trusting it.
+
+`daemon/src/nsswitch.c` now owns both variants and builds them from a single `NSSWITCH_HOSTS_LINE`, so they cannot disagree; `hosts: files dns` in both; and the baseline is written **whenever its content differs**, not merely when the file is absent. That last is the load-bearing half: writing only when absent was harmless while the content never changed, and became the mechanism by which every already-built image keeps the old content forever, since nothing else rewrites that file.
+
+Two things stated rather than left to be discovered. **Convergence arrives with the next real install, not with this daemon**, because of ADR-0155 -- the seeder runs against a staging rootfs whose version is discarded when the package manifest is unchanged, so `base`, `jumpbox`, `dns`, `chrony`, `ldap`, `syslog` and `router` each converge when something genuinely new is installed into them. And **the platform now overwrites this file**: safe today and measured (no installed package on the box ships an `/etc/nsswitch.conf`), but a package that later did would be silently overwritten and that needs its own decision.
+
+The backends were never the problem: `libnss_dns.so.2` ships in the glibc package (glibc 2.44-16 in `jumpbox` carries 13 `libnss` files) and nothing in this tree stages any of them -- ADR-0111's own `libnss_files.so.2` staging is gone from the code, which `grep -rn libnss` over the C sources confirms. The comment claiming otherwise was corrected in the same change as the finding.
+
+`test_nsswitch` gates it as pure logic in `SELFTESTS`: both variants name `files dns`, their hosts lines are identical, and `nsswitch_needs_write()` rewrites a stale or truncated file while leaving identical content alone. The convergence rule cannot be gated at runtime by this suite -- it needs a successful package install into an image, which needs a real build container, the one thing a build container cannot create (#224) -- so `test_images` separately asserts a freshly created image's rootfs carries the line, and `test_daemon` asserts the `ldap_client` copy does too.
+
+See [ADR-0296](docs/adr/0296-the-platform-keeps-nsswitch-correct.md).
+
 ### A container in the directory can read it: omitted `dns_servers` now defaults (#451)
 
 Measured inside the running `jump` on 192.168.15.103, 2026-09-13:

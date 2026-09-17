@@ -1,6 +1,7 @@
 #include "connthrottle.h"
 #include "container.h"
 #include "containerdef.h"
+#include "nsswitch.h"
 #include "internal.h"
 #include "device.h"
 #include "devicemap.h"
@@ -14085,7 +14086,13 @@ static int create_container_from_body(const char *body, size_t body_len,
 		/* Rendered from the daemon's own LDAP client config (validated
 		 * present above). nslcd.conf holds the bind credential -> 0600.
 		 * nsswitch.conf is the standard "files then ldap" resolution
-		 * order. `pam_authc_ppolicy no` matches this project's own
+		 * order for the ACCOUNT databases, and carries the same hosts
+		 * line every image gets -- it comes from nsswitch.c for that
+		 * reason. This file REPLACES the image baseline, and until #478
+		 * it had no hosts line at all, so glibc fell back to its own
+		 * compiled-in default: the containers that could resolve names
+		 * were the ones whose nsswitch was incomplete, by way of the
+		 * very default ADR-0111 wrote the file to stop depending on. `pam_authc_ppolicy no` matches this project's own
 		 * glauth deployment (jump's own working recipe), which doesn't
 		 * implement the ppolicy control nslcd probes for by default. */
 		const struct ldap_config *lc;
@@ -14106,10 +14113,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 		ldap_effective_client_uri(effective_uri, sizeof(effective_uri));
 
 		if (stage_container_file(stage_dir, "/etc/nsswitch.conf",
-		                          "passwd:         files ldap\n"
-		                          "group:          files ldap\n"
-		                          "shadow:         files ldap\n",
-		                          0644, (uid_t)-1, (gid_t)-1, stage_id_offset) != 0) {
+		                          nsswitch_ldap_client_content(), 0644, (uid_t)-1,
+		                          (gid_t)-1, stage_id_offset) != 0) {
 			json_free(root);
 			snprintf(err_msg, err_msg_size, "failed to stage ldap_client nsswitch.conf");
 			return 500;
