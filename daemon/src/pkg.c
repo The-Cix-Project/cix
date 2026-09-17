@@ -5132,6 +5132,16 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 	{
 		const char *nsswitch_content = nsswitch_baseline_content();
 		char nsswitch_dst[PATH_MAX];
+		/*
+		 * 512 is larger than either declared variant (the longer,
+		 * ldap_client, is under 200 bytes), and a file that does not
+		 * fit is deliberately rewritten rather than read fully: a
+		 * short read fills the buffer, have_len comes back as 512,
+		 * and nsswitch_needs_write() sees a length mismatch. That is
+		 * the wanted answer -- anything that is not byte-identical to
+		 * what the platform declares gets replaced (ADR-0296) -- so
+		 * this is not a truncation bug to "fix" with a bigger buffer.
+		 */
 		char have[512];
 		size_t have_len = 0;
 		FILE *nf;
