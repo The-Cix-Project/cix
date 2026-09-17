@@ -31,6 +31,10 @@ Two things checked before shipping rather than after. Both first-party clients a
 
 The creation-time `warn` added earlier for this issue (option 1 of the three it listed) is replaced: it now fires only when defaulting found nothing, and says which registered servers were skipped and why.
 
+**Verified on 192.168.15.95, and the verification found the next layer.** Every autostarted container on `services` whose definition omits the field -- `ntp-1`, `ntp-2`, `syslog-1`, `syslog-2`, `ldap-1`, `ldap-2`, `cr-1`, `cr-2`, `ar-1` -- now reports both resolvers, with no recipe change, which is the replay path working. `dns-1` and `dns-2` report `[]`, excluded as servers. Inside `jump`: `getent hosts git.home.arpa` -> 192.168.15.15, `getent hosts jump` -> 192.168.150.109, `getent hosts cix.internal` -> 192.168.15.95, all rc=0 -- the first being the exact command #451 reported failing.
+
+**A resolver is not the same as resolution, though.** A container whose `/etc/nsswitch.conf` comes from `pkg_seed_image_baseline()` has `hosts: files` and no `dns` backend, so glibc never consults DNS and the staged `resolv.conf` is inert -- measured in a throwaway `jumpbox` container: correct `resolv.conf`, `libnss_dns.so.2` present, `getent` rc=2. The containers that resolve do so because the `ldap_client` nsswitch replaces the baseline and omits the `hosts` line, letting a glibc compiled-in default supply `dns` -- the very default the baseline's own comment says not to depend on. Filed as #478 rather than folded in: changing the baseline reverses a stated posture and is its own decision.
+
 See [ADR-0295](docs/adr/0295-a-container-in-the-directory-can-read-it.md); [ADR-0143](docs/adr/0143-container-dns-servers-field.md) keeps everything except its no-auto-wiring paragraph.
 
 ### The dashboard JavaScript goes through a real parser (#340)
