@@ -14700,11 +14700,21 @@ components:
           type: object
           description: >
             How cix-init knows this service is ready. Exactly one of
-            tcp_port (a connect to the container's own first address),
-            socket (a connect to a unix socket path) or command (an argv
-            that exits 0, run as the service's uid with a 5 s timeout,
-            output discarded). Without one, a service is ready when it
-            has started. If the probe has not passed within
+            tcp_port, socket (a connect to a unix socket path) or
+            command (an argv that exits 0, run as the service's uid
+            with a 5 s timeout, output discarded). Without one, a
+            service is ready when it has started.
+
+
+            A tcp_port probe connects on ANY of the container's own
+            addresses -- 127.0.0.1 first, then each network it is
+            attached to, in declaration order, one candidate per
+            supervision turn until one answers. There is no single
+            right address, because "listening" covers a service bound
+            to 0.0.0.0, one bound to loopback only, and one bound to
+            exactly one interface of a multi-network container. Before
+            #476's sibling #477 this probe only ever tried 127.0.0.1,
+            whatever the container's addresses were. If the probe has not passed within
             timeout_seconds the failure is reported and the service is
             treated as ready so dependents proceed -- the same
             behaviour the container-level check had one layer up.

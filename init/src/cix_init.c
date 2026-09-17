@@ -406,6 +406,14 @@ struct svc {
 	long probe_pid;       /* a running CIXINIT_READY_COMMAND child, or 0 */
 	long probe_pid_deadline; /* monotonic ms */
 	int probe_fd;         /* CIXINIT_READY_TCP: the in-flight connect, or -1 (#413) */
+	/*
+	 * CIXINIT_READY_TCP: which candidate address the next attempt
+	 * uses -- 0 is loopback, 1..g_addr_count are the container's own
+	 * addresses from the hello (#477). Advanced only when an attempt
+	 * concludes, so an in-flight connect is never abandoned mid-way,
+	 * and reset on every fresh spawn.
+	 */
+	int probe_addr_idx;
 	long restart_at;      /* monotonic ms: ST_RESTART_WAIT respawns at this point */
 	long stop_sent_at;    /* monotonic ms: when stop_signal went out, 0 = not sent */
 	int killed;           /* SIGKILL already sent after stop_timeout_seconds */
@@ -418,6 +426,15 @@ struct svc {
 
 static struct svc g_svc[CIXINIT_MAX_SERVICES];
 static int g_count;
+/*
+ * The container's own addresses, from the hello (#477). A TCP
+ * readiness probe tries loopback and then each of these, because there
+ * is no single address that is right: a service may bind 0.0.0.0, or
+ * loopback only, or exactly one interface of a multi-network
+ * container, and all three are listening.
+ */
+static unsigned int g_addr_be[CIXINIT_MAX_ADDRS];
+static int g_addr_count;
 static int g_control_fd = -1;
 static int g_report_fd = -1;
 static char **g_envp;
@@ -577,7 +594,19 @@ static void read_table(void)
 		die("hello with a version this cix-init does not speak");
 	if (hello.service_count < 1 || hello.service_count > CIXINIT_MAX_SERVICES)
 		die("hello announcing an impossible service count");
+	if (hello.addr_count < 0 || hello.addr_count > CIXINIT_MAX_ADDRS)
+		die("hello announcing an impossible address count");
 	g_count = hello.service_count;
+	/*
+	 * #477: the container's own addresses, which a TCP readiness probe
+	 * tries after loopback. Refused rather than clamped, like the
+	 * service count above -- a probe short of the address a service
+	 * bound to reports that service as never ready, and a silent clamp
+	 * is how that would happen with nothing to read afterwards.
+	 */
+	g_addr_count = hello.addr_count;
+	for (i = 0; i < g_addr_count; i++)
+		g_addr_be[i] = hello.addr_be[i];
 
 	for (i = 0; i < g_count; i++) {
 		struct svc *s = &g_svc[i];
@@ -590,6 +619,7 @@ static void read_table(void)
 		s->pid = 0;
 		s->probe_pid = 0;
 		s->probe_fd = -1;
+		s->probe_addr_idx = 0;
 		s->stop_sent_at = 0;
 		s->killed = 0;
 		s->operator_stopped = 0;
@@ -684,6 +714,12 @@ static void start_service(int idx)
 	s->stop_sent_at = 0;
 	s->killed = 0;
 	s->probe_pid = 0;
+	/* Back to loopback for a fresh spawn, so the common case is
+	 * answered on the first attempt again rather than resuming
+	 * wherever the previous incarnation's rotation had reached (#477).
+	 * Not reset inside probe_fd_release(), which the rotation itself
+	 * calls on every concluded attempt. */
+	s->probe_addr_idx = 0;
 	probe_fd_release(s);
 	s->probe_deadline = now_ms() +
 	                    (s->def.ready_timeout_seconds > 0 ? s->def.ready_timeout_seconds : 30) *
@@ -759,12 +795,23 @@ static int probe_connect_unix(const void *addr, long addrlen)
  * Carrying the fd is still correct for any address without assuming
  * anything about timing, which is why it stays.
  *
- * This used to say "ready_addr_be is the container's own non-loopback
- * address (cixinit_table.c)". In practice it is always 0 and this
- * probe always goes to 127.0.0.1: the daemon computes that argument
- * before it has parsed the container's networks, so the value it
- * passes is unconditionally 0 (main.c, #477). The fallback below is
- * therefore the only path taken today, not the exception it reads as.
+ * WHICH ADDRESS. Not one: the caller hands this function a candidate
+ * and probe_service() rotates through them -- loopback, then each of
+ * the container's own addresses from the hello (#477/ADR-0298). There
+ * is no single right answer, because "listening" covers a service
+ * bound to 0.0.0.0, one bound to loopback only, and one bound to
+ * exactly one interface of a multi-network container.
+ *
+ * This comment used to say "ready_addr_be is the container's own
+ * non-loopback address (cixinit_table.c)", which was false in a way
+ * that made the loopback line below read as a defensive fallback when
+ * it was in fact the only path ever taken: the daemon computed that
+ * address before it had parsed the container's networks, so it was
+ * unconditionally 0 for every container that ever ran. Measured on
+ * 192.168.15.95, 2026-09-17: the only container on the box with a
+ * tcp_port probe is jump/sshd, and /proc/net/tcp inside it lists a
+ * single listener on 00000000:0016 -- 0.0.0.0:22 -- which is why
+ * loopback answered and nothing had surfaced.
  */
 static int probe_tcp(struct svc *s, const struct sockaddr_in *a)
 {
@@ -850,12 +897,38 @@ static void probe_service(int idx, long now)
 
 	if (s->def.ready_kind == CIXINIT_READY_TCP) {
 		struct sockaddr_in a;
+		int candidates = 1 + g_addr_count; /* loopback, then the hello's addresses */
 
+		if (s->probe_addr_idx < 0 || s->probe_addr_idx >= candidates)
+			s->probe_addr_idx = 0;
 		memset(&a, 0, sizeof(a));
 		a.sin_family = AF_INET;
 		a.sin_port = (unsigned short)(((s->def.ready_port & 0xff) << 8) | ((s->def.ready_port >> 8) & 0xff));
-		a.sin_addr = s->def.ready_addr_be != 0 ? s->def.ready_addr_be : 0x0100007f; /* 127.0.0.1 */
+		/*
+		 * Loopback first, deliberately: it is the candidate every
+		 * 0.0.0.0 binder answers on the first attempt, so the common
+		 * case costs exactly what it did when loopback was the only
+		 * candidate (#477). One candidate per supervision turn, so a
+		 * connect left in flight is polled to a conclusion rather
+		 * than abandoned -- worst case for an N-address container is
+		 * N+1 turns of 250 ms per round, well inside the 30-second
+		 * default probe timeout.
+		 */
+		a.sin_addr = s->probe_addr_idx == 0 ? 0x0100007fu : g_addr_be[s->probe_addr_idx - 1];
 		ready = probe_tcp(s, &a);
+		/*
+		 * Advance only on a CONCLUDED attempt. probe_tcp() leaves
+		 * probe_fd >= 0 while a connect is still in flight and
+		 * returns 0 for that too, so testing the return value alone
+		 * would move the target out from under a connect that had not
+		 * answered yet -- and the next turn would poll that fd while
+		 * believing it belonged to a different address.
+		 */
+		if (!ready && s->probe_fd < 0) {
+			s->probe_addr_idx++;
+			if (s->probe_addr_idx >= candidates)
+				s->probe_addr_idx = 0;
+		}
 	} else if (s->def.ready_kind == CIXINIT_READY_SOCKET) {
 		struct sockaddr_un a;
 		size_t len = cix_strlen(s->def.ready_path);

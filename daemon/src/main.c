@@ -13490,27 +13490,6 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 	}
 
-	/*
-	 * ADR-0260: what the container runs is its services[], translated
-	 * once into cix-init's table.
-	 *
-	 * This comment used to end "a tcp probe connects to the
-	 * container's own first address". It does not, and the argument
-	 * is right here in the line below: net_count is still 0 at this
-	 * point -- it is assigned from jnetworks in the attachment loop
-	 * FURTHER DOWN -- so the ternary always takes its 0 arm, every
-	 * service gets ready_addr_be == 0, and cix_init.c falls back to
-	 * 127.0.0.1. A service listening only on its network address is
-	 * therefore never seen as ready. Established by reading, 2026-09-17;
-	 * not measured against a real such service, and filed rather than
-	 * fixed here because moving this call past the loop is its own
-	 * change with its own blast radius. See #477.
-	 */
-	if (cixinit_table_from_json(jservices, net_count > 0 ? net_attachments[0].ip_be : 0, &init_table,
-	                            err_msg, err_msg_size) != 0) {
-		json_free(root);
-		return 400;
-	}
 	envp_ptrs[env_count] = NULL;
 
 	/*
@@ -13738,6 +13717,42 @@ static int create_container_from_body(const char *body, size_t body_len,
 			                "shares a network with it -- it is published in DNS yet cannot "
 			                "resolve names itself (no /etc/resolv.conf is staged).",
 			                name);
+		}
+	}
+
+	/*
+	 * ADR-0260: what the container runs is its services[], translated
+	 * once into cix-init's table.
+	 *
+	 * AFTER the attachment loop, because the table carries the
+	 * container's own addresses and those are what the loop produces
+	 * (#477/ADR-0298). It used to sit beside the services[] parse,
+	 * several hundred lines above, and read net_count there -- which
+	 * is 0 at that point for every container, since the loop that
+	 * assigns it had not run. So every TCP readiness probe was handed
+	 * address 0 and cix-init fell back to 127.0.0.1, which is why a
+	 * service bound only to its container's network address would
+	 * never have been seen as ready. Measured on 192.168.15.95,
+	 * 2026-09-17: the one container on the box with a tcp_port probe
+	 * is jump/sshd, and /proc/net/tcp inside it shows a single
+	 * listener on 00000000:0016 -- 0.0.0.0:22 -- so loopback answered
+	 * and nothing had surfaced.
+	 *
+	 * Nothing between the old position and here reads init_table: it
+	 * is consumed by init_transport_open() and registry_set_services()
+	 * much further down. The one behaviour this ordering changes is
+	 * which error a body with both bad networks and bad services
+	 * reports first; it now reports the network one.
+	 */
+	{
+		unsigned int svc_addrs[CONTAINER_MAX_NETWORKS];
+
+		for (i = 0; i < (size_t)net_count; i++)
+			svc_addrs[i] = net_attachments[i].ip_be;
+		if (cixinit_table_from_json(jservices, svc_addrs, net_count, &init_table, err_msg,
+		                            err_msg_size) != 0) {
+			json_free(root);
+			return 400;
 		}
 	}
 
