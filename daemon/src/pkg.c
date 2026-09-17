@@ -624,6 +624,9 @@ static struct pkg_chain g_chains[PKG_MAX_CONCURRENT_JOBS];
  */
 
 static struct pkg_entry *pkg_find(const char *name, const char *image);
+/* Defined below, needed by chain_reap_stale()'s #339 recovery. */
+static void pkg_fail(struct pkg_entry *e, int keep_installed, enum pipeline_stage stage,
+                     const char *fmt, ...);
 
 /*
  * Issue #246: reclaim any slot whose job is demonstrably over.
@@ -658,23 +661,98 @@ static struct pkg_entry *pkg_find(const char *name, const char *image);
  * reason. Reclaiming is logged: it means a clear site was missed, and a
  * silent self-heal would hide the defect it is compensating for.
  */
+static int (*g_build_container_live_fn)(const char *container_name);
+
+void pkg_set_build_container_live_fn(int (*fn)(const char *container_name))
+{
+	g_build_container_live_fn = fn;
+}
+
+/*
+ * Is a BUILDING entry's build container still going to report back?
+ *
+ * The discriminator above asks the entry what it is doing. This asks
+ * whether anyone is still going to tell it otherwise, which is the
+ * question that actually decides whether the slot is recoverable.
+ *
+ * Safe because of the ORDER in container_exit_finalize() (main.c):
+ * pkg_build_completed() is called BEFORE registry_remove(). So a
+ * container that is gone from the registry has already driven its
+ * completion, and there is no window in which it is absent while an
+ * exit event for it is still pending -- releasing on absence cannot
+ * hand a slot back from under a job that still owns it, which is the
+ * #98 hazard chain_release_if_job_over() exists to avoid. This is the
+ * same fact cancel's own already-gone branch relies on; that branch is
+ * where a leaked slot was recovered, and the defect was that an
+ * operator had to call cancel to trigger it.
+ *
+ * Only BUILDING is judged. A FETCHING entry's liveness is its
+ * fetch_pid, which pkg.c can see for itself -- but no leak of that kind
+ * has been measured since #239 gave cancel a way to kill a stuck fetch,
+ * and inventing a second unmeasured mechanism here would be guessing at
+ * a failure rather than fixing one.
+ */
+static int build_job_can_still_report(const struct pkg_entry *e)
+{
+	if (e->state != PKG_STATE_BUILDING)
+		return 1;
+	if (g_build_container_live_fn == NULL)
+		return 1; /* nobody registered an answer -- do not judge */
+	if (e->build_container_name[0] == '\0')
+		return 1;
+	return g_build_container_live_fn(e->build_container_name);
+}
+
 static void chain_reap_stale(void)
 {
 	int i;
 
 	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
 		struct pkg_entry *e;
+		const char *why;
 
 		if (g_chains[i].name[0] == '\0')
 			continue;
 		e = pkg_find(g_chains[i].name, g_chains[i].image);
 		if (e != NULL &&
-		    (e->state == PKG_STATE_FETCHING || e->state == PKG_STATE_BUILDING))
-			continue;
-		logstore_write("cixd", "warn",
-		                "pkg: reclaimed build slot %d, held by %s@%s whose job is no longer "
-		                "running (#246) -- a chain slot was not released on some path",
-		                i, g_chains[i].name, g_chains[i].image);
+		    (e->state == PKG_STATE_FETCHING || e->state == PKG_STATE_BUILDING)) {
+			/*
+			 * #339: the entry says it is still building. That is not
+			 * evidence, it is a claim -- and a build that reported
+			 * success in its own log left ten entries making it, each
+			 * pinning a slot, until the box was rebooted. Check whether
+			 * anything is still coming for it.
+			 */
+			if (build_job_can_still_report(e))
+				continue;
+			why = "whose build container is gone, so no completion is coming (#339)";
+			/*
+			 * The entry is fixed here as well as the slot, because
+			 * leaving it in BUILDING is the lie that produced the
+			 * measured state: ten slots, ten entries all still
+			 * claiming to be building the same package, and an
+			 * operator with no way to tell a live build from a dead
+			 * one. Freeing the slot alone would unwedge the box and
+			 * leave the report wrong forever.
+			 *
+			 * pkg_fail() rather than pkg_fail_cancelled(): nobody
+			 * cancelled this, it stopped reporting. is_upgrade is not
+			 * knowable this late -- the chain slot is being reclaimed
+			 * precisely because its bookkeeping is unreliable -- so
+			 * the installed record is kept (1), which cannot lose a
+			 * version that really is installed and at worst preserves
+			 * one this dead build was going to replace.
+			 */
+			pkg_fail(e, 1, PIPELINE_BUILD,
+			         "the build container %s is gone and never reported an exit, so this "
+			         "build cannot complete; its job slot has been reclaimed (#339)",
+			         e->build_container_name);
+		} else {
+			why = "whose job is no longer running (#246) -- a chain slot was not "
+			      "released on some path";
+		}
+		logstore_write("cixd", "warn", "pkg: reclaimed build slot %d, held by %s@%s %s", i,
+		                g_chains[i].name, g_chains[i].image, why);
 		g_chains[i].name[0] = '\0';
 		g_chains[i].dep_queue_count = 0;
 	}
