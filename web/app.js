@@ -3607,11 +3607,28 @@ function renderStatsCharts() {
 		formatY: formatBytes,
 	});
 	const lastDisk = h[h.length - 1].diskBytes;
+	const lastDiskSource = h[h.length - 1].diskSource;
+
+	/*
+	 * #475: this said "(overlay diff)" for every figure, and on the
+	 * btrfs substrate a container's writable tree is a subvolume seeded
+	 * from its image rather than an upperdir over it -- so the number
+	 * was frequently the whole rootfs presented as a per-container
+	 * diff, and a 30 MB service container read as having written 30 MB.
+	 * The two sources answer different questions, so the label names
+	 * the one that answered instead of asserting the flattering one.
+	 */
+	const diskWhat =
+		lastDiskSource === "qgroup"
+			? " written beyond image"
+			: lastDiskSource === "walk"
+				? " (whole writable tree, incl. image)"
+				: "";
 
 	document.getElementById("cd-stats-disk-label").textContent =
 		lastDisk === null || lastDisk === undefined
 			? "measuring…"
-			: formatBytes(lastDisk) + " (overlay diff)";
+			: formatBytes(lastDisk) + diskWhat;
 
 	const rxRates = [];
 	const txRates = [];
@@ -3683,6 +3700,12 @@ async function pollStatsOnce(name) {
 		memCurrent: stats.memory.current,
 		memMax: stats.memory.max,
 		diskBytes: stats.disk.upper_bytes,
+		/* #475: the number alone does not say what it measured, and the
+		 * label below used to assert "overlay diff" for a figure that
+		 * was often the whole writable tree. Carried through so the
+		 * label reads what the API reported rather than re-deriving a
+		 * claim about it. */
+		diskSource: stats.disk.upper_source,
 		netRx: netRx,
 		netTx: netTx,
 		cpuPressure: stats.cpu.pressure.some.avg10,

@@ -6078,6 +6078,19 @@ static void fmt_container_stats(const struct json_value *v)
 	}
 	print_pressure_line("memory", json_object_get(mem, "pressure"));
 
+	/*
+	 * upper_source alongside upper_bytes, because the two possible
+	 * sources do not measure the same thing (#475): "qgroup" is what
+	 * this container has written that its image does not hold, "walk"
+	 * is the size of its whole writable tree, which on a seeded-
+	 * subvolume substrate includes the image content. A number without
+	 * its source is the state the issue was filed about.
+	 */
+	{
+		const char *src = json_str_field(disk, "upper_source");
+
+		printf("disk.upper_source=%s\n", src != NULL ? src : "unmeasured");
+	}
 	printf("disk.upper_bytes=%lld disk.read_bytes=%lld disk.write_bytes=%lld "
 	       "disk.read_ios=%lld disk.write_ios=%lld\n",
 	       (long long)json_as_number(json_object_get(disk, "upper_bytes")),
