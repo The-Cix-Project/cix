@@ -166,7 +166,7 @@ static int int_field(const struct json_value *obj, const char *key, int lo, int 
  * One service record from its JSON object. after[] is filled with the
  * NAMES it depends on, resolved to indices once every name is known.
  */
-static int parse_one(const struct json_value *item, unsigned int container_ip_be,
+static int parse_one(const struct json_value *item,
                      struct cixinit_service *s, char after[][CIXINIT_NAME_MAX], int *after_count,
                      char *err, size_t err_size)
 {
@@ -248,7 +248,6 @@ static int parse_one(const struct json_value *item, unsigned int container_ip_be
 				return -1;
 			s->ready_kind = CIXINIT_READY_TCP;
 			s->ready_port = v;
-			s->ready_addr_be = container_ip_be;
 		} else if (jsock != NULL) {
 			const char *path = json_as_string(jsock);
 
@@ -321,8 +320,8 @@ static int parse_one(const struct json_value *item, unsigned int container_ip_be
 	return 0;
 }
 
-int cixinit_table_from_json(const struct json_value *jservices, unsigned int container_ip_be,
-                            struct cixinit_table *out, char *err, size_t err_size)
+int cixinit_table_from_json(const struct json_value *jservices, const unsigned int *addr_be,
+                            int addr_count, struct cixinit_table *out, char *err, size_t err_size)
 {
 	struct cixinit_service parsed[CIXINIT_MAX_SERVICES];
 	char after[CIXINIT_MAX_SERVICES][CIXINIT_MAX_SERVICES][CIXINIT_NAME_MAX];
@@ -341,7 +340,7 @@ int cixinit_table_from_json(const struct json_value *jservices, unsigned int con
 	n = (int)jservices->u.array.count;
 
 	for (i = 0; i < n; i++) {
-		if (parse_one(jservices->u.array.items[i], container_ip_be, &parsed[i], after[i],
+		if (parse_one(jservices->u.array.items[i], &parsed[i], after[i],
 		              &after_count[i], err, err_size) != 0)
 			return -1;
 		for (j = 0; j < i; j++) {
@@ -421,6 +420,24 @@ int cixinit_table_from_json(const struct json_value *jservices, unsigned int con
 	out->hello.magic = CIXINIT_MAGIC;
 	out->hello.version = CIXINIT_VERSION;
 	out->hello.service_count = out->count;
+	/*
+	 * #477: the container's own addresses, which a TCP readiness probe
+	 * tries after loopback. Refused rather than truncated -- a probe
+	 * missing the one address a service bound to would report the
+	 * service as never ready, and silently dropping addresses is how
+	 * that would happen without anything saying so. The caller's array
+	 * is bounded by CONTAINER_MAX_NETWORKS and the tripwire in
+	 * cixinit_table.h says the two agree, so this is unreachable
+	 * today and is here for the day one of them moves.
+	 */
+	if (addr_count < 0 || addr_count > CIXINIT_MAX_ADDRS) {
+		snprintf(err, err_size, "a container with more than %d addresses cannot declare services",
+		         CIXINIT_MAX_ADDRS);
+		return -1;
+	}
+	out->hello.addr_count = addr_count;
+	for (i = 0; i < addr_count; i++)
+		out->hello.addr_be[i] = addr_be[i];
 	return 0;
 }
 

@@ -75,9 +75,24 @@
  */
 
 #define CIXINIT_MAGIC 0x31584943  /* "CIX1", little-endian */
-#define CIXINIT_VERSION 1
+/*
+ * 2: the hello carries the container's own addresses and a TCP
+ * readiness probe tries each of them, so ready_addr_be is gone from
+ * cixinit_service (#477/ADR-0298). Both sides ship in one artifact and
+ * the table is rebuilt from the persisted body on every replay, so no
+ * old table ever meets a new reader -- the version exists so a
+ * mismatch dies with a message instead of misreading a struct.
+ */
+#define CIXINIT_VERSION 2
 
 #define CIXINIT_MAX_SERVICES 16
+/*
+ * How many container addresses the hello can carry. Mirrors
+ * CONTAINER_MAX_NETWORKS, which this header cannot include (it
+ * includes nothing -- cix-init is freestanding); cixinit_table.c
+ * asserts the two agree, on the side where both headers are visible.
+ */
+#define CIXINIT_MAX_ADDRS 64
 #define CIXINIT_NAME_MAX 32
 /*
  * argv as one buffer: argv[0] NUL argv[1] NUL ... NUL NUL. At most
@@ -96,7 +111,17 @@
 
 /* cixinit_service.ready_kind */
 #define CIXINIT_READY_NONE 0    /* ready when started */
-#define CIXINIT_READY_TCP 1     /* a TCP connect to ready_addr_be:ready_port succeeds */
+/*
+ * A TCP connect to ready_port succeeds on ANY of the container's own
+ * addresses: 127.0.0.1 first, then each address in the hello, one
+ * candidate per supervision turn until one connects (#477). There is
+ * no single right address to probe -- a service may bind 0.0.0.0, or
+ * loopback only, or exactly one of a multi-network container's
+ * interfaces, and all three are "listening". Loopback is tried first
+ * because it is the one every 0.0.0.0 binder answers immediately, so
+ * the common case costs exactly what it did before.
+ */
+#define CIXINIT_READY_TCP 1
 #define CIXINIT_READY_SOCKET 2  /* a connect to the unix socket at ready_path succeeds */
 #define CIXINIT_READY_COMMAND 3 /* the argv in ready_path exits 0 */
 
@@ -109,7 +134,19 @@ struct cixinit_hello {
 	int magic;         /* CIXINIT_MAGIC */
 	int version;       /* CIXINIT_VERSION */
 	int service_count; /* 1..CIXINIT_MAX_SERVICES; that many cixinit_service records follow */
-	int reserved;
+	/*
+	 * The container's own network addresses, network order, in the
+	 * order it declared its networks -- what a TCP readiness probe
+	 * tries after loopback (#477). 0 for a container with no networks,
+	 * which includes every build container.
+	 *
+	 * Per container rather than per service because that is what it is
+	 * a property of. The previous per-service field invited the
+	 * daemon to compute one address per service, which is how it came
+	 * to compute it before it had parsed the networks at all.
+	 */
+	int addr_count; /* 0..CIXINIT_MAX_ADDRS */
+	unsigned int addr_be[CIXINIT_MAX_ADDRS];
 };
 
 struct cixinit_service {
@@ -125,8 +162,7 @@ struct cixinit_service {
 	 */
 	unsigned int after_mask;
 	int ready_kind;
-	unsigned int ready_addr_be; /* CIXINIT_READY_TCP: the address to connect to, network order */
-	int ready_port;             /* CIXINIT_READY_TCP */
+	int ready_port;             /* CIXINIT_READY_TCP; the addresses come from the hello */
 	int ready_timeout_seconds;  /* how long to keep probing before reporting CIXINIT_FAIL_PROBE */
 	char ready_path[CIXINIT_PATH_MAX]; /* SOCKET: the path; COMMAND: NUL-separated argv */
 	int on_exit;

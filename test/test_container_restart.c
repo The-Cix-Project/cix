@@ -38,6 +38,16 @@ extern char **environ;
 #define READY_NETWORK_SUBNET "172.60.0.0"
 #define READY_TCP_PORT 9100
 #define NEVER_READY_TCP_PORT 9999
+/*
+ * #477: two services in one container, each binding exactly one
+ * address, to gate that a TCP readiness probe tries every address the
+ * container has rather than one. The loopback half is the
+ * no-regression guard (it is the only address the probe ever tried);
+ * the network-address half is the case that could not pass at all.
+ */
+#define BINDSPLIT_LOOPBACK_PORT 9101
+#define BINDSPLIT_NETADDR_PORT 9102
+#define BINDSPLIT_IP "172.60.0.50"
 #define STR_(x) #x
 #define STR(x) STR_(x)
 
@@ -943,8 +953,12 @@ int main(void)
 	 * delay (tcp_listen_child) -- depS (depends_on depR, whose listener
 	 * service declares a tcp ready probe, ADR-0260) must genuinely wait
 	 * for that, proven below by timing the daemon restart itself. The
-	 * probe is cix-init's, run from inside the container against its
-	 * own address. */
+	 * probe is cix-init's, run from inside the container.
+	 *
+	 * This comment used to end "against its own address". It did not:
+	 * the probe went to 127.0.0.1 and only there, which worked here
+	 * because tcp_listen_child binds INADDR_ANY (#477). bindsplit
+	 * below is the case that address actually matters for. */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"depR\",\"image\":\"restarttest\","
@@ -1289,6 +1303,85 @@ int main(void)
 		ok = 0;
 	}
 	cix_response_free(&r);
+
+	/*
+	 * #477/ADR-0298: a TCP readiness probe tries every address the
+	 * container has, not one.
+	 *
+	 * Two services, each binding exactly one address -- one loopback
+	 * only, one the container's own network address only. Both must
+	 * pass their probes. Before this, the daemon computed a single
+	 * probe address before it had parsed the container's networks, so
+	 * the value was always 0 and cix-init always probed 127.0.0.1:
+	 * netsvc could not have passed, and loopsvc is here because it
+	 * could, and must still.
+	 *
+	 * Asserted the way depR/neverready above are, and for the reason
+	 * svc_fail_reason()'s own comment gives: a timed-out probe is
+	 * REPORTED and then treated as ready, so "state": "ready" alone
+	 * proves nothing. The pair is the assertion -- ready, AND no
+	 * probe-timeout failure within a window longer than the declared
+	 * 2-second timeout.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"bindsplit\",\"image\":\"restarttest\","
+	                       "\"services\":["
+	                       "{\"name\":\"loopsvc\",\"on_exit\":\"stop\","
+	                       "\"cmd\":[\"/bin/tcp_listen_child\",\"" STR(BINDSPLIT_LOOPBACK_PORT) "\",\"0\",\"loopback\"],"
+	                       "\"ready\":{\"tcp_port\":" STR(BINDSPLIT_LOOPBACK_PORT) ",\"timeout_seconds\":2}},"
+	                       "{\"name\":\"netsvc\",\"on_exit\":\"stop\","
+	                       "\"cmd\":[\"/bin/tcp_listen_child\",\"" STR(BINDSPLIT_NETADDR_PORT) "\",\"0\",\"" BINDSPLIT_IP "\"],"
+	                       "\"ready\":{\"tcp_port\":" STR(BINDSPLIT_NETADDR_PORT) ",\"timeout_seconds\":2}}],"
+	                       "\"networks\":[{\"name\":\"" READY_NETWORK_NAME "\",\"ip\":\"" BINDSPLIT_IP "\"}],"
+	                       "\"restart\":\"always\"}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST bindsplit, status=%d %.200s\n", r.status,
+		        r.body != NULL ? r.body : "");
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	{
+		char got[64];
+		int si;
+		static const char *const bs_names[2] = { "loopsvc", "netsvc" };
+
+		for (si = 0; si < 2; si++) {
+			/* Returning 0 here means the reason BECAME probe-timeout,
+			 * which is the failure. -1 means it never did. */
+			if (wait_svc_fail_reason(&client, "bindsplit", si, "probe-timeout", 8000, got,
+			                          sizeof(got)) == 0) {
+				fprintf(stderr,
+				        "FAIL: bindsplit's %s reports failure \"%s\" -- its tcp_port probe "
+				        "timed out, so the probe did not try %s (#477)\n",
+				        bs_names[si], got,
+				        si == 0 ? "127.0.0.1" : "the container's own address " BINDSPLIT_IP);
+				ok = 0;
+			}
+		}
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/containers/bindsplit", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET bindsplit, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			for (si = 0; si < 2; si++) {
+				const struct json_value *svc = service_at(&r, si);
+
+				if (!str_eq(json_str_field(svc, "name"), bs_names[si]) ||
+				    !str_eq(json_str_field(svc, "state"), "ready")) {
+					fprintf(stderr,
+					        "FAIL: bindsplit's services[%d] is %s/%s, expected %s/ready\n",
+					        si, json_str_field(svc, "name"), json_str_field(svc, "state"),
+					        bs_names[si]);
+					ok = 0;
+				}
+			}
+		}
+		cix_response_free(&r);
+	}
 
 	/* Phase 13 part 3: the core unless-stopped-vs-always split. Both
 	 * were stopped identically above, right before this same restart --

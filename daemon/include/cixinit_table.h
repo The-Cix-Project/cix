@@ -2,6 +2,7 @@
 #define CIXINIT_TABLE_H
 
 #include "cixinit.h"
+#include "container.h"
 #include "json.h"
 
 #include <stddef.h>
@@ -54,11 +55,27 @@ struct cixinit_table {
 
 /*
  * Builds the table from a body's "services" array. 0 on success; -1
- * with a 400-shaped message in err. container_ip_be (network order,
- * may be 0) is what a tcp probe connects to from inside the container.
+ * with a 400-shaped message in err.
+ *
+ * addr_be/addr_count are the container's own addresses in network
+ * order, declaration order, and go into the hello as the candidates a
+ * TCP readiness probe tries after loopback (#477). 0/NULL for a
+ * container with no networks. MUST be called after the caller has
+ * parsed the container's networks -- a single address computed before
+ * that loop was always 0, which is the whole of #477, and taking a
+ * list rather than one address is what makes the mistake hard to
+ * repeat: there is no "first address" to reach for early.
  */
-int cixinit_table_from_json(const struct json_value *jservices, unsigned int container_ip_be,
-                            struct cixinit_table *out, char *err, size_t err_size);
+int cixinit_table_from_json(const struct json_value *jservices, const unsigned int *addr_be,
+                            int addr_count, struct cixinit_table *out, char *err, size_t err_size);
+
+/*
+ * The hello can carry every address a container can have. A negative
+ * array size rather than _Static_assert, the portable form this
+ * project uses (see daemon/include/storageplacement.h for why).
+ */
+typedef char cix_init_addrs_must_cover_every_network
+    [(CIXINIT_MAX_ADDRS >= CONTAINER_MAX_NETWORKS) ? 1 : -1];
 
 /*
  * A table of exactly one service -- the build container's "build"

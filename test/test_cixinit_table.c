@@ -36,6 +36,13 @@ static int g_fails;
 		}                                                          \
 	} while (0)
 
+/*
+ * Two addresses, so the hello's own list is exercised rather than the
+ * degenerate one-address case (#477): 10.0.0.5 and 10.0.1.5, network
+ * order.
+ */
+static const unsigned int g_test_addrs[2] = { 0x0500000au, 0x0500010au };
+
 static int build(const char *json, struct cixinit_table *t, char *err, size_t err_size)
 {
 	struct json_value *root = json_parse(json, strlen(json));
@@ -46,7 +53,8 @@ static int build(const char *json, struct cixinit_table *t, char *err, size_t er
 		snprintf(err, err_size, "test json did not parse");
 		return -1;
 	}
-	rc = cixinit_table_from_json(json_object_get(root, "services"), 0x0100007f, t, err, err_size);
+	rc = cixinit_table_from_json(json_object_get(root, "services"), g_test_addrs, 2, t, err,
+	                             err_size);
 	json_free(root);
 	return rc;
 }
@@ -86,9 +94,19 @@ static void test_example(void)
 	          t.svc[1].stop_timeout_seconds == 10 && t.svc[1].uid == -1 && t.svc[1].gid == -1,
 	      "daemon defaults");
 	CHECK(t.svc[2].after_mask == 3u && t.svc[2].ready_kind == CIXINIT_READY_TCP && t.svc[2].ready_port == 22 &&
-	          t.svc[2].ready_addr_be == 0x0100007f && t.svc[2].ready_timeout_seconds == 45 &&
+	          t.svc[2].ready_timeout_seconds == 45 &&
 	          t.svc[2].stop_signal == SIGINT && t.svc[2].restart_delay_seconds == 5 && t.svc[2].uid == 0,
 	      "sshd's explicit fields (after_mask=%u)", t.svc[2].after_mask);
+	/*
+	 * #477: the addresses a TCP probe tries live on the hello, once
+	 * per container, not on each service. A per-service field is what
+	 * let the daemon compute one address before it had parsed the
+	 * networks -- always 0, so every probe went to loopback and only
+	 * to loopback.
+	 */
+	CHECK(t.hello.addr_count == 2 && t.hello.addr_be[0] == g_test_addrs[0] &&
+	          t.hello.addr_be[1] == g_test_addrs[1] && t.hello.addr_be[2] == 0,
+	      "the container's addresses are on the hello, in order (addr_count=%d)", t.hello.addr_count);
 	CHECK(cixinit_table_index(&t, "sshd") == 2 && cixinit_table_index(&t, "nope") == -1, "index");
 	CHECK(t.order[0] == 0 && t.order[1] == 1 && t.order[2] == 2, "order kept");
 }
@@ -183,6 +201,10 @@ static void test_single(void)
 	      "single record");
 	CHECK(cixinit_table_socket_bytes(&t) == sizeof(struct cixinit_hello) + sizeof(struct cixinit_service),
 	      "socket bytes");
+	/* A build container has no networks, so its probe candidates are
+	 * loopback and nothing else -- which is what they were before
+	 * #477, for every container. */
+	CHECK(t.hello.addr_count == 0, "a single-service table announces no addresses");
 }
 
 static void test_send_framing(void)
@@ -201,7 +223,9 @@ static void test_send_framing(void)
 	CHECK(cixinit_table_send(&t, sv[0]) == 0, "send");
 	CHECK(read(sv[1], big, sizeof(big)) == (ssize_t)sizeof(hello), "first message is the hello, alone");
 	memcpy(&hello, big, sizeof(hello));
-	CHECK(hello.magic == CIXINIT_MAGIC && hello.service_count == 2, "hello content");
+	CHECK(hello.magic == CIXINIT_MAGIC && hello.service_count == 2 && hello.addr_count == 2 &&
+	          hello.addr_be[0] == g_test_addrs[0] && hello.addr_be[1] == g_test_addrs[1],
+	      "hello content, addresses included (#477 -- they cross the wire in the hello)");
 	CHECK(read(sv[1], big, sizeof(big)) == (ssize_t)sizeof(svc), "second message is one record");
 	memcpy(&svc, big, sizeof(svc));
 	CHECK(strcmp(svc.name, "a") == 0, "record a");

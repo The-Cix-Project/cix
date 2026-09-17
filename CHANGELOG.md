@@ -6,6 +6,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A readiness probe tries every address the container has (#477)
+
+`ready: {tcp_port: N}` probes only ever connected to `127.0.0.1`, whatever addresses the container had. `create_container_from_body()` built cix-init's service table beside the `services[]` parse, several hundred lines above the loop that assigns `net_count` — so the `net_count > 0 ? net_attachments[0].ip_be : 0` argument took its `0` arm for every container that has ever run, and `cix_init.c`'s loopback fallback was the only path, not the exception it reads as.
+
+It had not surfaced because a service bound to `0.0.0.0` answers on loopback. Measured on 192.168.15.95, 2026-09-17: exactly one container on the box declares a `tcp_port` probe, `jump`'s `sshd`, and `/proc/net/tcp` read from inside it over the console shows one listener on `00000000:0016` — `0.0.0.0:22`.
+
+ADR-0298: the probe tries **every** address — loopback first, then each attachment in declaration order, one candidate per 250 ms supervision turn, ready on the first that answers. The smaller fix of moving the call past the loop and keeping one address was rejected because it regresses the other direction: with `ready_addr_be` always 0 today, a service bound **only to loopback** passes, and privileging the first network address would break it. There is no defensible single address — `0.0.0.0`, loopback-only and one-interface-of-many are all "listening" — which also dissolves the issue's open question about multi-network containers rather than answering it.
+
+The addresses moved onto `cixinit_hello` (per container, once) and `cixinit_service.ready_addr_be` is gone; wire version 2, sizes pinned by `test_cix_init` at hello 272 / service 1372. That placement is the structural half: a per-service field invited the daemon to compute one address per service, which is how it came to compute it before the networks existed. `cixinit_table_from_json()` takes the array, so the call cannot be written before the loop that fills it without passing something visibly empty.
+
+**Three comments asserted the mechanism that did not exist** — in `main.c`, in `cix_init.c`, and in `test_container_restart.c`'s own depR case ("against its own address") — and the `#413` entry in this file repeated it. All four are corrected here; the changelog one carries a dated correction rather than being rewritten.
+
+Gated where it runs: `tcp_listen_child` gained a bind-address argument (`any` | `loopback` | a dotted quad, an unrecognised value refused rather than falling back to `INADDR_ANY`), and `test_container_restart`'s new `bindsplit` container runs two services, one bound to loopback only and one to the container's own address only, both required to reach ready with no `probe-timeout` failure. That test is in `DAEMON_SELFTESTS`.
+
 ### `pkg build-log --name=cix` reaches a running host build (#476)
 
 `cixctl pkg build-log --name=cix` answered `404 {"error":"no build in progress"}` for the whole of a running `cix` host build. Measured on 192.168.15.95, 2026-09-16, during the v2.57.195 host build: the 404 came back on every attempt while `GET /v1/pkg` reported the `cix` job in `building`.
@@ -1289,6 +1303,12 @@ that by reading twice and getting 111 then 0. The fd is carried rather than poll
 `ready_addr_be` is the container's **own non-loopback address**, and a build container has no such
 address to measure with; carrying it is correct for any address without assuming anything about
 timing.
+
+> **Correction, 2026-09-17 (#477).** `ready_addr_be` was never the container's own address. The
+> daemon computed it before it had parsed the container's networks, so it was 0 for every container
+> and the probe always went to `127.0.0.1`. The reasoning above for carrying the fd still holds —
+> it is correct for any address — but the premise was false, and the field no longer exists: the
+> container's addresses moved onto the hello and the probe now tries each of them (ADR-0298).
 
 **#413's stated cause was wrong, and the issue is corrected.** It was filed as OpenSSH's
 `PerSourcePenalties` defeating `jump`'s `ready: {tcp_port: 22}`. Every penalty line in it carries a

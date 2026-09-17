@@ -369,8 +369,15 @@ static void init_close(struct init_run *r)
 static int test_sizes(void)
 {
 	printf("0. wire-format sizes\n");
-	if (sizeof(int) != 4 || sizeof(struct cixinit_hello) != 16 || sizeof(struct cixinit_command) != 16 ||
-	    sizeof(struct cixinit_report) != 16 || sizeof(struct cixinit_service) != 1376) {
+	/*
+	 * hello grew from 16 to 272 and service shrank from 1376 to 1372
+	 * with #477/ADR-0298: the container's addresses moved onto the
+	 * hello (4 + 64*4 bytes) and the per-service ready_addr_be went
+	 * away. These are the numbers that stop one side of the wire
+	 * changing without the other.
+	 */
+	if (sizeof(int) != 4 || sizeof(struct cixinit_hello) != 272 || sizeof(struct cixinit_command) != 16 ||
+	    sizeof(struct cixinit_report) != 16 || sizeof(struct cixinit_service) != 1372) {
 		fprintf(stderr, "  FAIL: hello=%zu command=%zu report=%zu service=%zu\n",
 		        sizeof(struct cixinit_hello), sizeof(struct cixinit_command),
 		        sizeof(struct cixinit_report), sizeof(struct cixinit_service));
