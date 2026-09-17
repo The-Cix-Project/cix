@@ -35,7 +35,22 @@ So the installer now asserts nothing up front, keeps what `modprobe` said, and c
 
 **Two by-product findings, recorded rather than fixed here.** `test_installer` runs in no gate — [#480](https://git.home.arpa/itdlabs/cix/issues/480). And `igc` — Intel I225/I226 2.5GbE, standard on boards from about 2021 — appears **nowhere** in `image/kernel/qemu-part1.config` (`grep -c IGC` → 0), so a machine with one has no driver in the installer *or* on the installed system — [#479](https://git.home.arpa/itdlabs/cix/issues/479).
 
-**What this does not establish.** Which ISO the 2026-09-12 install actually booted is not recoverable from here: no ISO has ever been published to the cache (`GET /api/v1/artifacts` → 749 artifacts, 0 `.iso`), and the box's current media was built from v2.57.155. Both staging prerequisites are satisfied on 192.168.15.95 today — `cix-kmod` has a current version and `kernel@__hostbuild` is installed — so media built there now carries the tools. If that install used an ISO predating `121dd095`, the empty list was #429's already-fixed cause; the reason nobody could tell is the defect fixed here.
+**What this does not establish, corrected.** This entry first said "no ISO has ever been published to the cache (`GET /api/v1/artifacts` → 749 artifacts, 0 `.iso`)" and reasoned from it that the 2026-09-12 install probably booted pre-staging media. **That claim was false, and the way it was false matters more than the claim:** cache artifact entries carry no top-level `name` field — the filename lives in `formats[].name` — so the filter `x.get('name','').endswith('.iso')` returned `''` for all 751 entries and "0 isos" was guaranteed regardless of content. The same filter would have reported zero `.tar.gz` as well. Corrected by the owner, who knew the cache held ISOs.
+
+**Thirteen installer ISOs are published, under the artifact name `cix-installer`**, and the real record refutes the reasoning built on the false one:
+
+| published (UTC) | version | modprobe + drivers? |
+|---|---|---|
+| 2026-09-12 16:48 | 2.57.127 | no |
+| 2026-09-12 18:45 | 2.57.129 | **no** — 0 `.ko` files, no `modprobe` |
+| 2026-09-12 21:24 | 2.57.135 | yes (first tag containing `121dd095`) |
+| 2026-09-12 21:42 | 2.57.136 | **yes** |
+
+`8fd64f36` (the false note) is 20:54 UTC, `121dd095` (staging) is 21:16 UTC, and **#442 was filed at 23:01 UTC — 1h19m after correct media was published.** So "they booted pre-staging media" is not supported by the timeline the way the withdrawn claim implied.
+
+`cix-installer-2.57.136-1-x86_64.iso` was downloaded from the cache (sha256 matches its record) and inspected directly. It carries `/usr/bin/modprobe`, all five drivers (`e1000e igb ixgbe r8169 tg3`), the full `modules.*` metadata under `/lib/modules/7.2.3`, and a kernel reporting release `7.2.3` — so `modprobe`'s `/lib/modules/$(uname -r)` lookup resolves. `modprobe` needs only `libc.so.6` (`readelf -d`), which is on the media along with both loader paths, so it can run; and `early_mounts()` mounts `/proc` and `/sys` before any of this. **Every cause checkable without hardware is eliminated on that media.**
+
+So the cause is **still not established**, and #442 is reopened rather than closed on it. The code defects fixed here are real and shipped regardless — a discarded diagnostic, a false printed note, and media that could ship missing a driver — but if the operator booted `.135`/`.136` there is a further failure to find, and if they booted `.127`/`.129` the empty list was expected and the note was accurate on that media. The one fact that decides it is which ISO went onto the stick, and only the owner has it.
 
 ### A readiness probe tries every address the container has (#477)
 
