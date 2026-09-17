@@ -104,7 +104,7 @@ static int fetch_stats(const struct cix_client *c, const char *name, struct cix_
 
 
 /*
- * disk.upper_bytes is measured in the BACKGROUND now (#474/ADR-0293),
+ * disk.usage.bytes is measured in the BACKGROUND now (#474/ADR-0293),
  * because walking a container's tree inside the request stalled the one
  * event loop of a pid-1 daemon. So it is eventually consistent: null
  * until the first measurement lands, and refreshed no more often than
@@ -116,7 +116,7 @@ static int fetch_stats(const struct cix_client *c, const char *name, struct cix_
  * in exactly the way the API is weaker, and pretending otherwise by
  * measuring inline is the bug this replaced.
  */
-static long long poll_upper_bytes(const struct cix_client *client, const char *name,
+static long long poll_usage_bytes(const struct cix_client *client, const char *name,
                                   long long more_than, int timeout_ms)
 {
 	int waited = 0;
@@ -128,7 +128,8 @@ static long long poll_upper_bytes(const struct cix_client *client, const char *n
 		memset(&r, 0, sizeof(r));
 		if (fetch_stats(client, name, &r) == 0 && r.status == 200) {
 			const struct json_value *disk = json_object_get(r.json, "disk");
-			const struct json_value *ub = json_object_get(disk, "upper_bytes");
+			const struct json_value *usage = json_object_get(disk, "usage");
+			const struct json_value *ub = json_object_get(usage, "bytes");
 
 			/* null while unmeasured -- distinct from a real 0. */
 			if (ub != NULL && ub->type == JSON_NUMBER)
@@ -241,7 +242,7 @@ int main(void)
 		/* Waits for the first background measurement rather than
 		 * reading this response, which is legitimately null. */
 		(void)disk;
-		disk1 = poll_upper_bytes(&client, "statsctr", 0, 15000);
+		disk1 = poll_usage_bytes(&client, "statsctr", 0, 15000);
 
 		if (cpu1 <= 0) {
 			fprintf(stderr, "FAIL: cpu.usage_usec should already be > 0 after a real CPU burn, got %lld\n",
@@ -255,7 +256,7 @@ int main(void)
 		}
 		if (disk1 <= 0) {
 			fprintf(stderr,
-			        "FAIL: disk.upper_bytes should be > 0 within 15s (/statsdata.bin was "
+			        "FAIL: disk.usage.bytes should be > 0 within 15s (/statsdata.bin was "
 			        "appended to, and the measurement is a background one), got %lld\n",
 			        disk1);
 			ok = 0;
@@ -288,7 +289,7 @@ int main(void)
 	/* Real wall-clock time for another CPU-burn + disk-append cycle. */
 	usleep(400000);
 
-	/* 5. second sample -- cpu.usage_usec and disk.upper_bytes must have
+	/* 5. second sample -- cpu.usage_usec and disk.usage.bytes must have
 	 * genuinely advanced (real, monotonic, not the same snapshot
 	 * replayed). */
 	memset(&r, 0, sizeof(r));
@@ -305,7 +306,7 @@ int main(void)
 		 * appended to, so a figure that never moves is a figure that
 		 * is not being re-measured. */
 		(void)disk;
-		disk2 = poll_upper_bytes(&client, "statsctr", disk1, 15000);
+		disk2 = poll_usage_bytes(&client, "statsctr", disk1, 15000);
 
 		if (cpu2 <= cpu1) {
 			fprintf(stderr, "FAIL: cpu.usage_usec did not advance (%lld -> %lld)\n", cpu1, cpu2);
@@ -313,7 +314,7 @@ int main(void)
 		}
 		if (disk2 <= disk1) {
 			fprintf(stderr,
-			        "FAIL: disk.upper_bytes did not advance within 15s (%lld -> %lld) -- the "
+			        "FAIL: disk.usage.bytes did not advance within 15s (%lld -> %lld) -- the "
 			        "background measurement is not re-running, so a growing container "
 			        "would report a size frozen at whatever it was first measured at\n",
 			        disk1, disk2);

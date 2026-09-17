@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Applies [ADR-0247](0247-the-reactor-does-not-block.md)'s rule to work that is neither a request nor a subprocess, using [ADR-0278](0278-a-helper-process-for-filesystem-work.md)'s helper, and records why the obvious alternative is not available. Fixes [#474](https://git.home.arpa/itdlabs/cix/issues/474); contains [#402](https://git.home.arpa/itdlabs/cix/issues/402).
+Accepted. Applies [ADR-0247](0247-the-reactor-does-not-block.md)'s rule to work that is neither a request nor a subprocess, using [ADR-0278](0278-a-helper-process-for-filesystem-work.md)'s helper, and records why the obvious alternative is not available. Fixes [#474](https://git.home.arpa/itdlabs/cix/issues/474); contains [#402](https://git.home.arpa/itdlabs/cix/issues/402). The field this ADR names as `disk.upper_bytes` is `disk.usage.bytes` since [ADR-0301](0301-a-containers-disk-usage-is-named-for-the-question-it-answers.md), which renamed it once ADR-0207's subvolume substrate meant there was no upperdir to name; the decision recorded here is unchanged, and the old spelling is kept below as the record of what it was at the time.
 
 ## Context
 

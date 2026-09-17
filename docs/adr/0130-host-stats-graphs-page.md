@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. The field this ADR names as `disk.upper_bytes` is `disk.usage.bytes` since [ADR-0301](0301-a-containers-disk-usage-is-named-for-the-question-it-answers.md), which renamed it once ADR-0207's subvolume substrate meant there was no upperdir to name; the decision recorded here is unchanged, and the old spelling is kept below as the record of what it was at the time.
 
 ## Context
 

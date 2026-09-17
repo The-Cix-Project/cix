@@ -6,6 +6,24 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container's disk usage is named for the question it answers: `disk.usage` (#475, ADR-0301)
+
+`GET /containers/{name}/stats` reported `disk.upper_bytes`, `disk.upper_measured_at` and `disk.upper_source`. Those three are now one nested object, `disk.usage`, with `bytes`, `source` and `measured_at`.
+
+`upper_` was accurate when ADR-0054 chose it: a container's writable layer really was an overlayfs **upperdir** over its image's rootfs, so "how big is the upper" was both the question and the mechanism. ADR-0207 moved the substrate to btrfs, where a container's writable tree is a **subvolume seeded from its image** — no upper layer, no lower layer, no overlay at all. The name outlived the thing it named.
+
+That was not merely untidy, and the entry below is what it cost: the field went on measuring a whole tree as though it were a diff, reported image-sized figures, and documented itself as excluding "the shared, read-only image layer beneath it" — a layer that no longer existed. A stale name kept a retired storage model alive in the contract, and a wrong number survived underneath it.
+
+**Nested rather than flattened** to `bytes`/`source`/`measured_at`: `disk` also carries `read_bytes` and `write_bytes`, beside which a bare `bytes` reads as their total. It is not — those are cumulative I/O counters since the container started, this is a gauge, and the nesting keeps the two visibly apart. That ambiguity is the one reason this does *not* copy `GET /volumes/{name}/usage`'s flat shape, which has no I/O counters to collide with; in every other respect it is deliberately the same name and the same shape, for the same question about a different resource, sharing ADR-0267's qgroup-or-walk decision and the helper that implements it.
+
+**A clean cut-over: no alias, no deprecation window.** The old names are gone in the same commit as the new ones — daemon writer, `cixctl container stats`, the dashboard's disk chart and label, `test_container_stats.c`, `openapi.yaml` and `docs/api/README.md`. A field under two names is two sources of truth for one number.
+
+**The CLI guards a missing `usage`; the dashboard deliberately does not.** A locally built `cixctl` is routinely one deploy ahead of the daemon it queries (#476), so it prints `disk.usage=not reported -- this daemon predates the field (ADR-0301)` rather than a zero — the same distinction #481 had to draw on assembly status, where "absent" and "not reported" had been printing identically. The dashboard is *served by* the daemon it queries, so the two are always the same build and a guard there would be dead code asserting an impossible state.
+
+**ADR-0054, ADR-0130 and ADR-0293 keep `upper_bytes` in their bodies** and each gains a one-line pointer in its Status. They are the record of what was decided when that was the right name; rewriting them would make them lie about their own moment, which is what append-only means. The historical CHANGELOG and ROADMAP mentions are left for the same reason.
+
+**No automated gate protects this.** `test_container_stats` is not in `SELFTESTS` (#224, #480), and neither `test_apigen` nor `test_api_surfaces` cross-checks a schema's `required:` fields against the daemon's JSON writer — read rather than assumed, so a leftover `upper_*` would not fail a build. The check is a repo-wide grep finding only deliberate historical references, the schema parsing to the intended shape (`disk.required: [usage, read_bytes, …]`, `usage.required: [bytes, source, measured_at]`), and the live read after deploy.
+
 ### disk.upper_bytes reports what the container wrote, not what its image already held (#475)
 
 `GET /containers/{name}/stats` documented `disk.upper_bytes` as the container's own footprint, "not including the shared, read-only image layer beneath it". It was the size of the whole writable tree, image content included, and the containers proved it — measured on 192.168.15.95:

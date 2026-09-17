@@ -562,7 +562,7 @@ void handle_volume_owner_put(int fd, const char *name, const char *body, size_t 
  * quota the kernel is about to refuse a write on.
  *
  * overlay_upperdir_size() rather than a second walker on the fallback
- * path: a container's own disk.upper_bytes is measured with it, and two
+ * path: a container's own disk.usage.bytes falls back to it too, and two
  * implementations of "how big is this tree" would be two definitions of
  * what counts.
  *

@@ -17834,8 +17834,8 @@ static void handle_container_file_write(int fd, const char *name, const char *re
  * request serves the last figure and starts a new measurement if the
  * one it served is stale.
  *
- * WHAT A CALLER GETS. `upper_bytes` is null until the first
- * measurement lands, and `upper_measured_at` says when the figure is
+ * WHAT A CALLER GETS. `disk.usage.bytes` is null until the first
+ * measurement lands, and `disk.usage.measured_at` says when the figure is
  * from. Reporting 0 for "not measured yet" was the alternative and it
  * is a lie a caller cannot detect. Staleness is not new to this API --
  * `GET /volumes/{name}/usage` on btrfs reads a qgroup that settles at
@@ -17854,7 +17854,7 @@ static void handle_container_file_write(int fd, const char *name, const char *re
  * COST rather than on frequency.
  *
  * Deliberately not capped. A tree that takes a minute to walk is one
- * nobody should be walking every minute, and `upper_measured_at` is
+ * nobody should be walking every minute, and `usage.measured_at` is
  * how a caller sees that rather than having to assume it.
  *
  * TIMED IN MILLISECONDS, and that is not a detail. The first version
@@ -18137,7 +18137,7 @@ static void handle_container_stats(int fd, const char *name)
 		 * storage is not btrfs or has quotas disabled, where it is
 		 * still the only answer available -- and on the seeded-
 		 * subvolume layout it is still the whole tree. That is why
-		 * upper_source is reported rather than left implicit: the two
+		 * usage.source is reported rather than left implicit: the two
 		 * numbers mean different things, and a caller that cannot tell
 		 * them apart is the state this issue was filed about. It also
 		 * makes the remaining gap MEASURABLE instead of hidden: a
@@ -18152,7 +18152,7 @@ static void handle_container_stats(int fd, const char *name)
 		 * answer rather than an error. And its figure settles at
 		 * transaction commit, so it can be up to ~30 s behind; that is
 		 * the same caveat GET /volumes/{name}/usage carries, and
-		 * upper_measured_at is when it was READ, as it is there.
+		 * usage.measured_at is when it was READ, as it is there.
 		 */
 		if (cix_btrfs_qgroup_query(upperdir, &qgroup_used, &qgroup_limit, &qstate) == 0) {
 			disk_bytes = (long long)qgroup_used;
@@ -18214,12 +18214,33 @@ static void handle_container_stats(int fd, const char *name)
 	jw_obj_close(&w);
 	jw_key(&w, "disk");
 	jw_obj_open(&w);
-	jw_key(&w, "upper_bytes");
+	/*
+	 * disk.usage, nested and named for the question it answers (#475,
+	 * ADR-0301).
+	 *
+	 * These three were `upper_bytes`/`upper_measured_at`/
+	 * `upper_source`, and `upper_` was overlay vocabulary: it described
+	 * a mechanism, an overlayfs upperdir over the image as a lower
+	 * layer, that ADR-0207 replaced with a subvolume seeded from the
+	 * image. Once the measurement stopped being an upperdir at all, the
+	 * prefix named nothing that existed.
+	 *
+	 * Nested rather than flattened to `bytes`/`source`/`measured_at`,
+	 * because this object already carries read_bytes and write_bytes:
+	 * a bare `bytes` beside them reads as their total, which it is not.
+	 * `disk.usage` is also the same shape and the same name as GET
+	 * /volumes/{name}/usage, so the same question gets the
+	 * same-shaped answer on both resources -- the qgroup-or-walk
+	 * decision they share is ADR-0267's.
+	 */
+	jw_key(&w, "usage");
+	jw_obj_open(&w);
+	jw_key(&w, "bytes");
 	if (disk_known)
 		jw_int(&w, disk_bytes);
 	else
 		jw_null(&w); /* not measured yet -- 0 would be a lie (#474) */
-	jw_key(&w, "upper_measured_at");
+	jw_key(&w, "measured_at");
 	if (disk_known)
 		jw_int(&w, (long long)disk_measured_at);
 	else
@@ -18232,11 +18253,12 @@ static void handle_container_stats(int fd, const char *name)
 	 * seeded-subvolume substrate includes the image content, and is
 	 * the only figure available where no qgroup answers.
 	 */
-	jw_key(&w, "upper_source");
+	jw_key(&w, "source");
 	if (disk_source != NULL)
 		jw_str(&w, disk_source);
 	else
 		jw_null(&w);
+	jw_obj_close(&w);
 	jw_key(&w, "read_bytes");
 	jw_int(&w, io_rbytes);
 	jw_key(&w, "write_bytes");
