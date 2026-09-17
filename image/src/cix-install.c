@@ -26,6 +26,7 @@
 #include "kmod.h"
 #include "partlabel.h"
 #include "netconf.h"
+#include "nicreport.h"
 #include "treecopy.h"
 
 #include <dirent.h>
@@ -1050,37 +1051,74 @@ static int pick_disk(char *out, size_t out_size)
  * were the built-in drivers, meaning virtio_net. A real machine with a
  * built-in NIC and no virtio therefore showed "(none found)", and the
  * operator had nothing to choose. Measured on a bare-metal attempt,
- * 2026-09-12.
+ * 2026-09-12; the ISO has staged the drivers and modprobe since that
+ * same day (#429).
  *
- * Best-effort, per module, and quiet about the ordinary failures: no
- * single machine has all five chipsets, so most of these loads are
- * expected to do nothing useful. What matters is that the one matching
- * this machine gets a chance to bind before the list is read.
+ * WHAT MODPROBE SAID IS NOW KEPT, and #442 is why (see
+ * include/nicreport.h for the full account). This used to call the
+ * failures "ordinary" and discard the text, on the reasoning that no
+ * machine has all five chipsets so most loads do nothing useful. The
+ * second half is true and the first does not follow from it. Measured
+ * on 192.168.15.95, a virtio VM with no Broadcom hardware:
+ * `cixctl kmod load tg3` returns 0 and the module goes Live with
+ * used_by=0. modprobe SUCCEEDS on a machine that lacks the chipset --
+ * it loads a driver, it does not require a device. So with a correct
+ * module tree all five loads return 0 everywhere, and a non-zero is
+ * always a real defect in the media: no tree, a tree for another
+ * kernel release, or one built from another config. That text is the
+ * only thing that tells those apart, and throwing it away is what left
+ * #442 with no cause to name.
  *
  * The absence of module tools is reported rather than silently
  * tolerated: it is the difference between "this machine has no NIC the
  * platform supports" and "this media cannot look", and an operator
  * staring at an empty list deserves to know which.
  */
-static void load_nic_modules(void)
+static void load_nic_modules(struct nic_load_result *res)
 {
 	static const char *const mods[] = CIX_NIC_MODULES;
 	struct stat st;
 	size_t i;
 
+	memset(res, 0, sizeof(*res));
+	res->attempted = (int)(sizeof(mods) / sizeof(mods[0]));
 	if (stat(KMOD_MODPROBE_BIN, &st) != 0) {
 		dual_printf("\n  (this media carries no module tools, so only NIC drivers built into\n");
 		dual_printf("   the kernel can appear below -- see #429)\n");
+		res->attempted = 0;
 		return;
 	}
+	res->tools_present = 1;
 	dual_printf("\nLoading NIC drivers");
 	for (i = 0; i < sizeof(mods) / sizeof(mods[0]); i++) {
 		char out[256] = "";
 
 		dual_printf(" %s", mods[i]);
-		(void)kmod_load(mods[i], NULL, out, sizeof(out));
+		if (kmod_load(mods[i], NULL, out, sizeof(out)) == 0) {
+			res->loaded++;
+			continue;
+		}
+		res->failed++;
+		/* The FIRST error, not the last: they are nearly always the
+		 * same cause repeated five times, and the first one is the
+		 * one the operator reads before the screen scrolls. */
+		if (res->first_error[0] == '\0')
+			snprintf(res->first_error, sizeof(res->first_error), "%s: %s", mods[i],
+			         out[0] != '\0' ? out : "failed with no message");
 	}
 	dual_printf(" -- done\n");
+	/*
+	 * Printed here, next to the loads, rather than folded into the
+	 * empty-list note below: a load can fail on a machine that then
+	 * still lists a NIC (four chipsets absent, one built in), and that
+	 * is a media defect worth seeing even when the operator has
+	 * something to choose.
+	 */
+	if (res->failed > 0) {
+		dual_printf("  %d of %d driver loads FAILED -- %s\n", res->failed, res->attempted,
+		            res->first_error);
+		dual_printf("  (this is a defect in the media, not in this machine)\n");
+	}
 }
 
 /*
@@ -1091,17 +1129,26 @@ static void load_nic_modules(void)
  * `lo` is listed too, and deliberately, even though it fails that test.
  * It is a legitimate answer -- "install this box now, commit to an
  * address later" -- and it is the ONLY answer available on a machine
- * whose real NIC is not listed here at all, which happens for a plain
- * measured reason: the NIC drivers are kernel modules and this
- * installer carries no module tree, so only built-in drivers
- * (virtio_net) produce an interface. Hiding the one choice that always
- * works, on the screen where the operator needs a choice that works,
- * was the gap.
+ * whose real NIC is not listed here at all. Hiding the one choice that
+ * always works, on the screen where the operator needs a choice that
+ * works, was the gap.
  *
- * It is listed LAST and labelled, so it reads as the fallback it is
+ * This comment used to give the reason an empty list happens as "the
+ * NIC drivers are kernel modules and this installer carries no module
+ * tree, so only built-in drivers (virtio_net) produce an interface".
+ * That stopped being true the day it was written (#429 staged the
+ * drivers and modprobe the same afternoon), and a near-identical
+ * sentence was PRINTED ON SCREEN above this list -- which is how a
+ * real bare-metal install that showed only `lo` came with a confident
+ * explanation of a mechanism that no longer existed, and how #442
+ * ended up filed as "cause not established". There are now three
+ * distinguishable reasons and nicreport_no_nic_reason() picks between
+ * them from what the loads actually did.
+ *
+ * lo is listed LAST and labelled, so it reads as the fallback it is
  * rather than as a candidate for a machine that has a real NIC here.
  */
-static void list_interfaces(char *first, size_t first_size)
+static void list_interfaces(char *first, size_t first_size, const struct nic_load_result *loads)
 {
 	DIR *d = opendir("/sys/class/net");
 	struct dirent *e;
@@ -1126,8 +1173,11 @@ static void list_interfaces(char *first, size_t first_size)
 		n++;
 	}
 	closedir(d);
-	if (n == 0)
-		dual_printf("  (no real NIC visible -- see the note above about module drivers)\n");
+	if (n == 0) {
+		char why[640];
+
+		dual_printf("  %s\n", nicreport_no_nic_reason(loads, n, why, sizeof(why)));
+	}
 	dual_printf("  lo                (loopback, 127.0.0.1 -- install now, set the real\n");
 	dual_printf("                     address later)\n");
 	/*
@@ -1284,6 +1334,7 @@ static int install_main(int argc, char **argv)
 
 		if (iface == NULL || ip == NULL || gateway == NULL || prefix <= 0) {
 			char first_iface[64];
+			struct nic_load_result nic_loads;
 
 			dual_printf("\nThis address is how you reach the installed system: the REST API "
 			            "is its only control surface, so it has to be right.\n");
@@ -1311,11 +1362,22 @@ static int install_main(int argc, char **argv)
 			dual_printf("loopback, with no address committed to yet.\n");
 			dual_printf("\nA gateway is optional -- leave it blank for a box reachable only on\n");
 			dual_printf("its own subnet, which is the normal case for a LAN-local machine.\n");
-			dual_printf("\nNote: a built-in Ethernet port may not be listed below even though\n");
-			dual_printf("this machine has one -- its driver is a kernel module and this\n");
-			dual_printf("installer carries no module tree. The installed system loads it.\n");
-			load_nic_modules();
-			list_interfaces(first_iface, sizeof(first_iface));
+			/*
+			 * #442: three lines stood here telling the operator that a
+			 * built-in Ethernet port may be missing from the list
+			 * "because its driver is a kernel module and this installer
+			 * carries no module tree". The media has carried the tree
+			 * and modprobe since #429, the same afternoon that note was
+			 * added -- so the one real bare-metal install that listed
+			 * only `lo` was handed a printed explanation of a mechanism
+			 * that did not exist, which is why the cause went
+			 * unestablished. Nothing is claimed up front now: the
+			 * drivers are loaded, and if the list still comes back
+			 * empty, nicreport_no_nic_reason() says which of the three
+			 * actual reasons it was.
+			 */
+			load_nic_modules(&nic_loads);
+			list_interfaces(first_iface, sizeof(first_iface), &nic_loads);
 
 			if (iface == NULL) {
 				prompt_default("Management interface (blank for none)", first_iface, iface_buf,

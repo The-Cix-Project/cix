@@ -101,7 +101,9 @@ It then formats, writes the system, and reboots into a running `cixd` at the IP 
 cixctl management-network set --interface=eth0 --ip=192.168.15.95 --prefix=24 --gateway=192.168.15.1
 ```
 
-That applies immediately and persists, so the box comes back on it after a reboot — and it is the same command for moving an already-addressed box to a different interface, address or subnet later ([ADR-0283](../adr/0283-the-management-address-is-changeable-on-a-running-box.md)). This is useful when the machine's NIC driver is a kernel module the installer has not loaded yet, so the port you want is not in the installer's list: install on loopback, boot, and set it then, when every driver is present.
+That applies immediately and persists, so the box comes back on it after a reboot — and it is the same command for moving an already-addressed box to a different interface, address or subnet later ([ADR-0283](../adr/0283-the-management-address-is-changeable-on-a-running-box.md)). This is the route to take whenever the port you want is not in the installer's list: install on loopback, boot, and set it then.
+
+That sentence used to give the reason as "the machine's NIC driver is a kernel module the installer has not loaded yet". It is not — the installer stages the five NIC drivers and `modprobe` and loads them before it lists anything (#429), and a note on screen saying otherwise is what left [#442](https://git.home.arpa/itdlabs/cix/issues/442) unexplained. If the list still comes up with no real NIC, the installer now says which of three things happened: the media carries no module tools (a media defect — it was built on a host with no `cix-kmod` image), a driver load failed and here is what `modprobe` said (a media defect — the module tree is missing, is for another kernel release, or was built from another config), or all five loaded cleanly and this machine's Ethernet simply is not one of them (not a media defect at all). The recorded driver gaps are Broadcom NetXtreme II (`bnx2`, needs a firmware blob) and Intel I225/I226 2.5G (`igc`, absent from the kernel config).
 
 ### Installing over a serial console
 

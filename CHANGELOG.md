@@ -6,6 +6,35 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The installer says why its interface list is empty, instead of asserting a cause it no longer has (#442)
+
+On a real bare-metal install, 2026-09-12, the installer's interface list offered only `lo`. The operator typed `eth0` blind and it worked, and the box came up networked — so the driver existed, was staged, and bound. The issue was filed with **cause not established**.
+
+The cause is the installer's own explanation. Printed on screen, directly above the list:
+
+> Note: a built-in Ethernet port may not be listed below even though this machine has one — its driver is a kernel module and this installer carries no module tree. The installed system loads it.
+
+That was true when written and **false the same afternoon**: `121dd095` (21:16 UTC, filed under #429) made `mkinstalleriso` stage the five NIC drivers, their dependency closure and `modprobe`, and `cix-install` load them before listing. The note went in at 20:54 UTC, 22 minutes earlier. So a real install produced an empty list accompanied by a confident account of a mechanism that had just stopped existing, the reporter then read the code, found the staging present, and could not reconcile the two. A near-identical claim sat in `list_interfaces()`'s own comment and in `installing.md`.
+
+Underneath it, `load_nic_modules()` ran five `kmod_load()` calls, captured each error into a buffer, and discarded all five — its comment called them "ordinary failures" that "most loads are expected" to produce. **The second half is true and the first does not follow.** Measured on 192.168.15.95, a virtio VM with no Broadcom hardware:
+
+```
+$ cixctl kmod load tg3
+loaded tg3
+$ cixctl kmod ls | grep tg3
+tg3                        184320  used_by=0  Live
+```
+
+`modprobe` succeeds on a machine that does not have the chipset — it loads a driver, it does not require a device. With a correct module tree all five loads return 0 on every machine, so a non-zero is *always* a real defect in the media: no tree, a tree for another kernel release, or one built from another config. `modprobe`'s text is the only thing that tells those apart, and it was being thrown away.
+
+So the installer now asserts nothing up front, keeps what `modprobe` said, and classifies the empty list into the three states that can actually produce it — media with no tools (naming `cix-kmod`, the image whose absence produces such media), a failed load (quoting `modprobe` verbatim), or five clean loads and unsupported hardware (naming the five supported chipsets, plus `bnx2` and `igc` as the recorded gaps). A failed load is also reported next to the loads themselves, because a machine can have one driver fail and still list a NIC, and that is a media defect worth seeing anyway.
+
+**The classification is its own translation unit so that it can be gated at all.** `cix-install` runs as PID 1 on real media and formats a disk, and `test_installer` is in neither `SELFTESTS` nor `DAEMON_SELFTESTS` — an assertion there would never run. `image/src/nicreport.c` holds the decision and `test_nicreport` (in `SELFTESTS`) covers every state, asserting the claim rather than the wording: that the message blames the media when the media is at fault and the machine when the machine is, and never the other way round. That is what was wrong.
+
+**Two by-product findings, recorded rather than fixed here.** `test_installer` runs in no gate. And `igc` — Intel I225/I226 2.5GbE, standard on boards from about 2021 — appears **nowhere** in `image/kernel/qemu-part1.config` (`grep -c IGC` → 0), so a machine with one has no driver in the installer *or* on the installed system. Each gets its own issue.
+
+**What this does not establish.** Which ISO the 2026-09-12 install actually booted is not recoverable from here: no ISO has ever been published to the cache (`GET /api/v1/artifacts` → 749 artifacts, 0 `.iso`), and the box's current media was built from v2.57.155. Both staging prerequisites are satisfied on 192.168.15.95 today — `cix-kmod` has a current version and `kernel@__hostbuild` is installed — so media built there now carries the tools. If that install used an ISO predating `121dd095`, the empty list was #429's already-fixed cause; the reason nobody could tell is the defect fixed here.
+
 ### A readiness probe tries every address the container has (#477)
 
 `ready: {tcp_port: N}` probes only ever connected to `127.0.0.1`, whatever addresses the container had. `create_container_from_body()` built cix-init's service table beside the `services[]` parse, several hundred lines above the loop that assigns `net_count` — so the `net_count > 0 ? net_attachments[0].ip_be : 0` argument took its `0` arm for every container that has ever run, and `cix_init.c`'s loopback fallback was the only path, not the exception it reads as.
