@@ -246,7 +246,13 @@ static int stage_nic_modules(const char *stage_dir, const char *modules_dir)
 	char *line = NULL;
 	size_t line_cap = 0;
 	int staged = 0;
+	/* Which of the five modules.dep actually described, so a driver
+	 * the kernel does not build fails the build instead of quietly
+	 * lowering the file count (#442). */
+	int found[sizeof(nics) / sizeof(nics[0])];
 	size_t i;
+
+	memset(found, 0, sizeof(found));
 
 	/* Exactly one version directory in practice; take the first real
 	 * one and say which, so a tree with an unexpected shape is visible
@@ -328,6 +334,7 @@ static int stage_nic_modules(const char *stage_dir, const char *modules_dir)
 			 * matching "<name>something.ko". */
 			if (strncmp(slash, nics[i], n) == 0 && strncmp(slash + n, ".ko", 3) == 0) {
 				wanted = 1;
+				found[i] = 1;
 				break;
 			}
 		}
@@ -356,7 +363,50 @@ static int stage_nic_modules(const char *stage_dir, const char *modules_dir)
 	}
 	free(line);
 	fclose(f);
-	printf("staged %d NIC module files for kernel %s\n", staged, kver);
+
+	/*
+	 * Every one of the five, or this media does not get built (#442).
+	 *
+	 * A driver absent from modules.dep matches no line above, stages
+	 * nothing, and used to leave `staged` merely lower -- and
+	 * stage_module_file() likewise returns 0 for a source file that
+	 * does not exist. So "staged 11 NIC module files" could not tell
+	 * all five plus their closure from four plus their closure, and an
+	 * ISO missing the exact driver a machine needs reported success.
+	 * That is precisely the media defect cix-install's own empty-list
+	 * message now tells an operator to suspect, discovered at install
+	 * time on hardware rather than at build time on the box that can
+	 * still do something about it.
+	 *
+	 * Fatal rather than a warning, and naming the module. CIX_NIC_MODULES
+	 * is the platform's declared NIC support and the kernel config is
+	 * what realises it; one without the other is drift, which that
+	 * header exists to prevent ("a drifted copy would offer an
+	 * interface the installed system cannot bring up"). A kernel that
+	 * stops building one of these should break the ISO build loudly,
+	 * not ship media that quietly cannot see that chipset.
+	 *
+	 * This also makes a successful build the proof: measured on
+	 * 192.168.15.95, 2026-09-17, the v2.57.198 ISO staged 11 files for
+	 * kernel 7.2.3, and before this there was no way to know whether
+	 * all five were among them.
+	 */
+	for (i = 0; i < sizeof(nics) / sizeof(nics[0]); i++) {
+		if (found[i])
+			continue;
+		fprintf(stderr,
+		        "NIC driver %s is not in %s/modules.dep -- this kernel does not build it, so "
+		        "media staged from it could never list a %s interface. CIX_NIC_MODULES and the "
+		        "kernel config have drifted; fix one of them rather than shipping media that "
+		        "cannot see that chipset (#442).\n",
+		        nics[i], src_base, nics[i]);
+		return -1;
+	}
+	printf("staged %d NIC module files for kernel %s, all %d declared drivers present:",
+	       staged, kver, (int)(sizeof(nics) / sizeof(nics[0])));
+	for (i = 0; i < sizeof(nics) / sizeof(nics[0]); i++)
+		printf(" %s", nics[i]);
+	printf("\n");
 	return 0;
 }
 
