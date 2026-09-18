@@ -6,6 +6,19 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A build that stages nothing is a failed build, not a package (#486)
+
+A build whose install phase produced no files was published as a package and reported `installed`. Two reached the fleet that way, both measured on 192.168.15.95 on 2026-09-18:
+
+- **`probe-pbs 1-1`** — an 87-byte artifact, pushed to the **shared** artifact cache. Every later install took it as a cache hit and never built, so one build that staged nothing became every host's copy of that package.
+- **`probe-minisign 2`** — zero files, `installed`, while its recipe visibly stages `usr/share/doc/probe-minisign/README`. The finalize phase deleted `usr/share/doc` (ADR-0251 clause 4, withdrawn by ADR-0306) and emptied the package *after* the build had finished correctly.
+
+The second is why the gate belongs in the daemon rather than in the build: the tree was right when the build ended and empty by the time it was packaged. Only the thing about to publish it can tell.
+
+`staged_tree_has_content()` counts non-directory entries only — a build that ran `mkdir -p` and staged nothing leaves a tree that is not empty by any syscall's reckoning and is empty by the only definition that matters. It runs before the hostbuild/install branch, because emptiness is a property of what the build produced rather than of how it is installed, and all three arms would otherwise publish it: an ordinary install merges an empty tree into the image, a hostbuild harvests one into the artifact directory `mkbootroot` then reads, and a cache hit re-publishes the empty artifact it was handed. A tree that cannot be *read* is deliberately not treated as empty; that is a different failure and the branches below name it themselves.
+
+Gated by `recipes/package/probe-empty-install/1` rather than a case in `test_pkg`, which is not in `SELFTESTS` — a build container cannot create the build environments that test needs (#224), so an assertion added there would ship having never run. Same convention as `probe-missing-tool` for the #302 gate. The probe stages directories and no files, which is the shape a naive emptiness check misses.
+
 ### A package keeps its documentation, and therefore its licence (ADR-0306)
 
 ADR-0251's clause 4 removed `usr/share/{man,info,doc,locale,i18n}` from every staged tree. It is withdrawn in full. The finalize phase now deletes no directory on the grounds that nothing reads it.
