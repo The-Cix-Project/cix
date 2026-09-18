@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted, with clause 4 withdrawn by [ADR-0306](0306-a-package-keeps-its-documentation-and-its-licence.md). Clauses 1, 2, 3 and the enforcement rule stand as written; the finalize phase no longer removes `usr/share/{man,info,doc,locale,i18n}`.
 
 ## Context
 

@@ -329,10 +329,17 @@ The test to apply: *does everything this `.pc` file promises actually exist in `
 
 - **strips ELF output** — `--strip-unneeded` for shared objects and executables, `--strip-debug` for `.o` and `.ko`. An archive it keeps is left alone (`go-bootstrap` ships Go `.a` files that `strip` rejects);
 - **drops `libfoo.a` when `libfoo.so*` ships beside it** — this platform links dynamically always, so that archive is dead weight. An archive with **no** shared counterpart (`libtcc1.a`, `libgcc.a`, `libc_nonshared.a`) is kept;
-- **removes `*.la`**;
-- **removes `usr/share/{man,info,doc,locale,i18n}`**.
+- **removes `*.la`**.
 
-So **do not hand-write these in your recipe.** They used to be per-recipe, and the result is the reason the phase exists: of 115 recipes, 37 pruned anything at all, in twenty-one different spellings, while `glibc` shipped `libc.so.6` with 9.46 MiB of debug sections and `libc.a` three times over. Existing recipes still carry those lines; they are redundant now, not wrong, and come out when a recipe next revises.
+It does **not** remove documentation or locale trees. It used to
+([ADR-0251](../adr/0251-a-package-artifact-carries-what-the-platform-runs.md) clause 4);
+that clause is withdrawn by
+[ADR-0306](../adr/0306-a-package-keeps-its-documentation-and-its-licence.md). The line the
+finalize phase now holds is **remove what the platform cannot use, never what it merely does
+not read** — and the prune had been deleting `usr/share/doc/<package>/COPYING`, which is where
+GNU packages install their licence. Your recipe should not delete those trees either.
+
+So **do not hand-write the three rules above in your recipe.** They used to be per-recipe, and the result is the reason the phase exists: of 115 recipes, 37 pruned anything at all, in twenty-one different spellings, while `glibc` shipped `libc.so.6` with 9.46 MiB of debug sections and `libc.a` three times over. A recipe's own strip/`.a`/`.la` pruning is redundant now, not wrong, and comes out when the recipe next revises. A recipe's own `rm -rf .../share/man` or `.../share/doc` would be **live again** since ADR-0306 — it would delete something the platform now keeps — but measured across all 147 current revisions on 2026-09-18, **none carries one**: they came out when the finalize phase took the job over. Do not add one back.
 
 Two consequences for you:
 

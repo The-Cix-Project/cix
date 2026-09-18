@@ -17,7 +17,7 @@
 
 cix_finalize() {
 	local dest="$PKG_DESTDIR"
-	local elfmagic armagic f base stem magic d arsize t
+	local elfmagic armagic f base stem magic arsize t
 	local shared_stems=""
 	local -a elf_dyn=() elf_rel=() archives=()
 
@@ -40,10 +40,21 @@ cix_finalize() {
 
 	shopt -s nullglob dotglob globstar
 
-	# Clause 4: documentation and locale trees.
-	for d in man info doc locale i18n; do
-		rm -rf "$dest/usr/share/$d"
-	done
+	# ADR-0251's clause 4 -- removing usr/share/{man,info,doc,locale,i18n}
+	# -- is GONE. See ADR-0306. It is not commented out or made
+	# conditional: a package's staged tree reaches the artifact as the
+	# build left it, minus the three rules below, which remove things
+	# the platform cannot use rather than things nobody reads.
+	#
+	# The deletion recovered a share of the artifact that was never
+	# separately measured: ADR-0251's own table accounts for static
+	# archives (54%), debug sections (26%) and locale SOURCES (10%),
+	# leaving man/info/doc inside a 10% remainder. Measured against that:
+	# it deleted usr/share/doc, where GNU packages install COPYING, so
+	# every GPL artifact this platform published lost its licence text.
+	# Across 171 installed package entries on 192.168.15.95 on
+	# 2026-09-18, 25 licence files survived, every one of them by living
+	# somewhere other than usr/share/doc.
 
 	elfmagic=$(printf '\177ELF')
 	armagic='!<ar'
