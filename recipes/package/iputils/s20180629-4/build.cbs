@@ -1,0 +1,144 @@
+# iputils, as a PBS recipe (ADR-0305 stage 4, the corpus conversion).
+#
+# A translation of recipes/package/iputils/s20180629-3/build.sh, not a
+# fresh design. The source tarball, its digest, the build tools and the
+# make invocation are carried over unchanged; what changes is the
+# language the recipe is written in.
+#
+# It is a NEW REVISION rather than a rewrite in place because ADR-0305
+# says a version holds one format or the other and never both: the
+# fused version here is s20180629-4, and s20180629-3 stays exactly as it
+# is, published and installable.
+#
+# First of the corpus conversions, and chosen for being the simplest
+# real package in it -- no ./configure, one make, three files copied.
+# The point is to prove the loop end to end on a package an operator
+# actually uses, not to prove CPDL can express something difficult.
+package "iputils" {
+    version "s20180629"
+    release 4
+    format "cixpkg"
+
+    # Measured from upstream's own LICENSE at this exact tag, not
+    # assumed from the project as a whole -- iputils is per-tool, and
+    # the three tools this package builds do not agree:
+    #
+    #   ping       BSD-3
+    #   tracepath  GPL v2 or later
+    #   arping     GPL v2 or later
+    #
+    # (The tarball also carries clockdiff, ninfod, rarp, rdisc, tftpd
+    # and traceroute, which this recipe does not build and whose
+    # licences -- including rdisc's SUN AS-IS terms -- therefore do not
+    # apply to what ships here.)
+    #
+    # Declared for the CIXPKG manifest, which cbs writes it into. Note
+    # cixd cannot read it yet: `cbs explain --json` gained a `license`
+    # key upstream, and the engine installed on the host (v0.1.25-6,
+    # built from 170dc744d) parses the field without reporting it. The
+    # declaration is true today and becomes visible on the next cbs
+    # bump -- see ADR-0306 for why a package carrying its licence is
+    # worth having at all.
+    license "BSD-3-Clause AND GPL-2.0-or-later"
+
+    # No `upstream` block: CPDL's is a version-DISCOVERY provider, not a
+    # project URL, and `kernel.org` is the only value its validator
+    # accepts (measured -- a URL here is refused with CPDL-E3006,
+    # "unsupported upstream discovery provider"). iputils releases on
+    # GitHub, so there is nothing truthful to declare.
+
+    sources {
+        main "iputils" {
+            url "https://github.com/iputils/iputils/archive/refs/tags/s20180629.tar.gz"
+            sha256 "da14105291dd491f28ea91ade854ed10aee8ba019641c80eed233de3908be7c5"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+            tool "findutils"
+        }
+    }
+
+    metadata {
+        "artifact_sha256" "fef6baa662f55e3c00fe3cf6710ca07a5b82253dac677ebe7e8efac4d871034f"
+        "changelog" "s20180629-4: converted from build.sh to build.cbs (ADR-0305 stage 4). No source change and no build change -- the same tarball at the same digest, the same make invocation, the same three binaries. The revision exists because a version holds one recipe format or the other, never both, and because an image version is a hash of the package manifest (ADR-0155), so a same-version reinstall is deduped and discarded. Adds a license declaration measured from upstream's own LICENSE file at this tag."
+    }
+
+    prepare {
+        # Listed before it is required, so the build log answers what the
+        # GitHub tag archive's top-level directory is actually called
+        # rather than only whether one guess was right. This sandbox
+        # unpacks nothing, so the box is the only place that can answer
+        # it, and one build cycle is the price of that rule.
+        run "ls" {
+            "-la"
+            "${src}/iputils"
+        }
+        require directory "${src}/iputils/iputils-s20180629" {
+            exists
+        }
+    }
+
+    build {
+        # Carried over verbatim from the shell recipe, including the
+        # absence of -j: every value here is a make command-line
+        # OVERRIDE (one argv entry each, not an environment variable),
+        # which is what the shell form used and is the highest
+        # precedence make has. The distinction is load-bearing -- an
+        # `env "CC" = "tcc"` would be silently overridden by the
+        # Makefile's own CC, and the cbs recipe's own header records
+        # what that class of mistake cost there.
+        #
+        # No `jobs $jobs`, deliberately: the shell recipe never asked
+        # for a parallel make and this conversion is not the place to
+        # find out whether iputils' Makefile is parallel-safe.
+        cd "${src}/iputils/iputils-s20180629" {
+            run "make" {
+                "CC=tcc"
+                "CFLAGS=-O3 -g -fno-strict-aliasing -Wstrict-prototypes -Wall -fcommon"
+                "USE_CAP=no"
+                "USE_IDN=no"
+                "USE_NETTLE=no"
+                "USE_GCRYPT=no"
+                "USE_CRYPTO=no"
+                "USE_RESOLV=yes"
+                "ENABLE_RDISC_SERVER=no"
+                "ping"
+                "tracepath"
+                "arping"
+            }
+        }
+    }
+
+    install {
+        mkdir "${dest}/usr/bin" chmod 0755
+        copy "${src}/iputils/iputils-s20180629/ping" to "${dest}/usr/bin/ping"
+        copy "${src}/iputils/iputils-s20180629/tracepath" to "${dest}/usr/bin/tracepath"
+        copy "${src}/iputils/iputils-s20180629/arping" to "${dest}/usr/bin/arping"
+        # Three files and nothing else, asserted rather than assumed:
+        # the shell recipe's `cp a b c DEST/` either copies all three or
+        # fails, and this is the CPDL equivalent of that guarantee.
+        require file "${dest}/usr/bin/ping" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/bin/tracepath" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/bin/arping" {
+            exists
+            nonempty
+        }
+    }
+}

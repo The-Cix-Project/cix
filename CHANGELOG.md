@@ -6,6 +6,28 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### iputils is the first shell recipe converted to CPDL (#487)
+
+`recipes/package/iputils/s20180629-4/build.cbs`, a translation of `s20180629-3/build.sh` — same tarball at the same digest, same make invocation, same three binaries. A new revision rather than an edit in place, because ADR-0305 says a version holds one recipe format or the other and never both.
+
+Built and installed on 192.168.15.95 into the `jumpbox` image, and verified from **inside** the running `jump` container over the console WebSocket rather than from the files API (#394):
+
+```
+-rwxr-xr-x 1 root root 29368 Sep 18 18:28 /usr/bin/arping
+-rwxr-xr-x 1 root root 83896 Sep 18 18:28 /usr/bin/ping
+-rwxr-xr-x 1 root root 18936 Sep 18 18:28 /usr/bin/tracepath
+$ ping -V
+ping utility, iputils-s20180629
+```
+
+Three things this first conversion established, each of which was a question before it ran:
+
+- **#492's approval writer works on a real package.** It inserted `"artifact_sha256" "fef6baa6..."` into the recipe's `metadata` block after the build — the first time outside a `probe-*`. The recipe in this tree is the version pulled back from the daemon, so it carries that approval and a reinstall takes a cache hit instead of rebuilding.
+- **A make command-line override is a positional argument, not `env`.** `string_list_add(&arguments, cbs_resolve_value(...))` gives one argv entry per declared string with no word-splitting, so `"CFLAGS=-O3 -g ..."` reaches make as a single override exactly as the shell form did. An `env "CC" = "tcc"` would instead have lost to the Makefile's own `CC` — the trap the cbs recipe's own header records paying for.
+- **CPDL's `upstream` is a version-discovery provider, not a project URL.** `upstream "https://github.com/iputils/iputils"` is refused with `CPDL-E3006`, "unsupported upstream discovery provider"; `kernel.org` is the only value its validator accepts. Nothing truthful to declare for a GitHub-released package, so the block is absent and a comment says why.
+
+The recipe also declares `license "BSD-3-Clause AND GPL-2.0-or-later"`, measured from upstream's own `LICENSE` at this exact tag rather than assumed from the project: iputils licenses per tool, and of the three this package builds, `ping` is BSD-3 while `tracepath` and `arping` are GPL-2.0-or-later. cbs writes it into the CIXPKG manifest; cixd cannot read it yet, because the engine installed on the host (`v0.1.25-6`) parses the field without reporting it in `explain --json`.
+
 ### ADR-0307 proposes CIXPKG as a package's artifact format (stage 3)
 
 A design document, not code. Recorded as `Proposed` rather than `Accepted` because it cannot be implemented until [cix-build-system#173](https://git.home.arpa/itdlabs/cix-build-system/issues/173) lands.
