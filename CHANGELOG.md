@@ -16,6 +16,21 @@ What it cost is specific. `usr/share/doc/<package>/COPYING` is where GNU package
 
 The one measured cost is accepted knowingly and recorded rather than buried: `usr/share/i18n` is 15.04 MiB per `glibc` artifact, 10% of it. A rule against deleting the unread does not get an exception for the one case where the bytes are noticeable, or it is not a rule.
 
+**Proven on 192.168.15.95, not inferred.** `recipes/package/probe-finalize-docs/1` stages one file in each of the five trees plus a control in a directory clause 4 never touched, and nothing else. Installed into `base` on `v2.57.217`, the published file list is:
+
+```
+usr/share/doc/probe-finalize-docs/COPYING
+usr/share/i18n/locales/en_PROBE
+usr/share/info/probe.info
+usr/share/locale/en/probe.mo
+usr/share/man/man1/probe.1
+usr/share/probe-finalize-docs/CONTROL
+```
+
+Under clause 4 the first five would be gone and only the control would remain. A probe rather than a real package rebuild because no real package isolates the question: 57 of the 147 current recipes delete something under `$PKG_DESTDIR/usr/share` themselves.
+
+**And that number is the part of this change that is not finished.** Withdrawing clause 4 restores nothing for those 57 until each recipe is revised — 37 name `man`, `doc` or `info` directly and some, `xz` among them, remove the whole tree in one line. An earlier draft of this entry claimed none of them existed; the regex behind that anchored `rm` at the start of a line while every real one is tab-indented, so it reported zero against 57, and the false number reached a guide and a commit message before a real build contradicted it.
+
 `test_pkg_finalize`'s five assertions are **inverted rather than deleted** -- the fixture still stages all five trees plus a `usr/share/doc/zlib/COPYING`, so a reintroduced prune fails the gate instead of shipping quietly. Published artifacts are immutable (ADR-0107), so packages regain their licences at their next rebuild, which the PBS flip forces anyway.
 
 Two follow-ons are filed upstream rather than solved here: preserving what lands on disk still cannot answer "what is this package licensed under", because most `make install` runs install no licence file at all (cix-build-system#168 asks CIXPKG to record it as a fact); and pruning should be a policy a build declares and reports rather than a shell function deleting files silently (cix-build-system#169) -- an invisible `rm -rf` is how a licence went missing with nothing in any build log naming it.
