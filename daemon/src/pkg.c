@@ -174,6 +174,20 @@ struct pkg_entry {
 	 * not.
 	 */
 	char build_destdir_env[PATH_MAX + 16];
+	/*
+	 * The same destination as build_destdir_env above, without the
+	 * "PKG_DESTDIR=/" prefix, so the post-build harvest can find the
+	 * tree the build was TOLD to write to rather than re-deriving it.
+	 *
+	 * pkg_build_completed() has no recipe in scope -- it is handed a
+	 * container name and an exit status -- so re-deriving would mean
+	 * looking the recipe up again and trusting the answer to match.
+	 * It did not match once already: the first PBS build harvested
+	 * build/pkg-dest while the build staged into the cbs workspace,
+	 * and published a package with zero files and a state of
+	 * "installed". Remembering beats re-deriving.
+	 */
+	char build_dest_rel[64];
 	/* #412: build_envp's own 4th entry (ADR-0159 Phase B) used to carry
 	 * an optional CIX_KMOD_EXTRA_SYMBOLS=<value> for the recipe to loop
 	 * over; cixd now writes /build/extra/kmod-extra.config itself
@@ -2567,8 +2581,36 @@ static int write_finalize_script(const char *upperdir)
  */
 static const char *pkg_host_arch(void);
 
-#define PKG_CBS_WORKSPACE "/build/cbsws"
-#define PKG_CBS_CACHE_DIR "/build/cbscache"
+#define PKG_CBS_WORKSPACE_REL "build/cbsws"
+#define PKG_CBS_WORKSPACE "/" PKG_CBS_WORKSPACE_REL
+#define PKG_CBS_CACHE_REL "build/cbscache"
+#define PKG_CBS_CACHE_DIR "/" PKG_CBS_CACHE_REL
+
+/*
+ * Where a recipe's install lands, relative to both the container's root
+ * and the build container's upperdir -- which are the same path with a
+ * different prefix.
+ *
+ * ONE definition, because two disagreed and the failure was silent.
+ * A shell recipe stages into build/pkg-dest; a PBS recipe stages
+ * wherever cbs's workspace puts it, which is <workspace>/dest. The
+ * first PBS build set the container's PKG_DESTDIR to the workspace's
+ * dest and left cixd harvesting the shell path, so the install phase
+ * ran, wrote its file, and the package was published with ZERO files
+ * and a state of "installed". Nothing failed; the answer was just
+ * wrong -- which is the shape of bug this project exists to refuse.
+ *
+ * So the destination is computed here and nowhere else, and the
+ * environment variable the recipe reads and the directory cixd
+ * harvests are the same string with different roots.
+ */
+#define PKG_DEST_REL_SHELL "build/pkg-dest"
+#define PKG_DEST_REL_PBS PKG_CBS_WORKSPACE_REL "/dest"
+
+static const char *pkg_dest_rel(int is_pbs)
+{
+	return is_pbs ? PKG_DEST_REL_PBS : PKG_DEST_REL_SHELL;
+}
 
 /*
  * One file of a package's own recorded manifest, copied into a rootfs
@@ -8121,7 +8163,8 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	snprintf(e->build_merged, sizeof(e->build_merged), "%s/merged", container_base);
 
 	snprintf(src_dir, sizeof(src_dir), "%s/build/src", e->build_upperdir);
-	snprintf(dest_dir, sizeof(dest_dir), "%s/build/pkg-dest", e->build_upperdir);
+	snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_upperdir,
+	         pkg_dest_rel(recipe.is_pbs));
 	/* ADR-0305: cbs refuses any recipe path not ending in .cbs
 	 * (has_cbs_extension(), in `build` as well as `explain`), so the
 	 * name this is staged under is load-bearing rather than cosmetic --
@@ -8317,7 +8360,8 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		 * reports nothing. Two build cycles were spent on that, and it
 		 * is one mkdir.
 		 */
-		snprintf(cbs_ws_dir, sizeof(cbs_ws_dir), "%s/build/cbsws", e->build_upperdir);
+		snprintf(cbs_ws_dir, sizeof(cbs_ws_dir), "%s/%s", e->build_upperdir,
+		         PKG_CBS_WORKSPACE_REL);
 		if (persist_mkdir_p(cbs_ws_dir) != 0) {
 			logstore_write("cixd", "error",
 			                "pkg %s@%s: could not prepare build container (create cbs workspace): %s",
@@ -8328,8 +8372,8 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			g_chains[chain_idx].dep_queue_count = 0;
 			return 0;
 		}
-		snprintf(cbs_cache_dir, sizeof(cbs_cache_dir), "%s/build/cbscache",
-		         e->build_upperdir);
+		snprintf(cbs_cache_dir, sizeof(cbs_cache_dir), "%s/%s", e->build_upperdir,
+		         PKG_CBS_CACHE_REL);
 		if (persist_mkdir_p(cbs_cache_dir) != 0) {
 			logstore_write("cixd", "error",
 			                "pkg %s@%s: could not prepare build container (create cbs cache): %s",
@@ -8397,12 +8441,9 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	e->build_argv[1] = "-c";
 	e->build_argv[2] = e->build_argv_cmd;
 	e->build_argv[3] = NULL;
-	if (recipe.is_pbs)
-		snprintf(e->build_destdir_env, sizeof(e->build_destdir_env), "PKG_DESTDIR=%s/dest",
-		         PKG_CBS_WORKSPACE);
-	else
-		snprintf(e->build_destdir_env, sizeof(e->build_destdir_env),
-		         "PKG_DESTDIR=/build/pkg-dest");
+	snprintf(e->build_dest_rel, sizeof(e->build_dest_rel), "%s", pkg_dest_rel(recipe.is_pbs));
+	snprintf(e->build_destdir_env, sizeof(e->build_destdir_env), "PKG_DESTDIR=/%s",
+	         e->build_dest_rel);
 	e->build_envp[0] = e->build_destdir_env;
 	e->build_envp[1] = "PATH=/usr/bin:/bin";
 	e->build_envp[2] = "HOME=/build";
@@ -8894,8 +8935,10 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
 		return PKG_ERR_INVALID_RECIPE;
 
-	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe.sh", e->build_upperdir);
-	snprintf(dest_dir, sizeof(dest_dir), "%s/build/pkg-dest", e->build_upperdir);
+	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe%s", e->build_upperdir,
+	         recipe.is_pbs ? PKG_RECIPE_PBS_SUFFIX : PKG_RECIPE_SHELL_SUFFIX);
+	snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_upperdir,
+	         pkg_dest_rel(recipe.is_pbs));
 	snprintf(extra_dir, sizeof(extra_dir), "%s/build/extra", e->build_upperdir);
 
 	if (copy_file_simple(recipe_path, recipe_dst) != 0)
@@ -8932,7 +8975,10 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	e->build_argv[1] = "-c";
 	e->build_argv[2] = e->build_argv_cmd;
 	e->build_argv[3] = NULL;
-	e->build_envp[0] = "PKG_DESTDIR=/build/pkg-dest";
+	snprintf(e->build_dest_rel, sizeof(e->build_dest_rel), "%s", pkg_dest_rel(recipe.is_pbs));
+	snprintf(e->build_destdir_env, sizeof(e->build_destdir_env), "PKG_DESTDIR=/%s",
+	         e->build_dest_rel);
+	e->build_envp[0] = e->build_destdir_env;
 	e->build_envp[1] = "PATH=/usr/bin:/bin";
 	e->build_envp[2] = "HOME=/build";
 	e->build_envp[3] = NULL;
@@ -10851,7 +10897,12 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 
 	snprintf(container_base, sizeof(container_base), "%s/%s", g_containers_dir,
 	         e->build_container_name);
-	snprintf(dest_dir, sizeof(dest_dir), "%s/upper/build/pkg-dest", container_base);
+	/* What the build was told, not a second guess at it -- see
+	 * build_dest_rel's own comment. A cache hit never entered a
+	 * container and so never set it, and its tree is the shell
+	 * path the no-op arm populated directly. */
+	snprintf(dest_dir, sizeof(dest_dir), "%s/upper/%s", container_base,
+	         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_SHELL);
 
 	/*
 	 * Move the entry to the version this job installed -- for a fresh
