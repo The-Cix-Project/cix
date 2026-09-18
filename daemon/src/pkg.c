@@ -2012,24 +2012,28 @@ static int append_words(char *dst, size_t cap, const char *words)
  * Maps a PBS recipe's declarations onto this daemon's own fields, out
  * of the explain.json written at publish (ADR-0305).
  *
- * Three fields are deliberately left EMPTY rather than invented, each
- * for a reason filed upstream:
+ * Every field a shell recipe can declare, a PBS recipe now can too.
+ * Three of them could not until cix-build-system#161 and #162 closed,
+ * and this comment said so; it is corrected rather than deleted because
+ * the reason they were empty is worth keeping:
  *
- *   build_caps       `cbs explain --json` reports a capability COUNT,
- *                    not the names (cix-build-system#162), and a count
- *                    of 1 does not say whether the recipe asked for
- *                    CAP_SYS_ADMIN or CAP_NET_ADMIN. A non-zero count
- *                    is refused at PUBLISH rather than dropped here,
- *                    so a recipe whose capability would go missing
- *                    never becomes a stored file.
- *   artifact_sha256  CPDL rejects unknown package keys, so there is
- *                    nowhere in a build.cbs to approve one specific
- *                    published byte sequence (cix-build-system#161).
- *                    The consequence is real and is not hidden: a PBS
- *                    recipe cannot take a cache hit and rebuilds from
- *                    source on every install.
- *   changelog        Same gap, same ticket. Reports as null rather
- *                    than as an empty string pretending to be one.
+ *   build_caps       came back as a COUNT, and a count of 1 does not
+ *                    say whether the recipe asked for CAP_SYS_ADMIN or
+ *                    CAP_NET_ADMIN, so a non-zero count was refused at
+ *                    publish rather than dropped here. Now read by
+ *                    name. An older cbs still answering with a count
+ *                    is still refused -- see the publish path.
+ *   artifact_sha256  had nowhere to live, because CPDL rejects unknown
+ *                    package keys, so a converted recipe rebuilt from
+ *                    source on every install on every host. Now in the
+ *                    opaque `metadata { }` block.
+ *   changelog        same gap, same block.
+ *
+ * Verified rather than assumed: cbs 0.1.25-6 is built from
+ * cix-build-system main at 170dc744d, and its own cli-contract-test.sh
+ * -- which asserts both `"capabilities":["CAP_ONE","CAP_TWO"]` and
+ * `"metadata":{"artifact_sha256":...}` out of explain --json -- passes
+ * in a Cix build container on 192.168.15.95.
  *
  * `bootstrap` tools are folded into build_depends alongside `build`
  * ones because CBS itself treats them as build-time: its
@@ -2120,6 +2124,38 @@ static int parse_pbs_recipe(const char *path, struct pkg_recipe *out)
 	}
 
 	snprintf(out->upstream, sizeof(out->upstream), "%s", pbs_explain_upstream(ex));
+
+	/*
+	 * Capabilities by name. A return of 1 is the installed cbs still
+	 * answering with a count: refused here as well as at publish,
+	 * because a recipe published against a newer cbs can be BUILT
+	 * against an older one -- cixd execs whichever is on the host, and
+	 * a downgrade must not quietly drop what the recipe declares.
+	 */
+	{
+		int caps = pbs_explain_capabilities(ex, out->build_caps, sizeof(out->build_caps));
+
+		if (caps != 0) {
+			logstore_write("cixd", "error",
+			               "pkg: %s: %s -- refusing rather than building without the "
+			               "capabilities this recipe declares (cix-build-system#162)",
+			               explain_path,
+			               caps == 1 ? "the installed cbs reports a capability COUNT "
+			                            "rather than names; upgrade cbs"
+			                          : "the declared capabilities do not fit");
+			pbs_explain_free(ex);
+			return -1;
+		}
+	}
+
+	if (pbs_explain_metadata(ex, "artifact_sha256", out->artifact_sha256,
+	                          sizeof(out->artifact_sha256)) != 0 ||
+	    pbs_explain_metadata(ex, "changelog", out->changelog, sizeof(out->changelog)) != 0) {
+		logstore_write("cixd", "error", "pkg: %s: a metadata value does not fit",
+		               explain_path);
+		pbs_explain_free(ex);
+		return -1;
+	}
 
 	pbs_explain_free(ex);
 	return 0;
@@ -6614,33 +6650,75 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 			free(explain_json);
 			return PKG_ERR_INVALID_RECIPE;
 		}
-		/*
-		 * A declared capability this daemon cannot name is refused
-		 * rather than dropped (cix-build-system#162). `cbs explain
-		 * --json` reports a COUNT, and a count of 1 does not say
-		 * whether the recipe asked for CAP_SYS_ADMIN or
-		 * CAP_NET_ADMIN -- so granting by count would be worse than
-		 * not supporting the field, and dropping it silently is
-		 * exactly the defect ADR-0304 was written about. Refusing at
-		 * publish means a recipe whose capability would go missing
-		 * never becomes a stored file.
-		 */
-		if (pbs_explain_capability_count(ex) > 0) {
-			logstore_write("cixd", "error",
-			               "pkg: recipe %s declares %d build capability/ies, and `cbs "
-			               "explain --json` reports only a count, not the names "
-			               "(cix-build-system#162) -- refusing rather than building "
-			               "without them",
-			               name, pbs_explain_capability_count(ex));
+		memset(&parsed, 0, sizeof(parsed));
+		snprintf(parsed.name, sizeof(parsed.name), "%s", pbs_explain_name(ex));
+		if (pbs_explain_version(ex, parsed.version, sizeof(parsed.version)) != 0) {
 			pbs_explain_free(ex);
 			unlink(staging_path);
 			free(redacted);
 			free(explain_json);
 			return PKG_ERR_INVALID_RECIPE;
 		}
-		memset(&parsed, 0, sizeof(parsed));
-		snprintf(parsed.name, sizeof(parsed.name), "%s", pbs_explain_name(ex));
-		if (pbs_explain_version(ex, parsed.version, sizeof(parsed.version)) != 0) {
+		/*
+		 * Capabilities by NAME (cix-build-system#162, closed).
+		 *
+		 * This block used to refuse any recipe declaring one, because
+		 * `cbs explain --json` reported only a count and a count of 1
+		 * does not say whether the recipe asked for CAP_SYS_ADMIN or
+		 * CAP_NET_ADMIN -- granting by count would have been worse
+		 * than not supporting the field, and dropping it silently is
+		 * the defect ADR-0304 was written about.
+		 *
+		 * A return of 1 means the installed cbs still answers with a
+		 * count, so the refusal stays for exactly that case: cixd
+		 * execs whichever cbs is on the host, and an older one turns
+		 * a declared capability into none at all with nothing said.
+		 */
+		{
+			int caps = pbs_explain_capabilities(ex, parsed.build_caps,
+			                                     sizeof(parsed.build_caps));
+
+			if (caps != 0) {
+				logstore_write("cixd", "error",
+				               "pkg: recipe %s: %s (cix-build-system#162) -- refusing "
+				               "rather than building without the capabilities it "
+				               "declares",
+				               name,
+				               caps == 1 ? "the installed cbs reports a capability "
+				                            "COUNT rather than names; upgrade cbs"
+				                          : "its declared capabilities do not fit");
+				pbs_explain_free(ex);
+				unlink(staging_path);
+				free(redacted);
+				free(explain_json);
+				return PKG_ERR_INVALID_RECIPE;
+			}
+		}
+		/*
+		 * The two embedder-owned facts, out of the opaque metadata
+		 * block (cix-build-system#161, closed). Optional, exactly as
+		 * `pkg_artifact_sha256=` and `pkg_changelog=` are optional in
+		 * a shell recipe -- and read here rather than at build time so
+		 * a PBS recipe and a shell recipe reach the same fields of the
+		 * same struct, and the rest of the pipeline cannot tell which
+		 * format it came from.
+		 *
+		 * artifact_sha256 is what makes a conversion free: without a
+		 * home for it a converted recipe rebuilds from source on every
+		 * install on every host, forever, and 88 of 148 current
+		 * recipes carry one. Not format-validated here, deliberately
+		 * -- parse_recipe() does not validate the shell field either,
+		 * and one rule checked in one of two places is how the two
+		 * formats start to differ.
+		 */
+		if (pbs_explain_metadata(ex, "artifact_sha256", parsed.artifact_sha256,
+		                          sizeof(parsed.artifact_sha256)) != 0 ||
+		    pbs_explain_metadata(ex, "changelog", parsed.changelog,
+		                          sizeof(parsed.changelog)) != 0) {
+			logstore_write("cixd", "error",
+			               "pkg: recipe %s: a metadata value does not fit "
+			               "(artifact_sha256 max %d, changelog max %d)",
+			               name, PKG_SHA256_MAX - 1, PKG_CHANGELOG_MAX - 1);
 			pbs_explain_free(ex);
 			unlink(staging_path);
 			free(redacted);
@@ -14371,15 +14449,31 @@ static void approve_published_artifact(const char *name, const char *version)
 		return;
 	if (persist_read_file(recipe_path, &stored, &stored_len) != 0 || stored == NULL) {
 		/*
-		 * A PBS recipe (ADR-0305) reaches here and there is nothing to
-		 * do: CPDL 0.1 rejects unknown package keys, so a build.cbs has
-		 * nowhere to carry an artifact checksum
-		 * (cix-build-system#161). Safe by construction -- this function
-		 * only ever opens build.sh, so it cannot splice a line into a
-		 * CPDL document -- but silence here has a real, confusing
-		 * consequence: the package rebuilds from source on every
-		 * install, forever, with nothing saying why. So it is said
-		 * once, at the moment the approval would have happened.
+		 * A PBS recipe (ADR-0305) reaches here, and what happens next
+		 * is HALF done rather than impossible, which is a different
+		 * thing from what this comment used to say.
+		 *
+		 * A build.cbs CAN now carry an approval: cix-build-system#161
+		 * closed, so `metadata { "artifact_sha256" "..." }` is a legal
+		 * declaration, and parse_pbs_recipe() reads it into the same
+		 * field a shell recipe's `pkg_artifact_sha256=` lands in. A
+		 * hand-written approval in a .cbs is honoured end to end.
+		 *
+		 * What is missing is the WRITER. This function splices a line
+		 * into shell text anchored on `pkg_sha256="`, and the CPDL
+		 * equivalent is not a line splice: it is inserting or updating
+		 * a key inside a `metadata { }` block that may not exist yet,
+		 * and recipe_adds_only_artifact_sha256() -- the guard that
+		 * permits exactly this one edit to an immutable recipe
+		 * (ADR-0107) -- would need a CPDL-aware counterpart or the
+		 * guard becomes two rules for one policy. Filed as #492.
+		 *
+		 * Safe by construction meanwhile: this function only ever
+		 * opens build.sh, so it cannot splice a line into a CPDL
+		 * document. But the consequence is real -- a PBS recipe with
+		 * no hand-written approval rebuilds from source on every
+		 * install, forever -- so it is said once, at the moment the
+		 * approval would have happened.
 		 */
 		char pbs_path[PATH_MAX];
 		struct stat st;
@@ -14388,10 +14482,12 @@ static void approve_published_artifact(const char *name, const char *version)
 		                      version, PKG_RECIPE_PBS_FILE) < sizeof(pbs_path) &&
 		    stat(pbs_path, &st) == 0)
 			logstore_write("cixd", "info",
-			               "pkg: %s@%s is a PBS recipe, so its published artifact cannot be "
-			               "approved and it will rebuild from source on every install -- CPDL "
-			               "0.1 has nowhere to carry a checksum (cix-build-system#161)",
-			               name, version);
+			               "pkg: %s@%s is a PBS recipe, and this daemon cannot yet WRITE an "
+			               "artifact approval into a build.cbs (#492) -- it will rebuild from "
+			               "source on every install until one is added by hand as "
+			               "metadata { \"artifact_sha256\" \"%s\" }, which is read and "
+			               "honoured (cix-build-system#161 is closed)",
+			               name, version, sha);
 		return;
 	}
 
