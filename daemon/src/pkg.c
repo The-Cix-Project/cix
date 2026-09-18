@@ -10285,6 +10285,64 @@ static int declared_provided_sonames(const struct pkg_entry *e, const char *imag
  * evidence, and an unresolvable dependency or an unreadable tree is
  * the absence of evidence, not its presence.
  */
+/*
+ * Issue #486: does the staged tree contain anything at all?
+ *
+ * Returns 1 for a tree holding at least one non-directory entry, 0 for
+ * one holding nothing but directories (or nothing), -1 if it cannot be
+ * read.
+ *
+ * Directories do not count, deliberately. A build whose install phase
+ * ran `mkdir -p` and then staged nothing into it leaves a tree that is
+ * not empty by any syscall's reckoning and is empty by the only
+ * definition that matters: the artifact would ship no content.
+ *
+ * Measured on 192.168.15.95, 2026-09-18, which is what makes this a
+ * gate rather than a theory. TWO packages reached the fleet this way:
+ *
+ *   probe-pbs 1-1 -- an 87-byte artifact, published to the SHARED
+ *   cache, reported `installed`. Every later install took it as a
+ *   cache hit and never built, so one build that staged nothing
+ *   became every host's copy of that package.
+ *
+ *   probe-minisign 2 -- zero files, `installed`, while its recipe
+ *   visibly stages usr/share/doc/probe-minisign/README. The finalize
+ *   phase deleted usr/share/doc (ADR-0251 clause 4, withdrawn by
+ *   ADR-0306) and emptied the package on its way out of the build.
+ *
+ * The second is the argument for putting the check HERE rather than in
+ * the build: the tree was correct when the build finished and empty by
+ * the time it was packaged. Only the thing about to publish it can
+ * tell.
+ */
+static int staged_tree_has_content(const char *root)
+{
+	DIR *d = opendir(root);
+	struct dirent *ent;
+	int found = 0;
+
+	if (d == NULL)
+		return -1;
+	while (found == 0 && (ent = readdir(d)) != NULL) {
+		char child[PATH_MAX];
+		struct stat st;
+
+		if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+			continue;
+		if ((size_t)snprintf(child, sizeof(child), "%s/%s", root, ent->d_name) >=
+		    sizeof(child))
+			continue;
+		if (lstat(child, &st) != 0)
+			continue;
+		if (S_ISDIR(st.st_mode))
+			found = staged_tree_has_content(child) == 1 ? 1 : 0;
+		else
+			found = 1;
+	}
+	closedir(d);
+	return found;
+}
+
 static int undeclared_link_gate(const struct pkg_entry *e, const char *image,
                                  const char *staged_dir, char *err, size_t err_size)
 {
@@ -10941,6 +10999,36 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	e->status = PIPELINE_OK; /* a success that leaves a failed status set
 	                          * reports an installed package as failed to
 	                          * anything keying on it */
+
+	/*
+	 * Issue #486: nothing staged is a failed build, not a package.
+	 *
+	 * Before the branch, because it is a property of what the build
+	 * produced rather than of how it is about to be installed, and all
+	 * three arms below would otherwise publish it: an ordinary install
+	 * merges an empty tree into the image, a hostbuild harvests one
+	 * into the artifact directory that mkbootroot then reads, and a
+	 * cache hit re-publishes the empty artifact it was handed.
+	 *
+	 * A tree that cannot be READ is not treated as empty -- that is a
+	 * different failure, and the branches below report it with their
+	 * own messages rather than having this one guess.
+	 */
+	if (staged_tree_has_content(dest_dir) == 0) {
+		char msg[320];
+
+		snprintf(msg, sizeof(msg),
+		         "the build staged no files -- %s holds nothing but directories, so this "
+		         "would publish an empty package. Check the install phase, and check "
+		         "whether the finalize phase removed everything it staged (#486)",
+		         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_SHELL);
+		logstore_write("cixd", "error", "pkg install: %s@%s: %s", e->name, e->version, msg);
+		pkg_fail(e, 0, PIPELINE_INSTALL, msg);
+		g_chains[chain_idx].name[0] = '\0';
+		g_chains[chain_idx].dep_queue_count = 0;
+		g_chains[chain_idx].is_hostbuild = 0;
+		return 0;
+	}
 
 	if (g_chains[chain_idx].is_hostbuild) {
 		/* A hostbuild's output is a standalone host artifact (a
