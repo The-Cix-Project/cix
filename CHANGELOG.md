@@ -6,6 +6,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A package keeps its documentation, and therefore its licence (ADR-0306)
+
+ADR-0251's clause 4 removed `usr/share/{man,info,doc,locale,i18n}` from every staged tree. It is withdrawn in full. The finalize phase now deletes no directory on the grounds that nothing reads it.
+
+The other three clauses stand unchanged, and the line between them is the decision: **remove what the platform cannot use, never what it merely does not read.** Stripping debug sections, dropping a static archive superseded by a shared object beside it, and dropping `*.la` each have a functional consequence -- the archive rule in particular is what makes a stray `-ldl` fail loudly at link instead of silently resolving. Clause 4 had no such consequence, and it did not have the size argument either: ADR-0251's own table measured static archives at 54% of `glibc`, debug sections at 26% and locale *sources* at 10%, leaving `man`/`info`/`doc` inside an unmeasured 10% remainder. Clauses 1 and 2 did ~80% of the work; clause 4 rode along on their reasoning.
+
+What it cost is specific. `usr/share/doc/<package>/COPYING` is where GNU packages install their licence text, so the prune deleted the licence from every artifact it touched. Measured across the 171 installed package entries on 192.168.15.95 on 2026-09-18: **25 licence files survive anywhere at all**, and every one survives by living somewhere clause 4 did not look -- `usr/share/automake-1.16/COPYING`, `usr/doc/cmake-4.4/LICENSE.rst`, `usr/share/licenses/fastfetch/LICENSE`, `usr/lib/python3.13/LICENSE.txt`. The single package still carrying `usr/share/doc/bison/COPYING` has it because it was built before the policy reached it.
+
+The one measured cost is accepted knowingly and recorded rather than buried: `usr/share/i18n` is 15.04 MiB per `glibc` artifact, 10% of it. A rule against deleting the unread does not get an exception for the one case where the bytes are noticeable, or it is not a rule.
+
+`test_pkg_finalize`'s five assertions are **inverted rather than deleted** -- the fixture still stages all five trees plus a `usr/share/doc/zlib/COPYING`, so a reintroduced prune fails the gate instead of shipping quietly. Published artifacts are immutable (ADR-0107), so packages regain their licences at their next rebuild, which the PBS flip forces anyway.
+
+Two follow-ons are filed upstream rather than solved here: preserving what lands on disk still cannot answer "what is this package licensed under", because most `make install` runs install no licence file at all (cix-build-system#168 asks CIXPKG to record it as a fact); and pruning should be a policy a build declares and reports rather than a shell function deleting files silently (cix-build-system#169) -- an invisible `rm -rf` is how a licence went missing with nothing in any build log naming it.
+
 ### cbs builds itself, from a PBS recipe (ADR-0305, stage 2)
 
 The self-hosting step. `recipes/package/cbs/v0.1.25-3/build.cbs` is the build system's own recipe, written in the language the build system reads, and on 192.168.15.95:

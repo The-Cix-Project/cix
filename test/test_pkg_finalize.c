@@ -291,6 +291,8 @@ static void case_classification(const char *root)
 	wr_text(path, "info\n");
 	snprintf(path, sizeof(path), "%s/usr/share/doc/README", dest);
 	wr_text(path, "doc\n");
+	snprintf(path, sizeof(path), "%s/usr/share/doc/zlib/COPYING", dest);
+	wr_text(path, "Permission is granted to anyone to use this software\n");
 	snprintf(path, sizeof(path), "%s/usr/share/locale/en/m.mo", dest);
 	wr_text(path, "mo\n");
 	snprintf(path, sizeof(path), "%s/usr/share/i18n/locales/en_US", dest);
@@ -308,11 +310,23 @@ static void case_classification(const char *root)
 	if (rc != 0)
 		fail("policy exited %d on a well-formed tree", rc);
 
-	want(dest, "usr/share/man", 0);
-	want(dest, "usr/share/info", 0);
-	want(dest, "usr/share/doc", 0);
-	want(dest, "usr/share/locale", 0);
-	want(dest, "usr/share/i18n", 0);
+	/*
+	 * ADR-0306: the finalize phase no longer deletes documentation or
+	 * locale trees. These five assertions were `0` under ADR-0251's
+	 * clause 4 and are deliberately inverted rather than deleted -- the
+	 * fixture still stages all five, so a reintroduced prune fails here
+	 * instead of shipping quietly.
+	 *
+	 * The COPYING line is the one that matters: it is what clause 4
+	 * actually cost. usr/share/doc is where GNU packages install their
+	 * licence, and deleting the tree deleted the licence with it.
+	 */
+	want(dest, "usr/share/man/man1/x.1", 1);
+	want(dest, "usr/share/info/x.info", 1);
+	want(dest, "usr/share/doc/README", 1);
+	want(dest, "usr/share/doc/zlib/COPYING", 1);
+	want(dest, "usr/share/locale/en/m.mo", 1);
+	want(dest, "usr/share/i18n/locales/en_US", 1);
 	want(dest, "usr/share/cix/keep.dat", 1);
 
 	want(dest, "usr/lib/libfoo.la", 0);
@@ -379,7 +393,7 @@ static void case_data_only(const char *root)
 	if (rc != 0)
 		fail("a package with no ELF needed strip (exit %d)", rc);
 	want(dest, "usr/share/ca-certificates/ca.crt", 1);
-	want(dest, "usr/share/man", 0);
+	want(dest, "usr/share/man/x.1", 1);	/* ADR-0306 */
 }
 
 /* Case 3: ELF produced and no strip -- ADR-0250, fail, do not skip. */
