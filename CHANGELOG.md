@@ -6,6 +6,31 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The CPDL gaps are filed with counts, and the recipe guide gains an idiom table (#487)
+
+Three feature requests upstream, each with the corpus measurement behind it rather than an impression:
+
+| shape | packages | issue |
+|---|---|---|
+| apply several steps to each item of a list | 15 | cix-build-system#176 |
+| strip `-Wl,--version-script=<path>` from a Makefile | 6 | cix-build-system#177 |
+| find a shared library across candidate lib directories | 4 | cix-build-system#178 |
+
+**The measurement corrected itself twice on the way, and that is the useful part.** A first pass called 97 packages blocked. A second, after reading cbs's parser rather than guessing at it, found four features that already exist and that I had been about to file against:
+
+- `jobs $jobs` covers `$(nproc)` — **92 of the 217** command substitutions in this corpus are that one call.
+- `run { stdout "name" }` binds output, and `${stdout.name}` substitutes anywhere a value does. Command substitution is expressible today; there is no ticket for it.
+- `copy glob`, `move glob` and `remove glob` cover `for f in <glob>`.
+- `require file { exists, contains, nonempty, same_as }` covers guard-shaped conditionals.
+
+A third pass then split the loops by what their bodies do, because "24 packages use a loop" is not an argument if twenty of them could write four lines instead. Ten have single-statement bodies and are not blocked; **38 across 15 packages have compound bodies**, and those are what #176 asks for.
+
+So the honest gap is three shapes, not five categories, and two of the three are narrow enough to name exactly — one linker flag, one library search. #177 explicitly declines to ask for a regex engine: `replace`'s `exactly N` fails loudly when upstream moves a string, which `sed` does not, and that property is worth more than generality.
+
+`docs/guides/writing-recipes.md` gains a **shell idiom → CPDL equivalent** table covering every row used in a real conversion here, a "what not to remove" note (ADR-0306's documentation rule and ADR-0251's already-handled `.a`/`.la`), the `require file` symlink trap, and the three gaps above so an author knows in advance what will not convert.
+
+Two bullets in that guide were also stale and are corrected: PBS recipes *can* now carry an artifact checksum and a changelog (in `metadata { }`) and *can* declare build capabilities — cix-build-system#161 and #162 closed, and the guide still said both were impossible.
+
 ### xz, zlib and inetutils convert to CPDL (#487, #491)
 
 `xz/5.8.3-10`, `zlib/1.3.2-14` and `inetutils/2.5-4`. Six converted now, and the two library packages are the first where getting it wrong would have broken every consumer, so the verification is the point:

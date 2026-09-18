@@ -35,8 +35,54 @@ Four things to know before writing one, each of which will otherwise cost you a 
 
 - **`format "cixpkg"` is required**, even though cixd still tars the staged tree itself. CPDL accepts `"tar.gz"` as a value, but CBS's build pipeline refuses to run any recipe declaring anything else.
 - **The engine is not yours to declare.** Do not put `cbs` in `requires { build { … } }`; cixd adds it, the same way it adds the C library. Declare `cbs@<version>` only if you need a specific engine revision, which wins the slot.
-- **Two fields have no home yet.** A PBS recipe cannot carry an artifact checksum or a changelog — CPDL 0.1 rejects unknown package keys (cix-build-system#161). The practical consequence is that it **rebuilds from source on every install** rather than taking a cache hit, so do not flip a package that depends on that.
-- **Build capabilities are refused.** `cbs explain --json` reports a capability *count*, not the names (cix-build-system#162), and cixd will not grant one it cannot name — so a recipe declaring `capability "CAP_…"` is rejected at publish rather than built without it.
+- **The artifact checksum and changelog live in `metadata { }`.** Both are ordinary metadata keys:
+
+  ```
+  metadata {
+      "artifact_sha256" "…"
+      "changelog" "…"
+  }
+  ```
+
+  You do not write the checksum yourself. Publish without one, let it build, and cixd writes the approval into the stored recipe — then fetch the recipe back and commit **that**, or the copy in this tree and the published one differ. A changelog is capped at 511 bytes; over it, the publish is refused with a message about parsing that is not about parsing (#493).
+- **Build capabilities work.** `capability "CAP_SYS_ADMIN"` is read by name and granted. An engine too old to report names is refused rather than read as zero, so a `cbs` predating that will fail the publish rather than silently build without the capability.
+
+### Shell idiom → CPDL equivalent
+
+CPDL has no shell, and the reflex when converting is to assume a missing feature. Usually it is there under another name. Every row below was used in a real conversion in this repo:
+
+| shell | CPDL | note |
+|---|---|---|
+| `make -j"$(nproc)"` | `run "make" { jobs $jobs }` | 92 of the 217 command substitutions in this corpus are this one |
+| `VER=$(pkg-config --modversion x)` … `$VER` | `run "pkg-config" { "--modversion" "x" stdout "ver" }` … `${stdout.ver}` | a bound name substitutes anywhere a value does |
+| `cd dir && cmd` | `cd "dir" { run "cmd" { } }` | |
+| `cp a b c DEST/` | three `copy … to …` lines, full destination paths | `copy` is one source to one destination |
+| `cp *.h DEST/` | `copy glob "…/*.h" to "DEST"` | `move` and `remove` take `glob` too |
+| `rm -rf dir` | `remove tree "dir"` | but see **what not to remove** below |
+| `ln -s TARGET LINK` | `symlink "TARGET" to "LINK"` | operand order is target first, the reverse of how `ln -s` reads in prose |
+| `echo 'text' > f` | `write "f" "text"` | |
+| `sed -i 's/X/Y/' f` | `replace "f" { from "X" to "Y" exactly 1 }` | literal only; `exactly N` fails loudly when upstream moves it, which `sed` does not |
+| `grep -q X f \|\| exit 1` | `require file "f" { contains "X" }` | |
+| `test -f x \|\| exit 1` | `require file "x" { exists }` | |
+| `cmd; [ $? -eq 2 ]` | `run "cmd" { expect exit 2 }` | |
+| `$(pwd)` | the absolute path you already know | inside `cd "${src}/n/top"`, that is `${src}/n/top` |
+| the source tarball itself | `${source.NAME}` | the verified archive, not the unpacked tree |
+
+**`require file` matches regular files only.** It `lstat()`s and demands `S_ISREG`, so it fails on a **symlink** and reports "does not exist" (cix-build-system#175). Assert on `libz.so.1.3.2`, never on the `libz.so.1` soname link — the soname is the name you know, and it is the one that fails.
+
+**What not to remove.** Do not translate a `rm -rf "$PKG_DESTDIR/usr/share/{man,doc,locale}"` — [ADR-0306](../adr/0306-a-package-keeps-its-documentation-and-its-licence.md) withdrew that practice, and carrying it across is how a converted recipe keeps a deleted licence deleted. Do not translate `rm *.la` or a `.a` beside its `.so` either: ADR-0251's finalize phase already does both, after your install phase, and a recipe restating platform policy is a second place for that policy to live.
+
+### What CPDL cannot do yet
+
+Three shapes have no form, and a recipe needing one stays on `build.sh` until it does. Each is filed with the corpus count behind it:
+
+| shape | packages | issue |
+|---|---|---|
+| apply several steps to each item of a list | 15 | [#176](https://git.home.arpa/itdlabs/cix-build-system/issues/176) |
+| strip `-Wl,--version-script=<path>` (pattern edit) | 6 | [#177](https://git.home.arpa/itdlabs/cix-build-system/issues/177) |
+| find a shared library across candidate lib directories | 4 | [#178](https://git.home.arpa/itdlabs/cix-build-system/issues/178) |
+
+A `for` loop whose body is a **single** operation is not blocked — write it as N lines.
 
 Sources are handed to CBS, not fetched by it: cixd fetches and checksum-verifies as it does for any recipe, then places each source in a cache directory named by its own digest, which CBS re-verifies. So a PBS build container still has no network and no credentials, exactly like a shell one.
 
