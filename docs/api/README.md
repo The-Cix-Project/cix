@@ -1069,6 +1069,8 @@ What a PBS recipe declares maps onto the same fields every other endpoint alread
 | build tools | `requires { build { compiler "…" tool "…" } }` — composed into the build container exactly as `pkg_build_depends` is ([ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md)) |
 | build capabilities | `capability "CAP_…"` |
 
+A backup keys a shell recipe `<name>/<version>` exactly as it always has, and a PBS recipe `<name>/<version>/build.cbs`. The asymmetry is on purpose: an older daemon rejects a key it cannot read as `<name>/<version>` — and rejects the whole document when it does — so making every key three segments would cost every recipe in a backup restored onto the other boot slot. A restored `build.cbs` has its identity **re-derived** rather than restored, since `explain.json` is what one particular `cbs` made of the document.
+
 Two fields have no CPDL home, and both report as absent rather than as something invented: `changelog` is always `null`, and a PBS recipe cannot carry an artifact checksum, so it rebuilds from source instead of taking a cache hit. CPDL 0.1 rejects unknown package keys, so there is nowhere to put either; cix-build-system#161 asks upstream for an opaque embedder-owned block.
 
 The daemon does not parse CPDL. It runs `cbs`, which is the only parser for that language on the box — a second one in `pkg.c` would be a parallel implementation of the thing being adopted.

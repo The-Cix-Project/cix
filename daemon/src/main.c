@@ -3701,7 +3701,28 @@ static void do_system_backup(struct json_writer *w)
 					continue;
 				if (persist_read_file(script_path, &buf, &len) != 0 || buf == NULL)
 					continue;
-				snprintf(key, sizeof(key), "%s/%s/%s", de->d_name, vde->d_name, filename);
+				/*
+				 * The filename segment appears ONLY for a PBS recipe, and
+				 * that asymmetry is deliberate rather than tidy.
+				 *
+				 * A shell recipe keeps the exact two-segment key ADR-0120
+				 * emitted, byte for byte, because a backup has to stay
+				 * restorable by an OLDER daemon -- this platform keeps two
+				 * boot slots precisely so it can go back. An older
+				 * do_system_restore() rejects any key it cannot read as
+				 * <name>/<version>, and it rejects the whole document when
+				 * it does, so one three-segment key would cost every recipe
+				 * in the backup rather than the one it described.
+				 *
+				 * So the incompatibility arrives only once a host actually
+				 * has a PBS recipe to lose, instead of immediately, for
+				 * every box, in exchange for nothing.
+				 */
+				if (strcmp(filename, "build.sh") == 0)
+					snprintf(key, sizeof(key), "%s/%s", de->d_name, vde->d_name);
+				else
+					snprintf(key, sizeof(key), "%s/%s/%s", de->d_name, vde->d_name,
+					         filename);
 				jw_key(w, key);
 				jw_str(w, buf);
 				free(buf);
