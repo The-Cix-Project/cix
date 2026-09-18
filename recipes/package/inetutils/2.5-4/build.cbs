@@ -1,0 +1,84 @@
+# inetutils, as a PBS recipe (ADR-0305 stage 4).
+#
+# A translation of recipes/package/inetutils/2.5-3/build.sh: same
+# tarball at the same digest, the same three configure switches, and the
+# same single binary copied out.
+#
+# Nothing is dropped here -- this is one of the recipes that never
+# pruned its own usr/share, because it never runs `make install` at all.
+# It builds the whole tree and takes one file, which is why the package
+# is one binary and no documentation: `--disable-servers
+# --disable-clients --enable-telnet` builds telnet and nothing else.
+package "inetutils" {
+    version "2.5"
+    release 4
+    format "cixpkg"
+
+    license "GPL-3.0-or-later"
+
+    sources {
+        main "inetutils" {
+            url "https://ftp.gnu.org/gnu/inetutils/inetutils-2.5.tar.xz"
+            sha256 "87697d60a31e10b5cb86a9f0651e1ec7bee98320d048c0739431aac3d5764fb6"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+            tool "findutils"
+            tool "diffutils"
+            tool "ncurses"
+        }
+        runtime {
+            package "ncurses"
+        }
+    }
+
+    metadata {
+        "artifact_sha256" "702acb96c72b2be64e0abc883278b139db26ef4404bd6b84ee106dd24f2f34b4"
+        "changelog" "2.5-4: converted from build.sh to build.cbs (ADR-0305 stage 4). Same tarball at the same digest, the same configure switches, and the same single telnet binary. No behaviour change: this recipe never ran make install and so never pruned anything."
+    }
+
+    prepare {
+        run "ls" {
+            "-la"
+            "${src}/inetutils"
+        }
+        require directory "${src}/inetutils/inetutils-2.5" {
+            exists
+        }
+    }
+
+    build {
+        cd "${src}/inetutils/inetutils-2.5" {
+            run "./configure" {
+                "--prefix=/usr"
+                "--disable-servers"
+                "--disable-clients"
+                "--enable-telnet"
+                env "CC" = "tcc"
+            }
+            run "make" {
+                jobs $jobs
+            }
+        }
+    }
+
+    install {
+        mkdir "${dest}/usr/bin" chmod 0755
+        copy "${src}/inetutils/inetutils-2.5/telnet/telnet" to "${dest}/usr/bin/telnet"
+        require file "${dest}/usr/bin/telnet" {
+            exists
+            nonempty
+        }
+    }
+}

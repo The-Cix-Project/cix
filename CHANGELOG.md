@@ -6,6 +6,46 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### xz, zlib and inetutils convert to CPDL (#487, #491)
+
+`xz/5.8.3-10`, `zlib/1.3.2-14` and `inetutils/2.5-4`. Six converted now, and the two library packages are the first where getting it wrong would have broken every consumer, so the verification is the point:
+
+```
+$ xz --version
+xz (XZ Utils) 5.8.3
+liblzma 5.8.3
+$ echo hello | xz | xz -d
+hello
+$ curl --version | head -1
+curl 8.21.0 (x86_64-pc-linux-gnu) libcurl/8.21.0 OpenSSL/3.0.20 zlib/1.3.2
+$ ls -l /usr/lib/libz.so*
+lrwxrwxrwx 1 root root     13 Sep 18 19:06 /usr/lib/libz.so -> libz.so.1.3.2
+lrwxrwxrwx 1 root root     13 Sep 18 19:06 /usr/lib/libz.so.1 -> libz.so.1.3.2
+-rwxr-xr-x 1 root root 173256 Sep 18 19:06 /usr/lib/libz.so.1.3.2
+$ ls /usr/share/man/man1/xz.1
+/usr/share/man/man1/xz.1
+```
+
+`curl` and `git` both run against the replaced zlib, which is what proves the soname links landed correctly rather than merely that files appeared. And `xz.1` exists where the shell recipe's `rm -rf usr/share` had removed all of it — ADR-0306 again, this time for a package that was deleting its whole share tree rather than three directories of it.
+
+Both library recipes also stop deleting `liblzma.a`/`.la` and `libz.a`. That is a **different reason** from the documentation removals and worth separating: those lines were not wrong, they were redundant — ADR-0251's clauses 2 and 3 already drop a static archive superseded by a shared object beside it, and every `.la`, in the finalize phase that runs afterwards. A recipe restating platform policy is a second place for that policy to live.
+
+**`require file` matches regular files only, and says "does not exist" about a symlink.** Three builds were spent on this. `src/fs.c` in cbs does `lstat()` then `!S_ISREG(...) || S_ISLNK(...)`, and the single `failed:` label formats one message for absent, wrong-type and symlink alike. Asserting on `liblzma.so.5` or `libz.so.1` — the soname, the name a recipe author actually knows, and the name `DT_NEEDED` records — therefore fails after a completely successful `make install`. Recipes now assert on the versioned file. Filed as cix-build-system#175, together with the observation that there is currently no way to assert on a link at all, so the workaround checks strictly less than intended.
+
+One of those three builds was also my own error compounding it: `1.3.2-13`'s comment claimed `libz.so.1` was a real file in the build tree and only became a link at `make install`. It is a link in both. The build log said so plainly — zlib links its own test binaries against `libz.so.1.3.2` — and the comment was written from assumption rather than from that line.
+
+### A PBS recipe rejected for metadata length reports a parse failure (cix#493)
+
+Found converting `xz` and `zlib`: a `changelog` slightly over its 511-byte field is refused with `recipe content failed to parse, or its pkg_name= doesn't match name`. The recipe parses — `cbs explain --json` had already succeeded on it — and the name matches. The real reason reaches the log store and nothing else: `a metadata value does not fit (artifact_sha256 max 64, changelog max 511)`.
+
+`pkg_recipe_add()` returns `PKG_ERR_INVALID_RECIPE` for three unrelated conditions and `respond_pkg_recipe_error()` has one sentence for them, written for a different one.
+
+### Where the conversion can and cannot go (#487)
+
+Measured across the corpus at its current revisions: **47 non-probe packages are convertible** with what CPDL 0.1 expresses today — 6 needing nothing special, 41 needing `$jobs` for `$(nproc)`, a known absolute path for `$(pwd)`, or a `require` where the shell wrote a guard. The remaining 62 are blocked, and by a short list: command substitution (55), loops (51), pipes into `sed`/`awk`/`grep`/`xargs` (32), conditionals that are not simple guards (15), and regex `sed` rewrites with backreferences or character classes (9).
+
+Worth stating because it bounds the work rather than leaving it open-ended: roughly a third of the corpus can move now, and the rest needs CPDL to grow, not the recipes to be cleverer.
+
 ### vim and psmisc convert to CPDL and stop deleting their own documentation (#487, #491)
 
 `vim/9.1.1428-4` and `psmisc/23.7-8`, translations of their `build.sh` predecessors — same tarballs at the same digests, same configure switches, same `make install`. Both carry the artifact approval #492's writer added after the build, so a reinstall takes a cache hit.
