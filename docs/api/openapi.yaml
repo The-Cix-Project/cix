@@ -14655,9 +14655,23 @@ components:
           additionalProperties:
             type: string
           description: >
-            Every *.recipe file currently on disk, keyed by package
-            name (not just currently-installed packages -- recipes are
-            cheap, and the operator may want them all preserved).
+            Every published recipe currently on disk (not just
+            currently-installed packages -- recipes are cheap, and the
+            operator may want them all preserved).
+
+            Keyed `<name>/<version>` under ADR-0107's version-keyed
+            layout; this said "keyed by package name" from before that
+            layout existed. A PBS recipe (ADR-0305) takes a third
+            segment naming its file, `<name>/<version>/build.cbs`,
+            because the filename is what tells a restore which language
+            it is holding. A shell recipe deliberately keeps the bare
+            two-segment key rather than gaining a `/build.sh`: an older
+            daemon rejects any key it cannot read as `<name>/<version>`
+            and rejects the whole document when it does, so making
+            every key three segments would have cost every recipe in a
+            backup restored onto the other boot slot. The
+            incompatibility therefore arrives only for a host that
+            actually has a PBS recipe to lose.
         site_config:
           type: string
           description: >
