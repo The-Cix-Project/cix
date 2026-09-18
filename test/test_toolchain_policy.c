@@ -36,6 +36,8 @@
  * differently -- and counting prose would make the number meaningless
  * within a week.
  */
+#include "recipe_format.h"
+
 #include <dirent.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -228,7 +230,8 @@ static int recipe_uses_gcc(const char *path)
 	FILE *f = fopen(path, "r");
 	char line[4096];
 	size_t plen = strlen(path);
-	const int is_pbs = plen >= 4 && strcmp(path + plen - 4, ".cbs") == 0;
+	const size_t slen = sizeof(PKG_RECIPE_PBS_SUFFIX) - 1;
+	const int is_pbs = plen >= slen && strcmp(path + plen - slen, PKG_RECIPE_PBS_SUFFIX) == 0;
 	int in_build = 0, uses = 0;
 
 	if (f == NULL)
@@ -293,16 +296,18 @@ int main(void)
 
 			if (vent->d_name[0] == '.')
 				continue;
-			/* Either recipe language (ADR-0305). Deliberately a
-			 * textual check here rather than a call into the
-			 * daemon's pkg_recipe_file_in(): this test links no
-			 * daemon code at all, which is what lets it run
-			 * anywhere, and "which of two filenames exists" is a
-			 * fixture concern rather than a second implementation
-			 * of the rule. */
-			snprintf(path, sizeof(path), "%s/%s/build.sh", pkgdir, vent->d_name);
+			/* Either recipe language (ADR-0305), through the same
+			 * PKG_RECIPE_*_FILE constants the daemon resolves with.
+			 * This test links no daemon code -- which is what lets
+			 * it run anywhere -- so it cannot call
+			 * pkg_recipe_file_in(); sharing the names is what keeps
+			 * that from becoming a second definition of what a
+			 * recipe file is called. */
+			snprintf(path, sizeof(path), "%s/%s/%s", pkgdir, vent->d_name,
+			         PKG_RECIPE_SHELL_FILE);
 			if (stat(path, &st) != 0) {
-				snprintf(path, sizeof(path), "%s/%s/build.cbs", pkgdir, vent->d_name);
+				snprintf(path, sizeof(path), "%s/%s/%s", pkgdir, vent->d_name,
+				         PKG_RECIPE_PBS_FILE);
 				if (stat(path, &st) != 0)
 					continue;
 			}
@@ -313,9 +318,9 @@ int main(void)
 		if (latest[0] == '\0')
 			continue;
 
-		snprintf(path, sizeof(path), "%s/%s/build.sh", pkgdir, latest);
+		snprintf(path, sizeof(path), "%s/%s/%s", pkgdir, latest, PKG_RECIPE_SHELL_FILE);
 		if (stat_exists(path) == 0)
-			snprintf(path, sizeof(path), "%s/%s/build.cbs", pkgdir, latest);
+			snprintf(path, sizeof(path), "%s/%s/%s", pkgdir, latest, PKG_RECIPE_PBS_FILE);
 		if (!recipe_declares_gcc(path) && !recipe_uses_gcc(path))
 			continue;
 		found++;

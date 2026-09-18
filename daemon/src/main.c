@@ -1,4 +1,5 @@
 #include "connthrottle.h"
+#include "recipe_format.h"
 #include "container.h"
 #include "containerdef.h"
 #include "nsswitch.h"
@@ -3718,7 +3719,7 @@ static void do_system_backup(struct json_writer *w)
 				 * has a PBS recipe to lose, instead of immediately, for
 				 * every box, in exchange for nothing.
 				 */
-				if (strcmp(filename, "build.sh") == 0)
+				if (strcmp(filename, PKG_RECIPE_SHELL_FILE) == 0)
 					snprintf(key, sizeof(key), "%s/%s", de->d_name, vde->d_name);
 				else
 					snprintf(key, sizeof(key), "%s/%s/%s", de->d_name, vde->d_name,
@@ -3905,12 +3906,12 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 				const char *second = strchr(slash + 1, '/');
 
 				if (second != NULL &&
-				    (strcmp(second + 1, "build.sh") != 0 &&
-				     strcmp(second + 1, "build.cbs") != 0)) {
+				    (strcmp(second + 1, PKG_RECIPE_SHELL_FILE) != 0 &&
+				     strcmp(second + 1, PKG_RECIPE_PBS_FILE) != 0)) {
 					json_free(root);
 					snprintf(out_errmsg, out_errmsg_size,
 					         "pkg_recipes key %s names a recipe file that is neither "
-					         "build.sh nor build.cbs",
+					         PKG_RECIPE_SHELL_FILE " nor " PKG_RECIPE_PBS_FILE,
 					         key);
 					return 400;
 				}
@@ -4002,7 +4003,7 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 				int version_len = second != NULL ? (int)(second - (slash + 1))
 				                                 : (int)strlen(slash + 1);
 
-				filename = second != NULL ? second + 1 : "build.sh";
+				filename = second != NULL ? second + 1 : PKG_RECIPE_SHELL_FILE;
 				snprintf(version_dir, sizeof(version_dir), "%s/%.*s/%.*s", PKG_RECIPES_DIR,
 				         (int)(slash - key), key, version_len, slash + 1);
 			}
@@ -4028,7 +4029,7 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 			 * which also proves the restored recipe is still readable
 			 * by the engine this host actually has (ADR-0305).
 			 */
-			if (strcmp(filename, "build.cbs") == 0 &&
+			if (strcmp(filename, PKG_RECIPE_PBS_FILE) == 0 &&
 			    pkg_recipe_rederive_identity(path) != PKG_OK) {
 				json_free(root);
 				snprintf(out_errmsg, out_errmsg_size,

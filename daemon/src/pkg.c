@@ -16,6 +16,7 @@
 #include "elfcheck.h"
 #include "namecheck.h"
 #include "pbsrecipe.h"
+#include "recipe_format.h"
 #include "persist.h"
 #include "treecopy.h"
 #include "pki.h"
@@ -1945,9 +1946,9 @@ static int recipe_path_is_pbs(const char *path)
 	if (path == NULL)
 		return 0;
 	len = strlen(path);
-	if (len < 4)
+	if (len < sizeof(PKG_RECIPE_PBS_SUFFIX) - 1)
 		return 0;
-	return strcmp(path + len - 4, ".cbs") == 0;
+	return strcmp(path + len - (sizeof(PKG_RECIPE_PBS_SUFFIX) - 1), PKG_RECIPE_PBS_SUFFIX) == 0;
 }
 
 /*
@@ -2199,9 +2200,9 @@ int pkg_recipe_file_in(const char *version_dir, char *out_path, size_t out_path_
 	int have_shell;
 	int have_pbs;
 
-	snprintf(shell_path, sizeof(shell_path), "%s/build.sh", version_dir);
+	snprintf(shell_path, sizeof(shell_path), "%s/%s", version_dir, PKG_RECIPE_SHELL_FILE);
 	have_shell = stat(shell_path, &shell_st) == 0 && S_ISREG(shell_st.st_mode);
-	snprintf(pbs_path, sizeof(pbs_path), "%s/build.cbs", version_dir);
+	snprintf(pbs_path, sizeof(pbs_path), "%s/%s", version_dir, PKG_RECIPE_PBS_FILE);
 	have_pbs = stat(pbs_path, &pbs_st) == 0 && S_ISREG(pbs_st.st_mode);
 
 	if (have_shell && have_pbs) {
@@ -2216,7 +2217,7 @@ int pkg_recipe_file_in(const char *version_dir, char *out_path, size_t out_path_
 		if (out_created != NULL)
 			*out_created = (long)shell_st.st_mtime;
 		if (out_filename != NULL)
-			*out_filename = "build.sh";
+			*out_filename = PKG_RECIPE_SHELL_FILE;
 		return 0;
 	}
 	if (have_pbs) {
@@ -2224,7 +2225,7 @@ int pkg_recipe_file_in(const char *version_dir, char *out_path, size_t out_path_
 		if (out_created != NULL)
 			*out_created = (long)pbs_st.st_mtime;
 		if (out_filename != NULL)
-			*out_filename = "build.cbs";
+			*out_filename = PKG_RECIPE_PBS_FILE;
 		return 0;
 	}
 	return -1;
@@ -6520,7 +6521,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 	 * path outright, in `explain` as well as `build`, so a staging
 	 * file without it cannot be read at all (ADR-0305). */
 	if (snprintf(staging_path, sizeof(staging_path), "%s/.%s.recipe.new%s", g_recipes_dir, name,
-	             is_pbs ? ".cbs" : "") >= (int)sizeof(staging_path))
+	             is_pbs ? PKG_RECIPE_PBS_SUFFIX : "") >= (int)sizeof(staging_path))
 		return PKG_ERR_INVALID_NAME;
 	/* #405: never store a live repo token. Everything below -- the
 	 * write, the immutability check and the approval comparison --
@@ -6631,9 +6632,9 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 	snprintf(name_dir, sizeof(name_dir), "%s/%s", g_recipes_dir, name);
 	snprintf(version_dir, sizeof(version_dir), "%s/%s", name_dir, parsed.version);
 	snprintf(recipe_path, sizeof(recipe_path), "%s/%s", version_dir,
-	         is_pbs ? "build.cbs" : "build.sh");
+	         is_pbs ? PKG_RECIPE_PBS_FILE : PKG_RECIPE_SHELL_FILE);
 	snprintf(other_path, sizeof(other_path), "%s/%s", version_dir,
-	         is_pbs ? "build.sh" : "build.cbs");
+	         is_pbs ? PKG_RECIPE_SHELL_FILE : PKG_RECIPE_PBS_FILE);
 	if (stat(other_path, &st) == 0) {
 		logstore_write("cixd", "error",
 		               "pkg: recipe %s@%s is already published as %s -- a version holds one "
@@ -8125,8 +8126,8 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	 * (has_cbs_extension(), in `build` as well as `explain`), so the
 	 * name this is staged under is load-bearing rather than cosmetic --
 	 * a build.cbs copied in as recipe.sh could not be built at all. */
-	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/%s", e->build_upperdir,
-	         recipe.is_pbs ? "recipe.cbs" : "recipe.sh");
+	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe%s", e->build_upperdir,
+	         recipe.is_pbs ? PKG_RECIPE_PBS_SUFFIX : ".sh");
 	snprintf(extra_dir, sizeof(extra_dir), "%s/build/extra", e->build_upperdir);
 
 	{
@@ -14244,8 +14245,8 @@ static void approve_published_artifact(const char *name, const char *version)
 		char pbs_path[PATH_MAX];
 		struct stat st;
 
-		if ((size_t)snprintf(pbs_path, sizeof(pbs_path), "%s/%s/%s/build.cbs", g_recipes_dir,
-		                      name, version) < sizeof(pbs_path) &&
+		if ((size_t)snprintf(pbs_path, sizeof(pbs_path), "%s/%s/%s/%s", g_recipes_dir, name,
+		                      version, PKG_RECIPE_PBS_FILE) < sizeof(pbs_path) &&
 		    stat(pbs_path, &st) == 0)
 			logstore_write("cixd", "info",
 			               "pkg: %s@%s is a PBS recipe, so its published artifact cannot be "
