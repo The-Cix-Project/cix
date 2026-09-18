@@ -7,15 +7,21 @@ Proposed. Stage 3 of the four-stage flip
 first stage to change what is written into the shared artifact cache
 rather than only how a build is driven.
 
-Proposed rather than Accepted because it cannot be implemented yet:
-`cbs explain --json` does not report the declared format, so the daemon
-has no way to read the field this whole decision rests on
-([cix-build-system#173](https://git.home.arpa/itdlabs/cix-build-system/issues/173),
-filed 2026-09-18 — see **What this depends on**). The owner has accepted
-the decision's shape, including the two clauses that go beyond "support
-both": clause 2, which moves finalization into `--finalize-command`, and
-clause 6, which makes `cbs` mandatory in the control-plane root. This
-becomes `Accepted` when #173 lands and the code follows it.
+The owner has accepted the decision's shape, including the two clauses
+that go beyond "support both": clause 2, which moves finalization into
+`--finalize-command`, and clause 6, which makes `cbs` mandatory in the
+control-plane root. `Proposed` rather than `Accepted` only because no
+code implements it yet; it flips when the daemon does.
+
+**Its one dependency is already cleared.**
+[cix-build-system#173](https://git.home.arpa/itdlabs/cix-build-system/issues/173)
+was filed and closed on 2026-09-18, and `cbs explain --json` on `main`
+(VERSION 0.1.26, tagged `v0.1.26`) now emits `format` as a top-level key.
+The section **What this depended on** below records what was measured
+before the fix and is kept as the reason the field exists, not as a
+present-tense blocker. What remains before the code can land is a `cbs`
+recipe revision at `v0.1.26` built and installed on the host, since the
+running engine is still `v0.1.25-6`, whose explain omits the key.
 
 It is also a deliberate, owner-decided exception to this project's
 standing no-backward-compatibility rule, which says clean cut-overs and
@@ -172,8 +178,9 @@ recipe happily and fail later, and it would encode a restriction that is
 CBS's to lift, not ours to bake in. The daemon learns it the same way it
 learns everything else about a PBS recipe: from the explain document,
 which `parse_pbs_recipe()` reads and the recipe file it never parses.
-**That document does not report the format today** — see **What this
-depends on**.
+That document gained a `format` key on 2026-09-18
+(cix-build-system#173); the host must be running a `cbs` carrying it
+before any of this can be read — see **What this depended on**.
 
 **2. CBS packages a PBS build; cixd packages a shell build.** `cbs
 build` gains `--output` and cixd stops tarring the staged tree for a PBS
@@ -260,13 +267,15 @@ This replaces the bootstrap exemption an earlier draft of this ADR gave
 better answer anyway: it removes the exemption, the drift gate that would
 have policed it, and the open question it would have left for stage 4.
 
-## What this depends on
+## What this depended on
 
-One upstream change, and stage 3 cannot start without it:
-**[cix-build-system#173](https://git.home.arpa/itdlabs/cix-build-system/issues/173)**,
-filed 2026-09-18.
+**[cix-build-system#173](https://git.home.arpa/itdlabs/cix-build-system/issues/173)**
+— filed and closed 2026-09-18. Recorded here because it is why the daemon
+reads this field from the explain document rather than from anywhere
+else, and because the shape of the gap explains the shape of the fix.
 
-`cbs explain --json` does not emit the declared format. Measured by
+As measured before it was closed, `cbs explain --json` did not emit the
+declared format. Measured by
 reading the emitter at cix-build-system `main` (`src/main.c`, the block
 ending `"metadata":{...}`): its top-level keys are `architecture,
 build_image, capabilities, license, metadata, name, operations, phases,
