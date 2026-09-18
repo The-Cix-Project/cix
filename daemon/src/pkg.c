@@ -2540,6 +2540,16 @@ static int write_finalize_script(const char *upperdir)
  * finalize.sh runs last and is sourced, under the same set -e, exactly
  * as in the shell form above.
  */
+/*
+ * Forward declaration: the architecture is passed to `cbs build`
+ * (--arch), and the build container is prepared some six thousand
+ * lines above where this is defined. Declared rather than moved --
+ * pkg_host_arch() sits with the artifact-naming code it exists for,
+ * and #183's own comment about being the single place a future port
+ * would learn a mapping is worth more than adjacency to one caller.
+ */
+static const char *pkg_host_arch(void);
+
 #define PKG_CBS_WORKSPACE "/build/cbsws"
 #define PKG_CBS_CACHE_DIR "/build/cbscache"
 
