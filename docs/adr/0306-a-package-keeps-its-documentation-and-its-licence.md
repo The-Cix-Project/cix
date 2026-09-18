@@ -82,10 +82,21 @@ never what it merely does not read.**
   ever needs those bytes. It was accepted knowingly: the rule against
   deleting what is merely unread does not get an exception for the one
   case where the bytes are noticeable, or it is not a rule.
-- **Licence texts return to new artifacts, not to old ones.** Published
-  artifacts are immutable (ADR-0107), so every package regains its
-  `COPYING` at its next rebuild. The flip to PBS forces those rebuilds
-  anyway.
+- **Licence texts return to new artifacts, not to old ones** — and not
+  to all of them. Published artifacts are immutable (ADR-0107), so a
+  package regains its `COPYING` at its next rebuild. But **57 of the
+  147 current recipes delete something under `$PKG_DESTDIR/usr/share`
+  themselves** (measured 2026-09-18): 37 name `man`, `doc` or `info`
+  directly, and some, `xz` among them, remove the whole tree in one
+  line. For those, this decision changes nothing until the recipe
+  does. That is the half of the fix this ADR does not deliver, and it
+  is tracked rather than assumed.
+- **This was measured wrong once, which is why the number is here.**
+  The first version of this change asserted that no current recipe
+  hand-prunes. The regex behind it anchored `rm` at the start of a
+  line and every real one is tab-indented, so it found zero where
+  there are 57. The claim reached a guide and a commit message before
+  a real build contradicted it.
 - **This does not by itself give the platform a licence policy.** Most
   upstream `make install` runs never install a licence file at all, so
   preserving what lands on disk cannot answer "what is this package
