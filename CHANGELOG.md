@@ -6,6 +6,32 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A recipe version whose artifact name another version owns is refused at publish (#494)
+
+Shipped in **v2.57.222**, verified live on 192.168.15.95.
+
+The artifact server reads a missing release as release 1, so `wget@1.25.0` and `wget@1.25.0-1` resolve to one object — both `wget-1.25.0-x86_64.tar.gz` and `wget-1.25.0-1-x86_64.tar.gz` return 200 with an identical 211753-byte body. Two separately published, immutable recipe versions; one artifact name. Only the first to build can ever publish, and the loser rebuilds from source on every install on every host with no approval possible.
+
+Refused at **publish**, where choosing another release number is free, rather than at the artifact push of a build that has already succeeded and a version that is already immutable. `artifact_stem_version()` canonicalises a version the way the server does — a trailing all-digit component is already a release, anything else gains `-1` — and `artifact_name_is_taken()` scans the package's other published versions.
+
+`PKG_ERR_ARTIFACT_NAME_TAKEN` rather than `PKG_ERR_DUPLICATE`, because that would tell the author their version is already published when it is not, and send them looking for a recipe that does not exist. Every `pkg_error` switch has a `default`, so the new code breaks no build.
+
+Measured on the deployed daemon, all four cases including the control:
+
+```
+POST probe-collide@1.0.0     -> 204
+POST probe-collide@1.0.0-1   -> 409   (collides)
+POST probe-collide@1.0.0-2   -> 204   (control -- an ordinary revision bump is unaffected)
+POST probe-collide2@2.0.0-1  -> 204
+POST probe-collide2@2.0.0    -> 409   (reverse order)
+```
+
+with the daemon log naming both versions and the shared name in each direction. `openapi.yaml` and `docs/api/README.md` changed with it.
+
+Two things deliberately left: surfacing a 409 artifact push on the package entry (acceptance criterion 3) is a separate change to entry state and is not folded in — the publish-time refusal means a new recipe can no longer reach that situation. And the `test_pkg` case covering both orders is **not a gate**, because `test_pkg` is not in `SELFTESTS` (#224) and the helpers are `static` in pkg.c; the run above is the proof.
+
+Also corrects a comment in the same function that had gone false: it still said a PBS recipe has nowhere to carry an approval because CPDL rejects unknown keys (cix-build-system#161, closed) — the approval lives in `metadata { "artifact_sha256" }` and #492 writes it there.
+
 ### Nine more packages convert to CPDL, and one of them was never actually built (#487, #491, #494)
 
 Converted and installed on 192.168.15.95: `libuuid/2.42.2-5`, `curl/8.21.0-5`, `libxcrypt/4.4.36-11`, `wget/1.25.0-2` into `jumpbox`, and `gzip/1.13-5`, `patch/2.8-6`, `make/4.4.1-7`, `bc/1.08.1-4`, `pkgconf/3.0.5-6` into a throwaway image. Fifteen converted in total.

@@ -62,11 +62,15 @@ CPDL has no shell, and the reflex when converting is to assume a missing feature
 | `ln -s TARGET LINK` | `symlink "TARGET" to "LINK"` | operand order is target first, the reverse of how `ln -s` reads in prose |
 | `echo 'text' > f` | `write "f" "text"` | |
 | `sed -i 's/X/Y/' f` | `replace "f" { from "X" to "Y" exactly 1 }` | literal only; `exactly N` fails loudly when upstream moves it, which `sed` does not |
+| `find . -name M -exec sed -i 's/X/Y/g' {} +` | `replace glob "…/**/M" { from "X" to "Y" exactly N }` | `**` crosses directories, `*` stays within one segment |
+| `grep -q X f \|\| exit 1` before a `sed` | nothing — delete the guard | `exactly N` already is that guard, and names the file and the count when it fails |
 | `grep -q X f \|\| exit 1` | `require file "f" { contains "X" }` | |
 | `test -f x \|\| exit 1` | `require file "x" { exists }` | |
 | `cmd; [ $? -eq 2 ]` | `run "cmd" { expect exit 2 }` | |
 | `$(pwd)` | the absolute path you already know | inside `cd "${src}/n/top"`, that is `${src}/n/top` |
 | the source tarball itself | `${source.NAME}` | the verified archive, not the unpacked tree |
+
+**`exactly N` on a `replace glob` is a TOTAL across every matched file, not a count per file**, and the replacement itself then changes every occurrence in each. So converting a `find … -exec sed -i 's/X/Y/g'` needs a number you cannot know without counting — the practical route is to declare `exactly 1`, let the build fail, and read the real total out of `source edit expected 1 matches but found 23`. One deliberate failing build is the price, and it buys an assertion the shell form never had.
 
 **`require file` matches regular files only.** It `lstat()`s and demands `S_ISREG`, so it fails on a **symlink** and reports "does not exist" (cix-build-system#175). Assert on `libz.so.1.3.2`, never on the `libz.so.1` soname link — the soname is the name you know, and it is the one that fails.
 
