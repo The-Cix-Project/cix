@@ -8302,6 +8302,31 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	if (!e->cache_hit && recipe.is_pbs) {
 		char cbs_cache_dir[PATH_MAX];
 
+		char cbs_ws_dir[PATH_MAX];
+
+		/*
+		 * The workspace directory itself, which cbs does NOT create.
+		 *
+		 * cbs_workspace_prepare() makes root/src, root/build,
+		 * root/dest, root/cache and root/tmp -- and not root. So
+		 * `--staged /build/cbsws` against a missing /build/cbsws fails
+		 * at mkdir(ENOENT) and the whole build is rejected before it
+		 * starts, with no diagnostic at all: the rejection happens
+		 * before cbs emits its build-begin event, so even --events
+		 * reports nothing. Two build cycles were spent on that, and it
+		 * is one mkdir.
+		 */
+		snprintf(cbs_ws_dir, sizeof(cbs_ws_dir), "%s/build/cbsws", e->build_upperdir);
+		if (persist_mkdir_p(cbs_ws_dir) != 0) {
+			logstore_write("cixd", "error",
+			                "pkg %s@%s: could not prepare build container (create cbs workspace): %s",
+			                e->name, g_chains[chain_idx].image, strerror(errno));
+			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
+			         "could not prepare the build container (create cbs workspace failed)");
+			g_chains[chain_idx].name[0] = '\0';
+			g_chains[chain_idx].dep_queue_count = 0;
+			return 0;
+		}
 		snprintf(cbs_cache_dir, sizeof(cbs_cache_dir), "%s/build/cbscache",
 		         e->build_upperdir);
 		if (persist_mkdir_p(cbs_cache_dir) != 0) {
