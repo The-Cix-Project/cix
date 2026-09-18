@@ -6,6 +6,34 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cbs builds itself, from a PBS recipe (ADR-0305, stage 2)
+
+The self-hosting step. `recipes/package/cbs/v0.1.25-3/build.cbs` is the build system's own recipe, written in the language the build system reads, and on 192.168.15.95:
+
+```
+version v0.1.25-3 | state installed
+depends 'libarchive zstd'
+files   ['usr/bin/cbs']
+
+upstream smoke test: PASS (zstd build and verification)
+policy tests: PASS (embedder finalizer runs before manifest and is recorded)
+  make done (7527 ms)
+  run ./cbs
+cbs 0.1.25
+[check] done (7528 ms)
+[install] done (0 ms)
+```
+
+`depends 'libarchive zstd'` is the part worth pausing on: it was derived from `requires { runtime { package "libarchive" } }`, the free-form item keyword cix-build-system#160 asks upstream to bless. CPDL puts no allow-list on an item keyword and hands it to an embedder verbatim, so the form worked before it was blessed — and now a real package's runtime closure has come through it.
+
+**The entire upstream suite is the gate, and it passes offline**, which needed one non-obvious thing: 0.1.25's `make test` includes an `upstream-test` that builds `recipes/zstd.cbs` and therefore fetches, inside a container with no network. `upstream-smoke-test.sh` honours `CBS_UPSTREAM_CACHE`, and cixd already stages every declared source at `/build/cbscache/<sha256>` for a PBS build — which is exactly the digest-named layout CBS's own cache uses. So the variable points straight at the daemon's handoff directory: nothing copied, nothing invented, and the zstd tarball fetched and verified host-side like any other source.
+
+It is a translation of the working shell recipe rather than a fresh design, deliberately — that recipe carries details won the hard way, and a rewrite that quietly dropped one would look like a success. The `replace` on the Makefile is the sharpest of them: a make command-line assignment cannot be appended to, so passing `CPPFLAGS` there discards the Makefile's own `-DCBS_VERSION` and the binary reports `cbs unknown`. CPDL improves on the shell form here, because `exactly 1` means an upstream rename fails the edit loudly instead of producing a binary that builds and lies about its version.
+
+**Two drafts, and the failures were the useful part.** The first was rejected at publish with a real CPDL diagnostic carried through to the log by `run_cbs_explain()` — `CPDL-E2001: expected 'permission mode', found '${dest}/usr/bin/cbs'`, with the line and a caret, because `chmod` is normally a modifier (`mkdir "path" chmod 0755`) rather than a standalone op. The second built, ran 50 parser cases, the recipe corpus, the metadata test and the upstream smoke test, and then failed in `cli-build-test.sh`: the translation had dropped `curl` from the build declaration, and CBS `dlopen`s libcurl to fetch. A declaration system earning its keep on its own recipe.
+
+One finding for upstream along the way: **two of the three recipes CBS ships would not build.** `cbs_prepare_sources_with_events()` extracts every source into `<source_root>/<source-name>/`, main included, and `squashfs-tools.cbs` and `cix.cbs` both omit that segment from their paths. Their `recipe-test` only validates the corpus, never builds it, so nothing catches it. `gcc.cbs` has the right shape.
+
 ### The first PBS package, built on a real host (ADR-0305)
 
 Proven on 192.168.15.95, 2026-09-18, on `v2.57.216`:
