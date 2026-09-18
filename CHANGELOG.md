@@ -6,6 +6,39 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### vim and psmisc convert to CPDL and stop deleting their own documentation (#487, #491)
+
+`vim/9.1.1428-4` and `psmisc/23.7-8`, translations of their `build.sh` predecessors — same tarballs at the same digests, same configure switches, same `make install`. Both carry the artifact approval #492's writer added after the build, so a reinstall takes a cache hit.
+
+Both shell recipes ended by deleting their own `usr/share/{man,doc,locale}`, which is the practice [ADR-0306](docs/adr/0306-a-package-keeps-its-documentation-and-its-licence.md) withdrew and which #491 counts 57 recipes still doing by hand. Those lines are gone, and the result is visible from inside the running `jump` container rather than inferred:
+
+```
+$ vim --version | head -1
+VIM - Vi IMproved 9.1 (2024 Jan 02, compiled Sep 18 2026 18:38:55)
+$ killall --version
+killall (PSmisc) 23.7
+$ ls /usr/share/man/man1/vim.1 /usr/share/man/man1/killall.1
+/usr/share/man/man1/killall.1  /usr/share/man/man1/vim.1
+```
+
+Those two man pages are the point: the previous revisions removed them, and ADR-0306 restored nothing for either package until its recipe stopped doing the removal itself.
+
+A per-recipe detail worth not re-deriving: `CC` is an **environment variable** for these two and a **make command-line override** for iputils, and the difference is not stylistic. vim and psmisc set it as a prefix assignment on `./configure`, which is what configure reads; iputils passes it to `make`, where an environment variable would lose to the Makefile's own assignment. CPDL spells the two differently (`env "CC" = "tcc"` versus a positional `"CC=tcc"`), so the shell form has to be read before it is translated.
+
+### bzip2 cannot convert yet: cbs refuses its tarball as an "unsafe archive" (cix-build-system#174)
+
+`bzip2 1.0.8-6` was written, published, and failed at the source stage before any phase ran:
+
+```
+error[CPDL-E6001]: source: source `bzip2` archive format or entry is unsupported: unsafe archive
+```
+
+The recipe is not in this tree, because a recipe that cannot build is not a recipe. bzip2 stays on `1.0.8-5/build.sh`.
+
+Two throwaway probes (`recipes/package/probe-bzip2-entries/1` and `/2`) established that the archive contains nothing the safety rules cover — 56 regular files, 1 directory, and **zero** symlinks, hardlinks, devices or FIFOs — and that the same tarball at the same digest is extracted successfully by this platform's own libarchive consumer on every bzip2 build it has ever run.
+
+The message is the real finding. `"unsafe archive"` is what cbs prints whenever `archive_error_string()` is NULL, which covers every failure path in that function including `mkdir`, `open` and the format check. It is not a claim that an entry was unsafe, and reading it as one is what cost the two probes. #174 asks for the member and the rule to be named; the ordering hypothesis in it is labelled a hypothesis, because the raw tarball was not reachable from inside the build environment and the member order was never read.
+
 ### iputils is the first shell recipe converted to CPDL (#487)
 
 `recipes/package/iputils/s20180629-4/build.cbs`, a translation of `s20180629-3/build.sh` — same tarball at the same digest, same make invocation, same three binaries. A new revision rather than an edit in place, because ADR-0305 says a version holds one recipe format or the other and never both.

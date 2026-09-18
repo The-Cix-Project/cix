@@ -1,0 +1,97 @@
+# psmisc, as a PBS recipe (ADR-0305 stage 4).
+#
+# A translation of recipes/package/psmisc/23.7-7/build.sh: same tarball
+# at the same digest, same configure switches, same `make install`.
+#
+# As with vim, the shell recipe's closing
+#
+#     rm -rf "$PKG_DESTDIR/usr/share"/{man,doc}
+#
+# is gone -- ADR-0306 withdrew that practice and #491 counts the
+# recipes still doing it by hand. Nothing else about the build changes.
+package "psmisc" {
+    version "23.7"
+    release 8
+    format "cixpkg"
+
+    license "GPL-2.0-or-later"
+
+    sources {
+        main "psmisc" {
+            url "https://deb.debian.org/debian/pool/main/p/psmisc/psmisc_23.7.orig.tar.xz"
+            sha256 "58c55d9c1402474065adae669511c191de374b0871eec781239ab400b907c327"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+            tool "ncurses"
+        }
+        runtime {
+            package "ncurses"
+        }
+    }
+
+    metadata {
+        "artifact_sha256" "ca5e85b7406f8b9bac02c2d209fba8a5497ea7f930003752d78e2a6390f03e70"
+        "changelog" "23.7-8: converted from build.sh to build.cbs (ADR-0305 stage 4), and stops deleting its own usr/share/{man,doc} (ADR-0306, #491). Same tarball at the same digest and the same configure switches, including the __STDC_NO_VLA__ define TCC needs to parse glibc's regex.h."
+    }
+
+    prepare {
+        run "ls" {
+            "-la"
+            "${src}/psmisc"
+        }
+        require directory "${src}/psmisc/psmisc-23.7" {
+            exists
+        }
+    }
+
+    build {
+        # CPPFLAGS carries -D__STDC_NO_VLA__=1, and it is load-bearing
+        # rather than defensive: glibc's <regex.h> declares regexec()'s
+        # array parameter with a real C99 VLA-in-prototype size
+        # expression, which TCC's parser rejects outright. The header
+        # has its own #ifndef __STDC_NO_VLA__ branch for a compiler
+        # without VLA support, and defining it steers onto that branch
+        # -- accurately, since TCC really does not support the
+        # construct.
+        cd "${src}/psmisc/psmisc-23.7" {
+            run "./configure" {
+                "--prefix=/usr"
+                "--disable-harden-flags"
+                env "CC" = "tcc"
+                env "CPPFLAGS" = "-D__STDC_NO_VLA__=1"
+            }
+            run "make" {
+                jobs $jobs
+            }
+        }
+    }
+
+    install {
+        cd "${src}/psmisc/psmisc-23.7" {
+            run "make" {
+                "DESTDIR=${dest}"
+                "install"
+            }
+        }
+        require file "${dest}/usr/bin/killall" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/bin/fuser" {
+            exists
+            nonempty
+        }
+    }
+}
