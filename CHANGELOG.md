@@ -6,6 +6,26 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cixd writes an artifact approval into a PBS recipe (#492)
+
+It could read one and not write one, so a converted package rebuilt from source on every install on every host, forever, unless its approval was added by hand. That was the gate on converting the corpus at any volume.
+
+`approve_pbs_artifact()` inserts the approval into the recipe's `metadata { }` block and refreshes the derived `explain.json` beside it. Three things make it a different operation from the shell writer rather than the same one with a different anchor:
+
+- **It writes two files.** `parse_pbs_recipe()` reads `explain.json`, never the recipe (ADR-0305), so an approval written only into the `.cbs` would be invisible to every build — the recipe would say approved and the pipeline would rebuild forever. Recipe first, then `explain.json`: a crash between them reads as unapproved, which is the safe direction to fail; the reverse would leave an `explain.json` claiming an approval the recipe does not declare, so a re-derive would silently revoke it.
+- **The guard is semantic.** `recipe_adds_only_artifact_sha256()` walks lines, which is right for a format whose declarations *are* lines; CPDL's are keys inside a block. So "only the approval changed" is asked of the two explain documents via `jsondiff_equal_ignoring(..., "artifact_sha256")` — ADR-0292's existing diff, format-independent by construction, and stronger than a text diff: it catches a byte that changes what the recipe *means* and ignores one that does not. One rule, asked of each format's own authority — text for shell, cbs for CPDL, which is the seam ADR-0305 already draws.
+- **It refuses rather than guesses.** A `metadata { }` block must already exist on a line of its own; creating one would mean choosing a position in a document cixd does not parse, and CPDL fixes its declaration order (`CPDL-E3003`). Absent, or present only in upstream's single-line fixture form, is refused with a log line naming the three lines to add.
+
+Not a sidecar, for a stronger reason than the one given when this was filed upstream as cix-build-system#161: `pkg_sync_merge()` pulls recipes from git, so a file under `g_recipes_dir` is daemon-local state no sync carries — approvals would be per-host and the whole benefit, that *other* hosts take the cache hit, would not happen.
+
+**Proven as an A/B on 192.168.15.95.** `probe-approve-pbs 1-3` declares a block and gained `"artifact_sha256" "a0fc4b..."` inside it; `1-1` is identical minus the block and came back untouched with zero declarations.
+
+**And the `explain.json` half proven by removing the confound.** An install into a fresh image had looked like proof and was not — this host had built the package minutes earlier, so its *local* cache short-circuited the build with no approval involved. With `DELETE /v1/pkg/cache` first (0 bytes, 0 entries), the install finished in under 15 seconds, its build log was **0 bytes**, and the local cache afterwards held exactly the 227-byte downloaded artifact. With an empty local cache the only path that avoids a build is the artifact tier, and that is entered only when `recipe.artifact_sha256` is non-empty.
+
+**Two bugs the probe caught, both in the new code.** The "already approved" test read the recipe *text* — `strstr(stored, "\"artifact_sha256\"")` — and release 1-2 silently gained nothing because that probe's own header quotes the key while explaining what an approval looks like. The check hit a comment; a real recipe documenting its own approval would have been permanently unapprovable. It now asks `explain.json`. Release 1-3 deliberately **keeps** the quoted key, because removing it would have hidden the bug rather than gated it. The same mistake appeared in the verification: searching the returned recipe for the string reported the *control* as approved, because the control's header contains the word — both checks now match the declaration's shape. Separately, restructuring moved several refusals to the cleanup label, which unlinks the candidate file, with a `PATH_MAX` buffer not yet built — initialised and guarded.
+
+**What it does not do:** the 88 recipes carrying approvals today are *shell* recipes. This makes a newly converted PBS recipe free after its first publish; each existing one becomes free only once converted and published. It is the enabler for conversion at volume, not the conversion.
+
 ### A PBS recipe's capability names and metadata are read (cix-build-system#161, #162)
 
 Both gaps closed upstream on 2026-09-18. `pbs_explain_capability_count()` is gone, replaced by `pbs_explain_capabilities()` writing the **names** space-separated in the same shape `pkg_build_caps=` gives the shell path, and `pbs_explain_metadata()` reading `artifact_sha256` and `changelog` out of the opaque `metadata { }` block into the same `struct pkg_recipe` fields the shell keys land in. Neither format owns a second spelling of either list.
