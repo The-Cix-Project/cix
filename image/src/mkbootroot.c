@@ -1159,6 +1159,57 @@ int main(int argc, char **argv)
 					return 1;
 			}
 		}
+		/*
+		 * cbs -- PKG_CBS_BIN, daemon/src/pkg.c (ADR-0305). The CPDL
+		 * engine: cixd runs `cbs explain --json` to read a PBS recipe's
+		 * identity at publish, and `cbs build` runs the recipe inside
+		 * the build container.
+		 *
+		 * Staged TOLERANTLY, like mkfs.btrfs above and unlike
+		 * host_tool_bins[], and the reason is the same distinction that
+		 * cost a build there: every host_tool_bins[] entry is
+		 * unconditionally required because a dev-host fallback always
+		 * exists. There is no fallback for this one and there must not
+		 * be. `cbs` is a Cix-built package (recipes/package/cbs, built
+		 * by TCC from an upstream tarball pinned by commit), no dev host
+		 * has one in /usr/bin, and taking a foreign binary from a build
+		 * machine into the control-plane root is exactly what the Build
+		 * Provenance Mandate forbids.
+		 *
+		 * So a box whose cix-hosttools image predates `pkg install
+		 * --image=cix-hosttools cbs` simply has no CPDL engine, which is
+		 * a normal state rather than an assembly failure -- the same
+		 * posture firmware_dir/modules_dir/kmod_bin_dir already take.
+		 * It fails loudly at the right moment instead: publishing a
+		 * build.cbs on such a host is refused with a message naming the
+		 * install that fixes it, rather than storing a recipe nothing
+		 * can read.
+		 *
+		 * Its library closure needs no new shelled_bin_libs[] entries,
+		 * and that was checked rather than assumed: cbs links
+		 * libarchive (already staged with the platform's own libraries,
+		 * which is where cixd's own -larchive comes from) and libzstd,
+		 * and it dlopen()s libcurl.so.4 for source fetching it will
+		 * never do here -- libzstd.so.1 and libcurl.so.4 are both
+		 * already in the list below, staged for curl and unsquashfs.
+		 */
+		if (host_tools_dir[0] != '\0') {
+			char src[PATH_MAX];
+			struct stat st;
+
+			if (snprintf(src, sizeof(src), "%s/usr/bin/cbs", host_tools_dir) >=
+			    (int)sizeof(src)) {
+				fprintf(stderr, "path too long: %s/usr/bin/cbs\n", host_tools_dir);
+				return 1;
+			}
+			if (stat(src, &st) == 0) {
+				char dst[PATH_MAX];
+
+				snprintf(dst, sizeof(dst), "%s/usr/bin/cbs", image_root);
+				if (test_image_fixture_copy_file(src, dst) != 0)
+					return 1;
+			}
+		}
 		for (i = 0; i < sizeof(shelled_bin_libs) / sizeof(shelled_bin_libs[0]); i++) {
 			char lib_path[PATH_MAX];
 

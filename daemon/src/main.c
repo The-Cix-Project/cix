@@ -3664,6 +3664,7 @@ static void do_system_backup(struct json_writer *w)
 	if (d != NULL) {
 		while ((de = readdir(d)) != NULL) {
 			char name_dir[PATH_MAX];
+			char version_dir[PATH_MAX];
 			DIR *vd;
 			struct dirent *vde;
 
@@ -3676,17 +3677,31 @@ static void do_system_backup(struct json_writer *w)
 			while ((vde = readdir(vd)) != NULL) {
 				char script_path[PATH_MAX];
 				char key[512];
-				struct stat st;
+				const char *filename;
 
 				if (vde->d_name[0] == '.')
 					continue;
-				snprintf(script_path, sizeof(script_path), "%s/%s/build.sh", name_dir,
-				         vde->d_name);
-				if (stat(script_path, &st) != 0 || !S_ISREG(st.st_mode))
+				/*
+				 * ADR-0305: whichever language this version is written
+				 * in. A build.cbs missed here would be absent from every
+				 * backup and lost by every restore, silently -- the
+				 * failure shape this platform cares most about, since a
+				 * backup that omits something reports success.
+				 *
+				 * The key carries the FILENAME as a third segment, which
+				 * is what tells a restore which language it is holding.
+				 * That is not a new source of truth: ADR-0305 makes the
+				 * filename the format, so naming the file names the
+				 * format. An older backup has two-segment keys and
+				 * restores as a shell recipe, which is what it was.
+				 */
+				snprintf(version_dir, sizeof(version_dir), "%s/%s", name_dir, vde->d_name);
+				if (pkg_recipe_file_in(version_dir, script_path, sizeof(script_path), NULL,
+				                       &filename) != 0)
 					continue;
 				if (persist_read_file(script_path, &buf, &len) != 0 || buf == NULL)
 					continue;
-				snprintf(key, sizeof(key), "%s/%s", de->d_name, vde->d_name);
+				snprintf(key, sizeof(key), "%s/%s/%s", de->d_name, vde->d_name, filename);
 				jw_key(w, key);
 				jw_str(w, buf);
 				free(buf);
@@ -3840,16 +3855,44 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 				         "pkg_recipes.%s is not a string", key);
 				return 400;
 			}
-			/* ADR-0120: each key is "<name>/<version>" (do_system_
-			 * backup()'s own emitted shape) -- a bare package name
-			 * never itself contains '/', so a single separator with
-			 * non-empty content on both sides is both necessary and
-			 * sufficient here. */
+			/*
+			 * ADR-0120: each key is "<name>/<version>", and since
+			 * ADR-0305 "<name>/<version>/<filename>" -- a bare
+			 * package name and a version never themselves contain
+			 * '/', so counting separators is both necessary and
+			 * sufficient.
+			 *
+			 * The third segment is the recipe's own filename, which
+			 * is what tells this restore which language it is
+			 * holding: ADR-0305 makes the filename the format, so
+			 * naming the file names the format rather than adding a
+			 * second thing to keep in step. Only the two names the
+			 * daemon writes are accepted, because this string is
+			 * about to become a path component.
+			 *
+			 * A two-segment key is an older backup and restores as a
+			 * shell recipe, which is what it was -- the only recipe
+			 * language that existed when it was taken.
+			 */
 			if (slash == NULL || slash == key || slash[1] == '\0') {
 				json_free(root);
 				snprintf(out_errmsg, out_errmsg_size,
 				         "pkg_recipes key %s is not in <name>/<version> form", key);
 				return 400;
+			}
+			{
+				const char *second = strchr(slash + 1, '/');
+
+				if (second != NULL &&
+				    (strcmp(second + 1, "build.sh") != 0 &&
+				     strcmp(second + 1, "build.cbs") != 0)) {
+					json_free(root);
+					snprintf(out_errmsg, out_errmsg_size,
+					         "pkg_recipes key %s names a recipe file that is neither "
+					         "build.sh nor build.cbs",
+					         key);
+					return 400;
+				}
 			}
 		}
 	}
@@ -3924,26 +3967,51 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 		for (i = 0; i < jpkg_recipes->u.object.count; i++) {
 			const char *key = jpkg_recipes->u.object.keys[i];
 			const char *slash = strchr(key, '/');
+			const char *filename;
 			char version_dir[PATH_MAX];
 			char path[PATH_MAX];
 
-			/* Already validated above (key is "<name>/<version>",
-			 * slash guaranteed non-NULL and interior) -- rebuilds the
-			 * exact <name>/<version>/build.sh path do_system_backup()
-			 * read this same content from (ADR-0120). */
-			snprintf(version_dir, sizeof(version_dir), "%s/%.*s/%s", PKG_RECIPES_DIR,
-			         (int)(slash - key), key, slash + 1);
+			/*
+			 * Already validated above -- rebuilds the exact path
+			 * do_system_backup() read this content from (ADR-0120,
+			 * and ADR-0305 for the filename segment).
+			 */
+			{
+				const char *second = strchr(slash + 1, '/');
+				int version_len = second != NULL ? (int)(second - (slash + 1))
+				                                 : (int)strlen(slash + 1);
+
+				filename = second != NULL ? second + 1 : "build.sh";
+				snprintf(version_dir, sizeof(version_dir), "%s/%.*s/%.*s", PKG_RECIPES_DIR,
+				         (int)(slash - key), key, version_len, slash + 1);
+			}
 			if (persist_mkdir_p(version_dir) != 0) {
 				json_free(root);
 				snprintf(out_errmsg, out_errmsg_size, "failed to create recipe directory for %s",
 				         key);
 				return 500;
 			}
-			snprintf(path, sizeof(path), "%s/build.sh", version_dir);
+			snprintf(path, sizeof(path), "%s/%s", version_dir, filename);
 			if (restore_write_field(path, json_as_string(jpkg_recipes->u.object.values[i])) !=
 			    0) {
 				json_free(root);
 				snprintf(out_errmsg, out_errmsg_size, "failed to write recipe %s", key);
+				return 500;
+			}
+			/*
+			 * A PBS recipe's identity is DERIVED, so it is not in the
+			 * backup and must not be: explain.json is what one
+			 * particular cbs made of the document, and restoring a
+			 * copy taken months ago would resurrect that reading
+			 * rather than the current one. Re-derived here instead,
+			 * which also proves the restored recipe is still readable
+			 * by the engine this host actually has (ADR-0305).
+			 */
+			if (strcmp(filename, "build.cbs") == 0 &&
+			    pkg_recipe_rederive_identity(path) != PKG_OK) {
+				json_free(root);
+				snprintf(out_errmsg, out_errmsg_size,
+				         "restored recipe %s could not be read by this host's cbs", key);
 				return 500;
 			}
 		}
@@ -22503,6 +22571,7 @@ static void handle_pkg_recipe_add(int fd, const char *body, size_t body_len)
 	struct json_value *root;
 	const char *name;
 	const char *content;
+	enum pkg_recipe_format format;
 	enum pkg_error perr;
 
 	root = json_parse(body, body_len);
@@ -22518,7 +22587,34 @@ static void handle_pkg_recipe_add(int fd, const char *body, size_t body_len)
 		return;
 	}
 
-	perr = pkg_recipe_add(name, content, NULL);
+	/*
+	 * ADR-0305: which recipe language `content` is written in.
+	 * Omitted means "shell", so every client that predates PBS is
+	 * unchanged and nothing has to be migrated.
+	 *
+	 * A JSON object has no filename, which is why this field exists at
+	 * all -- and it is a routing hint that is VERIFIED rather than
+	 * trusted: pkg_recipe_add() validates the content with the parser
+	 * the format names (`cbs explain --json` for pbs, parse_recipe()
+	 * for shell), so a body whose format disagrees with its content is
+	 * refused and never becomes a stored file. From then on the
+	 * filename is the format and nothing asks again.
+	 */
+	{
+		const char *fmt = json_as_string(json_object_get(root, "format"));
+
+		if (fmt == NULL || strcmp(fmt, "shell") == 0) {
+			format = PKG_RECIPE_SHELL;
+		} else if (strcmp(fmt, "pbs") == 0) {
+			format = PKG_RECIPE_PBS;
+		} else {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "format must be \"shell\" or \"pbs\"");
+			return;
+		}
+	}
+
+	perr = pkg_recipe_add(name, content, format, NULL);
 	json_free(root);
 	if (perr != PKG_OK) {
 		respond_pkg_recipe_error(fd, perr);

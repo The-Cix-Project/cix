@@ -666,8 +666,55 @@ enum pkg_error pkg_recipe_get(const char *name, const char *version, struct json
  * new version.
  * PKG_ERR_INVALID_NAME / PKG_ERR_INVALID_RECIPE / PKG_ERR_DUPLICATE /
  * PKG_ERR_PERSIST_FAILED on failure.
+ *
+ * format says which language content is written in, and therefore
+ * which filename it is stored under (ADR-0305): PKG_RECIPE_SHELL is a
+ * build.sh, PKG_RECIPE_PBS a build.cbs in CPDL 0.1. A version holds
+ * one or the other and never both -- publishing the second format for
+ * a version that already has one is PKG_ERR_DUPLICATE, for the same
+ * One Source of Truth reason a republish is.
+ *
+ * For PKG_RECIPE_PBS the validation is `cbs explain --json` rather
+ * than parse_recipe(), and its output is persisted as explain.json
+ * beside the recipe. Two extra refusals apply, each because CPDL 0.1
+ * cannot express what this daemon would need: a recipe declaring any
+ * build capability is refused (explain reports a count, not the
+ * names -- cix-build-system#162), and there is no artifact-approval
+ * edit, since a build.cbs has nowhere to carry a checksum
+ * (cix-build-system#161).
  */
-enum pkg_error pkg_recipe_add(const char *name, const char *content, int *out_was_approval);
+/*
+ * The recipe file inside one published version directory, whichever
+ * language it is written in (ADR-0305): build.sh for a shell recipe,
+ * build.cbs for a PBS one. Fills out_path; out_created (the file's
+ * mtime, which ADR-0107 immutability makes a real "first published"
+ * timestamp) and out_filename (the bare "build.sh"/"build.cbs", which
+ * is what tells a caller the format) are both optional.
+ *
+ * Returns -1 when the directory holds neither, and ALSO when it holds
+ * both -- a version that could be read two ways has no single answer
+ * to what its build will do, and this function refuses to be the place
+ * that picks one.
+ *
+ * Exported rather than kept private to pkg.c because the system backup
+ * walks the same directories, and a second copy of this rule in main.c
+ * is exactly the parallel implementation that would let a backup and a
+ * build disagree about what a package's recipe is.
+ */
+int pkg_recipe_file_in(const char *version_dir, char *out_path, size_t out_path_size,
+                        long *out_created, const char **out_filename);
+
+enum pkg_recipe_format {
+	/*
+	 * Zero deliberately, so a caller that forgets the argument gets
+	 * the format that has always existed rather than the new one.
+	 */
+	PKG_RECIPE_SHELL = 0,
+	PKG_RECIPE_PBS = 1
+};
+
+enum pkg_error pkg_recipe_add(const char *name, const char *content,
+                               enum pkg_recipe_format format, int *out_was_approval);
 
 /*
  * Removes recipe version(s) for name. version NULL or "" removes every
@@ -680,6 +727,15 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content, int *out_wa
  * to exist); only affects future `pkg install`/update-all lookups.
  * PKG_ERR_INVALID_NAME / PKG_ERR_NOT_FOUND / PKG_ERR_PERSIST_FAILED.
  */
+/*
+ * Re-derives the explain.json beside an already-written build.cbs
+ * (ADR-0305). For a system restore: a PBS recipe's identity is
+ * derived state, deliberately absent from a backup, and re-deriving
+ * also proves the restored document is readable by the cbs this host
+ * actually has. PKG_ERR_INVALID_RECIPE if it is not.
+ */
+enum pkg_error pkg_recipe_rederive_identity(const char *recipe_path);
+
 enum pkg_error pkg_recipe_delete(const char *name, const char *version);
 
 /*

@@ -253,8 +253,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/pkg/bootstrap` | Stage the sandboxed build toolchain image (`toolchain_path` local import, or `toolchain_url`+`toolchain_sha256` for the daemon to fetch it itself; once; idempotent) |
 | GET | `/pkg/bootstrap` | Status of the most recent `toolchain_url` fetch |
 | GET | `/pkg/recipes` | List every published recipe version known to this daemon (metadata only) |
-| POST | `/pkg/recipes` | Publish a new recipe version — immutable once published, 409 if this exact (name,version) already exists |
-| GET | `/pkg/recipes/{name}` | One recipe version's full detail, including its raw `build.sh` text; `?version=` selects a specific one, omitted resolves to the highest available |
+| POST | `/pkg/recipes` | Publish a new recipe version — immutable once published, 409 if this exact (name,version) already exists. `format` picks the language: `shell` (default, a `build.sh`) or `pbs` (a `build.cbs` in CPDL, [ADR-0305](../adr/0305-a-recipes-format-is-its-filename.md)) |
+| GET | `/pkg/recipes/{name}` | One recipe version's full detail, including its raw recipe text and its `format`; `?version=` selects a specific one, omitted resolves to the highest available |
 | DELETE | `/pkg/recipes/{name}` | Remove recipe version(s) (does not affect anything already installed via it); `?version=` removes just that one, omitted removes every version |
 | GET | `/pkg/repo-config` | The configured recipe-sync source (ADR-0121); `auth_token` itself is never returned |
 | PUT | `/pkg/repo-config` | Partially update the configured recipe repo — fields omitted from the body are left unchanged |
@@ -1052,6 +1052,26 @@ The response carries **`hidden_internal`**, the count left out, so they never si
 The filter is on the endpoint rather than in each client on purpose. A dashboard-side filter would have given the web a view `cixctl container ls` could not have, and "what counts as internal" would then exist twice, in two languages, free to drift. `cixctl container ls --all` and the dashboard's *Show the platform's own build containers* toggle both go through this one parameter. `show running-config` excludes them unconditionally — a `__pkgbuild-<n>` is a transient job the daemon created for itself, gone by the time anyone replays the document.
 
 `exit_reason` (ADR-0080) is a human-readable why once `exit_status` is non-null — either the container's own real diagnostic text (e.g. `"child: execve(/usr/bin/foo): No such file or directory"`), a signal string (e.g. `"killed by signal 9 (SIGKILL)"`) when `term_signal` is set, or, when neither is available, a fixed category string (e.g. `"clean exit"`, `"overlay: mount(2) itself failed"`). `GET .../{name}` and `GET /v1/containers` both include it the same way; a failure that also reaches `500` at creation time (before any process exists) is instead surfaced directly in that response's own error message and in `GET /system/logs`.
+
+## Two recipe languages, and the filename is which (ADR-0305)
+
+A recipe version holds either a shell `build.sh` or a PBS recipe in CPDL 0.1, `build.cbs` — never both. `POST /pkg/recipes` takes `format: "shell" | "pbs"`, defaulting to `shell`, and that decides the filename it is stored under.
+
+The field is a routing hint, verified rather than trusted: `pbs` content must satisfy `cbs explain --json` and `shell` content must parse as a shell header, so a body whose `format` disagrees with its content is refused with 400 and never becomes a stored file. From then on nothing asks again — **the filename is the format**, which is the one representation that cannot disagree with what the daemon will actually run.
+
+What a PBS recipe declares maps onto the same fields every other endpoint already reports:
+
+| cixd | CPDL 0.1 |
+|---|---|
+| version | `version` + `release`, joined as `<version>-<release>` |
+| source / sha256 | `sources { main "…" { url … sha256 … } }` |
+| `depends` | `requires { runtime { package "…" } }` |
+| build tools | `requires { build { compiler "…" tool "…" } }` — composed into the build container exactly as `pkg_build_depends` is ([ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md)) |
+| build capabilities | `capability "CAP_…"` |
+
+Two fields have no CPDL home, and both report as absent rather than as something invented: `changelog` is always `null`, and a PBS recipe cannot carry an artifact checksum, so it rebuilds from source instead of taking a cache hit. CPDL 0.1 rejects unknown package keys, so there is nowhere to put either; cix-build-system#161 asks upstream for an opaque embedder-owned block.
+
+The daemon does not parse CPDL. It runs `cbs`, which is the only parser for that language on the box — a second one in `pkg.c` would be a parallel implementation of the thing being adopted.
 
 ## Two policy axes, and why they are not one setting (ADR-0255)
 
