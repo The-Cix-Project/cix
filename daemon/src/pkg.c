@@ -6568,6 +6568,89 @@ static int recipe_adds_only_artifact_sha256(const char *stored, const char *upda
 	}
 }
 
+/*
+ * The artifact name a recipe version publishes under, in the form the
+ * artifact server stores it: <version>-<release>.
+ *
+ * The server treats a MISSING release as release 1, so `1.25.0` and
+ * `1.25.0-1` are one object there -- measured on 192.168.15.31,
+ * 2026-09-18: both wget-1.25.0-x86_64.tar.gz and
+ * wget-1.25.0-1-x86_64.tar.gz returned 200 with an identical
+ * 211753-byte body. This is what makes two distinct, separately
+ * published recipe versions able to collide (#494).
+ *
+ * A version already ends in a release when its last `-`-separated
+ * component is all digits, which is how every revision in this corpus
+ * is spelled (`9.11-7`, `s20180629-3`, `v0.1.25-6`). Anything else --
+ * `1.25.0`, `20250605` -- gains `-1`, exactly as the server does.
+ *
+ * Returns 0, or -1 if the result would not fit.
+ */
+static int artifact_stem_version(const char *version, char *out, size_t out_size)
+{
+	const char *dash;
+	const char *p;
+	int has_release = 0;
+
+	if (version == NULL || out == NULL || out_size == 0)
+		return -1;
+	dash = strrchr(version, '-');
+	if (dash != NULL && dash[1] != '\0') {
+		has_release = 1;
+		for (p = dash + 1; *p != '\0'; p++) {
+			if (*p < '0' || *p > '9') {
+				has_release = 0;
+				break;
+			}
+		}
+	}
+	if (snprintf(out, out_size, "%s%s", version, has_release ? "" : "-1") >= (int)out_size)
+		return -1;
+	return 0;
+}
+
+/*
+ * Is some OTHER published version of this package going to publish its
+ * artifact under the same name as `version`? (#494)
+ *
+ * Refused at publish because that is the only moment it is fixable: the
+ * loser builds perfectly and then cannot push, and by then its version
+ * is published and immutable.
+ *
+ * A missing or unreadable recipe directory is "no collision" rather
+ * than an error -- the first version of a package has no directory yet,
+ * and that is the overwhelmingly common case here.
+ */
+static int artifact_name_is_taken(const char *name_dir, const char *version, char *out_other,
+                                  size_t out_other_size)
+{
+	char want[PKG_VERSION_MAX + 8];
+	DIR *d;
+	struct dirent *e;
+	int taken = 0;
+
+	if (artifact_stem_version(version, want, sizeof(want)) != 0)
+		return 0;
+	d = opendir(name_dir);
+	if (d == NULL)
+		return 0;
+	while ((e = readdir(d)) != NULL) {
+		char have[PKG_VERSION_MAX + 8];
+
+		if (e->d_name[0] == '.' || strcmp(e->d_name, version) == 0)
+			continue;
+		if (artifact_stem_version(e->d_name, have, sizeof(have)) != 0)
+			continue;
+		if (strcmp(have, want) == 0) {
+			snprintf(out_other, out_other_size, "%s", e->d_name);
+			taken = 1;
+			break;
+		}
+	}
+	closedir(d);
+	return taken;
+}
+
 enum pkg_error pkg_recipe_add(const char *name, const char *content,
                                enum pkg_recipe_format format, int *out_was_approval)
 {
@@ -6757,6 +6840,33 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 	         is_pbs ? PKG_RECIPE_PBS_FILE : PKG_RECIPE_SHELL_FILE);
 	snprintf(other_path, sizeof(other_path), "%s/%s", version_dir,
 	         is_pbs ? PKG_RECIPE_SHELL_FILE : PKG_RECIPE_PBS_FILE);
+	/*
+	 * #494: refuse a version whose ARTIFACT name another version
+	 * already owns. Checked before the immutability tests below
+	 * because it is a different situation with a different fix, and
+	 * reporting it as "already published" would send the reader
+	 * looking for a recipe that is not there.
+	 */
+	{
+		char other_version[PKG_VERSION_MAX];
+		char stem[PKG_VERSION_MAX + 8];
+
+		other_version[0] = '\0';
+		if (artifact_name_is_taken(name_dir, parsed.version, other_version,
+		                            sizeof(other_version))) {
+			artifact_stem_version(parsed.version, stem, sizeof(stem));
+			logstore_write("cixd", "error",
+			               "pkg: recipe %s@%s refused -- %s@%s already publishes under the "
+			               "artifact name %s-%s, because the artifact server reads a missing "
+			               "release as release 1. Both would build and only the first could "
+			               "publish; pick another release number (#494)",
+			               name, parsed.version, name, other_version, name, stem);
+			unlink(staging_path);
+			free(redacted);
+			free(explain_json);
+			return PKG_ERR_ARTIFACT_NAME_TAKEN;
+		}
+	}
 	if (stat(other_path, &st) == 0) {
 		logstore_write("cixd", "error",
 		               "pkg: recipe %s@%s is already published as %s -- a version holds one "
@@ -6778,13 +6888,15 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 		 * recipe_adds_only_artifact_sha256() for why this is not a
 		 * hole in immutability but the completion of it.
 		 *
-		 * It does not apply to a PBS recipe, and not because it was
-		 * left out: CPDL 0.1 rejects unknown package keys, so there
-		 * is no line in a build.cbs to add (cix-build-system#161).
-		 * The consequence is real and deliberately not hidden -- a
-		 * PBS recipe cannot take a cache hit and rebuilds from
-		 * source on every install, which is why the packages flipped
-		 * first are the ones that carry no approval today.
+		 * It does not apply to a PBS recipe, and the reason has
+		 * CHANGED since this was written. It used to be that CPDL
+		 * rejected unknown package keys, so a build.cbs had no line
+		 * to add (cix-build-system#161). That closed: a PBS recipe
+		 * carries its approval in `metadata { "artifact_sha256" }`,
+		 * and #492 writes it there directly after a successful build
+		 * rather than through this republish path. So a PBS recipe
+		 * DOES take a cache hit, and the old warning that it could
+		 * not is no longer true of anything.
 		 */
 		if (!is_pbs && persist_read_file(recipe_path, &stored, &stored_len) == 0 &&
 		    stored != NULL) {

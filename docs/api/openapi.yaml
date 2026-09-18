@@ -8809,6 +8809,16 @@ paths:
             This exact (name, version) is already published -- versions are immutable. Also
             returned when the version exists in the OTHER format: a version holds a build.sh
             or a build.cbs, never both (ADR-0305).
+
+
+            And (#494) when a DIFFERENT version of this package already publishes under the
+            same artifact name. The artifact server reads a missing release as release 1, so
+            `1.25.0` and `1.25.0-1` are one object there: both versions would build and only
+            the first could ever publish, leaving the second to rebuild from source on every
+            install with no approval possible. Refused here because choosing another release
+            number is free now and impossible once the version is published. The message
+            differs from the immutability one, and the daemon log names the other version and
+            the shared artifact name.
           content:
             application/json:
               schema:

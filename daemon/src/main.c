@@ -19543,6 +19543,19 @@ static void respond_pkg_recipe_error(int fd, enum pkg_error err)
 		respond_error(fd, 409, "Conflict",
 		              "this recipe version is already published -- versions are immutable, bump pkg_version= to publish a fix");
 		break;
+	case PKG_ERR_ARTIFACT_NAME_TAKEN:
+		/*
+		 * #494. Deliberately NOT the message above: this version is
+		 * not published, and telling the author it is sends them
+		 * looking for a recipe that does not exist. What is taken is
+		 * the artifact name, and the fix -- a different release
+		 * number -- is free right now and impossible once this
+		 * version is published. The daemon log names the other
+		 * version and the shared artifact name.
+		 */
+		respond_error(fd, 409, "Conflict",
+		              "another version of this package already publishes under the same artifact name (a missing release reads as release 1) -- choose a different release number; see the daemon log for which version and which name");
+		break;
 	case PKG_ERR_PERSIST_FAILED:
 	default:
 		respond_error(fd, 500, "Internal Server Error", "recipe operation failed");

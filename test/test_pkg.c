@@ -3027,6 +3027,76 @@ int main(void)
 		cix_response_free(&r);
 		jw_free(&w);
 
+		/*
+		 * #494: two recipe versions that collide on one ARTIFACT
+		 * name. The artifact server reads a missing release as
+		 * release 1, so `X` and `X-1` are one object there and only
+		 * the first to build can ever publish -- the second rebuilds
+		 * from source forever and can never be approved.
+		 *
+		 * Both orders, because the check has to hold whichever is
+		 * published first, and a 409 that is NOT the immutability
+		 * 409: this version is not published, and saying it is sends
+		 * the author looking for a recipe that does not exist.
+		 */
+		{
+			char coll[2048];
+			char coll_name[32];
+			int i;
+			static const char *const pairs[][2] = {
+				{ "9.9.9", "9.9.9-1" },
+				{ "8.8.8-1", "8.8.8" },
+			};
+
+			for (i = 0; i < 2; i++) {
+				int first_status = 0, second_status = 0;
+				int k;
+
+				for (k = 0; k < 2; k++) {
+					snprintf(coll, sizeof(coll),
+					         "pkg_name=collide%d\npkg_version=%s\n"
+					         "pkg_source=%s\npkg_sha256=%s\n"
+					         "pkg_depends=\"\"\npkg_build_depends=\"\"\n"
+					         "pkg_build() { :; }\n"
+					         "pkg_install() { mkdir -p \"$PKG_DESTDIR/usr/bin\"; "
+					         ": > \"$PKG_DESTDIR/usr/bin/collide\"; }\n",
+					         i, pairs[i][k], api_tarball, api_sha);
+					jw_init(&w);
+					jw_obj_open(&w);
+					jw_key(&w, "name");
+					snprintf(coll_name, sizeof(coll_name), "collide%d", i);
+					jw_str(&w, coll_name);
+					jw_key(&w, "content");
+					jw_str(&w, coll);
+					jw_obj_close(&w);
+					w.buf[w.len] = '\0';
+					memset(&r, 0, sizeof(r));
+					if (cix_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0) {
+						fprintf(stderr, "FAIL: #494 publish request failed\n");
+						ok = 0;
+					}
+					if (k == 0)
+						first_status = r.status;
+					else
+						second_status = r.status;
+					cix_response_free(&r);
+					jw_free(&w);
+				}
+				if (first_status != 204) {
+					fprintf(stderr, "FAIL: #494 first publish (%s) status=%d, want 204\n",
+					        pairs[i][0], first_status);
+					ok = 0;
+				}
+				if (second_status != 409) {
+					fprintf(stderr,
+					        "FAIL: #494 publishing %s after %s status=%d, want 409 -- both "
+					        "publish under the same artifact name\n",
+					        pairs[i][1], pairs[i][0], second_status);
+					ok = 0;
+				}
+			}
+		}
+
 		/* outright malformed content (no pkg_source=) -> 400 */
 		jw_init(&w);
 		jw_obj_open(&w);
