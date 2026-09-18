@@ -6,6 +6,25 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### ADR-0307 proposes CIXPKG as a package's artifact format (stage 3)
+
+A design document, not code. Recorded as `Proposed` rather than `Accepted` because it cannot be implemented until [cix-build-system#173](https://git.home.arpa/itdlabs/cix-build-system/issues/173) lands.
+
+The problem it names is not "the platform only ships tarballs". CPDL has carried a per-recipe artifact format since before this project wrote its first `build.cbs`, and **nothing reads it**: all twelve `build.cbs` in this tree declare `format "cixpkg"`, and all twelve published a `.tar.gz`, because `daemon/src/pkg.c:8498` passes no `--output` and cixd tars the staged tree itself. Twelve recipes make a claim the daemon silently contradicts.
+
+The two formats coexist during the transition, on the owner's decision, which is a deliberate exception to the no-backward-compat rule with an exit condition written into the ADR. The distinction that makes it coherent: that rule governs code kept alive to serve an old caller, and this is immutable data already in a shared store — 767 published tarballs that no decision here can rewrite.
+
+Four measurements shaped it rather than merely supporting it, and two changed the design:
+
+- cix-cache's `src/store.c:129` suffix table **already** carries `.cixpkg` and `.cixpkg.minisig` in the package tier. No cache change is needed. Read rather than inferred, deliberately — that server has produced four bogus bug reports from unmeasured assumptions about it.
+- `cbs`'s `src/prune.c` accepts exactly `strip-debug`, `drop-libtool-archives` and `drop-static-archives`: ADR-0251's three surviving clauses, with nothing able to express the clause 4 ADR-0306 withdrew.
+- `cbs build` refuses `format "tar.gz"` **unconditionally** (`src/package.c:305`, eighty lines before `package_path` is consulted). So every recipe here declares `cixpkg` because there was never a choice — and a draft clause that had exempted `cbs`'s own artifact to a tarball, to dodge a bootstrap dependency, had no format to fall back to. Clause 6 instead makes `mkbootroot`'s `cix-hosttools` staging of `cbs` mandatory, reversing that code's own comment.
+- `CIXPKG_FLAG_FINALIZED` is written by a successful `--finalize-command`, and **the bit is never consulted** — the only reads of that header byte reject *unknown* bits, and `cbs inspect` does not report it. Clause 2 therefore rests on keeping one policy file across both formats, not on the flag.
+
+One collision surfaced that would otherwise have been hit mid-implementation: `GET /v1/pkg/recipes` already emits a key called `format`, meaning the recipe's *language* (ADR-0305). Two meanings for one key in one subsystem reads as a bug, so it is renamed to `language` and the new one is `artifact_format`.
+
+Retirement of the tarball is a query a future ADR can run — no image manifest resolving any package to a shell revision — not a date, and not a count of `build.sh` files, which stays nonzero forever because old revisions never leave the tree.
+
 ### cixd writes an artifact approval into a PBS recipe (#492)
 
 It could read one and not write one, so a converted package rebuilt from source on every install on every host, forever, unless its approval was added by hand. That was the gate on converting the corpus at any volume.
