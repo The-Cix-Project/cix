@@ -2539,6 +2539,20 @@ static int write_finalize_script(const char *upperdir)
  * libcurl otherwise, and the build container has neither a route nor
  * the repo token, nor should it.
  *
+ * --events human, and this was learned the hard way rather than
+ * chosen: without it a failing phase prints NOTHING. The first PBS
+ * build on a real host produced a two-line log -- cbs's own "build
+ * failed: recipe, staged tree, or package output was rejected" and
+ * nothing else -- which is the same defect as #484's silent kernel
+ * link, in a path written the same afternoon that issue was filed.
+ * A build that cannot say why it failed is not finished work.
+ *
+ * "human" rather than "jsonl": the event stream is a dup of stderr,
+ * which is exactly where cixd's build log reads from, so jsonl would
+ * interleave machine records into the text an operator reads. Ingesting
+ * the jsonl properly -- phase timings and cache-hit counts into the
+ * REST progress fields -- is worth doing and is not this.
+ *
  * finalize.sh runs last and is sourced, under the same set -e, exactly
  * as in the shell form above.
  */
@@ -8331,8 +8345,8 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		/* See PKG_CBS_WORKSPACE for why there is no --output and why
 		 * the cache is pre-filled. */
 		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd),
-		         "set -e; cbs build /build/recipe.cbs --arch %s --staged %s --cache %s; "
-		         ". /build/finalize.sh",
+		         "set -e; cbs build /build/recipe.cbs --arch %s --staged %s --cache %s "
+		         "--events human; . /build/finalize.sh",
 		         pkg_host_arch(), PKG_CBS_WORKSPACE, PKG_CBS_CACHE_DIR);
 	else
 		/* See PKG_BUILD_CMD for why this is shaped the way it is. */
