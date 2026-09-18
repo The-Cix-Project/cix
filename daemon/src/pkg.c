@@ -16,6 +16,8 @@
 #include "elfcheck.h"
 #include "namecheck.h"
 #include "pbsrecipe.h"
+#include "json.h"
+#include "jsondiff.h"
 #include "recipe_format.h"
 #include "persist.h"
 #include "treecopy.h"
@@ -14430,6 +14432,232 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
  * is one definition of "this edit is permitted to an immutable recipe",
  * and this path cannot drift from it.
  */
+/*
+ * Writing an artifact approval into a PBS recipe (#492).
+ *
+ * The shell writer above splices `pkg_artifact_sha256="..."` into
+ * build.sh. This is its CPDL counterpart, and it differs in three ways
+ * that are each the point rather than an implementation detail.
+ *
+ * FIRST: it writes TWO files. parse_pbs_recipe() reads the derived
+ * explain.json beside the recipe, never the recipe itself (ADR-0305),
+ * so an approval written only into the .cbs would be invisible to
+ * every build -- the recipe would say approved and the pipeline would
+ * rebuild from source forever, which is the bug this fixes wearing a
+ * different hat. The recipe and its derived identity move together or
+ * not at all.
+ *
+ * SECOND: the guard is semantic, not textual.
+ * recipe_adds_only_artifact_sha256() walks lines, which is the right
+ * rule for a format whose declarations ARE lines. CPDL's are not: the
+ * approval is a key inside a block. So "only the approval changed" is
+ * asked of the two EXPLAIN documents instead --
+ * jsondiff_equal_ignoring(..., "artifact_sha256") -- which is one
+ * existing implementation (ADR-0292's diff), is format-independent by
+ * construction, and is strictly stronger than a text diff: it catches
+ * a byte that changes what the recipe MEANS and ignores one that does
+ * not. One rule, "the artifact approval is the only declaration that
+ * may change", asked of each format's own authority: text for shell,
+ * cbs for CPDL. That is the seam ADR-0305 already draws.
+ *
+ * THIRD: it refuses rather than guesses. A `metadata { }` block must
+ * already exist, on its own line, and the approval is inserted into
+ * it. Creating a block would mean choosing a position in a document
+ * this daemon deliberately does not parse -- CPDL fixes its
+ * declaration order (CPDL-E3003), so the position is real and getting
+ * it wrong produces an invalid recipe. Refusing names the three lines
+ * to add, once, at the moment the approval would have happened.
+ *
+ * NOT a sidecar file, and the reason is stronger than the one given
+ * when this was asked upstream (cix-build-system#161). `pkg_sync_merge()`
+ * pulls recipes from git; a file under g_recipes_dir is daemon-local
+ * state no sync carries, so approvals would be per-host and the entire
+ * benefit -- that OTHER hosts take the cache hit -- would not happen.
+ * The approval travels with the recipe because the recipe is what
+ * travels.
+ */
+static int pbs_metadata_insert_point(const char *text, size_t *out_off)
+{
+	const char *p = text;
+
+	/*
+	 * A line whose only content is `metadata {`. Matched that
+	 * narrowly on purpose: upstream's own test fixtures use a
+	 * single-line `metadata { "k" "v" }`, and inserting a line after
+	 * one of those would put the key OUTSIDE the block -- valid text,
+	 * invalid recipe, caught by cbs below but only after a wasted
+	 * write. A one-line block is refused with the same message as an
+	 * absent one.
+	 */
+	for (;;) {
+		const char *line = p;
+		const char *nl = strchr(line, '\n');
+		size_t len = (nl != NULL) ? (size_t)(nl - line) : strlen(line);
+		const char *t = line;
+		size_t tlen = len;
+
+		while (tlen > 0 && (*t == ' ' || *t == '\t')) {
+			t++;
+			tlen--;
+		}
+		while (tlen > 0 && (t[tlen - 1] == ' ' || t[tlen - 1] == '\t' || t[tlen - 1] == '\r'))
+			tlen--;
+		if (tlen == strlen("metadata {") && memcmp(t, "metadata {", tlen) == 0) {
+			if (nl == NULL)
+				return -1; /* last line of the file: nothing follows to insert before */
+			*out_off = (size_t)(nl - text) + 1;
+			return 0;
+		}
+		if (nl == NULL)
+			return -1;
+		p = nl + 1;
+	}
+}
+
+static void approve_pbs_artifact(const char *recipe_path, const char *name, const char *version,
+                                  const char *sha)
+{
+	char explain_path[PATH_MAX], candidate_path[PATH_MAX];
+	char err[512];
+	char *stored = NULL, *updated = NULL, *old_json = NULL, *new_json = NULL;
+	size_t stored_len = 0, old_len = 0, new_len = 0, insert_off = 0;
+	struct json_value *old_root = NULL, *new_root = NULL;
+	char line[PKG_SHA256_MAX + 64];
+	size_t line_len;
+	int ok = 0;
+
+	if (persist_read_file(recipe_path, &stored, &stored_len) != 0 || stored == NULL)
+		return;
+
+	/* Already approved -- by a previous publish or by hand. A no-op,
+	 * silently, exactly as the shell path treats its own key. */
+	if (strstr(stored, "\"artifact_sha256\"") != NULL) {
+		free(stored);
+		return;
+	}
+
+	if (pbs_metadata_insert_point(stored, &insert_off) != 0) {
+		logstore_write("cixd", "info",
+		               "pkg: %s@%s published, but its recipe has no `metadata {` block on a "
+		               "line of its own, so this daemon will not write the approval and the "
+		               "package rebuilds from source on every install. Add to the recipe, "
+		               "after `requires`:  metadata {  \"artifact_sha256\" \"%s\"  }  (#492)",
+		               name, version, sha);
+		free(stored);
+		return;
+	}
+
+	line_len = (size_t)snprintf(line, sizeof(line), "        \"artifact_sha256\" \"%s\"\n", sha);
+	updated = malloc(stored_len + line_len + 1);
+	if (updated == NULL) {
+		free(stored);
+		return;
+	}
+	memcpy(updated, stored, insert_off);
+	memcpy(updated + insert_off, line, line_len);
+	memcpy(updated + insert_off + line_len, stored + insert_off, stored_len - insert_off);
+	updated[stored_len + line_len] = '\0';
+
+	/*
+	 * The candidate must end in .cbs: cbs refuses any other extension,
+	 * in `explain` as well as `build` (ADR-0305). Named beside the
+	 * recipe so it lands on the same filesystem and the rename below
+	 * is atomic.
+	 */
+	if ((size_t)snprintf(candidate_path, sizeof(candidate_path), "%s.approve.cbs", recipe_path) >=
+	    sizeof(candidate_path))
+		goto done;
+	if (persist_atomic_write(candidate_path, updated, strlen(updated)) != 0)
+		goto done;
+
+	new_json = malloc(PKG_EXPLAIN_MAX);
+	if (new_json == NULL)
+		goto done;
+	/*
+	 * cbs is the syntax authority: an explain that fails is a recipe
+	 * this edit broke, and the recipe is left exactly as it was.
+	 */
+	if (run_cbs_explain(candidate_path, new_json, PKG_EXPLAIN_MAX, &new_len, err, sizeof(err)) !=
+	    0) {
+		logstore_write("cixd", "warn",
+		               "pkg: %s@%s: writing its approval produced a recipe cbs cannot read "
+		               "(%s) -- recipe left untouched (#492)",
+		               name, version, err);
+		goto done;
+	}
+
+	pbs_explain_path(recipe_path, explain_path, sizeof(explain_path));
+	if (persist_read_file(explain_path, &old_json, &old_len) != 0 || old_json == NULL)
+		goto done;
+
+	old_root = json_parse(old_json, old_len);
+	new_root = json_parse(new_json, new_len);
+	if (old_root == NULL || new_root == NULL)
+		goto done;
+
+	/*
+	 * Absent -> present only, the same asymmetry the shell guard
+	 * enforces: replacing an existing approval would let one version
+	 * name two different byte sequences, which is what immutability
+	 * protects against.
+	 */
+	if (json_as_string(json_object_get(json_object_get(old_root, "metadata"),
+	                                    "artifact_sha256")) != NULL)
+		goto done; /* the stored identity is already approved -- never a replacement */
+	if (json_as_string(json_object_get(json_object_get(new_root, "metadata"),
+	                                    "artifact_sha256")) == NULL) {
+		logstore_write("cixd", "warn",
+		               "pkg: %s@%s: the approval did not reach the recipe's metadata block "
+		               "-- recipe left untouched (#492)",
+		               name, version);
+		goto done;
+	}
+
+	if (jsondiff_equal_ignoring(old_root, new_root, "artifact_sha256") != 1) {
+		logstore_write("cixd", "warn",
+		               "pkg: %s@%s: writing its approval changed more than the approval "
+		               "-- recipe left untouched (#492)",
+		               name, version);
+		goto done;
+	}
+
+	/*
+	 * Both files, recipe first. A crash between the two leaves a
+	 * recipe declaring an approval whose explain.json does not carry
+	 * it, which reads as unapproved -- the pre-fix behaviour, and the
+	 * safe direction to fail in. The reverse order would leave an
+	 * explain.json claiming an approval the recipe does not declare,
+	 * so a re-derive would silently revoke it.
+	 */
+	if (rename(candidate_path, recipe_path) != 0)
+		goto done;
+	if (persist_atomic_write(explain_path, new_json, new_len) != 0) {
+		logstore_write("cixd", "error",
+		               "pkg: %s@%s: approval written to the recipe but its explain.json could "
+		               "not be refreshed -- the package will keep rebuilding from source until "
+		               "the identity is re-derived (#492)",
+		               name, version);
+		goto done;
+	}
+	ok = 1;
+	logstore_write("cixd", "info",
+	               "pkg: %s@%s approved its own published artifact (%.16s...) in its metadata "
+	               "block",
+	               name, version, sha);
+
+done:
+	if (!ok)
+		unlink(candidate_path);
+	if (old_root != NULL)
+		json_free(old_root);
+	if (new_root != NULL)
+		json_free(new_root);
+	free(old_json);
+	free(new_json);
+	free(updated);
+	free(stored);
+}
+
 static void approve_published_artifact(const char *name, const char *version)
 {
 	char tarball[PATH_MAX], recipe_path[PATH_MAX], tmp_path[PATH_MAX];
@@ -14449,31 +14677,14 @@ static void approve_published_artifact(const char *name, const char *version)
 		return;
 	if (persist_read_file(recipe_path, &stored, &stored_len) != 0 || stored == NULL) {
 		/*
-		 * A PBS recipe (ADR-0305) reaches here, and what happens next
-		 * is HALF done rather than impossible, which is a different
-		 * thing from what this comment used to say.
-		 *
-		 * A build.cbs CAN now carry an approval: cix-build-system#161
-		 * closed, so `metadata { "artifact_sha256" "..." }` is a legal
-		 * declaration, and parse_pbs_recipe() reads it into the same
-		 * field a shell recipe's `pkg_artifact_sha256=` lands in. A
-		 * hand-written approval in a .cbs is honoured end to end.
-		 *
-		 * What is missing is the WRITER. This function splices a line
-		 * into shell text anchored on `pkg_sha256="`, and the CPDL
-		 * equivalent is not a line splice: it is inserting or updating
-		 * a key inside a `metadata { }` block that may not exist yet,
-		 * and recipe_adds_only_artifact_sha256() -- the guard that
-		 * permits exactly this one edit to an immutable recipe
-		 * (ADR-0107) -- would need a CPDL-aware counterpart or the
-		 * guard becomes two rules for one policy. Filed as #492.
-		 *
-		 * Safe by construction meanwhile: this function only ever
-		 * opens build.sh, so it cannot splice a line into a CPDL
-		 * document. But the consequence is real -- a PBS recipe with
-		 * no hand-written approval rebuilds from source on every
-		 * install, forever -- so it is said once, at the moment the
-		 * approval would have happened.
+		 * A PBS recipe (ADR-0305) reaches here because this function
+		 * only ever opens build.sh, so persist_read_file() fails for
+		 * one. Its approval is written by approve_pbs_artifact()
+		 * above, which is a different operation rather than the same
+		 * one with a different anchor: the approval goes into a
+		 * `metadata { }` block, the guard is an explain diff rather
+		 * than a line diff, and explain.json has to move with the
+		 * recipe or the approval is invisible to every build (#492).
 		 */
 		char pbs_path[PATH_MAX];
 		struct stat st;
@@ -14481,13 +14692,7 @@ static void approve_published_artifact(const char *name, const char *version)
 		if ((size_t)snprintf(pbs_path, sizeof(pbs_path), "%s/%s/%s/%s", g_recipes_dir, name,
 		                      version, PKG_RECIPE_PBS_FILE) < sizeof(pbs_path) &&
 		    stat(pbs_path, &st) == 0)
-			logstore_write("cixd", "info",
-			               "pkg: %s@%s is a PBS recipe, and this daemon cannot yet WRITE an "
-			               "artifact approval into a build.cbs (#492) -- it will rebuild from "
-			               "source on every install until one is added by hand as "
-			               "metadata { \"artifact_sha256\" \"%s\" }, which is read and "
-			               "honoured (cix-build-system#161 is closed)",
-			               name, version, sha);
+			approve_pbs_artifact(pbs_path, name, version, sha);
 		return;
 	}
 
