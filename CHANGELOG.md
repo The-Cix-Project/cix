@@ -6,6 +6,31 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Five more convert to CPDL, and two of them make the language look good (#487, #491)
+
+`diffutils/3.10-9`, `grep/3.11-7`, `sed/4.9-6`, `gawk/5.3.0-10`, `htop/3.5.2-9`. Twenty converted now.
+
+Verified inside the running `jump` container, and the pipeline is the proof rather than three separate version strings:
+
+```
+$ echo one-two | sed s/-/+/ | gawk '{print $1" ok"}' | grep ok
+one+two ok
+$ ls /usr/share/awk/
+assert.awk
+```
+
+That `usr/share/awk` is the concrete cost of the practice ADR-0306 withdrew: gawk's `rm -rf "$PKG_DESTDIR/usr/share"` took its own **awk library files** along with the man pages, so anything `@include`-ing a shipped library was relying on a file the package deleted. Restoring documentation restored those too.
+
+**Two conversions come out shorter and stricter than the shell they replace.** `diffutils` had a `grep -q … || { echo …; exit 1; }` guard in front of a `sed`, existing only because a `sed` that matches nothing succeeds silently; `replace … exactly 1` is that guard by construction, and names the file and the count when it fails. `htop` had twelve lines running `./htop --version` and `case`-matching the version out of its output; `run … expect { stdout contains "3.5.2" }` asserts the same two things — that it runs at all, and that it is the version claimed.
+
+**`grep`, `sed` and `gawk` needed `write` plus a compile step inside a phase** for the weak `__dso_handle` stub. `$(pwd)` needed no equivalent — the shell wrote `LIBS="$(pwd)/dso_stub.o"` from inside a directory whose name the recipe already knows.
+
+Three things learned by being refused, each now in the recipe guide:
+
+- **`remove glob` fails when a glob matches nothing**, where `rm -f` shrugs. So `rm -rf "$PKG_DESTDIR/usr/lib"/*.a` in `grep` and `sed` — defensive, and matching nothing, since neither installs a library — is *not* translated. Translating a defensive no-op faithfully would break the build.
+- **`env` accepts uppercase names only**, so `ac_cv_prog_CC=tcc` is refused with `invalid environment name`. Autoconf cache variables are lowercase by convention and are the correct way to fix a probe that answers wrongly — this platform's own m4/gnulib fix is exactly that. Ten packages in this corpus set one. Filed as cix-build-system#179; `htop` passes it as a positional `VAR=VALUE` argument instead, which autoconf reads the same way for `./configure` but would not help a cache variable needing to reach a `make`.
+- **`htop` never declared `binutils`**, and rebuilding it failed in finalize with *"this package produced ELF output but the build image has no strip"*. ADR-0199/ADR-0304 compose the build container from the recipe's own declarations, so the shell revision has the same gap and would fail the same way if rebuilt — it simply is not being rebuilt. Declared in the conversion.
+
 ### A recipe version whose artifact name another version owns is refused at publish (#494)
 
 Shipped in **v2.57.222**, verified live on 192.168.15.95.

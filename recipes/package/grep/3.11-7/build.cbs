@@ -1,0 +1,110 @@
+# grep, as a PBS recipe (ADR-0305 stage 4).
+#
+# A translation of recipes/package/grep/3.11-6/build.sh: same tarball at
+# the same digest, the same stub object, the same configure and
+# `make install`.
+#
+# The __dso_handle stub is the interesting part, and it is the first
+# conversion here to need `write` + a compile step inside a phase.
+# glibc's static-destructor bookkeeping expects a __dso_handle symbol
+# that the normal CRT/libtool link path supplies and a direct tcc link
+# on this build image sometimes does not. The stub is `weak`, so it is
+# silently superseded wherever the toolchain already provides a real
+# one and supplies the missing definition where it does not.
+#
+# `$(pwd)` has no CPDL equivalent and needs none: the shell wrote
+# LIBS="$(pwd)/dso_stub.o" from inside the source directory, and that
+# directory has a name this recipe already knows.
+#
+# NOT translated: the shell recipe's `rm -rf "$PKG_DESTDIR/usr/lib"/*.a`.
+# grep installs no library, so that glob matched nothing and the `rm -f`
+# shrugged -- but CPDL's `remove glob` FAILS when a glob matches nothing
+# (select_paths sets ENOENT and returns 0), so translating a defensive
+# no-op faithfully would break the build. Where a static archive really
+# is produced and superseded, ADR-0251's finalize phase removes it.
+package "grep" {
+    version "3.11"
+    release 7
+    format "cixpkg"
+
+    license "GPL-3.0-or-later"
+
+    sources {
+        main "grep" {
+            url "https://ftp.gnu.org/gnu/grep/grep-3.11.tar.gz"
+            sha256 "1f31014953e71c3cddcedb97692ad7620cb9d6d04fbdc19e0d8dd836f87622bb"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+        }
+    }
+
+    metadata {
+        "artifact_sha256" "7be25a9b320bf456c30207869df9ab88e05bad9a4ba8d2495d9fc0cc376fc2de"
+        "changelog" "3.11-7: converted from build.sh to build.cbs (ADR-0305 stage 4). Same tarball at the same digest, the same weak __dso_handle stub, and the same gnulib _GL_EXTERN_INLINE_STDHEADER_BUG define TCC needs. Stops deleting usr/share/{man,info,locale} (ADR-0306, #491). The defensive rm of usr/lib/*.a is not translated: grep installs no library, and remove glob fails on a glob that matches nothing."
+    }
+
+    prepare {
+        run "ls" {
+            "-la"
+            "${src}/grep"
+        }
+        require directory "${src}/grep/grep-3.11" {
+            exists
+        }
+        write "${src}/grep/grep-3.11/dso_stub.c" "void *__dso_handle __attribute__((weak)) = (void *)0;\n"
+    }
+
+    build {
+        cd "${src}/grep/grep-3.11" {
+            run "tcc" {
+                "-c"
+                "dso_stub.c"
+                "-o"
+                "dso_stub.o"
+            }
+            # CC and CFLAGS are environment variables for configure;
+            # LIBS is a positional VAR=VALUE argument, which is how the
+            # shell form passed it and what autoconf reads.
+            run "./configure" {
+                "--prefix=/usr"
+                "LIBS=${src}/grep/grep-3.11/dso_stub.o"
+                env "CC" = "tcc"
+                env "CFLAGS" = "-D_GL_EXTERN_INLINE_STDHEADER_BUG=1"
+            }
+            run "make" {
+                "MAKEINFO=true"
+                jobs $jobs
+            }
+        }
+    }
+
+    install {
+        cd "${src}/grep/grep-3.11" {
+            run "make" {
+                "install"
+                "DESTDIR=${dest}"
+                "MAKEINFO=true"
+            }
+        }
+        require file "${dest}/usr/bin/grep" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/bin/egrep" {
+            exists
+            nonempty
+        }
+    }
+}

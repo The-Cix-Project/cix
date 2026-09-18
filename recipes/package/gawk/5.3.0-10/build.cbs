@@ -1,0 +1,102 @@
+# gawk, as a PBS recipe (ADR-0305 stage 4).
+#
+# A translation of recipes/package/gawk/5.3.0-9/build.sh: same tarball
+# at the same digest, the same weak __dso_handle stub, the same
+# configure and `make install`. See recipes/package/grep/3.11-7 for why
+# the stub exists.
+#
+# The three removals split, and gawk is the case where the split is
+# worth more than usual:
+#
+#   usr/share    -- GONE (ADR-0306, #491). This one is not just
+#                   documentation: gawk installs its own awk library
+#                   files under usr/share/awk, and `rm -rf usr/share`
+#                   took those with the man pages. Anything doing
+#                   `@include` of a shipped library was relying on a
+#                   file this package deleted.
+#   usr/include  -- kept. gawkapi.h is for building gawk extensions,
+#                   which nothing here does, and a header is neither
+#                   documentation nor something finalize handles.
+#   usr/etc      -- kept, same reasoning.
+package "gawk" {
+    version "5.3.0"
+    release 10
+    format "cixpkg"
+
+    license "GPL-3.0-or-later"
+
+    sources {
+        main "gawk" {
+            url "https://ftp.gnu.org/gnu/gawk/gawk-5.3.0.tar.gz"
+            sha256 "378f8864ec21cfceaa048f7e1869ac9b4597b449087caf1eb55e440d30273336"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+            tool "ncurses"
+        }
+    }
+
+    metadata {
+        "artifact_sha256" "805aff97d8ddc9cbe918d05a5b6bef29cd727c6124dbe497a02253235b133c3b"
+        "changelog" "5.3.0-10: converted from build.sh to build.cbs (ADR-0305 stage 4). Same tarball at the same digest and the same weak __dso_handle stub. Stops deleting usr/share (ADR-0306, #491), which for gawk also restores its own awk library files under usr/share/awk -- the previous recipe removed those along with the documentation, so anything @include-ing a shipped library was relying on a file this package deleted. usr/include and usr/etc are still dropped."
+    }
+
+    prepare {
+        run "ls" {
+            "-la"
+            "${src}/gawk"
+        }
+        require directory "${src}/gawk/gawk-5.3.0" {
+            exists
+        }
+        write "${src}/gawk/gawk-5.3.0/dso_stub.c" "void *__dso_handle __attribute__((weak)) = (void *)0;\n"
+    }
+
+    build {
+        cd "${src}/gawk/gawk-5.3.0" {
+            run "tcc" {
+                "-c"
+                "dso_stub.c"
+                "-o"
+                "dso_stub.o"
+            }
+            run "./configure" {
+                "--prefix=/usr"
+                "--without-readline"
+                "LIBS=${src}/gawk/gawk-5.3.0/dso_stub.o"
+                env "CC" = "tcc"
+            }
+            run "make" {
+                "MAKEINFO=true"
+                jobs $jobs
+            }
+        }
+    }
+
+    install {
+        cd "${src}/gawk/gawk-5.3.0" {
+            run "make" {
+                "install"
+                "DESTDIR=${dest}"
+                "MAKEINFO=true"
+            }
+        }
+        remove tree "${dest}/usr/include"
+        remove tree "${dest}/usr/etc"
+        require file "${dest}/usr/bin/gawk" {
+            exists
+            nonempty
+        }
+    }
+}

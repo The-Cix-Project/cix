@@ -55,6 +55,7 @@ package "diffutils" {
     }
 
     metadata {
+        "artifact_sha256" "8921e267948c53e170329bc7550c06210ad1e36162be09660f425ac94712ddc2"
         "changelog" "3.10-9: converted from build.sh to build.cbs (ADR-0305 stage 4). Same tarball at the same digest and the same two source edits, now expressed as replace ... exactly 1 -- which subsumes the shell recipe's separate grep guard, whose only job was to make a sed matching nothing fail loudly. Stops deleting usr/share/{man,info,locale} (ADR-0306, #491); dist_man1_MANS= stays, so no man pages are built to delete."
     }
 
