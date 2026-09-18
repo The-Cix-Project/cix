@@ -8749,11 +8749,15 @@ paths:
       summary: >
         Publishes a new recipe version (ADR-0107) -- the real, ongoing way a recipe
         catalog is managed on an already-running system, no ISO rebuild or reinstall
-        needed (ADR-0040). content is validated (must parse, and its own pkg_name=/
-        pkg_version= must equal name and the version content itself declares) before
+        needed (ADR-0040). content is validated (must parse, and its own declared name
+        and version must equal name and the version content itself declares) before
         anything on disk changes. Recipe versions are immutable once published: an
         already-published (name, version) pair is 409 Conflict, never a silent
-        overwrite -- fixing a mistake means bumping pkg_version= and publishing again.
+        overwrite -- fixing a mistake means bumping the version and publishing again.
+        Two formats are accepted, and format says which: a shell recipe (build.sh) or
+        a PBS recipe in CPDL (build.cbs, ADR-0305). A version may hold one or the
+        other, never both -- publishing the second format for a version that already
+        has one is 409, for the same One Source of Truth reason a republish is.
       operationId: addPkgRecipe
       x-cix-expose: [cli, web]
       requestBody:
@@ -8768,24 +8772,53 @@ paths:
                   type: string
                 content:
                   type: string
-                  description: The full text of a build.sh file (pkg_name=/pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=/pkg_changelog=)
+                  description: >
+                    The full text of the recipe. For format "shell" (the default) that is a
+                    build.sh file (pkg_name=/pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=/
+                    pkg_changelog=). For format "pbs" it is a CPDL 0.1 document -- a single
+                    package block declaring version, release, format, sources and requires,
+                    with up to five phases.
+                format:
+                  type: string
+                  enum: [shell, pbs]
+                  default: shell
+                  description: >
+                    Which recipe language content is written in, and therefore which filename
+                    it is stored under: "shell" -> build.sh, "pbs" -> build.cbs (ADR-0305 --
+                    a recipe's format is its filename, because a filename cannot disagree with
+                    itself). Omitted means "shell", so every pre-existing client is unchanged.
+                    This field is a routing hint that is verified immediately rather than
+                    trusted: "pbs" content must satisfy `cbs explain --json` and "shell"
+                    content must parse as a shell recipe, so a body whose format disagrees
+                    with its content is refused with 400 and never becomes a stored file.
       responses:
         "204":
           description: Recipe version published
         "400":
-          description: name/content missing, name invalid, or content failed to parse / its pkg_name= doesn't match name
+          description: >
+            name/content missing, name invalid, format not one of shell/pbs, or content
+            failed to parse in the declared format / its own declared name doesn't match name.
+            For format "pbs" this includes any CPDL validation error -- the diagnostic names
+            the CPDL error code (e.g. CPDL-E3001) and the line it was raised on.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: This exact (name, version) is already published -- versions are immutable
+          description: >
+            This exact (name, version) is already published -- versions are immutable. Also
+            returned when the version exists in the OTHER format: a version holds a build.sh
+            or a build.cbs, never both (ADR-0305).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "500":
-          description: Validated but writing the build.sh file to disk failed
+          description: >
+            Validated but writing the recipe file to disk failed. For format "pbs" this also
+            covers a failure to persist the derived explain.json beside it, which is written
+            in the same operation because every later read uses it instead of re-running the
+            parser (ADR-0305).
           content:
             application/json:
               schema:
@@ -8794,8 +8827,10 @@ paths:
   /pkg/recipes/{name}:
     get:
       summary: >
-        One recipe version's own {name,version,depends,content,created_at} -- the raw
-        build.sh text too, unlike GET /pkg/recipes' list-view metadata-only shape.
+        One recipe version's own {name,version,format,depends,content,created_at} -- the
+        raw recipe text too, unlike GET /pkg/recipes' list-view metadata-only shape.
+        content is whichever file holds that version, and format says which language it
+        is in: a shell build.sh or a PBS build.cbs in CPDL (ADR-0305).
         Powers the web dashboard's per-package Recipe tab (view, and edit-then-publish
         as a new version through POST /pkg/recipes). An optional ?version= query
         parameter selects a specific published version; omitted resolves to the
@@ -18776,9 +18811,22 @@ components:
             diamond-dependency handling (dependencies always resolve to
             their own highest available version, regardless of any
             pinned version on the package actually being installed). A
-            hostbuild recipe (POST /pkg/hostbuild) must leave this empty
-            -- dependency resolution has no meaning for a one-shot
-            artifact harvest.
+            hostbuild recipe (POST /pkg/hostbuild) may declare it: the
+            declaration is CARRIED onto the entry and not resolved, since
+            resolving means "install the closure into an image" and a
+            hostbuild has no image to merge into (ADR-0303, #465). This
+            said "must leave this empty" until then, which was true of the
+            refusal that used to reject such a recipe outright.
+            For a PBS recipe (build.cbs) this value is derived from
+            `requires { runtime { package "..." } }` (ADR-0305).
+        format:
+          type: string
+          enum: [shell, pbs]
+          description: >
+            Which language this published version is written in, and therefore which
+            file holds it: "shell" -> build.sh, "pbs" -> build.cbs in CPDL 0.1
+            (ADR-0305). Not a property a recipe declares -- it IS the filename, so it
+            cannot disagree with what the daemon will actually run.
         changelog:
           type: string
           nullable: true
@@ -18790,7 +18838,10 @@ components:
             recipe author who simply hasn't added one). Deliberately
             single-line by construction (the daemon reads up to the closing
             quote or a newline, whichever comes first) -- not a place for a
-            real multi-paragraph release note.
+            real multi-paragraph release note. Always null for a PBS recipe:
+            CPDL 0.1 rejects unknown package keys, so there is nowhere in a
+            build.cbs to put one (cix-build-system#161 asks for an opaque
+            embedder-owned metadata block; ADR-0305 records the gap).
         created_at:
           type: integer
           description: >
