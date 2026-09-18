@@ -6,6 +6,28 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cbs 0.1.25-6, built from `main` -- every upstream blocker closed and verified on Cix hardware
+
+Upstream closed all twelve open tickets in thirteen commits, none of them yet in a release. `recipes/package/cbs/v0.1.25-6/build.cbs` packages the commit (`170dc744d`, sha256 `27cea3ff...`) and the full upstream suite runs as the build's own gate, in a Cix build container on 192.168.15.95. It passes, and its contract tests are what verify the four gaps that were blocking Cix:
+
+```
+CLI contract tests:   PASS (commands, output, and exit statuses)
+CLI finalizer tests:  PASS (mutation before manifest and fail-closed policy)
+policy tests:         PASS (embedder finalizer runs before manifest and is recorded)
+archive extraction:   PASS (safe links, mtimes, and hostile entries)
+kconfig merge tests:  PASS (curated y/m/n states and deterministic order)
+```
+
+`cli-contract-test.sh` asserts, among other things, `"capabilities":["CAP_ONE","CAP_TWO"]`, `"metadata":{"artifact_sha256":"deadbeef",...}` and `"license":"GPL-3.0-or-later"` out of `explain --json` -- so cix-build-system#162, #161 and #168 are verified by upstream's own gate running here, not by reading their commits. #159's seam is verified twice over, by the finalizer test and the policy test.
+
+**Both remaining stages of the PBS flip (#487) are therefore unblocked**: stage 3 (CIXPKG as the artifact format) needed #159; stage 4 (the `.cbs` as the only recipe file) needed #161 and #162.
+
+**Three revisions were burned on the version string, and the lesson is upstream's contract rather than a bug.** Releases 4 and 5 passed `CBS_VERSION` explicitly so the binary would report the commit rather than the unbumped `0.1.25`. Release 4 failed `cli-build-test.sh`, which asserts the version's *format* (`^cbs [0-9][0-9A-Za-z._-]*$` -- no `+`). Release 5 passed that and failed `cli-contract-test.sh`, which asserts *equality* with the VERSION file. That second one is a contract, not a nit: upstream defines the version a `cbs` binary reports as the content of its VERSION file, which is exactly what #146 was filed about. Release 6 drops the override, reports `cbs 0.1.25` as its source tree declares, and keeps the provenance where it belongs -- the pinned commit, the release digit, and the recipe header.
+
+It also sharpens cix-build-system#172, the request for a tagged release: because upstream's own suite pins the reported version to the VERSION file, *every* build from `main` necessarily reports `0.1.25`, so a downstream packager cannot tell them apart at runtime by design.
+
+One earlier claim corrected: #172 was filed asserting Cix "cannot consume any of it" without a tag. That was invented. A commit archive fetches through the ordinary `pkg_source` path (HTTP 200, 326458 bytes), pins with `sha256` exactly as a tag's does, and has the same top-level directory; and a Cix package being `<version>-<release>` means `v0.1.25-6` collides with nothing. The issue is downgraded to a request.
+
 ### A build that stages nothing is a failed build, not a package (#486)
 
 A build whose install phase produced no files was published as a package and reported `installed`. Two reached the fleet that way, both measured on 192.168.15.95 on 2026-09-18:
