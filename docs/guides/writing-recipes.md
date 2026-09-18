@@ -4,12 +4,41 @@ This is the canonical, complete reference for Cix's recipe format — the source
 
 ## What a recipe is
 
-A recipe is a POSIX shell script, one per package, matching the same well-proven format Gentoo ebuilds, Arch PKGBUILDs, and CRUX Pkgfiles all use. `cixd` treats it two completely different ways depending on which part is being read:
+A recipe is usually a POSIX shell script, one per package, matching the same well-proven format Gentoo ebuilds, Arch PKGBUILDs, and CRUX Pkgfiles all use — and since ADR-0305 it may instead be a declarative CPDL document (see [Two recipe languages](#two-recipe-languages-adr-0305) below). The rest of this section describes the shell form. `cixd` treats it two completely different ways depending on which part is being read:
 
 - **Metadata** (`pkg_name=`, `pkg_version=`, `pkg_source=`, `pkg_sha256=`, `pkg_depends=`, `pkg_changelog=`) is read by a strict, non-executing line scanner (`parse_recipe()` in `daemon/src/pkg.c`) — the daemon never runs a shell interpreter over your recipe to extract these values.
 - **Build logic** (`pkg_build()`/`pkg_install()`, real shell functions) is only ever invoked inside an isolated, network-less build container, `". /build/recipe.sh"` sourced by a tiny driver script. This is the *only* place a recipe's own shell code ever actually runs — never on the host, never outside a container.
 
 This split is deliberate and load-bearing: a malicious or buggy recipe's shell code can corrupt its own build container's filesystem, but it can never touch the host, and it has no network access to exfiltrate anything even if it tried (this project's networking plane has no outbound NAT — see ADR-0007 and `daemon/include/pkg.h`'s own header comment).
+
+## Two recipe languages (ADR-0305)
+
+Everything below describes a **shell recipe**, `build.sh`, which is what every recipe in this repo is today. A second language exists: a **PBS recipe**, `build.cbs`, written in CPDL 0.1 and built by [cix-build-system](https://git.home.arpa/itdlabs/cix-build-system) rather than by a shell.
+
+**The filename is the format.** `<name>/<version>/build.sh` is a shell recipe, `<name>/<version>/build.cbs` a PBS one, and a version holds one or the other — never both, which is refused at publish. Nothing sniffs the content and no recipe declares its own language, because a filename cannot disagree with what will actually run. `cixctl pkg recipe add` takes the format from the file you point it at, so publishing one needs no extra flag:
+
+```sh
+cixctl pkg recipe add --name=zstd --file=recipes/package/zstd/1.5.7-4/build.cbs
+```
+
+A PBS recipe is declarative: five ordered phases (`prepare`, `configure`, `build`, `check`, `install`) instead of two shell functions, validated before anything runs. What it declares maps onto the same fields the rest of this guide describes:
+
+| shell recipe | PBS recipe |
+|---|---|
+| `pkg_version=` | `version` + `release`, joined as `<version>-<release>` |
+| `pkg_source=` / `pkg_sha256=` | `sources { main "…" { url … sha256 … } }` |
+| `pkg_depends=` | `requires { runtime { package "…" } }` |
+| `pkg_build_depends=` | `requires { build { compiler "…" tool "…" } }` |
+| `pkg_build()` / `pkg_install()` | the phases; an install phase stages into `${dest}` |
+
+Four things to know before writing one, each of which will otherwise cost you a build:
+
+- **`format "cixpkg"` is required**, even though cixd still tars the staged tree itself. CPDL accepts `"tar.gz"` as a value, but CBS's build pipeline refuses to run any recipe declaring anything else.
+- **The engine is not yours to declare.** Do not put `cbs` in `requires { build { … } }`; cixd adds it, the same way it adds the C library. Declare `cbs@<version>` only if you need a specific engine revision, which wins the slot.
+- **Two fields have no home yet.** A PBS recipe cannot carry an artifact checksum or a changelog — CPDL 0.1 rejects unknown package keys (cix-build-system#161). The practical consequence is that it **rebuilds from source on every install** rather than taking a cache hit, so do not flip a package that depends on that.
+- **Build capabilities are refused.** `cbs explain --json` reports a capability *count*, not the names (cix-build-system#162), and cixd will not grant one it cannot name — so a recipe declaring `capability "CAP_…"` is rejected at publish rather than built without it.
+
+Sources are handed to CBS, not fetched by it: cixd fetches and checksum-verifies as it does for any recipe, then places each source in a cache directory named by its own digest, which CBS re-verifies. So a PBS build container still has no network and no credentials, exactly like a shell one.
 
 ## Required metadata fields
 

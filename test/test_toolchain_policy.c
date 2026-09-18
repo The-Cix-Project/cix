@@ -156,6 +156,14 @@ static int version_newer(const char *a, const char *b)
  *
  * Read before pkg_build(), where the metadata lives.
  */
+/* 1 when path is a regular file. Keeps the resolution above readable. */
+static int stat_exists(const char *path)
+{
+	struct stat st;
+
+	return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
 static int recipe_declares_gcc(const char *path)
 {
 	FILE *f = fopen(path, "r");
@@ -172,6 +180,28 @@ static int recipe_declares_gcc(const char *path)
 		if (strncmp(line, "pkg_toolchain=\"gcc\"", 19) == 0) {
 			declares = 1;
 			break;
+		}
+		/*
+		 * ADR-0305: the same declaration in a PBS recipe, where it is
+		 * CPDL's own `toolchain "gcc" { "reason" }` node rather than a
+		 * shell assignment -- and indented, so the line is not
+		 * anchored at column zero the way the shell form is.
+		 *
+		 * This gate MUST learn every recipe language as it arrives.
+		 * It walks the corpus textually and counts, so a format it
+		 * does not recognise is not an error here -- it is a silent
+		 * zero, and a gcc recipe that escapes the count is exactly
+		 * what ADR-0224 exists to make impossible.
+		 */
+		{
+			const char *q = line;
+
+			while (*q == ' ' || *q == '\t')
+				q++;
+			if (strncmp(q, "toolchain \"gcc\"", 15) == 0) {
+				declares = 1;
+				break;
+			}
 		}
 	}
 	fclose(f);
@@ -197,6 +227,8 @@ static int recipe_uses_gcc(const char *path)
 {
 	FILE *f = fopen(path, "r");
 	char line[4096];
+	size_t plen = strlen(path);
+	const int is_pbs = plen >= 4 && strcmp(path + plen - 4, ".cbs") == 0;
 	int in_build = 0, uses = 0;
 
 	if (f == NULL)
@@ -207,7 +239,17 @@ static int recipe_uses_gcc(const char *path)
 		if (!in_build) {
 			if (strncmp(line, "pkg_build()", 11) == 0)
 				in_build = 1;
-			continue;
+			/*
+			 * A PBS recipe has no pkg_build() to wait for: its
+			 * phases ARE the document, and the metadata above them
+			 * carries no compiler invocation to confuse this scan.
+			 * So the whole file is in scope from the first line
+			 * (ADR-0305).
+			 */
+			else if (is_pbs)
+				in_build = 1;
+			else
+				continue;
 		}
 		while (*p == ' ' || *p == '\t')
 			p++;
@@ -251,9 +293,19 @@ int main(void)
 
 			if (vent->d_name[0] == '.')
 				continue;
+			/* Either recipe language (ADR-0305). Deliberately a
+			 * textual check here rather than a call into the
+			 * daemon's pkg_recipe_file_in(): this test links no
+			 * daemon code at all, which is what lets it run
+			 * anywhere, and "which of two filenames exists" is a
+			 * fixture concern rather than a second implementation
+			 * of the rule. */
 			snprintf(path, sizeof(path), "%s/%s/build.sh", pkgdir, vent->d_name);
-			if (stat(path, &st) != 0)
-				continue;
+			if (stat(path, &st) != 0) {
+				snprintf(path, sizeof(path), "%s/%s/build.cbs", pkgdir, vent->d_name);
+				if (stat(path, &st) != 0)
+					continue;
+			}
 			if (latest[0] == '\0' || version_newer(vent->d_name, latest))
 				snprintf(latest, sizeof(latest), "%s", vent->d_name);
 		}
@@ -262,6 +314,8 @@ int main(void)
 			continue;
 
 		snprintf(path, sizeof(path), "%s/%s/build.sh", pkgdir, latest);
+		if (stat_exists(path) == 0)
+			snprintf(path, sizeof(path), "%s/%s/build.cbs", pkgdir, latest);
 		if (!recipe_declares_gcc(path) && !recipe_uses_gcc(path))
 			continue;
 		found++;
