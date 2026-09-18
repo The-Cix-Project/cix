@@ -346,11 +346,36 @@ enum pkg_error {
 	                                 * this used to collapse into, misleadingly reporting a real
 	                                 * "create the image first" situation as if the recipe's own
 	                                 * content were malformed. */,
-	PKG_ERR_NOT_INSTALLED /* the package row exists but is not INSTALLED -- a failed or
-	                       * in-flight build. Distinct from PKG_ERR_NOT_FOUND (no such
-	                       * package at all) for the same reason
-	                       * PKG_ERR_TARGET_IMAGE_NOT_FOUND is: collapsing the two reports
-	                       * "no such thing" for something the operator can plainly see. */
+	PKG_ERR_NOT_INSTALLED, /* the package row exists but is not INSTALLED -- a failed or
+	                        * in-flight build. Distinct from PKG_ERR_NOT_FOUND (no such
+	                        * package at all) for the same reason
+	                        * PKG_ERR_TARGET_IMAGE_NOT_FOUND is: collapsing the two reports
+	                        * "no such thing" for something the operator can plainly see. */
+	/*
+	 * #494: a DIFFERENT version of this package already owns the
+	 * artifact name this one would publish under.
+	 *
+	 * The artifact server treats a missing release as release 1, so
+	 * `wget@1.25.0` and `wget@1.25.0-1` both resolve to
+	 * wget-1.25.0-1-x86_64.tar.gz -- measured, both names return 200
+	 * with an identical body. The second version builds correctly and
+	 * then cannot publish: the push is refused 409 because the name is
+	 * immutable and taken, so no approval can ever be written for it
+	 * and the package rebuilds from source on every install, on every
+	 * host, forever.
+	 *
+	 * Its own code, and not PKG_ERR_DUPLICATE: this version is NOT
+	 * already published, and saying so sends the reader to look for a
+	 * recipe that is not there. What is taken is the artifact name,
+	 * which is a different object with a different fix -- pick another
+	 * release number, which is free at publish time and impossible
+	 * afterwards.
+	 *
+	 * Refused here rather than at the artifact push because that push
+	 * happens after a build has already succeeded, when the version is
+	 * published and immutable and nothing can be done about it.
+	 */
+	PKG_ERR_ARTIFACT_NAME_TAKEN
 };
 
 /*
