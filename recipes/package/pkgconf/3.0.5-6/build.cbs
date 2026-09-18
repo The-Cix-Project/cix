@@ -1,0 +1,103 @@
+# pkgconf, as a PBS recipe (ADR-0305 stage 4).
+#
+# A translation of recipes/package/pkgconf/3.0.5-5/build.sh: same
+# tarball at the same digest, the same two configure switches, the same
+# `make install` plus the pkg-config compatibility symlink.
+#
+# THE REMOVALS ARE NOT ALL THE SAME, and this recipe is where that
+# stopped being a footnote. The other conversions in this batch dropped
+# `rm usr/lib/*.a` as redundant, on the grounds that ADR-0251's finalize
+# phase already removes a static archive. That is only true when the
+# archive is SUPERSEDED: cbs's `drop-static-archives` rule unlinks a
+# `.a` only when a shared object sits beside it in the same directory
+# (`same_directory_shared_object()`).
+#
+# pkgconf builds with `--disable-shared`. There is no `libpkgconf.so`,
+# so finalize will NOT drop `libpkgconf.a`, and deleting it here is
+# load-bearing rather than a restatement of platform policy. Kept.
+#
+# So of the five things the shell recipe removed:
+#
+#   usr/share/man, usr/share/doc  -- GONE (ADR-0306, #491)
+#   usr/include                   -- kept: a static-only build ships no
+#                                   usable development headers, and this
+#                                   package is a tool, not a library
+#   libpkgconf.a, libpkgconf.la   -- kept: see above; .la goes with it
+package "pkgconf" {
+    version "3.0.5"
+    release 6
+    format "cixpkg"
+
+    license "ISC"
+
+    sources {
+        main "pkgconf" {
+            url "https://distfiles.ariadne.space/pkgconf/pkgconf-3.0.5.tar.xz"
+            sha256 "3acd3a8a3cce65a8d620321855d92fb602e026cbe8e13ee36bdec58483b59ace"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+            tool "findutils"
+            tool "diffutils"
+        }
+    }
+
+    metadata {
+        "artifact_sha256" "ede67b56f3c4cb45b543195baa26827ef324c5d09b46c03a70dbf38f3c5560b9"
+        "changelog" "3.0.5-6: converted from build.sh to build.cbs (ADR-0305 stage 4). Same tarball at the same digest and the same configure switches. Stops deleting usr/share/{man,doc} (ADR-0306, #491) but KEEPS the libpkgconf.a/.la and usr/include removals: this is a --disable-shared build, so no shared object sits beside the archive and finalize's drop-static-archives rule would not remove it."
+    }
+
+    prepare {
+        run "ls" {
+            "-la"
+            "${src}/pkgconf"
+        }
+        require directory "${src}/pkgconf/pkgconf-3.0.5" {
+            exists
+        }
+    }
+
+    build {
+        cd "${src}/pkgconf/pkgconf-3.0.5" {
+            run "./configure" {
+                "--prefix=/usr"
+                "--disable-shared"
+                env "CC" = "tcc"
+            }
+            run "make" {
+                jobs $jobs
+            }
+        }
+    }
+
+    install {
+        cd "${src}/pkgconf/pkgconf-3.0.5" {
+            run "make" {
+                "install"
+                "DESTDIR=${dest}"
+            }
+        }
+        # Relative target, deliberately: the link must resolve on the
+        # installed host, where ${dest} does not exist. Operand order is
+        # target first -- the reverse of how `ln -s` reads in prose.
+        symlink "pkgconf" to "${dest}/usr/bin/pkg-config"
+        remove tree "${dest}/usr/include"
+        remove "${dest}/usr/lib/libpkgconf.a"
+        remove "${dest}/usr/lib/libpkgconf.la"
+        require file "${dest}/usr/bin/pkgconf" {
+            exists
+            nonempty
+        }
+    }
+}

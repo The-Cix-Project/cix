@@ -6,6 +6,31 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Nine more packages convert to CPDL, and one of them was never actually built (#487, #491, #494)
+
+Converted and installed on 192.168.15.95: `libuuid/2.42.2-5`, `curl/8.21.0-5`, `libxcrypt/4.4.36-11`, `wget/1.25.0-2` into `jumpbox`, and `gzip/1.13-5`, `patch/2.8-6`, `make/4.4.1-7`, `bc/1.08.1-4`, `pkgconf/3.0.5-6` into a throwaway image. Fifteen converted in total.
+
+The five build tools went into a throwaway image deliberately rather than into `cix-builder`, `cix-hosttools` or `kernel-builder` where they live: a broken `make` in the build image cannot be fixed by building anything. Proving the recipes and promoting them are separate decisions, and only the first is taken here.
+
+Verified from inside the running `jump` container, where the login itself exercises the gcc-built `libxcrypt` through PAM:
+
+```
+$ curl --version | head -1
+curl 8.21.0 (x86_64-pc-linux-gnu) libcurl/8.21.0 OpenSSL/3.0.20 zlib/1.3.2
+$ curl -sS -o /dev/null -w '%{http_code}\n' https://192.168.15.95/v1/health --insecure
+200
+```
+
+**`wget` reported success without ever building, and I reported it verified.** A recipe version with no release suffix publishes as release 1, so the shell recipe `wget@1.25.0` had already published `wget-1.25.0-1-x86_64.tar.gz`. The obvious conversion — `version "1.25.0" release 1` — fuses to that identical artifact name. The install found it cached, downloaded it, installed it, and reported `installed` at the PBS version. Everything an operator would check agreed: correct state, correct file list, and `wget --version` reporting `GNU Wget 1.25.0`, which both recipes produce.
+
+The only thing that exposed it was the artifact's `modified` timestamp being **five days older than the build**. The `artifact_cached` flag is not a signal and nearly sent this the other way: all five tool conversions also report `cached=true`, with artifacts timestamped minutes earlier — the flag is set once a build publishes its artifact, so it says nothing about whether one ran. Filed as #494, with the request that the daemon refuse or at least log an artifact older than the recipe version claiming it. `wget` is now `1.25.0-2`, which built in 46 seconds and produced its own artifact; the colliding `1.25.0-1` recipe is deleted.
+
+This will recur: CPDL declares `version` and `release` separately, so the natural conversion of any suffix-less shell version is exactly the colliding case.
+
+**"The finalize phase already does it" is not true unconditionally, and `pkgconf` is where that mattered.** Earlier conversions dropped `rm usr/lib/*.a` as a restatement of ADR-0251 clause 2. That clause only removes an archive that is *superseded* — cbs unlinks a `.a` solely when a shared object sits beside it in the same directory. `pkgconf` builds `--disable-shared`, so there is no `libpkgconf.so`, finalize leaves `libpkgconf.a` in place, and deleting it in the recipe is load-bearing. It is kept, with the reasoning written down where the next reader will be tempted to remove it.
+
+What ADR-0306 restores also varies far more than "stops deleting documentation" suggests, measured across the converted set: `libuuid` ships 46 of its 51 files under `usr/share` (all locale catalogues) where the shell recipe deleted every one; `xz` ships 254 of 296. `curl` and `wget` gain almost nothing — one file each — because `--disable-manual --disable-docs` and a missing `help2man` mean upstream never built the documentation to begin with.
+
 ### The CPDL gaps are filed with counts, and the recipe guide gains an idiom table (#487)
 
 Three feature requests upstream, each with the corpus measurement behind it rather than an impression:
