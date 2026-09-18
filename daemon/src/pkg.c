@@ -1794,6 +1794,7 @@ static int run_cbs_explain(const char *recipe_path, char *out, size_t out_size, 
 	pid_t pid;
 	int status = 0;
 	size_t total = 0;
+	int truncated;
 
 	if (out_size == 0)
 		return -1;
@@ -1862,18 +1863,13 @@ static int run_cbs_explain(const char *recipe_path, char *out, size_t out_size, 
 	/*
 	 * A filled buffer means the document was cut off, and a truncated
 	 * JSON object fails to parse with a message about syntax rather
-	 * than about size. Refused explicitly so the cause is the cause.
+	 * than about size. Noted here and reported below, after the single
+	 * wait -- not returned from early, so that this function has
+	 * exactly ONE waitpid() on every path (ADR-0247's budget, and
+	 * test_blocking_waits' own rule that a raise has to argue for
+	 * itself: one bounded wait is easier to argue for than two).
 	 */
-	if (total + 1 >= out_size) {
-		snprintf(err, err_size, "cbs explain produced more than %zu bytes of output",
-		         out_size - 1);
-		while (read(errfd[0], out, out_size) > 0)
-			;
-		close(errfd[0]);
-		waitpid(pid, &status, 0);
-		out[0] = '\0';
-		return -1;
-	}
+	truncated = total + 1 >= out_size;
 
 	{
 		char diag[512];
@@ -1896,6 +1892,12 @@ static int run_cbs_explain(const char *recipe_path, char *out, size_t out_size, 
 
 		if (waitpid(pid, &status, 0) != pid) {
 			snprintf(err, err_size, "could not wait for cbs: %s", strerror(errno));
+			out[0] = '\0';
+			return -1;
+		}
+		if (truncated) {
+			snprintf(err, err_size, "cbs explain produced more than %zu bytes of output",
+			         out_size - 1);
 			out[0] = '\0';
 			return -1;
 		}

@@ -121,7 +121,34 @@ static const struct budget g_budgets[] = {
 	 * wait on it (a double-fork intermediate, in budget); all three now
 	 * call curlfetch_perform() directly inside the function's own
 	 * already-forked child, with no inner fork left to wait on. */
-	{ "daemon/src/pkg.c", 6, "build helpers and fetch intermediates; #352 dropped one (pkg_run_capture_sha256(), no more forked sha256sum), #411 dropped another (tarball_has_common_top_dir(), no more forked tar -tf), #410 dropped three more (start_fetch_for()'s curl children, replaced by in-process curlfetch_perform())" },
+	/*
+	 * 6 -> 7 (ADR-0305): run_cbs_explain() waits for `cbs explain
+	 * --json`, and this is the argument the comment above demands of
+	 * any raise, against the rule it states.
+	 *
+	 * In budget as a BOUNDED EXTERNAL TOOL, and bounded by construction
+	 * rather than by expectation. `explain` parses one local file and
+	 * writes JSON to a pipe: it opens no socket (CBS fetches only in
+	 * `build`, over a libcurl it dlopen()s there), takes no lock, forks
+	 * nothing, and waits on nothing. Its runtime is a function of a
+	 * recipe's size.
+	 *
+	 * The one way it could have outlived the call is the reason to read
+	 * the code and not just this sentence: if the reader stopped
+	 * draining stdout while the child was still writing, the child
+	 * would block on a full pipe forever and so would the wait. That is
+	 * why the read end is CLOSED before the wait on every path,
+	 * including the truncation path -- a child writing into a closed
+	 * pipe dies rather than blocking. The first draft returned early
+	 * from truncation with a second waitpid() of its own; it was
+	 * restructured to a single wait precisely so this entry has one
+	 * thing to justify instead of two.
+	 *
+	 * What it is NOT: a wait after a signal. This is the pattern the
+	 * comment above names as out of budget, and it cost 366 seconds and
+	 * a hand reset on 192.168.15.95. Nothing here signals the child.
+	 */
+	{ "daemon/src/pkg.c", 7, "build helpers and fetch intermediates, plus ADR-0305's `cbs explain` (a bounded parse of a local file, its pipe closed before the wait); #352 dropped one (pkg_run_capture_sha256(), no more forked sha256sum), #411 dropped another (tarball_has_common_top_dir(), no more forked tar -tf), #410 dropped three more (start_fetch_for()'s curl children, replaced by in-process curlfetch_perform())" },
 	{ "daemon/src/targz.c", 4, "tar/gzip pipeline, bounded by the archive" },
 	{ "daemon/src/diskpart.c", 4, "sfdisk/blkid, bounded external tools" },
 	{ "daemon/src/exec.c", 2, "namespace-join intermediates" },
@@ -151,8 +178,10 @@ static const struct budget g_budgets[] = {
  * then 57 -> 53 for #410 (main.c's fetch_update_image() dropped one,
  * pkg.c's start_fetch_for() dropped three -- every remaining curl
  * subprocess across both files replaced by in-process libcurl calls
- * via curlfetch_perform()). */
-#define TOTAL_ALLOWED 53
+ * via curlfetch_perform()). Then 53 -> 54 for ADR-0305's
+ * run_cbs_explain() in pkg.c, the same single wait the per-file entry
+ * above argues for. */
+#define TOTAL_ALLOWED 54
 
 static int is_comment(const char *line)
 {
