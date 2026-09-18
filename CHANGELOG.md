@@ -6,6 +6,33 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A PBS recipe's capability names and metadata are read (cix-build-system#161, #162)
+
+Both gaps closed upstream on 2026-09-18. `pbs_explain_capability_count()` is gone, replaced by `pbs_explain_capabilities()` writing the **names** space-separated in the same shape `pkg_build_caps=` gives the shell path, and `pbs_explain_metadata()` reading `artifact_sha256` and `changelog` out of the opaque `metadata { }` block into the same `struct pkg_recipe` fields the shell keys land in. Neither format owns a second spelling of either list.
+
+**Proven on 192.168.15.95 with a control, because the first result was not one.** `probe-pbs-caps 1-2` declares `capability "CAP_SYS_ADMIN"`; its build container reported `CapEff=0x00000000b8a4fdff`, in which bit 21 is set. That alone proves nothing — bit 12 (`CAP_NET_ADMIN`) is set in the same mask and the recipe never declared it, so a set bit is equally consistent with the declaration having done nothing. `1-3` is identical minus the declaration:
+
+```
+with declaration : 0xb8a4fdff
+control          : 0xb884fdff
+XOR              : 0x00200000     -> bits differing: [21]
+```
+
+One bit, and it is CAP_SYS_ADMIN. `CAP_NET_ADMIN` is set in both, so it comes from the baseline rather than the declaration.
+
+Two more results from the same probe. **Publishing it at all is half the proof**: before this, cixd refused any PBS recipe declaring a capability rather than building it without one, because a count of 1 does not say whether the recipe asked for `CAP_SYS_ADMIN` or `CAP_NET_ADMIN`. And `GET /v1/pkg/recipes/probe-pbs-caps` now reports a real `changelog`, where every PBS recipe reported `null` — CPDL has no `changelog` keyword, so that value can only have come through the metadata block.
+
+**An older cbs is refused, not read as zero.** `pbs_explain_capabilities()` returns a distinct result when the document reports a NUMBER rather than an array, and both the publish path and the build-time parse refuse on it, saying to upgrade cbs. cixd execs whichever cbs is installed, so a downgrade would otherwise turn a declared `CAP_SYS_ADMIN` into no capability at all in silence — the defect ADR-0304 was written about. A count of **zero** is genuinely none and is not refused. `test_pbsrecipe` carries both document shapes and is in `SELFTESTS`, so this is gated where `test_pkg` could not be (#224).
+
+**The host's own cbs had to be upgraded first, and that is a deploy-order fact worth keeping**: `mkbootroot` stages `cbs` from `cix-hosttools`, not `cix-builder`, so `cbs` was upgraded there before the hostbuild. Otherwise the assembled root would carry v0.1.25-1, `cbs explain` at publish would still answer with a count, and a capability-declaring recipe would be refused by the very code this change adds.
+
+**Two CPDL properties found by having a recipe refused, both worth knowing before writing one:**
+
+- **CPDL fixes declaration order** (`CPDL-E3003`). It is `version, release, format, [license], [upstream], sources, requires, metadata, capability,` then phases.
+- **CPDL refuses `run "bash"`** (`CPDL-E3006`, "command interpreters are not valid run executables"). That is the language doing its job — a declarative recipe that can shell out is a shell recipe with extra syntax. The probe's first version used `bash -c` with shell arithmetic to test a capability bit; the rewrite prints all four masks with `grep` and the arithmetic is done in the report instead.
+
+**Half of #161's benefit is still unreachable and is filed rather than implied.** cixd can now *read* a PBS artifact approval and still cannot *write* one: `approve_published_artifact()` splices a line into shell text anchored on `pkg_sha256="`, and the CPDL equivalent inserts a key into a block that may not exist, needing a counterpart to `recipe_adds_only_artifact_sha256()` — the guard that permits exactly this one edit to an immutable recipe (ADR-0107). So a converted package rebuilds from source on every install unless its approval is hand-written, and 88 of 148 recipes carry one. Tracked as #492. The stale comment in that function claiming a `.cbs` has nowhere to carry a checksum is corrected in the same change, and its log line now says what is true and what to write by hand.
+
 ### cbs 0.1.25-6, built from `main` -- every upstream blocker closed and verified on Cix hardware
 
 Upstream closed all twelve open tickets in thirteen commits, none of them yet in a release. `recipes/package/cbs/v0.1.25-6/build.cbs` packages the commit (`170dc744d`, sha256 `27cea3ff...`) and the full upstream suite runs as the build's own gate, in a Cix build container on 192.168.15.95. It passes, and its contract tests are what verify the four gaps that were blocking Cix:
