@@ -7,6 +7,7 @@
  * verify the daemon.
  */
 #include "console.h"
+#include "recipe_format.h"
 #include "httpclient.h"
 #include "version.h" /* CIX_BUILD_VERSION -- cixctl's own build, for the shell banner (#440) */
 /*
@@ -14489,8 +14490,15 @@ static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int arg
 	 */
 	if (format == NULL) {
 		size_t flen = strlen(file);
+		const size_t slen = sizeof(PKG_RECIPE_PBS_SUFFIX) - 1;
 
-		format = (flen >= 4 && strcmp(file + flen - 4, ".cbs") == 0) ? "pbs" : "shell";
+		/* PKG_RECIPE_PBS_SUFFIX, not a literal: the daemon resolves a
+		 * version to its recipe with the same constant, and two copies
+		 * of this string are two places that could disagree about what
+		 * a PBS recipe is. */
+		format = (flen >= slen && strcmp(file + flen - slen, PKG_RECIPE_PBS_SUFFIX) == 0)
+		             ? "pbs"
+		             : "shell";
 	} else if (strcmp(format, "shell") != 0 && strcmp(format, "pbs") != 0) {
 		fprintf(stderr, "cixctl: --format= must be shell or pbs\n");
 		return 2;
