@@ -99,20 +99,60 @@ const char *pbs_explain_toolchain(const struct pbs_explain *ex);
 const char *pbs_explain_toolchain_reason(const struct pbs_explain *ex);
 
 /*
- * How many build capabilities the document declares -- a COUNT, not
- * the names, because that is all `cbs explain --json` reports
- * (cix-build-system#162). cixd cannot honour a capability it cannot
- * name, and granting one by count would be worse than not supporting
- * the field: a count of 1 does not say whether the recipe asked for
- * CAP_SYS_ADMIN or CAP_NET_ADMIN.
+ * The build capabilities the document declares, space-separated, in the
+ * same shape `pkg_build_caps=` gives the shell path -- so both formats
+ * reach pkg_build_container_spec()'s one caps argument and neither owns
+ * a second spelling of the same list.
  *
- * So this exists to REFUSE, not to grant: a non-zero count makes the
- * publish fail with a message naming the upstream issue, rather than
- * building the package with the capability silently missing. Which is
- * the same rule ADR-0304 settled -- a declaration that is read by
- * nothing is worse than one that is absent.
+ * `cbs explain --json` reported a capability COUNT until
+ * cix-build-system#162, which is why this accessor once existed only to
+ * REFUSE a publish (a count of 1 does not say whether the recipe asked
+ * for CAP_SYS_ADMIN or CAP_NET_ADMIN, and granting by count would be
+ * worse than not supporting the field). That is fixed upstream and
+ * verified here: cbs 0.1.25-6 is built from cix-build-system main at
+ * 170dc744d, and its own `cli-contract-test.sh` -- which asserts
+ * `"capabilities":["CAP_ONE","CAP_TWO"]` out of explain --json -- passes
+ * in a Cix build container on 192.168.15.95.
+ *
+ * Returns:
+ *   0   names written to out (an empty string when none are declared)
+ *  -1   bad argument, or the names do not fit
+ *   1   the document reports a NUMBER, not an array -- an older cbs
+ *
+ * The 1 is not a compatibility path and must never become one. cixd
+ * execs whichever `cbs` is installed, so an older one silently turns a
+ * declared CAP_SYS_ADMIN into no capability at all -- the build then
+ * fails somewhere unrelated, or worse, succeeds having done less than
+ * the recipe asked. The caller refuses the publish and says to upgrade
+ * cbs. Guessing is the one thing that is not allowed here.
  */
-int pbs_explain_capability_count(const struct pbs_explain *ex);
+int pbs_explain_capabilities(const struct pbs_explain *ex, char *out, size_t out_size);
+
+/*
+ * One value out of the recipe's opaque `metadata { }` block
+ * (cix-build-system#161), or "" written to out when the key is absent.
+ *
+ * CBS assigns these keys no meaning; the platform does. Two matter, and
+ * they are the two that kept a PBS recipe from expressing everything a
+ * shell recipe can:
+ *
+ *   artifact_sha256   the platform's approval of one published byte
+ *                     sequence. Without a home for it, a converted
+ *                     recipe rebuilds from source on every install on
+ *                     every host, forever -- 88 of 148 current recipes
+ *                     carry one.
+ *   changelog         the revision's own note on why it exists.
+ *
+ * Deliberately a getter per key rather than a whole-block accessor: the
+ * daemon has exactly two keys it understands, and enumerating the rest
+ * would invite reading a key nothing acts on, which is the state
+ * ADR-0304 settled against.
+ *
+ * Returns 0 on success (including "absent"), -1 on a bad argument or a
+ * value that does not fit.
+ */
+int pbs_explain_metadata(const struct pbs_explain *ex, const char *key, char *out,
+                          size_t out_size);
 
 /* How many phases the document declares (1..5). */
 int pbs_explain_phase_count(const struct pbs_explain *ex);

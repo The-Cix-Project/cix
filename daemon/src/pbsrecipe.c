@@ -219,16 +219,66 @@ const char *pbs_explain_toolchain_reason(const struct pbs_explain *ex)
 	return str_or_empty(json_object_get(ex->root, "toolchain_reason"));
 }
 
-int pbs_explain_capability_count(const struct pbs_explain *ex)
+int pbs_explain_capabilities(const struct pbs_explain *ex, char *out, size_t out_size)
 {
 	const struct json_value *v;
+	size_t i;
+	size_t off = 0;
 
-	if (ex == NULL)
-		return 0;
+	if (ex == NULL || out == NULL || out_size == 0)
+		return -1;
+	out[0] = '\0';
+
 	v = json_object_get(ex->root, "capabilities");
-	if (v == NULL || v->type != JSON_NUMBER)
+	if (v == NULL)
+		return 0; /* declares none */
+	/*
+	 * A number means an older cbs, which cannot name them -- see the
+	 * header. Reported rather than treated as zero, because zero and
+	 * "one I cannot name" must not look alike to the caller.
+	 */
+	if (v->type == JSON_NUMBER)
+		return json_as_number(v) > 0 ? 1 : 0;
+	if (v->type != JSON_ARRAY)
 		return 0;
-	return (int)json_as_number(v);
+
+	for (i = 0; i < v->u.array.count; i++) {
+		const char *name = json_as_string(v->u.array.items[i]);
+		int n;
+
+		if (name == NULL || name[0] == '\0')
+			continue;
+		n = snprintf(out + off, out_size - off, "%s%s", off > 0 ? " " : "", name);
+		if (n < 0 || (size_t)n >= out_size - off) {
+			out[0] = '\0';
+			return -1;
+		}
+		off += (size_t)n;
+	}
+	return 0;
+}
+
+int pbs_explain_metadata(const struct pbs_explain *ex, const char *key, char *out,
+                          size_t out_size)
+{
+	const struct json_value *block;
+	const char *value;
+
+	if (ex == NULL || key == NULL || out == NULL || out_size == 0)
+		return -1;
+	out[0] = '\0';
+
+	block = json_object_get(ex->root, "metadata");
+	if (block == NULL || block->type != JSON_OBJECT)
+		return 0; /* no metadata block at all */
+	value = json_as_string(json_object_get(block, key));
+	if (value == NULL)
+		return 0; /* key absent, or not a string */
+	if ((size_t)snprintf(out, out_size, "%s", value) >= out_size) {
+		out[0] = '\0';
+		return -1;
+	}
+	return 0;
 }
 
 int pbs_explain_phase_count(const struct pbs_explain *ex)

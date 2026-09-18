@@ -6,8 +6,18 @@
  * emitter (its src/main.c explain_file()) at v0.1.24 rather than
  * imagined: keys in that order, `release` a bare number, `sources` an
  * array of {name, urls[], sha256}, `requires` an object of role
- * objects of keyword arrays, `capabilities` a COUNT, and null -- not
- * an absent key -- for an undeclared upstream or toolchain.
+ * objects of keyword arrays, and null -- not an absent key -- for an
+ * undeclared upstream or toolchain.
+ *
+ * `capabilities` appears in BOTH shapes here on purpose. It was a
+ * COUNT until cix-build-system#162 and is an array of names from
+ * cix-build-system main at 170dc744d onward. cixd execs whichever cbs
+ * is installed on the host, so both shapes are documents it can really
+ * be handed, and the count shape must be REFUSED rather than read as
+ * zero -- a downgrade that silently dropped a declared CAP_SYS_ADMIN
+ * would be the defect ADR-0304 was written about. The array fixture is
+ * transcribed from that tree's own cli-contract-test.sh, which asserts
+ * `"capabilities":["CAP_ONE","CAP_TWO"]`.
  *
  * This test exists because the daemon's own package test cannot run on
  * a Cix host at all: test_pkg needs the ADR-0209 floor artifacts, a
@@ -56,7 +66,7 @@ static const char *const ZSTD_JSON =
     "\"requires\":{\"build\":{\"compiler\":[\"tcc\"],\"tool\":[\"make\",\"bash\","
     "\"coreutils\",\"binutils\"]}},"
     "\"build_image\":null,\"upstream\":null,\"toolchain\":null,\"toolchain_reason\":null,"
-    "\"capabilities\":0,\"phases\":[{\"name\":\"prepare\",\"operations\":4},"
+    "\"capabilities\":[],\"phases\":[{\"name\":\"prepare\",\"operations\":4},"
     "{\"name\":\"build\",\"operations\":1},{\"name\":\"check\",\"operations\":1},"
     "{\"name\":\"install\",\"operations\":1}]}";
 
@@ -124,7 +134,18 @@ static void test_happy_path(void)
 	expect_str("upstream when null", pbs_explain_upstream(ex), "");
 	expect_str("toolchain when null", pbs_explain_toolchain(ex), "");
 
-	expect_int("capability count", pbs_explain_capability_count(ex), 0);
+	if (pbs_explain_capabilities(ex, buf, sizeof(buf)) != 0)
+		fail("an empty capability array should read as none, not as an error");
+	else
+		expect_str("no capabilities declared", buf, "");
+
+	/* No metadata block at all is "absent", not an error -- exactly as
+	 * a shell recipe with no pkg_artifact_sha256= line parses fine. */
+	if (pbs_explain_metadata(ex, "artifact_sha256", buf, sizeof(buf)) != 0)
+		fail("an absent metadata block should not be an error");
+	else
+		expect_str("absent artifact_sha256", buf, "");
+
 	expect_int("phase count", pbs_explain_phase_count(ex), 4);
 
 	pbs_explain_free(ex);
@@ -147,7 +168,11 @@ static void test_release_and_runtime(void)
 	    "\"runtime\":{\"package\":[\"openssl\",\"libarchive\",\"curl\"]}},"
 	    "\"build_image\":null,\"upstream\":\"kernel.org\",\"toolchain\":\"gcc\","
 	    "\"toolchain_reason\":\"the kernel does not build with TCC\","
-	    "\"capabilities\":1,\"phases\":[{\"name\":\"build\",\"operations\":2}]}";
+	    "\"license\":\"GPL-2.0-only\","
+	    "\"metadata\":{\"artifact_sha256\":\"c09de99506f24a17786da6507775c2fb3e5e3882"
+	    "ec25e234f85632ec5f4607a8\",\"changelog\":\"7.2.3-15: real revision note\"},"
+	    "\"capabilities\":[\"CAP_SYS_ADMIN\"],"
+	    "\"phases\":[{\"name\":\"build\",\"operations\":2}]}";
 	char err[256] = {0};
 	struct pbs_explain *ex = pbs_explain_parse(json, strlen(json), err, sizeof(err));
 	char buf[512];
@@ -184,16 +209,90 @@ static void test_release_and_runtime(void)
 	           "the kernel does not build with TCC");
 
 	/*
-	 * A capability COUNT, which is all explain reports
-	 * (cix-build-system#162). This assertion is what the publish
-	 * refusal is built on: a non-zero count with no names must FAIL a
-	 * publish rather than build the package with the capability
-	 * silently absent, because a count of 1 does not say whether the
-	 * recipe asked for CAP_SYS_ADMIN or CAP_NET_ADMIN.
+	 * Capabilities by NAME (cix-build-system#162, closed). The name is
+	 * the whole point: a count of 1 did not say whether the recipe
+	 * asked for CAP_SYS_ADMIN or CAP_NET_ADMIN, which is why a
+	 * non-zero count was refused at publish. The shape here matches
+	 * `pkg_build_caps=`, so both recipe formats hand
+	 * pkg_build_container_spec() the same string.
 	 */
-	expect_int("capability count is visible", pbs_explain_capability_count(ex), 1);
+	if (pbs_explain_capabilities(ex, buf, sizeof(buf)) != 0)
+		fail("named capabilities could not be read");
+	else
+		expect_str("capability names", buf, "CAP_SYS_ADMIN");
+
+	/* The two embedder-owned facts (cix-build-system#161, closed).
+	 * artifact_sha256 is the one that makes a conversion free: without
+	 * it a converted recipe rebuilds from source on every install on
+	 * every host, and 88 of 148 current recipes carry one. */
+	if (pbs_explain_metadata(ex, "artifact_sha256", buf, sizeof(buf)) != 0)
+		fail("artifact_sha256 could not be read out of metadata");
+	else
+		expect_str("artifact_sha256 from metadata", buf,
+		           "c09de99506f24a17786da6507775c2fb3e5e3882ec25e234f85632ec5f4607a8");
+	if (pbs_explain_metadata(ex, "changelog", buf, sizeof(buf)) != 0)
+		fail("changelog could not be read out of metadata");
+	else
+		expect_str("changelog from metadata", buf, "7.2.3-15: real revision note");
+
+	/* A key the platform does not understand is absent, not an error:
+	 * CBS assigns metadata no meaning, so an unknown key is ordinary. */
+	if (pbs_explain_metadata(ex, "no_such_key", buf, sizeof(buf)) != 0)
+		fail("an unknown metadata key should read as absent");
+	else
+		expect_str("unknown metadata key", buf, "");
 
 	pbs_explain_free(ex);
+}
+
+/*
+ * An OLDER cbs, reporting a capability COUNT. This is a document cixd
+ * can really be handed -- it execs whichever cbs is installed -- and
+ * reading it as zero would drop a declared capability in silence. The
+ * accessor answers 1 for it, distinctly from 0-means-none, and both
+ * the publish and the build path refuse on that.
+ */
+static void test_legacy_capability_count(void)
+{
+	static const char *const json =
+	    "{\"name\":\"legacy\",\"version\":\"1\",\"release\":1,\"architecture\":null,"
+	    "\"sources\":[{\"name\":\"s\",\"urls\":[\"https://example.invalid/a.tar.gz\"],"
+	    "\"sha256\":\"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\"}],"
+	    "\"requires\":{},\"capabilities\":1,\"phases\":[]}";
+	char err[256] = {0};
+	struct pbs_explain *ex = pbs_explain_parse(json, strlen(json), err, sizeof(err));
+	char buf[256];
+
+	if (ex == NULL) {
+		fail("the legacy-shaped document failed to parse");
+		return;
+	}
+	expect_int("a capability COUNT is reported as such, not as none",
+	           pbs_explain_capabilities(ex, buf, sizeof(buf)), 1);
+	expect_str("and writes no names", buf, "");
+
+	/* A count of ZERO is genuinely none, and must NOT be refused --
+	 * an older cbs building a recipe that declares no capability is
+	 * fine, and refusing it would break every such recipe. */
+	pbs_explain_free(ex);
+	{
+		static const char *const zero =
+		    "{\"name\":\"legacy\",\"version\":\"1\",\"release\":1,"
+		    "\"architecture\":null,\"sources\":[{\"name\":\"s\","
+		    "\"urls\":[\"https://example.invalid/a.tar.gz\"],\"sha256\":\"00112233445566"
+		    "778899aabbccddeeff00112233445566778899aabbccddeeff\"}],"
+		    "\"requires\":{},\"capabilities\":[],\"phases\":[]}";
+		struct pbs_explain *z = pbs_explain_parse(zero, strlen(zero), err, sizeof(err));
+
+		if (z == NULL) {
+			fail("the zero-count document failed to parse");
+			return;
+		}
+		expect_int("a count of zero is none, not a refusal",
+		           pbs_explain_capabilities(z, buf, sizeof(buf)), 0);
+		expect_str("and writes no names", buf, "");
+		pbs_explain_free(z);
+	}
 }
 
 static void test_first_url_of_several(void)
@@ -343,7 +442,13 @@ static void test_null_safety(void)
 	expect_str("toolchain of NULL", pbs_explain_toolchain(NULL), "");
 	expect_str("toolchain reason of NULL", pbs_explain_toolchain_reason(NULL), "");
 	expect_int("source count of NULL", pbs_explain_source_count(NULL), 0);
-	expect_int("capability count of NULL", pbs_explain_capability_count(NULL), 0);
+	{
+		char buf[64];
+
+		expect_int("capabilities of NULL", pbs_explain_capabilities(NULL, buf, sizeof(buf)),
+		           -1);
+		expect_int("metadata of NULL", pbs_explain_metadata(NULL, "k", buf, sizeof(buf)), -1);
+	}
 	expect_int("phase count of NULL", pbs_explain_phase_count(NULL), 0);
 	if (pbs_explain_version(NULL, buf, sizeof(buf)) == 0)
 		fail("version of NULL succeeded");
@@ -357,6 +462,7 @@ int main(void)
 	printf("=== PBS recipe identity (ADR-0305) ===\n");
 	test_happy_path();
 	test_release_and_runtime();
+	test_legacy_capability_count();
 	test_first_url_of_several();
 	test_rejections();
 	test_truncation_is_refused();

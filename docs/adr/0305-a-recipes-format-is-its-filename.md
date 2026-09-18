@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. The first step of the owner-directed flip to PBS. Extends [ADR-0107](0107-version-keyed-recipes.md)'s version-keyed layout to a second recipe language, and [ADR-0199](0199-recipes-declare-their-build-tools.md)/[ADR-0304](0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md)'s composition to a recipe that declares its tools in CPDL. Supersedes nothing. Three upstream gaps shape what it can do and are filed rather than assumed: [cix-build-system#159](https://git.home.arpa/itdlabs/cix-build-system/issues/159) (no finalize policy from the CLI, which blocks CIXPKG adoption), [#161](https://git.home.arpa/itdlabs/cix-build-system/issues/161) (no home for `pkg_artifact_sha256`/`pkg_changelog`) and [#162](https://git.home.arpa/itdlabs/cix-build-system/issues/162) (a capability count instead of names).
+Accepted. The first step of the owner-directed flip to PBS. Extends [ADR-0107](0107-version-keyed-recipes.md)'s version-keyed layout to a second recipe language, and [ADR-0199](0199-recipes-declare-their-build-tools.md)/[ADR-0304](0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md)'s composition to a recipe that declares its tools in CPDL. Supersedes nothing. Three upstream gaps shaped what it could do at the time of writing and were filed rather than assumed: [cix-build-system#159](https://git.home.arpa/itdlabs/cix-build-system/issues/159) (no finalize policy from the CLI, which blocked CIXPKG adoption), [#161](https://git.home.arpa/itdlabs/cix-build-system/issues/161) (no home for `pkg_artifact_sha256`/`pkg_changelog`) and [#162](https://git.home.arpa/itdlabs/cix-build-system/issues/162) (a capability count instead of names). **All three closed upstream on 2026-09-18 and are verified running on 192.168.15.95** via `cbs v0.1.25-6`, built from cix-build-system `main` at `170dc744d`: #162 and #161 are read by the daemon (capability NAMES into `build_caps`, and `metadata { }` into `artifact_sha256`/`changelog`), and #159's `--finalize-command` is proven by upstream's own `cli-finalizer-test.sh` passing in a Cix build container. One half remains: cixd READS a PBS artifact approval and cannot WRITE one, tracked as [#492](https://git.home.arpa/itdlabs/cix/issues/492).
 
 ## Context
 
@@ -143,15 +143,22 @@ not before.
   a box; and **`do_system_backup()`** would omit it from a backup, so a restore would
   quietly lose it. A third, `sync_walk_image_recipes()`, covers image recipes — a
   different recipe kind, deliberately out of scope here.
-- **Artifact approval has no CPDL home.** `approve_published_artifact()` rewrites the
-  recipe's own `pkg_artifact_sha256=` line, and CPDL rejects unknown package keys
-  (`validate_package()`'s `default:` arm → `CPDL-E9001`). So a PBS recipe cannot take a
-  cache hit and rebuilds from source on every install. Filed as cix-build-system#161,
-  asking for an opaque embedder-owned metadata block. It gates 88 of 148 packages —
-  measured, and none of them early: `cbs`, `zstd`, `libarchive`, `kernel`, `gcc`,
-  `binutils` and `cix` itself carry no approval today.
-- **`pkg_changelog` has no CPDL home either**, so a PBS recipe lists with a null
-  changelog. Same ticket.
+- **Artifact approval had no CPDL home, and now half of one.** `approve_published_artifact()`
+  rewrites the recipe's own `pkg_artifact_sha256=` line, and CPDL rejected unknown package
+  keys (`validate_package()`'s `default:` arm → `CPDL-E9001`), so a PBS recipe could not
+  take a cache hit and rebuilt from source on every install. Filed as cix-build-system#161,
+  asking for an opaque embedder-owned metadata block; **closed 2026-09-18**, and
+  `metadata { "artifact_sha256" "…" }` is now read by `parse_pbs_recipe()` into the same
+  field the shell line lands in. What remains is the WRITER: that function splices a line
+  into shell text anchored on `pkg_sha256="`, and the CPDL equivalent is inserting a key
+  into a block that may not exist, which also needs a counterpart to
+  `recipe_adds_only_artifact_sha256()` — the guard that permits exactly this one edit to an
+  immutable recipe. Tracked as [#492](https://git.home.arpa/itdlabs/cix/issues/492). Until
+  then a PBS approval works only when hand-written. It gates 88 of 148 packages — measured,
+  and none of them early: `cbs`, `zstd`, `libarchive`, `kernel`, `gcc`, `binutils` and `cix`
+  itself carry no approval today.
+- **`pkg_changelog` had no CPDL home either**, so a PBS recipe listed with a null changelog.
+  Same ticket, same close: it is the second key the daemon reads out of `metadata { }`.
 - **`test_toolchain_policy` goes blind**, and is extended in the same change: it walks
   `recipes/package/*/*/build.sh` explicitly, so a `.cbs` recipe's toolchain declaration
   would escape the ADR-0224 count. `test_recipe_hygiene` needs nothing —
