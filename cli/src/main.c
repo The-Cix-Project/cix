@@ -266,10 +266,14 @@ static void print_usage(FILE *out)
 	        "  pkg rebuilds  -- image rebuilds this host has queued but not started.\n"
 	        "               Publishing a recipe queues one for every image tracking that\n"
 	        "               package `rolling`, which is real work nothing else reports.\n"
-	        "  pkg recipe add --name=NAME --file=PATH  -- publishes a new recipe version on\n"
-	        "               this running system directly, no reinstall needed (ADR-0040);\n"
-	        "               an already-published (name,version) is rejected, not overwritten\n"
-	        "               (ADR-0107) -- bump pkg_version= to publish a fix\n"
+	        "  pkg recipe add --name=NAME --file=PATH [--format=shell|pbs]  -- publishes a\n"
+	        "               new recipe version on this running system directly, no reinstall\n"
+	        "               needed (ADR-0040); an already-published (name,version) is\n"
+	        "               rejected, not overwritten (ADR-0107) -- bump the version to\n"
+	        "               publish a fix. The format comes from the filename: build.cbs is\n"
+	        "               a PBS recipe in CPDL, build.sh a shell one (ADR-0305), so\n"
+	        "               --format= is only needed for content held in a file not named\n"
+	        "               for what it is\n"
 	        "  pkg recipe show NAME [--version=VERSION]  -- print a recipe's own raw content,\n"
 	        "               omitted version resolves to the highest available\n"
 	        "  pkg recipe rm NAME [--version=VERSION]  -- omitted removes every version\n"
@@ -14448,6 +14452,7 @@ static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int arg
 {
 	const char *name = NULL;
 	const char *file = NULL;
+	const char *format = NULL;
 	char *content;
 	size_t content_len;
 	int i;
@@ -14459,13 +14464,35 @@ static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int arg
 			name = argv[i] + 7;
 		else if (strncmp(argv[i], "--file=", 7) == 0)
 			file = argv[i] + 7;
+		else if (strncmp(argv[i], "--format=", 9) == 0)
+			format = argv[i] + 9;
 		else {
 			fprintf(stderr, "cixctl: unknown pkg recipe add option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || file == NULL) {
-		fprintf(stderr, "usage: cixctl pkg recipe add --name=NAME --file=PATH\n");
+		fprintf(stderr,
+		        "usage: cixctl pkg recipe add --name=NAME --file=PATH [--format=shell|pbs]\n");
+		return 2;
+	}
+	/*
+	 * ADR-0305: a recipe's format is its filename, so the ordinary case
+	 * needs no flag -- publishing a build.cbs makes it a PBS recipe and
+	 * a build.sh makes it a shell one, exactly as the file is named on
+	 * disk and exactly as it will be stored on the host. The flag exists
+	 * for the one case the extension cannot answer: content held in a
+	 * file not named for what it is (a scratch path, a pipe staged to a
+	 * temporary). A wrong answer either way is refused by the daemon
+	 * rather than stored, because it validates with the parser the
+	 * format names.
+	 */
+	if (format == NULL) {
+		size_t flen = strlen(file);
+
+		format = (flen >= 4 && strcmp(file + flen - 4, ".cbs") == 0) ? "pbs" : "shell";
+	} else if (strcmp(format, "shell") != 0 && strcmp(format, "pbs") != 0) {
+		fprintf(stderr, "cixctl: --format= must be shell or pbs\n");
 		return 2;
 	}
 	if (read_local_file(file, &content, &content_len) != 0) {
@@ -14479,6 +14506,8 @@ static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int arg
 	jw_str(&w, name);
 	jw_key(&w, "content");
 	jw_str(&w, content);
+	jw_key(&w, "format");
+	jw_str(&w, format);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 	free(content);
@@ -14498,7 +14527,7 @@ static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int arg
 		cix_response_free(&r);
 		return 1;
 	}
-	printf("recipe '%s' added\n", name);
+	printf("recipe '%s' added (%s)\n", name, format);
 	cix_response_free(&r);
 	return 0;
 }

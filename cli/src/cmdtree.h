@@ -1328,6 +1328,7 @@ static const struct cli_node n_pkg_policy_subs[] = {
 
 static const char *const n_pkg_recipe_add_flags[] = {
 	"--file=",
+	"--format=",
 	"--name=",
 	NULL
 };
