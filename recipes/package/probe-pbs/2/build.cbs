@@ -1,0 +1,72 @@
+# The first PBS recipe this platform has ever published (ADR-0305).
+#
+# Version 2 because version 1's artifact is POISONED and cannot be
+# rebuilt over. 1-1 was built while cixd harvested a different
+# directory from the one the install phase wrote to, so it produced an
+# 87-byte tarball containing nothing -- and published it to the SHARED
+# artifact cache at 192.168.15.31, where every later install of
+# probe-pbs 1-1 takes it as a cache hit and never builds at all. That
+# is why 1-1 kept reporting `files []` even after the harvest was
+# fixed: nothing was running. See cix#486.
+#
+# SCRATCH DIAGNOSTIC, but not a throwaway one: this is stage 1's proof.
+# It exists to answer, on a real host, the questions that reading the
+# code cannot:
+#
+#   - does cixd accept a build.cbs at all -- `cbs explain --json` run
+#     host-side at publish, its output mapped onto pkg_name/pkg_version/
+#     pkg_source/pkg_sha256/pkg_build_depends and persisted as the
+#     explain.json beside this file?
+#   - does the version fuse the way ADR-0305 says (version "1" plus
+#     release 1 becoming the version string "1-1")?
+#   - is the build container composed from `requires { build { ... } }`
+#     the way pkg_build_depends is, with cbs itself added by cixd
+#     rather than declared here?
+#   - does the source handoff work -- cixd fetching and verifying
+#     host-side, then placing the tarball at <cache>/<sha256> where CBS
+#     re-verifies it and reports a cache hit instead of reaching for a
+#     network the container does not have?
+#   - does the staged tree land where cixd's finalize expects it, given
+#     that `--staged` names a WORKSPACE and the tree is its dest/
+#     subdirectory?
+#
+# The source is this platform's own source tarball, deliberately. Not
+# because the probe needs it -- the install phase never opens it -- but
+# because it is the one archive certain to fetch: cixd has the repo
+# token, substitutes it into {{REPO_TOKEN}} host-side, and has pulled
+# this exact tag several times already. A probe that failed on a
+# network question would answer none of the questions above.
+#
+# No prepare phase, and that is also deliberate. The extraction layout
+# (${src}/<source-name>/<archive-top-dir>) is CBS's business and is
+# spelled inconsistently across its own shipped recipes, so requiring a
+# particular directory here would couple this proof to something it is
+# not testing.
+package "probe-pbs" {
+    version "2"
+    release 1
+    format "cixpkg"
+
+    sources {
+        main "cixsrc" {
+            url "https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.57.212.tar.gz"
+            sha256 "9cad35a8c2697859aeb5c343363a97bd95f88fe0e87c0651dd2d943b899922de"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "bash"
+            tool "coreutils"
+        }
+    }
+
+    install {
+        mkdir "${dest}/usr/share/probe-pbs"
+        write "${dest}/usr/share/probe-pbs/proof.txt" "built by cbs from a build.cbs\n"
+        require file "${dest}/usr/share/probe-pbs/proof.txt" {
+            exists
+        }
+    }
+}

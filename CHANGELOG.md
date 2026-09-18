@@ -6,6 +6,36 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The first PBS package, built on a real host (ADR-0305)
+
+Proven on 192.168.15.95, 2026-09-18, on `v2.57.216`:
+
+```
+version 2-1 | state installed
+files   ['usr/share/probe-pbs/proof.txt']
+
+9cad35a8c2697859aeb5c343363a97bd95f88fe0e87c0651dd2d943b899922de   <- source cache hit
+build-begin
+[install] started
+[install] done (0 ms)
+build-end
+staged /build/cbsws
+```
+
+`recipes/package/probe-pbs/2/build.cbs` is the first CPDL recipe this platform has published and built. Every part of the chain is in that output: the format came from the filename, the identity from `cbs explain --json` run host-side (`2-1` is CPDL's `version "2"` and `release 1` fused), the build container was composed from `requires { build { … } }` with the engine added by cixd rather than declared, the source was fetched and verified host-side and handed over at `<cache>/<sha256>` — the digest at the top of the log is CBS reporting a cache hit, in a container with no network — and the staged tree was harvested from the workspace's `dest`, finalized and packaged exactly as a shell recipe's is.
+
+**It took five deploy cycles, and four of them were bugs worth the trip.** Recorded because the failures are the useful part:
+
+- **`pkg_host_arch()` used six thousand lines before its definition.** The only compile error in ~2500 lines of new code, and the price of a sandbox that compiles nothing but `cixctl`.
+- **`test_system_backup` refused a change to the recipe-key shape, and was right.** Every `pkg_recipes` key had gained a filename segment; an older daemon rejects a key it cannot read as `<name>/<version>` *and rejects the whole document*, so one three-segment key would have cost every recipe in a backup restored onto the other boot slot. The segment now appears only for a `build.cbs`.
+- **`test_blocking_waits` caught two blocking `waitpid()` calls against a budget of six** — a gate that exists because a wait-after-signal froze this control plane for 366 seconds. Restructured to one, and the budget raised with the argument that gate demands of a raise.
+- **`cbs build` rejected the build silently, twice.** `cbs_workspace_prepare()` creates `root/src`, `root/build`, `root/dest` — and not `root`. The rejection happens before CBS's own `build-begin` event, so even `--events human` (added in one of those cycles, on the theory that a phase was failing quietly) reported nothing. Found by reading `workspace.c`. Filed as cix-build-system#163.
+- **And the one that matters most: the first successful build published a package with zero files and reported it `installed`.** The container's `PKG_DESTDIR` pointed at cbs's workspace `dest`, correctly, while `pkg_build_completed()` went on harvesting `build/pkg-dest`. Two definitions of one destination — the exact maxim, failing the exact way it says it will, and failing *silently*. Now `pkg_dest_rel()` is the only thing that knows, and the entry remembers what its build was told rather than the harvest re-deriving it.
+
+That last one had a second act worth recording: the empty 87-byte artifact was **published to the shared artifact cache**, so every later install of `1-1` took it as a cache hit and never built at all — which is why the version kept reporting `files []` after the harvest was fixed. Nothing was running. Filed as #486, and it is why the probe is version 2: a poisoned artifact cannot be rebuilt over.
+
+One maxim fix landed mid-stream, asked for directly: the string `.cbs` was in three places — the daemon, `cixctl` and the toolchain-policy gate — each independently knowing what makes a recipe PBS. Three literals spelling one rule is a parallel implementation of the rule ADR-0305 exists to state. One definition now, in `include/recipe_format.h`, shared rather than in the daemon's API header because `cixctl` is a pure REST client.
+
 ### A recipe's format is its filename, and cixd learns to run one written in CPDL (ADR-0305)
 
 The first step of the owner-directed flip to PBS, and it decides less than full adoption needs, because two of the four stages depend on upstream work that is filed rather than assumed.
