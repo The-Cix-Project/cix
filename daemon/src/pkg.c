@@ -14517,7 +14517,14 @@ static int pbs_metadata_insert_point(const char *text, size_t *out_off)
 static void approve_pbs_artifact(const char *recipe_path, const char *name, const char *version,
                                   const char *sha)
 {
-	char explain_path[PATH_MAX], candidate_path[PATH_MAX];
+	char explain_path[PATH_MAX];
+	/*
+	 * "" until the candidate is actually written: the cleanup below
+	 * unlinks it, and several refusals above reach `done` before there
+	 * is anything to unlink. An uninitialised buffer there would ask
+	 * the kernel to delete whatever the stack happened to hold.
+	 */
+	char candidate_path[PATH_MAX] = {0};
 	char err[512];
 	char *stored = NULL, *updated = NULL, *old_json = NULL, *new_json = NULL;
 	size_t stored_len = 0, old_len = 0, new_len = 0, insert_off = 0;
@@ -14529,12 +14536,26 @@ static void approve_pbs_artifact(const char *recipe_path, const char *name, cons
 	if (persist_read_file(recipe_path, &stored, &stored_len) != 0 || stored == NULL)
 		return;
 
-	/* Already approved -- by a previous publish or by hand. A no-op,
-	 * silently, exactly as the shell path treats its own key. */
-	if (strstr(stored, "\"artifact_sha256\"") != NULL) {
-		free(stored);
-		return;
-	}
+	/*
+	 * Already approved is asked of the derived identity, never of the
+	 * recipe TEXT, and that distinction was a real bug here rather
+	 * than a nicety. The first version of this function tested
+	 * strstr(stored, "\"artifact_sha256\"") and returned silently on a
+	 * hit -- which the very probe written to gate it tripped, because
+	 * its header comment quotes the key while explaining what the
+	 * approval looks like. A comment mentioning a declaration is not a
+	 * declaration. explain.json is the parsed answer and is what the
+	 * build path reads anyway, so it is the only thing worth asking.
+	 */
+	pbs_explain_path(recipe_path, explain_path, sizeof(explain_path));
+	if (persist_read_file(explain_path, &old_json, &old_len) != 0 || old_json == NULL)
+		goto done;
+	old_root = json_parse(old_json, old_len);
+	if (old_root == NULL)
+		goto done;
+	if (json_as_string(json_object_get(json_object_get(old_root, "metadata"),
+	                                    "artifact_sha256")) != NULL)
+		goto done; /* approved already -- never a replacement (ADR-0107) */
 
 	if (pbs_metadata_insert_point(stored, &insert_off) != 0) {
 		logstore_write("cixd", "info",
@@ -14543,16 +14564,13 @@ static void approve_pbs_artifact(const char *recipe_path, const char *name, cons
 		               "package rebuilds from source on every install. Add to the recipe, "
 		               "after `requires`:  metadata {  \"artifact_sha256\" \"%s\"  }  (#492)",
 		               name, version, sha);
-		free(stored);
-		return;
+		goto done;
 	}
 
 	line_len = (size_t)snprintf(line, sizeof(line), "        \"artifact_sha256\" \"%s\"\n", sha);
 	updated = malloc(stored_len + line_len + 1);
-	if (updated == NULL) {
-		free(stored);
-		return;
-	}
+	if (updated == NULL)
+		goto done;
 	memcpy(updated, stored, insert_off);
 	memcpy(updated + insert_off, line, line_len);
 	memcpy(updated + insert_off + line_len, stored + insert_off, stored_len - insert_off);
@@ -14586,13 +14604,8 @@ static void approve_pbs_artifact(const char *recipe_path, const char *name, cons
 		goto done;
 	}
 
-	pbs_explain_path(recipe_path, explain_path, sizeof(explain_path));
-	if (persist_read_file(explain_path, &old_json, &old_len) != 0 || old_json == NULL)
-		goto done;
-
-	old_root = json_parse(old_json, old_len);
 	new_root = json_parse(new_json, new_len);
-	if (old_root == NULL || new_root == NULL)
+	if (new_root == NULL)
 		goto done;
 
 	/*
@@ -14601,9 +14614,6 @@ static void approve_pbs_artifact(const char *recipe_path, const char *name, cons
 	 * name two different byte sequences, which is what immutability
 	 * protects against.
 	 */
-	if (json_as_string(json_object_get(json_object_get(old_root, "metadata"),
-	                                    "artifact_sha256")) != NULL)
-		goto done; /* the stored identity is already approved -- never a replacement */
 	if (json_as_string(json_object_get(json_object_get(new_root, "metadata"),
 	                                    "artifact_sha256")) == NULL) {
 		logstore_write("cixd", "warn",
@@ -14646,7 +14656,7 @@ static void approve_pbs_artifact(const char *recipe_path, const char *name, cons
 	               name, version, sha);
 
 done:
-	if (!ok)
+	if (!ok && candidate_path[0] != '\0')
 		unlink(candidate_path);
 	if (old_root != NULL)
 		json_free(old_root);
