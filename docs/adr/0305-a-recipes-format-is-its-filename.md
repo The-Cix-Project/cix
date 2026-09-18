@@ -1,9 +1,8 @@
-# ADR-0305: A recipe's format is its filename, and CPDL is parsed by exactly one parser
+# 0305 — A recipe's format is its filename, and CPDL is parsed by exactly one parser
 
-- **Status:** Accepted
-- **Date:** 2026-09-18
-- **Issues:** cix-build-system#159, #161, #162
-- **Supersedes:** nothing. **Extends:** [ADR-0107](0107-version-keyed-recipes.md) (the version-keyed layout), [ADR-0199](0199-recipes-declare-their-build-tools.md) and [ADR-0304](0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md) (composition from the declaration)
+## Status
+
+Accepted. The first step of the owner-directed flip to PBS. Extends [ADR-0107](0107-version-keyed-recipes.md)'s version-keyed layout to a second recipe language, and [ADR-0199](0199-recipes-declare-their-build-tools.md)/[ADR-0304](0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md)'s composition to a recipe that declares its tools in CPDL. Supersedes nothing. Three upstream gaps shape what it can do and are filed rather than assumed: [cix-build-system#159](https://git.home.arpa/itdlabs/cix-build-system/issues/159) (no finalize policy from the CLI, which blocks CIXPKG adoption), [#161](https://git.home.arpa/itdlabs/cix-build-system/issues/161) (no home for `pkg_artifact_sha256`/`pkg_changelog`) and [#162](https://git.home.arpa/itdlabs/cix-build-system/issues/162) (a capability count instead of names).
 
 ## Context
 
@@ -96,10 +95,17 @@ hand. Twice.
 
 Derived state is normally a second source of truth and normally forbidden. It is
 legitimate here for one specific reason: ADR-0107 makes a published `(name, version)`
-**immutable**, so the document `explain.json` describes cannot change under it. The
-file records the `cbs` version that produced it, so a parse that changes meaning across
-a CBS release is visible rather than silent — and that would be a CBS breaking change,
-not a case to design around.
+**immutable**, so the document `explain.json` describes cannot change under it.
+
+What the file does **not** carry is which `cbs` produced it — it is that command's
+output verbatim, and `explain --json` emits no version of its own. So a CBS release that
+changed what those fields *mean* would go unnoticed here until something behaved oddly.
+That is accepted rather than solved, on the grounds that such a change would be a
+breaking change on CBS's side rather than a drift on ours, and that wrapping the output
+to add provenance would cost the one property worth having: what is stored is exactly
+what the engine said. A system restore does not copy this file at all — it re-derives it
+(`pkg_recipe_rederive_identity()`), which is the case where a stale reading would
+otherwise be resurrected months later.
 
 **5. The engine is implicit in the composed build environment.** A PBS recipe does not
 declare `cbs` among its build tools; `buildenv_resolve_tools()` adds it, exactly as it
