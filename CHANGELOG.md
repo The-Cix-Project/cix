@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An ISO build no longer refuses over a seed artifact the host can reach (#495)
+
+`POST /v1/system/iso` refused with *"the installer seed needs glibc@2.44-14 and its artifact is not in this host's cache -- publish or rebuild it first"*. Three defects behind one message.
+
+**The seeded version was whichever entry the package table held first.** `pkg_seed_stage()` scanned `g_packages` for the first `INSTALLED` match and broke, so which image sorted first decided what went on the media. Measured on 192.168.15.95: ten images carry glibc, five of them at 2.44-16, and the pick was `cix-builder`'s 2.44-14. For zlib the pick was worse than arbitrary — `cix-builder`'s 1.3.2-10 has neither a cached artifact nor an approved checksum, while `jumpbox`'s 1.3.2-14 has both.
+
+**The artifact was required to be in the local cache, and it was reachable.** `pkg_artifact_cache_has()` is a `stat()`. The configured cache at `192.168.15.31:8080` holds `glibc-2.44-14`, `glibc-2.44-16` and `dnsmasq-2.90-3` with digests matching `pkg_artifact_sha256` in those recipes exactly — approved, reachable, refused. Why this host's local cache held none of them is **not established**: 58 entries / 26830259 bytes against a 2147483648 cap rules out eviction pressure now, and no `pkg cache` line survives in the log store.
+
+**And staging ran in the event loop.** `iso_build_start()` is called from the request handler, so the 12.8 MB recursive recipe-tree copy and the artifact copies happened inside cixd's epoll loop with every other request waiting — which is also why the fetch could not simply be added where the check was.
+
+So: `seed_choose()` takes the **newest installed version across every image** that is either locally cached or carries an approved `pkg_artifact_sha256`, ordered by `pkg_version_compare()` — the comparator the drift report already uses, not a second one. `pkg_seed_preflight()` answers in the handler what a table scan and a `stat()` can decide, and still refuses those with `400`, because "no installed glibc at all" does not become true by being retried. Everything that costs time moved below the fork: the ISO build child stages the seed and only then `execve()`s mkinstalleriso, exiting 126 if staging failed. An uncached artifact is fetched into the seed directory itself — not into the shared cache, where a build child's LRU eviction would race the install pipeline's — and verified against the recipe's approval before it can reach the media.
+
+The reaper no longer calls every failure `mkinstalleriso failed`: 126 is seed staging and 127 is an `execve` that never happened, which is the same wrong-cause shape that made #202 read as an assembler bug when it was an argv count.
+
+Two by-products, both in the same change. `read_iso_signed_version()`'s doc comment had been invisible for some time — the opening half of `handle_iso_assemble_event()`'s comment was stranded ~400 lines above it as an unterminated opener, swallowing it whole; the two halves are rejoined. And the staging progress line moved from `logstore_write()` to stdout, because the store is a file the **parent** holds open with in-process rotation accounting, and a forked child writing through that inherited descriptor appends bytes the parent does not count.
+
 ### cbs v0.1.29 installs, and the new CPDL shapes are proven on real packages (#487, #491)
 
 Three upstream releases to get here, each answering a measurement rather than a guess: v0.1.27 had the features but failed `archive-test` silently; v0.1.28 carried #180 and made the test *report*, which reduced five build cycles of narrowing to one named assertion; v0.1.29 carries #181 and asserts empty-archive rejection without pinning libarchive's wording. **The full upstream suite now passes as a fatal gate in a Cix build container**, and `cbs v0.1.29-1` is installed in `cix-builder` and `cix-hosttools`.

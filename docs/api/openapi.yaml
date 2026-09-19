@@ -4828,6 +4828,36 @@ paths:
         cixd itself (the same real security posture this project's
         own image/keys/ already has: a release-signing private key must
         never propagate onto every deployed box).
+
+        **Which version of a seeded package ships, and where its bytes
+        come from** (issue #495). For each of the three, the daemon
+        takes the **newest installed version across every image** that
+        it can actually produce bytes for -- one whose artifact is
+        already in this host's local cache, or one whose recipe carries
+        an approved `pkg_artifact_sha256`, in which case the artifact is
+        fetched from the configured artifact cache and checked against
+        that approval before it reaches the media. It used to take
+        whichever entry the package table held first, which is whichever
+        image happened to sort first: on a host running glibc 2.44-16 in
+        five images the media was offered 2.44-14 because `cix-builder`
+        came first. A fetched artifact goes straight into the seed
+        directory rather than into the shared local cache, which is
+        rebuilt on every ISO build and is not shared with the install
+        pipeline's own eviction.
+
+
+        **What 400 means here, and what it no longer means.** The
+        preconditions this endpoint can settle from its own tables --
+        a seed package installed nowhere, or no installed version of one
+        with either a cached artifact or an approved checksum -- are
+        still answered synchronously, because retrying will not change
+        them. The work itself (copying the recipe tree, copying or
+        fetching artifacts) runs in the forked build child, so a failure
+        there is reported by `GET /system/iso` as a failed build rather
+        than by this call. That split exists because staging ran in
+        cixd's event loop until #495, and a fetch there would have put a
+        network round trip inside the control plane.
+
       operationId: postSystemIso
       x-cix-expose: [cli, web]
       requestBody:
@@ -4846,8 +4876,14 @@ paths:
         "400":
           description: >
             Invalid JSON body, or a real precondition is missing --
-            the "cix"/"kernel"/"isotools" hostbuild artifacts, or
-            the operator-provided signing key pair
+            the "cix"/"kernel"/"isotools" hostbuild artifacts, the
+            operator-provided signing key pair, or a package seed that
+            cannot be staged at all (a seed package installed nowhere,
+            or no installed version of one carrying either a cached
+            artifact or an approved checksum to fetch one with).
+            A seed failure that only shows up while staging -- a fetch
+            that fails, or bytes that do not match the approval -- fails
+            the build instead and is reported by GET /system/iso (#495)
           content:
             application/json:
               schema:

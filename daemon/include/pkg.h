@@ -589,6 +589,22 @@ int pkg_artifact_cache_has(const char *name, const char *version);
 enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size);
 
 /*
+ * Whether pkg_seed_stage() can succeed, without doing any of its work
+ * (#495).
+ *
+ * Runs the same per-package selection and answers only the questions a
+ * table scan, a stat and a recipe read can settle: is this package
+ * installed anywhere, and is there an installed version of it with
+ * either a cached artifact or an approved pkg_artifact_sha256 to fetch
+ * one with. POST /v1/system/iso calls this in the request handler so
+ * the cases nothing can fix still refuse with 400 and their own
+ * reason; everything that costs real time -- the recipe tree copy, the
+ * artifact copies, a fetch -- happens in pkg_seed_stage() inside the
+ * forked build child.
+ */
+enum pkg_error pkg_seed_preflight(char *err, size_t err_size);
+
+/*
  * The image rebuilds this host has queued but not started (#236).
  *
  * In memory and deliberately not persisted: a rebuild is re-derivable

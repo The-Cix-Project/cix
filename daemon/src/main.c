@@ -10100,11 +10100,25 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	 */
 	snprintf(seed_dir, sizeof(seed_dir), "%s/.seed", ISO_DIR);
 	cix_btrfs_subvol_delete_or_rmtree(seed_dir);
+	/*
+	 * Only the question, here; the work happens in the child (#495).
+	 *
+	 * Staging a seed copies the whole recipe tree (12.8 MB) and up to
+	 * three package artifacts, and since #495 it may also fetch one
+	 * from the configured artifact cache. All of that used to run
+	 * right here -- inside cixd's epoll loop, with every other request
+	 * waiting on it, and a fetch would have made a network round trip
+	 * part of the control plane's latency. The split is: what a table
+	 * scan and a stat can decide is answered now and refuses with 400,
+	 * because "no installed glibc at all" will not become true by
+	 * being retried; everything that costs time moves below the fork
+	 * and fails the build in GET /system/iso instead.
+	 */
 	{
 		char seed_err[256];
 
 		seed_err[0] = '\0';
-		if (pkg_seed_stage(seed_dir, seed_err, sizeof(seed_err)) != PKG_OK) {
+		if (pkg_seed_preflight(seed_err, sizeof(seed_err)) != PKG_OK) {
 			snprintf(err_msg, err_msg_size, "could not stage the installer package seed: %s",
 			         seed_err[0] != '\0' ? seed_err : "unknown");
 			return -1;
@@ -10142,9 +10156,23 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 		return -1;
 	}
 	if (pid == 0) {
+		char seed_err[256];
+
 		if (output_pipe[1] >= 0) {
 			dup2(output_pipe[1], STDOUT_FILENO);
 			dup2(output_pipe[1], STDERR_FILENO);
+		}
+		/*
+		 * The expensive half of seed staging (#495), run here so it
+		 * costs the build rather than the control plane. Exit 126 and
+		 * not 127: the reaper tells the two apart, and 127 already
+		 * means "mkinstalleriso could not be executed".
+		 */
+		seed_err[0] = '\0';
+		if (pkg_seed_stage(seed_dir, seed_err, sizeof(seed_err)) != PKG_OK) {
+			fprintf(stderr, "error: could not stage the installer package seed: %s\n",
+			        seed_err[0] != '\0' ? seed_err : "unknown");
+			_exit(126);
 		}
 		execve(mkinstalleriso_bin, argv, environ);
 		perror("child: execve mkinstalleriso");
@@ -10169,7 +10197,27 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	return 0;
 }
 
-/* Reaps iso_build_start()'s own mkinstalleriso child, same shape as
+/*
+ * What the ISO build child was doing when it failed (#495).
+ *
+ * The child stages the package seed and only then execve()s
+ * mkinstalleriso, so a failure is not necessarily the assembler's.
+ * Exit 126 is the seed staging step and 127 is an execve that never
+ * happened -- reporting either as "mkinstalleriso failed" names a tool
+ * that had not run yet, which is the same class of wrong-cause message
+ * that made #202 read as an assembler bug when it was an argv count.
+ */
+static const char *iso_child_failure_what(int status)
+{
+	if (!WIFEXITED(status))
+		return "the ISO build child died";
+	if (WEXITSTATUS(status) == 126)
+		return "staging the installer package seed failed";
+	if (WEXITSTATUS(status) == 127)
+		return "mkinstalleriso could not be executed";
+	return "mkinstalleriso failed";
+}
+
 /*
  * Reads the version out of a minisign signature's trusted comment.
  *
@@ -10576,10 +10624,17 @@ static void handle_iso_publish_event(struct conn *cc)
 }
 
 /*
+ * Reaps iso_build_start()'s own child, same shape as
  * handle_bootroot_assemble_event() -- updates g_iso_build_state for
  * GET /v1/system/iso to report back, since no REST response is waiting
  * on this (the original POST already returned 202 long before this
- * fires). */
+ * fires).
+ *
+ * The opening half of this sentence had been stranded ~400 lines
+ * above as a comment opener with no close, which silently swallowed
+ * read_iso_signed_version()'s own doc comment into itself. Rejoined
+ * here rather than left as two halves (#495).
+ */
 static void handle_iso_assemble_event(struct conn *cc)
 {
 	int status;
@@ -10639,11 +10694,11 @@ static void handle_iso_assemble_event(struct conn *cc)
 			 */
 			logstore_write("cixd", "error", "iso assembly: output: %s", output);
 			childdiag_reduce_to_error_line(output);
-			snprintf(g_iso_build_error, sizeof(g_iso_build_error),
-			         "mkinstalleriso failed (status 0x%x): %s", (unsigned)status, output);
+			snprintf(g_iso_build_error, sizeof(g_iso_build_error), "%s (status 0x%x): %s",
+			         iso_child_failure_what(status), (unsigned)status, output);
 		} else {
-			snprintf(g_iso_build_error, sizeof(g_iso_build_error),
-			         "mkinstalleriso failed (status 0x%x)", (unsigned)status);
+			snprintf(g_iso_build_error, sizeof(g_iso_build_error), "%s (status 0x%x)",
+			         iso_child_failure_what(status), (unsigned)status);
 		}
 		fprintf(stderr, "iso assembly: failed\n");
 		logstore_write("cixd", "error", "iso assembly: %s", g_iso_build_error);

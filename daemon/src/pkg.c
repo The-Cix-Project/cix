@@ -13983,6 +13983,209 @@ static int seed_stage_recipes(const char *recipes_dst)
 	return rc;
 }
 
+/*
+ * Which version of a seed package the media should carry, and how its
+ * artifact can be obtained (#495).
+ *
+ * This used to be "the first INSTALLED entry in g_packages with this
+ * name", which is not a rule -- it is whichever image the table
+ * happened to hold first. Measured on 192.168.15.95, 2026-09-19: ten
+ * images carry glibc, five of them at 2.44-16, and the pick was
+ * cix-builder's 2.44-14 because that entry sorts first. For zlib the
+ * arbitrary pick was actively worse: cix-builder's 1.3.2-10 has no
+ * approved checksum and no cached artifact, while jumpbox's 1.3.2-14
+ * has both.
+ *
+ * So: the NEWEST installed version across every image, restricted to
+ * versions this host can actually produce bytes for -- one already in
+ * the local cache, or one whose recipe carries a pkg_artifact_sha256
+ * approving a specific byte sequence the configured artifact cache can
+ * be asked for. A version with neither is not a candidate, because
+ * seeding it means shipping media that names an artifact nothing can
+ * supply.
+ *
+ * pkg_version_compare() is the one comparator, the same one
+ * recipe_latest_version() and the drift report use. A second ordering
+ * here would be a second answer to "which is newer".
+ */
+struct seed_choice {
+	char version[PKG_VERSION_MAX];
+	char sha256[PKG_SHA256_MAX];
+	int cached;
+};
+
+static enum pkg_error seed_choose(const char *name, struct seed_choice *out, char *err,
+                                   size_t err_size)
+{
+	int i;
+	int seen_any = 0;
+	int have = 0;
+	char newest_rejected[PKG_VERSION_MAX];
+
+	memset(out, 0, sizeof(*out));
+	newest_rejected[0] = '\0';
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		struct pkg_recipe recipe;
+		char recipe_path[PATH_MAX];
+		const char *version;
+		int cached;
+		int approved;
+
+		if (!g_packages[i].in_use || g_packages[i].state != PKG_STATE_INSTALLED)
+			continue;
+		if (strcmp(g_packages[i].name, name) != 0)
+			continue;
+		version = g_packages[i].version;
+		seen_any = 1;
+		/* The same version in several images is one candidate, which
+		 * <= 0 already covers -- equal is not newer. */
+		if (have && pkg_version_compare(version, out->version) <= 0)
+			continue;
+
+		cached = pkg_artifact_cache_has(name, version);
+		memset(&recipe, 0, sizeof(recipe));
+		approved = (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) == 0 &&
+		            parse_recipe(recipe_path, &recipe) == 0 && recipe.artifact_sha256[0] != '\0');
+		if (!cached && !approved) {
+			/*
+			 * The NEWEST unusable version is what a refusal names,
+			 * not a list of every one: an older version becoming
+			 * usable would not change the answer, since this rule
+			 * takes the newest, so the newest is the only one worth
+			 * acting on. It also sidesteps listing the same version
+			 * once per image that carries it.
+			 */
+			if (newest_rejected[0] == '\0' ||
+			    pkg_version_compare(version, newest_rejected) > 0)
+				snprintf(newest_rejected, sizeof(newest_rejected), "%s", version);
+			continue;
+		}
+
+		snprintf(out->version, sizeof(out->version), "%s", version);
+		snprintf(out->sha256, sizeof(out->sha256), "%s", approved ? recipe.artifact_sha256 : "");
+		out->cached = cached;
+		have = 1;
+	}
+
+	if (!seen_any) {
+		snprintf(err, err_size,
+		         "the installer seed needs %s and this host has none installed -- an ISO "
+		         "built now could not bring up DNS on a fresh box",
+		         name);
+		return PKG_ERR_NOT_FOUND;
+	}
+	if (!have) {
+		snprintf(err, err_size,
+		         "the installer seed needs %s, and no installed version of it can be put on "
+		         "the media -- the newest, %s, has no cached artifact and no approved "
+		         "pkg_artifact_sha256 to fetch one with",
+		         name, newest_rejected[0] != '\0' ? newest_rejected : "(none)");
+		return PKG_ERR_NOT_FOUND;
+	}
+	return PKG_OK;
+}
+
+/*
+ * Answers, without doing any of the work, whether staging a seed can
+ * succeed -- so POST /v1/system/iso can still refuse synchronously the
+ * cases nothing will fix (#495).
+ *
+ * The division is deliberate: what is cheap and decisive (a table scan,
+ * a stat, a recipe read) stays in the request handler and answers 400;
+ * what costs time (a 12.8 MB recipe tree copy, artifact copies, a
+ * fetch) moves into the forked build child and fails the build in
+ * GET /system/iso instead. Doing the expensive half here is what had
+ * cixd copying the whole recipe tree inside its own epoll loop.
+ */
+enum pkg_error pkg_seed_preflight(char *err, size_t err_size)
+{
+	size_t i;
+
+	for (i = 0; i < sizeof(g_seed_packages) / sizeof(g_seed_packages[0]); i++) {
+		struct seed_choice c;
+		enum pkg_error rc = seed_choose(g_seed_packages[i], &c, err, err_size);
+
+		if (rc != PKG_OK)
+			return rc;
+		if (!c.cached && !pkg_artifact_is_configured()) {
+			snprintf(err, err_size,
+			         "the installer seed needs %s@%s, its artifact is not in this host's "
+			         "cache, and no artifact cache is configured to fetch it from",
+			         g_seed_packages[i], c.version);
+			return PKG_ERR_NOT_FOUND;
+		}
+	}
+	return PKG_OK;
+}
+
+/*
+ * Puts one seed artifact at dst, fetching it when the local cache has
+ * no copy (#495).
+ *
+ * Fetched straight into the seed directory rather than into the shared
+ * local cache: the seed is rebuilt on every ISO build, and a build
+ * child writing the cache would run cache_evict_lru_until_fits()
+ * alongside the install pipeline doing the same in the same directory.
+ * A re-download per ISO build costs a few seconds and owns nothing.
+ *
+ * The approved digest is the whole of the trust here. seed_choose()
+ * only ever selects an uncached version that has one, so there is no
+ * branch where unverified bytes reach the media.
+ */
+static enum pkg_error seed_place_artifact(const char *name, const struct seed_choice *c,
+                                           const char *dst, char *err, size_t err_size)
+{
+	char url[768];
+	char header[320];
+	char sha_out[128] = "";
+	struct curlfetch_opts opts;
+	char curl_err[256];
+
+	if (c->cached) {
+		char src[PATH_MAX];
+
+		cache_tarball_path(name, c->version, src, sizeof(src));
+		if (copy_file_simple(src, dst) != 0) {
+			snprintf(err, err_size, "could not stage the %s artifact: %s", name,
+			         strerror(errno));
+			return PKG_ERR_PERSIST_FAILED;
+		}
+		return PKG_OK;
+	}
+
+	pkg_artifact_build_request(name, c->version, url, sizeof(url), header, sizeof(header));
+	memset(&opts, 0, sizeof(opts));
+	opts.url = url;
+	opts.path = dst;
+	opts.header1 = header[0] != '\0' ? header : NULL;
+	opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
+	opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
+	opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
+	curl_err[0] = '\0';
+	unlink(dst);
+	if (curlfetch_perform(&opts, NULL, curl_err, sizeof(curl_err)) != 0) {
+		unlink(dst);
+		snprintf(err, err_size, "could not fetch the %s@%s artifact from %s: %s", name,
+		         c->version, url, curl_err[0] != '\0' ? curl_err : "fetch failed");
+		return PKG_ERR_NOT_FOUND;
+	}
+	if (pkg_run_capture_sha256(dst, sha_out, sizeof(sha_out)) != 0) {
+		unlink(dst);
+		snprintf(err, err_size, "could not hash the fetched %s@%s artifact", name, c->version);
+		return PKG_ERR_PERSIST_FAILED;
+	}
+	if (strcmp(sha_out, c->sha256) != 0) {
+		unlink(dst);
+		snprintf(err, err_size,
+		         "the fetched %s@%s artifact is not the approved one: recipe approves %s, "
+		         "%s served %s",
+		         name, c->version, c->sha256, url, sha_out);
+		return PKG_ERR_NOT_FOUND;
+	}
+	return PKG_OK;
+}
+
 enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size)
 {
 	char recipes_dst[PATH_MAX];
@@ -14019,26 +14222,16 @@ enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size)
 	 * level up, where the reason is still known.
 	 */
 	for (i = 0; i < sizeof(g_seed_packages) / sizeof(g_seed_packages[0]); i++) {
-		const struct pkg_entry *e = NULL;
+		const char *name = g_seed_packages[i];
+		struct seed_choice c;
 		char src[PATH_MAX];
 		char dst[PATH_MAX];
 		const char *base;
-		int j;
+		enum pkg_error rc;
 
-		for (j = 0; j < PKG_MAX_PACKAGES; j++) {
-			if (g_packages[j].in_use && g_packages[j].state == PKG_STATE_INSTALLED &&
-			    strcmp(g_packages[j].name, g_seed_packages[i]) == 0) {
-				e = &g_packages[j];
-				break;
-			}
-		}
-		if (e == NULL) {
-			snprintf(err, err_size,
-			         "the installer seed needs %s and this host has none installed -- an ISO "
-			         "built now could not bring up DNS on a fresh box",
-			         g_seed_packages[i]);
-			return PKG_ERR_NOT_FOUND;
-		}
+		rc = seed_choose(name, &c, err, err_size);
+		if (rc != PKG_OK)
+			return rc;
 		/*
 		 * This artifact's OWN recipe version, even if a newer one is
 		 * what seed_stage_recipes() already staged. Otherwise a fresh
@@ -14046,33 +14239,37 @@ enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size)
 		 * artifact for, and tries to build a C library on a machine
 		 * with no compiler.
 		 */
-		if (seed_copy_one_recipe(recipes_dst, e->name, e->version) != 0) {
+		if (seed_copy_one_recipe(recipes_dst, name, c.version) != 0) {
 			snprintf(err, err_size, "could not stage the %s@%s recipe the seeded artifact "
 			                        "needs: %s",
-			         e->name, e->version, treecopy_last_error());
+			         name, c.version, treecopy_last_error());
 			return PKG_ERR_PERSIST_FAILED;
 		}
 
-		cache_tarball_path(e->name, e->version, src, sizeof(src));
-		if (!pkg_artifact_cache_has(e->name, e->version)) {
-			snprintf(err, err_size,
-			         "the installer seed needs %s@%s and its artifact is not in this host's "
-			         "cache -- publish or rebuild it first",
-			         e->name, e->version);
-			return PKG_ERR_NOT_FOUND;
-		}
+		cache_tarball_path(name, c.version, src, sizeof(src));
 		base = strrchr(src, '/');
 		base = (base != NULL) ? base + 1 : src;
 		if (snprintf(dst, sizeof(dst), "%s/%s", artifacts_dst, base) >= (int)sizeof(dst)) {
-			snprintf(err, err_size, "seed artifact path too long for %s", e->name);
+			snprintf(err, err_size, "seed artifact path too long for %s", name);
 			return PKG_ERR_INVALID_NAME;
 		}
-		if (copy_file_simple(src, dst) != 0) {
-			snprintf(err, err_size, "could not stage the %s artifact: %s", e->name,
-			         strerror(errno));
-			return PKG_ERR_PERSIST_FAILED;
-		}
-		logstore_write("cixd", "info", "iso seed: staged %s@%s", e->name, e->version);
+		rc = seed_place_artifact(name, &c, dst, err, err_size);
+		if (rc != PKG_OK)
+			return rc;
+		/*
+		 * stdout, not the log store: this runs in the ISO build's
+		 * forked child, whose output the reaper already captures and
+		 * reports (#495). The store is a file the PARENT holds open
+		 * (logstore.c's g_current_fp) and whose rotation it accounts
+		 * for in-process (g_current_size); a forked child writing
+		 * through that inherited descriptor appends bytes the parent
+		 * does not count, with two independent stdio buffers on one
+		 * offset. So the child says what it did on a channel built
+		 * for it instead.
+		 */
+		printf("iso seed: staged %s@%s (%s)\n", name, c.version,
+		       c.cached ? "from the local cache" : "fetched");
+		fflush(stdout);
 	}
 
 	return PKG_OK;
