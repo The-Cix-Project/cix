@@ -10099,7 +10099,6 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	 * standing there unable to resolve anything.
 	 */
 	snprintf(seed_dir, sizeof(seed_dir), "%s/.seed", ISO_DIR);
-	cix_btrfs_subvol_delete_or_rmtree(seed_dir);
 	/*
 	 * Only the question, here; the work happens in the child (#495).
 	 *
@@ -10169,6 +10168,10 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 		 * means "mkinstalleriso could not be executed".
 		 */
 		seed_err[0] = '\0';
+		/* Last build's seed goes with the rest of the staging work:
+		 * removing a directory of this size is I/O the event loop
+		 * should not be doing either. */
+		cix_btrfs_subvol_delete_or_rmtree(seed_dir);
 		if (pkg_seed_stage(seed_dir, seed_err, sizeof(seed_err)) != PKG_OK) {
 			fprintf(stderr, "error: could not stage the installer package seed: %s\n",
 			        seed_err[0] != '\0' ? seed_err : "unknown");
