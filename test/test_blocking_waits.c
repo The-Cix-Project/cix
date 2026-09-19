@@ -148,7 +148,35 @@ static const struct budget g_budgets[] = {
 	 * comment above names as out of budget, and it cost 366 seconds and
 	 * a hand reset on 192.168.15.95. Nothing here signals the child.
 	 */
-	{ "daemon/src/pkg.c", 7, "build helpers and fetch intermediates, plus ADR-0305's `cbs explain` (a bounded parse of a local file, its pipe closed before the wait); #352 dropped one (pkg_run_capture_sha256(), no more forked sha256sum), #411 dropped another (tarball_has_common_top_dir(), no more forked tar -tf), #410 dropped three more (start_fetch_for()'s curl children, replaced by in-process curlfetch_perform())" },
+	/*
+	 * 7 -> 8 (ADR-0307 clause 7, #496): cbs_engine_version() waits for
+	 * `cbs --version`, and here is the argument this table demands.
+	 *
+	 * Bounded by construction, and more narrowly than `cbs explain`
+	 * above: `--version` is a single printf of a compile-time constant
+	 * followed by `return 0` (cix-build-system src/main.c:664, read at
+	 * tag v0.1.29). It opens no file, no socket and no lock, and its
+	 * runtime is not a function of any input -- there is no input. The
+	 * read end is drained and then CLOSED before the wait, on every
+	 * path including the early break when the buffer fills -- so the
+	 * full-pipe case the explain entry describes cannot arise: a child
+	 * still writing dies on EPIPE rather than blocking forever with
+	 * the reader gone. In practice the output is one short line.
+	 *
+	 * And it is not on the reactor at all. It runs from pkg_init(),
+	 * which is startup -- before the epoll loop exists, so no request
+	 * handler and no reactor pass can reach it, exactly once per boot.
+	 * That is a stronger position than most entries in this table,
+	 * which have to argue about handlers that CAN reach them.
+	 *
+	 * What it is NOT: a wait after a signal. Nothing here signals the
+	 * child.
+	 *
+	 * The re-derivations the sweep then performs add no wait of their
+	 * own -- they go through pkg_recipe_rederive_identity(), whose
+	 * run_cbs_explain() is the wait the entry below already counts.
+	 */
+	{ "daemon/src/pkg.c", 8, "build helpers and fetch intermediates, plus ADR-0305's `cbs explain` (a bounded parse of a local file, its pipe closed before the wait); #352 dropped one (pkg_run_capture_sha256(), no more forked sha256sum), #411 dropped another (tarball_has_common_top_dir(), no more forked tar -tf), #410 dropped three more (start_fetch_for()'s curl children, replaced by in-process curlfetch_perform())" },
 	{ "daemon/src/targz.c", 4, "tar/gzip pipeline, bounded by the archive" },
 	{ "daemon/src/diskpart.c", 4, "sfdisk/blkid, bounded external tools" },
 	{ "daemon/src/exec.c", 2, "namespace-join intermediates" },
@@ -180,8 +208,10 @@ static const struct budget g_budgets[] = {
  * subprocess across both files replaced by in-process libcurl calls
  * via curlfetch_perform()). Then 53 -> 54 for ADR-0305's
  * run_cbs_explain() in pkg.c, the same single wait the per-file entry
- * above argues for. */
-#define TOTAL_ALLOWED 54
+ * above argues for. Then 54 -> 55 for ADR-0307 clause 7's
+ * cbs_engine_version(), also in pkg.c, also a single wait and argued
+ * for in the same place. */
+#define TOTAL_ALLOWED 55
 
 static int is_comment(const char *line)
 {
