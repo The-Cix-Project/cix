@@ -141,6 +141,13 @@ int main(void)
 	 * silently stopped looking at anything" is the way a static check
 	 * rots -- the same reason test_apigen pins its operation count.
 	 *
+	 * Ten sites as of #495: nine below, plus seed_place_artifact() in
+	 * pkg.c, which fetches an installer-seed artifact the local cache
+	 * does not hold. That one runs in the ISO build's forked child
+	 * rather than in the event loop, which makes the stall guard more
+	 * important and not less -- an unguarded transfer there hangs a
+	 * build with no timeout of its own to end it.
+	 *
 	 * Nine sites as of #410: the twelve execve(curl, ...) sites this
 	 * test used to count collapsed to nine curlfetch_perform() calls,
 	 * because three with/without-header argv-branch pairs -- pkg_sync_
@@ -154,9 +161,9 @@ int main(void)
 	 * publish_upload, bootstrap_fetch_start, kernel_releases_fetch_
 	 * start). If that changes, change this number deliberately.
 	 */
-	if (sites != 9) {
+	if (sites != 10) {
 		fprintf(stderr,
-		        "FAIL: found %d curlfetch_perform() call sites, expected 9 -- if a call site "
+		        "FAIL: found %d curlfetch_perform() call sites, expected 10 -- if a call site "
 		        "was genuinely added or removed, update this number deliberately; a silently "
 		        "different count is how an unguarded fetch hides\n",
 		        sites);
