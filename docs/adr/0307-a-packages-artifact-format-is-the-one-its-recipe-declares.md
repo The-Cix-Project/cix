@@ -10,8 +10,15 @@ rather than only how a build is driven.
 The owner has accepted the decision's shape, including the two clauses
 that go beyond "support both": clause 2, which moves finalization into
 `--finalize-command`, and clause 6, which makes `cbs` mandatory in the
-control-plane root. `Proposed` rather than `Accepted` only because no
-code implements it yet; it flips when the daemon does.
+control-plane root.
+
+**Clauses 1 and 7 are implemented and proven on 192.168.15.95**
+(`v2.57.227`, 2026-09-19): the daemon reads the declared format, all 50
+published PBS recipe versions report `artifact_format: "cixpkg"` after
+the re-derivation sweep, and a recipe declaring `format "tar.gz"` is
+refused at publish with a message naming `cbs build`. Clauses 2, 3, 4,
+5 and 6 are not — no `.cixpkg` is produced or consumed yet, so this
+stays `Proposed` until they are.
 
 **Its one dependency is already cleared.**
 [cix-build-system#173](https://git.home.arpa/itdlabs/cix-build-system/issues/173)
