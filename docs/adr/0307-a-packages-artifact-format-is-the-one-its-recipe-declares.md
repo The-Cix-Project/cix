@@ -19,9 +19,19 @@ was filed and closed on 2026-09-18, and `cbs explain --json` on `main`
 (VERSION 0.1.26, tagged `v0.1.26`) now emits `format` as a top-level key.
 The section **What this depended on** below records what was measured
 before the fix and is kept as the reason the field exists, not as a
-present-tense blocker. What remains before the code can land is a `cbs`
-recipe revision at `v0.1.26` built and installed on the host, since the
-running engine is still `v0.1.25-6`, whose explain omits the key.
+present-tense blocker.
+
+That dependency is now fully cleared, and the sentence that used to
+stand here — *"what remains before the code can land is a `cbs` recipe
+revision at `v0.1.26` built and installed on the host, since the running
+engine is still `v0.1.25-6`"* — is history rather than a blocker.
+`cbs v0.1.29-1` is installed in `cix-builder` and `cix-hosttools`, and
+`mkbootroot` has staged it into the running control-plane root
+(192.168.15.95, `v2.57.224`). Read at tag `v0.1.29`, `src/main.c:344`
+emits `,"format":` immediately after `release`, so the key is there.
+What it uncovered instead is clause 7 below: the documents already on
+disk were derived by the engine that was running when each was
+published, and most of them predate that key.
 
 It is also a deliberate, owner-decided exception to this project's
 standing no-backward-compatibility rule, which says clean cut-overs and
@@ -267,6 +277,64 @@ This replaces the bootstrap exemption an earlier draft of this ADR gave
 better answer anyway: it removes the exemption, the drift gate that would
 have policed it, and the open question it would have left for stage 4.
 
+**7. `explain.json` is a derived cache, so it is re-derived when the
+engine that derived it changes** ([#496](https://git.home.arpa/itdlabs/cix/issues/496)).
+
+Clause 1 has the daemon read the declared format from the explain
+document, and `parse_pbs_recipe()` reads that document and never the
+recipe. The documents already on disk were each derived by whichever
+`cbs` was on the host the day that version was published, and `format`
+only exists from `v0.1.26` — so most of them do not have it. Measured
+via publish times against the host's own boot record: `zlib@1.3.2-14`,
+`vim@9.1.1428-4` and `iputils@s20180629-4` were published on 2026-09-18
+between 18:28 and 19:06 UTC, and the reassembly that put the newer
+engine on the host booted at 22:30:40 UTC that evening; `cbs@v0.1.29-1`,
+`mtr@0.96-9` and `libmnl@1.0.5-7` followed at 04:05–04:11 the next
+morning.
+
+Neither of the two obvious answers is available. **Refusing** a document
+with no `format` makes every recipe published before that reboot
+unbuildable, which is the opposite of what stage 3 is for.
+**Assuming `cixpkg`** is precisely what clause 1 rules out: the daemon
+must be able to refuse a `tar.gz` declaration at publish rather than
+accept it and fail at build time, and assuming would encode a
+restriction that is CBS's to lift.
+
+So the third answer, which is what the document already claims to be:
+**`explain.json` is derived, and derived state is rebuilt when its
+producer changes.** A published `(name, version)` is immutable
+(ADR-0107) and `cbs explain --json` is deterministic over the recipe
+text, so re-deriving cannot produce a different answer about the same
+recipe — only a more complete one from a newer engine.
+
+**The sweep runs once at startup, and that is complete rather than
+merely convenient.** The host's `cbs` is `/usr/bin/cbs` in the
+control-plane root, which `mkbootroot` stages from `cix-hosttools` at
+assembly time (clause 6). That root is a read-only squashfs replaced
+only by `POST /system/update` and a reboot — so **the engine cannot
+change while the daemon is running**, and every way it can change goes
+through a restart. A recipe published while the daemon is up is derived
+by that same engine at publish. There is therefore no window a startup
+sweep misses, and no need for a second, lazy path on the read side.
+
+Staleness is decided by the engine's own version string, not by probing
+for a key. `cbs --version` prints `cbs <version>` (`src/main.c:664`),
+the daemon records the version its last sweep ran with, and a mismatch
+re-derives every PBS recipe's document and stores the new version. That
+generalises: the next key CBS adds to explain is picked up by the same
+mechanism, where a check for `format` specifically would have to be
+written again each time — and a key-absence test cannot tell "this
+engine does not emit it" from "this recipe did not declare it".
+
+This does **not** re-derive on read, and the distinction matters. The
+comment above `pbs_explain_path()` records why: re-running `cbs explain`
+per read would fork once per recipe file, of which there are ~1400, and
+#236 already measured the event loop blocked for 10981 ms on a
+comparable walk doing something cheaper — twice, each needing the host
+reset by hand. The sweep is bounded by the number of PBS recipes (28 at
+the time of writing), runs before the daemon serves anything, and then
+never again until the engine changes.
+
 ## What this depended on
 
 **[cix-build-system#173](https://git.home.arpa/itdlabs/cix-build-system/issues/173)**
@@ -337,6 +405,13 @@ artifacts are immutable and stay readable.
   `"artifact_format"`. A clean rename, no alias: `docs/api/openapi.yaml`
   and `docs/api/README.md` change together with it, and the web dashboard
   is the only other reader.
+- **The daemon gains one new piece of persisted state: the `cbs` version
+  its last explain sweep ran with** (clause 7). That is a record of what
+  produced the derived documents, not a second source of truth about
+  them — the documents themselves stay the only account of what a recipe
+  declares, and this says only which engine wrote them. It is the
+  smallest thing that makes "is this cache stale" answerable without
+  probing for one key at a time.
 - **`daemon/policy/pkg-finalize.sh` becomes an executable**, since
   `--finalize-command` is `execlp`'d with the staged root as `$1` rather
   than sourced. It stays one file and one policy for both formats.
