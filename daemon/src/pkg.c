@@ -2599,10 +2599,16 @@ static int write_finalize_script(const char *upperdir)
 
 	/*
 	 * 0755, because it is execve()d now rather than sourced (ADR-0307
-	 * clause 2). A 0644 file with a valid shebang fails with EACCES,
-	 * and CBS's own runner reports that as exit 127 through
-	 * execlp() -- an error that reads as "no such file" against a
-	 * file that is plainly there.
+	 * clause 2).
+	 *
+	 * By construction rather than by observation, and said that way
+	 * on purpose: cix-build-system src/main.c:514-522 forks and calls
+	 * execlp(command, command, staged_root, NULL), then _exit(127) on
+	 * any failure to exec -- so a 0644 file's EACCES arrives as 127,
+	 * indistinguishable from a missing interpreter or a missing file.
+	 * The policy has never actually been staged 0644 through this
+	 * path; the point is that if it were, the error would name
+	 * nothing useful.
 	 */
 	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
 	if (fd < 0)
