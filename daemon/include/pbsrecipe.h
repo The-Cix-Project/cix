@@ -93,6 +93,21 @@ int pbs_explain_source(const struct pbs_explain *ex, int index, char *url, size_
 int pbs_explain_requires(const struct pbs_explain *ex, const char *role, const char *kind,
                           char *out, size_t out_size);
 
+/*
+ * The artifact format the recipe declares (ADR-0307): "cixpkg" or
+ * "tar.gz", CPDL's only two legal values, exactly one of which every
+ * package must declare (cix-build-system `src/validate.c:698`).
+ *
+ * "" means the ENGINE did not report it, not that the recipe declared
+ * nothing -- a document derived by a cbs older than v0.1.26 has no
+ * `format` key at all (cix-build-system#173). Telling those two apart
+ * is not possible from here and does not need to be: ADR-0307 clause 7
+ * re-derives a document whose engine has changed, so a "" reaching a
+ * caller means the sweep has not run or the engine is older than the
+ * daemon requires, and both are refusals rather than defaults.
+ */
+const char *pbs_explain_format(const struct pbs_explain *ex);
+
 /* "" when the document declares none. Never NULL. */
 const char *pbs_explain_upstream(const struct pbs_explain *ex);
 const char *pbs_explain_toolchain(const struct pbs_explain *ex);

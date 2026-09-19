@@ -254,7 +254,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/pkg/bootstrap` | Status of the most recent `toolchain_url` fetch |
 | GET | `/pkg/recipes` | List every published recipe version known to this daemon (metadata only) |
 | POST | `/pkg/recipes` | Publish a new recipe version — immutable once published, 409 if this exact (name,version) already exists, or ([#494](https://git.home.arpa/itdlabs/cix/issues/494)) if a **different** version of the package already publishes under the same artifact name — the artifact server reads a missing release as release 1, so `1.25.0` and `1.25.0-1` collide there and only one could ever publish. `format` picks the language: `shell` (default, a `build.sh`) or `pbs` (a `build.cbs` in CPDL, [ADR-0305](../adr/0305-a-recipes-format-is-its-filename.md)) |
-| GET | `/pkg/recipes/{name}` | One recipe version's full detail, including its raw recipe text and its `format`; `?version=` selects a specific one, omitted resolves to the highest available |
+| GET | `/pkg/recipes/{name}` | One recipe version's full detail, including its raw recipe text, its `language` (`shell`/`pbs`) and its `artifact_format` (`cixpkg`/`tar.gz`, [ADR-0307](../adr/0307-a-packages-artifact-format-is-the-one-its-recipe-declares.md)); `?version=` selects a specific one, omitted resolves to the highest available |
 | DELETE | `/pkg/recipes/{name}` | Remove recipe version(s) (does not affect anything already installed via it); `?version=` removes just that one, omitted removes every version |
 | GET | `/pkg/repo-config` | The configured recipe-sync source (ADR-0121); `auth_token` itself is never returned |
 | PUT | `/pkg/repo-config` | Partially update the configured recipe repo — fields omitted from the body are left unchanged |
@@ -1071,7 +1071,22 @@ What a PBS recipe declares maps onto the same fields every other endpoint alread
 
 A backup keys a shell recipe `<name>/<version>` exactly as it always has, and a PBS recipe `<name>/<version>/build.cbs`. The asymmetry is on purpose: an older daemon rejects a key it cannot read as `<name>/<version>` — and rejects the whole document when it does — so making every key three segments would cost every recipe in a backup restored onto the other boot slot. A restored `build.cbs` has its identity **re-derived** rather than restored, since `explain.json` is what one particular `cbs` made of the document.
 
-Two fields have no CPDL home, and both report as absent rather than as something invented: `changelog` is always `null`, and a PBS recipe cannot carry an artifact checksum, so it rebuilds from source instead of taking a cache hit. CPDL 0.1 rejects unknown package keys, so there is nowhere to put either; cix-build-system#161 asks upstream for an opaque embedder-owned block.
+Two fields used to have no CPDL home, and this paragraph used to say so: *"`changelog` is always `null`, and a PBS recipe cannot carry an artifact checksum, so it rebuilds from source instead of taking a cache hit."* **Neither is true any more.** cix-build-system#161 closed, a `build.cbs` carries both in its opaque `metadata { }` block, and `parse_pbs_recipe()` reads them from there — so a converted recipe takes a cache hit exactly as its shell revision did, and reports its changelog.
+
+### What a version publishes, and how the daemon knows ([ADR-0307](../adr/0307-a-packages-artifact-format-is-the-one-its-recipe-declares.md))
+
+`GET /pkg/recipes` reports two different things that both used to be called "format", and now are not:
+
+| key | what it is |
+|---|---|
+| `language` | `shell` or `pbs` — which language the recipe is WRITTEN in. It is the filename, so it cannot disagree with what runs. Called `format` until ADR-0307; a clean rename, no alias |
+| `artifact_format` | `cixpkg` or `tar.gz` — what the version PUBLISHES. A PBS recipe declares it; a shell recipe has no field and is `tar.gz` by construction |
+
+The two are not the same question, and the daemon **reads** the declared one rather than inferring it from the language. CPDL accepts `format "tar.gz"` and `cbs build` then refuses to execute it (*"standalone builds require cixpkg"*), so a PBS recipe declaring `tar.gz` is **refused at publish** with a message saying so — storing it would mean an immutable version that fails at build time, every time. Assuming `cixpkg` for every PBS recipe would accept that recipe happily, and would bake in a restriction that is CBS's to lift rather than this platform's to encode.
+
+The request field on `POST /pkg/recipes` still spells it `format`: there it selects the language and there is nothing for it to collide with.
+
+**The derived document is rebuilt when the engine changes** (ADR-0307 clause 7). `parse_pbs_recipe()` reads `explain.json` and never the recipe, and `format` only exists from `cbs v0.1.26` — so documents derived by an older engine simply do not have it. They are re-derived once at startup, keyed on `cbs --version` against the version the last sweep recorded. Once, and at startup, because the host's `cbs` lives in the read-only control-plane root: the engine cannot change while the daemon runs, so there is no window that misses. It is emphatically not a re-derive per read — there are ~1400 recipe files, and forking per read is how the event loop ends up blocked for eleven seconds ([#236](https://git.home.arpa/itdlabs/cix/issues/236)).
 
 The daemon does not parse CPDL. It runs `cbs`, which is the only parser for that language on the box — a second one in `pkg.c` would be a parallel implementation of the thing being adopted.
 

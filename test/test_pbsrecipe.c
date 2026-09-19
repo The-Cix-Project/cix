@@ -87,6 +87,15 @@ static void test_happy_path(void)
 	expect_str("name", pbs_explain_name(ex), "zstd");
 
 	/*
+	 * ADR-0307 clause 7: this fixture is a document as a cbs older
+	 * than v0.1.26 wrote one -- no `format` key at all. It must read
+	 * as "" rather than crash or invent a value, because "" is what
+	 * the daemon keys the re-derivation refusal on. A fixture that
+	 * carried the key would test the easy half only.
+	 */
+	expect_str("format absent in an old document", pbs_explain_format(ex), "");
+
+	/*
 	 * The fused version, and the whole reason this is worth asserting
 	 * rather than trusting: cixd has ONE version string and CPDL has
 	 * two fields. A join that silently dropped the release would
@@ -440,6 +449,7 @@ static void test_null_safety(void)
 	expect_str("name of NULL", pbs_explain_name(NULL), "");
 	expect_str("upstream of NULL", pbs_explain_upstream(NULL), "");
 	expect_str("toolchain of NULL", pbs_explain_toolchain(NULL), "");
+	expect_str("format of NULL", pbs_explain_format(NULL), "");
 	expect_str("toolchain reason of NULL", pbs_explain_toolchain_reason(NULL), "");
 	expect_int("source count of NULL", pbs_explain_source_count(NULL), 0);
 	{
@@ -457,6 +467,56 @@ static void test_null_safety(void)
 	pbs_explain_free(NULL);
 }
 
+/*
+ * The declared artifact format (ADR-0307 clause 1).
+ *
+ * Both legal values and the absent case, because the daemon does three
+ * different things with them: cixpkg is published as a .cixpkg,
+ * "tar.gz" is REFUSED at publish (cbs build will not execute it), and
+ * absent means the document was derived by an engine older than
+ * v0.1.26 and has to be re-derived rather than guessed at. A reader
+ * that collapsed any two of those would take the wrong branch silently.
+ */
+static void test_declared_format(void)
+{
+	static const char *const CIXPKG =
+	    "{\"name\":\"p\",\"version\":\"1\",\"release\":1,\"format\":\"cixpkg\","
+	    "\"sources\":[{\"name\":\"p\",\"urls\":[\"https://e/p.tar.gz\"],\"sha256\":\"aa\"}]}";
+	static const char *const TARGZ =
+	    "{\"name\":\"p\",\"version\":\"1\",\"release\":1,\"format\":\"tar.gz\","
+	    "\"sources\":[{\"name\":\"p\",\"urls\":[\"https://e/p.tar.gz\"],\"sha256\":\"aa\"}]}";
+	static const char *const NULLFMT =
+	    "{\"name\":\"p\",\"version\":\"1\",\"release\":1,\"format\":null,"
+	    "\"sources\":[{\"name\":\"p\",\"urls\":[\"https://e/p.tar.gz\"],\"sha256\":\"aa\"}]}";
+	char err[256];
+	struct pbs_explain *ex;
+
+	ex = pbs_explain_parse(CIXPKG, strlen(CIXPKG), err, sizeof(err));
+	if (ex == NULL)
+		fail("a document declaring cixpkg failed to parse");
+	else
+		expect_str("declared cixpkg", pbs_explain_format(ex), "cixpkg");
+	pbs_explain_free(ex);
+
+	ex = pbs_explain_parse(TARGZ, strlen(TARGZ), err, sizeof(err));
+	if (ex == NULL)
+		fail("a document declaring tar.gz failed to parse");
+	else
+		expect_str("declared tar.gz", pbs_explain_format(ex), "tar.gz");
+	pbs_explain_free(ex);
+
+	/* A JSON null is not a declaration. It must read the same as an
+	 * absent key -- "" -- and not as the string "null", which would
+	 * sail past the daemon's cixpkg comparison as an unknown format
+	 * rather than being caught as a missing one. */
+	ex = pbs_explain_parse(NULLFMT, strlen(NULLFMT), err, sizeof(err));
+	if (ex == NULL)
+		fail("a document with a null format failed to parse");
+	else
+		expect_str("format declared null", pbs_explain_format(ex), "");
+	pbs_explain_free(ex);
+}
+
 int main(void)
 {
 	printf("=== PBS recipe identity (ADR-0305) ===\n");
@@ -467,6 +527,7 @@ int main(void)
 	test_rejections();
 	test_truncation_is_refused();
 	test_null_safety();
+	test_declared_format();
 
 	if (g_failures != 0) {
 		printf("PBS RECIPE TEST: FAIL (%d failure(s))\n", g_failures);

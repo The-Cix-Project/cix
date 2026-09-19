@@ -18879,7 +18879,7 @@ components:
             refusal that used to reject such a recipe outright.
             For a PBS recipe (build.cbs) this value is derived from
             `requires { runtime { package "..." } }` (ADR-0305).
-        format:
+        language:
           type: string
           enum: [shell, pbs]
           description: >
@@ -18887,6 +18887,31 @@ components:
             file holds it: "shell" -> build.sh, "pbs" -> build.cbs in CPDL 0.1
             (ADR-0305). Not a property a recipe declares -- it IS the filename, so it
             cannot disagree with what the daemon will actually run.
+
+
+            Called `format` until ADR-0307, which gave this subsystem a second and
+            genuinely different notion of format -- `artifact_format` below, what the
+            recipe declares it PUBLISHES. Two meanings for one key reads as a bug, so
+            this took the word its own description already used. A clean rename with
+            no alias; the request field on POST /pkg/recipes still spells it `format`,
+            because there it selects the language and nothing else is in scope to
+            collide with.
+        artifact_format:
+          type: string
+          enum: [cixpkg, "tar.gz"]
+          description: >
+            What this version publishes (ADR-0307). A PBS recipe DECLARES it -- CPDL
+            requires exactly one `format` declaration per package -- and the daemon
+            reads it from the derived explain document rather than assuming, so that
+            a recipe declaring "tar.gz" can be refused at publish: `cbs build` cannot
+            execute one ("standalone builds require cixpkg"). A shell recipe has no
+            such field and is "tar.gz" permanently and by construction.
+
+
+            One version of one package is one byte sequence in one format. The same
+            version is never published twice in two formats, which is what keeps the
+            two from being two ways to ship a package rather than a property of which
+            recipe built it.
         changelog:
           type: string
           nullable: true
@@ -18898,10 +18923,14 @@ components:
             recipe author who simply hasn't added one). Deliberately
             single-line by construction (the daemon reads up to the closing
             quote or a newline, whichever comes first) -- not a place for a
-            real multi-paragraph release note. Always null for a PBS recipe:
-            CPDL 0.1 rejects unknown package keys, so there is nowhere in a
-            build.cbs to put one (cix-build-system#161 asks for an opaque
-            embedder-owned metadata block; ADR-0305 records the gap).
+            real multi-paragraph release note.
+
+
+            This said "always null for a PBS recipe, because CPDL rejects
+            unknown package keys" and that is no longer true of anything:
+            cix-build-system#161 closed, a build.cbs carries one in its
+            opaque `metadata { "changelog" }` block, and the daemon reads it
+            from there (`parse_pbs_recipe()`).
         created_at:
           type: integer
           description: >

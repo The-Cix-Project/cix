@@ -295,6 +295,22 @@ struct pkg_recipe {
 	 * need it, which is how the two could disagree.
 	 */
 	int is_pbs;
+	/*
+	 * Which artifact format this version publishes (ADR-0307):
+	 * PKG_ARTIFACT_FORMAT_CIXPKG or PKG_ARTIFACT_FORMAT_TARGZ, never
+	 * empty on a recipe that parsed.
+	 *
+	 * Separate from is_pbs above, and reaching for that instead would
+	 * be the bug. is_pbs says which LANGUAGE the recipe is written in;
+	 * this says what the recipe DECLARED, read from the explain
+	 * document. They are not the same question -- CPDL accepts
+	 * `format "tar.gz"`, which `cbs build` then refuses to execute
+	 * ("standalone builds require cixpkg"), so the daemon must be able
+	 * to see that declaration and refuse it at publish rather than
+	 * assume cixpkg and fail at build time. A shell recipe has no
+	 * field to read and is tar.gz by construction.
+	 */
+	char artifact_format[PKG_ARTIFACT_FORMAT_MAX];
 	/* source[0]/sha256[0] is "the" source, extracted into /build/src;
 	 * source[1..source_count-1] are plain files copied into
 	 * /build/extra/<basename> (ADR-0036). Every recipe before this one
@@ -2150,6 +2166,39 @@ static int parse_pbs_recipe(const char *path, struct pkg_recipe *out)
 		}
 	}
 
+	/*
+	 * The declared artifact format (ADR-0307 clause 1). Read, never
+	 * assumed: CPDL accepts `format "tar.gz"` and `cbs build` refuses
+	 * to execute it, so the daemon has to be able to see the
+	 * declaration in order to refuse it at publish.
+	 *
+	 * An empty value is an engine older than v0.1.26, whose explain
+	 * has no `format` key at all. Clause 7's startup sweep re-derives
+	 * exactly those documents, so reaching here with "" means the
+	 * sweep could not run -- refused rather than defaulted, because a
+	 * default here is the assumption clause 1 exists to prevent.
+	 */
+	{
+		const char *fmt = pbs_explain_format(ex);
+
+		if (fmt[0] == '\0') {
+			logstore_write("cixd", "error",
+			               "pkg: %s declares no artifact format -- it was derived by a cbs "
+			               "older than v0.1.26, and re-deriving it is what ADR-0307 clause 7 "
+			               "does at startup; this daemon could not",
+			               explain_path);
+			pbs_explain_free(ex);
+			return -1;
+		}
+		if (snprintf(out->artifact_format, sizeof(out->artifact_format), "%s", fmt) >=
+		    (int)sizeof(out->artifact_format)) {
+			logstore_write("cixd", "error", "pkg: %s: artifact format \"%s\" does not fit",
+			               explain_path, fmt);
+			pbs_explain_free(ex);
+			return -1;
+		}
+	}
+
 	if (pbs_explain_metadata(ex, "artifact_sha256", out->artifact_sha256,
 	                          sizeof(out->artifact_sha256)) != 0 ||
 	    pbs_explain_metadata(ex, "changelog", out->changelog, sizeof(out->changelog)) != 0) {
@@ -2185,7 +2234,16 @@ static int parse_recipe(const char *path, struct pkg_recipe *out)
 			return -1;
 		return 0;
 	}
-	return parse_shell_recipe(path, out);
+	if (parse_shell_recipe(path, out) != 0)
+		return -1;
+	/*
+	 * A shell recipe has no format field to read, and gains one here
+	 * rather than at every place that asks (ADR-0307 clause 1). It is
+	 * tar.gz permanently and by construction -- not by a rule written
+	 * down somewhere that could drift from what the code does.
+	 */
+	snprintf(out->artifact_format, sizeof(out->artifact_format), "%s", PKG_ARTIFACT_FORMAT_TARGZ);
+	return 0;
 }
 
 /*
@@ -4641,6 +4699,189 @@ void pkg_repoint(const char *pkg_dir, const char *installed_state_path, const ch
 	container_recipe_repoint(pkg_dir);
 }
 
+/*
+ * ADR-0307 clause 7: rebuild every derived identity when the engine
+ * that derives them has changed.
+ *
+ * `explain.json` is a cache of `cbs explain --json` over an immutable
+ * recipe (ADR-0107), so re-deriving one cannot produce a different
+ * answer about the same text -- only a more complete one from a newer
+ * engine. What made that necessary rather than tidy: `format` only
+ * exists from cbs v0.1.26 (cix-build-system#173), and clause 1 reads
+ * the declared artifact format out of this document, so every
+ * document written by an older engine is missing the field the daemon
+ * now needs. Refusing those would make the older half of the PBS
+ * corpus unbuildable; assuming a value is what clause 1 exists to
+ * prevent.
+ *
+ * Once at startup, and that is COMPLETE rather than merely cheap: the
+ * host's cbs is /usr/bin/cbs inside the control-plane root, which
+ * mkbootroot stages from cix-hosttools at assembly time, and that root
+ * is a read-only squashfs replaced only by POST /system/update and a
+ * reboot. The engine therefore cannot change while this daemon runs,
+ * and every way it can change passes through a restart. A recipe
+ * published while the daemon is up is derived by that same engine at
+ * publish. So there is no window a startup sweep misses, and no need
+ * for a second, lazy path on the read side -- which would be the far
+ * worse shape anyway: see pbs_explain_path()'s own comment for why a
+ * re-derive per read is forbidden (~1400 recipe files, and #236
+ * measured the event loop blocked for 10981 ms on a cheaper walk).
+ *
+ * Staleness is the engine's version string, not a probe for one key.
+ * A key-absence test cannot tell "this engine does not emit it" from
+ * "this recipe did not declare it", and it would have to be written
+ * again for the next key CBS adds.
+ */
+static void cbs_engine_version(char *out, size_t out_size)
+{
+	int fds[2];
+	pid_t pid;
+	int status = 0;
+	size_t total = 0;
+
+	out[0] = '\0';
+	if (access(PKG_CBS_BIN, X_OK) != 0)
+		return;
+	if (pipe2(fds, O_CLOEXEC) != 0)
+		return;
+	pid = fork();
+	if (pid < 0) {
+		close(fds[0]);
+		close(fds[1]);
+		return;
+	}
+	if (pid == 0) {
+		char *argv[] = { (char *)PKG_CBS_BIN, (char *)"--version", NULL };
+		int devnull = open("/dev/null", O_RDWR);
+
+		if (devnull >= 0) {
+			dup2(devnull, STDIN_FILENO);
+			dup2(devnull, STDERR_FILENO);
+		}
+		dup2(fds[1], STDOUT_FILENO);
+		execve(PKG_CBS_BIN, argv, environ);
+		_exit(127);
+	}
+	close(fds[1]);
+	for (;;) {
+		ssize_t n = read(fds[0], out + total, out_size - 1 - total);
+
+		if (n <= 0)
+			break;
+		total += (size_t)n;
+		if (total >= out_size - 1)
+			break;
+	}
+	out[total] = '\0';
+	close(fds[0]);
+	while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+		;
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		out[0] = '\0';
+		return;
+	}
+	out[strcspn(out, "\r\n")] = '\0';
+}
+
+static void explain_sweep_if_engine_changed(void)
+{
+	char version[128];
+	char recorded[128];
+	char state_path[PATH_MAX];
+	char *stored = NULL;
+	size_t stored_len = 0;
+	DIR *names;
+	struct dirent *nde;
+	int rederived = 0;
+	int failed = 0;
+
+	cbs_engine_version(version, sizeof(version));
+	if (version[0] == '\0') {
+		/* No engine on this host. Not an error in itself -- a box
+		 * that installs no PBS recipe never needs one -- and saying
+		 * so once at startup beats a refusal per recipe later. */
+		logstore_write("cixd", "info",
+		               "pkg: no CPDL engine at %s, so no derived identity was checked "
+		               "(ADR-0307 clause 7)",
+		               PKG_CBS_BIN);
+		return;
+	}
+
+	snprintf(state_path, sizeof(state_path), "%s/cbs-engine", g_pkg_dir);
+	recorded[0] = '\0';
+	if (persist_read_file(state_path, &stored, &stored_len) == 0 && stored != NULL) {
+		snprintf(recorded, sizeof(recorded), "%.*s", (int)stored_len, stored);
+		recorded[strcspn(recorded, "\r\n")] = '\0';
+		free(stored);
+	}
+	if (strcmp(recorded, version) == 0)
+		return;
+
+	names = opendir(g_recipes_dir);
+	if (names == NULL) {
+		/* No recipes yet is the state of every fresh install, and
+		 * recording the engine is still right: there is nothing
+		 * stale, which is exactly what the record will then say. */
+		if (persist_atomic_write(state_path, version, strlen(version)) != 0)
+			logstore_write("cixd", "error", "pkg: could not record the CPDL engine version");
+		return;
+	}
+	while ((nde = readdir(names)) != NULL) {
+		char name_dir[PATH_MAX];
+		DIR *versions;
+		struct dirent *vde;
+
+		if (nde->d_name[0] == '.' || !pkg_name_is_valid(nde->d_name))
+			continue;
+		snprintf(name_dir, sizeof(name_dir), "%s/%s", g_recipes_dir, nde->d_name);
+		versions = opendir(name_dir);
+		if (versions == NULL)
+			continue;
+		while ((vde = readdir(versions)) != NULL) {
+			char version_dir[PATH_MAX];
+			char recipe_path[PATH_MAX];
+
+			if (vde->d_name[0] == '.')
+				continue;
+			snprintf(version_dir, sizeof(version_dir), "%s/%s", name_dir, vde->d_name);
+			if (pkg_recipe_file_in(version_dir, recipe_path, sizeof(recipe_path), NULL,
+			                        NULL) != 0)
+				continue;
+			if (!recipe_path_is_pbs(recipe_path))
+				continue; /* a shell recipe has no derived identity */
+			/*
+			 * The same primitive a backup restore uses, not a
+			 * second one: re-deriving a document is one operation
+			 * and it already existed. Best-effort per recipe --
+			 * one unreadable recipe must not stop the sweep,
+			 * because the documents it has not reached yet are the
+			 * ones a running daemon needs.
+			 */
+			if (pkg_recipe_rederive_identity(recipe_path) != PKG_OK) {
+				failed++;
+				continue;
+			}
+			rederived++;
+		}
+		closedir(versions);
+	}
+	closedir(names);
+
+	logstore_write("cixd", failed > 0 ? "warn" : "info",
+	               "pkg: CPDL engine changed (%s -> %s): re-derived %d identit%s, %d failed "
+	               "(ADR-0307 clause 7)",
+	               recorded[0] != '\0' ? recorded : "none recorded", version, rederived,
+	               rederived == 1 ? "y" : "ies", failed);
+	/*
+	 * Recorded only when every document was rebuilt. A partial sweep
+	 * that recorded the new engine would never be retried, leaving
+	 * whichever recipes failed permanently stale -- and stale is the
+	 * state this exists to end.
+	 */
+	if (failed == 0 && persist_atomic_write(state_path, version, strlen(version)) != 0)
+		logstore_write("cixd", "error", "pkg: could not record the CPDL engine version");
+}
+
 int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *containers_dir,
               const char *images_dir, const char *artifacts_dir)
 {
@@ -4677,6 +4918,12 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 	 * first runs are most worth keeping.
 	 */
 	pkg_runs_load();
+	/*
+	 * Before load_state(), because a derived identity that is about to
+	 * be rebuilt should be rebuilt before anything reads it -- and
+	 * load_state() is the first thing that does (ADR-0307 clause 7).
+	 */
+	explain_sweep_if_engine_changed();
 	return load_state();
 }
 
@@ -6050,9 +6297,19 @@ void pkg_write_json_recipes(struct json_writer *w)
 				jw_str(w, r.version);
 				/* ADR-0305: which language this version is written in. Not
 				 * something a recipe declares -- it IS the filename, so it
-				 * cannot disagree with what will actually run. */
-				jw_key(w, "format");
+				 * cannot disagree with what will actually run.
+				 *
+				 * Called "format" until ADR-0307, which introduced a
+				 * second, genuinely different notion of format in this
+				 * same subsystem -- the artifact one below. Two meanings
+				 * for one key reads as a bug, so this took the word its
+				 * own comment already used. A clean rename, no alias. */
+				jw_key(w, "language");
 				jw_str(w, recipe_path_is_pbs(path) ? "pbs" : "shell");
+				/* ADR-0307: what this version PUBLISHES, which the recipe
+				 * declares and the language does not imply. */
+				jw_key(w, "artifact_format");
+				jw_str(w, r.artifact_format);
 				jw_key(w, "depends");
 				jw_str(w, r.depends);
 				jw_key(w, "changelog");
@@ -6778,6 +7035,47 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 				free(explain_json);
 				return PKG_ERR_INVALID_RECIPE;
 			}
+		}
+		/*
+		 * The declared artifact format, refused at the boundary when
+		 * the engine cannot execute it (ADR-0307 clause 1).
+		 *
+		 * `cbs build` fails any recipe not declaring cixpkg with
+		 * "standalone builds require cixpkg" (src/package.c:305), and
+		 * the check is not conditional on an output path -- so
+		 * `format "tar.gz"` is legal CPDL that this platform's only
+		 * way of running a PBS recipe cannot execute. Storing such a
+		 * recipe means an immutable version that fails at build time,
+		 * every time; refusing it here costs the author one edit
+		 * before anything is published.
+		 *
+		 * The value is READ rather than assumed, which is the whole
+		 * reason the daemon needs it: assuming cixpkg would accept
+		 * that recipe happily, and would bake in a restriction that
+		 * is CBS's to lift rather than ours to encode.
+		 */
+		{
+			const char *fmt = pbs_explain_format(ex);
+
+			if (fmt[0] == '\0' || strcmp(fmt, PKG_ARTIFACT_FORMAT_CIXPKG) != 0) {
+				logstore_write("cixd", "error",
+				               "pkg: recipe %s rejected: %s",
+				               name,
+				               fmt[0] == '\0'
+				                   ? "the installed cbs reports no artifact format; it is "
+				                     "older than v0.1.26 (cix-build-system#173) and this "
+				                     "daemon cannot tell what the recipe declared"
+				                   : "it declares format \"tar.gz\", which `cbs build` "
+				                     "refuses to execute (\"standalone builds require "
+				                     "cixpkg\") -- a PBS recipe publishes a .cixpkg "
+				                     "(ADR-0307)");
+				pbs_explain_free(ex);
+				unlink(staging_path);
+				free(redacted);
+				free(explain_json);
+				return PKG_ERR_INVALID_RECIPE;
+			}
+			snprintf(parsed.artifact_format, sizeof(parsed.artifact_format), "%s", fmt);
 		}
 		/*
 		 * The two embedder-owned facts, out of the opaque metadata

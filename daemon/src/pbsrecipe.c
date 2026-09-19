@@ -198,6 +198,13 @@ int pbs_explain_requires(const struct pbs_explain *ex, const char *role, const c
 	return 0;
 }
 
+const char *pbs_explain_format(const struct pbs_explain *ex)
+{
+	if (ex == NULL)
+		return "";
+	return str_or_empty(json_object_get(ex->root, "format"));
+}
+
 const char *pbs_explain_upstream(const struct pbs_explain *ex)
 {
 	if (ex == NULL)

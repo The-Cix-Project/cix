@@ -403,8 +403,15 @@ artifacts are immutable and stay readable.
   and will read as a bug. The existing key is renamed to `"language"`,
   which is the word its own comment uses, and the new one is
   `"artifact_format"`. A clean rename, no alias: `docs/api/openapi.yaml`
-  and `docs/api/README.md` change together with it, and the web dashboard
-  is the only other reader.
+  and `docs/api/README.md` change together with it. **This said "the web
+  dashboard is the only other reader" and that was wrong** — checked
+  when the rename was made: neither `web/app.js` nor `cli/src/main.c`
+  reads the key at all (`fmt_pkg_recipe_line()` prints name, version and
+  depends; the dashboard uses name, version and `created_at`). The
+  rename has no client readers, which is worth recording so the next
+  person does not go looking for one. The request field on
+  `POST /pkg/recipes` keeps the name `format`: there it selects the
+  language and nothing else is in scope to collide with.
 - **The daemon gains one new piece of persisted state: the `cbs` version
   its last explain sweep ran with** (clause 7). That is a record of what
   produced the derived documents, not a second source of truth about

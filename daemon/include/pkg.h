@@ -117,6 +117,17 @@
 #define PKG_URL_MAX 512
 #define PKG_SHA256_MAX 65
 /*
+ * The artifact format a package's recipe declares (ADR-0307). CPDL has
+ * exactly two legal values and a shell recipe has no field at all, so
+ * this holds "cixpkg" or "tar.gz" and nothing else -- sized for the
+ * longer of the two plus its terminator, with room to spare rather
+ * than to the byte, since a third value would come from CBS's grammar
+ * and not from us.
+ */
+#define PKG_ARTIFACT_FORMAT_MAX 16
+#define PKG_ARTIFACT_FORMAT_CIXPKG "cixpkg"
+#define PKG_ARTIFACT_FORMAT_TARGZ "tar.gz"
+/*
  * Stall guards every fetch this daemon performs carries (#285, #410).
  *
  * A connection can be accepted and then never answered, so a peer that
