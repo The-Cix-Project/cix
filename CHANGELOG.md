@@ -6,6 +6,41 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### CBS grew the five shapes the corpus was blocked on; two more packages convert (#487, #491)
+
+Upstream implemented every request: cix-build-system#174 through #179, all closed, and **v0.1.27 is a real tag with VERSION moved past it** — which cix-build-system#172 asked for and which means a cbs recipe can name a tag again instead of pinning a commit. Verified in main's own source at both refs rather than taken from the tracker: `each` was partially present at v0.1.26 as a list-suffix form, and `stage`, `replace … until`, `require … target` and lowercase `env` names were not there at all.
+
+| shape | what it replaces |
+|---|---|
+| `each "n" in { … } { … }`, bound as `${each.n}` | 38 compound-body loops across 15 packages |
+| `replace { from X until whitespace to "" }` | the `-Wl,--version-script=<path>` strip in 6 packages |
+| `stage library "N" into PATH` | the three-candidate-directory library search in 4 packages |
+| `require file { target "…" }` | asserting a soname link, which previously reported "does not exist" |
+| `env "ac_cv_prog_CC" = "tcc"` | autoconf cache variables in 10 packages |
+
+**`cbs v0.1.27-1` does not install yet, and it is not being forced.** `./tests/archive-test` — new in this release, the test for the #174 fix — fails when `make test` runs it and **passes when run standalone**, in the same container, from the Makefile's own link line (`Makefile:127`), with the same `TMPDIR=/run`. It prints nothing either way, and every sibling test in that suite prints its own `PASS` line, so silence is indistinguishable from a process that died before reporting.
+
+Five build cycles went into that, and two hypotheses were tested and disproven rather than assumed: **TMPDIR** (the test hardcodes `mkdtemp("/tmp/cbs-archive-XXXXXX")` and never consults it — but the passing standalone run had `TMPDIR=/run` set and `/tmp` does exist in `cix-builder`) and **a committed test binary** (the v0.1.26 and v0.1.27 tarballs differ by 10 bytes). An `on_fail` block listed `/tmp` after the failure: both runs got a root, and the failing one is the smaller of the two, so it stopped early rather than failing a final assertion.
+
+Filed as cix-build-system#180, asking first for the test to say *what* failed — that alone would have turned five cycles into one. Every cbs revision this platform ships makes the upstream suite a fatal gate, and cbs archive extraction is what every source fetch depends on, so suppressing the test to get unblocked is not a trade worth making.
+
+Converted meanwhile, on the cbs already installed: **`openldap-client/2.6.14-5`** and **`ncurses/6.6-10`**. Twenty-two now.
+
+```
+$ ldapsearch -VV | head -1
+ldapsearch: @(#) $OpenLDAP: ldapsearch 2.6.14 (Sep 19 2026 03:29:55) $
+$ tic -V
+ncurses 6.6.20251230
+$ ls -l /usr/lib/libtinfo.so.6
+lrwxrwxrwx 1 root root 16 Sep 19 03:47 /usr/lib/libtinfo.so.6 -> libncursesw.so.6
+$ TERM=xterm tput cols
+80
+```
+
+`tput cols` answering is the real check: it exercises the terminfo database and the `libtinfo` compatibility symlink, not just the presence of a file.
+
+ncurses is also the first recipe to use `replace glob`, and it paid the documented price: `exactly N` on a glob is a **total across every matched file**, so the number cannot be known without counting. `6.6-9` declared `exactly 1` and the build answered *"expected 1 matches but found 4"*; `6.6-10` declares 4. One deliberate failing cycle, in exchange for an assertion the shell recipe's `grep -rlq … || exit 1` guard could not make — a fifth Makefile growing the flag now fails loudly instead of being missed.
+
 ### Five more convert to CPDL, and two of them make the language look good (#487, #491)
 
 `diffutils/3.10-9`, `grep/3.11-7`, `sed/4.9-6`, `gawk/5.3.0-10`, `htop/3.5.2-9`. Twenty converted now.
