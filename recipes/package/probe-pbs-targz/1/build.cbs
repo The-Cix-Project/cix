@@ -1,0 +1,45 @@
+# The refusal ADR-0307 clause 1 exists for, proven on a real host.
+#
+# THROWAWAY DIAGNOSTIC. It is expected never to publish: this recipe
+# declares `format "tar.gz"`, which is legal CPDL and which `cbs build`
+# refuses to execute -- src/package.c:305 fails any recipe not
+# declaring cixpkg with "standalone builds require cixpkg", and the
+# check is not conditional on an output path. A daemon that accepted
+# this would store an immutable version that fails at build time,
+# every time.
+#
+# The reason it must be a real publish attempt rather than a unit test:
+# the refusal depends on the HOST's cbs reporting the declared format
+# in `cbs explain --json`, which only happens from v0.1.26
+# (cix-build-system#173). Nothing in the dev sandbox can answer whether
+# the engine the daemon actually execs reports it.
+#
+# Expected: 400, with a message naming tar.gz and cbs build.
+# Anything else -- most of all a 204 -- means the daemon is deciding
+# the artifact format for itself instead of reading the declaration,
+# which is precisely what clause 1 forbids.
+package "probe-pbs-targz" {
+    version "1"
+    release 1
+    format "tar.gz"
+
+    sources {
+        main "cixsrc" {
+            url "https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.57.212.tar.gz"
+            sha256 "9cad35a8c2697859aeb5c343363a97bd95f88fe0e87c0651dd2d943b899922de"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "bash"
+            tool "coreutils"
+        }
+    }
+
+    install {
+        mkdir "${dest}/usr/share/probe-pbs-targz"
+        write "${dest}/usr/share/probe-pbs-targz/proof.txt" "this should never be built\n"
+    }
+}

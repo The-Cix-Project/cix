@@ -19591,8 +19591,30 @@ static void respond_pkg_recipe_error(int fd, enum pkg_error err)
 		respond_error(fd, 404, "Not Found", "no such recipe");
 		break;
 	case PKG_ERR_INVALID_RECIPE:
-		respond_error(fd, 400, "Bad Request",
-		              "recipe content failed to parse, or its pkg_name= doesn't match name");
+		/*
+		 * The specific reason when the publish knows one, the
+		 * generic sentence when it does not.
+		 *
+		 * That sentence is wrong for most of what this code covers,
+		 * and measurably so: a PBS recipe refused for declaring
+		 * `format "tar.gz"` (ADR-0307 clause 1) parsed perfectly and
+		 * its name matched, and telling its author otherwise sends
+		 * them to re-read syntax that is fine. Proven with a
+		 * deliberately-refused probe on 192.168.15.95 -- the daemon
+		 * log named the real cause and the HTTP body did not.
+		 *
+		 * Safe to read a last-error here although this mapper is
+		 * shared: checked rather than assumed -- pkg_recipe_delete()
+		 * returns only INVALID_NAME/NOT_FOUND/PERSIST_FAILED and
+		 * pkg_recipe_get() only INVALID_NAME/NOT_FOUND/
+		 * PERSIST_FAILED, so this branch is reachable from the
+		 * publish path alone, which clears the buffer on entry.
+		 */
+		if (pkg_recipe_add_last_error()[0] != '\0')
+			respond_error(fd, 400, "Bad Request", pkg_recipe_add_last_error());
+		else
+			respond_error(fd, 400, "Bad Request",
+			              "recipe content failed to parse, or its pkg_name= doesn't match name");
 		break;
 	case PKG_ERR_DUPLICATE:
 		/* ADR-0107: recipe versions are immutable once published --

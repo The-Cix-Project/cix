@@ -782,6 +782,25 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
                                enum pkg_recipe_format format, int *out_was_approval);
 
 /*
+ * Why the last pkg_recipe_add() refused, when it knows something the
+ * error code cannot carry. "" when it has nothing to add, in which
+ * case the caller's generic message for that code is the right one.
+ *
+ * The same shape as treecopy_last_error() and for the same reason.
+ * PKG_ERR_INVALID_RECIPE covers a dozen different refusals, and the
+ * caller's one message for it -- "recipe content failed to parse, or
+ * its pkg_name= doesn't match name" -- is actively wrong for most of
+ * them: a recipe refused for declaring `format "tar.gz"` (ADR-0307
+ * clause 1) parsed perfectly, and telling its author it did not sends
+ * them to re-read syntax that is fine. Measured on 192.168.15.95 with
+ * a deliberately-refused probe: the daemon log named the real cause
+ * and the HTTP body did not.
+ *
+ * Valid until the next pkg_recipe_add() call.
+ */
+const char *pkg_recipe_add_last_error(void);
+
+/*
  * Removes recipe version(s) for name. version NULL or "" removes every
  * version of name (the whole pkg_dir/recipes/<name>/ directory);
  * a specific version removes only that one version's subdirectory,

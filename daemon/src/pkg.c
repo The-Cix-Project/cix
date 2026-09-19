@@ -6949,6 +6949,16 @@ static int artifact_name_is_taken(const char *name_dir, const char *version, cha
 	return taken;
 }
 
+/* See pkg_recipe_add_last_error()'s declaration for why this exists.
+ * Cleared at the top of every publish, so it can never describe an
+ * older refusal than the one the caller is reporting. */
+static char g_recipe_add_err[256];
+
+const char *pkg_recipe_add_last_error(void)
+{
+	return g_recipe_add_err;
+}
+
 enum pkg_error pkg_recipe_add(const char *name, const char *content,
                                enum pkg_recipe_format format, int *out_was_approval)
 {
@@ -6965,6 +6975,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 
 	if (out_was_approval != NULL)
 		*out_was_approval = 0;
+	g_recipe_add_err[0] = '\0';
 
 	if (!pkg_name_is_valid(name))
 		return PKG_ERR_INVALID_NAME;
@@ -7099,17 +7110,16 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 			const char *fmt = pbs_explain_format(ex);
 
 			if (fmt[0] == '\0' || strcmp(fmt, PKG_ARTIFACT_FORMAT_CIXPKG) != 0) {
-				logstore_write("cixd", "error",
-				               "pkg: recipe %s rejected: %s",
-				               name,
-				               fmt[0] == '\0'
-				                   ? "the installed cbs reports no artifact format; it is "
-				                     "older than v0.1.26 (cix-build-system#173) and this "
-				                     "daemon cannot tell what the recipe declared"
-				                   : "it declares format \"tar.gz\", which `cbs build` "
-				                     "refuses to execute (\"standalone builds require "
-				                     "cixpkg\") -- a PBS recipe publishes a .cixpkg "
-				                     "(ADR-0307)");
+				snprintf(g_recipe_add_err, sizeof(g_recipe_add_err), "%s",
+				         fmt[0] == '\0'
+				             ? "the installed cbs reports no artifact format; it is older "
+				               "than v0.1.26 (cix-build-system#173) and this daemon cannot "
+				               "tell what the recipe declared"
+				             : "it declares format \"tar.gz\", which `cbs build` refuses to "
+				               "execute (\"standalone builds require cixpkg\") -- a PBS "
+				               "recipe publishes a .cixpkg (ADR-0307)");
+				logstore_write("cixd", "error", "pkg: recipe %s rejected: %s", name,
+				               g_recipe_add_err);
 				pbs_explain_free(ex);
 				unlink(staging_path);
 				free(redacted);
