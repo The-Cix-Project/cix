@@ -18,6 +18,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 So: `seed_choose()` takes the **newest installed version across every image** that is either locally cached or carries an approved `pkg_artifact_sha256`, ordered by `pkg_version_compare()` — the comparator the drift report already uses, not a second one. `pkg_seed_preflight()` answers in the handler what a table scan and a `stat()` can decide, and still refuses those with `400`, because "no installed glibc at all" does not become true by being retried. Everything that costs time moved below the fork: the ISO build child stages the seed and only then `execve()`s mkinstalleriso, exiting 126 if staging failed. An uncached artifact is fetched into the seed directory itself — not into the shared cache, where a build child's LRU eviction would race the install pipeline's — and verified against the recipe's approval before it can reach the media.
 
+**Verified on 192.168.15.95, v2.57.224 (slot a), 2026-09-19.** `POST /v1/system/iso` answered `202` where the same call answered `400` before, and the build finished `ready` at 72646656 bytes with its signature beside it. The child's own account of the seed, captured through the assembly output the reaper already collects:
+
+```
+iso seed: staged glibc@2.44-16 (fetched)
+iso seed: staged zlib@1.3.2-14 (from the local cache)
+iso seed: staged dnsmasq@2.90-3 (fetched)
+```
+
+All three claims in one line each: **2.44-16, not the 2.44-14** the first-match rule picked; **1.3.2-14, not the 1.3.2-10** that has neither an artifact nor an approval; and the two uncached ones fetched and checked against their recipes' approvals before the build continued. `GET /v1/pkg` afterwards still reports `artifact_cached: false` for every glibc and dnsmasq entry, which is the other half of the design — a fetched seed artifact goes to the seed directory and not into the shared cache.
+
 `test_curl_guards` counts `curlfetch_perform()` call sites and asserts the number, so the new fetch failed the selftest at `v2.57.223` with *"found 10 call sites, expected 9"* — which is the guard working exactly as designed. The count is now 10, changed deliberately, with the new site named in the comment beside it. `v2.57.223` therefore never produced an artifact; `v2.57.224` is the same change plus that count.
 
 The reaper no longer calls every failure `mkinstalleriso failed`: 126 is seed staging and 127 is an `execve` that never happened, which is the same wrong-cause shape that made #202 read as an assembler bug when it was an argv count.
