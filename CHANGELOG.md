@@ -6,6 +6,44 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cbs v0.1.29 installs, and the new CPDL shapes are proven on real packages (#487, #491)
+
+Three upstream releases to get here, each answering a measurement rather than a guess: v0.1.27 had the features but failed `archive-test` silently; v0.1.28 carried #180 and made the test *report*, which reduced five build cycles of narrowing to one named assertion; v0.1.29 carries #181 and asserts empty-archive rejection without pinning libarchive's wording. **The full upstream suite now passes as a fatal gate in a Cix build container**, and `cbs v0.1.29-1` is installed in `cix-builder` and `cix-hosttools`.
+
+**Installing cbs into an image is not enough, and this cost a round.** The daemon validates a publish with the **host's** `/usr/bin/cbs`, which `mkbootroot` stages from `cix-hosttools` at assembly time — so a newly installed engine is invisible until the control-plane root is reassembled and booted. Both recipes below were refused at publish with `expected to, found until` and `expected phase operation, found stage` while the new cbs sat installed in the image. `POST /v1/system/assembly` exists for exactly this (#308, and its description names this case), so: assemble → `POST /system/update` → reboot. The root grew 20496384 → 20500480 bytes, which is the new binary.
+
+Two packages converted specifically to exercise the new shapes, both verified in the running `jump` container:
+
+**`mtr/0.96-9`** — `stage library` (#178). Twelve lines of shell become one operation:
+
+```
+stage library "libresolv.so.2" into "${dest}/usr/lib"
+```
+
+replacing a first-match search over three hardcoded multiarch directories, a guard naming the dependency that should have provided the library, and a `cp -a`. The hardcoded list goes with them — it was going to rot in all four recipes that carry it the day a build host's layout changed.
+
+```
+$ mtr --version
+mtr 0.96
+$ ls -l /usr/lib/libresolv.so.2
+-rwxr-xr-x 1 root root 64264 Sep 19 04:09 /usr/lib/libresolv.so.2
+```
+
+**`libmnl/1.0.5-7`** — `replace … until whitespace` (#177) and `require symlink { target }` (#175). The version-script strip TCC needs has no literal form, because the flag carries a filename argument that differs at every site; `from "-Wl,--version-script" until whitespace to ""` with `exactly 1` expresses it *and* subsumes the `grep … && exit 1` guard behind it. The soname assertion now checks **where the link points**, which `test -e` never did:
+
+```
+$ ls -l /usr/lib/libmnl.so*
+lrwxrwxrwx 15 /usr/lib/libmnl.so.0 -> libmnl.so.0.2.0
+-rwxr-xr-x 26400 /usr/lib/libmnl.so.0.2.0
+```
+
+Two things learned by being refused, both now facts about the platform rather than guesses:
+
+- **`target` belongs to `require symlink`, not `require file`.** `require file { target … }` is rejected with *"file assertion must use contains, same_as, or nonempty"*. A separate assertion kind is the better shape, and it cost one publish to find.
+- **A PBS recipe's sources are extracted INSIDE the build container by cbs**, where a shell recipe's are extracted host-side by cixd using the host's own tools. So a compressor the archive needs must be declared: `libmnl`'s `.tar.bz2` failed before any phase ran with *"cannot open archive: Can't initialize filter; unable to run program \"bzip2 -d\""*, and the shell revision never needed the declaration because it never did the work. Every converted recipe whose source is `.bz2` — or any format libarchive farms out — needs the same.
+
+Twenty-four converted.
+
 ### cbs v0.1.28 narrows the blocker to one assertion (cix-build-system#180, #181)
 
 Upstream shipped the #180 fix — *"make archive-test report which check failed"* — and it did exactly what was asked. Five build cycles of narrowing became one build:

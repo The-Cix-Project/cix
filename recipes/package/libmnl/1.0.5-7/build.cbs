@@ -21,9 +21,14 @@
 # THE SONAME ASSERTION (cix-build-system#175). The shell recipe's
 # `test -e "$PKG_DESTDIR/usr/lib/libmnl.so.0"` checks a SYMLINK, and
 # `require file` matches regular files only -- asserting a link reported
-# "does not exist" while the link sat right there. `require file
-# { target ... }` now asserts both that the link exists and where it
-# points, which is more than `test -e` ever checked: a link to the wrong
+# "does not exist" while the link sat right there.
+#
+# The fix is its own assertion kind rather than a property on `file`,
+# which is the better shape and cost one refused publish to learn:
+# `require file { target ... }` is rejected with "file assertion must
+# use contains, same_as, or nonempty", and `require symlink` is what
+# takes `target`. It asserts both that the link exists and where it
+# points -- more than `test -e` ever checked, since a link to the wrong
 # soname passed the old test and fails this one.
 #
 # NOT translated: `rm -f "$PKG_DESTDIR/usr/lib"/*.la`. ADR-0251's
@@ -31,7 +36,7 @@
 # fails on a glob matching nothing.
 package "libmnl" {
     version "1.0.5"
-    release 6
+    release 7
     format "cixpkg"
 
     license "LGPL-2.1-or-later"
@@ -56,11 +61,28 @@ package "libmnl" {
             tool "binutils"
             tool "findutils"
             tool "diffutils"
+            # bzip2, and NOT because the build uses it. The source is a
+            # .tar.bz2, and a PBS recipe's sources are extracted INSIDE
+            # the build container by cbs -- where a shell recipe's are
+            # extracted host-side by cixd, using the host's own tools.
+            #
+            # So a compressor the archive needs has to be declared. This
+            # platform's libarchive has no built-in bz2 filter and shells
+            # out, and 1.0.5-6 failed before any phase ran:
+            #
+            #   source `libmnl`: cannot open archive: Can't initialize
+            #   filter; unable to run program "bzip2 -d"
+            #
+            # The shell revision never needed the declaration because it
+            # never did the work. Any converted recipe whose source is
+            # .bz2 (or any format libarchive farms out) needs the same.
+            tool "bzip2"
         }
     }
 
     metadata {
-        "changelog" "1.0.5-6: converted from build.sh to build.cbs (ADR-0305 stage 4), and the first recipe to use replace ... until whitespace (cix-build-system#177) for the -Wl,--version-script strip TCC needs -- no literal match could reach the flag's argument. exactly N subsumes the shell recipe's grep guard. The soname check becomes require file { target }, which asserts where the link points rather than only that something is there (#175). Stops deleting usr/lib/*.la, which finalize already removes."
+        "artifact_sha256" "dc6f661c52e1f7c6ad3f11fd5d292f64dacb1a14bf79c2eb4235394b4b3e893a"
+        "changelog" "1.0.5-7: converted from build.sh to build.cbs (ADR-0305 stage 4). First recipe to use replace ... until whitespace (cix-build-system#177) for the -Wl,--version-script strip TCC needs, since no literal match can reach the flag's argument, and require symlink { target } for the soname link (#175). Declares bzip2: a PBS recipe's sources are extracted inside the build container, so a .tar.bz2 needs the compressor declared where a shell recipe did not."
     }
 
     prepare {
@@ -113,7 +135,7 @@ package "libmnl" {
             exists
             nonempty
         }
-        require file "${dest}/usr/lib/libmnl.so.0" {
+        require symlink "${dest}/usr/lib/libmnl.so.0" {
             exists
             target "libmnl.so.0.2.0"
         }
