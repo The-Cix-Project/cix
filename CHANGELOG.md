@@ -8,6 +8,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 ### The finalize policy is a program, and CBS runs it (#487, ADR-0307 clause 2, first half)
 
+**Verified on 192.168.15.95, v2.57.228, 2026-09-19, by a probe designed to fail.** Inspecting a stripped binary from outside the container cannot tell "the policy ran" from "the policy silently did nothing", and the second is the regression that matters. So `probe-finalize-runs` produces an ELF binary and declares no `binutils`: ADR-0251 clause 1 says a finalize that cannot find `strip` fails the build rather than skipping it, so a *passing* build would have been the bad outcome.
+
+```
+[install] done (0 ms)
+cix: this package produced ELF output but the build image has no strip.
+cix: add binutils to pkg_build_depends (ADR-0199, ADR-0251).
+/build/recipe.cbs:19:1: error[CPDL-E4001]: runtime: finalize: finalization policy rejected the staged tree
+```
+
+Six things at once, and none of them inferred: `--finalize-command` invoked the policy; it ran *after* the install phase; the file was found and executable (no exit 127 from `EACCES`); `#!/usr/bin/bash` resolved (no exit 127 from a missing interpreter); it received a staged root (no *"given no staged root"*); and its non-zero exit failed the build through CBS's own pipeline, which reports it as a finalize rejection rather than as something else. The probe and its failed entry were removed from the host afterwards.
+
+The shell path needed no separate proof: `cix` is itself a shell recipe, so every one of these releases exercised `/build/finalize.sh "$PKG_DESTDIR"` in order to build at all.
+
+
 `daemon/policy/pkg-finalize.sh` was *sourced* — by the shell build command, reading `$PKG_DESTDIR` out of the environment. It is now **executed**, with the staged root as `$1`, and a PBS build reaches it as `cbs build --finalize-command /build/finalize.sh` rather than as a shell step afterwards.
 
 The reason is one file. ADR-0251's rules have to stay a single definition across both recipe languages, and CBS invokes an embedder's finalizer as `execlp(cmd, cmd, staged_root, NULL)` (cix-build-system `src/main.c:514`, read at tag `v0.1.29`) — so the only shape that serves both is a program taking one argument. ADR-0306's withdrawal of clause 4 already had to be made in one expression of these rules; a second expression is what that warns about.
