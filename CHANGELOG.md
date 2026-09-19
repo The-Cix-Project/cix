@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The finalize policy is a program, and CBS runs it (#487, ADR-0307 clause 2, first half)
+
+`daemon/policy/pkg-finalize.sh` was *sourced* — by the shell build command, reading `$PKG_DESTDIR` out of the environment. It is now **executed**, with the staged root as `$1`, and a PBS build reaches it as `cbs build --finalize-command /build/finalize.sh` rather than as a shell step afterwards.
+
+The reason is one file. ADR-0251's rules have to stay a single definition across both recipe languages, and CBS invokes an embedder's finalizer as `execlp(cmd, cmd, staged_root, NULL)` (cix-build-system `src/main.c:514`, read at tag `v0.1.29`) — so the only shape that serves both is a program taking one argument. ADR-0306's withdrawal of clause 4 already had to be made in one expression of these rules; a second expression is what that warns about.
+
+**The ordering was measured, not assumed, because it is the point.** `cbs_build_standalone_with_events_policy()` runs the finalizer at `src/package.c:374` and packages at `:389` — so the policy is applied *before* any artifact is written, which is what makes it possible for CBS to write that artifact at all. And it runs when no `--output` is given, so this is correct today while cixd still packages the tree itself. The `--output` half of clause 2 is deliberately not in this change: it moves who writes the artifact, and that belongs with clause 3's consumption side rather than inside a calling-convention change.
+
+Three details, each with a real failure behind it. The script gets `#!/usr/bin/bash` and not `/bin/bash`, because these images ship `bin/sh` and `usr/bin/bash` and no `/bin/bash`, and a bad interpreter reports as exit 127 against a file that visibly exists. `write_finalize_script()` writes it **0755**, because a 0644 file with a valid shebang fails with `EACCES` that CBS's runner also reports as 127. And an empty `$1` is refused rather than treated as an empty package: `test -d ""` is false, so it would otherwise take the nothing-staged early return and report success having finalized nothing — a build whose policy silently did not run, which is exactly what ADR-0251 exists to prevent and which nothing downstream could see.
+
+`test_pkg_finalize` runs the policy the way the container does — through its own shebang, as a program — so the interpreter line and the executable bit are both part of what it asserts, and it gains a fifth case for the empty-argument refusal. It checks `X_OK` up front with a message saying why, rather than discovering a lost executable bit as an opaque `system()` failure.
+
 ### The daemon reads the artifact format a PBS recipe declares, and rebuilds a stale identity (#487, #496, ADR-0307 clauses 1 and 7)
 
 **Verified on 192.168.15.95, v2.57.227, 2026-09-19.** Three things, each answered by the host rather than by reading the code.

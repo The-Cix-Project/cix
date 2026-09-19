@@ -191,14 +191,27 @@ static void make_stub_bin(const char *bin, const char *log, int with_strip)
 	real_tool(bin, "wc");
 }
 
+/*
+ * Runs the policy the way the build container does (ADR-0307 clause 2):
+ * as a PROGRAM with the staged root as its one argument, not sourced
+ * with $PKG_DESTDIR set. That is not a detail of this harness -- CBS
+ * invokes an embedder's finalizer as `execlp(cmd, cmd, staged_root,
+ * NULL)`, so a test that kept sourcing it would be exercising a
+ * calling convention nothing uses any more.
+ *
+ * Invoked through its own shebang rather than through an explicit
+ * bash, so the file's interpreter line and its executable bit are both
+ * part of what this asserts. Both have a real failure behind them:
+ * these images ship usr/bin/bash and no /bin/bash, and a 0644 policy
+ * fails with EACCES that CBS's runner reports as exit 127 -- an error
+ * that reads as a missing file against one that is plainly there.
+ */
 static int run_policy(const char *dest, const char *bin, const char *errfile)
 {
 	char cmd[1024];
 	int rc;
 
-	snprintf(cmd, sizeof(cmd),
-	         "PKG_DESTDIR='%s' PATH='%s' /usr/bin/bash -c 'set -e; . %s' 2>'%s'",
-	         dest, bin, POLICY, errfile);
+	snprintf(cmd, sizeof(cmd), "PATH='%s' %s '%s' 2>'%s'", bin, POLICY, dest, errfile);
 	rc = system(cmd);
 	return rc == -1 ? -1 : WEXITSTATUS(rc);
 }
@@ -468,10 +481,54 @@ static void case_missing_wc(const char *root)
 		fail("the failure did not name coreutils as the fix");
 }
 
+/*
+ * Case 5: no staged root given at all (ADR-0307 clause 2).
+ *
+ * The argument replaced $PKG_DESTDIR, and the failure mode to refuse
+ * is the quiet one: `test -d ""` is false, so an empty argument would
+ * otherwise take the "nothing staged" early return and report SUCCESS
+ * having finalized nothing. A build whose policy silently did not run
+ * is exactly what ADR-0251 exists to prevent, and it would be
+ * invisible -- the package installs, and only its size says anything.
+ */
+static void case_no_argument(const char *root)
+{
+	char bin[512], err[512], cmd[1024];
+	int rc;
+
+	snprintf(bin, sizeof(bin), "%s/c5bin", root);
+	snprintf(err, sizeof(err), "%s/c5.err", root);
+	make_stub_bin(bin, "", 0);
+
+	snprintf(cmd, sizeof(cmd), "PATH='%s' %s 2>'%s'", bin, POLICY, err);
+	rc = system(cmd);
+	rc = rc == -1 ? -1 : WEXITSTATUS(rc);
+	if (rc == 0)
+		fail("the policy reported success with no staged root -- it finalized nothing "
+		     "and said so was fine");
+	if (!log_has(err, "no staged root"))
+		fail("the policy refused with no argument but did not say why");
+}
+
 int main(void)
 {
 	char root[] = "/tmp/cix_finalize_XXXXXX";
 
+	/*
+	 * X_OK as well as R_OK since ADR-0307 clause 2: the policy is
+	 * execve()d, by this test and by CBS's --finalize-command alike,
+	 * so losing the executable bit in the repo breaks every PBS build
+	 * on the box with an exit 127 that names nothing useful. Checked
+	 * here, where the message can say so, rather than discovered as a
+	 * failing system() below.
+	 */
+	if (access(POLICY, X_OK) != 0) {
+		fprintf(stderr,
+		        "PKG FINALIZE: %s is not executable -- it is run as a program with the "
+		        "staged root as $1 (ADR-0307 clause 2), so it needs its executable bit\n",
+		        POLICY);
+		return 1;
+	}
 	if (access(POLICY, R_OK) != 0) {
 		fprintf(stderr, "PKG FINALIZE: cannot read %s -- run from the repo root\n", POLICY);
 		return 1;
@@ -485,12 +542,13 @@ int main(void)
 	case_data_only(root);
 	case_missing_strip(root);
 	case_missing_wc(root);
+	case_no_argument(root);
 
 	if (g_failures > 0) {
 		fprintf(stderr, "PKG FINALIZE: FAIL (%d) -- tree kept at %s\n", g_failures, root);
 		return 1;
 	}
 
-	printf("PKG FINALIZE: ok (classification, data-only, missing-strip, missing-wc)\n");
+	printf("PKG FINALIZE: ok (classification, data-only, missing-strip, missing-wc, no-argument)\n");
 	return 0;
 }

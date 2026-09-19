@@ -2563,8 +2563,13 @@ static int copy_file_simple(const char *src, const char *dst)
  * debug sections and libc.a three times over. The scope of a universal
  * rule was being re-guessed 115 times.
  *
- * Written into the build container beside recipe.sh and sourced by the
- * build command after pkg_install() returns.
+ * Written into the build container beside recipe.sh and RUN after the
+ * install phase -- by the build command for a shell recipe, and by
+ * `cbs build --finalize-command` for a PBS one (ADR-0307 clause 2).
+ * It used to be sourced, reading $PKG_DESTDIR out of the environment;
+ * CBS runs an embedder's finalizer as `execlp(cmd, cmd, staged_root,
+ * NULL)`, so the only way one policy file can serve both languages is
+ * as a program taking the staged root as its argument.
  *
  * The policy text itself is shell, and lives in its own file
  * (daemon/policy/pkg-finalize.sh) rather than as an escaped string
@@ -2592,7 +2597,14 @@ static int write_finalize_script(const char *upperdir)
 	if ((size_t)snprintf(path, sizeof(path), "%s/build/finalize.sh", upperdir) >= sizeof(path))
 		return -1;
 
-	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	/*
+	 * 0755, because it is execve()d now rather than sourced (ADR-0307
+	 * clause 2). A 0644 file with a valid shebang fails with EACCES,
+	 * and CBS's own runner reports that as exit 127 through
+	 * execlp() -- an error that reads as "no such file" against a
+	 * file that is plainly there.
+	 */
+	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
 	if (fd < 0)
 		return -1;
 	n = write(fd, PKG_FINALIZE_SH, len);
@@ -2623,12 +2635,15 @@ static int write_finalize_script(const char *upperdir)
  * `pkg_build && pkg_install` would leave every failure inside
  * pkg_build() ignored, which is precisely the case that needs catching.
  *
- * finalize.sh runs last and is sourced, not executed, so a non-zero
- * return from it fails the build under the same set -e.
+ * finalize.sh runs last, as a program taking the staged tree as its
+ * argument (ADR-0307 clause 2), so a non-zero exit fails the build
+ * under the same set -e. It was sourced until then; one policy file
+ * has to serve both recipe languages, and the PBS side can only reach
+ * it through CBS's own execlp() of a command with one argument.
  */
 #define PKG_BUILD_CMD \
 	"set -e; . /build/recipe.sh; cd /build/src; pkg_build; pkg_install; " \
-	". /build/finalize.sh"
+	"/build/finalize.sh \"$PKG_DESTDIR\""
 
 /*
  * A PBS recipe's build (ADR-0305).
@@ -2664,8 +2679,15 @@ static int write_finalize_script(const char *upperdir)
  * the jsonl properly -- phase timings and cache-hit counts into the
  * REST progress fields -- is worth doing and is not this.
  *
- * finalize.sh runs last and is sourced, under the same set -e, exactly
- * as in the shell form above.
+ * finalize.sh is CBS's own --finalize-command rather than a shell step
+ * after it (ADR-0307 clause 2). Measured at tag v0.1.29 rather than
+ * assumed, because the ordering is the whole point:
+ * cbs_build_standalone_with_events_policy() runs the finalizer at
+ * src/package.c:374 and packages at :389, so the policy is applied
+ * BEFORE any artifact is written -- which is what makes it possible
+ * for CBS to write that artifact at all (clause 2's other half). It
+ * also runs when no --output is given, so this is correct today,
+ * while cixd still packages the tree itself.
  */
 /*
  * Forward declaration: the architecture is passed to `cbs build`
@@ -8953,11 +8975,12 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	if (e->cache_hit)
 		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), ":");
 	else if (recipe.is_pbs)
-		/* See PKG_CBS_WORKSPACE for why there is no --output and why
-		 * the cache is pre-filled. */
+		/* See PKG_CBS_WORKSPACE for why there is still no --output,
+		 * why the cache is pre-filled, and why the finalize policy is
+		 * CBS's own --finalize-command rather than a step after it. */
 		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd),
 		         "set -e; cbs build /build/recipe.cbs --arch %s --staged %s --cache %s "
-		         "--events human; . /build/finalize.sh",
+		         "--finalize-command /build/finalize.sh --events human",
 		         pkg_host_arch(), PKG_CBS_WORKSPACE, PKG_CBS_CACHE_DIR);
 	else
 		/* See PKG_BUILD_CMD for why this is shaped the way it is. */

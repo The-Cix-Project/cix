@@ -1,6 +1,20 @@
+#!/usr/bin/bash
 #
 # ADR-0251 -- a package artifact carries what the platform runs, and
 # nothing else.
+#
+# EXECUTED, not sourced, and it takes the staged root as $1 (ADR-0307
+# clause 2). It was sourced until then, reading $PKG_DESTDIR out of the
+# environment. The change is not cosmetic: CBS runs an embedder's
+# finalizer as `execlp(command, command, staged_root, NULL)`
+# (cix-build-system src/main.c:514), so a PBS build can only reach this
+# policy as a program taking one argument -- and ADR-0251's rules have
+# to stay ONE definition across both recipe languages rather than
+# growing a second expression for the PBS side.
+#
+# #!/usr/bin/bash and not /bin/bash: this project's own images ship
+# bin/sh and usr/bin/bash and no /bin/bash at all, and a bad
+# interpreter reports as exit 127 against a file that visibly exists.
 #
 # Written into the build container by cixd (daemon/src/pkg.c), never by
 # a recipe. That is the whole point: before this existed, the scope of
@@ -9,17 +23,28 @@
 # spellings, while glibc shipped 9.46 MiB of debug sections in
 # libc.so.6 and libc.a three times over.
 #
-# Sourced by the build command after pkg_install() returns, in the
-# build container, with `set -e` already in effect. Uses bash builtins
-# for the scan (no find, no file) so it adds no tool dependency of its
-# own; strip is required only when the package actually produced ELF.
+# Run after the install phase, in the build container, against the tree
+# that phase staged. Uses bash builtins for the scan (no find, no file)
+# so it adds no tool dependency of its own; strip is required only when
+# the package actually produced ELF.
 #
+set -e
 
 cix_finalize() {
-	local dest="$PKG_DESTDIR"
+	local dest="$1"
 	local elfmagic armagic f base stem magic arsize t
 	local shared_stems=""
 	local -a elf_dyn=() elf_rel=() archives=()
+
+	# An empty argument is a CALLER bug, not an empty package, and the
+	# two must not look alike: `test -d ""` is false, so the check
+	# below would return 0 for it -- finalizing nothing and reporting
+	# success, which is the exact shape ADR-0251 exists to stop (37 of
+	# 115 recipes pruning, nobody counting).
+	if test -z "$dest"; then
+		echo "cix: package finalize was given no staged root" >&2
+		return 1
+	fi
 
 	if ! test -d "$dest"; then
 		return 0
@@ -196,4 +221,4 @@ cix_finalize() {
 	return 0
 }
 
-cix_finalize
+cix_finalize "$@"
