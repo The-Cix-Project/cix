@@ -6,6 +6,23 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cbs v0.1.28 narrows the blocker to one assertion (cix-build-system#180, #181)
+
+Upstream shipped the #180 fix — *"make archive-test report which check failed"* — and it did exactly what was asked. Five build cycles of narrowing became one build:
+
+```
+archive-test: FAILED at line 442: `empty` was not rejected as specified
+archive-test: expected ... `archive contains no members`; diagnostic was:
+  error[CPDL-E6001]: source: source `empty`: cannot open archive: Unrecognized archive format
+archive-test: 1 check(s) failed under /run/cbs-archive-rQBGds
+```
+
+Two things resolved at once. `TMPDIR` is honoured now — the root is under `/run`, not the hardcoded `/tmp` — which was the other half of #180. And the remaining failure is **one assertion pinned to libarchive's wording**: line 442 expects an empty archive to be refused with `archive contains no members`, and libarchive **3.8.1-4** (this platform's own build, in both build images) refuses it at `archive_read_open_filename` with `Unrecognized archive format` instead. `cbs_extract_archive()` reports that faithfully and never reaches the branch the test names. The behaviour under test is correct here; the string is not. Filed as cix-build-system#181.
+
+`cbs v0.1.28-1` therefore still does not install, and still is not being forced — the recipe makes the upstream suite a fatal gate deliberately, and cbs archive extraction is what every source fetch depends on. The diagnostic scaffolding v0.1.27-1 carried is gone, because this release makes it unnecessary: the check phase is back to the plain full suite.
+
+`libmnl/1.0.5-6` is written against the new features and waiting on them — the first recipe to use `replace … from "-Wl,--version-script" until whitespace` for the strip TCC needs (no literal match can reach a flag's filename argument), and `require file { target "libmnl.so.0.2.0" }` for the soname link, which asserts **where the link points** where the shell recipe's `test -e` only asked whether something was there.
+
 ### CBS grew the five shapes the corpus was blocked on; two more packages convert (#487, #491)
 
 Upstream implemented every request: cix-build-system#174 through #179, all closed, and **v0.1.27 is a real tag with VERSION moved past it** — which cix-build-system#172 asked for and which means a cbs recipe can name a tag again instead of pinning a commit. Verified in main's own source at both refs rather than taken from the tracker: `each` was partially present at v0.1.26 as a list-suffix form, and `stage`, `replace … until`, `require … target` and lowercase `env` names were not there at all.

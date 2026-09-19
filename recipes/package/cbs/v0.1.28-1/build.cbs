@@ -53,19 +53,26 @@
 # conversion: 62 packages were blocked on those five shapes against 47
 # convertible without them.
 #
-# The check phase carries a diagnostic this revision, and the header
-# inside it records what four earlier build cycles measured about
-# ./tests/archive-test. Restore a plain `make test` once that resolves.
+# This release also carries the fix for cix-build-system#180 --
+# ./tests/archive-test now reports which check failed. v0.1.27-1 could
+# not be packaged because that test failed under `make test`, passed
+# standalone, and printed nothing either way; five build cycles went
+# into narrowing it and two hypotheses (TMPDIR, a committed test
+# binary) were tested and disproven. The check phase below is
+# therefore back to the plain upstream suite.
+#
+# And it keeps the CIXPKG identity out of the flags byte, which is a
+# header-layout change ADR-0307 depends on reading correctly.
 #
 package "cbs" {
-    version "v0.1.27"
+    version "v0.1.28"
     release 1
     format "cixpkg"
 
     sources {
         main "cbs" {
-            url "https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix-build-system/archive/v0.1.27.tar.gz"
-            sha256 "6ea06abbe0672aa5fd1c1177ac6d10c7b53de641d055b67f37de5965479cc035"
+            url "https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix-build-system/archive/v0.1.28.tar.gz"
+            sha256 "61b16ad82ec06d735610469aef506b5d6cc3ed580d0185d0c37ec304c673b94d"
         }
         # zstd 1.5.4, for upstream-test. Declared as a source so the
         # daemon fetches and checksum-verifies it host-side; never
@@ -112,7 +119,7 @@ package "cbs" {
     }
 
     metadata {
-        "changelog" "v0.1.27-1: the first cbs revision since v0.1.23 that can name a TAG -- VERSION has moved past it, so the binary reports what its source tree declares (cix-build-system#172). Adds the five CPDL shapes the recipe corpus was blocked on: each with a compound body (#176), replace from a prefix until a delimiter (#177), stage library (#178), require file target for symlinks (#175), and lowercase environment names for autoconf cache variables (#179). Also #174."
+        "changelog" "v0.1.28-1: carries the fix for cix-build-system#180 -- archive-test now reports which check failed, where before it printed nothing and failed only under make test while passing standalone. Also keeps the CIXPKG identity out of the flags byte, which ADR-0307 depends on. Built from the v0.1.28 tag with VERSION moved to match. The check phase is back to the plain upstream suite; v0.1.27-1 carried diagnostic scaffolding this release makes unnecessary."
     }
 
     prepare {
@@ -180,55 +187,18 @@ package "cbs" {
     }
 
     check {
-        # ONE HYPOTHESIS, TESTED AS AN ASSERTION. Diagnostic revision.
+        # The whole upstream suite, as a real gate -- restored to the
+        # plain form every cbs revision before v0.1.27-1 had.
         #
-        # Measured so far, on this host in this image:
-        #
-        #   -1  `make test` -- everything PASSes except
-        #       ./tests/archive-test, which printed NOTHING and took
-        #       make down with Error 1.
-        #   -2  `make tests/archive-test` -- not a real target. make
-        #       fell back to a builtin rule and linked the test alone.
-        #       This recipe's error, not upstream's.
-        #   -3  the Makefile's own link line (Makefile:127), run
-        #       standalone BEFORE `make test` -- PASSED: "archive
-        #       extraction tests: PASS (safe links, mtimes, implicit
-        #       parents, deferred directory modes, hostile entries, and
-        #       named diagnostics)". The identical link and run then
-        #       failed inside `make test` eighty lines later.
-        #
-        # Same binary, same container, same command line: passes
-        # standalone, fails under make. The one difference this recipe
-        # introduces is TMPDIR -- the `make test` run sets TMPDIR=/run
-        # because these images have no /tmp, and the standalone run set
-        # nothing.
-        #
-        # So the standalone run below now sets TMPDIR=/run and is a
-        # real assertion rather than a diagnostic. If it fails, TMPDIR
-        # is the differentiator and the answer is in hand. If it passes
-        # and `make test` still fails, the cause is something else and
-        # the on_fail block says what the two temp roots looked like.
+        # v0.1.27-1's check carried five build cycles of scaffolding
+        # after ./tests/archive-test failed under `make test` while
+        # passing standalone, printing nothing either way. That is
+        # cix-build-system#180, and this release carries its fix:
+        # "make archive-test report which check failed". So the
+        # scaffolding is gone -- if the test fails now it says which
+        # assertion, which is what the issue asked for and what makes a
+        # diagnostic revision unnecessary.
         cd "${src}/cbs/cix-build-system" {
-            run "tcc" {
-                "-Isrc"
-                "-DCBS_VERSION=\"0.1.26\""
-                "-DZSTD_DISABLE_DEPRECATE_WARNINGS"
-                "-std=c11"
-                "-Wall"
-                "-Wextra"
-                "-Werror"
-                "-pedantic"
-                "tests/archive-test.c"
-                "src/archive.o"
-                "src/ast.o"
-                "src/diag.o"
-                "-larchive"
-                "-o"
-                "tests/archive-test"
-            }
-            run "./tests/archive-test" {
-                env "TMPDIR" = "/run"
-            }
             run "make" {
                 "test"
                 env "CC" = "tcc"
@@ -236,22 +206,9 @@ package "cbs" {
                 env "TMPDIR" = "/run"
                 jobs $jobs
             }
+            # It runs, and it knows its own version.
             run "./cbs" {
                 "--version"
-            }
-            # Diagnostics, run only if something above failed. This is
-            # what on_fail is for, and allow_failure is valid only here.
-            on_fail {
-                run "ls" {
-                    "-la"
-                    "/run"
-                    allow_failure
-                }
-                run "ls" {
-                    "-la"
-                    "/tmp"
-                    allow_failure
-                }
             }
         }
     }
