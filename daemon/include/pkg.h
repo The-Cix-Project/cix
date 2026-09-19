@@ -616,6 +616,19 @@ enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size);
 enum pkg_error pkg_seed_preflight(char *err, size_t err_size);
 
 /*
+ * Reports what pkg_init()'s explain sweep did (ADR-0307 clause 7).
+ *
+ * Separate from the sweep itself because pkg_init() runs before
+ * logstore_init(), so anything the sweep logged directly would be
+ * dropped by the store's own not-initialised guard and go nowhere --
+ * measured, and the fourth time this project has hit that. Call this
+ * from main() after logstore_init(), beside log_degraded_placements()
+ * and iso_recover_state(), which exist for exactly the same reason.
+ * A no-op when no sweep ran.
+ */
+void pkg_log_explain_sweep(void);
+
+/*
  * The image rebuilds this host has queued but not started (#236).
  *
  * In memory and deliberately not persisted: a rebuild is re-derivable

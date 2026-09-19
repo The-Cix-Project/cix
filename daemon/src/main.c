@@ -30468,6 +30468,14 @@ static int cixd_main(int argc, char **argv)
 		return 1;
 	log_degraded_placements(); /* #256: now that there is somewhere to say it */
 	/*
+	 * ADR-0307 clause 7, and the same reason as every other call in
+	 * this little cluster: the sweep itself has to run inside
+	 * pkg_init(), before anything reads a derived identity, and that
+	 * is ~100 lines before logstore_init() -- so it records what it
+	 * did and says it here, where an operator can actually see it.
+	 */
+	pkg_log_explain_sweep();
+	/*
 	 * Issue #40: after image_init (it produces a real image version)
 	 * AND after logstore_init, so what it did is visible where an
 	 * operator actually looks. Reporting it to stderr instead put the

@@ -4783,6 +4783,51 @@ static void cbs_engine_version(char *out, size_t out_size)
 	out[strcspn(out, "\r\n")] = '\0';
 }
 
+/*
+ * What the sweep did, held for pkg_log_explain_sweep() to report.
+ *
+ * pkg_init() runs ~100 lines BEFORE logstore_init() in main(), so a
+ * logstore_write() from here is dropped by write_entry()'s own
+ * !g_initialized guard and the sweep says nothing anywhere. That was
+ * measured, not guessed: the first cut of this logged directly, the
+ * documents on 192.168.15.95 were demonstrably re-derived, and
+ * `GET /system/logs?regex=CPDL engine` returned `[]`.
+ *
+ * This is the fourth time this project has learned that a diagnostic
+ * written before there is somewhere to write it goes nowhere --
+ * log_degraded_placements() (#256), pkg_migrate_build_sandbox()
+ * (#40) and iso_recover_state() (#205) each carry the same note. The
+ * shape they settled on is this one: do the work where it has to
+ * happen, record what happened, and say it once the log store exists.
+ */
+static struct {
+	int ran;
+	int no_engine;
+	int rederived;
+	int failed;
+	char from[128];
+	char to[128];
+} g_explain_sweep;
+
+void pkg_log_explain_sweep(void)
+{
+	if (!g_explain_sweep.ran)
+		return;
+	if (g_explain_sweep.no_engine) {
+		logstore_write("cixd", "info",
+		               "pkg: no CPDL engine at %s, so no derived identity was checked "
+		               "(ADR-0307 clause 7)",
+		               PKG_CBS_BIN);
+		return;
+	}
+	logstore_write("cixd", g_explain_sweep.failed > 0 ? "warn" : "info",
+	               "pkg: CPDL engine changed (%s -> %s): re-derived %d identit%s, %d failed "
+	               "(ADR-0307 clause 7)",
+	               g_explain_sweep.from[0] != '\0' ? g_explain_sweep.from : "none recorded",
+	               g_explain_sweep.to, g_explain_sweep.rederived,
+	               g_explain_sweep.rederived == 1 ? "y" : "ies", g_explain_sweep.failed);
+}
+
 static void explain_sweep_if_engine_changed(void)
 {
 	char version[128];
@@ -4792,18 +4837,14 @@ static void explain_sweep_if_engine_changed(void)
 	size_t stored_len = 0;
 	DIR *names;
 	struct dirent *nde;
-	int rederived = 0;
-	int failed = 0;
 
 	cbs_engine_version(version, sizeof(version));
 	if (version[0] == '\0') {
 		/* No engine on this host. Not an error in itself -- a box
 		 * that installs no PBS recipe never needs one -- and saying
 		 * so once at startup beats a refusal per recipe later. */
-		logstore_write("cixd", "info",
-		               "pkg: no CPDL engine at %s, so no derived identity was checked "
-		               "(ADR-0307 clause 7)",
-		               PKG_CBS_BIN);
+		g_explain_sweep.ran = 1;
+		g_explain_sweep.no_engine = 1;
 		return;
 	}
 
@@ -4817,13 +4858,17 @@ static void explain_sweep_if_engine_changed(void)
 	if (strcmp(recorded, version) == 0)
 		return;
 
+	g_explain_sweep.ran = 1;
+	snprintf(g_explain_sweep.from, sizeof(g_explain_sweep.from), "%s", recorded);
+	snprintf(g_explain_sweep.to, sizeof(g_explain_sweep.to), "%s", version);
+
 	names = opendir(g_recipes_dir);
 	if (names == NULL) {
 		/* No recipes yet is the state of every fresh install, and
 		 * recording the engine is still right: there is nothing
 		 * stale, which is exactly what the record will then say. */
 		if (persist_atomic_write(state_path, version, strlen(version)) != 0)
-			logstore_write("cixd", "error", "pkg: could not record the CPDL engine version");
+			g_explain_sweep.failed++;
 		return;
 	}
 	while ((nde = readdir(names)) != NULL) {
@@ -4858,28 +4903,24 @@ static void explain_sweep_if_engine_changed(void)
 			 * ones a running daemon needs.
 			 */
 			if (pkg_recipe_rederive_identity(recipe_path) != PKG_OK) {
-				failed++;
+				g_explain_sweep.failed++;
 				continue;
 			}
-			rederived++;
+			g_explain_sweep.rederived++;
 		}
 		closedir(versions);
 	}
 	closedir(names);
 
-	logstore_write("cixd", failed > 0 ? "warn" : "info",
-	               "pkg: CPDL engine changed (%s -> %s): re-derived %d identit%s, %d failed "
-	               "(ADR-0307 clause 7)",
-	               recorded[0] != '\0' ? recorded : "none recorded", version, rederived,
-	               rederived == 1 ? "y" : "ies", failed);
 	/*
 	 * Recorded only when every document was rebuilt. A partial sweep
 	 * that recorded the new engine would never be retried, leaving
 	 * whichever recipes failed permanently stale -- and stale is the
 	 * state this exists to end.
 	 */
-	if (failed == 0 && persist_atomic_write(state_path, version, strlen(version)) != 0)
-		logstore_write("cixd", "error", "pkg: could not record the CPDL engine version");
+	if (g_explain_sweep.failed == 0 && persist_atomic_write(state_path, version,
+	                                                         strlen(version)) != 0)
+		g_explain_sweep.failed++;
 }
 
 int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *containers_dir,
