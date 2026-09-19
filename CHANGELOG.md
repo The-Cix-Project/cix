@@ -8,6 +8,32 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 ### The daemon reads the artifact format a PBS recipe declares, and rebuilds a stale identity (#487, #496, ADR-0307 clauses 1 and 7)
 
+**Verified on 192.168.15.95, v2.57.227, 2026-09-19.** Three things, each answered by the host rather than by reading the code.
+
+*The sweep rebuilt what was stale.* Every one of the **50** published PBS recipe versions now reports `artifact_format: "cixpkg"` in `GET /v1/pkg/recipes` — including `zlib@1.3.2-14` and `vim@9.1.1428-4`, published on 2026-09-18 before the reassembly that put `cbs v0.1.29` on the host, whose documents therefore had no `format` key when they were written.
+
+*The listing reports both meanings separately.*
+
+```
+bc   1.08.1-4    language=pbs  artifact_format=cixpkg
+zlib 1.3.2-14    language=pbs  artifact_format=cixpkg
+```
+
+*A `tar.gz` declaration is refused, and the caller is told why.* A throwaway probe recipe, identical to `probe-pbs/2` except for one line:
+
+```
+package "probe-pbs-targz" { version "1"  release 1  format "tar.gz"  ... }
+```
+
+```
+HTTP 400
+{"error":"it declares format \"tar.gz\", which `cbs build` refuses to execute
+ (\"standalone builds require cixpkg\") -- a PBS recipe publishes a .cixpkg (ADR-0307)"}
+```
+
+It is **not** kept in `recipes/`, and that is deliberate rather than tidiness: `pkg_sync_completed()` counts a refused recipe as `failed`, so a permanently-refusable recipe in the tree would report a failure on every repo sync, forever. The document is here instead, which is enough to run it again by hand.
+
+
 Stage 3's first half. CPDL has had two artifact formats and a per-recipe choice between them for as long as this project has written CPDL, and the daemon ignored the declaration entirely — twelve recipes claiming `format "cixpkg"` while every artifact published from one was a `.tar.gz`. `parse_pbs_recipe()` now reads `format` out of the explain document into `struct pkg_recipe`, and a PBS recipe declaring `tar.gz` is **refused at publish**, naming why: `cbs build` fails any recipe not declaring cixpkg with *"standalone builds require cixpkg"* (`src/package.c:305`), and the check is not conditional on an output path. Storing such a recipe means an immutable version that fails at build time, every time. The value is read rather than assumed precisely so that refusal is possible — assuming cixpkg would accept it happily and would encode a restriction that is CBS's to lift.
 
 **And the derived documents on disk did not have the field.** `explain.json` is written once, at publish, by whichever `cbs` the host was running that day, and `format` only exists from `v0.1.26` (cix-build-system#173). Refusing a document without it makes the older half of the PBS corpus unbuildable; assuming a value is the thing clause 1 exists to prevent. So the document is treated as what it already claims to be: **derived state, rebuilt when its producer changes.** A published `(name, version)` is immutable (ADR-0107) and `cbs explain --json` is deterministic over the recipe text, so re-deriving cannot produce a different answer — only a more complete one.
