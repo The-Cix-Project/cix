@@ -272,7 +272,9 @@ static int build_seed_fixture(const char *workdir, char *out_root, size_t out_ro
 	if (fixture_mkdir_p(recipe_dir) != 0 || fixture_mkdir_p(artifact_dir) != 0)
 		return -1;
 
-	snprintf(src, sizeof(src), "recipes/package/glibc/%s/build.sh", SEED_LIBC_VERSION);
+	/* #504: the corpus is its own repository and flat. */
+	if (test_recipe_path("package", "glibc", SEED_LIBC_VERSION, "sh", src, sizeof(src)) != 0)
+		return -1;
 	snprintf(dst, sizeof(dst), "%s/build.sh", recipe_dir);
 	if (test_image_fixture_copy_file(src, dst) != 0)
 		return -1;

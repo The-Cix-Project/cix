@@ -306,6 +306,26 @@ int test_image_fixture_clear_floor_cache(const char *data_dir);
  */
 int test_mkdir_p(const char *path);
 
+/*
+ * #504: where the recipe corpus lives, now that it is a repository of
+ * its own (git.home.arpa/itdlabs/cix-recipes) rather than a directory
+ * in this one.
+ *
+ * Defaults to a sibling checkout, which is the layout a developer
+ * gets by cloning both repos next to each other, and is overridable
+ * with CIX_RECIPES_DIR for anything that puts them elsewhere. It is a
+ * function rather than a #define so that a wrong path fails once,
+ * here, with a message naming the environment variable -- rather than
+ * as three separate "could not open" failures in three tests.
+ *
+ * Recipes are FLAT: "<root>/package/<name>@<version>.<ext>". Use
+ * test_recipe_path() to build one rather than composing the name by
+ * hand, so the day the separator changes there is one place to fix.
+ */
+const char *test_recipes_root(void);
+int test_recipe_path(const char *kind, const char *name, const char *version,
+                     const char *ext, char *out, size_t out_size);
+
 #define TEST_SETTLE_ATTEMPTS 200
 #define TEST_SETTLE_INTERVAL_US (100 * 1000)
 

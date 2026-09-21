@@ -1,0 +1,102 @@
+# keyutils -- libkeyutils, which mokutil links. Converted from
+# build.sh to build.cbs (ADR-0305 stage 4, #487).
+#
+# NOTHING TO RESTORE under #491: this recipe never deleted anything.
+# It builds two named targets out of a hand-written Makefile and
+# copies four files.
+#
+# The three `test -L` assertions become `require file { target }`,
+# which is new (cix-build-system#175). Before it, `require file`
+# matched regular files only and reported a symlink as "does not
+# exist", so a soname link could not be asserted at all -- and this
+# package is entirely about getting a soname chain right.
+#
+# LIBDIR and USRLIBDIR name the same directory (#184 stage 2): the
+# multiarch triplet is a Debian convention for sharing one filesystem
+# between architectures, and a Cix image has one architecture. That
+# makes the development symlink an ordinary same-directory one rather
+# than an absolute path into another partition-era location.
+package "keyutils" {
+    version "1.6.3"
+    release 11
+    format "cixpkg"
+
+    sources {
+        main "keyutils" {
+            url "http://deb.debian.org/debian/pool/main/k/keyutils/keyutils_1.6.3.orig.tar.gz"
+            sha256 "a61d5706136ae4c05bd48f86186bcfdbd88dd8bd5107e3e195c924cfc1b39bb4"
+        }
+    }
+
+    requires {
+        build {
+            compiler "gcc"
+            tool "bash"
+            tool "coreutils"
+            tool "make"
+            tool "tcc"
+            tool "linux-headers"
+            tool "binutils"
+            tool "sed"
+            tool "grep"
+        }
+    }
+
+    toolchain "gcc" {
+        reason "missing language feature: linking needs a symbol TCC does not provide, and the alternative was fabricating a placeholder archive for a binary this package discards. Carried from 1.6.3-10 and not re-measured against the pinned tcc 0.9.28rc"
+    }
+
+    metadata {
+        "changelog" "1.6.3-11: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same two make targets. Nothing to restore under ADR-0306: this recipe never deleted anything. The three test -L checks become require file { target }, which cix-build-system#175 made possible -- before it a soname link could not be asserted at all, and this package is entirely about a soname chain."
+    }
+
+    build {
+        cd "${src}/keyutils/keyutils-1.6.3" {
+            run "make" {
+                "CC=/usr/bin/gcc"
+                "CXX=/usr/bin/g++"
+                "LIBDIR=/usr/lib"
+                "USRLIBDIR=/usr/lib"
+                "BUILDFOR=64-bit"
+                "NO_ARLIB=1"
+                "libkeyutils.so.1.10"
+                "cxx"
+                jobs $jobs
+            }
+            run "make" {
+                "CC=/usr/bin/gcc"
+                "LIBDIR=/usr/lib"
+                "USRLIBDIR=/usr/lib"
+                "BUILDFOR=64-bit"
+                "NO_ARLIB=1"
+                "pkgconfig"
+            }
+        }
+    }
+
+    install {
+        mkdir "${dest}/usr/lib/pkgconfig" chmod 0755
+        mkdir "${dest}/usr/include" chmod 0755
+        copy "${src}/keyutils/keyutils-1.6.3/libkeyutils.so.1.10" to "${dest}/usr/lib/libkeyutils.so.1.10"
+        copy "${src}/keyutils/keyutils-1.6.3/keyutils.h" to "${dest}/usr/include/keyutils.h"
+        copy "${src}/keyutils/keyutils-1.6.3/libkeyutils.pc" to "${dest}/usr/lib/pkgconfig/libkeyutils.pc"
+        symlink "libkeyutils.so.1.10" to "${dest}/usr/lib/libkeyutils.so.1"
+        symlink "libkeyutils.so.1" to "${dest}/usr/lib/libkeyutils.so"
+        require file "${dest}/usr/lib/libkeyutils.so.1.10" {
+            exists
+            nonempty
+        }
+        require symlink "${dest}/usr/lib/libkeyutils.so.1" {
+            exists
+            target "libkeyutils.so.1.10"
+        }
+        require symlink "${dest}/usr/lib/libkeyutils.so" {
+            exists
+            target "libkeyutils.so.1"
+        }
+        require file "${dest}/usr/lib/pkgconfig/libkeyutils.pc" {
+            exists
+            nonempty
+        }
+    }
+}

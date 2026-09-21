@@ -1,0 +1,106 @@
+# libuv -- BIND's bin/dig hard-requires it via pkg-config (its own
+# configure.ac does AC_MSG_ERROR if missing, with no way to build
+# without it even though bin/dig never links it), so this exists as
+# that prerequisite for the jump box's nslookup. Converted from
+# build.sh to build.cbs (ADR-0305 stage 4, #487).
+#
+# WHAT CHANGES: the defensive `rm -f usr/lib/*.la` is not translated.
+# Finalize's clause 3 drops every .la, and CPDL's `remove glob` FAILS
+# on a glob matching nothing where `rm -f` shrugged.
+#
+# THE TOOLWRAP STAYS, and it is worth saying why it was not dropped
+# as stale. autogen.sh defaults to bare `aclocal`/`automake`/
+# `libtoolize`, and this build sandbox's copies of those are dangling
+# Debian update-alternatives symlink chains that the kernel's #!
+# shebang exec path fails to resolve -- ENOEXEC, so bash's shell
+# fallback then mis-parses the perl source as shell and reports
+# "package: command not found". Invoking perl on the same file
+# directly works. autogen.sh reads ACLOCAL/AUTOMAKE/LIBTOOLIZE from
+# the environment, so no patch to libuv's source is needed. That is a
+# property of the composed build environment rather than of any
+# compiler version, so nothing about the tcc upgrade retires it.
+package "libuv" {
+    version "1.51.0"
+    release 3
+    format "cixpkg"
+
+    sources {
+        main "libuv" {
+            url "https://github.com/libuv/libuv/archive/refs/tags/v1.51.0.tar.gz"
+            sha256 "27e55cf7083913bfb6826ca78cde9de7647cded648d35f24163f2d31bb9f51cd"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+            tool "findutils"
+            tool "diffutils"
+            tool "autoconf"
+            tool "automake"
+            tool "libtool"
+            tool "m4"
+            tool "perl"
+        }
+    }
+
+    metadata {
+        "changelog" "1.51.0-3: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest, the same autogen.sh toolwrap and the same configure line. perl is now declared as a build tool: the wrapper scripts invoke it directly and the shell recipe relied on it being present without saying so. The defensive rm of usr/lib/*.la is not translated -- finalize drops every .la, and remove glob fails on a glob matching nothing."
+    }
+
+    prepare {
+        run "ls" {
+            "-la"
+            "${src}/libuv"
+        }
+        require directory "${src}/libuv/libuv-1.51.0" {
+            exists
+        }
+        mkdir "/build/toolwrap" chmod 0755
+        write "/build/toolwrap/aclocal-wrap" "#!/bin/sh\nexec perl /usr/bin/aclocal \"$@\"\n"
+        write "/build/toolwrap/automake-wrap" "#!/bin/sh\nexec perl /usr/bin/automake \"$@\"\n"
+        write "/build/toolwrap/libtoolize-wrap" "#!/bin/sh\nexec perl /usr/bin/libtoolize \"$@\"\n"
+        chmod 0755 "/build/toolwrap/aclocal-wrap"
+        chmod 0755 "/build/toolwrap/automake-wrap"
+        chmod 0755 "/build/toolwrap/libtoolize-wrap"
+    }
+
+    build {
+        cd "${src}/libuv/libuv-1.51.0" {
+            run "./autogen.sh" {
+                env "ACLOCAL" = "/build/toolwrap/aclocal-wrap"
+                env "AUTOMAKE" = "/build/toolwrap/automake-wrap"
+                env "LIBTOOLIZE" = "/build/toolwrap/libtoolize-wrap"
+            }
+            run "./configure" {
+                "--prefix=/usr"
+                "--disable-static"
+                env "CC" = "tcc"
+            }
+            run "make" {
+                jobs $jobs
+            }
+        }
+    }
+
+    install {
+        cd "${src}/libuv/libuv-1.51.0" {
+            run "make" {
+                "install"
+                "DESTDIR=${dest}"
+            }
+        }
+        require file "${dest}/usr/lib/pkgconfig/libuv.pc" {
+            exists
+            nonempty
+        }
+    }
+}

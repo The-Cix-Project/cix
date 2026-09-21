@@ -1,0 +1,59 @@
+# gnu-efi -- the EFI headers, crt0 and link script the bootloader
+# pieces build against. Converted from build.sh to build.cbs
+# (ADR-0305 stage 4, #487).
+#
+# NOTHING TO RESTORE under #491: this recipe never deleted anything.
+# It is one make and one make install.
+package "gnu-efi" {
+    version "3.0.18"
+    release 7
+    format "cixpkg"
+
+    sources {
+        main "gnu-efi" {
+            url "https://sourceforge.net/projects/gnu-efi/files/gnu-efi-3.0.18.tar.bz2/download"
+            sha256 "7f212c96ee66547eeefb531267b641e5473d7d8529f0bd8ccdefd33cf7413f5c"
+        }
+    }
+
+    requires {
+        build {
+            compiler "gcc"
+            tool "bash"
+            tool "coreutils"
+            tool "make"
+            tool "linux-headers"
+            tool "binutils"
+            tool "sed"
+        }
+    }
+
+    toolchain "gcc" {
+        reason "missing language feature: needs __builtin_ms_va_list for the EFI calling convention, which TCC does not implement. Carried from 3.0.18-6 and not re-measured against the pinned tcc 0.9.28rc -- a candidate for re-measuring, since that upgrade added 12 of 15 previously-missing builtins (ADR-0223)"
+    }
+
+    metadata {
+        "changelog" "3.0.18-7: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same make invocation. Nothing to restore under ADR-0306: this recipe never deleted anything. The gcc reason now records that it predates the compiler upgrade and has not been re-measured."
+    }
+
+    build {
+        cd "${src}/gnu-efi/gnu-efi-3.0.18" {
+            run "make" {
+                jobs $jobs
+                "ARCH=x86_64"
+                "CC=/usr/bin/gcc"
+                "PREFIX=/usr"
+            }
+        }
+    }
+
+    install {
+        cd "${src}/gnu-efi/gnu-efi-3.0.18" {
+            run "make" {
+                "install"
+                "DESTDIR=${dest}"
+                "PREFIX=/usr"
+            }
+        }
+    }
+}

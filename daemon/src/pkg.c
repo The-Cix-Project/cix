@@ -13130,54 +13130,123 @@ enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd)
  * needs the highest version per name directory, same selection rule
  * find_recipe_path() already uses for an unpinned package install.
  */
+/*
+ * #504: the recipe repository is FLAT, and a recipe is one file named
+ * "<name>@<version>.<ext>" -- sh for a shell recipe, cbs for a PBS one
+ * (ADR-0305), json for a deployment definition.
+ *
+ * It was "<name>/<version>/build.<ext>" until 2026-09-21: two
+ * directory levels carrying two fields, under a leaf filename that was
+ * the same two strings 1577 times over. Every editor tab, grep hit and
+ * diff header said "build.cbs" and the path was the only thing that
+ * said which recipe it was. Measured before the change: every one of
+ * those 1577 directories held exactly one file and nothing else, so
+ * the directories carried no information the filename could not.
+ *
+ * Splits at the FIRST '@'. That is unambiguous because no package,
+ * image or deployment name contains one -- checked across all 155
+ * names -- and because '@' is already this platform's name/version
+ * separator wherever it prints one (glibc@2.44-14, kmod@cix-builder).
+ * The version may contain dots (xorriso@1.5.8.pl02-8.cbs), so the
+ * extension is taken from the LAST dot, never the first.
+ *
+ * Returns 0 and fills name, version and ext on a match; -1 otherwise,
+ * which is how a README or any other stray file in the directory is
+ * skipped rather than mistaken for a recipe.
+ */
+static int recipe_file_split(const char *fname, char *name, size_t name_size,
+                             char *version, size_t version_size, const char **ext)
+{
+	const char *at, *dot;
+	size_t nlen, vlen;
+
+	if (fname == NULL || fname[0] == '.')
+		return -1;
+	at = strchr(fname, '@');
+	if (at == NULL || at == fname)
+		return -1;
+	dot = strrchr(at, '.');
+	if (dot == NULL || dot == at + 1)
+		return -1;
+	nlen = (size_t)(at - fname);
+	vlen = (size_t)(dot - (at + 1));
+	if (nlen == 0 || nlen >= name_size)
+		return -1;
+	if (vlen == 0 || vlen >= version_size)
+		return -1;
+	memcpy(name, fname, nlen);
+	name[nlen] = '\0';
+	memcpy(version, at + 1, vlen);
+	version[vlen] = '\0';
+	if (ext != NULL)
+		*ext = dot + 1;
+	return 0;
+}
+
 static void sync_walk_image_recipes(const char *images_root, int *added, int *skipped,
                                      int *failed)
 {
 	DIR *names_d;
 	struct dirent *name_de;
 
+	/*
+	 * #504: one flat directory. The old shape opened a directory per
+	 * name and scanned its versions; now every "<name>@<version>.sh"
+	 * sits side by side. An image recipe is name-keyed at the daemon
+	 * layer (ADR-0123), so exactly one version per name may win, and
+	 * the rule is the same as before: the highest.
+	 *
+	 * Expressed as "this entry wins unless a higher version of the
+	 * same name exists", which needs no bookkeeping across the outer
+	 * loop and cannot pick two winners. It rescans the directory per
+	 * entry, which is quadratic and deliberately so -- there are 58
+	 * image recipe versions in the whole corpus, and a clear rule
+	 * beats a clever one at that size.
+	 */
 	names_d = opendir(images_root);
 	if (names_d == NULL)
 		return;
 	while ((name_de = readdir(names_d)) != NULL) {
-		char name_dir[PATH_MAX];
-		char best_version[PKG_VERSION_MAX];
+		char name[PKG_NAME_MAX], version[PKG_VERSION_MAX];
 		char script_path[PATH_MAX];
 		char *content;
 		size_t content_len;
-		DIR *vd;
 		struct dirent *vde;
-		int have_best = 0;
+		DIR *vd;
+		int outranked = 0;
+		const char *ext;
 		enum pkg_error rc;
 
-		if (name_de->d_name[0] == '.')
+		if (recipe_file_split(name_de->d_name, name, sizeof(name), version,
+		                      sizeof(version), &ext) != 0)
 			continue;
-		snprintf(name_dir, sizeof(name_dir), "%s/%s", images_root, name_de->d_name);
-		vd = opendir(name_dir);
+		if (strcmp(ext, "sh") != 0)
+			continue;
+
+		vd = opendir(images_root);
 		if (vd == NULL)
 			continue;
 		while ((vde = readdir(vd)) != NULL) {
-			char candidate[PATH_MAX];
-			struct stat st;
+			char n2[PKG_NAME_MAX], v2[PKG_VERSION_MAX];
+			const char *e2;
 
-			if (vde->d_name[0] == '.')
+			if (recipe_file_split(vde->d_name, n2, sizeof(n2), v2, sizeof(v2), &e2) != 0)
 				continue;
-			snprintf(candidate, sizeof(candidate), "%s/%s/build.sh", name_dir, vde->d_name);
-			if (stat(candidate, &st) != 0 || !S_ISREG(st.st_mode))
+			if (strcmp(e2, "sh") != 0 || strcmp(n2, name) != 0)
 				continue;
-			if (!have_best || pkg_version_compare(vde->d_name, best_version) > 0) {
-				snprintf(best_version, sizeof(best_version), "%s", vde->d_name);
-				have_best = 1;
+			if (pkg_version_compare(v2, version) > 0) {
+				outranked = 1;
+				break;
 			}
 		}
 		closedir(vd);
-		if (!have_best)
+		if (outranked)
 			continue;
 
-		snprintf(script_path, sizeof(script_path), "%s/%s/build.sh", name_dir, best_version);
+		snprintf(script_path, sizeof(script_path), "%s/%s", images_root, name_de->d_name);
 		if (persist_read_file(script_path, &content, &content_len) != 0 || content == NULL)
 			continue;
-		rc = image_recipe_add(name_de->d_name, content);
+		rc = image_recipe_add(name, content);
 		free(content);
 		/* image_recipe_add() always overwrites (name-keyed, no
 		 * version-keying of its own, ADR-0123) -- it never returns
@@ -13211,49 +13280,53 @@ static void sync_walk_container_recipes(const char *containers_root, int *added,
 	DIR *names_d;
 	struct dirent *name_de;
 
+	/* #504: flat, and the same "wins unless outranked" rule as the
+	 * image walk above. The extension is json, not sh, because a
+	 * container recipe's content is a JSON body. */
 	names_d = opendir(containers_root);
 	if (names_d == NULL)
 		return;
 	while ((name_de = readdir(names_d)) != NULL) {
-		char name_dir[PATH_MAX];
-		char best_version[PKG_VERSION_MAX];
+		char name[PKG_NAME_MAX], version[PKG_VERSION_MAX];
 		char json_path[PATH_MAX];
 		char *content;
 		size_t content_len;
-		DIR *vd;
 		struct dirent *vde;
-		int have_best = 0;
+		DIR *vd;
+		int outranked = 0;
+		const char *ext;
 		enum pkg_error rc;
 
-		if (name_de->d_name[0] == '.')
+		if (recipe_file_split(name_de->d_name, name, sizeof(name), version,
+		                      sizeof(version), &ext) != 0)
 			continue;
-		snprintf(name_dir, sizeof(name_dir), "%s/%s", containers_root, name_de->d_name);
-		vd = opendir(name_dir);
+		if (strcmp(ext, "json") != 0)
+			continue;
+
+		vd = opendir(containers_root);
 		if (vd == NULL)
 			continue;
 		while ((vde = readdir(vd)) != NULL) {
-			char candidate[PATH_MAX];
-			struct stat st;
+			char n2[PKG_NAME_MAX], v2[PKG_VERSION_MAX];
+			const char *e2;
 
-			if (vde->d_name[0] == '.')
+			if (recipe_file_split(vde->d_name, n2, sizeof(n2), v2, sizeof(v2), &e2) != 0)
 				continue;
-			snprintf(candidate, sizeof(candidate), "%s/%s/container.json", name_dir,
-			         vde->d_name);
-			if (stat(candidate, &st) != 0 || !S_ISREG(st.st_mode))
+			if (strcmp(e2, "json") != 0 || strcmp(n2, name) != 0)
 				continue;
-			if (!have_best || pkg_version_compare(vde->d_name, best_version) > 0) {
-				snprintf(best_version, sizeof(best_version), "%s", vde->d_name);
-				have_best = 1;
+			if (pkg_version_compare(v2, version) > 0) {
+				outranked = 1;
+				break;
 			}
 		}
 		closedir(vd);
-		if (!have_best)
+		if (outranked)
 			continue;
 
-		snprintf(json_path, sizeof(json_path), "%s/%s/container.json", name_dir, best_version);
+		snprintf(json_path, sizeof(json_path), "%s/%s", containers_root, name_de->d_name);
 		if (persist_read_file(json_path, &content, &content_len) != 0 || content == NULL)
 			continue;
-		rc = container_recipe_add(name_de->d_name, content);
+		rc = container_recipe_add(name, content);
 		free(content);
 		if (rc == PKG_OK)
 			(*added)++;
@@ -13423,74 +13496,75 @@ int pkg_sync_merge(void)
 	snprintf(extract_dir, sizeof(extract_dir), "%s/sync-extract", g_pkg_dir);
 
 	snprintf(recipes_root, sizeof(recipes_root), "%s/recipes/package", extract_dir);
+	/*
+	 * #504: flat. Unlike the image and container walks above, EVERY
+	 * version is synced, not just the highest -- package recipe
+	 * versions are immutable and independently installable
+	 * (ADR-0107), so a box needs all of them.
+	 */
 	names_d = opendir(recipes_root);
 	if (names_d != NULL) {
 		while ((name_de = readdir(names_d)) != NULL) {
-			char name_dir[PATH_MAX];
-			DIR *vd;
-			struct dirent *vde;
+			char name[PKG_NAME_MAX], version[PKG_VERSION_MAX];
+			char script_path[PATH_MAX];
+			char *content;
+			size_t content_len;
+			const char *ext;
+			enum pkg_error rc;
+			int is_pbs;
 
-			if (name_de->d_name[0] == '.')
+			if (recipe_file_split(name_de->d_name, name, sizeof(name), version,
+			                      sizeof(version), &ext) != 0)
 				continue;
-			snprintf(name_dir, sizeof(name_dir), "%s/%s", recipes_root, name_de->d_name);
-			vd = opendir(name_dir);
-			if (vd == NULL)
+			/*
+			 * ADR-0305: whichever language the repo holds this
+			 * version in, decided by the extension now that it is on
+			 * the recipe's own filename rather than on a leaf called
+			 * build.*. Anything else in the directory -- a README, a
+			 * stray file -- has no recognised extension and is
+			 * skipped here rather than being mistaken for a recipe.
+			 */
+			if (strcmp(ext, "cbs") == 0)
+				is_pbs = 1;
+			else if (strcmp(ext, "sh") == 0)
+				is_pbs = 0;
+			else
 				continue;
-			while ((vde = readdir(vd)) != NULL) {
-				char script_path[PATH_MAX];
-				char version_dir[PATH_MAX];
-				char *content;
-				size_t content_len;
-				enum pkg_error rc;
 
-				if (vde->d_name[0] == '.')
-					continue;
-				/*
-				 * ADR-0305: whichever language the repo holds this
-				 * version in. Without this, a build.cbs committed to
-				 * git would simply never reach a box -- the sync would
-				 * walk straight past it and report nothing, which is
-				 * the worst shape of failure this platform has: a
-				 * recipe that exists, is correct, and is invisible.
-				 */
-				snprintf(version_dir, sizeof(version_dir), "%s/%s", name_dir, vde->d_name);
-				if (pkg_recipe_file_in(version_dir, script_path, sizeof(script_path), NULL, NULL) != 0)
-					continue;
-				if (persist_read_file(script_path, &content, &content_len) != 0 ||
-				    content == NULL)
-					continue;
-				/* Issue #59: the one version this sync was explicitly
-				 * asked to re-fetch is deleted first, so the add below
-				 * takes the repo's current content instead of being
-				 * skipped as a duplicate. Everything else keeps the
-				 * immutability that ADR-0107 depends on. */
-				if (g_sync_refetch_name[0] != '\0' &&
-				    strcmp(g_sync_refetch_name, name_de->d_name) == 0 &&
-				    strcmp(g_sync_refetch_version, vde->d_name) == 0)
-					pkg_recipe_delete(name_de->d_name, vde->d_name);
+			snprintf(script_path, sizeof(script_path), "%s/%s", recipes_root,
+			         name_de->d_name);
+			if (persist_read_file(script_path, &content, &content_len) != 0 ||
+			    content == NULL)
+				continue;
+			/* Issue #59: the one version this sync was explicitly
+			 * asked to re-fetch is deleted first, so the add below
+			 * takes the repo's current content instead of being
+			 * skipped as a duplicate. Everything else keeps the
+			 * immutability that ADR-0107 depends on. */
+			if (g_sync_refetch_name[0] != '\0' &&
+			    strcmp(g_sync_refetch_name, name) == 0 &&
+			    strcmp(g_sync_refetch_version, version) == 0)
+				pkg_recipe_delete(name, version);
 
-				{
-					int was_approval = 0;
+			{
+				int was_approval = 0;
 
-					rc = pkg_recipe_add(name_de->d_name, content,
-					                    recipe_path_is_pbs(script_path) ? PKG_RECIPE_PBS
-					                                                    : PKG_RECIPE_SHELL,
-					                    &was_approval);
-					free(content);
-					/* #404: an approval applied to an already-published
-					 * version is NOT a new recipe -- count it apart so
-					 * `pkg sync` does not report an approval as an add. */
-					if (rc == PKG_OK && was_approval)
-						approved++;
-					else if (rc == PKG_OK)
-						added++;
-					else if (rc == PKG_ERR_DUPLICATE)
-						skipped++;
-					else
-						failed++;
-				}
+				rc = pkg_recipe_add(name, content,
+				                    is_pbs ? PKG_RECIPE_PBS : PKG_RECIPE_SHELL,
+				                    &was_approval);
+				free(content);
+				/* #404: an approval applied to an already-published
+				 * version is NOT a new recipe -- count it apart so
+				 * `pkg sync` does not report an approval as an add. */
+				if (rc == PKG_OK && was_approval)
+					approved++;
+				else if (rc == PKG_OK)
+					added++;
+				else if (rc == PKG_ERR_DUPLICATE)
+					skipped++;
+				else
+					failed++;
 			}
-			closedir(vd);
 		}
 		closedir(names_d);
 	}

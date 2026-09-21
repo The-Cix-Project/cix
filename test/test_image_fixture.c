@@ -727,6 +727,31 @@ static int sha256_file_hex(const char *path, char *out, size_t out_size)
 
 /* Reads pkg_artifact_sha256="..." out of a recipe -- the line that
  * approves those exact bytes, and the only thing that makes a cached
+/*
+ * #504: see test_image_fixture.h. The corpus moved to its own
+ * repository, so a test that reads a real recipe has to be told where
+ * it is instead of assuming a directory in this tree.
+ */
+const char *test_recipes_root(void)
+{
+	const char *env = getenv("CIX_RECIPES_DIR");
+
+	if (env != NULL && env[0] != '\0')
+		return env;
+	return "../cix-recipes/recipes";
+}
+
+int test_recipe_path(const char *kind, const char *name, const char *version,
+                     const char *ext, char *out, size_t out_size)
+{
+	int n = snprintf(out, out_size, "%s/%s/%s@%s.%s", test_recipes_root(), kind, name,
+	                 version, ext);
+
+	if (n < 0 || (size_t)n >= out_size)
+		return -1;
+	return 0;
+}
+
  * artifact trustworthy. */
 static int recipe_artifact_sha(const char *name, const char *version, char *out, size_t out_size)
 {
@@ -735,16 +760,42 @@ static int recipe_artifact_sha(const char *name, const char *version, char *out,
 	FILE *f;
 	int found = 0;
 
-	snprintf(path, sizeof(path), "recipes/package/%s/%s/build.sh", name, version);
+	/*
+	 * ADR-0305: a recipe is a shell one or a PBS one, and which is
+	 * decided by the extension. Both are tried because the corpus
+	 * holds a mix and a package converts on its own schedule -- a
+	 * fixture that only knew build.sh would start failing the day the
+	 * package it reads converts, which is a failure with no
+	 * connection to what the test is checking.
+	 */
+	if (test_recipe_path("package", name, version, "sh", path, sizeof(path)) != 0)
+		return -1;
 	f = fopen(path, "r");
+	if (f == NULL) {
+		if (test_recipe_path("package", name, version, "cbs", path, sizeof(path)) != 0)
+			return -1;
+		f = fopen(path, "r");
+	}
 	if (f == NULL)
 		return -1;
 	while (fgets(line, sizeof(line), f) != NULL) {
-		const char *p = strstr(line, "pkg_artifact_sha256=\"");
+		const char *p;
 
-		if (line == strstr(line, "pkg_artifact_sha256=\"") && p != NULL) {
-			p += strlen("pkg_artifact_sha256=\"");
+		/* Shell: pkg_artifact_sha256="<64 hex>" at the line start. */
+		if (line == strstr(line, "pkg_artifact_sha256=\"")) {
+			p = line + strlen("pkg_artifact_sha256=\"");
 			snprintf(out, out_size, "%.64s", p);
+			found = 1;
+			break;
+		}
+		/* PBS: "artifact_sha256" "<64 hex>" inside the metadata
+		 * block, so indented rather than at the line start. */
+		p = strstr(line, "\"artifact_sha256\"");
+		if (p != NULL) {
+			p = strchr(p + strlen("\"artifact_sha256\""), '"');
+			if (p == NULL)
+				continue;
+			snprintf(out, out_size, "%.64s", p + 1);
 			found = 1;
 			break;
 		}
@@ -846,11 +897,26 @@ int test_image_fixture_seed_floor_packages(const char *data_dir, const char *art
 		 * recipe is what approves them. Copying the genuine recipe
 		 * keeps one source of truth rather than a test-shaped
 		 * imitation of one. */
-		snprintf(recipe_dst_dir, sizeof(recipe_dst_dir), "%s/%s", recipes_dir, name);
-		if (mkdir(recipe_dst_dir, 0755) != 0 && errno != EEXIST)
+		/* #504: the corpus is flat, so this copies one FILE rather
+		 * than a version directory, and the destination has to name
+		 * it. The daemon's own recipe store keeps its directory
+		 * shape -- only the repository changed -- so the layout
+		 * written here is still <name>/<version>/build.<ext>. */
+		snprintf(recipe_dst_dir, sizeof(recipe_dst_dir), "%s/%s/%s", recipes_dir, name,
+		         version);
+		if (test_mkdir_p(recipe_dst_dir) != 0)
 			return -1;
-		snprintf(recipe_src, sizeof(recipe_src), "recipes/package/%s/%s", name, version);
-		if (copy_tree_via_cp(recipe_src, recipe_dst_dir) != 0)
+		if (test_recipe_path("package", name, version, "sh", recipe_src,
+		                     sizeof(recipe_src)) != 0)
+			return -1;
+		snprintf(dst, sizeof(dst), "%s/build.sh", recipe_dst_dir);
+		if (access(recipe_src, R_OK) != 0) {
+			if (test_recipe_path("package", name, version, "cbs", recipe_src,
+			                     sizeof(recipe_src)) != 0)
+				return -1;
+			snprintf(dst, sizeof(dst), "%s/build.cbs", recipe_dst_dir);
+		}
+		if (copy_tree_via_cp(recipe_src, dst) != 0)
 			return -1;
 	}
 	return 0;

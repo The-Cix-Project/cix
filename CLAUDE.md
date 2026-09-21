@@ -53,6 +53,31 @@ Ten documents, each with one job — respect these boundaries (One Source of Tru
 
 When a phase lands: update `docs/roadmap/ROADMAP.md` with what was verified, write an ADR if a significant/hard-to-reverse decision was made along the way, add a `CHANGELOG.md` entry, update `docs/architecture/architecture.svg` if the phase changed the system's actual shape (a new module, a new host-level component, a new client surface — not every phase does), update `docs/api/openapi.yaml` + `docs/api/README.md` together if the REST contract changed, and update the relevant `docs/guides/*.md` if an operator-facing workflow changed. Skipping the ADR, changelog entry, diagram update, or guide update "for now" is itself a stop-gap.
 
+## Where the recipes are
+
+**Recipes are not in this repository.** They live in
+`git.home.arpa/itdlabs/cix-recipes`, moved there on 2026-09-21
+([ADR-0308](docs/adr/0308-recipes-are-their-own-repository-flat.md)),
+and a recipe is **one flat file** named `<name>@<version>.<ext>`:
+
+```
+recipes/package/zstd@1.5.7-5.cbs      was recipes/package/zstd/1.5.7-5/build.cbs
+recipes/image/cix-builder@1.4.0.sh    was recipes/image/cix-builder/1.4.0/build.sh
+recipes/deployment/dns-1@1.2.0.json   was recipes/deployment/dns-1/1.2.0/container.json
+```
+
+Every `recipes/package/<name>/<version>/build.<ext>` cited further down
+this file, and in the ADRs, was correct when written and maps to the
+new path by that rule. Those citations are left as they are rather than
+rewritten: an ADR is append-only, and a note that says where a file was
+when a thing was measured is still true.
+
+Tests in this repository that read the corpus resolve it through
+`test_recipes_root()` — `CIX_RECIPES_DIR`, defaulting to
+`../cix-recipes/recipes`, so **clone the two repositories side by
+side**. A clean checkout of this repository alone cannot run
+`test_image_fixture` or `test_installer`.
+
 ## Backlog & Issue Tracking
 
 Every idea, known gap, or piece of future work — anything not being done right now — lives as a real issue in this repo's own Gitea tracker (`git.home.arpa/itdlabs/cix`, Issues tab), not in a memory file, an informal `#NNN` mention in a commit message or doc, or a `// TODO` left in code. One source of truth for "what's left to do," queryable and linkable, not reconstructed by archaeology across ROADMAP/CHANGELOG/commit history after the fact (which is exactly what was needed before this tracker existed).

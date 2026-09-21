@@ -51,7 +51,6 @@ web/           browser dashboard: vanilla HTML/CSS/JS, no framework, no build st
 image/         bare-metal boot tooling: kernel config, mkbootroot, cix-install, mkinstalleriso
 init/          cix-init: PID 1 in every container, freestanding (no libc) — the one exception to the TCC-and-glibc rule
 tools/         build-time tooling: apigen (generates the API surface from openapi.yaml), verify-symbols.sh
-recipes/       package/ + image/ build & manifest recipes for `pkg install`/`image apply-recipe` (see recipes/README.md and docs/guides/writing-recipes.md)
 test/          the test suite: per-feature tests, contract gates, and the subset the release selftest runs
 docs/          all documentation — see docs/README.md, which indexes every subdirectory
 build/         compiled output (gitignored)

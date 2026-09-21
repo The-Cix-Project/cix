@@ -1,0 +1,103 @@
+# btrfs-progs -- mkfs.btrfs and btrfs, the two binaries this platform
+# actually calls. Converted from build.sh to build.cbs (ADR-0305
+# stage 4, #487).
+#
+# NOTHING TO RESTORE under #491: this recipe never deleted anything.
+# --disable-documentation means there is nothing to have deleted, and
+# it copies exactly two binaries out of a much larger build.
+#
+# libblkid is the reason this package has a hard dependency chain:
+# mkfs.btrfs uses it to spot an existing filesystem signature before
+# formatting over a device, and btrfs-progs' configure does
+# PKG_CHECK_MODULES(BLKID) unconditionally with no --disable flag.
+package "btrfs-progs" {
+    version "7.1"
+    release 12
+    format "cixpkg"
+
+    sources {
+        main "btrfs-progs" {
+            url "https://www.kernel.org/pub/linux/kernel/people/kdave/btrfs-progs/btrfs-progs-v7.1.tar.xz"
+            sha256 "d1f55cc2971398c9142eaa79d203e63d586a3b4b867f956664a1d68322cd4e34"
+        }
+    }
+
+    requires {
+        build {
+            compiler "gcc"
+            tool "bash"
+            tool "coreutils"
+            tool "make"
+            tool "linux-headers"
+            tool "binutils"
+            tool "pkgconf"
+            tool "zlib"
+            tool "libuuid"
+            tool "libblkid"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "findutils"
+            tool "diffutils"
+        }
+        runtime {
+            package "zlib"
+            package "libuuid"
+            package "libblkid"
+            package "pkgconf"
+        }
+    }
+
+    # Carried verbatim from 7.1-11, which already holds the
+    # correction: the reason recorded before 2026-09-01 was "TCC
+    # cannot parse __thread" and was measured FALSE against tcc
+    # 0.9.28rc-10, which parses and runs __thread correctly. This
+    # package is ADR-0226's worked example of a reason written once to
+    # satisfy a bar and then left to rot, and the note stays attached
+    # to the reason so the next reader sees why it is worded this way.
+    toolchain "gcc" {
+        reason "missing flag: needs -MG, a dependency-generation option TCC does not implement (#209). NOTE: the reason recorded before 2026-09-01 was TCC cannot parse __thread and was measured FALSE against tcc 0.9.28rc-10, which parses and runs __thread correctly"
+    }
+
+    metadata {
+        "changelog" "7.1-12: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same configure line. Nothing to restore under ADR-0306: --disable-documentation means there was nothing to delete and this recipe deleted nothing. The gcc reason is carried verbatim from 7.1-11, correction note and all."
+    }
+
+    build {
+        cd "${src}/btrfs-progs/btrfs-progs-v7.1" {
+            run "./configure" {
+                "--prefix=/usr"
+                "--disable-documentation"
+                "--disable-python"
+                "--disable-convert"
+                "--disable-libudev"
+                "--disable-zoned"
+                "--with-crypto=builtin"
+                "--disable-zstd"
+                "--disable-lzo"
+                env "CC" = "/usr/bin/gcc"
+            }
+            run "make" {
+                jobs $jobs
+                "mkfs.btrfs"
+                "btrfs"
+            }
+        }
+    }
+
+    install {
+        mkdir "${dest}/usr/sbin" chmod 0755
+        copy "${src}/btrfs-progs/btrfs-progs-v7.1/mkfs.btrfs" to "${dest}/usr/sbin/mkfs.btrfs"
+        copy "${src}/btrfs-progs/btrfs-progs-v7.1/btrfs" to "${dest}/usr/sbin/btrfs"
+        chmod 0755 "${dest}/usr/sbin/mkfs.btrfs"
+        chmod 0755 "${dest}/usr/sbin/btrfs"
+        require file "${dest}/usr/sbin/mkfs.btrfs" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/sbin/btrfs" {
+            exists
+            nonempty
+        }
+    }
+}

@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Recipes become their own repository, and a recipe becomes one flat file (#504, ADR-0308)
+
+Two changes made together, because both rewrite every recipe path and doing them apart would rewrite them twice. [ADR-0308](docs/adr/0308-recipes-are-their-own-repository-flat.md) carries the reasoning; this is what happened.
+
+**The corpus had become most of this repository** — 1711 tracked files under `recipes/` against 892 everywhere else, with `cix` alone holding 559 revision directories. And ADR-0149's `<name>/<version>/build.<ext>` carried no information: every one of those 1577 directories held **exactly one file**, checked across all of them, so two directory levels existed to encode two fields under a leaf filename that was the same two strings 1577 times over. Every editor tab, grep hit and diff header said `build.cbs`.
+
+Now `recipes/package/zstd@1.5.7-5.cbs`, in [cix-recipes](https://git.home.arpa/itdlabs/cix-recipes), with history preserved. `@` rather than `_`, which was the first proposal: no name or version contains an underscore *today*, but upstream names with underscores are ordinary and the split rule would break on the first, while `@` is already this platform's separator wherever it prints one.
+
+**The daemon change is three sync walkers sharing one parser.** `recipe_file_split()` splits at the first `@` and takes the extension from the last dot, so a version with dots (`xorriso@1.5.8.pl02-8.cbs`) still parses. No dual-layout support and no fallback — clean cut-over, so the daemon ships first and `pkg sync` is the only thing in the window. Which repository to sync was *already* runtime configuration (`pkg repo-config set --url=`), which is why this is a small change and not a large one.
+
+**Two tests moved, three changed.** `test_kernelrecipe` and `test_recipe_hygiene` assert recipe *content*, so they went with the corpus and left `SELFTESTS`. `test_pkg_sync` builds a synthetic repository and is the gate on the walker, so it stayed and went flat. `test_image_fixture` and `test_installer` read real recipes, so they stayed and now resolve the corpus through `test_recipes_root()` (`CIX_RECIPES_DIR`, defaulting to `../cix-recipes/recipes`). `test_image_fixture` also learned to read an artifact approval out of **either** format, because a fixture that only knew `build.sh` would start failing the day the package it reads converts — a failure with no connection to what the test checks.
+
+**The cost, stated rather than buried:** a clean checkout of this repository can no longer run `test_image_fixture` or `test_installer` by itself; they need `cix-recipes` beside it. The alternative — skip when absent — is the silently-disabled gate this project has already been bitten by, so it was refused.
+
+**History was scrubbed before the first push, because the new repository is public.** Six commits under `recipes/` carried the live `git.home.arpa` credential from #502. `git filter-repo` replaced it with the `{{REPO_TOKEN}}` placeholder, and the result was checked by grepping **every one of the 1330 rewritten commits**, not just the log: zero occurrences. That covers the one credential known to be there. It is not a proof that 1330 commits hold no other secret, and the same credential remains in this repository's own history regardless — **it still wants rotating.**
+
 ### The rebuildable store moves to sda, and linux-headers and getopt build (#503, #487)
 
 The disk problem in the entry below had a supported answer sitting unused on the box.
