@@ -190,6 +190,19 @@ struct pkg_entry {
 	 * "installed". Remembering beats re-deriving.
 	 */
 	char build_dest_rel[64];
+	/*
+	 * The artifact format this build will produce (ADR-0307),
+	 * remembered here for the same reason build_dest_rel above is:
+	 * pkg_build_completed() is handed a container name and an exit
+	 * status and has no recipe in scope, so the alternative is
+	 * looking the recipe up again and trusting the answer to match.
+	 * It did not match once already -- the first PBS build harvested
+	 * the wrong directory and published a package with zero files
+	 * and a state of "installed". Remembering beats re-deriving, and
+	 * a format read at prepare time is the one the build was
+	 * actually driven with.
+	 */
+	char artifact_format[PKG_ARTIFACT_FORMAT_MAX];
 	/* #412: build_envp's own 4th entry (ADR-0159 Phase B) used to carry
 	 * an optional CIX_KMOD_EXTRA_SYMBOLS=<value> for the recipe to loop
 	 * over; cixd now writes /build/extra/kmod-extra.config itself
@@ -7580,7 +7593,8 @@ static void pkg_cache_save(const char *name, const char *version, const char *de
 static void pkg_build_log_dir(char *out, size_t out_size); /* issue #57 */
 static void pkg_build_log_open(struct pkg_entry *e, const char *version); /* issue #57 */
 static void pkg_build_log_close(struct pkg_entry *e);
-static void pkg_cache_save_from_file(const char *name, const char *version, const char *src_path);
+static void pkg_cache_save_from_file(const char *name, const char *version, const char *format,
+                                      const char *src_path);
 static int pkg_cache_extract(const char *name, const char *version, const char *out_dir);
 /* Issue #139: defined with pkg_cache_extract() further down; called from
  * the install path's own cache/artifact-hit branch above it. */
@@ -7590,9 +7604,11 @@ static int pkg_artifact_is_configured(void);
 /* Issue #129: defined with the rest of the push machinery further
  * down; called from pkg_build_completed()'s own fresh-build branch. */
 static void pkg_artifact_push_enqueue(const char *name, const char *version);
-static void pkg_artifact_build_request(const char *name, const char *version, char *out_url,
-                                        size_t out_url_size, char *out_header, size_t out_header_size);
-static void artifact_sentinel_path(const char *name, const char *version, char *out, size_t out_size);
+static void pkg_artifact_build_request(const char *name, const char *version, const char *format,
+                                        char *out_url, size_t out_url_size, char *out_header,
+                                        size_t out_header_size);
+static void artifact_sentinel_path(const char *name, const char *version, const char *format,
+                                    char *out, size_t out_size);
 
 /*
  * Starts the fetch for a single package already known to have a valid
@@ -7774,11 +7790,11 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			int sha_ok = 0;
 			int sig_ok = 0;
 
-			pkg_artifact_build_request(recipe.name, recipe.version, artifact_url,
-			                            sizeof(artifact_url), artifact_header,
+			pkg_artifact_build_request(recipe.name, recipe.version, recipe.artifact_format,
+			                            artifact_url, sizeof(artifact_url), artifact_header,
 			                            sizeof(artifact_header));
-			artifact_sentinel_path(recipe.name, recipe.version, artifact_path,
-			                        sizeof(artifact_path));
+			artifact_sentinel_path(recipe.name, recipe.version, recipe.artifact_format,
+			                        artifact_path, sizeof(artifact_path));
 			unlink(artifact_path);
 
 			/* No inner fork any more (#410): this whole function
@@ -9012,6 +9028,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	e->build_argv[2] = e->build_argv_cmd;
 	e->build_argv[3] = NULL;
 	snprintf(e->build_dest_rel, sizeof(e->build_dest_rel), "%s", pkg_dest_rel(recipe.is_pbs));
+	snprintf(e->artifact_format, sizeof(e->artifact_format), "%s", recipe.artifact_format);
 	snprintf(e->build_destdir_env, sizeof(e->build_destdir_env), "PKG_DESTDIR=/%s",
 	         e->build_dest_rel);
 	e->build_envp[0] = e->build_destdir_env;
@@ -9192,10 +9209,11 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		char artifact_sentinel[PATH_MAX];
 		struct stat st;
 
-		artifact_sentinel_path(e->name, recipe.version, artifact_sentinel,
-		                        sizeof(artifact_sentinel));
+		artifact_sentinel_path(e->name, recipe.version, recipe.artifact_format,
+		                        artifact_sentinel, sizeof(artifact_sentinel));
 		if (stat(artifact_sentinel, &st) == 0 && S_ISREG(st.st_mode)) {
-			pkg_cache_save_from_file(e->name, recipe.version, artifact_sentinel);
+			pkg_cache_save_from_file(e->name, recipe.version, recipe.artifact_format,
+			                          artifact_sentinel);
 			e->cache_hit = 1;
 		}
 	}
@@ -9546,6 +9564,7 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	e->build_argv[2] = e->build_argv_cmd;
 	e->build_argv[3] = NULL;
 	snprintf(e->build_dest_rel, sizeof(e->build_dest_rel), "%s", pkg_dest_rel(recipe.is_pbs));
+	snprintf(e->artifact_format, sizeof(e->artifact_format), "%s", recipe.artifact_format);
 	snprintf(e->build_destdir_env, sizeof(e->build_destdir_env), "PKG_DESTDIR=/%s",
 	         e->build_dest_rel);
 	e->build_envp[0] = e->build_destdir_env;
@@ -11784,6 +11803,14 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		if (e->cache_hit) {
 			pkg_cache_touch(e->name, e->version);
 		} else {
+			/*
+			 * ADR-0307: only a tarball is MADE here. A cixpkg is
+			 * written by CBS inside the build container and taken
+			 * into the cache as a finished file, which is a
+			 * different operation on a different input -- so this
+			 * branch names the format rather than tarring whatever
+			 * it is handed.
+			 */
 			pkg_cache_save(e->name, e->version, dest_dir);
 			/* Issue #129: a fresh build is the only thing worth
 			 * publishing -- a cache/artifact hit's bytes already came
@@ -13217,15 +13244,110 @@ static char g_cache_dir[PATH_MAX];
 static char g_cache_config_path[PATH_MAX];
 static long long g_cache_max_bytes = PKG_CACHE_DEFAULT_MAX_BYTES;
 
-static void cache_tarball_path(const char *name, const char *version, char *out, size_t out_size)
+/*
+ * The one place a package artifact's file extension is spelled
+ * (ADR-0307).
+ *
+ * Two formats, and which one a version uses is a property of the
+ * recipe that built it -- a PBS recipe declares `format "cixpkg"`, a
+ * shell recipe has no field to declare and is tar.gz by construction.
+ * One version is one byte sequence in one format; the same version is
+ * never published twice in two.
+ *
+ * Every caller that NAMES an artifact goes through this, so the two
+ * formats cannot drift apart into two spellings in twelve places.
+ */
+static const char *artifact_suffix(const char *format)
 {
-	snprintf(out, out_size, "%s/%s-%s.tar.gz", g_cache_dir, name, version);
+	if (format != NULL && strcmp(format, PKG_ARTIFACT_FORMAT_CIXPKG) == 0)
+		return ".cixpkg";
+	return ".tar.gz";
 }
 
-/* Beside the artifact it signs, named the way the cache names it. */
-static void cache_signature_path(const char *name, const char *version, char *out, size_t out_size)
+/*
+ * The format of an artifact that EXISTS, read from its own name.
+ *
+ * ADR-0307 clause 3: consumption dispatches once, on the artifact's
+ * extension. A file on disk is its own answer -- more truthful than
+ * the recipe, which may have been converted since these bytes were
+ * built, and available where no recipe is in scope at all (the push
+ * worker holds a name, a version and a path).
+ */
+static const char *artifact_format_of_path(const char *path)
 {
-	snprintf(out, out_size, "%s/%s-%s.tar.gz.minisig", g_cache_dir, name, version);
+	size_t len = path != NULL ? strlen(path) : 0;
+	const char *suffix = artifact_suffix(PKG_ARTIFACT_FORMAT_CIXPKG);
+	size_t slen = strlen(suffix);
+
+	if (len >= slen && strcmp(path + len - slen, suffix) == 0)
+		return PKG_ARTIFACT_FORMAT_CIXPKG;
+	return PKG_ARTIFACT_FORMAT_TARGZ;
+}
+
+/*
+ * Where an artifact of a KNOWN format goes. For writers: a save, a
+ * fetch destination, anything producing bytes that do not exist yet
+ * and whose format the caller already knows from the recipe.
+ */
+static void cache_artifact_path(const char *name, const char *version, const char *format,
+                                 char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/%s-%s%s", g_cache_dir, name, version, artifact_suffix(format));
+}
+
+/*
+ * Where this version's artifact ALREADY is, whichever format it is in.
+ * Returns 1 and fills out when one exists, 0 otherwise (and out still
+ * holds the tar.gz spelling, so a caller reporting "not found" names a
+ * plausible path rather than an empty string).
+ *
+ * Resolved from the filesystem rather than from the recipe, and that
+ * is the point: the cache holds at most one file per (name, version),
+ * and what is on disk is the only truthful answer to "what do we
+ * have". A recipe-derived answer would be a second source of truth
+ * able to disagree -- and it would be wrong in exactly the case that
+ * matters, a version whose recipe has since been converted while the
+ * artifact it was built from is still the one in the cache.
+ *
+ * .cixpkg first, so a host that somehow holds both prefers the format
+ * the platform is moving to.
+ */
+static int cache_artifact_path_existing(const char *name, const char *version, char *out,
+                                         size_t out_size)
+{
+	static const char *const formats[] = { PKG_ARTIFACT_FORMAT_CIXPKG,
+	                                       PKG_ARTIFACT_FORMAT_TARGZ };
+	size_t i;
+	struct stat st;
+
+	for (i = 0; i < sizeof(formats) / sizeof(formats[0]); i++) {
+		cache_artifact_path(name, version, formats[i], out, out_size);
+		if (stat(out, &st) == 0 && S_ISREG(st.st_mode))
+			return 1;
+	}
+	cache_artifact_path(name, version, PKG_ARTIFACT_FORMAT_TARGZ, out, out_size);
+	return 0;
+}
+
+/*
+ * The signature beside whichever artifact this version actually has --
+ * `.cixpkg.minisig` or `.tar.gz.minisig`, both of which cix-cache
+ * already recognises in its own suffix table and files in the same
+ * package tier (ADR-0307, read from that server's src/store.c).
+ *
+ * Only the "whichever exists" form, deliberately. A signature is made
+ * from bytes that are already here, so there is no case where a
+ * caller knows the format but not the file -- and a second,
+ * format-taking variant would be a way for the two to disagree about
+ * what is being signed.
+ */
+static void cache_signature_path_existing(const char *name, const char *version, char *out,
+                                           size_t out_size)
+{
+	char artifact[PATH_MAX];
+
+	(void)cache_artifact_path_existing(name, version, artifact, sizeof(artifact));
+	snprintf(out, out_size, "%s.minisig", artifact);
 }
 
 static int save_cache_config(void)
@@ -13384,10 +13506,8 @@ static void cache_evict_lru_until_fits(long long incoming_size)
 static int pkg_cache_has(const char *name, const char *version)
 {
 	char path[PATH_MAX];
-	struct stat st;
 
-	cache_tarball_path(name, version, path, sizeof(path));
-	return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+	return cache_artifact_path_existing(name, version, path, sizeof(path));
 }
 
 /* Marks a cache entry as just-used (bumps its mtime to now) -- called
@@ -13400,8 +13520,8 @@ static void pkg_cache_touch(const char *name, const char *version)
 {
 	char path[PATH_MAX];
 
-	cache_tarball_path(name, version, path, sizeof(path));
-	utime(path, NULL);
+	if (cache_artifact_path_existing(name, version, path, sizeof(path)))
+		utime(path, NULL);
 }
 
 /*
@@ -13425,7 +13545,15 @@ static void pkg_cache_save(const char *name, const char *version, const char *de
 		                g_cache_dir, strerror(errno), name, version);
 		return;
 	}
-	cache_tarball_path(name, version, final_path, sizeof(final_path));
+	/*
+	 * Always a tar.gz, and no format parameter, because tarring a
+	 * directory is the whole of what this does (ADR-0307). A cixpkg
+	 * is not made here at all -- CBS writes it inside the build
+	 * container and pkg_cache_save_from_file() takes the finished
+	 * file, which is why that one takes a format and this does not.
+	 */
+	cache_artifact_path(name, version, PKG_ARTIFACT_FORMAT_TARGZ, final_path,
+	                     sizeof(final_path));
 	snprintf(tmp_path, sizeof(tmp_path), "%s.tmp-%d", final_path, (int)getpid());
 	unlink(tmp_path);
 
@@ -13504,7 +13632,8 @@ static void pkg_cache_save(const char *name, const char *version, const char *de
  * fallback across a filesystem boundary, or on any failure) -- never
  * left behind either way.
  */
-static void pkg_cache_save_from_file(const char *name, const char *version, const char *src_path)
+static void pkg_cache_save_from_file(const char *name, const char *version, const char *format,
+                                      const char *src_path)
 {
 	char final_path[PATH_MAX];
 	struct stat st;
@@ -13517,7 +13646,7 @@ static void pkg_cache_save_from_file(const char *name, const char *version, cons
 		unlink(src_path);
 		return;
 	}
-	cache_tarball_path(name, version, final_path, sizeof(final_path));
+	cache_artifact_path(name, version, format, final_path, sizeof(final_path));
 	cache_evict_lru_until_fits(size);
 	unlink(final_path);
 	if (rename(src_path, final_path) != 0) {
@@ -13595,11 +13724,30 @@ static void warn_unexecutable_binaries(const char *root, const char *pkg_name, i
 	closedir(d);
 }
 
+/*
+ * Unpacks a CACHED TARBALL into out_dir, in process.
+ *
+ * Tarball only, and it says so rather than trying: libarchive cannot
+ * read a CIXPKG -- that is an 8-byte magic, a 352-byte header and two
+ * zstd streams, and only `cbs extract` reads it (ADR-0305 keeps that
+ * format out of cixd entirely). A .cixpkg reaching here is a caller
+ * that did not dispatch, and it must fail loudly rather than hand
+ * bytes to an extractor that will reject them with a message about
+ * archive formats.
+ */
 static int pkg_cache_extract(const char *name, const char *version, const char *out_dir)
 {
 	char path[PATH_MAX];
 
-	cache_tarball_path(name, version, path, sizeof(path));
+	if (!cache_artifact_path_existing(name, version, path, sizeof(path)))
+		return -1;
+	if (strcmp(artifact_format_of_path(path), PKG_ARTIFACT_FORMAT_CIXPKG) == 0) {
+		logstore_write("cixd", "error",
+		               "pkg %s@%s: %s is a CIXPKG and this is the tarball extractor -- the "
+		               "caller did not dispatch on the artifact's format (ADR-0307)",
+		               name, version, path);
+		return -1;
+	}
 	return extract_archive_to(path, out_dir, 0);
 }
 
@@ -14250,7 +14398,7 @@ static void pkg_artifact_push_enqueue(const char *name, const char *version)
  */
 void pkg_artifact_cache_path(const char *name, const char *version, char *out, size_t out_size)
 {
-	cache_tarball_path(name, version, out, out_size);
+	(void)cache_artifact_path_existing(name, version, out, out_size);
 }
 
 /*
@@ -14389,6 +14537,13 @@ static int seed_stage_recipes(const char *recipes_dst)
 struct seed_choice {
 	char version[PKG_VERSION_MAX];
 	char sha256[PKG_SHA256_MAX];
+	/* What a FETCH of this version would land, since the file does
+	 * not exist locally yet and so cannot be asked (ADR-0307). When
+	 * cached is 1 the on-disk file answers instead and this is not
+	 * consulted -- what the cache actually holds beats what the
+	 * recipe now declares, for a version whose recipe was converted
+	 * after the artifact was built. */
+	char format[PKG_ARTIFACT_FORMAT_MAX];
 	int cached;
 };
 
@@ -14442,6 +14597,7 @@ static enum pkg_error seed_choose(const char *name, struct seed_choice *out, cha
 
 		snprintf(out->version, sizeof(out->version), "%s", version);
 		snprintf(out->sha256, sizeof(out->sha256), "%s", approved ? recipe.artifact_sha256 : "");
+		snprintf(out->format, sizeof(out->format), "%s", recipe.artifact_format);
 		out->cached = cached;
 		have = 1;
 	}
@@ -14523,7 +14679,7 @@ static enum pkg_error seed_place_artifact(const char *name, const struct seed_ch
 	if (c->cached) {
 		char src[PATH_MAX];
 
-		cache_tarball_path(name, c->version, src, sizeof(src));
+		(void)cache_artifact_path_existing(name, c->version, src, sizeof(src));
 		if (copy_file_simple(src, dst) != 0) {
 			snprintf(err, err_size, "could not stage the %s artifact: %s", name,
 			         strerror(errno));
@@ -14532,7 +14688,8 @@ static enum pkg_error seed_place_artifact(const char *name, const struct seed_ch
 		return PKG_OK;
 	}
 
-	pkg_artifact_build_request(name, c->version, url, sizeof(url), header, sizeof(header));
+	pkg_artifact_build_request(name, c->version, c->format, url, sizeof(url), header,
+	                            sizeof(header));
 	memset(&opts, 0, sizeof(opts));
 	opts.url = url;
 	opts.path = dst;
@@ -14624,7 +14781,16 @@ enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size)
 			return PKG_ERR_PERSIST_FAILED;
 		}
 
-		cache_tarball_path(name, c.version, src, sizeof(src));
+		/*
+		 * The name the media carries: whatever the cache actually
+		 * holds when it holds something, and otherwise what a fetch
+		 * of the declared format will land. cix-install copies the
+		 * directory verbatim and the installed box's own cache reads
+		 * these names back, so an artifact whose extension does not
+		 * match its bytes would be a cache entry nothing can open.
+		 */
+		if (!cache_artifact_path_existing(name, c.version, src, sizeof(src)))
+			cache_artifact_path(name, c.version, c.format, src, sizeof(src));
 		base = strrchr(src, '/');
 		base = (base != NULL) ? base + 1 : src;
 		if (snprintf(dst, sizeof(dst), "%s/%s", artifacts_dst, base) >= (int)sizeof(dst)) {
@@ -14656,10 +14822,8 @@ enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size)
 int pkg_artifact_cache_has(const char *name, const char *version)
 {
 	char path[PATH_MAX];
-	struct stat st;
 
-	cache_tarball_path(name, version, path, sizeof(path));
-	return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+	return cache_artifact_path_existing(name, version, path, sizeof(path));
 }
 
 /*
@@ -14930,11 +15094,11 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 		 * both are made from it: the signature does not exist yet and
 		 * is produced in the child below, over these same bytes.
 		 */
-		cache_tarball_path(g_push_current.name, g_push_current.version, artifact,
-		                   sizeof(artifact));
+		(void)cache_artifact_path_existing(g_push_current.name, g_push_current.version,
+		                                    artifact, sizeof(artifact));
 		if (g_push_current.kind == PKG_PUSH_SIGNATURE)
-			cache_signature_path(g_push_current.name, g_push_current.version, tarball,
-			                      sizeof(tarball));
+			cache_signature_path_existing(g_push_current.name, g_push_current.version, tarball,
+			                               sizeof(tarball));
 		else
 			snprintf(tarball, sizeof(tarball), "%s", artifact);
 		if (stat(artifact, &st) == 0)
@@ -14959,8 +15123,12 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 		                "artifact push: %s@%s has no tarball in the local cache -- not published",
 		                g_push_current.name, g_push_current.version);
 	}
-	pkg_artifact_build_request(g_push_current.name, g_push_current.version, url, sizeof(url),
-	                           auth_header, sizeof(auth_header));
+	/* The format of the bytes actually being pushed, from the file
+	 * that was just found -- never from the recipe, which may have
+	 * been converted since these bytes were built (ADR-0307). */
+	pkg_artifact_build_request(g_push_current.name, g_push_current.version,
+	                            artifact_format_of_path(artifact), url, sizeof(url), auth_header,
+	                            sizeof(auth_header));
 	if (g_push_current.kind == PKG_PUSH_SIGNATURE) {
 		size_t ulen = strlen(url);
 
@@ -15365,9 +15533,9 @@ static void approve_published_artifact(const char *name, const char *version)
 	int fd;
 	ssize_t w;
 
-	cache_tarball_path(name, version, tarball, sizeof(tarball));
+	(void)cache_artifact_path_existing(name, version, tarball, sizeof(tarball));
 	if (pkg_run_capture_sha256(tarball, sha, sizeof(sha)) != 0)
-		return; /* the tarball is gone from the cache -- nothing to approve */
+		return; /* the artifact is gone from the cache -- nothing to approve */
 
 	if ((size_t)snprintf(recipe_path, sizeof(recipe_path), "%s/%s/%s/build.sh", g_recipes_dir,
 	                      name, version) >= sizeof(recipe_path))
@@ -15588,8 +15756,9 @@ static const char *pkg_host_arch(void)
 	return arch;
 }
 
-static void pkg_artifact_build_request(const char *name, const char *version, char *out_url,
-                                        size_t out_url_size, char *out_header, size_t out_header_size)
+static void pkg_artifact_build_request(const char *name, const char *version, const char *format,
+                                        char *out_url, size_t out_url_size, char *out_header,
+                                        size_t out_header_size)
 {
 	size_t len = strlen(g_artifact_base_url);
 
@@ -15616,8 +15785,17 @@ static void pkg_artifact_build_request(const char *name, const char *version, ch
 	 * because silently serving the wrong architecture to a machine that
 	 * will boot it is the worst failure this system could have.
 	 */
-	snprintf(out_url, out_url_size, "%.*s/%s-%s-%s.tar.gz", (int)len, g_artifact_base_url, name,
-	         version, pkg_host_arch());
+	/*
+	 * ADR-0307: the extension comes from the format the recipe
+	 * declared, not from a constant. cix-cache already recognises
+	 * `.cixpkg` and `.cixpkg.minisig` in its own suffix table and
+	 * files them in the same package tier as a tarball, so this is a
+	 * name change and not a protocol one -- read from that server's
+	 * src/store.c rather than assumed, because four bogus bug
+	 * reports have been filed against it from assumptions.
+	 */
+	snprintf(out_url, out_url_size, "%.*s/%s-%s-%s%s", (int)len, g_artifact_base_url, name,
+	         version, pkg_host_arch(), artifact_suffix(format));
 	if (g_artifact_token[0] != '\0')
 		snprintf(out_header, out_header_size, "Authorization: Bearer %s", g_artifact_token);
 	else
@@ -15748,9 +15926,11 @@ int pkg_artifact_push_is_enabled(void)
  * cache -- deliberately under g_sources_dir (not g_cache_dir): an
  * unverified download never touches the cache directory at all, only
  * a file that has already passed the recipe's own sha256 check does. */
-static void artifact_sentinel_path(const char *name, const char *version, char *out, size_t out_size)
+static void artifact_sentinel_path(const char *name, const char *version, const char *format,
+                                    char *out, size_t out_size)
 {
-	snprintf(out, out_size, "%s/.artifact-%s-%s.tar.gz", g_sources_dir, name, version);
+	snprintf(out, out_size, "%s/.artifact-%s-%s%s", g_sources_dir, name, version,
+	         artifact_suffix(format));
 }
 
 /* ---- pkg/ redesign Part 4 (ADR-0123): image recipes + image-artifact fetch ---- */
