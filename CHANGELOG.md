@@ -8,6 +8,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 ### The explain sweep keys on the engine's bytes, because a version string lies (#496, ADR-0307 clause 7)
 
+**Verified on 192.168.15.95, v2.57.234, 2026-09-21 — and this is the first time the sweep has been observed at all.** It did its work correctly on `v2.57.227` and said nothing, because it ran before `logstore_init()`; that was fixed the same day and then never had an engine change to report. Changing the key is itself a key change, so this boot produced one:
+
+```
+pkg: CPDL engine changed (cbs 0.1.29 -> cbs 0.1.29 f1a5c102...):
+     re-derived 54 identities, 0 failed (ADR-0307 clause 7)
+```
+
+`cbs 0.1.29 -> cbs 0.1.29` with a different key beside it is exactly the shape the log line was written to make legible, and the reason the version string was kept rather than replaced. All 54 PBS recipe versions still report `artifact_format: "cixpkg"` afterwards, so the re-derivation reproduced what was there rather than losing it — which is the property that makes re-deriving safe at all: the documents are derived from immutable recipes, so the answer cannot change, only become more complete.
+
+
 Clause 7 re-derives every PBS recipe's `explain.json` when the engine that derived them changes, and decided "changed" by comparing `cbs --version`. That was wrong, and a real event showed it rather than review.
 
 cix-build-system closed **cbs#183** on 2026-09-21 with commit `f22e6aa` — a real change to `manifest.c`, adding the named rejection diagnostics this project asked for — pushed to `main` with **`VERSION` still reading `0.1.29`, the same as the tag**. That is not an oversight: upstream ships fixes between tags, and its own test suite asserts `cbs --version` equals `VERSION`, so a newer engine reports an older number by design. This project's own `cbs` recipe header already records the same behaviour biting once before (cix-build-system#172, where VERSION lagged the tag and a recipe had to pin a commit).
