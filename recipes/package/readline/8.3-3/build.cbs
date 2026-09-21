@@ -1,0 +1,99 @@
+# readline -- libreadline and libhistory, kept so other packages can
+# build against them. Converted from build.sh to build.cbs (ADR-0305
+# stage 4, #487).
+#
+# WHAT CHANGES:
+#
+#   usr/share/{man,info,doc}  -- no longer deleted (ADR-0306, #491).
+#   usr/share/readline        -- STILL deleted, and that is this
+#                                package's own judgement rather than
+#                                the withdrawn policy: it is the
+#                                examples tree, not runtime data.
+#                                The headers and the .so link name
+#                                are kept, which is the whole reason
+#                                this package exists here.
+#
+# THE BUILD GUARD MOVED RATHER THAN DISAPPEARED. The shell form ran
+#
+#     found=$(find . -name 'libreadline.so*' -o -name 'libhistory.so*')
+#     [ -z "$found" ] && exit 1
+#
+# to catch a configure that silently produced no shared library at
+# all. `find` prints many lines and CPDL cannot bind or assert on
+# multi-line output (cix-build-system#185), so the same question is
+# asked of the INSTALLED tree instead: if no shared library was
+# built, `make install` puts none there and the assertion fails. The
+# check is not weaker for moving -- it is narrower, naming the exact
+# file rather than any match anywhere in the tree, which is what the
+# find was standing in for because it did not know where the build
+# would put it.
+package "readline" {
+    version "8.3"
+    release 3
+    format "cixpkg"
+
+    sources {
+        main "readline" {
+            url "https://ftp.gnu.org/gnu/readline/readline-8.3.tar.gz"
+            sha256 "fe5383204467828cd495ee8d1d3c037a7eba1389c22bc6a041f627976f9061cc"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+            tool "findutils"
+            tool "diffutils"
+            tool "ncurses"
+        }
+        runtime {
+            package "ncurses"
+        }
+    }
+
+    metadata {
+        "changelog" "8.3-3: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same --with-curses --enable-shared --disable-static. Stops deleting usr/share/{man,info,doc} (ADR-0306, #491) but keeps usr/share/readline, which is the examples tree rather than runtime data. The no-shared-library guard moves from a find over the build tree to a require file on the installed one."
+    }
+
+    build {
+        cd "${src}/readline/readline-8.3" {
+            run "./configure" {
+                "--prefix=/usr"
+                "--with-curses"
+                "--enable-shared"
+                "--disable-static"
+                env "CC" = "tcc"
+            }
+            run "make" {
+                jobs $jobs
+            }
+        }
+    }
+
+    install {
+        cd "${src}/readline/readline-8.3" {
+            run "make" {
+                "install"
+                "DESTDIR=${dest}"
+            }
+        }
+        remove tree "${dest}/usr/share/readline"
+        # The real files, never the soname links (cix-build-system#175).
+        require file "${dest}/usr/lib/libreadline.so.8.3" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/lib/libhistory.so.8.3" {
+            exists
+            nonempty
+        }
+    }
+}

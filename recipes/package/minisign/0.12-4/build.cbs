@@ -1,0 +1,83 @@
+# minisign -- the signature tool this platform verifies its own
+# artifacts and installer ISOs with. Converted from build.sh to
+# build.cbs (ADR-0305 stage 4, #487).
+#
+# Compiled directly with tcc rather than through its own CMake: four
+# source files and one library, which is less machinery to carry than
+# a build system for it.
+#
+# WHAT CHANGES: nothing is deleted, because this recipe never deleted
+# anything -- it installs exactly two files, the binary and its man
+# page, and the man page was always kept. The conversion is here for
+# stage 4 and for the .cixpkg, not to undo a removal.
+#
+# `copy` takes no chmod suffix in CPDL (src/parser.c: only mkdir and
+# write do), so the executable bit is a standalone chmod operation.
+# That is not cosmetic here: the whole point of this package is a
+# binary that runs.
+package "minisign" {
+    version "0.12"
+    release 4
+    format "cixpkg"
+
+    sources {
+        main "minisign" {
+            url "https://github.com/jedisct1/minisign/archive/refs/tags/0.12.tar.gz"
+            sha256 "796dce1376f9bcb1a19ece729c075c47054364355fe0c0c1ebe5104d508c7db0"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "bash"
+            tool "coreutils"
+            tool "linux-headers"
+            tool "binutils"
+            tool "libsodium"
+        }
+        runtime {
+            package "libsodium"
+        }
+    }
+
+    metadata {
+        "changelog" "0.12-4: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same direct tcc compile of four sources against libsodium, rather than its own CMake. No removals to drop: this recipe never deleted anything, installing only the binary and its man page."
+    }
+
+    build {
+        cd "${src}/minisign/minisign-0.12" {
+            run "tcc" {
+                "-Wall"
+                "-O2"
+                "-Isrc"
+                "-o"
+                "minisign"
+                "src/minisign.c"
+                "src/helpers.c"
+                "src/base64.c"
+                "src/get_line.c"
+                "-lsodium"
+            }
+            # It runs. Deliberately no `expect { stdout contains }`:
+            # minisign -v prints more than one line and CPDL requires
+            # single-line output for that (cix-build-system#185).
+            # Exit 0 is what the shell form actually depended on.
+            run "./minisign" {
+                "-v"
+            }
+        }
+    }
+
+    install {
+        mkdir "${dest}/usr/bin" chmod 0755
+        mkdir "${dest}/usr/share/man/man1" chmod 0755
+        copy "${src}/minisign/minisign-0.12/minisign" to "${dest}/usr/bin/minisign"
+        chmod 0755 "${dest}/usr/bin/minisign"
+        copy "${src}/minisign/minisign-0.12/share/man/man1/minisign.1" to "${dest}/usr/share/man/man1/minisign.1"
+        require file "${dest}/usr/bin/minisign" {
+            exists
+            nonempty
+        }
+    }
+}

@@ -42,6 +42,31 @@ An engine that runs but cannot be hashed records a failure rather than being tre
 
 **And cbs#182 was closed without hard-link support, which is the right outcome and worth recording.** `main`'s `manifest.c:140` still refuses `st_nlink != 1` — what changed is that it now says so: *"%s is a hard link (link count %lu); CIXPKG entries must have exactly one link"*. That matches the argument this project put to them in its own follow-up: a package installs into an image by copying files one at a time, so a hard link never survives installation, and a format declining to promise it is being honest rather than incomplete. The consequence for recipes is unchanged and now discoverable — `binutils` keeps its `ld`-as-symlink, and the next package with the same shape gets told which path and why instead of three errors naming nothing.
 
+### minisign, zstd and readline convert; `rm -rf` and `remove tree` are not the same operation (#487, #491)
+
+Stage 4 now at **38 of 117**. `readline` gained `doc`, `info` and `man` (16 files to 27); `minisign` and `zstd` had nothing to restore — minisign only ever installed a binary and its man page, and zstd installs no `usr/share` at all.
+
+These three were picked by a rule the last batch produced: **convert what is already installed somewhere first**, because its shape is then free to inspect. That held — the two clean batches were the ones with a file list to read, and it is why `bzip2` was skipped rather than attempted: it is already documented as blocked on cbs#174.
+
+**`require file` rejects a symlink, for the third time in one sitting.** zstd's first attempt asserted on `lib/libzstd.so` in the *build* tree, which is the soname link:
+
+```
+required file ${src}/.../lib/libzstd.so is a symbolic link;
+require file matches regular files only
+```
+
+The same recipe asserted correctly on `libzstd.so.1.5.7` in the installed tree one operation later, and mtools had cost a build for the same rule an hour earlier. The guard is now only on the installed tree, which answers the question strictly better anyway: if no shared library was built, `make install` puts none there.
+
+**And a real semantic difference between the two languages, which this is the first recipe to hit.** readline's first attempt failed with:
+
+```
+filesystem operation failed: ${dest}/usr/share/readline; errno=2
+```
+
+`rm -rf` tolerates a path that is not there; `remove tree` does not. The shell recipe had been removing `usr/share/readline` **as a no-op for its whole life** — this configure never creates it — and the comment above that line described an examples tree that was not being installed. Stating the removal honestly is what turned a silent no-op into a build failure, which is the conversion doing its job rather than the language being awkward: a recipe that removes something absent is a recipe describing a build it does not have.
+
+Worth generalising for the recipes still to come: any `rm -rf` in a shell recipe is a candidate no-op, and CPDL will say so.
+
 ### findutils, libtool, mtools and xorriso convert — and xorriso's conversion found a real bug (#487, #491)
 
 Four more, stage 4 now at **35 of 117**:

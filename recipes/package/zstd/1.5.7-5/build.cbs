@@ -1,0 +1,89 @@
+# zstd -- libzstd, which CIXPKG itself compresses with. Converted
+# from build.sh to build.cbs (ADR-0305 stage 4, #487).
+#
+# Library only: `make -C lib`, never the top-level target, so the
+# `zstd` command-line tool is not built or installed. Nothing here
+# needs it -- libarchive and cbs link the library.
+#
+# WHAT CHANGES: `rm -f usr/lib/*.a` is gone. ADR-0251's finalize drops
+# a static archive when a shared object sits beside it, and this
+# package installs libzstd.so.1.5.7, so the rule applies. Checked
+# rather than assumed, the same way libtool's was -- pkgconf is the
+# counter-example that keeps its own removal, being --disable-shared.
+#
+# The "was a shared library built at all" guard lives on the
+# INSTALLED tree, not the build tree, and 1.5.7-4 found out why the
+# hard way:
+#
+#   required file ${src}/.../lib/libzstd.so is a symbolic link;
+#   require file matches regular files only
+#
+# lib/libzstd.so in the build tree is the soname link, and `require
+# file` lstat()s and demands S_ISREG (cix-build-system#175) -- the
+# third time that rule has cost a build in this sitting, and the
+# second time in a recipe that applied it correctly one assertion
+# later. The install-tree assertion below answers the same question
+# strictly better: if no shared library was built, `make install`
+# puts none there.
+package "zstd" {
+    version "1.5.7"
+    release 5
+    format "cixpkg"
+
+    sources {
+        main "zstd" {
+            url "https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz"
+            sha256 "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "binutils"
+            tool "findutils"
+        }
+    }
+
+    metadata {
+        "changelog" "1.5.7-5: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same library-only make -C lib, so no zstd command-line tool is built. Stops deleting usr/lib/*.a, which finalize already removes given libzstd.so.1.5.7 sits beside it. The no-shared-library guard is the install-tree assertion: 1.5.7-4 put it on the build tree and hit require file rejecting a symlink (cix-build-system#175)."
+    }
+
+    build {
+        cd "${src}/zstd/zstd-1.5.7" {
+            run "make" {
+                "-C"
+                "lib"
+                "CC=tcc"
+                jobs $jobs
+            }
+        }
+    }
+
+    install {
+        cd "${src}/zstd/zstd-1.5.7" {
+            run "make" {
+                "-C"
+                "lib"
+                "install"
+                "CC=tcc"
+                "PREFIX=/usr"
+                "LIBDIR=/usr/lib"
+                "DESTDIR=${dest}"
+            }
+        }
+        # The real file, never the soname link -- require file
+        # rejects a symlink as "does not exist"
+        # (cix-build-system#175), which mtools cost a build to relearn.
+        require file "${dest}/usr/lib/libzstd.so.1.5.7" {
+            exists
+            nonempty
+        }
+    }
+}
