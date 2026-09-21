@@ -6,6 +6,27 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The recipe split is live, and hibr is the first package added after it (#504, #487)
+
+`v2.57.238` is deployed on 192.168.15.95 and `pkg repo-config` points at [cix-recipes](https://git.home.arpa/itdlabs/cix-recipes). The cut-over measurement:
+
+```
+state=success  added=28  skipped=1569
+```
+
+1569 recognised as already-published and 28 new, which is the flat walker reading the whole corpus. Twelve containers running throughout, no failed packages, 1584 recipes known.
+
+**It took three builds, and both failures were gates doing their job.** The first died at `test_image_fixture.c:755: error: declaration expected` — the new `test_recipes_root()` had been inserted into the *middle* of an existing comment block, leaving it unterminated, and tcc reported the line after the damage rather than the damage. The second failed two selftests at once: `test_docindex` wanted ADR-0308's row in `docs/adr/README.md`, and `test_toolchain_policy` said `found 3 recipes building with gcc, this test expects 30` — it walks the corpus, so it is a recipe-content gate and it moved out with the corpus. That correction also caught the reverse error: **`test_kernelrecipe` cannot move**, because it links `daemon/src/kernelrecipe.c`, so it stays here, reads through `CIX_RECIPES_DIR`, and leaves `SELFTESTS` (a build container has no sibling checkout).
+
+**cix-recipes has a Makefile from its first commit**, building and running the two gates that moved. A gate living away from what it gates is a gate nobody runs, and that is the failure this project's own `SELFTESTS` list has already produced twice.
+
+**hibr is packaged** — the owner's shell, `hibr@0.21-2.cbs`, installing `/usr/bin/hibr`, four modules under `/usr/lib/hibr` and the module header. Two things needed adapting and both were measured rather than assumed:
+
+- **`-ldl` is dropped from `LDFLAGS`.** `cix-builder`'s glibc ships `libc.so` and `libm.so` linker stubs but no `libdl.so`, ADR-0251's finalize policy having removed the stubs — so the flag fails to link while every symbol hibr wants from it resolves anyway, glibc having folded libdl into libc at 2.34. `-rdynamic` stays: hibr's modules call back into the shell's own symbols. This is the environment note in CLAUDE.md paying for itself, used the right way round — the note named the symptom, and the fix was still checked against this package's own link line.
+- **The source URL carries `{{REPO_TOKEN}}` although the repository is public.** 0.21-1 omitted it on exactly that reasoning and failed with `curl exit status 1: The requested URL returned error: 404`. Measured against the same URL immediately after: **404 unauthenticated, 200 with a token**, public or not. Gitea's API archive route wants a token regardless, and answers a missing one with 404 rather than 401 — so it reads as a wrong path and is not one.
+
+`openssl` is declared as a runtime dependency although nothing links it: `src/net.c` `dlopen`s `libssl` on first use, so no `DT_NEEDED` records it and the #389 undeclared-link gate can never notice its absence. Declaring it is the only thing that makes the dependency real.
+
 ### Recipes become their own repository, and a recipe becomes one flat file (#504, ADR-0308)
 
 Two changes made together, because both rewrite every recipe path and doing them apart would rewrite them twice. [ADR-0308](docs/adr/0308-recipes-are-their-own-repository-flat.md) carries the reasoning; this is what happened.
