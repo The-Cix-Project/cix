@@ -1146,6 +1146,7 @@ enum conn_kind {
 	CONN_CONTAINER,
 	CONN_PKG_FETCH,
 	CONN_PKG_BUILDENV, /* #238: a forked build-environment composition */
+	CONN_PKG_UNPACK,   /* ADR-0307: a forked `cbs extract` of a cached .cixpkg */
 	CONN_PKG_BUILD_OUTPUT,  /* pkg.c's build-output capture pipe, drained incrementally
 	                          * as the container runs rather than once at exit (ADR-0087) */
 	CONN_CONTAINER_INIT,    /* ADR-0260: one container's cix-init report socket -- service state */
@@ -8013,6 +8014,38 @@ static void register_pkg_buildenv_pidfd(pid_t pid, int pidfd, int chain_idx)
 	ev.data.ptr = cc;
 	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD pkg buildenv pidfd");
+		abort();
+	}
+}
+
+/*
+ * ADR-0307 clause 3: the forked `cbs extract` that unpacks a cached
+ * .cixpkg. Its own kind rather than reusing CONN_PKG_BUILDENV,
+ * because the two resume differently -- a composition produces an
+ * image and pkg_buildenv_completed() cleans one up on failure, where
+ * this produces a tree and has nothing of the sort to undo. Sharing
+ * the kind would have meant one handler asking which it really was.
+ */
+static void register_pkg_unpack_pidfd(pid_t pid, int pidfd, int chain_idx)
+{
+	struct conn *cc;
+	struct cix_epoll_event ev;
+
+	cc = calloc(1, sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (pkg unpack reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_PKG_UNPACK;
+	cc->fd = pidfd;
+	cc->pkg_fetch_pid = pid;
+	cc->pkg_chain_idx = chain_idx;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD pkg unpack pidfd");
 		abort();
 	}
 }
@@ -29183,6 +29216,13 @@ static void handle_pkg_fetch_event(struct conn *cc)
 		register_pkg_buildenv_pidfd(compose_pid, compose_pidfd, chain_idx);
 		return;
 	}
+	if (r == 3) {
+		/* A cached .cixpkg is being unpacked in a child instead of
+		 * on this thread (ADR-0307 clause 3) -- same suspension,
+		 * different completion. */
+		register_pkg_unpack_pidfd(compose_pid, compose_pidfd, chain_idx);
+		return;
+	}
 	pkg_step_dispatch(r, chain_idx, &spec, stdio_write_fd);
 }
 
@@ -29215,6 +29255,52 @@ static void handle_pkg_buildenv_event(struct conn *cc)
 	                           &compose_pidfd);
 	if (r == 2) {
 		register_pkg_buildenv_pidfd(compose_pid, compose_pidfd, chain_idx);
+		return;
+	}
+	if (r == 3) {
+		register_pkg_unpack_pidfd(compose_pid, compose_pidfd, chain_idx);
+		return;
+	}
+	pkg_step_dispatch(r, chain_idx, &spec, stdio_write_fd);
+}
+
+/*
+ * Reaps the forked `cbs extract` that unpacked a cached .cixpkg
+ * (ADR-0307 clause 3) and continues the install it suspended. Same
+ * shape as handle_pkg_buildenv_event() above, because it is the same
+ * kind of thing.
+ *
+ * It can hand back r == 3 itself in principle -- a chain whose next
+ * job is also a cache hit on a .cixpkg -- so the re-registration is
+ * here too rather than assumed away.
+ */
+static void handle_pkg_unpack_event(struct conn *cc)
+{
+	int status;
+	int exit_status;
+	struct container_spec spec;
+	int stdio_write_fd;
+	int chain_idx = cc->pkg_chain_idx;
+	pid_t compose_pid;
+	int compose_pidfd;
+	int r;
+
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
+		exit_status = WEXITSTATUS(status);
+	else
+		exit_status = -1;
+	close(cc->fd);
+	free(cc);
+
+	r = pkg_unpack_completed(chain_idx, exit_status, &spec, &stdio_write_fd, &compose_pid,
+	                          &compose_pidfd);
+	if (r == 2) {
+		register_pkg_buildenv_pidfd(compose_pid, compose_pidfd, chain_idx);
+		return;
+	}
+	if (r == 3) {
+		register_pkg_unpack_pidfd(compose_pid, compose_pidfd, chain_idx);
 		return;
 	}
 	pkg_step_dispatch(r, chain_idx, &spec, stdio_write_fd);
@@ -31003,6 +31089,8 @@ static int cixd_main(int argc, char **argv)
 				handle_pkg_fetch_event(cc);
 			else if (cc->kind == CONN_PKG_BUILDENV)
 				handle_pkg_buildenv_event(cc);
+			else if (cc->kind == CONN_PKG_UNPACK)
+				handle_pkg_unpack_event(cc);
 			else if (cc->kind == CONN_PKG_BUILD_OUTPUT)
 				handle_pkg_build_output_event(cc);
 			else if (cc->kind == CONN_CONTAINER_OUTPUT)

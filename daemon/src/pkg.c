@@ -628,6 +628,22 @@ struct pkg_chain {
 	 * composed from may have been superseded by then.
 	 */
 	char buildenv_image[PKG_IMAGE_NAME_MAX];
+	/*
+	 * ADR-0307 clause 3: a cached .cixpkg has already been unpacked
+	 * for this job, so pkg_prepare_build_and_start() takes the fast
+	 * path when the unpack child's completion re-enters it.
+	 *
+	 * The same shape as buildenv_image above, which is what tells
+	 * that function a composition it forked has finished. Without a
+	 * flag the re-entry would simply start a second unpack, forever:
+	 * the state that says "done" is the extracted tree, and asking
+	 * the filesystem whether a directory looks populated is an
+	 * inference, not a fact about what this job did.
+	 *
+	 * Cleared with the rest of the slot, so it cannot survive into
+	 * the next job in the chain.
+	 */
+	int unpacked;
 	/* ADR-0107: the caller-requested explicit version pin for the
 	 * single top-level package this job actually installs/hostbuilds
 	 * (empty == no pin, resolve to the highest available version, the
@@ -912,6 +928,13 @@ static int chain_alloc(void)
 			 * belonging to a job that finished long ago.
 			 */
 			g_chains[i].fetch_pid = 0;
+			/*
+			 * ADR-0307 clause 3, same reasoning as fetch_pid: a
+			 * slot that came back round would otherwise report the
+			 * previous job's unpack as this one's, and skip the
+			 * extraction this job needs.
+			 */
+			g_chains[i].unpacked = 0;
 			/*
 			 * #326: and for the same reason -- the captured version
 			 * belongs to the job that just ended. Cleared on handout
@@ -2722,6 +2745,26 @@ static const char *pkg_host_arch(void);
 #define PKG_CBS_WORKSPACE "/" PKG_CBS_WORKSPACE_REL
 #define PKG_CBS_CACHE_REL "build/cbscache"
 #define PKG_CBS_CACHE_DIR "/" PKG_CBS_CACHE_REL
+
+/*
+ * Where CBS writes the artifact it packages (ADR-0307 clause 2).
+ *
+ * Beside recipe.cbs and finalize.sh in /build, and deliberately NOT
+ * inside the workspace: `--staged W` owns W entirely -- src, build,
+ * dest, cache and tmp are its subdirectories -- and an artifact
+ * dropped in there would be a file CBS did not put there, inside a
+ * tree it manages.
+ *
+ * One definition with both roots, the same shape as PKG_DEST_REL_*
+ * above and for the same reason: the path the container is told to
+ * write and the path cixd harvests are one string, so they cannot
+ * disagree. They already did once -- the first PBS build harvested
+ * the shell destination while the build staged into the workspace,
+ * and published a package with zero files and a state of
+ * "installed".
+ */
+#define PKG_CBS_ARTIFACT_REL "build/artifact.cixpkg"
+#define PKG_CBS_ARTIFACT "/" PKG_CBS_ARTIFACT_REL
 
 /*
  * Where a recipe's install lands, relative to both the container's root
@@ -7596,6 +7639,13 @@ static void pkg_build_log_close(struct pkg_entry *e);
 static void pkg_cache_save_from_file(const char *name, const char *version, const char *format,
                                       const char *src_path);
 static int pkg_cache_extract(const char *name, const char *version, const char *out_dir);
+/* ADR-0307: defined with the rest of the cache-naming helpers further
+ * down; called from pkg_prepare_build_and_start()'s cache-hit branch,
+ * some five thousand lines above them, to decide which extractor a
+ * cached artifact needs. */
+static const char *artifact_format_of_path(const char *path);
+static int cache_artifact_path_existing(const char *name, const char *version, char *out,
+                                         size_t out_size);
 /* Issue #139: defined with pkg_cache_extract() further down; called from
  * the install path's own cache/artifact-hit branch above it. */
 static void warn_unexecutable_binaries(const char *root, const char *pkg_name, int depth,
@@ -8556,6 +8606,66 @@ static int write_kmod_extra_config(const char *extra_dir, const char *symbols)
 	return 0;
 }
 
+/*
+ * Starts unpacking a cached CIXPKG into dest_dir, in a forked child
+ * (ADR-0307 clause 3).
+ *
+ * Forked rather than run here, and that is the whole design rather
+ * than a detail. cixd never links CBS (ADR-0305) and never parses its
+ * formats, so reading a .cixpkg means running `cbs extract` -- and
+ * this function is reached from the install pipeline, which runs on
+ * the single epoll loop that serves every request. A wait here would
+ * stop the control plane for as long as it takes to write out a
+ * package, which for glibc is not a moment. So the child is tracked
+ * by pidfd like every other child this daemon starts, and
+ * pkg_unpack_completed() resumes the install when it exits.
+ *
+ * The tarball path is deliberately NOT changed to match: libarchive
+ * is a library, so that extraction has no child to wait on and
+ * nothing to make asynchronous. One dispatch point, two mechanisms,
+ * because the two formats differ in exactly that way.
+ *
+ * dest_dir is REMOVED before the fork, not after: cbs_cixpkg_extract()
+ * refuses a destination that already exists, and the caller has just
+ * created it. rmdir() only succeeds on an empty directory, so this
+ * cannot quietly discard a populated tree -- if anything is in there,
+ * the unpack does not start and says so.
+ */
+static int cixpkg_unpack_start(const char *artifact, const char *dest_dir, pid_t *out_pid,
+                                int *out_pidfd)
+{
+	pid_t pid;
+	int pidfd;
+
+	*out_pid = -1;
+	*out_pidfd = -1;
+
+	if (access(PKG_CBS_BIN, X_OK) != 0)
+		return -1;
+	if (rmdir(dest_dir) != 0 && errno != ENOENT)
+		return -1;
+
+	pid = fork();
+	if (pid < 0)
+		return -1;
+	if (pid == 0) {
+		char *argv[] = { (char *)PKG_CBS_BIN, (char *)"extract", (char *)artifact,
+		                 (char *)"--into", (char *)dest_dir, NULL };
+
+		execve(PKG_CBS_BIN, argv, environ);
+		_exit(127);
+	}
+	pidfd = sys_pidfd_open(pid, 0);
+	if (pidfd < 0) {
+		kill(pid, SIGKILL);
+		waitpid(pid, NULL, 0);
+		return -1;
+	}
+	*out_pid = pid;
+	*out_pidfd = pidfd;
+	return 0;
+}
+
 static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
                                         const struct pkg_recipe *recipe_in,
                                         int is_final_upgrade, const char *recipe_path,
@@ -8807,7 +8917,23 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			 */
 			enum pipeline_stage prep_stage = PIPELINE_BUILD;
 
-			if (reset_build_container_dir(container_base) != 0) {
+			if (g_chains[chain_idx].unpacked) {
+				/*
+				 * Re-entered after the cixpkg unpack child exited
+				 * (ADR-0307 clause 3), and every step below has
+				 * already run: the container directory was reset,
+				 * dest_dir and tmp_dir were created, the child
+				 * filled dest_dir, and pkg_unpack_completed() ran
+				 * the #139 usability check over the result.
+				 *
+				 * FIRST in the chain, and that placement is the
+				 * point rather than tidiness:
+				 * reset_build_container_dir() is what the old
+				 * first branch does, and on a re-entry it would
+				 * delete the tree the child just extracted --
+				 * leaving an empty package that installs cleanly.
+				 */
+			} else if (reset_build_container_dir(container_base) != 0) {
 				prep_step = "reset build container dir";
 			} else if (persist_mkdir_p(dest_dir) != 0) {
 				prep_step = "create dest dir";
@@ -8824,7 +8950,34 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				 * starts, purely to keep pkg_build_completed()'s own
 				 * merge/dependency-chaining logic completely unchanged
 				 * for this case too. */
-				if (pkg_cache_extract(e->name, recipe.version, dest_dir) != 0) {
+				char cached[PATH_MAX];
+
+				(void)cache_artifact_path_existing(e->name, recipe.version, cached,
+				                                    sizeof(cached));
+				/*
+				 * ADR-0307 clause 3: the one branch, on the
+				 * artifact's own extension, at the one point where
+				 * bytes become a tree. Everything either side of it
+				 * -- locating, checksumming, the #139 usability
+				 * check, the image merge -- stays format-blind.
+				 */
+				if (strcmp(artifact_format_of_path(cached), PKG_ARTIFACT_FORMAT_CIXPKG) == 0) {
+					if (cixpkg_unpack_start(cached, dest_dir, out_compose_pid,
+					                         out_compose_pidfd) != 0) {
+						prep_step = "start the cixpkg unpack";
+						prep_stage = PIPELINE_UNPACK;
+					} else {
+						/*
+						 * 3, not 2: the same out-parameters carry
+						 * the child either way, and the caller
+						 * tells them apart by this value so it can
+						 * register the right completion. The
+						 * install resumes in
+						 * pkg_unpack_completed().
+						 */
+						return 3;
+					}
+				} else if (pkg_cache_extract(e->name, recipe.version, dest_dir) != 0) {
 					prep_step = "extract cached artifact";
 					prep_stage = PIPELINE_UNPACK;
 				} else {
@@ -8997,13 +9150,13 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	if (e->cache_hit)
 		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), ":");
 	else if (recipe.is_pbs)
-		/* See PKG_CBS_WORKSPACE for why there is still no --output,
-		 * why the cache is pre-filled, and why the finalize policy is
-		 * CBS's own --finalize-command rather than a step after it. */
+		/* See PKG_CBS_WORKSPACE for why the cache is pre-filled and
+		 * why the finalize policy is CBS's own --finalize-command,
+		 * and PKG_CBS_ARTIFACT for where --output writes. */
 		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd),
 		         "set -e; cbs build /build/recipe.cbs --arch %s --staged %s --cache %s "
-		         "--finalize-command /build/finalize.sh --events human",
-		         pkg_host_arch(), PKG_CBS_WORKSPACE, PKG_CBS_CACHE_DIR);
+		         "--output %s --finalize-command /build/finalize.sh --events human",
+		         pkg_host_arch(), PKG_CBS_WORKSPACE, PKG_CBS_CACHE_DIR, PKG_CBS_ARTIFACT);
 	else
 		/* See PKG_BUILD_CMD for why this is shaped the way it is. */
 		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), "%s", PKG_BUILD_CMD);
@@ -9436,6 +9589,105 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 		return 0;
 	}
 
+	return pkg_prepare_build_and_start(chain_idx, e, &recipe, is_final_upgrade, recipe_path,
+	                                    spec_out, out_stdio_write_fd, out_compose_pid,
+	                                    out_compose_pidfd);
+}
+
+/*
+ * Reaps the cixpkg unpack child and resumes the install it suspended
+ * (ADR-0307 clause 3).
+ *
+ * The same shape as pkg_buildenv_completed() above, because it is the
+ * same kind of thing: a step that had to be a child so the reactor
+ * would not stop, and whose completion continues a chain. The one
+ * difference is what is checked afterwards -- a composition produces
+ * an image, this produces a tree, and a tree gets the #139 usability
+ * check that a checksum cannot give.
+ */
+int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *spec_out,
+                          int *out_stdio_write_fd, pid_t *out_compose_pid,
+                          int *out_compose_pidfd)
+{
+	struct pkg_entry *e = pkg_find(g_chains[chain_idx].name, g_chains[chain_idx].image);
+	char recipe_path[PATH_MAX];
+	struct pkg_recipe recipe;
+	int is_final_upgrade;
+
+	*out_compose_pid = -1;
+	*out_compose_pidfd = -1;
+
+	/* The same stale-slot discriminator its two siblings use (#98):
+	 * an entry that is no longer FETCHING cannot be the one whose
+	 * unpack just exited. */
+	if (e == NULL || e->state != PKG_STATE_FETCHING) {
+		chain_release_if_job_over(chain_idx, e);
+		return 0;
+	}
+
+	is_final_upgrade = g_chains[chain_idx].dep_queue_is_upgrade &&
+	                   (g_chains[chain_idx].dep_queue_pos + 1 >= g_chains[chain_idx].dep_queue_count);
+
+	if (exit_status != 0) {
+		/*
+		 * PIPELINE_UNPACK, not PIPELINE_BUILD (ADR-0256): an
+		 * artifact that arrived intact and could not be opened is
+		 * not a build failure, and reporting it as one sends a
+		 * reader to a compile log for something that happened
+		 * before any compiler ran.
+		 *
+		 * 127 is worth distinguishing because it is the one cause
+		 * an operator can act on directly: cbs is what reads this
+		 * format, and a host without it cannot install a PBS
+		 * package at all (ADR-0307 clause 6).
+		 */
+		if (exit_status == 127)
+			pkg_fail(e, is_final_upgrade, PIPELINE_UNPACK,
+			         "could not run %s to unpack the cached artifact -- this host has no CPDL "
+			         "engine, and nothing else reads a .cixpkg",
+			         PKG_CBS_BIN);
+		else
+			pkg_fail(e, is_final_upgrade, PIPELINE_UNPACK,
+			         "unpacking the cached artifact failed (cbs extract exited %d)",
+			         exit_status);
+		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
+		g_chains[chain_idx].name[0] = '\0';
+		g_chains[chain_idx].dep_queue_count = 0;
+		return 0;
+	}
+
+	if (find_recipe_path(e->name, current_fetch_effective_version(chain_idx), recipe_path,
+	                      sizeof(recipe_path)) != 0 ||
+	    parse_recipe(recipe_path, &recipe) != 0) {
+		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
+		         "the recipe became unreadable while its artifact was unpacked");
+		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
+		g_chains[chain_idx].name[0] = '\0';
+		g_chains[chain_idx].dep_queue_count = 0;
+		return 0;
+	}
+
+	/*
+	 * Issue #139: a checksum proves an artifact is intact, never that
+	 * it is usable. Run here rather than left to the caller because
+	 * this is where the tree first exists -- the same point the
+	 * tarball path runs it, just in a different function.
+	 *
+	 * A CIXPKG checks a digest per file and refuses setuid modes and
+	 * non-root ownership on its way out (ADR-0307 clause 4), which is
+	 * strictly more than a tarball offers -- and none of that answers
+	 * "is this binary executable", which is what #139 was about.
+	 */
+	{
+		char dest_dir[PATH_MAX];
+		int reported = 0;
+
+		snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_upperdir,
+		         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_SHELL);
+		warn_unexecutable_binaries(dest_dir, e->name, 0, &reported);
+	}
+
+	g_chains[chain_idx].unpacked = 1;
 	return pkg_prepare_build_and_start(chain_idx, e, &recipe, is_final_upgrade, recipe_path,
 	                                    spec_out, out_stdio_write_fd, out_compose_pid,
 	                                    out_compose_pidfd);
@@ -11804,14 +12056,54 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			pkg_cache_touch(e->name, e->version);
 		} else {
 			/*
-			 * ADR-0307: only a tarball is MADE here. A cixpkg is
-			 * written by CBS inside the build container and taken
-			 * into the cache as a finished file, which is a
-			 * different operation on a different input -- so this
-			 * branch names the format rather than tarring whatever
-			 * it is handed.
+			 * ADR-0307 clause 2: who packages a build depends on
+			 * which language wrote its recipe, and the two are
+			 * genuinely different operations rather than one with
+			 * a flag.
+			 *
+			 * A shell build leaves a directory, so cixd tars it.
+			 * A PBS build leaves a finished .cixpkg -- CBS wrote
+			 * it, inside the container, after the finalize policy
+			 * ran (src/package.c:374 then :389) -- so cixd takes
+			 * the file. Taking a file is strictly less host work
+			 * than tarring a tree: pkg_cache_save() forks tar and
+			 * gzip and waits on both, on the reactor, and this
+			 * branch is a rename.
+			 *
+			 * Read from the entry rather than re-derived, and the
+			 * format rather than is_pbs: the recipe declared it
+			 * (a PBS recipe declaring tar.gz is refused at
+			 * publish, so in practice these agree -- but is_pbs
+			 * says which LANGUAGE was used, which is not the
+			 * question being asked here).
 			 */
-			pkg_cache_save(e->name, e->version, dest_dir);
+			if (strcmp(e->artifact_format, PKG_ARTIFACT_FORMAT_CIXPKG) == 0) {
+				char produced[PATH_MAX];
+				struct stat pst;
+
+				snprintf(produced, sizeof(produced), "%s/upper/%s", container_base,
+				         PKG_CBS_ARTIFACT_REL);
+				/*
+				 * Said out loud, because pkg_cache_save_from_file()
+				 * returns silently on a missing source and the next
+				 * thing an operator would see is the push worker
+				 * reporting "no artifact in the local cache" -- a
+				 * true statement about a cause two steps away. A
+				 * build that succeeded and produced no artifact
+				 * means cbs did not honour --output, which is worth
+				 * naming where it happened.
+				 */
+				if (stat(produced, &pst) != 0)
+					logstore_write("cixd", "error",
+					                "pkg %s@%s: the build succeeded but wrote no artifact at "
+					                "%s -- nothing to cache or publish (ADR-0307)",
+					                e->name, e->version, PKG_CBS_ARTIFACT);
+				else
+					pkg_cache_save_from_file(e->name, e->version, e->artifact_format,
+					                          produced);
+			} else {
+				pkg_cache_save(e->name, e->version, dest_dir);
+			}
 			/* Issue #129: a fresh build is the only thing worth
 			 * publishing -- a cache/artifact hit's bytes already came
 			 * from somewhere else. */

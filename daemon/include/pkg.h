@@ -1092,6 +1092,24 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
                             int *out_stdio_write_fd, pid_t *out_compose_pid,
                             int *out_compose_pidfd);
 
+/*
+ * Reaps the forked `cbs extract` that unpacks a cached .cixpkg, and
+ * resumes the install it suspended (ADR-0307 clause 3).
+ *
+ * Same contract as pkg_buildenv_completed() above -- same return
+ * values, same out-parameters, dispatched by the caller the same way
+ * -- because it is the same kind of step: one that had to run in a
+ * child so the reactor would keep answering, and whose completion
+ * continues a chain.
+ *
+ * Only a .cixpkg takes this path. A tarball is unpacked in process by
+ * libarchive, which has no child to wait on and so nothing to make
+ * asynchronous.
+ */
+int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *spec_out,
+                          int *out_stdio_write_fd, pid_t *out_compose_pid,
+                          int *out_compose_pidfd);
+
 /* Called if registry_create() itself fails for the build container
  * pkg_fetch_completed() just prepared -- transitions the in-flight
  * job to FAILED (there is no container to wait for in this case). */

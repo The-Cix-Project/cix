@@ -176,7 +176,33 @@ static const struct budget g_budgets[] = {
 	 * own -- they go through pkg_recipe_rederive_identity(), whose
 	 * run_cbs_explain() is the wait the entry below already counts.
 	 */
-	{ "daemon/src/pkg.c", 8, "build helpers and fetch intermediates, plus ADR-0305's `cbs explain` (a bounded parse of a local file, its pipe closed before the wait); #352 dropped one (pkg_run_capture_sha256(), no more forked sha256sum), #411 dropped another (tarball_has_common_top_dir(), no more forked tar -tf), #410 dropped three more (start_fetch_for()'s curl children, replaced by in-process curlfetch_perform())" },
+	/*
+	 * 8 -> 9 (ADR-0307 clause 3): cixpkg_unpack_start()'s
+	 * pidfd_open-failure cleanup.
+	 *
+	 * This one has to be argued honestly, because it IS a wait after
+	 * a signal -- the shape the comment at the top of this table
+	 * names as out of budget, after it cost 366 seconds and a hand
+	 * reset. The reason it is nonetheless in budget is the state of
+	 * the child, not the presence of the kill: it is reached only
+	 * when pidfd_open() fails on a process forked three lines
+	 * earlier, which has at most just execve()d `cbs extract` and
+	 * has opened nothing, taken no lock and touched no network. The
+	 * case that rule was written for was a SIGKILL to a long-lived
+	 * shell already in uninterruptible D-state.
+	 *
+	 * It is also the convention every other fork site in this file
+	 * already uses for exactly this failure (start_fetch_for's own
+	 * pidfd_open path is the one it was copied from), and the
+	 * alternative is worse: killing without reaping leaks a zombie
+	 * into a daemon that is pid 1 on an installed host.
+	 *
+	 * The extraction ITSELF adds no wait -- that is the whole point
+	 * of the clause. The child is tracked by pidfd and reaped by
+	 * handle_pkg_unpack_event() on EPOLLIN, where the process is
+	 * already gone.
+	 */
+	{ "daemon/src/pkg.c", 9, "build helpers and fetch intermediates, plus ADR-0305's `cbs explain` (a bounded parse of a local file, its pipe closed before the wait); #352 dropped one (pkg_run_capture_sha256(), no more forked sha256sum), #411 dropped another (tarball_has_common_top_dir(), no more forked tar -tf), #410 dropped three more (start_fetch_for()'s curl children, replaced by in-process curlfetch_perform())" },
 	{ "daemon/src/targz.c", 4, "tar/gzip pipeline, bounded by the archive" },
 	{ "daemon/src/diskpart.c", 4, "sfdisk/blkid, bounded external tools" },
 	{ "daemon/src/exec.c", 2, "namespace-join intermediates" },
@@ -210,8 +236,11 @@ static const struct budget g_budgets[] = {
  * run_cbs_explain() in pkg.c, the same single wait the per-file entry
  * above argues for. Then 54 -> 55 for ADR-0307 clause 7's
  * cbs_engine_version(), also in pkg.c, also a single wait and argued
- * for in the same place. */
-#define TOTAL_ALLOWED 55
+ * for in the same place. Then 55 -> 56 for clause 3's
+ * cixpkg_unpack_start(), again in pkg.c and again argued in the
+ * per-file entry -- the extraction it starts adds none of its own,
+ * being pidfd-tracked. */
+#define TOTAL_ALLOWED 56
 
 static int is_comment(const char *line)
 {

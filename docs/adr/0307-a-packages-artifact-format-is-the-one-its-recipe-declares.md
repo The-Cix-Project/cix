@@ -200,8 +200,16 @@ That document gained a `format` key on 2026-09-18
 before any of this can be read — see **What this depended on**.
 
 **2. CBS packages a PBS build; cixd packages a shell build.** `cbs
-build` gains `--output` and cixd stops tarring the staged tree for a PBS
-recipe. A shell recipe is packaged by cixd exactly as it is now. Since
+build` gains `--output` — writing to `/build/artifact.cixpkg`, beside
+`recipe.cbs` and the finalize policy rather than inside the workspace
+CBS owns — and cixd stops tarring the staged tree for a PBS recipe. A
+shell recipe is packaged by cixd exactly as it is now.
+
+That direction costs the host less, not more, which is worth saying
+because it is the opposite of what "the container packages it too"
+sounds like: `pkg_cache_save()` forks `tar`, forks `gzip` and waits on
+both, on the reactor, over the whole staged tree. Taking a finished
+file out of the container's upperdir is a `rename()`. Since
 `cbs build` executes only `cixpkg` recipes, this is not a second policy
 choice on top of clause 1 — it is clause 1 restated at the producer.
 
@@ -394,6 +402,28 @@ Until that ADR is written, `.tar.gz` is a supported, first-class format
 and not a deprecated one. There is no warning, no grace period and no
 migration tooling, because there is nothing to migrate: published
 artifacts are immutable and stay readable.
+
+## A consequence found while building it
+
+**25 of the 28 converted PBS recipes carry an approval over tarball
+bytes**, and an approval is never replaced (`approve_pbs_artifact()`
+returns at *"approved already -- never a replacement (ADR-0107)"*). So
+on cut-over each of them asks the cache for a `.cixpkg` that does not
+exist, falls back to a source build, publishes a `.cixpkg`, and cannot
+approve it — rebuilding from source on every host, for that version,
+permanently.
+
+Nothing breaks; they fall out of the artifact tier. Clause 5 covers a
+recipe converted *after* this ADR; these were converted before it
+existed and are one step behind the state it describes.
+
+The remedy is an ordinary revision bump, which is clause 5's path
+unchanged. The owner's decision (2026-09-21) is to **ship the flip and
+let them bump naturally** rather than mass-revising 25 recipes, on the
+same reasoning recorded for the `ftp.gnu.org` mirror swap: each publish
+queues a rolling rebuild of every image tracking it, and the interim
+cost is a source rebuild rather than a failure. Tracked in
+[#497](https://git.home.arpa/itdlabs/cix/issues/497).
 
 ## Consequences
 
