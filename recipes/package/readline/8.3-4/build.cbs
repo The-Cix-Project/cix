@@ -71,6 +71,7 @@ package "readline" {
     }
 
     metadata {
+        "artifact_sha256" "f0c757db6155d02fff56aedde485257f822ce6b114dd31d47de03e31d0abb074"
         "changelog" "8.3-4: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same configure line. Stops deleting usr/share/{man,info,doc} (ADR-0306, #491). The usr/share/readline removal is gone too, for a different reason: 8.3-3 failed with errno=2 because this configure never creates it -- rm -rf tolerated the absence, remove tree does not."
     }
 

@@ -82,6 +82,7 @@ package "bison" {
     }
 
     metadata {
+        "artifact_sha256" "6457cc49c17d477b7a5a367bd3c0d1b70357490ccb13d8cf5ca254565df8c667"
         "changelog" "3.8.2-8: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest, the same two TCC workarounds and the same posix_spawn cache variables. Stops deleting usr/share/{man,info,locale} (ADR-0306, #491) and usr/lib/*.a, which finalize already removes. usr/share/bison was never deleted and still is not: bison reads those skeleton files at every invocation."
     }
 

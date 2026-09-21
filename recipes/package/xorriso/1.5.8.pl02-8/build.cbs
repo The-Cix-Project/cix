@@ -93,6 +93,7 @@ package "xorriso" {
     }
 
     metadata {
+        "artifact_sha256" "56275398b1baf7d90793820487b7bbb1f1961fc1f4fb4825592e217b759f9e3b"
         "changelog" "1.5.8.pl02-8: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest, the same --disable-libreadline and the same __STDC_NO_VLA__ define TCC needs for glibc regex.h. Stops deleting usr/share (ADR-0306, #491). Declares zlib, which every shell revision omitted: xorriso links libz.so.1 and the #389 gate refused -7 for it. The extracted directory is xorriso-1.5.8, not -1.5.8.pl02 -- the patchlevel is in the tarball name only."
     }
 

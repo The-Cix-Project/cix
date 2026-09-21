@@ -42,6 +42,7 @@ package "minisign" {
     }
 
     metadata {
+        "artifact_sha256" "c99891cd0f31702286921f2ebbed168f63b05302ec75c2e1c7af28f2b2ad6cac"
         "changelog" "0.12-4: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same direct tcc compile of four sources against libsodium, rather than its own CMake. No removals to drop: this recipe never deleted anything, installing only the binary and its man page."
     }
 

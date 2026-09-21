@@ -52,6 +52,7 @@ package "zstd" {
     }
 
     metadata {
+        "artifact_sha256" "75e78994a5f46bab071a93ae83a88f095d4a98aba79e39316e5a860763bde05c"
         "changelog" "1.5.7-5: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same library-only make -C lib, so no zstd command-line tool is built. Stops deleting usr/lib/*.a, which finalize already removes given libzstd.so.1.5.7 sits beside it. The no-shared-library guard is the install-tree assertion: 1.5.7-4 put it on the build tree and hit require file rejecting a symlink (cix-build-system#175)."
     }
 

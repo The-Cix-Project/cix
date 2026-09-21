@@ -43,6 +43,7 @@ package "findutils" {
     }
 
     metadata {
+        "artifact_sha256" "d4450532894fdc5519366255bee566fca63bc31881267a2c325430da8d247e4c"
         "changelog" "4.10.0-6: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same gnulib _GL_EXTERN_INLINE_STDHEADER_BUG define TCC needs. Stops deleting usr/share/{man,info,locale} (ADR-0306, #491), which are exactly the withdrawn categories."
     }
 

@@ -89,6 +89,7 @@ package "cbs" {
     }
 
     metadata {
+        "artifact_sha256" "4973529c7b3db712dd83f11215365270ce1d16c5d59a2ec59737d7deaa401817"
         "changelog" "v0.1.30-1: a rejected staged tree now names the path and the reason (cix-build-system#183). collect() had four silent return-0 paths -- hard link, setuid, unsafe symlink, unsupported entry type -- all surfacing as the same three errors, and finding which one binutils hit took a source read and two builds. Hard links stay refused (#182), correctly: a package installs by copying files one at a time, so a hard link never survived installation. Does not carry #185, which landed after the tag."
     }
 

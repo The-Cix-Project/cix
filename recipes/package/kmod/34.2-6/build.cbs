@@ -1,0 +1,102 @@
+# PUBLISHED, BUILT, AND WRONG -- superseded by 34.2-7. Recipe
+# versions are immutable (ADR-0107), so this stays as published.
+#
+# The header below names six removals and the install phase codes
+# three: usr/share/fish, usr/share/zsh and usr/share/pkgconfig were
+# dropped in translation, and the prose was never re-read against the
+# code. Measured on 192.168.15.95, 2026-09-21: 34.2-2 installs 7
+# files and this artifact installs 14, the extra seven being exactly
+# those three trees. The comment asserting a mechanism that is not in
+# the code is the bug here, not just the missing lines.
+#
+# kmod -- modprobe, insmod, lsmod and friends, which are symlinks to
+# the one kmod binary. Converted from build.sh to build.cbs (ADR-0305
+# stage 4, #487).
+#
+# NOTHING TO RESTORE under #491, and that is worth stating rather
+# than leaving implicit: every removal this recipe makes is its own
+# judgement about what a package should ship, not the withdrawn
+# documentation policy. They all stay:
+#
+#   usr/share/{bash-completion,fish,zsh}  completions for shells this
+#                                         platform does not package
+#   usr/share/pkgconfig, usr/include, usr/lib
+#                                         libkmod's development side.
+#                                         Nothing here links libkmod;
+#                                         cixd talks to the kernel
+#                                         directly (daemon/src/kmod.c)
+#
+# --disable-manpages means there are no man pages to have deleted in
+# the first place.
+package "kmod" {
+    version "34.2"
+    release 6
+    format "cixpkg"
+
+    sources {
+        main "kmod" {
+            url "https://www.kernel.org/pub/linux/utils/kernel/kmod/kmod-34.2.tar.xz"
+            sha256 "5a5d5073070cc7e0c7a7a3c6ec2a0e1780850c8b47b3e3892226b93ffcb9cb54"
+        }
+    }
+
+    requires {
+        build {
+            compiler "gcc"
+            tool "make"
+            tool "bash"
+            tool "coreutils"
+            tool "binutils"
+            tool "linux-headers"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "findutils"
+            tool "diffutils"
+            tool "pkgconf"
+            tool "zlib"
+            tool "xz"
+        }
+    }
+
+    toolchain "gcc" {
+        reason "carried from the shell revision and NOT re-measured against the pinned tcc 0.9.28rc -- ADR-0226 says a reason is a measurement with a date on it, and this one has neither, so it is a candidate for re-measuring rather than a settled fact"
+    }
+
+    metadata {
+        "artifact_sha256" "f7e0b9ef66e33e330e7ef67e5e785cce7bafb11d2772eb0e244d778e12e4830a"
+        "changelog" "34.2-6: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same configure line. No ADR-0306 restoration here: every removal is this package's own judgement -- shell completions for shells this platform does not package, and libkmod's development side, which nothing here links. The gcc reason is carried unverified and flagged as such."
+    }
+
+    build {
+        cd "${src}/kmod/kmod-34.2" {
+            run "./configure" {
+                "--prefix=/usr"
+                "--sbindir=/usr/bin"
+                "--disable-manpages"
+                env "CC" = "/usr/bin/gcc"
+            }
+            run "make" {
+                jobs $jobs
+            }
+        }
+    }
+
+    install {
+        cd "${src}/kmod/kmod-34.2" {
+            run "make" {
+                "install"
+                "DESTDIR=${dest}"
+            }
+        }
+        remove tree "${dest}/usr/share/bash-completion"
+        remove tree "${dest}/usr/include"
+        remove tree "${dest}/usr/lib"
+        # The real binary; modprobe, insmod and the rest are symlinks
+        # to it, which require file rejects (cix-build-system#175).
+        require file "${dest}/usr/bin/kmod" {
+            exists
+            nonempty
+        }
+    }
+}

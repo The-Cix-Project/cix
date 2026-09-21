@@ -75,6 +75,7 @@ package "byobu" {
     }
 
     metadata {
+        "artifact_sha256" "e26bcfc98263c68647ac6aff16e92ee9522e92b66a9cea945d06243750f75b71"
         "changelog" "5.133-3: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest, the same touch ordering that stops make regenerating aclocal.m4, and --sysconfdir=/etc so byobu config lands where byobu looks for it. Stops deleting usr/share/man (ADR-0306, #491). The backend pin is commented out by replace ... exactly 1, which is itself the guard the shell form spelled as a following grep."
     }
 

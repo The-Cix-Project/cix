@@ -52,6 +52,7 @@ package "libtool" {
     }
 
     metadata {
+        "artifact_sha256" "75d4fa7d52927294bfbfb92da01344296e869c8bf05d3675169a610d291ad0c0"
         "changelog" "2.4.7-4: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same configure line. Stops deleting usr/share/{info,man} (ADR-0306, #491) and libltdl.a/.la, which finalize already removes -- confirmed, since this package really does ship libltdl.so beside the archive. Keeps the usr/include removal: nothing here links libltdl, so ltdl.h describes an interface no consumer uses."
     }
 

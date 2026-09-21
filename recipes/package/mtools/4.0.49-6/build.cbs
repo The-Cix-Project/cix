@@ -51,6 +51,7 @@ package "mtools" {
     }
 
     metadata {
+        "artifact_sha256" "6c4ba0b2779c343fd0b1ace6f78263fd27299195972d385f2fc03caf168b6f73"
         "changelog" "4.0.49-6: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same ac_cv_header_iconv_h=no, which keeps configure off a codepage path that does not link here. Stops deleting usr/share (ADR-0306, #491); the shell recipe removed the whole tree rather than named categories."
     }
 

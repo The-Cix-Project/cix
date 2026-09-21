@@ -1,0 +1,71 @@
+# dnsmasq -- the DNS forwarder and DHCP server this platform's own
+# dns-1/dns-2 containers run. Converted from build.sh to build.cbs
+# (ADR-0305 stage 4, #487).
+#
+# Nothing to restore under #491: this recipe never deleted anything.
+# It copies one binary and writes two small files.
+#
+# THE /etc/passwd AND /etc/group ARE LOAD-BEARING, not boilerplate.
+# dnsmasq looks up its configured run-as user by name at startup --
+# even as root, even with privilege-dropping compiled out -- and
+# these images have no /etc/passwd at all, so getpwnam() legitimately
+# returns nothing and it exits with "Fatal error : Could not get
+# user/group ID of root" on every attempt. That is recorded in
+# CLAUDE.md's environment notes against chrony, which fails the same
+# way for the same reason.
+package "dnsmasq" {
+    version "2.90"
+    release 4
+    format "cixpkg"
+
+    sources {
+        main "dnsmasq" {
+            url "https://deb.debian.org/debian/pool/main/d/dnsmasq/dnsmasq_2.90.orig.tar.xz"
+            sha256 "8e50309bd837bfec9649a812e066c09b6988b73d749b7d293c06c57d46a109e4"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+            tool "findutils"
+            tool "diffutils"
+        }
+    }
+
+    metadata {
+        "artifact_sha256" "38c9b3b497a9cbca1290f913964545b49efdbc1bef3a9dd56a8ec56c607de49b"
+        "changelog" "2.90-4: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same plain make. Nothing to restore under ADR-0306: this recipe never deleted anything. The minimal /etc/passwd and /etc/group are kept and are load-bearing -- dnsmasq looks up its run-as user by name at startup even as root, and these images ship no passwd file."
+    }
+
+    build {
+        cd "${src}/dnsmasq/dnsmasq-2.90" {
+            run "make" {
+                jobs $jobs
+                "CC=tcc"
+                "PREFIX=/usr"
+            }
+        }
+    }
+
+    install {
+        mkdir "${dest}/usr/sbin" chmod 0755
+        mkdir "${dest}/etc" chmod 0755
+        copy "${src}/dnsmasq/dnsmasq-2.90/src/dnsmasq" to "${dest}/usr/sbin/dnsmasq"
+        chmod 0755 "${dest}/usr/sbin/dnsmasq"
+        write "${dest}/etc/passwd" "root:x:0:0:root:/root:/bin/sh\n"
+        write "${dest}/etc/group" "root:x:0:\n"
+        require file "${dest}/usr/sbin/dnsmasq" {
+            exists
+            nonempty
+        }
+    }
+}

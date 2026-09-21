@@ -72,6 +72,7 @@ package "automake" {
     }
 
     metadata {
+        "artifact_sha256" "4dae6a67f9d224e1211b56e67449e085edcbd9cc67a9bc3792651fdeee4a2775"
         "changelog" "1.16.5-4: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same configure line. Stops deleting usr/share/{info,man,doc} (ADR-0306, #491). automake-1.16 and aclocal-1.16 become relative symlinks: install-exec-hook hard-links them to the unversioned names, and CIXPKG refuses a link count above 1 (cix-build-system#182)."
     }
 

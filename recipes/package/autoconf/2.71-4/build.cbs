@@ -58,6 +58,7 @@ package "autoconf" {
     }
 
     metadata {
+        "artifact_sha256" "a80d417473db25c67af0154c4c0d8eb0aeb90ff277ef8bb348e178b1f510cb7f"
         "changelog" "2.71-4: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same configure line. Stops deleting usr/share/{info,man,locale} (ADR-0306, #491); the rest of usr/share was always kept, because the Autom4te Perl modules and the m4sugar macro files under usr/share/autoconf are runtime data this tool cannot run without."
     }
 

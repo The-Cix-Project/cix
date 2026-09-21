@@ -1,0 +1,91 @@
+# flex -- the lexer generator. Converted from build.sh to build.cbs
+# (ADR-0305 stage 4, #487).
+#
+# WHAT CHANGES:
+#
+#   usr/share            -- no longer deleted (ADR-0306, #491). The
+#                           shell recipe removed the whole tree
+#                           rather than named categories, so what
+#                           returns is whatever make install puts
+#                           there.
+#   usr/lib/libfl.{a,la} -- no longer deleted here. Finalize drops a
+#                           .la always and a .a when a shared object
+#                           sits beside it, and this package really
+#                           does install libfl.so.2.0.0 -- checked
+#                           against the installed 2.6.4-5, the same
+#                           way libtool's and zstd's were.
+#
+# -D__STDC_NO_VLA__=1 carries over: glibc's <regex.h> sizes
+# regexec()'s match array with a C99 VLA-in-prototype expression that
+# TCC's parser rejects, and the header has an explicit branch for a
+# compiler without VLA support, which TCC genuinely is.
+#
+# flex++ is a link to flex, so the assertion below names flex.
+package "flex" {
+    version "2.6.4"
+    release 6
+    format "cixpkg"
+
+    sources {
+        main "flex" {
+            url "https://github.com/westes/flex/releases/download/v2.6.4/flex-2.6.4.tar.gz"
+            sha256 "e87aae032bf07c26f85ac0ed3250998c37621d95f8bd748b31f15b33c45ee995"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+            tool "m4"
+        }
+        runtime {
+            package "m4"
+        }
+    }
+
+    metadata {
+        "artifact_sha256" "dd6a3080ee146f27b27f4fd01624c1bfb1b5dff200b0d748f522964303599f2a"
+        "changelog" "2.6.4-6: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same __STDC_NO_VLA__ define TCC needs for glibc regex.h. Stops deleting usr/share (ADR-0306, #491) and libfl.a/.la, which finalize already removes given libfl.so.2.0.0 sits beside it."
+    }
+
+    build {
+        cd "${src}/flex/flex-2.6.4" {
+            run "./configure" {
+                "--prefix=/usr"
+                env "CC" = "tcc"
+                env "CC_FOR_BUILD" = "tcc"
+                env "CPPFLAGS" = "-D__STDC_NO_VLA__=1"
+            }
+            run "make" {
+                jobs $jobs
+                "MAKEINFO=true"
+            }
+        }
+    }
+
+    install {
+        cd "${src}/flex/flex-2.6.4" {
+            run "make" {
+                "install"
+                "DESTDIR=${dest}"
+                "MAKEINFO=true"
+            }
+        }
+        require file "${dest}/usr/bin/flex" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/lib/libfl.so.2.0.0" {
+            exists
+            nonempty
+        }
+    }
+}

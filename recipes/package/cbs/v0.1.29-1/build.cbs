@@ -132,6 +132,7 @@ package "cbs" {
     }
 
     metadata {
+        "artifact_sha256" "c3a2b1c9e721ce243df4334f646a2379ba44bcf64d4a512b3ecb2f925c8572fa"
         "changelog" "v0.1.29-1: the first cbs release carrying all five CPDL shapes that Cix can install. v0.1.27 had the features but failed archive-test silently; v0.1.28 carried #180 and made it report, narrowing the whole thing to one assertion; v0.1.29 carries #181 and asserts empty-archive rejection without pinning libarchive wording, which libarchive 3.8.1 words differently. Also gives every test its own temporary root, and keeps the CIXPKG identity out of the flags byte (ADR-0307)."
     }
 

@@ -133,6 +133,7 @@ package "binutils" {
     }
 
     metadata {
+        "artifact_sha256" "32a12bfe053a4af33333391a2f0fcea0a4c5faafe3099125d45775610546c8ce"
         "changelog" "2.42-13: converted from build.sh to build.cbs (ADR-0305 stage 4), and the first non-probe package to publish as a .cixpkg (ADR-0307). Stops deleting usr/share (ADR-0306, #491) and usr/lib/*.a and *.la, which finalize already removes. ld becomes a relative symlink to ld.bfd: make install hard-links them, CIXPKG refuses a link count above 1 (cix-build-system#182), and the copy-per-file install meant every image already carried 11 MB twice."
     }
 
