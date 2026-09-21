@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. Stage 3 of the four-stage flip
+**Accepted and implemented**, on 192.168.15.95 at `v2.57.231`. Stage 3 of the four-stage flip
 [ADR-0305](0305-a-recipes-format-is-its-filename.md) set out, and the
 first stage to change what is written into the shared artifact cache
 rather than only how a build is driven.
@@ -12,13 +12,34 @@ that go beyond "support both": clause 2, which moves finalization into
 `--finalize-command`, and clause 6, which makes `cbs` mandatory in the
 control-plane root.
 
-**Clauses 1 and 7 are implemented and proven on 192.168.15.95**
-(`v2.57.227`, 2026-09-19): the daemon reads the declared format, all 50
-published PBS recipe versions report `artifact_format: "cixpkg"` after
-the re-derivation sweep, and a recipe declaring `format "tar.gz"` is
-refused at publish with a message naming `cbs build`. Clauses 2, 3, 4,
-5 and 6 are not — no `.cixpkg` is produced or consumed yet, so this
-stays `Proposed` until they are.
+Every clause is implemented and proven on the box:
+
+- **1 and 7** (`v2.57.227`): the daemon reads the declared format, all
+  50 published PBS recipe versions report `artifact_format: "cixpkg"`
+  after the re-derivation sweep, and a recipe declaring
+  `format "tar.gz"` is refused at publish with a message naming
+  `cbs build`.
+- **2 and 3** (`v2.57.228`, `v2.57.230`): the finalize policy became a
+  program CBS runs; `cbs build --output` writes the artifact and cixd
+  takes the file; a cached `.cixpkg` is unpacked by a pidfd-tracked
+  child rather than on the reactor. The first `.cixpkg` this platform
+  has published is `probe-cixpkg-1-1-x86_64.cixpkg`, signed, in the
+  shared cache.
+- **4** is CBS's own guarantee and was exercised by every extraction
+  above — the per-file digests and the setuid/ownership refusals are
+  what `cbs extract` runs before a byte lands.
+- **5** is what [#497](https://git.home.arpa/itdlabs/cix/issues/497)
+  records: an approval does not cross formats, and the 25 recipes
+  holding a tarball-era approval rejoin the artifact tier at their
+  next revision bump.
+- **6** (`v2.57.231`): `mkbootroot` refuses to seal a root without
+  `cbs`, and cixd refuses a `.cixpkg` by name on a host that has none.
+
+**The file-for-file proof ADR asked for** ran on 2026-09-21: the same
+tree shipped both ways and compared on name, type, mode, size and
+content digest, in both directions, over nine entries including a
+0755 executable, a 0444 read-only file, a 0640 file two directories
+down and a symlink. Identical.
 
 **Its one dependency is already cleared.**
 [cix-build-system#173](https://git.home.arpa/itdlabs/cix-build-system/issues/173)

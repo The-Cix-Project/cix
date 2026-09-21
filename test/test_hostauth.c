@@ -386,11 +386,45 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	/* 9a. #490: the identity reads need a credential once gating is
+	 * active, unlike every other GET.
+	 *
+	 * Asserted before 9b below reads the same endpoint WITH a token,
+	 * because the pair is what means something: either alone is
+	 * consistent with a gate that is broken in one direction. The
+	 * roster is checked too -- it is the other half of the same
+	 * decision and it gates for a different reason (a per-account
+	 * profile, not a live activity window). */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET", "/v1/system/hostauth/sessions", NULL, &r) != 0 ||
+	    r.status != 401) {
+		fprintf(stderr, "FAIL: unauthenticated GET hostauth sessions expected 401, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET", "/v1/ldap/users", NULL, &r) != 0 || r.status != 401) {
+		fprintf(stderr, "FAIL: unauthenticated GET ldap users expected 401, got %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+	/* The control that keeps this from passing on a daemon that
+	 * simply refuses everything: an ordinary machine-describing GET
+	 * is still open, which is the line #490 moved rather than
+	 * erased. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET", "/v1/health", NULL, &r) != 0 || r.status != 200) {
+		fprintf(stderr, "FAIL: unauthenticated GET health expected 200, got %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
 	/* 9b. ADR-0152: session listing shows the real active session, a
 	 * real expires_in_seconds (idle_timeout_seconds=900 here, so never
 	 * null), and never a raw token anywhere in the response. */
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "GET", "/v1/system/hostauth/sessions", NULL, &r) != 0 ||
+	if (request_with_token(&client, "GET", "/v1/system/hostauth/sessions", token, NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET hostauth sessions, status=%d\n", r.status);
 		ok = 0;

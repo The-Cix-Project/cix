@@ -15,7 +15,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/whoami` | Is the caller's own bearer token currently authenticated -- read-only, never consumes a single-use session (ADR-0164) |
 | GET | `/system/hostauth-config` | Current admin-group list, session idle timeout, live-LDAP backend config |
 | PUT | `/system/hostauth-config` | Replace host-auth config (full replacement of admin_groups/idle_timeout_seconds; ldap_* fields optional, including `ldap_tls` for the daemon's own bind) |
-| GET | `/system/hostauth/sessions` | Every active session (username, expires-in) -- never a raw token, before or after issuance (ADR-0152) |
+| GET | `/system/hostauth/sessions` | Every active session (username, expires-in) -- never a raw token, before or after issuance (ADR-0152). **Needs a token** once gating is active ([#490](https://git.home.arpa/itdlabs/cix/issues/490)) |
 | DELETE | `/system/hostauth/sessions/{username}` | Revoke every active session for that user -- "log out everywhere" |
 | GET | `/system/boot` | Build version/time, A/B slot, kernel version (`uname`), and which device backs each of the platform's five partitions this boot |
 | GET | `/system/stalls` | Times the control plane stopped going round its own loop, recorded by a watchdog process (issue #100) — each record names the daemon's own child processes and what each was doing, so a `wchan` of `do_wait` says *which* wait (issue #399) |
@@ -234,7 +234,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/ldap/groups/{name}` | Inspect one LDAP group |
 | PUT | `/ldap/groups/{name}` | Edit an existing LDAP group's gidnumber in place (task #750); a real, different `name` in the body renames it (ADR-0147) |
 | DELETE | `/ldap/groups/{name}` | Delete an LDAP group |
-| GET | `/ldap/users` | List every LDAP user |
+| GET | `/ldap/users` | List every LDAP user — a profile per account, not just names. **Needs a token** once gating is active ([#490](https://git.home.arpa/itdlabs/cix/issues/490)) |
 | POST | `/ldap/users` | Create an LDAP user (`uidnumber` optional -- auto-allocated if omitted, task #748; `ssh_public_key` optional, task #731) |
 | GET | `/ldap/users/{name}` | Inspect one LDAP user |
 | PUT | `/ldap/users/{name}` | Update an existing LDAP user (full field replacement; `password` omitted keeps the existing credential); a real, different `name` in the body renames it (ADR-0147) |
@@ -650,6 +650,14 @@ Authorization: Bearer 6245f4...
 ```
 
 **Gating only ever activates once someone exists to gate for.** `GET /system/hostauth-config` reports the current `admin_groups` list; as long as it's empty, or none of its groups has a member yet, every write stays open — a fresh install, or one where an operator hasn't gotten around to configuring this yet, can never lock itself out of its own API. The moment a real LDAP user (`POST /ldap/users`, below) becomes a member of a configured admin group, gating activates for every subsequent request. There is no in-band break-glass credential (nothing reachable over this API can bypass write-gating once it's active, by design) — the recovery path for a genuine lockout requires physical/hypervisor console access instead: `cix-recover`, a second boot option on the installer media, resets only `admin_groups` on an already-installed system after a real typed confirmation. See [`docs/guides/security.md`'s break-glass recovery section](../guides/security.md#break-glass-recovery-adr-0146) and [ADR-0146](../adr/0146-ldap-startup-resync-and-break-glass-recovery.md).
+
+**Two GETs are gated as well, and both describe people rather than the machine ([#490](https://git.home.arpa/itdlabs/cix/issues/490)).** Almost every read on this API is open by design — disks, containers, packages. `GET /system/hostauth/sessions` and `GET /ldap/users` (and one user by name) are not, judged by intent rather than by HTTP verb, which is the same exception the container console upgrade already had.
+
+What each gives away is different, and worth stating so the line is defensible rather than a reflex. The session list carries `expires_in_seconds`, which counts down and refreshes on use — polling an open copy tracks a live operator's working window. The roster is not a list of names but a profile per account: `mail`, `givenname`/`sn`, `homedirectory`, `loginshell`, `ssh_public_key`, `primarygroup`, `secondary_groups`, `has_password`, `disabled`. Neither is catastrophic on a trusted LAN; both are free reconnaissance for anyone who can reach port 80, and this platform is meant for networks nobody here controls.
+
+**Gating the roster costs name resolution nothing, and that was the question that decided it.** `nslcd` resolves over LDAP against the directory server — `uri`/`base`/`binddn`/`bindpw` in the `/etc/nslcd.conf` this daemon writes — not through this endpoint. Nothing in the tree reads it but the dashboard, `cixctl` and the tests, so this is a policy change and not a functional one.
+
+The escape hatch is inherited rather than rebuilt: the same `hostauth_authorize_write()` that lets every write through while gating is inactive lets these reads through too, so a fresh install with no admin account still answers them and cannot lock itself out of the API that would explain why.
 
 **Whether gating is actually in force is now reported, and its preconditions are protected (#370).** This host answered unauthenticated writes for four days and nothing anywhere said so — `/health` returned `{"status":"ok"}`, nothing was logged at boot, and the dashboard rendered an open box exactly like a secured one. Two changes:
 

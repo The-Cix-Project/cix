@@ -6,6 +6,30 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The identity reads need a credential (#490)
+
+Almost every GET on this API is open by design — disks, containers, packages describe the machine. Two describe **people**, and they are now gated: `GET /v1/system/hostauth/sessions` and `GET /v1/ldap/users` (and one user by name). Judged by intent rather than HTTP verb, which is the same exception the container console upgrade already had — the gate's own comment said "one deliberate GET-verb exception" and now says two.
+
+What each gives away is different, and worth stating so the line is defensible rather than a reflex. The session list carries `expires_in_seconds`, which counts down and refreshes on use, so polling an open copy tracks a live operator's working window — when they logged in, whether they are still there, when it lapses. The roster is not a list of names: it is a profile per account, `mail`, `givenname`/`sn`, `homedirectory`, `loginshell`, `ssh_public_key`, `primarygroup`, `secondary_groups`, `has_password`, `disabled`.
+
+**The question that decided it was whether gating the roster breaks name resolution, and it does not.** `nslcd` resolves over LDAP against the directory server — `uri`/`base`/`binddn`/`bindpw` in the `/etc/nslcd.conf` this daemon writes — not through the REST endpoint. Nothing in the tree reads it but the dashboard, `cixctl` and the tests, so this is a policy change and not a functional one. That was the open question in the issue, which measured the host from outside and said plainly it could not answer it without the source.
+
+The escape hatch #370 needs is inherited rather than rebuilt: `hostauth_authorize_write()` returns true unconditionally while gating is inactive, so a fresh install with no admin account still answers these reads and cannot lock itself out of the API that would explain why.
+
+The path match is exact-or-child rather than a prefix, deliberately: `strncmp()` alone would gate a future `/v1/ldap/usersets` by accident and, worse, would silently stop gating the day the roster moved — a security check that fails open on a rename is the wrong shape. `test_hostauth` asserts the pair (401 without a token, 200 with one) plus a control that an ordinary machine-describing GET is still open, because either half alone is consistent with a gate broken in one direction.
+
+### cbs is required in the control-plane root, and a .cixpkg is refused by name without it (#487, ADR-0307 clause 6)
+
+`mkbootroot` staged `cbs` behind a `stat()` and silently omitted it when absent. The comment above it argued for exactly that, and the argument is kept rather than deleted because it was right when it was written: *"a box whose cix-hosttools image predates `pkg install --image=cix-hosttools cbs` simply has no CPDL engine, which is a normal state rather than an assembly failure ... it fails loudly at the right moment instead: publishing a build.cbs on such a host is refused."*
+
+ADR-0307 makes it false. Refusing at publish covers a recipe arriving that cannot be read; it does nothing for the case that now exists, where an already-published package's artifact is a `.cixpkg` and nothing on the host can extract it. A root without `cbs` is no longer a root that cannot publish PBS recipes — it is a root that **cannot install packages**, and 25 of them are already published in that format.
+
+So the staging is mandatory, with a message naming the install that fixes it, and it is checked **again before the root is sealed** — the same reason `verify_platform_libs_intact()` exists rather than trusting the copy that staged those libraries: that check was written after a later staging step overwrote an earlier one and produced a root that panicked at boot, while both assemblies printed "wrote ..." and reported success.
+
+`cbs` stays out of `host_tool_bins[]` even so. Every entry there has a dev-host fallback, and this one must not: it is a Cix-built package, no dev host has one, and taking a foreign binary from a build machine into the control-plane root is what the Build Provenance Mandate forbids. Required, with nothing to fall back to.
+
+And the daemon half: a cached `.cixpkg` on a host with no `cbs` is refused by name, with the install that fixes it, rather than through the generic prep-failure template that would have rendered it as *"unpacking (... failed)"* and buried the only actionable part. Clause 6 makes that unreachable on an assembled root; it stays because "unreachable" is a claim about today's assembly path and this is a claim about what the daemon does.
+
 ### A PBS recipe publishes a .cixpkg, and unpacking one does not stop the control plane (#487, #497, ADR-0307 clauses 2 and 3)
 
 **Verified on 192.168.15.95, v2.57.230, 2026-09-21.** `probe-cixpkg` installs an executable, a non-executable data file, and nothing else — chosen because a mode is the thing a format loses silently and a whole-artifact checksum cannot notice (#139).

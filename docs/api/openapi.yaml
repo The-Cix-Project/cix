@@ -440,6 +440,22 @@ paths:
         Every currently active host-auth session (ADR-0152) -- username
         and expires_in_seconds only, never the raw token (it is shown
         exactly once, in POST /login's own response, and never again).
+
+
+        **Authenticated read** (#490). Almost every GET on this API is open;
+        this one is not, and the exception is deliberate rather than an
+        oversight elsewhere. It describes PEOPLE rather than the machine, so
+        the 401 applies to reading it as well as changing it -- the same
+        judged-by-intent exception the container console upgrade already has.
+        While gating is inactive (no admin-group account exists yet) it stays
+        open, so a fresh install cannot lock itself out of the API that would
+        explain why.
+
+
+        The specific exposure this closes: `expires_in_seconds` counts down
+        and refreshes on use, so polling an open copy of this endpoint tracks
+        a live operator's working window -- when they logged in, whether they
+        are still there, when the session lapses.
       operationId: listHostauthSessions
       x-cix-expose: [cli, web]
       responses:
@@ -455,6 +471,13 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/HostauthSession"
+        "401":
+          description: >
+            No valid session token, while gating is active (#490)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /system/hostauth/sessions/{username}:
     delete:
@@ -7931,6 +7954,28 @@ paths:
   /ldap/users:
     get:
       summary: List every LDAP user (task #726)
+      description: >
+        A profile per account rather than a list of names --
+        `mail`, `givenname`/`sn`, `homedirectory`, `loginshell`,
+        `ssh_public_key`, `primarygroup`, `secondary_groups`,
+        `has_password`, `disabled`.
+
+
+        **Authenticated read** (#490). Almost every GET on this API is open;
+        this one is not, and the exception is deliberate rather than an
+        oversight elsewhere. It describes PEOPLE rather than the machine, so
+        the 401 applies to reading it as well as changing it -- the same
+        judged-by-intent exception the container console upgrade already has.
+        While gating is inactive (no admin-group account exists yet) it stays
+        open, so a fresh install cannot lock itself out of the API that would
+        explain why.
+
+
+        Gating this takes nothing away from name resolution, which was the
+        question that decided it: `nslcd` resolves over LDAP against the
+        directory server (`uri`/`base`/`binddn`/`bindpw` in the
+        `/etc/nslcd.conf` this daemon writes), not through this endpoint.
+        Nothing but the dashboard, `cixctl` and the tests reads it.
       operationId: listLdapUsers
       x-cix-expose: [cli, web]
       responses:
@@ -7946,6 +7991,13 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/LdapUser"
+        "401":
+          description: >
+            No valid session token, while gating is active (#490)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     post:
       summary: >
         Create an LDAP user. Same durable-record-store + write-through model
@@ -7984,6 +8036,11 @@ paths:
   /ldap/users/{name}:
     get:
       summary: Fetch one LDAP user
+      description: >
+        **Authenticated read** (#490), for the same reason the list above is:
+        it returns one person's profile, and asking for a single account by
+        name is if anything the more targeted question. Open while gating is
+        inactive, like the rest.
       operationId: getLdapUser
       x-cix-expose: []
       parameters:
@@ -7995,6 +8052,13 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LdapUser"
+        "401":
+          description: >
+            No valid session token, while gating is active (#490)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           description: No such user
           content:

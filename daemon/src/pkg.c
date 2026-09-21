@@ -8961,7 +8961,40 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				 * -- locating, checksumming, the #139 usability
 				 * check, the image merge -- stays format-blind.
 				 */
-				if (strcmp(artifact_format_of_path(cached), PKG_ARTIFACT_FORMAT_CIXPKG) == 0) {
+				if (strcmp(artifact_format_of_path(cached), PKG_ARTIFACT_FORMAT_CIXPKG) == 0 &&
+				    access(PKG_CBS_BIN, X_OK) != 0) {
+					/*
+					 * ADR-0307 clause 6's other half: refused by
+					 * name, never by falling through to an
+					 * extractor that cannot be correct.
+					 *
+					 * Its own failure rather than a prep_step,
+					 * because the generic template would render
+					 * this as "unpacking (... failed)" and bury
+					 * the one thing an operator needs -- which
+					 * install fixes it. Clause 6 makes this
+					 * unreachable on an assembled root, since
+					 * mkbootroot now refuses to seal one without
+					 * cbs; it stays because "unreachable" is a
+					 * claim about today's assembly path and this
+					 * is a claim about what the daemon does.
+					 */
+					logstore_write("cixd", "error",
+					                "pkg %s@%s: %s is a .cixpkg and this host has no CPDL "
+					                "engine at %s -- nothing else reads that format. Fix "
+					                "it with: pkg install --image=cix-hosttools cbs, then "
+					                "reassemble and reboot the control plane (ADR-0307 "
+					                "clause 6)",
+					                e->name, g_chains[chain_idx].image, cached, PKG_CBS_BIN);
+					pkg_fail(e, is_final_upgrade, PIPELINE_UNPACK,
+					         "the cached artifact is a .cixpkg and this host has no %s to "
+					         "read it with",
+					         PKG_CBS_BIN);
+					g_chains[chain_idx].name[0] = '\0';
+					g_chains[chain_idx].dep_queue_count = 0;
+					return 0;
+				} else if (strcmp(artifact_format_of_path(cached),
+				                   PKG_ARTIFACT_FORMAT_CIXPKG) == 0) {
 					if (cixpkg_unpack_start(cached, dest_dir, out_compose_pid,
 					                         out_compose_pidfd) != 0) {
 						prep_step = "start the cixpkg unpack";

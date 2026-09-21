@@ -1165,25 +1165,34 @@ int main(int argc, char **argv)
 		 * identity at publish, and `cbs build` runs the recipe inside
 		 * the build container.
 		 *
-		 * Staged TOLERANTLY, like mkfs.btrfs above and unlike
-		 * host_tool_bins[], and the reason is the same distinction that
-		 * cost a build there: every host_tool_bins[] entry is
-		 * unconditionally required because a dev-host fallback always
-		 * exists. There is no fallback for this one and there must not
-		 * be. `cbs` is a Cix-built package (recipes/package/cbs, built
-		 * by TCC from an upstream tarball pinned by commit), no dev host
-		 * has one in /usr/bin, and taking a foreign binary from a build
-		 * machine into the control-plane root is exactly what the Build
-		 * Provenance Mandate forbids.
+		 * REQUIRED (ADR-0307 clause 6), and kept out of
+		 * host_tool_bins[] all the same: every entry there has a
+		 * dev-host fallback, and there is no fallback for this one and
+		 * there must not be. `cbs` is a Cix-built package
+		 * (recipes/package/cbs, built by TCC from an upstream tarball
+		 * pinned by commit), no dev host has one in /usr/bin, and
+		 * taking a foreign binary from a build machine into the
+		 * control-plane root is exactly what the Build Provenance
+		 * Mandate forbids. So: required, and with no fallback to fall
+		 * back to.
 		 *
-		 * So a box whose cix-hosttools image predates `pkg install
-		 * --image=cix-hosttools cbs` simply has no CPDL engine, which is
-		 * a normal state rather than an assembly failure -- the same
-		 * posture firmware_dir/modules_dir/kmod_bin_dir already take.
-		 * It fails loudly at the right moment instead: publishing a
-		 * build.cbs on such a host is refused with a message naming the
-		 * install that fixes it, rather than storing a recipe nothing
-		 * can read.
+		 * THIS COMMENT USED TO ARGUE THE OPPOSITE, and the argument is
+		 * kept rather than deleted because it was right when it was
+		 * written: *"a box whose cix-hosttools image predates `pkg
+		 * install --image=cix-hosttools cbs` simply has no CPDL engine,
+		 * which is a normal state rather than an assembly failure ...
+		 * it fails loudly at the right moment instead: publishing a
+		 * build.cbs on such a host is refused."*
+		 *
+		 * ADR-0307 makes that false. Refusing at publish covered the
+		 * case where a recipe arrives and cannot be read; it does
+		 * nothing for the case that now exists, where an ALREADY
+		 * PUBLISHED package's artifact is a .cixpkg and nothing on the
+		 * host can extract it. A root without cbs is no longer a root
+		 * that cannot publish PBS recipes -- it is a root that cannot
+		 * install packages, and 25 of them are already published in
+		 * that format. Failing here, where the fix is one install away,
+		 * beats failing on a box that has already booted the root.
 		 *
 		 * Its library closure needs no new shelled_bin_libs[] entries,
 		 * and that was checked rather than assumed: cbs links
@@ -1193,22 +1202,35 @@ int main(int argc, char **argv)
 		 * never do here -- libzstd.so.1 and libcurl.so.4 are both
 		 * already in the list below, staged for curl and unsquashfs.
 		 */
-		if (host_tools_dir[0] != '\0') {
+		{
 			char src[PATH_MAX];
+			char dst[PATH_MAX];
 			struct stat st;
 
+			if (host_tools_dir[0] == '\0') {
+				fprintf(stderr,
+				        "no cix-hosttools root given, so this root would carry no CPDL "
+				        "engine -- and a root with no /usr/bin/cbs cannot install any "
+				        "package built by a PBS recipe, itself included (ADR-0307 "
+				        "clause 6)\n");
+				return 1;
+			}
 			if (snprintf(src, sizeof(src), "%s/usr/bin/cbs", host_tools_dir) >=
 			    (int)sizeof(src)) {
 				fprintf(stderr, "path too long: %s/usr/bin/cbs\n", host_tools_dir);
 				return 1;
 			}
-			if (stat(src, &st) == 0) {
-				char dst[PATH_MAX];
-
-				snprintf(dst, sizeof(dst), "%s/usr/bin/cbs", image_root);
-				if (test_image_fixture_copy_file(src, dst) != 0)
-					return 1;
+			if (stat(src, &st) != 0) {
+				fprintf(stderr,
+				        "%s is absent, so this root would carry no CPDL engine and could "
+				        "not install any package built by a PBS recipe (ADR-0307 clause "
+				        "6). Fix it with: pkg install --image=cix-hosttools cbs\n",
+				        src);
+				return 1;
 			}
+			snprintf(dst, sizeof(dst), "%s/usr/bin/cbs", image_root);
+			if (test_image_fixture_copy_file(src, dst) != 0)
+				return 1;
 		}
 		for (i = 0; i < sizeof(shelled_bin_libs) / sizeof(shelled_bin_libs[0]); i++) {
 			char lib_path[PATH_MAX];
@@ -1671,6 +1693,34 @@ int main(int argc, char **argv)
 		}
 		if (verify_platform_libs_intact(image_root, host_tools_dir) != 0)
 			return 1;
+		/*
+		 * ADR-0307 clause 6, checked again at the seal rather than
+		 * only where it was staged -- the same reason
+		 * verify_platform_libs_intact() above exists rather than
+		 * trusting the copy that put those libraries there. That one
+		 * was written after a later staging step overwrote an earlier
+		 * one and produced a root that panicked at boot; both
+		 * assemblies printed "wrote ..." and reported success.
+		 *
+		 * This is cheaper than that check and answers a smaller
+		 * question -- is the engine still in the root about to be
+		 * sealed -- but it is the same class of question, and the
+		 * answer matters as much: a root without it installs nothing.
+		 */
+		{
+			char cbs_path[PATH_MAX];
+			struct stat cst;
+
+			snprintf(cbs_path, sizeof(cbs_path), "%s/usr/bin/cbs", image_root);
+			if (stat(cbs_path, &cst) != 0 || !S_ISREG(cst.st_mode)) {
+				fprintf(stderr,
+				        "the assembled root has no %s -- it was staged and is gone, so "
+				        "something later in this assembly removed or replaced it "
+				        "(ADR-0307 clause 6)\n",
+				        cbs_path);
+				return 1;
+			}
+		}
 		if (run_mksquashfs(use_mksquashfs, image_root, out_path, host_tools_dir) != 0)
 			return 1;
 	}

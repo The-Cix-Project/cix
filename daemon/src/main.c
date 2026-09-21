@@ -26357,12 +26357,15 @@ static void dispatch(int fd, const struct http_request *req)
 	 * ADR-0144: write-gating -- the one authorization check every
 	 * mutating request goes through, dispatch-wide, before any route
 	 * below ever sees it. "Mutating" means every non-GET verb, plus
-	 * one deliberate GET-verb exception: the container console
+	 * two deliberate GET-verb exceptions -- so the function's name
+	 * now reads narrower than its job, which is authorization and
+	 * not writes specifically. The first is the container console
 	 * upgrade is, in real effect, arbitrary command execution inside a
 	 * container, judged here by intent rather than HTTP method (the
 	 * same reasoning the audit-log exclusion just above already
 	 * applies the other way -- a GET is usually "just a query," this
-	 * one specifically isn't). hostauth_authorize_write() itself
+	 * one specifically isn't). The second is the identity reads,
+	 * below. hostauth_authorize_write() itself
 	 * returns true unconditionally while gating isn't active yet (no
 	 * admin-group user exists) -- a fresh install is never locked out
 	 * of its own API by this. POST /v1/login and POST /v1/logout are
@@ -26371,18 +26374,65 @@ static void dispatch(int fd, const struct http_request *req)
 	 * own token (it used to be exempt by being routed before this
 	 * block; now that every operation dispatches through the one
 	 * generated table below, the exemption is stated instead of
-	 * implied by ordering, ADR-0218). Every other GET is already
-	 * exempt by construction (needs_auth stays 0).
+	 * implied by ordering, ADR-0218).
+	 *
+	 * The IDENTITY reads are the second GET-verb exception (#490).
+	 * Most open GETs describe the machine -- its disks, containers,
+	 * packages. These two describe PEOPLE, and answer the two
+	 * questions an attacker asks first: which accounts are real and
+	 * privileged, and whether an administrator is at the keyboard
+	 * right now. `GET /v1/system/hostauth/sessions` returns
+	 * `expires_in_seconds`, which counts down and refreshes on use,
+	 * so polling it tracks a live operator's working window; and
+	 * `GET /v1/ldap/users` returns not a list of names but a profile
+	 * per account -- `mail`, `givenname`/`sn`, `homedirectory`,
+	 * `loginshell`, `ssh_public_key`, `primarygroup`,
+	 * `secondary_groups`, `has_password`, `disabled`. Neither is
+	 * catastrophic on a trusted LAN; both are free reconnaissance for
+	 * anyone who can reach port 80, and this platform is meant for
+	 * networks we do not control.
+	 *
+	 * The question the issue could not answer from outside, because
+	 * it decides whether gating the roster is a policy change or a
+	 * functional one: DOES NAME RESOLUTION GO THROUGH IT? It does
+	 * not. `nslcd` resolves over LDAP against the directory server
+	 * -- `uri`/`base`/`binddn`/`bindpw` in the /etc/nslcd.conf this
+	 * daemon writes -- and nothing in the tree reads this endpoint
+	 * except the dashboard, cixctl and the tests. So gating it takes
+	 * nothing away from anything that was working.
+	 *
+	 * The escape hatch #370 needed is inherited rather than rebuilt:
+	 * hostauth_authorize_write() returns true unconditionally while
+	 * gating is inactive, so a fresh install with no admin account
+	 * still answers these reads openly and cannot lock itself out of
+	 * the API that would explain why.
+	 *
+	 * Every other GET stays exempt by construction (needs_auth stays
+	 * 0).
 	 */
 	{
 		size_t path_len = strlen(req->path);
-		int is_console = strcmp(req->method, "GET") == 0 &&
+		static const char *const LDAP_USERS = "/v1/ldap/users";
+		int is_get = strcmp(req->method, "GET") == 0;
+		int is_console = is_get &&
 		                  strncmp(req->path, CONTAINERS_PREFIX, strlen(CONTAINERS_PREFIX)) == 0 &&
 		                  path_len > 8 && strcmp(req->path + path_len - 8, "/console") == 0;
+		/*
+		 * Exact path or a child of it, never a prefix match:
+		 * strncmp() alone would also gate a future /v1/ldap/usersets
+		 * and, worse, would silently stop gating the day the roster
+		 * moved -- a security check that fails open on a rename is
+		 * the wrong shape.
+		 */
+		int is_identity_read =
+		    is_get && (strcmp(req->path, "/v1/system/hostauth/sessions") == 0 ||
+		               strcmp(req->path, LDAP_USERS) == 0 ||
+		               (strncmp(req->path, LDAP_USERS, strlen(LDAP_USERS)) == 0 &&
+		                req->path[strlen(LDAP_USERS)] == '/'));
 		int is_login = strcmp(req->method, "POST") == 0 &&
 		               (strcmp(req->path, "/v1/login") == 0 ||
 		                strcmp(req->path, "/v1/logout") == 0);
-		int needs_auth = (strcmp(req->method, "GET") != 0 && !is_login) || is_console;
+		int needs_auth = (!is_get && !is_login) || is_console || is_identity_read;
 
 		if (needs_auth) {
 			char token_hdr[HOSTAUTH_TOKEN_LEN + 32];
