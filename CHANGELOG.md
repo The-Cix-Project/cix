@@ -42,6 +42,36 @@ An engine that runs but cannot be hashed records a failure rather than being tre
 
 **And cbs#182 was closed without hard-link support, which is the right outcome and worth recording.** `main`'s `manifest.c:140` still refuses `st_nlink != 1` — what changed is that it now says so: *"%s is a hard link (link count %lu); CIXPKG entries must have exactly one link"*. That matches the argument this project put to them in its own follow-up: a package installs into an image by copying files one at a time, so a hard link never survives installation, and a format declining to promise it is being honest rather than incomplete. The consequence for recipes is unchanged and now discoverable — `binutils` keeps its `ld`-as-symlink, and the next package with the same shape gets told which path and why instead of three errors naming nothing.
 
+### cbs v0.1.30: a rejected staged tree names the path and the reason (cix-build-system#182, #183, ADR-0307 clause 7)
+
+Installed into `cix-builder` and `cix-hosttools`, staged into the control-plane root by a reassembly, and booted. The difference it buys, on the same probe that found the problem under `v0.1.29` — identical recipe, only the engine changed:
+
+```
+v0.1.29   manifest: cannot write staged-tree manifest
+          manifest: cannot collect staged-tree entries
+          package output: cannot write CIXPKG output
+
+v0.1.30   manifest: usr/lib/probe-shapes/original is a hard link
+          (link count 2); CIXPKG entries must have exactly one link
+```
+
+One error instead of three, the path named, the reason named, the count given. Finding that under the old engine took a source read, a synthetic probe and a second full package build.
+
+**Hard links are still refused, and that is the outcome this project argued for.** `manifest.c:140` at this tag still rejects `st_nlink != 1`; only the silence changed. A package installs into an image by copying files one at a time, so a hard link never survives installation — a format declining to promise it is being honest rather than incomplete, which is what the follow-up on cbs#182 said before it was closed. `binutils` and `automake` keep their symlink treatment.
+
+**And clause 7's digest key earned itself on the first real upgrade.** The sweep has now fired twice, and the pair is the argument:
+
+```
+cbs 0.1.29          -> cbs 0.1.29 f1a5c102…   re-derived 54, 0 failed
+cbs 0.1.29 f1a5c102… -> cbs 0.1.30 a06bee5b…   re-derived 60, 0 failed
+```
+
+The first is the key format changing; the second is a real engine upgrade, both fields moving together. Had the sweep still keyed on the version string it would have handled the second and **missed the class of change that prompted the fix** — a post-tag commit reporting the old number, which is exactly what `df52033` is doing on `main` right now.
+
+**v0.1.30 does not carry #185's `stdout file`**, read at both refs: it landed after the tag. So `btop` stays on `build.sh`, and cbs#185 carries a note saying so for whenever the next release is cut. Same shape as #184 rather than a new problem.
+
+One incidental proof: publishing this recipe was refused first, at 517 bytes of changelog against the 511 limit — with *"a metadata value is too long (artifact_sha256 max 64 bytes, changelog max 511)"*. That is #493's fix working in real use, hours after shipping, on a recipe nobody wrote to test it.
+
 ### byobu converts, and the recipe guide's own idiom table was wrong (#487, #491)
 
 `byobu-5.133-3-x86_64.cixpkg`, 72628 bytes, signed, approval `e26bcfc9…`. 117 files became 154 — `man` restored (ADR-0306, #491); `byobu`, `doc` and `dbus-1` were never deleted.
