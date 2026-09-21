@@ -64,7 +64,7 @@ CPDL has no shell, and the reflex when converting is to assume a missing feature
 | `sed -i 's/X/Y/' f` | `replace "f" { from "X" to "Y" exactly 1 }` | literal only; `exactly N` fails loudly when upstream moves it, which `sed` does not |
 | `find . -name M -exec sed -i 's/X/Y/g' {} +` | `replace glob "…/**/M" { from "X" to "Y" exactly N }` | `**` crosses directories, `*` stays within one segment |
 | `grep -q X f \|\| exit 1` before a `sed` | nothing — delete the guard | `exactly N` already is that guard, and names the file and the count when it fails |
-| `grep -q X f \|\| exit 1` | `require file "f" { contains "X" }` | |
+| `grep -q X f \|\| exit 1` | `require file "f" { exists contains "X" }` | `exists` is REQUIRED and must come first -- the parser consumes it unconditionally before any of contains/same_as/nonempty/target (`src/parser.c:533`). This row used to omit it and cost a publish round-trip |
 | `test -f x \|\| exit 1` | `require file "x" { exists }` | |
 | `cmd; [ $? -eq 2 ]` | `run "cmd" { expect exit 2 }` | |
 | `$(pwd)` | the absolute path you already know | inside `cd "${src}/n/top"`, that is `${src}/n/top` |

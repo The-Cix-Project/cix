@@ -42,6 +42,22 @@ An engine that runs but cannot be hashed records a failure rather than being tre
 
 **And cbs#182 was closed without hard-link support, which is the right outcome and worth recording.** `main`'s `manifest.c:140` still refuses `st_nlink != 1` — what changed is that it now says so: *"%s is a hard link (link count %lu); CIXPKG entries must have exactly one link"*. That matches the argument this project put to them in its own follow-up: a package installs into an image by copying files one at a time, so a hard link never survives installation, and a format declining to promise it is being honest rather than incomplete. The consequence for recipes is unchanged and now discoverable — `binutils` keeps its `ld`-as-symlink, and the next package with the same shape gets told which path and why instead of three errors naming nothing.
 
+### byobu converts, and the recipe guide's own idiom table was wrong (#487, #491)
+
+`byobu-5.133-3-x86_64.cixpkg`, 72628 bytes, signed, approval `e26bcfc9…`. 117 files became 154 — `man` restored (ADR-0306, #491); `byobu`, `doc` and `dbus-1` were never deleted.
+
+Two shell constructions needed deciding rather than translating. The **timestamp guard is gone**: the shell form touched `aclocal.m4`, `configure` and every `Makefile.in` in dependency order, because the tarball ships them all with one timestamp and make then tries to regenerate `aclocal.m4` with autoconf, m4 and Perl that are not packaged here — and then asserted `[ aclocal.m4 -nt configure ]` was false. CPDL cannot compare two timestamps. Unlike btop's dropped assertion, losing this one costs only the *quality* of the error: if the ordering fails, the next `make` dies with the `Error 127` the guard exists to pre-empt. A clearer message is worth something; it is not worth staying on `build.sh` for, and the difference between the two cases is the whole judgement.
+
+The **backend guard became `exactly 1`**. The shell form ran a `sed` and grepped afterwards to prove it took; `replace … exactly 1` *is* that guard, which is what the guide says to do with a grep that exists only to make a silent sed loud. Worth noting the literal: CPDL's replace has no anchors and `BYOBU_BACKEND=` is a substring of `#BYOBU_BACKEND=`, so if that file ever carries a commented example the count stops being 1 and the build says so rather than commenting out the wrong line.
+
+**And the publish was refused first, by the guide's own fault.** `require file { contains "X" }` — the idiom table's exact wording — is not valid CPDL:
+
+```
+error[CPDL-E2001]: parse: expected `exists`, found `contains`
+```
+
+`src/parser.c:533` consumes `exists` **unconditionally** before any of `contains`/`same_as`/`nonempty`/`target`. The table omitted it, so following the documentation produced a rejected recipe. Fixed in the table with the reason, since the next person to write an assertion would have paid the same round-trip.
+
 ### bison converts; btop cannot, and keeping its guard beats converting it (#487, #491, cix-build-system#185)
 
 **bison** converted and installed first try — `bison-3.8.2-8-x86_64.cixpkg`, 730159 bytes, signed, approval `6457cc49…`. 87 files became 200: `doc`, `info`, `locale` and `man` are no longer deleted (ADR-0306, #491), and neither is `usr/lib/*.a`, which finalize already drops. `usr/share/bison` was never deleted and still is not — bison reads those m4 skeletons at every invocation, and an early version of the shell recipe wiped the whole of `usr/share` and took them with it, caught only when a real kernel hostbuild tried to run bison. The two TCC workarounds and the glibc 2.44 `posix_spawn` cache variables carry over unchanged; `$(pwd)` needed no CPDL form, because inside `cd "${src}/bison/bison-3.8.2"` that is the path itself.

@@ -1,0 +1,146 @@
+# byobu -- a text window manager over screen. Converted from build.sh
+# to build.cbs (ADR-0305 stage 4, #487).
+#
+# Compiles nothing: configure.ac declares exactly one program macro
+# (AC_PROG_LN_S) and the installed tree has zero ELF binaries, which
+# is why tcc, binutils and linux-headers are absent from the build
+# list where every other recipe here declares them.
+#
+# WHAT CHANGES: usr/share/man is no longer deleted (ADR-0306, #491).
+#
+# TWO THINGS THE SHELL FORM DID THAT CPDL EXPRESSES DIFFERENTLY, both
+# stated rather than quietly dropped:
+#
+# 1. The timestamp guard is GONE. The shell recipe touched
+#    aclocal.m4, configure and every Makefile.in in dependency order
+#    -- the tarball ships them all with one timestamp, so make decides
+#    aclocal.m4 is stale and tries to regenerate it with autoconf, m4
+#    and Perl that are not packaged here ("Error 127"). It then
+#    asserted `[ aclocal.m4 -nt configure ]` was false, to fail
+#    clearly if the touch order had not taken. CPDL cannot compare two
+#    timestamps, and unlike btop's dropped assertion
+#    (cix-build-system#185) losing this one costs only the QUALITY of
+#    the error: if the ordering fails, the very next `make` dies with
+#    the Error 127 this exists to pre-empt. A clearer message is worth
+#    something; it is not worth staying on build.sh for.
+#
+# 2. The backend guard becomes `exactly 1`. The shell form ran a sed
+#    and then grepped to prove it took. `replace … exactly 1` IS that
+#    guard -- it fails loudly, naming the count, if the pattern is not
+#    matched precisely once -- which is what the recipe guide says to
+#    do with a grep that only exists to make a silent sed loud.
+#
+#    Note the literal: CPDL's replace has no anchors, and
+#    "BYOBU_BACKEND=" is a substring of "#BYOBU_BACKEND=", so if this
+#    file ever carries a commented example the count stops being 1 and
+#    the build says so rather than commenting out the wrong line.
+package "byobu" {
+    version "5.133"
+    release 3
+    format "cixpkg"
+
+    sources {
+        main "byobu" {
+            url "https://launchpad.net/byobu/trunk/5.133/+download/byobu_5.133.orig.tar.gz"
+            sha256 "4d8ea48f8c059e56f7174df89b04a08c32286bae5a21562c5c6f61be6dab7563"
+        }
+    }
+
+    # Runtime only, and each earns its place: screen is the
+    # multiplexer byobu drives, python runs the session picker, procps
+    # backs the status widgets (absent, they are blank and nothing
+    # else breaks), bash is the shebang of one include script where
+    # everything else is /bin/sh.
+    requires {
+        build {
+            tool "make"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "findutils"
+            tool "diffutils"
+        }
+        runtime {
+            package "screen"
+            package "python"
+            package "procps"
+            package "bash"
+            package "sed"
+            package "grep"
+            package "gawk"
+            package "coreutils"
+        }
+    }
+
+    metadata {
+        "changelog" "5.133-3: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest, the same touch ordering that stops make regenerating aclocal.m4, and --sysconfdir=/etc so byobu config lands where byobu looks for it. Stops deleting usr/share/man (ADR-0306, #491). The backend pin is commented out by replace ... exactly 1, which is itself the guard the shell form spelled as a following grep."
+    }
+
+    # --sysconfdir=/etc is load-bearing: with --prefix=/usr alone
+    # autoconf puts sysconfdir at $prefix/etc, byobu's config lands in
+    # /usr/etc/byobu, and byobu's own scripts look in /etc/byobu.
+    # Confirmed by building it both ways.
+    build {
+        cd "${src}/byobu/byobu-5.133" {
+            run "touch" {
+                "aclocal.m4"
+            }
+            run "sleep" {
+                "1"
+            }
+            run "touch" {
+                "configure"
+            }
+            run "sleep" {
+                "1"
+            }
+            run "find" {
+                "."
+                "-name"
+                "Makefile.in"
+                "-exec"
+                "touch"
+                "{}"
+                "+"
+            }
+            run "./configure" {
+                "--prefix=/usr"
+                "--sysconfdir=/etc"
+            }
+            run "make" {
+                jobs $jobs
+            }
+        }
+    }
+
+    # The backend is deliberately left UNPINNED. byobu picks one for
+    # itself in usr/lib/byobu/include/common -- tmux if on PATH, else
+    # screen -- but only when BYOBU_BACKEND is empty, and the shipped
+    # /etc/byobu/backend sets it to tmux unconditionally, which
+    # defeats that. Commenting the line out rather than rewriting it
+    # to "screen" is the point: if tmux is ever packaged, byobu
+    # prefers it with no change here and no stale pin to find.
+    install {
+        cd "${src}/byobu/byobu-5.133" {
+            run "make" {
+                "DESTDIR=${dest}"
+                "install"
+            }
+        }
+        replace "${dest}/etc/byobu/backend" {
+            from "BYOBU_BACKEND="
+            to "#BYOBU_BACKEND="
+            exactly 1
+        }
+        require file "${dest}/etc/byobu/backend" {
+            exists
+            contains "#BYOBU_BACKEND="
+        }
+        require file "${dest}/usr/bin/byobu" {
+            exists
+            nonempty
+        }
+    }
+}
