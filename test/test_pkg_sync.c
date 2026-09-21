@@ -154,7 +154,7 @@ static int stop_http_server(pid_t pid)
  * a real git-archive-shaped tarball (single top-level "testrepo-master/"
  * prefix) containing one package recipe at
  * recipes/package/synctest@1.0.sh and one image recipe at
- * recipes/image/synctest-image@1.0.0.sh (#504's flat layout,
+ * recipes/image/synctest-image@1.0.0.sh (#505's flat layout,
  * ADR-0149's unified
  * layout) -- also stages a stale, lower-versioned image recipe
  * directory (0.9.0) alongside the real one to prove sync picks the
@@ -169,7 +169,7 @@ static int stage_fixture_archive(const char *scratch_dir)
 	FILE *f;
 
 	snprintf(stage_dir, sizeof(stage_dir), "%s/stage/testrepo-master", scratch_dir);
-	/* #504: the repository layout is flat -- one file per recipe,
+	/* #505: the repository layout is flat -- one file per recipe,
 	 * "<name>@<version>.<ext>" -- so the synthetic repo this test
 	 * builds has to be flat too, or it would be testing a shape the
 	 * sync walker no longer reads. */
@@ -188,7 +188,7 @@ static int stage_fixture_archive(const char *scratch_dir)
 	fprintf(f, "pkg_depends=\"\"\n");
 	fclose(f);
 
-	/* #504: flat here too. Two versions of one image recipe, so the
+	/* #505: flat here too. Two versions of one image recipe, so the
 	 * walk's "highest version wins" rule still has something to
 	 * choose between -- which is the whole point of this pair. */
 	snprintf(stale_image_dir, sizeof(stale_image_dir), "%s/recipes/image", stage_dir);

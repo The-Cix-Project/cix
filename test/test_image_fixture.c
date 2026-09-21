@@ -726,7 +726,7 @@ static int sha256_file_hex(const char *path, char *out, size_t out_size)
 }
 
 /*
- * #504: see test_image_fixture.h. The corpus moved to its own
+ * #505: see test_image_fixture.h. The corpus moved to its own
  * repository, so a test that reads a real recipe has to be told where
  * it is instead of assuming a directory in this tree.
  */
@@ -897,7 +897,7 @@ int test_image_fixture_seed_floor_packages(const char *data_dir, const char *art
 		 * recipe is what approves them. Copying the genuine recipe
 		 * keeps one source of truth rather than a test-shaped
 		 * imitation of one. */
-		/* #504: the corpus is flat, so this copies one FILE rather
+		/* #505: the corpus is flat, so this copies one FILE rather
 		 * than a version directory, and the destination has to name
 		 * it. The daemon's own recipe store keeps its directory
 		 * shape -- only the repository changed -- so the layout

@@ -103,7 +103,7 @@ int main(void)
 	char *cur;
 
 	/*
-	 * #504: the corpus is its own repository and flat. This test
+	 * #505: the corpus is its own repository and flat. This test
 	 * links daemon code (kernelrecipe.c), which is why it stayed here
 	 * rather than moving with the recipes it reads -- and why it is
 	 * NOT in SELFTESTS: a build container has no sibling checkout, so

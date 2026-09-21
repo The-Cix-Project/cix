@@ -13131,7 +13131,7 @@ enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd)
  * find_recipe_path() already uses for an unpinned package install.
  */
 /*
- * #504: the recipe repository is FLAT, and a recipe is one file named
+ * #505: the recipe repository is FLAT, and a recipe is one file named
  * "<name>@<version>.<ext>" -- sh for a shell recipe, cbs for a PBS one
  * (ADR-0305), json for a deployment definition.
  *
@@ -13190,7 +13190,7 @@ static void sync_walk_image_recipes(const char *images_root, int *added, int *sk
 	struct dirent *name_de;
 
 	/*
-	 * #504: one flat directory. The old shape opened a directory per
+	 * #505: one flat directory. The old shape opened a directory per
 	 * name and scanned its versions; now every "<name>@<version>.sh"
 	 * sits side by side. An image recipe is name-keyed at the daemon
 	 * layer (ADR-0123), so exactly one version per name may win, and
@@ -13280,7 +13280,7 @@ static void sync_walk_container_recipes(const char *containers_root, int *added,
 	DIR *names_d;
 	struct dirent *name_de;
 
-	/* #504: flat, and the same "wins unless outranked" rule as the
+	/* #505: flat, and the same "wins unless outranked" rule as the
 	 * image walk above. The extension is json, not sh, because a
 	 * container recipe's content is a JSON body. */
 	names_d = opendir(containers_root);
@@ -13497,7 +13497,7 @@ int pkg_sync_merge(void)
 
 	snprintf(recipes_root, sizeof(recipes_root), "%s/recipes/package", extract_dir);
 	/*
-	 * #504: flat. Unlike the image and container walks above, EVERY
+	 * #505: flat. Unlike the image and container walks above, EVERY
 	 * version is synced, not just the highest -- package recipe
 	 * versions are immutable and independently installable
 	 * (ADR-0107), so a box needs all of them.

@@ -307,7 +307,7 @@ int test_image_fixture_clear_floor_cache(const char *data_dir);
 int test_mkdir_p(const char *path);
 
 /*
- * #504: where the recipe corpus lives, now that it is a repository of
+ * #505: where the recipe corpus lives, now that it is a repository of
  * its own (git.home.arpa/itdlabs/cix-recipes) rather than a directory
  * in this one.
  *

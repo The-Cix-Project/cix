@@ -6,7 +6,25 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
-### The recipe split is live, and hibr is the first package added after it (#504, #487)
+### I cited an issue number I had not filed, and it turned out to belong to something else (#505)
+
+Worth its own entry because the artefact was already shipped before the mistake surfaced.
+
+ADR-0308, four commits, `daemon/src/pkg.c`, five test files, the `cix-recipes` README and its Makefile were all written citing **`#504`** for the recipe split. I never filed that issue — I assumed the number would be next and wrote it into a decision record and a source file. Minutes later an unrelated glibc unpack bug was filed and Gitea gave it #504, so every one of those citations pointed at the wrong thing.
+
+The split is now **#505**, filed properly, and every reference in both repositories is corrected. The commit messages that carry `#504` cannot be, which is what this entry is for.
+
+CLAUDE.md's backlog rule already says work lives as a real issue rather than an informal `#NNN` mention. This is that rule's least obvious failure: not a missing issue, but a *confidently wrong* cross-reference baked into an ADR. **File first, then cite the number you were given** — a number you have not been handed is a guess, and a guess written into a decision record reads exactly like a fact.
+
+### glibc 2.44-16 will not unpack on the chrony image, and nothing says why (#504)
+
+Surfaced by a rolling rebuild after publishing chrony 4.8-5: `installed:unpack/failed … could not unpack (extract cached artifact failed)`, reproducible on demand.
+
+Ruled out rather than assumed. **Not the artifact** — the same version installed on `dns`, `ldap`, `syslog`, `jumpbox`, `router` and `wifi_router` in the same window. **Not the new async `.cixpkg` unpack path** — `glibc@2.44-16` is a shell recipe, so its artifact is a `.tar.gz` and it takes the tarball path. **Not disk** — 12.5 GiB free on `/var/lib/cix` and 81.8 GiB on `sda`, measured at the time. **Not a missing image** — `chrony` exists and `ntp-1`/`ntp-2` both ran `chronyd` throughout.
+
+The log store holds nothing beyond that one line, which is #503's gap again: a stage, not a reason. Left as a filed finding rather than escalated — the `chrony` manifest pins glibc to `2.44-12` anyway, so the upgrade the rebuild keeps reaching for contradicts the manifest, and the image is healthy on what it has. The bug worth fixing is the silence.
+
+### The recipe split is live, and hibr is the first package added after it (#505, #487)
 
 `v2.57.238` is deployed on 192.168.15.95 and `pkg repo-config` points at [cix-recipes](https://git.home.arpa/itdlabs/cix-recipes). The cut-over measurement:
 
@@ -27,7 +45,7 @@ state=success  added=28  skipped=1569
 
 `openssl` is declared as a runtime dependency although nothing links it: `src/net.c` `dlopen`s `libssl` on first use, so no `DT_NEEDED` records it and the #389 undeclared-link gate can never notice its absence. Declaring it is the only thing that makes the dependency real.
 
-### Recipes become their own repository, and a recipe becomes one flat file (#504, ADR-0308)
+### Recipes become their own repository, and a recipe becomes one flat file (#505, ADR-0308)
 
 Two changes made together, because both rewrite every recipe path and doing them apart would rewrite them twice. [ADR-0308](docs/adr/0308-recipes-are-their-own-repository-flat.md) carries the reasoning; this is what happened.
 

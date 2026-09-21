@@ -790,7 +790,7 @@ $(BUILD)/test_scheduler: test/test_scheduler.c daemon/src/scheduler.c daemon/src
 $(BUILD)/test_pipeline: test/test_pipeline.c daemon/src/pipeline.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_pipeline.c daemon/src/pipeline.c -o $@
 
-# #504: NOT in SELFTESTS. It reads the kernel recipe out of the
+# #505: NOT in SELFTESTS. It reads the kernel recipe out of the
 # cix-recipes sibling checkout, which a build container does not have,
 # so in a release selftest it would fail on a missing file rather than
 # on anything about the recipe. Run it locally with both repos cloned
