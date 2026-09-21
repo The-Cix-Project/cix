@@ -2,7 +2,7 @@
 
 ## Status
 
-**Accepted and implemented**, on 192.168.15.95 at `v2.57.231`. Stage 3 of the four-stage flip
+Accepted, and implemented on 192.168.15.95 at `v2.57.231`. Stage 3 of the four-stage flip
 [ADR-0305](0305-a-recipes-format-is-its-filename.md) set out, and the
 first stage to change what is written into the shared artifact cache
 rather than only how a build is driven.

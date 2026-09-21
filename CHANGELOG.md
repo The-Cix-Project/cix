@@ -20,6 +20,9 @@ The path match is exact-or-child rather than a prefix, deliberately: `strncmp()`
 
 ### cbs is required in the control-plane root, and a .cixpkg is refused by name without it (#487, ADR-0307 clause 6)
 
+ADR-0307 flips to **Accepted** with this release, every clause implemented and proven. `test_docindex` caught the first attempt at that — the status line read `**Accepted and implemented**` and the gate requires a bare status word first, qualifying prose after. The fourth count-or-format guard to stop a release in this series, each on something genuinely new.
+
+
 `mkbootroot` staged `cbs` behind a `stat()` and silently omitted it when absent. The comment above it argued for exactly that, and the argument is kept rather than deleted because it was right when it was written: *"a box whose cix-hosttools image predates `pkg install --image=cix-hosttools cbs` simply has no CPDL engine, which is a normal state rather than an assembly failure ... it fails loudly at the right moment instead: publishing a build.cbs on such a host is refused."*
 
 ADR-0307 makes it false. Refusing at publish covers a recipe arriving that cannot be read; it does nothing for the case that now exists, where an already-published package's artifact is a `.cixpkg` and nothing on the host can extract it. A root without `cbs` is no longer a root that cannot publish PBS recipes — it is a root that **cannot install packages**, and 25 of them are already published in that format.
