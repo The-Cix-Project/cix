@@ -24,7 +24,26 @@ CBS wrote it inside the build container, cixd took the file rather than tarring 
 
 That third absence only means something if the check actually looked at the tree, so that was confirmed rather than assumed: `e->build_upperdir` is assigned `"%s/upper"` from the same `container_base` the merge later reads (`pkg.c:8856`), so the directory the check scans and the directory the install merges are one path. `usr/bin/probe-cixpkg` therefore came out of a CIXPKG with its execute bit — which is the single thing #139 is about.
 
-**What is not yet proven** is the ADR's full stated proof: the extracted tree compared file-for-file, content *and* mode, against the same package built as a tarball. One executable's mode bit is not a file-for-file comparison, and the evidence above is only one side of it. The probe was uninstalled from both images afterwards; the artifact stays published, which is the durable evidence.
+**And the file-for-file comparison, which is ADR-0307's own stated proof, now exists.** `probe-fmt-cixpkg` and `probe-fmt-targz` stage the identical five entries — an executable, an ordinary file, a read-only file, a file two directories down with a group-only mode, and a symlink — chosen because each is something a package format loses quietly and a whole-artifact checksum cannot notice. A third recipe, `probe-fmt-compare`, **declares both as build tools**, so ADR-0199's composition installs each through its own format's real path, and its build phase walks both trees:
+
+```
+PROOF ok  bin              dir mode 755
+PROOF ok  bin/tool         mode 755 size 23 sha 88fc19e1e631b074
+PROOF ok  etc              dir mode 755
+PROOF ok  etc/locked.conf  mode 444 size 7  sha 3a52732e0c982630
+PROOF ok  etc/plain.conf   mode 644 size 6  sha dacf36547c7774a0
+PROOF ok  lib              dir mode 755
+PROOF ok  lib/link         symlink -> sub/deep.txt
+PROOF ok  lib/sub          dir mode 755
+PROOF ok  lib/sub/deep.txt mode 640 size 5  sha 64896f89fd111900
+PROOF: cixpkg and tar.gz delivered identical trees (9 entries)
+```
+
+Name, type, mode, size and content digest, in both directions — a one-way walk would call a file the cixpkg lost a pass — with the entry count asserted so a walk that found nothing cannot read as agreement. The build fails on any mismatch, so a green build *is* the result.
+
+Two things make this a controlled comparison rather than two observations. Both trees reach the comparer through the **same** `pkg_file_copy()` into the composed image, so any difference surviving to that point came from the format and not from the copy. And one version is one format: the cache lists `probe-fmt-cixpkg-1-1-x86_64.cixpkg` (724 bytes) and `probe-fmt-targz-1-1-x86_64.tar.gz` (367 bytes), each signed, neither published twice.
+
+All three probes were uninstalled from the host afterwards. The probe was uninstalled from both images afterwards; the artifact stays published, which is the durable evidence.
 
 
 The flip. `cbs build` gets `--output /build/artifact.cixpkg`, so the build container packages what it built; cixd takes the finished file into the cache instead of tarring the tree. **That direction costs the host less, not more** — `pkg_cache_save()` forks `tar`, forks `gzip` and waits on both, on the reactor, over the whole staged tree, and taking a file out of the container's upperdir is a `rename()`.
