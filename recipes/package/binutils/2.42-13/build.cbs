@@ -1,0 +1,210 @@
+# binutils -- the GNU binary utilities: as, ld/ld.bfd, ar/ranlib,
+# objcopy/objdump/readelf/nm/size/strings/strip/addr2line/c++filt/
+# elfedit/gprof. Converted from build.sh to build.cbs (ADR-0305 stage
+# 4, #487), and the first package of this corpus -- as opposed to a
+# probe -- to publish as a .cixpkg under ADR-0307.
+#
+# Chosen first deliberately: binutils is a declared build tool of much
+# of this corpus, so its artifact is installed by build-environment
+# composition constantly. A leaf package would prove the format on a
+# path almost nothing walks.
+#
+# WHAT CHANGES, and each is a rule this platform already decided:
+#
+#   usr/share          -- NO LONGER DELETED. ADR-0306 (#491) withdrew
+#                         that practice, and carrying it across a
+#                         conversion is how a deleted licence stays
+#                         deleted. What binutils actually installs
+#                         there under MAKEINFO=true is not asserted
+#                         here and was not assumed -- see the install
+#                         phase; the change is that the tree survives,
+#                         and what is in it gets read off the built
+#                         artifact rather than guessed at.
+#   usr/lib/*.a, *.la  -- NO LONGER DELETED HERE. ADR-0251's finalize
+#                         phase drops both, after the install phase,
+#                         and a recipe restating platform policy is a
+#                         second place for that policy to live.
+#
+# WHAT DOES NOT CHANGE, because these are this package's own choices
+# rather than platform policy:
+#
+#   usr/x86_64-pc-linux-gnu  binutils' cross-compilation convention
+#                            installs a second, triplet-prefixed copy
+#                            of every tool. This platform never cross
+#                            compiles.
+#   usr/include              libbfd/libopcodes headers. Nothing in
+#                            this image set links against libbfd, and
+#                            with the archives gone they describe an
+#                            interface the artifact does not ship.
+#
+# AND ONE THING 2.42-12 GOT WRONG, which is why this revision exists.
+# 2.42-12 built and installed cleanly and then failed at packaging:
+#
+#   manifest: cannot write staged-tree manifest
+#   manifest: cannot collect staged-tree entries
+#   package output: cannot write CIXPKG output
+#
+# CIXPKG refuses a regular file whose link count is not 1
+# (cix-build-system src/manifest.c:108, and cix-build-system#182), and
+# binutils' `make install` hard-links ld to ld.bfd. Measured with a
+# probe that listed the staged tree immediately before packaging,
+# after both removals above had run:
+#
+#   -rwxr-xr-x 2 0 0 11296152 ld
+#   -rwxr-xr-x 2 0 0 11296152 ld.bfd
+#
+# Two names, one inode, 11 MB. Nothing else in the tree has a link
+# count above 1 and there are no symlinks at all, so this pair is the
+# whole of it.
+#
+# ld becomes a relative SYMLINK to ld.bfd, which CIXPKG carries
+# happily. That is not a workaround dressed up as an improvement: an
+# image installing this package gets its files copied in one at a
+# time, so the hard link never survived installation anyway -- the
+# tarball-era artifact shipped ld and ld.bfd as two independent 11 MB
+# copies and every image carrying binutils has been paying for both.
+#
+# Everything else is the same tarball at the same digest, the same
+# configure switches and the same out-of-tree build.
+package "binutils" {
+    version "2.42"
+    release 13
+    format "cixpkg"
+
+    sources {
+        main "binutils" {
+            url "https://ftp.gnu.org/gnu/binutils/binutils-2.42.tar.xz"
+            sha256 "f6e4d41fd5fc778b06b7891457b3620da5ecea1006c6a4a41ae998109f85a800"
+        }
+    }
+
+    # zlib and flex are what the BUILT tools need to start: ar/ld/
+    # objdump link libz for compressed sections, and ar links libfl
+    # (its own script-mode lexer). Both were found by running the
+    # tools in an environment holding only what was declared, never
+    # from reading configure output -- 2.42-2 declared neither and was
+    # correct only because the shared sandbox happened to have them
+    # lying around (#110).
+    #
+    # binutils appears in its own build list because it builds real
+    # static archives (libbfd.a, libopcodes.a, libiberty.a) on the way
+    # to the tools it installs, so it needs an `ar` before it can make
+    # one. zlib and flex are there for the same bootstrap reason: a
+    # declared tool normally arrives with its own runtime closure, but
+    # that closure is read from what was recorded when the tool was
+    # INSTALLED, and every binutils installed anywhere predates this
+    # recipe declaring either.
+    requires {
+        build {
+            compiler "gcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+            tool "zlib"
+            tool "flex"
+        }
+        runtime {
+            package "zlib"
+            package "flex"
+        }
+    }
+
+    # ADR-0224 as amended by ADR-0226. The reason recorded here is the
+    # one that does not rot with a compiler upgrade: as/ld sit under
+    # the gcc bootstrap, and BFD rewrites .eh_frame during every link,
+    # so TCC -- which has four recorded classes of silently-wrong
+    # output in this project's own history -- is the wrong provenance
+    # for exactly this package, whatever it can parse today.
+    #
+    # 2.42-8's OTHER reason, a bfd.c parse failure under TCC, is
+    # deliberately NOT carried forward as the justification: it was
+    # measured against 0.9.27 and is unverified against the pinned
+    # 0.9.28rc. btrfs-progs is the worked example of why that matters
+    # -- its recorded reason ("TCC cannot parse __thread") was
+    # measurably false against the pinned compiler while the real
+    # blocker was something else entirely.
+    toolchain "gcc" {
+        reason "provenance: as/ld sit under the gcc bootstrap and BFD rewrites .eh_frame on every link, so TCC's recorded silently-wrong-output classes are the wrong risk to place there (2.42-8)"
+    }
+
+    metadata {
+        "changelog" "2.42-13: converted from build.sh to build.cbs (ADR-0305 stage 4), and the first non-probe package to publish as a .cixpkg (ADR-0307). Stops deleting usr/share (ADR-0306, #491) and usr/lib/*.a and *.la, which finalize already removes. ld becomes a relative symlink to ld.bfd: make install hard-links them, CIXPKG refuses a link count above 1 (cix-build-system#182), and the copy-per-file install meant every image already carried 11 MB twice."
+    }
+
+    # Out-of-tree, which is binutils' own documented convention and
+    # avoids a known problem building certain subdirectories in-tree.
+    #
+    # --enable-targets=x86_64-pep adds the PE/COFF linker emulation
+    # (i386pep) beside the default ELF one. ADR-0215: the Cix EFI boot
+    # manager is a PE32+ image and GNU ld links one directly, which is
+    # why this platform needs no ELF-to-PE conversion step and why
+    # sd-boot's build needs Python and pyelftools where this does not.
+    #
+    # --disable-gold (ld.bfd covers every use here and gold wants a C++
+    # toolchain this set does not assume), --disable-gprofng (a newer
+    # profiler with dependencies nothing here uses), MAKEINFO=true
+    # (texinfo is not part of this toolchain).
+    #
+    # CC is an absolute path: a bare `gcc` computes its installation
+    # prefix as a RELATIVE path in this environment and then fails cc1
+    # lookup with a misleading "posix_spawnp: No such file or
+    # directory" (recorded in CLAUDE.md).
+    build {
+        mkdir "${src}/binutils/binutils-2.42/build"
+        cd "${src}/binutils/binutils-2.42/build" {
+            run "../configure" {
+                "--prefix=/usr"
+                "--enable-targets=x86_64-pep"
+                "--disable-multilib"
+                "--disable-gold"
+                "--disable-gprofng"
+                "--enable-deterministic-archives"
+                env "CC" = "/usr/bin/gcc"
+                env "CFLAGS" = "-g -O2"
+            }
+            run "make" {
+                jobs $jobs
+                "MAKEINFO=true"
+            }
+        }
+    }
+
+    install {
+        cd "${src}/binutils/binutils-2.42/build" {
+            run "make" {
+                "install"
+                "DESTDIR=${dest}"
+                "MAKEINFO=true"
+            }
+        }
+        remove tree "${dest}/usr/x86_64-pc-linux-gnu"
+        remove tree "${dest}/usr/include"
+        # See the header: ld and ld.bfd arrive as one inode under two
+        # names, which CIXPKG refuses. Relative, so it stays inside
+        # the staged root -- cbs_manifest's safe_link_target() rejects
+        # an absolute target as firmly as it rejects the hard link.
+        remove "${dest}/usr/bin/ld"
+        symlink "ld.bfd" to "${dest}/usr/bin/ld"
+        # The tools. Deliberately NO assertion on anything under
+        # usr/share: the change here is that this recipe stops
+        # REMOVING that tree, not that any particular file appears in
+        # it. What `make install` puts there with MAKEINFO=true is a
+        # question about binutils, and asserting a path picked from
+        # memory is how a conversion fails for a reason that has
+        # nothing to do with the conversion. What actually lands is
+        # read off the built artifact afterwards and recorded then.
+        require file "${dest}/usr/bin/ld.bfd" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/bin/ar" {
+            exists
+            nonempty
+        }
+    }
+}

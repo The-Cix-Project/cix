@@ -6,6 +6,41 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### binutils is the first real package to ship as a .cixpkg, and it found a format limit (#487, #491, cix-build-system#182, #183)
+
+`binutils@2.42-13`, converted from `build.sh` to CPDL — the first package of this corpus, as opposed to a probe, to publish as a CIXPKG. Chosen first deliberately: it is a declared build tool of much of the corpus, so its artifact is installed by build-environment composition constantly, where a leaf package would prove the format on a path almost nothing walks.
+
+```
+binutils-2.42-13-x86_64.cixpkg   .cixpkg   10928303 bytes  signed=True
+```
+
+**It failed the first time, and the failure was worth more than the conversion.** `2.42-12` built and installed cleanly, then:
+
+```
+manifest: cannot write staged-tree manifest
+manifest: cannot collect staged-tree entries
+package output: cannot write CIXPKG output
+```
+
+Three errors naming no file and no reason. Reading `cbs`'s `src/manifest.c` at `v0.1.29` found four silent `return 0` paths in `collect()` — a hard link, a setuid mode, an unsafe symlink target, and anything that is not a directory, file or symlink. A probe staging exactly one file and one hard link to it reproduced the errors byte for byte, which proved the mechanism but not that it was *this* package's cause: every installed binutils tool reports `nlink=1`.
+
+A second probe — binutils' own build with `ls -lR` over the staged tree immediately before packaging — settled it:
+
+```
+-rwxr-xr-x 2 0 0 11296152 ld
+-rwxr-xr-x 2 0 0 11296152 ld.bfd
+```
+
+Two names, one inode. Nothing else in the tree has a link count above 1 and there are no symlinks at all. The first guess — that the hard links were the triplet-prefixed copies under `usr/x86_64-pc-linux-gnu`, which this recipe removes — was wrong; the pair is in `usr/bin` itself. Filed upstream as **cix-build-system#182** (the capability gap, with binutils' own `ln` invocation as the real-world case) and **#183** (four silent refusals, priced against their own #180 fix).
+
+**`ld` becomes a relative symlink to `ld.bfd`,** which is not a workaround dressed up as an improvement: a package installs into an image by copying files one at a time, so the hard link never survived installation anyway — the tarball-era artifact shipped two independent 11 MB copies, and every image carrying binutils has been paying for both.
+
+**What `usr/share` actually restored, measured rather than claimed.** 139 of the package's 161 files are under it — and they are `info`, `locale` and `man`. **No licence file at all**: binutils' `make install` does not install one. The recipe's first draft said this "restores its own COPYING and COPYING3" and that was deleted before publishing precisely because it had not been checked. Worth carrying into the rest of #491: "stops deleting `usr/share`" and "restores a licence" are not the same statement, and which one is true is per-package.
+
+The new artifact is 10.9 MB against the old tarball's 54.2 MB. **Not a like-for-like measurement** and not offered as one: the new one carries 139 files the old one deleted, drops an 11 MB duplicate the old one shipped, and CIXPKG compresses with zstd where the tarball used gzip. Three changes at once, no attribution attempted.
+
+`#492`'s approval writer wrote `artifact_sha256 32a12bfe…` into the published recipe — the first approval this platform has recorded over a CIXPKG, and the same mechanism the 25 recipes of #497 rejoin the artifact tier through.
+
 ### A metadata value that is too long says so (#493)
 
 `POST /v1/pkg/recipes` answered a PBS recipe whose `changelog` exceeded its 511-byte field with *"recipe content failed to parse, or its pkg_name= doesn't match name"*. Both things that sentence names are false — `cbs explain --json` had already succeeded on the recipe and the code reporting the error was reading its output, and the name matched — and both are expensive to go and check, so it sends the author hunting for a CPDL syntax error that does not exist. It happened twice in one afternoon, converting `xz` and `zlib`.
