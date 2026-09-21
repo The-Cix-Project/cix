@@ -54,6 +54,7 @@ pkg_name="cbs"
 pkg_version="v0.1.23-2"
 pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix-build-system/archive/v0.1.23.tar.gz"
 pkg_sha256="66d5d353ffce97e07c0c8150f32f2d4e795c502b3dc24d04f092b43e2a18f18c"
+pkg_artifact_sha256="056f36d96272f14f2a614ca26ce7c53344f29c7758c06fd925ee4fd3a7d0a726"
 pkg_build_image="cix-builder"
 # A composed build environment contains precisely what is declared here.
 # No configure script, so this is the plain make list plus the two

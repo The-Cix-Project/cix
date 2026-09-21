@@ -37,6 +37,7 @@ pkg_name="libsodium"
 pkg_version="1.0.20-3"
 pkg_source="https://download.libsodium.org/libsodium/releases/libsodium-1.0.20.tar.gz"
 pkg_sha256="ebb65ef6ca439333c2bb41a0c1990587288da07f6c7fd07cb3a18cc18d30ce19"
+pkg_artifact_sha256="5eb007a663b1f940e4518dce57755b6309eb059bd0247824e7ceabe3e98723c4"
 pkg_build_image="cix-builder"
 # An autotools configure shells out constantly, and a composed build
 # environment has only what is declared here -- the -1 revision listed

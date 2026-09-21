@@ -71,6 +71,7 @@ pkg_upstream="kernel.org"
 pkg_version="7.2.3-3"
 pkg_source="https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.2.3.tar.xz https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/raw/image/kernel/qemu-part1.config?ref=370dde868ae177652e0892534be829cbe65bbef0"
 pkg_sha256="8ba259e8e7b13ec6ef0941c8a39ad90b24bd4a4d6c0010ba6bafb794550ecd03 f22ebfd2fabb2bd4256c882169aebdb668dec01c30a18f14e3bbf351cd6e4de9"
+pkg_artifact_sha256="e3490cb91e0445955b8340df40b16899a3a118cb7c2a2dc6ef11c25fae097d8e"
 pkg_depends=""
 #
 # The tools a kernel build needs, and where this list comes from (#206).

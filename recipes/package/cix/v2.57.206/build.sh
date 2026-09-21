@@ -487,6 +487,7 @@ pkg_name="cix"
 pkg_version="v2.57.206"
 pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.57.206.tar.gz"
 pkg_sha256="cd99f12f104f4de27a8825684809928028f032d4e97cdbfca760660bbc2fb692"
+pkg_artifact_sha256="9ba527454a91e9f9e53acf2a6702bcdb52a619eeecc179adfe8e5b650d78a3dc"
 pkg_build_depends="bash coreutils make tcc linux-headers openssl gcc binutils minisign sed tar gzip grep libarchive curl quickjs"
 pkg_build_caps="CAP_SYS_ADMIN"
 # RETIRED BY THE VERY BUILD THIS RECIPE PRODUCES (#482, ADR-0304), and

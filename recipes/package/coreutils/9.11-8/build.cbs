@@ -1,0 +1,139 @@
+# coreutils -- ls, cp, rm, install, nproc and the other ~100 tools
+# every recipe here declares. Converted from build.sh to build.cbs
+# (ADR-0305 stage 4, #487).
+#
+# WHAT CHANGES, and the first one is the largest single restoration
+# this conversion effort has made:
+#
+#   usr/share  -- no longer deleted (ADR-0306, #491). The shell recipe
+#                 removed the whole tree, which for coreutils is
+#                 info, man AND the full locale set. The artifact
+#                 grows accordingly, and the licence text this
+#                 platform lost across every GPL package comes back
+#                 with it.
+#
+#   the library staging loop -- twelve lines of first-match search
+#                 over three multiarch directories, plus a guard and
+#                 a cp -a, become three `stage library` operations
+#                 (cix-build-system#178). The hardcoded directory
+#                 list goes with them, which is the point: the shell
+#                 version searched a fixed set precisely BECAUSE
+#                 openssl and glibc move under this recipe's feet as
+#                 the platform collapses onto one library directory,
+#                 and the operation that knows how to look is a
+#                 better answer than a list that has to be maintained.
+#
+# WHY THOSE THREE LIBRARIES. Measured with ldd across all 102
+# binaries this build produces: every one links libc and nothing
+# else, except `ls`, which links libcap.so.2 for its file-capability
+# display, and the sha*sum family, which links libcrypto.so.3 for
+# OpenSSL-backed digests. libcap is staged as its soname plus the
+# versioned target it points at; libcrypto's filename already IS its
+# soname, so it needs no second name.
+#
+# usr/libexec/coreutils/libstdbuf.so is kept -- it is stdbuf's real
+# LD_PRELOAD buffering helper, not documentation.
+#
+# The __dso_handle stub: a direct tcc link with no libtool driving it
+# can leave __dso_handle undefined, since glibc's static-destructor
+# bookkeeping expects a symbol the normal CRT path supplies. Declared
+# weak, so a toolchain that already provides one silently wins, and
+# handed to configure through LIBS so every link gets it.
+#
+# FORCE_UNSAFE_CONFIGURE=1 because the build runs as root in the
+# sandbox and coreutils' configure refuses that by default.
+# _GL_EXTERN_INLINE_STDHEADER_BUG=1 is gnulib's own designed-in
+# escape hatch for a compiler whose C99 inline linkage it cannot
+# detect as broken -- it forces `static _GL_UNUSED`, so the
+# "defined twice" collision across translation units cannot happen.
+package "coreutils" {
+    version "9.11"
+    release 8
+    format "cixpkg"
+
+    sources {
+        main "coreutils" {
+            url "https://ftp.gnu.org/gnu/coreutils/coreutils-9.11.tar.xz"
+            sha256 "394024eda0a5955217ceda9cd1201e65dc8fa3aa29c2951135a49521d57c3cc3"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+            tool "findutils"
+            tool "diffutils"
+        }
+    }
+
+    # No runtime packages and no libcap/openssl build tools, matching
+    # the shell recipe exactly. coreutils SHIPS the two libraries it
+    # links inside its own package rather than depending on them, so
+    # there is nothing to declare at runtime -- and the two are
+    # reachable in a sandbox composed from the tools above without
+    # being named, which is how 9.11-7 built. `stage library` fails
+    # loudly and names the library if that ever stops being true,
+    # which is the same guard the shell loop hand-rolled.
+
+    metadata {
+        "artifact_sha256" "a8bb48400d2e60f20278989dbf2e7546e3a0b9558c2cc3ddd0bd3517f1e2da9f"
+        "changelog" "9.11-8: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same configure line. Stops deleting usr/share (ADR-0306, #491), which for coreutils is info, man and the whole locale set -- the largest single restoration in this conversion effort. The twelve-line first-match search over three multiarch directories that staged libcap and libcrypto becomes three stage library operations (cix-build-system#178)."
+    }
+
+    build {
+        cd "${src}/coreutils/coreutils-9.11" {
+            write "${src}/coreutils/coreutils-9.11/dso_stub.c" "void *__dso_handle __attribute__((weak)) = (void *)0;\n"
+            run "tcc" {
+                "-c"
+                "dso_stub.c"
+                "-o"
+                "dso_stub.o"
+            }
+            run "./configure" {
+                "--prefix=/usr"
+                "LIBS=${src}/coreutils/coreutils-9.11/dso_stub.o"
+                env "CC" = "tcc"
+                env "FORCE_UNSAFE_CONFIGURE" = "1"
+                env "CFLAGS" = "-D_FORTIFY_SOURCE=0 -D_GL_EXTERN_INLINE_STDHEADER_BUG=1"
+            }
+            run "make" {
+                "MAKEINFO=true"
+                jobs $jobs
+            }
+        }
+    }
+
+    install {
+        cd "${src}/coreutils/coreutils-9.11" {
+            run "make" {
+                "install"
+                "DESTDIR=${dest}"
+                "MAKEINFO=true"
+            }
+        }
+        mkdir "${dest}/usr/lib" chmod 0755
+        stage library "libcap.so.2" into "${dest}/usr/lib"
+        stage library "libcap.so.2.66" into "${dest}/usr/lib"
+        stage library "libcrypto.so.3" into "${dest}/usr/lib"
+        require file "${dest}/usr/bin/ls" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/bin/sha256sum" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/libexec/coreutils/libstdbuf.so" {
+            exists
+            nonempty
+        }
+    }
+}

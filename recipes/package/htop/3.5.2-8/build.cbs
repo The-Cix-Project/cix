@@ -1,0 +1,129 @@
+# htop, as a PBS recipe (ADR-0305 stage 4).
+#
+# A translation of recipes/package/htop/3.5.2-7/build.sh: same tarball
+# at the same digest, the same six configure switches, the same
+# `make install`.
+#
+# The shell recipe's own gate translates directly, and this is the first
+# conversion here where CPDL says it better. It did:
+#
+#     out=$(./htop --version 2>&1) || { echo "... does not run"; exit 1; }
+#     case "$out" in
+#     *3.5.2*) echo "  built htop runs: $out" ;;
+#     *) echo "... did not report the expected version"; exit 1 ;;
+#     esac
+#
+# -- twelve lines asserting two things: that the binary runs at all, and
+# that it reports the version this recipe claims to build. `run` with
+# `expect { stdout contains "3.5.2" }` asserts both: a non-zero exit
+# fails the run, and output that does not contain the version fails the
+# assertion. The hand-written messages are not translated because the
+# engine's own name the operation and the phase.
+package "htop" {
+    version "3.5.2"
+    release 8
+    format "cixpkg"
+
+    license "GPL-2.0-or-later"
+
+    sources {
+        main "htop" {
+            url "https://github.com/htop-dev/htop/releases/download/3.5.2/htop-3.5.2.tar.xz"
+            sha256 "225128e697c4a8c8a878fd0078c965ff8bd5fb24913bfc8473b8edbd50f843f8"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "ncurses"
+        }
+        runtime {
+            package "ncurses"
+        }
+    }
+
+    metadata {
+        "changelog" "3.5.2-8: converted from build.sh to build.cbs (ADR-0305 stage 4). Same tarball at the same digest and the same configure switches. The twelve-line shell gate that ran ./htop --version and matched the version out of its output becomes run ... expect { stdout contains \"3.5.2\" }, which asserts the same two things. Stops deleting usr/share/doc (ADR-0306, #491)."
+    }
+
+    prepare {
+        run "ls" {
+            "-la"
+            "${src}/htop"
+        }
+        require directory "${src}/htop/htop-3.5.2" {
+            exists
+        }
+    }
+
+    build {
+        # ac_cv_prog_CC=tcc alongside CC: htop's configure probes for a
+        # compiler and the cache variable settles it, which the shell
+        # form set for the same reason.
+        #
+        # It is a POSITIONAL argument here and an environment variable
+        # in the shell recipe, and that is forced rather than chosen.
+        # CPDL's `env` accepts `[A-Z_][A-Z0-9_]*` only, and autoconf
+        # cache variables are lowercase by convention, so
+        # `env "ac_cv_prog_CC" = "tcc"` is refused with CPDL-E3004
+        # "invalid environment name" (cix-build-system#179 -- 10
+        # packages in this corpus set one).
+        #
+        # Autoconf reads a VAR=VALUE argument as a shell variable in
+        # configure's own scope before it consults the cache, so the
+        # effect here is the same. It would NOT be the same for a cache
+        # variable that has to reach a `make` or a sub-configure, which
+        # is why the issue asks for the rule rather than working around
+        # it everywhere.
+        cd "${src}/htop/htop-3.5.2" {
+            run "./configure" {
+                "--prefix=/usr"
+                "--with-curses=ncursesw"
+                "--disable-capabilities"
+                "--disable-delayacct"
+                "--disable-sensors"
+                "--disable-hwloc"
+                "ac_cv_prog_CC=tcc"
+                env "CC" = "tcc"
+            }
+            run "make" {
+                jobs $jobs
+            }
+        }
+    }
+
+    check {
+        # The binary runs, and it is the version this recipe says it is.
+        # A non-zero exit fails the run; output without the version
+        # fails the assertion.
+        cd "${src}/htop/htop-3.5.2" {
+            run "./htop" {
+                "--version"
+                expect {
+                    stdout contains "3.5.2"
+                }
+            }
+        }
+    }
+
+    install {
+        cd "${src}/htop/htop-3.5.2" {
+            run "make" {
+                "DESTDIR=${dest}"
+                "install"
+            }
+        }
+        require file "${dest}/usr/bin/htop" {
+            exists
+            nonempty
+        }
+    }
+}

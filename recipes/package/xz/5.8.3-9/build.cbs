@@ -1,0 +1,98 @@
+# xz, as a PBS recipe (ADR-0305 stage 4).
+#
+# A translation of recipes/package/xz/5.8.3-8/build.sh: same tarball at
+# the same digest, same configure switches, same `make install`.
+#
+# Both of the shell recipe's post-install removals are gone, for two
+# different reasons:
+#
+#   rm -rf usr/share            -- ADR-0306 withdrew this practice. The
+#                                  platform removes what it CANNOT use,
+#                                  never what it merely does not read.
+#                                  xz is one of the 57 recipes #491
+#                                  counts as still pruning by hand.
+#   rm -f liblzma.{a,la}        -- redundant, not wrong. ADR-0251's
+#                                  clauses 2 and 3 already drop a static
+#                                  archive superseded by a shared object
+#                                  beside it, and every .la file, in the
+#                                  finalize phase that runs after this.
+#                                  A recipe restating platform policy is
+#                                  a second place for that policy to
+#                                  live, which is what One Source of
+#                                  Truth forbids.
+package "xz" {
+    version "5.8.3"
+    release 9
+    format "cixpkg"
+
+    # xz 5.8.x is 0BSD for the core library and tools; the package also
+    # carries GPL'd scripts (xzdiff, xzgrep, xzmore) and an LGPL'd
+    # getopt replacement. SPDX for the tree as shipped.
+    license "0BSD AND GPL-2.0-or-later AND LGPL-2.1-or-later"
+
+    sources {
+        main "xz" {
+            url "https://github.com/tukaani-project/xz/releases/download/v5.8.3/xz-5.8.3.tar.gz"
+            sha256 "3d3a1b973af218114f4f889bbaa2f4c037deaae0c8e815eec381c3d546b974a0"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+        }
+    }
+
+    metadata {
+        "changelog" "5.8.3-9: converted from build.sh to build.cbs (ADR-0305 stage 4). Same tarball at the same digest and the same configure switches. Stops deleting usr/share (ADR-0306, #491), and stops deleting liblzma.a/.la, which ADR-0251's finalize phase already removes -- a recipe restating platform policy is a second place for it to live."
+    }
+
+    prepare {
+        run "ls" {
+            "-la"
+            "${src}/xz"
+        }
+        require directory "${src}/xz/xz-5.8.3" {
+            exists
+        }
+    }
+
+    build {
+        cd "${src}/xz/xz-5.8.3" {
+            run "./configure" {
+                "--prefix=/usr"
+                "--disable-doc"
+                "--disable-symbol-versions"
+                env "CC" = "tcc"
+            }
+            run "make" {
+                jobs $jobs
+            }
+        }
+    }
+
+    install {
+        cd "${src}/xz/xz-5.8.3" {
+            run "make" {
+                "DESTDIR=${dest}"
+                "install"
+            }
+        }
+        require file "${dest}/usr/bin/xz" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/lib/liblzma.so.5" {
+            exists
+            nonempty
+        }
+    }
+}

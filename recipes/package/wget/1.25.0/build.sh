@@ -24,6 +24,7 @@ pkg_name="wget"
 pkg_version="1.25.0"
 pkg_source="https://mirrors.kernel.org/gnu/wget/wget-1.25.0.tar.gz"
 pkg_sha256="766e48423e79359ea31e41db9e5c289675947a7fcf2efdcedb726ac9d0da3784"
+pkg_artifact_sha256="b35e9b4291630e47046595b8aaed76c56cb72eca494f15d2acfea67de2a1d2c6"
 pkg_depends="openssl zlib"
 #
 # Build tools derived rather than guessed: the baseline the declaring

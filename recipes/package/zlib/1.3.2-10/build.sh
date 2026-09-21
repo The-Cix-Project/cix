@@ -12,6 +12,7 @@ pkg_version="1.3.2-10"
 pkg_changelog="1.3.2-10: rebuild against tcc 0.9.28rc-10, which emits PT_GNU_STACK (#228). The artifact approval is dropped because those bytes came from rc-9."
 pkg_source="https://zlib.net/zlib-1.3.2.tar.gz"
 pkg_sha256="bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16"
+pkg_artifact_sha256="e1f012c63356345db3d9e7c204382a4ab8eceef209b3b0c468bd6dc89ccb053b"
 
 # Prebuilt artifact for THIS exact version (ADR-0122 package tier).
 # With it set, an install fetches <artifact base_url>/zlib-1.3.2-6.tar.gz

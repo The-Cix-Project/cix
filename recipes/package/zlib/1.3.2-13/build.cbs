@@ -1,0 +1,109 @@
+# zlib, as a PBS recipe (ADR-0305 stage 4).
+#
+# A translation of recipes/package/zlib/1.3.2-11/build.sh: same tarball
+# at the same digest, the same three environment variables, the same
+# `make install`.
+#
+# The shell recipe's guard
+#
+#     if [ ! -f libz.so.1 ]; then echo "... static-only" >&2; exit 1; fi
+#
+# becomes a `require file`, and moves from install to the end of build,
+# where the thing it checks is actually produced. That is the same
+# assertion in the language's own terms rather than a shell idiom
+# carried across -- and it fails with the path it was looking for
+# instead of a message someone had to write.
+#
+# Both post-install removals are gone: usr/share/man by ADR-0306 (#491),
+# and usr/lib/*.a because ADR-0251's finalize phase already drops a
+# static archive superseded by a shared object beside it. libz.a is
+# exactly that case.
+package "zlib" {
+    version "1.3.2"
+    release 13
+    format "cixpkg"
+
+    license "Zlib"
+
+    sources {
+        main "zlib" {
+            url "https://zlib.net/zlib-1.3.2.tar.gz"
+            sha256 "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "binutils"
+            tool "linux-headers"
+        }
+    }
+
+    metadata {
+        "changelog" "1.3.2-13: converted from build.sh to build.cbs (ADR-0305 stage 4). Same tarball at the same digest and the same LDSHARED/LDFLAGS pair that makes zlib's hand-written configure emit a shared library under TCC. The static-only guard is a require file at the end of build. Stops deleting usr/share/man (ADR-0306, #491) and usr/lib/*.a. -12 asserted on libz.so.1, a symlink after install (cix-build-system#175)."
+    }
+
+    prepare {
+        run "ls" {
+            "-la"
+            "${src}/zlib"
+        }
+        require directory "${src}/zlib/zlib-1.3.2" {
+            exists
+        }
+    }
+
+    build {
+        # All three are ENVIRONMENT variables, not make overrides: zlib
+        # ships a hand-written configure (not autoconf) that reads them
+        # from the environment to decide how to link. LDSHARED carries
+        # the soname explicitly because TCC does not derive one, and
+        # LDFLAGS names libtcc1.a because a TCC-linked shared object
+        # needs its compiler runtime and nothing else supplies it.
+        cd "${src}/zlib/zlib-1.3.2" {
+            run "./configure" {
+                "--prefix=/usr"
+                env "CC" = "tcc"
+                env "LDSHARED" = "tcc -shared -Wl,-soname,libz.so.1"
+                env "LDFLAGS" = "/usr/lib/tcc/libtcc1.a"
+            }
+            run "make" {
+                jobs $jobs
+            }
+            # The guard, in CPDL's terms. A configure that falls back to
+            # static-only produces no libz.so.1 and every later link
+            # against -lz silently takes the archive instead.
+            require file "${src}/zlib/zlib-1.3.2/libz.so.1" {
+                exists
+                nonempty
+            }
+        }
+    }
+
+    install {
+        cd "${src}/zlib/zlib-1.3.2" {
+            run "make" {
+                "install"
+                "DESTDIR=${dest}"
+            }
+        }
+        # libz.so.1.3.2, NOT libz.so.1: `require file` lstat()s and
+        # demands S_ISREG, so it fails on a symlink and reports "does
+        # not exist" (cix-build-system#175). The in-build check above is
+        # a different case -- zlib's own configure writes libz.so.1 as a
+        # REAL file there, and only `make install` turns it into a link.
+        require file "${dest}/usr/lib/libz.so.1.3.2" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/include/zlib.h" {
+            exists
+            nonempty
+        }
+    }
+}

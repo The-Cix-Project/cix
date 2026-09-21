@@ -26,6 +26,7 @@ pkg_name="byobu"
 pkg_version="5.133-2"
 pkg_source="https://launchpad.net/byobu/trunk/5.133/+download/byobu_5.133.orig.tar.gz"
 pkg_sha256="4d8ea48f8c059e56f7174df89b04a08c32286bae5a21562c5c6f61be6dab7563"
+pkg_artifact_sha256="f09bbc468e3a9f71c9b1f6941220baecd6c33bd50ab4f2960bc9144f9297212d"
 
 # Runtime only. byobu compiles NOTHING -- see pkg_build().
 #   screen  the multiplexer it drives. tmux is not packaged in this

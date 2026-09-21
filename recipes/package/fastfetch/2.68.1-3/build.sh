@@ -46,6 +46,7 @@ pkg_name="fastfetch"
 pkg_version="2.68.1-3"
 pkg_source="https://github.com/fastfetch-cli/fastfetch/archive/refs/tags/2.68.1.tar.gz"
 pkg_sha256="c268cfcd230cc7ed5447fb34ed21bf4977315c7104356a39388b6ba784ad11b0"
+pkg_artifact_sha256="a224cfdca74d7d1ed7e5c4b95c1857eb92cef445617f18fa4cff77f1b1fc06ae"
 pkg_depends=""
 #
 # ADR-0224 as amended by ADR-0226.

@@ -13,6 +13,7 @@ pkg_name="probe-bzip2-entries"
 pkg_version="2"
 pkg_source="https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"
 pkg_sha256="ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269"
+pkg_artifact_sha256="f3b3de8ac4bab765b81ae7dedcbf40357745f09b96769d4495812c6690be59d7"
 pkg_depends=""
 pkg_build_depends="bash coreutils findutils tar gzip"
 

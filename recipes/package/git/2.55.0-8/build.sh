@@ -28,6 +28,7 @@ pkg_name="git"
 pkg_version="2.55.0-8"
 pkg_source="https://www.kernel.org/pub/software/scm/git/git-2.55.0.tar.xz"
 pkg_sha256="457fdb04dc8728e007d4688695e6912e6f680727920f2a40bf11eacc17505357"
+pkg_artifact_sha256="e261dd3496652e87b4b792d05c7a0d26958ab0470dcfc44af2d3e57a13a2eb9e"
 pkg_depends="zlib"
 #
 # Build tools derived rather than guessed: the baseline the declaring

@@ -31,6 +31,7 @@ pkg_name="zstd"
 pkg_version="1.5.7-3"
 pkg_source="https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz"
 pkg_sha256="eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"
+pkg_artifact_sha256="ef3816de6d305b02323b0db672191c69c3fd3dd7eae67d19dc6fc3989c5298d6"
 pkg_build_image="cix-builder"
 # A composed build environment contains precisely what is declared here,
 # and the -1 revision learned that the hard way for the second time in a

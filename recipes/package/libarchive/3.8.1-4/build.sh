@@ -82,6 +82,7 @@ pkg_name="libarchive"
 pkg_version="3.8.1-4"
 pkg_source="https://github.com/libarchive/libarchive/releases/download/v3.8.1/libarchive-3.8.1.tar.gz"
 pkg_sha256="bde832a5e3344dc723cfe9cc37f8e54bde04565bfe6f136bc1bd31ab352e9fab"
+pkg_artifact_sha256="2d0717977a0c0e0ff1d3ab54607037c1fc0dfcf9cd90fe55e30df36ef227ee50"
 pkg_build_image="cix-builder"
 # A composed build environment contains precisely what is declared here.
 # This is the autotools list (libsodium's, which is chrony's) plus the

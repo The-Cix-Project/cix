@@ -36,6 +36,7 @@ pkg_name="minisign"
 pkg_version="0.12-3"
 pkg_source="https://github.com/jedisct1/minisign/archive/refs/tags/0.12.tar.gz"
 pkg_sha256="796dce1376f9bcb1a19ece729c075c47054364355fe0c0c1ebe5104d508c7db0"
+pkg_artifact_sha256="fa325c12e8372eb752fbccc74899b9f08a7d213fd6817de9b715eacb880caa62"
 pkg_build_image="cix-builder"
 # linux-headers because glibc's own <limits.h> reaches for
 # <linux/limits.h> through bits/local_lim.h -- the -1 revision

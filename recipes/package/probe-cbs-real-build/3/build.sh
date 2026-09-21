@@ -77,6 +77,7 @@ pkg_name="probe-cbs-real-build"
 pkg_version="3"
 pkg_source="https://github.com/facebook/zstd/archive/refs/tags/v1.5.4.tar.gz"
 pkg_sha256="35ad983197f8f8eb0c963877bf8be50490a0b3df54b4edeb8399ba8a8b2f60a4"
+pkg_artifact_sha256="ee4ef7c2ad4954e29bb804403a7ee572ccd484dfa6bc76653fe61a363dc80474"
 pkg_build_image="cix-builder"
 # cbs plus its own runtime libraries, plus what CBS will need to shell
 # out to for zstd's build (it runs make, which runs the compiler) and

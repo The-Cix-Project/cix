@@ -6,6 +6,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A live credential was in HEAD, and 254 artifact approvals were only on the box (#502)
+
+Three separate git/box divergences, all found by one sweep while converting the next batch of recipes. None was caused by this batch; the sweep is what made them visible.
+
+**`recipes/package/kernel/6.18.40-16/build.sh` carried a real, still-current credential.** `pkg_source=` held `https://osakka:<password>@git.home.arpa/...` where 6.18.40-15 directly beside it has `{{REPO_TOKEN}}`. It arrived through `ca5661e4` ("58 published recipes return to git"), which pulled recipes back from the box with `pkg recipe show` — and that read-back returns the URL with the credential in it.
+
+#405 added `redact_repo_token()` on both sides of persistence for exactly this, and it does not cover this case: it substitutes the one string `pkg_repo_token()` returns, and this URL uses a basic-auth password rather than the configured API token, so there is nothing to match. The function's own comment says the outbound half makes already-stored recipes "stop being served", which is true only of recipes carrying *that* token. #502 carries the fix — redact the userinfo component of a URL by shape, not by equality with one known secret — and the comment correction with it. Removed from HEAD here; it remains in five commits of history and the credential is still in use, so rotation and any history rewrite are the owner's.
+
+**254 recipes were missing their artifact approval in git.** The daemon writes `artifact_sha256` into a recipe's stored metadata after a successful publish — the one post-hoc edit recipe immutability permits — and it had never been pulled back. This is the same finding as the twenty CPDL recipes in the previous entry, an order of magnitude larger: it spans the shell corpus too, back through the whole project. Each was synced only where the box copy differed from git by exactly one added approval line and nothing else; 251 landed in this commit. A recipe without its approval is one a fresh host must **rebuild from source** rather than install from the cache, so this is not cosmetic.
+
+**Thirteen published recipes had no file in git at all** — `cix v2.57.137`, `htop 3.5.2-8`, `libmnl 1.0.5-6`, `ncurses 6.6-9`, `xz 5.8.3-9`, `zlib 1.3.2-12` and `-13`, and `cbs v0.1.26-1` through `v0.1.28-1`. Every one is a single-revision hole in an otherwise complete sequence, which is the signature of a publish whose commit was never made. All pulled back. Throwaway `probe-*` recipes are left alone: they are ephemeral by design.
+
+**Two divergences are left deliberately unresolved, because overwriting either would destroy information.** `diffutils/3.10-5` has a *different* approval in git (`d24a309d…`) from the box (`fa6edce5…`) — two distinct byte sequences approved for one immutable recipe version, which needs someone to decide which bytes are real rather than a script picking the newer. And `node/24.21.0-1`'s git copy carries a *more accurate* comment than the published one, describing what the built ELF actually links; the published text predates the measurement.
+
 ### recipes: dnsmasq, flex, kmod, bash and screen convert; screen's libcrypt and twenty missing approvals (#487, #491, #389, #501)
 
 Five more of ADR-0305's stage 4, each a translation of the shell recipe at the same tarball and the same digest, published as `.cixpkg` under ADR-0307. Every one was checked file-for-file against the revision it replaces, and that check earned its place twice in five packages — see kmod and bash below.

@@ -26,6 +26,7 @@ pkg_name="cmake"
 pkg_version="4.4.3-2"
 pkg_source="https://cmake.org/files/v4.4/cmake-4.4.3.tar.gz"
 pkg_sha256="c46400618b4f1f2b43507f24fb22f3ae830c3416cf23b776e16e1d413aa892f0"
+pkg_artifact_sha256="00e7e6fe5a644ba3192afeb4aea85c35256a14e9e398a31fe836793591758be6"
 pkg_depends=""
 #
 # ADR-0224 as amended by ADR-0226: gcc, recorded for auditability rather

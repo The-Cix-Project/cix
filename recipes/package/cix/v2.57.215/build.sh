@@ -580,6 +580,7 @@ pkg_name="cix"
 pkg_version="v2.57.215"
 pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.57.215.tar.gz"
 pkg_sha256="460279f90db3b7cbe862ab44b474434c203eda1853968db21d4276422654f7ef"
+pkg_artifact_sha256="160c9f0bac0ee4c07165b1d85f8f6e103e78dfc3feb88939275f1fe846299efd"
 pkg_build_depends="bash coreutils make tcc linux-headers openssl gcc binutils minisign sed tar gzip grep libarchive curl quickjs"
 pkg_build_caps="CAP_SYS_ADMIN"
 # What cixd needs in order to RUN. Measured, not guessed: cixd's link

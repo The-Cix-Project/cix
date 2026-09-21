@@ -45,6 +45,7 @@ pkg_name="probe-minisign"
 pkg_version="2"
 pkg_source="https://mirrors.kernel.org/gnu/hello/hello-2.12.1.tar.gz"
 pkg_sha256="8d99142afd92576f30b0cd7cb42a8dc6809998bc5d607d88761f512e26c7db20"
+pkg_artifact_sha256="a9203b32399b8cd505ccfada18ca0e5dfdc74eca1bc76080cf8f6d702b90aa0f"
 pkg_build_image="cix-builder"
 pkg_build_depends="bash coreutils minisign"
 

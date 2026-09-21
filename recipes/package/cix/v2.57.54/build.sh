@@ -30,6 +30,7 @@ pkg_name="cix"
 pkg_version="v2.57.54"
 pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.57.54.tar.gz"
 pkg_sha256="da88d7204cb41ffc06dc2a5957a43e90ce6806beff6cb6254d61461453b78468"
+pkg_artifact_sha256="63a8bf38870f48f9353c47453c276dafa01e944ee82487f313ec6dd618522ecc"
 pkg_build_depends="bash coreutils make tcc linux-headers openssl gcc binutils"
 pkg_build_caps="CAP_SYS_ADMIN"
 # ADR-0208: cix-builder's one job is building Cix. This said

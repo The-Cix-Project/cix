@@ -12,6 +12,7 @@ pkg_name="elfutils"
 pkg_version="0.192-12"
 pkg_source="https://sourceware.org/elfutils/ftp/0.192/elfutils-0.192.tar.bz2"
 pkg_sha256="616099beae24aba11f9b63d86ca6cc8d566d968b802391334c91df54eab416b4"
+pkg_artifact_sha256="da6f649ec7674e0b9bbe9429e5edf5473ab336e2a84ec6a9bfbe1830c52c243a"
 # libelf.so.1 links against all three, for the compressed-section
 # support that is most of the reason to use libelf at all. Read off the
 # built library rather than reasoned about:
