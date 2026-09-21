@@ -1,0 +1,94 @@
+# autoconf -- autoconf/autoheader/autom4te/autoreconf/autoscan/
+# autoupdate/ifnames. Converted from build.sh to build.cbs (ADR-0305
+# stage 4, #487).
+#
+# Nothing here is compiled: every tool is a real shell or Perl script
+# sed-substituted from a .in template at build time, confirmed with
+# `file` when the shell recipe was written.
+#
+# WHAT CHANGES: the three usr/share removals are gone (ADR-0306,
+# #491). They took info, man and locale -- exactly the categories that
+# ADR withdrew, and nothing else. The rest of usr/share was already
+# kept deliberately and stays kept: the Autom4te::* Perl modules and
+# every autoconf/autotest/m4sugar .m4 macro file under
+# usr/share/autoconf are load-bearing runtime data, not documentation,
+# and autoconf cannot run without them.
+#
+# No hard links to work around here, checked before writing rather
+# than discovered in a failed build: the seven installed tools are
+# seven distinct names with no versioned twin, unlike automake's
+# aclocal-1.16 pair. See cix-build-system#182 for why that matters.
+package "autoconf" {
+    version "2.71"
+    release 4
+    format "cixpkg"
+
+    sources {
+        main "autoconf" {
+            url "https://ftp.gnu.org/gnu/autoconf/autoconf-2.71.tar.xz"
+            sha256 "f14c83cfebcc9427f2c3cea7258bd90df972d92eb26752da4ddad81c87a0faa4"
+        }
+    }
+
+    # perl and m4 are runtime dependencies rather than build-time
+    # conveniences, read off the generated scripts: every tool but
+    # autoconf itself has a hardcoded `#!/usr/bin/perl`, and
+    # autoconf's own wrapper hardcodes M4=/usr/bin/m4 and AWK=gawk.
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+            tool "m4"
+            tool "perl"
+            tool "findutils"
+            tool "diffutils"
+        }
+        runtime {
+            package "m4"
+            package "perl"
+            package "gawk"
+        }
+    }
+
+    metadata {
+        "changelog" "2.71-4: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same configure line. Stops deleting usr/share/{info,man,locale} (ADR-0306, #491); the rest of usr/share was always kept, because the Autom4te Perl modules and the m4sugar macro files under usr/share/autoconf are runtime data this tool cannot run without."
+    }
+
+    build {
+        cd "${src}/autoconf/autoconf-2.71" {
+            run "./configure" {
+                "--prefix=/usr"
+                env "CC" = "tcc"
+            }
+            run "make" {
+                jobs $jobs
+                "MAKEINFO=true"
+            }
+        }
+    }
+
+    install {
+        cd "${src}/autoconf/autoconf-2.71" {
+            run "make" {
+                "install"
+                "DESTDIR=${dest}"
+                "MAKEINFO=true"
+            }
+        }
+        require file "${dest}/usr/bin/autoconf" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/bin/autom4te" {
+            exists
+            nonempty
+        }
+    }
+}

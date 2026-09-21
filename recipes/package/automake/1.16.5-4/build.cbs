@@ -1,0 +1,112 @@
+# automake -- aclocal/automake and their -1.16 twins. Converted from
+# build.sh to build.cbs (ADR-0305 stage 4, #487).
+#
+# Perl scripts, not compiled binaries: aclocal and automake are
+# sed-substituted from bin/aclocal.in and bin/automake.in.
+#
+# WHAT CHANGES, and both are rules this platform already decided:
+#
+#   usr/share/{info,man,doc}  -- NO LONGER DELETED (ADR-0306, #491).
+#                                Exactly the withdrawn categories.
+#                                usr/share/aclocal-1.16 and
+#                                usr/share/automake-1.16 were always
+#                                kept and stay kept: the Automake::*
+#                                Perl modules and the install-sh /
+#                                missing / depcomp / config.guess
+#                                boilerplate that --add-missing copies
+#                                into other projects are runtime data,
+#                                not documentation.
+#
+#   automake-1.16, aclocal-1.16 -- become relative SYMLINKS.
+#                                automake's install-exec-hook creates
+#                                the versioned name as a HARD LINK to
+#                                the unversioned one, and CIXPKG
+#                                refuses a regular file whose link
+#                                count is not 1 (cix-build-system#182,
+#                                src/manifest.c:140). binutils hit the
+#                                same wall and cost two builds to
+#                                diagnose; this one is pre-empted,
+#                                from the installed 1.16.5-3 file list
+#                                showing both names.
+#
+# The remove-then-symlink is correct whichever name upstream made the
+# "real" file, and that is worth saying because it is easy to worry
+# about: with a hard link both names ARE one file, so removing either
+# leaves the other a complete regular file, and pointing the removed
+# name at it restores the pair.
+package "automake" {
+    version "1.16.5"
+    release 4
+    format "cixpkg"
+
+    sources {
+        main "automake" {
+            url "https://ftp.gnu.org/gnu/automake/automake-1.16.5.tar.xz"
+            sha256 "f01d58cd6d9d77fbdca9eb4bbd5ead1988228fdb73d6f7a201f5f8d6b118b469"
+        }
+    }
+
+    # autoconf is a real build input, not just a runtime one:
+    # automake's own configure probes for it, and aclocal's job is
+    # expanding autoconf's macro files.
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+            tool "m4"
+            tool "perl"
+            tool "autoconf"
+            tool "findutils"
+            tool "diffutils"
+        }
+        runtime {
+            package "autoconf"
+        }
+    }
+
+    metadata {
+        "changelog" "1.16.5-4: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same configure line. Stops deleting usr/share/{info,man,doc} (ADR-0306, #491). automake-1.16 and aclocal-1.16 become relative symlinks: install-exec-hook hard-links them to the unversioned names, and CIXPKG refuses a link count above 1 (cix-build-system#182)."
+    }
+
+    build {
+        cd "${src}/automake/automake-1.16.5" {
+            run "./configure" {
+                "--prefix=/usr"
+                env "CC" = "tcc"
+            }
+            run "make" {
+                jobs $jobs
+                "MAKEINFO=true"
+            }
+        }
+    }
+
+    install {
+        cd "${src}/automake/automake-1.16.5" {
+            run "make" {
+                "install"
+                "DESTDIR=${dest}"
+                "MAKEINFO=true"
+            }
+        }
+        remove "${dest}/usr/bin/automake-1.16"
+        remove "${dest}/usr/bin/aclocal-1.16"
+        symlink "automake" to "${dest}/usr/bin/automake-1.16"
+        symlink "aclocal" to "${dest}/usr/bin/aclocal-1.16"
+        require file "${dest}/usr/bin/automake" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/bin/aclocal" {
+            exists
+            nonempty
+        }
+    }
+}

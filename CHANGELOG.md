@@ -42,6 +42,32 @@ An engine that runs but cannot be hashed records a failure rather than being tre
 
 **And cbs#182 was closed without hard-link support, which is the right outcome and worth recording.** `main`'s `manifest.c:140` still refuses `st_nlink != 1` — what changed is that it now says so: *"%s is a hard link (link count %lu); CIXPKG entries must have exactly one link"*. That matches the argument this project put to them in its own follow-up: a package installs into an image by copying files one at a time, so a hard link never survives installation, and a format declining to promise it is being honest rather than incomplete. The consequence for recipes is unchanged and now discoverable — `binutils` keeps its `ld`-as-symlink, and the next package with the same shape gets told which path and why instead of three errors naming nothing.
 
+### autoconf and automake convert, and the hard-link trap is pre-empted rather than hit (#487, #491)
+
+Two conversions, both installed on the first attempt:
+
+```
+autoconf-2.71-4-x86_64.cixpkg     621323 bytes  signed=True
+automake-1.16.5-4-x86_64.cixpkg   562097 bytes  signed=True
+```
+
+Both earned an approval on publish (`a80d4174…`, `4dae6a67…`), so neither joins #497's backlog.
+
+**automake would have failed exactly as binutils did, and did not, because the shape was checked first.** Its `install-exec-hook` creates `automake-1.16` and `aclocal-1.16` as hard links to the unversioned names, and CIXPKG refuses a link count above 1 (cix-build-system#182). The tell was free: the *installed* `1.16.5-3` file list already showed both names in `usr/bin`, which is all the warning needed. Both versioned names are now relative symlinks — and that is safe whichever name upstream made the "real" file, because with a hard link both names *are* one file, so removing either leaves the other complete and pointing the removed name at it restores the pair. `autoconf` was checked the same way and has no twins, so it needed nothing.
+
+That is the difference the binutils investigation bought: the same trap cost two builds and a source read the first time, and cost a file-list lookup the second.
+
+**What #491 actually restored here, measured rather than assumed** — and it differs per package, as binutils already showed:
+
+| | usr/share subtrees now present |
+|---|---|
+| autoconf | `autoconf`, **`info`**, **`man`** |
+| automake | `aclocal`, `aclocal-1.16`, `automake-1.16`, **`doc`**, **`info`**, **`man`** |
+
+The bold ones are what the shell recipes deleted. Neither package installs a licence file, so again: "stops deleting `usr/share`" restored documentation, not a licence. The non-bold subtrees were never deleted — both recipes already kept them deliberately, because the Autom4te and Automake Perl modules and the `install-sh`/`missing`/`depcomp`/`config.guess` boilerplate under them are runtime data these tools cannot run without.
+
+Stage 4 stands at **28 of 117**.
+
 ### binutils is the first real package to ship as a .cixpkg, and it found a format limit (#487, #491, cix-build-system#182, #183)
 
 `binutils@2.42-13`, converted from `build.sh` to CPDL — the first package of this corpus, as opposed to a probe, to publish as a CIXPKG. Chosen first deliberately: it is a declared build tool of much of the corpus, so its artifact is installed by build-environment composition constantly, where a leaf package would prove the format on a path almost nothing walks.
