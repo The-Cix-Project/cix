@@ -1,0 +1,147 @@
+# btop -- a process monitor. Converted from build.sh to build.cbs
+# (ADR-0305 stage 4, #487), and the first C++ package to do so.
+#
+# WHAT CHANGES: usr/share/doc is no longer deleted (ADR-0306, #491).
+# usr/share/applications and usr/share/icons still are, and that is
+# not the same rule: a .desktop entry and two icons are for a
+# graphical menu, this platform has none, and no image installing
+# btop has one either. Dead weight in every rootfs is a package
+# decision; deleting documentation was a platform policy that was
+# withdrawn. usr/share/btop/themes stays, as before -- btop reads
+# those at runtime and degrades to one built-in theme without them.
+#
+# PUBLISHED AND NEVER BUILT. Kept because a published recipe version
+# is immutable, and because what it tried is worth reading.
+#
+# It compiled btop in 4m10s and then failed on its own assertion:
+#
+#   error[CPDL-E4001]: runtime: process stdout must be one line
+#
+# `expect { stdout contains }` and `stdout "name"` both require
+# single-line output. btop's --version prints a banner over several
+# lines and `ldd` prints one line per library, so BOTH constructions
+# below are invalid -- the version check failed first and the ldd
+# check would have failed the same way.
+#
+# btop therefore stays on build.sh at 1.4.7-1. Converting it means
+# dropping the static-link guard, and that guard catches a failure
+# that is silent at build time and only appears on someone else's
+# machine. Keeping the conversion and losing the guard is the wrong
+# trade. Filed as cix-build-system#185; the shape is in
+# docs/guides/writing-recipes.md's own "what CPDL cannot do yet"
+# table, which exists to stop the next person rediscovering this.
+#
+# THE STATIC-LINK ASSERTION, and why it looks odd. The shell recipe
+# ended with:
+#
+#     if ldd ./bin/btop | grep -q libstdc++; then ... exit 1; fi
+#
+# a NEGATIVE assertion: the link must NOT name a shared libstdc++,
+# because btop is the only consumer of a C++ runtime here and the
+# whole point of -static-libstdc++ is that no image installing it
+# needs one. CPDL's file assertions are contains / same_as / nonempty
+# with no negation, so the check is expressed as its exit status
+# instead: bind ldd's output, write it out, and require that `grep -q`
+# over it exits 1. grep exits 1 when the pattern is absent, which is
+# precisely the condition being asserted.
+#
+# It is kept rather than dropped because the failure it catches is
+# silent at build time and only appears on someone else's machine --
+# the recipe's own words, and the reason it was written.
+package "btop" {
+    version "1.4.7"
+    release 2
+    format "cixpkg"
+
+    sources {
+        main "btop" {
+            url "https://github.com/aristocratos/btop/archive/refs/tags/v1.4.7.tar.gz"
+            sha256 "933de2e4d1b2211a638be463eb6e8616891bfba73aef5d38060bd8319baeefc6"
+        }
+    }
+
+    # Nothing at runtime beyond libc: btop draws its own ANSI and
+    # links no curses despite looking like it does, and libstdc++ and
+    # libgcc are linked statically below.
+    requires {
+        build {
+            compiler "gcc"
+            tool "make"
+            tool "bash"
+            tool "coreutils"
+            tool "findutils"
+            tool "sed"
+            tool "grep"
+            tool "glibc"
+            tool "binutils"
+            tool "linux-headers"
+        }
+    }
+
+    toolchain "gcc" {
+        reason "language: btop is C++ and its Makefile requires -std=c++23 (Makefile:173, override REQFLAGS). TCC is a C compiler with no C++ front end at all, so this is not a TCC gap to fix or track -- it is the wrong tool"
+    }
+
+    metadata {
+        "changelog" "1.4.7-2: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307), the first C++ package to convert. Same tarball at the same digest and the same static-libstdc++ link. Stops deleting usr/share/doc (ADR-0306, #491); still drops applications and icons, which are for a graphical menu this platform does not have. The ldd guard survives as an exit-status assertion, CPDL having no negative file check."
+    }
+
+    # ADDFLAGS rather than LDFLAGS: this Makefile appends its own
+    # LDFLAGS after the environment's and appends ADDFLAGS last, so
+    # ADDFLAGS is the one that reliably reaches the link line.
+    #
+    # GPU_SUPPORT=false explicitly, so it is a decision rather than an
+    # accident of what a build container happened to contain.
+    # VERBOSE=true so the real compile and link lines reach the log.
+    # /usr/bin/g++ by absolute path -- a bare name makes a GCC driver
+    # compute a relative installation prefix and fail cc1plus lookup
+    # with a misleading "posix_spawnp: No such file or directory".
+    build {
+        cd "${src}/btop/btop-1.4.7" {
+            run "make" {
+                "CXX=/usr/bin/g++"
+                "VERBOSE=true"
+                "GPU_SUPPORT=false"
+                "STATIC=false"
+                "ADDFLAGS=-static-libstdc++ -static-libgcc"
+                jobs $jobs
+            }
+            # It runs, and it is the version claimed.
+            run "./bin/btop" {
+                "--version"
+                expect {
+                    stdout contains "1.4.7"
+                }
+            }
+            # And the static link took. See the header for why this is
+            # three operations rather than one.
+            run "ldd" {
+                "bin/btop"
+                stdout "deps"
+            }
+            write "${src}/btop/btop-1.4.7/ldd.txt" "${stdout.deps}"
+            run "grep" {
+                "-q"
+                "libstdc++"
+                "ldd.txt"
+                expect exit 1
+            }
+        }
+    }
+
+    install {
+        cd "${src}/btop/btop-1.4.7" {
+            run "make" {
+                "DESTDIR=${dest}"
+                "PREFIX=/usr"
+                "install"
+            }
+        }
+        remove tree "${dest}/usr/share/applications"
+        remove tree "${dest}/usr/share/icons"
+        require file "${dest}/usr/bin/btop" {
+            exists
+            nonempty
+        }
+    }
+}

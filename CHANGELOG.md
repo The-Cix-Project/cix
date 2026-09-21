@@ -42,6 +42,25 @@ An engine that runs but cannot be hashed records a failure rather than being tre
 
 **And cbs#182 was closed without hard-link support, which is the right outcome and worth recording.** `main`'s `manifest.c:140` still refuses `st_nlink != 1` — what changed is that it now says so: *"%s is a hard link (link count %lu); CIXPKG entries must have exactly one link"*. That matches the argument this project put to them in its own follow-up: a package installs into an image by copying files one at a time, so a hard link never survives installation, and a format declining to promise it is being honest rather than incomplete. The consequence for recipes is unchanged and now discoverable — `binutils` keeps its `ld`-as-symlink, and the next package with the same shape gets told which path and why instead of three errors naming nothing.
 
+### bison converts; btop cannot, and keeping its guard beats converting it (#487, #491, cix-build-system#185)
+
+**bison** converted and installed first try — `bison-3.8.2-8-x86_64.cixpkg`, 730159 bytes, signed, approval `6457cc49…`. 87 files became 200: `doc`, `info`, `locale` and `man` are no longer deleted (ADR-0306, #491), and neither is `usr/lib/*.a`, which finalize already drops. `usr/share/bison` was never deleted and still is not — bison reads those m4 skeletons at every invocation, and an early version of the shell recipe wiped the whole of `usr/share` and took them with it, caught only when a real kernel hostbuild tried to run bison. The two TCC workarounds and the glibc 2.44 `posix_spawn` cache variables carry over unchanged; `$(pwd)` needed no CPDL form, because inside `cd "${src}/bison/bison-3.8.2"` that is the path itself.
+
+**btop did not, and stays on `build.sh`.** It compiled in 4m10s and then failed on the recipe's own assertion:
+
+```
+error[CPDL-E4001]: runtime: process stdout must be one line
+  89 |             run "./bin/btop" {
+```
+
+`expect { stdout contains … }` and `stdout "name"` both require single-line output — right for binding `pkg-config --modversion`, and fatal for anything else. `btop --version` prints a banner over several lines, so the version check failed; `ldd` prints one line per library, so the second construction would have failed identically.
+
+That second one is what decides it. btop's build ends by proving `ldd` does not name a shared `libstdc++` — a **negative** assertion, and the only thing standing between a silently-dropped `-static-libstdc++` flag and a binary that dies on every image without a C++ runtime. The recipe's own words: *"the failure is silent at build time and only appears on someone else's machine."* CPDL has no negation on file assertions and no way to examine multi-line output, so the usual route — bind the output, grep it for an exit status — is closed at the first step.
+
+Converting btop means keeping the conversion and losing the guard. That is the wrong trade, so it does not convert. Filed as cix-build-system#185 with the preferred fix (let a run's stdout go to a file, which solves both shapes and composes with the file assertions that already exist), and added to the guide's own "what CPDL cannot do yet" table so the next person meets it as a documented limit rather than a 4-minute build.
+
+`btop@1.4.7-2` is published and never built, like `binutils@2.42-12` before it. Its header now records what it attempted and why it could not work.
+
 ### autoconf and automake convert, and the hard-link trap is pre-empted rather than hit (#487, #491)
 
 Two conversions, both installed on the first attempt:

@@ -85,8 +85,11 @@ Three shapes have no form, and a recipe needing one stays on `build.sh` until it
 | apply several steps to each item of a list | 15 | [#176](https://git.home.arpa/itdlabs/cix-build-system/issues/176) |
 | strip `-Wl,--version-script=<path>` (pattern edit) | 6 | [#177](https://git.home.arpa/itdlabs/cix-build-system/issues/177) |
 | find a shared library across candidate lib directories | 4 | [#178](https://git.home.arpa/itdlabs/cix-build-system/issues/178) |
+| assert on a process that prints more than one line, and so any NEGATIVE assertion built from one | 1 | [#185](https://git.home.arpa/itdlabs/cix-build-system/issues/185) |
 
 A `for` loop whose body is a **single** operation is not blocked — write it as N lines.
+
+**#185 is the one that costs an assertion rather than a conversion, so it is worth knowing the shape.** `expect { stdout contains … }` and `stdout "name"` both require the process to print exactly one line, which is right for binding `pkg-config --modversion` and leaves `ldd`, `--version` banners and anything else multi-line with no form at all. That in turn means a negative check — *this output must NOT contain X* — cannot be built either, since the usual route is to bind the output and grep it for an exit status. `btop` stays on `build.sh` for exactly this: its build ends by proving `ldd` does not name a shared `libstdc++`, and the failure that check catches is silent at build time and only appears on someone else's machine. Convert a recipe like that and you keep the conversion and lose the guard, which is the wrong trade.
 
 Sources are handed to CBS, not fetched by it: cixd fetches and checksum-verifies as it does for any recipe, then places each source in a cache directory named by its own digest, which CBS re-verifies. So a PBS build container still has no network and no credentials, exactly like a shell one.
 
