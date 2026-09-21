@@ -60,6 +60,7 @@ package "getopt" {
     }
 
     metadata {
+        "artifact_sha256" "33b42b4d4de58a405aa43a19ddbcfcb1aa00201e8cc952bc981ea104d06c564b"
         "changelog" "2.42.2-4: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest, the same configure line and the same single make target. Nothing to restore under ADR-0306: this recipe never deleted anything."
     }
 

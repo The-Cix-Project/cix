@@ -55,6 +55,7 @@ package "linux-headers" {
     }
 
     metadata {
+        "artifact_sha256" "4816447bc9f1c3812f3fc2a3a78dfd43c7528fc8bf374bfd82c292b62f6c9922"
         "changelog" "6.18.40-7: fetch from www.kernel.org rather than cdn.kernel.org, for consistency with every other kernel.org fetch here, NOT as a fix. 6.18.40-6 could not be built because /var/lib/cix was full: its first attempt failed in the build stage with a 65-byte log, later ones failed fetching 150 MB into 0 bytes free, and the log store froze. Same digest, so the swap is a non-event. 6.18.40-6: converted to build.cbs (ADR-0305) as a .cixpkg; cp -a stays a run, CPDL having no tree copy (cbs#186)."
     }
 

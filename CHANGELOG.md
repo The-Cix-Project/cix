@@ -6,6 +6,27 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The rebuildable store moves to sda, and linux-headers and getopt build (#503, #487)
+
+The disk problem in the entry below had a supported answer sitting unused on the box.
+
+**There is no partition-resize operation in the API** — `cixctl storage` offers `add-partition`, which states outright that it "never touches an existing partition", plus `rm-partition`, `format` and roles. Growing `vdb5` in place is not something this platform can be asked to do, and doing it outside the API would break the API-First mandate on a host with no shell.
+
+**What was already configured and never run:** `storage-role ls` showed `sda  rebuildable-storage  present` — a 100 GiB disk, formatted, mounted, empty — while `storage rebuildable show` said `default OS-disk placement`. The role had been assigned and the placement never moved, so images, packages and artifacts were all still on the OS partition. That is precisely what `storage rebuildable migrate` exists for: ADR-0070/ADR-0126's split for data "regenerable from recipes/sources, never irreplaceable".
+
+One migration:
+
+```
+vdb5   used 14.9 GiB  free  0.2 GiB     ->  used 4.2 GiB   free 10.8 GiB
+sda    used  0.0 GiB  free 98.0 GiB     ->  used 13.3 GiB  free 84.9 GiB
+```
+
+All twelve containers stayed running, 189 package entries intact.
+
+**Both blocked packages then built with no further change.** `linux-headers 6.18.40-7` installs **2059 files, byte-identical in name to 6.18.40-5** — nothing added, nothing removed. `getopt 2.42.2-4` installs its single `usr/bin/getopt`.
+
+One thing this build does *not* prove, and the recipe says so: it carries both the mirror swap and the freed disk, so it cannot discriminate between them on its own. The disk evidence stands independently — a build-stage failure whose 65-byte log could not be written, fetches of a 150 MB file into zero free bytes, bare 500s on every publish, and a log store frozen at the second the first build started, all of which ended the minute space appeared. The mirror change is kept on its own merit, since `getopt` and `libblkid` already take their kernel.org tarballs from `www.kernel.org`.
+
 ### /var/lib/cix filled up, and nothing said so (#503)
 
 192.168.15.95 stopped being able to write anything for about half an hour. Establishing that took a wrong diagnosis first, which is the part worth recording.
