@@ -725,8 +725,6 @@ static int sha256_file_hex(const char *path, char *out, size_t out_size)
 	return 0;
 }
 
-/* Reads pkg_artifact_sha256="..." out of a recipe -- the line that
- * approves those exact bytes, and the only thing that makes a cached
 /*
  * #504: see test_image_fixture.h. The corpus moved to its own
  * repository, so a test that reads a real recipe has to be told where
@@ -752,6 +750,8 @@ int test_recipe_path(const char *kind, const char *name, const char *version,
 	return 0;
 }
 
+/* Reads an artifact approval out of a recipe -- the line that
+ * approves those exact bytes, and the only thing that makes a cached
  * artifact trustworthy. */
 static int recipe_artifact_sha(const char *name, const char *version, char *out, size_t out_size)
 {
