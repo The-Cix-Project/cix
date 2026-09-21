@@ -4896,8 +4896,11 @@ static struct {
 	int no_engine;
 	int rederived;
 	int failed;
-	char from[128];
-	char to[128];
+	/* Wide enough for "<version> <64-hex digest>" plus slack, since
+	 * the key gained the digest (#496) and a truncated one would
+	 * compare unequal forever, re-deriving on every boot. */
+	char from[256];
+	char to[256];
 } g_explain_sweep;
 
 void pkg_log_explain_sweep(void)
@@ -4922,13 +4925,37 @@ void pkg_log_explain_sweep(void)
 static void explain_sweep_if_engine_changed(void)
 {
 	char version[128];
-	char recorded[128];
+	char digest[65];
+	char key[256];
+	char recorded[256];
 	char state_path[PATH_MAX];
 	char *stored = NULL;
 	size_t stored_len = 0;
 	DIR *names;
 	struct dirent *nde;
 
+	/*
+	 * The key is the engine's own BYTES, not the version string it
+	 * prints, and that distinction is not hypothetical (#496).
+	 *
+	 * Measured on 2026-09-21: cix-build-system's `main` carries
+	 * commit f22e6aa -- a real change to manifest.c -- while its
+	 * VERSION file still reads 0.1.29, the same as the tag. Upstream
+	 * ships fixes between tags, and its own test suite asserts that
+	 * `cbs --version` equals VERSION, so a newer engine can and does
+	 * report an older number. Keyed on that string, this sweep would
+	 * decide nothing had changed and leave every derived document
+	 * stale -- silently, which is the failure mode clause 7 exists to
+	 * end rather than to reproduce in a new place.
+	 *
+	 * A digest cannot say that. Any change to the binary changes it,
+	 * including one upstream did not think worth a version.
+	 *
+	 * The version string is still read, because it is what a human
+	 * reads in the log line -- "0.1.29 -> 0.1.29" alongside a changed
+	 * digest is a more useful thing to see than two hashes, and it
+	 * says out loud that the engine moved without renaming itself.
+	 */
 	cbs_engine_version(version, sizeof(version));
 	if (version[0] == '\0') {
 		/* No engine on this host. Not an error in itself -- a box
@@ -4939,6 +4966,17 @@ static void explain_sweep_if_engine_changed(void)
 		return;
 	}
 
+	if (pkg_run_capture_sha256(PKG_CBS_BIN, digest, sizeof(digest)) != 0) {
+		/* An engine that runs but cannot be hashed is a state worth
+		 * saying out loud rather than treating as unchanged: the
+		 * alternative is deciding "no sweep needed" from a failure. */
+		g_explain_sweep.ran = 1;
+		g_explain_sweep.failed++;
+		snprintf(g_explain_sweep.to, sizeof(g_explain_sweep.to), "%s (unhashable)", version);
+		return;
+	}
+	snprintf(key, sizeof(key), "%s %s", version, digest);
+
 	snprintf(state_path, sizeof(state_path), "%s/cbs-engine", g_pkg_dir);
 	recorded[0] = '\0';
 	if (persist_read_file(state_path, &stored, &stored_len) == 0 && stored != NULL) {
@@ -4946,19 +4984,19 @@ static void explain_sweep_if_engine_changed(void)
 		recorded[strcspn(recorded, "\r\n")] = '\0';
 		free(stored);
 	}
-	if (strcmp(recorded, version) == 0)
+	if (strcmp(recorded, key) == 0)
 		return;
 
 	g_explain_sweep.ran = 1;
 	snprintf(g_explain_sweep.from, sizeof(g_explain_sweep.from), "%s", recorded);
-	snprintf(g_explain_sweep.to, sizeof(g_explain_sweep.to), "%s", version);
+	snprintf(g_explain_sweep.to, sizeof(g_explain_sweep.to), "%s", key);
 
 	names = opendir(g_recipes_dir);
 	if (names == NULL) {
 		/* No recipes yet is the state of every fresh install, and
 		 * recording the engine is still right: there is nothing
 		 * stale, which is exactly what the record will then say. */
-		if (persist_atomic_write(state_path, version, strlen(version)) != 0)
+		if (persist_atomic_write(state_path, key, strlen(key)) != 0)
 			g_explain_sweep.failed++;
 		return;
 	}
@@ -5009,8 +5047,7 @@ static void explain_sweep_if_engine_changed(void)
 	 * whichever recipes failed permanently stale -- and stale is the
 	 * state this exists to end.
 	 */
-	if (g_explain_sweep.failed == 0 && persist_atomic_write(state_path, version,
-	                                                         strlen(version)) != 0)
+	if (g_explain_sweep.failed == 0 && persist_atomic_write(state_path, key, strlen(key)) != 0)
 		g_explain_sweep.failed++;
 }
 

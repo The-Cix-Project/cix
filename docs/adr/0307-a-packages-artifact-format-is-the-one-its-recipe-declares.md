@@ -353,14 +353,31 @@ through a restart. A recipe published while the daemon is up is derived
 by that same engine at publish. There is therefore no window a startup
 sweep misses, and no need for a second, lazy path on the read side.
 
-Staleness is decided by the engine's own version string, not by probing
-for a key. `cbs --version` prints `cbs <version>` (`src/main.c:664`),
-the daemon records the version its last sweep ran with, and a mismatch
-re-derives every PBS recipe's document and stores the new version. That
-generalises: the next key CBS adds to explain is picked up by the same
-mechanism, where a check for `format` specifically would have to be
-written again each time — and a key-absence test cannot tell "this
-engine does not emit it" from "this recipe did not declare it".
+Staleness is decided by the engine's own BYTES, not by probing for a
+key and not by the version string it prints. The daemon records
+`<version> <sha256 of /usr/bin/cbs>` from its last sweep and
+re-derives every PBS recipe's document when that changes.
+
+Keying on a key-absence test was rejected first: it cannot tell "this
+engine does not emit it" from "this recipe did not declare it", and it
+would have to be rewritten for the next key CBS adds.
+
+**Keying on the version string was the original design and it was
+wrong**, which a real event showed rather than review: on 2026-09-21
+cix-build-system's `main` carried commit `f22e6aa` — a real change to
+`manifest.c`, adding the named rejection diagnostics we had asked for
+— while its `VERSION` file still read `0.1.29`, the same as the tag.
+Upstream ships fixes between tags, and its own test suite asserts that
+`cbs --version` equals `VERSION`, so a newer engine reports an older
+number *by design*. Keyed on that string, the sweep would have decided
+nothing had changed and left every derived document stale — silently,
+which is the failure this clause exists to end rather than to
+reproduce somewhere new.
+
+A digest cannot say that. The version string is still read and still
+appears in the log line, because `0.1.29 -> 0.1.29` beside a changed
+digest tells an operator something two hashes would not: the engine
+moved without renaming itself.
 
 This does **not** re-derive on read, and the distinction matters. The
 comment above `pbs_explain_path()` records why: re-running `cbs explain`

@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The explain sweep keys on the engine's bytes, because a version string lies (#496, ADR-0307 clause 7)
+
+Clause 7 re-derives every PBS recipe's `explain.json` when the engine that derived them changes, and decided "changed" by comparing `cbs --version`. That was wrong, and a real event showed it rather than review.
+
+cix-build-system closed **cbs#183** on 2026-09-21 with commit `f22e6aa` — a real change to `manifest.c`, adding the named rejection diagnostics this project asked for — pushed to `main` with **`VERSION` still reading `0.1.29`, the same as the tag**. That is not an oversight: upstream ships fixes between tags, and its own test suite asserts `cbs --version` equals `VERSION`, so a newer engine reports an older number by design. This project's own `cbs` recipe header already records the same behaviour biting once before (cix-build-system#172, where VERSION lagged the tag and a recipe had to pin a commit).
+
+Keyed on that string, the sweep would have decided nothing changed and left every derived document stale — silently, which is the exact failure clause 7 exists to end. It is now keyed on `<version> <sha256 of /usr/bin/cbs>`: any change to the binary changes it, including one upstream did not think worth a version. The version string is still read and still appears in the log line, because `0.1.29 -> 0.1.29` beside a changed digest says something two hashes would not — the engine moved without renaming itself.
+
+An engine that runs but cannot be hashed records a failure rather than being treated as unchanged: deciding "no sweep needed" from a failure is how the stale state comes back.
+
+**And cbs#182 was closed without hard-link support, which is the right outcome and worth recording.** `main`'s `manifest.c:140` still refuses `st_nlink != 1` — what changed is that it now says so: *"%s is a hard link (link count %lu); CIXPKG entries must have exactly one link"*. That matches the argument this project put to them in its own follow-up: a package installs into an image by copying files one at a time, so a hard link never survives installation, and a format declining to promise it is being honest rather than incomplete. The consequence for recipes is unchanged and now discoverable — `binutils` keeps its `ld`-as-symlink, and the next package with the same shape gets told which path and why instead of three errors naming nothing.
+
 ### binutils is the first real package to ship as a .cixpkg, and it found a format limit (#487, #491, cix-build-system#182, #183)
 
 `binutils@2.42-13`, converted from `build.sh` to CPDL — the first package of this corpus, as opposed to a probe, to publish as a CIXPKG. Chosen first deliberately: it is a declared build tool of much of the corpus, so its artifact is installed by build-environment composition constantly, where a leaf package would prove the format on a path almost nothing walks.
