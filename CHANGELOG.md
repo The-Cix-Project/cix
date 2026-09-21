@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### /var/lib/cix filled up, and nothing said so (#503)
+
+192.168.15.95 stopped being able to write anything for about half an hour. Establishing that took a wrong diagnosis first, which is the part worth recording.
+
+**What it looked like.** `linux-headers@6.18.40-6` failed with `build failed (exit status 3)` and a 65-byte log holding only the source digest. Every retry failed earlier with `fetch failed (curl exit status 1)` on the ~150 MB tarball. Then `pkg recipe add` began returning a bare **HTTP 500 for every package**, and the log store went silent — frozen at the exact second that build started. `GET /v1/health` said `ok` the whole time, because reads need no space.
+
+**The wrong turn.** `curl exit status 1` on a kernel.org fetch is a documented class in this project's own environment notes, and three reproducible failures matched it exactly. I swapped the mirror to `www.kernel.org`, wrote the reasoning into a recipe header and a changelog entry, and committed it — **before running `cixctl storage`**. One command would have shown `vdb5 … used=15.1GiB free=0.0GiB`. The environment notes were consulted for a matching symptom rather than the environment being measured, which is the exact inversion this project's own rule about claims exists to prevent.
+
+**The cause.** `/dev/vdb5`, the 15.6 GiB partition mounted at `/var/lib/cix`, at zero free. Removing one leftover composed build environment (`__buildenv-a95ad7acae9150d9`) freed enough that publishing worked again in the same minute and the log store resumed, advancing from `1790006122` to `1790007685`. That resumption is what makes this a measurement rather than a story that fits.
+
+**`image gc` could not help, and that is a finding on its own.** Its dry run offered 77 versions and ~70.9 GB "apparent". The real reclaim was a few hundred MB, because overlay sharing means an old image version is nearly free — fourteen `jumpbox` versions at a nominal 1.26 GB each share almost all of it. On a full disk the first run reported `77 could not be removed (see the log store)`, pointing at a store that could not record why; the second reported `reclaimed 0; kept 18` with the candidates simply gone.
+
+**What was corrected rather than only discussed.** The `cdn.kernel.org` paragraph in the entry below now says it was wrong. The unpublished `linux-headers 6.18.40-7` header no longer presents the mirror as the fix — the swap is kept on its own merit, since `getopt` and `libblkid` already take their kernel.org tarballs from `www.kernel.org` and this was the one recipe reaching a different host for no reason. #503 was rewritten from "a failed build can leave an empty log" to the real shape: **running out of space is invisible here** — it surfaced as three different misleading messages and one silence, and never once as ENOSPC.
+
+**Left for the owner.** The partition is back to 0.1 GiB free, which is enough to publish and not enough to build. `/dev/sda` has 98 GiB free and `/dev/vda` 14.5 GiB, both mounted and unused. Conversions are paused here rather than filling it again.
+
 ### recipes: libsodium and tar convert; linux-headers is written but blocked on its fetch (#487, #491, cbs#186)
 
 **tar keeps its self-test, and it is the one conversion where a guard genuinely changed shape.** That test exists because of #122: upstream TCC 0.9.27 silently dropped the condition of a `do-while` whose body ends unreachably — exactly `read_and()`'s shape — so a TCC-built tar listed and extracted **one member per archive and exited 0 every time**. The lesson recorded then was that the gate must compare *content*, because exit status was worthless.
@@ -18,7 +34,7 @@ tar goes from **1 file to 46** — it was down to `usr/bin/tar` alone, because t
 
 **CPDL has no recursive tree copy, which stops `linux-headers` being fully declarative (cbs#186).** `cp -a usr/include/. DEST/` has no operation: `copy` is one file to one file and `copy glob` matches a pattern. `copy tree` was the natural guess and is refused at parse. The escape is `run "cp" { "-a" … }`, which works and asks for nothing extra, but is a shell command inside a declarative phase with none of what CPDL is for. **Ten packages in this corpus copy a tree this way**, including `glibc` and `tcc`, so every one of them will need the same escape; cbs#186 asks for the operation.
 
-**linux-headers 6.18.40-6 is published and unbuilt, and the reason is not the recipe.** Its first build reached the build stage and failed with exit status 3 — and its build log is **65 bytes containing only the source digest**, so what failed is not recorded anywhere. Every attempt since has failed earlier, at the fetch: `fetch failed (curl exit status 1)` against `cdn.kernel.org`, reproducibly, for the ~150 MB tarball. That is the documented bare-`curl`-exit-1 class, not a Cix defect and not something this recipe can fix. Left published and unbuilt rather than escalated; the exit-3 cause is unestablished and stays that way until the fetch works.
+**linux-headers 6.18.40-6 is published and unbuilt.** Its first build reached the build stage and failed with exit status 3, and its build log is **65 bytes containing only the source digest**. Every attempt since failed earlier, at the fetch: `fetch failed (curl exit status 1)` for the ~150 MB tarball. *This paragraph originally attributed that to `cdn.kernel.org` and the documented bare-`curl`-exit-1 class. That was wrong, and the correction is the entry above: `/var/lib/cix` had filled up, and every one of these failures was the same cause.*
 
 **Four recipes examined and not converted**, each for a measured reason rather than effort: `net-tools` (a `while read` loop over `config.in` generating two files; `each` iterates a literal list, not file lines), `libnftnl` and `keepalived` (`readelf -d | grep -q` plus, for libnftnl, a `find | grep -c` count captured and compared — cbs#185 again), and `glauth` (`./glauth --help | grep -q 'Usage:'`).
 

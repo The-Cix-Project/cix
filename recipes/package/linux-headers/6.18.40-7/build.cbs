@@ -1,0 +1,112 @@
+# 6.18.40-6 is published and was never built, and the reason was NOT
+# the mirror. /var/lib/cix filled up during its first build attempt
+# and every failure after that was collateral:
+#
+#   attempt 1  reached the BUILD stage, exit 3, 65-byte log holding
+#              only the source digest -- the log could not be written
+#   attempts 2-4  `fetch failed (curl exit status 1)` -- a ~150 MB
+#              download into a partition with 0 bytes free
+#   meanwhile  every `pkg recipe add` returned a bare HTTP 500 and
+#              the log store stopped accepting entries entirely,
+#              frozen at the exact second that build started
+#
+# Freeing space made publishing work again in the same minute and the
+# log store resume. Measured on 192.168.15.95, 2026-09-21: vdb5, the
+# 15.6 GiB partition mounted at /var/lib/cix, at 0.0 GiB free.
+#
+# THE MIRROR CHANGE IS KEPT ANYWAY, on its own merits rather than as
+# the fix it was first written to be. www.kernel.org is what every
+# other kernel.org fetch in this corpus already uses -- getopt and
+# libblkid both take their util-linux tarball from it -- so this
+# removes the one recipe reaching a different host for no reason.
+# The digest is unchanged, which is what makes a mirror swap a
+# non-event.
+#
+package "linux-headers" {
+    version "6.18.40"
+    release 7
+    format "cixpkg"
+
+    sources {
+        main "linux" {
+            url "https://www.kernel.org/pub/linux/kernel/v6.x/linux-6.18.40.tar.xz"
+            sha256 "3712fc1ec839e4daac981176c8518912e8f452650aaedfe4381da4419613a431"
+        }
+    }
+
+    requires {
+        build {
+            compiler "gcc"
+            tool "bash"
+            tool "coreutils"
+            tool "make"
+            tool "binutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "findutils"
+            tool "diffutils"
+            tool "perl"
+        }
+    }
+
+    toolchain "gcc" {
+        reason "missing flag: the build passes -MMD,<path>, a dependency-generation option TCC does not implement (#209). Measured against tcc 0.9.27; #209 tracks it and this is a candidate for re-measuring when it moves"
+    }
+
+    metadata {
+        "changelog" "6.18.40-7: fetch from www.kernel.org rather than cdn.kernel.org, for consistency with every other kernel.org fetch here, NOT as a fix. 6.18.40-6 could not be built because /var/lib/cix was full: its first attempt failed in the build stage with a 65-byte log, later ones failed fetching 150 MB into 0 bytes free, and the log store froze. Same digest, so the swap is a non-event. 6.18.40-6: converted to build.cbs (ADR-0305) as a .cixpkg; cp -a stays a run, CPDL having no tree copy (cbs#186)."
+    }
+
+    build {
+        cd "${src}/linux/linux-6.18.40" {
+            # HOSTCC by absolute path. The kernel's default is a bare
+            # "gcc", which in this build environment resolved to TCC
+            # and failed on -MMD; and a bare name makes real gcc
+            # compute its installation prefix relatively, failing cc1
+            # with a misleading posix_spawnp error.
+            run "make" {
+                "ARCH=x86"
+                "HOSTCC=/usr/bin/gcc"
+                "headers"
+            }
+        }
+    }
+
+    install {
+        mkdir "${dest}/usr/include" chmod 0755
+        # A plain `run "cp"`, and not a CPDL operation, because CPDL
+        # has none for a recursive tree copy: `copy` is one file to
+        # one file and `copy glob` matches within a pattern. `copy
+        # tree` was tried here and the recipe was refused at parse.
+        # cp comes from coreutils, which is declared above, so this
+        # asks for nothing the environment does not already have --
+        # it is simply less declarative than the rest of the phase.
+        # Filed upstream; ten packages in this corpus copy a tree
+        # this way and every one of them will need the same escape.
+        run "cp" {
+            "-a"
+            "${src}/linux/linux-6.18.40/usr/include/."
+            "${dest}/usr/include/"
+        }
+        # These four are what glibc's own configure looks for. A
+        # headers run that silently produced nothing would otherwise
+        # surface much later as a confusing glibc configure failure.
+        require file "${dest}/usr/include/linux/version.h" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/include/asm/unistd.h" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/include/asm-generic/unistd.h" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/include/linux/errno.h" {
+            exists
+            nonempty
+        }
+    }
+}
