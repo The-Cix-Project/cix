@@ -733,15 +733,35 @@ function setAuth(token, username) {
 	updateAuthUi();
 }
 
-/* Opens the login modal on a 401 from any request, so "why did my
- * action just fail" has an immediate, actionable answer instead of
- * only a status-bar error -- the same reasoning cixctl's own
- * "authentication required -- POST /v1/login first" message serves,
- * adapted to a UI that can just show the form directly. Guarded so a
- * burst of 401s from one poll cycle (several concurrent GETs are
- * never gated, but a save-in-flight write easily could be) only ever
- * opens it once. */
+/*
+ * True while the periodic sweep is running its refreshers, so a 401
+ * from one of them never opens the login modal (#490).
+ *
+ * The comment below used to say "several concurrent GETs are never
+ * gated", and that was true when it was written. Gating the identity
+ * reads made it false, and the result was a login prompt that
+ * reappeared on a timer: the sweep runs refreshLdapUsers() for every
+ * visitor on every page, it 401s when nobody is signed in, and every
+ * 401 opened the form again -- including immediately after a
+ * successful login, because a second gated read from the same cycle
+ * lands after the modal closes.
+ */
+let inBackgroundSweep = false;
+
+/* Opens the login modal on a 401 from any request the PERSON made, so
+ * "why did my action just fail" has an immediate, actionable answer
+ * instead of only a status-bar error -- the same reasoning cixctl's
+ * own "authentication required -- POST /v1/login first" message
+ * serves, adapted to a UI that can just show the form directly.
+ *
+ * Never from a background refresh. A poll is not the person's action,
+ * and a modal it opens interrupts whatever they were actually doing
+ * -- which is the bug this guard exists to prevent, not a
+ * hypothetical. Guarded as well so a burst of 401s from one cycle
+ * only ever opens it once. */
 function promptReauth() {
+	if (inBackgroundSweep)
+		return;
 	if (modalOverlay.hidden)
 		openModal("login-form", "Log in");
 }
@@ -8122,7 +8142,27 @@ function renderLdapUsers(users) {
 	}
 }
 
+/*
+ * One of the two reads that need a credential (#490), so it does not
+ * ask when there is none.
+ *
+ * Not an optimisation. This refresher is in ALL_REFRESHERS, which the
+ * sweep runs for every visitor on every page -- so without this guard
+ * an idle unauthenticated tab sends a request that cannot succeed on
+ * every cycle, and each one writes an audit warning on the host. A
+ * dashboard left open overnight fills the audit log with its own
+ * failures.
+ *
+ * The panel renders empty rather than stale: showing the last roster
+ * read before the session lapsed would be a list of real people that
+ * is no longer being refreshed, which is worse than showing nothing.
+ */
 async function refreshLdapUsers() {
+	if (!authToken) {
+		cache.ldapUsers = [];
+		renderLdapUsers(cache.ldapUsers);
+		return;
+	}
 	const data = await apiRequest("GET", CIX_API.listLdapUsers());
 	cache.ldapUsers = data.users;
 	renderLdapUsers(cache.ldapUsers);
@@ -10912,7 +10952,15 @@ let rollingConfigDirty = false;
  * visibility into a table that previously had none (no endpoint, no
  * CLI, no web panel) ---- */
 
+/* The other credentialed read (#490) -- see refreshLdapUsers() for
+ * why an unauthenticated tab must not ask. This one is called from a
+ * view refresher rather than the global sweep, but the reasoning and
+ * the cost are the same. */
 async function refreshHostauthSessions() {
+	if (!authToken) {
+		renderHostauthSessions([]);
+		return;
+	}
 	try {
 		const data = await apiRequest("GET", CIX_API.listHostauthSessions());
 
@@ -14881,6 +14929,17 @@ let lastSweepAt = 0;
 let lastViewRefreshAt = 0;
 
 async function runRefreshers(list) {
+	const wasSweeping = inBackgroundSweep;
+
+	inBackgroundSweep = true;
+	try {
+		await runRefreshersInner(list);
+	} finally {
+		inBackgroundSweep = wasSweeping;
+	}
+}
+
+async function runRefreshersInner(list) {
 	for (const fn of list) {
 		try {
 			await fn();

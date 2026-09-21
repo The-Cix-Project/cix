@@ -6,6 +6,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The dashboard's login prompt reappeared on a timer, and #490 is why
+
+Reported by the owner: the web UI kept asking for authentication *even after authenticating*. A regression from gating the identity reads earlier the same day, and the code said so before the change was made.
+
+`promptReauth()`'s own comment read: *"Guarded so a burst of 401s from one poll cycle (**several concurrent GETs are never gated**, but a save-in-flight write easily could be) only ever opens it once."* That parenthesis was true when it was written. #490 made it false and nothing re-read it.
+
+The loop: `refreshLdapUsers` is in `ALL_REFRESHERS`, which the periodic sweep runs **for every visitor on every page**. With nobody signed in it now 401s every cycle, and `apiRequest()` opens the login modal on any 401. Worse after a successful login rather than better — the modal closes, then a second gated read still in flight from the same cycle rejects and opens it again.
+
+Two fixes, because the bug has two halves.
+
+**A background refresh never opens the login modal.** `runRefreshers()` sets a flag for its duration and `promptReauth()` returns early while it is set. The feature's own justification is *"why did my action just fail"* — a poll is not the person's action, and a modal it raises interrupts whatever they were actually doing.
+
+**And an unauthenticated tab does not call a credentialed endpoint at all.** Both gated refreshers return early without a token. That is not an optimisation: each pointless 401 also writes an audit warning on the host, so a dashboard left open overnight was filling the audit log with its own failures. The panels render empty rather than stale — showing the last roster read before a session lapsed would be a list of real people that is no longer being refreshed, which is worse than showing nothing.
+
 ### The explain sweep keys on the engine's bytes, because a version string lies (#496, ADR-0307 clause 7)
 
 **Verified on 192.168.15.95, v2.57.234, 2026-09-21 — and this is the first time the sweep has been observed at all.** It did its work correctly on `v2.57.227` and said nothing, because it ran before `logstore_init()`; that was fixed the same day and then never had an engine change to report. Changing the key is itself a key change, so this boot produced one:
