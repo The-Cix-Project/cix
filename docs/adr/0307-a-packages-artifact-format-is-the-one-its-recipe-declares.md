@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, and implemented on 192.168.15.95 at `v2.57.231`. Stage 3 of the four-stage flip
+Accepted, and implemented on 192.168.15.95 at `v2.57.232`. Stage 3 of the four-stage flip
 [ADR-0305](0305-a-recipes-format-is-its-filename.md) set out, and the
 first stage to change what is written into the shared artifact cache
 rather than only how a build is driven.
@@ -32,7 +32,7 @@ Every clause is implemented and proven on the box:
   records: an approval does not cross formats, and the 25 recipes
   holding a tarball-era approval rejoin the artifact tier at their
   next revision bump.
-- **6** (`v2.57.231`): `mkbootroot` refuses to seal a root without
+- **6** (`v2.57.232`): `mkbootroot` refuses to seal a root without
   `cbs`, and cixd refuses a `.cixpkg` by name on a host that has none.
 
 **The file-for-file proof ADR asked for** ran on 2026-09-21: the same

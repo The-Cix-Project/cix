@@ -8,6 +8,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 ### The identity reads need a credential (#490)
 
+**Verified on 192.168.15.95, v2.57.232, 2026-09-21**, as a pair with a control — either half alone is consistent with a gate broken in one direction:
+
+```
+                                   no token   with token
+/v1/system/hostauth/sessions          401        200
+/v1/ldap/users                        401        200
+/v1/ldap/users/claude                 401        200
+/v1/health                            200         -
+/v1/system/boot                       200         -
+```
+
+The refusal body is the same sentence every gated write gives — `authentication required -- POST /v1/login first` — and each one is audited: `GET /v1/ldap/users REFUSED (not authorized)`. The two open reads are the control: this is the read/write line moving, not the read surface closing.
+
+
 Almost every GET on this API is open by design — disks, containers, packages describe the machine. Two describe **people**, and they are now gated: `GET /v1/system/hostauth/sessions` and `GET /v1/ldap/users` (and one user by name). Judged by intent rather than HTTP verb, which is the same exception the container console upgrade already had — the gate's own comment said "one deliberate GET-verb exception" and now says two.
 
 What each gives away is different, and worth stating so the line is defensible rather than a reflex. The session list carries `expires_in_seconds`, which counts down and refreshes on use, so polling an open copy tracks a live operator's working window — when they logged in, whether they are still there, when it lapses. The roster is not a list of names: it is a profile per account, `mail`, `givenname`/`sn`, `homedirectory`, `loginshell`, `ssh_public_key`, `primarygroup`, `secondary_groups`, `has_password`, `disabled`.
@@ -19,6 +33,9 @@ The escape hatch #370 needs is inherited rather than rebuilt: `hostauth_authoriz
 The path match is exact-or-child rather than a prefix, deliberately: `strncmp()` alone would gate a future `/v1/ldap/usersets` by accident and, worse, would silently stop gating the day the roster moved — a security check that fails open on a rename is the wrong shape. `test_hostauth` asserts the pair (401 without a token, 200 with one) plus a control that an ordinary machine-describing GET is still open, because either half alone is consistent with a gate broken in one direction.
 
 ### cbs is required in the control-plane root, and a .cixpkg is refused by name without it (#487, ADR-0307 clause 6)
+
+**Verified on 192.168.15.95, v2.57.232, 2026-09-21.** The assembly that produced this root is itself the first half of the proof: it went through the mandatory staging and the pre-seal check and sealed a root, which it now cannot do without `cbs`. The second half is that the booted root really carries it — republishing an already-published PBS recipe version answers `409 ... versions are immutable`, and reaching that refusal means `cbs explain --json` ran first, in this root. A root with no engine answers the same request with *"this host has no CPDL engine"* instead.
+
 
 ADR-0307 flips to **Accepted** with this release, every clause implemented and proven. `test_docindex` caught the first attempt at that — the status line read `**Accepted and implemented**` and the gate requires a bare status word first, qualifying prose after. The fourth count-or-format guard to stop a release in this series, each on something genuinely new.
 
