@@ -109,7 +109,15 @@ static const struct budget g_budgets[] = {
 	 * child to wait on at all -- curlfetch_perform() is a synchronous
 	 * library call, so the fork()+waitpid() pair around it had nothing
 	 * left to isolate. */
-	{ "daemon/src/main.c", 23, "pidfd callbacks + double-fork intermediates" },
+	/* 23 -> 24 (ADR-0307 clause 3): handle_pkg_unpack_event() reaps
+	 * the forked `cbs extract`. In budget under the FIRST category
+	 * this table names rather than by an argument -- it is a pidfd
+	 * callback, so EPOLLIN has already said the child exited and the
+	 * wait collects a zombie and returns at once. The asynchrony
+	 * that made this callback exist is the whole reason clause 3 is
+	 * shaped the way it is: the alternative was waiting for the
+	 * extraction itself, on the reactor. */
+	{ "daemon/src/main.c", 24, "pidfd callbacks + double-fork intermediates" },
 	/* 10 -> 11 for ADR-0279's signature fetch: the artifact tier now
 	 * pulls <artifact>.minisig alongside the artifact and waits for
 	 * that curl. In budget for the same reason every other one in this
@@ -239,8 +247,10 @@ static const struct budget g_budgets[] = {
  * for in the same place. Then 55 -> 56 for clause 3's
  * cixpkg_unpack_start(), again in pkg.c and again argued in the
  * per-file entry -- the extraction it starts adds none of its own,
- * being pidfd-tracked. */
-#define TOTAL_ALLOWED 56
+ * being pidfd-tracked. Then 56 -> 57 for the other half of the same
+ * clause: handle_pkg_unpack_event() in main.c, a pidfd callback whose
+ * child is already gone. */
+#define TOTAL_ALLOWED 57
 
 static int is_comment(const char *line)
 {
