@@ -1,0 +1,77 @@
+# mtools -- mcopy, mmd, mformat and friends, which this project uses
+# to populate a FAT filesystem image with no loop device and no mount
+# (see test/test_boot.c for why that matters here). Converted from
+# build.sh to build.cbs (ADR-0305 stage 4, #487).
+#
+# WHAT CHANGES: `rm -rf usr/share` is gone (ADR-0306, #491), same as
+# xorriso and with the same caveat -- the shell recipe removed the
+# whole tree rather than named categories, so what returns is read
+# off the artifact rather than predicted.
+#
+# ac_cv_header_iconv_h=no carries over. mtools' configure finds
+# glibc's <iconv.h> and enables a codepage-conversion path that then
+# fails to link here; telling configure the header is absent is the
+# recipe's existing, working answer and is left exactly as it was.
+#
+# UNKNOWN, deliberately: mtools historically installs its whole tool
+# family as links to one binary, and this package is installed
+# nowhere, so there is no file list to check. If they are hard links
+# cbs v0.1.30 now names the path and the reason
+# (cix-build-system#183); if they are relative symlinks CIXPKG
+# carries them unchanged. One build answers it either way.
+package "mtools" {
+    version "4.0.49"
+    release 5
+    format "cixpkg"
+
+    sources {
+        main "mtools" {
+            url "https://ftp.gnu.org/gnu/mtools/mtools-4.0.49.tar.gz"
+            sha256 "10cd1111da87bf2400a380c1639a6cba8bfb937a24f9c51f5f88d393ae5f6f76"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+        }
+    }
+
+    metadata {
+        "changelog" "4.0.49-5: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same ac_cv_header_iconv_h=no, which keeps configure off a codepage path that does not link here. Stops deleting usr/share (ADR-0306, #491); the shell recipe removed the whole tree rather than named categories."
+    }
+
+    build {
+        cd "${src}/mtools/mtools-4.0.49" {
+            run "./configure" {
+                "--prefix=/usr"
+                env "CC" = "tcc"
+                env "ac_cv_header_iconv_h" = "no"
+            }
+            run "make" {
+                jobs $jobs
+            }
+        }
+    }
+
+    install {
+        cd "${src}/mtools/mtools-4.0.49" {
+            run "make" {
+                "install"
+                "DESTDIR=${dest}"
+            }
+        }
+        require file "${dest}/usr/bin/mcopy" {
+            exists
+            nonempty
+        }
+    }
+}

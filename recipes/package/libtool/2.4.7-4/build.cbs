@@ -1,0 +1,92 @@
+# libtool -- libtool and libtoolize, plus libltdl. Converted from
+# build.sh to build.cbs (ADR-0305 stage 4, #487).
+#
+# WHAT CHANGES, and the middle one needed checking rather than
+# assuming:
+#
+#   usr/share/{info,man}     -- no longer deleted (ADR-0306, #491).
+#                               usr/share/{aclocal,libtool} were never
+#                               deleted and stay: aclocal macros and
+#                               the libtool build-aux scripts are what
+#                               other packages consume.
+#   usr/lib/libltdl.{a,la}   -- no longer deleted HERE. ADR-0251's
+#                               finalize drops a .la always, and drops
+#                               a .a when a shared object sits beside
+#                               it. Confirmed for this package rather
+#                               than assumed: the installed 2.4.7-3
+#                               ships libltdl.so, libltdl.so.7 and
+#                               libltdl.so.7.3.2, so the counterpart
+#                               exists and the rule applies. pkgconf
+#                               is the opposite case and keeps its own
+#                               removal, being --disable-shared.
+#   usr/include              -- STILL deleted. That is this package's
+#                               own choice, not platform policy:
+#                               nothing in this image set links
+#                               against libltdl, so ltdl.h describes
+#                               an interface no consumer uses.
+package "libtool" {
+    version "2.4.7"
+    release 4
+    format "cixpkg"
+
+    sources {
+        main "libtool" {
+            url "https://ftp.gnu.org/gnu/libtool/libtool-2.4.7.tar.xz"
+            sha256 "4f7f217f057ce655ff22559ad221a0fd8ef84ad1fc5fcb6990cecc333aa1635d"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+            tool "m4"
+        }
+    }
+
+    metadata {
+        "changelog" "2.4.7-4: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same configure line. Stops deleting usr/share/{info,man} (ADR-0306, #491) and libltdl.a/.la, which finalize already removes -- confirmed, since this package really does ship libltdl.so beside the archive. Keeps the usr/include removal: nothing here links libltdl, so ltdl.h describes an interface no consumer uses."
+    }
+
+    build {
+        cd "${src}/libtool/libtool-2.4.7" {
+            run "./configure" {
+                "--prefix=/usr"
+                env "CC" = "tcc"
+            }
+            run "make" {
+                jobs $jobs
+                "MAKEINFO=true"
+            }
+        }
+    }
+
+    install {
+        cd "${src}/libtool/libtool-2.4.7" {
+            run "make" {
+                "install"
+                "DESTDIR=${dest}"
+                "MAKEINFO=true"
+            }
+        }
+        remove tree "${dest}/usr/include"
+        require file "${dest}/usr/bin/libtool" {
+            exists
+            nonempty
+        }
+        # The real file, never the soname link: require file lstat()s
+        # and demands S_ISREG, so it reports a symlink as "does not
+        # exist" (cix-build-system#175).
+        require file "${dest}/usr/lib/libltdl.so.7.3.2" {
+            exists
+            nonempty
+        }
+    }
+}

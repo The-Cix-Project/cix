@@ -1,0 +1,109 @@
+# xorriso -- the ISO 9660 / Rock Ridge image manipulator this project
+# uses to build installer media. Converted from build.sh to build.cbs
+# (ADR-0305 stage 4, #487).
+#
+# WHAT CHANGES: `rm -rf usr/share` is gone (ADR-0306, #491). The shell
+# recipe removed the whole tree rather than named categories, so what
+# comes back is whatever xorriso's own `make install` puts there --
+# read off the built artifact afterwards rather than predicted here,
+# the same discipline binutils needed when its own usr/share turned
+# out to hold no licence.
+#
+# -D__STDC_NO_VLA__=1 carries over and is not cosmetic: glibc's
+# <regex.h> declares regexec()'s match array with a real C99
+# VLA-in-prototype sizing expression that TCC's parser rejects
+# outright ("'__nmatch' undeclared"). The header has an
+# #ifndef __STDC_NO_VLA__ branch for exactly a compiler without VLA
+# support, and TCC genuinely is one, so this steers it onto that
+# branch truthfully rather than redeclaring anything.
+#
+# --disable-libreadline: xorriso's interactive shell is not used here
+# and readline would be a dependency for nothing.
+#
+# 1.5.8.pl02-5 FAILED before reaching any of that, on the extracted
+# directory's name:
+#
+#   cannot enter directory `${src}/xorriso/xorriso-1.5.8.pl02`; errno=2
+#
+# A shell recipe never needs that name -- cixd extracts with the
+# common wrapping directory stripped, so ./configure runs from the
+# extraction root. A PBS recipe is handed ${src}/<source>/<top> and
+# has to name <top> exactly, and a `.pl02` patchlevel in the TARBALL
+# name does not have to appear in the directory inside it.
+#
+# So this revision asks rather than guesses: the prepare phase lists
+# the extraction root, which is the idiom libxcrypt's conversion
+# already used for the same question, and the require directory below
+# then fails with the real name in the log above it.
+#
+# Still unknown and deliberately so: whether xorrisofs and xorrecord
+# are hard links. mtools turned out to use symlinks, which CIXPKG
+# carries; if these are hard links cbs v0.1.30 names the path now
+# (cix-build-system#183).
+package "xorriso" {
+    version "1.5.8.pl02"
+    release 6
+    format "cixpkg"
+
+    sources {
+        main "xorriso" {
+            url "https://ftp.gnu.org/gnu/xorriso/xorriso-1.5.8.pl02.tar.gz"
+            sha256 "b1455ecafbf0692ddafe1d71002a96f2ce2d77f4deae602678261ce033f97bc8"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+        }
+    }
+
+    metadata {
+        "changelog" "1.5.8.pl02-6: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest, the same --disable-libreadline and the same __STDC_NO_VLA__ define TCC needs to parse glibc regex.h. Stops deleting usr/share (ADR-0306, #491); the shell recipe removed the whole tree rather than named categories, so what returns is whatever make install puts there."
+    }
+
+    prepare {
+        run "ls" {
+            "-la"
+            "${src}/xorriso"
+        }
+        require directory "${src}/xorriso/xorriso-1.5.8.pl02" {
+            exists
+        }
+    }
+
+    build {
+        cd "${src}/xorriso/xorriso-1.5.8.pl02" {
+            run "./configure" {
+                "--prefix=/usr"
+                "--disable-libreadline"
+                env "CC" = "tcc"
+                env "CFLAGS" = "-D__STDC_NO_VLA__=1"
+            }
+            run "make" {
+                jobs $jobs
+            }
+        }
+    }
+
+    install {
+        cd "${src}/xorriso/xorriso-1.5.8.pl02" {
+            run "make" {
+                "install"
+                "DESTDIR=${dest}"
+            }
+        }
+        require file "${dest}/usr/bin/xorriso" {
+            exists
+            nonempty
+        }
+    }
+}

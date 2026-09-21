@@ -42,6 +42,38 @@ An engine that runs but cannot be hashed records a failure rather than being tre
 
 **And cbs#182 was closed without hard-link support, which is the right outcome and worth recording.** `main`'s `manifest.c:140` still refuses `st_nlink != 1` — what changed is that it now says so: *"%s is a hard link (link count %lu); CIXPKG entries must have exactly one link"*. That matches the argument this project put to them in its own follow-up: a package installs into an image by copying files one at a time, so a hard link never survives installation, and a format declining to promise it is being honest rather than incomplete. The consequence for recipes is unchanged and now discoverable — `binutils` keeps its `ld`-as-symlink, and the next package with the same shape gets told which path and why instead of three errors naming nothing.
 
+### findutils, libtool, mtools and xorriso convert — and xorriso's conversion found a real bug (#487, #491)
+
+Four more, stage 4 now at **35 of 117**:
+
+```
+findutils-4.10.0-6-x86_64.cixpkg     488899 bytes
+libtool-2.4.7-4-x86_64.cixpkg        387869 bytes
+mtools-4.0.49-6-x86_64.cixpkg        133695 bytes
+xorriso-1.5.8.pl02-8-x86_64.cixpkg   827514 bytes
+```
+
+`findutils` and `libtool` went first try. For libtool the one judgement worth checking rather than assuming was whether to keep its `libltdl.a`/`.la` removals: finalize drops a `.la` always and a `.a` only when a shared object sits beside it, and this package really does ship `libltdl.so.7.3.2`, so both removals go. `pkgconf` is the opposite case and keeps its own, being `--disable-shared`. The `usr/include` removal stays in both libtool and binutils — that is a package's own choice about what it ships, not the withdrawn platform policy.
+
+**My hard-link prediction was wrong for both of the packages I expected it in**, and measuring cost two builds rather than assuming cost a wrong recipe. `mtools` installs its tool family as **symlinks**, which CIXPKG carries without complaint; what failed was my own assertion:
+
+```
+required file ${dest}/usr/bin/mcopy is a symbolic link;
+require file matches regular files only
+```
+
+That is cix-build-system#175, stated plainly in the recipe guide, and applied correctly to libtool's soname link two recipes earlier in the same sitting. `xorriso` likewise: `xorrisofs`, `xorrecord` and `osirrox` all came through fine.
+
+**xorriso cost two more builds and both were worth it.** First the extracted directory: `cannot enter directory ${src}/xorriso/xorriso-1.5.8.pl02; errno=2`, because the `.pl02` patchlevel is in the tarball's name and not in the directory inside it. A shell recipe never learns that — cixd extracts with the wrapping directory stripped, so `./configure` runs from the extraction root — while a PBS recipe is handed `${src}/<source>/<top>` and must name `<top>` exactly. The revision that failed asked rather than guessed, with the prepare-phase `ls` that libxcrypt's conversion already established for this question, and the answer was in the log above the error. That `ls` stays: it costs one line and makes the next version bump diagnose itself.
+
+Then the real find. The build succeeded and the install was refused by the #389 undeclared-link gate:
+
+```
+usr/bin/xorriso links "libz.so.1", which nothing it declares provides
+```
+
+Every shell revision of this recipe declared `pkg_depends=""`, and that was **simply untrue** — xorriso links zlib. It survived because every image that ever installed it happened to have zlib already, which is the same accident `binutils@2.42-2` documents, where `ar` died with *"cannot open shared object file: libz.so.1"* the moment an environment held only what it declared. zlib is now declared both ways: as a build tool because the link needs it, and at runtime because the binary does. A conversion is not supposed to find bugs; this one did, because composing an environment from declarations is what makes a false declaration visible.
+
 ### cbs v0.1.30: a rejected staged tree names the path and the reason (cix-build-system#182, #183, ADR-0307 clause 7)
 
 Installed into `cix-builder` and `cix-hosttools`, staged into the control-plane root by a reassembly, and booted. The difference it buys, on the same probe that found the problem under `v0.1.29` — identical recipe, only the engine changed:
