@@ -8,6 +8,23 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 ### A PBS recipe publishes a .cixpkg, and unpacking one does not stop the control plane (#487, #497, ADR-0307 clauses 2 and 3)
 
+**Verified on 192.168.15.95, v2.57.230, 2026-09-21.** `probe-cixpkg` installs an executable, a non-executable data file, and nothing else — chosen because a mode is the thing a format loses silently and a whole-artifact checksum cannot notice (#139).
+
+*Produced.* The first `.cixpkg` this platform has ever published, from the shared cache's own listing:
+
+```
+{"stem": "probe-cixpkg-1-1-x86_64", "formats": [
+  {"format": ".cixpkg", "name": "probe-cixpkg-1-1-x86_64.cixpkg",
+   "signed": true, "bytes": 1587, "sha256": "40bae375..."}]}
+```
+
+CBS wrote it inside the build container, cixd took the file rather than tarring a tree, cached it, signed it and published it — and cix-cache filed it in the package tier beside every tarball, exactly as reading its suffix table said it would.
+
+*Consumed.* A second install of the same version into a different image took the local cache hit and went through the forked unpack: `installed`, with both files. Three log queries say which path it took, and each absence means something specific — no *"is a CIXPKG and this is the tarball extractor"* refusal, so the dispatch did not hand it to libarchive; no `cbs extract` failure, so the child exited 0; and no #139 *"NOT executable"* warning from the check `pkg_unpack_completed()` runs over the extracted tree, which is where a lost mode on `usr/bin/probe-cixpkg` would have surfaced.
+
+**What is not yet proven** is the ADR's full stated proof: the extracted tree compared file-for-file, content *and* mode, against the same package built as a tarball. The evidence above is one side of that comparison. The probe was uninstalled from both images afterwards; the artifact stays published, which is the durable evidence.
+
+
 The flip. `cbs build` gets `--output /build/artifact.cixpkg`, so the build container packages what it built; cixd takes the finished file into the cache instead of tarring the tree. **That direction costs the host less, not more** — `pkg_cache_save()` forks `tar`, forks `gzip` and waits on both, on the reactor, over the whole staged tree, and taking a file out of the container's upperdir is a `rename()`.
 
 **Unpacking a cached `.cixpkg` runs in a forked child.** cixd never links CBS (ADR-0305), so reading that format means running `cbs extract` — and the one place a cached artifact becomes a tree is `pkg_prepare_build_and_start()`, on the single epoll loop that serves every request. Waiting there would stop the control plane for as long as it takes to write out a package. So the child is pidfd-tracked like every other child this daemon starts, and `pkg_unpack_completed()` resumes the install when it exits, reusing the suspend-and-resume the pipeline already had for a forked build environment (#238).
