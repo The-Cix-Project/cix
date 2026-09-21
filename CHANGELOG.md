@@ -6,6 +6,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A metadata value that is too long says so (#493)
+
+`POST /v1/pkg/recipes` answered a PBS recipe whose `changelog` exceeded its 511-byte field with *"recipe content failed to parse, or its pkg_name= doesn't match name"*. Both things that sentence names are false — `cbs explain --json` had already succeeded on the recipe and the code reporting the error was reading its output, and the name matched — and both are expensive to go and check, so it sends the author hunting for a CPDL syntax error that does not exist. It happened twice in one afternoon, converting `xz` and `zlib`.
+
+The reason was in the log store and only there. Now it reaches the caller, with the limits, through the `pkg_recipe_add_last_error()` mechanism this release series already added for the `format "tar.gz"` refusal:
+
+```
+400 {"error":"a metadata value is too long (artifact_sha256 max 64 bytes, changelog max 511)"}
+```
+
+A message rather than a new error code, deliberately. The issue is right that `PKG_ERR_INVALID_RECIPE` is overloaded — it means "cbs refused it", "the name does not match" and "a field does not fit" — but the thing a caller acts on is the sentence, and a fourth enum value would ripple through the mapper to deliver the same text. The last-error channel is this codebase's own answer to exactly that, from `treecopy_last_error()`.
+
+The parse-time twin, which reads a stored document rather than an incoming one, gained the same limits in its log line. It is unreachable while publish refuses such a recipe before storing it — and "cannot happen" is a claim about what put the file there, not about this code.
+
 ### The identity reads need a credential (#490)
 
 **Verified on 192.168.15.95, v2.57.232, 2026-09-21**, as a pair with a control — either half alone is consistent with a gate broken in one direction:

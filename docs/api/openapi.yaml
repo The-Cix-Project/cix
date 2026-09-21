@@ -8902,6 +8902,15 @@ paths:
             the CPDL error code (e.g. CPDL-E3001) and the line it was raised on.
 
 
+            Also (#493) a PBS recipe whose `metadata { }` holds a value longer than
+            the field it lands in -- `changelog` is capped at 511 bytes and
+            `artifact_sha256` at 64. The message says so and carries both limits,
+            rather than the parse sentence: such a recipe parsed perfectly and its
+            name matched, so that sentence sends its author hunting for a CPDL
+            syntax error that does not exist. It really happened, converting `xz`
+            and `zlib` with a changelog a few bytes over.
+
+
             Also (ADR-0307 clause 1) a PBS recipe declaring `format "tar.gz"`. That is legal
             CPDL and `cbs build` refuses to execute it -- *"standalone builds require
             cixpkg"* -- so storing it would mean an immutable version that fails at build

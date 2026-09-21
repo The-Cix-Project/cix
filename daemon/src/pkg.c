@@ -2238,8 +2238,15 @@ static int parse_pbs_recipe(const char *path, struct pkg_recipe *out)
 	if (pbs_explain_metadata(ex, "artifact_sha256", out->artifact_sha256,
 	                          sizeof(out->artifact_sha256)) != 0 ||
 	    pbs_explain_metadata(ex, "changelog", out->changelog, sizeof(out->changelog)) != 0) {
-		logstore_write("cixd", "error", "pkg: %s: a metadata value does not fit",
-		               explain_path);
+		/* The same limits as the publish path's own message (#493).
+		 * Unreachable in practice, since publish refuses such a
+		 * recipe before it is ever stored -- but this reads a
+		 * document off disk, and "cannot happen" is a claim about
+		 * what put it there. */
+		logstore_write("cixd", "error",
+		               "pkg: %s: a metadata value does not fit (artifact_sha256 max %d "
+		               "bytes, changelog max %d)",
+		               explain_path, PKG_SHA256_MAX - 1, PKG_CHANGELOG_MAX - 1);
 		pbs_explain_free(ex);
 		return -1;
 	}
@@ -7233,10 +7240,26 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 		                          sizeof(parsed.artifact_sha256)) != 0 ||
 		    pbs_explain_metadata(ex, "changelog", parsed.changelog,
 		                          sizeof(parsed.changelog)) != 0) {
-			logstore_write("cixd", "error",
-			               "pkg: recipe %s: a metadata value does not fit "
-			               "(artifact_sha256 max %d, changelog max %d)",
-			               name, PKG_SHA256_MAX - 1, PKG_CHANGELOG_MAX - 1);
+			/*
+			 * #493: the caller gets this, not the generic parse
+			 * sentence. Both things that sentence names are FALSE
+			 * here -- the recipe parsed (cbs explain already ran on
+			 * it and this code is reading the result) and the name
+			 * matched -- and both are expensive to go and check, so
+			 * it sends the author hunting for a CPDL syntax error
+			 * that does not exist. It really happened, twice in one
+			 * afternoon, converting xz and zlib with a changelog a
+			 * few bytes over.
+			 *
+			 * The limits travel with the message because they are
+			 * the actionable part and the author cannot see them
+			 * from the recipe.
+			 */
+			snprintf(g_recipe_add_err, sizeof(g_recipe_add_err),
+			         "a metadata value is too long (artifact_sha256 max %d bytes, changelog "
+			         "max %d)",
+			         PKG_SHA256_MAX - 1, PKG_CHANGELOG_MAX - 1);
+			logstore_write("cixd", "error", "pkg: recipe %s: %s", name, g_recipe_add_err);
 			pbs_explain_free(ex);
 			unlink(staging_path);
 			free(redacted);
