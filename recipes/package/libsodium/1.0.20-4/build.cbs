@@ -1,0 +1,117 @@
+# libsodium -- the crypto library minisign and the PKI side build
+# against. Converted from build.sh to build.cbs (ADR-0305 stage 4,
+# #487).
+#
+# WHAT CHANGES:
+#
+#   usr/share/man   -- no longer deleted (ADR-0306, #491).
+#   usr/lib/*.a     -- not translated. --disable-static means none is
+#                      built, and CPDL's `remove glob` FAILS on a glob
+#                      matching nothing where `rm -f` shrugged. The
+#                      finalize policy would drop one anyway, given
+#                      libsodium.so.26.2.0 beside it.
+#
+#   the shared-library guard MOVES and gets stronger. The shell
+#   recipe tested for src/libsodium/.libs/libsodium.so BEFORE the
+#   install -- a libtool build-tree path, which is a symlink, and
+#   `require file` matches regular files only and would report it as
+#   "does not exist" (cix-build-system#175). Asserting the INSTALLED
+#   usr/lib/libsodium.so.26.2.0 instead checks the thing that ships
+#   rather than an intermediate, and is a real file.
+#
+# -include stdatomic.h is upstream's latent bug, not a TCC defect.
+# private/common.h selects
+#
+#   #elif defined(HAVE_C11_MEMORY_FENCES)
+#   # define ACQUIRE_FENCE atomic_thread_fence(memory_order_acquire)
+#
+# and includes <stdatomic.h> nowhere, while configure's own C11 probe
+# DOES include it -- so the probe passes and the branch it enables
+# cannot compile. GCC never notices: it defines both macros and the
+# #ifdef arm wins, so the #elif arm is dead code on every compiler
+# upstream builds with. tcc is simply the first to be exactly one and
+# not the other.
+#
+# Supplying the header is the truthful fix. The tempting one is to let
+# the probe fail so ACQUIRE_FENCE becomes (void) 0 -- that builds, and
+# silently removes a memory fence from a crypto library.
+#
+# Safe as a force-include specifically because <stdatomic.h> is
+# compiler-provided and pulls in no system headers: the hazard libnl's
+# shim documents -- a -include processed before the TU can define
+# _GNU_SOURCE, latching glibc's feature-test macros early -- needs a
+# header that reaches glibc, and this one does not.
+package "libsodium" {
+    version "1.0.20"
+    release 4
+    format "cixpkg"
+
+    sources {
+        main "libsodium" {
+            url "https://download.libsodium.org/libsodium/releases/libsodium-1.0.20.tar.gz"
+            sha256 "ebb65ef6ca439333c2bb41a0c1990587288da07f6c7fd07cb3a18cc18d30ce19"
+        }
+    }
+
+    requires {
+        build {
+            compiler "tcc"
+            tool "make"
+            tool "linux-headers"
+            tool "bash"
+            tool "coreutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "binutils"
+            tool "findutils"
+            tool "diffutils"
+        }
+    }
+
+    metadata {
+        "artifact_sha256" "e24855c67ea9ecd185e69948c47185582f8c3fac93f543831b693bf3182b4c5a"
+        "changelog" "1.0.20-4: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same configure line, stdatomic.h force-include included. Stops deleting usr/share/man (ADR-0306, #491). The shared-library guard moves from a libtool build-tree path before the install to the installed libsodium.so.26.2.0 after it: that is the file that ships, and it is a real file rather than the symlink require file would have refused."
+    }
+
+    build {
+        cd "${src}/libsodium/libsodium-1.0.20" {
+            run "./configure" {
+                "--prefix=/usr"
+                "--libdir=/usr/lib"
+                "--disable-asm"
+                "--disable-static"
+                env "CC" = "tcc"
+                env "CPPFLAGS" = "-include stdatomic.h"
+            }
+            run "make" {
+                jobs $jobs
+            }
+        }
+    }
+
+    install {
+        cd "${src}/libsodium/libsodium-1.0.20" {
+            run "make" {
+                "install"
+                "DESTDIR=${dest}"
+            }
+        }
+        # The same refusal zlib makes, for the same reason: a silent
+        # fall back to static-only produces a package whose only
+        # consumer then fails to link, one build cycle later and
+        # somewhere else (#113).
+        require file "${dest}/usr/lib/libsodium.so.26.2.0" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/include/sodium.h" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/lib/pkgconfig/libsodium.pc" {
+            exists
+            nonempty
+        }
+    }
+}

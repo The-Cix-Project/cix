@@ -1,0 +1,116 @@
+# linux-headers -- the sanitised kernel uapi headers glibc and every
+# C package here compiles against. Converted from build.sh to
+# build.cbs (ADR-0305 stage 4, #487).
+#
+# NOTHING TO RESTORE under #491: this recipe never deleted anything.
+#
+# WHAT CHANGES: the four-element assertion loop becomes four `require
+# file` lines, and the two diagnostic lines after it go. Those were an
+# `echo` of a `find | wc -l` count and a `grep -m1` of
+# LINUX_VERSION_CODE -- both print to the build log and neither can
+# fail the build, so nothing is lost with them. The assertions are the
+# part that gates.
+#
+# "headers", not "headers_install". The two do the same sanitising
+# work -- the HDRINST steps that write cleaned headers into the build
+# tree's own usr/include -- but headers_install adds a final copy to
+# INSTALL_HDR_PATH that the kernel performs with rsync:
+#
+#   INSTALL /build/hdr/include
+#   /bin/sh: line 1: rsync: command not found
+#
+# rsync is not packaged here, and packaging a file-synchronisation
+# tool to copy a directory the install phase copies anyway would be a
+# poor trade.
+#
+# ARCH=x86 explicitly: headers_install otherwise guesses from uname,
+# and a build container is not necessarily the machine that will run
+# these headers.
+package "linux-headers" {
+    version "6.18.40"
+    release 6
+    format "cixpkg"
+
+    sources {
+        main "linux" {
+            url "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.40.tar.xz"
+            sha256 "3712fc1ec839e4daac981176c8518912e8f452650aaedfe4381da4419613a431"
+        }
+    }
+
+    requires {
+        build {
+            compiler "gcc"
+            tool "bash"
+            tool "coreutils"
+            tool "make"
+            tool "binutils"
+            tool "sed"
+            tool "grep"
+            tool "gawk"
+            tool "findutils"
+            tool "diffutils"
+            tool "perl"
+        }
+    }
+
+    toolchain "gcc" {
+        reason "missing flag: the build passes -MMD,<path>, a dependency-generation option TCC does not implement (#209). Measured against tcc 0.9.27; #209 tracks it and this is a candidate for re-measuring when it moves"
+    }
+
+    metadata {
+        "changelog" "6.18.40-6: converted from build.sh to build.cbs (ADR-0305 stage 4) and published as a .cixpkg (ADR-0307). Same tarball at the same digest and the same make target. Nothing to restore under ADR-0306: this recipe never deleted anything. The four-element assertion loop becomes four require file lines; the two diagnostic prints after it go, neither being able to fail a build."
+    }
+
+    build {
+        cd "${src}/linux/linux-6.18.40" {
+            # HOSTCC by absolute path. The kernel's default is a bare
+            # "gcc", which in this build environment resolved to TCC
+            # and failed on -MMD; and a bare name makes real gcc
+            # compute its installation prefix relatively, failing cc1
+            # with a misleading posix_spawnp error.
+            run "make" {
+                "ARCH=x86"
+                "HOSTCC=/usr/bin/gcc"
+                "headers"
+            }
+        }
+    }
+
+    install {
+        mkdir "${dest}/usr/include" chmod 0755
+        # A plain `run "cp"`, and not a CPDL operation, because CPDL
+        # has none for a recursive tree copy: `copy` is one file to
+        # one file and `copy glob` matches within a pattern. `copy
+        # tree` was tried here and the recipe was refused at parse.
+        # cp comes from coreutils, which is declared above, so this
+        # asks for nothing the environment does not already have --
+        # it is simply less declarative than the rest of the phase.
+        # Filed upstream; ten packages in this corpus copy a tree
+        # this way and every one of them will need the same escape.
+        run "cp" {
+            "-a"
+            "${src}/linux/linux-6.18.40/usr/include/."
+            "${dest}/usr/include/"
+        }
+        # These four are what glibc's own configure looks for. A
+        # headers run that silently produced nothing would otherwise
+        # surface much later as a confusing glibc configure failure.
+        require file "${dest}/usr/include/linux/version.h" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/include/asm/unistd.h" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/include/asm-generic/unistd.h" {
+            exists
+            nonempty
+        }
+        require file "${dest}/usr/include/linux/errno.h" {
+            exists
+            nonempty
+        }
+    }
+}

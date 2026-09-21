@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### recipes: libsodium and tar convert; linux-headers is written but blocked on its fetch (#487, #491, cbs#186)
+
+**tar keeps its self-test, and it is the one conversion where a guard genuinely changed shape.** That test exists because of #122: upstream TCC 0.9.27 silently dropped the condition of a `do-while` whose body ends unreachably — exactly `read_and()`'s shape — so a TCC-built tar listed and extracted **one member per archive and exited 0 every time**. The lesson recorded then was that the gate must compare *content*, because exit status was worthless.
+
+The shell version did three things: create, grep `tar -tf`'s output for three paths, then extract and `sha256sum`-compare each file. The middle one needs multi-line stdout redirected to a file, which CPDL cannot do yet (cbs#185) — `run` proves exit 0, the precise thing #122 proved worthless. So the listing grep is gone and the content comparison stays, as three `require file { same_as }` in a real `check` phase. The coverage holds: `-t` and `-x` are both `read_and()`, and a truncating tar cannot produce three byte-identical files at three different depths. What is actually lost is a direct look at `tar -t`'s output, and it returns with #185's `stdout file`. The phase ran and passed on the box.
+
+tar goes from **1 file to 46** — it was down to `usr/bin/tar` alone, because the shell recipe deleted `usr/share` *and* `usr/libexec`. `usr/share` comes back (#491); `usr/libexec` stays deleted, because that is `rmt` and nothing here drives a tape over rsh.
+
+**libsodium is 71 files before and after, and its `rm -rf usr/share/man` was a lifelong no-op** — the package installs no man pages at all, so the line removed a directory that never existed. Same discovery as readline's. Its shared-library guard also moved and got stronger: the shell recipe tested `src/libsodium/.libs/libsodium.so` *before* installing, a libtool build-tree path that is a symlink and that `require file` would have reported as "does not exist" (cbs#175). Asserting the installed `libsodium.so.26.2.0` checks the thing that ships.
+
+**CPDL has no recursive tree copy, which stops `linux-headers` being fully declarative (cbs#186).** `cp -a usr/include/. DEST/` has no operation: `copy` is one file to one file and `copy glob` matches a pattern. `copy tree` was the natural guess and is refused at parse. The escape is `run "cp" { "-a" … }`, which works and asks for nothing extra, but is a shell command inside a declarative phase with none of what CPDL is for. **Ten packages in this corpus copy a tree this way**, including `glibc` and `tcc`, so every one of them will need the same escape; cbs#186 asks for the operation.
+
+**linux-headers 6.18.40-6 is published and unbuilt, and the reason is not the recipe.** Its first build reached the build stage and failed with exit status 3 — and its build log is **65 bytes containing only the source digest**, so what failed is not recorded anywhere. Every attempt since has failed earlier, at the fetch: `fetch failed (curl exit status 1)` against `cdn.kernel.org`, reproducibly, for the ~150 MB tarball. That is the documented bare-`curl`-exit-1 class, not a Cix defect and not something this recipe can fix. Left published and unbuilt rather than escalated; the exit-3 cause is unestablished and stays that way until the fetch works.
+
+**Four recipes examined and not converted**, each for a measured reason rather than effort: `net-tools` (a `while read` loop over `config.in` generating two files; `each` iterates a literal list, not file lines), `libnftnl` and `keepalived` (`readelf -d | grep -q` plus, for libnftnl, a `find | grep -c` count captured and compared — cbs#185 again), and `glauth` (`./glauth --help | grep -q 'Usage:'`).
+
 ### A live credential was in HEAD, and 254 artifact approvals were only on the box (#502)
 
 Three separate git/box divergences, all found by one sweep while converting the next batch of recipes. None was caused by this batch; the sweep is what made them visible.
