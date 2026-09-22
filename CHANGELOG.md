@@ -6,6 +6,21 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### `cix` converts to CPDL and passes its own selftest: the conversion had dropped `CAP_SYS_ADMIN` (#515, #487)
+
+`cix@v2.57.244-2` through `-4`, the CPDL conversion of the platform's own recipe, failed the selftest's container-creating suites. Parallelism was blamed first, then "a CPDL build container cannot create cgroups" (the original text of #515). Both were wrong. The shell recipe declared `pkg_build_caps="CAP_SYS_ADMIN"`, and the conversion carried no `capability` line. cixd mounts cgroup2 into a build container only when that capability is present (`src/container.c`, `mount_cgroup2`), and without it the container cannot clone namespaces either. Both build paths get the same container spec from `start_build_container_spec()`, and the recipe decides what goes into it.
+
+Measured on 192.168.15.95 from the retained build logs:
+
+| build | `cgroup_create` errors | `cgroup.controllers` ENOENT | `Operation not permitted` | tests |
+|---|---|---|---|---|
+| `-4` (no capability) | 258 | 33 | 2 | 64 PASS, 28 FAIL |
+| `-6` (`capability "CAP_SYS_ADMIN"`) | 0 | 0 | 0 | 92 PASS, `SELFTEST: PASS` |
+
+`-6` differs from `-4` only in that line, its changelog, and comments corrected to the measured cause. The #296 negative control also ran in `-6`: the poisoned `cixd` made `test_console_exec` fail, as the recipe requires. `-5` is the shell A/B control build, so it is not in the recipes repository.
+
+A sweep of the corpus for shell recipes that declare `pkg_build_caps` and have a `.cbs` successor found one more conversion that dropped it: `cix-aggressive-test@1.0.6.cbs`. That recipe cannot fetch yet (source checksum mismatch), so it has never built. Whichever release fixes its source has to carry the capability too. `docs/guides/writing-recipes.md` now says a conversion must carry `pkg_build_caps` over by hand, and what forgetting it looks like.
+
 ### The `thinc` package is deprecated, and the REST contract stops citing it (#487)
 
 `thinc` is what Cix was called before the rebrand (#121). One thing still carried the name as a live artefact rather than as history, and it is gone:
