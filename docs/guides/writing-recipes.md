@@ -117,18 +117,66 @@ CPDL has no shell, and the reflex when converting is to assume a missing feature
 
 ### What CPDL cannot do yet
 
-Three shapes have no form, and a recipe needing one stays on `build.sh` until it does. Each is filed with the corpus count behind it:
+The four shapes that used to block conversions are all delivered, and the corpus uses each of them: a compound body per list item ([#176](https://git.home.arpa/itdlabs/cix-build-system/issues/176)), `replace … until whitespace` for a flag and its argument ([#177](https://git.home.arpa/itdlabs/cix-build-system/issues/177)), `stage library` ([#178](https://git.home.arpa/itdlabs/cix-build-system/issues/178)), and `stdout file PATH` for output an assertion needs to read ([#185](https://git.home.arpa/itdlabs/cix-build-system/issues/185)). **This table used to say btop and iw were blocked on the last of those; both are converted.**
 
-| shape | packages | issue |
+What is open, measured on 2026-09-22:
+
+| shape | what to do instead | issue |
 |---|---|---|
-| apply several steps to each item of a list | 15 | [#176](https://git.home.arpa/itdlabs/cix-build-system/issues/176) |
-| strip `-Wl,--version-script=<path>` (pattern edit) | 6 | [#177](https://git.home.arpa/itdlabs/cix-build-system/issues/177) |
-| find a shared library across candidate lib directories | 4 | [#178](https://git.home.arpa/itdlabs/cix-build-system/issues/178) |
-| assert on a process that prints more than one line, and so any NEGATIVE assertion built from one | 1 | [#185](https://git.home.arpa/itdlabs/cix-build-system/issues/185) |
+| assert a tool exists in the build environment | a bare `run "find" { "--version" }` — `require file` is confined to the recipe's own trees and refuses an absolute path | [#225](https://git.home.arpa/itdlabs/cix-build-system/issues/225) |
+| a declared tool that is missing | nothing to do — it presents as a **timeout**, not an error naming the tool | [#224](https://git.home.arpa/itdlabs/cix-build-system/issues/224) |
+| `stage library` on a symlink | nothing — it dereferences, which is what the corpus needs; the spec says otherwise | [#222](https://git.home.arpa/itdlabs/cix-build-system/issues/222) |
 
-A `for` loop whose body is a **single** operation is not blocked — write it as N lines.
+**`expect { stdout contains … }` takes ONE LINE of output, and that is the rule to know before writing an assertion.** It is right for `pkg-config --modversion`, and wrong for almost everything else — including a `--version` banner, which is the case it looks designed for: GNU's convention is four lines, so `msgfmt --version` is refused. Three ways out, in order of preference:
 
-**#185 is the one that costs an assertion rather than a conversion, so it is worth knowing the shape.** `expect { stdout contains … }` and `stdout "name"` both require the process to print exactly one line, which is right for binding `pkg-config --modversion` and leaves `ldd`, `--version` banners and anything else multi-line with no form at all. That in turn means a negative check — *this output must NOT contain X* — cannot be built either, since the usual route is to bind the output and grep it for an exit status. `btop` stays on `build.sh` for exactly this: its build ends by proving `ldd` does not name a shared `libstdc++`, and the failure that check catches is silent at build time and only appears on someone else's machine. Convert a recipe like that and you keep the conversion and lose the guard, which is the wrong trade. `iw` stays on `build.sh` for the same reason in the opposite direction: it asserts that its binary *does* carry `NEEDED libnl-3.so.200` and `libnl-genl-3.so.200`, via `readelf -d | grep -q`, which catches a build that silently went static or resolved against something else. `require file { exists contains "libnl-3.so.200" }` looks like a substitute and is not one to reach for on faith — whether that check is binary-safe on an ELF has not been measured here, and a `contains` that quietly stops at the first NUL would pass vacuously, which is the one failure direction a guard must not have.
+1. **If you are asserting a link dependency, use `links`.** It is a first-class DT_NEEDED assertion with both directions:
+
+   ```
+   links "${dest}/usr/sbin/nft" {
+       needs "libnftables.so.1"
+       needs "libgmp.so.10"
+   }
+   links "${dest}/usr/bin/btop" {
+       forbids "libstdc++.so.6"
+   }
+   ```
+
+   `forbids` is the negative check this section used to say had no form. **`links` compares a FULL SONAME, not a substring** — `needs "libnftables"` fails on a binary that does link it, with `artifact is missing required library`, which reads as "not linked" when the fault is the spelling. `readelf -d | grep NEEDED.*libnftables` accepted a prefix; this does not, and is right not to.
+
+2. **If the thing you want is "did this succeed", drop the assertion and keep a bare `run`.** A nonzero exit fails the build and CBS prints the failing command. `msgfmt --version` proves the tool runs; matching its own name in its own banner was never the part doing the work.
+
+3. **If you need to search real output, `stdout file PATH` then `require file { contains … }`** — bounded at 64 KiB, so not for `nm` over an archive. `iw@6.17-5` does this with `readelf`.
+
+**A command that prints a lot cannot be asserted on at all.** `nm` over a static archive is far past 64 KiB and there is no pipe, no filter, and no line-oriented match. Where the question is really *is this object in that archive*, ask it directly instead — `ar x ARCHIVE MEMBER` exits nonzero when the member is absent, and what it extracts is an ordinary file `require file` is scoped for:
+
+```
+mkdir "${build}/absorb"
+cd "${build}/absorb" {
+    run "ar" {
+        "x"
+        "${src}/…/libtextstyle.a"
+        "rpl_la-cr-parser.o"
+    }
+}
+require file "${build}/absorb/rpl_la-cr-parser.o" {
+    exists
+    nonempty
+}
+```
+
+`gettext@1.0-22` does this, and it is **stronger** than the `nm | grep ' T sym'` it replaced: the failure it guards against (cix#220) was objects not being *members* of the archive, so membership and content is the exact question. A `require file … contains "libtextstyle_cr_"` on the archive would have looked like a substitute and been silently useless — libtextstyle's own objects *reference* those renamed symbols, so the bytes are in the file whether or not the definitions ever arrived.
+
+**CPDL will not run a shell, and will not let you name one.** `sh`, `bash`, `dash`, `ash`, `ksh`, `zsh` and `env` are rejected as `run` executables, at validation and again at runtime, so a recipe cannot embed logic in an interpreter argument. A verified upstream script is fine — the kernel honours its `#!` line. When that line is wrong for this platform, **fix the shebang rather than reaching for the interpreter**:
+
+```
+replace "${glob.top}/lib/ccan.git/tools/create-ccan-tree" {
+    from "#!/bin/bash"
+    to "#!/usr/bin/bash"
+    exactly 1
+}
+```
+
+`sbsigntools@0.9.5-11` does this, where the shell form ran `bash <script>`. The edit is to the generated tree, upstream's own source is untouched, and it repairs the defect instead of stepping around it for one caller.
 
 Sources are handed to CBS, not fetched by it: cixd fetches and checksum-verifies as it does for any recipe, then places each source in a cache directory named by its own digest, which CBS re-verifies. So a PBS build container still has no network and no credentials, exactly like a shell one.
 
