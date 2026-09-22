@@ -3127,6 +3127,8 @@ static int extract_archive_to(const char *archive_path, const char *dest_dir,
 	for (;;) {
 		const char *name;
 		char full[PATH_MAX];
+		char hfull[PATH_MAX];
+		const char *hardlink;
 		int r = archive_read_next_header(a, &entry);
 
 		if (r == ARCHIVE_EOF)
@@ -3164,6 +3166,63 @@ static int extract_archive_to(const char *archive_path, const char *dest_dir,
 		if ((size_t)snprintf(full, sizeof(full), "%s/%s", dest_dir, name) >= sizeof(full))
 			goto out;
 		archive_entry_set_pathname(entry, full);
+
+		/*
+		 * #506: a HARD LINK's target is an archive-internal path and
+		 * needs the identical transformation the pathname just got.
+		 * Rewriting one and not the other is the whole bug: the
+		 * member lands at <dest_dir>/<stripped> while its link target
+		 * still reads "<archive-prefix>/<path>", which libarchive
+		 * resolves against the current directory, does not find, and
+		 * refuses --
+		 *
+		 *   write header for ".../build/src/snap/hooks/install"
+		 *   failed: Hard-link target
+		 *   'keepalived-2.3.4/snap/hooks/post-refresh' does not exist
+		 *
+		 * The message names the LINK and the TARGET and nothing about
+		 * path rewriting, so it reads as a malformed archive. It is
+		 * not: keepalived ships snap/hooks/install and post-refresh
+		 * as one inode, which is ordinary, and every such package was
+		 * unbuildable.
+		 *
+		 * A SYMLINK target is deliberately NOT rewritten. It is
+		 * interpreted relative to the link's own directory at
+		 * resolution time, so it stays correct under both the strip
+		 * and the dest_dir prefix -- rewriting it would break it. The
+		 * two look alike and are opposite, which is worth the
+		 * paragraph.
+		 *
+		 * An absolute target is refused for the same reason an
+		 * absolute member path is: it escapes dest_dir, and
+		 * ARCHIVE_EXTRACT_SECURE_NODOTDOT does not cover a link
+		 * target.
+		 */
+		hardlink = archive_entry_hardlink(entry);
+		if (hardlink != NULL) {
+			const char *h = hardlink;
+
+			if (h[0] == '/') {
+				logstore_write("cixd", "error",
+				                "extract %s: refusing absolute hard-link target \"%s\"",
+				                archive_path, h);
+				goto out;
+			}
+			if (strip_first_component) {
+				const char *hslash = strchr(h, '/');
+
+				if (hslash == NULL) {
+					logstore_write("cixd", "error",
+					                "extract %s: hard-link target \"%s\" has no component to strip",
+					                archive_path, h);
+					goto out;
+				}
+				h = hslash + 1;
+			}
+			if ((size_t)snprintf(hfull, sizeof(hfull), "%s/%s", dest_dir, h) >= sizeof(hfull))
+				goto out;
+			archive_entry_set_hardlink(entry, hfull);
+		}
 
 		if (archive_write_header(ext, entry) != ARCHIVE_OK) {
 			logstore_write("cixd", "error", "extract %s: write header for \"%s\" failed: %s",
