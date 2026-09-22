@@ -66,6 +66,25 @@ Five things to know before writing one, each of which will otherwise cost you a 
 
   The fetch tries the first, then each of the rest, and reports every url it failed on rather than only the last — so a mirror that is merely misspelled does not read exactly like one that is down. Up to 12 fallback urls across all of a recipe's sources; a thirteenth is refused at publish rather than dropped. **Worth knowing this was broken until 2026-09-22**: the daemon parsed the list and kept only the first url, so a mirror list validated, published, and did nothing (#507). If you are reading a recipe written before then, its mirrors never ran. A shell recipe has no syntax for a second url at all.
 
+### Three things measured the expensive way
+
+Each of these cost a completed build on 192.168.15.95 before failing, so they are here rather than only in a recipe comment.
+
+- **`write` does not create parent directories.** `fastfetch@2.68.1-5` wrote a logo into `cixlogo/` after a full cmake build and got `error[CPDL-E4004]: filesystem operation failed: ...; errno=2 (No such file or directory)`. A shell recipe's `mkdir -p` before a heredoc is load-bearing, not defensive — translate it. `mkdir` itself creates every missing component.
+- **`expect { stdout contains ... }` is for single-line output only.** Assert on anything chattier and you get `error[CPDL-E4001]: process stdout must be one line`. For a multi-line program use `stdout file "..."` and then `require file "..." { contains "..." }`, which is what cbs#185 added the file form for.
+- **Only stdout is captured; there is no `2>&1` and no stderr assertion.** `bird@2.19.1-11` asserted `stdout contains "2.19.1"`, the build log shows `BIRD version 2.19.1` printed and the command exiting 0, and the assertion still failed — bird writes `--version` to stderr, and cbs `dup2`s the capture over `STDOUT_FILENO` alone. A `--version` gate on a daemon is likely to need cbs#206 before it can be written at all.
+
+**CPDL has no "does not contain", and `grep` is the idiom for one.** `grep` exits 1 when it matches nothing, so a `run` with `expect exit 1` is a negative assertion — and it is exact rather than a substring search when the file is exactly the bytes you are testing:
+
+```
+run "head" { "-c" "4" "out.squashfs" stdout file "${build}/magic" }
+require file "${build}/magic" { exists contains "hsqs" }
+
+run "grep" { "-F" "$1" "${build}/ff-logo.txt" expect exit 1 }
+```
+
+Use `-F` whenever the needle contains a regex metacharacter, which `$1` and a leading `.` both do.
+
 ### Shell idiom → CPDL equivalent
 
 CPDL has no shell, and the reflex when converting is to assume a missing feature. Usually it is there under another name. Every row below was used in a real conversion in this repo:
