@@ -306,10 +306,16 @@ static void test_legacy_capability_count(void)
 
 static void test_first_url_of_several(void)
 {
-	/* CPDL allows several URLs per source (mirrors); cixd's model is
-	 * one URL per positional source. The first is taken and the rest
-	 * ignored -- never concatenated, which would produce a URL that
-	 * fetches nothing and a checksum failure naming the wrong cause. */
+	/* CPDL allows several URLs per source: ordered mirrors for one
+	 * source identity, sharing its one checksum. They are read one at
+	 * a time and never concatenated, which would produce a URL that
+	 * fetches nothing and a checksum failure naming the wrong cause.
+	 *
+	 * This test used to assert that "the rest are ignored", which was
+	 * true and was the bug: a recipe could declare three mirrors,
+	 * validate, publish, and have the fetch only ever try one
+	 * (#507). The accessors below are what parse_pbs_recipe() uses to
+	 * carry the whole list into struct pkg_recipe. */
 	static const char *const json =
 	    "{\"name\":\"m4\",\"version\":\"1.4.20\",\"release\":2,"
 	    "\"sources\":[{\"name\":\"m4\",\"urls\":[\"https://mirrors.kernel.org/m4.tar.gz\","
@@ -328,6 +334,56 @@ static void test_first_url_of_several(void)
 		fail("multi-URL source could not be read");
 	else
 		expect_str("first URL is taken", url, "https://mirrors.kernel.org/m4.tar.gz");
+
+	/*
+	 * Every url, in document order, because document order IS mirror
+	 * precedence -- a reader that returned them in any other order
+	 * would try the fallback first and the author's stated primary
+	 * second, silently.
+	 */
+	expect_int("url count", pbs_explain_source_url_count(ex, 0), 2);
+	if (pbs_explain_source_url(ex, 0, 0, url, sizeof(url)) != 0)
+		fail("url 0 could not be read");
+	else
+		expect_str("url 0", url, "https://mirrors.kernel.org/m4.tar.gz");
+	if (pbs_explain_source_url(ex, 0, 1, url, sizeof(url)) != 0)
+		fail("url 1 could not be read");
+	else
+		expect_str("url 1", url, "https://ftp.gnu.org/gnu/m4/m4.tar.gz");
+
+	/*
+	 * Past the end is -1, not the last url repeated and not a stale
+	 * buffer. parse_pbs_recipe() walks u = 1..count-1 and stops on
+	 * the count, so an accessor that answered 0 here would loop
+	 * forever or record a duplicate mirror.
+	 */
+	url[0] = 'x';
+	url[1] = '\0';
+	expect_int("url past the end is refused",
+	           pbs_explain_source_url(ex, 0, 2, url, sizeof(url)), -1);
+	expect_int("a negative url index is refused",
+	           pbs_explain_source_url(ex, 0, -1, url, sizeof(url)), -1);
+	expect_int("a url of an absent source is refused",
+	           pbs_explain_source_url(ex, 1, 0, url, sizeof(url)), -1);
+	expect_str("a refused read leaves the buffer alone", url, "x");
+
+	/* An absent source answers 0 urls rather than failing, so a
+	 * caller may loop on the count without a separate range check. */
+	expect_int("url count of an absent source", pbs_explain_source_url_count(ex, 1), 0);
+	expect_int("url count of a negative index", pbs_explain_source_url_count(ex, -1), 0);
+
+	/*
+	 * A url longer than the caller's buffer is refused, not
+	 * truncated. A truncated mirror is a url that fetches nothing,
+	 * and it would be tried and fail with a message naming a host
+	 * the recipe never wrote.
+	 */
+	{
+		char tiny[8];
+
+		expect_int("a url that does not fit is refused",
+		           pbs_explain_source_url(ex, 0, 0, tiny, sizeof(tiny)), -1);
+	}
 
 	/* An empty requires object must answer "" for every question,
 	 * not fail. */

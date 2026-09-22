@@ -63,16 +63,43 @@ int pbs_explain_version(const struct pbs_explain *ex, char *out, size_t out_size
 int pbs_explain_source_count(const struct pbs_explain *ex);
 
 /*
- * Source index's first URL and its sha256. CPDL allows a source to
- * carry several URLs (mirrors); cixd's own model is one URL per
- * positional source, so the first is taken and the rest are
- * deliberately ignored rather than silently concatenated.
+ * Source index's FIRST URL and its sha256.
+ *
+ * A source may declare several urls, which CPDL defines as ordered
+ * mirrors for one source identity sharing this one checksum. This
+ * accessor returns the first; pbs_explain_source_url() below reaches
+ * the rest, and parse_pbs_recipe() records them so the fetch can fall
+ * back through the list.
+ *
+ * The comment here used to say the rest were "deliberately ignored",
+ * and that was a real defect rather than a design note: a recipe could
+ * declare three mirrors, validate, publish, and fetch only ever tried
+ * one. freetype@2.13.3-7 did exactly that and failed naming only
+ * download.savannah.gnu.org while two working mirrors sat unused
+ * (#507).
  *
  * Returns 0 on success, -1 if index is out of range or either value
  * would not fit.
  */
 int pbs_explain_source(const struct pbs_explain *ex, int index, char *url, size_t url_size,
                         char *sha256, size_t sha256_size);
+
+/*
+ * How many urls source `index` declares. 0 for an absent source, so a
+ * caller may loop without checking the index separately.
+ */
+int pbs_explain_source_url_count(const struct pbs_explain *ex, int index);
+
+/*
+ * Source `index`'s url at `url_index`, in document order -- which is
+ * mirror precedence order. url_index 0 is the same string
+ * pbs_explain_source() returns.
+ *
+ * Returns 0 on success, -1 if either index is out of range or the
+ * value would not fit.
+ */
+int pbs_explain_source_url(const struct pbs_explain *ex, int index, int url_index, char *url,
+                            size_t url_size);
 
 /*
  * Space-joined values of one `requires { <role> { <kind> "..." } }`

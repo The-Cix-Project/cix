@@ -331,6 +331,22 @@ struct pkg_recipe {
 	char source[PKG_MAX_SOURCES][PKG_URL_MAX];
 	char sha256[PKG_MAX_SOURCES][PKG_SHA256_MAX];
 	int source_count;
+	/*
+	 * Fallback urls for the sources above (#507). source[i] is a
+	 * source's FIRST url; a CPDL recipe may declare more, which are
+	 * ordered mirrors for that same source identity sharing its one
+	 * checksum. mirror_source[k] says which source index mirror_url[k]
+	 * belongs to, and entries for one source appear in the order the
+	 * recipe gave them -- which is the order the fetch tries them in,
+	 * after that source's own source[i] fails.
+	 *
+	 * A shell recipe has no syntax for a second url and always leaves
+	 * mirror_count at 0, which is exactly the behaviour every recipe
+	 * had before this field existed.
+	 */
+	char mirror_url[PKG_MAX_MIRRORS][PKG_URL_MAX];
+	int mirror_source[PKG_MAX_MIRRORS];
+	int mirror_count;
 	char depends[PKG_DEPENDS_MAX];
 	/*
 	 * Issue #109: the tools that must be present to BUILD this package,
@@ -1762,6 +1778,13 @@ static void substitute_repo_token(struct pkg_recipe *out)
 		return;
 	for (i = 0; i < out->source_count; i++)
 		str_replace_all(out->source[i], sizeof(out->source[i]), "{{REPO_TOKEN}}", tok);
+	/* Mirrors are urls like any other and reach curl the same way, so
+	 * they get the same substitution -- a placeholder left in a mirror
+	 * would fail only on the fallback path, which is the one nobody
+	 * exercises until the day it matters (#507). */
+	for (i = 0; i < out->mirror_count; i++)
+		str_replace_all(out->mirror_url[i], sizeof(out->mirror_url[i]), "{{REPO_TOKEN}}",
+		                tok);
 }
 
 static int parse_shell_recipe(const char *path, struct pkg_recipe *out)
@@ -2135,13 +2158,48 @@ static int parse_pbs_recipe(const char *path, struct pkg_recipe *out)
 		pbs_explain_free(ex);
 		return -1;
 	}
+	out->mirror_count = 0;
 	for (i = 0; i < count; i++) {
+		int urls;
+		int u;
+
 		if (pbs_explain_source(ex, i, out->source[i], PKG_URL_MAX, out->sha256[i],
 		                        PKG_SHA256_MAX) != 0) {
 			logstore_write("cixd", "error", "pkg: %s: source %d has no usable url/sha256 pair",
 			               explain_path, i);
 			pbs_explain_free(ex);
 			return -1;
+		}
+		/*
+		 * Every url past the first is a mirror for this same source
+		 * and this same checksum (#507). Recorded here rather than
+		 * discarded, so the fetch can fall back through them; a
+		 * recipe that declares one url adds nothing.
+		 *
+		 * Refused rather than truncated when the pool is full: a
+		 * silently dropped mirror is the exact failure this change
+		 * exists to remove, and a recipe author who declared one has
+		 * to be able to believe it is there.
+		 */
+		urls = pbs_explain_source_url_count(ex, i);
+		for (u = 1; u < urls; u++) {
+			if (out->mirror_count >= PKG_MAX_MIRRORS) {
+				logstore_write("cixd", "error",
+				               "pkg: %s: more than %d mirror urls across all sources",
+				               explain_path, PKG_MAX_MIRRORS);
+				pbs_explain_free(ex);
+				return -1;
+			}
+			if (pbs_explain_source_url(ex, i, u, out->mirror_url[out->mirror_count],
+			                            PKG_URL_MAX) != 0) {
+				logstore_write("cixd", "error",
+				               "pkg: %s: source %d url %d is not a usable string",
+				               explain_path, i, u);
+				pbs_explain_free(ex);
+				return -1;
+			}
+			out->mirror_source[out->mirror_count] = i;
+			out->mirror_count++;
 		}
 	}
 	out->source_count = count;
@@ -8133,8 +8191,16 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 		 * from fixed. Hit live on a real host, where the fetch had
 		 * been failing this way with nothing naming the cause.
 		 */
-		for (j = 0; j < recipe.source_count; j++) {
-			if (strstr(recipe.source[j], "{{REPO_TOKEN}}") != NULL) {
+		for (j = 0; j < recipe.source_count + recipe.mirror_count; j++) {
+			/* Mirrors are checked alongside the sources, not after
+			 * them: a placeholder left in a mirror would surface
+			 * only once the primary failed, i.e. on the path nobody
+			 * exercises until it matters (#507). */
+			const char *url_to_check = j < recipe.source_count
+			                               ? recipe.source[j]
+			                               : recipe.mirror_url[j - recipe.source_count];
+
+			if (strstr(url_to_check, "{{REPO_TOKEN}}") != NULL) {
 				static const char msg[] =
 				    "pkg_source needs a repo token, but none is configured on this host -- "
 				    "set one with `cixctl pkg repo-config set --token=...`";
@@ -8167,6 +8233,24 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			char src_tarball_path[PATH_MAX];
 			struct curlfetch_opts opts;
 			char curl_err[256];
+			char url_shown[PKG_URL_MAX];
+			/*
+			 * Every url tried for this source, each with its own
+			 * failure (#507).
+			 *
+			 * 512 is not a guess: pkg_fetch_completed() reads this
+			 * sidecar back into a `char detail[512]`, so a larger
+			 * buffer here would write bytes that are silently
+			 * dropped on the way to the operator -- the tail, which
+			 * is where the last url's failure is. Matching the
+			 * reader means nothing is written that cannot be read.
+			 * Beyond four or five mirrors the tail does truncate;
+			 * the full text is in the build log either way.
+			 */
+			char fetch_err[512];
+			size_t err_len;
+			int attempt;
+			int fetched;
 			/*
 			 * retry_count/retry_all_errors/resume: large sources
 			 * (e.g. kernel.recipe's ~150MB tarball) hit real,
@@ -8189,43 +8273,104 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			         g_sources_dir, recipe.name, recipe.version, j);
 
 			/*
-			 * resume only makes sense continuing *this* attempt's
-			 * own partial download (recovering from a transient
-			 * mid-transfer reset within curlfetch_perform()'s own
-			 * retry loop). A stale, already-fully-downloaded file
-			 * left over from an earlier, separate fetch attempt at
-			 * this same fixed path makes it request a byte range
-			 * starting past EOF, which the server correctly
-			 * answers with HTTP 416 -- confirmed the hard way
-			 * (ADR-0056): every retry hit the identical 416 since
-			 * the file never changed. Starting every fresh
-			 * top-level attempt from a clean slate avoids this;
-			 * ENOENT is expected and fine.
+			 * source[j] first, then every mirror declared for it,
+			 * in the order the recipe gave them (#507). CPDL calls
+			 * these ordered mirrors for one source identity sharing
+			 * one checksum, and that shared checksum is what makes
+			 * trying another host safe: pkg_fetch_completed()
+			 * verifies whatever arrives against the recipe's own
+			 * sha256 regardless of which url produced it, so a
+			 * mirror cannot substitute different bytes without
+			 * failing a gate that already exists.
+			 *
+			 * Before this, only source[j] was ever tried and the
+			 * remaining urls were parsed and dropped, so a declared
+			 * mirror list did nothing at all -- freetype@2.13.3-7
+			 * declared three and failed naming the first.
 			 */
-			unlink(src_tarball_path);
+			attempt = 0;
+			fetched = 0;
+			fetch_err[0] = '\0';
+			for (;;) {
+				const char *url;
+				int k;
+				int seen = 0;
 
-			memset(&opts, 0, sizeof(opts));
-			opts.url = recipe.source[j];
-			opts.path = src_tarball_path;
-			opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
-			opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
-			opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
-			opts.retry_count = 8;
-			opts.retry_all_errors = 1;
-			opts.retry_delay = 3;
-			opts.resume = 1;
-			if (curlfetch_perform(&opts, NULL, curl_err, sizeof(curl_err)) != 0) {
+				if (attempt == 0) {
+					url = recipe.source[j];
+				} else {
+					url = NULL;
+					for (k = 0; k < recipe.mirror_count; k++) {
+						if (recipe.mirror_source[k] != j)
+							continue;
+						if (++seen == attempt) {
+							url = recipe.mirror_url[k];
+							break;
+						}
+					}
+					if (url == NULL)
+						break;
+				}
+				attempt++;
+
+				/*
+				 * resume only makes sense continuing *this*
+				 * attempt's own partial download (recovering from
+				 * a transient mid-transfer reset within
+				 * curlfetch_perform()'s own retry loop). A stale
+				 * file left at this same fixed path -- by an
+				 * earlier fetch attempt, or by the url this loop
+				 * just tried -- makes it request a byte range
+				 * starting past EOF, which the server correctly
+				 * answers with HTTP 416; confirmed the hard way
+				 * (ADR-0056), every retry hit the identical 416
+				 * since the file never changed. Every attempt
+				 * starts from a clean slate; ENOENT is expected
+				 * and fine.
+				 */
+				unlink(src_tarball_path);
+
+				memset(&opts, 0, sizeof(opts));
+				opts.url = url;
+				opts.path = src_tarball_path;
+				opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
+				opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
+				opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
+				opts.retry_count = 8;
+				opts.retry_all_errors = 1;
+				opts.retry_delay = 3;
+				opts.resume = 1;
+				if (curlfetch_perform(&opts, NULL, curl_err, sizeof(curl_err)) == 0) {
+					fetched = 1;
+					break;
+				}
+				/* A url can carry the real repo token (gitea's
+				 * token-in-URL convention) after {{REPO_TOKEN}}
+				 * substitution -- redact both the error text and
+				 * the url before either reaches a sidecar file,
+				 * same discipline as pkg_sync_start's own child
+				 * (#405/#410). */
+				redact_repo_token(curl_err, sizeof(curl_err));
+				snprintf(url_shown, sizeof(url_shown), "%s", url);
+				redact_repo_token(url_shown, sizeof(url_shown));
+				/*
+				 * Every failed url is named, not just the last.
+				 * A fallback list whose failures collapse into one
+				 * message is how a mirror that is merely
+				 * misspelled reads exactly like one that is down.
+				 * Bounded by the buffer: a truncated tail is
+				 * acceptable, an unbounded sidecar is not.
+				 */
+				err_len = strlen(fetch_err);
+				snprintf(fetch_err + err_len, sizeof(fetch_err) - err_len,
+				         "%s%s: %s", err_len > 0 ? "; " : "", url_shown, curl_err);
+			}
+			if (!fetched) {
 				int fd;
 
-				/* recipe.source[j] can carry the real repo token
-				 * (gitea's token-in-URL convention) after {{REPO_
-				 * TOKEN}} substitution -- redact before this ever
-				 * reaches a sidecar file, same discipline as
-				 * pkg_sync_start's own child (#405/#410). */
-				redact_repo_token(curl_err, sizeof(curl_err));
 				fd = open(fetch_err_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 				if (fd >= 0) {
-					ssize_t written = write(fd, curl_err, strlen(curl_err));
+					ssize_t written = write(fd, fetch_err, strlen(fetch_err));
 
 					(void)written;
 					close(fd);

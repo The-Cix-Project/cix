@@ -129,6 +129,48 @@ int pbs_explain_source_count(const struct pbs_explain *ex)
 	return v == NULL ? 0 : (int)v->u.array.count;
 }
 
+int pbs_explain_source_url_count(const struct pbs_explain *ex, int index)
+{
+	const struct json_value *sources = sources_array(ex);
+	const struct json_value *source;
+	const struct json_value *urls;
+
+	if (sources == NULL || index < 0 || (size_t)index >= sources->u.array.count)
+		return 0;
+	source = sources->u.array.items[index];
+	if (source == NULL || source->type != JSON_OBJECT)
+		return 0;
+	urls = json_object_get(source, "urls");
+	if (urls == NULL || urls->type != JSON_ARRAY)
+		return 0;
+	return (int)urls->u.array.count;
+}
+
+int pbs_explain_source_url(const struct pbs_explain *ex, int index, int url_index, char *url,
+                            size_t url_size)
+{
+	const struct json_value *sources = sources_array(ex);
+	const struct json_value *source;
+	const struct json_value *urls;
+	const char *text;
+
+	if (sources == NULL || index < 0 || (size_t)index >= sources->u.array.count ||
+	    url_index < 0)
+		return -1;
+	source = sources->u.array.items[index];
+	if (source == NULL || source->type != JSON_OBJECT)
+		return -1;
+	urls = json_object_get(source, "urls");
+	if (urls == NULL || urls->type != JSON_ARRAY ||
+	    (size_t)url_index >= urls->u.array.count)
+		return -1;
+	text = json_as_string(urls->u.array.items[url_index]);
+	if (text == NULL || strlen(text) >= url_size)
+		return -1;
+	snprintf(url, url_size, "%s", text);
+	return 0;
+}
+
 int pbs_explain_source(const struct pbs_explain *ex, int index, char *url, size_t url_size,
                         char *sha256, size_t sha256_size)
 {

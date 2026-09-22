@@ -191,6 +191,23 @@
  * already sets, not an unbounded list. */
 #define PKG_MAX_SOURCES 16
 
+/*
+ * Fallback URLs, pooled across every source of one recipe (#507).
+ *
+ * CPDL lets a source declare several urls that are ordered mirrors for
+ * one source identity sharing its one paired checksum, and the daemon
+ * used to keep only the first -- so a mirror list validated, published,
+ * and then did nothing. freetype@2.13.3-7 declared three urls and
+ * failed at fetch naming only the first.
+ *
+ * Pooled rather than a per-source array because mirrors are rare and a
+ * [PKG_MAX_SOURCES][N][PKG_URL_MAX] block would add tens of kilobytes
+ * to a struct that lives on the stack of a dozen functions. Each entry
+ * records which source it belongs to; document order within one source
+ * is the array order, which is the order the fetch tries them in.
+ */
+#define PKG_MAX_MIRRORS 12
+
 /* ADR-0157: the hard compile-time ceiling on build/install/hostbuild
  * chains that may exist at once -- sizes g_chains[]/g_build_output_
  * entries[] (pkg.c) and bounds main.c's own per-chain WS conn tracking

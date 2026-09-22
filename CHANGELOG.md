@@ -6,6 +6,27 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A recipe's mirror urls were parsed and thrown away (#507)
+
+CPDL lets a source declare several urls -- ordered mirrors for one source identity, sharing that source's one checksum. cbs parses all of them, stores all of them, emits all of them in its explain document, and its own fetcher walks the list. The daemon read `urls[0]` and dropped the rest, and `struct pkg_recipe` had nowhere to put a second url anyway. So a mirror list validated, published, and did nothing.
+
+Found the way these are always found. `freetype@2.13.3-7` declared three urls after savannah started refusing this host's TLS connections, and the install failed at fetch naming only the first:
+
+```
+fetch failed (curl exit status 1): OpenSSL SSL_connect: SSL_ERROR_SYSCALL
+in connection to download.savannah.gnu.org:443
+```
+
+Not this host's egress: in the same window it fetched libnl from github.com and net-tools from sourceforge.net through the identical path, and `cixctl storage` reported 13.4 GiB free with health `ok` -- checked **first**, because a full disk is what a "flaky mirror" looked like in #503.
+
+Fixed by carrying the whole list. `parse_pbs_recipe()` records every url past the first into a pooled `mirror_url[]`/`mirror_source[]`/`mirror_count` on `struct pkg_recipe`, and the fetch child tries a source's own url and then each of its mirrors in document order, which is precedence order. Pooled rather than a `[PKG_MAX_SOURCES][N][PKG_URL_MAX]` block because mirrors are rare and that shape would add tens of kilobytes to a struct that lives on the stack of a dozen functions; the ceiling is 12 fallback urls across all sources, and a thirteenth is **refused at publish** rather than dropped -- a silently discarded mirror being the exact defect this removes.
+
+Two details worth stating. **Every failed url is named**, not just the last one, because a fallback list whose failures collapse into a single message is how a misspelled mirror reads exactly like one that is down. And the `{{REPO_TOKEN}}` substitution and its redaction both cover mirrors, since a placeholder left in a mirror would surface only on the fallback path -- the one nobody exercises until it matters.
+
+The comment in `pbsrecipe.h` said the extra urls were "deliberately ignored". It was accurate about the code and wrong about the intent, and it is the reason nobody looked: it read as a design note rather than a gap. It now says what actually happens, and cites the recipe that found it. This is CLAUDE.md's rule about a comment being a claim -- a comment describing a deliberate limitation that is really a bug is what the next reader believes instead of reading the spec.
+
+`test_pbsrecipe`'s own `test_first_url_of_several()` asserted "the rest are ignored", so the bug had a passing test. It now walks the list, and asserts the four ways a reader can be wrong about it: order, a count that stops, a refusal past the end that leaves the caller's buffer alone, and a url too long for the buffer refused rather than truncated -- a truncated mirror is a url that fetches nothing and fails naming a host the recipe never wrote. That test is in `SELFTESTS`, so it runs on the box.
+
 ### I cited an issue number I had not filed, and it turned out to belong to something else (#505)
 
 Worth its own entry because the artefact was already shipped before the mistake surfaced.

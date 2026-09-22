@@ -37,7 +37,7 @@ A PBS recipe is declarative: five ordered phases (`prepare`, `configure`, `build
 | `pkg_build_depends=` | `requires { build { compiler "…" tool "…" } }` |
 | `pkg_build()` / `pkg_install()` | the phases; an install phase stages into `${dest}` |
 
-Four things to know before writing one, each of which will otherwise cost you a build:
+Five things to know before writing one, each of which will otherwise cost you a build:
 
 - **`format "cixpkg"` is required**, even though cixd still tars the staged tree itself. CPDL accepts `"tar.gz"` as a value, but CBS's build pipeline refuses to run any recipe declaring anything else.
 - **The engine is not yours to declare.** Do not put `cbs` in `requires { build { … } }`; cixd adds it, the same way it adds the C library. Declare `cbs@<version>` only if you need a specific engine revision, which wins the slot.
@@ -52,6 +52,19 @@ Four things to know before writing one, each of which will otherwise cost you a 
 
   You do not write the checksum yourself. Publish without one, let it build, and cixd writes the approval into the stored recipe — then fetch the recipe back and commit **that**, or the copy in this tree and the published one differ. A changelog is capped at 511 bytes; over it, the publish is refused with a message about parsing that is not about parsing (#493).
 - **Build capabilities work.** `capability "CAP_SYS_ADMIN"` is read by name and granted. An engine too old to report names is refused rather than read as zero, so a `cbs` predating that will fail the publish rather than silently build without the capability.
+- **A source may declare mirrors, and they are tried in order.** Repeat `url` inside one source; every url shares that source's one `sha256`, which is what makes a mirror safe — no mirror can substitute different bytes without failing a gate that already exists.
+
+  ```
+  sources {
+      main "freetype" {
+          url "https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.xz"
+          url "https://downloads.sourceforge.net/project/freetype/freetype2/2.13.3/freetype-2.13.3.tar.xz"
+          sha256 "0550350666d427c74daeb85d5ac7bb353acba5f76956395995311a9c6f063289"
+      }
+  }
+  ```
+
+  The fetch tries the first, then each of the rest, and reports every url it failed on rather than only the last — so a mirror that is merely misspelled does not read exactly like one that is down. Up to 12 fallback urls across all of a recipe's sources; a thirteenth is refused at publish rather than dropped. **Worth knowing this was broken until 2026-09-22**: the daemon parsed the list and kept only the first url, so a mirror list validated, published, and did nothing (#507). If you are reading a recipe written before then, its mirrors never ran. A shell recipe has no syntax for a second url at all.
 
 ### Shell idiom → CPDL equivalent
 
