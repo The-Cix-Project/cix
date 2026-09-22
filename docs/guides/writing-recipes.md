@@ -127,6 +127,16 @@ What is open, measured on 2026-09-22:
 | a declared tool that is missing | nothing to do — it presents as a **timeout**, not an error naming the tool | [#224](https://git.home.arpa/itdlabs/cix-build-system/issues/224) |
 | `stage library` on a symlink | nothing — it dereferences, which is what the corpus needs; the spec says otherwise | [#222](https://git.home.arpa/itdlabs/cix-build-system/issues/222) |
 
+**Do not add parallelism the shell form did not have.** `jobs $jobs` is the natural translation of `make -j"$(nproc)"` and it is faithful — but where the shell ran a bare `make`, adding it is a behaviour change, and for anything that runs tests it is a *correctness* change. `cix@v2.57.244-2` put `jobs $jobs` on all four of its `make` invocations, including `make selftest`, and the suite failed:
+
+```
+FAIL: volume delete refused (409) while a container definition references it
+FAIL: volume deletes once nothing references it
+VOLUME RESULT: FAIL (21)
+```
+
+after twelve minutes. This project's suite forks real daemons on fixed ports and creates real containers and bridges, so running its binaries concurrently races on shared state — a volume-reference test failing is exactly what that looks like from outside. The shell recipe had no `-j` anywhere, which was the answer, and the conversion overrode it without evidence. **Check what the shell actually passed before reaching for `jobs`,** and treat making a build faster as a separate change with its own burden of proof. (A command that parallelises internally, like `go build`, is unaffected: `-j` is a make flag and was never what made it concurrent.)
+
 **`expect { stdout contains … }` takes ONE LINE of output, and that is the rule to know before writing an assertion.** It is right for `pkg-config --modversion`, and wrong for almost everything else — including a `--version` banner, which is the case it looks designed for: GNU's convention is four lines, so `msgfmt --version` is refused. Three ways out, in order of preference:
 
 1. **If you are asserting a link dependency, use `links`.** It is a first-class DT_NEEDED assertion with both directions:
