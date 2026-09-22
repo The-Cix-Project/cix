@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The recipe guide's own list of CPDL gaps was stale, and it was steering people wrong (#487)
+
+`docs/guides/writing-recipes.md`'s "What CPDL cannot do yet" table listed four issues as blocking conversions. **All four are delivered and the corpus uses each** -- cbs#176 (a compound body per list item), cbs#177 (`replace … until whitespace`), cbs#178 (`stage library`) and cbs#185 (`stdout file PATH`). The table also told a reader that `btop` and `iw` stayed on `build.sh` because of the last one, which had stopped being the reason.
+
+A guide that says a shape is impossible is worse than one that says nothing, because it is read instead of the specification. Rewritten to what is open (cbs#222, cbs#224, cbs#225) and to the rule that is expensive to learn by hitting it.
+
+**`expect { stdout contains … }` accepts one line of output.** That is right for `pkg-config --modversion` and wrong for nearly everything else -- including a `--version` banner, which is the case it looks designed for, since GNU's convention is four lines. Three routes out, in preference order, each measured on 2026-09-22 while converting:
+
+- **A link dependency is `links`**, a first-class DT_NEEDED assertion with both directions. `forbids` is the negative check the guide said had no form at all. It compares a **full soname**: `needs "libnftables"` fails on a binary that does link it, reporting `missing required library` when the fault is the spelling -- `readelf -d | grep NEEDED.*libnftables` accepted a prefix and this does not.
+- **When the question is only "did this succeed", drop the assertion** and keep a bare `run`. A nonzero exit fails the build and CBS prints the failing command.
+- **To search real output**, `stdout file` then `require file { contains … }`, bounded at 64 KiB -- so not for `nm` over an archive.
+
+For "is this object in that archive", ask directly instead: `ar x ARCHIVE MEMBER` exits nonzero when the member is absent and leaves a file `require file` is scoped for. `gettext@1.0-22` does this and it is **stronger** than the `nm | grep` it replaced, because #220's failure was objects not being *members*. A `require file … contains` on the archive looks like a substitute and is silently useless -- libtextstyle's own objects *reference* those renamed symbols whether or not the definitions ever arrived.
+
+Also records that CPDL rejects `sh`, `bash`, `dash`, `ash`, `ksh`, `zsh` and `env` as `run` executables, at validation and again at runtime, so a recipe cannot smuggle logic into an interpreter argument. When a third-party script's `#!` line is wrong for this platform, the answer is to `replace` the shebang rather than name the interpreter: it repairs the defect instead of stepping around it for one caller (`sbsigntools@0.9.5-14`).
+
 ### The control-plane root carries CPDL engine v0.1.34, and seven operations arrive at once (#487)
 
 No cix code change. This release exists to re-stage `/usr/bin/cbs`, because the daemon validates every published recipe with the **host's** engine -- `PKG_CBS_BIN "/usr/bin/cbs"`, exec'd by a cixd that is PID 1 -- and `mkbootroot` stages that binary out of `cix-hosttools`. A newer engine installed into an image is invisible to `pkg recipe add` until a root is assembled with it.
