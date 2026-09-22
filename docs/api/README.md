@@ -2839,7 +2839,7 @@ Validation refuses rather than escapes. A console is a bare tty name with option
 ```
 GET    /v1/system/esp
 PUT    /v1/system/esp                  {"default": "cix-*"}          # partial; timeout too
-DELETE /v1/system/esp/entries/thinc-a+3.conf
+DELETE /v1/system/esp/entries/cix-a+3.conf
 ```
 
 The most important field is the one you cannot set: **`selected_entry`** names the entry systemd-boot would actually boot, and each entry carries `matches_default`. The daemon computes that rather than leaving an operator to derive it from a glob and a directory listing — which is the step that went wrong. `cixctl esp show` leads with `will boot: <entry>`.

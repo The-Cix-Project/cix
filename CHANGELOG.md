@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The `thinc` package is deprecated, and the REST contract stops citing it (#487)
+
+`thinc` is what Cix was called before the rebrand (#121). One thing still carried the name as a live artefact rather than as history, and it is gone:
+
+**`thinc@v2.0.0-b3`** sourced `itdlabs/cix` at tag `v2.0.0` — the platform itself, under its old name. Measured before removing it: **zero artifacts** in the cache, installed in **no image**, **no `thinc` repository** on the Gitea instance, and fully superseded by `cix@v2.57.244`. Its recipe is deleted from the corpus and unpublished from 192.168.15.95.
+
+**The live REST contract cited a `thinc` boot entry.** `docs/api/openapi.yaml` described the ESP entry-name parameter as *"e.g. `thinc-a+3.conf`"*, and `docs/api/README.md` showed `DELETE /v1/system/esp/entries/thinc-a+3.conf` — in a code block whose line above already said `{"default": "cix-*"}`, so it contradicted itself two lines apart. The installer writes `cix-a+N.conf` (`image/src/cix-install.c`), and `GET /v1/system/esp` on 192.168.15.95 returns `default: "cix-*"` with entries `cix-a.conf` and `cix-b.conf`. Both documents are corrected in the same change, as the Documentation Map requires.
+
+**`test/test_esp.c` keeps its `thinc` references, deliberately.** They are not stale naming: the test stages a `cix-b+3` entry alongside a legacy `thinc-*` default and asserts the staged entry is **not** captured by the old glob, with `selected_entry` resolving to `thinc-b+3.conf`. That is the rebrand-migration hazard — a default pattern that does not cover the freshly staged entry means the host does not boot the update — and it is worth a test whatever the prefixes are called. Removing those names would have deleted the scenario, which is what a search-and-replace would have done.
+
+Everything else naming ThinC — the ADRs, ROADMAP, CHANGELOG and `docs/brand/` — is history and stays. The brand documents exist precisely to record the ThinC → Cix migration.
+
 ### The recipe guide's own list of CPDL gaps was stale, and it was steering people wrong (#487)
 
 `docs/guides/writing-recipes.md`'s "What CPDL cannot do yet" table listed four issues as blocking conversions. **All four are delivered and the corpus uses each** -- cbs#176 (a compound body per list item), cbs#177 (`replace … until whitespace`), cbs#178 (`stage library`) and cbs#185 (`stdout file PATH`). The table also told a reader that `btop` and `iw` stayed on `build.sh` because of the last one, which had stopped being the reason.

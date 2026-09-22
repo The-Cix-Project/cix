@@ -3813,7 +3813,7 @@ paths:
         - name: name
           in: path
           required: true
-          description: The entry's filename, e.g. "thinc-a+3.conf".
+          description: The entry's filename, e.g. "cix-a+3.conf".
           schema:
             type: string
       responses:
