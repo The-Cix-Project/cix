@@ -6,6 +6,28 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The control-plane root carries CPDL engine v0.1.34, and seven operations arrive at once (#487)
+
+No cix code change. This release exists to re-stage `/usr/bin/cbs`, because the daemon validates every published recipe with the **host's** engine -- `PKG_CBS_BIN "/usr/bin/cbs"`, exec'd by a cixd that is PID 1 -- and `mkbootroot` stages that binary out of `cix-hosttools`. A newer engine installed into an image is invisible to `pkg recipe add` until a root is assembled with it.
+
+Every one of the seven was filed from this corpus in a single day of converting recipes, and every one was found by a recipe failing rather than by reading the specification:
+
+| | what it unblocks |
+|---|---|
+| cbs#205 non-archive main sources | `ca-certificates` and `rtw88-firmware` **at all** -- a CA bundle and a firmware blob, neither of which has a tarball to point at |
+| cbs#206 stderr capture and assertions | `bird`'s `--version` gate, dropped for a revision because bird prints it on stderr |
+| cbs#207 globs as run arguments | `hostapd`'s libnl-tiny link line, which had to hide in a generated makefile so `make` could expand `*.c` |
+| cbs#208 literal `${}` in a block string | `hostapd`'s toolwrap, which had to rebuild its argument list through the positional parameters |
+| cbs#209 glob bindings across phases | `hostapd`'s binding, declared twice because it did not survive into `install` |
+| cbs#210 anchored source replacements | `libcap`'s shebang rewrite, narrowed from the whole tree to one named script |
+| cbs#211 named post-install check cases | every recipe converted from here on |
+
+**#211 is the one that changes how recipes are written.** Measured across the 98 latest `.cbs` recipes: 367 verification operations, and **three** recipes using the `check` phase built for them. The cause was structural rather than cultural -- `check` ran *before* `install`, so it could not see the staged artifact, and 239 of 315 `require` operations assert on `${dest}`. v0.1.34 runs `check` after `install` and adds named `case` blocks with a private `${case.dir}`, reporting every case even when an earlier one fails.
+
+That last property is not theoretical. `perl@5.40.1-8` was refused for one hard link, `-9` fixed it and was refused for a *second* hard link, and each of those was a full perl build -- three cycles where one run reporting both would have cost one.
+
+**The workaround list is what made this tractable.** Six of the eight entries in cix#509 become revertible with this engine, and that issue exists precisely so none of them survives by inertia: the owner's instruction was to file tickets rather than route around a gap, and every gap filed today was fixed and tagged the same day.
+
 ### A recipe's mirror urls were parsed and thrown away (#507)
 
 CPDL lets a source declare several urls -- ordered mirrors for one source identity, sharing that source's one checksum. cbs parses all of them, stores all of them, emits all of them in its explain document, and its own fetcher walks the list. The daemon read `urls[0]` and dropped the rest, and `struct pkg_recipe` had nowhere to put a second url anyway. So a mirror list validated, published, and did nothing.
