@@ -4,6 +4,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 /* 600 polls 300 ms apart: three minutes, the budget every copy of this
@@ -17,6 +18,7 @@ static int floor_install_one(const struct cix_client *c, const char *name)
 	struct cix_response r;
 	char buf[160];
 	int i;
+	time_t start = time(NULL);
 
 	snprintf(buf, sizeof(buf), "{\"name\":\"%s\"}", name);
 	memset(&r, 0, sizeof(r));
@@ -41,6 +43,11 @@ static int floor_install_one(const struct cix_client *c, const char *name)
 			state = json_as_string(json_object_get(r.json, "state"));
 		if (state != NULL && strcmp(state, "installed") == 0) {
 			cix_response_free(&r);
+			/* Timed, because a slow floor is otherwise invisible inside
+			 * a test that later times out (probe-cix-testreport@7-1).
+			 * stderr: unbuffered, so it survives the test being killed. */
+			fprintf(stderr, "    floor: %s installed in %lds\n", name,
+			        (long)(time(NULL) - start));
 			return 0;
 		}
 		if (state != NULL && strcmp(state, "failed") == 0) {

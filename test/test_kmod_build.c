@@ -35,6 +35,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -293,12 +294,18 @@ int main(void)
 		char hb_rootfs[PATH_MAX];
 		char hb_manifest[PATH_MAX];
 		FILE *f;
+		time_t staged_at;
 
 		snprintf(hb_rootfs, sizeof(hb_rootfs), "%s/hbfixture/rootfs", g_hbimage_dir);
+		staged_at = time(NULL);
 		if (test_image_fixture_stage_toolchain(hb_rootfs) != 0) {
 			fprintf(stderr, "FAIL: could not stage hbimage toolchain\n");
 			return 1;
 		}
+		/* Timed: this copies a toolchain tree, and the test as a whole
+		 * overran a 300 s limit in probe-cix-testreport@7-1. */
+		fprintf(stderr, "    hbimage toolchain staged in %lds\n",
+		        (long)(time(NULL) - staged_at));
 		snprintf(hb_manifest, sizeof(hb_manifest), "%s/manifest.json", g_hbimage_dir);
 		f = fopen(hb_manifest, "w");
 		if (f == NULL) {
@@ -397,6 +404,11 @@ int main(void)
 			usleep(300000);
 			continue;
 		}
+		/* Each transition, timed and on stderr (unbuffered), so a run
+		 * killed from outside still shows how far the job got
+		 * (probe-cix-testreport@7-1 timed out with no trace of it). */
+		if (strcmp(state, s) != 0)
+			fprintf(stderr, "    kmod-build: %s at poll %d (300 ms apart)\n", s, i);
 		snprintf(state, sizeof(state), "%s", s);
 		/* Kept past the free, so a failure can say why (cix-tests
 		 * v2.57.251-1 reported only the final state). */

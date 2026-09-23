@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### test_pkg_cache passes; test_kmod_build's time is now visible
+
+In `probe-cix-testreport@7-1` (cix v2.57.255, 192.168.15.95, 2026-09-23), `test_pkg_sync` and `test_pkg_cache` passed. `test_kmod_build` reached the report's 300-second limit. Within seconds the whole build was then killed with SIGKILL (`build killed by signal 9`), so the two tests after it never ran. Full cix-tests runs have lasted about 1,470 seconds without being killed, so a fixed build limit does not explain it. The cause is not established. It is the first run in which the test was stopped with its nested hostbuild still in flight.
+
+The test now prints where its time goes, on stderr so the lines survive being killed:
+- how long it takes to stage the hbimage toolchain;
+- each floor package's install time, which `test_floor_install_all()` now prints for every test;
+- each state change of the kmod job.
+
 ### test_pkg_cache reads assembly status where #182 moved it; kmod survives a failed poll
 
 `probe-cix-testreport@6-1` (cix v2.57.254, 192.168.15.95, 2026-09-23): `test_pkg_sync` and `test_pkg_build_log` pass.
