@@ -237,6 +237,7 @@ int main(void)
 	char tarball_path[512], sha256[128];
 	char artifact_path[PATH_MAX] = "";
 	char state[32];
+	char kmod_err[400];
 	int i;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
@@ -348,6 +349,7 @@ int main(void)
 	cix_response_free(&r);
 
 	state[0] = '\0';
+	kmod_err[0] = '\0';
 	for (i = 0; ok && i < 30; i++) {
 		const char *s;
 
@@ -363,13 +365,18 @@ int main(void)
 			break;
 		}
 		snprintf(state, sizeof(state), "%s", s);
+		/* Kept past the free, so a failure can say why (cix-tests
+		 * v2.57.251-1 reported only the final state). */
+		s = json_as_string(json_object_get(r.json, "error"));
+		snprintf(kmod_err, sizeof(kmod_err), "%s", s != NULL ? s : "");
 		cix_response_free(&r);
 		if (strcmp(state, "fetching") != 0 && strcmp(state, "building") != 0)
 			break;
 		usleep(300000);
 	}
 	if (ok && strcmp(state, "installed") != 0) {
-		fprintf(stderr, "FAIL: kmod-build ended in state '%s', expected installed\n", state);
+		fprintf(stderr, "FAIL: kmod-build ended in state '%s', expected installed: %s\n", state,
+		        kmod_err[0] != '\0' ? kmod_err : "(no error field)");
 		ok = 0;
 	}
 

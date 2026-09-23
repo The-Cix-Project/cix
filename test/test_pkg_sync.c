@@ -219,8 +219,18 @@ static int poll_sync(const struct cix_client *c, struct cix_response *out)
 		if (cix_client_request(c, "GET", "/v1/pkg/sync", NULL, out) != 0 || out->status != 200)
 			return -1;
 		state = json_str_field(out->json, "state");
-		if (state == NULL || strcmp(state, "running") != 0)
+		if (state == NULL || strcmp(state, "running") != 0) {
+			/* The daemon's reason, when a sync did not succeed: the
+			 * report said only "first sync succeeds" FAILED (cix-tests
+			 * v2.57.251-1, 2026-09-23). */
+			if (state != NULL && strcmp(state, "success") != 0) {
+				const char *err = json_str_field(out->json, "error");
+
+				fprintf(stderr, "    sync state %s: %s\n", state,
+				        err != NULL ? err : "(no error field)");
+			}
 			return 0;
+		}
 		cix_response_free(out);
 		usleep(100000);
 	}

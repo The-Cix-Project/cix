@@ -157,6 +157,15 @@ static int wait_for_pkg_state(const struct cix_client *c, const char *name, cons
 		}
 		state = json_str_field(r.json, "state");
 		matched = state != NULL && strcmp(state, want) == 0;
+		/* A failed package will not become `want`: say why and stop
+		 * waiting (cix-tests v2.57.251-1 reported only the CHECK text). */
+		if (!matched && state != NULL && strcmp(state, "failed") == 0) {
+			const char *err = json_str_field(r.json, "error");
+
+			fprintf(stderr, "    %s failed: %s\n", path, err != NULL ? err : "(no error field)");
+			cix_response_free(&r);
+			return -1;
+		}
 		cix_response_free(&r);
 		if (matched)
 			return 0;
