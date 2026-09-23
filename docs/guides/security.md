@@ -8,7 +8,7 @@ Bootstrapping and operating this platform's internal certificate authority, turn
 cixctl pki ca bootstrap --common-name="Cix Root CA" --days=3650
 ```
 
-One-shot — a second call is refused (`409`); see [Rotating the whole chain](#rotating-the-whole-chain) below for the real "start over" operation. **The CA private key is never returned over this API, ever, on any endpoint** — it's the root of trust and stays on the host. Real cryptography (keypair generation, CSR signing) runs through the system's own real, unmodified `openssl` binary as a short-lived subprocess, not a hand-rolled implementation.
+One-shot — a second call is refused (`409`); see [Rotating the whole chain](#rotating-the-whole-chain) below for the real "start over" operation. **The CA private key is never returned in the clear** — the only endpoint that carries it off the box is `pki export`, as a passphrase-encrypted bundle (see [Carrying the CA across a reinstall](#carrying-the-ca-across-a-reinstall)). Real cryptography (keypair generation, CSR signing) runs through the system's own real, unmodified `openssl` binary as a short-lived subprocess, not a hand-rolled implementation.
 
 Optionally add a second, intermediate tier — requires the root to already exist:
 
@@ -24,7 +24,7 @@ Once bootstrapped, every future leaf certificate is signed by the intermediate i
 cixctl pki cert create --name=svc.internal --sans=svc.internal,svc --days=365
 ```
 
-`name` becomes the cert's CN and this resource's identifier — a bare name (no `.`) gets this install's own site suffix appended automatically, the same rule DNS records use. The response is the **only** place the leaf's private key is ever returned — `cixctl pki cert ls`/`pki cert rm NAME` never include it again, so save it now if you're issuing by hand. `pki cert rm` deletes the key and cert files from disk, not just the index entry.
+`name` becomes the cert's CN and this resource's identifier — a bare name (no `.`) gets this install's own site suffix appended automatically, the same rule DNS records use. The response is the **only** place the leaf's private key is returned in the clear — `cixctl pki cert ls`/`pki cert rm NAME` never include it, and `pki export` carries it only encrypted — so save it now if you're issuing by hand. `pki cert rm` deletes the key and cert files from disk, not just the index entry.
 
 **Automatic issuance straight into a container**, instead of issuing separately and figuring out delivery:
 
@@ -38,7 +38,7 @@ Issues a cert named after the container and writes `tls.crt`/`tls.key` (mode `06
 
 `ldap-1`/`ldap-2` run glauth. Turning on TLS is two independent steps, and they are independent on purpose — the servers can serve TLS long before any client is told to use it, so nothing is cut over blind.
 
-**1. The servers serve it.** `ldap-1`/`ldap-2` at 1.4.0 set `pki_issue: true` and enable glauth's `[ldaps]` listener on 636 (glauth's own sample-config default) against the delivered `/etc/cix-tls/tls.{crt,key}`. A `waitkey` oneshot gates glauth on the key actually arriving, so the server never starts without an identity. (1.5.0 drops that oneshot — the cert is staged before `clone3()`, so there is nothing to wait for; the `ldap` image is `glibc + glauth` with no shell, and a shell-based gate crash-looped it.) **1.6.0 sets `[ldap] enabled = false`**, so the plaintext listener on 3893 is gone — see step 4 below for what had to be true first.
+**1. The servers serve it.** The `ldap-1`/`ldap-2` deployments set `pki_issue: true` and enable glauth's `[ldaps]` listener on 636 against the delivered `/etc/cix-tls/tls.{crt,key}`. The certificate is staged before the container starts, so glauth never starts without an identity. The current deployments (1.6.0) also set `[ldap] enabled = false`, so there is no plaintext listener on 3893; step 4 says what has to be true before you do that.
 
 Prove it before going further, from any container that has the CA bundle:
 
@@ -63,7 +63,7 @@ That one call configures both halves (#419, [ADR-0282](../adr/0282-glauths-liste
 cixctl hostauth-config set --ldap-tls --ldap-port=636
 ```
 
-`cixd` is itself an LDAP client: `POST /login` with `ldap_enabled: true` binds against each entry in `ldap_servers`. Until #416 `ldapclient.c` had no TLS at all, so `client_tls` neither affected nor protected that bind, and the plaintext listener had to keep running on any install where it was in use. It now speaks LDAPS, verified against **this host's own CA** — read from the PKI store at the moment it dials, not from a file staged at startup that a CA reset or an [ADR-0281](../adr/0281-the-ca-leaves-the-box-encrypted-or-it-is-lost.md) import would leave stale.
+`cixd` is itself an LDAP client: `POST /login` with `ldap_enabled: true` binds against each entry in `ldap_servers`. With `--ldap-tls` that bind is LDAPS, verified against **this host's own CA** — read from the PKI store at the moment it dials, so a CA reset or an [ADR-0281](../adr/0281-the-ca-leaves-the-box-encrypted-or-it-is-lost.md) import takes effect without a restart (#416).
 
 The two switches stay separate on purpose. `client_tls` configures the clients inside containers; `--ldap-tls` configures the daemon. They can point at different ports, and a single flag could never correctly serve both — see [`docs/api/README.md`](../api/README.md#ldap-over-tls-two-switches-two-different-clients).
 
@@ -74,9 +74,9 @@ Two guards worth knowing:
 
 A failed handshake is a connect-class failure, so the next configured server is tried and, if none answers, local authentication applies. The OpenSSL error text goes to the log store (`GET /system/logs`, source `ldap`), because an unexplained fallback looks exactly like a wrong password.
 
-**4. Then, and only then, the plaintext listener comes down.** With every client population on LDAPS — the containers via `effective_client_uri`, the daemon via `ldap_tls` — `ldap-1`/`ldap-2` at 1.6.0 set `[ldap] enabled = false` and keep only `[ldaps]` on 636. Verified on 192.168.15.95, 2026-09-12: an `ldapsearch` bind over `ldaps://…:636` succeeds against both servers, the same bind over `ldap://…:3893` is refused by both, and `id claude` inside `jump` still resolves through nslcd. Order matters here in one direction only — turning 3893 off before the clients moved would have broken authentication, while leaving it on after they moved only left an unused door open.
+**4. Then, and only then, the plaintext listener comes down.** With every client population on LDAPS — the containers via `effective_client_uri`, the daemon via `ldap_tls` — `ldap-1`/`ldap-2` at 1.6.0 set `[ldap] enabled = false` and keep only `[ldaps]` on 636. Verified on 192.168.15.95, 2026-09-12: an `ldapsearch` bind over `ldaps://…:636` succeeds against both servers, the same bind over `ldap://…:3893` is refused by both, and `id claude` inside `jump` still resolves through nslcd. Order matters in one direction only: turning 3893 off before the clients move breaks authentication, while leaving it on after they move only leaves an unused door open.
 
-Applying 1.6.0 means recreating the container. Do one server at a time, so the other keeps serving while you do. The recreated server comes back with the record set already rendered into its config — it did not before v2.57.113, which is [#418](https://git.home.arpa/itdlabs/cix/issues/418): a recreated LDAP server came up with no user records and refused every bind with `invalidCredentials` while looking perfectly healthy.
+Applying a new deployment version means recreating the container. Do one server at a time, so the other keeps serving. The recreated server comes back with the record set already rendered into its config ([#418](https://git.home.arpa/itdlabs/cix/issues/418)).
 
 ### An identity that must outlive the container: `--pki-cert`
 
@@ -97,7 +97,7 @@ This install also always keeps its own `"host"` leaf current, auto-reissued when
 
 ## Carrying the CA across a reinstall
 
-PKI state lives at `/config/state/pki`, on the `cix-config` partition. That means the CA survives a reboot, an A/B update and a rolling rebuild — and **`cix-install` formats that partition**, so before this existed a reinstall destroyed the trust root and every certificate under it. "Back it up at the host level" was not an answer on a host that is shell-less by charter; a key in exactly this position was already lost that way once.
+PKI state lives at `/config/state/pki`, on the `cix-config` partition. That means the CA survives a reboot, an A/B update and a rolling rebuild — but **`cix-install` formats that partition** unless it finds a CA there (below), and the host is shell-less, so there is no host-level copy to fall back on.
 
 Two independent protections, because they cover different failures.
 
@@ -117,7 +117,7 @@ Restore into a **fresh** install, before anything bootstraps a CA:
 cixctl pki import --in=cix-ca-backup.enc
 ```
 
-**Order matters, and there is no way round it.** Import is refused with `409` once a CA exists, the same one-shot posture `pki ca bootstrap` has — replacing a live trust root would invalidate every certificate the install has issued. `pki reset` regenerates rather than deletes, so there is **no path from a bootstrapped CA back to an imported one**. Import first, then `cixctl system restore` for the rest.
+**Order matters, and there is no way round it.** Import is refused with `409` once a CA exists, the same one-shot posture `pki ca bootstrap` has — replacing a live trust root would invalidate every certificate the install has issued. `pki reset` regenerates rather than deletes, so there is **no path from a bootstrapped CA back to an imported one**. Import first, then `cixctl restore --input=PATH` for the rest.
 
 Since the passphrase travels in the request body, make that call over **HTTPS**.
 
@@ -133,11 +133,11 @@ Requires a bootstrapped root CA first (`cixctl pki ca bootstrap`, above) — the
 cixctl daemon-config set --enable-https
 ```
 
-Starts a second, independent listener on `--https-port=` (default `443`), live immediately. See [`networking.md`](networking.md#the-management-network) for the rest of `daemon-config`'s own contract (port, management-network repoint, a dedicated bind IP) — this is one field of that same live-reconfigurable resource, not a separate mechanism.
+Starts a second, independent listener on `--https-port=` (default `443`), live immediately. `daemon-config` owns only the ports and HTTP/HTTPS exposure; *where* `cixd` listens off-box is the management address ([`networking.md`](networking.md#the-management-network)). Full contract: [`docs/api/README.md`](../api/README.md#http-https-and-the-listen-port).
 
 ## Trusting the CA on your own device
 
-This install's root CA is private and self-signed — nothing trusts it by default, so a browser or OS hitting `https://<box>:<https-port>/` (the web dashboard, or a direct API call) shows a certificate warning until you trust it once, on each device you connect from. This is expected, not a bug: it's the same reason `curl` needs `--cacert` for a self-signed endpoint. **Found live**: an untrusted browser doesn't just show a warning once — every poll the dashboard's own JavaScript makes (every 2 seconds, and this daemon never does HTTP keep-alive, so each one is a fresh TLS handshake) fails the same way, which can flood `GET /system/logs` and the physical console with `https handshake failed` warnings fast enough to crowd out everything else (ADR-0134 rate-limits the logging itself, but trusting the cert is what actually stops the failures).
+This install's root CA is private and self-signed — nothing trusts it by default, so a browser or OS hitting `https://<box>:<https-port>/` (the web dashboard, or a direct API call) shows a certificate warning until you trust it once, on each device you connect from. This is expected, not a bug: it's the same reason `curl` needs `--cacert` for a self-signed endpoint. An untrusted browser doesn't just show a warning once — every poll the dashboard's own JavaScript makes (every 2 seconds, and this daemon never does HTTP keep-alive, so each one is a fresh TLS handshake) fails the same way, which can flood `GET /system/logs` and the physical console with `https handshake failed` warnings fast enough to crowd out everything else (ADR-0134 rate-limits the logging itself, but trusting the cert is what actually stops the failures).
 
 **Get the certificate**: web dashboard's System > PKI > Root CA page has a "Download certificate (.crt)" button once the CA is bootstrapped — or fetch it directly:
 
@@ -155,7 +155,7 @@ Trusting the **root** is enough even if you've also bootstrapped an intermediate
 - **Firefox** (any OS — it keeps its own trust store, independent of the OS one above): **Settings > Privacy & Security > Certificates > View Certificates > Authorities tab > Import** → select the file → check **Trust this CA to identify websites**.
 - **Chrome/Edge**: uses the OS-level trust store on Windows/macOS (the steps above cover it) and, on Linux, typically the same NSS database Firefox uses — the Linux system-wide step above is usually enough, but if it still isn't trusted, import it the same way as the Firefox step, into Chrome's own **Settings > Privacy and security > Security > Manage certificates**.
 
-**If a browser still shows a warning after trusting the root**, and you're connecting by bare IP address (`https://192.168.x.x/`) rather than a hostname: the daemon's own auto-issued `"host"` leaf certificate only carries this install's DNS FQDN as its Subject Alternative Name (`GET /pki/certs/host`'s own `sans` field), not the raw IP — a browser doing strict hostname verification will flag that as a *different* warning (hostname mismatch, not "untrusted") even with the chain fully trusted. Reach the box by its FQDN instead (whatever your own DNS setup resolves it through), or accept the mismatch warning if IP access is what you need — this endpoint doesn't currently issue IP-SAN certificates.
+**If a browser still shows a warning after trusting the root**, and you're connecting by bare IP address (`https://192.168.x.x/`) rather than a hostname: the daemon's own auto-issued `"host"` leaf certificate only carries this install's DNS FQDN as its Subject Alternative Name (`GET /pki/certs/host`'s own `sans` field), not the raw IP — a browser doing strict hostname verification will flag that as a *different* warning (hostname mismatch, not "untrusted") even with the chain fully trusted. Reach the box by its FQDN instead (whatever your own DNS setup resolves it through), or accept the mismatch warning if IP access is what you need. The `"host"` leaf is reissued automatically with the FQDN as its only SAN (`reissue_host_pki_cert()`, `daemon/src/api_pki.c`), so an IP SAN cannot be added to it; `pki cert create` does accept IP SANs for certificates you issue yourself.
 
 Once trusted, no further action is needed — the same cert (or its successor after a [chain rotation](#rotating-the-whole-chain), which requires re-trusting) is presented on every future connection to this install.
 
@@ -195,7 +195,7 @@ cixctl ldap user add --name=j_doe --primarygroup=5501 --mail=j.doe@cix.internal 
 ```sh
 cixctl container run --name=jumpbox1 --image=jumpbox \
   --ldap-client --ldap-allow-group=jumpusers --ldap-allow-group=admins \
-  --service=sshd=/usr/sbin/sshd -D
+  --service="sshd=/usr/sbin/sshd -D -e"
 ```
 
 Every named group must already exist, or creation is refused naming the offending one — a typo there would otherwise render a filter matching nobody and lock the container out completely. See [`docs/api/README.md`'s "Who may log in here"](../api/README.md#who-may-log-in-here-ldap_allow_groups-issue-76) for the rendered filter and the full rule set.
@@ -208,16 +208,25 @@ cixctl ldap user add --name=svc-nslcd --primarygroup=10001 --password=<a-real-se
 cixctl ldap user add --name=j_doe --primarygroup=5501 --ssh-key="ssh-ed25519 AAAA..." --password=dogood --loginshell=/usr/bin/bash
 ```
 
-`--ssh-key=` is rendered as glauth's own real `sshkeys` LDAP attribute, queried live rather than copied to a file. `--loginshell=` matters here in a way it didn't before: an empty one renders as glauth's own default, which doesn't resolve on this project's own minimal images (`/usr/bin/bash` is the real path, not `/bin/bash`) — `sshd` rejects the login outright if it can't find the configured shell.
+`--ssh-key=` is rendered as glauth's own real `sshkeys` LDAP attribute, queried live rather than copied to a file. Set `--loginshell=` explicitly: an empty one renders as glauth's own default, which doesn't resolve on this project's own minimal images (`/usr/bin/bash` is the real path, not `/bin/bash`), and `sshd` rejects the login outright if it can't find the configured shell.
 
-Two more real, non-obvious gotchas confirmed live re-provisioning this from scratch (both closed, neither is a hack -- both are the standard, documented fix for the class of problem they are): `nslcd.conf` needs `pam_authc_ppolicy no` -- glauth's `config` backend doesn't recognize the LDAP password-policy control `nslcd` requests by default, and returns a spurious "Invalid credentials" rather than ignoring the unsupported control gracefully; and `openssh` needs `recipes/package/openssh/10.4p1-8/build.sh` specifically, not `-7` -- with `UsePAM yes`, the actual PAM conversation runs inside `sshd`'s own privsep pre-auth child, which `chroot()`s to `--with-privsep-path` before that conversation ever happens, so `pam_ldap.so`'s attempt to reach `nslcd`'s local socket fails unless that chroot target lives on the same filesystem the socket does (`-8` moves it from `/var/empty` to `/run/sshd-empty`, alongside `nslcd`'s own `/run/nslcd/socket`, and the container's own startup command hard-links the socket into the chroot once `nslcd` has bound it -- see `docs/api/README.md`'s own worked example for the exact sequencing).
+Two further requirements:
+
+- **`pam_authc_ppolicy no` in `nslcd.conf`.** glauth's `config` backend does not recognise the password-policy control `nslcd` sends by default and answers "Invalid credentials". The `nslcd.conf` the daemon renders for an `ldap_client` container already carries the line (`daemon/src/main.c`).
+- **The privsep chroot must share a filesystem with `nslcd`'s socket.** With `UsePAM yes`, the PAM conversation runs in `sshd`'s privsep pre-auth child, which has already `chroot()`ed to `--with-privsep-path`, so `pam_ldap.so` can reach `nslcd` only through a socket inside that chroot. The `openssh` recipe builds with `--with-privsep-path=/run/sshd-empty` (`openssh@10.4p1-12.cbs`), next to `/run/nslcd/socket`. The `jump` deployment hard-links the socket into the chroot with a oneshot that runs after `nslcd` is ready:
+
+  ```json
+  {"name": "linksock", "type": "oneshot",
+   "cmd": ["/usr/bin/ln", "/run/nslcd/socket", "/run/sshd-empty/run/nslcd/socket"],
+   "after": ["nslcd"]}
+  ```
 
 ### Service accounts for containers themselves
 
 A container can provision its own LDAP bind account at creation time, separate from the human accounts above:
 
 ```sh
-cixctl container run --name=svc1 --image=myapp --ldap-provision --ldap-group=svcaccts--service=main=/usr/bin/some-binary
+cixctl container run --name=svc1 --image=myapp --ldap-provision --ldap-group=svcaccts --service=main=/usr/bin/some-binary
 ```
 
 Delivers a freshly-generated `bind.secret` (never persisted in plaintext anywhere in Cix's own state — only its hash survives) into `/etc/cix-ldap/` inside the container by default. `--ldap-group=` must already exist; `--ldap-user=` defaults to the container's own name. The account is removed automatically when the container is.
@@ -228,7 +237,7 @@ Host-auth write-gating (`GET`/`PUT /system/hostauth-config`, [`docs/api/README.m
 
 1. Attach the same installer ISO used to originally install this system (`docs/guides/installing.md`) as boot media, and force a reboot.
 2. At the GRUB menu, select **"Cix Recovery"** instead of the normal install entry.
-3. The tool mounts the already-installed system's own containers partition, shows the current host-auth config for confirmation, and requires typing `RESET` (all capitals) before changing anything.
+3. The tool mounts the installed system's `cix-config` partition, where `state/hostauth_config.json` lives (falling back to `cix-containers` for a system whose daemon has not yet moved its state there, `image/src/cix-recover.c`), shows the current host-auth config for confirmation, and requires typing `RESET` (all capitals) before changing anything.
 4. Confirming resets **only** `admin_groups` back to empty — the same state a fresh install starts in, where every write is open with no login required. Every other setting (LDAP backend config, session idle timeout, every container, every LDAP user/group record) is left completely untouched.
 5. Remove the recovery media and reboot into the normal installed system. Every API write is open again — reconfigure a real admin group (`cixctl hostauth-config set --admin-group=...`) before anyone relies on gating again.
 
@@ -257,7 +266,7 @@ pin a copy once rather than re-fetching it, and see
 [`docs/keys/README.md`](../keys/README.md) for why it lives in git and
 not beside the ISO.
 
-**This is a different key from the Secure Boot pair above.** That one is
+**This is a different key from the Secure Boot signing pair** ([`installing.md`](installing.md#secure-boot), `cixctl signing-keys`, [ADR-0212](../adr/0212-signing-keys-over-rest.md)). That one is
 RSA, because UEFI requires it, and it decides whether firmware will boot
 an image. This one is Ed25519, because minisign requires it, and it
 tells a downloader the bytes really came from us. One key doing both

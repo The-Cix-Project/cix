@@ -17,8 +17,12 @@ Task-oriented "how do I do X" instructions for building, installing, operating, 
 | [`cli-reference.md`](cli-reference.md) | The full `cixctl` command surface |
 | [`web-dashboard.md`](web-dashboard.md) | A tour of the browser dashboard |
 | [`web-ux-guidelines.md`](web-ux-guidelines.md) | The dashboard's design system — the one widget per job, and the logic that keeps it consistent (for anyone changing the web) |
+| [`containers-and-services.md`](containers-and-services.md) | Running containers and declaring them as deployments |
+| [`images.md`](images.md) | Images: manifests, image recipes, versions, and reclaiming old versions |
+| [`network-services.md`](network-services.md) | DNS, DHCP, NTP and syslog: standing them up, registering servers, health and drain |
 | [`staying-updated.md`](staying-updated.md) | Keeping an already-installed system current: control plane + packages |
 | [`administration.md`](administration.md) | Monitoring, backup/restore, and disk management day to day |
+| [`storage.md`](storage.md) | Disks, the five assignable roles and what each is for, btrfs vs ext4, snapshots and quotas |
 | [`reinstall-and-restore.md`](reinstall-and-restore.md) | Wiping and reinstalling a host, and what a reinstall destroys that a backup cannot carry |
 | [`networking.md`](networking.md) | Networks, physical/VLAN interface attachment, and routing |
 | [`security.md`](security.md) | PKI, HTTPS, and LDAP-backed Unix/SSH accounts |
@@ -27,7 +31,6 @@ Task-oriented "how do I do X" instructions for building, installing, operating, 
 
 | Guide | Job |
 |---|---|
-| [`storage.md`](storage.md) | Disks, the six roles and what each is for, btrfs vs ext4, snapshots and quotas |
 | [`writing-recipes.md`](writing-recipes.md) | The complete `pkg` recipe format, with a real worked example |
 | [`remote-development.md`](remote-development.md) | Pushing local (or server-compiled) changes onto a real box with no SSH, and proving they landed |
 | [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) | Producing a kernel and rolling it out through the A/B slot mechanism |

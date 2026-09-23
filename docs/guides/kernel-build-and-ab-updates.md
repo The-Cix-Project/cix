@@ -1,14 +1,16 @@
 # Building and rolling out a kernel update
 
-A complete runbook: producing a kernel image, then rolling it onto a running install through the A/B slot mechanism, and confirming it actually stuck. This is the one guide that ties those three steps together — [`docs/api/README.md`](../api/README.md#host--package-updates) documents the `/system/update` endpoint itself, and ADR-0014/ADR-0031/ADR-0032 document the *why* behind A/B slots and per-slot kernels; this page is the operator-facing "how do I actually do this" walkthrough neither of those is.
+A complete runbook: building a kernel on a Cix host, rolling it onto a running install through the A/B slot mechanism, and confirming it stuck. [`docs/api/README.md`](../api/README.md#host--package-updates) documents the `/system/update` endpoint itself, and ADR-0014/ADR-0031/ADR-0032 document the *why* behind A/B slots and per-slot kernels; this page is the operator's "how do I do this".
 
 ## Background: how A/B kernel updates work here
 
-Cix boots from one of two symmetric slots (`cix-root-a`/`cix-root-b`), each with its **own** kernel file pre-staged on the ESP at install time (`cix-bzImage-a`/`cix-bzImage-b`) — a kernel update always targets the *inactive* slot (whichever one this daemon is **not** currently running as), never the live one. `POST /system/update` writes the new kernel there and stages a fresh systemd-boot loader entry with a fresh **Automatic Boot Assessment** tries-left counter (`ROOT_UPDATE_TRIES = 3`). Nothing takes effect until you explicitly reboot into that slot — writing and booting are two separate, deliberate steps (ADR-0031). Once the newly-booted daemon reaches a genuinely healthy, serving state, it automatically renames its own loader entry to drop the tries-left counter — that's the actual "this slot is confirmed good" signal, and it needs no operator action. If a freshly-updated slot instead fails to boot to health three times in a row, systemd-boot's own native counter falls back to the previous good slot by itself — the old kernel and root are untouched the whole time, so a bad update is always recoverable by nature of A/B, not by a script hoping to undo damage after the fact.
+Cix boots from one of two symmetric slots (`cix-root-a`/`cix-root-b`), each with its **own** kernel file on the ESP (`cix-bzImage-a`/`cix-bzImage-b`). An update always targets the *inactive* slot — whichever one this daemon is **not** running from. `POST /system/update` writes the new kernel there and stages a fresh systemd-boot loader entry with a fresh **Automatic Boot Assessment** tries-left counter (`ROOT_UPDATE_TRIES`, 3). Nothing takes effect until you reboot into that slot — writing and booting are two separate steps ([ADR-0031](../adr/0031-host-and-package-update-mechanism.md)).
+
+The new slot confirms itself. When the booted daemon has its listeners up, its uplink attached and its management address bound, it renames its loader entry to drop the tries-left counter (`maybe_confirm_boot()` in `daemon/src/main.c`). If the uplink or the management address is missing, an unconfirmed slot retries for 120 seconds and then reboots without confirming, spending a try so the loader falls back; a slot already confirmed on an earlier boot is kept, never rebooted over this. A slot that never reaches that point fails its tries and systemd-boot falls back to the previous slot on its own. The old kernel and root are untouched throughout, so a bad update is recoverable by the nature of A/B.
 
 ## Step 0: decide which version you are moving to
 
-Which kernel *line* this box tracks is a real setting (issue #65), not something to work out by hand each time:
+Which kernel *line* this box tracks is a setting (issue #65):
 
 ```sh
 cixctl kernel-policy refresh          # ask kernel.org what each channel is at
@@ -16,60 +18,33 @@ cixctl kernel-policy show
 cixctl kernel-policy set --channel=longterm
 ```
 
-It reports the running kernel, the version your channel currently points at, and whether you are behind it — resolved from kernel.org's own `releases.json`, so nothing here has to be kept up to date by hand. It deliberately stops there: it never rewrites the recipe pin, and the version you build below is still yours to choose. See [`docs/api/README.md`'s "Kernel line"](../api/README.md#kernel-line-issue-65) for why, including how `longterm` resolves when kernel.org lists six longterm lines at once.
+It reports the running kernel, the version your channel currently points at, and whether you are behind it — resolved from kernel.org's own `releases.json`. It never rewrites the recipe pin: the version you build is chosen by the `kernel` recipe you publish. See [`docs/api/README.md`'s "Kernel line"](../api/README.md#kernel-line-issue-65) for how `longterm` resolves when kernel.org lists several longterm lines at once.
 
-## Step 1: get a kernel image
+## Step 1: build the kernel on the host
 
-Two ways to produce a `bzImage`; both use the exact same source version and kernel config fragment (`image/kernel/qemu-part1.config`), so they produce equivalent kernels.
-
-### On a dev machine
-
-```sh
-curl -sSL -o linux.tar.xz https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.40.tar.xz
-tar xf linux.tar.xz && cd linux-6.18.40
-make allnoconfig ARCH=x86_64
-./scripts/kconfig/merge_config.sh -m .config ../image/kernel/qemu-part1.config
-make olddefconfig ARCH=x86_64
-make -j$(nproc) ARCH=x86_64 bzImage
-make -j$(nproc) ARCH=x86_64 modules
-cp arch/x86/boot/bzImage <repo>/build-inputs/bzImage
-make ARCH=x86_64 INSTALL_MOD_PATH=<repo>/build modules_install
-depmod -b <repo>/build "$(make -s ARCH=x86_64 kernelrelease)"
-```
-
-A real GCC toolchain, not TCC — this is unmodified upstream software, not this project's own code, so the TCC mandate doesn't apply to it (same split as any other real software this platform runs as a workload rather than authors itself). The last two lines (Part 3, bare-metal-readiness plan) harvest a real `.ko` tree for the `=m` drivers `image/kernel/qemu-part1.config` enables (a curated set of common real-hardware NICs/USB controllers, see ADR-0061 for exactly which and why) — needs a real `depmod` (`kmod`, any distro package or `recipes/package/kmod/`) on this dev machine's own `PATH`.
-
-### Self-hosted, from a running Cix box
-
-Using the [hostbuild](writing-recipes.md#the-hostbuild-variant) mechanism against `recipes/package/kernel/`, which reproduces the identical sequence above (including the modules build + a real `depmod`) inside a build container:
-
-`kernel.recipe`'s own `pkg_source` fetches both the kernel tarball and `image/kernel/qemu-part1.config` host-side, before the build container starts — the config by its **pinned Gitea raw URL** (`.../raw/image/kernel/qemu-part1.config?ref=<commit>`), so the exact config a given kernel version was built against is fixed in the recipe and reviewable in git, the same as any other `pkg_source` entry. Nothing has to be served locally:
+The kernel is a [hostbuild](writing-recipes.md#the-hostbuild-variant) of the `kernel` recipe, which lives in [cix-recipes](https://git.home.arpa/itdlabs/cix-recipes) as `recipes/package/kernel@<version>.sh`. Its `pkg_source` fetches both the kernel tarball and this repository's `image/kernel/qemu-part1.config`, host-side, before the build container starts — the config by a **pinned Gitea raw URL** (`.../raw/image/kernel/qemu-part1.config?ref=<commit>`), so the exact config a kernel version was built against is fixed in the recipe and reviewable in git.
 
 ```
 cixctl pkg hostbuild kernel --wait
 ```
 
-> Earlier revisions of this recipe fetched that config from a scratch
-> `http://127.0.0.1:8901/` server the operator had to start by hand, and this
-> guide told you to run `python3 -m http.server 8901` first. That step is gone
-> — it predates the recipe being pinned to a real Gitea ref, and running it
-> today serves a port nothing reads.
+Add `--upgrade` when a `kernel` hostbuild is already installed on the host; without it the call answers `409`. No image is named: the build container is composed from the recipe's own `pkg_build_depends` ([ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md)) — gcc and binutils, `kmod` for the final `depmod`, the `bc`/`bison`/`flex`/`elfutils`/`perl` the kernel build reaches for, and `wireless-regdb` because `CONFIG_EXTRA_FIRMWARE` embeds the regulatory database. The kernel is built with gcc (`pkg_toolchain="gcc"`), as a third-party package may be ([ADR-0226](../adr/0226-gcc-is-an-ordinary-choice-for-third-party-packages.md)).
 
-No image is named, because none is chosen: the build container is composed from the `kernel` recipe's own `pkg_build_depends` ([ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md)) — a real GCC toolchain plus `kmod`, because the recipe compiles with `CC=/usr/bin/gcc` and finishes with a real `depmod`, along with the `bc`/`bison`/`flex`/`elfutils` the kernel's own build genuinely reaches for, and `wireless-regdb` because `CONFIG_EXTRA_FIRMWARE` embeds the regulatory database at build time. The kernel is the one thing this project builds with gcc rather than TCC (ADR-0001, ADR-0226), declared as `pkg_toolchain="gcc"` in the recipe.
+The build runs the ordinary kernel sequence against that config — `allnoconfig`, merge `qemu-part1.config`, `olddefconfig`, `bzImage modules`, `modules_install`, `depmod` — plus any source patches the recipe carries, each asserted by the build. The `=m` drivers the config enables are a curated set of common NICs and USB controllers ([ADR-0061](../adr/0061-kernel-module-loading.md)).
 
-> Two earlier versions of this paragraph are worth knowing about, because each records a real failure. It first said `--build-image=dev`, and `dev`'s manifest held neither `gcc` nor `kmod`, so the documented build could not work as written — which prompted [ADR-0208](../adr/0208-build-image-taxonomy.md) and the `kernel-builder` image. It then said `kernel-builder` was "the image whose one job this is", which was true and hid the real defect: a hostbuild read the recipe's declared tools *not at all*, so `kernel-builder` was silently supplying `wireless-regdb`, `perl` and `linux-headers` that the recipe never declared. `kernel-builder` still exists as an ordinary image; it is no longer how this build gets its environment.
+When `--wait` returns with `state: "installed"`, the finished `bzImage` is at that job's `artifact_path` (`GET /pkg/hostbuild/kernel`), alongside a `lib/modules/<kernelrelease>/` tree in the same artifact directory. `mkbootroot`'s `<modules-dir>`/`<kmod-bin-dir>` arguments (see [`installing.md`](installing.md#building-the-iso)) stage both into a control-plane root, so `cixd`'s boot-time `modprobe` has something to load.
 
-Once `--wait` returns with `state: "installed"`, the finished `bzImage` is at that job's own `artifact_path` (`GET /pkg/hostbuild/kernel`), alongside a real `lib/modules/<kernelrelease>/` tree in the same artifact directory — `build/mkbootroot`'s own `<modules-dir>`/`<kmod-bin-dir>` arguments (see [`installing.md`](installing.md#building-the-iso)) stage both onto a real control-plane squashfs, so `cixd`'s own boot-time `modprobe` (ADR-0061) has something real to load on an installed system.
+`build-inputs/bzImage`, which the installer ISO and the boot tests take as an input, is the same kernel: take it out of the `kernel` package artifact a Cix host already published to the cache (`tar xzf kernel-<ver>.tar.gz ./bzImage`) rather than building one anywhere else.
 
-**Need a driver that isn't in the curated `=m` set at all?** (ADR-0159 Phase B) — `cixctl kmod-build --symbol=CONFIG_DUMMY --wait` is the exact same `pkg hostbuild kernel` call above, gaining a `--symbol=` flag (repeatable) that merges extra `CONFIG_*` symbols into the same curated config, each forced to `=m`. No new mechanism, no persistent kernel-build-tree kept around between builds — deliberately not that, per [`docs/api/README.md`](../api/README.md#building-an-extra-kernel-module-adr-0159-phase-b)'s own note on the simpler design that was chosen instead. Applying the result is identical to any other kernel update: `cixctl update --kernel=<artifact_path>/bzImage` then a reboot onto the inactive slot (Step 2 below) — there is no live, same-boot way to add a module the curated set didn't already build.
+**Need a driver that isn't in the curated `=m` set?** ([ADR-0159](../adr/0159-api-driven-kernel-module-management.md) Phase B) `cixctl kmod-build --symbol=CONFIG_DUMMY --wait` is the same `pkg hostbuild kernel` call, with a repeatable `--symbol=` that merges extra `CONFIG_*` symbols into the curated config, each forced to `=m`. See [`docs/api/README.md`](../api/README.md#building-an-extra-kernel-module-adr-0159-phase-b) for the design. Applying the result is an ordinary kernel update (Step 2); there is no same-boot way to add a module the curated set did not build.
 
 ## Step 2: write it to the inactive slot
 
 ```
-cixctl update --kernel=<path-to-bzImage>
+cixctl update --kernel=<artifact_path>/bzImage
 ```
 
-(or `--image=<path>` too, to update the control-plane squashfs in the same call — see [`staying-updated.md`](staying-updated.md) for that half). This does **not** reboot. `--kernel=` alone leaves the inactive slot's own root squashfs untouched; only the kernel file and the loader entry change.
+(or `--image=<path>` too, to update the control-plane squashfs in the same call — see [`staying-updated.md`](staying-updated.md) for that half). This does **not** reboot. `--kernel=` alone pairs the new kernel with a fresh copy of the root the active slot is running ([ADR-0095](../adr/0095-update-one-sided-footgun.md)), so neither half is left stale.
 
 ## Step 3: reboot into it
 
@@ -77,21 +52,30 @@ cixctl update --kernel=<path-to-bzImage>
 cixctl reboot
 ```
 
-The machine restarts into whichever slot was just written — systemd-boot picks the freshest loader entry (the one this update just staged) automatically, no manual boot-menu selection needed under normal conditions.
+The machine restarts into the slot just written, with no boot-menu selection needed. Before rebooting, `cixctl esp show` (`GET /system/esp`, [ADR-0202](../adr/0202-the-esp-is-reachable-over-rest.md)) reports `selected_entry`, the entry systemd-boot will actually boot next; if it is not the one this update staged, a stale `default` pattern is outranking it, and `cixctl esp set --default=PATTERN` corrects it.
+
+To boot a specific slot **once** — to try a slot, or to roll back to the previous one — arm it before rebooting:
+
+```
+cixctl boot-next b             # or a; `boot-next clear` disarms, no argument reports
+cixctl reboot
+```
+
+`boot-next` reverts to normal selection after that one boot. Pinning the loader default to a slot instead is sticky and breaks the next update, which stages the other slot.
 
 ## Step 4: confirm it stuck
 
-There's no explicit "confirm" API call — a healthy daemon confirms itself automatically, per [Background](#background-how-ab-kernel-updates-work-here) above. To verify from the outside:
+There is no explicit "confirm" call — the booted daemon confirms itself, per [Background](#background-how-ab-kernel-updates-work-here). To verify from the outside:
 
 ```
 cixctl health
 cixctl boot
 ```
 
-A `200` from `health` means the daemon is up and has already self-confirmed (health-check success is exactly the "genuinely healthy, serving state" condition that triggers the rename). If the box instead comes back up on the *old* kernel with no intervention from you, the new one failed Automatic Boot Assessment three times and the bootloader silently fell back — check the new kernel/config for a real boot failure (serial console output, if you have it attached, is the most direct way to see why) before writing it again.
+A `200` from `health` over the management address means the daemon reached its listeners with that address bound, which is the point at which it confirms. `cixctl boot` (`GET /system/boot`) reports `build_version` (the `git describe` this `cixd` was built from), `build_time`, `slot` (`"a"`/`"b"`, or `null` for a daemon started without `--slot=`) and `kernel_version` (the running `uname -r`). Check `slot` and `kernel_version`, not just `health`: a `200` alone proves only that *some* daemon answered.
 
-`GET /system/boot`'s response carries `build_version` (the `git describe` this `cixd` was actually built from), `build_time`, `slot` (`"a"`/`"b"`, or `null` for a dev/test daemon started without `--slot=`), and `kernel_version` (the running `uname -r`) — check these, not just `health`'s `200`, before trusting that a given round trip actually landed: a `200` alone only proves *some* daemon answered, not that it's the one you just wrote, and `slot`/`kernel_version` are the direct answer to "did I boot into the slot and kernel I just wrote." A kernel-only or root-only update auto-fills the other half from the active slot's own currently-running copy (ADR-0095) rather than leaving it stale — see [Doing both kernel and root together](#doing-both-kernel-and-root-together) below for the case where you actually have fresh copies of both to write in one call.
+If the box comes back on the *old* kernel with no intervention from you, the new slot failed its boot assessment and the loader fell back. Find out why before writing it again — a serial console, if one is attached, is the most direct way to see a boot failure.
 
 ## Doing both kernel and root together
 
-A single `cixctl update --image=<squashfs> --kernel=<bzImage>` call writes both to the same inactive slot in one request — useful when a [self-hosted rebuild](building-cix.md#from-a-running-cix-host-self-hosted-rebuild) has produced a fresh control-plane squashfs at the same time as a fresh kernel, so the two roll out and get confirmed together rather than as two separate reboot cycles.
+A single `cixctl update --image=<squashfs> --kernel=<bzImage>` writes both to the same inactive slot in one request — useful when a [self-hosted rebuild](building-cix.md#rebuilding-cix-on-a-running-host) has produced a fresh control-plane squashfs at the same time as a fresh kernel, so the two roll out and are confirmed together rather than as two reboot cycles.

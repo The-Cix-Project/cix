@@ -10,18 +10,18 @@ This is the canonical, complete reference for Cix's recipe format — the source
 
 ## What a recipe is
 
-A recipe is usually a POSIX shell script, one per package, matching the same well-proven format Gentoo ebuilds, Arch PKGBUILDs, and CRUX Pkgfiles all use — and since ADR-0305 it may instead be a declarative CPDL document (see [Two recipe languages](#two-recipe-languages-adr-0305) below). The rest of this section describes the shell form. `cixd` treats it two completely different ways depending on which part is being read:
+A recipe is either a POSIX shell script, in the format Gentoo ebuilds, Arch PKGBUILDs and CRUX Pkgfiles use, or a declarative CPDL document (ADR-0305; see [Two recipe languages](#two-recipe-languages-adr-0305) below). Most current recipes are CPDL. The rest of this section describes the shell form. `cixd` treats it two completely different ways depending on which part is being read:
 
 - **Metadata** (`pkg_name=`, `pkg_version=`, `pkg_source=`, `pkg_sha256=`, `pkg_depends=`, `pkg_changelog=`) is read by a strict, non-executing line scanner (`parse_recipe()` in `daemon/src/pkg.c`) — the daemon never runs a shell interpreter over your recipe to extract these values.
 - **Build logic** (`pkg_build()`/`pkg_install()`, real shell functions) is only ever invoked inside an isolated, network-less build container, `". /build/recipe.sh"` sourced by a tiny driver script. This is the *only* place a recipe's own shell code ever actually runs — never on the host, never outside a container.
 
-This split is deliberate and load-bearing: a malicious or buggy recipe's shell code can corrupt its own build container's filesystem, but it can never touch the host, and it has no network access to exfiltrate anything even if it tried (this project's networking plane has no outbound NAT — see ADR-0007 and `daemon/include/pkg.h`'s own header comment).
+This split is deliberate and load-bearing: a recipe's shell code never runs on the host directly, and the build container it runs in has no network access (this project's networking plane has no outbound NAT — see ADR-0007 and `daemon/include/pkg.h`'s own header comment). That container is not a user namespace, so its root is host root confined by namespaces and a reduced capability set — see `pkg_build_caps` below for exactly what it holds.
 
 ## Two recipe languages (ADR-0305)
 
-Everything below describes a **shell recipe**, `build.sh`, which is what every recipe in this repo is today. A second language exists: a **PBS recipe**, `build.cbs`, written in CPDL 0.1 and built by [cix-build-system](https://git.home.arpa/itdlabs/cix-build-system) rather than by a shell.
+A recipe is written in one of two languages: a **shell recipe**, `<name>@<version>.sh`, which most of this guide describes, or a **PBS recipe**, `<name>@<version>.cbs`, written in CPDL 0.1 and built by [cix-build-system](https://git.home.arpa/itdlabs/cix-build-system) rather than by a shell.
 
-**The filename is the format.** `<name>/<version>/build.sh` is a shell recipe, `<name>/<version>/build.cbs` a PBS one, and a version holds one or the other — never both, which is refused at publish. Nothing sniffs the content and no recipe declares its own language, because a filename cannot disagree with what will actually run. `cixctl pkg recipe add` takes the format from the file you point it at, so publishing one needs no extra flag:
+**The filename is the format.** A `.sh` file is a shell recipe, a `.cbs` file a PBS one, and a version holds one or the other — never both, which is refused at publish. Nothing sniffs the content and no recipe declares its own language, because a filename cannot disagree with what will actually run. `cixctl pkg recipe add` takes the format from the file you point it at, so publishing one needs no extra flag:
 
 ```sh
 cixctl pkg recipe add --name=zstd --file=recipes/package/zstd@1.5.7-5.cbs
@@ -64,7 +64,7 @@ Five things to know before writing one, each of which will otherwise cost you a 
   }
   ```
 
-  The fetch tries the first, then each of the rest, and reports every url it failed on rather than only the last — so a mirror that is merely misspelled does not read exactly like one that is down. Up to 12 fallback urls across all of a recipe's sources; a thirteenth is refused at publish rather than dropped. **Worth knowing this was broken until 2026-09-22**: the daemon parsed the list and kept only the first url, so a mirror list validated, published, and did nothing (#507). If you are reading a recipe written before then, its mirrors never ran. A shell recipe has no syntax for a second url at all.
+  The fetch tries the first, then each of the rest, and reports every url it failed on rather than only the last — so a mirror that is merely misspelled does not read exactly like one that is down. Up to 12 fallback urls across all of a recipe's sources; a thirteenth is refused at publish rather than dropped. A shell recipe has no syntax for a second url at all.
 
 ### Three things measured the expensive way
 
@@ -87,11 +87,11 @@ Use `-F` whenever the needle contains a regex metacharacter, which `$1` and a le
 
 ### Shell idiom → CPDL equivalent
 
-CPDL has no shell, and the reflex when converting is to assume a missing feature. Usually it is there under another name. Every row below was used in a real conversion in this repo:
+CPDL has no shell, and the reflex when converting is to assume a missing feature. Usually it is there under another name. Every row below was used in a real conversion in cix-recipes:
 
 | shell | CPDL | note |
 |---|---|---|
-| `make -j"$(nproc)"` | `run "make" { jobs $jobs }` | 92 of the 217 command substitutions in this corpus are this one |
+| `make -j"$(nproc)"` | `run "make" { jobs $jobs }` | |
 | `VER=$(pkg-config --modversion x)` … `$VER` | `run "pkg-config" { "--modversion" "x" stdout "ver" }` … `${stdout.ver}` | a bound name substitutes anywhere a value does |
 | `cd dir && cmd` | `cd "dir" { run "cmd" { } }` | |
 | `cp a b c DEST/` | three `copy … to …` lines, full destination paths | `copy` is one source to one destination |
@@ -102,8 +102,8 @@ CPDL has no shell, and the reflex when converting is to assume a missing feature
 | `sed -i 's/X/Y/' f` | `replace "f" { from "X" to "Y" exactly 1 }` | literal only; `exactly N` fails loudly when upstream moves it, which `sed` does not |
 | `find . -name M -exec sed -i 's/X/Y/g' {} +` | `replace glob "…/**/M" { from "X" to "Y" exactly N }` | `**` crosses directories, `*` stays within one segment |
 | `grep -q X f \|\| exit 1` before a `sed` | nothing — delete the guard | `exactly N` already is that guard, and names the file and the count when it fails |
-| `grep -q X f \|\| exit 1` | `require file "f" { exists contains "X" }` | `exists` is REQUIRED and must come first -- the parser consumes it unconditionally before the rest (`src/parser.c:533`). This row used to omit it and cost a publish round-trip |
-| `test -L l \|\| exit 1` | `require symlink "l" { exists target "dest" }` | **`target` belongs to `require symlink`, not `require file`.** A file assertion takes only contains/same_as/nonempty and rejects `target` with `error[CPDL-E3004]: file assertion must use contains, same_as, or nonempty`. This row is here because that cost a publish round-trip too: `require file` matches regular files only and reports a symlink as "does not exist" (cbs#175), so a soname link needs this form |
+| `grep -q X f \|\| exit 1` | `require file "f" { exists contains "X" }` | `exists` is REQUIRED and must come first -- the parser consumes it unconditionally before the rest (`consume_word(parser, "exists")` in cix-build-system's `src/parser.c`) |
+| `test -L l \|\| exit 1` | `require symlink "l" { exists target "dest" }` | **`target` belongs to `require symlink`, not `require file`.** A file assertion takes only contains/same_as/nonempty and rejects `target` with `error[CPDL-E3004]: file assertion must use contains, same_as, or nonempty`. `require file` matches regular files only and reports a symlink as "does not exist" (cbs#175), so a soname link needs this form |
 | `test -f x \|\| exit 1` | `require file "x" { exists }` | |
 | `cmd; [ $? -eq 2 ]` | `run "cmd" { expect exit 2 }` | |
 | `$(pwd)` | the absolute path you already know | inside `cd "${src}/n/top"`, that is `${src}/n/top` |
@@ -117,14 +117,14 @@ CPDL has no shell, and the reflex when converting is to assume a missing feature
 
 ### What CPDL cannot do yet
 
-The four shapes that used to block conversions are all delivered, and the corpus uses each of them: a compound body per list item ([#176](https://git.home.arpa/itdlabs/cix-build-system/issues/176)), `replace … until whitespace` for a flag and its argument ([#177](https://git.home.arpa/itdlabs/cix-build-system/issues/177)), `stage library` ([#178](https://git.home.arpa/itdlabs/cix-build-system/issues/178)), and `stdout file PATH` for output an assertion needs to read ([#185](https://git.home.arpa/itdlabs/cix-build-system/issues/185)). **This table used to say btop and iw were blocked on the last of those; both are converted.**
+These shapes exist and the corpus uses each: a compound body per list item ([#176](https://git.home.arpa/itdlabs/cix-build-system/issues/176)), `replace … until whitespace` for a flag and its argument ([#177](https://git.home.arpa/itdlabs/cix-build-system/issues/177)), `stage library` ([#178](https://git.home.arpa/itdlabs/cix-build-system/issues/178)), and `stdout file PATH` for output an assertion needs to read ([#185](https://git.home.arpa/itdlabs/cix-build-system/issues/185)).
 
 What is open, measured on 2026-09-22:
 
 | shape | what to do instead | issue |
 |---|---|---|
 | assert a tool exists in the build environment | a bare `run "find" { "--version" }` — `require file` is confined to the recipe's own trees and refuses an absolute path | [#225](https://git.home.arpa/itdlabs/cix-build-system/issues/225) |
-| a declared tool that is missing | nothing to do — it presents as a **timeout**, not an error naming the tool | [#224](https://git.home.arpa/itdlabs/cix-build-system/issues/224) |
+| a recipe that omits `tool "bash"` | declare it in every recipe with a build phase: without it `cix-init` cannot start the phase (`execve(/usr/bin/bash) failed, errno 2`), and the daemon reports `build killed by signal 14`, a **timeout**, not an error naming bash. A declared tool installed nowhere is different: that fails naming it (see [Dependencies](#dependencies-two-questions-two-fields)) | [#224](https://git.home.arpa/itdlabs/cix-build-system/issues/224) |
 | `stage library` on a symlink | nothing — it dereferences, which is what the corpus needs; the spec says otherwise | [#222](https://git.home.arpa/itdlabs/cix-build-system/issues/222) |
 | run each of many files separately (a loop) | put the loop in the project's own build system and call that one target. `run` takes `timeout` and `allow_failure` for one command, and `args glob` passes every match to a single command; there is no per-match iteration, and an interpreter is not a valid `run` executable (CPDL-E3006). `cix-tests` calls `make testreport` for exactly this reason | by design |
 
@@ -153,7 +153,7 @@ Nothing else differs between the two. Both formats hand cixd the same container 
    }
    ```
 
-   `forbids` is the negative check this section used to say had no form. **`links` compares a FULL SONAME, not a substring** — `needs "libnftables"` fails on a binary that does link it, with `artifact is missing required library`, which reads as "not linked" when the fault is the spelling. `readelf -d | grep NEEDED.*libnftables` accepted a prefix; this does not, and is right not to.
+   `forbids` is the negative check. **`links` compares a FULL SONAME, not a substring** — `needs "libnftables"` fails on a binary that does link it, with `artifact is missing required library`, which reads as "not linked" when the fault is the spelling. `readelf -d | grep NEEDED.*libnftables` accepted a prefix; this does not, and is right not to.
 
 2. **If the thing you want is "did this succeed", drop the assertion and keep a bare `run`.** A nonzero exit fails the build and CBS prints the failing command. `msgfmt --version` proves the tool runs; matching its own name in its own banner was never the part doing the work.
 
@@ -200,6 +200,7 @@ pkg_version="2.12.1"
 pkg_source="https://ftp.gnu.org/gnu/hello/hello-2.12.1.tar.gz"
 pkg_sha256="8d99142afd92576f30b0cd7cb42a8dc6809998bc5d607d88761f512e26c7db8"
 pkg_depends=""
+pkg_build_depends="tcc make linux-headers bash coreutils sed grep gawk binutils findutils"
 ```
 
 - **`pkg_name`** — must exactly match the `{name}` this recipe is uploaded as (`POST /pkg/recipes {"name": ...}`) — a mismatch is a `400`, so a bad upload can never silently attach to the wrong name. Same charset as every other simple name in this platform: `[A-Za-z0-9_-]+`.
@@ -207,13 +208,15 @@ pkg_depends=""
 - **`pkg_source`** — where to fetch from. Almost always an `https://` URL; a local self-hosted git remote's own archive-download endpoint works identically (see [`building-cix.md`](building-cix.md) for a real example). Fetched host-side by the daemon's own `curl` subprocess, before the build container ever starts — the container itself has no network access at all, so anything a build needs must already be named here.
 - **`pkg_sha256`** — the fetched source's checksum, verified before extraction. A mismatch fails the job outright (`PKG_STATE_FAILED`, no partial state).
 - **`pkg_build_depends`** — a space-separated list of packages that must be present to *build* this one (ADR-0199). The build container is composed from exactly these; see [Dependencies](#dependencies-two-questions-two-fields) below.
-- **`pkg_build_image`** — **retired** ([ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md), [#482](https://git.home.arpa/itdlabs/cix/issues/482)). It named the image a recipe was meant to be *hostbuilt* in, and the daemon no longer reads it: a hostbuild composes its build container from `pkg_build_depends` like every other build, so there is no image to name. New recipes must not declare it; the line is inert in already-published revisions and disappears as each recipe next bumps. The field existed because which image could build what was convention rather than contract ([#182](https://git.home.arpa/itdlabs/cix/issues/182), [ADR-0230](../adr/0230-the-five-lifecycle-domains.md)) — a declaration of the build environment, which is what `pkg_build_depends` already is, more precisely.
-- **`pkg_build_caps`** — a space-separated list of Linux capabilities the *build container* needs. Almost every recipe leaves this empty and should. It exists for one shape of recipe: one whose build has to **create containers**. Three recipes do, all of them running this platform's own tests: `cix` (its `make selftest` gate), `cix-tests` (`make testreport`, every test binary) and `cix-aggressive-test` (issue #224). In CPDL the same declaration is `capability "CAP_SYS_ADMIN"`. A build container is otherwise measured to have no `CLONE_NEWNET`, no `CLONE_NEWNS`, no `mount()` and no cgroup tree, so a test that makes a real container cannot run in one. Declared here rather than configured on the host because it is a property of what the build *does*, and a recipe is immutable and reviewable. It grants nothing a recipe did not effectively have already: a build script runs as uid 0 inside a **user-namespaced** container, so this widens what that confined root may do to *itself*, not what it may do to the host. `CAP_SYS_ADMIN` additionally delegates the container's own cgroup subtree to it (its `cgroup.procs`, `cgroup.subtree_control` and `cgroup.threads` — never the limit files, so a build still cannot raise the budget it was given). An unrecognised name fails the build rather than being dropped.
-- **`pkg_depends`** — a space-separated list of other recipe names to install first (empty string if none), i.e. what the built thing needs at *runtime*. See [Dependencies](#dependencies) below. A hostbuild recipe may declare it too, and should when the artifact links anything: it is recorded on the entry and carried forward, but not resolved there (see [The hostbuild variant](#the-hostbuild-variant) below).
+- **`pkg_build_image`** — **retired** ([ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md), [#482](https://git.home.arpa/itdlabs/cix/issues/482)). It named the image a recipe was meant to be *hostbuilt* in, and the daemon no longer reads it: a hostbuild composes its build container from `pkg_build_depends` like every other build, so there is no image to name. New recipes must not declare it; the line is inert in already-published revisions.
+- **`pkg_build_caps`** — a space-separated list of Linux capabilities the *build container* needs. Almost every recipe leaves this empty and should. It exists for one shape of recipe: one whose build has to **create containers**. Three recipes do, all of them running this platform's own tests: `cix` (its `make selftest` gate), `cix-tests` (`make testreport`, every test binary) and `cix-aggressive-test` (issue #224). In CPDL the same declaration is `capability "CAP_SYS_ADMIN"`. A build container is otherwise measured to have no `CLONE_NEWNET`, no `CLONE_NEWNS`, no `mount()` and no cgroup tree, so a test that makes a real container cannot run in one. Declared here rather than configured on the host because it is a property of what the build *does*, and a recipe is immutable and reviewable. An unrecognised name fails the build rather than being dropped.
+
+  **What this grants is real host privilege, so declare it only when the build creates containers.** A build container gets new PID, mount, UTS, network and cgroup namespaces and **no user namespace** (`start_build_container_spec()` in `daemon/src/pkg.c`: `CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWCGROUP`, no `CLONE_NEWUSER`). So uid 0 in a build is uid 0 on the host. By default `container_caps_drop()` (`src/container_caps.c`) removes 20 capabilities from the bounding set — `CAP_SYS_ADMIN`, `CAP_SYS_MODULE`, `CAP_SYS_PTRACE`, `CAP_SYS_RAWIO`, `CAP_BPF` and the rest of its deny-list — and sets `PR_SET_NO_NEW_PRIVS`. Every other root capability (`CAP_DAC_OVERRIDE`, `CAP_CHOWN`, `CAP_SETUID`, `CAP_NET_ADMIN`, ...) stays, confined by those namespaces. Declaring `CAP_SYS_ADMIN` keeps that one out of the drop: host root may then mount, create namespaces and perform the wide set of administrative operations `container_caps.c`'s own comment describes as including well-known container-breakout vectors. There is no seccomp filter or LSM behind it (same comment). The cgroup-subtree delegation `CAP_SYS_ADMIN` triggers for a user-namespaced service container (`src/container.c`) does not apply here, because a build container is not user-namespaced; `mount_cgroup2` does, so the build sees its own cgroup subtree through the cgroup namespace. That is why only the platform's own test recipes declare it.
+- **`pkg_depends`** — a space-separated list of other recipe names to install first (empty string if none), i.e. what the built thing needs at *runtime*. See [Dependencies](#dependencies-two-questions-two-fields) below. A hostbuild recipe may declare it too, and should when the artifact links anything: it is recorded on the entry and carried forward, but not resolved there (see [The hostbuild variant](#the-hostbuild-variant) below).
 - **`pkg_source` does not have to be an archive.** The daemon decides from the fetched file's own leading bytes, not from the URL: gzip, xz, bzip2, zstd or a bare `ustar` header is extracted into `/build/src`; anything else is placed there as `/build/src/<basename>`, the same basename rule the extra sources below already use. `ca-certificates` is the first real case — its source is a single `.pem`.
-- **A source that needs preparing first** — vendored Go modules, a submodule merged in, a generated file — is assembled once in the dev sandbox and published to cix-cache as `<name>-src-<version>-<release>`; `pkg_source` then names that URL and `pkg_sha256` approves the exact bytes, with the assembly steps written out in full in the recipe header. See the [cix-recipes README](https://git.home.arpa/itdlabs/cix-recipes) for the convention and why a scratch LAN server is not a home for one ([#262](https://git.home.arpa/itdlabs/cix/issues/262)), and `recipes/package/glauth` for a real worked example.
+- **A source that needs preparing first** — vendored Go modules, a submodule merged in, a generated file — is assembled once in the dev sandbox and published to cix-cache as `<name>-src-<version>-<release>`; `pkg_source` then names that URL and `pkg_sha256` approves the exact bytes, with the assembly steps written out in full in the recipe header. See the [cix-recipes README](https://git.home.arpa/itdlabs/cix-recipes) for the convention and why a scratch LAN server is not a home for one ([#262](https://git.home.arpa/itdlabs/cix/issues/262)), and `glauth@2.4.0-7.cbs` in cix-recipes for a real worked example.
 - **`{{REPO_TOKEN}}` in `pkg_source`** — optional (issue #60). The literal string `{{REPO_TOKEN}}` anywhere in a source URL is replaced at fetch time with the daemon's own stored repo auth token (`pkg repo-config set --token=`). Lets a recipe that self-fetches from the private Gitea be committed in its final, working form — no credential in the recipe, none in the catalog. Absent/empty token leaves the URL unchanged.
-- **`pkg_artifact_sha256`** — optional (ADR-0122). Absent means this recipe always builds from source, exactly as above. Set means: if a plain-HTTP precompiled-artifact server is configured (`GET`/`PUT /v1/pkg/artifact-config`, a separate, non-git thing from `pkg_source` — see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs)), an install first tries `<base_url>/<name>-<version>-<arch>.tar.gz` and verifies it against this checksum before ever trusting it; a miss (no server, 404, mismatch) silently falls back to `pkg_source`/`pkg_build()`/`pkg_install()` below, unchanged. This is the *only* thing that makes a fetched artifact trustworthy — the server itself is never a trust boundary. When you explain this line in a recipe comment, write the filename generically as `<name>-<version>-<arch>.tar.gz` rather than spelling out this revision's: the comment is copied forward on every version bump and the hardcoded name is never updated, which is how 113 recipe revisions ended up naming a file that is not theirs ([#226](https://git.home.arpa/itdlabs/cix/issues/226)) — `bison@3.8.2-7` still said `bison-3.8.2-2.tar.gz`. Published revisions are immutable so those cannot be corrected; `test_recipe_hygiene` holds the count so it can only fall. And when this line is *absent* — a new revision whose artifact does not exist yet — do not write a comment saying so. Adding the checksum later is the single edit ADR-0107 permits on a published revision, and the daemon accepts it only when the added line is the **whole** difference: `recipe_adds_only_artifact_sha256()` compares the stored and updated recipes line by line and rejects anything else that moved. A comment reading "No pkg_artifact_sha256 ..." therefore has to be edited at the same moment, which makes the change two edits and refuses it — and leaving the comment in place would make the file contradict itself. Omit the line silently; the field's own purpose is documented here, not in every recipe. This cost `procps@4.0.6-9` its approval: the artifact was built and published correctly and could not be approved without burning a whole new revision and rebuild. The reverse direction (a fresh build *publishing* itself to that same server, `cixctl pkg artifact-config set --push`) keeps exactly this property: the digest it sends is a corruption check at the door, and every consumer still verifies against this recipe's own checksum ([ADR-0201](../adr/0201-artifacts-are-retrievable-and-self-publishing.md)).
+- **`pkg_artifact_sha256`** — optional (ADR-0122). Absent means this recipe always builds from source, exactly as above. Set means: if a plain-HTTP precompiled-artifact server is configured (`GET`/`PUT /v1/pkg/artifact-config`, a separate, non-git thing from `pkg_source` — see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs)), an install first tries `<base_url>/<name>-<version>-<arch>.tar.gz` and verifies it against this checksum before ever trusting it; a miss (no server, 404, mismatch) silently falls back to `pkg_source`/`pkg_build()`/`pkg_install()` below, unchanged. This is the *only* thing that makes a fetched artifact trustworthy — the server itself is never a trust boundary. When you explain this line in a recipe comment, write the filename generically as `<name>-<version>-<arch>.tar.gz` rather than spelling out this revision's: the comment is copied forward on every version bump and the hardcoded name is never updated, which is how 113 recipe revisions ended up naming a file that is not theirs ([#226](https://git.home.arpa/itdlabs/cix/issues/226)) — `bison@3.8.2-7` still said `bison-3.8.2-2.tar.gz`. Published revisions are immutable so those cannot be corrected; `test_recipe_hygiene` in cix-recipes holds the count so it can only fall. And when this line is *absent* — a new revision whose artifact does not exist yet — do not write a comment saying so. Adding the checksum later is the single edit ADR-0107 permits on a published revision, and the daemon accepts it only when the added line is the **whole** difference: `recipe_adds_only_artifact_sha256()` compares the stored and updated recipes line by line and rejects anything else that moved. A comment reading "No pkg_artifact_sha256 ..." therefore has to be edited at the same moment, which makes the change two edits and refuses it — and leaving the comment in place would make the file contradict itself. Omit the line silently; the field's own purpose is documented here, not in every recipe. This cost `procps@4.0.6-9` its approval: the artifact was built and published correctly and could not be approved without burning a whole new revision and rebuild. The reverse direction (a fresh build *publishing* itself to that same server, `cixctl pkg artifact-config set --push`) keeps exactly this property: the digest it sends is a corruption check at the door, and every consumer still verifies against this recipe's own checksum ([ADR-0201](../adr/0201-artifacts-are-retrievable-and-self-publishing.md)).
 - **`pkg_changelog`** — optional (ADR-0176). A short, single-line, free-text summary of what changed in this specific published version (a commit subject line, not a release note) — shown in the Web dashboard's package detail page, on a real per-version "Versions" tab. Deliberately single-line: the scanner reads up to the closing quote or a newline, whichever comes first, so a real multi-paragraph changelog isn't representable here by construction. Absent for any recipe that doesn't set it — nothing retroactively required of existing recipes, adopt it whenever you next re-pin one.
 
 ## Multi-source recipes
@@ -227,7 +230,7 @@ pkg_sha256="<tarball's sha256> <font.woff2's sha256> <icons.css's sha256>"
 
 Index 0 is treated as "the" source: fetched, verified, and extracted into `/build/src` exactly like a single-source recipe. Every entry after that is fetched and verified the same way, but never extracted — each lands as a plain file at `/build/extra/<basename-of-its-own-URL>` for `pkg_build()`/`pkg_install()` to reference directly (e.g. `/build/extra/font.woff2`). Up to 16 entries (`PKG_MAX_SOURCES`). Any single entry's fetch failure or checksum mismatch fails the whole job — no partial-success state, matching the single-source case's own all-or-nothing guarantee.
 
-**A real trap this bit in practice**: `/build/extra/`'s filename comes from `url_basename()` of the URL *as written in `pkg_source`*, not from the original file's name at its ultimate origin. If a source needs re-hosting — e.g. mirroring a CDN asset over the LAN (the [remote-development](remote-development.md) trick) for a box with no outbound DNS — the mirror URL's own path must still end in the exact basename `pkg_build()` expects, not a generic renamed pattern (`asset-1.src`, `pkg-name-version-N.src`, etc.). A real `lldap.recipe` LAN-mirror workaround once re-served all 8 of its CDN assets under a generic `lldap-0.6.3-N.src` naming scheme; every checksum passed, the whole build ran to completion, and only the final `cp /build/extra/bootstrap-nightshade.min.css ...` step failed with "No such file or directory" — silent and easy to miss until the log store's own tail-capture fix (ADR-0072) made the real error visible instead of truncated build-progress noise.
+**The filename comes from the URL as written.** `/build/extra/`'s filename is `url_basename()` of the URL *as written in `pkg_source`*, not the original file's name at its origin. If a source is re-hosted — a CDN asset mirrored to a server the box can reach — the mirror URL's own path must still end in the exact basename `pkg_build()` expects, not a generic renamed pattern (`asset-1.src`, `pkg-name-version-N.src`, etc.). A renamed mirror passes every checksum and the build runs to completion; only the step that reads `/build/extra/<expected-name>` fails, with "No such file or directory".
 
 ## The `pkg_build()`/`pkg_install()` contract
 
@@ -245,7 +248,7 @@ pkg_install() {
 Both run inside the isolated build container, in this order, with:
 
 - **CWD already at `/build/src`** — the extracted source tree, one leading path component already stripped (so a tarball extracting to `hello-2.12.1/` still leaves you at its own root, not a level above it).
-- **`PATH=/usr/bin:/bin`**, **`HOME=/build`** — nothing else in the environment. Whatever your build needs (a compiler, `make`, `autoconf`, ...) must already be present in the build image (see [Build images](#build-images) below) — there is no implicit toolchain.
+- **`PATH=/usr/bin:/bin`**, **`HOME=/build`** — nothing else in the environment. Whatever your build needs (a compiler, `make`, `autoconf`, ...) must be declared in `pkg_build_depends` (see [Dependencies](#dependencies-two-questions-two-fields) below) — there is no implicit toolchain.
 - **No network access at all** — every source `pkg_build()`/`pkg_install()` could possibly need was already fetched host-side per [Multi-source recipes](#multi-source-recipes) above.
 - **`$PKG_DESTDIR`** — set by the daemon to a real, empty staging directory (currently `/build/pkg-dest`). Everything `pkg_install()` writes under it is exactly what gets merged into the target image's rootfs once the build container exits successfully (an ordinary install) or harvested as a standalone artifact (a hostbuild — see below). The overwhelmingly common pattern is `make install DESTDIR="$PKG_DESTDIR"`, which every reasonably well-behaved upstream `Makefile`/`configure` script supports natively.
 
@@ -258,7 +261,7 @@ These are genuine, confirmed environment facts about this project's own minimal 
 - **No `/bin`, only `/usr/bin`.** This project's images stage everything under `/usr/bin/` — `/bin/sh` doesn't exist unless something explicitly creates it (`bash.recipe`'s own `pkg_install()` symlinks it, see the real recipe below). glibc's `popen()`/`system()` hardcode `/bin/sh` with no override, so any build step that shells out (`make`'s own recipe lines, `configure`'s `$(shell ...)`-style macros) needs it present in the *build image*, not just the target.
 - **No `/tmp`.** Use `/run` instead for any scratch path a build step needs.
 - **Absolute tool paths inside a container, not bare names.** `gcc`/`ld` resolve their own installation prefix differently depending on how they're invoked (see `CLAUDE.md`'s own environment notes) — prefer `/usr/bin/gcc` over a bare `gcc` if a recipe's own build step execs a compiler directly rather than through `make`'s normal `$(CC)` indirection.
-- **A recipe only ever sees what it declared, or (if it declared nothing) whatever its build image already has.** With `pkg_build_depends` set, the environment is exactly your declared packages — nothing is auto-detected or auto-installed on demand, and anything missing fails the build by name.
+- **A recipe only ever sees what it declared.** The environment is exactly the packages in `pkg_build_depends`, plus the C library — nothing is auto-detected or auto-installed on demand, and anything missing fails the build by name.
 
 ### Metadata strings are shell, so no backticks
 
@@ -357,62 +360,42 @@ Dropping it costs symbol versioning and nothing else — same soname, same expor
 
 Note the difference between how packages fail here. `libmnl` and `ipset` **fail loudly** at the link step, which is the good case. `zlib`'s configure merely *probed*, printed "No shared library support", built a static library instead and installed cleanly — and the next thing to link against it died. That is issue #113, and it is why a recipe should assert what it built rather than trust that `make` exited 0.
 
-### TCC implements none of the bit-twiddling builtins
+### TCC does not implement the byte-swap builtins
 
-TCC does not implement `__builtin_ffs`, `__builtin_clz`, `__builtin_clzll`,
-`__builtin_popcount`, `__builtin_bswap16`, `__builtin_bswap32` or
-`__builtin_bswap64`. It does not reject them either — it emits each as an
-ordinary undefined external symbol. (`__builtin_constant_p`,
-`__builtin_expect`, `__builtin_types_compatible_p` and
-`__builtin_choose_expr` *are* implemented.)
+The pinned TCC (`tcc@0.9.28rc-*`, [ADR-0223](../adr/0223-the-compiler-is-a-pinned-upstream-snapshot.md)) does not implement `__builtin_bswap16`, `__builtin_bswap32` or `__builtin_bswap64`, measured on a Cix host by `probe-tcc-conformance@9` in cix-recipes. It does not reject them either — it emits each as an ordinary undefined external symbol. The other bit-twiddling builtins that probe checks (`__builtin_ffs`, `__builtin_clz`, `__builtin_popcount`, ...) are implemented.
 
-Whether that is loud or silent depends entirely on what you are building:
+Whether that is loud or silent depends on what you are building:
 
-- an **executable** fails at link — `tcc: error: undefined symbol '__builtin_ffs'`
+- an **executable** fails at link — `tcc: error: undefined symbol '__builtin_bswap32'`
 - a **shared library** links fine, because undefined symbols are legal in a
-  `.so`. It installs, publishes, and stays broken until something calls it.
-
-Both real cases so far have been shared libraries, which is not a
-coincidence. `libblkid` shipped an undefined `__builtin_clz` (#176); libnl
-needed four of them at once (#207). The install-time gate catches these now
-and fails the build rather than publishing — see #176 — but the gate tells
-you *that* a builtin is missing, not what to do about it.
+  `.so`. The install-time ELF gate then refuses it (#176), which tells you
+  *that* a builtin is missing, not what to do about it.
 
 The fix in a recipe is a small compatibility header force-included via
-`CPPFLAGS`. `libnl`'s recipe is the reference. Two traps it had to avoid,
-both of which cost a build each:
+`CPPFLAGS`. `libnl`'s recipe is the reference (`libnl@3.11.0-7.cbs`, the
+`tcc-builtins.h` it writes and passes as `-include`). Two rules for the shim:
 
-**Use plain `static`.** Measured on Cix's own tcc (via
-`recipes/package/probe-tcc-conformance`, not a dev sandbox's tcc — see
-below): `static inline`, plain `static` and `extern inline` all come out
-file-local and link correctly. The one spelling that breaks is **bare
-`inline`**, which TCC emits as a strong global in every translation unit
-— that is the "defined twice" failure m4 hit, via gnulib's `_GL_INLINE`.
-Plain `static` is chosen here as the least surprising of the safe three.
-Verify with `nm` that your symbols come out lowercase `t`, not `T`.
-
-**Probe compiler behaviour on a Cix host, never in a dev sandbox.** This
-sandbox's `/usr/bin/tcc` is Debian's, and it demonstrably answers
-differently from Cix's `tcc@0.9.27-10`: it accepts a compound-literal
-array initializer Cix's rejects, rejects anonymous unions Cix's parses,
-and reports six builtins as present that Cix's does not implement. A
-conclusion from it is not a conclusion about this platform.
-`recipes/package/probe-tcc-conformance` is the pattern — a recipe that
-runs the probes and deliberately exits nonzero so its output is kept in
-the build log.
+**Use `static inline` or plain `static`.** `static inline` is the one inline
+spelling that links correctly on this TCC and would on any other compiler;
+bare `inline` and `extern inline` are not portable here
+(`probe-tcc-conformance@9`, section 2). Verify with `nm` that your symbols
+come out lowercase `t`, not `T`.
 
 **Include no system headers in the shim.** A `-include` header is processed
 before the translation unit can define `_GNU_SOURCE`, so pulling in any libc
-header there latches glibc's feature-test macros too early. libnl's first
-attempt included `<strings.h>` for `ffs()` and hid `struct ucred` from an
-unrelated header, failing with `field 'nm_creds' has incomplete type` — an
-error naming nothing to do with builtins. Write the implementations out by
-hand instead, using plain `unsigned int`/`unsigned long long` rather than
-`<stdint.h>` types.
+header there latches glibc's feature-test macros too early — libnl's shim
+once hid `struct ucred` that way, failing with `field 'nm_creds' has
+incomplete type`. Write the implementations out by hand, using plain
+`unsigned int`/`unsigned long long` rather than `<stdint.h>` types.
 
-This is a workaround, not the fix. #208 tracks implementing the builtins in
-TCC itself, after which these shims should be deleted rather than copied
-into a third recipe.
+**Probe compiler behaviour on a Cix host, never in a dev sandbox.** A
+sandbox's `/usr/bin/tcc` is not Cix's, and an answer from it is not an
+answer about this platform. `probe-tcc-conformance` is the pattern — a
+recipe that runs the probes and deliberately exits nonzero, so its output
+is kept in the build log (read it with `cixctl pkg build-logs --file=NAME`).
+
+#208 tracks implementing the byte-swap builtins in TCC itself, after which
+these shims should be deleted rather than copied into another recipe.
 
 ### `#!/bin/bash` does not work in the build sandbox
 
@@ -483,15 +466,13 @@ The test to apply: *does everything this `.pc` file promises actually exist in `
 - **drops `libfoo.a` when `libfoo.so*` ships beside it** — this platform links dynamically always, so that archive is dead weight. An archive with **no** shared counterpart (`libtcc1.a`, `libgcc.a`, `libc_nonshared.a`) is kept;
 - **removes `*.la`**.
 
-It does **not** remove documentation or locale trees. It used to
-([ADR-0251](../adr/0251-a-package-artifact-carries-what-the-platform-runs.md) clause 4);
-that clause is withdrawn by
-[ADR-0306](../adr/0306-a-package-keeps-its-documentation-and-its-licence.md). The line the
-finalize phase now holds is **remove what the platform cannot use, never what it merely does
-not read** — and the prune had been deleting `usr/share/doc/<package>/COPYING`, which is where
-GNU packages install their licence. Your recipe should not delete those trees either.
+It does **not** remove documentation or locale trees
+([ADR-0306](../adr/0306-a-package-keeps-its-documentation-and-its-licence.md)). The rule is
+**remove what the platform cannot use, never what it merely does not read** —
+`usr/share/doc/<package>/COPYING` is where GNU packages install their licence. Your recipe
+should not delete those trees either.
 
-So **do not hand-write the three rules above in your recipe.** They used to be per-recipe, and the result is the reason the phase exists: of 115 recipes, 37 pruned anything at all, in twenty-one different spellings, while `glibc` shipped `libc.so.6` with 9.46 MiB of debug sections and `libc.a` three times over. A recipe's own strip/`.a`/`.la` pruning is redundant now, not wrong, and comes out when the recipe next revises. **A recipe's own `rm -rf .../share/...` is a different matter since ADR-0306: it is live, and it deletes something the platform now keeps.** Measured across the 147 current revisions on 2026-09-18, **57 delete something under `$PKG_DESTDIR/usr/share`** — 37 of them naming `man`, `doc` or `info` directly, and some, like `xz`, removing the whole tree in one line. Those lines are why withdrawing clause 4 does not by itself give those packages their licences back. Do not write a new one, and take the existing one out when you revise a recipe that has it.
+So **do not hand-write the three rules above in your recipe.** A recipe's own strip/`.a`/`.la` pruning is redundant, not wrong, and comes out when the recipe next revises. **A recipe's own `rm -rf .../share/...` is a different matter since ADR-0306: it is live, and it deletes something the platform now keeps.** Measured across the 147 current revisions on 2026-09-18, **57 delete something under `$PKG_DESTDIR/usr/share`** — 37 of them naming `man`, `doc` or `info` directly, and some, like `xz`, removing the whole tree in one line. Those lines still delete the licences the finalize phase keeps. Do not write a new one, and take the existing one out when you revise a recipe that has it.
 
 Two consequences for you:
 
@@ -534,7 +515,7 @@ pkg_build_depends="tcc make bash coreutils glibc@2.44-6"
 
 Declared tools resolve first and duplicates collapse by name, so an explicit pin always wins over the implicit one. Naming it unpinned is harmless and simply redundant.
 
-Before ADR-0216 the loader and libc were *copied into every image off the build host* rather than coming from a package at all. If a build ever fails with `execve(/usr/bin/bash): No such file or directory` for a binary you can see was staged, that is a missing loader, not a missing binary.
+If a build fails with `execve(/usr/bin/bash): No such file or directory` for a binary you can see was staged, that is a missing loader, not a missing binary.
 
 Write the list by building and reading the failures. Each one names precisely the next thing to add, and it converges quickly — `zlib` needs seven packages and its declaration says why each one earns its place, including the two it learned the hard way on a real box.
 
@@ -542,11 +523,11 @@ The composed environment is cached as an image named for the hash of your declar
 
 **Sufficiency is enforced, minimality is not.** If you declare a tool you do not actually need, the build still succeeds and nothing complains. Keep the list honest by review.
 
-**A recipe declaring nothing** falls back to the shared build sandbox — the old behaviour, which is fungible by construction and on its way out. Prefer declaring.
+**A recipe declaring nothing is refused** before its build starts, with `recipe declares no pkg_build_depends` (`daemon/src/pkg.c`).
 
 ### Recipes run under `set -e`
 
-`pkg_build()` and `pkg_install()` are executed as `set -e; . recipe.sh; cd src; pkg_build; pkg_install`. **Any command that fails ends the build**, and the package is recorded as failed rather than installed with whatever happened to make it into `$PKG_DESTDIR`.
+`pkg_build()` and `pkg_install()` are executed as `set -e; . /build/recipe.sh; cd /build/src; pkg_build; pkg_install; /build/finalize.sh "$PKG_DESTDIR"` (`PKG_BUILD_CMD` in `daemon/src/pkg.c`). **Any command that fails ends the build**, and the package is recorded as failed rather than installed with whatever happened to make it into `$PKG_DESTDIR`.
 
 That matters because the alternative was worse: without it, a `make install` could die halfway, the `rm -rf` after it succeed, and the package be recorded **installed** while missing binaries. A real `libcap` shipped that way, and nothing downstream could tell.
 
@@ -581,23 +562,25 @@ Installing `top` installs `leaf1` and `leaf2` first (skipping any already instal
 
 ## Build images
 
-Every install targets one image's rootfs — `pkg_build()`/`pkg_install()` write into a build *container* whose own toolchain is composed from the recipe's `pkg_build_depends` ([ADR-0199](../adr/0199-recipes-declare-their-build-tools.md)), the same way for an ordinary install and a hostbuild alike since [ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md) — then the result is merged into the target image, or harvested as a host artifact for a hostbuild.
+Every install targets one image's rootfs — `pkg_build()`/`pkg_install()` write into a build *container* whose own toolchain is composed from the recipe's `pkg_build_depends` ([ADR-0199](../adr/0199-recipes-declare-their-build-tools.md)), the same way for an ordinary install and a hostbuild ([ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md)) — then the result is merged into the target image, or harvested as a host artifact for a hostbuild.
 
-`POST /pkg/bootstrap` is a separate, one-time convenience specifically for the *shared, default* build sandbox ordinary installs use — see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs) for that specific mechanism; it doesn't apply to a custom `build_image` used for a hostbuild.
+`POST /pkg/bootstrap` stages a toolchain into the shared, sandboxed build image — see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs). It plays no part in a composed build environment, which holds the declared packages and nothing else.
 
 ## A complete, real worked example
 
-`recipes/package/bash@5.2.37.sh`, verbatim, annotated with why each line is there:
+`bash@5.2.37-5.sh` in cix-recipes, with its comments and changelog line removed (its current revision, `bash@5.2.37-6.cbs`, is the same build in CPDL):
 
 ```sh
 pkg_name="bash"
-pkg_version="5.2.37"
+pkg_version="5.2.37-5"
 pkg_source="https://ftp.gnu.org/gnu/bash/bash-5.2.37.tar.gz"
 pkg_sha256="9599b22ecd1d5787ad7d3b7bf0c59f312b3396d1e281175dd1f8a4014da621ff"
+pkg_artifact_sha256="a0b0e6e78822e844660dd4f274afbd11edde7f910d001258f0ee53993443ef6e"
 pkg_depends=""
+pkg_build_depends="tcc make linux-headers bash coreutils sed grep gawk binutils"
 
 pkg_build() {
-	./configure --prefix=/usr
+	CC=tcc ./configure --prefix=/usr
 	make -j"$(nproc)"
 }
 
@@ -608,7 +591,7 @@ pkg_install() {
 }
 ```
 
-The extra `mkdir`/`ln` in `pkg_install()` is a real, deliberate fix, not boilerplate: any image that installs `bash` also gets a standard `/bin/sh -> /usr/bin/bash` symlink, the one path every real Linux distribution guarantees exists — closing the "no `/bin`" gotcha above for every future recipe that needs a working `/bin/sh` in its own build image.
+`CC=tcc` is explicit because a bare `cc` in a build environment that also holds gcc is not guaranteed to be TCC. `binutils` is declared because the finalize phase needs `strip` (see [What you do NOT have to clean up](#what-you-do-not-have-to-clean-up)). The extra `mkdir`/`ln` in `pkg_install()` is a real, deliberate fix, not boilerplate: any image that installs `bash` also gets a standard `/bin/sh -> /usr/bin/bash` symlink, the one path every real Linux distribution guarantees exists — closing the "no `/bin`" gotcha above for every future recipe that needs a working `/bin/sh` in its own build image.
 
 ## Adding, updating, and installing a recipe
 
@@ -632,9 +615,9 @@ Every real build is also cached locally (ADR-0122) — installing the same `(nam
 
 ## The hostbuild variant
 
-A recipe can also be built as a standalone, host-side artifact instead of merging into a container image's rootfs — used for building the Linux kernel and for [self-hosted rebuilds of Cix's own control plane](building-cix.md) (ADR-0056). The recipe format is identical, and the build environment comes from the same place it does for an ordinary install: `pkg_build_depends`, composed into a build container holding exactly the declared tools and nothing else ([ADR-0199](../adr/0199-recipes-declare-their-build-tools.md), [ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md)). There is no build image to prepare and none to name. A hostbuild used to be the one exception to that — rooted on `--build-image=`'s rootfs, which meant its recipe's declared build tools were read by nothing at all, and an undeclared tool the image happened to carry worked anyway. Issue #482 is what that cost: the `kernel` recipe deliberately moved `wireless-regdb` out of its own declaration and into the build image's manifest, recording the reason in its changelog, because the declaration could not work.
+A recipe can also be built as a standalone, host-side artifact instead of merging into a container image's rootfs — used for building the Linux kernel and for [self-hosted rebuilds of Cix's own control plane](building-cix.md) (ADR-0056). The recipe format is identical, and the build environment comes from the same place it does for an ordinary install: `pkg_build_depends`, composed into a build container holding exactly the declared tools and nothing else ([ADR-0199](../adr/0199-recipes-declare-their-build-tools.md), [ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md)). There is no build image to prepare and none to name.
 
-`pkg_depends` is still worth declaring on a hostbuild recipe, and is no longer refused ([ADR-0303](../adr/0303-a-hostbuild-carries-pkg-depends-it-does-not-resolve-it.md), issue #465). It describes what the finished artifact needs in order to *run*: a hostbuild records it on the entry and carries it forward — visible in `GET /v1/pkg` — but does not resolve or install it, since resolving means "install the closure into an image" and a hostbuild has no image to merge into. The declaration matters because the same recipe may also be installed the ordinary way into an image, where `pkg_depends` is what the linkage gate checks a binary's libraries against. `cix`'s own recipe is the worked example: `cixd` links `-lssl -lcrypto -larchive -lcurl`, so those three packages are what it has to declare.
+`pkg_depends` is worth declaring on a hostbuild recipe ([ADR-0303](../adr/0303-a-hostbuild-carries-pkg-depends-it-does-not-resolve-it.md), issue #465). It describes what the finished artifact needs in order to *run*: a hostbuild records it on the entry and carries it forward — visible in `GET /v1/pkg` — but does not resolve or install it, since resolving means "install the closure into an image" and a hostbuild has no image to merge into. The declaration matters because the same recipe may also be installed the ordinary way into an image, where `pkg_depends` is what the linkage gate checks a binary's libraries against. `cix`'s own recipe is the worked example: `cixd` links `-lssl -lcrypto -larchive -lcurl`, so those three packages are what it has to declare.
 
 ```sh
 pkg_install() {
@@ -642,4 +625,4 @@ pkg_install() {
 }
 ```
 
-`$PKG_DESTDIR`'s contents are copied verbatim to `BASE_DIR/artifacts/<name>/` on the host instead of being merged anywhere — a plain host directory, deliberately never container-visible, so `GET /containers/{name}/files` cannot reach it. To get those bytes *off* the box, use `cixctl pkg artifact-export NAME` ([ADR-0201](../adr/0201-artifacts-are-retrievable-and-self-publishing.md)); before that existed there was no retrieval route at all, and a hostbuild artifact was excluded from backup and wiped by factory reset, which for a multi-hour kernel build is a real loss — see [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and [`docs/guides/building-cix.md`](building-cix.md) for the two real, complete operator runbooks built on this mechanism.
+`$PKG_DESTDIR`'s contents are copied verbatim to `<data-dir>/rebuildable/artifacts/<name>/` on the host instead of being merged anywhere — a plain host directory, deliberately never container-visible, so `GET /containers/{name}/files` cannot reach it. To get those bytes *off* the box, use `cixctl pkg artifact-export NAME [--out=FILE]` ([ADR-0201](../adr/0201-artifacts-are-retrievable-and-self-publishing.md)). See [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and [`docs/guides/building-cix.md`](building-cix.md) for the two real, complete operator runbooks built on this mechanism.

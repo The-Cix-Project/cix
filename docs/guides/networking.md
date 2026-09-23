@@ -15,7 +15,7 @@ Creates a real Linux bridge immediately (via rtnetlink) and persists the definit
 - **Given** — the bridge itself owns that address, and it's assigned as the automatic default route for every container's *primary* attachment to this network. The normal case for a network the host itself routes for.
 - **Omitted** — pure L2, no host-owned address at all. For a network whose routing is owned by whatever's attached to it instead (a router-pair container running a routing protocol, a shared VRRP address) — containers on it get no default route from this network.
 
-`cixctl network ls` / `network rm NAME` list and remove (refused if any container is still attached, or if it's the management network — see below).
+`cixctl network ls` / `network rm NAME` list and remove (refused if any container is still attached, or if it's the management network — see [The management network](#the-management-network)).
 
 ## Attaching real hardware
 
@@ -26,7 +26,7 @@ cixctl network attach-interface lan1 --interface=eth1 --vlan=100
 
 Enslaves a real host interface into a network's bridge (ADR-0038) — the "physical ethernet on a host-managed switch" mechanism. The interface must be currently assignable (`cixctl device ls`'s own `net:` entries — not already inside a container's netns, not already attached elsewhere via this command). Without `--vlan=`, `eth1` itself is enslaved untagged. With `--vlan=100`, an 802.1q sub-interface `eth1.100` is created and enslaved instead, leaving bare `eth1` free to attach to a *different* network (with a different, or no, VLAN tag) at the same time — one physical NIC can back several isolated networks this way. `network detach-interface lan1 --interface=eth1` releases it — the bridge attachment or the VLAN sub-interface, whichever this command originally created.
 
-This is a different mechanism from a NIC passed straight into one container's own network namespace at creation time (`run --interface=IFNAME`, ADR-0022) — that's exclusive, dedicated hardware for one container; attaching to a network's bridge is shared L2 connectivity any number of containers on that network can use.
+This is a different mechanism from a NIC passed straight into one container's own network namespace at creation time (`container run --interface=IFNAME`, ADR-0022) — that's exclusive, dedicated hardware for one container; attaching to a network's bridge is shared L2 connectivity any number of containers on that network can use.
 
 ## Recovering a stuck NIC
 
@@ -48,7 +48,8 @@ See [Giving a container a radio](#giving-a-container-a-radio) below for the wire
 
 ```sh
 cixctl container run --name=ar-1 --image=wifi_router --interface=wlan0 \
-    --network=access:192.168.151.1:br0 --service=hostapd=/usr/bin/hostapd:/etc/hostapd/hostapd.conf
+    --network=access:192.168.151.110 \
+    --service="hostapd=/usr/bin/hostapd /etc/hostapd/hostapd.conf"
 ```
 
 A wireless adapter is passed as an **interface**, never as a device — and that catches people out, because a USB dongle looks like a USB device.
@@ -70,21 +71,36 @@ By the time a container exists, the adapter's USB endpoint has already been clai
 cixctl kmod-config set rtw88_8822bu --autoload
 ```
 
-That is deliberate: building the driver into the kernel instead means it probes a USB device at an unpredictable point relative to the root mount, and it can lose the race to its own firmware — measured at three failed boots in six before the driver became a module (issue #346).
+The driver is a module on purpose: built into the kernel, it probes the USB device at an unpredictable point relative to the root mount and can lose the race to its own firmware (issue #346).
 
 **Bridging the radio to a wired segment** needs `container_bridge`, because the two halves arrive from opposite directions: `hostapd` puts the radio into whatever bridge its `bridge=` names and will create that bridge itself, but it knows nothing about the container's other interfaces and will never enslave one. Cix builds the bridge first with the wired attachment already in it, and `hostapd` then adds the radio to the bridge it finds. See [ADR-0264](../adr/0264-a-container-may-bridge-its-own-interfaces.md).
 
-## The management network
+`container_bridge` is a field of a network attachment in the `POST /v1/containers` body and has no `cixctl container run` flag, so a bridged access point is created from a deployment (see [`containers-and-services.md`](containers-and-services.md#deployments)) or a direct API call. The attachment from the `ar-1` deployment:
 
-Exactly one network is `is_management` at a time — the one `cixd` itself binds to. It's bootstrapped automatically at install time from the physical interface and address given to `cix-install` (see [`installing.md`](installing.md)), but from then on it's an ordinary, API-visible network like any other (`GET /networks`), not a special case hidden from the API.
-
-Because deleting or detaching the management network's own interface would sever the connection you're managing the box through, both are unconditionally refused (`409`) while `is_management` is set — deliberately, with no override flag. To move it:
-
-```sh
-cixctl daemon-config set --management-network=lan1
+```json
+"interfaces": ["wlan0"],
+"networks": [
+  {"name": "access", "ip": "192.168.151.110", "ifname": "access", "container_bridge": "br0"}
+]
 ```
 
-`lan1` must already have its own address (create it with `--address=`, or attach a physical interface to it first). This performs a live listen-socket rebind — the new socket is created and bound *before* the old one is torn down, so a failure leaves the previous listener intact rather than dropping connectivity. Since `cixd` runs as real PID 1 on an installed system, double-check reachability of the new network before relying on it — physical console access is the only fallback if it's wrong. See [`docs/api/README.md`](../api/README.md#the-management-network-and-cixds-own-listeners) for the full daemon-config contract (port, HTTP/HTTPS, a dedicated `bind_ip` decoupled from the management network's own address).
+The address goes on the bridge `br0` inside the container, never on the port. The field contract is in [`docs/api/README.md`](../api/README.md#creating-a-container).
+
+## The management network
+
+`cixd` always listens on `127.0.0.1`, plus **one off-box address**: the management address ([ADR-0287](../adr/0287-the-management-address-is-the-single-truth.md)). Install time creates an ordinary network from the interface and prefix given to `cix-install` and sets the management address into it (see [`installing.md`](installing.md)). From then on it is a network like any other in `GET /networks`.
+
+Which network is "the management network" is **derived, not stored**: a network's `management` field is `true` when its subnet contains the current management address. While it is `true`, deleting that network or detaching one of its interfaces is refused with `409`, because either would cut the connection you manage the box through. There is no force flag.
+
+```sh
+cixctl management-address show
+cixctl management-address set 172.31.0.5
+cixctl management-address reset
+```
+
+`set` takes an address, never a network name. The network is whichever existing network's subnet contains the address, so create that network and attach its interface first; an address in no network's subnet is refused with `400`. The change applies live and then persists: the new listeners are bound before the old ones are torn down, and the superseded address is removed from its bridge a couple of seconds later so the reply to this call still gets out. `reset` drops the box to loopback-only, which is also how you free the management network for deletion.
+
+Since `cixd` runs as PID 1 on an installed system, check that the new address is reachable before relying on it. The physical console always works, because `127.0.0.1` is always bound. Ports and HTTP/HTTPS exposure are a separate resource, `cixctl daemon-config`. See [`docs/api/README.md`](../api/README.md#the-management-address-and-cixds-own-listeners) for both contracts.
 
 ## The host's own kernel routing table
 
@@ -101,13 +117,13 @@ A real, live `RTM_GETROUTE` dump plus thin add/remove wrappers (ADR-0066/ADR-006
 A container attached to two networks with IP forwarding on will actually forward packets between them:
 
 ```sh
-cixctl container run --name=router --image=frr --network=internal --network=dmz --ip-forward--service=main=/usr/sbin/some-router-daemon
+cixctl container run --name=router --image=frr --network=internal --network=dmz --ip-forward --service=main=/usr/sbin/some-router-daemon
 ```
 
 Enough for a container running a real dynamic routing protocol (BIRD, FRR) to do the routing itself, or for pure static routing. Other containers then need their own static route pointing at the router's address to actually reach the far side:
 
 ```sh
-cixctl container run --name=internal-host --image=base --network=internal --route=172.32.0.0/24:172.31.0.2--service=main=/usr/bin/some-binary
+cixctl container run --name=internal-host --image=base --network=internal --route=172.32.0.0/24:172.31.0.2 --service=main=/usr/bin/some-binary
 ```
 
 Up to 8 routes, set once at container creation — not modifiable on an already-running container. `--ip-forward` is per-netns and defaults off; it never affects the host or any other container. That's a different, container-scoped mechanism from the host's own `net.ipv4.ip_forward` — see [`cixctl sysctl`](administration.md#host-sysctl-tuning) to tune the host's own kernel directly.

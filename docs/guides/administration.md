@@ -48,9 +48,9 @@ cixctl kmod unload e1000e
 
 Wraps real `modprobe`/`modinfo` (ADR-0159 Phase A) -- `kmod ls` reads the kernel's own live `/proc/modules`; `kmod show NAME` is real `modinfo` output (description, module parameters, dependencies, in-tree vs. out-of-tree) for a module that's built and available, whether or not it's currently loaded. `kmod load NAME [--option=KEY=VALUE ...]` is real `modprobe`, with real dependency resolution -- omit `--option=` and it falls back to that module's own persisted `kmod-config` default, if one exists. `kmod-config set NAME --autoload` marks a module for automatic reload on every future boot (its own small, REST-managed list -- distinct from this platform's separate, fixed hardware-detection module list, which needs no configuration at all); `kmod-config set NAME --option=KEY=VALUE` sets the persisted default options a bare `kmod load NAME` falls back to. Building an *additional* module not already present in this platform's own curated kernel build -- rather than just loading one that's already there -- goes through the kernel rebuild + A/B cutover path in [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md), not this command.
 
-`kmod unload NAME` is real `modprobe -r` -- reverse-dependency-aware, not a bare `rmmod` that would leave now-unused dependencies loaded. **It needs a kernel built with `CONFIG_MODULE_UNLOAD`, which this platform's kernel did not have before 7.2.3-9** (issue #353): on an older kernel `delete_module(2)` is not compiled in at all, and the unload fails with `Function not implemented` no matter how idle the module is. If you see that, the kernel is the answer, not the module.
+`kmod unload NAME` is real `modprobe -r` -- reverse-dependency-aware, not a bare `rmmod` that would leave now-unused dependencies loaded. **It needs a kernel built with `CONFIG_MODULE_UNLOAD`** (kernel 7.2.3-9 and later, issue #353): without it `delete_module(2)` is not compiled in, and every unload fails with `Function not implemented` no matter how idle the module is. If you see that, the kernel is the answer, not the module.
 
-A failed load or unload reports **modprobe's own words**, not a fixed sentence -- `is builtin.`, `not found in directory /lib/modules/...`, `FATAL: Module X is in use.` Each points at a different fix, and each used to be discarded before the message reached you.
+A failed load or unload reports **modprobe's own words**, not a fixed sentence -- `is builtin.`, `not found in directory /lib/modules/...`, `FATAL: Module X is in use.` Each points at a different fix.
 
 **Changing a loaded module's parameters means unloading it first.** Module parameters are set when a module is inserted, so `kmod load NAME --option=...` against a module that is already loaded is refused with `409` rather than reporting a success that changed nothing -- `modprobe` on a loaded module exits 0 and does nothing at all. Unload it, then load it with the options you want. A bare `kmod load NAME` of something already loaded is still fine and does nothing: it means "make sure this is loaded", and it is.
 
@@ -59,13 +59,13 @@ Which drivers are modules at all is a deliberate split (#347): a driver for a *p
 ## Device hotplug
 
 ```sh
-cixctl container run --name=printer --image=base --optional-device=usb:04b8:0202:12345--service=print-daemon=/usr/bin/print-daemon
+cixctl container run --name=printer --image=base --optional-device=usb:04b8:0202:12345 --service=print-daemon=/usr/bin/print-daemon
 cixctl container device attach printer usb:04b8:0202:12345
 cixctl container device detach printer usb:04b8:0202:12345
 cixctl device ls
 ```
 
-Extends the existing device-passthrough model (`run --device=ID`, `devicemap`) rather than replacing it (ADR-0161) -- the passthrough unit stays the *whole device*, never an individual USB interface, even for a composite device (a combo HID+storage device, say): `device ls`/`GET /v1/devices` now reports every real interface such a device exposes (class/subclass/protocol) so it's no longer opaque, but granting it still means granting the entire thing.
+Extends the existing device-passthrough model (`container run --device=ID`, `devicemap`) rather than replacing it (ADR-0161) -- the passthrough unit stays the *whole device*, never an individual USB interface, even for a composite device (a combo HID+storage device, say): `device ls`/`GET /v1/devices` now reports every real interface such a device exposes (class/subclass/protocol) so it's no longer opaque, but granting it still means granting the entire thing.
 
 **`--optional-device=ID`** is the one real behavior addition here: unlike `--device=ID`, a currently-unresolvable optional reference does not fail container creation -- the container is created without that grant, and the reference itself is remembered. From that point on, two things keep it moving toward being granted without any further operator action needed:
 
@@ -80,15 +80,32 @@ Every hotplug-driven grant or revocation is written to the consolidated log (`ci
 cixctl backup --output=backup.json
 ```
 
-Bundles container definitions, networks, DNS records, package install state + recipes, and site config into one file, saved byte-for-byte for later use with `cixctl restore --input=backup.json`. Read the fine print before relying on this for disaster recovery — **does not** include container workload data (a database's own files, a git host's repos — back those up with their own native tooling), image rootfs content (reproducible by re-running `pkg install`, since everything here is compiled from source — the bundle is the "shopping list," not the built bytes), or anything PKI-related (a CA/leaf private key is never returned over this API anywhere, by design — back up `/var/lib/cix/state/pki/` (ADR-0141) separately, directly on the host). Full detail: [`docs/api/README.md`](../api/README.md#backup-and-restore).
+Bundles container definitions, networks, DNS records, the volume registry, package install state + recipes, and site config into one file, saved byte-for-byte for later use with `cixctl restore --input=backup.json`. Read the fine print before relying on this for disaster recovery — it **does not** include:
 
-Restoring does not take effect immediately or reboot for you — a typical disaster-recovery sequence is: boot a fresh install → `cixctl restore --input=backup.json` → `cixctl reboot` → the second boot comes up with the restored state. A scheduled backup is just this same command run on a cron entry (or from a container with network reachability to `cixd`) — `cixctl` is a plain REST client either way, nothing special about running it unattended.
+- **container workload data** — a database's own files, a git host's repos; keep that on volumes and use [volume backups](containers-and-services.md#volumes) or the workload's own tooling. A restore recreates volumes empty.
+- **image rootfs content** — reproducible by re-running `pkg install`, since everything here is compiled from source; the bundle is the "shopping list", not the built bytes.
+- **PKI** — the bundle reports `pki_included: false`. The CA, intermediate and every leaf travel separately, encrypted, with `cixctl pki export` ([`security.md`](security.md#carrying-the-ca-across-a-reinstall), ADR-0281). Take both to restore an install.
+
+Full detail: [`docs/api/README.md`](../api/README.md#backup-and-restore).
+
+Restoring does not take effect immediately or reboot for you — a typical disaster-recovery sequence is: boot a fresh install → `cixctl pki import --in=cix-ca-backup.enc` → `cixctl restore --input=backup.json` → `cixctl reboot` → the second boot comes up with the restored state.
+
+**Automatic snapshots** write the same bundle to a disk carrying the `backup` role:
+
+```sh
+cixctl backup-config set --disk=sdb --enable
+cixctl backup-config status          # the most recent attempt
+cixctl backup-config snapshot-now    # write one now
+cixctl schedule ls                   # when they run
+```
+
+When snapshots run is a schedule like every other timed job on the host (`cixctl schedule`, [ADR-0257](../adr/0257-one-scheduler-structured-schedules.md)); `backup-config` only chooses the disk and turns them on. See [`storage.md`](storage.md#3-the-roles-you-assign) for the `backup` role.
 
 ## Disk management
 
 `cixctl storage` lists every real host block device, live-enumerated on every call, including any partitions already on it, and flags which ones are protected — the OS disk itself and its first four structural partitions (the ESP, both root slots and `/config`), which are never given a role, formatted or unmounted.
 
-Everything else about storage — the six disk roles and what each is for, when to add a disk at all, btrfs versus ext4 and what snapshots buy you, per-container quotas, splitting a disk into several role-assigned partitions, and moving a placement afterwards — has its own guide: **[`storage.md`](storage.md)**. It is the single place that describes them, so this section deliberately does not repeat it.
+Everything else about storage — the five disk roles and what each is for, when to add a disk at all, btrfs versus ext4 and what snapshots buy you, per-container quotas, splitting a disk into several role-assigned partitions, and moving a placement afterwards — has its own guide: **[`storage.md`](storage.md)**. It is the single place that describes them, so this section deliberately does not repeat it.
 
 The two-step shape is worth knowing here, because it is what stops an accident:
 
@@ -104,11 +121,13 @@ A disk is used in exactly one of two mutually-exclusive modes: role assigned dir
 
 ## Does installing a package onto an image reach containers already running from it?
 
-**No — not on its own, by deliberate design (ADR-0107/0108).** Every install/upgrade/uninstall against an image produces a new, immutable, content-addressed rootfs version; nothing is ever mutated in place. A container pins the specific image version it was created against (`registry.json`'s own `image_version`) and keeps running against that exact rootfs forever, even after the image moves on to a newer version — its overlay lowerdir points at a different on-disk directory than the one the new version lives in, so there's no live content for it to pick up. This is the answer to a real, previously-surprising symptom: a package installed onto an image doesn't show up in an already-running container started from that image, only in one created (or recreated) afterward.
+**No — not on its own, by deliberate design (ADR-0107/0108).** Every install/upgrade/uninstall against an image produces a new, immutable rootfs version; nothing is ever mutated in place. A container pins the image version it was created against (`image_version` in `GET /containers/{name}`), and its own rootfs is a snapshot (or copy) of that version, so a newer version of the image is a different tree it never sees. A package installed onto an image therefore shows up only in containers created or re-seeded afterward.
+
+When a container's pin does move, its rootfs is discarded and seeded again from the new version at the next start ([ADR-0277](../adr/0277-a-container-rootfs-is-derived-from-its-image.md)), so **writes made inside the container's rootfs do not survive an image version change**. Anything that must outlive one belongs on a volume ([`containers-and-services.md`](containers-and-services.md#volumes)).
 
 Two ways to actually get a running container onto new content, neither automatic unless you ask for it:
-- **Recreate it** — `cixctl container rm NAME` + `cixctl container run ...` again (or re-`POST`/re-apply a [container recipe](../adr/0151-container-recipes.md)) re-resolves the image's current version at that moment.
-- **`follow_rolling: true`** at creation time (`run --follow-rolling`, [ADR-0124](../adr/0124-pkg-redesign-part5-rolling-containers-and-restart-jitter.md)) — the daemon detects the pinned image's `current_version` advancing (a rolling auto-rebuild or a manual `pkg install`) and live-restarts the container onto the new pin on its own, spread out with jitter (`--follow-rolling-jitter-seconds=`, or the daemon-wide default via `cixctl rolling-config`) so many containers following the same image don't all restart at once.
+- **Recreate it** — `cixctl container rm NAME`, then `cixctl container run ...` again (or `cixctl deployment apply NAME` for a container that has a [deployment](containers-and-services.md#deployments); apply creates, so it fails on a name that still exists), re-resolves the image's current version at that moment.
+- **`follow_rolling: true`** at creation time (`container run --follow-rolling`, [ADR-0124](../adr/0124-pkg-redesign-part5-rolling-containers-and-restart-jitter.md)) — the daemon detects the pinned image's `current_version` advancing (a rolling auto-rebuild or a manual `pkg install`) and live-restarts the container onto the new pin on its own, spread out with jitter (`--follow-rolling-jitter-seconds=`, or the daemon-wide default via `cixctl rolling-config`) so many containers following the same image don't all restart at once.
 
 For patching a single file into an already-running container without a full recreate — a live config tweak, not a package install — see [`PUT /containers/{name}/files`](../api/README.md#writing-a-file-into-an-existing-container-live-without-a-recreate) ([ADR-0153](../adr/0153-container-file-live-update.md)); it's live and ephemeral, not a substitute for either option above.
 

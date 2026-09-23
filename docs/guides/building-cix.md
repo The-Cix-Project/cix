@@ -1,19 +1,17 @@
 # Building Cix
 
-Two ways to produce `cixd`/`cixctl`/`web/`: the ordinary way, on a ordinary Linux dev machine with a system TCC already installed, and the self-hosted way, from inside a running Cix install with no separate dev machine at all. Both produce byte-for-byte the same kind of artifact; the self-hosted path exists specifically so an operator with only a Cix box, no laptop/dev-server, can still rebuild it.
+Cix builds itself. `cixd`, `cixctl`, the web dashboard and the installer tools are compiled on a Cix host, by the `cix` recipe, with the Cix-built toolchain; the result is assembled into a control-plane root and written to the host's inactive boot slot. There is no supported route that compiles Cix somewhere else and ships the result: see the Build Provenance Mandate in the repository's `CLAUDE.md`.
 
-## From a dev machine
+## What `make` produces
 
-Requires `tcc` and a Linux kernel with cgroup v2 and `clone3`/`CLONE_INTO_CGROUP` support (5.7+). Namespace/mount tests must run as root, and need a **privileged** container if run inside one (see `docs/roadmap/ROADMAP.md` Phase 1 for why).
+The root `Makefile` is what the `cix` recipe runs inside its build container. `make` (the `all` target) builds every binary this repository produces into `build/`, with `-Wall -Werror`:
 
-```sh
-make                       # builds everything into build/, -Wall -Werror, zero warnings
-sudo build/cixd         # start the daemon (REST API + web dashboard on :80)
-build/cixctl health     # talk to it with the CLI
-make clean
-```
+- `cixd` and `cixctl`
+- `cix-init`, the freestanding PID 1 of every container ([ADR-0260](../adr/0260-a-container-declares-services-not-a-command.md))
+- the installer tools: `mkbootroot`, `mkinstalleriso`, `cix-install`, `cix-recover`, `mktoolchainimage`, and `cix-boot.efi` (built with gcc, because a PE/COFF EFI image needs the MS ABI, which TCC does not emit)
+- one test binary per feature, each forking its own `cixd` against a scratch `--data-dir`
 
-`make` builds every binary this repo produces — `cixd`, `cixctl`, the installer tools (`mkbootroot`, `mkinstalleriso`, `cix-install`, `cix-recover`), and one test binary per phase/part (each self-contained, forking and `exec`ing its own `cixd` instance where needed — e.g. `sudo build/test_pkg` runs standalone). There is no `make install`. The named targets beyond `all` and `clean`:
+There is no `make install`. The named targets beyond `all` and `clean`:
 
 | target | what it does | gates? |
 |---|---|---|
@@ -24,53 +22,37 @@ make clean
 
 A test that is not in `SELFTESTS` is **not** a gate on any cix build: passing `make selftest` says nothing about it. `testreport` is where it runs.
 
-`build-inputs/bzImage` (the kernel Cix boots) is intentionally **not** part of this build — see [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) for how that's produced, on a dev machine or self-hosted.
+The tests create real containers, networks and cgroups, so they run where the platform runs: in the `cix`, `cix-tests` and `cix-aggressive-test` recipes on a Cix host, which is why those three recipes declare `CAP_SYS_ADMIN` (see [`writing-recipes.md`](writing-recipes.md#required-metadata-fields)).
 
-## From a running Cix host (self-hosted rebuild)
+The kernel Cix boots is not part of this build — see [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md).
 
-An operator with no separate dev machine can rebuild `cixd`/`cixctl`/`web/` from inside Cix's own container+recipe mechanism, using the [hostbuild](writing-recipes.md#the-hostbuild-variant) pipeline (ADR-0057) — the same mechanism [kernel builds](kernel-build-and-ab-updates.md) use, applied to Cix's own source instead. TCC ships as an ordinary recipe rather than being baked into any shared toolchain, since it's this project's own Immutable Maxim that `cixd`/`cixctl` are built with TCC, never GCC — nothing about that changes just because the build is happening on the target box itself.
+## Rebuilding Cix on a running host
 
-### 1. Build a toolchain image
+The rebuild is a [hostbuild](writing-recipes.md#the-hostbuild-variant) of the `cix` recipe ([ADR-0056](../adr/0056-hostbuild-artifact-mechanism.md), [ADR-0057](../adr/0057-self-hosted-toolchain-and-control-plane-rebuild.md)). Cix's own code is compiled with TCC ([ADR-0001](../adr/0001-tcc-exclusive-toolchain.md)); `cix-boot.efi` is the one gcc-built file, for the reason above.
 
-```
-cixctl image create --name=cix-builder
-cixctl pkg install --name=tcc --image=cix-builder
-cixctl pkg install --name=make --image=cix-builder
-cixctl pkg install --name=glibc --image=cix-builder
-cixctl pkg install --name=linux-headers --image=cix-builder
-cixctl pkg install --name=bash --image=cix-builder
-cixctl pkg install --name=coreutils --image=cix-builder
-cixctl pkg install --name=openssl --image=cix-builder
-```
+### 1. Nothing to prepare for the build itself
 
-An image is just an ordinary image, built up with ordinary installs — no special "builder image" concept exists beyond having the right packages present. This exact set (`tcc`, `make`, `glibc`, `linux-headers`, `bash`, `coreutils`, `openssl`) is the minimum a plain Makefile build of this repo needs: `tcc` to compile, `make` to drive the build, `glibc` for the C headers and the CRT startup objects (`crt1.o`/`crti.o`/`crtn.o` — see the note on TCC's own CRT search path below), `linux-headers` for the kernel UAPI headers glibc's own `limits.h` chain includes (these two replaced `libc-dev`, which was retired in ADR-0217: it staged another distribution's headers copied off the bootstrap machine, and was pinned to glibc 2.36 while the runtime ran 2.44), `bash` because glibc's `popen()` hardcodes `/bin/sh` with no override and the kernel's own Kconfig-style patterns some build steps use need a real shell present, `coreutils` because the root `Makefile`'s own `mkdir -p build` needs a real `mkdir`, and `openssl` (a real from-source build, ADR-0078) because `cixd` itself has linked `-lssl -lcrypto` since the HTTPS listener landed (ADR-0059) — its own link-time `libssl.so`/`libcrypto.so` symlinks are among the real files this recipe's build produces. If a future change to this repo's own build needs something more, that surfaces as a real, specific build failure naming exactly what's missing — install it onto `cix-builder` the same way, one real gap at a time, never speculatively.
+A hostbuild composes its build container from the recipe's own declared build tools ([ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md)), so there is no build image to create. The `cix` recipe declares what it uses — TCC, make, the headers, the libraries `cixd` links (`-lssl -lcrypto -larchive -lcurl`), quickjs for the dashboard syntax gate, gcc for `cix-boot.efi`, and the rest — and every declared tool must be installed in some image on the host, or the build fails naming it.
 
-### 1b. Build the host tools image (optional, ADR-0078)
+Two optional images change what the assembled root contains. Both are ordinary images built with ordinary installs, found by fixed name when the root is assembled.
 
-`cixd` itself shells out to a handful of real binaries at runtime -- `openssl` (PKI), `curl` (`pkg_source` fetches), `tar`/`gzip`/`bzip2`/`xz` (source extraction), `cp`/`rm`/`sha256sum` (build-container bookkeeping), `unsquashfs` (toolchain import), `mkfs.ext4` (disk format). `image/src/mkbootroot.c` (the tool that assembles the control-plane squashfs) has always sourced these from whichever machine runs it -- fine for this repo's own dev-sandbox build, but not "from source" for a produced squashfs meant to run on someone else's hardware.
+#### `cix-hosttools` (optional, ADR-0078)
 
-An operator who wants every one of those binaries built from real source, not copied off the machine that happened to run `mkbootroot`, builds one more image:
+`mkbootroot` stages the binaries `cixd` shells out to at runtime into the control-plane root. Without this image it copies them from the host running the assembly — on a Cix host, that is the running control-plane root. With it, these come from Cix-built packages instead:
 
 ```
 cixctl image create --name=cix-hosttools
 cixctl pkg install --name=coreutils --image=cix-hosttools
 cixctl pkg install --name=gzip --image=cix-hosttools
-cixctl pkg install --name=openssl --image=cix-hosttools
-cixctl pkg install --name=curl --image=cix-hosttools
-cixctl pkg install --name=tar --image=cix-hosttools
-cixctl pkg install --name=bzip2 --image=cix-hosttools
-cixctl pkg install --name=xz --image=cix-hosttools
 cixctl pkg install --name=squashfs-tools --image=cix-hosttools
-cixctl pkg install --name=e2fsprogs --image=cix-hosttools
+cixctl pkg install --name=btrfs-progs --image=cix-hosttools
 ```
 
-`cix-hosttools` is a fixed, well-known name (`HOST_TOOLS_IMAGE` in `daemon/src/main.c`) -- `spawn_cix_bootroot_assembly()` (the server-side handler behind a `cix` hostbuild's own automatic bootroot assembly, ADR-0057) checks for it and, if present, passes its rootfs to `mkbootroot.c`'s own `host_tools_dir` argument so `cp`/`rm`/`sha256sum`/`gzip` come from there instead of the box running the build. This is entirely optional and purely additive: a box that never builds this image keeps today's behavior (those four tools sourced from wherever `mkbootroot` itself runs) -- nothing breaks either way. `openssl`/`curl`/`tar`/`bzip2`/`xz`/`squashfs-tools`/`mkfs.ext4` (e2fsprogs) don't have a `mkbootroot.c` wiring point yet (a real, tracked follow-on, not silently dropped) -- installing them onto this same image is still worthwhile today since it's the same real, from-source artifact a future wiring pass will point at.
+`cix-hosttools` is `HOST_TOOLS_IMAGE` in `daemon/src/main.c`; `spawn_cix_bootroot_assembly()` passes its rootfs to `mkbootroot` as the host-tools directory. From it `mkbootroot` stages `cp` and `gzip`, stages `btrfs` and `mkfs.btrfs` (which exist in the root only if this image carries them — without them `fs_type: "btrfs"` fails at exec), and runs `mksquashfs` to seal the root, with the image's own libraries on its search path ([ADR-0154](../adr/0154-host-tools-mksquashfs-ld-library-path.md)). The other tools `cixd` shells out to (`openssl`, `tar`, `bzip2`, `xz`, `unsquashfs`, `mkfs.ext4`) are still staged from the assembling host's own filesystem (`image/src/mkbootroot.c`).
 
-### 1c. Build the firmware image (optional, ADR-0263)
+#### `cix-firmware` (optional, ADR-0263)
 
-A driver asks the kernel for firmware during device probe, and the kernel answers it out of the root filesystem it booted — before any container exists, so a blob inside a container can never be reached. Any host whose hardware needs firmware therefore needs it in the control-plane root.
-
-Build one more image, named for what it holds:
+A driver asks the kernel for firmware during device probe, and the kernel answers it out of the root filesystem it booted — before any container exists, so a blob inside a container can never be reached. Any host whose hardware needs firmware therefore needs it in the control-plane root:
 
 ```
 cixctl image create --name=cix-firmware
@@ -78,11 +60,9 @@ cixctl pkg install --name=rtw88-firmware --image=cix-firmware
 cixctl pkg install --name=wireless-regdb --image=cix-firmware
 ```
 
-`cix-firmware` is a fixed, well-known name (`FIRMWARE_IMAGE` in `daemon/src/main.c`), resolved the same way `cix-hosttools` is: `spawn_cix_bootroot_assembly()` takes the image's current version, then its own `lib/firmware`, and hands that to `mkbootroot` as the firmware root to stage. That subdirectory is used rather than the image rootfs because it is where firmware packages install, so its contents already mirror `/lib/firmware` exactly — `rtw88/rtw8822b_fw.bin` and a bare `regulatory.db` land where `request_firmware()` looks, with no knowledge anywhere of which drivers exist.
+`cix-firmware` is `FIRMWARE_IMAGE` in `daemon/src/main.c`, resolved the same way: `spawn_cix_bootroot_assembly()` takes the image's current version, then its own `lib/firmware`, and hands that to `mkbootroot` as the firmware root to stage. Firmware packages install there, so its contents already mirror `/lib/firmware` — `rtw88/rtw8822b_fw.bin` and a bare `regulatory.db` land where `request_firmware()` looks.
 
-Optional and purely additive, like `cix-hosttools`: a box that never builds this image passes an empty firmware root and `mkbootroot` skips the staging. Install only what the hardware actually needs — the two above are what an 802.11ac access point on an RTL8822BU adapter takes (`rtw88-firmware` for the radio, `wireless-regdb` for the channels and powers `cfg80211` will permit). A machine with an AMD GPU adds `amdgpu` firmware to this same image; nothing about the mechanism changes per device.
-
-The staged firmware is part of the assembled root, and `mkbootroot` assembles a **fresh** root every run. So this is not a one-time action whose result persists: the image has to exist at assembly time, every time, or the resulting root simply has no firmware in it.
+Install only what the hardware needs — the two above are what an 802.11ac access point on an RTL8822BU adapter takes. A box without this image passes an empty firmware root and `mkbootroot` skips the staging. `mkbootroot` assembles a **fresh** root every run, so the image has to exist at every assembly, or that root has no firmware in it.
 
 ### 2. Point the `cix` recipe at a tagged source snapshot
 
@@ -94,38 +74,49 @@ url "https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archiv
 
 `{{REPO_TOKEN}}` is replaced at fetch time, host-side, with the token set by `cixctl pkg repo-config set --token=…` ([writing-recipes.md](writing-recipes.md#required-metadata-fields), issue #60), so no credential is ever written into a recipe or reaches the build container. The repository is private, so an unauthenticated fetch gets Gitea's `404`, not a `401`.
 
-To make a newer self-build available: tag this repository, then publish a new `cix` recipe for that tag with `cixctl pkg recipe add --name=cix --file=… --format=pbs`. A new tag's archive has a new `sha256`; learn it from the box rather than downloading it elsewhere, with a throwaway `probe-*` recipe that declares a deliberately wrong hash. The fetch then fails and the daemon logs the real one as `computed=<64 hex>` (`probe-cix-tarball@1.sh` in cix-recipes is the template).
+To make a newer self-build available: tag this repository, then publish a new `cix` recipe for that tag with `cixctl pkg recipe add --name=cix --file=cix@<tag>.cbs` (the `.cbs` suffix selects the PBS format). A new tag's archive has a new `sha256`; learn it from the box rather than downloading it elsewhere, with a throwaway `probe-*` recipe that declares a deliberately wrong hash. The fetch then fails and the daemon logs the real one as `computed=<64 hex>` (`probe-cix-tarball@1.sh` in cix-recipes is the template).
 
 ### 3. Run the hostbuild
 
 ```
-cixctl pkg hostbuild cix --wait --deploy
+cixctl pkg hostbuild cix --upgrade --wait --deploy
 ```
 
-This fetches the tagged source (host-side, before the build container starts — the build container itself has no network access, same as every other install), builds `cixd`/`cixctl`/`web/` **and** `mkbootroot` itself with the just-installed TCC, then hands off to the daemon's own server-side assembly step: `cixd` forks and execs the freshly-built `mkbootroot` (the same non-blocking, pidfd-tracked pattern it already uses for `curl` fetches) to package those artifacts into a fresh `cixd-root.squashfs` — never the CLI invoking `mkbootroot` itself, which the API-First Mandate rules out. `mkbootroot` is built by this same hostbuild round, not reused from any earlier one, so a box that's never had a self-build before (every real deployed box, since `mkbootroot` was previously only ever a dev-machine tool) has everything it needs in one self-contained round.
+`--upgrade` is needed on any host that has hostbuilt `cix` before: without it an already-installed hostbuild entry answers `409` ([ADR-0094](../adr/0094-hostbuild-upgrade-flag.md)). This fetches the tagged source (host-side, before the build container starts — the build container has no network access), builds `cixd`/`cixctl`/`web/` **and** `mkbootroot`, then hands off to the daemon's own assembly step: `cixd` runs the freshly built `mkbootroot` to package those artifacts into a fresh `cixd-root.squashfs` — never the CLI invoking `mkbootroot` itself, which the API-First Mandate rules out.
 
-`--wait` polls until the hostbuild job itself reaches `installed` — that only means the compile finished, not that the async squashfs assembly has too. `--deploy` waits for that assembly's own real completion (ADR-0105 — comparing `GET /system/assembly`'s `completed_generation` against a baseline it captured before this round even started, not just trusting `cixd-root.squashfs`'s presence on disk, which could be a stale leftover from an earlier round) before calling the existing `/system/update` with it, exactly as if you'd `scp`'d it from a dev machine.
+`--wait` polls until the hostbuild job reaches `installed` — that only means the compile finished, not that the asynchronous assembly has. `--deploy` waits for the assembly to complete ([ADR-0105](../adr/0105-bootroot-assembly-freshness.md) — comparing `GET /system/assembly`'s `completed_generation` against a baseline captured before the round started) and then calls `/system/update` with the assembled image. It does not reboot.
 
-If you are driving this by hand rather than through `--deploy`, read the `image_*` fields on `GET /system/assembly` rather than the generation counters. The counters live in the daemon's memory and a deploy ends in a reboot, so a host that has just booted the root it assembled reports `started_generation: 0, completed_generation: 0` — the same as one that has never assembled anything. `image_mtime` is `stat()`ed from the file and survives the reboot, and `image_complete` tells you whether `/system/update` will accept those bytes before you call it (#481). From here, follow the same write → reboot → confirm sequence as any other update — see [`staying-updated.md`](staying-updated.md).
+Driving it by hand instead:
+
+```
+cixctl assembly status        # image_path, image_complete, image_mtime
+cixctl assembly start         # re-assemble without a new build; poll status
+cixctl update --image=<image_path>
+cixctl reboot
+```
+
+Read the `image_*` fields rather than the generation counters. The counters live in the daemon's memory and a deploy ends in a reboot, so a host that has just booted the root it assembled reports `started_generation: 0, completed_generation: 0` — the same as one that has never assembled anything. `image_mtime` is `stat()`ed from the file and survives the reboot, and `image_complete` tells you whether `/system/update` will accept those bytes before you call it (#481). Then follow the same write → reboot → confirm sequence as any other update — see [`staying-updated.md`](staying-updated.md) and [Confirming a deploy](remote-development.md#confirming-a-deploy-actually-took-effect).
 
 ### 4. Build a fresh installer ISO, server-side
 
-The same round above also produces `cix-install` and `mkinstalleriso` — enough to assemble a brand-new installer ISO (see [`installing.md`](installing.md) for what that ISO actually contains and how an operator boots it) without a separate dev machine at all, via `POST /system/iso` (ADR-0064). That endpoint also needs `grub-mkrescue`/`sbsign`/`xorriso`/`mformat`/`mcopy`, plus the pieces that go *inside* the ISO rather than assemble it — `shim`/`MokManager`/`mokutil` for the Secure Boot chain, and `fdisk`/`mkfs.fat` for the installer's own partitioning and ESP formatting. All of them are self-built the same hostbuild way rather than borrowed from whatever happens to be installed on the box, which for the last five was not a preference but a correctness fix: they were read from absolute paths that exist on a Debian development machine and on no Cix control-plane root, so an ISO could only ever be built on a dev box.
+The same round also produces `cix-install` and `mkinstalleriso` — enough to assemble a new installer ISO (see [`installing.md`](installing.md) for what the ISO contains and how to boot it) via `POST /system/iso` ([ADR-0064](../adr/0064-rest-driven-iso-assembly.md)). The ISO tools themselves — GRUB, `sbsign`, `xorriso`, `mtools`, `shim`, `mokutil`, `mkfs.fat` — come from one more hostbuild artifact:
 
 ```
-cixctl pkg hostbuild isotools
+cixctl pkg hostbuild isotools --upgrade --wait
 ```
 
-(No image is named: the build container is composed from `isotools.recipe`'s own `pkg_build_depends` ([ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md)), so what it builds inside is what the recipe declares. The `iso-builder` image still exists as an ordinary image and its manifest still names `grub`/`sbsigntools`/`xorriso`/`mtools`/`shim`/`mokutil`/`fdisk`/`dosfstools`; see [ADR-0208](../adr/0208-build-image-taxonomy.md), which created it after a `dev` image meaning "general" was prescribed for kernel builds it could not do. The declaration carries the full toolchain those four recipes need to build from source — gcc/binutils/autotools, see [`writing-recipes.md`](writing-recipes.md); `isotools.recipe` itself doesn't rebuild them, it harvests those binaries + their real shared-library closure the installs above just produced into a single, portable, host-executable artifact.) Then, with a real Secure Boot signing key pair installed on the host at `<data-dir>/keys/cix-signing.{key,crt,cer}`:
+The `isotools` recipe builds nothing: it declares the installed `grub`, `sbsigntools`, `xorriso`, `mtools`, `mokutil`, `shim` and `dosfstools` packages (plus the libraries they link) as its build tools, and harvests those binaries and their shared-library closure into a single portable artifact.
+
+ISO assembly signs the EFI binaries with the host's Secure Boot key pair, stored under the daemon's state directory (`<state-dir>/keys/cix-signing.{key,crt,cer}`) and installed over REST ([ADR-0212](../adr/0212-signing-keys-over-rest.md)):
 
 ```
 cixctl signing-keys set --key=image/keys/cix-signing.key --cert=image/keys/cix-signing.crt
 cixctl signing-keys            # confirm: subject, expiry, fingerprint
 ```
 
-This guide used to say the pair was "staged out of band", which is what ADR-0064 specified — but a real Cix host runs no sshd and has no console, so there was no out-of-band channel and this step could not actually be performed. [ADR-0212](../adr/0212-signing-keys-over-rest.md) makes it a REST operation; `cixctl` sends the file contents, so the private key never appears in shell history or the host's process list. `cixd` still never generates or fetches this key on its own, and only the public DER `.cer` is ever staged onto an installed target — put it on the one host that cuts media, not on every box. Then:
+`cixctl` sends the file contents, so the private key never appears in shell history or the host's process list. `cixd` never generates or fetches this key, and only the public DER `.cer` is staged onto an installed target — put it on the one host that cuts media, not on every box.
 
-Optionally, install a **release-signing key** as well ([ADR-0220](../adr/0220-a-separate-release-signing-key.md)) so the finished ISO is signed:
+Install a **release-signing key** as well ([ADR-0220](../adr/0220-a-separate-release-signing-key.md)) so the finished ISO is signed:
 
 ```
 openssl genpkey -algorithm ed25519 -out cix-release.key   # once, kept offline
@@ -135,35 +126,35 @@ cixctl release-key                                        # prints the public ke
 
 This is a **second, separate** key, not the pair above in another encoding. That one is RSA because UEFI requires it and it decides whether firmware will boot an image; this one is Ed25519 because minisign requires it and it tells a downloader the bytes really came from you. One key doing both jobs would mean whoever can sign a download can also sign a bootloader.
 
-Skipping this step is fine — the build still succeeds and simply produces no signature. Whoever downloads a signed ISO verifies it with stock `minisign -Vm cix-install.iso -p cix-release.pub`, no Cix software needed on their side.
+Without a release key the build still succeeds and produces no signature, but `iso publish` refuses (below).
 
 ```
 cixctl iso build --wait
 cixctl iso status
 ```
 
-The ISO exists on that host's own disk and nothing else can reach it yet. To put it where a machine being installed can actually fetch it:
+The ISO exists on that host's own disk and nothing else can reach it yet. To put it where a machine being installed can fetch it:
 
 ```
 cixctl iso publish --wait
 ```
 
-That uploads the **signature first, then the ISO** — the artifact cache refuses an ISO with no signature beside it, which is the correct refusal: an unsigned installer is exactly the thing that must not be downloadable. If you skipped the release key above, this step refuses and says so, rather than publishing something no one can verify.
+That uploads the **signature first, then the ISO** — the artifact cache refuses an ISO with no signature beside it, so an unsigned installer is never downloadable. Without a release key this step refuses and says so.
 
 Published as `cix-installer-<version>-1-<arch>.iso`, alongside its `.minisig`. On the far side, with no Cix software involved:
 
 ```
 curl -fsSLO http://<cache>:8080/cix-installer-<version>-1-<arch>.iso
 curl -fsSLO http://<cache>:8080/cix-installer-<version>-1-<arch>.iso.minisig
-minisign -Vm cix-installer-<version>-1-<arch>.iso -p cix-release.pub
+minisign -Vm cix-installer-<version>-1-<arch>.iso -p cix-release-2026-09.pub
 ```
 
 Verify on a machine you already trust, before writing the stick. An installer that checks its own signature is the code being checked doing the checking — a substituted ISO would report success.
 
-The public key to check against is committed at [`docs/keys/cix-release.pub`](../keys/cix-release.pub) — pin a copy once and keep it, rather than re-fetching it each time (whoever could hand you a bad ISO could hand you the key that matches it). It lives in git rather than in the artifact cache on purpose: the cache serves the bytes, so a cache that also served the key would be vouching for its own payload. See [`docs/keys/README.md`](../keys/README.md).
+The current public key is committed at [`docs/keys/cix-release-2026-09.pub`](../keys/cix-release-2026-09.pub); ISOs published before 2026-09-06 verify against the retired `cix-release.pub`. Pin a copy once and keep it, rather than re-fetching it each time (whoever could hand you a bad ISO could hand you the key that matches it). It lives in git rather than in the artifact cache on purpose: a cache that also served the key would be vouching for its own payload. See [`docs/keys/README.md`](../keys/README.md).
 
-An empty `iso build` (no flags at all) is the normal case, and produces the ISO you want for general use: it passes the installer no arguments, and the installer asks for the disk and the network on the console with the machine's own disks and NICs listed. Pass flags only to build media that installs one specific machine unattended.
+An empty `iso build` (no flags) is the normal case, and produces the ISO you want for general use: it passes the installer no arguments, and the installer asks for the disk and the network on the console with the machine's own disks and NICs listed. Pass flags only to build media that installs one specific machine unattended.
 
-### A real, TCC-specific gap worth knowing about
+### A TCC-specific symptom worth recognising
 
-If a from-scratch build image reports `tcc: error: file 'crt1.o' not found` even though `crt1.o` genuinely exists on disk: TCC maintains a separate, single-path search list for CRT startup objects (`crt1.o`/`crti.o`/`crtn.o`/`Scrt1.o`/`gcrt1.o`/`Mcrt1.o`), defaulting to `/usr/lib/x86_64-linux-gnu` — distinct from its broader `-l`/library search list, and distinct from GCC's own `LIBRARY_PATH` convention. This project's `glibc` recipe already stages both locations -- it inherited that from the retired `libc-dev`, and ADR-0217 kept the behaviour when glibc took over the multiarch include and link directories — this note exists so the symptom is recognizable if it ever resurfaces in some other build-image combination, not because it's an open problem today.
+If a build reports `tcc: error: file 'crt1.o' not found` even though `crt1.o` exists on disk: TCC keeps a separate, single-path search list for CRT startup objects (`crt1.o`/`crti.o`/`crtn.o`/`Scrt1.o`/`gcrt1.o`/`Mcrt1.o`), defaulting to `/usr/lib/x86_64-linux-gnu` — distinct from its `-l` library search list, and from GCC's `LIBRARY_PATH` convention. The `glibc` recipe stages both locations ([ADR-0217](../adr/0217-retiring-libc-dev.md)), so this appears only in a build environment that carries some other C library layout.

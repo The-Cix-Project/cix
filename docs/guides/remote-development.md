@@ -1,54 +1,33 @@
 # Developing against a real remote box, with no SSH
 
-How to push local (or even entirely server-compiled) changes onto a real, already-installed Cix host and verify they actually took effect — without SSH, without a general shell, and without reinstalling from an ISO each time. This is the operational counterpart to [`building-cix.md`](building-cix.md) (which covers compiling) and [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md)/[`staying-updated.md`](staying-updated.md) (which cover the update endpoints themselves) — this page is the "how do I actually get a file onto the box in the first place, and prove it landed" walkthrough neither of those needed to be, because a real Cix install genuinely has no other way in.
+How to get a change onto a real, installed Cix host, prove it took effect, and debug a build there — without SSH, without a general shell, and without reinstalling from an ISO. This is the operational counterpart to [`building-cix.md`](building-cix.md) (which covers the build itself) and [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md)/[`staying-updated.md`](staying-updated.md) (which cover the update endpoints).
 
-## Why this needs a trick at all
+## Why everything goes through the API
 
-A real installed Cix host has no SSH server and no general shell (ADR-0034, confirmed directly — `nc -z <box> 22` closed on a fresh install). `POST /system/update`'s `image_path`/`kernel_path` fields, and `cixctl update --image=PATH`, are **paths the daemon reads from its own local disk** — not an upload endpoint. `cixctl`'s `update` subcommand just forwards whatever string you give it straight into the JSON body (`cli/src/main.c`'s `cmd_update()`); it never reads the file itself. So a locally-built artifact needs a real way to land on the *remote* daemon's own filesystem before `system/update` has anything to point at.
+An installed Cix host has no SSH server and no general shell ([ADR-0034](../adr/0034-console-login-via-supervised-cixctl.md)). Every step below is a REST call, made here with `cixctl --host=<box>`.
 
-## The core trick: reuse the package-fetch pipeline as a generic file-transfer primitive
+`POST /system/update`'s `image_path`/`kernel_path` fields, and `cixctl update --image=PATH`/`--kernel=PATH`, are **paths the daemon reads from its own disk** — not uploads. `cixctl update` forwards the string into the JSON body (`cmd_update()` in `cli/src/main.c`) and never reads the file itself.
 
-`pkg install`'s own fetch step already does exactly what's needed — the daemon `curl`s a URL host-side, verifies it against a `pkg_sha256`, and lands the raw download at a real, predictable local path (`<data-dir>/pkg/sources/<name>-<version>-0.src`) before ever trying to build anything. A throwaway scratch recipe pointed at an arbitrary file, served from your own dev machine, turns this into a general "get this file onto the remote box's disk" mechanism — the eventual build/install step is expected to fail (the file usually isn't a real tarball), but by then the only part that matters, the fetch + checksum, has already succeeded.
+## Getting a new build onto the box
 
-1. **Serve the artifact over your LAN**, from wherever you built it:
-   ```sh
-   cd /path/to/artifacts && python3 -m http.server 8904 --bind <your-lan-ip>
-   ```
-2. **Compute its real checksum** and write a scratch recipe:
-   ```sh
-   sha256sum cixd-root.squashfs
-   ```
-   ```
-   pkg_name="scratch-deploy"
-   pkg_version="1"
-   pkg_source="http://<your-lan-ip>:8904/cixd-root.squashfs"
-   pkg_sha256="<the real sha256 above>"
-   pkg_depends=""
-
-   pkg_build() { true; }
-   pkg_install() { true; }
-   ```
-3. **Push the recipe and trigger a fetch** (see [`writing-recipes.md`](writing-recipes.md) for the full recipe format):
-   ```sh
-   cixctl --host=<box> pkg recipe add --name=scratch-deploy --file=scratch-deploy.recipe
-   cixctl --host=<box> pkg install --name=scratch-deploy
-   ```
-   Poll `GET /pkg/scratch-deploy` until it leaves `fetching`/`building`. `state: "failed"` with `"could not prepare the build container (extract source tarball failed)"` is the **expected, harmless** outcome for a non-tarball artifact — it means the fetch and checksum verification already succeeded, which is all this step is for.
-4. **Read back the real local path**: `<data-dir>/pkg/sources/scratch-deploy-1-0.src` (the default data dir is `/var/lib/cix`).
-5. **Clean up** once you're done: `cixctl --host=<box> pkg recipe rm scratch-deploy` (a package left in `PKG_STATE_FAILED` can't be `DELETE`d via the package endpoint — that's expected, not a bug; the recipe delete is what matters).
-
-## Writing it to the inactive slot, and a real gap to know about
+The normal route builds on the box itself: tag this repository, publish a `cix` recipe for the tag, and run
 
 ```sh
-cixctl --host=<box> update \
-  --image=/var/lib/cix/rebuildable/pkg/sources/scratch-deploy-1-0.src \
-  --kernel=/var/lib/cix/rebuildable/pkg/sources/<kernel-scratch-path>
+cixctl --host=<box> pkg hostbuild cix --upgrade --wait --deploy
+```
+
+which compiles, assembles the control-plane root, and writes it to the inactive slot — see [`building-cix.md`](building-cix.md#rebuilding-cix-on-a-running-host). A kernel is the same shape: `pkg hostbuild kernel`, then `update --kernel=` with the path the hostbuild reports ([`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md)). In both cases the file is already on the box's own disk.
+
+A control-plane image that is **not** on the box's disk — one produced by another Cix host, served over HTTP — is fetched by the daemon itself:
+
+```sh
+cixctl --host=<box> update --image-url=http://<server>/cixd-root.squashfs --image-sha256=<64 hex>
 cixctl --host=<box> reboot
 ```
 
-**`--image=`/`--kernel=` can be supplied independently -- a one-sided update no longer leaves the other file stale (ADR-0095).** This used to be a real footgun, discovered the hard way: a root-only update once landed in a slot whose kernel predated a since-fixed config, and the very next boot regressed to a bug that had already been fixed elsewhere. `POST /system/update` now auto-fills whichever half is omitted from the *active* slot's own currently-running copy (already booted, already known-good) rather than leaving the inactive slot's own prior, possibly-stale content in place -- so `--kernel=` alone updates only the root, paired with a fresh copy of the kernel that's actually running right now, and vice versa. Supplying both explicitly still works exactly as before and is unaffected; this only changes what happens when one is omitted.
+`--image-sha256=` is mandatory, and the image is verified before it is written to a boot slot. The daemon resolves the URL itself, so on a host with no working resolver only a literal IP works ([`docs/api/README.md`](../api/README.md#host--package-updates)). There is no URL form for the kernel; `--kernel=` takes a path on the box.
 
-See [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md#background-how-ab-kernel-updates-work-here) for the full A/B mechanics this write triggers — same mechanism, root and kernel share one slot and one Automatic Boot Assessment counter.
+`--image=` and `--kernel=` can be supplied independently: whichever is omitted is filled from the *active* slot's running copy ([ADR-0095](../adr/0095-update-one-sided-footgun.md)). See [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md#background-how-ab-kernel-updates-work-here) for the A/B mechanics this write triggers.
 
 ## Confirming a deploy actually took effect
 
@@ -57,57 +36,25 @@ cixctl --host=<box> health
 cixctl --host=<box> boot
 ```
 
-```json
-{"status":"ok"}
-{"build_version":"v1.6.0-9-gc59e482-dirty","build_time":"2026-08-08T00:52:00Z","slot":"b","kernel_version":"6.18.40"}
-```
-
-`build_version` is `git describe --tags --always --dirty` **at build time** — check it against the commit you actually intended to ship, not just that the daemon answered. `slot` is the direct answer to "did I actually boot into the slot I just wrote," and `kernel_version` (`uname -r`) confirms the running kernel matches what you just wrote too. A bare `200` from `health` on its own proves only that *some* daemon answered — it doesn't prove it's the one you just deployed, especially right after a reboot where a stale connection or a fallback-to-the-old-slot could both look identical from the outside. Poll through at least one connection failure during the reboot itself (a `curl` timeout or connection-refused) before trusting the recovery — a suspiciously instant reply can mean you never actually lost the old connection.
+`boot` reports `build_version`, `build_time`, `slot` and `kernel_version` (plus the platform device list). `build_version` is `git describe --tags --always --dirty` **at build time** — check it against the commit you intended to ship, not just that the daemon answered. `slot` answers "did I boot into the slot I just wrote", and `kernel_version` (`uname -r`) confirms the running kernel. A bare `200` from `health` proves only that *some* daemon answered. Poll through at least one connection failure during the reboot itself before trusting the recovery — a suspiciously instant reply can mean you never lost the old connection.
 
 ### A deploy is not verified until the new daemon has built something
 
-`health` and `boot` prove the daemon you meant is running and answering.
-They do not prove it still works. Finish every deploy by building a real
-package:
+`health` and `boot` prove the daemon you meant is running and answering. They do not prove it can still build. A release that changes the build path is itself built by the daemon it replaces, so the first real exercise of the new build code is always the build *after* the deploy. Finish every deploy by building a real package, from the `probe-selftest-one@1.sh` recipe in cix-recipes:
 
 ```sh
-cixctl --host=<box> pkg publish  recipes/package/probe-selftest-one/1/build.sh
-cixctl --host=<box> pkg hostbuild probe-selftest-one 1
+cixctl --host=<box> pkg recipe add --name=probe-selftest-one --file=probe-selftest-one@1.sh
+cixctl --host=<box> pkg install --name=probe-selftest-one
+cixctl --host=<box> pkg build-logs --last
 ```
 
-It fails on purpose -- the log is the product -- and the line to read is
-`BUILD-PATH RESULT`. Reaching it means the daemon composed a build
-image, created a build container and ran something in it.
+(The `recipe add` answers `409` if that version is already published on the box, which is fine.) The build fails on purpose — the log is the product — and the line to read is `BUILD-PATH RESULT`. Reaching it means the daemon composed a build environment, created a build container and ran something in it.
 
-This step exists because it was missing once, and the cost was the whole
-platform's ability to build. `v2.55.24` was verified across eleven
-containers, `birdcl show protocols` on both routers and a real SSH
-banner from the jump host -- and it could not build a single package.
-ADR-0260 had made a build container's capture pipe the same descriptor
-`cix-init` was told to keep, and the pre-exec tidy-up closed it: every
-build died with `EBADF` before writing a byte, reported as the fictional
-`build killed by signal 10`. Recovering needed a rollback to the
-previous release and a second deploy, with every container down in
-between.
-
-The reason it survived verification generalises beyond that one bug:
-**a release that changes the build path is itself built by the daemon it
-replaces**, so the first real exercise of the new build code is always
-the build *after* the one that ships it. That is a property of
-self-hosting, not of any particular change, and it will be true of the
-next one.
-
-If the box is already on a daemon that cannot build, the recovery is
-API-only and does not need console access: install a previous version
-whose artifact is already in the cache (a cache hit does not need a
-working build), let the assembly run, `POST /system/update` and reboot.
-Delete any containers whose declaration the older daemon predates
-first -- a daemon that cannot load its own persisted state is the one
-failure the API cannot recover from.
+If the box is already on a daemon that cannot build, the recovery is API-only and does not need console access: install a previous `cix` version whose artifact is already in the cache (a cache hit does not need a working build), let the assembly run, `update --image=` the assembled root and reboot — or, if the previous slot still holds a good root, arm it for one boot with `cixctl --host=<box> boot-next <slot>` (`a` or `b`). Delete any containers whose declaration the older daemon predates first: a daemon that cannot load its own persisted state is the one failure the API cannot recover from.
 
 ## When something goes wrong: read the real diagnostics, not just the exit code
 
-`GET /system/logs?source=cixd&tail=N` is the log store (ADR-0070) — every internal `cixd` diagnostic, not just the audit trail, reaches it. For a failed `pkg install`/`pkg hostbuild`, this includes the real captured stdout/stderr of the build container itself (not just its exit status) — a build failure's *actual* error text, e.g.:
+`cixctl --host=<box> logs --source=cixd --tail=N` (`GET /system/logs`, [ADR-0070](../adr/0070-consolidated-log-store.md)) is the log store — every internal `cixd` diagnostic reaches it. For a failed `pkg install`/`pkg hostbuild` it includes the build container's own captured output as a `build output:` entry, not just its exit status:
 
 ```
 "pkg cix@__hostbuild: build output: /usr/bin/bash: error while loading
@@ -115,23 +62,16 @@ shared libraries: libtinfo.so.6: cannot open shared object file: No such
 file or directory"
 ```
 
-This is genuinely load-bearing: an exit status alone is often ambiguous (exit 127 in particular means either "this project's own container-launch diagnostic ran out of encodable errno range" or "a real command inside the build script genuinely wasn't found" — indistinguishable without the real text). Don't stop at the exit-code decode message in `error`; always check the log store for the accompanying `build output:` entry logged alongside it.
+An exit status alone is often ambiguous (exit 127 means either a container-launch diagnostic or a command inside the build script not found), so always read the `build output:` entry beside the decoded error.
 
 ## Debugging a remote build in depth (no shell on the box needed)
 
-Everything below was learned running real, multi-hour toolchain builds against a live box — each item closes a gap where the basic flow above goes quiet exactly when you need detail most.
-
-- **The captured `build output:` in the log store is a 3800-byte TAIL, not the whole log** (`PKG_BUILD_OUTPUT_CAPTURE_MAX`, `daemon/src/pkg.c` — deliberate: the error is usually last). A build whose final phase prints hundreds of lines of noise (gmp's configure is a real offender) pushes the actual error out of the window entirely. The reliable pattern for a long build: redirect inside the recipe itself — `make -j6 all > /build/make.log 2>&1` — and on failure `tail -n 100 /build/make.log`, so the captured window always holds the real failure point. The full log stays retrievable afterward (next bullet).
-- **`--keep-on-failure` + the files API is your post-mortem** (ADR-0175): `cixctl pkg install ... --keep-on-failure` preserves the failed build container (named `__pkgbuild-N` — check `cixctl process`). Any file in it is then one REST call away: `curl "http://<box>/v1/containers/__pkgbuild-N/files?path=/build/make.log"` — including crashed binaries themselves, pulled locally for a real gdb session (this exact flow root-caused a corrupted-jump-instruction GCC codegen bug this project hit). `cixctl pkg resume` can continue a preserved build without redoing fetch+extract. Delete the container (`cixctl container rm __pkgbuild-N`) when done — **it holds the single build slot; a new install can't start while it exists**, and a *hung* (not crashed) build likewise holds the slot forever until you `rm` it.
-- **Live streaming**: `cixctl pkg build-log` tails the in-flight build's output live and untruncated (WebSocket under the hood — a plain `curl` on `/v1/pkg/build/log` won't work, use the CLI).
-- **Detecting a silent hang vs. a slow build**: `GET /v1/system/stats` load near zero for two consecutive checks *plus* a make.log (pulled via the files API — readable live, not just after failure) whose line count hasn't grown between checks = genuinely hung, not slow. `cixctl container console __pkgbuild-N` gives an interactive shell inside the still-running container to inspect the process tree — note the dev image's own `ps` binary is currently broken (issue #47); walk `/proc/[0-9]*/cmdline` + `stat` field 22 by hand instead to find which process is stuck and for how long.
-- **`pkg sync` never re-fetches an already-seen `name@version`, even when the repo content for it has genuinely changed** — the per-version cache is keyed on name+version alone, and the first sync wins permanently (confirmed live several times, including a version whose *first* sync caught placeholder content: every later fix pushed to the same version was silently ignored despite `state=success` syncs). Any content change therefore **requires bumping the version string**, and anything that must be live in the repo at fetch time (see next bullet) must be in place *before* that version's first-ever sync. `cixctl pkg recipe show <name> --version=<v>` shows what the daemon actually holds — trust that, not the repo.
-- **Recipes that self-fetch from the private Gitea** (e.g. the kernel recipe pulling its own `.config` via the authenticated raw-content API): put the literal `{{REPO_TOKEN}}` in the `pkg_source` URL where the credential goes (`https://osakka:{{REPO_TOKEN}}@git.home.arpa/...`) and commit it in that final form — the daemon substitutes its own stored repo token (`cixctl pkg repo-config set --token=...`) at fetch time (issue #60). No live-substitution dance, no temp tokens, no revert: the recipe is committable as-is and the token never touches the catalog or any log. (Historical note: before #60, this required committing a `REPLACE_WITH_REAL_TOKEN` placeholder, live-substituting a real scoped token on Gitea's HEAD *before the version's first sync*, then reverting and deleting it after the fetch — the per-version sync cache made every step order-sensitive. `{{REPO_TOKEN}}` replaces all of it.)
+- **The `build output:` entry in the log store is a 3800-byte TAIL** (`PKG_BUILD_OUTPUT_CAPTURE_MAX`, `daemon/src/pkg.c`), because the error is usually last. The **whole** log of every build is retained: `cixctl pkg build-logs` lists them with sizes, `--last` prints the most recent and `--file=NAME` prints one. The size column is itself a diagnostic — a log of a few dozen bytes means the build phase never started. `cixctl pkg build-log [--name=NAME]` (singular) is live-only: it tails the in-flight build over a WebSocket (`GET /v1/pkg/build/log` — a plain `curl` will not work) and answers `404` once the build has ended.
+- **`--keep-on-failure` + the files API is your post-mortem** ([ADR-0175](../adr/0175-pkg-build-keep-on-failure.md)): `cixctl pkg install ... --keep-on-failure` preserves the failed build container (named `__pkgbuild-N`; `cixctl container ls --all` shows it). Any file in it is then one REST call away — `cixctl container files get __pkgbuild-N --path=/build/src/config.log`, including a crashed binary itself, pulled locally for a debugger. `cixctl pkg resume` continues a preserved build without redoing fetch+extract ([ADR-0177](../adr/0177-pkg-build-resume.md)). Delete the container (`cixctl container rm __pkgbuild-N`) when done; each concurrent build runs in its own `__pkgbuild-N` container. How many builds run at once is `cixctl pkg-build-config show` (`max_concurrent_jobs`, 1-10); only one hostbuild runs at a time, whatever it builds.
+- **Detecting a silent hang vs. a slow build**: `GET /v1/pkg/{name}` reports a running build's `last_output_seconds_ago` and its `build_container` ([`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs)). A long silence is not by itself a hang — a large link or gcc's bootstrap goes quiet for minutes — so combine it with `cixctl host-stats` (`GET /v1/system/stats`) showing load near zero across two checks. `cixctl process ls` lists every process on the box correlated to its container, which finds the stuck one. `cixctl pkg cancel --name=NAME` stops a build that will never finish and releases its slot (`POST /pkg/cancel`).
+- **`pkg sync` never re-fetches an already-seen `name@version`**, even when the repository's content for it has changed: a sync only adds versions the host does not have ([ADR-0121](../adr/0121-pkg-redesign-part2-configurable-repo-and-sync.md), [ADR-0107](../adr/0107-package-image-versioning.md)). Any content change therefore **requires a new version**. `cixctl pkg recipe show <name> --version=<v>` shows what the daemon holds — trust that, not the repository.
+- **Recipes that fetch from the private Gitea** put the literal `{{REPO_TOKEN}}` in the source URL where the credential goes (`https://osakka:{{REPO_TOKEN}}@git.home.arpa/...`); the daemon substitutes its stored repo token (`cixctl pkg repo-config set --token=...`) at fetch time (issue #60). The recipe is committable as-is and the token never reaches the catalog or a log.
 
 ## The endpoint, not just the mechanism
 
-None of this is Cix-specific tooling beyond the recipe format itself — every step above is a plain REST call any HTTP client can make (`curl`, a script, `cixctl`, or the web dashboard). See [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs) and [`docs/api/README.md`](../api/README.md#host--package-updates) for the full contract, [`docs/api/README.md`](../api/README.md#a-consolidated-log) for the log store's own query parameters, and [`cli-reference.md`](cli-reference.md) for every `cixctl` subcommand used above.
-
-## Going further: no local build at all
-
-Everything above still assumes you cross-compiled `cixd` locally and are pushing the *result*. The [hostbuild mechanism](writing-recipes.md#the-hostbuild-variant) (ADR-0056) removes even that step: `POST /pkg/hostbuild {"name": "cix", "build_image": "<an image with a working toolchain>"}` compiles `cixd`/`cixctl`/`web/` **entirely on the remote box itself**, from its own currently-tracked source (`cix.recipe`'s `pkg_source`), harvesting the result to a real host artifact directory — see [`building-cix.md`](building-cix.md#from-a-running-cix-host-self-hosted-rebuild) for the full self-hosted rebuild walkthrough. Combined with the LAN-serve trick above (used here to get the *source snapshot* onto the box instead of a compiled artifact — a scratch recipe whose `pkg_source` is a `tar czf`'d copy of your own working tree, since a real install typically can't reach a real git server either), this closes the loop completely: develop locally, push source, compile server-side, deploy the result, all over plain REST, with no ISO reinstall anywhere in the cycle.
+Every step above is a plain REST call any HTTP client can make (`curl`, a script, `cixctl`, or the web dashboard). See [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs) and [`docs/api/README.md`](../api/README.md#host--package-updates) for the full contract, [`docs/api/README.md`](../api/README.md#a-consolidated-log) for the log store's query parameters, and [`cli-reference.md`](cli-reference.md) for every `cixctl` subcommand used above.
