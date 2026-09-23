@@ -5149,6 +5149,17 @@ static void explain_sweep_if_engine_changed(void)
 			 * ones a running daemon needs.
 			 */
 			if (pkg_recipe_rederive_identity(recipe_path) != PKG_OK) {
+				/*
+				 * Named here, not only counted: on 2026-09-23 the
+				 * cbs 0.1.34 -> 0.1.52 sweep reported "1 failed"
+				 * and nothing anywhere said which recipe, because
+				 * only one of pkg_recipe_rederive_identity()'s
+				 * failure paths logs.
+				 */
+				logstore_write("cixd", "warn",
+				               "pkg: engine sweep could not re-derive %s@%s -- that "
+				               "recipe keeps its old identity until it is re-derived",
+				               nde->d_name, vde->d_name);
 				g_explain_sweep.failed++;
 				continue;
 			}
