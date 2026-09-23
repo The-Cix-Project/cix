@@ -361,7 +361,7 @@ int main(void)
 	CHECK(wait_for_daemon(&client_a, 50) == 0, "daemon A became healthy");
 
 	{
-		static const char *const floor[] = { "bash", "coreutils", "tcc", "linux-headers", NULL };
+		const char *const *floor = test_floor_install;
 		int fi;
 
 		/* ADR-0209: the build floor, installed as cache hits from real
@@ -506,7 +506,7 @@ int main(void)
 	CHECK(wait_for_daemon(&client_b, 50) == 0, "daemon B became healthy");
 
 	{
-		static const char *const floor[] = { "bash", "coreutils", "tcc", "linux-headers", NULL };
+		const char *const *floor = test_floor_install;
 		int fi;
 
 		/* ADR-0209: the build floor, installed as cache hits from real

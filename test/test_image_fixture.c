@@ -699,6 +699,18 @@ static const struct {
 	{ "zlib", "1.3.2-11" }, { "flex", "2.6.4-2" }, { "binutils", "2.42-10" },
 };
 
+/*
+ * The floor packages a test installs explicitly, in order, after seeding.
+ * One list, where six tests each carried their own copy -- which is how
+ * binutils reached the seeded floor above and none of the install lists
+ * ("declared build tool binutils is not installed anywhere",
+ * probe-cix-testreport@2, 2026-09-23). glibc is not here: the daemon
+ * installs it into the default image itself. zlib and flex arrive as
+ * binutils' runtime dependencies.
+ */
+const char *const test_floor_install[] = { "bash", "coreutils", "tcc", "linux-headers",
+                                           "binutils", NULL };
+
 static int sha256_file_hex(const char *path, char *out, size_t out_size)
 {
 	char cmd_path[] = "/usr/bin/sha256sum";

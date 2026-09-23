@@ -367,6 +367,9 @@ const char *test_http_src(const char *abs_path);
 int test_http_server_start(const char *root, int accept_put, int *out_port, pid_t *out_pid);
 int test_http_server_stop(pid_t pid);
 
+/* The floor packages a test installs explicitly, NULL-terminated (test_image_fixture.c). */
+extern const char *const test_floor_install[];
+
 #define TEST_SETTLE_ATTEMPTS 200
 #define TEST_SETTLE_INTERVAL_US (100 * 1000)
 

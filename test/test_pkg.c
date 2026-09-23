@@ -847,7 +847,7 @@ int main(void)
 	 * resolve against these.
 	 */
 	{
-		static const char *const floor[] = { "bash", "coreutils", "tcc", "linux-headers", NULL };
+		const char *const *floor = test_floor_install;
 		char fstate[64];
 		int i;
 

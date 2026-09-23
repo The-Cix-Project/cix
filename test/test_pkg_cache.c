@@ -332,7 +332,7 @@ int main(void)
 	}
 
 	{
-		static const char *const floor[] = { "bash", "coreutils", "tcc", "linux-headers", NULL };
+		const char *const *floor = test_floor_install;
 		int fi;
 
 		for (fi = 0; floor[fi] != NULL; fi++) {
