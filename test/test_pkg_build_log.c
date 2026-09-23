@@ -155,8 +155,26 @@ static int stage_tarball(const char *scratch_dir, char *out_tarball_path, size_t
 	fputs("unused -- pkg_build() below never reads this\n", f);
 	fclose(f);
 
+	/*
+	 * A non-ASCII file name, in a pax archive, which is how upstream
+	 * source tarballs carry one: pax records the path as UTF-8. cixd
+	 * extracts sources in-process with libarchive (#411), and in the C
+	 * locale libarchive cannot represent that name, so the whole
+	 * extraction failed -- go1.24.9's source was refused with
+	 * "Pathname can't be converted from UTF-8 to current locale"
+	 * (192.168.15.95, 2026-09-23). pkg_build() below checks the file
+	 * arrived with its bytes intact.
+	 */
+	snprintf(placeholder, sizeof(placeholder), "%s/na\xc3\xafve-\xc3\xbc.txt", src_dir);
+	f = fopen(placeholder, "w");
+	if (f == NULL)
+		return -1;
+	fputs("a file whose name is not ASCII\n", f);
+	fclose(f);
+
 	snprintf(out_tarball_path, tarball_path_size, "%s/slowbuild-1.0.tarball", scratch_dir);
-	if (run_cmd("tar -cf '%s' -C '%s' slowbuild-1.0", out_tarball_path, scratch_dir) != 0)
+	if (run_cmd("LC_ALL=C.UTF-8 tar --format=pax -cf '%s' -C '%s' slowbuild-1.0", out_tarball_path,
+	            scratch_dir) != 0)
 		return -1;
 
 	return compute_file_sha256(out_tarball_path, out_sha256, sha256_size);
@@ -187,6 +205,7 @@ static int write_slowbuild_recipe(const char *tarball_path, const char *sha256)
 	fprintf(f, "pkg_depends=\"\"\n");
 	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n");
 	fprintf(f, "pkg_build() {\n"
+	           "\ttest -f \"$(printf 'na\\303\\257ve-\\303\\274.txt')\"\n"
 	           "\techo marker-1\n"
 	           "\tsleep 1\n"
 	           "\techo marker-2\n"
