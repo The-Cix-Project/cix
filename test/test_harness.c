@@ -27,12 +27,13 @@
  * directories, and inside a build container /tmp sits on the container's
  * own overlay rootfs -- the kernel refuses to stack overlayfs on
  * overlayfs ("not supported as upperdir"). /run is a fresh tmpfs in
- * every container. The inner "/tmp/harness_result.txt" below is a path
- * INSIDE the container and deliberately unchanged: it has to land in the
- * upperdir to be readable from out here.
+ * every container. The child writes "/harness_result.txt", at the root
+ * of its overlay, so it lands in the upperdir and is readable from out
+ * here; not /tmp, which is a fresh tmpfs in every container
+ * (src/mountns.c) and so never reaches the upperdir.
  */
 #define UPPERDIR "/run/harness_overlay/upper"
-#define RESULT_PATH UPPERDIR "/tmp/harness_result.txt"
+#define RESULT_PATH UPPERDIR "/harness_result.txt"
 
 static int read_cgroup_procs_count(const char *cgroup_name, pid_t expect_pid)
 {

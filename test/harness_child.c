@@ -10,7 +10,14 @@
 #include <string.h>
 #include <unistd.h>
 
-#define RESULT_PATH "/tmp/harness_result.txt"
+/*
+ * At the root of the container's overlay, so it lands in the upperdir
+ * test_harness reads. Not /tmp: every container gets a fresh tmpfs
+ * there (src/mountns.c), so a file written to /tmp never reaches the
+ * upperdir -- which is how test_harness failed with its child exiting
+ * 7 and the result file missing (cix-tests@v2.57.246-1, 2026-09-23).
+ */
+#define RESULT_PATH "/harness_result.txt"
 
 int main(void)
 {
