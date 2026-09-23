@@ -699,6 +699,13 @@ static int poll_pkg_state(const struct cix_client *c, const char *name, char *ou
 				g_build_container_gate_fails++;
 			}
 		}
+		/* The daemon's reason for a failed build, so a report can say
+		 * why and not only that (cix-tests v2.57.247-1, 2026-09-23). */
+		if (strcmp(out_state, "failed") == 0) {
+			const char *err = json_str_field(r.json, "error");
+
+			fprintf(stderr, "    %s failed: %s\n", name, err != NULL ? err : "(no error field)");
+		}
 		cix_response_free(&r);
 		if (strcmp(out_state, "fetching") != 0 && strcmp(out_state, "building") != 0)
 			return 0;
