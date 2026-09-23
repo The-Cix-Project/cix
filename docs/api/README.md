@@ -199,7 +199,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | DELETE | `/dhcp/static/{mac}` | Remove a reservation |
 | GET | `/networks/{name}/ports` | What is plugged into this network's bridge right now, per port, with each port's own counters (issue #26) |
 | GET | `/images` | List every image this daemon knows about |
-| POST | `/images` | Create an empty image (runtime pre-seeded, ready for `pkg install`) |
+| POST | `/images` | Create an empty image: no packages, not even a C library (install `glibc` before running a container on it) |
 | POST | `/images/gc` | Reclaim image versions nothing references; `{"dry_run":true}` to preview |
 | GET | `/images/{name}` | Inspect one image, including its manifest |
 | DELETE | `/images/{name}` | Remove an image (refused for `base`, if in use, or if it still has packages) |
@@ -637,7 +637,7 @@ Both clients use this. `cixctl console` sends the terminal it is running in; the
 
 ## Host authentication (ADR-0144)
 
-`cixd` had no authentication at all until ADR-0144: every write below succeeded with zero credentials. The rule now is one and applies uniformly, not per-endpoint: every `POST`/`PUT`/`DELETE` in this document, plus `GET .../containers/{name}/console` (a WebSocket upgrade that is arbitrary command execution in real effect, gated by intent rather than HTTP method), needs a valid `Authorization: Bearer <token>` naming a user who is currently a member of one of the configured admin groups. Every `GET` — including every one already listed above — stays open, unconditionally, always; reads were never the concern. `openapi.yaml`'s `components.securitySchemes.bearerAuth` carries this note once rather than repeating it on all ~130 mutating operations individually.
+One rule applies uniformly, not per-endpoint: every `POST`/`PUT`/`DELETE` in this document, plus `GET .../containers/{name}/console` (a WebSocket upgrade that is arbitrary command execution in real effect, gated by intent rather than HTTP method), needs a valid `Authorization: Bearer <token>` naming a user who is currently a member of one of the configured admin groups. Every other `GET` stays open, with exactly two exceptions — `GET /system/hostauth/sessions` and `GET /ldap/users` (and one user by name), which describe people rather than the machine (#490, explained below). `POST /login` and `POST /logout` are the only requests exempt by path. `openapi.yaml`'s `components.securitySchemes.bearerAuth` carries this note once rather than repeating it on all ~130 mutating operations individually.
 
 ```
 POST /v1/login

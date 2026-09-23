@@ -6561,10 +6561,12 @@ paths:
                       $ref: "#/components/schemas/Image"
     post:
       summary: >
-        Creates an empty image (just a rootfs/ directory) and immediately seeds its
-        C runtime (ld.so/libc.so.6/libtinfo.so.6, see ADR-0023) so it's usable right
-        away -- POST /pkg/install's own image field would otherwise only create one
-        implicitly, on its first successful install into a name never seen before.
+        Creates an empty image: an empty manifest and no packages, not even a C
+        library. An image gets its C library as a package (glibc) like everything
+        else, and POST /containers refuses an image with no loader, naming what to
+        install (daemon/src/pkg.c, pkg_seed_image_baseline()). POST /pkg/install's
+        own image field would otherwise only create one implicitly, on its first
+        successful install into a name never seen before.
       operationId: createImage
       x-cix-expose: [cli, web]
       requestBody:

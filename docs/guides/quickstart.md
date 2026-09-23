@@ -22,12 +22,13 @@ cixctl login --username=<user>      # prompts for the password
 
 ## 3. Put a program in the default image
 
-Every host has an image called `base` from its first boot: an empty package list plus the C runtime. Nothing else is in it, not even a shell, because every package is built from a recipe. Install `bash` (the shell) and `coreutils` (`sleep`, `ls` and the rest) into it:
+Every host has an image called `base` from its first boot, with an empty package list. Nothing is in it, not even a C library: an image gets its C library the way it gets everything else, as a package. A container on an image with no C library is refused, and the error names what to install. Install `glibc`, then `bash` (the shell) and `coreutils` (`sleep`, `ls` and the rest):
 
 ```sh
+cixctl pkg install --name=glibc
 cixctl pkg install --name=bash
 cixctl pkg install --name=coreutils
-cixctl pkg ls                       # repeat until both show "installed"
+cixctl pkg ls                       # repeat until all three show "installed"
 ```
 
 `pkg install` uses an already-built artifact when one is available and builds from the recipe otherwise. Where recipes and artifacts come from on a fresh box (the installer's package seed, a configured artifact cache, a recipe repository) is in [installing.md](installing.md#building-the-iso) and [writing-recipes.md](writing-recipes.md).

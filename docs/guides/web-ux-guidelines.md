@@ -34,7 +34,7 @@ Each widget has exactly one job. The "reach for instead" column is the anti-swap
 | **Context menu** | `#tree-context-menu`, `contextMenuItemsFor` | Per-item actions on a **tree leaf**, right-click | the node is a page, not an item → no menu; the action is global → the **header menu bar** |
 | **Header menu bar** | `.menu-bar`, `.menu-dropdown` | Global navigation and resource creation ("New …") | the action belongs to one existing item → its **context menu** or **detail page** |
 | **Modal form** | `openModal(id, title)` / `closeModal()`, `.modal` | Create or edit one resource through a form | you are only showing information → a **detail page**; you are confirming a yes/no → **confirm** |
-| **Detail page + tabs** | routed `category/name`, `.detail-topbar`, `.tab` | View and act on one resource; tabs split its facets | the resource is one of many being compared → a **list table** |
+| **Detail page + tabs** | routed `category/name`, `.detail-topbar`, `.tab-bar` + `.tab-button` + `.tab-panel` | View and act on one resource; tabs split its facets | the resource is one of many being compared → a **list table** |
 | **Key–value table** | `.detail-table` + `fieldBlock(label, value)` | Show a resource's fields as label/value rows | the rows are many peer records → a **list table** |
 | **List table** | `simpleTableRows(body, cols, n, emptyText)` | Show many peer records, with a built-in empty state | it is one record's fields → a **key–value table** |
 | **Status message** | `showStatus(message, isError)` | Every transient success/error after an action | it is a permanent condition → a **banner** or **badge**; you reached for `alert()`/`console` → **stop, use `showStatus`** |
@@ -68,7 +68,7 @@ Two widgets that look similar are still not interchangeable: a **badge** carries
 
 **Destructive actions** are `.button-danger`, are placed **last** in any action group, are gated by a **`confirm`** whose question names the specific target, and end in a `showStatus` toast. All four, every time — a destructive action missing any one of them is incomplete.
 
-**Semantic colour is fixed and separate from the accent.** `badge-ok` = healthy/present/running (green), `badge-error` = failed/broken (red), `badge-paused` = paused/idle/in-progress (amber), `badge-unknown` = unknown/not-applicable (grey). These map to the `--ok` / `--error` / `--muted` tokens and mean the same thing on every page. Never repurpose a colour to mean something local.
+**Semantic colour is fixed and separate from the accent.** `badge-ok` = healthy/present/running (green), `badge-error` = failed/broken (red), `badge-paused` = paused/idle/in-progress (amber), `badge-unknown` = unknown/not-applicable (grey). These map to the `--ok` / `--error` / `--paused` / `--muted` tokens (text) and their `--ok-bg` / `--error-bg` / `--paused-bg` / `--unknown-bg` fills, and mean the same thing on every page. Never repurpose a colour to mean something local.
 
 **Every list and panel has three states: loading, empty, populated.** A list uses `simpleTableRows`' empty text; a panel that is genuinely empty says so in a muted line, never a bare blank that reads as "still loading" or "broken". Loading is a distinct state from empty — do not show "none" while a fetch is still in flight (this caused Processes to flash empty twice a second; see `web/app.js`).
 
