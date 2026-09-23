@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Shell recipes stay as history; the shell build path retires with its last dependent (ADR-0309, #516)
+
+Asked whether the `.sh` recipes can be removed, since two recipe languages are a parallel implementation. [ADR-0309](docs/adr/0309-shell-recipes-are-history-the-shell-path-retires-with-its-last-dependent.md) separates three things:
+- **The 1,502 published `.sh` files stay.** `pkg sync` only adds, so deleting them removes nothing from a host. Each one carries the artifact approval its cached bytes depend on. 67 of 179 installed versions on 192.168.15.95 are shell-built, and `cix@*.sh` is the release record.
+- **New revisions are CPDL.**
+- **cixd's shell build path is the real parallel,** and it is removed in one change once its dependents are gone: seven latest-shell packages (four behind the cost gate), the installed shell revisions, 12 shell-fixture test files, a proven CPDL probe template, and an explicit decision on how cbs bootstraps, since cixd has no CPDL executor and `cbs@v0.1.25-1.sh` is the only from-nothing root.
+
+#516 tracks the list.
+
 ### The guides were audited claim by claim against the code, and corrected
 
 Every guide under `docs/guides/` was checked against `cli/src/main.c`, `docs/api/openapi.yaml`, the daemon source and `cixctl`'s own usage output, and about 130 stale or wrong claims were fixed. The larger ones:
