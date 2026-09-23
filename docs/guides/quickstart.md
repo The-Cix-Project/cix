@@ -1,69 +1,68 @@
 # Quickstart
 
-The fastest real path from nothing to a running container. Every step here is a real command against a real daemon — nothing here is illustrative-only. Each step links to the guide that covers it in depth; this page stays deliberately thin.
+From an installed Cix host to a running container you can open a shell in. Every command is `cixctl` against the host's REST API; the dashboard at `http://<host>/` can do all of it too ([web-dashboard.md](web-dashboard.md)). Each step links to the guide that covers it in depth.
 
-## 1. Build and start the daemon
+## 1. Install a host
 
-```sh
-make
-sudo build/cixd
-```
+Build installer media and boot it: [installing.md](installing.md). A Cix host has no shell and no SSH; everything after this point is the API.
 
-Leave it running. In another shell:
+## 2. Reach it
 
 ```sh
-build/cixctl health
+cixctl --host=<host-ip> health
 ```
 
-`{"status": "ok"}` means it's up. Full detail: [`building-cix.md`](building-cix.md).
+`{"status": "ok"}` means it's up. Every later command takes the same `--host=`; it is left out below for brevity.
 
-## 2. Give it something runnable
-
-A freshly created image has no binaries in it at all — not even a shell — since everything is compiled from source, on demand. Stage a build toolchain once, then install a real, minimal package (`bash`) onto the default `base` image:
+If an operator has turned on write-gating ([security.md](security.md)), log in once. The token is saved in `~/.cixctl_token` and sent automatically from then on:
 
 ```sh
-build/cixctl pkg bootstrap
-build/cixctl pkg recipe add --name=bash --file=pkg/recipes/bash.recipe
-build/cixctl pkg install --name=bash
+cixctl login --username=<user>      # prompts for the password
 ```
 
-Poll until it's done:
+## 3. Put a program in the default image
+
+Every host has an image called `base` from its first boot: an empty package list plus the C runtime. Nothing else is in it, not even a shell, because every package is built from a recipe. Install `bash` (the shell) and `coreutils` (`sleep`, `ls` and the rest) into it:
 
 ```sh
-build/cixctl pkg ls
+cixctl pkg install --name=bash
+cixctl pkg install --name=coreutils
+cixctl pkg ls                       # repeat until both show "installed"
 ```
 
-Full detail: [`writing-recipes.md`](writing-recipes.md).
+`pkg install` uses an already-built artifact when one is available and builds from the recipe otherwise. Where recipes and artifacts come from on a fresh box (the installer's package seed, a configured artifact cache, a recipe repository) is in [installing.md](installing.md#building-the-iso) and [writing-recipes.md](writing-recipes.md).
 
-## 3. Create a network
+## 4. Create a network
 
 ```sh
-build/cixctl network create --name=lan1 --subnet=172.31.0.0 --prefix=24
+cixctl network create --name=lan1 --subnet=172.31.0.0 --prefix=24
 ```
 
-Full detail: [`docs/api/README.md`](../api/README.md#creating-a-network).
+The bridge stays pure layer 2 unless you also pass `--address=`. More in [networking.md](networking.md).
 
-## 4. Run a container
+## 5. Run a container
+
+A container declares the **services** it runs, not a single command ([ADR-0260](../adr/0260-a-container-declares-services-not-a-command.md)), and the **consoles** it offers. This one runs one long-lived service and offers a bash console:
 
 ```sh
-build/cixctl container run --name=hello --image=base --network=lan1--service=bash=/usr/bin/bash -c"echo hello from inside Cix"
-build/cixctl container inspect hello
+cixctl container run --name=hello --image=base --network=lan1 \
+    --service="main=/usr/bin/sleep infinity" \
+    --console="shell=/usr/bin/bash"
+cixctl container inspect hello
 ```
 
-Full detail: [`docs/api/README.md`](../api/README.md#creating-a-container).
+Quote a `--service=` or `--console=` value that contains spaces. The CLI splits the command on spaces and does no shell-style quoting inside it, so a command that needs a quoted argument (`bash -c "…"`) belongs in a script inside the image, not on this line.
 
-## 5. Look around
+## 6. Look around
 
 ```sh
-build/cixctl process
-build/cixctl container console hello   # a real interactive shell inside it, if it's still running
+cixctl container console hello      # an interactive shell inside it
+cixctl process ls                   # every process on the box, with its container
 ```
-
-Or open `http://127.0.0.1/` in a browser for the same thing visually — see [`web-dashboard.md`](web-dashboard.md).
 
 ## Where to go next
 
-- [`cli-reference.md`](cli-reference.md) — the full command surface
-- [`installing.md`](installing.md) — putting this on real, booted hardware instead of a dev-machine daemon
-- [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) / [`staying-updated.md`](staying-updated.md) — keeping an install current
-- [`docs/api/README.md`](../api/README.md) — the full API surface this CLI and the dashboard are both built on
+- [cli-reference.md](cli-reference.md): the full command surface
+- [networking.md](networking.md), [storage.md](storage.md), [security.md](security.md): the host's subsystems
+- [staying-updated.md](staying-updated.md): keeping an install current
+- [docs/api/README.md](../api/README.md): the REST API the CLI and the dashboard are both built on
