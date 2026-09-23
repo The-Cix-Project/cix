@@ -538,6 +538,7 @@ static const struct cli_node n_volume_subs[] = {
 	{ "restore", NULL, NULL },
 	{ "rm", NULL, NULL },
 	{ "show", NULL, NULL },
+	{ "usage", NULL, NULL },
 	{ NULL, NULL, NULL },
 };
 
