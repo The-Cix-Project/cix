@@ -1,6 +1,8 @@
 # `cixctl` CLI reference
 
-`cixctl` is a pure REST client (`docs/api/openapi.yaml`) — every subcommand below is exactly one HTTP call, per the API-First Mandate (ADR-0005). This page is the CLI's own command surface; for what each call actually does, its request/response fields, and its error conditions, see [`docs/api/README.md`](../api/README.md) and `openapi.yaml` — this page deliberately doesn't repeat that.
+`cixctl` is a pure REST client of [`docs/api/openapi.yaml`](../api/openapi.yaml): it holds no logic the API does not expose (the API-First Mandate, [ADR-0005](../adr/0005-api-first-mandate.md)). Most commands are one HTTP call. The exceptions are read-modify-write setters (`hostauth-config set`, `kmod-config set`), multi-step commands (`image materialize`, `pkg artifact-export`, `pkg hostbuild --deploy`), and the client-only `pager`, which makes no call at all. This page lists the command surface. For what each call does, its fields and its errors, see [`docs/api/README.md`](../api/README.md) and `openapi.yaml`.
+
+The usage text printed by `cixctl <command>` with missing or wrong arguments is the authoritative syntax for any command below.
 
 ## Global flags and invocation
 
@@ -8,11 +10,11 @@
 cixctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 ```
 
-- `--host=`/`--port=` — default `127.0.0.1:80`.
-- `--json` — print the raw API response instead of the default formatted text. Every subcommand supports it except `console` (an interactive terminal session, not a per-call response) and `files get`/`files put` (`get`'s own raw file bytes are the CLI's one non-JSON response body, and `put`'s own success response is a real `204 No Content` with nothing to render as JSON) — `--json` is silently ignored on all three.
-- Running `cixctl` with no command at all, from a real terminal (`isatty(stdin)`), drops into an **interactive shell**: one line, one command, reusing the same connection — useful for a session of several related calls without re-establishing a TCP connection each time (`cixctl --json` plus a piped/redirected stdin skips the shell and falls through to the usual usage-error path instead, so scripting is unaffected). The prompt is the connected daemon's own full site identity (`GET /system/site`, `instance.site.domain` or `instance.domain` with no site tier set, e.g. `lab.uk.home.arpa> `), not a fixed string — useful the moment more than one Cix install is reachable (ADR-0132). The trailing character follows real shell/network-device convention: `>` normally, `#` once `login` succeeds (`GET /whoami`, ADR-0164) -- refreshed immediately after every `login`/`logout` command, not just at shell startup.
-- **Exit codes**: `0` success, `1` the API call itself failed (a non-2xx response, or a transport-level failure reaching the daemon), `2` a usage error (bad flags, unknown subcommand) — checked before any network call is made.
-- **Authentication (ADR-0144)**: once a daemon has write-gating active (see [`docs/api/README.md`'s own "Host authentication" section](../api/README.md#host-authentication-adr-0144)), every mutating command needs a session — run `login` once and every subsequent `cixctl` invocation on this machine authenticates automatically via the persisted token, until `logout` or the session's own idle timeout expires it. `GET`-only commands (`health`, `container ls`, every `... ls`/`... show`) never need one.
+- `--host=`/`--port=`: default `127.0.0.1:80`.
+- `--json`: print the raw API response instead of the formatted text. It is a global flag and goes before the command (`cixctl --json show running-config`). `console`, `container files get` and `container files put` have no JSON form: a console is an interactive session, `get` returns raw file bytes, and `put` returns `204 No Content`.
+- Running `cixctl` with no command from a terminal (`isatty(stdin)`) starts an **interactive shell**: one line per command, over one connection. With stdin piped or redirected it prints the usage error instead, so scripts are unaffected. The prompt is the connected daemon's site identity (`GET /system/site`: `instance.site.domain`, or `instance.domain` when no site tier is set, e.g. `lab.uk.home.arpa> `). The prompt ends in `>`, or `#` while logged in (`GET /whoami`, ADR-0164), refreshed after every `login`/`logout`. `exit`, `quit` and `help` work inside the shell only.
+- **Exit codes**: `0` success, `1` the API call failed (a non-2xx response, or the daemon could not be reached), `2` a usage error (bad flags, unknown subcommand), detected before any network call.
+- **Authentication ([ADR-0144](../adr/0144-host-authentication-and-real-ldap.md))**: once write-gating is active (see [Host authentication](../api/README.md#host-authentication-adr-0144)), every mutating command needs a session. Run `login` once; later invocations on the same machine authenticate with the saved token until `logout` or the session's idle timeout. Read-only commands never need one.
 
 ## Completion
 
@@ -24,20 +26,20 @@ cixctl container mig<TAB>        -> migrate-storage  migrate-storage-status
 cixctl update --<TAB>            -> --image=  --image-sha256=  --image-url=  --kernel=
 ```
 
-It works in two places: the built-in interactive shell (run `cixctl` with no command from a terminal), and your own shell once you install one of the scripts in [`cli/completion/`](../../cli/completion) — `cixctl.bash` or `cixctl.zsh`. Source it from your shell rc, or drop the bash one in `/usr/share/bash-completion/completions/cixctl`.
+It works in the built-in interactive shell, and in your own shell once you install one of the scripts in [`cli/completion/`](../../cli/completion) (`cixctl.bash` or `cixctl.zsh`). Source it from your shell rc, or put the bash one in `/usr/share/bash-completion/completions/cixctl`.
 
-Both get their candidates from `cixctl __complete`, a hidden helper that reads the CLI's own command tree. Two consequences worth knowing:
+Both get their candidates from `cixctl __complete`, a hidden helper that reads the CLI's own command tree:
 
-- **Tab never blocks.** `__complete` makes no HTTP call, so completion works identically when the daemon is slow, unreachable, or not running at all.
-- **The completion scripts describe no commands of their own**, so they cannot fall behind the CLI the way a hand-written completion script normally does.
+- **Tab never blocks.** `__complete` makes no HTTP call, so completion works when the daemon is slow, unreachable or not running.
+- **The completion scripts define no commands themselves**, so they stay in step with the CLI.
 
-Flag *values* are deliberately not completed. The ones worth completing — container names, image names — are knowable only by asking the daemon, and a completion that makes a blocking request on every keypress is worse than none.
+Flag *values* are not completed. The useful ones (container names, image names) can only come from the daemon, and a blocking request on every keypress is worse than none.
 
-The command surface lives in `cli/src/cmdtree.h` as data. Because that is a second description of something `dispatch_command()` also encodes, `test_clitree` re-derives the surface from `cli/src/main.c` on every build and fails it if the two disagree — a completion that offers a flag the parser rejects is worse than no completion, so the disagreement is made a build failure rather than a surprise.
+The command tree is data in `cli/src/cmdtree.h`. `test_clitree` re-derives the command surface from `cli/src/main.c` and fails the build when the two disagree.
 
 ## The pager
 
-Long output — `container ls` on a real host, `logs`, `pkg ls` — used to scroll off the top with no way back. `cixctl` now pipes its output through a pager, and the preference is remembered rather than passed every time:
+Long output (`container ls`, `logs`, `pkg ls`) goes through a pager. The setting is remembered:
 
 ```
 cixctl pager status      # on | off
@@ -45,78 +47,42 @@ cixctl pager off
 cixctl pager on
 ```
 
-It is deliberately conservative about when it engages, because the usual way this feature goes wrong is breaking things that were working:
+It engages only when all of these hold:
 
-- **Never when stdout is not a terminal.** Piping to `grep`, `jq` or a file behaves exactly as it did before. A pager that engages inside a pipeline breaks scripts, and it breaks them quietly.
-- **Never with `--json`.** That output exists to be consumed by something else.
-- **Never when turned off**, which is remembered in `~/.cixctl_pager`.
+- **stdout is a terminal.** Piping to `grep`, `jq` or a file is never paged.
+- **`--json` is not set.** That output is meant for another program.
+- **It is turned on.** The setting is stored in `~/.cixctl_pager`.
 
-`$PAGER` is respected. The fallback is `less -FRX`: `-F` quits immediately when the output already fits on one screen (so short commands feel unchanged), `-R` passes colour through, and `-X` leaves the output on screen after the pager exits — which is the point of having scrolled it. An explicitly empty `PAGER` is the conventional way to say "no pager" and is honoured.
+`$PAGER` is respected. The fallback is `less -FRX`: `-F` exits at once when the output fits one screen, `-R` passes colour through, and `-X` leaves the output on screen after the pager exits. An explicitly empty `PAGER` means no pager.
 
-`cixctl pager` is one of the few commands that makes no HTTP call: it configures this client, so it has no endpoint and does not pretend to have one.
+`pager` configures this client only, so it has no endpoint.
 
 ## Seeding a fresh box
 
 ```
-cixctl --host=NEWBOX image recipe add --name=toolchain --file=recipes/image/toolchain/1.0.0/build.sh
+cixctl --host=NEWBOX image recipe add --name=toolchain --file=recipes/image/toolchain@1.0.0.sh
 cixctl --host=NEWBOX image materialize toolchain
 ```
 
-One command turns an image recipe into a real, populated build image.
-It creates the image if absent, declares its manifest from the recipe,
-and installs every package in it.
+`--file=` is a local path. Image recipes live in the [cix-recipes](https://git.home.arpa/itdlabs/cix-recipes) repository as flat `<name>@<version>.sh` files ([ADR-0308](../adr/0308-recipes-are-their-own-repository-flat.md)); the path above is relative to a checkout of it. `image materialize` creates the image if it does not exist, declares its manifest from the image recipe of the same name, and installs every package in it (#141). An install that finds an approved prebuilt artifact verifies it and stages it without composing a build sandbox, so a host with no compiler can materialize a build image ([ADR-0225](../adr/0225-build-images-are-composed-from-packages.md)). A package that arrives as another's build dependency is reported as `already present`, not as an error.
 
-This is what a freshly installed box needs and previously could not get.
-A real install has no shell and no SSH, so the older routes — hand the
-daemon a 1.4 GB squashfs by local path, or stand up an HTTP server to
-serve one — were not things you could ask of an operator, and the
-remaining route copied the daemon host's own `/usr`, which is how a
-developer workstation's rustup, cargo, chromium and node ended up inside
-`cix-builder` ([#168](https://git.home.arpa/itdlabs/cix/issues/168),
-[ADR-0225](../adr/0225-build-images-are-composed-from-packages.md)).
-
-None of that is needed now, because an install that finds an approved
-prebuilt artifact verifies it against the recipe's own checksum and
-stages it **without composing a build sandbox** — so a host with no
-compiler can install any approved package. Measured on a fresh image:
-the whole 27-package toolchain, gcc included, in **about thirty
-seconds**, with no compilation at all.
-
-A package that arrives as another's build dependency is reported as
-`already present`, not as an error — installing gcc brings binutils, m4,
-flex and zlib with it.
-
-## Configuration
+## Configuration as a document
 
 ```
 cixctl show running-config          # the whole configuration, Cisco-style
 cixctl --json show running-config   # the document itself
 ```
 
-One ordered, redacted view of every configurable subsystem (ADR-0206) --
-identity, storage, networks, DNS, DHCP, PKI, LDAP, packages, images,
-containers. Secrets are never printed: tokens and passwords render as a
-set/not-set boolean, and PKI private keys never appear.
-
-It is a view of live state, not a stored file, so it always matches what
-the daemon is actually doing. The section list comes from the API schema,
-so a new subsystem appears here without any CLI change.
+One ordered, redacted view of every configurable subsystem ([ADR-0206](../adr/0206-configuration-as-a-first-class-document.md)): identity, storage, networks, DNS, DHCP, PKI, LDAP, packages, images, containers. Secrets are never printed. Tokens and passwords render as set/not-set, and PKI private keys never appear. It reads live state, and its section list comes from the API schema.
 
 ```
 cixctl config diff  --file=c.json [--section=NAME ...]   # what it would change
 cixctl config apply --file=c.json [--section=NAME ...]   # change it
 ```
 
-The write direction (ADR-0292). Both take a configuration document --
-what `cixctl --json show running-config` writes -- so the workflow is fetch,
-edit, send back. `diff` changes nothing and is the safe way to find out
-what an edit means.
+Both take the document `cixctl --json show running-config` writes, so the workflow is fetch, edit, send back ([ADR-0292](../adr/0292-configuration-applies-section-by-section.md)). `diff` changes nothing.
 
-**Send only the sections you changed.** The document carries running
-state alongside configuration (a container's `pid`, a volume's creation
-time), so a whole document sent back can differ from live for reasons
-that are not configuration, and one unappliable section refuses the
-request. `--section=NAME` rebuilds the body with just those sections.
+**Send only the sections you changed.** The document carries running state alongside configuration (a container's `pid`, a volume's creation time), and one unappliable section refuses the whole request. `--section=NAME` sends only the named sections.
 
 ```
 $ cixctl --json show running-config > c.json
@@ -128,369 +94,417 @@ resolver             changed    appliable
 $ cixctl config apply --file=c.json --section=resolver
 ```
 
-Eleven sections can be applied -- the ones a single setter owns (site,
-daemon, resolver, time, zswap, swap, backup, dns_forwarders, ldap,
-package_repo, package_artifacts). The rest are shown in a diff but
-refuse an apply, because applying them means creating and deleting live
-resources; use those sections' own commands (`container`, `network`,
-`dns`, `pkg`, …). A section is replaced whole: send back every field it
-renders. Secrets cannot be set this way at all -- the document never
-carried them, and applying a section that has one behind it leaves it
-untouched.
+Eleven sections can be applied, the ones a single setter owns: site, daemon, resolver, time, zswap, swap, backup, dns_forwarders, ldap, package_repo, package_artifacts. The rest show in a diff and refuse an apply; use their own commands (`container`, `network`, `dns`, `pkg`, …). A section is replaced whole, so send back every field it renders. Secrets cannot be set this way: the document never carries them, and applying a section leaves its secret untouched.
 
-## System
+## Session and identity
 
 | Command | |
 |---|---|
-| `login [--username=NAME] [--password=PASS]` | Authenticate (ADR-0144) -- prompts for whichever of username/password isn't given as a flag, with terminal echo off for the password; on success persists the session token to `~/.cixctl_token` (mode `0600`) so every subsequent invocation authenticates automatically. A no-op-equivalent (succeeds, but nothing enforces it) on a daemon where write-gating was never activated (no admin-group user exists yet) |
-| `logout` | Invalidate the current session (if any) and remove the persisted token; always succeeds, even when not currently logged in |
-| `health` | Liveness check -- minimal, no build/slot identity |
-| `boot` | Build version/time, A/B slot, kernel version (ADR-0077) |
-| `shutdown` | Stop `cixd`; powers off the host too when running as real PID 1 |
-| `reboot` | Stop `cixd`; restarts the host too when running as real PID 1 |
-| `update [--image=PATH] [--kernel=PATH]` | Write a fresh control-plane squashfs and/or kernel to the inactive A/B slot; does not reboot |
-| `backup [--output=PATH]` | Bundle platform config state; prints it (or `--json`) by default, `--output=` saves verbatim for `restore --input=` |
-| `restore --input=PATH` | Write a previously-saved bundle back; does not reboot or hot-reload |
-| `backup-config show` | Which disk (if any) automatic backup snapshots write to, whether enabled, interval (ADR-0141) |
-| `backup-config set [--disk=NAME\|--clear-disk] [--enable\|--disable] [--interval-hours=N]` | Only the fields given are changed; target disk must carry the `backup` role |
-| `backup-config status` | Outcome of the most recent backup-snapshot attempt (manual or automatic) |
-| `backup-config snapshot-now` | Write the same bundle `backup` produces to the configured disk right now |
+| `login [--username=NAME] [--password=PASS]` | Authenticate. Prompts for whichever is not given, with echo off for the password. Saves the session token to `~/.cixctl_token` (mode `0600`). Succeeds with nothing enforced on a daemon where write-gating was never activated |
+| `logout` | End the current session, if any, and remove the saved token. Always succeeds |
 | `site show` | This install's `instance_name`/`site_name`/`domain_suffix` |
 | `site set [--instance-name=NAME] [--site-name=NAME] [--domain-suffix=NAME]` | Set them |
-| `management-network show` | The interface, address, prefix and gateway this box answers on — what it will come up on after a reboot, read back from `net.conf` |
-| `management-network set --ip=A.B.C.D --prefix=N [--interface=IF] [--gateway=A.B.C.D \| --no-gateway]` | Move `cixd` to another interface, address, subnet or gateway. Applies live, then persists, so it survives a reboot. Creates the management network if the box has none (a blank-interface install). Omitted `--interface`/`--gateway` keep the current ones; `--no-gateway` removes the default route. Refused before anything moves if the address, prefix, interface or gateway cannot work, or if a subnet change would strand attached containers (which it names). Point later commands at the new address with `--host=` ([ADR-0283](../adr/0283-the-management-address-is-changeable-on-a-running-box.md)) |
-| `daemon-config show` | `cixd`'s own listen port, HTTP/HTTPS exposure, and which network is currently its management one |
-| `daemon-config set [--port=N] [--https-port=N] [--enable-http] [--disable-http] [--enable-https] [--disable-https] [--management-network=NAME] [--bind-ip=A.B.C.D \| --clear-bind-ip]` | Live, no-restart change — only the fields given are touched. `bind_ip` (ADR-0068) is a dedicated second address on the management network's own bridge; `--clear-bind-ip` reverts to that network's own address |
-| `hostauth-config show` | Current `admin_groups`/`idle_timeout_seconds`/live-LDAP backend settings (ADR-0144) |
-| `hostauth-config set [--admin-group=NAME ...] [--idle-timeout-seconds=N] [--ldap-enable \| --ldap-disable] [--ldap-server=HOST ...] [--ldap-port=N] [--ldap-tls \| --no-ldap-tls] [--ldap-base-dn=NAME]` | Read-modify-write (the underlying `PUT` is full-replacement, but this command fetches the current config first so only the flags given actually change) -- write-gating activates the instant a real user is a member of one of `admin_groups`. `--ldap-tls` (#416) runs the **daemon's own** bind over LDAPS against this host's own CA; that is a different switch from `ldap config set --client-tls`, which configures the LDAP clients inside containers. Refused 409 alongside `--ldap-enable` when no root CA is bootstrapped |
-| `hostauth-sessions ls` | Every active session (username, expires-in) -- never a raw token, before or after issuance (ADR-0152) |
-| `hostauth-sessions revoke USERNAME` | Log that user out everywhere -- revokes every active session for it at once |
-| `rolling-config show` | The configured rolling-restart jitter window (`jitter_window_seconds`) used by `container run --follow-rolling` (ADR-0124) |
-| `rolling-config set --jitter-window-seconds=N` | Set the jitter window — `0` disables jitter (restart happens immediately on every rolling reconcile) |
-| `pkg-build-config show` | The configured pkg install/hostbuild concurrency ceiling (`max_concurrent_jobs`, default 10, ADR-0157) |
-| `pkg-build-config set --max-concurrent-jobs=N` | Set it — 1-10; lowering it doesn't disrupt jobs already in flight, only future ones |
-| `tls-throttle show` | Per-source-IP throttling config for repeated failed HTTPS handshakes (ADR-0134) |
-| `tls-throttle set [--enabled \| --disabled] [--threshold=N] [--window-seconds=N] [--block-seconds=N] [--log-interval-seconds=N]` | Partial update — only the fields given are touched. `threshold` failures within `window-seconds` blocks a source, on both listeners, for `block-seconds`; loopback is never throttled. `log-interval-seconds` separately caps how often a repeatedly-failing source's own log line is written — `0` logs every failure |
-| `tls-throttle status` | Every source currently tracked for failed handshakes, live (in-memory, not persisted) |
-| `iso status` | Status of the most recent server-side installer ISO build |
-| `iso build [--disk=DEV] [--ip=A.B.C.D] [--prefix=N] [--gateway=A.B.C.D] [--interface=IFNAME] [--wait]` | Assemble a fresh installer ISO server-side; all flags optional (unset fields fall back to the daemon's own defaults) — `--wait` polls until the build finishes instead of returning immediately |
-| `routes` | The box's own real kernel IPv4 routing table (ADR-0066) — the only way to see this on a real install, no SSH/general shell |
-| `host-stats` | Host-wide uptime/load/CPU/memory/disk/network snapshot, including cpu/memory/io pressure-stall (PSI) figures (ADR-0073, ADR-0074) — the host-level counterpart to `stats NAME` below. `uptime.host` is seconds since boot, `uptime.daemon` seconds since `cixd` itself started; they diverge after a control-plane restart that was not a reboot |
-| `kmsg [--tail=N]` | The kernel's own ring buffer (`/dev/kmsg`) — dmesg over REST (issue #77). Mount failures, driver probes and OOM kills surface here, and on a real installed host with no shell this is the only way to read them. Distinct from the log store, which carries `cixd`'s own diagnostics and the audit trail |
-| `server-health [ls]` | Health of every registered LDAP/DNS/NTP/syslog server (issue #81) — state, whether it's in service, how it was probed (`tcp:PORT` is a real service check; `process` only means the container is running), and the last error |
-| `server-health drain KIND NAME` / `server-health undrain KIND NAME` | Take one deliberately out of / back into service (maintenance). Persisted across a daemon restart, unlike the observed health state. A drained or unhealthy server is withheld from the client config Cix generates |
-| `process ls` | Every real process on the box (a direct `/proc` scan), each correlated to a container by its own real host ppid chain, if any (ADR-0131) |
-| `process kill PID` | A real, immediate SIGKILL; refuses pid 1 and this daemon's own pid |
-| `ping HOST` | Real ICMP echo against a literal IPv4 address (ADR-0075) — waits ~2s max, exits nonzero if unreachable |
-| `resolv [show]` | The host's own outbound DNS resolver config (ADR-0076) |
-| `resolv set [--nameserver=A.B.C.D ...]` | Replace it (repeatable flag, up to 3) — takes effect immediately, no reboot; no flags clears it |
-| `sysctl [show]` | Every host-level sysctl currently persisted for reapply at boot (ADR-0160) — not the full kernel sysctl tree |
-| `sysctl get KEY` | The true current live value of one host-level sysctl (persisted or not), e.g. `net.ipv4.ip_forward` |
-| `sysctl set KEY --value=V [--value=V ...] [--no-persist]` | Live write against the host's real `/proc/sys` — no key allowlist, dots translate to slashes. Repeat `--value=` for a tuple-shaped key (e.g. `net.ipv4.ip_local_port_range --value=32768 --value=60999`). Persists for reapply at every boot unless `--no-persist` is given |
-| `sysctl rm KEY` | Remove a key from the persisted boot-apply list only — never touches the live value |
-| `kmod [ls]` | Every currently-loaded kernel module (live `/proc/modules`, ADR-0159) |
-| `kmod show NAME` | Real `modinfo`: description, params, depends, in-tree vs. out-of-tree — for a module that's built/available whether loaded or not |
-| `kmod load NAME [--option=KEY=VALUE ...]` | Real `modprobe`; no `--option=` falls back to this module's own persisted `kmod-config` default options |
-| `kmod unload NAME` | Real `modprobe -r` (reverse-dependency-aware) |
-| `kmod-config [ls]` | Every module with a persisted default-options and/or autoload entry |
-| `kmod-config set NAME [--option=KEY=VALUE ...] [--autoload \| --no-autoload]` | Read-modify-write — only the fields given are touched |
-| `kmod-config rm NAME` | Clear a module's persisted config entirely — never touches whether it's currently loaded |
-| `kmod-build [--version=VERSION] [--symbol=CONFIG_FOO ...] [--upgrade] [--wait] [--keep-on-failure]` | An ordinary `pkg hostbuild kernel` under the hood, gaining extra `=m` module symbols merged into the same curated kernel config (ADR-0159 Phase B) — needs a reboot onto the new `bzImage` (A/B cutover) to actually take effect. `--keep-on-failure` (ADR-0175) preserves a crashing kernel/toolchain build container for real debugging instead of losing it on failure |
-| `time [show]` | The host's current date/time (ADR-0110) |
-| `time set --unixtime=N` | Manually set the host clock (real `clock_settime()`, immediate, no reboot) |
-| `ntp config [show]` | Upstream NTP server address list used to sync the host clock (ADR-0110) |
-| `ntp config set [--server=A.B.C.D ...]` | Replace it (repeatable flag, up to 3); no flags clears it |
-| `ntp status` | Most recent sync attempt's outcome/source/time |
-| `ntp sync` | Trigger a sync attempt now, rather than waiting for the next hourly automatic one |
-| `ntp server register --container=NAME` | Register a running container as an available internal NTP time source, mirrors `dns server register`/`ldap server register` |
-| `ntp server ls` | List registered NTP server bindings |
-| `ntp server unregister CONTAINER` | Unregister one (does not touch the container itself) |
-| `syslog target register --container=NAME` | Register a running container (e.g. `syslog-1`/`syslog-2` running `sysklogd`) as an optional, redundant syslog forward target — every container-sourced log line is also sent to it as a real RFC 3164 UDP datagram, alongside the consolidated log store (ADR-0127) |
-| `syslog target ls` | List registered syslog forward targets |
-| `syslog target unregister CONTAINER` | Unregister one (does not touch the container itself) |
-| `routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]` | Add a real kernel route (ADR-0067 Part 3); or `--default --gateway=A.B.C.D` for the default route |
-| `routes rm --dest=A.B.C.D --prefix=N` | Remove one; or `--default` for the default route |
-| `swap` | Whether the host swap file is enabled (ADR-0069) and which disk (if any) it's placed on |
-| `swap enable --size-mb=N [--disk=NAME]` | Create and activate a swap file of this size; `--disk=` places it on a disk carrying the `swap` role (issue #28) instead of the default OS-disk location |
-| `swap disable` | Deactivate and remove it |
-| `dhcp show` | Every DHCP-configured network and every static reservation (ADR-0197) |
-| `dhcp leases` | Current leases, read from the serving container's own lease file. A lease is not a DNS record -- it resolves anyway, because the same dnsmasq issues it and answers for it |
-| `dhcp server ls \| add CONTAINER \| rm CONTAINER` | Registered DHCP servers. `rm` also drops the server from every range that named it, and disables any range left with none |
-| `dhcp enable --network=NAME --range=START-END --server=CONTAINER [--server=CONTAINER ...] [--lease-seconds=N] [--router=IP]` | Enable DHCP on a network. `--server=` is repeatable: dnsmasq has no failover protocol, so a range named to more than one server is split into disjoint slices -- all answer, none share an address. **Changes to a range restart the servers that serve it**, since dnsmasq reads ranges only at startup |
-| `dhcp disable --network=NAME` | Turn it off |
-| `dhcp static add --mac=M --ip=IP [--hostname=NAME]` | Reserve an address for a MAC. Live -- no restart |
-| `dhcp static rm MAC` | Remove a reservation |
-| `zswap show` | The compressed swap cache (issue #51): configured intent, what the kernel actually reports, and the compressors this kernel was built with. A disagreement between the first two means the setting did not take |
-| `zswap set [--enable \| --disable] [--max-pool-percent=N] [--compressor=NAME]` | Configure it. On by default -- it costs nothing until the box is actually swapping |
-| `logs [--source=kernel\|cixd\|audit\|container] [--level=...] [--container=NAME] [--regex=PATTERN] [--tail=N] [--since=UNIXTS]` | The consolidated log — kernel dmesg, cixd diagnostics, a per-request audit trail, and every container's own stdout/stderr, transparently (ADR-0070, ADR-0126) — `--container=` filters to one container's own lines, `--regex=` is a POSIX extended regex (case-insensitive) matched against the message text |
-| `logs config [--max-bytes=N] [--min-level=LEVEL]` | Show or set the log's total size cap and/or minimum severity floor (`emerg`/`alert`/`crit`/`err`\|`error`/`warning`\|`warn`/`notice`/`info`/`debug`, default `debug`) -- either flag alone is fine, both are independent |
+| `hostauth-config show` | `admin_groups`, `idle_timeout_seconds` and the LDAP backend settings |
+| `hostauth-config set [--admin-group=NAME ...] [--idle-timeout-seconds=N] [--ldap-enable \| --ldap-disable] [--ldap-server=HOST ...] [--ldap-port=N] [--ldap-tls \| --no-ldap-tls] [--ldap-base-dn=NAME]` | Change only the flags given (the command fetches the current config first). Write-gating activates as soon as a real user is a member of one of `admin_groups`. `--ldap-tls` (#416) is the daemon's own bind over LDAPS; `ldap config set --client-tls` is the separate switch for LDAP clients in containers. `--ldap-enable` is refused (409) when no root CA is bootstrapped |
+| `hostauth-sessions ls` | Every active session (username, expires-in), never a token ([ADR-0152](../adr/0152-hostauth-session-introspection.md)) |
+| `hostauth-sessions revoke USERNAME` | Revoke every session that user holds |
 
-See [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and [`docs/guides/staying-updated.md`](staying-updated.md) for `update`'s real operator runbooks, not just the flag syntax.
+## Boot, updates and the control plane
+
+| Command | |
+|---|---|
+| `health` | Liveness check |
+| `boot` | Build version and time, A/B slot, kernel version |
+| `shutdown` | Stop `cixd`; powers the host off too when `cixd` is PID 1 (an installed system) |
+| `reboot` | Stop `cixd`; restarts the host too when `cixd` is PID 1 |
+| `update [--image=PATH \| --image-url=URL --image-sha256=HEX] [--kernel=PATH]` | Write a control-plane squashfs and/or a kernel to the inactive A/B slot and stage a loader entry for it. Does not reboot. `--image=`/`--kernel=` are paths already on the box; on an installed host, which has no shell, use `--image-url=` with its required `--image-sha256=` |
+| `boot-next [a\|b\|clear]` | Boot the given slot once on the next boot, then return to normal selection. No argument reports what is armed. This is the rollback tool: pinning the loader default instead is sticky and breaks the next update |
+| `boot-manager [--path=FILE \| --url=URL --sha256=HEX]` | Report or replace `\EFI\BOOT\BOOTX64.EFI`, the boot manager both slots share (#469). Does not reboot |
+| `assembly status` | What control-plane assembly is doing, and where the assembled root is (`image_path`, ready for `update --image=`) with its size, mtime and completeness |
+| `assembly start` | Assemble a fresh control-plane root now (#308). Returns at once; poll `assembly status` |
+| `esp show` | The ESP's boot configuration ([ADR-0202](../adr/0202-the-esp-is-reachable-over-rest.md)). Leads with **`will boot:`**, the entry the boot manager would choose, then every entry marked `[default]` or `[not matched]` |
+| `esp set [--default=PATTERN] [--timeout=N]` | Set `loader.conf`'s default **glob pattern** (not an entry name, #128) and/or the menu timeout. A pattern matching no entry is refused; other directives are kept |
+| `esp rm-entry NAME` | Remove one stale loader entry. The last entry for the running slot cannot be removed |
+| `boot-console show` | The boot console parameters, and the options line each loader entry carries (#24) |
+| `boot-console set [--console=NAME ...] [--extra="..."]` | Set them. `--console` is repeatable and ordered (`--console=tty0 --console=ttyS0,115200n8`). Rewrites the loader entries; takes effect at the next boot. Everything from `root=` onward is left alone |
+| `kernel-policy show` | Which kernel line this box tracks, where that channel is, and whether the running kernel is behind (#65) |
+| `kernel-policy set --channel=pinned\|longterm\|stable\|mainline` | Set the channel (kernel.org's own names). `pinned`, the default, proposes no version; the pin stays in the kernel recipe |
+| `kernel-policy refresh` | Re-read kernel.org's `releases.json`. Asynchronous |
+| `kmod-build [--version=VERSION] [--symbol=CONFIG_FOO ...] [--upgrade] [--wait] [--keep-on-failure]` | A `pkg hostbuild kernel` with extra `=m` module symbols merged into the kernel config (ADR-0159). Takes effect after a reboot onto the new kernel |
+| `iso build [--disk=DEV] [--ip=A.B.C.D] [--prefix=N] [--gateway=A.B.C.D] [--interface=IFNAME] [--wait]` | Assemble an installer ISO on the host from the latest `cix`, `kernel` and `isotools` hostbuild artifacts ([ADR-0064](../adr/0064-rest-driven-iso-assembly.md)). Every flag is optional; with none, the installer asks for everything at install time |
+| `iso status` | State, `iso_path` and error of the most recent ISO build |
+| `iso publish [--wait]` | Put the ISO and its signature in the artifact cache |
+| `signing-keys [show]` | Whether this host holds the Secure Boot signing key pair `iso build` needs, and the certificate's identity |
+| `signing-keys set --key=PATH --cert=PATH` | Install the pair ([ADR-0212](../adr/0212-signing-keys-over-rest.md)). The private key is never returned by any endpoint |
+| `signing-keys clear` | Remove it from this host |
+| `release-key [show]` | Whether this host holds the Ed25519 release-signing key, and its public half |
+| `release-key set --key=PATH` | Install it ([ADR-0220](../adr/0220-a-separate-release-signing-key.md)) |
+| `release-key clear` | Remove it from this host |
+| `factory-reset --confirm=<instance name>` | Return the box to its just-installed state and reboot. Destroys every container, image, network, registration, package state, the log store, and **every volume and all data in it**. Keeps the installed OS; forgets disk roles without reformatting the disks |
+
+Runbooks: [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and [`staying-updated.md`](staying-updated.md).
+
+## Daemon settings
+
+| Command | |
+|---|---|
+| `daemon-config show` | `cixd`'s listen ports and HTTP/HTTPS exposure |
+| `daemon-config set [--port=N] [--https-port=N] [--enable-http] [--disable-http] [--enable-https] [--disable-https]` | Live, no restart; only the flags given change |
+| `management-address show` | The one off-box address `cixd` answers on, whether it is bound, and the network derived from it ([ADR-0287](../adr/0287-the-management-address-is-the-single-truth.md)) |
+| `management-address set A.B.C.D` | Set the off-box address; the network follows from it. Live and persistent. Point later commands at the new address with `--host=` |
+| `management-address reset` | Unbind the off-box address. `127.0.0.1` stays bound |
+| `tls-throttle show` | Per-source throttling of repeated failed HTTPS handshakes (ADR-0134) |
+| `tls-throttle set [--enabled \| --disabled] [--threshold=N] [--window-seconds=N] [--block-seconds=N] [--log-interval-seconds=N]` | Change only the fields given. `threshold` failures within `window-seconds` block a source on both listeners for `block-seconds`; loopback is never throttled. `log-interval-seconds` limits how often one source's failures are logged; `0` logs every one |
+| `tls-throttle status` | Every source currently tracked (in memory, not persisted) |
+| `control-plane-reservation show` | CPU and memory held back for the daemon, the host totals, and the ceiling applied to the `cix-workload` cgroup that every container and build runs under (#86) |
+| `control-plane-reservation set [--enabled \| --disabled] [--cpu-percent=N] [--memory-bytes=N]` | Change it; applied to the live cgroup immediately. `cpu_percent` is 1-50 |
+| `rolling-config show` | The rolling-restart jitter window (`jitter_window_seconds`) used by `container run --follow-rolling` (ADR-0124) |
+| `rolling-config set --jitter-window-seconds=N` | 0-3600; `0` restarts immediately on every rolling reconcile |
+| `pkg-build-config show` | How many package jobs may run at once (`max_concurrent_jobs`, default 10) and the memory/CPU ceiling of each build sandbox (ADR-0157) |
+| `pkg-build-config set [--max-concurrent-jobs=N] [--memory-max=BYTES] [--cpu-max="QUOTA PERIOD"]` | Change only the flags given. `max-concurrent-jobs` is 1-10; lowering it affects only future jobs. `--memory-max=0` or `--cpu-max=""` means unlimited; `cpu-max` is raw cgroup v2 `cpu.max` syntax, as for `container run --cpu-max=` |
+
+## Backup and scheduling
+
+| Command | |
+|---|---|
+| `backup [--output=PATH]` | The platform configuration bundle (container definitions, networks, DNS records, package state and recipes). No workload data, no image content, no keys. Prints it by default; `--output=` saves it byte-for-byte for `restore` |
+| `restore --input=PATH` | Write a saved bundle back. Does not reboot or hot-reload |
+| `backup-config show` | Which disk automatic backup snapshots go to, and whether they are enabled (ADR-0141). When they run is a schedule (below) |
+| `backup-config set [--disk=NAME \| --clear-disk] [--enable \| --disable]` | Change only the fields given. The disk must carry the `backup` role |
+| `backup-config status` | Outcome of the most recent snapshot attempt |
+| `backup-config snapshot-now` | Write the `backup` bundle to the configured disk now |
+| `schedule ls` | Everything this host does on a clock ([ADR-0257](../adr/0257-one-scheduler-structured-schedules.md)) |
+| `schedule actions` | The actions a schedule may run |
+| `schedule show NAME` / `schedule rm NAME` | Inspect / remove one |
+| `schedule run NAME` | Run it now, even if disabled |
+| `schedule set NAME --action=A <when> [--window-minutes=N] [--catch-up] [--disabled]` | Create or replace one. `<when>` is exactly one of `--every-seconds=N`, `--every-minutes=N`, `--every-hours=N`, `--every-days=N`, `--daily-at=HH:MM`, or `--weekly-on=sun\|mon\|… --weekly-at=HH:MM`. `--catch-up` runs once at startup if the time passed while the daemon was down; `--disabled` stores it without running it |
+
+## Observing the host
+
+| Command | |
+|---|---|
+| `host-stats` | Host-wide uptime, load, CPU, memory, disk and network, including pressure-stall (PSI) figures (ADR-0073, ADR-0074). `uptime.host` is seconds since boot, `uptime.daemon` seconds since `cixd` started |
+| `stalls` | Times the control plane stopped going round its loop, with the kernel function it was sleeping in and the request it was serving (#100). Recorded by a separate watchdog process |
+| `kmsg [--tail=N]` | The kernel ring buffer (`/dev/kmsg`) over REST (#77) |
+| `logs [--source=kernel\|cixd\|audit\|container] [--level=...] [--container=NAME] [--regex=PATTERN] [--tail=N] [--since=UNIXTS]` | The consolidated log: kernel messages, `cixd` diagnostics, the per-request audit trail and every container's stdout/stderr (ADR-0070, ADR-0126). `--regex=` is a case-insensitive POSIX extended regex on the message text |
+| `logs config [--max-bytes=N] [--min-level=LEVEL]` | Show or set the log's size cap and minimum severity (`emerg`/`alert`/`crit`/`err`\|`error`/`warning`\|`warn`/`notice`/`info`/`debug`, default `debug`) |
+| `process ls` | Every process on the box (a `/proc` scan), each matched to a container through its host parent chain, if any (ADR-0131) |
+| `process kill PID` | Immediate `SIGKILL`; refuses pid 1 and the daemon's own pid |
+| `routes [ls]` | The kernel IPv4 routing table (ADR-0066) |
+| `routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]` / `routes add --default --gateway=A.B.C.D` | Add a route |
+| `routes rm --dest=A.B.C.D --prefix=N` / `routes rm --default` | Remove one |
+| `ping HOST` | ICMP echo to an IPv4 address (ADR-0075); waits about 2 s and exits nonzero if unreachable |
+| `server-health [ls]` | Health of every registered LDAP/DNS/NTP/syslog server (#81): state, whether it is in service, how it was probed (`tcp:PORT` is a service check; `process` only means the container runs), and the last error |
+| `server-health drain KIND CONTAINER` / `server-health undrain KIND CONTAINER` | Take one out of or back into service. `KIND` is `ldap`, `dns`, `ntp` or `syslog`. Persists across a daemon restart. A drained or unhealthy server is left out of the client configuration Cix generates |
+| `software` | What is declared (has a recipe) against what is installed. Anything installed with **no recipe** cannot be rebuilt from source control |
+
+## Tuning the host
+
+| Command | |
+|---|---|
+| `sysctl [show]` | Every host-level sysctl persisted for reapply at boot (ADR-0160) |
+| `sysctl get KEY` | The live value of one key, persisted or not |
+| `sysctl set KEY --value=V [--value=V ...] [--no-persist]` | Write `/proc/sys` live. No allowlist; host-auth write-gating is the only access control. Repeat `--value=` for a tuple (`net.ipv4.ip_local_port_range --value=32768 --value=60999`). Persisted for boot unless `--no-persist` |
+| `sysctl rm KEY` | Stop reapplying it at boot; the live value is untouched |
+| `kmod [ls]` | Loaded kernel modules (`/proc/modules`, ADR-0159) |
+| `kmod show NAME` | `modinfo`: description, parameters, dependencies, in-tree or not |
+| `kmod load NAME [--option=KEY=VALUE ...]` | `modprobe`; with no `--option=`, the module's persisted `kmod-config` options apply |
+| `kmod unload NAME` | `modprobe -r` |
+| `kmod-config [ls]` | Modules with persisted default options and/or autoload |
+| `kmod-config set NAME [--option=KEY=VALUE ...] [--autoload \| --no-autoload]` | Change only the fields given |
+| `kmod-config rm NAME` | Clear both fields; the module's loaded state is untouched |
+| `ksm show` | Kernel samepage merging (#50) |
+| `ksm set [--enable \| --disable] [--pages-to-scan=N] [--sleep-millisecs=N]` | Configure the scanner. Nothing merges until a container opts in with `container run --ksm` |
+| `zswap show` | The compressed swap cache (#51): configured intent, what the kernel reports, and the available compressors. A disagreement between the first two means the setting did not take |
+| `zswap set [--enable \| --disable] [--max-pool-percent=N] [--compressor=NAME]` | Configure it |
+| `swap [status]` | Whether the host swap file is enabled (ADR-0069) and which disk it is on |
+| `swap enable --size-mb=N [--disk=NAME]` | Create and activate a swap file; `--disk=` puts it on a disk carrying the `swap` role (#28) |
+| `swap disable` | Deactivate and remove it |
+| `time [show]` | The host's date and time (ADR-0110) |
+| `time set --unixtime=N` | Set the host clock (`clock_settime()`) |
+| `ntp config [show]` | Upstream NTP servers used to set the host clock |
+| `ntp config set [--server=A.B.C.D ...]` | Replace them (up to 3); no flags clears them |
+| `ntp status` | Outcome, source and time of the most recent sync |
+| `ntp sync` | Sync now |
+| `ntp server register --container=NAME` / `ntp server ls` / `ntp server unregister CONTAINER` | Register a running container as an internal NTP source |
+| `resolv [show]` | The host's outbound DNS resolvers (ADR-0076) |
+| `resolv set [--nameserver=A.B.C.D ...]` | Replace them (up to 3), live; no flags clears them |
+| `syslog target register --container=NAME` / `syslog target ls` / `syslog target unregister CONTAINER` | Forward every container log line to a running container as an RFC 3164 UDP datagram, in addition to the log store (ADR-0127) |
+
+## Storage
+
+See [`storage.md`](storage.md) for how disks, roles and filesystems fit together.
+
+| Command | |
+|---|---|
+| `storage [ls]` | Block devices and their partitions, marking the OS disk |
+| `storage free-space NAME` | Room left in the disk's partition table: the total, and the largest single gap, which bounds one new partition. Read by `sfdisk` from the disk itself |
+| `storage partition-table NAME` | Destructive: write an empty GPT to a non-OS whole disk with no role or partition in use |
+| `storage add-partition NAME --name=PART_NAME [--size-mib=N]` | Append one partition; omit `--size-mib` for the rest of the disk |
+| `storage grow-partition DISK_NAME PARTITION_NAME [--size-mib=N]` | Grow a partition and its filesystem; omit the size to take all free space after it. Grow only. A mounted btrfs grows online; anything else must be unmounted first |
+| `storage rm-partition DISK_NAME PARTITION_NAME` | Remove one partition; refused (409) while it has a role |
+| `storage format NAME [--fs-type=ext4\|btrfs]` | Destructive: `mkfs` and mount a role-assigned, non-OS disk (btrfs by default). Refused (409) against an active placement |
+| `storage format-status NAME` | State, mount path and error of the most recent format |
+| `storage unmount NAME` | `umount2(2)` a mounted non-OS disk (#34); data untouched. Refused (409) if it is an active placement or holds a running container's storage |
+| `storage-role create --disk=NAME --role=container-storage\|backup\|rebuildable-storage\|log-storage\|swap` | Assign a role to a disk or partition (never the OS disk) |
+| `storage-role ls` / `storage-role rm NAME` | List roles (with whether each disk is present) / remove one; refused (409) while the disk is an active placement |
+| `storage logs [show]` / `storage logs migrate [--disk=NAME]` / `storage logs migrate-status` | Where the log store lives; move it to a disk carrying `log-storage`, or back to the OS disk with no `--disk=` (ADR-0141) |
+| `storage rebuildable [show]` / `storage rebuildable migrate [--disk=NAME]` / `storage rebuildable migrate-status` | The same for images, packages and artifacts (`rebuildable-storage`) |
 
 ## Containers
 
-Every container operation is a subcommand of `container` — one noun-based namespace matching `dns`/`ldap`/`ntp`/etc.'s own `<noun> <verb>` shape (ADR-0132, issue #74). There are no bare top-level container verbs (no plain `ps`/`run`/`rm`/…).
+Every container operation is a subcommand of `container`. `console NAME` is also accepted as a shorthand for `container console NAME`.
 
 | Command | |
 |---|---|
-| `container ls` | List all containers (running, stopped, and exited) |
-| `container drift` | Is this box in the state it is supposed to be in? Lists containers that should be running and are not, and **exits 1** if any have — so a deploy script can gate on it rather than an operator having to read the output. A container an operator stopped is listed separately and does **not** set the exit status; one whose policy is `unless-stopped` and was stopped is not listed at all, since that policy honours the stop permanently. Exit 2 means the question could not be asked (unreachable daemon), which must never look like a clean box. Worth running after a reboot: a deploy can succeed, the daemon can come up healthy, and a container that should be running can still be missing (#268) |
-| `container run --name=NAME --image=IMAGE [flags...] -- CMD [ARGS...]` | Create and start a container — see below for the full flag list |
+| `container ls [--all]` | List containers (running, stopped and exited). `--all` includes the platform's own build containers (#426) |
+| `container drift` | Containers that should be running and are not. **Exits 1** if any are listed, so a script can gate on it. A container an operator stopped is listed separately and does not set the exit status; a stopped `unless-stopped` container is not listed. Exit 2 means the daemon could not be asked (#268) |
+| `container run --name=NAME --image=IMAGE --service=NAME=/path [args] [flags...]` | Create and start a container; full flag set below |
 | `container inspect NAME` | Show one container |
-| `container edit NAME --json='{...}'` | Edit the stored definition in place — cmd, env, files, limits, volumes (issue #11). Applies at the container's next start; the output says so, and says when a restart is needed. `name` and the index fields (`restart`/`depends_on`/`readiness`/`follow_rolling`) are refused with a 400 naming them |
-| `container stop NAME` | Kill it now, keep its persisted definition — it reappears as `stopped` (only `container rm` removes it; ADR-0181) |
-| `container start NAME` | Bring a stopped or exited container back, no daemon restart needed |
-| `container pause NAME` / `container unpause NAME` | Freeze/thaw via the real cgroup v2 freezer, not `SIGSTOP` |
-| `container stats NAME` | Real, host-side CPU/memory/disk/network usage, including this container's own cpu/memory/io pressure-stall (PSI) figures (ADR-0074), one point-in-time snapshot |
-| `container migrate-storage NAME [--disk=NAME]` | Move a container's own overlay storage to a disk carrying the `container-storage` role (or `--disk=` omitted for the default OS-disk placement) — briefly stops and automatically restarts the container for the final cutover; requires `restart` other than `"no"` (ADR-0142) |
-| `container migrate-storage-status NAME` | State/disk/error of the most recent (or running) container-storage migration |
-| `container console NAME [--console=NAME]` | Attach to one of the consoles the container **declares** ([#248](https://git.home.arpa/itdlabs/cix/issues/248)). `--console=` picks which; omitted means the first declared. A container that declares none has no console and says so &mdash; that is the correct answer for an image with no shell, which is most of this platform's own. There is no free-text command: [ADR-0261](../adr/0261-reaching-inside-a-container.md) removed `--cmd=` and the separate `exec` endpoint together, so a container is reachable only through what its own recipe declares. To debug with something new, add it to the container's `consoles` and re-apply &mdash; the set is meant to be edited when the need changes |
-| `container files get NAME --path=/some/path [--output=PATH]` | Read one file's raw bytes back out of a container's rootfs; stdout if `--output=` omitted |
-| `container files put NAME --path=/some/path --file=LOCAL_PATH [--mode=0644]` | Write/overwrite one file inside an already-existing container, live and ephemeral, without a recreate (ADR-0153) |
-| `container rm NAME` | Stop (if running), remove, and forget the persisted definition — the only way to make a container truly gone (ADR-0181) |
-| `container recipe add --name=NAME --file=PATH` | Publish a container recipe (ADR-0151) -- content must already be a full `POST /containers` body, its own `"name"` matching NAME |
-| `container recipe show NAME` | Print a recipe's own raw, unsubstituted content |
-| `container recipe rm NAME` | Remove a stored container recipe |
-| `container recipe ls` | List container recipes (metadata only) |
-| `container apply-recipe NAME [--secret=KEY=VALUE ...]` | Render `NAME`'s own stored recipe (substituting `{{SECRET:KEY}}` tokens, plus `{{LDAP:*}}` tokens from `ldap config`'s stored client settings) and create the container -- always synchronous, real `POST /containers` under the hood |
-| `container network attach NAME --network=NETWORK [--ip=A.B.C.D] [--ifname=NAME]` | Attach a network to an already-running container, live, without a recreate (ADR-0156). `--ifname=` names the interface inside the container ([ADR-0259](../adr/0259-an-interface-may-be-named.md)); omit it for the positional `eth<N>` |
-| `container network detach NAME NETWORK` | Detach a live-attached network; refuses (409) a network attached at container creation |
-| `container device attach NAME ID` | Live-grant one more device to an already-running container, no recreate (ADR-0161 Phase D) — `ID` is a real device id or devicemap name, resolved fresh |
-| `container device detach NAME ID` | Detach a live-attached device; refuses (409) a device granted at container creation |
+| `container edit NAME --json='{...}'` | Edit the stored definition (#11). Fields given replace those fields; `null` removes one. Applies at the next start. `name`, `restart`, `restart_delay_seconds`, `depends_on`, `follow_rolling` and `follow_rolling_jitter_seconds` cannot be edited (`handle_container_patch()`); recreate the container to change them |
+| `container start NAME` | Start a stopped or exited container |
+| `container stop NAME` | Stop it and keep its definition; it shows as `stopped` ([ADR-0181](../adr/0181-persist-all-containers-restart-decoupled-from-existence.md)) |
+| `container pause NAME` / `container unpause NAME` | Freeze / thaw through the cgroup v2 freezer |
+| `container rm NAME` | Stop it if running, and delete it and its definition |
+| `container service start\|stop\|restart NAME SERVICE` | Act on one declared service. A stop holds until the next container start |
+| `container stats NAME` | Host-side CPU, memory, disk and network usage, including pressure-stall figures (ADR-0074) |
+| `container console NAME [--console=NAME]` | Attach to a console the container **declares** (#248). `--console=` picks which; the default is the first declared. A container that declares none says so. There is no free-text command ([ADR-0261](../adr/0261-reaching-inside-a-container.md)) |
+| `container files get NAME --path=/some/path [--output=PATH]` | Read one file's bytes out of the container; stdout if `--output=` is omitted |
+| `container files put NAME --path=/some/path --file=LOCAL_PATH [--mode=0644]` | Write one file into an existing container, live and not persisted (ADR-0153) |
+| `container migrate-storage NAME [--disk=NAME]` | Move the container's overlay storage to a disk carrying `container-storage`, or back to the OS disk with no `--disk=` (ADR-0142). Briefly restarts it |
+| `container migrate-storage-status NAME` | State, disk and error of the most recent migration |
+| `container network attach NAME --network=NETWORK [--ip=A.B.C.D] [--ifname=NAME]` | Attach a network to a running container, live and not persisted (ADR-0156). `--ifname=` names the interface ([ADR-0259](../adr/0259-an-interface-may-be-named.md)) |
+| `container network detach NAME NETWORK` | Detach a live-attached network; a network from creation is refused (409) |
+| `container device attach NAME ID` | Grant one more device to a running container; `ID` is a device id or devicemap name (ADR-0161) |
+| `container device detach NAME ID` | Remove a live-attached device; a device from creation is refused (409) |
+| `container volume attach NAME --volume=VOLUME --path=/mount/point [--read-only]` | Add a volume to the definition; see [Volumes](#volumes) |
+| `container volume detach NAME VOLUME` | Remove it from the definition; the volume's data is untouched |
 
 `container run`'s full flag set:
 
 ```
 container run --name=NAME --image=IMAGE
-    [--memory-max=BYTES] [--pids-max=N] [--cpu-max="QUOTA PERIOD"] [--cpuset=0-1,3]
-    [--memory-swap-max=BYTES]   -- 0 = may not swap at all; omit = swap unlimited
-    [--disk-quota=BYTES] [--disk=NAME]
-    [--network=NAME[:IP] ...] [--ip-forward]
-    [--userns] [--ldap-client] [--ldap-allow-group=NAME ...] [--capture-output]
-    [--dns-register]
-    [--pki-issue | --pki-cert=NAME] [--pki-cert-dir=PATH] [--pki-days=N]
+    --service=NAME=/path [args] ...
+    [--oneshot=NAME=/path [args] ...] [--after=NAME:DEP[,DEP] ...]
+    [--ready=NAME:tcp:PORT|socket:PATH|command:/path [args] ...]
+    [--on-exit=NAME:restart|stop|fail-container ...]
+    [--console=NAME=/path [args] ...]
+    [--memory-max=BYTES] [--memory-swap-max=BYTES] [--pids-max=N]
+    [--cpu-max="QUOTA PERIOD"] [--cpuset=0-1,3]
+    [--disk-quota=BYTES] [--disk=NAME] [--volume=NAME:/path[:ro] ...]
+    [--network=NAME[:IP] ...] [--ip-forward] [--route=DEST/PREFIX:VIA ...]
+    [--interface=IFNAME ...] [--dns-register] [--dns-server=A.B.C.D ...]
+    [--device=ID ...] [--optional-device=ID ...] [--cap-add=CAP_NAME ...]
+    [--userns] [--ksm] [--capture-output]
+    [--ldap-client] [--ldap-allow-group=NAME ...]
     [--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME] [--ldap-uid=N] [--ldap-secret-dir=PATH]
-    [--route=DEST/PREFIX:VIA ...]
-    [--device=ID ...] [--optional-device=ID ...] [--interface=IFNAME ...]
-    [--cap-add=CAP_NAME ...]
+    [--pki-issue | --pki-cert=NAME] [--pki-cert-dir=PATH] [--pki-days=N]
     [--restart=always|on-failure|unless-stopped] [--restart-delay=N]
     [--follow-rolling] [--follow-rolling-jitter-seconds=N]
     [--depends-on=NAME ...]
-    [--readiness-tcp-port=N [--readiness-timeout=N]]
-    [--file=CONTAINER_PATH=LOCAL_PATH[:MODE] ...] [--file-owner=CONTAINER_PATH:UID:GID ...] [--sysctl=KEY=VALUE ...]
-    [--env=KEY=VALUE ...]
-    [--dns-server=A.B.C.D ...]
-    -- CMD [ARGS...]
+    [--file=CONTAINER_PATH=LOCAL_PATH[:MODE] ...] [--file-owner=CONTAINER_PATH:UID:GID ...]
+    [--sysctl=KEY=VALUE ...] [--env=KEY=VALUE ...]
 ```
 
-Each flag maps directly to the matching `ContainerCreateRequest` field — see [`docs/api/README.md`](../api/README.md#creating-a-container) for what each one actually means and its validation rules (network membership, route format, restart-policy semantics, readiness checks, and so on); this reference only lists the CLI surface, not the payload contract behind it. `--optional-device=ID` (ADR-0161 Phase B) is the one exception to "a bad device id fails creation": unlike `--device=ID`, a currently-unresolvable `--optional-device=` still creates the container, without that grant — the reference itself is remembered and matched against real hardware as it appears, see [`administration.md`](administration.md#device-hotplug) for the operator-facing walkthrough.
+A container runs its declared services, started in `--after` order by `cix-init`, which is PID 1 in every container ([ADR-0260](../adr/0260-a-container-declares-services-not-a-command.md)). A container with one daemon declares one `--service=`. `--memory-swap-max=0` forbids swapping; omitting it leaves swap unlimited. Each flag maps to a `ContainerCreateRequest` field; see [Creating a container](../api/README.md#creating-a-container) for what each means and how it is validated. `--optional-device=ID` differs from `--device=ID` in one way: an unresolvable reference still creates the container, without that grant, and is matched against hardware as it appears (ADR-0161; see [Device hotplug](administration.md#device-hotplug)).
 
+### Declaring a container's services and consoles
+
+`--service=`, `--oneshot=` and `--console=` each take `NAME=/absolute/path [args...]` as **one** shell argument, so quote it. The value is split on spaces with no further quoting, so an argument that itself contains a space cannot be written this way; use a deployment (below), which declares these as JSON arrays.
+
+```
+cixctl container run --name=jump --image=jumpbox \
+  --console='shell=/usr/bin/bash -l' \
+  --console='logs=/usr/bin/tail -F /var/log/messages' \
+  --oneshot='hostkeys=/usr/bin/ssh-keygen -A' \
+  --service='nslcd=/usr/sbin/nslcd -d' --ready=nslcd:socket:/run/nslcd/socket \
+  --service='sshd=/usr/sbin/sshd -D -e' --after=sshd:hostkeys,nslcd
+```
+
+`--console=` is repeatable up to four times (#248). The first declared is what `container console NAME` attaches to with no `--console=`. `argv[0]` must be an absolute path: it is `execve`'d directly, and a bare name is refused at creation.
+
+Declaring no console is valid: an image holding one static binary and no shell has nothing for a console to run, and both the CLI and the dashboard say so.
+
+### Full-screen programs in a console
+
+`container console` gives the remote program a real terminal. It sends your terminal's size and `$TERM` when it attaches, and a new size when you resize the window ([ADR-0242](../adr/0242-a-console-is-a-sized-terminal-of-a-declared-type.md)), so `htop`, `btop` and `vim` fill the window.
+
+```
+cixctl container console jump --console=shell
+```
+
+Two requirements:
+
+- The container must carry the terminfo entry your `$TERM` names. The `ncurses` package installs the full database (2903 entries, including `xterm` and `xterm-256color`), and anything linking `libncursesw` depends on it.
+- Your own stdio must be a terminal. When it is piped, the session uses `xterm-256color` at 80×24.
+
+The web dashboard's console is a real VT as well ([ADR-0243](../adr/0243-the-dashboard-terminal-is-a-real-vt.md)).
+
+## Deployments
+
+A deployment is a stored container definition: what to run and where. Deployment recipes live in the [cix-recipes](https://git.home.arpa/itdlabs/cix-recipes) repository as `recipes/deployment/<name>@<version>.json` ([ADR-0308](../adr/0308-recipes-are-their-own-repository-flat.md)) and arrive through `pkg sync`, or are published directly:
 
 | Command | |
 |---|---|
+| `deployment add --name=NAME --file=PATH` | Publish one ([ADR-0151](../adr/0151-container-recipes.md)). The content is a full `POST /containers` body whose `"name"` matches `NAME` |
+| `deployment show NAME` | Its raw, unsubstituted content |
+| `deployment ls` / `deployment rm NAME` | List / remove. Removing one does not affect containers already created from it |
+| `deployment apply NAME [--secret=KEY=VALUE ...]` | Render it, substituting `{{SECRET:KEY}}` tokens and `{{LDAP:*}}` tokens from `ldap config`, and create the container through the same path as `POST /containers` |
+
+## Volumes
+
+A volume's lifetime is independent of any container: deleting a container never removes its volumes. See [ADR-0183](../adr/0183-persistent-volumes.md) for the reasoning and [Persistent volumes](../api/README.md#persistent-volumes-issue-88-adr-0183) for the contract.
+
+| Command | |
+|---|---|
+| `volume create --name=NAME [--disk=DISK] [--owner-uid=N --owner-gid=N]` | Create one. Without an owner it belongs to root, which a non-root workload cannot write to (#102) |
+| `volume owner NAME --uid=N --gid=N [--recursive]` | Hand it to an account. `--recursive` also rewrites ownership of what is already inside |
+| `volume owner NAME --root` | Hand it back to root |
+| `volume ls` / `volume show NAME` | List / inspect one (disk, host path, creation time) |
+| `volume usage NAME` | Space used, measured now |
+| `volume quota NAME BYTES` | A kernel-enforced size limit; `0` removes it |
+| `volume backups NAME [--enable \| --disable] [--retain=N] [--while-running=refuse\|pause\|allow]` | Show or set the backup policy (opt-in). `--while-running` decides what happens when a container uses it: `refuse` skips, `pause` freezes the users for the copy, `allow` copies live (crash-consistent) |
+| `volume backup NAME` | Take one snapshot now |
+| `volume restore NAME SNAPSHOT` | **Replace** the volume's contents with that snapshot |
+| `volume migrate NAME [--disk=DISK]` | Move its data to another disk or partition, or back to the OS disk with no `--disk=`. Refused while a container using it runs |
+| `volume rm NAME` | **Delete its data** permanently. Refused while any container definition references it (the error names which) |
+
+Attach one at creation with `container run --volume=NAME:/path[:ro]`, or later with `container volume attach`. The volume must exist; an unknown name fails creation. A volume that cannot be mounted, or a `:ro` one that cannot be remounted read-only, fails the container's start. An attach to a running container takes effect immediately as well as being recorded; otherwise it applies at the next start, and the command says which. Containers reference volumes by name, so several can share one; `container inspect NAME` lists a container's volumes.
 
 ## Networks
 
 | Command | |
 |---|---|
-| `network create --name=NAME --subnet=A.B.C.D --prefix=N [--address=A.B.C.D] [--alloc-start=IP --alloc-end=IP]` | Create a network — no `--address=` means pure L2 (the default); `--alloc-start/--alloc-end` bound the auto-IP window (issue #70; a management network skips `.1` by default regardless) |
+| `network create --name=NAME --subnet=A.B.C.D --prefix=N [--address=A.B.C.D] [--alloc-start=IP --alloc-end=IP]` | Create a network. Without `--address=` it is pure L2 with no host address. `--alloc-start`/`--alloc-end` bound the automatic IP range (#70) |
+| `network set-pool NAME [--alloc-start=IP] [--alloc-end=IP]` | Change the automatic IP range; `none` clears a bound |
 | `network ls` / `network rm NAME` | List / remove |
-| `network ports NAME` | What is plugged into this network's bridge right now, per port, with each port's own counters (issue #26). The list is the kernel's, so a port nothing can account for prints as `unattributed` rather than being left out |
-| `network attach-interface NAME --interface=IFNAME [--vlan=N]` | Enslave a real host interface to this network's bridge; `--vlan=` creates an 802.1q sub-interface instead |
-| `network detach-interface NAME --interface=IFNAME` | Detach |
-| `network flap-interface IFNAME` | Bring a host NIC down then straight back up to recover a stuck link (a carrier that came up wrong, a bridge port wedged in blocking). Flap-only — it never leaves the interface down. Run it from the console; against an off-box address riding the flapped NIC the reply may not return even though the flap succeeded |
+| `network ports NAME` | What is plugged into the network's bridge, per port, with counters (#26). A port nothing accounts for prints as `unattributed` |
+| `network attach-interface NAME --interface=IFNAME [--vlan=N]` | Attach a host interface to the network's bridge; `--vlan=` attaches an 802.1q sub-interface instead |
+| `network detach-interface NAME --interface=IFNAME` | Detach it |
+| `network flap-interface IFNAME` | Take a host NIC down and straight back up to recover a stuck link. Run it from the console: a reply over the flapped NIC may not arrive |
+| `dhcp show` | DHCP-configured networks and static reservations ([ADR-0197](../adr/0197-dhcp-served-by-the-dns-server.md)) |
+| `dhcp leases` | Current leases, read from the serving container's lease file |
+| `dhcp server ls` / `dhcp server add CONTAINER` / `dhcp server rm CONTAINER` | Registered DHCP servers. `rm` also drops the server from every range naming it, and disables a range left with none |
+| `dhcp enable --network=NAME --range=START-END --server=CONTAINER [--server=CONTAINER ...] [--lease-seconds=N] [--router=IP]` | Serve DHCP on a network. A range with several servers is split into disjoint slices. **A range change restarts the servers serving it** |
+| `dhcp disable --network=NAME` | Stop serving, keeping the configuration |
+| `dhcp remove --network=NAME` | Delete the network's DHCP configuration |
+| `dhcp static add --mac=M --ip=IP [--hostname=NAME]` / `dhcp static rm MAC` | Add / remove a reservation, live |
 
-
-
-| Command | |
-|---|---|
-| `stalls` | Times the control plane stopped going round its own loop, with the kernel function it was sleeping in and the request it was serving (issue #100) — written by a watchdog process, because the loop cannot record its own silence |
-| `kernel-policy show` | Which kernel line this box tracks, what that channel is at, and whether the running kernel is behind it (issue #65) |
-| `kernel-policy set --channel=pinned\|longterm\|stable\|mainline` | Set the channel — kernel.org's own monikers. `pinned` (the default) proposes no version at all; the pin stays in the kernel recipe |
-| `kernel-policy refresh` | Re-ask kernel.org's `releases.json` what each channel is at. Async — the answer lands a moment after the command returns |
-| `boot-console show` | The installed system's own boot console parameters, plus the options line each loader entry currently carries (issue #24) |
-| `boot-console set [--console=NAME ...] [--extra="..."]` | Set them — `--console` is repeatable and ordered. Rewrites the loader entries on the ESP; takes effect at the next boot. Everything from `root=` onward is left alone |
-| `esp show` | The ESP's boot configuration ([ADR-0202](../adr/0202-the-esp-is-reachable-over-rest.md), issue #128). Leads with **`will boot:`** — the entry systemd-boot would actually choose — then lists every entry marked `[default]` or `[not matched]`. An A/B update that was staged correctly but never boots shows up here immediately |
-| `esp set [--default=PATTERN] [--timeout=N]` | Set `loader.conf`'s default **glob pattern** (not an entry name — that distinction is the whole of #128) and/or the menu timeout. A pattern matching no existing entry is refused. Other `loader.conf` directives are preserved |
-| `esp rm-entry NAME` | Remove one stale loader entry. Duplicates of the running slot's entry can go; the last one standing cannot |
-| `control-plane-reservation show` | How much CPU/memory is held back for the daemon itself, the host's totals, and the derived ceiling actually applied to the `cix-workload` cgroup every container and build lives under (issue #86) |
-| `control-plane-reservation set [--enabled\|--disabled] [--cpu-percent=N] [--memory-bytes=N]` | Change it — applied to the live cgroup immediately. `cpu_percent` 1-50; a larger reservation would be a second workload budget, not a safety margin |
-| `factory-reset --confirm=<instance name>` | Return the box to its just-installed state and reboot. Destroys every container, image, network, registration, package state, the log store, and **every volume and all data in them**. Keeps the installed OS; forgets disk roles without reformatting the disks |
-
-## Software
-
-| Command | |
-|---|---|
-| `software` | What is declared (has a recipe) against what is actually installed. Flags anything installed with **no recipe** — it cannot be rebuilt from source control, so either capture one or it is debris |
-
-## Volumes
-
-Storage whose lifetime is independent of any container using it — deleting a container never removes its volumes. That is what makes it the right home for a jump host's `/home`, a database's data directory, or anything else worth keeping across the recreates that `follow_rolling` and recipe edits perform routinely. See [ADR-0183](../adr/0183-persistent-volumes.md) for the reasoning and [`docs/api/README.md`](../api/README.md#persistent-volumes-issue-88-adr-0183) for the payload contract.
-
-| Command | |
-|---|---|
-| `volume create --name=NAME [--disk=DISK] [--owner-uid=N --owner-gid=N]` | Create a persistent volume. Without an owner it belongs to root, which a non-root workload cannot write to (issue #102) |
-| `volume owner NAME --uid=N --gid=N [--recursive]` | Hand a volume to the account that will use it. `--recursive` also rewrites what is already inside; off by default, since a volume in use holds files whose ownership may have been set deliberately |
-| `volume owner NAME --root` | Hand it back to root |
-| `volume ls` / `volume show NAME` | List / inspect one (disk, resolved host path, creation time) |
-| `volume backups NAME [--enable\|--disable] [--retain=N] [--while-running=refuse\|pause\|allow]` | Show or set a volume's backup policy. Opt-in. `--while-running` decides what happens when a container is using it: `refuse` skips (and an always-on container means never), `pause` freezes every container using it for the copy then resumes them (a genuinely consistent snapshot, at the cost of real downtime), `allow` copies live and accepts a crash-consistent snapshot |
-| `volume backup NAME` | Take one snapshot now |
-| `volume restore NAME SNAPSHOT` | **Replace** the volume's contents with that snapshot |
-| `volume quota NAME BYTES` | Set a real, kernel-enforced size limit (0 removes it). Without one a volume can grow until its disk is full |
-| `volume migrate NAME [--disk=DISK]` | Move its data to another disk or partition; omit `--disk` to move it back to the default OS-disk placement. Refused while a container mounting it is running |
-| `volume rm NAME` | **Deletes the volume's data**, permanently — refused while any container *definition* references it (the error names which one) |
-
-Attach or detach one on a container that already exists:
-
-| Command | |
-|---|---|
-| `container volume attach NAME --volume=VOLUME --path=/mount/point [--read-only]` | Adds it to the container's definition |
-| `container volume detach NAME VOLUME` | Removes it from the definition; the volume and its data are untouched |
-
-An attach to a **running** container takes effect immediately as well as being recorded; otherwise it applies on the container's next start. The command prints which. Unlike `container network attach`, which is live *and ephemeral*, the definition here is the source of truth — the live mount is it taking effect early, not instead.
-
-A volume is never *owned* by a container: containers reference volumes by name, never the reverse, so several containers may mount the same volume and a volume outlives every one of them. `volume ls`'s own listing plus `container inspect NAME` (which echoes a container's `volumes` back by name) are the two ends of that mapping.
-
-Attach one at container creation with `--volume=NAME:/path[:ro]`. The volume must already exist: an unknown name fails creation rather than quietly making a fresh empty one. A volume that can't be mounted — or a `:ro` one that can't be remounted read-only — fails the container's start instead of coming up without the storage, or with a guarantee that isn't real.
-
-### Declaring a container's consoles
-
-`--console=NAME=/absolute/path [args...]`, repeatable up to four times, declares what a container offers as a console ([#248](https://git.home.arpa/itdlabs/cix/issues/248)):
-
-```
-cixctl run --name=jump --image=jumpbox \
-  --console='shell=/usr/bin/bash -l' \
-  --console='logs=/usr/bin/tail -F /var/log/messages' \
-  --oneshot=hostkeys=/usr/bin/ssh-keygen -A --service=nslcd=/usr/sbin/nslcd -d --ready=nslcd:socket:/run/nslcd/socket \
-  --service=sshd=/usr/sbin/sshd -D -e --after=sshd:hostkeys,nslcd
-```
-
-The first declared is what `container console NAME` attaches to with no `--console=`. `argv[0]` must be an absolute path — it is `execve`'d directly, with no shell to resolve a bare name, and a bare name is refused at creation rather than failing confusingly at attach.
-
-### Full-screen programs in a console
-
-`container console` gives the remote program a real terminal: it sends the size of your own terminal and your `$TERM` when it attaches, and a fresh size whenever you resize the window ([ADR-0242](../adr/0242-a-console-is-a-sized-terminal-of-a-declared-type.md)). So `htop`, `btop` and `vim` fill your actual window and resize with it.
-
-Before this they still *ran* — which is why it was easy to miss — but always at a fixed 80×24 in the corner of the screen, because the pty was never sized and ncurses fell back to the terminfo defaults.
-
-```
-cixctl container console jump --console=login
-```
-
-Two things it needs, both usually already true:
-
-- The container must carry the terminfo entry your `$TERM` names. The `ncurses` package installs the full database (2903 entries, `xterm` and `xterm-256color` among them), and anything linking `libncursesw` already depends on it — so an image with `htop` or `vim` in it has this by construction.
-- Your own terminal has to be a terminal. With stdio piped there is nothing to measure, so the session takes the documented defaults (`xterm-256color`, 80×24) instead.
-
-The web dashboard's console runs these too, since [ADR-0243](../adr/0243-the-dashboard-terminal-is-a-real-vt.md) replaced its line-buffer renderer with a real VT. The CLI is still the better tool when you want your own terminal's exact font, scrollback and copy behaviour, or when you are already in a shell.
-
-Declaring nothing is a real and often correct answer: an image holding one static binary and no shell has nothing for a console to run, and both the CLI and the dashboard then say so rather than offering a control that cannot work.
-
-The value splits on spaces, so an argument containing a literal space cannot be written this way. That is a real limit of the flag, not of the feature — a deployment (`recipes/deployment/<name>/*/container.json`) declares consoles as a real JSON array with nothing to lose in quoting, and is the better place for anything non-trivial.
+See [`networking.md`](networking.md).
 
 ## Images
 
 | Command | |
 |---|---|
-| `image create --name=NAME` | An empty image, C runtime pre-seeded, ready for `pkg install --image=NAME` |
-| `image ls` / `image show NAME` / `image rm NAME` | List / inspect one (manifest, current version, and full version history) / remove (refused for `base`, in-use, or still has packages) |
-| `image manifest set --image=NAME --package=NAME --mode=pinned\|rolling --version=VERSION` | Upsert one manifest entry (ADR-0107) -- `pinned` never auto-advances, `rolling` auto-rebuilds onto a newer recipe version as soon as one is published |
-| `image manifest rm --image=NAME --package=NAME` | Remove one manifest entry |
-| `image manifest show --image=NAME --version=VERSION` | What one image **version** holds -- the `name@version` pairs installed into it, snapshotted when it was produced (#398). Not the declared manifest above: that is live intent, and a `rolling` entry's version there is a *floor* rather than a fact, so it cannot say what a container pinned to that version actually has. A version produced before snapshots existed has none and returns 404 rather than falling back |
-| `image recipe add --name=NAME --file=PATH` | Publish a declarative image recipe (ADR-0123) -- recipe name and image name are 1:1; bulk-declares a manifest in one shot instead of one `image manifest set` per package |
-| `image recipe show NAME` | Print a recipe's own raw content |
-| `image recipe rm NAME` | Remove a stored image recipe |
-| `image recipe ls` | List image recipes (metadata only) |
-| `image apply-recipe NAME` | Apply `NAME`'s own stored recipe -- bulk-declares its manifest. Synchronous; packages still need a real `pkg install` afterward to be built |
-| `image gc [--dry-run] [--measure]` | Reclaim image versions nothing references. Every install leaves an immutable version behind and nothing else removes one; `--dry-run` previews. `--measure` sizes what it finds and can block the daemon for minutes, so it is off by default. Refused while a package job is running |
+| `image create --name=NAME` | An empty image with the C runtime seeded, ready for `pkg install --image=NAME` |
+| `image materialize NAME` | Create the image if absent, declare its manifest from the image recipe `NAME`, and install every package in it (#141) |
+| `image ls` / `image show NAME` | List / inspect one (manifest, current version, version history) |
+| `image rm NAME` | Remove one; refused for `base`, for an image in use, or with packages installed |
+| `image manifest set --image=NAME --package=NAME --mode=pinned\|rolling --version=VERSION` | Add or replace one manifest entry (ADR-0107). `pinned` never advances; `rolling` rebuilds onto a newer recipe version when one is published |
+| `image manifest rm --image=NAME --package=NAME` | Remove one entry |
+| `image manifest show --image=NAME --version=VERSION` | The `name@version` pairs one image **version** holds, recorded when it was produced (#398). A version produced before these records existed returns 404 |
+| `image recipe add --name=NAME --file=PATH` | Publish an image recipe (ADR-0123); recipe name equals image name |
+| `image recipe show NAME` / `image recipe rm NAME` / `image recipe ls` | Print / remove / list image recipes |
+| `image apply-recipe NAME` | Declare the image's manifest from its recipe. Packages still need installing (`image materialize` does both) |
+| `image gc [--dry-run] [--measure]` | Reclaim image versions nothing references. `--dry-run` previews. `--measure` sizes what it finds and can block the daemon for minutes. Refused while a package job runs |
 
 ## Devices
 
 | Command | |
 |---|---|
-| `device ls` | Host PCI/USB/GPU devices from sysfs, with each one's `id` (pass to `run --device=`), whether it's assignable, and (for a composite USB device) every real interface it exposes (ADR-0161 Phase A) |
-| `devicemap create --name=NAME --kind=exact\|vendor_model --selector=SELECTOR` | A persisted, named device binding, usable in place of a raw id in `run --device=` |
-| `devicemap ls` / `devicemap rm NAME` | List (shows whether each mapping currently resolves to real hardware) / remove |
-| `disks [ls]` | Real host block devices, including their partitions (task #844), flagging which one is the fixed OS disk |
-| `diskrole create --disk=NAME --role=container-storage\|backup\|state-storage\|rebuildable-storage\|log-storage\|swap` | Assign a persisted role to a disk or partition (never the OS disk) |
-| `diskrole ls` / `diskrole rm NAME` | List assigned roles (with whether each disk is currently present) / remove one (409 if the disk is the active state-storage placement) |
-| `disks format NAME [--fs-type=ext4\|btrfs]` | Destructive: mkfs (ext4 by default, or btrfs, ADR-0104) + mount an already role-assigned, non-OS disk (409 against the active state-storage placement) |
-| `disks format-status NAME` | State/mount_path/error of the most recent format job for this disk |
-| `disks unmount NAME` | Real, synchronous `umount2(2)` of an already-mounted, non-OS disk (issue #34) — data untouched, only its attachment to the running system is removed; 409 against the same active-placement/container-storage-in-use checks `format` has |
-| `disks grow-partition DISK PARTITION [--size-mib=N]` | Grow a partition and the filesystem in it; omit the size to take all free space immediately after it. Grow only — shrinking would need the filesystem shrunk first, and cutting the table entry before that destroys live data. ext4, btrfs and unformatted are all grown; a mounted **btrfs** grows online in place (the only way to extend the data directory, `/var/lib/cix`), a mounted non-btrfs must be unmounted first |
-| `disks free-space NAME` | How much room is left in this disk's table — total, and the largest single gap, which is what actually bounds one new partition. Asked of sfdisk, not computed by subtracting sizes (that misses alignment, GPT reserved areas, and gaps from an earlier delete) |
-| `disks partition-table NAME` | Destructive: writes a fresh, empty GPT partition table to a non-OS whole disk with no role or partitions of its own in use |
-| `disks add-partition NAME --name=PART_NAME [--size-mib=N]` | Appends one new partition to a disk's existing table; omit `--size-mib` for "rest of the disk" |
-| `disks rm-partition DISK_NAME PARTITION_NAME` | Removes one partition (409 if it still has a role assigned) |
-| `storage state [show]` | Which disk (if any) is the active placement for Cix's own state (ADR-0141) |
-| `storage state migrate [--disk=NAME]` | Move Cix's own state to a disk already carrying the role and mounted; omit `--disk=` for the default OS-disk placement; live, no downtime |
-| `storage state migrate-status` | State/disk/error of the most recent (or running) state-storage migration |
-| `storage logs [show\|migrate [--disk=NAME]\|migrate-status]` | Same shape as `storage state`, for where the consolidated log store lives instead (ADR-0141 Phase 3); an independent job slot from `storage state migrate` |
-| `storage rebuildable [show\|migrate [--disk=NAME]\|migrate-status]` | Same shape again, for where images/packages/artifacts live instead (ADR-0141 Phase 4); its own independent job slot |
+| `device ls` | Host PCI/USB/GPU devices from sysfs, each with its `id` (for `--device=`), whether it is assignable, and the interfaces of a composite USB device (ADR-0161) |
+| `devicemap create --name=NAME --kind=exact\|vendor_model --selector=SELECTOR` | A persisted, named device binding usable in place of an id in `--device=` (ADR-0048). `exact` takes a device id; `vendor_model` takes `<vendor_id>:<product_id>` and follows the device across USB ports |
+| `devicemap ls` / `devicemap rm NAME` | List (with whether each resolves to hardware now) / remove |
 
 ## DNS
 
 | Command | |
 |---|---|
+| `dns provision [--replica=NAME ...] [--no-resolver]` | Bring up the platform's DNS service in one call: create each replica from its deployment, register it as a DNS server, and point the host resolver at it unless `--no-resolver`. Re-runnable |
 | `dns record create --name=NAME --ip=A.B.C.D` | Create a record |
-| `dns record update --name=NAME --ip=A.B.C.D` | Edit an existing record's ip in place (task #749) |
+| `dns record update --name=NAME --ip=A.B.C.D` | Change a record's address |
 | `dns record ls` / `dns record rm NAME` | List / remove |
-| `dns server register --container=NAME --hosts-path=PATH` | Register a running container as a DNS-serving target |
+| `dns server register --container=NAME --hosts-path=PATH` | Register a running container as a DNS server |
 | `dns server ls` / `dns server unregister CONTAINER` | List / unregister |
-| `ldap server register --container=NAME --config-path=PATH` | Register a running container as the LDAP-serving target (task #725) -- `config_path` is its own absolute view of glauth's own config file |
+| `dns forwarders show` | Upstream forwarders the DNS servers use |
+| `dns forwarders set [--forwarder=IP ...]` | Replace them; no flags clears them |
+
+## LDAP
+
+| Command | |
+|---|---|
+| `ldap server register --container=NAME --config-path=PATH` | Register a running glauth container as the LDAP server; `--config-path` is its own path to glauth's config file |
 | `ldap server ls` / `ldap server unregister CONTAINER` | List / unregister |
-| `ldap group add --name=NAME [--gidnumber=N]` | Create a group (task #726) -- `--gidnumber=` optional, auto-allocated if omitted (task #748) |
-| `ldap group update --name=NAME --gidnumber=N [--new-name=NEWNAME]` | Edit an existing group's gidnumber in place (task #750); `--new-name=` renames it (ADR-0147) -- if it's currently an admin group, `hostauth-config`'s own `admin_groups` follows the rename automatically |
+| `ldap group add --name=NAME [--gidnumber=N]` | Create a group; the gid is allocated when omitted |
+| `ldap group update --name=NAME --gidnumber=N [--new-name=NEWNAME]` | Change a group; a renamed admin group stays in `hostauth-config`'s `admin_groups` |
 | `ldap group ls` / `ldap group rm NAME` | List / remove |
-| `ldap user add --name=NAME [--uidnumber=N] --primarygroup=N [--secondary-groups=N,N,...] [--givenname=S] [--sn=S] [--mail=S] [--loginshell=S] [--homedirectory=S] [--password=S] [--disabled] [--ssh-key=S] [--can-search]` | Create a user -- `--uidnumber=` optional, auto-allocated if omitted (task #748); `--ssh-key=` optional, rendered as glauth's own `sshkeys` LDAP attribute, queried live by a container's own `AuthorizedKeysCommand` (task #731/ADR-0144 task #838); `--can-search` grants glauth's own minimal search capability, needed for a real bind/service account (`nslcd`, a live `AuthorizedKeysCommand`, ADR-0144 task #838), off by default |
-| `ldap user update --name=NAME [--new-name=NEWNAME] ...` | Edit an existing user in place -- full field replacement, same fields as `add` (task #731); `--new-name=` renames it (ADR-0147) |
+| `ldap user add --name=NAME [--uidnumber=N] --primarygroup=N [--secondary-groups=N,N,...] [--givenname=S] [--sn=S] [--mail=S] [--loginshell=S] [--homedirectory=S] [--password=S] [--disabled] [--ssh-key=S] [--can-search]` | Create a user; the uid is allocated when omitted. `--ssh-key=` is served as glauth's `sshkeys` attribute; `--can-search` grants the search right a bind/service account needs |
+| `ldap user update --name=NAME [--new-name=NEWNAME] ...` | Replace a user's fields (same flags as `add`) |
 | `ldap user ls` / `ldap user rm NAME` | List / remove |
-| `ldap config show` | Show the current `start_uid`/`start_gid` auto-allocation floor (task #748), the client-login settings, and `effective_client_uri` — what `ldap_client` containers are actually handed right now, after derivation from registered servers and after dropping any that are drained or unhealthy (issue #84) |
-| `ldap config set --start-uid=N --start-gid=N` | Set the floor -- takes effect for future auto-allocations only, does not renumber existing users/groups |
-| `ldap config set [--client-tls \| --no-client-tls]` | Which enabled listener clients configured from here are pointed at. Flips `effective_client_uri` between `ldaps://` and `ldap://`, which is what the rendered `nslcd.conf` and the `{{LDAP:URI}}` token both resolve to. The port is the server's own, not a separate setting — `--client-tls-port=` is gone (#419). Naming a disabled listener is refused. Does **not** affect the daemon's own bind, which has its own switch: `hostauth-config set --ldap-tls` (#416). See [`security.md`](security.md#ldap-over-tls) |
-| `ldap config set [--server-plaintext \| --no-server-plaintext] [--server-plaintext-port=N] [--server-tls \| --no-server-tls] [--server-tls-port=N]` | Which listeners each registered glauth actually serves (#419, [ADR-0282](../adr/0282-glauths-listeners-are-configuration.md)) — rendered into its own config file and into what is staged for it on its next start. glauth binds listeners at startup and its watcher reloads only records, so a running server adopts a listener change when it restarts: add `--restart-servers` to do that one at a time (off by default — this is the directory that authenticates the control plane). Until the first `--server-*` flag, `listeners_managed` is false and each server's own config decides. Both listeners off is refused; `--server-tls` is refused (409) while a registered running server has no delivered certificate, since glauth exits on reload without one |
+| `ldap config show` | The uid/gid allocation floor, the client login settings, `effective_client_uri` (what `--ldap-client` containers receive now), and the listeners the servers serve |
+| `ldap config set [--start-uid=N --start-gid=N] [--client-uri=URIS] [--base-dn=DN] [--bind-dn=DN] [--bind-password=PW] [--client-tls \| --no-client-tls] [--server-plaintext \| --no-server-plaintext] [--server-plaintext-port=N] [--server-tls \| --no-server-tls] [--server-tls-port=N] [--restart-servers]` | Change only the flags given. `--client-tls` picks which enabled listener clients use (see [LDAP over TLS](security.md#ldap-over-tls)). The `--server-*` flags set each glauth's listeners (#419, [ADR-0282](../adr/0282-glauths-listeners-are-configuration.md)); glauth reads listeners only at startup, so add `--restart-servers` to restart them one at a time |
 
 ## PKI
 
 | Command | |
 |---|---|
-| `pki ca bootstrap [--common-name=NAME] [--days=N]` / `pki ca show` | Bootstrap / inspect the root CA |
-| `pki intermediate bootstrap [--common-name=NAME] [--days=N]` / `pki intermediate show` | Bootstrap / inspect a second CA tier — root must already be bootstrapped; once done, every future `pki cert create` is signed by it instead |
+| `pki ca bootstrap [--common-name=NAME] [--days=N]` / `pki ca show` | Create / inspect the root CA |
+| `pki intermediate bootstrap [--common-name=NAME] [--days=N]` / `pki intermediate show` | Create / inspect an intermediate CA. Needs the root; afterwards `pki cert create` signs with it |
 | `pki cert create --name=NAME [--sans=a,b,c] [--days=N]` | Issue a leaf certificate |
 | `pki cert ls` / `pki cert rm NAME` | List / remove |
-| `pki reset [--root-common-name=NAME] [--intermediate-common-name=NAME] [--root-days=N] [--intermediate-days=N] [--leaf-days=N]` | Destructive: wipe and regenerate the entire chain, reissuing every tracked leaf |
+| `pki reset [--root-common-name=NAME] [--intermediate-common-name=NAME] [--root-days=N] [--intermediate-days=N] [--leaf-days=N]` | Destructive: regenerate the whole chain and reissue every tracked leaf |
+| `pki export [--passphrase-file=PATH] [--out=PATH]` | The whole PKI store (CA, intermediate, every leaf), encrypted under a passphrase ([ADR-0281](../adr/0281-the-ca-leaves-the-box-encrypted-or-it-is-lost.md)). This is how a CA survives a reinstall; see [Carrying the CA across a reinstall](security.md#carrying-the-ca-across-a-reinstall) |
+| `pki import --in=PATH [--passphrase-file=PATH]` | Restore that bundle; refused (409) when a CA already exists |
 
 ## Packages
 
 | Command | |
 |---|---|
-| `pkg bootstrap [--toolchain=PATH]` | Stage a build toolchain into the shared build sandbox — see [`docs/guides/writing-recipes.md`](writing-recipes.md#build-images) |
-| `pkg bootstrap --toolchain-url=URL --toolchain-sha256=SHA256 [--wait]` | The daemon fetches the toolchain itself, host-side — for a real minimal install with no SSH server (ADR-0065) |
-| `pkg bootstrap-status` | State/error of the most recent `--toolchain-url=` fetch |
-| `pkg recipes` | List every published recipe version |
-| `pkg recipe add --name=NAME --file=PATH` | Publish a new recipe version on this running system directly, no reinstall needed — immutable once published, rejected if this exact (name,version) already exists |
-| `pkg recipe show NAME [--version=VERSION]` | Print a recipe version's own raw content; omitted version resolves to the highest available |
-| `pkg recipe rm NAME [--version=VERSION]` | Remove recipe version(s); omitted removes every published version |
-| `pkg repo-config show` | The currently configured recipe-sync source (empty if none) |
-| `pkg repo-config set [--url=URL] [--kind=gitea\|github\|gitlab] [--ref=REF] [--token=TOKEN\|--clear-token] [--sync-interval=SECONDS]` | Partially update the configured repo; omitted flags leave that setting unchanged |
-| `pkg sync [--wait] [--refetch=NAME@VERSION]` | Fetch and merge the configured repo's recipes into this host's own catalog (additive — never overwrites an existing version). `--refetch=` lets this one sync replace exactly one already-seen version, for a recipe under active development (issue #59) — one-shot, and never inherited by the periodic background sync |
-| `pkg sync-status` | The most recent (or currently running) sync's outcome |
-| `pkg cache-config show` \| `set --max-bytes=N` | The local build-artifact cache's own size cap (always a real cap, no "unlimited" mode) |
-| `pkg cache-status` | Current cache occupancy (max/current bytes, entry count) |
-| `pkg cache-clear` | Remove every cached artifact — an explicit operator reset |
-| `pkg artifact-config show` \| `set [--url=URL] [--token=TOKEN\|--clear-token] [--push\|--no-push]` | The configured plain-HTTP precompiled-artifact server — separate from `repo-config` above, never a git forge. `--push` (issue #129, [ADR-0201](../adr/0201-artifacts-are-retrievable-and-self-publishing.md)) makes a **genuine fresh build** publish its own result there, so the next host pulls it instead of rebuilding; off by default, needs a token, and never republishes a cache/artifact *hit* |
-| `pkg artifact-export NAME [--out=FILE]` | Export a hostbuild package's harvested artifact (`kernel`, `cix`, `isotools`) and write it locally — the way expensive build output leaves the box that made it. Drives the whole async sequence (start, poll, chunked download); `--out=` defaults to the daemon's own `{name}-{version}.tar.gz`, which is exactly the name an artifact server serves it at |
-| `pkg install --name=NAME [--image=IMAGE] [--version=VERSION] [--upgrade] [--keep-on-failure]` | Start installing (or upgrading) a package; omitted version resolves to the highest available. `--keep-on-failure` (ADR-0175) preserves a failed build's own container instead of tearing it down — see [Debugging a failed build](../api/README.md#debugging-a-failed-build-keep_on_failure-adr-0175-issue-35) |
-| `pkg ls` | List every known package (installed or in-flight). State reads `failed:fetch` / `failed:build` / `failed:recipe` / `failed:install` (issue #101), so a source that could not be reached is distinguishable from a build that genuinely broke |
+| `pkg ls` | Every known package, installed or in flight. A failure reads `failed:fetch`, `failed:build`, `failed:recipe` or `failed:install` (#101) |
+| `pkg install --name=NAME [--image=IMAGE] [--version=VERSION] [--upgrade] [--keep-on-failure]` | Install or upgrade a package; an omitted version resolves by the package's policy. `--keep-on-failure` keeps a failed build's container for inspection ([Debugging a failed build](../api/README.md#debugging-a-failed-build-keep_on_failure-adr-0175-issue-35)) |
 | `pkg rm NAME[@IMAGE]` | Uninstall |
-| `pkg update-all` | Start an upgrade for the first installed package whose recipe has drifted; call again to drain the backlog |
-| `pkg verify` | Which installed packages are recorded as installed but are **not actually in their image**, and which ship headers whose includes do not resolve ([#289](https://git.home.arpa/itdlabs/cix/issues/289)) ([#281](https://git.home.arpa/itdlabs/cix/issues/281)). An image version is a hash of the installed package set ([ADR-0108](../adr/0108-image-version-content-hash.md)), so re-installing a `name@version` the set already holds reproduces the same hash and the freshly built tree is discarded ([ADR-0155](../adr/0155-baseline-reseed-manifest-hash-dedup-gap.md)) &mdash; the install reports success and the files are absent. The install path refuses that now; this answers the same question for anything installed before it did. Reports rather than acts: the repair is to bump the package revision so the hash genuinely changes, or delete and recreate the image. On demand only &mdash; it stats every file of every installed package |
-| `pkg hostbuild NAME [--version=VERSION] [--wait] [--deploy] [--upgrade] [--keep-on-failure]` | Build a standalone host artifact (kernel, or Cix's own control plane) instead of merging into an image — see [`docs/guides/writing-recipes.md#the-hostbuild-variant`](writing-recipes.md#the-hostbuild-variant). `--upgrade` re-runs a build already `state: "installed"` if the recipe's own version has moved on (otherwise a bare 409). `--keep-on-failure` (ADR-0175) preserves a failed build container for real debugging |
-| `pkg resume --name=NAME [--image=IMAGE] [--version=VERSION] [--keep-on-failure]` | Continue a `--keep-on-failure`-preserved build container in place (ADR-0177) — its already-extracted source tree is kept, only the recipe (optionally a newly-fixed version) and install destination are refreshed, skipping a full fetch+extract+build restart — see [Continuing a kept build in place](../api/README.md#continuing-a-kept-build-in-place-post-pkgresume-adr-0177-issue-46) |
-| `pkg build-log [--name=NAME [--image=IMAGE]]` | Live-tail an in-flight install/hostbuild's own stdout/stderr (task #676, ADR-0101) — a one-way stream, not an interactive session; prints each chunk as it arrives and exits once the build finishes. 404 if nothing is currently building. `--name` picks which build when several run at once, which a recipe publish causes by itself (it queues a rebuild per image tracking the package rolling); omit it only while at most one build is in flight, or the daemon refuses with `400 multiple builds in progress` (#245). `--image` needs `--name` and is rarely wanted: omitting it means "whichever image is building that package", which is what makes `--name=cix` reach a host build (a host build's job is filed under the internal `__hostbuild` image — before #476 this defaulted to `base` and the command 404'd for the whole of a running host build) |
-| `pkg build-logs [--last \| --file=NAME]` | The **complete** persisted output of recent builds, kept on disk as each build streams (issue #57) — as opposed to `pkg build-log`'s live-only stream and the log store's ~4KB tail. `--last` prints the most recent build's whole log; with no arguments, lists what is kept |
-| `pkg policy ls` | Per-package rolling policy — which version an omitted version resolves to (issue #64). Only packages with a policy set are listed; everything else is on `highest` |
-| `pkg policy set NAME --policy=highest\|newest\|pinned [--version=V]` | `highest` is the default; `newest` picks the most recently published recipe; `pinned` holds an explicit version that `update-all`/`follow_rolling` cannot bump |
+| `pkg hostbuild NAME [--version=VERSION] [--wait] [--deploy] [--upgrade] [--keep-on-failure]` | Build or fetch a host artifact (`kernel`, `cix`, `isotools`) instead of installing into an image ([the hostbuild variant](writing-recipes.md#the-hostbuild-variant)). `--upgrade` reruns an installed one whose recipe version moved. `--deploy` implies `--wait` and then writes the result to the inactive slot with `update` (`kernel` and `cix`); it does not reboot |
+| `pkg resume --name=NAME [--image=IMAGE] [--version=VERSION] [--keep-on-failure]` | Continue a kept failed build in place, keeping its extracted source ([Continuing a kept build](../api/README.md#continuing-a-kept-build-in-place-post-pkgresume-adr-0177-issue-46)) |
+| `pkg cancel --name=NAME [--image=IMAGE]` | Stop an in-flight build, or release a slot whose build container has gone (#213, #339) |
+| `pkg update-all` | Start an upgrade for the first installed package whose recipe version has moved on; run it again to take the next |
+| `pkg drift` | Every installed package whose recipe is newer than what is installed, against the number installed (#217) |
+| `pkg rebuilds` | Image rebuilds queued but not started. Publishing a recipe queues one for every image tracking that package `rolling` (#236) |
+| `pkg verify` | Installed packages that are recorded but **not actually in their image**, and packages whose headers include files that do not resolve (#281, #289). Reports only; checks every file of every package |
+| `pkg build-log [--name=NAME [--image=IMAGE]]` | Follow a running build's output live; exits when the build ends. 404 when nothing is building. `--name` is required when several builds run (#245); a host build is found by `--name` alone |
+| `pkg build-logs [--last \| --file=NAME]` | The complete retained output of recent builds (#57). No arguments lists them with sizes; `--last` prints the newest; `--file=` prints one |
+| `pkg buildenv [ls]` / `pkg buildenv rm NAME` | Composed build environments held on this host, and reclaim one now ([ADR-0221](../adr/0221-build-environments-are-reclaimed-by-last-use.md)) |
+| `pkg recipes` | Every published recipe version |
+| `pkg recipe add --name=NAME --file=PATH [--format=shell\|pbs]` | Publish a recipe version on this host. A published `(name, version)` is never overwritten. The format follows the file extension (`.cbs` is CPDL, `.sh` is shell); `--format=` is for a file not named that way |
+| `pkg recipe show NAME [--version=VERSION]` | Print a recipe version; an omitted version means the highest |
+| `pkg recipe rm NAME [--version=VERSION]` | Remove one version, or every version when omitted |
+| `pkg repo-config show` | The recipe repository this host syncs from |
+| `pkg repo-config set [--url=URL] [--kind=gitea\|github\|gitlab] [--ref=REF] [--token=TOKEN \| --clear-token]` | Change only the flags given. How often it syncs is a schedule (`pkg.sync` action) |
+| `pkg sync [--wait] [--refetch=NAME@VERSION]` | Fetch the repository and merge its recipes (additive; an existing version is never overwritten). `--refetch=` lets this one sync replace exactly one already-seen version (#59) |
+| `pkg sync-status` | The latest sync's outcome |
+| `pkg policy ls` | Per-package version policy (#64); unlisted packages use `highest` |
+| `pkg policy set NAME --policy=highest\|newest\|pinned [--version=V]` | `newest` takes the most recently published recipe; `pinned` holds a version that `update-all` and `follow_rolling` cannot move |
 | `pkg policy clear NAME` | Back to the default |
+| `pkg upstreams` | The upstream discovery kinds a recipe may declare, and their channels ([ADR-0255](../adr/0255-a-recipe-is-a-rule-not-a-version.md)) |
+| `pkg source-catalogue` | What upstream has published, against what this platform has recipes for |
+| `pkg source-policy ls` | Which upstream release each package builds |
+| `pkg source-policy set-default [--channel=C] [--depth=n-<lines>.<releases>]` / `pkg source-policy set NAME [--channel=C] [--depth=D]` / `pkg source-policy clear NAME` | Set the default, set one package's policy, or return it to the default |
+| `pkg cache-config show` / `pkg cache-config set --max-bytes=N` | The local build-artifact cache's size cap |
+| `pkg cache-status` | Cache occupancy |
+| `pkg cache-clear` | Remove every cached artifact |
+| `pkg artifact-config show` / `pkg artifact-config set [--url=URL] [--token=TOKEN \| --clear-token] [--push \| --no-push]` | The artifact server. `--push` makes a fresh build publish its result there ([ADR-0201](../adr/0201-artifacts-are-retrievable-and-self-publishing.md)); off by default, needs a token |
+| `pkg artifact-publish NAME` | Publish an already-built artifact without rebuilding it |
+| `pkg artifact-export NAME [--out=FILE]` | Download a hostbuild package's artifact (`kernel`, `cix`, `isotools`) to a local file, named `{name}-{version}.tar.gz` by default |
+| `pkg bootstrap [--toolchain=PATH]` / `pkg bootstrap --toolchain-url=URL --toolchain-sha256=SHA256 [--wait]` | Stage a toolchain artifact into the shared build image (ADR-0065). With no flag it copies the daemon host's own toolchain, which is empty on an installed host; build images are normally made with `image materialize` ([Build images](writing-recipes.md#build-images)) |
+| `pkg bootstrap-status` | State and error of the most recent `--toolchain-url=` fetch |
 
-See [`docs/guides/writing-recipes.md`](writing-recipes.md) for the recipe format itself, and [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) / [`docs/guides/building-cix.md`](building-cix.md) for the two real operator runbooks built on `pkg hostbuild`.
+### The pipeline
+
+| Command | |
+|---|---|
+| `pipeline [--all]` | Where every package stands in the pipeline and what is stopping it ([ADR-0256](../adr/0256-the-pipeline-is-the-model.md)). Hides healthy rows unless `--all` |
+| `pipeline runs [--name=NAME] [--image=IMAGE] [--limit=N]` | What has happened to a package, as a log ([ADR-0272](../adr/0272-a-pipeline-run-is-a-log-entry-not-join-state.md)) |
+| `pipeline approvals` | What is held waiting for a person, and what has been approved ([ADR-0273](../adr/0273-a-gate-holds-automation-where-a-change-escapes-its-blast-radius.md)) |
+| `pipeline approve publish\|roll\|deploy TARGET` | Let one held change through |
+| `pipeline config [--run-retention=N] [--gate-publish=on\|off] [--gate-roll=on\|off] [--gate-deploy=on\|off]` | Pipeline settings |
+
+See [`writing-recipes.md`](writing-recipes.md) for the recipe format, and [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) / [`building-cix.md`](building-cix.md) for the runbooks built on `pkg hostbuild`.

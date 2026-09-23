@@ -6,6 +6,26 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The guides were audited claim by claim against the code, and corrected
+
+Every guide under `docs/guides/` was checked against `cli/src/main.c`, `docs/api/openapi.yaml`, the daemon source and `cixctl`'s own usage output, and about 130 stale or wrong claims were fixed. The larger ones:
+- **`cli-reference.md` is rebuilt from the dispatcher.** It dropped commands that no longer exist (`disks`, `diskrole`, `management-network`, `container recipe`, `storage state`, a top-level `run`) and gained the ones it never had (`deployment`, `schedule`, `pipeline`, `volume`, `boot-next`, `assembly`, `container service`, and most `pkg` verbs).
+- **`web-dashboard.md` matches the dashboard.** The branch is Software, container detail has six tabs, and the control plane has a Ports tab with the ADR-0287 management address.
+- **The management network is the ADR-0287 management address** throughout `networking.md`, `installing.md` and `security.md`.
+- **Build containers have no user namespace.** `writing-recipes.md` justified `CAP_SYS_ADMIN` with one; it now says what the capability actually grants on the host.
+- **A freshly created image has no C library.** The quickstart, `cixctl image create` help, `api/README.md` and the openapi `createImage` summary all said it was pre-seeded.
+- **The quickstart starts from an installed host,** and every line in it runs.
+- **Three new guides:** `containers-and-services.md`, `images.md` and `network-services.md`.
+- **Retraction history ("this used to say…") is removed from the guides.** A guide states what is; history is here and in the ADRs.
+
+Contract text corrected in the same change:
+- The openapi `ContainerCreateRequest` required `cmd`, which ADR-0260 removed; it now requires `services`, which is what the daemon checks.
+- `bearerAuth` now names the two #490 gated reads.
+- `/pkg/install` no longer claims installs are serialised.
+- `capture_output` no longer points at the removed exec endpoint.
+- The signing-key location is `<state-dir>/keys`, installed over `PUT /system/signing-keys`.
+- In `cixctl`, `container edit` now names the fields the daemon really refuses (`handle_container_patch()`): `services` is editable, and `restart_delay_seconds` and `follow_rolling_jitter_seconds` are not.
+
 ### `cixctl help` lists every command, and a test keeps it that way (#151)
 
 `cixctl help` never mentioned 14 commands the CLI routes and completes: `volume`, `deployment`, `dhcp`, `software`, `stalls`, `control-plane-reservation`, `tls-throttle`, `ksm`, `zswap`, `kernel-policy`, `esp`, `boot-console`, `factory-reset` and the `console` alias. Each now has a help line written from its real usage output.

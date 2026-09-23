@@ -4845,8 +4845,9 @@ paths:
         asks for the disk and the network on the console, listing the
         machine's own disks and NICs. Supply fields to build media that
         installs one specific machine unattended.
-        Requires a real Secure Boot signing key pair, staged out of band
-        by the operator at <data-dir>/keys/cix-signing.{key,crt,cer}
+        Requires a real Secure Boot signing key pair, installed by the
+        operator with PUT /system/signing-keys (ADR-0212), which writes
+        <state-dir>/keys/cix-signing.{key,crt,cer}
         -- deliberately never generated, fetched, or copied there by
         cixd itself (the same real security posture this project's
         own image/keys/ already has: a release-signing private key must
@@ -10570,8 +10571,9 @@ paths:
         not wait for the fetch or the build to finish), then, once fetched and its
         checksum verified, builds it inside an isolated, network-less container and
         merges the result into the target image (request body's "image", default
-        "base") every container using that image sees. v1 serializes installs: only
-        one may be in flight at a time, across every image.
+        "base") every container using that image sees. Several installs can build
+        at once, up to max_concurrent_jobs (GET/PUT /system/pkg-build-config,
+        ADR-0157); hostbuilds run one at a time.
       operationId: pkgInstall
       x-cix-expose: [cli, web]
       requestBody:
@@ -13888,7 +13890,7 @@ components:
 
     ContainerCreateRequest:
       type: object
-      required: [name, image, cmd]
+      required: [name, image, services]
       properties:
         name:
           type: string
@@ -14271,7 +14273,8 @@ components:
             gone to a terminal nobody was watching. Not a live tail:
             the buffer fills as the process runs but is only useful to
             read after it has produced output, not as an ongoing log
-            stream (see the console/exec endpoint for that). Default
+            stream (a container's output also reaches the log store,
+            GET /system/logs?container=NAME). Default
             false: capturing costs one pipe and one small buffer per
             container, worth paying only when actually needed.
         dns_register:
@@ -19799,8 +19802,11 @@ components:
         rather than HTTP method), needs a valid `Authorization: Bearer
         <token>` from `POST /login` naming a user in one of the
         configured `admin_groups` (`GET/PUT /system/hostauth-config`).
-        Every `GET` (this one included) stays open, unconditionally,
-        always -- reads were never the concern. Gating itself only
+        Every other `GET` stays open, with two exceptions that
+        describe people rather than the machine and need a token
+        once gating is active (#490): `GET /system/hostauth/sessions`
+        and `GET /ldap/users` (and one user by name). `POST /login`
+        and `POST /logout` are the only requests exempt by path. Gating itself only
         activates once at least one such admin-group user actually
         exists (`hostauth_gating_active()`) -- a fresh install can
         never lock itself out of its own API, and every mutating

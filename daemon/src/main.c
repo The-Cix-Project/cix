@@ -23607,11 +23607,9 @@ static void handle_kmod_build_post(int fd, const char *body, size_t body_len)
  * path. The only new thing is *finding* what needs it: the first
  * PKG_STATE_INSTALLED package (across every image) whose recipe's
  * version has drifted (pkg_find_update_candidate()). Starts exactly
- * one upgrade, honestly respecting the existing v1 single-job-in-
- * flight constraint (pkg_install_start() itself would return
- * PKG_ERR_BUSY otherwise) rather than pretending to parallelize past
- * it -- an operator or cron entry drains the whole backlog by calling
- * this again once each job finishes.
+ * one upgrade per call; draining the backlog is calling it again.
+ * That is this endpoint's own choice, not a build-system limit: builds
+ * have run concurrently up to max_concurrent_jobs since ADR-0157.
  */
 static void handle_pkg_update_all(int fd)
 {

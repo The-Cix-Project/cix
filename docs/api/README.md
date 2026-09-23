@@ -1456,7 +1456,7 @@ Reading never fetches. Refreshing a kind's release list is a network operation a
 
 ## Persisted containers and the `restart` policy
 
-Every container is persisted at create time — its exact request is written to `/var/lib/cix/state/container_defs.json` (ADR-0141) — so it survives a daemon restart and is never destroyed by anything except `DELETE` (ADR-0181: *stop is stop, delete is delete*). The `restart` policy governs only whether, and when, it comes **back up on its own**, not whether it exists. A container with the default `restart: "no"` is fully persisted and kept; it just never auto-restarts:
+Every container is persisted at create time — its exact request is written to `container_defs.json` in the state directory, `/config/state` on an installed host (ADR-0141) — so it survives a daemon restart and is never destroyed by anything except `DELETE` (ADR-0181: *stop is stop, delete is delete*). The `restart` policy governs only whether, and when, it comes **back up on its own**, not whether it exists. A container with the default `restart: "no"` is fully persisted and kept; it just never auto-restarts:
 
 ```
 POST /v1/containers

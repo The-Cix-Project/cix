@@ -317,9 +317,9 @@ static void print_usage(FILE *out)
 	        "  pkg ls\n"
 	        "  pkg rm NAME[@IMAGE]\n"
 	        "  pkg update-all  -- starts an upgrade for the first installed package whose\n"
-	        "               recipe version has drifted (one at a time, same v1 single-job\n"
-	        "               constraint as pkg install --upgrade); call again once that job\n"
-	        "               finishes to pick up the next one\n"
+	        "               recipe version has drifted, one per call; call again to start\n"
+	        "               the next (builds themselves may run concurrently, see\n"
+	        "               pkg-build-config)\n"
 	        "  site show  -- this install's own instance_name/site_name/domain_suffix\n"
 	        "               (ADR-0046); convenience for identification + suggesting FQDNs,\n"
 	        "               never enforced\n"
@@ -4938,7 +4938,7 @@ static int cmd_container(const struct cix_client *c, int json_mode, int argc, ch
 	        "         pause NAME |\n"
 	        "         unpause NAME | rm NAME | inspect NAME | stats NAME |\n"
 	        "         console NAME [--console=NAME] |\n"
-	        "         files NAME --path=PATH | migrate-storage NAME --disk=ID | migrate-storage-status NAME\n"
+	        "         files get|put NAME --path=PATH | migrate-storage NAME [--disk=NAME] | migrate-storage-status NAME\n"
 	        "       cixctl deployment add --name=NAME --file=PATH\n"
 	        "       cixctl deployment show|rm NAME / deployment ls\n"
 	        "       cixctl deployment apply NAME [--secret=KEY=VALUE ...]\n"
@@ -15465,7 +15465,8 @@ static int cmd_container_edit(const struct cix_client *c, int json_mode, int arg
 	if (argc < 2 || argv[0][0] == '-') {
 		fprintf(stderr, "usage: cixctl container edit NAME --json='{\"env\":{...}}'\n"
 		                "  Fields given replace those fields; a field set to null removes it.\n"
-		                "  restart/depends_on/services/follow_rolling cannot be edited --\n"
+		                "  name, restart, restart_delay_seconds, depends_on, follow_rolling and\n"
+		                "  follow_rolling_jitter_seconds cannot be edited --\n"
 		                "  recreate the container to change those.\n");
 		return 2;
 	}

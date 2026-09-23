@@ -1,35 +1,50 @@
 # Staying updated
 
-Keeping an already-installed system current, day to day. This is the operational counterpart to [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) — that guide is about kernel updates specifically (build → write → reboot → confirm); this one covers the root control-plane and packages, and how the two update mechanisms relate.
+Keeping an installed system current. [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) covers kernel updates (build, write, reboot, confirm); this guide covers the control plane and packages, and what runs on its own.
 
 ## Two independent things to keep current
 
-Cix separates "the control plane itself" from "the software installed into images" — they update through two different endpoints, on two different schedules, because they're genuinely different kinds of change.
+The control plane and the software installed into images update through different endpoints, on different schedules.
 
 ### The control plane (`cixd`/`cixctl`/`web/`)
 
 ```
-cixctl update --image=<path-to-cixd-root.squashfs>
+cixctl pkg hostbuild cix --upgrade --deploy
 cixctl reboot
 ```
 
-Writes a fresh control-plane squashfs to the inactive A/B slot; same write-then-reboot-separately shape as a kernel update, same automatic self-confirmation once the newly-booted daemon reaches a healthy state (see [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md#background-how-ab-kernel-updates-work-here) for exactly how that works — it applies identically here, root and kernel share the same A/B slot and the same Automatic Boot Assessment counter). The squashfs itself comes from either a dev-machine build or a [self-hosted rebuild](building-cix.md#from-a-running-cix-host-self-hosted-rebuild) — see [`building-cix.md`](building-cix.md).
+`cix` is a hostbuild package. `pkg hostbuild cix --upgrade` fetches the signed artifact from the artifact cache when one is published there, and builds only when it is not ([ADR-0289](../adr/0289-a-hostbuild-package-is-consumed-from-the-cache-like-any-other.md)). `kernel` and `isotools` work the same way. `--deploy` waits for the result and writes it to the inactive A/B slot with `update`. It does not reboot.
 
-**Upgrading from the cache instead of rebuilding.** `cix` (and `kernel`, and `isotools`) is a hostbuild package like any other: a `cixctl pkg hostbuild cix --upgrade [--deploy]` **fetches the signed artifact from the cache when one is published there, and builds only when it is not** — a rebuild of `cix` or `kernel` is the most expensive thing this platform does, so this is what makes "upgrade" cheap on a host that is not the one that built it ([ADR-0289](../adr/0289-a-hostbuild-package-is-consumed-from-the-cache-like-any-other.md)). The command is identical either way; only whether it fetches or builds differs. Two conditions must both hold for the fetch: the artifact server is configured (`GET /pkg/artifact-config`), and this host **trusts the signing key** — a host adopts the release key by running `cixctl pkg sync` against a repo that publishes `docs/keys/` (the key is the trust anchor because these packages carry no per-recipe `pkg_artifact_sha256`; see [ADR-0279](../adr/0279-an-artifact-carries-its-own-approval.md)). A host with no trusted key, or a version never published to the cache, simply builds — correct, not degraded.
-
-### Packages (whatever's installed into your images)
+Writing and booting are separate steps, as for a kernel update, and the newly booted daemon confirms the slot itself once it is healthy (see [how A/B updates work](kernel-build-and-ab-updates.md#background-how-ab-kernel-updates-work-here); root and kernel share the slot and its boot counter). To write a squashfs you already have, use `update` directly. An installed host has no shell, so the daemon fetches the image itself:
 
 ```
+cixctl update --image-url=<URL> --image-sha256=<HEX>
+```
+
+For building the control plane on a host, see [`building-cix.md`](building-cix.md#rebuilding-cix-on-a-running-host).
+
+**When the cache is used.** A hostbuild fetches instead of building only when both hold:
+
+- the artifact server is configured (`cixctl pkg artifact-config show`);
+- this host **trusts the key that signed the artifact**. These packages carry no per-recipe `pkg_artifact_sha256`; the signature is the approval ([ADR-0279](../adr/0279-an-artifact-carries-its-own-approval.md)).
+
+Otherwise, and for a version never published to the cache, it builds. A host adopts trusted keys during `cixctl pkg sync`: the daemon copies the `docs/keys/` directory of the synced repository into its trusted-key store (`daemon/src/pkg.c`), and a repository with no `docs/keys/` adopts nothing. Recipes are synced from the cix-recipes repository ([ADR-0308](../adr/0308-recipes-are-their-own-repository-flat.md)), which has no `docs/keys/` directory at present. How a host syncing only from it comes to trust the release key is an open question, not covered here.
+
+### Packages (whatever is installed into your images)
+
+```
+cixctl pkg drift
 cixctl pkg update-all
 ```
 
-Finds the first installed package (across every image) whose recipe's `pkg_version=` has drifted from what's actually installed, and starts an upgrade for it — reusing the exact same install mechanism as any fresh `pkg install`, just with `upgrade: true` implied. Starts **at most one job at a time** (the same v1 single-install-in-flight constraint every install path shares) — call it again once that job finishes to pick up the next drifted package, repeating until it reports `{"status": "nothing to update"}`. This takes effect immediately, live, with no reboot — a package upgrade merges straight into its target image's rootfs the same way any install does.
+`pkg drift` lists every installed package whose recipe is newer than what is installed. `pkg update-all` starts an upgrade for the first such package, across every image, through the same mechanism as `pkg install --upgrade`. Each call starts one upgrade; call it again once that job finishes, until it reports `nothing to update`. A package upgrade applies live to its image, with no reboot.
 
-`GET /pkg/{name}` shows `available_version` for any installed package whose recipe has since changed, if you want to check what's drifted before triggering anything.
+## What runs on its own
 
-## What triggers these
+- **Schedules** ([ADR-0257](../adr/0257-one-scheduler-structured-schedules.md)). `cixctl schedule actions` lists what a schedule can run: fetching recipes (`pkg.sync`), refreshing upstream release data (`pkg.refresh-upstreams`), the platform backup (`system.backup`) and volume snapshots (`volume.backup`). `cixctl schedule ls` shows which are scheduled on this host.
+- **Rolling images.** Publishing a recipe, by hand or through a sync, queues a rebuild of every image that tracks that package `rolling` (`cixctl pkg rebuilds` lists the queue). Containers created with `--follow-rolling` restart onto the rebuilt image, spread over the jitter window (`cixctl rolling-config show`).
 
-**Nothing does, automatically.** Both are on-demand, operator- or cron-invoked — there is no background updater, no scheduled check, and no automatic "update then reboot" chaining anywhere in this platform (a deliberate v1 scope boundary, not an oversight — see [`docs/api/README.md`](../api/README.md#current-scope-boundaries-v1-deliberate--see-adr-0007)). If you want periodic updates, that's a cron entry (or a container with network reachability to `cixd`) calling `cixctl pkg update-all` and/or fetching+writing a fresh control-plane squashfs on whatever cadence you choose — the same "a plain REST client, nothing special" posture `cixctl backup` already documents for scheduled backups.
+Nothing updates the control plane or runs `pkg update-all` on its own, and nothing reboots the host. Run those yourself, or from any REST client on whatever cadence you choose.
 
 ## Before you update: back up
 
@@ -37,4 +52,4 @@ Finds the first installed package (across every image) whose recipe's `pkg_versi
 cixctl backup --output=backup.json
 ```
 
-Bundles container definitions, networks, DNS records, package install state + recipes, and site config — cheap insurance before any update that might go sideways. See [`docs/api/README.md`](../api/README.md#backup-and-restore) for exactly what's in (and deliberately not in) this bundle, and its own real disaster-recovery sequence.
+The bundle holds container definitions, networks, DNS records, volume definitions (not their data), package install state and recipes, and site config. See [Backup and restore](../api/README.md#backup-and-restore) for exactly what it contains and excludes. To take it on a clock, schedule the `system.backup` action; `cixctl backup-config` sets which disk it is written to.
