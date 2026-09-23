@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A kmod-build's symbols reach a CPDL kernel recipe (#517)
+
+`POST /v1/system/kmod-build` has cixd write the requested `CONFIG_*=m` symbols to `/build/extra/kmod-extra.config` (#412). A CPDL recipe cannot name that path, because it is outside the CBS roots, which was the one thing stopping the kernel recipe's conversion. cbs v0.1.54 added embedder-supplied optional inputs (cix-build-system#231). cixd now passes `--input kmod-extra=/build/extra/kmod-extra.config` on the `cbs build` command line when a build has extra symbols, and passes nothing otherwise. A recipe consumes the file with `args input "kmod-extra"`, which appends no argument when the input is absent.
+
+`test_kmod_build`'s fixture kernel recipe is now CPDL, as the real one is to be. It reads the input with `cat /dev/null` followed by `args input "kmod-extra"`, and the test still asserts that `symbols.txt` in the built artifact holds exactly the requested symbols. The shell fixture could not exercise the path the real kernel recipe takes. The fixture source is named `.tar` rather than `.tarball`, so CBS's extraction does not depend on guessing the format.
+
+cbs v0.1.55 (cix-recipes `cbs@v0.1.55-1`) is installed in `cix-builder` and `cix-hosttools` on 192.168.15.95. It also carries cix-build-system#232: CBS takes a UTF-8 `LC_CTYPE` before reading archive headers, so go's and gcc's sources extract.
+
 ### cixd runs with a UTF-8 LC_CTYPE, so source archives with non-ASCII paths extract (#518)
 
 This is the rest of the #518 fix described in the entry below. glibc now ships the locale: `glibc@2.44-19` in cix-recipes, the CPDL conversion, compiles C.UTF-8 with glibc's own `localedef` into `/usr/lib/locale/C.utf8`, and gates its install on `setlocale(LC_CTYPE, "C.UTF-8")` succeeding with a UTF-8 codeset. On 192.168.15.95 it is installed in the six rolling images, in `cix-builder` and in `cix-hosttools`.

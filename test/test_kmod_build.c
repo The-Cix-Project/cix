@@ -171,54 +171,89 @@ static int stage_fixture_tarball(const char *scratch_dir, char *out_tarball_path
 	fprintf(f, "hello: hello.c\n\tgcc -o hello hello.c\n");
 	fclose(f);
 
-	snprintf(out_tarball_path, tarball_path_size, "%s/kernel-1.0.tarball", scratch_dir);
+	snprintf(out_tarball_path, tarball_path_size, "%s/kernel-1.0.tar", scratch_dir);
 	if (run_cmd("tar -cf '%s' -C '%s' 'kernel-1.0'", out_tarball_path, scratch_dir) != 0)
 		return -1;
 
 	return compute_file_sha256(out_tarball_path, out_sha256, sha256_size);
 }
 
-/* pkg_build() copies whatever cixd staged at /build/extra/kmod-extra.config
- * to symbols.txt -- unset/empty means cixd wrote no file at all (#412's
- * write_kmod_extra_config() unlinks rather than leaves a stale one), so
- * this produces an empty symbols.txt, exactly mirroring the real
- * kernel.recipe's own "strictly additive, unset changes nothing" shape
- * (its own merge_config.sh branch is skipped the same way, on the
- * file's absence rather than an env var's). */
+/*
+ * The fixture kernel recipe, in CPDL, because the real kernel recipe is
+ * CPDL and this test exists to prove the path the real one takes (#517).
+ * Its shell predecessor read /build/extra/kmod-extra.config directly,
+ * which a CPDL recipe cannot name: the file is outside the CBS roots.
+ * cixd now hands it to CBS as `--input kmod-extra=...`, and the recipe
+ * appends it with `args input "kmod-extra"` (cbs v0.1.54,
+ * cix-build-system#231).
+ *
+ * `cat /dev/null <input>` into symbols.txt: with symbols requested the
+ * file carries them, and with none the input is absent, args input adds
+ * no argument, and symbols.txt is empty -- the same "strictly additive,
+ * unset changes nothing" shape the real kernel recipe's merge_config.sh
+ * run has.
+ *
+ * Declares its build tools because a hostbuild composes its build
+ * container from them (ADR-0304, #482); the names are the ADR-0209 test
+ * floor's own. tcc rather than gcc: gcc is not in the floor, and what
+ * this test is about is whether config_symbols reaches the build, not
+ * which compiler builds a five-line hello.c.
+ */
 static int write_kernel_fixture_recipe(const char *tarball_path, const char *sha256)
 {
-	char name_dir[256];
-	char path[300];
+	char dir[PATH_MAX];
+	char path[PATH_MAX + 16];
 	FILE *f;
 
-	snprintf(name_dir, sizeof(name_dir), "%s/recipes/kernel", g_pkg_state_dir);
-	mkdir(name_dir, 0755);
-	snprintf(path, sizeof(path), "%s/1.0", name_dir);
-	mkdir(path, 0755);
-	snprintf(path, sizeof(path), "%s/recipes/kernel/1.0/build.sh", g_pkg_state_dir);
+	snprintf(dir, sizeof(dir), "%s/recipes/kernel/1.0-1", g_pkg_state_dir);
+	if (run_cmd("mkdir -p '%s'", dir) != 0)
+		return -1;
+	snprintf(path, sizeof(path), "%s/build.cbs", dir);
 	f = fopen(path, "w");
 	if (f == NULL)
 		return -1;
-	fprintf(f, "pkg_name=kernel\npkg_version=1.0\npkg_source=%s\n", test_http_src(tarball_path));
-	/*
-	 * Declares its build tools, because ADR-0304 (#482) made a
-	 * hostbuild compose its build container from pkg_build_depends
-	 * like every other build -- this fixture used to rely on the
-	 * hbimage build image supplying a toolchain, which is exactly the
-	 * mechanism that retired. The four names are the ADR-0209 test
-	 * floor's own seeded set, so they resolve here.
-	 *
-	 * tcc rather than gcc for the same reason: gcc is not in the floor
-	 * and cannot be composed. What this test is about is whether
-	 * config_symbols reaches /build/extra/kmod-extra.config, not which
-	 * compiler builds a five-line hello.c.
-	 */
-	fprintf(f, "pkg_sha256=%s\npkg_depends=\"\"\n", sha256);
-	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n");
-	fprintf(f, "pkg_build() {\n\ttcc -o hello hello.c\n\tif [ -f /build/extra/kmod-extra.config ]; "
-	           "then cp /build/extra/kmod-extra.config symbols.txt; else : > symbols.txt; fi\n}\n\n");
-	fprintf(f, "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n\tcp symbols.txt "
-	           "\"$PKG_DESTDIR/symbols.txt\"\n}\n");
+	fprintf(f,
+	        "package \"kernel\" {\n"
+	        "    version \"1.0\"\n"
+	        "    release 1\n"
+	        "    format \"cixpkg\"\n"
+	        "\n"
+	        "    sources {\n"
+	        "        main \"kernel\" {\n"
+	        "            url \"%s\"\n"
+	        "            sha256 \"%s\"\n"
+	        "        }\n"
+	        "    }\n"
+	        "\n"
+	        "    requires {\n"
+	        "        build {\n"
+	        "            compiler \"tcc\"\n"
+	        "            tool \"linux-headers\"\n"
+	        "            tool \"bash\"\n"
+	        "            tool \"coreutils\"\n"
+	        "            tool \"binutils\"\n"
+	        "        }\n"
+	        "    }\n"
+	        "\n"
+	        "    build {\n"
+	        "        cd \"${src}/kernel/kernel-1.0\" {\n"
+	        "            run \"tcc\" {\n"
+	        "                \"-o\" \"hello\" \"hello.c\"\n"
+	        "            }\n"
+	        "            run \"cat\" {\n"
+	        "                \"/dev/null\"\n"
+	        "                args input \"kmod-extra\"\n"
+	        "                stdout file \"${src}/kernel/kernel-1.0/symbols.txt\"\n"
+	        "            }\n"
+	        "        }\n"
+	        "    }\n"
+	        "\n"
+	        "    install {\n"
+	        "        copy \"${src}/kernel/kernel-1.0/hello\" to \"${dest}/hello\"\n"
+	        "        copy \"${src}/kernel/kernel-1.0/symbols.txt\" to \"${dest}/symbols.txt\"\n"
+	        "    }\n"
+	        "}\n",
+	        test_http_src(tarball_path), sha256);
 	fclose(f);
 	return 0;
 }
