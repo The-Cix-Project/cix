@@ -6,13 +6,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
-### Source archives with non-ASCII path names extract again
+### A source archive with a non-ASCII path still cannot be extracted; v2.57.260's fix is reverted (#518)
 
-Since #411 moved source extraction in-process, cixd has extracted package sources with libarchive. libarchive converts a pax header's UTF-8 path to the current locale, and cixd never set one, so in the C locale any archive containing a non-ASCII path failed. That covers upstream sources routinely. go1.24.9's source tree, whose test data has such names, was refused on 192.168.15.95 with `extract .../go-1.24.9-2-0.src: read header failed: Pathname can't be converted from UTF-8 to current locale`. The `tar(1)` that #411 replaced had written the name bytes as they were. The cached go artifacts all predate #411: go-1.24.9-1 was last written 2026-09-03, and the switch landed 2026-09-14.
+Since #411 moved source extraction in-process, cixd has extracted package sources with libarchive. libarchive converts a pax header's UTF-8 path to the current locale, and in cixd's C locale a non-ASCII name cannot be represented, so the whole extraction fails. go1.24.9's source tree was refused that way on 192.168.15.95 (`Pathname can't be converted from UTF-8 to current locale`). go therefore cannot be rebuilt from source on a Cix host right now. Its cached artifacts all predate #411.
 
-`cixd` now sets `LC_CTYPE` to `C.UTF-8` first thing in `main()`. glibc 2.34 and later build that locale in, so no locale files are needed. Number formatting and collation are untouched. If the call fails, cixd logs the failure once the log store is up.
+v2.57.260 set `LC_CTYPE` to `C.UTF-8` in cixd on the belief that glibc builds that locale in. **It does not, and the change fixed nothing.** `probe-cix-testreport@12-1` failed exactly as before. `probe-locale@1-1` measured that `setlocale(LC_CTYPE, "C.UTF-8")` returns NULL, that `locale -a` lists only `C` and `POSIX`, and that there is neither `/usr/lib/locale` nor `/usr/share/i18n` to build one from. v2.57.261 reverts the change rather than ship a call that cannot succeed and would log an error on every boot.
 
-`test_pkg_build_log`'s source fixture now carries a UTF-8 name in pax format, and its recipe checks the file arrives byte for byte. The test was committed and run ahead of the fix (v2.57.259). In `probe-cix-testreport@11-1` it failed exactly as go did: `"error":"could not unpack (stage source failed)"`.
+The fix needs three things together (#518): glibc shipping a compiled C.UTF-8 locale, mkbootroot staging it into the control-plane root, and the `setlocale` call reinstated. The regression test added in v2.57.259 stays. `test_pkg_build_log`'s source fixture carries a pax UTF-8 path, and the test fails until #518 is fixed, which is the truth about the platform.
 
 ### test_kmod_build no longer copies a toolchain nothing reads
 
