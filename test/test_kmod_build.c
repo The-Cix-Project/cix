@@ -34,6 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -302,8 +303,18 @@ int main(void)
 			fprintf(stderr, "FAIL: could not stage hbimage toolchain\n");
 			return 1;
 		}
-		/* Timed: this copies a toolchain tree, and the test as a whole
-		 * overran a 300 s limit in probe-cix-testreport@7-1. */
+		/* Timed and sized: this copies a toolchain tree into the data
+		 * directory on /run -- tmpfs, charged to the build's 2 GiB memory
+		 * cgroup, where this test's daemon was OOM-killed
+		 * (probe-cix-testreport@8-1). The whole test also overran a
+		 * 300 s limit in @7-1. */
+		{
+			struct statvfs sv;
+
+			if (statvfs(hb_rootfs, &sv) == 0)
+				fprintf(stderr, "    filesystem under %s: %llu KiB used\n", hb_rootfs,
+				        (unsigned long long)(sv.f_blocks - sv.f_bfree) * sv.f_frsize / 1024);
+		}
 		fprintf(stderr, "    hbimage toolchain staged in %lds\n",
 		        (long)(time(NULL) - staged_at));
 		snprintf(hb_manifest, sizeof(hb_manifest), "%s/manifest.json", g_hbimage_dir);

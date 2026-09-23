@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The test runs were killed by the build's memory limit; testreport now measures /run
+
+The SIGKILL in `probe-cix-testreport@7-1` was the kernel's OOM killer. The box's kernel log at 1790186551, the moment that build's log stopped, reads `Memory cgroup out of memory: Killed process ... (cbs)` in `oom_memcg=/cix-workload/cix-pkgbuild`. That cgroup's limit is 2 GiB (`memory: usage 2097152kB, limit 2097152kB`), and it held 2,081,173,504 bytes of `shmem` against 35,639,296 of `anon`, so what filled it was tmpfs content, not process memory. `@8-1` then lost `test_kmod_build`'s own nested `cixd` the same way at 1790186824, which is why that job never left `fetching`. `@8-1` also passed `test_slow_client` and `test_pkg_build_log`.
+
+The daemon-linked tests keep their data directories on `/run`, which is tmpfs and so charged to that cgroup. They cannot move to the overlay root, because a test daemon's containers would stack overlay on overlay (#224). `probe-build-mounts@1-1` measured that a build container has nothing else writable: `/` and `/build` are the overlay, and `/run` and `/tmp` are tmpfs.
+
+What fills the 2 GiB is not yet measured. `make testreport` now prints how much `/run` holds after each test, and `test_kmod_build` prints the filesystem's usage after copying its `hbimage` toolchain.
+
 ### test_pkg_cache passes; test_kmod_build's time is now visible
 
 In `probe-cix-testreport@7-1` (cix v2.57.255, 192.168.15.95, 2026-09-23), `test_pkg_sync` and `test_pkg_cache` passed. `test_kmod_build` reached the report's 300-second limit. Within seconds the whole build was then killed with SIGKILL (`build killed by signal 9`), so the two tests after it never ran. Full cix-tests runs have lasted about 1,470 seconds without being killed, so a fixed build limit does not explain it. The cause is not established. It is the first run in which the test was stopped with its nested hostbuild still in flight.

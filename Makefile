@@ -377,6 +377,12 @@ selftest: $(SELFTESTS) $(SELFTEST_HELPERS)
 # rather than stalling the run. Logs go under $(BUILD) rather than /tmp,
 # which Cix's minimal images do not carry.
 #
+# After each test it prints how much /run holds. The daemon-linked tests
+# keep their data directories there (tmpfs, charged to the build's
+# memory cgroup), and a run that filled the 2 GiB of
+# /cix-workload/cix-pkgbuild was OOM-killed (probe-cix-testreport@7-1,
+# 192.168.15.95, 2026-09-23).
+#
 TESTREPORT_TIMEOUT ?= 300
 # Lines of each failing test's log to print. 12 keeps a full run readable;
 # raise it to diagnose one test.
@@ -397,6 +403,7 @@ testreport: all
 			if [ $$rc -eq 124 ]; then hung="$$hung $$n"; printf '  %-34s TIMEOUT\n' "$$n"; \
 			else failed="$$failed $$n"; printf '  %-34s FAIL (exit %s)\n' "$$n" "$$rc"; fi; \
 		fi; \
+		set -- $$(df -Pk /run | tail -n 1); printf '  %-34s /run holds %s KiB\n' '' "$$3"; \
 	done; \
 	echo; echo "=== failing ==="; \
 	for n in $$failed; do echo "--- $$n"; tail -n $(TESTREPORT_TAIL) $(BUILD)/testreport/$$n.log | sed 's/^/    /'; done; \
