@@ -12,6 +12,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_floor.h"
 
 #include <stdint.h>
 #include <arpa/inet.h>
@@ -343,11 +344,20 @@ static int recv_ws_frame(int fd, int *out_opcode, unsigned char *out_buf, size_t
 		if (read_full(fd, ext, 2) != 0)
 			return -1;
 		payload_len = ((size_t)ext[0] << 8) | (size_t)ext[1];
+	} else if (len7 == 127) {
+		/* The 64-bit form. ws_write_frame() never sends it (its
+		 * payload is capped at 64 KiB), so meeting one is a protocol
+		 * fault to report, not a length to read as 127 bytes. */
+		fprintf(stderr, "    ws: unexpected 64-bit length frame\n");
+		return -1;
 	} else {
 		payload_len = len7;
 	}
-	if (payload_len > out_cap)
+	if (payload_len > out_cap) {
+		fprintf(stderr, "    ws: %zu-byte frame exceeds this reader's %zu-byte buffer\n",
+		        payload_len, out_cap);
 		return -1;
+	}
 
 	/* The same loop the header now uses -- one implementation, not a
 	 * second copy of it three lines further down. */
@@ -480,42 +490,7 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	{
-		const char *const *floor = test_floor_install;
-		int fi;
-
-		for (fi = 0; floor[fi] != NULL; fi++) {
-			char fbody[128];
-			int fr;
-
-			snprintf(fbody, sizeof(fbody), "{\"name\":\"%s\"}", floor[fi]);
-			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "POST", "/v1/pkg/install", fbody, &r) != 0 ||
-			    (r.status != 202 && r.status != 200)) {
-				/* A floor install that fails silently is how a later
-				 * build ends up reporting a missing tool that was
-				 * supposed to be here -- say it at the point it goes
-				 * wrong, not three screens later. */
-				fprintf(stderr, "FAIL: floor install of %s: status=%d %.200s\n", floor[fi],
-				        r.status, r.body != NULL ? r.body : "");
-			}
-			cix_response_free(&r);
-			for (fr = 0; fr < 600; fr++) {
-				const char *st = NULL;
-
-				memset(&r, 0, sizeof(r));
-				snprintf(fbody, sizeof(fbody), "/v1/pkg/%s", floor[fi]);
-				if (cix_client_request(&client, "GET", fbody, NULL, &r) == 0 && r.json != NULL)
-					st = json_str_field(r.json, "state");
-				if (st != NULL && strcmp(st, "installed") == 0) {
-					cix_response_free(&r);
-					break;
-				}
-				cix_response_free(&r);
-				usleep(300000);
-			}
-		}
-	}
+	CHECK(test_floor_install_all(&client) == 0, "install the build floor");
 
 	/* --- scenario 1: no build in progress yet -> 404 --- */
 	fd = raw_connect(TEST_PORT);
@@ -651,36 +626,62 @@ int main(void)
 		      "Sec-WebSocket-Accept matches the RFC 6455 worked example");
 
 		{
-			char accumulated[4096];
-			size_t acc_len = 0;
+			/*
+			 * Sized to the largest frame ws_write_frame() can send
+			 * (WS_MAX_FRAME_PAYLOAD, 64 KiB), not to a guess at how
+			 * much output one relay carries. This was 2048 while the
+			 * relay reads up to 4096 bytes at a time
+			 * (handle_pkg_build_output_event()), so one busy chunk
+			 * ended the loop with neither a marker nor the close
+			 * frame seen (probe-cix-testreport@4-1, 2026-09-23).
+			 *
+			 * "marker-" is looked for in each frame plus the tail of
+			 * the one before, so a marker split across two relays
+			 * still counts and nothing needs to be accumulated.
+			 */
+			static unsigned char buf[65536 + 8];
+			char tail[8] = "";
+			size_t frames = 0, bytes = 0;
+			const char *ended = "frame limit reached";
 			int saw_marker_before_close = 0;
 			int saw_close = 0;
-			int attempts;
 
-			accumulated[0] = '\0';
-			for (attempts = 0; attempts < 40 && !saw_close; attempts++) {
+			while (frames < 4096) {
 				int opcode;
-				unsigned char buf[2048];
-				size_t len;
+				size_t len, tl = strlen(tail);
 
-				if (recv_ws_frame(fd, &opcode, buf, sizeof(buf), &len) != 0)
-					break;
-				if (opcode == 0x8) {
-					saw_close = 1;
+				if (recv_ws_frame(fd, &opcode, buf + tl, sizeof(buf) - 8, &len) != 0) {
+					ended = "read failed or timed out";
 					break;
 				}
-				if ((opcode == 0x1 || opcode == 0x2) && len > 0 &&
-				    acc_len + len < sizeof(accumulated)) {
-					memcpy(accumulated + acc_len, buf, len);
-					acc_len += len;
-					accumulated[acc_len] = '\0';
-					if (strstr(accumulated, "marker-") != NULL)
-						saw_marker_before_close = 1;
+				frames++;
+				if (opcode == 0x8) {
+					saw_close = 1;
+					ended = "close frame";
+					break;
+				}
+				if ((opcode != 0x1 && opcode != 0x2) || len == 0)
+					continue;
+				bytes += len;
+				memcpy(buf, tail, tl);
+				buf[tl + len] = '\0';
+				if (memmem(buf, tl + len, "marker-", 7) != NULL)
+					saw_marker_before_close = 1;
+				/* Keep the last six bytes: one short of "marker-". */
+				if (tl + len > 6) {
+					memcpy(tail, buf + tl + len - 6, 6);
+					tail[6] = '\0';
+				} else {
+					memcpy(tail, buf, tl + len);
+					tail[tl + len] = '\0';
 				}
 			}
 			CHECK(saw_marker_before_close,
 			      "at least one build output marker arrived live, before the close frame");
 			CHECK(saw_close, "daemon sent a real WS close frame once the build finished");
+			if (!saw_marker_before_close || !saw_close)
+				fprintf(stderr, "      live tail ended on: %s, after %zu frames, %zu bytes\n",
+				        ended, frames, bytes);
 		}
 		close(fd);
 	}

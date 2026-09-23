@@ -1195,12 +1195,24 @@ int test_image_fixture_stage_closure(const char *image_root, const char *binary_
  * The loopback HTTP file server behind test_http_server_start() and
  * test_http_source_url(). See test_image_fixture.h for why it exists.
  */
+
+/*
+ * The request being answered, "<METHOD> <path>", for the one line every
+ * reply logs. A test that fails on a fetch sees only the daemon's
+ * summary of it ("The requested URL returned error: 404"); this line is
+ * what says which path was asked for and what this server made of it.
+ * One per server process, which serves one request at a time.
+ */
+static char g_http_serving[PATH_MAX + 16] = "(unparsed request)";
+
 static void http_serve_reply(int fd, const char *status, long long length)
 {
 	char head[160];
 	int n = snprintf(head, sizeof(head),
 	                 "HTTP/1.0 %s\r\nContent-Length: %lld\r\nConnection: close\r\n\r\n",
 	                 status, length);
+
+	fprintf(stderr, "    fixture http: %s -> %s\n", g_http_serving, status);
 
 	if (n > 0 && write(fd, head, (size_t)n) != n)
 		return;
@@ -1316,6 +1328,9 @@ static void http_serve_one(int fd, const char *root, int accept_put)
 			break;
 	}
 	req[used] = '\0';
+	snprintf(g_http_serving, sizeof(g_http_serving), "(unparsed request)");
+	if (sscanf(req, "%7s %4095s", method, upath) == 2)
+		snprintf(g_http_serving, sizeof(g_http_serving), "%s %s", method, upath);
 	if (sscanf(req, "%7s %4095s", method, upath) != 2 || upath[0] != '/' ||
 	    strstr(upath, "..") != NULL) {
 		http_serve_reply(fd, "400 Bad Request", 0);
@@ -1336,6 +1351,7 @@ static void http_serve_one(int fd, const char *root, int accept_put)
 	if (snprintf(path, sizeof(path), "%s%s", strcmp(root, "/") == 0 ? "" : root, upath) >=
 	        (int)sizeof(path) ||
 	    stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+		fprintf(stderr, "    fixture http: %s is not a regular file here\n", path);
 		http_serve_reply(fd, "404 Not Found", 0);
 		return;
 	}

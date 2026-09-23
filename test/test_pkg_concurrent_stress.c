@@ -17,6 +17,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_floor.h"
 
 #include <limits.h>
 #include <signal.h>
@@ -360,48 +361,10 @@ int main(void)
 	cix_client_init(&client_a, "127.0.0.1", PORT_A);
 	CHECK(wait_for_daemon(&client_a, 50) == 0, "daemon A became healthy");
 
-	{
-		const char *const *floor = test_floor_install;
-		int fi;
-
-		/* ADR-0209: the build floor, installed as cache hits from real
-		 * recipe-built artifacts -- no shared sandbox to inherit one
-		 * from, and nothing fabricated. */
-		for (fi = 0; floor[fi] != NULL; fi++) {
-			char fbody[160];
-			int fr;
-
-			snprintf(fbody, sizeof(fbody), "{\"name\":\"%s\"}", floor[fi]);
-			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client_a, "POST", "/v1/pkg/install", fbody, &r) != 0 ||
-			    (r.status != 202 && r.status != 200))
-				fprintf(stderr, "FAIL: floor install of %s: status=%d %.200s\n", floor[fi], r.status, r.body != NULL ? r.body : "");
-			cix_response_free(&r);
-			for (fr = 0; fr < 600; fr++) {
-				const char *st = NULL;
-
-				memset(&r, 0, sizeof(r));
-				snprintf(fbody, sizeof(fbody), "/v1/pkg/%s", floor[fi]);
-				if (cix_client_request(&client_a, "GET", fbody, NULL, &r) == 0 && r.json != NULL)
-					st = json_str_field(r.json, "state");
-				if (st != NULL && strcmp(st, "installed") == 0) {
-					cix_response_free(&r);
-					break;
-				}
-				if (st != NULL && strcmp(st, "failed") == 0) {
-					/* Say it here. A floor package that fails leaves
-					 * every later build reporting a missing tool, which
-					 * is three screens away from the real cause. */
-					fprintf(stderr, "FAIL: floor package %s failed: %.240s\n", floor[fi],
-					        r.body != NULL ? r.body : "");
-					cix_response_free(&r);
-					break;
-				}
-				cix_response_free(&r);
-				usleep(300000);
-			}
-		}
-	}
+	/* ADR-0209: the build floor, installed as cache hits from real
+	 * recipe-built artifacts -- no shared sandbox to inherit one from,
+	 * and nothing fabricated. */
+	CHECK(test_floor_install_all(&client_a) == 0, "install the build floor on daemon A");
 
 	/* Pin the concurrency ceiling to exactly N -- deterministic, and
 	 * proves the config genuinely governs how many of these N+1
@@ -505,48 +468,7 @@ int main(void)
 	cix_client_init(&client_b, "127.0.0.1", PORT_B);
 	CHECK(wait_for_daemon(&client_b, 50) == 0, "daemon B became healthy");
 
-	{
-		const char *const *floor = test_floor_install;
-		int fi;
-
-		/* ADR-0209: the build floor, installed as cache hits from real
-		 * recipe-built artifacts -- no shared sandbox to inherit one
-		 * from, and nothing fabricated. */
-		for (fi = 0; floor[fi] != NULL; fi++) {
-			char fbody[160];
-			int fr;
-
-			snprintf(fbody, sizeof(fbody), "{\"name\":\"%s\"}", floor[fi]);
-			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client_b, "POST", "/v1/pkg/install", fbody, &r) != 0 ||
-			    (r.status != 202 && r.status != 200))
-				fprintf(stderr, "FAIL: floor install of %s: status=%d %.200s\n", floor[fi], r.status, r.body != NULL ? r.body : "");
-			cix_response_free(&r);
-			for (fr = 0; fr < 600; fr++) {
-				const char *st = NULL;
-
-				memset(&r, 0, sizeof(r));
-				snprintf(fbody, sizeof(fbody), "/v1/pkg/%s", floor[fi]);
-				if (cix_client_request(&client_b, "GET", fbody, NULL, &r) == 0 && r.json != NULL)
-					st = json_str_field(r.json, "state");
-				if (st != NULL && strcmp(st, "installed") == 0) {
-					cix_response_free(&r);
-					break;
-				}
-				if (st != NULL && strcmp(st, "failed") == 0) {
-					/* Say it here. A floor package that fails leaves
-					 * every later build reporting a missing tool, which
-					 * is three screens away from the real cause. */
-					fprintf(stderr, "FAIL: floor package %s failed: %.240s\n", floor[fi],
-					        r.body != NULL ? r.body : "");
-					cix_response_free(&r);
-					break;
-				}
-				cix_response_free(&r);
-				usleep(300000);
-			}
-		}
-	}
+	CHECK(test_floor_install_all(&client_b) == 0, "install the build floor on daemon B");
 
 	for (i = 0; i < N_PACKAGES; i++) {
 		char body[64];

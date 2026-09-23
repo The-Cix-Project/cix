@@ -27,6 +27,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_floor.h"
 
 #include <limits.h>
 #include <signal.h>
@@ -330,42 +331,7 @@ int main(void)
 	 * from this sandbox's own real host environment (same call
 	 * test_pkg.c's own scenario 1 makes), needed before any install
 	 * below can create its build container. */
-	{
-		const char *const *floor = test_floor_install;
-		int fi;
-
-		for (fi = 0; floor[fi] != NULL; fi++) {
-			char fbody[128];
-			int fr;
-
-			snprintf(fbody, sizeof(fbody), "{\"name\":\"%s\"}", floor[fi]);
-			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "POST", "/v1/pkg/install", fbody, &r) != 0 ||
-			    (r.status != 202 && r.status != 200)) {
-				/* A floor install that fails silently is how a later
-				 * build ends up reporting a missing tool that was
-				 * supposed to be here -- say it at the point it goes
-				 * wrong, not three screens later. */
-				fprintf(stderr, "FAIL: floor install of %s: status=%d %.200s\n", floor[fi],
-				        r.status, r.body != NULL ? r.body : "");
-			}
-			cix_response_free(&r);
-			for (fr = 0; fr < 600; fr++) {
-				const char *st = NULL;
-
-				memset(&r, 0, sizeof(r));
-				snprintf(fbody, sizeof(fbody), "/v1/pkg/%s", floor[fi]);
-				if (cix_client_request(&client, "GET", fbody, NULL, &r) == 0 && r.json != NULL)
-					st = json_str_field(r.json, "state");
-				if (st != NULL && strcmp(st, "installed") == 0) {
-					cix_response_free(&r);
-					break;
-				}
-				cix_response_free(&r);
-				usleep(300000);
-			}
-		}
-	}
+	CHECK(test_floor_install_all(&client) == 0, "install the build floor");
 
 	/* --- rolling-config GET/PUT round trip, and range validation --- */
 	memset(&r, 0, sizeof(r));

@@ -15,6 +15,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_floor.h"
 
 #include <limits.h>
 #include <signal.h>
@@ -847,9 +848,7 @@ int main(void)
 	 * resolve against these.
 	 */
 	{
-		const char *const *floor = test_floor_install;
 		char fstate[64];
-		int i;
 
 		/*
 		 * glibc is deliberately NOT in that list: the daemon installs
@@ -900,44 +899,9 @@ int main(void)
 			}
 		}
 
-		for (i = 0; floor[i] != NULL; i++) {
-			char body[160];
-
-			snprintf(body, sizeof(body), "{\"name\":\"%s\"}", floor[i]);
-			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "POST", "/v1/pkg/install", body, &r) != 0 ||
-			    (r.status != 202 && r.status != 200)) {
-				fprintf(stderr, "FAIL: installing floor package %s, status=%d body=%.120s\n",
-				        floor[i], r.status, r.body != NULL ? r.body : "");
-				ok = 0;
-				continue;
-			}
-			cix_response_free(&r);
-			/*
-			 * Polled in rounds rather than once: extracting an
-			 * artifact runs synchronously in this single-threaded
-			 * daemon, so an individual status request can genuinely
-			 * time out while the install is perfectly healthy.
-			 * Treating that as failure made a working install look
-			 * broken -- the state it printed was "installed".
-			 */
-			{
-				int round;
-
-				fstate[0] = '\0';
-				for (round = 0; round < 10; round++) {
-					if (poll_pkg_state(&client, floor[i], fstate, sizeof(fstate), 300) == 0)
-						break;
-				}
-				if (strcmp(fstate, "installed") != 0) {
-					fprintf(stderr,
-					        "FAIL: floor package %s ended in state '%s', not installed -- a "
-					        "cache hit needs no build environment, so this should not fail\n",
-					        floor[i], fstate);
-					ok = 0;
-				}
-			}
-		}
+		/* test_floor_install_all() reports each failure where it happens. */
+		if (test_floor_install_all(&client) != 0)
+			ok = 0;
 	}
 
 	/* ADR-0157 Phase 3 raised the real default ceiling to 10 -- lowered

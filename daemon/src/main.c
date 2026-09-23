@@ -28208,7 +28208,21 @@ static void handle_client_event(struct conn *cc)
 	 * already sent says Connection: close.
 	 */
 	if (cc->out_buf != NULL && cc->out_sent < cc->out_len) {
-		if (conn_out_drain(cc) != 0)
+		int dr = conn_out_drain(cc);
+
+		/*
+		 * A failed write ends the connection like the deadline does,
+		 * and must say so like the deadline does: the kernel's own
+		 * TCP_USER_TIMEOUT abort arrives here as ETIMEDOUT, and a
+		 * drop nobody logged is indistinguishable from one that
+		 * never happened (#237's test reads this log).
+		 */
+		if (dr < 0)
+			logstore_write("cixd", "warn",
+			               "dropping a client whose connection failed mid-response "
+			               "after %zu of %zu bytes: %s",
+			               cc->out_sent, cc->out_len, strerror(errno));
+		if (dr != 0)
 			client_conn_teardown(cc);
 		return;
 	}

@@ -595,7 +595,7 @@ $(BUILD)/test_sysctl: test/test_sysctl.c test/test_image_fixture.c $(CLIENT_SRCS
 $(BUILD)/test_kmod: test/test_kmod.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_kmod_build: test/test_kmod_build.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_kmod_build: test/test_kmod_build.c test/test_image_fixture.c test/test_floor.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_device_hotplug: test/test_device_hotplug.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
@@ -709,19 +709,19 @@ $(BUILD)/test_ldap: test/test_ldap.c test/test_image_fixture.c $(CLIENT_SRCS) | 
 $(BUILD)/test_pki: test/test_pki.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_pkg: test/test_pkg.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_pkg: test/test_pkg.c test/test_image_fixture.c test/test_floor.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_pkg_build_log: test/test_pkg_build_log.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_pkg_build_log: test/test_pkg_build_log.c test/test_image_fixture.c test/test_floor.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_pkg_concurrent_stress: test/test_pkg_concurrent_stress.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_pkg_concurrent_stress: test/test_pkg_concurrent_stress.c test/test_image_fixture.c test/test_floor.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_pkg_sync: test/test_pkg_sync.c test/test_image_fixture.c daemon/src/persist.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_pkg_cache: test/test_pkg_cache.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_pkg_cache: test/test_pkg_cache.c test/test_image_fixture.c test/test_floor.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_image_recipe: test/test_image_recipe.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
@@ -730,8 +730,8 @@ $(BUILD)/test_image_recipe: test/test_image_recipe.c test/test_image_fixture.c $
 $(BUILD)/test_container_recipe: test/test_container_recipe.c test/test_image_fixture.c test/test_cleanup.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_rolling_restart: test/test_rolling_restart.c test/test_image_fixture.c $(CLIENT_SRCS) $(BUILD)/daemon_child | $(BUILD)
-	$(CC) $(CLIENT_CFLAGS) test/test_rolling_restart.c test/test_image_fixture.c $(CLIENT_SRCS) -o $@
+$(BUILD)/test_rolling_restart: test/test_rolling_restart.c test/test_image_fixture.c test/test_floor.c $(CLIENT_SRCS) $(BUILD)/daemon_child | $(BUILD)
+	$(CC) $(CLIENT_CFLAGS) test/test_rolling_restart.c test/test_image_fixture.c test/test_floor.c $(CLIENT_SRCS) -o $@
 
 $(BUILD)/syslog_recv_child: test/syslog_recv_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@

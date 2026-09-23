@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The package tests install one shared build floor, and three silent failures now name themselves
+
+A focused run of four failing package tests (`probe-cix-testreport@4-1`, cix v2.57.252, 192.168.15.95, 2026-09-23) gave each one a reason:
+- **`test_kmod_build`** never seeded or installed the ADR-0209 build floor. Its build was refused with `declared build tool "tcc" is not installed anywhere`. It now seeds and installs the floor like the other package tests.
+- **`test_pkg_build_log`** read WebSocket frames into a 2048-byte buffer. The daemon relays build output in reads of up to 4096 bytes (`handle_pkg_build_output_event()`), and `recv_ws_frame()` failed on any larger frame. That ended the loop with neither a marker nor the close frame seen. The buffer is now sized to the largest frame the daemon can send (64 KiB). A 64-bit length is reported as a protocol fault instead of being read as 127 bytes. On failure the test prints why the live tail ended.
+- **`test_pkg_sync` and `test_pkg_cache`** get 404s from the loopback fixture server, and the daemon's error does not say which path it asked for. The server now logs every request (`fixture http: GET /path -> 404 Not Found`) and names the file it could not find, so the next run shows the cause. The cause itself is not yet established.
+
+The loop that installs the floor existed in five tests, as six copies with small differences: one reported a `failed` state and the others did not. It is now `test_floor_install_all()` in `test/test_floor.c`. It reports a refused request, a failed package with the daemon's error, and a package that never finishes, all at the point they happen.
+
+`cixd` also logs a client it drops because a write failed mid-response, as it already did for one dropped by the write deadline. The kernel's `TCP_USER_TIMEOUT` and that deadline are both 30 seconds. When the kernel aborts first, the teardown used to leave no trace, which is one explanation for `test_slow_client` finding no drop in the log. That explanation is unverified until the next run.
+
 ### The package tests fetch their fixtures over loopback HTTP, as cixd requires
 
 Since #410 cixd fetches `http` and `https` only (`CURLOPT_PROTOCOLS_STR` in `daemon/src/curlfetch.c`). The package tests still named their fixture sources as `file:///…`. None of those tests is in the `SELFTESTS` gate, so the break went unseen until `cix-tests` ran them on 192.168.15.95 (`v2.57.246-1`). Every nested build failed with `fetch failed (curl exit status 1): file:///tmp/…: Protocol "file" is disabled`, and that one cause surfaced in about eight tests as missing binaries, exit status 142 and wrong pipeline stages.

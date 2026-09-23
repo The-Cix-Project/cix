@@ -25,6 +25,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_floor.h"
 
 #include <limits.h>
 #include <signal.h>
@@ -245,6 +246,20 @@ int main(void)
 	snprintf(g_pkg_state_dir, sizeof(g_pkg_state_dir), "%s/rebuildable/pkg", g_data_dir);
 	snprintf(g_hbimage_dir, sizeof(g_hbimage_dir), "%s/rebuildable/images/hbimage", g_data_dir);
 
+	/*
+	 * ADR-0209: the build floor. The kmod build composes its container
+	 * from the fixture recipe's pkg_build_depends, and those resolve
+	 * only against packages installed here -- without this the build
+	 * failed with 'declared build tool "tcc" is not installed anywhere'
+	 * (probe-cix-testreport@4-1, 192.168.15.95, 2026-09-23).
+	 */
+	if (test_image_fixture_seed_floor_packages(g_data_dir, "build-inputs/floor-artifacts") != 0) {
+		fprintf(stderr, "FAIL: could not seed the build floor -- fetch the real package "
+		                "artifacts into build-inputs/floor-artifacts first (ADR-0209)\n");
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
+
 	run_cmd("mkdir -p '%s/recipes'", g_pkg_state_dir);
 
 	if (mkdtemp(scratch_dir) == NULL) {
@@ -300,6 +315,9 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
+
+	if (test_floor_install_all(&client) != 0)
+		ok = 0;
 
 	/* 1. Error paths first (no job in flight yet for any of these).
 	 *
