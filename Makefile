@@ -360,6 +360,48 @@ selftest: $(SELFTESTS) $(SELFTEST_HELPERS)
 	if [ $$fail -ne 0 ]; then echo "SELFTEST: FAIL" >&2; exit 1; fi; \
 	echo "SELFTEST: PASS"
 
+#
+# testreport -- run EVERY test binary `all` builds, not just the gated
+# SELFTESTS subset, and report per-test results (#224, cix#487).
+#
+# This is the loop the cix-tests shell recipe carried inline. It lives
+# here because a CPDL recipe cannot express it: `run` has timeout and
+# allow_failure for one command, and `args glob` expands a pattern into
+# ONE command's arguments, but there is no per-match iteration, and an
+# interpreter is not a valid run executable (CPDL-E3006). A make target
+# is an ordinary command either recipe format can run.
+#
+# REPORTS, DOES NOT GATE: it exits 0 whatever the results, as the shell
+# recipe did, because there is no baseline yet. Each test gets
+# TESTREPORT_TIMEOUT seconds, and a hung one is reported as TIMEOUT
+# rather than stalling the run. Logs go under $(BUILD) rather than /tmp,
+# which Cix's minimal images do not carry.
+#
+TESTREPORT_TIMEOUT ?= 300
+.PHONY: testreport
+testreport: all
+	@mkdir -p $(BUILD)/testreport; \
+	total=0; passed=""; failed=""; hung=""; \
+	for t in $(BUILD)/test_*; do \
+		[ -x "$$t" ] || continue; \
+		n=$$(basename $$t); total=$$((total + 1)); \
+		if timeout $(TESTREPORT_TIMEOUT) ./$$t >$(BUILD)/testreport/$$n.log 2>&1; then \
+			passed="$$passed $$n"; printf '  %-34s PASS\n' "$$n"; \
+		else \
+			rc=$$?; \
+			if [ $$rc -eq 124 ]; then hung="$$hung $$n"; printf '  %-34s TIMEOUT\n' "$$n"; \
+			else failed="$$failed $$n"; printf '  %-34s FAIL (exit %s)\n' "$$n" "$$rc"; fi; \
+		fi; \
+	done; \
+	echo; echo "=== failing ==="; \
+	for n in $$failed; do echo "--- $$n"; tail -12 $(BUILD)/testreport/$$n.log | sed 's/^/    /'; done; \
+	echo; echo "=== summary ==="; \
+	echo "  total    : $$total"; \
+	echo "  passed   : $$(echo $$passed | wc -w)"; \
+	echo "  failed   : $$(echo $$failed | wc -w)"; \
+	echo "  timed out: $$(echo $$hung | wc -w)$${hung:+ ($$hung )}"; \
+	echo "TESTREPORT: DONE"
+
 .PHONY: all clean aggressive
 
 all: $(BUILD)/cix-init $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/test_container_pty $(BUILD)/pty_child $(BUILD)/cixd $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/cixctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_slow_client $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_network_interfaces $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_ntp $(BUILD)/test_ldap $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/cix-install $(BUILD)/cix-recover $(BUILD)/test_dual_console $(BUILD)/dual_console_child $(BUILD)/console_term_child $(BUILD)/console_input_child $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/mktoolchainimage $(BUILD)/test_console_pki_bootstrap $(BUILD)/test_console_exec $(BUILD)/test_container_lifecycle $(BUILD)/output_child $(BUILD)/stats_child $(BUILD)/test_container_stats $(BUILD)/test_disk_quota $(BUILD)/test_diskpart $(BUILD)/test_sysctl $(BUILD)/test_kmod $(BUILD)/test_kmod_build $(BUILD)/test_routes $(BUILD)/test_management_address $(BUILD)/test_pkg_build_log $(BUILD)/test_pkg_concurrent_stress $(BUILD)/test_pkg_sync $(BUILD)/test_pkg_cache $(BUILD)/test_image_recipe $(BUILD)/test_container_recipe $(BUILD)/test_rolling_restart $(BUILD)/syslog_recv_child $(BUILD)/test_syslogfwd $(BUILD)/test_hostproc $(BUILD)/test_tls_throttle $(BUILD)/test_https_chain $(BUILD)/test_layout_upgrade $(BUILD)/test_treecopy $(BUILD)/test_storage_placement $(BUILD)/test_backup_config $(BUILD)/test_container_storage_migrate $(BUILD)/test_container_dns_servers $(BUILD)/test_hostauth $(BUILD)/test_device_hotplug $(BUILD)/test_subid $(BUILD)/test_volume $(BUILD)/volume_child $(BUILD)/test_userns_run $(BUILD)/run_child $(BUILD)/test_factory_reset $(BUILD)/test_boot_console $(BUILD)/test_signing_keys $(BUILD)/test_pkg_recipe_approval $(BUILD)/test_stallwatch $(BUILD)/test_kernelpolicy $(BUILD)/test_dhcp $(BUILD)/test_artifact_export $(BUILD)/test_esp $(BUILD)/test_btrfs $(BUILD)/test_direct_rootfs $(BUILD)/test_targz $(BUILD)/targz_probe $(BUILD)/test_childdiag $(BUILD)/apigen $(BUILD)/test_apigen $(BUILD)/test_apiroute $(BUILD)/test_api_surfaces $(BUILD)/test_docindex $(BUILD)/test_web_vt $(BUILD)/test_web_syntax $(BUILD)/test_secrets $(BUILD)/test_curl_guards $(BUILD)/test_timebounds $(BUILD)/test_procfuse $(BUILD)/test_lint $(BUILD)/test_osrelease $(BUILD)/test_json $(BUILD)/test_jsondiff $(BUILD)/test_pbsrecipe $(BUILD)/test_nsswitch $(BUILD)/test_nicreport $(BUILD)/test_blocking_waits $(BUILD)/test_listenbind $(BUILD)/test_bootorder $(BUILD)/test_pkg_finalize $(BUILD)/test_fresh_output_dir $(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc $(BUILD)/test_releasekey $(BUILD)/test_aggressive $(BUILD)/cix-boot.efi $(BUILD)/cix-xorriso

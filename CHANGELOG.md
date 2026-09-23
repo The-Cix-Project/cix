@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### `make testreport` runs every test binary, so `cix-tests` can convert to CPDL (#224, #487)
+
+`make selftest` runs the gated subset. `make testreport` builds `all` and runs every `build/test_*` under a `TESTREPORT_TIMEOUT` (default 300 s). It reports each one as PASS, FAIL (with the tail of its log) or TIMEOUT, then prints a summary. It exits 0 whatever the results: there is no baseline yet, so it reports rather than gates. Logs go to `build/testreport/`, not `/tmp`, which Cix's minimal images do not carry.
+
+This is the loop the `cix-tests` shell recipe carried inline. CPDL cannot express it: `run` has `timeout` and `allow_failure` for one command, but `args glob` feeds every match to a single command, there is no per-match iteration, and an interpreter is not a valid `run` executable (CPDL-E3006). Moving the loop beside `selftest` makes it one `make` call for either recipe format, and keeps the two runners in one file. `cix-tests@v2.57.245.cbs` uses it, declares `capability "CAP_SYS_ADMIN"`, and moves off the `v2.53.21` tag, whose Gitea archive no longer matches the hash its shell recipe declares (#513).
+
+Not yet run: the target is new at this tag and has not been executed on a Cix host.
+
 ### `cix` converts to CPDL and passes its own selftest: the conversion had dropped `CAP_SYS_ADMIN` (#515, #487)
 
 `cix@v2.57.244-2` through `-4`, the CPDL conversion of the platform's own recipe, failed the selftest's container-creating suites. Parallelism was blamed first, then "a CPDL build container cannot create cgroups" (the original text of #515). Both were wrong. The shell recipe declared `pkg_build_caps="CAP_SYS_ADMIN"`, and the conversion carried no `capability` line. cixd mounts cgroup2 into a build container only when that capability is present (`src/container.c`, `mount_cgroup2`), and without it the container cannot clone namespaces either. Both build paths get the same container spec from `start_build_container_spec()`, and the recipe decides what goes into it.
