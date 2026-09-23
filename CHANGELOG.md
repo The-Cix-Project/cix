@@ -6,6 +6,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cixd runs with a UTF-8 LC_CTYPE, so source archives with non-ASCII paths extract (#518)
+
+This is the rest of the #518 fix described in the entry below. glibc now ships the locale: `glibc@2.44-19` in cix-recipes, the CPDL conversion, compiles C.UTF-8 with glibc's own `localedef` into `/usr/lib/locale/C.utf8`, and gates its install on `setlocale(LC_CTYPE, "C.UTF-8")` succeeding with a UTF-8 codeset. On 192.168.15.95 it is installed in the six rolling images, in `cix-builder` and in `cix-hosttools`.
+
+- **mkbootroot** copies `usr/lib/locale/C.utf8` from the host-tools image into the control-plane root, beside the glibc libraries it already takes from there. An older host-tools glibc without the locale gets a note naming #518, not a failure.
+- **cixd** sets `LC_CTYPE` to `C.UTF-8` first thing in `main()`, which v2.57.261 had reverted. If the call fails, cixd logs it after `logstore_init()` and names the missing `/usr/lib/locale/C.utf8`. Only `LC_CTYPE` changes; number formatting and collation are as before.
+
 ### A source archive with a non-ASCII path still cannot be extracted; v2.57.260's fix is reverted (#518)
 
 Since #411 moved source extraction in-process, cixd has extracted package sources with libarchive. libarchive converts a pax header's UTF-8 path to the current locale, and in cixd's C locale a non-ASCII name cannot be represented, so the whole extraction fails. go1.24.9's source tree was refused that way on 192.168.15.95 (`Pathname can't be converted from UTF-8 to current locale`). go therefore cannot be rebuilt from source on a Cix host right now. Its cached artifacts all predate #411.

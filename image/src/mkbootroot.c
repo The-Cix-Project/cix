@@ -1375,6 +1375,45 @@ int main(int argc, char **argv)
 		}
 
 		/*
+		 * The C.UTF-8 locale, from the same host-tools image and for the
+		 * same reason: it is glibc's (2.44-17 onwards), and cixd needs it
+		 * (#518). cixd sets LC_CTYPE to C.UTF-8 so libarchive can extract
+		 * a pax archive's UTF-8 path; with no locale in this root the call
+		 * fails and every source tarball with a non-ASCII name is refused,
+		 * which is how go1.24.9 and gcc-16.2.0 stopped building. glibc
+		 * builds no locale in (probe-locale@1-1 measured `locale -a`
+		 * listing only C and POSIX), so this root carries exactly the
+		 * files glibc's own localedef produced. Absent from an older
+		 * host-tools glibc, which is said rather than failed on: the root
+		 * still boots, it just keeps that limit.
+		 */
+		if (host_tools_dir != NULL && host_tools_dir[0] != '\0') {
+			char loc_src[PATH_MAX], loc_dst[PATH_MAX];
+			struct stat lst;
+
+			if (snprintf(loc_src, sizeof(loc_src), "%s/usr/lib/locale/C.utf8", host_tools_dir) >=
+			            (int)sizeof(loc_src) ||
+			    snprintf(loc_dst, sizeof(loc_dst), "%s/usr/lib/locale/C.utf8", image_root) >=
+			            (int)sizeof(loc_dst)) {
+				fprintf(stderr, "path too long staging the C.UTF-8 locale\n");
+				return 1;
+			}
+			if (stat(loc_src, &lst) == 0 && S_ISDIR(lst.st_mode)) {
+				if (ensure_dir_path_under(image_root, "usr/lib/locale") != 0)
+					return 1;
+				if (test_image_fixture_copy_dir_recursive(loc_src, loc_dst) != 0)
+					return 1;
+				fprintf(stderr, "staged the C.UTF-8 locale from %s\n", host_tools_dir);
+			} else {
+				fprintf(stderr,
+				        "note: %s carries no C.UTF-8 locale -- cixd will run with an "
+				        "ASCII codeset and refuse any source archive with a non-ASCII "
+				        "path name (#518)\n",
+				        host_tools_dir);
+			}
+		}
+
+		/*
 		 * openssl's own default config path -- found by an actual "pki
 		 * ca bootstrap" failing, not guessed at: "req -x509 failed:
 		 * Can't open /usr/lib/ssl/openssl.cnf". On this build host that
