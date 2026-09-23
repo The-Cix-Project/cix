@@ -42,6 +42,15 @@ extern char **environ;
 #define TEST_PORT 7684
 #define PORT_ARG "--port=7684"
 
+/*
+ * Polls of GET /v1/pkg/hostbuild/kernel, 300 ms apart: 600 is three
+ * minutes. This was 30 (nine seconds), and the job was still
+ * "fetching" when it ran out (probe-cix-testreport@5-1, 192.168.15.95,
+ * 2026-09-23). Why it was slower than nine seconds is not measured; a
+ * timeout now says so, instead of reading as a wrong final state.
+ */
+#define KMOD_POLLS 600
+
 static char g_data_dir[PATH_MAX];
 static char g_pkg_state_dir[PATH_MAX];
 static char g_hbimage_dir[PATH_MAX];
@@ -368,7 +377,7 @@ int main(void)
 
 	state[0] = '\0';
 	kmod_err[0] = '\0';
-	for (i = 0; ok && i < 30; i++) {
+	for (i = 0; ok && i < KMOD_POLLS; i++) {
 		const char *s;
 
 		memset(&r, 0, sizeof(r));
@@ -392,7 +401,11 @@ int main(void)
 			break;
 		usleep(300000);
 	}
-	if (ok && strcmp(state, "installed") != 0) {
+	if (ok && i == KMOD_POLLS) {
+		fprintf(stderr, "FAIL: kmod-build still in state '%s' after %d s\n", state,
+		        KMOD_POLLS * 3 / 10);
+		ok = 0;
+	} else if (ok && strcmp(state, "installed") != 0) {
 		fprintf(stderr, "FAIL: kmod-build ended in state '%s', expected installed: %s\n", state,
 		        kmod_err[0] != '\0' ? kmod_err : "(no error field)");
 		ok = 0;

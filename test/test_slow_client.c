@@ -224,6 +224,32 @@ int main(void)
 	 *    client rather than to the machine being busy. */
 	sample_health("baseline", 2, &ok);
 
+	/*
+	 * 1b. The premise: /app.js is a 200 larger than the send buffer
+	 *     cixd caps (CONN_OUT_SNDBUF_CAP, 128 KiB effective), or no
+	 *     response is ever left pending and neither drop path can fire.
+	 *     The daemon serves it from a web root relative to its working
+	 *     directory. In probe-cix-testreport@5-1 (192.168.15.95,
+	 *     2026-09-23) the log held neither drop message, so this is
+	 *     measured rather than assumed.
+	 */
+	{
+		struct cix_response a;
+
+		memset(&a, 0, sizeof(a));
+		if (cix_client_request(&client, "GET", "/app.js", NULL, &a) != 0 || a.status != 200 ||
+		    a.body_len <= 256 * 1024) {
+			fprintf(stderr,
+			        "FAIL: /app.js is not a large 200 here (status=%d, %zu bytes), so "
+			        "nothing below can stall\n",
+			        a.status, a.body_len);
+			ok = 0;
+		} else {
+			printf("  /app.js: 200, %zu bytes\n", a.body_len);
+		}
+		cix_response_free(&a);
+	}
+
 	/* 2. The reproduction: request a large asset, never read a byte. */
 	slow_fd = connect_to_daemon(512);
 	if (slow_fd < 0 || send_request(slow_fd, "/app.js") != 0) {
@@ -266,6 +292,11 @@ int main(void)
 				fprintf(stderr, "FAIL: a client that never read was not dropped "
 				                "after %ds -- the write deadline did not fire\n",
 				        DEADLINE_WAIT_SECONDS);
+				fprintf(stderr, "      the write-failure drop path %s\n",
+				        r.body != NULL &&
+				                        strstr(r.body, "connection failed mid-response") != NULL
+				                ? "did fire instead"
+				                : "did not fire either");
 				ok = 0;
 			} else {
 				printf("  stalled client dropped by the write deadline\n");

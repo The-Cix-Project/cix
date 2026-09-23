@@ -383,6 +383,19 @@ int main(void)
 	 * syncs unless a schedule says so (ADR-0257).
 	 */
 	/* --- scenario 4: real fetch + merge against the stand-in http server --- */
+	/*
+	 * Name the ref the fixture archive is staged under. Scenario 3's
+	 * partial update left it at "main", so every sync below fetched
+	 * archive/main.tar.gz and 404'd against the staged master.tar.gz
+	 * (probe-cix-testreport@5-1, 192.168.15.95, 2026-09-23).
+	 */
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config", "{\"ref\":\"master\"}", &r) ==
+	                      0 &&
+	              r.status == 200,
+	      "PUT /v1/pkg/repo-config (ref of the staged fixture archive)");
+	cix_response_free(&r);
+
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/pkg/sync", NULL, &r) == 0 && r.status == 202,
 	      "POST /v1/pkg/sync accepted (202)");

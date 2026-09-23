@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/utsname.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -238,6 +239,23 @@ static int write_recipe(const char *pkg_state_dir, const char *name, const char 
 	        name);
 	fclose(f);
 	return 0;
+}
+
+/*
+ * The architecture an artifact server's names carry: uname(2)'s machine
+ * field, which is what pkg_host_arch() stamps on every artifact the
+ * daemon fetches or pushes (#183). The fixtures staged these names
+ * unstamped, so every artifact-tier fetch 404'd and every push landed
+ * under a name the test never looked for (probe-cix-testreport@5-1,
+ * 192.168.15.95, 2026-09-23).
+ */
+static const char *host_arch(void)
+{
+	static struct utsname u;
+
+	if (u.machine[0] == '\0' && uname(&u) != 0)
+		snprintf(u.machine, sizeof(u.machine), "unknown");
+	return u.machine;
 }
 
 static long cache_json_long(const struct json_value *v, const char *key)
@@ -547,7 +565,8 @@ int main(void)
 
 		if (ok) {
 			snprintf(artifact_tarball, sizeof(artifact_tarball),
-			         "%s/artifacttest-1.0.tar.gz", artifact_stage_dir);
+			         "%s/artifacttest-1.0-%s.tar.gz", artifact_stage_dir,
+			         host_arch());
 			if (run_cmd("tar -C '%s/stage' -czf '%s' .", artifact_stage_dir, artifact_tarball) !=
 			    0)
 				ok = 0;
@@ -637,9 +656,9 @@ int main(void)
 				cix_response_free(&r);
 
 				/* The same bytes, published under the name the daemon
-				 * will ask for: <base>/<name>-<version>.tar.gz. */
-				CHECK(run_cmd("cp '%s' '%s/cix-1.0.tar.gz'", artifact_tarball,
-				               artifact_stage_dir) == 0,
+				 * will ask for: <base>/<name>-<version>-<arch>.tar.gz. */
+				CHECK(run_cmd("cp '%s' '%s/cix-1.0-%s.tar.gz'", artifact_tarball,
+				               artifact_stage_dir, host_arch()) == 0,
 				      "publish the cix artifact under its own name");
 
 				CHECK(write_recipe(g_pkg_state_dir, "cix", "1.0",
@@ -751,9 +770,9 @@ int main(void)
 
 			/* The push is asynchronous by design (it must never block
 			 * the event loop), so the arrival is polled, not assumed. */
-			snprintf(pushed, sizeof(pushed), "%s/pushtest-1.0.tar.gz", push_dir);
-			snprintf(headers_path, sizeof(headers_path), "%s/pushtest-1.0.tar.gz.headers",
-			         push_dir);
+			snprintf(pushed, sizeof(pushed), "%s/pushtest-1.0-%s.tar.gz", push_dir, host_arch());
+			snprintf(headers_path, sizeof(headers_path), "%s/pushtest-1.0-%s.tar.gz.headers",
+			         push_dir, host_arch());
 			for (i = 0; i < 100; i++) {
 				if (access(headers_path, R_OK) == 0)
 					break;
@@ -896,10 +915,10 @@ int main(void)
 				}
 
 				if (hb_ok) {
-					snprintf(hb_pushed, sizeof(hb_pushed), "%s/hbpush-1.0.tar.gz",
-					         push_dir);
+					snprintf(hb_pushed, sizeof(hb_pushed), "%s/hbpush-1.0-%s.tar.gz",
+					         push_dir, host_arch());
 					snprintf(hb_headers, sizeof(hb_headers),
-					         "%s/hbpush-1.0.tar.gz.headers", push_dir);
+					         "%s/hbpush-1.0-%s.tar.gz.headers", push_dir, host_arch());
 					/* Nothing should have published it yet -- a
 					 * hostbuild produces no cache tarball, which
 					 * is the whole defect. */

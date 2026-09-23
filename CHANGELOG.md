@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Three package tests asked for names their fixtures never staged
+
+`probe-cix-testreport@5-1` (cix v2.57.253, 192.168.15.95, 2026-09-23) ran with the fixture server's new request log. `test_pkg_build_log` passed. The log showed each remaining 404's exact path:
+- **`test_pkg_sync`** set `"ref":"main"` to test a partial update of `repo-config`, then never set it back. Every sync after that fetched `archive/main.tar.gz` while the fixture served `master.tar.gz`. The sync scenario now sets the ref it serves.
+- **`test_pkg_cache`** staged artifacts and looked for pushes under unstamped names (`artifacttest-1.0.tar.gz`). Since #183 the daemon asks for, and pushes, `<name>-<version>-<arch>.tar.gz` (`GET /artifacttest-1.0-x86_64.tar.gz -> 404`, `PUT /pushtest-1.0-x86_64.tar.gz -> 201`). The fixture names now carry `uname(2)`'s machine field, the value `pkg_host_arch()` uses.
+- **`test_kmod_build`** got past the floor and stopped in `fetching`, because its poll budget was 30 polls 300 ms apart, about nine seconds. The budget is now three minutes, and running out reports as a timeout rather than as a wrong final state. Why this job takes longer than nine seconds is not measured.
+
+**`test_slow_client`:** in the same run the log held **neither** drop message. That disproves the explanation given in the entry below, that the kernel's `TCP_USER_TIMEOUT` was winning the race against the write deadline. The test now first checks its premise, that `/app.js` is a 200 larger than 256 KiB here. If the daemon serves it from a relative web root the build tree lacks, nothing is ever left pending. On failure the test also reports whether the write-failure drop path fired instead.
+
 ### The package tests install one shared build floor, and three silent failures now name themselves
 
 A focused run of four failing package tests (`probe-cix-testreport@4-1`, cix v2.57.252, 192.168.15.95, 2026-09-23) gave each one a reason:
@@ -15,7 +24,7 @@ A focused run of four failing package tests (`probe-cix-testreport@4-1`, cix v2.
 
 The loop that installs the floor existed in five tests, as six copies with small differences: one reported a `failed` state and the others did not. It is now `test_floor_install_all()` in `test/test_floor.c`. It reports a refused request, a failed package with the daemon's error, and a package that never finishes, all at the point they happen.
 
-`cixd` also logs a client it drops because a write failed mid-response, as it already did for one dropped by the write deadline. The kernel's `TCP_USER_TIMEOUT` and that deadline are both 30 seconds. When the kernel aborts first, the teardown used to leave no trace, which is one explanation for `test_slow_client` finding no drop in the log. That explanation is unverified until the next run.
+`cixd` also logs a client it drops because a write failed mid-response, as it already did for one dropped by the write deadline. The kernel's `TCP_USER_TIMEOUT` and that deadline are both 30 seconds. When the kernel aborts first, the teardown used to leave no trace, which is one explanation for `test_slow_client` finding no drop in the log. The next run disproved it: neither drop was logged (see the entry above).
 
 ### The package tests fetch their fixtures over loopback HTTP, as cixd requires
 
