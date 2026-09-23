@@ -1,15 +1,17 @@
 /*
  * Phase 1 demonstrable test: proves clone3-based PID/MNT/UTS/NET/CGROUP
  * isolation, atomic cgroup placement, and pivot_root all work together
- * end to end. See /home/osakka/.claude/plans/compressed-riding-harbor.md
- * for the 7-point verification this implements.
+ * end to end: the child reports its own PID, hostname and network
+ * interfaces, and the host's hostname must be unchanged afterwards.
  */
 #include "container.h"
 #include "linux_compat.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <sched.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -113,7 +115,18 @@ static int check_result_file(void)
 
 int main(void)
 {
-	char *child_argv[] = { "/home/osakka/new_project/build/harness_child", NULL };
+	/*
+	 * The container's lowerdir is the host's own "/", so the child is
+	 * named by its absolute host path, resolved from the repository
+	 * root the test runs in (`make selftest` and `make testreport` both
+	 * run ./build/test_*). This was a hard-coded dev-sandbox path, which
+	 * does not exist in a package build container: execve() failed with
+	 * ENOENT, cix-init's 140+errno encoding made that exit status 142,
+	 * and the test reported "expected exit status 7, got 142"
+	 * (cix-tests@v2.57.245-4 on 192.168.15.95, 2026-09-23).
+	 */
+	char child_path[PATH_MAX];
+	char *child_argv[] = { child_path, NULL };
 	char *child_envp[] = { NULL };
 	struct container_spec spec;
 	struct container_handle handle;
@@ -121,6 +134,11 @@ int main(void)
 	char host_hostname_after[256];
 	int exit_status;
 	int ok = 1;
+
+	if (realpath("build/harness_child", child_path) == NULL) {
+		perror("realpath build/harness_child (run from the repository root)");
+		return 1;
+	}
 
 	if (gethostname(host_hostname_before, sizeof(host_hostname_before)) != 0) {
 		perror("gethostname (host, before)");

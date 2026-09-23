@@ -378,11 +378,16 @@ selftest: $(SELFTESTS) $(SELFTEST_HELPERS)
 # which Cix's minimal images do not carry.
 #
 TESTREPORT_TIMEOUT ?= 300
+# Lines of each failing test's log to print. 12 keeps a full run readable;
+# raise it to diagnose one test.
+TESTREPORT_TAIL ?= 12
+# Run only these tests (names, e.g. "test_pkg test_harness"). Empty runs all.
+TESTREPORT_ONLY ?=
 .PHONY: testreport
 testreport: all
 	@mkdir -p $(BUILD)/testreport; \
 	total=0; passed=""; failed=""; hung=""; \
-	for t in $(BUILD)/test_*; do \
+	for t in $(if $(TESTREPORT_ONLY),$(addprefix $(BUILD)/,$(TESTREPORT_ONLY)),$(BUILD)/test_*); do \
 		[ -x "$$t" ] || continue; \
 		n=$$(basename $$t); total=$$((total + 1)); \
 		if timeout $(TESTREPORT_TIMEOUT) ./$$t >$(BUILD)/testreport/$$n.log 2>&1; then \
@@ -394,7 +399,9 @@ testreport: all
 		fi; \
 	done; \
 	echo; echo "=== failing ==="; \
-	for n in $$failed; do echo "--- $$n"; tail -12 $(BUILD)/testreport/$$n.log | sed 's/^/    /'; done; \
+	for n in $$failed; do echo "--- $$n"; tail -n $(TESTREPORT_TAIL) $(BUILD)/testreport/$$n.log | sed 's/^/    /'; done; \
+	echo; echo "=== timed out ==="; \
+	for n in $$hung; do echo "--- $$n"; tail -n $(TESTREPORT_TAIL) $(BUILD)/testreport/$$n.log | sed 's/^/    /'; done; \
 	echo; echo "=== summary ==="; \
 	echo "  total    : $$total"; \
 	echo "  passed   : $$(echo $$passed | wc -w)"; \

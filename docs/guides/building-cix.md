@@ -16,7 +16,7 @@ There is no `make install`. The named targets beyond `all` and `clean`:
 | target | what it does | gates? |
 |---|---|---|
 | `make selftest` | runs the curated `SELFTESTS` subset: the tests measured to run inside a package build container. The `cix` recipe runs it on every build | yes: any failure fails the build |
-| `make testreport` | builds `all`, then runs **every** `build/test_*` under a `TESTREPORT_TIMEOUT` (default 300 s) and reports each as PASS, FAIL (with the tail of its log from `build/testreport/`) or TIMEOUT, then a summary. The `cix-tests` recipe runs it | no: exits 0 whatever the results, since there is no baseline yet |
+| `make testreport` | builds `all`, then runs **every** `build/test_*` under a `TESTREPORT_TIMEOUT` (default 300 s) and reports each as PASS, FAIL (with the tail of its log from `build/testreport/`) or TIMEOUT, then a summary. `TESTREPORT_ONLY="test_a test_b"` runs just those, and `TESTREPORT_TAIL=N` prints N lines of each failing or timed-out log instead of 12, for diagnosing one test. The `cix-tests` recipe runs it | no: exits 0 whatever the results, since there is no baseline yet |
 | `make aggressive` | runs `test_aggressive`, the harness that attacks a live daemon; the `cix-aggressive-test` recipe runs it with a negative control | yes |
 | `make web-syntax` | `node --check` over `web/*.js`, when `node` is present | yes, when it runs |
 
