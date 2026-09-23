@@ -13,7 +13,16 @@ build/cixctl health     # talk to it with the CLI
 make clean
 ```
 
-`make` builds every binary this repo produces — `cixd`, `cixctl`, the installer tools (`mkbootroot`, `mkinstalleriso`, `cix-install`, `cix-recover`), and one test binary per phase/part (each self-contained, forking and `exec`ing its own `cixd` instance where needed — e.g. `sudo build/test_pkg` runs standalone). There is no `make install` target and no other named target beyond `all`/`clean` — everything beyond `make`/`make clean` is a manually-invoked binary out of `build/`.
+`make` builds every binary this repo produces — `cixd`, `cixctl`, the installer tools (`mkbootroot`, `mkinstalleriso`, `cix-install`, `cix-recover`), and one test binary per phase/part (each self-contained, forking and `exec`ing its own `cixd` instance where needed — e.g. `sudo build/test_pkg` runs standalone). There is no `make install`. The named targets beyond `all` and `clean`:
+
+| target | what it does | gates? |
+|---|---|---|
+| `make selftest` | runs the curated `SELFTESTS` subset: the tests measured to run inside a package build container. The `cix` recipe runs it on every build | yes: any failure fails the build |
+| `make testreport` | builds `all`, then runs **every** `build/test_*` under a `TESTREPORT_TIMEOUT` (default 300 s) and reports each as PASS, FAIL (with the tail of its log from `build/testreport/`) or TIMEOUT, then a summary. The `cix-tests` recipe runs it | no: exits 0 whatever the results, since there is no baseline yet |
+| `make aggressive` | runs `test_aggressive`, the harness that attacks a live daemon; the `cix-aggressive-test` recipe runs it with a negative control | yes |
+| `make web-syntax` | `node --check` over `web/*.js`, when `node` is present | yes, when it runs |
+
+A test that is not in `SELFTESTS` is **not** a gate on any cix build: passing `make selftest` says nothing about it. `testreport` is where it runs.
 
 `build-inputs/bzImage` (the kernel Cix boots) is intentionally **not** part of this build — see [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) for how that's produced, on a dev machine or self-hosted.
 
@@ -75,15 +84,17 @@ Optional and purely additive, like `cix-hosttools`: a box that never builds this
 
 The staged firmware is part of the assembled root, and `mkbootroot` assembles a **fresh** root every run. So this is not a one-time action whose result persists: the image has to exist at assembly time, every time, or the resulting root simply has no firmware in it.
 
-### 2. Point `cix.recipe` at a real source snapshot
+### 2. Point the `cix` recipe at a tagged source snapshot
 
-`recipes/package/cix/`'s `pkg_source` is this repo's own self-hosted git remote's archive-download endpoint, pinned to a real tag — never floating `main`, the same fixed-version discipline every other recipe in this catalog follows:
+The `cix` recipe lives in the [cix-recipes](https://git.home.arpa/itdlabs/cix-recipes) repository, one flat file per version: `recipes/package/cix@<tag>[-<release>].cbs` ([ADR-0308](../adr/0308-recipes-are-their-own-repository-flat.md); older versions are `.sh`). Its source is this repository's own archive-download endpoint, pinned to a tag, never a floating branch:
 
-```sh
-pkg_source="https://<user>:<TOKEN>@<git-host>/api/v1/repos/<org>/cix/archive/<tag>.tar.gz"
+```
+url "https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/<tag>.tar.gz"
 ```
 
-The committed recipe carries a placeholder in place of a real token — substitute a real, scoped, read-only access token for the account this daemon should fetch as before uploading it (`cixctl pkg recipe add --name=cix --file=...`), the same "generate locally, never commit" posture this project's own installer signing key already established. Cut a fresh tag and bump `pkg_version`/`pkg_source`/`pkg_sha256` whenever you want a newer self-build available — a tag bump is the deliberate, auditable signal that a new self-build snapshot exists, not an automatic floating-HEAD fetch.
+`{{REPO_TOKEN}}` is replaced at fetch time, host-side, with the token set by `cixctl pkg repo-config set --token=…` ([writing-recipes.md](writing-recipes.md#required-metadata-fields), issue #60), so no credential is ever written into a recipe or reaches the build container. The repository is private, so an unauthenticated fetch gets Gitea's `404`, not a `401`.
+
+To make a newer self-build available: tag this repository, then publish a new `cix` recipe for that tag with `cixctl pkg recipe add --name=cix --file=… --format=pbs`. A new tag's archive has a new `sha256`; learn it from the box rather than downloading it elsewhere, with a throwaway `probe-*` recipe that declares a deliberately wrong hash. The fetch then fails and the daemon logs the real one as `computed=<64 hex>` (`probe-cix-tarball@1.sh` in cix-recipes is the template).
 
 ### 3. Run the hostbuild
 
