@@ -116,6 +116,7 @@
 #include <fcntl.h>
 #include <ftw.h>
 #include <limits.h>
+#include <locale.h>
 #include <linux/netlink.h>
 #include <net/if.h>
 #include <netinet/in.h>
@@ -30076,6 +30077,8 @@ static void containerdef_autostart_all(void)
  * a successful recovery run look like the same catastrophic event.
  */
 static int g_pid1_mode;
+/* Whether main() got a UTF-8 LC_CTYPE; reported once the log store is up. */
+static int g_ctype_is_utf8;
 
 static int boot_subsystem_init(int init_mode, const char *name, int rc)
 {
@@ -30637,6 +30640,10 @@ static int cixd_main(int argc, char **argv)
 	if (boot_subsystem_init(init_mode, "logstore", logstore_init(LOG_DIR, LOG_STATE_PATH)) != 0)
 		return 1;
 	log_degraded_placements(); /* #256: now that there is somewhere to say it */
+	if (!g_ctype_is_utf8)
+		logstore_write("cixd", "error",
+		                "setlocale(LC_CTYPE, \"C.UTF-8\") failed: source archives with a "
+		                "non-ASCII path name will not extract");
 	/*
 	 * ADR-0307 clause 7, and the same reason as every other call in
 	 * this little cluster: the sweep itself has to run inside
@@ -31356,6 +31363,22 @@ int main(int argc, char **argv)
 	/* Record the argv area before anything forks, so procfuse and the
 	 * watchdog can set their own /proc/<pid>/cmdline (#456). */
 	proctitle_init(argc, argv);
+
+	/*
+	 * Character classification is UTF-8, before anything can extract
+	 * an archive. libarchive converts a pax header's UTF-8 pathname to
+	 * the current locale, and in the C locale a non-ASCII name cannot
+	 * be represented, so the whole extraction fails. Since #411 moved
+	 * source extraction in-process, every archive with such a path
+	 * failed: go1.24.9's source tree, whose test data has non-ASCII
+	 * names, was refused with "Pathname can't be converted from UTF-8
+	 * to current locale" (192.168.15.95, 2026-09-23), where the tar(1)
+	 * it replaced had written the bytes as they were. glibc 2.34 and
+	 * later build C.UTF-8 in, so no locale files are needed. Only
+	 * LC_CTYPE: number formatting and collation stay exactly as they
+	 * were. Reported after logstore_init(), where it can be seen.
+	 */
+	g_ctype_is_utf8 = setlocale(LC_CTYPE, "C.UTF-8") != NULL;
 
 	rc = cixd_main(argc, argv);
 

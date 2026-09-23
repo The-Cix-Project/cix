@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Source archives with non-ASCII path names extract again
+
+Since #411 moved source extraction in-process, cixd has extracted package sources with libarchive. libarchive converts a pax header's UTF-8 path to the current locale, and cixd never set one, so in the C locale any archive containing a non-ASCII path failed. That covers upstream sources routinely. go1.24.9's source tree, whose test data has such names, was refused on 192.168.15.95 with `extract .../go-1.24.9-2-0.src: read header failed: Pathname can't be converted from UTF-8 to current locale`. The `tar(1)` that #411 replaced had written the name bytes as they were. The cached go artifacts all predate #411: go-1.24.9-1 was last written 2026-09-03, and the switch landed 2026-09-14.
+
+`cixd` now sets `LC_CTYPE` to `C.UTF-8` first thing in `main()`. glibc 2.34 and later build that locale in, so no locale files are needed. Number formatting and collation are untouched. If the call fails, cixd logs the failure once the log store is up.
+
+`test_pkg_build_log`'s source fixture now carries a UTF-8 name in pax format, and its recipe checks the file arrives byte for byte. The test was committed and run ahead of the fix (v2.57.259). In `probe-cix-testreport@11-1` it failed exactly as go did: `"error":"could not unpack (stage source failed)"`.
+
 ### test_kmod_build no longer copies a toolchain nothing reads
 
 `probe-cix-testreport@9-1` (cix v2.57.257, 192.168.15.95, 2026-09-23) measured what filled the 2 GiB `pkgbuild` memory cgroup. Nothing piles up between tests: `/run` held 0 KiB after each of `test_pkg_sync`, `test_pkg_cache`, `test_pkg_build_log` and `test_kmod_build`, and the first three passed. Within `test_kmod_build`, copying its `hbimage` fixture's toolchain left the filesystem at 1,311,776 KiB, and the kernel again OOM-killed the test's daemons (at 1790187535).
