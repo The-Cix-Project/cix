@@ -636,7 +636,9 @@ int main(void)
 			 * package installed and produced no image at all. On a real
 			 * host the only sign was
 			 * bootroot_assembly_started_generation staying at 0 while
-			 * everything else claimed success.
+			 * everything else claimed success. That field moved to
+			 * GET /v1/system/assembly as started_generation (#182);
+			 * this test read the old one until probe-cix-testreport@6-1.
 			 *
 			 * Asserted on the generation counter rather than on a
 			 * finished image: mkbootroot will fail here (no real
@@ -649,10 +651,10 @@ int main(void)
 				long gen_after = -1;
 
 				memset(&r, 0, sizeof(r));
-				if (cix_client_request(&client, "GET", "/v1/system/boot", NULL, &r) == 0 &&
+				if (cix_client_request(&client, "GET", "/v1/system/assembly", NULL, &r) == 0 &&
 				    r.json != NULL)
 					gen_before =
-					    cache_json_long(r.json, "bootroot_assembly_started_generation");
+					    cache_json_long(r.json, "started_generation");
 				cix_response_free(&r);
 
 				/* The same bytes, published under the name the daemon
@@ -678,10 +680,10 @@ int main(void)
 				      "the cix hostbuild reaches state=installed from the artifact");
 
 				memset(&r, 0, sizeof(r));
-				if (cix_client_request(&client, "GET", "/v1/system/boot", NULL, &r) == 0 &&
+				if (cix_client_request(&client, "GET", "/v1/system/assembly", NULL, &r) == 0 &&
 				    r.json != NULL)
 					gen_after =
-					    cache_json_long(r.json, "bootroot_assembly_started_generation");
+					    cache_json_long(r.json, "started_generation");
 				cix_response_free(&r);
 
 				CHECK(gen_after > gen_before,

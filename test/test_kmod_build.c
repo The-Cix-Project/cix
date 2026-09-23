@@ -44,10 +44,10 @@ extern char **environ;
 
 /*
  * Polls of GET /v1/pkg/hostbuild/kernel, 300 ms apart: 600 is three
- * minutes. This was 30 (nine seconds), and the job was still
- * "fetching" when it ran out (probe-cix-testreport@5-1, 192.168.15.95,
- * 2026-09-23). Why it was slower than nine seconds is not measured; a
- * timeout now says so, instead of reading as a wrong final state.
+ * minutes. It was 30 (nine seconds) when the loop ended with the job
+ * still "fetching" (probe-cix-testreport@5-1, 192.168.15.95,
+ * 2026-09-23); @6-1 showed that was a failed status request ending the
+ * wait, not the budget (see the loop). A timeout now says so.
  */
 #define KMOD_POLLS 600
 
@@ -380,16 +380,22 @@ int main(void)
 	for (i = 0; ok && i < KMOD_POLLS; i++) {
 		const char *s;
 
+		/*
+		 * A status request that fails, or answers without a state,
+		 * counts as "not yet" rather than ending the wait. It used to
+		 * break, and in probe-cix-testreport@6-1 (192.168.15.95,
+		 * 2026-09-23) the loop ended within its budget with the job
+		 * still "fetching" -- which only a break can do. Extracting an
+		 * artifact runs synchronously in the single-threaded daemon,
+		 * so one request can time out while the job is healthy.
+		 */
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "GET", "/v1/pkg/hostbuild/kernel", NULL, &r) != 0 ||
-		    r.status != 200) {
+		    r.status != 200 ||
+		    (s = json_as_string(json_object_get(r.json, "state"))) == NULL) {
 			cix_response_free(&r);
-			break;
-		}
-		s = json_as_string(json_object_get(r.json, "state"));
-		if (s == NULL) {
-			cix_response_free(&r);
-			break;
+			usleep(300000);
+			continue;
 		}
 		snprintf(state, sizeof(state), "%s", s);
 		/* Kept past the free, so a failure can say why (cix-tests

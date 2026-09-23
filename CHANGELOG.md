@@ -6,6 +6,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### test_pkg_cache reads assembly status where #182 moved it; kmod survives a failed poll
+
+`probe-cix-testreport@6-1` (cix v2.57.254, 192.168.15.95, 2026-09-23): `test_pkg_sync` and `test_pkg_build_log` pass.
+- **`test_pkg_cache`** is down to one failure, and it was the test's own. It read `bootroot_assembly_started_generation` from `GET /v1/system/boot`, but #182 moved that field to `GET /v1/system/assembly` as `started_generation`. Both reads came back empty, so "the counter advanced" could never hold. The test now reads the endpoint that serves the field.
+- **`test_kmod_build`** ended with the job still `fetching` well inside its three-minute budget. Only the loop's `break` on a failed or state-less status request can do that. Such a request now counts as "not yet", as it already does in the floor installs.
+- **`test_slow_client`:** `/app.js` is a 529,476-byte 200, so the test's premise holds, and still neither drop path was logged. The log query used `?limit=`, which the endpoint ignores (its parameter is `tail`), and now asks for `tail=5000`. On failure the test reads the stalled socket's `TCP_INFO.tcpi_bytes_received` without reading any data. That says whether the kernel absorbed the whole response, leaving cixd nothing pending to sweep, or the response is still pending and the sweep did not act.
+
 ### Three package tests asked for names their fixtures never staged
 
 `probe-cix-testreport@5-1` (cix v2.57.253, 192.168.15.95, 2026-09-23) ran with the fixture server's new request log. `test_pkg_build_log` passed. The log showed each remaining 404's exact path:

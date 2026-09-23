@@ -36,6 +36,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <limits.h>
+#include <linux/tcp.h> /* struct tcp_info with tcpi_bytes_received; glibc's has none */
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
@@ -60,6 +61,9 @@ extern char **environ;
 /* The regression bar. Healthy is single-digit ms; anything approaching
  * a second means the loop is being held by someone else's response. */
 #define HEALTH_MAX_MS 2000
+
+/* /app.js body size, measured in step 1b, for step 5's diagnostic. */
+static size_t g_app_js_len;
 
 static int connect_to_daemon(int rcvbuf)
 {
@@ -245,6 +249,7 @@ int main(void)
 			        a.status, a.body_len);
 			ok = 0;
 		} else {
+			g_app_js_len = a.body_len;
 			printf("  /app.js: 200, %zu bytes\n", a.body_len);
 		}
 		cix_response_free(&a);
@@ -284,7 +289,7 @@ int main(void)
 		printf("  waiting %ds for the write deadline\n", DEADLINE_WAIT_SECONDS);
 		sleep(DEADLINE_WAIT_SECONDS);
 
-		if (cix_client_request(&client, "GET", "/v1/system/logs?limit=2000", NULL, &r) != 0) {
+		if (cix_client_request(&client, "GET", "/v1/system/logs?tail=5000", NULL, &r) != 0) {
 			fprintf(stderr, "FAIL: could not read the log store\n");
 			ok = 0;
 		} else {
@@ -297,6 +302,29 @@ int main(void)
 				                        strstr(r.body, "connection failed mid-response") != NULL
 				                ? "did fire instead"
 				                : "did not fire either");
+				/*
+				 * Where the response went, measured without reading
+				 * it (a read would let a pending response resume and
+				 * hide the difference). tcpi_bytes_received is what
+				 * the kernel accepted for this socket: near the whole
+				 * body means it was absorbed and cixd never had
+				 * anything pending to sweep; far short means it is
+				 * still pending in cixd and the sweep did not act.
+				 */
+				{
+					struct tcp_info ti;
+					socklen_t tl = sizeof(ti);
+
+					memset(&ti, 0, sizeof(ti));
+					if (getsockopt(slow_fd, IPPROTO_TCP, TCP_INFO, &ti, &tl) == 0)
+						fprintf(stderr,
+						        "      the stalled socket's kernel accepted %llu bytes "
+						        "of a %zu-byte body (tcpi_rcv_space %u)\n",
+						        (unsigned long long)ti.tcpi_bytes_received, g_app_js_len,
+						        ti.tcpi_rcv_space);
+					else
+						fprintf(stderr, "      TCP_INFO: %s\n", strerror(errno));
+				}
 				ok = 0;
 			} else {
 				printf("  stalled client dropped by the write deadline\n");
