@@ -184,7 +184,7 @@ static int write_slowbuild_recipe(const char *tarball_path, const char *sha256)
 	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
 	fprintf(f, "pkg_sha256=%s\n", sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
-	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n");
+	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n");
 	fprintf(f, "pkg_build() {\n"
 	           "\techo marker-1\n"
 	           "\tsleep 1\n"

@@ -211,7 +211,7 @@ static int write_binary_recipe(const char *pkg_state_dir, const char *version,
 	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
 	fprintf(f, "pkg_sha256=%s\n", sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
-	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n");
+	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n");
 	/* No compiler needed -- rollsvc is already a real ELF binary. */
 	fprintf(f, "pkg_build() {\n\t:\n}\n\n");
 	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
@@ -513,7 +513,7 @@ int main(void)
 			snprintf(content, sizeof(content),
 			         "pkg_name=rollsvc\npkg_version=2.0\npkg_source=%s\n"
 			         "pkg_sha256=%s\npkg_depends=\"\"\n"
-		         "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
+		         "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
 			         "pkg_build() {\n\t:\n}\n\n"
 			         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
 			         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n\tchmod +x "
@@ -654,7 +654,7 @@ int main(void)
 		snprintf(content, sizeof(content),
 		         "pkg_name=rollsvc\npkg_version=3.0\npkg_source=%s\n"
 		         "pkg_sha256=%s\npkg_depends=\"\"\n"
-		         "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
+		         "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
 		         "pkg_build() {\n\t:\n}\n\n"
 		         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
 		         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n\tchmod +x "

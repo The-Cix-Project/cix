@@ -199,7 +199,7 @@ static int write_recipe(const char *pkg_state_dir, const char *name, const char 
 	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
 	fprintf(f, "pkg_sha256=%s\n", sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
-	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n");
+	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n");
 	fprintf(f, "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
 	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
 	           "\"$PKG_DESTDIR/usr/bin/%s\"\n}\n",

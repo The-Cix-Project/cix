@@ -661,13 +661,17 @@ static const struct {
 	 * and linux-headers for the kernel UAPI headers glibc's own
 	 * limits.h chain includes.
 	 *
-	 * binutils used to be here and is deliberately gone: tcc has its
-	 * own linker, nothing in a fixture reaches for ar or ld, and at
-	 * 57 MB it dominated the cost -- copying it into every test's cache
-	 * pushed the package tests past a ten-minute timeout. Its own
-	 * declared closure (zlib, flex, m4) went with it. If a future
-	 * fixture genuinely needs a linker, it declares binutils and this
-	 * table gains it back, deliberately.
+	 * binutils, for strip. The finalize policy strips every ELF a
+	 * package produces and refuses the build when strip is absent
+	 * (daemon/policy/pkg-finalize.sh, ADR-0250/0251). A fixture that
+	 * compiles hello with tcc produces ELF, so without binutils every
+	 * such build failed: "cix: this package produced ELF output but the
+	 * build image has no strip" (probe-cix-testreport on 192.168.15.95,
+	 * 2026-09-23). binutils was once removed from this floor because its
+	 * size pushed the package tests past a ten-minute timeout; cix-tests
+	 * runs each test under its own 300 s limit and will show if that
+	 * returns. Its runtime closure is zlib and flex; flex 2.6.4-2 is the
+	 * approved revision that declares no m4.
 	 */
 	/*
 	 * glibc is the C library every composed build environment now gets
@@ -692,6 +696,7 @@ static const struct {
 	 */
 	{ "bash", "5.2.37-2" }, { "coreutils", "9.11-3" }, { "tcc", "0.9.27-7" },
 	{ "glibc", "2.44-12" }, { "linux-headers", "6.18.40-4" },
+	{ "zlib", "1.3.2-11" }, { "flex", "2.6.4-2" }, { "binutils", "2.42-10" },
 };
 
 static int sha256_file_hex(const char *path, char *out, size_t out_size)

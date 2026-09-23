@@ -205,7 +205,7 @@ static int write_kernel_fixture_recipe(const char *tarball_path, const char *sha
 	 * compiler builds a five-line hello.c.
 	 */
 	fprintf(f, "pkg_sha256=%s\npkg_depends=\"\"\n", sha256);
-	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n");
+	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n");
 	fprintf(f, "pkg_build() {\n\ttcc -o hello hello.c\n\tif [ -f /build/extra/kmod-extra.config ]; "
 	           "then cp /build/extra/kmod-extra.config symbols.txt; else : > symbols.txt; fi\n}\n\n");
 	fprintf(f, "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n\tcp symbols.txt "
