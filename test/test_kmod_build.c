@@ -34,9 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 #include <sys/wait.h>
-#include <time.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -55,7 +53,6 @@ extern char **environ;
 
 static char g_data_dir[PATH_MAX];
 static char g_pkg_state_dir[PATH_MAX];
-static char g_hbimage_dir[PATH_MAX];
 
 static pid_t start_daemon(void)
 {
@@ -255,7 +252,6 @@ int main(void)
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
 	snprintf(g_pkg_state_dir, sizeof(g_pkg_state_dir), "%s/rebuildable/pkg", g_data_dir);
-	snprintf(g_hbimage_dir, sizeof(g_hbimage_dir), "%s/rebuildable/images/hbimage", g_data_dir);
 
 	/*
 	 * ADR-0209: the build floor. The kmod build composes its container
@@ -288,46 +284,18 @@ int main(void)
 		return 1;
 	}
 
-	/* hbimage: a real gcc-capable rootfs (ADR-0107/0108 manifest.json
-	 * shape, same fixture test_pkg.c's own hostbuild step already
-	 * establishes). */
-	{
-		char hb_rootfs[PATH_MAX];
-		char hb_manifest[PATH_MAX];
-		FILE *f;
-		time_t staged_at;
-
-		snprintf(hb_rootfs, sizeof(hb_rootfs), "%s/hbfixture/rootfs", g_hbimage_dir);
-		staged_at = time(NULL);
-		if (test_image_fixture_stage_toolchain(hb_rootfs) != 0) {
-			fprintf(stderr, "FAIL: could not stage hbimage toolchain\n");
-			return 1;
-		}
-		/* Timed and sized: this copies a toolchain tree into the data
-		 * directory on /run -- tmpfs, charged to the build's 2 GiB memory
-		 * cgroup, where this test's daemon was OOM-killed
-		 * (probe-cix-testreport@8-1). The whole test also overran a
-		 * 300 s limit in @7-1. */
-		{
-			struct statvfs sv;
-
-			if (statvfs(hb_rootfs, &sv) == 0)
-				fprintf(stderr, "    filesystem under %s: %llu KiB used\n", hb_rootfs,
-				        (unsigned long long)(sv.f_blocks - sv.f_bfree) * sv.f_frsize / 1024);
-		}
-		fprintf(stderr, "    hbimage toolchain staged in %lds\n",
-		        (long)(time(NULL) - staged_at));
-		snprintf(hb_manifest, sizeof(hb_manifest), "%s/manifest.json", g_hbimage_dir);
-		f = fopen(hb_manifest, "w");
-		if (f == NULL) {
-			fprintf(stderr, "FAIL: could not write hbimage manifest.json\n");
-			return 1;
-		}
-		fprintf(f,
-		        "{\"packages\":[],\"current_version\":\"hbfixture\","
-		        "\"versions\":[{\"version\":\"hbfixture\",\"created_at\":0}]}");
-		fclose(f);
-	}
+	/*
+	 * No build image is staged. This test used to copy the build
+	 * environment's whole toolchain tree into an "hbimage" fixture
+	 * image, for the build_image a hostbuild once composed from.
+	 * ADR-0304 (#482) retired that: the build composes from the
+	 * fixture recipe's pkg_build_depends, installed from the floor
+	 * above, and nothing read the fixture any more. It was not free:
+	 * the copy put 1,311,776 KiB on /run, which is tmpfs charged to the
+	 * build's 2 GiB memory cgroup, and the kernel OOM-killed this
+	 * test's daemon (probe-cix-testreport@8-1 and @9-1, 192.168.15.95,
+	 * 2026-09-23).
+	 */
 
 	daemon_pid = start_daemon();
 	if (daemon_pid < 0) {

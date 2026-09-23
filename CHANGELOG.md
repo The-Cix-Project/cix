@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### test_kmod_build no longer copies a toolchain nothing reads
+
+`probe-cix-testreport@9-1` (cix v2.57.257, 192.168.15.95, 2026-09-23) measured what filled the 2 GiB `pkgbuild` memory cgroup. Nothing piles up between tests: `/run` held 0 KiB after each of `test_pkg_sync`, `test_pkg_cache`, `test_pkg_build_log` and `test_kmod_build`, and the first three passed. Within `test_kmod_build`, copying its `hbimage` fixture's toolchain left the filesystem at 1,311,776 KiB, and the kernel again OOM-killed the test's daemons (at 1790187535).
+
+That fixture was the build image a hostbuild used to compose from. ADR-0304 (#482) retired that mechanism, and this test's own fixture recipe already builds from `pkg_build_depends` installed from the floor. Nothing read the copy, so it is removed. `test_image_fixture_stage_toolchain()` stays, because `mktoolchainimage` still uses it.
+
 ### The test runs were killed by the build's memory limit; testreport now measures /run
 
 The SIGKILL in `probe-cix-testreport@7-1` was the kernel's OOM killer. The box's kernel log at 1790186551, the moment that build's log stopped, reads `Memory cgroup out of memory: Killed process ... (cbs)` in `oom_memcg=/cix-workload/cix-pkgbuild`. That cgroup's limit is 2 GiB (`memory: usage 2097152kB, limit 2097152kB`), and it held 2,081,173,504 bytes of `shmem` against 35,639,296 of `anon`, so what filled it was tmpfs content, not process memory. `@8-1` then lost `test_kmod_build`'s own nested `cixd` the same way at 1790186824, which is why that job never left `fetching`. `@8-1` also passed `test_slow_client` and `test_pkg_build_log`.
