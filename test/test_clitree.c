@@ -23,6 +23,10 @@
  *   5. Every flag literal in main.c is somewhere in the table.
  *   6. Every subcommand the source routes (strcmp(sub, "...")) is
  *      somewhere in the table.
+ *   7. Every top-level command in the table has a line in the help text
+ *      (print_usage()). Measured 2026-09-23: 14 routed commands --
+ *      volume, deployment, dhcp, factory-reset and ten more -- could be
+ *      run and completed but did not appear in `cixctl help` at all.
  *
  * 5 and 6 are the reverse direction, and it used to be missing. The
  * comment that stood here argued it could not be done -- "a flag literal
@@ -404,6 +408,35 @@ int main(void)
 	 */
 	scan_flag_literals();
 	scan_routed_subcommands();
+
+	/*
+	 * 7: every top-level command has a help line. A help line is a
+	 * string literal inside print_usage() that begins with two spaces
+	 * and the command name, followed by a space or the end of the line.
+	 */
+	{
+		const char *begin = strstr(g_src, "static void print_usage(FILE *out)");
+		const char *finish = begin != NULL ? strstr(begin, "\n}\n") : NULL;
+
+		if (begin == NULL || finish == NULL) {
+			fail("cannot find print_usage() in %s", src_path);
+		} else {
+			for (i = 0; CLI_TREE[i].name != NULL; i++) {
+				char with_space[160], at_eol[160];
+				const char *hit_space, *hit_eol;
+
+				snprintf(with_space, sizeof(with_space), "\"  %s ", CLI_TREE[i].name);
+				snprintf(at_eol, sizeof(at_eol), "\"  %s\\n", CLI_TREE[i].name);
+				hit_space = strstr(begin, with_space);
+				hit_eol = strstr(begin, at_eol);
+				if ((hit_space == NULL || hit_space > finish) &&
+				    (hit_eol == NULL || hit_eol > finish))
+					fail("top-level command '%s' has no line in print_usage() -- "
+					     "it can be run but `cixctl help` never mentions it",
+					     CLI_TREE[i].name);
+			}
+		}
+	}
 
 	free(g_src);
 	if (g_failures > 0) {

@@ -6,6 +6,24 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### `cixctl help` lists every command, and a test keeps it that way (#151)
+
+`cixctl help` never mentioned 14 commands the CLI routes and completes: `volume`, `deployment`, `dhcp`, `software`, `stalls`, `control-plane-reservation`, `tls-throttle`, `ksm`, `zswap`, `kernel-policy`, `esp`, `boot-console`, `factory-reset` and the `console` alias. Each now has a help line written from its real usage output.
+
+Help and usage text that described the CLI wrongly is corrected:
+- `storage state` is retired (#251) and no longer listed. `storage free-space` and `storage grow-partition` are now listed.
+- Three references to a `diskrole` command now name `storage-role`.
+- `storage format` defaults to btrfs, not ext4.
+- `storage-role create` no longer offers the retired `state-storage` role.
+- `storage grow-partition` no longer says a partition must be unmounted: a mounted btrfs grows online (#163).
+- `container run`, `container files` and `container console` printed their usage as `cixctl run` / `cixctl files` / `cixctl console`; `files` and `run` are not top-level commands.
+- `container files` shows its real `get` and `put` forms.
+- A line of the `kmsg` entry had landed inside `server-health`.
+
+`test_clitree` gains check 7: every top-level command in `cli/src/cmdtree.h` must have a line in `print_usage()`, so a command can no longer be added to the CLI without appearing in its help.
+
+The shared volume-backup schedule, `PUT /v1/system/volume-backup-config`, still has no `cixctl` command; the help for `volume backups` names the endpoint.
+
 ### `make testreport` runs every test binary, so `cix-tests` can convert to CPDL (#224, #487)
 
 `make selftest` runs the gated subset. `make testreport` builds `all` and runs every `build/test_*` under a `TESTREPORT_TIMEOUT` (default 300 s). It reports each one as PASS, FAIL (with the tail of its log) or TIMEOUT, then prints a summary. It exits 0 whatever the results: there is no baseline yet, so it reports rather than gates. Logs go to `build/testreport/`, not `/tmp`, which Cix's minimal images do not carry.

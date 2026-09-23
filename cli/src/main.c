@@ -132,8 +132,30 @@ static void print_usage(FILE *out)
 	        "               so (#248). There is no free-text command: ADR-0261 removed both\n"
 	        "               that and the exec endpoint, so a container is reachable only\n"
 	        "               through what its recipe declares\n"
-	        "  container files NAME --path=PATH  -- read a file from the container's rootfs\n"
+	        "  container files get NAME --path=PATH [--output=PATH]  -- read a file from the\n"
+	        "               container's rootfs\n"
+	        "  container files put NAME --path=PATH --file=LOCAL_PATH [--mode=0644]\n"
 	        "  container rm NAME  -- delete the container and its storage\n"
+	        "  console NAME [--console=NAME]  -- short for container console\n"
+	        "  volume ls | show NAME | rm NAME  -- persistent volumes (issue #88): storage\n"
+	        "               that outlives the containers using it; rm is refused while any\n"
+	        "               container definition still references the volume\n"
+	        "  volume create --name=NAME [--disk=DISK]\n"
+	        "  volume migrate NAME [--disk=DISK]  -- move it to another disk\n"
+	        "  volume quota NAME BYTES  -- a kernel-enforced size limit; 0 removes it\n"
+	        "  volume usage NAME  -- bytes used, measured now rather than stored\n"
+	        "  volume backups NAME [--enable|--disable] [--retain=N]  -- opt this volume in\n"
+	        "               to the shared volume backup schedule and set its retention; the\n"
+	        "               schedule itself is PUT /v1/system/volume-backup-config (#96)\n"
+	        "  volume backup NAME / volume restore NAME SNAPSHOT  -- snapshot now /\n"
+	        "               replace the volume's contents with a snapshot\n"
+	        "  deployment add --name=NAME --file=PATH  -- store a container definition\n"
+	        "               (container.json) to create containers from (ADR-0151)\n"
+	        "  deployment show|rm NAME / deployment ls\n"
+	        "  deployment apply NAME [--secret=KEY=VALUE ...]  -- create the container;\n"
+	        "               each --secret= fills a {{SECRET:KEY}} token in the definition\n"
+	        "  software  -- what is declared (recipes) against what is installed, for\n"
+	        "               images, packages and containers (issue #97)\n"
 	        "  network create --name=NAME --subnet=A.B.C.D --prefix=N [--address=A.B.C.D]\n"
 	        "               -- no --address= means pure L2, no host-owned address (the\n"
 	        "               default); pass it only when the host itself should have an\n"
@@ -181,6 +203,10 @@ static void print_usage(FILE *out)
 	        "  dns server register --container=NAME --hosts-path=PATH\n"
 	        "  dns server ls\n"
 	        "  dns server unregister CONTAINER\n"
+	        "  dhcp show | leases  -- DHCP service state / current leases (ADR-0197)\n"
+	        "  dhcp server ls | add CONTAINER | rm CONTAINER\n"
+	        "  dhcp enable --network=NAME --range=START-END / dhcp disable --network=NAME\n"
+	        "  dhcp static add --mac=M --ip=IP [--hostname=NAME] / dhcp static rm MAC\n"
 	        "  ldap server register --container=NAME --config-path=PATH  -- registers a running\n"
 	        "               container as the LDAP-serving target (task #725); config_path is\n"
 	        "               its own absolute view of glauth's own config file\n"
@@ -377,14 +403,14 @@ static void print_usage(FILE *out)
 	        "  storage-role create --disk=NAME\n"
 	        "               --role=container-storage|backup|rebuildable-storage|log-storage|swap\n"
 	        "               -- assign a persisted role to a disk (never the OS disk)\n"
-	        "  storage-role ls / diskrole rm NAME  -- list assigned roles (with whether each\n"
+	        "  storage-role ls / storage-role rm NAME  -- list assigned roles (with whether each\n"
 	        "               disk is currently present) / remove one; refused (409) if the\n"
 	        "               disk is the active rebuildable/log-storage placement (storage migrate\n"
 	        "               away first)\n"
 	        "  storage format NAME [--fs-type=ext4|btrfs]  -- destructive: mkfs + mount an\n"
 	        "               already role-assigned, non-OS disk (assign a role first via\n"
-	        "               diskrole create); fs_type defaults to ext4; refused (409) if the\n"
-	        "               disk is the active storage placement\n"
+	        "               storage-role create); fs_type defaults to btrfs; refused (409)\n"
+	        "               if the disk is the active storage placement\n"
 	        "  storage format-status NAME  -- state/mount_path/error of the most recent\n"
 	        "               format job for this disk\n"
 	        "  storage unmount NAME  -- a real, synchronous umount2(2) of an already-mounted,\n"
@@ -392,33 +418,61 @@ static void print_usage(FILE *out)
 	        "               attachment to the running system is removed; refused (409) if\n"
 	        "               it's the active placement for a storage singleton/backup-config/\n"
 	        "               swap, or a live container has its own storage on it\n"
-	        "  storage state [show]  -- which disk (if any) is the active placement for\n"
-	        "               Cix's own state (ADR-0141); default (null) is the OS disk\n"
-	        "  storage state migrate [--disk=NAME]  -- move Cix's own state to a disk\n"
-	        "               already carrying the matching role and currently mounted;\n"
-	        "               omit --disk= to migrate back to the default OS-disk placement;\n"
-	        "               async, no pause -- poll storage state migrate-status\n"
-	        "  storage state migrate-status  -- state/disk/error of the most recent (or\n"
-	        "               running) storage migration\n"
-	        "  storage logs [show|migrate [--disk=NAME]|migrate-status]  -- same shape as\n"
-	        "               storage state, for where Cix's own consolidated log store\n"
-	        "               (ADR-0070/ADR-0126) lives instead\n"
-	        "  storage rebuildable [show|migrate [--disk=NAME]|migrate-status]  -- same shape\n"
-	        "               again, for where images/packages/artifacts (regenerable from\n"
+	        "  storage free-space NAME  -- the free extents on a disk, read from the\n"
+	        "               partition table itself rather than the kernel's cached view\n"
+	        "  storage grow-partition DISK_NAME PARTITION_NAME [--size-mib=N]  -- grow-only;\n"
+	        "               omit --size-mib for all the free space right after it. ext4 or\n"
+	        "               unformatted must be unmounted; a mounted btrfs grows online\n"
+	        "  storage logs [show|migrate [--disk=NAME]|migrate-status]  -- which disk\n"
+	        "               (if any) holds Cix's own consolidated log store (ADR-0070/\n"
+	        "               ADR-0126); migrate moves it to a disk carrying the log-storage\n"
+	        "               role, or back to the default with no --disk=; async, poll\n"
+	        "               migrate-status. Platform state itself lives on the config\n"
+	        "               partition and does not move (#251)\n"
+	        "  storage rebuildable [show|migrate [--disk=NAME]|migrate-status]  -- same\n"
+	        "               shape, for where images/packages/artifacts (regenerable from\n"
 	        "               recipes/sources, never irreplaceable) live instead\n"
 	        "  swap  -- show whether the host swap file is enabled (ADR-0069) and which disk\n"
 	        "               (if any) it's placed on\n"
 	        "  swap enable --size-mb=N [--disk=NAME]  -- create and activate a swap file of\n"
 	        "               this size; --disk= places it on a disk carrying the \"swap\" role\n"
-	        "               (diskrole create --role=swap, issue #28) instead of the default\n"
+	        "               (storage-role create --role=swap, issue #28) instead of the default\n"
 	        "               OS-disk location -- omit for the default\n"
 	        "  swap disable  -- deactivate and remove it\n"
 	        "  host-stats  -- host-wide load/CPU/memory/disk/network snapshot (ADR-0073)\n"
+	        "  stalls  -- times the daemon's event loop stopped turning, recorded by a\n"
+	        "               separate watchdog, with the kernel function it slept in (#100)\n"
+	        "  control-plane-reservation show\n"
+	        "  control-plane-reservation set [--enabled | --disabled] [--cpu-percent=N]\n"
+	        "               [--memory-bytes=N]  -- how much of the machine is held back for\n"
+	        "               cixd; every container and build is capped at the rest (#86)\n"
+	        "  tls-throttle show | status\n"
+	        "  tls-throttle set [--enabled | --disabled] [--threshold=N] [--window-seconds=N]\n"
+	        "               [--block-seconds=N] [--log-interval-seconds=N]  -- block a\n"
+	        "               source IP after repeated failed HTTPS handshakes (ADR-0134)\n"
+	        "  ksm show / ksm set [--enable | --disable] [--pages-to-scan=N]\n"
+	        "               [--sleep-millisecs=N]  -- merge identical memory pages across\n"
+	        "               containers; merges nothing until a container opts in\n"
+	        "  zswap show / zswap set [--enable | --disable] [--max-pool-percent=N]\n"
+	        "               [--compressor=NAME]  -- compress pages in RAM before they would\n"
+	        "               reach the swap device (ADR-0196)\n"
+	        "  kernel-policy show | refresh\n"
+	        "  kernel-policy set --channel=pinned|longterm|stable|mainline  -- which\n"
+	        "               kernel.org line this box tracks (#65); pinned proposes nothing\n"
+	        "  esp show / esp set [--default=PATTERN] [--timeout=N] / esp rm-entry NAME\n"
+	        "               -- the boot entries on the EFI system partition (ADR-0202)\n"
+	        "  boot-console show / boot-console set [--console=NAME ...] [--extra=\"...\"]\n"
+	        "               -- console arguments on the boot line, repeatable and ordered\n"
+	        "               (e.g. --console=tty0 --console=ttyS0,115200n8); next boot (#24)\n"
+	        "  factory-reset --confirm=<instance name>  -- return the box to its\n"
+	        "               just-installed state and REBOOT; destroys every container,\n"
+	        "               image, network, registration, package state, the log store and\n"
+	        "               every volume with its data. Cannot be undone\n"
 	        "  kmsg [--tail=N]  -- the kernel ring buffer (/dev/kmsg), dmesg over REST --\n"
+	        "               the only kernel-log window a shell-less installed host has\n"
 	        "  server-health [ls] | drain KIND NAME | undrain KIND NAME  -- health of every\n"
 	        "               registered LDAP/DNS/NTP/syslog server; drain takes one out of\n"
 	        "               service deliberately (issue #81)\n"
-	        "               the only kernel-log window a shell-less installed host has\n"
 	        "  process ls  -- every real process on the box (a direct /proc scan), each\n"
 	        "               correlated to a container by its own real host ppid chain, if any\n"
 	        "               (ADR-0131)\n"
@@ -1834,7 +1888,7 @@ static int cmd_disks_grow_partition(const struct cix_client *c, int json_mode, i
 		fprintf(stderr, "usage: cixctl storage grow-partition DISK_NAME PARTITION_NAME "
 		                "[--size-mib=N]\n"
 		                "  Omit --size-mib to take all free space immediately after it.\n"
-		                "  The partition must be unmounted, and ext4 or unformatted.\n");
+		                "  ext4 or unformatted: must be unmounted. btrfs: grown online if mounted (#163).\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), CIX_API_resizeStoragePartition, disk_name, part_name);
@@ -6167,7 +6221,7 @@ static int cmd_console(const struct cix_client *c, int argc, char **argv)
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: cixctl console NAME [--console=NAME]\n");
+		fprintf(stderr, "usage: cixctl container console NAME [--console=NAME]\n");
 		return 2;
 	}
 
@@ -7029,7 +7083,7 @@ static int cmd_files_get(const struct cix_client *c, int argc, char **argv)
 		}
 	}
 	if (name == NULL || path_arg == NULL) {
-		fprintf(stderr, "usage: cixctl files get NAME --path=/some/path [--output=PATH]\n");
+		fprintf(stderr, "usage: cixctl container files get NAME --path=/some/path [--output=PATH]\n");
 		return 2;
 	}
 
@@ -7113,7 +7167,7 @@ static int cmd_files_put(const struct cix_client *c, int argc, char **argv)
 	}
 	if (name == NULL || path_arg == NULL || file_arg == NULL) {
 		fprintf(stderr,
-		        "usage: cixctl files put NAME --path=/some/path --file=LOCAL_PATH "
+		        "usage: cixctl container files put NAME --path=/some/path --file=LOCAL_PATH "
 		        "[--mode=0644]\n");
 		return 2;
 	}
@@ -7161,8 +7215,8 @@ static int cmd_files(const struct cix_client *c, int argc, char **argv)
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl files get NAME --path=/some/path [--output=PATH]\n"
-		                "       cixctl files put NAME --path=/some/path --file=LOCAL_PATH "
+		fprintf(stderr, "usage: cixctl container files get NAME --path=/some/path [--output=PATH]\n"
+		                "       cixctl container files put NAME --path=/some/path --file=LOCAL_PATH "
 		                "[--mode=0644]\n");
 		return 2;
 	}
@@ -9419,7 +9473,7 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 
 	if (name == NULL || image == NULL || service_count == 0) {
 		fprintf(stderr,
-		        "usage: cixctl run --name=NAME --image=IMAGE [--memory-max=N] "
+		        "usage: cixctl container run --name=NAME --image=IMAGE [--memory-max=N] "
 		        "[--pids-max=N] [--cpu-max=\"QUOTA PERIOD\"] [--cpuset=0-1,3] "
 		        "[--disk-quota=BYTES] [--disk=NAME] "
 		        "[--network=NAME[:IP] ...] [--ip-forward] [--dns-register] "
@@ -11459,7 +11513,7 @@ static int cmd_diskrole_create(const struct cix_client *c, int json_mode, int ar
 	}
 	if (disk_name == NULL || role == NULL) {
 		fprintf(stderr,
-		        "usage: cixctl storage-role create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage|swap\n");
+		        "usage: cixctl storage-role create --disk=NAME --role=container-storage|backup|rebuildable-storage|log-storage|swap\n");
 		return 2;
 	}
 
@@ -11515,7 +11569,7 @@ static int cmd_diskrole(const struct cix_client *c, int json_mode, int argc, cha
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl storage-role create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage|swap\n"
+		fprintf(stderr, "usage: cixctl storage-role create --disk=NAME --role=container-storage|backup|rebuildable-storage|log-storage|swap\n"
 		                "       cixctl storage-role ls\n"
 		                "       cixctl storage-role rm NAME\n");
 		return 2;
