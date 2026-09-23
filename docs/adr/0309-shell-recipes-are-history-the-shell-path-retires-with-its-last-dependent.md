@@ -48,9 +48,18 @@ When those are gone, the shell path is removed in one change, not left dormant.
 **4. Once probes have a CPDL template, publishing a new shell revision is refused.** That stops the parallel growing while it retires, and it costs nothing then.
 
 **5. The cbs bootstrap is decided explicitly, not by default.** Removing the shell path leaves cbs installable from source only through a previously built cbs, whose root is `cbs@v0.1.25-1.sh`. The same question applies to the toolchain. The options, for the owner:
+- **the seed is the previous Cix root.** This is already true today. `mkbootroot` refuses to assemble a control-plane root without `/usr/bin/cbs` (`image/src/mkbootroot.c`, ADR-0307 clause 6), so every Cix host has a Cix-built cbs, and building cbs from source is an ordinary upgrade using the engine the host already runs. The seed is Cix-built, not external, so the Build Provenance Mandate holds. **Recommended.**
 - keep one shell recipe as the documented bootstrap root, the one exception to point 3;
-- give cixd a minimal built-in CPDL executor sufficient to build cbs;
-- accept seeding from an approved cached artifact, which the no-external-seed rule currently forbids.
+- give cixd a minimal built-in CPDL executor sufficient to build cbs. That is a second CPDL implementation, a parallel of its own;
+- accept seeding from an approved cached artifact that no Cix root carried, which the no-external-seed rule forbids.
+
+**Considered and rejected: linking libcbs into cixd.** cbs builds a library, `libcbs.a`, so linking it looks like it removes the dependency on a separate binary. It does not, for two reasons:
+- **It does not solve the bootstrap.** `libcbs.a` is built by the cbs recipe, which needs a cbs. A cixd linking it would declare it as a build tool, the same shape as `libarchive` and `curl` in `cix@v2.57.244-6.cbs`, and that is the same recursion. The only way out is vendoring cbs source into this repository, which is a second copy of a project maintained separately.
+- **It does not give cixd a builder.** `cbs build` runs inside the composed build container, not in cixd. Linking would move `explain` in-process and leave the build exactly where it is.
+
+It is also the wrong dependency for the binary that boots the machine. [ADR-0305](0305-a-recipes-format-is-its-filename.md) §3 rejected it because cixd is PID 1, so a crash in linked code is a kernel panic; because a cbs upgrade would become rebuild cixd, deploy and reboot; and because of the blast radius. Those grounds now have measurements:
+- **Engine defects:** cix-build-system #216, #217, #218, #221, #229 and #230 are engine defects found in the last two weeks. Each was a failed build because cbs runs as a separate process. Linked, each was a candidate kernel panic.
+- **Upgrade coupling:** the box stays on cbs v0.1.34 while #229 is open, and cixd does not care. Linked, shipping cixd would have meant choosing a cbs to ship with it.
 
 **Image recipes are out of scope.** They are `image_packages=` declarations, line-scanned and never executed. They are `.sh` by extension only, and CPDL 0.1 has no image form.
 
