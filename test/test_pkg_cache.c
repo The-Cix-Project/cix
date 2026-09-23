@@ -5,8 +5,8 @@
  * install path (a real, unmodified build container whose own upperdir
  * is pre-populated before it ever runs, see pkg.c's own comment).
  * Kept hermetic like test_pkg.c's own fixture: real gcc compiles a
- * real tiny C program via file:// sources, and a real python3
- * http.server stands in for a plain artifact host.
+ * real tiny C program from loopback http:// sources, and the shared
+ * loopback server (test_image_fixture.c) stands in for an artifact host.
  */
 #include "httpclient.h"
 #include "json.h"
@@ -26,10 +26,10 @@ extern char **environ;
 
 #define TEST_PORT 7649
 #define PORT_ARG "--port=7649"
-#define HTTP_PORT 17650
+static int g_http_port; /* assigned by test_http_server_start() */
 /* Issue #129: the push receiver -- a separate port from the pull
  * server above, so a push can never be mistaken for a pull. */
-#define PUSH_PORT 17651
+static int g_push_port; /* assigned by test_http_server_start() */
 
 static char g_data_dir[PATH_MAX];
 static char g_pkg_state_dir[PATH_MAX];
@@ -235,93 +235,44 @@ static long cache_json_long(const struct json_value *v, const char *key)
 	return (long)json_as_number(json_object_get(v, key));
 }
 
+/*
+ * The shared loopback file server (test_image_fixture.c), rooted at dir.
+ * This was `python3 -m http.server`, and a Cix build environment has no
+ * Python, so the test failed before reaching what it tests
+ * (cix-tests@v2.57.246-1, 192.168.15.95, 2026-09-23).
+ */
 static pid_t start_http_server(const char *dir)
 {
 	pid_t pid;
 
-	pid = fork();
-	if (pid < 0) {
-		perror("fork");
+	if (test_http_server_start(dir, 0, &g_http_port, &pid) != 0) {
+		perror("test_http_server_start");
 		return -1;
-	}
-	if (pid == 0) {
-		char port_str[16];
-		char *argv[8];
-
-		snprintf(port_str, sizeof(port_str), "%d", HTTP_PORT);
-		argv[0] = "python3";
-		argv[1] = "-m";
-		argv[2] = "http.server";
-		argv[3] = port_str;
-		argv[4] = "--directory";
-		argv[5] = (char *)dir;
-		argv[6] = NULL;
-		freopen("/dev/null", "w", stdout);
-		freopen("/dev/null", "w", stderr);
-		execvp("python3", argv);
-		_exit(127);
 	}
 	return pid;
 }
 
 static int stop_http_server(pid_t pid)
 {
-	int status;
-
-	kill(pid, SIGTERM);
-	return waitpid(pid, &status, 0) == pid ? 0 : -1;
+	return test_http_server_stop(pid);
 }
 
 /*
- * Issue #129: a minimal PUT-accepting artifact server, standing in for
- * the real one. python3 -m http.server cannot do this (GET only), and
- * the point of the test is what actually arrives over the wire, so it
- * records the body plus the two headers the contract depends on:
- * the bearer token and the declared digest.
- *
- * Deliberately dumb -- it verifies nothing itself. The test asserts
- * against what it recorded, so a daemon that sent the wrong digest
- * would be caught here rather than quietly accepted.
+ * Issue #129: a PUT-accepting artifact server standing in for the real
+ * one: the shared loopback server (test_image_fixture.c) with PUT
+ * recording on. The test asserts on what it recorded -- the body plus
+ * the Authorization and X-Cix-Sha256 headers the contract depends on --
+ * so a daemon that sent the wrong digest is caught here rather than
+ * quietly accepted. This was a python3 script, and a Cix build
+ * environment has no Python.
  */
 static pid_t start_push_server(const char *dir)
 {
 	pid_t pid;
 
-	pid = fork();
-	if (pid < 0) {
-		perror("fork");
+	if (test_http_server_start(dir, 1, &g_push_port, &pid) != 0) {
+		perror("test_http_server_start (push)");
 		return -1;
-	}
-	if (pid == 0) {
-		char script[2048];
-		char *argv[5];
-
-		snprintf(script, sizeof(script),
-		         "import http.server,os\n"
-		         "D=%s%s%s\n"
-		         "class H(http.server.BaseHTTPRequestHandler):\n"
-		         "    def do_PUT(self):\n"
-		         "        n=int(self.headers.get('Content-Length','0'))\n"
-		         "        b=self.rfile.read(n)\n"
-		         "        base=os.path.basename(self.path)\n"
-		         "        open(os.path.join(D,base),'wb').write(b)\n"
-		         "        open(os.path.join(D,base+'.headers'),'w').write(\n"
-		         "            (self.headers.get('Authorization') or '')+chr(10)+\n"
-		         "            (self.headers.get('X-Cix-Sha256') or '')+chr(10))\n"
-		         "        self.send_response(201)\n"
-		         "        self.end_headers()\n"
-		         "    def log_message(self,*a):\n"
-		         "        pass\n"
-		         "http.server.HTTPServer(('127.0.0.1',%d),H).serve_forever()\n",
-		         "'", dir, "'", PUSH_PORT);
-		argv[0] = "python3";
-		argv[1] = "-c";
-		argv[2] = script;
-		argv[3] = NULL;
-		freopen("/dev/null", "w", stdout);
-		freopen("/dev/null", "w", stderr);
-		execvp("python3", argv);
-		_exit(127);
 	}
 	return pid;
 }
@@ -428,7 +379,7 @@ int main(void)
 	{
 		char source_url[600];
 
-		snprintf(source_url, sizeof(source_url), "file://%s", tarball_path);
+		snprintf(source_url, sizeof(source_url), "%s", test_http_src(tarball_path));
 		CHECK(write_recipe(g_pkg_state_dir, "cachetest", "1.0", source_url, sha256, NULL) == 0,
 		      "write cachetest recipe");
 	}
@@ -509,7 +460,7 @@ int main(void)
 
 		if (stage_source_tarball(scratch_dir, "cachetest2", "1.0", tarball2, sizeof(tarball2),
 		                          sha2562, sizeof(sha2562)) == 0) {
-			snprintf(source_url2, sizeof(source_url2), "file://%s", tarball2);
+			snprintf(source_url2, sizeof(source_url2), "%s", test_http_src(tarball2));
 			CHECK(write_recipe(g_pkg_state_dir, "cachetest2", "1.0", source_url2, sha2562, NULL) ==
 			              0,
 			      "write cachetest2 recipe");
@@ -637,7 +588,7 @@ int main(void)
 			{
 				char artifact_url[256], put_body[512];
 
-				snprintf(artifact_url, sizeof(artifact_url), "http://127.0.0.1:%d", HTTP_PORT);
+				snprintf(artifact_url, sizeof(artifact_url), "http://127.0.0.1:%d", g_http_port);
 				snprintf(put_body, sizeof(put_body), "{\"base_url\":\"%s\"}", artifact_url);
 				memset(&r, 0, sizeof(r));
 				CHECK(cix_client_request(&client, "PUT", "/v1/pkg/artifact-config", put_body, &r) ==
@@ -648,7 +599,7 @@ int main(void)
 			}
 
 			CHECK(write_recipe(g_pkg_state_dir, "artifacttest", "1.0",
-			                    "file:///nonexistent/artifacttest-1.0.tar", artifact_sha,
+			                    test_http_src("/nonexistent/artifacttest-1.0.tar"), artifact_sha,
 			                    artifact_sha) == 0,
 			      "write artifacttest recipe (broken source, real artifact checksum)");
 			/* Note: pkg_source's own sha256 is deliberately set to the
@@ -715,7 +666,7 @@ int main(void)
 				      "publish the cix artifact under its own name");
 
 				CHECK(write_recipe(g_pkg_state_dir, "cix", "1.0",
-				                    "file:///nonexistent/cix-1.0.tar", artifact_sha,
+				                    test_http_src("/nonexistent/cix-1.0.tar"), artifact_sha,
 				                    artifact_sha) == 0,
 				      "write a cix recipe served only by the artifact tier");
 
@@ -776,7 +727,7 @@ int main(void)
 		                                sizeof(push_tarball), push_sha256,
 		                                sizeof(push_sha256)) != 0)
 			ok = 0;
-		snprintf(source_url, sizeof(source_url), "file://%s", push_tarball);
+		snprintf(source_url, sizeof(source_url), "%s", test_http_src(push_tarball));
 		CHECK(ok, "stage pushtest source tarball");
 
 		if (ok) {
@@ -790,7 +741,7 @@ int main(void)
 				snprintf(put_body, sizeof(put_body),
 				         "{\"base_url\":\"http://127.0.0.1:%d\",\"auth_token\":\"tok-129\","
 				         "\"push_enabled\":true}",
-				         PUSH_PORT);
+				         g_push_port);
 				memset(&r, 0, sizeof(r));
 				CHECK(cix_client_request(&client, "PUT", "/v1/pkg/artifact-config", put_body,
 				                         &r) == 0 &&
@@ -942,12 +893,12 @@ int main(void)
 					} else {
 						fprintf(hf,
 						        "pkg_name=hbpush\npkg_version=1.0\n"
-						        "pkg_source=file://%s\npkg_sha256=%s\n"
+						        "pkg_source=%s\npkg_sha256=%s\n"
 						        "pkg_depends=\"\"\n"
 						        "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
 						        "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
 						        "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n}\n",
-						        hb_tarball, hb_sha256);
+						        test_http_src(hb_tarball), hb_sha256);
 						fclose(hf);
 					}
 					CHECK(hb_ok, "write hbpush hostbuild recipe");

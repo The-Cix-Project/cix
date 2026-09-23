@@ -2,9 +2,10 @@
  * Proves Part 2 of the pkg/ redesign (task #767, ADR-0121) end to end:
  * GET/PUT /v1/pkg/repo-config (partial-update semantics, token never
  * echoed back) and POST/GET /v1/pkg/sync (async fetch + merge/additive
- * recipe import). Kept hermetic like test_pkg.c's own fetch tests: a
- * real `python3 -m http.server` stands in for a gitea instance, serving
- * a hand-built tarball at the exact path build_sync_fetch_request()'s
+ * recipe import). Kept hermetic like test_pkg.c's own fetch tests: the
+ * shared loopback server (test_image_fixture.c) stands in for a gitea
+ * instance, serving a hand-built tarball at the exact path
+ * build_sync_fetch_request()'s
  * own gitea branch computes (/api/v1/repos/<owner>/<repo>/archive/
  * <ref>.tar.gz) -- the real curl subprocess and real tar-extraction
  * code paths run unmocked, only the forge itself is a stand-in.
@@ -27,7 +28,7 @@ extern char **environ;
 
 #define TEST_PORT 7647
 #define PORT_ARG "--port=7647"
-#define HTTP_PORT 7648
+static int g_http_port; /* assigned by test_http_server_start() */
 
 static char g_data_dir[PATH_MAX];
 static char g_pkg_state_dir[PATH_MAX];
@@ -113,41 +114,26 @@ static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 /* Serves scratch_dir/api/v1/repos/... as a stand-in gitea REST archive
  * endpoint -- plain static file serving matches exactly since
  * build_sync_fetch_request()'s gitea branch computes a fixed path. */
+/*
+ * The shared loopback file server (test_image_fixture.c), rooted at dir.
+ * This was `python3 -m http.server`, and a Cix build environment has no
+ * Python, so the test failed before reaching what it tests
+ * (cix-tests@v2.57.246-1, 192.168.15.95, 2026-09-23).
+ */
 static pid_t start_http_server(const char *dir)
 {
 	pid_t pid;
 
-	pid = fork();
-	if (pid < 0) {
-		perror("fork");
+	if (test_http_server_start(dir, 0, &g_http_port, &pid) != 0) {
+		perror("test_http_server_start");
 		return -1;
-	}
-	if (pid == 0) {
-		char port_str[16];
-		char *argv[8];
-
-		snprintf(port_str, sizeof(port_str), "%d", HTTP_PORT);
-		argv[0] = "python3";
-		argv[1] = "-m";
-		argv[2] = "http.server";
-		argv[3] = port_str;
-		argv[4] = "--directory";
-		argv[5] = (char *)dir;
-		argv[6] = NULL;
-		freopen("/dev/null", "w", stdout);
-		freopen("/dev/null", "w", stderr);
-		execvp("python3", argv);
-		_exit(127);
 	}
 	return pid;
 }
 
 static int stop_http_server(pid_t pid)
 {
-	int status;
-
-	kill(pid, SIGTERM);
-	return waitpid(pid, &status, 0) == pid ? 0 : -1;
+	return test_http_server_stop(pid);
 }
 
 /* Builds <scratch>/api/v1/repos/testowner/testrepo/archive/master.tar.gz,
@@ -183,7 +169,7 @@ static int stage_fixture_archive(const char *scratch_dir)
 		return -1;
 	fprintf(f, "pkg_name=synctest\n");
 	fprintf(f, "pkg_version=1.0\n");
-	fprintf(f, "pkg_source=file:///nonexistent/synctest-1.0.tar\n");
+	fprintf(f, "pkg_source=%s\n", test_http_src("/nonexistent/synctest-1.0.tar"));
 	fprintf(f, "pkg_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n");
 	fprintf(f, "pkg_depends=\"\"\n");
 	fclose(f);
@@ -311,7 +297,7 @@ int main(void)
 	cix_response_free(&r);
 
 	/* --- scenario 3: PUT /v1/pkg/repo-config, partial update semantics --- */
-	snprintf(repo_url, sizeof(repo_url), "http://127.0.0.1:%d/testowner/testrepo", HTTP_PORT);
+	snprintf(repo_url, sizeof(repo_url), "http://127.0.0.1:%d/testowner/testrepo", g_http_port);
 	snprintf(put_body, sizeof(put_body),
 	         "{\"repo_url\":\"%s\",\"repo_kind\":\"gitea\",\"ref\":\"master\","
 	         "\"auth_token\":\"scratch-token\"}",
@@ -467,7 +453,7 @@ int main(void)
 	snprintf(put_body, sizeof(put_body),
 	         "{\"repo_url\":\"http://127.0.0.1:%d/testowner/testrepo/src/branch/master/recipes/"
 	         "package\"}",
-	         HTTP_PORT);
+	         g_http_port);
 	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config", put_body, &r) == 0 &&
 	              r.status == 200,
 	      "PUT /v1/pkg/repo-config (browse-URL-style suffix)");
@@ -496,7 +482,7 @@ int main(void)
 	 * exit) reports state=failed with a real error, not a silent hang. */
 	memset(&r, 0, sizeof(r));
 	snprintf(put_body, sizeof(put_body), "{\"repo_url\":\"http://127.0.0.1:%d/testowner/nosuch\"}",
-	         HTTP_PORT);
+	         g_http_port);
 	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config", put_body, &r) == 0 &&
 	              r.status == 200,
 	      "PUT /v1/pkg/repo-config (repoint at a nonexistent repo)");

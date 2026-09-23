@@ -5,8 +5,8 @@
  * pinned recipe with a matching configured plain-HTTP artifact server
  * fetches one whole-rootfs tarball, checksum-verified against the
  * recipe's own declared hash, instead of running any per-package
- * build. Kept hermetic like test_pkg_cache.c's own fixture: a real
- * python3 http.server stands in for the artifact host, a real tar
+ * build. Kept hermetic like test_pkg_cache.c's own fixture: the shared
+ * loopback server stands in for the artifact host, a real tar
  * builds the fixture payload.
  */
 #include "httpclient.h"
@@ -27,7 +27,7 @@ extern char **environ;
 
 #define TEST_PORT 7653
 #define PORT_ARG "--port=7653"
-#define HTTP_PORT 17654
+static int g_http_port; /* assigned by test_http_server_start() */
 
 static char g_data_dir[PATH_MAX];
 
@@ -157,41 +157,26 @@ static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 	return -1;
 }
 
+/*
+ * The shared loopback file server (test_image_fixture.c), rooted at dir.
+ * This was `python3 -m http.server`, and a Cix build environment has no
+ * Python, so the test failed before reaching what it tests
+ * (cix-tests@v2.57.246-1, 192.168.15.95, 2026-09-23).
+ */
 static pid_t start_http_server(const char *dir)
 {
 	pid_t pid;
 
-	pid = fork();
-	if (pid < 0) {
-		perror("fork");
+	if (test_http_server_start(dir, 0, &g_http_port, &pid) != 0) {
+		perror("test_http_server_start");
 		return -1;
-	}
-	if (pid == 0) {
-		char port_str[16];
-		char *argv[8];
-
-		snprintf(port_str, sizeof(port_str), "%d", HTTP_PORT);
-		argv[0] = "python3";
-		argv[1] = "-m";
-		argv[2] = "http.server";
-		argv[3] = port_str;
-		argv[4] = "--directory";
-		argv[5] = (char *)dir;
-		argv[6] = NULL;
-		freopen("/dev/null", "w", stdout);
-		freopen("/dev/null", "w", stderr);
-		execvp("python3", argv);
-		_exit(127);
 	}
 	return pid;
 }
 
 static int stop_http_server(pid_t pid)
 {
-	int status;
-
-	kill(pid, SIGTERM);
-	return waitpid(pid, &status, 0) == pid ? 0 : -1;
+	return test_http_server_stop(pid);
 }
 
 int main(void)
@@ -380,7 +365,7 @@ int main(void)
 		char base_url[64];
 		struct json_writer w;
 
-		snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d", HTTP_PORT);
+		snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d", g_http_port);
 		jw_init(&w);
 		jw_obj_open(&w);
 		jw_key(&w, "base_url");

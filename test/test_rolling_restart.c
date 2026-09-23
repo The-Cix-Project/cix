@@ -208,7 +208,7 @@ static int write_binary_recipe(const char *pkg_state_dir, const char *version,
 		return -1;
 	fprintf(f, "pkg_name=rollsvc\n");
 	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
 	fprintf(f, "pkg_sha256=%s\n", sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
 	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n");
@@ -511,14 +511,14 @@ int main(void)
 			char content[1200];
 
 			snprintf(content, sizeof(content),
-			         "pkg_name=rollsvc\npkg_version=2.0\npkg_source=file://%s\n"
+			         "pkg_name=rollsvc\npkg_version=2.0\npkg_source=%s\n"
 			         "pkg_sha256=%s\npkg_depends=\"\"\n"
 		         "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
 			         "pkg_build() {\n\t:\n}\n\n"
 			         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
 			         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n\tchmod +x "
 			         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n}\n",
-			         tarball_v2, sha_v2);
+			         test_http_src(tarball_v2), sha_v2);
 
 			jw_init(&w);
 			jw_obj_open(&w);
@@ -652,14 +652,14 @@ int main(void)
 		      "stage rollsvc 3.0 fixture");
 
 		snprintf(content, sizeof(content),
-		         "pkg_name=rollsvc\npkg_version=3.0\npkg_source=file://%s\n"
+		         "pkg_name=rollsvc\npkg_version=3.0\npkg_source=%s\n"
 		         "pkg_sha256=%s\npkg_depends=\"\"\n"
 		         "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
 		         "pkg_build() {\n\t:\n}\n\n"
 		         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
 		         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n\tchmod +x "
 		         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n}\n",
-		         tarball_v3, sha_v3);
+		         test_http_src(tarball_v3), sha_v3);
 
 		jw_init(&w);
 		jw_obj_open(&w);

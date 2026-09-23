@@ -2,6 +2,7 @@
 #define TEST_IMAGE_FIXTURE_H
 
 #include <stddef.h>
+#include <sys/types.h>
 
 /*
  * Stages a minimal test image at image_root: child_binary_path (built
@@ -325,6 +326,46 @@ int test_mkdir_p(const char *path);
 const char *test_recipes_root(void);
 int test_recipe_path(const char *kind, const char *name, const char *version,
                      const char *ext, char *out, size_t out_size);
+
+/*
+ * A loopback HTTP source for fixture recipes.
+ *
+ * cixd fetches http and https only (daemon/src/curlfetch.c,
+ * CURLOPT_PROTOCOLS_STR, since #410), so a fixture recipe cannot name
+ * its tarball as file:///path. Measured in cix-tests@v2.57.246-1 on
+ * 192.168.15.95, 2026-09-23: every nested build in the package tests
+ * failed "fetch failed (curl exit status 1): file:///tmp/...: Protocol
+ * "file" is disabled", and the tests reported it as missing binaries,
+ * exit status 142 and wrong pipeline stages.
+ *
+ * test_http_source_url() writes "http://127.0.0.1:<port><abs_path>" for
+ * an absolute path: the path part of the URL IS the file's path, so a
+ * test changes only its scheme. The first call starts one server for
+ * the whole test process, bound to 127.0.0.1 on a kernel-chosen port,
+ * serving GET for regular files and 404 for anything else (so a
+ * deliberately nonexistent path still fails the fetch, as file:// did).
+ * The server is stopped at exit. It replaces the per-test
+ * `python3 -m http.server` helpers, and there is no Python in a Cix
+ * build environment.
+ *
+ * Returns 0, or -1 if the server could not start or the URL does not fit.
+ *
+ * test_http_server_start() is the same server rooted at a directory, for
+ * a test whose URLs the daemon builds itself (a repo base URL it appends
+ * API paths to, an artifact base URL it appends a filename to): a
+ * request for /X serves <root>/X. A query string is ignored. It replaces
+ * the tests' python3 http.server helpers. With accept_put, a PUT writes
+ * its body to <root>/<basename> and the Authorization and X-Cix-Sha256
+ * headers to <root>/<basename>.headers, for a test that asserts on what
+ * a daemon uploaded. Stop it with
+ * test_http_server_stop().
+ */
+int test_http_source_url(const char *abs_path, char *out, size_t out_size);
+/* The same, returned for use inside one printf (eight at a time); exits
+ * the test if the server cannot start. */
+const char *test_http_src(const char *abs_path);
+int test_http_server_start(const char *root, int accept_put, int *out_port, pid_t *out_pid);
+int test_http_server_stop(pid_t pid);
 
 #define TEST_SETTLE_ATTEMPTS 200
 #define TEST_SETTLE_INTERVAL_US (100 * 1000)

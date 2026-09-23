@@ -7,10 +7,14 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netinet/in.h>
+#include <signal.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <sys/wait.h>
@@ -1170,4 +1174,288 @@ int test_image_fixture_stage_closure(const char *image_root, const char *binary_
 	seen.n = 0;
 	return stage_closure_rec(image_root, binary_path, search_dirs, &seen);
 }
+/*
+ * The loopback HTTP file server behind test_http_server_start() and
+ * test_http_source_url(). See test_image_fixture.h for why it exists.
+ */
+static void http_serve_reply(int fd, const char *status, long long length)
+{
+	char head[160];
+	int n = snprintf(head, sizeof(head),
+	                 "HTTP/1.0 %s\r\nContent-Length: %lld\r\nConnection: close\r\n\r\n",
+	                 status, length);
 
+	if (n > 0 && write(fd, head, (size_t)n) != n)
+		return;
+}
+
+/* Copies the value of header `name` (case-insensitive) out of req, or "". */
+static void http_header_value(const char *req, const char *name, char *out, size_t out_size)
+{
+	size_t nlen = strlen(name);
+	const char *line = strstr(req, "\r\n");
+
+	out[0] = '\0';
+	while (line != NULL && line[2] != '\r' && line[2] != '\0') {
+		const char *h = line + 2;
+		const char *end = strstr(h, "\r\n");
+
+		if (strncasecmp(h, name, nlen) == 0 && h[nlen] == ':') {
+			const char *v = h + nlen + 1;
+			size_t vlen;
+
+			while (*v == ' ')
+				v++;
+			vlen = end != NULL ? (size_t)(end - v) : strlen(v);
+			if (vlen >= out_size)
+				vlen = out_size - 1;
+			memcpy(out, v, vlen);
+			out[vlen] = '\0';
+			return;
+		}
+		line = end;
+	}
+}
+
+/*
+ * A PUT, for a server started with accept_put: the body is written to
+ * root/<basename of the path>, and root/<basename>.headers records the
+ * Authorization and X-Cix-Sha256 headers, one per line, so a test can
+ * assert on exactly what arrived. It verifies nothing itself.
+ */
+static void http_serve_put(int fd, const char *root, const char *upath, const char *req,
+                           size_t used)
+{
+	const char *base = strrchr(upath, '/');
+	const char *body = strstr(req, "\r\n\r\n");
+	char path[PATH_MAX], hpath[PATH_MAX + 16], value[512];
+	long long want, have;
+	FILE *out;
+
+	base = base != NULL ? base + 1 : upath;
+	if (body == NULL || base[0] == '\0' ||
+	    snprintf(path, sizeof(path), "%s/%s", root, base) >= (int)sizeof(path)) {
+		http_serve_reply(fd, "400 Bad Request", 0);
+		return;
+	}
+	body += 4;
+	http_header_value(req, "Content-Length", value, sizeof(value));
+	want = atoll(value);
+	out = fopen(path, "wb");
+	if (out == NULL) {
+		http_serve_reply(fd, "500 Internal Server Error", 0);
+		return;
+	}
+	have = (long long)(used - (size_t)(body - req));
+	if (have > want)
+		have = want;
+	if (have > 0)
+		fwrite(body, 1, (size_t)have, out);
+	while (have < want) {
+		char buf[65536];
+		size_t chunk = (size_t)(want - have) < sizeof(buf) ? (size_t)(want - have) : sizeof(buf);
+		ssize_t got = read(fd, buf, chunk);
+
+		if (got <= 0)
+			break;
+		fwrite(buf, 1, (size_t)got, out);
+		have += got;
+	}
+	fclose(out);
+	snprintf(hpath, sizeof(hpath), "%s.headers", path);
+	out = fopen(hpath, "w");
+	if (out != NULL) {
+		http_header_value(req, "Authorization", value, sizeof(value));
+		fprintf(out, "%s\n", value);
+		http_header_value(req, "X-Cix-Sha256", value, sizeof(value));
+		fprintf(out, "%s\n", value);
+		fclose(out);
+	}
+	http_serve_reply(fd, "201 Created", 0);
+}
+
+/* Serves one request on fd: GET or HEAD of root + the request path, and
+ * PUT when accept_put is set. */
+static void http_serve_one(int fd, const char *root, int accept_put)
+{
+	char req[4096];
+	char method[8];
+	char upath[PATH_MAX];
+	char path[PATH_MAX];
+	size_t used = 0;
+	ssize_t got;
+	struct stat st;
+	char *query;
+	int file;
+
+	/* Read until the end of the request headers, or the buffer is full. */
+	while (used < sizeof(req) - 1) {
+		got = read(fd, req + used, sizeof(req) - 1 - used);
+		if (got <= 0)
+			break;
+		used += (size_t)got;
+		req[used] = '\0';
+		if (strstr(req, "\r\n\r\n") != NULL)
+			break;
+	}
+	req[used] = '\0';
+	if (sscanf(req, "%7s %4095s", method, upath) != 2 || upath[0] != '/' ||
+	    strstr(upath, "..") != NULL) {
+		http_serve_reply(fd, "400 Bad Request", 0);
+		return;
+	}
+	if (accept_put && strcmp(method, "PUT") == 0) {
+		http_serve_put(fd, root, upath, req, used);
+		return;
+	}
+	if (strcmp(method, "GET") != 0 && strcmp(method, "HEAD") != 0) {
+		http_serve_reply(fd, "405 Method Not Allowed", 0);
+		return;
+	}
+	/* A query string names the same file, as python's http.server treated it. */
+	query = strchr(upath, '?');
+	if (query != NULL)
+		*query = '\0';
+	if (snprintf(path, sizeof(path), "%s%s", strcmp(root, "/") == 0 ? "" : root, upath) >=
+	        (int)sizeof(path) ||
+	    stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+		http_serve_reply(fd, "404 Not Found", 0);
+		return;
+	}
+	file = open(path, O_RDONLY | O_CLOEXEC);
+	if (file < 0) {
+		http_serve_reply(fd, "404 Not Found", 0);
+		return;
+	}
+	http_serve_reply(fd, "200 OK", (long long)st.st_size);
+	if (strcmp(method, "GET") == 0) {
+		char buf[65536];
+
+		while ((got = read(file, buf, sizeof(buf))) > 0) {
+			ssize_t off = 0;
+
+			while (off < got) {
+				ssize_t w = write(fd, buf + off, (size_t)(got - off));
+
+				if (w <= 0)
+					break;
+				off += w;
+			}
+			if (off < got)
+				break;
+		}
+	}
+	close(file);
+}
+
+int test_http_server_start(const char *root, int accept_put, int *out_port, pid_t *out_pid)
+{
+	struct sockaddr_in addr;
+	socklen_t len = sizeof(addr);
+	int lfd;
+	pid_t pid;
+
+	if (root == NULL || root[0] != '/')
+		return -1;
+	lfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	if (lfd < 0)
+		return -1;
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	addr.sin_port = 0; /* kernel-chosen, so parallel tests never collide */
+	if (bind(lfd, (struct sockaddr *)&addr, sizeof(addr)) != 0 || listen(lfd, 16) != 0 ||
+	    getsockname(lfd, (struct sockaddr *)&addr, &len) != 0) {
+		close(lfd);
+		return -1;
+	}
+	pid = fork();
+	if (pid < 0) {
+		close(lfd);
+		return -1;
+	}
+	if (pid == 0) {
+		signal(SIGPIPE, SIG_IGN);
+		for (;;) {
+			int cfd = accept(lfd, NULL, NULL);
+
+			if (cfd < 0) {
+				if (errno == EINTR)
+					continue;
+				_exit(1);
+			}
+			http_serve_one(cfd, root, accept_put);
+			close(cfd);
+		}
+	}
+	close(lfd);
+	*out_port = ntohs(addr.sin_port);
+	*out_pid = pid;
+	return 0;
+}
+
+int test_http_server_stop(pid_t pid)
+{
+	int status;
+
+	if (pid <= 0)
+		return -1;
+	kill(pid, SIGTERM);
+	return waitpid(pid, &status, 0) == pid ? 0 : -1;
+}
+
+/*
+ * test_http_source_url()'s own server, rooted at "/": one per test
+ * process, started on first use and stopped at exit.
+ */
+static pid_t g_http_source_pid = -1;
+static int g_http_source_port;
+/* The process that started it. A test that forks and later exit()s in
+ * the child runs atexit handlers there too; only the owner stops it. */
+static pid_t g_http_source_owner = -1;
+
+static void http_source_stop(void)
+{
+	if (g_http_source_pid > 0 && getpid() == g_http_source_owner) {
+		test_http_server_stop(g_http_source_pid);
+		g_http_source_pid = -1;
+	}
+}
+
+int test_http_source_url(const char *abs_path, char *out, size_t out_size)
+{
+	int n;
+
+	if (abs_path == NULL || abs_path[0] != '/')
+		return -1;
+	if (g_http_source_pid <= 0) {
+		if (test_http_server_start("/", 0, &g_http_source_port, &g_http_source_pid) != 0)
+			return -1;
+		g_http_source_owner = getpid();
+		atexit(http_source_stop);
+	}
+	n = snprintf(out, out_size, "http://127.0.0.1:%d%s", g_http_source_port, abs_path);
+	if (n < 0 || (size_t)n >= out_size)
+		return -1;
+	return 0;
+}
+
+/*
+ * test_http_source_url() for use inside one printf: returns the URL
+ * from a ring of buffers, so up to eight can appear in one call (a
+ * multi-source recipe names three). A server that cannot start ends
+ * the test rather than letting a fixture silently fetch nothing.
+ */
+const char *test_http_src(const char *abs_path)
+{
+	static char ring[8][PATH_MAX + 64];
+	static unsigned next;
+	char *out = ring[next++ % 8];
+
+	if (test_http_source_url(abs_path, out, sizeof(ring[0])) != 0) {
+		fprintf(stderr, "test_http_src: cannot serve %s over loopback HTTP\n",
+		        abs_path != NULL ? abs_path : "(null)");
+		exit(1);
+	}
+	return out;
+}

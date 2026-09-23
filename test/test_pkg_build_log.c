@@ -6,7 +6,7 @@
  * format by hand over a raw socket, same "no existing client
  * primitive fits, write the minimum needed directly in the test"
  * precedent test/test_console_exec.c already set for the console
- * WebSocket. Reuses test_pkg.c's own hermetic file:// tarball +
+ * WebSocket. Reuses test_pkg.c's own hermetic loopback-http tarball +
  * toolchain-bootstrap pattern for a real, non-mocked build container.
  */
 #include "httpclient.h"
@@ -181,7 +181,7 @@ static int write_slowbuild_recipe(const char *tarball_path, const char *sha256)
 		return -1;
 	fprintf(f, "pkg_name=slowbuild\n");
 	fprintf(f, "pkg_version=1.0\n");
-	fprintf(f, "pkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
 	fprintf(f, "pkg_sha256=%s\n", sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
 	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n");

@@ -5,8 +5,8 @@
  * real fetch -> checksum verify -> isolated container build -> merge
  * into the shared base image as the actual payoff, not a mocked
  * pipeline. Kept hermetic: no real internet dependency -- pkg_source
- * uses a file:// URL against a tiny synthetic C fixture this test
- * stages itself, so the real `curl` subprocess code path is genuinely
+ * is a loopback http:// URL (test_http_src()) serving a tiny synthetic C
+ * fixture this test stages itself, so the real fetch path is genuinely
  * exercised (not skipped/mocked) while the suite stays offline-safe
  * for repeated stress-testing runs. Part 2 additionally proves
  * automatic dependency resolution (with cycle detection) and explicit
@@ -275,7 +275,7 @@ static int write_recipe(const char *name, const char *version, const char *tarba
 		return -1;
 	fprintf(f, "pkg_name=%s\n", name);
 	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
 	fprintf(f, "pkg_sha256=%s\n", sha256);
 	fprintf(f, "pkg_depends=\"%s\"\n", depends != NULL ? depends : "");
 	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n");
@@ -354,7 +354,7 @@ static int write_shared_path_recipe(const char *name, const char *version,
 		return -1;
 	fprintf(f, "pkg_name=%s\n", name);
 	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
 	fprintf(f, "pkg_sha256=%s\n", sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
 	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n");
@@ -401,7 +401,7 @@ static int write_stalling_recipe(const char *name, const char *version, const ch
 		return -1;
 	fprintf(f, "pkg_name=%s\n", name);
 	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
 	fprintf(f, "pkg_sha256=%s\n", sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
 	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n");
@@ -435,7 +435,7 @@ static int write_midfail_recipe(const char *name, const char *version, const cha
 		return -1;
 	fprintf(f, "pkg_name=%s\n", name);
 	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
 	fprintf(f, "pkg_sha256=%s\n", sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
 	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n");
@@ -472,7 +472,7 @@ static int write_stamped_recipe(const char *name, const char *version, const cha
 		return -1;
 	fprintf(f, "pkg_name=%s\n", name);
 	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
 	fprintf(f, "pkg_sha256=%s\n", sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
 	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n");
@@ -507,7 +507,7 @@ static int write_builddeps_recipe(const char *name, const char *version, const c
 		return -1;
 	fprintf(f, "pkg_name=%s\n", name);
 	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
 	fprintf(f, "pkg_sha256=%s\n", sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
 	/* This writer takes its declaration from the caller -- that is its
@@ -556,7 +556,7 @@ static int write_observing_recipe(const char *name, const char *version, const c
 		return -1;
 	fprintf(f, "pkg_name=%s\n", name);
 	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
 	fprintf(f, "pkg_sha256=%s\n", sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
 	fprintf(f, "pkg_build_depends=\"%s\"\n\n", build_depends);
@@ -586,8 +586,8 @@ static int write_multisrc_recipe(const char *name, const char *version, const ch
 		return -1;
 	fprintf(f, "pkg_name=%s\n", name);
 	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=\"file://%s file://%s file://%s\"\n", tarball_path, extra1_path,
-	        extra2_path);
+	fprintf(f, "pkg_source=\"%s %s %s\"\n", test_http_src(tarball_path), test_http_src(extra1_path),
+	        test_http_src(extra2_path));
 	fprintf(f, "pkg_sha256=\"%s %s %s\"\n", tarball_sha256, extra1_sha256, extra2_sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
 	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n");
@@ -776,7 +776,7 @@ int main(void)
 		f = fopen(path, "w");
 		if (f != NULL) {
 			fprintf(f, "pkg_name=chatty\npkg_version=1.0\n");
-			fprintf(f, "pkg_source=file://%s\n", tarball_path);
+			fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
 			fprintf(f, "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n", sha256);
 			fprintf(f, "pkg_build() {\n\techo BUILD_LOG_MARKER_ONE\n\ttcc -o hello hello.c\n"
 			           "\techo BUILD_LOG_MARKER_TWO\n}\n\n");
@@ -1156,7 +1156,7 @@ int main(void)
 		f = fopen(path, "w");
 		if (f != NULL) {
 			fprintf(f, "pkg_name=badbuild\npkg_version=1.0\n");
-			fprintf(f, "pkg_source=file://%s\n", tarball_path);
+			fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
 			fprintf(f, "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n", sha256);
 			fprintf(f, "pkg_build() {\n\texit 7\n}\n\npkg_install() {\n\ttrue\n}\n");
 			fclose(f);
@@ -1240,7 +1240,7 @@ int main(void)
 		f = fopen(path, "w");
 		if (f != NULL) {
 			fprintf(f, "pkg_name=silenttool\npkg_version=1.0\n");
-			fprintf(f, "pkg_source=file://%s\n", tarball_path);
+			fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
 			fprintf(f, "pkg_sha256=%s\npkg_depends=\"\"\n"
 			           "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n",
 			        sha256);
@@ -2929,10 +2929,10 @@ int main(void)
 		 * 192.168.15.95 the first time this exact mechanism was ever
 		 * actually exercised). Reuses extra1's own already-staged
 		 * fixture file and real sha256 from test 15 above, just
-		 * addressed via a URL with "?ref=deadbeef" appended -- curl's
-		 * own file:// handling ignores/strips a query string exactly
-		 * like a real HTTP(S) fetch would, confirmed directly, so this
-		 * exercises the real bug without needing a live HTTP server. */
+		 * addressed via a URL with "?ref=deadbeef" appended; the loopback
+		 * server (test_image_fixture.c) ignores the query string exactly
+		 * as a real HTTP host would, so this
+		 * exercises the real bug. */
 		{
 			char extra1_url_with_query[600];
 
@@ -3001,12 +3001,12 @@ int main(void)
 			goto skip_recipe_api;
 		}
 		snprintf(body, sizeof(body),
-		         "pkg_name=apirecipe\npkg_version=1.0\npkg_source=file://%s\n"
+		         "pkg_name=apirecipe\npkg_version=1.0\npkg_source=%s\n"
 		         "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
 		         "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
 		         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
 		         "\"$PKG_DESTDIR/usr/bin/apirecipe\"\n}\n",
-		         api_tarball, api_sha);
+		         test_http_src(api_tarball), api_sha);
 
 		/* name/pkg_name= mismatch -> 400, nothing written */
 		jw_init(&w);
@@ -3161,12 +3161,12 @@ int main(void)
 		 * pkg_version=) and both versions must coexist afterward. */
 		{
 			snprintf(body2, sizeof(body2),
-			         "pkg_name=apirecipe\npkg_version=2.0\npkg_source=file://%s\n"
+			         "pkg_name=apirecipe\npkg_version=2.0\npkg_source=%s\n"
 			         "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
 			         "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
 			         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
 			         "\"$PKG_DESTDIR/usr/bin/apirecipe\"\n}\n",
-			         api_tarball, api_sha);
+			         test_http_src(api_tarball), api_sha);
 			jw_init(&w);
 			jw_obj_open(&w);
 			jw_key(&w, "name");
@@ -3374,12 +3374,12 @@ skip_recipe_api:
 				goto skip_rolling_rebuild;
 			}
 			snprintf(body2, sizeof(body2),
-			         "pkg_name=rollpkg\npkg_version=2.0\npkg_source=file://%s\n"
+			         "pkg_name=rollpkg\npkg_version=2.0\npkg_source=%s\n"
 			         "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
 			         "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
 			         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
 			         "\"$PKG_DESTDIR/usr/bin/rollpkg\"\n}\n",
-			         tarball2, sha2);
+			         test_http_src(tarball2), sha2);
 			jw_init(&w);
 			jw_obj_open(&w);
 			jw_key(&w, "name");
@@ -3776,11 +3776,11 @@ skip_pin_isolation:
 		 * coreutils is in this recipe's own declared build tools, so
 		 * `sleep` is genuinely present rather than assumed.
 		 */
-		fprintf(f, "pkg_name=hbtest\npkg_version=1.0\npkg_source=file://%s\n"
+		fprintf(f, "pkg_name=hbtest\npkg_version=1.0\npkg_source=%s\n"
 		           "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
 		           "pkg_build() {\n\tsleep 5\n\ttcc -o hello hello.c\n}\n\n"
 		           "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n}\n",
-		        tarball_path, sha256);
+		        test_http_src(tarball_path), sha256);
 		fclose(f);
 
 		/* start it -> 202, fetching */
@@ -4163,12 +4163,12 @@ skip_pin_isolation:
 					ok = 0;
 				} else {
 					fprintf(vf,
-					        "pkg_name=hbtest\npkg_version=1.1\npkg_source=file://%s\n"
+					        "pkg_name=hbtest\npkg_version=1.1\npkg_source=%s\n"
 					        "pkg_sha256=%s\npkg_depends=\"\"\n"
 					        "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
 					        "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
 					        "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n}\n",
-					        tarball_path, sha256);
+					        test_http_src(tarball_path), sha256);
 					fclose(vf);
 				}
 
@@ -4337,12 +4337,12 @@ skip_pin_isolation:
 			ok = 0;
 			goto skip_hostbuild;
 		}
-		fprintf(f, "pkg_name=hbdepstest\npkg_version=1.0\npkg_source=file://%s\n"
+		fprintf(f, "pkg_name=hbdepstest\npkg_version=1.0\npkg_source=%s\n"
 		           "pkg_sha256=%s\npkg_depends=\"nosuchdep\"\n"
 		           "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
 		           "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
 		           "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n}\n",
-		        tarball_path, sha256);
+		        test_http_src(tarball_path), sha256);
 		fclose(f);
 
 		memset(&r, 0, sizeof(r));
@@ -4619,11 +4619,11 @@ skip_hostbuild:
 		 * build container spawns, extracting hello.c into /build/src/
 		 * before pkg_build() deliberately fails, distinguishing this
 		 * from badsum's own fetch-stage-only failure (step 7). */
-		fprintf(f, "pkg_name=keepfail\npkg_version=1.0\npkg_source=file://%s\n"
+		fprintf(f, "pkg_name=keepfail\npkg_version=1.0\npkg_source=%s\n"
 		           "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
 		           "pkg_build() {\n\texit 1\n}\n\n"
 		           "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n}\n",
-		        tarball_path, sha256);
+		        test_http_src(tarball_path), sha256);
 		fclose(f);
 
 		/* 18a. WITHOUT keep_on_failure: unchanged pre-existing
@@ -4829,11 +4829,11 @@ skip_keep_on_failure:
 			ok = 0;
 			goto skip_resume;
 		}
-		fprintf(f, "pkg_name=resumeme\npkg_version=1.0\npkg_source=file://%s\n"
+		fprintf(f, "pkg_name=resumeme\npkg_version=1.0\npkg_source=%s\n"
 		           "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
 		           "pkg_build() {\n\ttouch /build/src/.resumed_marker\n\texit 1\n}\n\n"
 		           "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n}\n",
-		        tarball_path, sha256);
+		        test_http_src(tarball_path), sha256);
 		fclose(f);
 
 		memset(&r, 0, sizeof(r));
@@ -4902,11 +4902,11 @@ skip_keep_on_failure:
 			ok = 0;
 			goto skip_resume;
 		}
-		fprintf(f, "pkg_name=resumeme\npkg_version=1.1\npkg_source=file://%s\n"
+		fprintf(f, "pkg_name=resumeme\npkg_version=1.1\npkg_source=%s\n"
 		           "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
 		           "pkg_build() {\n\t[ -f /build/src/.resumed_marker ] || exit 1\n}\n\n"
 		           "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n}\n",
-		        tarball_path, sha256);
+		        test_http_src(tarball_path), sha256);
 		fclose(f);
 
 		memset(&r, 0, sizeof(r));
@@ -5187,7 +5187,7 @@ skip_resume:
 			ok186 = 0;
 		} else {
 			fprintf(zf,
-			        "pkg_name=zzlibc\npkg_version=1.0\npkg_source=file://%s\n"
+			        "pkg_name=zzlibc\npkg_version=1.0\npkg_source=%s\n"
 			        "pkg_sha256=%s\npkg_depends=\"\"\n"
 			        "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
 			        "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
@@ -5195,7 +5195,7 @@ skip_resume:
 			        "\tmkdir -p \"$PKG_DESTDIR/lib/x86_64-linux-gnu\"\n"
 			        "\techo not-a-real-libc > "
 			        "\"$PKG_DESTDIR/lib/x86_64-linux-gnu/libc.so.6\"\n}\n",
-			        zz_tarball, zz_sha);
+			        test_http_src(zz_tarball), zz_sha);
 			fclose(zf);
 		}
 
@@ -5247,13 +5247,13 @@ skip_resume:
 				ok186 = 0;
 			} else {
 				fprintf(zf,
-				        "pkg_name=collide\npkg_version=1.0\npkg_source=file://%s\n"
+				        "pkg_name=collide\npkg_version=1.0\npkg_source=%s\n"
 				        "pkg_sha256=%s\npkg_depends=\"\"\n"
 				        "pkg_build_depends=\"tcc linux-headers bash coreutils zzlibc\"\n\n"
 				        "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
 				        "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n"
 				        "\tcp hello \"$PKG_DESTDIR/usr/bin/collide\"\n}\n",
-				        zz_tarball, zz_sha);
+				        test_http_src(zz_tarball), zz_sha);
 				fclose(zf);
 			}
 		}
@@ -5356,12 +5356,12 @@ skip_resume:
 			okc = 0;
 		} else if (cf != NULL) {
 			fprintf(cf,
-			        "pkg_name=sleeper\npkg_version=1.0\npkg_source=file://%s\n"
+			        "pkg_name=sleeper\npkg_version=1.0\npkg_source=%s\n"
 			        "pkg_sha256=%s\npkg_depends=\"\"\n"
 			        "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
 			        "pkg_build() {\n\tsleep 600\n}\n\n"
 			        "pkg_install() {\n\ttrue\n}\n",
-			        c_tarball, c_sha);
+			        test_http_src(c_tarball), c_sha);
 			fclose(cf);
 		}
 

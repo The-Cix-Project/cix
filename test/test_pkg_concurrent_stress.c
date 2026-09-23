@@ -196,7 +196,7 @@ static int write_recipe(const char *pkg_state_dir, const char *name, const char 
 		return -1;
 	fprintf(f, "pkg_name=%s\n", name);
 	fprintf(f, "pkg_version=1.0\n");
-	fprintf(f, "pkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
 	fprintf(f, "pkg_sha256=%s\n", sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
 	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n");

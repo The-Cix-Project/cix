@@ -190,7 +190,7 @@ static int write_kernel_fixture_recipe(const char *tarball_path, const char *sha
 	f = fopen(path, "w");
 	if (f == NULL)
 		return -1;
-	fprintf(f, "pkg_name=kernel\npkg_version=1.0\npkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_name=kernel\npkg_version=1.0\npkg_source=%s\n", test_http_src(tarball_path));
 	/*
 	 * Declares its build tools, because ADR-0304 (#482) made a
 	 * hostbuild compose its build container from pkg_build_depends

@@ -6,6 +6,23 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The package tests fetch their fixtures over loopback HTTP, as cixd requires
+
+Since #410 cixd fetches `http` and `https` only (`CURLOPT_PROTOCOLS_STR` in `daemon/src/curlfetch.c`). The package tests still named their fixture sources as `file:///…`. None of those tests is in the `SELFTESTS` gate, so the break went unseen until `cix-tests` ran them on 192.168.15.95 (`v2.57.246-1`). Every nested build failed with `fetch failed (curl exit status 1): file:///tmp/…: Protocol "file" is disabled`, and that one cause surfaced in about eight tests as missing binaries, exit status 142 and wrong pipeline stages.
+
+Relaxing the protocol rule would have made the tests pass by weakening the daemon, so the tests change instead. `test_image_fixture.c` gains one loopback HTTP file server:
+- `test_http_src(path)` turns an absolute path into `http://127.0.0.1:<port><path>`, so a fixture changes only its scheme. A deliberately nonexistent path still fails, now as a 404.
+- `test_http_server_start(root, …)` roots it at a directory, for the tests whose URLs the daemon builds itself (a Gitea-style repo URL, an artifact base URL).
+- With `accept_put`, a PUT records its body and the `Authorization` and `X-Cix-Sha256` headers.
+
+It replaces the three `python3 -m http.server` helpers and the Python push server in `test_pkg_cache`, `test_pkg_sync` and `test_image_recipe`. A Cix build environment has no Python, so those failed before reaching what they test.
+
+Also in `test_harness`:
+- **Child path:** it named its child by a dev-sandbox path, which does not exist in a build container. `execve()` failed with ENOENT, which cix-init encodes as exit 142.
+- **Result file:** its child wrote its result to `/tmp`, which is a fresh tmpfs in every container, so the file never reached the overlay the test reads.
+
+`make testreport` gains `TESTREPORT_ONLY` and `TESTREPORT_TAIL`, and prints the log tail of timed-out tests too.
+
 ### Shell recipes stay as history; the shell build path retires with its last dependent (ADR-0309, #516)
 
 Asked whether the `.sh` recipes can be removed, since two recipe languages are a parallel implementation. [ADR-0309](docs/adr/0309-shell-recipes-are-history-the-shell-path-retires-with-its-last-dependent.md) separates three things:

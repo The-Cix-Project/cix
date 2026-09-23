@@ -119,7 +119,7 @@ static int run_cmd(const char *fmt, ...)
 }
 
 /* Stages a tiny synthetic tarball -- just needs to be a real,
- * fetchable file:// source; this test intentionally pairs it with a
+ * fetchable source (loopback http://); this test intentionally pairs it with a
  * WRONG sha256 (mirroring test_pkg.c's own "badsum" scenario) so the
  * install fails fast at checksum verification, before any build
  * container ever launches -- pkg.c still tracks the entry (in_use)
@@ -158,7 +158,7 @@ static int write_recipe(const char *name, const char *tarball_path)
 		return -1;
 	fprintf(f, "pkg_name=%s\n", name);
 	fprintf(f, "pkg_version=1.0\n");
-	fprintf(f, "pkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
 	fprintf(f,
 	        "pkg_sha256=0000000000000000000000000000000000000000000000000000000000000000\n");
 	fprintf(f, "pkg_depends=\"\"\n\n");
