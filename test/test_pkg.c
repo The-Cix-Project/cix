@@ -1892,7 +1892,7 @@ int main(void)
 	 * does not come back with the composition refusal.
 	 */
 	if (write_builddeps_recipe("selfdep", "1.0", tarball_path, sha256,
-	                           "tcc linux-headers bash coreutils") != 0) {
+	                           "tcc linux-headers bash coreutils binutils") != 0) {
 		fprintf(stderr, "FAIL: could not write the self-dependency recipe\n");
 		ok = 0;
 	}
@@ -1919,7 +1919,7 @@ int main(void)
 		ok = 0;
 	} else {
 		if (write_builddeps_recipe("selfdep", "2.0", tarball_path, sha256,
-		                           "selfdep tcc linux-headers bash coreutils") != 0) {
+		                           "selfdep tcc linux-headers bash coreutils binutils") != 0) {
 			fprintf(stderr, "FAIL: could not write the self-declaring upgrade recipe\n");
 			ok = 0;
 		}
@@ -4770,14 +4770,42 @@ skip_hostbuild:
 		cix_response_free(&r);
 
 		/*
-		 * Negative (the host-leak half): /etc/os-release exists on the
-		 * daemon's own host but is NOT staged into the build lowerdir
-		 * (only /etc/alternatives is). It must therefore 404 -- a 200
-		 * here means the endpoint served a host file through a
-		 * per-container path.
+		 * Negative (the host-leak half): a marker file this test writes
+		 * into its own scratch directory exists on the daemon's host and
+		 * in no image, so it must 404 -- a 200 here means the endpoint
+		 * served a host file through a per-container path.
+		 *
+		 * This used /etc/os-release, on the premise that it exists on the
+		 * host but not in the build tree. The daemon now writes a Cix
+		 * os-release into every image it seeds (pkg_seed_image_baseline(),
+		 * ADR-0274), so that path answered 200 from the container's own
+		 * tree (cix-tests on 192.168.15.95, 2026-09-23) and could no
+		 * longer tell a leak from a correct read.
 		 */
-		snprintf(kf_container_path, sizeof(kf_container_path),
-		         "/v1/containers/%s/files?path=%%2Fetc%%2Fos-release", kept_name);
+		{
+			char marker[600], enc[1800];
+			const char *p;
+			size_t o = 0;
+			FILE *mf;
+
+			snprintf(marker, sizeof(marker), "%s/host-only-marker", scratch_dir);
+			mf = fopen(marker, "w");
+			if (mf != NULL) {
+				fputs("host only\n", mf);
+				fclose(mf);
+			}
+			for (p = marker; *p != '\0' && o + 4 < sizeof(enc); p++) {
+				if (*p == '/') {
+					memcpy(enc + o, "%2F", 3);
+					o += 3;
+				} else {
+					enc[o++] = *p;
+				}
+			}
+			enc[o] = '\0';
+			snprintf(kf_container_path, sizeof(kf_container_path),
+			         "/v1/containers/%s/files?path=%s", kept_name, enc);
+		}
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "GET", kf_container_path, NULL, &r) != 0 || r.status != 404) {
 			fprintf(stderr,
@@ -4912,7 +4940,8 @@ skip_keep_on_failure:
 		fprintf(f, "pkg_name=resumeme\npkg_version=1.1\npkg_source=%s\n"
 		           "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
 		           "pkg_build() {\n\t[ -f /build/src/.resumed_marker ] || exit 1\n}\n\n"
-		           "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n}\n",
+		           "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/share/resumeme\"\n"
+		           "\techo resumed > \"$PKG_DESTDIR/usr/share/resumeme/stamp\"\n}\n",
 		        test_http_src(tarball_path), sha256);
 		fclose(f);
 
