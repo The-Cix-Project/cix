@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The package finalize policy strips by ELF type, not file name, so Go's race runtime keeps its symbols
+
+ADR-0251's policy gave `--strip-debug` to files named `.o` or `.ko` and `--strip-unneeded` to every other ELF file. A relocatable object named any other way lost the `.symtab` its linker needs. Go ships its linux/amd64 race runtime as `src/runtime/race/internal/amd64v{1,3}/race_linux.syso`. `go@1.24.9-3` passed its own `-race` gate before finalize ran. After finalize, `probe-go-race@1` on 192.168.15.95 failed to link a `-race` program with the installed package: `hole in findfunctab`.
+
+The policy now reads `e_type`, the two bytes at ELF offset 16, with `od`. `ET_REL` gets `--strip-debug` whatever the file is called. `od` is coreutils, the same package the policy already needed for `rm` and `wc`. `test_pkg_finalize` writes typed ELF fixtures and asserts that a `race_linux.syso` is stripped with `--strip-debug` and never `--strip-unneeded`. ADR-0251's table and the recipe guide said `.o`, `.ko`; both are corrected.
+
 ### The kmod-build input is named `kmod_extra`, which CBS accepts (#517)
 
 v2.57.263 passed `--input kmod-extra=...`, and CBS refuses that name. An input name must be a portable identifier, and a hyphen is not allowed in one. Measured on 192.168.15.95 by publishing the kernel recipe, which CBS rejected with `CPDL-E3004: validation: input name must be a portable identifier` at `args input "kmod-extra"`. The input is now `kmod_extra` in cixd, in `test_kmod_build`'s fixture and in `kernel@7.2.3-17`. The file cixd writes keeps its name, `/build/extra/kmod-extra.config`. The entry below originally said `kmod-extra` and has been corrected.

@@ -24,9 +24,9 @@
 # libc.so.6 and libc.a three times over.
 #
 # Run after the install phase, in the build container, against the tree
-# that phase staged. Uses bash builtins for the scan (no find, no file)
-# so it adds no tool dependency of its own; strip is required only when
-# the package actually produced ELF.
+# that phase staged. The scan uses bash builtins and coreutils (rm, wc,
+# od) and no find or file, so it adds no package the build image lacks;
+# strip is required only when the package actually produced ELF.
 #
 set -e
 
@@ -51,11 +51,11 @@ cix_finalize() {
 	fi
 
 	# ADR-0250: name every tool this phase needs, and fail on absence
-	# rather than skipping. rm and wc are what the prune needs -- both
-	# from coreutils, so this asks for no package the prune did not
-	# already require; strip is checked later, and only if ELF was
-	# produced.
-	for t in rm wc; do
+	# rather than skipping. rm and wc are what the prune needs, and od
+	# reads an ELF header's type -- all three from coreutils, so this
+	# asks for no package the prune did not already require; strip is
+	# checked later, and only if ELF was produced.
+	for t in rm wc od; do
 		if ! command -v "$t" >/dev/null 2>&1; then
 			echo "cix: package finalize needs $t and the build image has none." >&2
 			echo "cix: add coreutils to pkg_build_depends (ADR-0199, ADR-0251)." >&2
@@ -150,15 +150,26 @@ cix_finalize() {
 			*"|$stem|"*) ;;
 			*) shared_stems="$shared_stems|$stem|" ;;
 			esac
-			elf_dyn+=("$f")
-			;;
-		*.o|*.ko)
-			elf_rel+=("$f")
-			;;
-		*)
-			elf_dyn+=("$f")
 			;;
 		esac
+
+		# Which strip is decided by what the file IS -- e_type, the
+		# two bytes at offset 16 -- and never by its name. 1 is ET_REL,
+		# a relocatable object, whose .symtab the linker needs. This
+		# used to match *.o and *.ko, so any relocatable object named
+		# otherwise got --strip-unneeded: Go ships its race runtime as
+		# race/internal/amd64v1/race_linux.syso, and go@1.24.9-3's
+		# stripped copy made every `go build -race` fail to link with
+		# "hole in findfunctab" (measured on 192.168.15.95,
+		# 2026-09-24, probe-go-race@1). od reads host byte order, and
+		# every ELF this platform builds is little-endian x86-64, as
+		# the host is.
+		t=$(LC_ALL=C od -An -t u2 -j 16 -N 2 "$f" 2>/dev/null) || t=""
+		if test "${t// /}" = 1; then
+			elf_rel+=("$f")
+		else
+			elf_dyn+=("$f")
+		fi
 	done
 
 	# Clause 2: an archive whose shared counterpart ships beside it is
@@ -201,8 +212,9 @@ cix_finalize() {
 	fi
 
 	# --strip-unneeded keeps .dynsym, which is all the linker and
-	# elfcheck read. .o and .ko keep .symtab, which linking and module
-	# loading genuinely need, so those get --strip-debug instead.
+	# elfcheck read. A relocatable object (ET_REL: .o, .ko, Go's .syso)
+	# keeps .symtab, which linking and module loading genuinely need,
+	# so it gets --strip-debug instead.
 	# Kernel modules here are unsigned (no CONFIG_MODULE_SIG), so
 	# rewriting them does not invalidate a signature.
 	for f in "${elf_dyn[@]}"; do

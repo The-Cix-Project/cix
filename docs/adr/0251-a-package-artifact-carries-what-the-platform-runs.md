@@ -79,8 +79,10 @@ linking or module loading silently:
 | kind | flag | why |
 |---|---|---|
 | `.so*`, executables | `--strip-unneeded` | preserves `.dynsym`, which is all the linker and `elfcheck` read |
-| `.o`, `.ko` | `--strip-debug` | `.symtab` is load-bearing for linking and module loading |
+| relocatable objects (ELF `ET_REL`: `.o`, `.ko`, Go's `.syso`) | `--strip-debug` | `.symtab` is load-bearing for linking and module loading |
 | archives | *not stripped* | `!<arch>` does not imply an archive of ELF — `go-bootstrap` ships Go 1.4's `pkg/linux_amd64/*.a`, which `strip` rejects outright |
+
+*Corrected 2026-09-24:* this row said `.o`, `.ko`, and the policy matched those file names. A relocatable object named otherwise got `--strip-unneeded` — Go's race runtime, `race/internal/amd64v1/race_linux.syso`, was stripped that way in `go@1.24.9-3`, and every `go build -race` then failed to link with `hole in findfunctab` (192.168.15.95, `probe-go-race@1`). The kind is now read from the ELF header's `e_type`, which is what the reasoning above always meant by "kind".
 
 ### 2. Static archives are dropped where a shared library supersedes them
 

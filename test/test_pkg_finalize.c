@@ -20,6 +20,8 @@
  *                     the only thing `ld -lpthread` can resolve (#324)
  *   libc.so           glibc ships this as an ASCII ld script, not ELF
  *   a symlink         never followed, never stripped
+ *   race_linux.syso   a relocatable object not named .o -- --strip-debug,
+ *                     chosen by e_type; --strip-unneeded breaks go -race
  *
  * strip is stubbed rather than required, so the classification is
  * asserted without needing binutils here and without depending on what
@@ -94,14 +96,33 @@ static void wr_text(const char *path, const char *text)
 	wr(path, text, strlen(text), 0644);
 }
 
-/* An ELF file as far as the policy's four-byte magic test is concerned. */
-static void wr_elf(const char *path)
+/*
+ * An ELF file as far as the policy's four-byte magic test is concerned,
+ * with the given e_type in the two little-endian bytes at offset 16 --
+ * the field the policy chooses a strip by.
+ */
+#define ET_EXEC_TYPE 2
+#define ET_REL_TYPE 1
+
+static void wr_elf_typed(const char *path, int e_type)
 {
 	char buf[64];
 
 	memset(buf, 0, sizeof(buf));
 	memcpy(buf, "\177ELF", 4);
+	buf[16] = (char)(e_type & 0xff);
+	buf[17] = (char)((e_type >> 8) & 0xff);
 	wr(path, buf, sizeof(buf), 0755);
+}
+
+static void wr_elf(const char *path)
+{
+	wr_elf_typed(path, ET_EXEC_TYPE);
+}
+
+static void wr_elf_rel(const char *path)
+{
+	wr_elf_typed(path, ET_REL_TYPE);
 }
 
 static void wr_ar(const char *path)
@@ -184,11 +205,13 @@ static void make_stub_bin(const char *bin, const char *log, int with_strip)
 	/*
 	 * rm does the pruning; wc measures an archive, because the shell
 	 * cannot -- a NUL byte cannot live in a variable and read stops at
-	 * one regardless of -N or -d '' (#324). Both are coreutils, so the
+	 * one regardless of -N or -d '' (#324). All three are coreutils, so the
 	 * policy asks for no package it did not already need.
 	 */
 	real_tool(bin, "rm");
 	real_tool(bin, "wc");
+	/* od reads an ELF file's e_type, which chooses the strip. */
+	real_tool(bin, "od");
 }
 
 /*
@@ -235,6 +258,26 @@ static int log_has(const char *log, const char *needle)
 	return found;
 }
 
+/* Whether one line of the log carries both needles -- a flag and a path. */
+static int log_has_line(const char *log, const char *a, const char *b)
+{
+	char line[1024];
+	FILE *f;
+	int found = 0;
+
+	f = fopen(log, "r");
+	if (f == NULL)
+		return 0;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		if (strstr(line, a) != NULL && strstr(line, b) != NULL) {
+			found = 1;
+			break;
+		}
+	}
+	fclose(f);
+	return found;
+}
+
 /* Case 1: a package shaped like glibc -- what goes, what stays. */
 static void case_classification(const char *root)
 {
@@ -253,9 +296,18 @@ static void case_classification(const char *root)
 	snprintf(path, sizeof(path), "%s/usr/bin/prog", dest);
 	wr_elf(path);
 	snprintf(path, sizeof(path), "%s/usr/lib/crt1.o", dest);
-	wr_elf(path);
+	wr_elf_rel(path);
 	snprintf(path, sizeof(path), "%s/usr/lib/mod.ko", dest);
-	wr_elf(path);
+	wr_elf_rel(path);
+	/*
+	 * A relocatable object whose name says nothing: Go's race runtime.
+	 * Stripped with --strip-unneeded, as a name-based classifier did, it
+	 * makes every `go build -race` fail to link (probe-go-race@1,
+	 * 192.168.15.95, 2026-09-24).
+	 */
+	snprintf(path, sizeof(path), "%s/usr/lib/go/src/runtime/race/internal/amd64v1/race_linux.syso",
+	         dest);
+	wr_elf_rel(path);
 
 	/* archives WITH a shared counterpart -- dropped */
 	snprintf(path, sizeof(path), "%s/usr/lib/libc.a", dest);
@@ -372,10 +424,16 @@ static void case_classification(const char *root)
 		fail("libc.so.6 was not stripped as a shared object");
 	if (!log_has(log, "usr/bin/prog"))
 		fail("the executable was not stripped");
-	if (!log_has(log, "usr/lib/crt1.o"))
-		fail("crt1.o was not stripped");
-	if (!log_has(log, "usr/lib/mod.ko"))
-		fail("the kernel module was not stripped");
+	if (!log_has_line(log, "--strip-debug", "usr/lib/crt1.o"))
+		fail("crt1.o was not stripped with --strip-debug");
+	if (!log_has_line(log, "--strip-debug", "usr/lib/mod.ko"))
+		fail("the kernel module was not stripped with --strip-debug");
+	if (!log_has_line(log, "--strip-debug", "race_linux.syso"))
+		fail("a relocatable object not named .o was not stripped with --strip-debug -- "
+		     "the strip must follow e_type, not the file name");
+	if (log_has_line(log, "--strip-unneeded", "race_linux.syso"))
+		fail("a relocatable object was stripped with --strip-unneeded, which breaks "
+		     "linking against it (go build -race)");
 	if (log_has(log, "usr/lib/libtcc1.a"))
 		fail("a kept archive was passed to strip -- go-bootstrap ships Go .a "
 		     "files that strip rejects, so kept archives are left alone");
