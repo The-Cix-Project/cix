@@ -16,6 +16,12 @@
  * the same state machine, that the two kinds do NOT cross-match on a
  * shared name, 404 for an unknown package, and 404 for a download with
  * no ready export behind it.
+ *
+ * And #520: the same package name is seeded in an ordinary image as
+ * well as as a hostbuild, ordinary one first, because publishing by
+ * name alone used to mean whichever entry the package array held
+ * first. For `kernel` that is its `base` install, so no kernel this
+ * host built ever reached the artifact cache.
  */
 #include "httpclient.h"
 #include "json.h"
@@ -40,6 +46,15 @@ extern char **environ;
  * used as an IMAGE name below, to prove the two kinds stay separate. */
 #define HB_NAME "faux"
 #define HB_VERSION "1.0-1"
+/*
+ * The SAME package name, installed in an ordinary image too, and
+ * seeded FIRST so the package array holds it first. That is `kernel`'s
+ * real shape on 192.168.15.95 -- `base` from a cached artifact, plus a
+ * `__hostbuild` -- and publishing by name alone used to answer with
+ * whichever came first (#520).
+ */
+#define HB_BASE_IMAGE "base"
+#define HB_BASE_VERSION "0.9-1"
 
 static char g_data_dir[PATH_MAX];
 static int g_failures;
@@ -159,7 +174,9 @@ static int seed_hostbuild(void)
 		return -1;
 	}
 	fprintf(f,
-	        "[{\"name\":\"" HB_NAME "\",\"image\":\"__hostbuild\",\"version\":\"" HB_VERSION
+	        "[{\"name\":\"" HB_NAME "\",\"image\":\"" HB_BASE_IMAGE "\",\"version\":\"" HB_BASE_VERSION
+	        "\",\"depends\":\"\",\"files\":[]},"
+	        "{\"name\":\"" HB_NAME "\",\"image\":\"__hostbuild\",\"version\":\"" HB_VERSION
 	        "\",\"depends\":\"\",\"files\":[\"bzImage\"]}]\n");
 	fclose(f);
 	return 0;
@@ -358,6 +375,44 @@ int main(void)
 		cix_response_free(&r);
 	} else {
 		fail("image export download request failed");
+	}
+
+	/*
+	 * --- #520: publishing by name alone means the HOSTBUILD entry ---
+	 *
+	 * Both seeded entries share a name and the ordinary one is first in
+	 * the array, which is `kernel`'s real shape. The publish endpoint
+	 * resolves the name, and on the wrong entry it takes the
+	 * not-a-hostbuild branch: 409 "cannot be rebuilt from the installed
+	 * tree", for a package whose hostbuild artifact is right there on
+	 * disk. 202 is the whole assertion -- the version cannot serve as
+	 * one, because the export above already left HB_VERSION in the
+	 * shared state machine and would report it either way.
+	 *
+	 * Publishing has to be configured for the endpoint to resolve at
+	 * all. The base URL is a closed port: the push this queues is
+	 * expected to fail, and failing immediately is what keeps it from
+	 * outliving the test.
+	 */
+	if (cix_client_request(&c, "PUT", "/v1/pkg/artifact-config",
+	                       "{\"base_url\":\"http://127.0.0.1:1/\",\"auth_token\":\"t\","
+	                       "\"push_enabled\":true}",
+	                       &r) == 0) {
+		if (r.status != 200)
+			fail("could not enable artifact push (status %d)", r.status);
+		cix_response_free(&r);
+	} else {
+		fail("artifact-config PUT failed");
+	}
+	if (cix_client_request(&c, "POST", "/v1/pkg/" HB_NAME "/artifact/publish", "", &r) == 0) {
+		if (r.status == 409)
+			fail("publish resolved the non-hostbuild entry: 409 %.*s", (int)r.body_len,
+			     r.body);
+		else if (r.status != 202)
+			fail("publish of a name installed twice: expected 202, got %d", r.status);
+		cix_response_free(&r);
+	} else {
+		fail("artifact publish POST failed");
 	}
 
 	/* --- the image kind still works over the shared machine (#126) --- */

@@ -9379,7 +9379,17 @@ static void publish_hostbuild_artifact(const char *name)
 
 	if (name == NULL || name[0] == '\0')
 		return;
-	if (pkg_artifact_publish_resolve(name, version, sizeof(version), &is_hostbuild) != PKG_OK)
+	/*
+	 * The HOSTBUILD entry specifically. A name-only resolve answers
+	 * with whichever entry g_packages holds first, and for `kernel`
+	 * that is the `base` install from a cached artifact, not the
+	 * hostbuild -- so this returned at !is_hostbuild, no tarball was
+	 * ever built, and no host-built kernel reached the artifact cache
+	 * (#520). `cix` was unaffected only because its one entry is the
+	 * hostbuild.
+	 */
+	if (pkg_artifact_publish_resolve_in(name, PKG_HOSTBUILD_IMAGE, version, sizeof(version),
+	                                     &is_hostbuild) != PKG_OK)
 		return;
 	if (!is_hostbuild || pkg_artifact_cache_has(name, version))
 		return;
@@ -9494,7 +9504,12 @@ static void handle_artifact_export_event(struct conn *cc)
 		/* The tarball exists now, which is the whole reason this
 		 * export ran -- enqueue the push it was built for. */
 		if (g_artifact_export_publish_name[0] != '\0') {
-			enum pkg_error perr = pkg_artifact_publish(g_artifact_export_publish_name);
+			/* The hostbuild entry, not whichever entry of that
+			 * name comes first: publish_hostbuild_artifact() is
+			 * the only thing that sets this name, and it exported
+			 * the hostbuild's tree (#520). */
+			enum pkg_error perr = pkg_artifact_publish_in(g_artifact_export_publish_name,
+			                                               PKG_HOSTBUILD_IMAGE);
 
 			if (perr == PKG_OK)
 				artifact_push_pump();

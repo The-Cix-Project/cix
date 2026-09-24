@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Publishing an artifact by name means the hostbuild entry, so a host-built kernel reaches the cache (#520)
+
+A package name is not unique: it names one installed entry per image. Both publish entry points searched `g_packages` by name alone and took the first match, and nothing sorts that array. `kernel` is installed twice on 192.168.15.95 -- in `base` from a cached artifact, and as a `__hostbuild` -- in that order, so every publish of it meant the `base` entry.
+
+Two consequences, both measured there on 2026-09-24 with cixd v2.57.265. `publish_hostbuild_artifact()` read `is_hostbuild = 0` and returned before building the tarball, so the push it had already queued found nothing and logged `artifact push: kernel@7.2.3-17 has no tarball in the local cache -- not published`; the cache's newest kernel is still `kernel-7.2.3-3`, from two revisions of the shell recipe ago. And `POST /v1/pkg/{name}/artifact/publish` refused with `409 cannot be rebuilt from the installed tree` for a package whose hostbuild artifact was on disk. `cix` was unaffected throughout because its only entry is the hostbuild, which is why every `cix` release published while no kernel did. #200's own note records `isotools`, the same shape, in the same state.
+
+One search now serves both, and with no image named a hostbuild entry wins over the rest rather than array order deciding: a hostbuild's artifact is the one this host produced, any other entry's came from the cache and is published there already, and rebuilding a tarball from an installed tree is something only the hostbuild branch knows how to do. `pkg_artifact_publish_in()` and `pkg_artifact_publish_resolve_in()` name one image for a caller that means exactly one -- the post-build publish and the export completion both name `__hostbuild`. `test_artifact_export` seeds one name in two images, the ordinary one first, and fails on the 409.
+
 ### The package finalize policy strips by ELF type, not file name, so Go's race runtime keeps its symbols
 
 ADR-0251's policy gave `--strip-debug` to files named `.o` or `.ko` and `--strip-unneeded` to every other ELF file. A relocatable object named any other way lost the `.symtab` its linker needs. Go ships its linux/amd64 race runtime as `src/runtime/race/internal/amd64v{1,3}/race_linux.syso`. `go@1.24.9-3` passed its own `-race` gate before finalize ran. After finalize, `probe-go-race@1` on 192.168.15.95 failed to link a `-race` program with the installed package: `hole in findfunctab`.

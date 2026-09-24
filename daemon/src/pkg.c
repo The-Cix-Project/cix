@@ -15516,31 +15516,89 @@ int pkg_artifact_cache_has(const char *name, const char *version)
 }
 
 /*
- * Resolves what pkg_artifact_publish() would publish, without enqueuing
- * anything -- same validation, same version selection, so the two can
- * never disagree about which version a publish means.
+ * The one search behind every publish entry point below: the installed
+ * entry for NAME, in IMAGE when one is named. Returns its index, or -1.
+ *
+ * A package name is not unique -- it names one entry per image it is
+ * installed in -- and nothing sorts g_packages, so this used to answer
+ * with whatever the array happened to hold first. `kernel` is
+ * installed both in `base`, from a cached artifact, and as a
+ * `__hostbuild`, in that array order, so every publish of it meant the
+ * `base` entry (#520):
+ *
+ *   - publish_hostbuild_artifact() read is_hostbuild = 0 and returned
+ *     before building the tarball, so the push it had already queued
+ *     found nothing. No kernel this host built has ever reached the
+ *     artifact cache; the newest one there is 7.2.3-3, from two
+ *     releases of the shell recipe ago. `cix` was unaffected only
+ *     because its one entry IS the hostbuild, and #200's own note
+ *     records `isotools`, the same shape, in the same state.
+ *   - POST /v1/pkg/{name}/artifact/publish either re-published the
+ *     cached `base` version or, when that was not cached, refused with
+ *     409 "cannot be rebuilt from the installed tree" -- for a package
+ *     whose hostbuild artifact was sitting on disk.
+ *
+ * With no IMAGE named, a hostbuild entry therefore WINS over the rest
+ * rather than the array deciding. That is the only reading under which
+ * publishing such a name works at all: a hostbuild's artifact is the
+ * one this host produced, the other entry's came from the cache and is
+ * published there already, and rebuilding a tarball from an installed
+ * tree is something only the hostbuild branch knows how to do. A
+ * caller that means one specific image says so.
  */
-enum pkg_error pkg_artifact_publish_resolve(const char *name, char *out_version,
-                                             size_t out_version_size, int *out_is_hostbuild)
+static int artifact_publish_entry(const char *name, const char *image)
 {
+	int fallback = -1;
 	int i;
-
-	if (!g_artifact_push_enabled || g_artifact_base_url[0] == '\0')
-		return PKG_ERR_INVALID_RECIPE;
 
 	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
 		if (!g_packages[i].in_use || g_packages[i].state != PKG_STATE_INSTALLED)
 			continue;
 		if (strcmp(g_packages[i].name, name) != 0)
 			continue;
-		snprintf(out_version, out_version_size, "%s", g_packages[i].version);
-		/* Derived from the image, never a stored flag -- the same
-		 * One Source of Truth rule the listing follows (ADR-0056). */
-		if (out_is_hostbuild != NULL)
-			*out_is_hostbuild = strcmp(g_packages[i].image, PKG_HOSTBUILD_IMAGE) == 0;
-		return PKG_OK;
+		if (image != NULL) {
+			if (strcmp(g_packages[i].image, image) != 0)
+				continue;
+			return i;
+		}
+		if (strcmp(g_packages[i].image, PKG_HOSTBUILD_IMAGE) == 0)
+			return i;
+		if (fallback < 0)
+			fallback = i;
 	}
-	return PKG_ERR_NOT_FOUND;
+	return fallback;
+}
+
+/*
+ * Resolves what pkg_artifact_publish_in() would publish, without
+ * enqueuing anything -- same validation, same entry, so the two can
+ * never disagree about which version a publish means.
+ */
+enum pkg_error pkg_artifact_publish_resolve_in(const char *name, const char *image,
+                                                char *out_version, size_t out_version_size,
+                                                int *out_is_hostbuild)
+{
+	int i;
+
+	if (!g_artifact_push_enabled || g_artifact_base_url[0] == '\0')
+		return PKG_ERR_INVALID_RECIPE;
+
+	i = artifact_publish_entry(name, image);
+	if (i < 0)
+		return PKG_ERR_NOT_FOUND;
+	snprintf(out_version, out_version_size, "%s", g_packages[i].version);
+	/* Derived from the image, never a stored flag -- the same
+	 * One Source of Truth rule the listing follows (ADR-0056). */
+	if (out_is_hostbuild != NULL)
+		*out_is_hostbuild = strcmp(g_packages[i].image, PKG_HOSTBUILD_IMAGE) == 0;
+	return PKG_OK;
+}
+
+enum pkg_error pkg_artifact_publish_resolve(const char *name, char *out_version,
+                                             size_t out_version_size, int *out_is_hostbuild)
+{
+	return pkg_artifact_publish_resolve_in(name, NULL, out_version, out_version_size,
+	                                        out_is_hostbuild);
 }
 
 /*
@@ -15685,22 +15743,23 @@ enum pkg_error pkg_seed_default_image_libc(pid_t *out_pid, int *out_pidfd, int *
 	                          sizeof(started), out_pid, out_pidfd, out_chain_idx);
 }
 
-enum pkg_error pkg_artifact_publish(const char *name)
+enum pkg_error pkg_artifact_publish_in(const char *name, const char *image)
 {
 	int i;
 
 	if (!g_artifact_push_enabled || g_artifact_base_url[0] == '\0')
 		return PKG_ERR_INVALID_RECIPE;
 
-	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
-		if (!g_packages[i].in_use || g_packages[i].state != PKG_STATE_INSTALLED)
-			continue;
-		if (strcmp(g_packages[i].name, name) != 0)
-			continue;
-		pkg_artifact_push_enqueue(g_packages[i].name, g_packages[i].version);
-		return PKG_OK;
-	}
-	return PKG_ERR_NOT_FOUND;
+	i = artifact_publish_entry(name, image);
+	if (i < 0)
+		return PKG_ERR_NOT_FOUND;
+	pkg_artifact_push_enqueue(g_packages[i].name, g_packages[i].version);
+	return PKG_OK;
+}
+
+enum pkg_error pkg_artifact_publish(const char *name)
+{
+	return pkg_artifact_publish_in(name, NULL);
 }
 
 /*

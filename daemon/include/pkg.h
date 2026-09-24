@@ -596,8 +596,19 @@ void pkg_write_json_recipes(struct json_writer *w);
  * configured, or predates a rule change, could never be published
  * again without rebuilding it -- which for `cix` or `kernel` is the
  * most expensive thing this platform does.
+ *
+ * A package name is not unique -- it names one entry per image the
+ * package is installed in. Given only a name, these publish the
+ * HOSTBUILD entry when there is one, because that is the artifact this
+ * host produced and the only kind whose tarball can be rebuilt from
+ * the installed tree; any other entry's artifact came from the cache
+ * and is published there already. They used to publish whichever entry
+ * the package array happened to hold first, which for `kernel` is its
+ * `base` install and meant no host-built kernel was ever published
+ * (#520). pkg_artifact_publish_in() names one image explicitly.
  */
 enum pkg_error pkg_artifact_publish(const char *name);
+enum pkg_error pkg_artifact_publish_in(const char *name, const char *image);
 void pkg_artifact_cache_path(const char *name, const char *version, char *out, size_t out_size);
 int pkg_artifact_cache_has(const char *name, const char *version);
 
@@ -729,6 +740,11 @@ int pkg_approval_take_deploy(const char *target);
 void pkg_approvals_write_json(struct json_writer *w);
 enum pkg_error pkg_artifact_publish_resolve(const char *name, char *out_version,
                                              size_t out_version_size, int *out_is_hostbuild);
+/* The same resolve restricted to one image; NULL image is the call
+ * above. See pkg_artifact_publish_in() for why an image matters. */
+enum pkg_error pkg_artifact_publish_resolve_in(const char *name, const char *image,
+                                                char *out_version, size_t out_version_size,
+                                                int *out_is_hostbuild);
 
 enum pkg_error pkg_recipe_get(const char *name, const char *version, struct json_writer *w);
 

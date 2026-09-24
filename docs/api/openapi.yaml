@@ -9540,6 +9540,18 @@ paths:
         path.
 
 
+        A package name is not unique: it names one installed entry per
+        image. Given only a name, this publishes the HOSTBUILD entry
+        when there is one, because that is the artifact this host
+        produced and the only kind whose tarball can be rebuilt from the
+        installed tree -- any other entry's artifact came from the cache
+        and is published there already. It used to publish whichever
+        entry came first internally, so for "kernel", installed both in
+        "base" and as a hostbuild, this refused with 409 while the
+        hostbuild artifact sat on disk, and no host-built kernel was
+        ever published (#520).
+
+
         A successful push queues a second one: the artifact's detached
         minisign signature, uploaded beside it as
         <name>-<version>-<arch>.tar.gz.minisig (ADR-0279). Its trusted
