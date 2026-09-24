@@ -183,8 +183,8 @@ static int stage_fixture_tarball(const char *scratch_dir, char *out_tarball_path
  * CPDL and this test exists to prove the path the real one takes (#517).
  * Its shell predecessor read /build/extra/kmod-extra.config directly,
  * which a CPDL recipe cannot name: the file is outside the CBS roots.
- * cixd now hands it to CBS as `--input kmod-extra=...`, and the recipe
- * appends it with `args input "kmod-extra"` (cbs v0.1.54,
+ * cixd now hands it to CBS as `--input kmod_extra=...`, and the recipe
+ * appends it with `args input "kmod_extra"` (cbs v0.1.54,
  * cix-build-system#231).
  *
  * `cat /dev/null <input>` into symbols.txt: with symbols requested the
@@ -242,7 +242,7 @@ static int write_kernel_fixture_recipe(const char *tarball_path, const char *sha
 	        "            }\n"
 	        "            run \"cat\" {\n"
 	        "                \"/dev/null\"\n"
-	        "                args input \"kmod-extra\"\n"
+	        "                args input \"kmod_extra\"\n"
 	        "                stdout file \"${src}/kernel/kernel-1.0/symbols.txt\"\n"
 	        "            }\n"
 	        "        }\n"

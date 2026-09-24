@@ -2833,15 +2833,15 @@ static const char *pkg_host_arch(void);
 
 /*
  * A kmod-build's extra symbols reach a CPDL recipe as a CBS input
- * (#517): `cbs build --input kmod-extra=<this path>`, which the kernel
- * recipe consumes with `args input "kmod-extra"` -- a CPDL recipe
+ * (#517): `cbs build --input kmod_extra=<this path>`, which the kernel
+ * recipe consumes with `args input "kmod_extra"` -- a CPDL recipe
  * cannot name /build/extra itself, which is outside the CBS roots
  * (cix-build-system#231, in cbs v0.1.54). The file is the one
  * write_kmod_extra_config() writes, and the option is passed only when
  * that wrote one, because an absent optional input is how a recipe
  * learns there are no extra symbols.
  */
-#define PKG_CBS_KMOD_EXTRA_INPUT "kmod-extra=/build/extra/kmod-extra.config"
+#define PKG_CBS_KMOD_EXTRA_INPUT "kmod_extra=/build/extra/kmod-extra.config"
 
 /*
  * Where a recipe's install lands, relative to both the container's root
