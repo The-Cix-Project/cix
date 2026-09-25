@@ -16818,6 +16818,77 @@ static void image_recipe_path(const char *name, char *out, size_t out_size)
 	snprintf(out, out_size, "%s/%s.recipe", g_image_recipes_dir, name);
 }
 
+/*
+ * ADR-0311: an image recipe is a JSON document.
+ *
+ * Dispatched on the CONTENT, not on the filename, and that is forced
+ * rather than chosen: the daemon's own store is
+ * "<image-recipes-dir>/<name>.recipe" (image_recipe_path() above) --
+ * one file per image, with no version and no extension in it. ADR-0305's
+ * "the filename is the format" governs the corpus, where a recipe is
+ * <name>@<version>.<ext>; by the time a recipe reaches this function it
+ * has been copied into a store that never carried an extension to
+ * dispatch on. A leading '{' is the discriminator because the legacy
+ * form cannot begin with one: it is comments and a single
+ * image_packages= assignment.
+ *
+ * The legacy reader stays. 43 published .sh revisions are immutable
+ * history that `pkg sync` merges onto every host (ADR-0309's reasoning,
+ * unchanged), and a host whose store still holds one must keep being
+ * able to read it.
+ */
+static int parse_image_recipe_json(const char *buf, struct image_recipe *out)
+{
+	struct json_value *root;
+	const struct json_value *packages;
+	size_t i;
+
+	root = json_parse(buf, strlen(buf));
+	if (root == NULL)
+		return -1;
+	packages = json_object_get(root, "packages");
+	if (packages == NULL || packages->type != JSON_ARRAY ||
+	    packages->u.array.count > IMAGE_MANIFEST_MAX_PACKAGES) {
+		json_free(root);
+		return -1;
+	}
+	memset(out, 0, sizeof(*out));
+	for (i = 0; i < packages->u.array.count; i++) {
+		const struct json_value *e = packages->u.array.items[i];
+		const char *pkg, *mode, *ver;
+
+		if (e == NULL || e->type != JSON_OBJECT) {
+			json_free(root);
+			return -1;
+		}
+		/* package/mode/version, the words POST /v1/images/{name}/manifest
+		 * already uses (api_image.c) -- one vocabulary for one concept. */
+		pkg = json_as_string(json_object_get(e, "package"));
+		mode = json_as_string(json_object_get(e, "mode"));
+		ver = json_as_string(json_object_get(e, "version"));
+		if (pkg == NULL || mode == NULL || ver == NULL || !pkg_name_is_valid(pkg) ||
+		    strlen(ver) >= PKG_VERSION_MAX) {
+			json_free(root);
+			return -1;
+		}
+		if (strcmp(mode, "pinned") == 0)
+			out->entries[i].mode = IMAGE_PKG_PINNED;
+		else if (strcmp(mode, "rolling") == 0)
+			out->entries[i].mode = IMAGE_PKG_ROLLING;
+		else {
+			json_free(root);
+			return -1;
+		}
+		snprintf(out->entries[i].package, sizeof(out->entries[i].package), "%s", pkg);
+		snprintf(out->entries[i].version, sizeof(out->entries[i].version), "%s", ver);
+	}
+	out->entry_count = (int)packages->u.array.count;
+	json_free(root);
+	if (out->entry_count <= 0)
+		return -1;
+	return 0;
+}
+
 /* buf is modified in place by extract_line_value()/tokenize_into(),
  * same convention parse_recipe() already has for its own raw_source/
  * raw_sha256 buffers. */
@@ -16826,6 +16897,15 @@ static int parse_image_recipe_buf(char *buf, struct image_recipe *out)
 	char raw_packages[IMAGE_MANIFEST_MAX_PACKAGES * IMAGE_RECIPE_TOKEN_MAX];
 	char tokens[IMAGE_MANIFEST_MAX_PACKAGES][IMAGE_RECIPE_TOKEN_MAX];
 	int n, i;
+	const char *p = buf;
+
+	/* ADR-0311: JSON if it looks like JSON, the legacy assignment
+	 * otherwise. See parse_image_recipe_json() for why the content and
+	 * not the filename decides. */
+	while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+		p++;
+	if (*p == '{')
+		return parse_image_recipe_json(buf, out);
 
 	memset(out, 0, sizeof(*out));
 	if (extract_line_value(buf, "image_packages=", raw_packages, sizeof(raw_packages)) != 0)
