@@ -693,6 +693,15 @@ static const struct {
 	 * #187 found on the real box, reproduced faithfully in the one
 	 * place meant to catch it. Every local test run was validating the
 	 * world being retired.
+	 *
+	 * glibc is 2.44-19 and not 2.44-12 for a second reason of the same
+	 * kind: 2.44-19 is the first revision to ship the C.UTF-8 locale at
+	 * /usr/lib/locale/C.utf8 (#518), and cbs takes a UTF-8 LC_CTYPE
+	 * before it reads an archive header (cix-build-system#232). On the
+	 * older one every CPDL build in the floor died at its first source:
+	 * "error[CPDL-E6001]: source: source `kernel`: cannot initialize a
+	 * UTF-8 archive locale" (probe-cix-testreport@21 on 192.168.15.95,
+	 * 2026-09-25).
 	 */
 	/*
 	 * cbs, because a CPDL recipe is built BY it: cixd composes a build
@@ -707,7 +716,7 @@ static const struct {
 	 * floor_artifact_find() above exists for.
 	 */
 	{ "bash", "5.2.37-2" }, { "coreutils", "9.11-3" }, { "tcc", "0.9.27-7" },
-	{ "glibc", "2.44-12" }, { "linux-headers", "6.18.40-4" },
+	{ "glibc", "2.44-19" }, { "linux-headers", "6.18.40-4" },
 	{ "zlib", "1.3.2-11" }, { "flex", "2.6.4-2" }, { "binutils", "2.42-10" },
 	/*
 	 * cbs and its runtime closure. cbs declares libarchive and zstd;
