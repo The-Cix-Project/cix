@@ -2420,10 +2420,10 @@ int main(void)
 			} else {
 				memset(&r, 0, sizeof(r));
 				if (cix_client_request(&client, "GET", "/v1/pkg/leaf", NULL, &r) != 0 ||
-				    !str_eq(json_str_field(r.json, "version"), "2.0") ||
+				    !str_eq(json_str_field(r.json, "version"), "2.0-1") ||
 				    json_str_field(r.json, "available_version") != NULL) {
 					fprintf(stderr,
-					        "FAIL: leaf after upgrade should be version=2.0, "
+					        "FAIL: leaf after upgrade should be version=2.0-1, "
 					        "available_version=null\n");
 					ok = 0;
 				}
