@@ -2861,7 +2861,7 @@ int main(void)
 		 * is also the one a plain strcmp() would rank lower. */
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/pkg/install",
-		                       "{\"name\":\"stamped\",\"version\":\"1.10\","
+		                       "{\"name\":\"stamped\",\"version\":\"1.10-1\","
 		                       "\"image\":\"vnew\"}",
 		                       &r) != 0 ||
 		    r.status != 202)
@@ -2874,7 +2874,7 @@ int main(void)
 		}
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/pkg/install",
-		                       "{\"name\":\"stamped\",\"version\":\"1.9\","
+		                       "{\"name\":\"stamped\",\"version\":\"1.9-1\","
 		                       "\"image\":\"vold\"}",
 		                       &r) != 0 ||
 		    r.status != 202)
@@ -2898,7 +2898,7 @@ int main(void)
 		 * rather than what was lying around when it finished.
 		 */
 		if (write_observing_recipe("usesstamped", "1.0", tarball_path, sha256,
-		                            "stamped@1.9 tcc linux-headers bash coreutils") != 0)
+		                            "stamped@1.9-1 tcc linux-headers bash coreutils") != 0)
 			ok = 0;
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/pkg/install",
@@ -2941,7 +2941,7 @@ int main(void)
 					observed[0] = '\0';
 				fclose(of);
 				observed[strcspn(observed, "\r\n")] = '\0';
-				if (strcmp(observed, "1.9") != 0) {
+				if (strcmp(observed, "1.9-1") != 0) {
 					fprintf(stderr,
 					        "FAIL: #109 the composed environment held stamped '%s', expected the "
 					        "declared 1.9 -- a declaration must pin the version, not resolve to "
