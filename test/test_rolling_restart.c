@@ -234,36 +234,47 @@ static const char *rollsvc_recipe_text(const char *version, const char *tarball_
 	         version, test_http_src(tarball_path), sha256, version);
 	return buf;
 }
-
-static int write_binary_recipe(const char *pkg_state_dir, const char *version,
-                                const char *tarball_path, const char *sha256)
+/*
+ * Publishes a rollsvc revision through the API rather than writing it
+ * into the store.
+ *
+ * That is not a stylistic preference. A CPDL recipe's identity comes
+ * from `cbs explain --json`, derived once at publish (ADR-0305) or by
+ * the daemon's startup sweep; a file dropped into the store while the
+ * daemon is already running gets neither, and every install of it is
+ * refused with 400. A shell recipe needed no such derivation, which is
+ * why writing the file worked before and is the one thing a conversion
+ * cannot carry over. Measured on 192.168.15.95, 2026-09-25
+ * (probe-cix-testreport@60): test_pkg_concurrent_stress writes its
+ * fixtures BEFORE start_daemon and passed; this test and test_images
+ * wrote theirs after and failed identically at POST install (cix#516).
+ */
+static int publish_rollsvc_recipe(const struct cix_client *c, const char *version,
+                                   const char *tarball_path, const char *sha256)
 {
-	char recipes_dir[256];
-	char name_dir[256];
-	char path[300];
-	FILE *f;
+	struct json_writer w;
+	struct cix_response r;
+	int ok;
 
-	/* Unlike the real POST /v1/pkg/recipes path (pkg_recipe_add()'s own
-	 * persist_mkdir_p()), this test writes recipe files directly to
-	 * disk and never calls that endpoint first, so nothing else has
-	 * created "recipes/" yet. */
-	snprintf(recipes_dir, sizeof(recipes_dir), "%s/recipes", pkg_state_dir);
-	mkdir(pkg_state_dir, 0755);
-	mkdir(recipes_dir, 0755);
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, "rollsvc");
+	jw_key(&w, "content");
+	jw_str(&w, rollsvc_recipe_text(version, tarball_path, sha256));
+	jw_key(&w, "format");
+	jw_str(&w, "pbs");
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
 
-	snprintf(name_dir, sizeof(name_dir), "%s/recipes/rollsvc", pkg_state_dir);
-	mkdir(name_dir, 0755);
-	/* <version>-<release>, which is the store's shape whatever the
-	 * format -- only the filename says which it is (ADR-0305). */
-	snprintf(path, sizeof(path), "%s/%s-1", name_dir, version);
-	mkdir(path, 0755);
-	snprintf(path, sizeof(path), "%s/recipes/rollsvc/%s-1/build.cbs", pkg_state_dir, version);
-	f = fopen(path, "w");
-	if (f == NULL)
-		return -1;
-	fputs(rollsvc_recipe_text(version, tarball_path, sha256), f);
-	fclose(f);
-	return 0;
+	memset(&r, 0, sizeof(r));
+	ok = (cix_client_request(c, "POST", "/v1/pkg/recipes", w.buf, &r) == 0 && r.status == 204);
+	if (!ok)
+		fprintf(stderr, "      POST /v1/pkg/recipes rollsvc %s: status=%d %.200s\n", version,
+		        r.status, r.body != NULL ? r.body : "");
+	cix_response_free(&r);
+	jw_free(&w);
+	return ok ? 0 : -1;
 }
 
 static int poll_pkg_installed_version(const struct cix_client *c, const char *pkg_at_image,
@@ -323,7 +334,6 @@ int main(void)
 	struct cix_client client;
 	struct cix_response r;
 	char scratch_dir[] = "/tmp/cix_test_rollrestart_XXXXXX";
-	char pkg_state_dir[PATH_MAX];
 	char image_dir[PATH_MAX];
 	char tarball_v1[512], sha_v1[128];
 	char tarball_v2[512], sha_v2[128];
@@ -353,7 +363,6 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	snprintf(pkg_state_dir, sizeof(pkg_state_dir), "%s/rebuildable/pkg", g_data_dir);
 	snprintf(image_dir, sizeof(image_dir), "%s/rebuildable/images/rollctrimg", g_data_dir);
 
 	daemon_pid = start_daemon();
@@ -412,8 +421,8 @@ int main(void)
 	CHECK(stage_binary_fixture(scratch_dir, "1.0", "build/daemon_child", tarball_v1,
 	                            sizeof(tarball_v1), sha_v1, sizeof(sha_v1)) == 0,
 	      "stage rollsvc 1.0 fixture");
-	CHECK(write_binary_recipe(pkg_state_dir, "1.0", tarball_v1, sha_v1) == 0,
-	      "write rollsvc 1.0 recipe");
+	CHECK(publish_rollsvc_recipe(&client, "1.0", tarball_v1, sha_v1) == 0,
+	      "publish rollsvc 1.0 recipe");
 
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/images", "{\"name\":\"rollctrimg\"}", &r) == 0 &&
@@ -508,16 +517,17 @@ int main(void)
 		struct json_writer w;
 		char body[2048];
 
-		/* Built purely in memory and published ONLY through POST
-		 * /v1/pkg/recipes -- unlike rollsvc 1.0 (write_binary_recipe(),
-		 * a direct on-disk write used once as setup before anything
-		 * else touches that version), this version must reach the
-		 * daemon exclusively through the real API call for
-		 * pkg_recipe_add()'s own trigger (queue_rolling_rebuilds_for())
-		 * to ever fire -- pre-writing the file first (as an earlier
-		 * draft of this test did) makes the daemon see an
-		 * already-published version and reject the POST as a 409
-		 * (recipe versions are immutable). */
+		/* Published through POST /v1/pkg/recipes, like 1.0 above, so
+		 * that pkg_recipe_add()'s own trigger
+		 * (queue_rolling_rebuilds_for()) fires for it -- that trigger
+		 * is what this block tests, and a recipe written to disk
+		 * never reaches it.
+		 *
+		 * 1.0 went the same way since cix#516: a CPDL recipe dropped
+		 * into the store while the daemon is running has no derived
+		 * identity and every install of it is refused 400. So the API
+		 * is no longer one of two options here, it is the only one.
+		 */
 		{
 			const char *content = rollsvc_recipe_text("2.0", tarball_v2, sha_v2);
 

@@ -145,69 +145,91 @@ static int stage_fixture_tarball(const char *scratch_dir, const char *name,
 	return run_cmd("tar -cf '%s' -C '%s' '%s-1.0'", out_tarball_path, scratch_dir, name);
 }
 
-static int write_recipe(const char *name, const char *tarball_path)
+/*
+ * Published through POST /v1/pkg/recipes rather than written into the
+ * store.
+ *
+ * A CPDL recipe's identity comes from `cbs explain --json`, derived
+ * once at publish (ADR-0305) or by the daemon's startup sweep. A file
+ * dropped into the store while the daemon is already running gets
+ * neither, and every install of it is refused 400 -- which is not the
+ * failure this fixture is here to produce. A shell recipe needed no
+ * such derivation, which is why writing the file worked before and is
+ * the one thing a conversion cannot carry over (cix#516).
+ *
+ * The declared source checksum is all zeroes on purpose: this package
+ * must end FAILED, and it fails at the checksum before any build runs.
+ *
+ * tcc rather than the gcc the shell fixture named. The compiler is not
+ * inert even though it never runs: a declared build tool installed in
+ * no image is refused when the build environment is composed, which
+ * would fail this package for a different reason than the one it
+ * demonstrates. tcc is in the ADR-0209 floor; gcc is not.
+ */
+static int publish_recipe(const struct cix_client *c, const char *name, const char *tarball_path)
 {
-	char path[300];
-	FILE *f;
+	struct json_writer w;
+	struct cix_response r;
+	char content[1600];
+	int ok;
 
-	if (run_cmd("mkdir -p '%s/recipes/%s/1.0-1'", g_pkg_state_dir, name) != 0)
-		return -1;
-	snprintf(path, sizeof(path), "%s/recipes/%s/1.0-1/build.cbs", g_pkg_state_dir, name);
-	f = fopen(path, "w");
-	if (f == NULL)
-		return -1;
-	/*
-	 * The declared sha256 is all zeroes on purpose: this recipe must
-	 * end FAILED, which is the property being tested, and it fails at
-	 * the checksum before any build runs.
-	 *
-	 * tcc rather than the gcc the shell fixture named, and the reason
-	 * is that the compiler is not inert here even though it never
-	 * runs: a declared build tool that is installed in no image is
-	 * refused outright when composing the build environment, which
-	 * would fail this package for a different reason than the one it
-	 * is here to demonstrate. tcc is in the ADR-0209 floor; gcc is
-	 * not.
-	 */
-	fprintf(f,
-	        "package \"%s\" {\n"
-	        "    version \"1.0\"\n"
-	        "    release 1\n"
-	        "    format \"cixpkg\"\n"
-	        "\n"
-	        "    sources {\n"
-	        "        main \"%s\" {\n"
-	        "            url \"%s\"\n"
-	        "            sha256 \"%064d\"\n"
-	        "        }\n"
-	        "    }\n"
-	        "\n"
-	        "    requires {\n"
-	        "        build {\n"
-	        "            compiler \"tcc\"\n"
-	        "            tool \"linux-headers\"\n"
-	        "            tool \"bash\"\n"
-	        "            tool \"coreutils\"\n"
-	        "            tool \"binutils\"\n"
-	        "        }\n"
-	        "    }\n"
-	        "\n"
-	        "    build {\n"
-	        "        cd \"${src}/%s/%s-1.0\" {\n"
-	        "            run \"tcc\" {\n"
-	        "                \"-o\" \"hello\" \"hello.c\"\n"
-	        "            }\n"
-	        "        }\n"
-	        "    }\n"
-	        "\n"
-	        "    install {\n"
-	        "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
-	        "        copy \"${src}/%s/%s-1.0/hello\" to \"${dest}/usr/bin/%s\"\n"
-	        "    }\n"
-	        "}\n",
-	        name, name, test_http_src(tarball_path), 0, name, name, name, name, name);
-	fclose(f);
-	return 0;
+	snprintf(content, sizeof(content),
+	         "package \"%s\" {\n"
+	         "    version \"1.0\"\n"
+	         "    release 1\n"
+	         "    format \"cixpkg\"\n"
+	         "\n"
+	         "    sources {\n"
+	         "        main \"%s\" {\n"
+	         "            url \"%s\"\n"
+	         "            sha256 \"%064d\"\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    requires {\n"
+	         "        build {\n"
+	         "            compiler \"tcc\"\n"
+	         "            tool \"linux-headers\"\n"
+	         "            tool \"bash\"\n"
+	         "            tool \"coreutils\"\n"
+	         "            tool \"binutils\"\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    build {\n"
+	         "        cd \"${src}/%s/%s-1.0\" {\n"
+	         "            run \"tcc\" {\n"
+	         "                \"-o\" \"hello\" \"hello.c\"\n"
+	         "            }\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    install {\n"
+	         "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
+	         "        copy \"${src}/%s/%s-1.0/hello\" to \"${dest}/usr/bin/%s\"\n"
+	         "    }\n"
+	         "}\n",
+	         name, name, test_http_src(tarball_path), 0, name, name, name, name, name);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "content");
+	jw_str(&w, content);
+	jw_key(&w, "format");
+	jw_str(&w, "pbs");
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	memset(&r, 0, sizeof(r));
+	ok = (cix_client_request(c, "POST", "/v1/pkg/recipes", w.buf, &r) == 0 && r.status == 204);
+	if (!ok)
+		fprintf(stderr, "      POST /v1/pkg/recipes %s: status=%d %.200s\n", name, r.status,
+		        r.body != NULL ? r.body : "");
+	cix_response_free(&r);
+	jw_free(&w);
+	return ok ? 0 : -1;
 }
 
 static int poll_pkg_state(const struct cix_client *c, const char *name, char *out_state,
@@ -607,7 +629,7 @@ int main(void)
 
 		if (stage_fixture_tarball(scratch_dir, "badsum2", tarball_path,
 		                           sizeof(tarball_path)) != 0 ||
-		    write_recipe("badsum2", tarball_path) != 0) {
+		    publish_recipe(&client, "badsum2", tarball_path) != 0) {
 			fprintf(stderr, "FAIL: could not stage badsum2 fixture/recipe\n");
 			ok = 0;
 		} else {
