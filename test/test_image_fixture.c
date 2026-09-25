@@ -721,7 +721,7 @@ static const struct {
 	{ "bash", "5.2.37-6" }, { "coreutils", "9.11-8" }, { "tcc", "0.9.28rc-31" },
 	{ "glibc", TEST_FLOOR_GLIBC_VERSION }, { "linux-headers", "6.18.40-10" },
 	{ "zlib", "1.3.2-14" }, { "flex", "2.6.4-6" }, { "m4", "1.4.20-6" },
-	{ "binutils", "2.42-14" },
+	{ "binutils", "2.42-10" }, /* shell, held by #526 */
 	/*
 	 * cbs and its runtime closure. cbs declares libarchive and zstd;
 	 * libarchive declares zlib, xz and zstd, and zlib is already here.
