@@ -238,8 +238,8 @@ static int stage_fixture_tarball(const char *scratch_dir, const char *name, cons
 }
 
 /* A plain, non-tarball fixture file -- source index 1+ in the
- * multisrc scenario below (ADR-0036), landing at /build/extra/
- * <basename> verbatim, never extracted. */
+ * multisrc scenario below (ADR-0036). Under CPDL a non-archive
+ * source lands at ${src}/<source-name>/<basename>, never extracted. */
 static int stage_fixture_plain_file(const char *scratch_dir, const char *filename, const char *content,
                                      char *out_path, size_t out_path_size, char *out_sha256,
                                      size_t sha256_size)
@@ -685,8 +685,8 @@ static int write_builddeps_recipe(const char *name, const char *version, const c
 }
 
 /* Multi-source recipe (ADR-0036): source 0 is the usual fixture
- * tarball; sources 1/2 are plain files that land at
- * /build/extra/extra1.txt and /build/extra/extra2.txt. pkg_install()
+ * tarball; sources 1/2 are plain files, named extra1 and extra2, that
+ * land at ${src}/extraN/extraN.txt. The install phase
  * deliberately copies extra1.txt into PKG_DESTDIR so the caller can
  * check its real byte content afterward -- proof the file was
  * genuinely there during the build, not just that the job succeeded. */
@@ -726,40 +726,62 @@ static int write_observing_recipe(const char *name, const char *version, const c
 	return 0;
 }
 
-static int write_multisrc_recipe(const char *name, const char *version, const char *tarball_path,
+static int write_multisrc_recipe(const struct cix_client *c, const char *name,
+                                  const char *version, const char *tarball_path,
                                   const char *tarball_sha256, const char *extra1_path,
                                   const char *extra1_sha256, const char *extra2_path,
                                   const char *extra2_sha256)
 {
-	char name_dir[256];
-	char path[300];
-	FILE *f;
+	char srcdir[160];
+	char extra_sources[768];
+	char build_body[512], install_body[768];
 
-	snprintf(name_dir, sizeof(name_dir), "%s/recipes/%s", g_pkg_state_dir, name);
-	mkdir(name_dir, 0755);
-	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
-	mkdir(path, 0755);
-	snprintf(path, sizeof(path), "%s/recipes/%s/%s/build.sh", g_pkg_state_dir, name, version);
-	f = fopen(path, "w");
-	if (f == NULL)
-		return -1;
-	fprintf(f, "pkg_name=%s\n", name);
-	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=\"%s %s %s\"\n", test_http_src(tarball_path), test_http_src(extra1_path),
-	        test_http_src(extra2_path));
-	fprintf(f, "pkg_sha256=\"%s %s %s\"\n", tarball_sha256, extra1_sha256, extra2_sha256);
-	fprintf(f, "pkg_depends=\"\"\n");
-	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n");
-	fprintf(f, "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
-	fprintf(f,
-	        "pkg_install() {\n"
-	        "\tmkdir -p \"$PKG_DESTDIR/usr/bin\" \"$PKG_DESTDIR/usr/share/multisrc\"\n"
-	        "\tcp hello \"$PKG_DESTDIR/usr/bin/%s\"\n"
-	        "\tcp /build/extra/extra1.txt \"$PKG_DESTDIR/usr/share/multisrc/extra1.txt\"\n"
-	        "}\n",
-	        name);
-	fclose(f);
-	return 0;
+	/*
+	 * Three sources (ADR-0036): the fixture tarball, and two plain
+	 * files. The shell form declared them as one space-separated
+	 * pkg_source and they landed at /build/extra/extraN.txt; CPDL
+	 * names each one, and a non-archive source arrives at
+	 * ${src}/<source-name>/<basename> rather than being unpacked.
+	 */
+	snprintf(extra_sources, sizeof(extra_sources),
+	         "        extra \"extra1\" {\n"
+	         "            url \"%s\"\n"
+	         "            sha256 \"%s\"\n"
+	         "        }\n"
+	         "        extra \"extra2\" {\n"
+	         "            url \"%s\"\n"
+	         "            sha256 \"%s\"\n"
+	         "        }\n",
+	         test_http_src(extra1_path), extra1_sha256, test_http_src(extra2_path),
+	         extra2_sha256);
+
+	fixture_srcdir(tarball_path, srcdir, sizeof(srcdir));
+	snprintf(build_body, sizeof(build_body),
+	         "        cd \"${src}/%s/%s\" {\n"
+	         "            run \"tcc\" {\n"
+	         "                \"-o\" \"hello\" \"hello.c\"\n"
+	         "            }\n"
+	         "        }\n",
+	         name, srcdir);
+	/* extra1.txt is copied into the staged tree on purpose, so the
+	 * caller can read its real byte content afterwards -- proof the
+	 * file was genuinely there during the build, not merely that the
+	 * job succeeded. */
+	snprintf(install_body, sizeof(install_body),
+	         "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
+	         "        mkdir \"${dest}/usr/share/multisrc\" chmod 0755\n"
+	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s\"\n"
+	         "        copy \"${src}/extra1/extra1.txt\" to "
+	         "\"${dest}/usr/share/multisrc/extra1.txt\"\n",
+	         name, srcdir, name);
+
+	return publish_cpdl_recipe(c, name, version, tarball_path, tarball_sha256, extra_sources,
+	                            "            compiler \"tcc\"\n"
+	                            "            tool \"linux-headers\"\n"
+	                            "            tool \"bash\"\n"
+	                            "            tool \"coreutils\"\n"
+	                            "            tool \"binutils\"\n",
+	                            "", build_body, install_body);
 }
 
 /* Polls GET /v1/pkg/{name} until state leaves fetching/building (or
@@ -2958,8 +2980,8 @@ int main(void)
 	/* 15. multi-source recipes (ADR-0036): a real install with one main
 	 * tarball plus two extra plain files, proving (a) the whole thing
 	 * installs end to end exactly like every single-source recipe
-	 * already does, (b) an extra file was genuinely available under
-	 * /build/extra/ *during* the build -- checked by its real byte
+	 * already does, (b) an extra file was genuinely available to
+	 * the build *during* it -- checked by its real byte
 	 * content post-install, not just its presence -- and (c) a bad
 	 * checksum on a non-zero-index source fails the *whole* job, the
 	 * same all-or-nothing guarantee badsum.recipe already proves for
@@ -2977,7 +2999,7 @@ int main(void)
 		                              sizeof(extra2_path), extra2_sha, sizeof(extra2_sha)) != 0) {
 			fprintf(stderr, "FAIL: could not stage multisrc fixtures\n");
 			ok = 0;
-		} else if (write_multisrc_recipe("multisrc", "1.0", ms_tarball, ms_tarball_sha, extra1_path,
+		} else if (write_multisrc_recipe(&client, "multisrc", "1.0", ms_tarball, ms_tarball_sha, extra1_path,
 		                                  extra1_sha, extra2_path, extra2_sha) != 0) {
 			fprintf(stderr, "FAIL: could not write multisrc recipe\n");
 			ok = 0;
@@ -3020,7 +3042,7 @@ int main(void)
 		/* A bad checksum on the *second* extra (index 2, not index 0)
 		 * must still fail the whole job -- confirms verification isn't
 		 * limited to the main source. */
-		if (write_multisrc_recipe("multisrcbad", "1.0", ms_tarball, ms_tarball_sha, extra1_path,
+		if (write_multisrc_recipe(&client, "multisrcbad", "1.0", ms_tarball, ms_tarball_sha, extra1_path,
 		                           extra1_sha, extra2_path,
 		                           "0000000000000000000000000000000000000000000000000000000000000000") !=
 		    0) {
@@ -3079,7 +3101,7 @@ int main(void)
 
 			snprintf(extra1_url_with_query, sizeof(extra1_url_with_query), "%s?ref=deadbeef",
 			         extra1_path);
-			if (write_multisrc_recipe("multisrcquery", "1.0", ms_tarball, ms_tarball_sha,
+			if (write_multisrc_recipe(&client, "multisrcquery", "1.0", ms_tarball, ms_tarball_sha,
 			                           extra1_url_with_query, extra1_sha, extra2_path,
 			                           extra2_sha) != 0) {
 				fprintf(stderr, "FAIL: could not write multisrcquery recipe\n");
