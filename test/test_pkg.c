@@ -277,6 +277,25 @@ static int write_recipe(const struct cix_client *c, const char *name, const char
 	char runtime[192] = "";
 	char content[2400];
 	int ok;
+	/*
+	 * The wrapping directory inside the tarball, which is NOT the
+	 * package name: several fixtures here build different packages
+	 * from one tarball -- `relinked` is built from
+	 * greeter-1.0.tarball -- and assuming the name gave "cannot
+	 * enter directory ${src}/relinked/relinked-1.0; errno=2"
+	 * (CPDL-E4004, measured on 192.168.15.95, 2026-09-25).
+	 * stage_fixture_tarball() names the tarball after the directory
+	 * it wraps, so the path already carries the answer.
+	 */
+	char srcdir[160];
+	const char *base = strrchr(tarball_path, '/');
+	size_t blen;
+
+	base = (base != NULL) ? base + 1 : tarball_path;
+	snprintf(srcdir, sizeof(srcdir), "%s", base);
+	blen = strlen(srcdir);
+	if (blen > 8 && strcmp(srcdir + blen - 8, ".tarball") == 0)
+		srcdir[blen - 8] = '\0';
 
 	if (depends != NULL && depends[0] != '\0')
 		snprintf(runtime, sizeof(runtime),
@@ -310,7 +329,7 @@ static int write_recipe(const struct cix_client *c, const char *name, const char
 	         "    }\n"
 	         "\n"
 	         "    build {\n"
-	         "        cd \"${src}/%s/%s-%s\" {\n"
+	         "        cd \"${src}/%s/%s\" {\n"
 	         "%s"
 	         "            run \"tcc\" {\n"
 	         "                \"-o\" \"hello\" \"hello.c\"\n"
@@ -320,11 +339,10 @@ static int write_recipe(const struct cix_client *c, const char *name, const char
 	         "\n"
 	         "    install {\n"
 	         "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
-	         "        copy \"${src}/%s/%s-%s/hello\" to \"${dest}/usr/bin/%s\"\n"
+	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s\"\n"
 	         "    }\n"
 	         "}\n",
-	         name, version, name, test_http_src(tarball_path), sha256, runtime, name, name,
-	         version,
+	         name, version, name, test_http_src(tarball_path), sha256, runtime, srcdir,
 	         /*
 	          * Issue #192, second pass: ONE recipe builds slowly, on
 	          * purpose. The build-ceiling check asserts a 409 that is
@@ -344,7 +362,7 @@ static int write_recipe(const struct cix_client *c, const char *name, const char
 	                   "                \"5\"\n"
 	                   "            }\n"
 	                 : "",
-	         name, name, version, name);
+	         name, srcdir, name);
 
 	jw_init(&w);
 	jw_obj_open(&w);
