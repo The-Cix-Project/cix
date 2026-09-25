@@ -259,6 +259,47 @@ static int write_kernel_fixture_recipe(const char *tarball_path, const char *sha
 }
 
 /*
+ * This daemon's own diagnostics, on stderr.
+ *
+ * logstore_write() does not echo to stderr -- measured by reading
+ * daemon/src/logstore.c, whose only fprintf is for a malformed state
+ * file -- so everything cixd records about an install lands in the log
+ * store inside this test's mkdtemp data directory and is deleted with
+ * it. v2.57.272 added a line naming the destination, its parent and
+ * the rmdir before cixd forks `cbs extract` (#485), and none of it
+ * reached the run that needed it (probe-cix-testreport@23 on
+ * 192.168.15.95, 2026-09-25): the stderr lines that DO appear there
+ * are the daemon's own fprintf()s, not its log.
+ *
+ * source=cixd and a generous tail, rather than a regex for what is
+ * expected: an install failure is exactly the case where the useful
+ * line is the one nobody predicted.
+ */
+static void print_daemon_log(const struct cix_client *c)
+{
+	struct cix_response r;
+	size_t i;
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "GET", "/v1/system/logs?source=cixd&tail=40", NULL, &r) != 0 ||
+	    r.status != 200 || r.json == NULL || r.json->type != JSON_ARRAY) {
+		fprintf(stderr, "    (daemon log unavailable: GET /v1/system/logs status=%d)\n",
+		        r.status);
+		cix_response_free(&r);
+		return;
+	}
+	for (i = 0; i < r.json->u.array.count; i++) {
+		const char *msg = json_as_string(json_object_get(r.json->u.array.items[i], "msg"));
+
+		if (msg != NULL)
+			fprintf(stderr, "    dlog: %.300s\n", msg);
+	}
+	if (r.json->u.array.count == 0)
+		fprintf(stderr, "    (daemon log is empty)\n");
+	cix_response_free(&r);
+}
+
+/*
  * The failing build's own output, on stderr.
  *
  * Without this a failure here says only what the daemon's error field
@@ -493,11 +534,13 @@ int main(void)
 	if (ok && i == KMOD_POLLS) {
 		fprintf(stderr, "FAIL: kmod-build still in state '%s' after %d s\n", state,
 		        KMOD_POLLS * 3 / 10);
+		print_daemon_log(&client);
 		print_failing_build_log(&client);
 		ok = 0;
 	} else if (ok && strcmp(state, "installed") != 0) {
 		fprintf(stderr, "FAIL: kmod-build ended in state '%s', expected installed: %s\n", state,
 		        kmod_err[0] != '\0' ? kmod_err : "(no error field)");
+		print_daemon_log(&client);
 		print_failing_build_log(&client);
 		ok = 0;
 	}

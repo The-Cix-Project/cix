@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### test_kmod_build prints the daemon's own log, not only the build's (#485)
+
+`logstore_write()` does not echo to stderr -- `daemon/src/logstore.c`'s only `fprintf` is for a malformed state file -- so everything cixd records about an install lands in the log store inside the test's `mkdtemp` data directory and is deleted with it. v2.57.272 added a line naming the destination, its parent and the `rmdir()` before cixd forks `cbs extract`, and **none of it reached the run that needed it** (probe-cix-testreport@23 on 192.168.15.95, 2026-09-25): the daemon lines that do appear in a test's output are its own `fprintf()`s, not its log. Both failure paths now print `GET /v1/system/logs?source=cixd&tail=40` as well, following the pattern `test_console_exec` already uses.
+
+That run also showed, from its own cleanup error, that `cbs extract` builds the tree in `<dest>.cbs-tmp-XXXXXX` and moves it into place, and that the automatic glibc install into the default image runs concurrently with the floor's own installs, in a different build container (`__pkgbuild-0` against `__pkgbuild-1`). Neither is the established cause of anything yet; both are recorded because the next reader would otherwise measure them again.
+
 ### cixd records what cbs is about to see before it unpacks a .cixpkg (#485, cix-build-system#233)
 
 `cbs extract` answers a DESTINATION fault with `<artifact>: error[CIXPKG-E4001]: artifact extraction failed`, naming the artifact. Measured on 192.168.15.95, 2026-09-25 (`probe-cixpkg-extract@4`): a destination whose parent is missing and a destination that already exists both produce that line and exit 4, and the same message covers an artifact that genuinely cannot be read. The daemon forks that child and keeps its stderr, so a reader got a message about bytes that were fine -- three probes went into the artifact before the destination was suspected.
