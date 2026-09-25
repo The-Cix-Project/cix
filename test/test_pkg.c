@@ -2944,7 +2944,7 @@ int main(void)
 				if (strcmp(observed, "1.9-1") != 0) {
 					fprintf(stderr,
 					        "FAIL: #109 the composed environment held stamped '%s', expected the "
-					        "declared 1.9 -- a declaration must pin the version, not resolve to "
+					        "declared 1.9-1 -- a declaration must pin the version, not resolve to "
 					        "the newest\n",
 					        observed);
 					ok = 0;
