@@ -217,6 +217,12 @@ static const char *rollsvc_recipe_text(const char *version, const char *tarball_
 	         "        build {\n"
 	         "            tool \"bash\"\n"
 	         "            tool \"coreutils\"\n"
+	         /* binutils for strip, not for compiling: rollsvc IS a real
+	          * ELF binary, and ADR-0251's finalize policy strips every
+	          * ELF a package produces and refuses the build when strip
+	          * is absent -- "this package produced ELF output but the
+	          * build image has no strip" (192.168.15.95, 2026-09-26). */
+	         "            tool \"binutils\"\n"
 	         "        }\n"
 	         "    }\n"
 	         "\n"
