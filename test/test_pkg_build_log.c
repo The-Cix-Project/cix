@@ -256,23 +256,28 @@ static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 /* Polls GET /v1/pkg/{name} until its state matches want, or times out. */
 
 /*
- * #519: what the job was doing, printed at the two moments that
- * distinguish this bug's candidate causes.
+ * #519: what the job was doing, printed at the two moments worth
+ * knowing it -- when the tail attached, and when the read gave up.
  *
- * The live tail intermittently gets its 101 and then neither a frame
- * nor a close frame, and reports "0 frames, 0 bytes" -- which is
- * consistent with three different things and tells them apart from
- * none of them: the build finished before the attach and nothing was
- * left to send; the build was still running and had produced no output
- * within the socket's 5 s SO_RCVTIMEO; or the conn really was on the
- * attach list and teardown missed it.
+ * This was written to tell three candidate causes apart, and its own
+ * dichotomy was false. The reasoning ran: the live tail gets its 101
+ * and then neither a frame nor a close frame, so either the build
+ * finished before the attach, or it was alive and silent for five
+ * seconds, or the conn was on the attach list and teardown missed it;
+ * and "building" at the give-up would mean the second while anything
+ * else would mean the third.
  *
- * v2.57.277 ruled out the first -- the attach now answers 404 when the
- * chain's output fd is already closed -- and the failure survived, so
- * a guess was wrong rather than a fix being wrong. The remaining two
- * are told apart by the job's own state at the moment the read gave
- * up: still "building" means the timeout is the bug, anything else
- * means the close frame is.
+ * Measured on 192.168.15.95, 2026-09-25 (probe-cix-testreport@35-1):
+ * two failing runs, one reporting "building" and the other
+ * "installed", and NEITHER cause held. The test's own reader had
+ * discarded the bytes its handshake read took past "\r\n\r\n" and was
+ * parsing payload as a frame header, so it received nothing whatever
+ * the daemon did. See struct ws_reader.
+ *
+ * Kept because the pairing is still the right first question of any
+ * future failure here -- it says which end to look at -- and because
+ * a diagnostic that once pointed at the wrong answer is worth keeping
+ * honest rather than deleting.
  */
 static void report_job_state(const struct cix_client *c, const char *name, const char *when)
 {
@@ -796,8 +801,10 @@ int main(void)
 
 			/* #519: the paired reading -- what the job was doing when
 			 * the tail attached, against what it was doing when the
-			 * read gave up. A run that shows "building" at both ends
-			 * produced no output for five seconds while alive. */
+			 * read gave up. It does not by itself name a cause: a run
+			 * reporting "building" at both ends was measured while the
+			 * daemon had relayed everything (see report_job_state()).
+			 * It says which end of the stream to look at. */
 			report_job_state(&client, "slowbuild", "at attach");
 			t0 = now_ms();
 

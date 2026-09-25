@@ -27540,13 +27540,23 @@ static enum console_route_result try_pkg_build_log_upgrade(struct conn *cc, cons
 		 * and calls build_log_ws_teardown_all() together at EOF, and
 		 * that teardown is the only thing that ever sends a close
 		 * frame -- so an attach landing after it, while the registry
-		 * still shows the container running, joined a list nothing
-		 * would ever close and sat until the client's own read
-		 * timeout. Seen as "0 frames, no close frame" in
-		 * probe-cix-testreport@13 (192.168.15.95, 2026-09-23) and
-		 * again in the full suite at v2.57.275; the shorter the
-		 * build, the wider the window, and this fixture's whole build
-		 * is a few `sleep 1`s.
+		 * still shows the container running, would join a list nothing
+		 * will ever close and sit until the client's own read timeout.
+		 *
+		 * That window is REASONED, not observed: the registry entry
+		 * and the output pipe are torn down by two different epoll
+		 * events with no ordering between them, so the state is
+		 * reachable by construction, and the shorter the build the
+		 * wider it is. What this comment used to cite as having seen
+		 * it -- "0 frames, no close frame" in probe-cix-testreport@13
+		 * and in the full suite at v2.57.275 -- was something else
+		 * entirely: test_pkg_build_log discarded the bytes its own
+		 * handshake read took past "\r\n\r\n" and misparsed the rest
+		 * of the stream. Measured on 192.168.15.95, 2026-09-25: ten
+		 * runs, every one carrying leftover bytes, three of them a
+		 * split frame header. Fixed test-side in v2.57.280; this
+		 * guard is kept because the window is real, not because it
+		 * was what failed.
 		 *
 		 * Answering 404 rather than inventing a late-attach handshake
 		 * keeps one contract: a build whose output has ended has no
