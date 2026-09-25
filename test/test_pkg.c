@@ -342,7 +342,7 @@ static int write_recipe(const struct cix_client *c, const char *name, const char
 	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s\"\n"
 	         "    }\n"
 	         "}\n",
-	         name, version, name, test_http_src(tarball_path), sha256, runtime, srcdir,
+	         name, version, name, test_http_src(tarball_path), sha256, runtime, name, srcdir,
 	         /*
 	          * Issue #192, second pass: ONE recipe builds slowly, on
 	          * purpose. The build-ceiling check asserts a 409 that is
