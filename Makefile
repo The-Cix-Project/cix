@@ -153,7 +153,9 @@ DAEMON_SELFTESTS = \
 # question those exclusions were answering.
 #
 # The 22 that fail are not mysteries: eleven want the hand-fetched
-# build-inputs trees (a real kernel image, the ADR-0209 artifact floor),
+# build-inputs trees (a real kernel image, the ADR-0209 artifact floor
+# -- three of those eleven are in FLOOR_SELFTESTS below now that the cix
+# recipe stages the floor, #485),
 # five want something the image has not got (dnsmasq, a GPU, loop
 # devices, Debian host libraries), and six were unexplained and worth
 # investigating rather than papering over. #224 records each.
@@ -201,7 +203,34 @@ DAEMON_SELFTESTS_2 = \
 	$(BUILD)/test_syslogfwd \
 	$(BUILD)/test_system_backup \
 	$(BUILD)/test_userns_run \
-	$(BUILD)/test_volume
+	$(BUILD)/test_volume \
+	\
+	$(FLOOR_SELFTESTS)
+
+#
+# The three that need the ADR-0209 artifact floor (#485). They were in
+# the "eleven want the hand-fetched build-inputs trees" bucket above and
+# could not run on a Cix host at all; probe-cix-testreport@26 on
+# 192.168.15.95 (2026-09-25) ran all three in a build container and all
+# three passed, unchanged.
+#
+# THEY ONLY RUN IF THE FLOOR IS THERE. test_image_fixture_seed_floor_
+# packages() refuses to fabricate an artifact -- it seeds from real
+# checksum-verified bytes in build-inputs/floor-artifacts/ or it fails --
+# so a `make selftest` without that directory fails these three rather
+# than skipping them. That is deliberate (ADR-0209) and it is why the
+# cix recipe now stages those artifacts as declared sources: the
+# Makefile and the recipe have to move together, and a release that
+# carries this list without them fails its own selftest.
+#
+# test_pkg is the package manager's own test and gated nothing until
+# now; test_kmod_build gated a shipped feature (#517) through eleven
+# releases that each reported SELFTEST: PASS.
+#
+FLOOR_SELFTESTS = \
+	$(BUILD)/test_kmod_build \
+	$(BUILD)/test_pkg \
+	$(BUILD)/test_pkg_cache
 #
 # Three tests were in this list and are deliberately NOT, because they
 # fail in a composed build container for reasons that are not defects.

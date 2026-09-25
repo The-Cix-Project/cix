@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### test_pkg, test_pkg_cache and test_kmod_build gate a release (#485)
+
+All three ran for the first time on a Cix host on 2026-09-25 (probe-cix-testreport@26, 192.168.15.95) and all three passed, unchanged. They are now in `SELFTESTS`, as `FLOOR_SELFTESTS`.
+
+They are separated in the Makefile rather than folded into the list above because they carry a precondition the others do not: `test_image_fixture_seed_floor_packages()` refuses to fabricate an artifact -- it seeds from real checksum-verified bytes in `build-inputs/floor-artifacts/` or it fails (ADR-0209). A `make selftest` without that directory fails these three rather than skipping them, which is the correct behaviour and means **the Makefile and the cix recipe have to move together**: the recipe now stages those twelve artifacts as declared sources, and the recipe corpus beside the source tree, because the floor reads each package's own recipe for the checksum it verifies against.
+
+`test_pkg` is the package manager's own test and gated nothing until now. `test_kmod_build` gated a shipped feature (#517) through eleven releases that each reported `SELFTEST: PASS`.
+
 ### The test floor waits for the C library before installing anything (#485)
 
 The daemon installs glibc into the default image itself when it finds none (#186), asynchronously, while it comes up. `test_floor_install_all()` never waited for that and raced it. Measured on 192.168.15.95, 2026-09-25 (probe-cix-testreport@24, cix v2.57.273, the first build whose `test_kmod_build` could print the daemon's own log): the daemon began unpacking glibc into `__pkgbuild-0` and never finished before the test gave up, while eleven floor installs ran past it, each logging `skipping the undeclared-link check -- declared dependency "glibc" is not installed in image "base"`, and the kmod-build that followed failed with `declared build tool "glibc" is not installed anywhere`. Teardown found glibc's extraction still half-written in `dest.cbs-tmp-PzNrAx`.
