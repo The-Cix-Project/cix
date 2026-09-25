@@ -256,78 +256,115 @@ static int stage_fixture_plain_file(const char *scratch_dir, const char *filenam
 	return compute_file_sha256(out_path, out_sha256, sha256_size);
 }
 
-/* ADR-0107: recipes live at recipes/<name>/<version>/build.sh -- the
- * two mkdir()s are best-effort (already-exists is fine, anything else
- * surfaces as the fopen() below failing). */
-static int write_recipe(const char *name, const char *version, const char *tarball_path,
-                         const char *sha256, const char *depends)
+/*
+ * The fixture recipe most of this file's packages are built from.
+ *
+ * CPDL, and published through POST /v1/pkg/recipes rather than written
+ * into the store (cix#516). A CPDL recipe's identity comes from
+ * `cbs explain --json`, derived at publish (ADR-0305) or by the
+ * daemon's startup sweep; a file dropped into the store while the
+ * daemon is running has neither and every install of it is refused
+ * 400. A shell recipe needed no derivation at all, which is why
+ * writing the file worked for every caller here regardless of when it
+ * ran, and is the one thing this conversion cannot carry across. The
+ * callers that used to run before start_daemon() now run after it.
+ */
+static int write_recipe(const struct cix_client *c, const char *name, const char *version,
+                         const char *tarball_path, const char *sha256, const char *depends)
 {
-	char name_dir[256];
-	char path[300];
-	FILE *f;
+	struct json_writer w;
+	struct cix_response r;
+	char runtime[192] = "";
+	char content[2400];
+	int ok;
 
-	snprintf(name_dir, sizeof(name_dir), "%s/recipes/%s", g_pkg_state_dir, name);
-	mkdir(name_dir, 0755);
-	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
-	mkdir(path, 0755);
-	snprintf(path, sizeof(path), "%s/recipes/%s/%s/build.sh", g_pkg_state_dir, name, version);
-	f = fopen(path, "w");
-	if (f == NULL)
-		return -1;
-	fprintf(f, "pkg_name=%s\n", name);
-	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
-	fprintf(f, "pkg_sha256=%s\n", sha256);
-	fprintf(f, "pkg_depends=\"%s\"\n", depends != NULL ? depends : "");
-	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n");
-	/*
-	 * Issue #192, second pass: ONE recipe builds slowly, on purpose.
-	 *
-	 * The build-ceiling check asserts a 409 that is only true while a
-	 * previous job still holds the single slot. #192 added a guard that
-	 * waits for the slot to be held and fails clearly if it was not --
-	 * which stopped the test blaming the ceiling for a timing problem,
-	 * but left it still failing intermittently. Detecting a lost
-	 * precondition is not the same as not losing it.
-	 *
-	 * A fixture build is `tcc -o hello hello.c`, milliseconds, so
-	 * whether the window existed at all was left to scheduling. The
-	 * slow build makes it reliably exist.
-	 *
-	 * It is a DEDICATED package, not `overflow`. Slowing `overflow`
-	 * was tried and made things worse: it is reused as a probe at
-	 * several points, so an earlier job was still holding a slot when
-	 * a later one started, turning an expected 202 into a 409. A
-	 * package that exists only to occupy a slot has no other use to
-	 * disturb.
-	 *
-	 * coreutils is in this recipe's own declared build tools, so
-	 * `sleep` is genuinely present rather than assumed.
-	 */
-	/*
-	 * "hbconcurrent" is here for the same reason, found the same way.
-	 * #192 fixed the ordinary-install ceiling check by giving it a
-	 * package that genuinely holds its slot -- and fixed only that
-	 * one. The hostbuild ceiling check below has the identical race
-	 * and was left with the identical bug: it occupies the second
-	 * chain slot with an ordinary install and then expects a third
-	 * request to be refused, but nothing made that install slow. Its
-	 * own comment claimed it "takes a genuine gcc build to finish",
-	 * which was never true of these fixture recipes -- they compile
-	 * one 5-line hello.c with tcc. When that finishes before the
-	 * overflow request lands, the slot is legitimately free and 202
-	 * is the CORRECT answer, so the test failed while the daemon was
-	 * right. Intermittent, roughly one run in three.
-	 */
-	if (strcmp(name, "slowhold") == 0 || strcmp(name, "hbconcurrent") == 0)
-		fprintf(f, "pkg_build() {\n\tsleep 5\n\ttcc -o hello hello.c\n}\n\n");
-	else
-		fprintf(f, "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
-	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
-	           "\"$PKG_DESTDIR/usr/bin/%s\"\n}\n",
-	        name);
-	fclose(f);
-	return 0;
+	if (depends != NULL && depends[0] != '\0')
+		snprintf(runtime, sizeof(runtime),
+		         "        runtime {\n"
+		         "            package \"%s\"\n"
+		         "        }\n",
+		         depends);
+
+	snprintf(content, sizeof(content),
+	         "package \"%s\" {\n"
+	         "    version \"%s\"\n"
+	         "    release 1\n"
+	         "    format \"cixpkg\"\n"
+	         "\n"
+	         "    sources {\n"
+	         "        main \"%s\" {\n"
+	         "            url \"%s\"\n"
+	         "            sha256 \"%s\"\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    requires {\n"
+	         "        build {\n"
+	         "            compiler \"tcc\"\n"
+	         "            tool \"linux-headers\"\n"
+	         "            tool \"bash\"\n"
+	         "            tool \"coreutils\"\n"
+	         "            tool \"binutils\"\n"
+	         "        }\n"
+	         "%s"
+	         "    }\n"
+	         "\n"
+	         "    build {\n"
+	         "        cd \"${src}/%s/%s-%s\" {\n"
+	         "%s"
+	         "            run \"tcc\" {\n"
+	         "                \"-o\" \"hello\" \"hello.c\"\n"
+	         "            }\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    install {\n"
+	         "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
+	         "        copy \"${src}/%s/%s-%s/hello\" to \"${dest}/usr/bin/%s\"\n"
+	         "    }\n"
+	         "}\n",
+	         name, version, name, test_http_src(tarball_path), sha256, runtime, name, name,
+	         version,
+	         /*
+	          * Issue #192, second pass: ONE recipe builds slowly, on
+	          * purpose. The build-ceiling check asserts a 409 that is
+	          * only true while a previous job still holds the single
+	          * slot, and nothing made that install slow -- these
+	          * fixtures compile one five-line hello.c, so the slot was
+	          * legitimately free and 202 was the CORRECT answer. The
+	          * test failed while the daemon was right, about one run
+	          * in three. "hbconcurrent" is the same bug in the
+	          * hostbuild ceiling check, found the same way.
+	          *
+	          * coreutils is in the declared build tools above, so
+	          * `sleep` is genuinely present rather than assumed.
+	          */
+	         (strcmp(name, "slowhold") == 0 || strcmp(name, "hbconcurrent") == 0)
+	                 ? "            run \"sleep\" {\n"
+	                   "                \"5\"\n"
+	                   "            }\n"
+	                 : "",
+	         name, name, version, name);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "content");
+	jw_str(&w, content);
+	jw_key(&w, "format");
+	jw_str(&w, "pbs");
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	memset(&r, 0, sizeof(r));
+	ok = (cix_client_request(c, "POST", "/v1/pkg/recipes", w.buf, &r) == 0 && r.status == 204);
+	if (!ok)
+		fprintf(stderr, "      POST /v1/pkg/recipes %s@%s: status=%d %.200s\n", name, version,
+		        r.status, r.body != NULL ? r.body : "");
+	cix_response_free(&r);
+	jw_free(&w);
+	return ok ? 0 : -1;
 }
 
 /*
@@ -797,21 +834,6 @@ int main(void)
 			fclose(f);
 		}
 	}
-	if (write_recipe("greeter", "1.0", tarball_path, sha256, "") != 0 ||
-	    write_recipe("concurrent", "1.0", tarball_path, sha256, "") != 0 ||
-	    write_recipe("overflow", "1.0", tarball_path, sha256, "") != 0 ||
-	    write_recipe("slowhold", "1.0", tarball_path, sha256, "") != 0 ||
-	    write_recipe("hbconcurrent", "1.0", tarball_path, sha256, "") != 0) {
-		fprintf(stderr, "FAIL: could not write recipes\n");
-		return 1;
-	}
-	snprintf(bad_sha256, sizeof(bad_sha256),
-	         "0000000000000000000000000000000000000000000000000000000000000000");
-	bad_sha256[64] = '\0';
-	if (write_recipe("badsum", "1.0", tarball_path, bad_sha256, "") != 0) {
-		fprintf(stderr, "FAIL: could not write badsum recipe\n");
-		return 1;
-	}
 
 	daemon_pid = start_daemon();
 	if (daemon_pid < 0)
@@ -822,6 +844,29 @@ int main(void)
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
 		waitpid(daemon_pid, NULL, 0);
+		return 1;
+	}
+
+	/*
+	 * Published after the daemon is up, not before it: a CPDL recipe
+	 * needs its identity derived, and POST /v1/pkg/recipes is what
+	 * does that (cix#516). These five plus badsum used to be written
+	 * straight to disk here, which a shell recipe allowed and a PBS
+	 * one does not.
+	 */
+	if (write_recipe(&client, "greeter", "1.0", tarball_path, sha256, "") != 0 ||
+	    write_recipe(&client, "concurrent", "1.0", tarball_path, sha256, "") != 0 ||
+	    write_recipe(&client, "overflow", "1.0", tarball_path, sha256, "") != 0 ||
+	    write_recipe(&client, "slowhold", "1.0", tarball_path, sha256, "") != 0 ||
+	    write_recipe(&client, "hbconcurrent", "1.0", tarball_path, sha256, "") != 0) {
+		fprintf(stderr, "FAIL: could not write recipes\n");
+		return 1;
+	}
+	snprintf(bad_sha256, sizeof(bad_sha256),
+	         "0000000000000000000000000000000000000000000000000000000000000000");
+	bad_sha256[64] = '\0';
+	if (write_recipe(&client, "badsum", "1.0", tarball_path, bad_sha256, "") != 0) {
+		fprintf(stderr, "FAIL: could not write badsum recipe\n");
 		return 1;
 	}
 
@@ -1305,12 +1350,12 @@ int main(void)
 	{
 		char installed[64];
 
-		if (write_recipe("policypkg", "2.0", tarball_path, sha256, "") != 0) {
+		if (write_recipe(&client, "policypkg", "2.0", tarball_path, sha256, "") != 0) {
 			fprintf(stderr, "FAIL: #64 could not write policypkg 2.0\n");
 			ok = 0;
 		}
 		sleep(1); /* distinct mtimes: "published later" has to be real */
-		if (write_recipe("policypkg", "1.5", tarball_path, sha256, "") != 0) {
+		if (write_recipe(&client, "policypkg", "1.5", tarball_path, sha256, "") != 0) {
 			fprintf(stderr, "FAIL: #64 could not write policypkg 1.5\n");
 			ok = 0;
 		}
@@ -1379,7 +1424,7 @@ int main(void)
 			ok = 0;
 		}
 		cix_response_free(&r);
-		if (write_recipe("policypkg", "3.0", tarball_path, sha256, "") != 0) {
+		if (write_recipe(&client, "policypkg", "3.0", tarball_path, sha256, "") != 0) {
 			fprintf(stderr, "FAIL: #64 could not write policypkg 3.0\n");
 			ok = 0;
 		}
@@ -1560,7 +1605,7 @@ int main(void)
 		}
 		cix_response_free(&r);
 
-		if (write_recipe("budgeted", "1.0", tarball_path, sha256, "") != 0) {
+		if (write_recipe(&client, "budgeted", "1.0", tarball_path, sha256, "") != 0) {
 			fprintf(stderr, "FAIL: #85 could not write budgeted recipe\n");
 			ok = 0;
 		}
@@ -2048,7 +2093,7 @@ int main(void)
 		}
 		cix_response_free(&r);
 
-		if (write_recipe("relinked", "1.0", tarball_path, sha256, NULL) != 0)
+		if (write_recipe(&client, "relinked", "1.0", tarball_path, sha256, NULL) != 0)
 			ok = 0;
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"relinked\"}",
@@ -2237,8 +2282,8 @@ int main(void)
 		                           top_sha, sizeof(top_sha)) != 0) {
 			fprintf(stderr, "FAIL: could not stage leaf/top fixtures\n");
 			ok = 0;
-		} else if (write_recipe("leaf", "1.0", leaf_tarball, leaf_sha, "") != 0 ||
-		           write_recipe("top", "1.0", top_tarball, top_sha, "leaf") != 0) {
+		} else if (write_recipe(&client, "leaf", "1.0", leaf_tarball, leaf_sha, "") != 0 ||
+		           write_recipe(&client, "top", "1.0", top_tarball, top_sha, "leaf") != 0) {
 			fprintf(stderr, "FAIL: could not write leaf/top recipes\n");
 			ok = 0;
 		} else {
@@ -2265,8 +2310,8 @@ int main(void)
 	}
 
 	/* 10. circular dependency -> 400, nothing registered */
-	if (write_recipe("circ1", "1.0", tarball_path, sha256, "circ2") != 0 ||
-	    write_recipe("circ2", "1.0", tarball_path, sha256, "circ1") != 0) {
+	if (write_recipe(&client, "circ1", "1.0", tarball_path, sha256, "circ2") != 0 ||
+	    write_recipe(&client, "circ2", "1.0", tarball_path, sha256, "circ1") != 0) {
 		fprintf(stderr, "FAIL: could not write circular recipes\n");
 		ok = 0;
 	} else {
@@ -2289,7 +2334,7 @@ int main(void)
 	}
 
 	/* 11. a dependency with no matching recipe -> 400 */
-	if (write_recipe("needsghost", "1.0", tarball_path, sha256, "ghost") != 0) {
+	if (write_recipe(&client, "needsghost", "1.0", tarball_path, sha256, "ghost") != 0) {
 		fprintf(stderr, "FAIL: could not write needsghost recipe\n");
 		ok = 0;
 	} else {
@@ -2315,7 +2360,7 @@ int main(void)
 		                           leaf2_sha, sizeof(leaf2_sha)) != 0) {
 			fprintf(stderr, "FAIL: could not stage leaf 2.0 fixture\n");
 			ok = 0;
-		} else if (write_recipe("leaf", "2.0", leaf2_tarball, leaf2_sha, "") != 0) {
+		} else if (write_recipe(&client, "leaf", "2.0", leaf2_tarball, leaf2_sha, "") != 0) {
 			fprintf(stderr, "FAIL: could not write leaf 2.0 recipe\n");
 			ok = 0;
 		} else {
@@ -2616,7 +2661,7 @@ int main(void)
 			                           top2_sha, sizeof(top2_sha)) != 0) {
 				fprintf(stderr, "FAIL: could not stage top 2.0 fixture\n");
 				ok = 0;
-			} else if (write_recipe("top", "2.0", top2_tarball, top2_sha, "leaf") != 0) {
+			} else if (write_recipe(&client, "top", "2.0", top2_tarball, top2_sha, "leaf") != 0) {
 				fprintf(stderr, "FAIL: could not write top 2.0 recipe\n");
 				ok = 0;
 			} else {
@@ -3293,7 +3338,7 @@ skip_recipe_api:
 
 		if (stage_fixture_tarball(scratch_dir, "rollpkg", "1.0", tarball1, sizeof(tarball1), sha1,
 		                           sizeof(sha1)) != 0 ||
-		    write_recipe("rollpkg", "1.0", tarball1, sha1, NULL) != 0) {
+		    write_recipe(&client, "rollpkg", "1.0", tarball1, sha1, NULL) != 0) {
 			fprintf(stderr, "FAIL: could not stage/write rollpkg 1.0\n");
 			ok = 0;
 			goto skip_rolling_rebuild;
@@ -3462,7 +3507,7 @@ skip_rolling_rebuild:
 
 		if (stage_fixture_tarball(scratch_dir, "pinpkg", "1.0", tarball1, sizeof(tarball1), sha1,
 		                           sizeof(sha1)) != 0 ||
-		    write_recipe("pinpkg", "1.0", tarball1, sha1, NULL) != 0) {
+		    write_recipe(&client, "pinpkg", "1.0", tarball1, sha1, NULL) != 0) {
 			fprintf(stderr, "FAIL: could not stage/write pinpkg 1.0\n");
 			ok = 0;
 			goto skip_pin_isolation;
@@ -3554,7 +3599,7 @@ skip_rolling_rebuild:
 		 * exactly what it was pinned to above. */
 		if (stage_fixture_tarball(scratch_dir, "pinpkg", "2.0", tarball2, sizeof(tarball2), sha2,
 		                           sizeof(sha2)) != 0 ||
-		    write_recipe("pinpkg", "2.0", tarball2, sha2, NULL) != 0) {
+		    write_recipe(&client, "pinpkg", "2.0", tarball2, sha2, NULL) != 0) {
 			fprintf(stderr, "FAIL: could not stage/write pinpkg 2.0\n");
 			ok = 0;
 			goto skip_pin_isolation;
