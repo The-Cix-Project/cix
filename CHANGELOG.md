@@ -8,7 +8,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 ### The test floor carries cbs, so a CPDL fixture recipe can build in it (#517)
 
-A CPDL recipe is built BY cbs: cixd composes a build environment from the recipe's declared tools plus cbs itself, and with cbs installed nowhere there is nothing to compose from. `test_kmod_build`'s fixture kernel recipe became CPDL in v2.57.263 -- so it could read a kmod-build's symbols through `args input` the way the real kernel recipe does -- and the ADR-0209 floor had no cbs, so the test stopped running there: `declared build tool "cbs" is not installed anywhere` (probe-cix-testreport@16 on 192.168.15.95, 2026-09-24).
+cbs and its runtime closure -- libarchive, zstd and xz -- are seeded too. A CPDL recipe is built BY cbs: cixd composes a build environment from the recipe's declared tools plus cbs itself, and with cbs installed nowhere there is nothing to compose from. `test_kmod_build`'s fixture kernel recipe became CPDL in v2.57.263 -- so it could read a kmod-build's symbols through `args input` the way the real kernel recipe does -- and the ADR-0209 floor had no cbs, so the test stopped running there: `declared build tool "cbs" is not installed anywhere` (probe-cix-testreport@16 on 192.168.15.95, 2026-09-24).
 
 The floor seeder also hardcoded `.tar.gz`, so it could hold nothing published since ADR-0307 made `.cixpkg` the artifact format -- cbs among them. It now finds the extension the way the daemon's own `cache_artifact_path_existing()` does, `.cixpkg` then `.tar.gz`, and `test_image_fixture_clear_floor_cache()` removes both so a cleared floor leaves no cache hit behind either way.
 

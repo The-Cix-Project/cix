@@ -709,7 +709,18 @@ static const struct {
 	{ "bash", "5.2.37-2" }, { "coreutils", "9.11-3" }, { "tcc", "0.9.27-7" },
 	{ "glibc", "2.44-12" }, { "linux-headers", "6.18.40-4" },
 	{ "zlib", "1.3.2-11" }, { "flex", "2.6.4-2" }, { "binutils", "2.42-10" },
-	{ "cbs", "v0.1.55-1" },
+	/*
+	 * cbs and its runtime closure. cbs declares libarchive and zstd;
+	 * libarchive declares zlib, xz and zstd, and zlib is already here.
+	 * Seeded rather than listed in test_floor_install[] below, because
+	 * a runtime dependency installs itself when the cache holds it --
+	 * the same way zlib and flex arrive behind binutils. Without them
+	 * cbs's own install is refused before it starts: "a dependency of
+	 * this package could not be resolved" (probe-cix-testreport@18 on
+	 * 192.168.15.95, 2026-09-24).
+	 */
+	{ "cbs", "v0.1.55-1" }, { "libarchive", "3.8.1-5" }, { "zstd", "1.5.7-5" },
+	{ "xz", "5.8.3-8" },
 };
 
 /*
