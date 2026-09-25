@@ -769,6 +769,11 @@ static int write_multisrc_recipe(const struct cix_client *c, const char *name,
 	 * job succeeded. */
 	snprintf(install_body, sizeof(install_body),
 	         "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
+	         /* usr/share first: CPDL's mkdir creates the LEAF, not its
+	          * parents, which is what linux-headers@6.18.40-9 records
+	          * after 6.18.40-8 assumed otherwise. The shell form made
+	          * both in one mkdir -p. */
+	         "        mkdir \"${dest}/usr/share\" chmod 0755\n"
 	         "        mkdir \"${dest}/usr/share/multisrc\" chmod 0755\n"
 	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s\"\n"
 	         "        copy \"${src}/extra1/extra1.txt\" to "
