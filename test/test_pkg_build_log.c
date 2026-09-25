@@ -26,9 +26,20 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 extern char **environ;
+
+/* Monotonic milliseconds, for saying how long a read waited rather
+ * than only that it gave up (#519). */
+static long long now_ms(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 
 #define TEST_PORT 7639
 #define PORT_ARG "--port=7639"
@@ -354,7 +365,57 @@ static int write_all_raw(int fd, const void *buf, size_t n)
 	return 0;
 }
 
-/* Reads exactly one complete (unmasked, server-to-client) WS frame. */
+/*
+ * A websocket stream, with whatever the handshake read already took
+ * off the socket sitting in front of it.
+ *
+ * One read() of the upgrade response is entitled to return the 101
+ * headers AND whatever the daemon wrote next in the same segment --
+ * and this endpoint writes the replay snapshot immediately after the
+ * 101 (try_pkg_build_log_upgrade(), daemon/src/main.c). Discarding
+ * those trailing bytes does not cost one frame, it MISALIGNS the
+ * stream: the next two bytes read are payload, parsed as a frame
+ * header, and the bogus length that follows swallows every later
+ * frame -- the close frame included -- until the read times out.
+ *
+ * It presents as "0 frames, 0 bytes" from a daemon that did
+ * everything right, and only when the snapshot is non-empty and TCP
+ * happens to coalesce the two writes, which is why it is
+ * intermittent. Measured on 192.168.15.95, 2026-09-25
+ * (probe-cix-testreport@35-1): five runs, two failures, both with 0
+ * frames and no close frame, one with the job still "building" at
+ * the 5 s give-up and one with it already "installed" -- a spread
+ * that fits a misaligned reader and nothing else (#519).
+ */
+struct ws_reader {
+	int fd;
+	/* Sized to the handshake buffer it drains, so the whole of a
+	 * coalesced read always fits. */
+	unsigned char pending[2048];
+	size_t pending_len;
+	size_t pending_pos;
+	/* What the last failed read saw, so a caller can say which of
+	 * "the peer closed" (0) and "nothing arrived in time" (-1 with
+	 * EAGAIN) it hit -- they are different bugs and read_full used to
+	 * report both as -1. */
+	ssize_t last_n;
+	int last_errno;
+};
+
+static void ws_reader_init(struct ws_reader *r, int fd, const void *leftover, size_t leftover_len)
+{
+	memset(r, 0, sizeof(*r));
+	r->fd = fd;
+	r->last_n = 1;
+	if (leftover_len > sizeof(r->pending)) {
+		fprintf(stderr, "    ws: %zu leftover handshake bytes exceed this reader's %zu\n",
+		        leftover_len, sizeof(r->pending));
+		leftover_len = sizeof(r->pending);
+	}
+	memcpy(r->pending, leftover, leftover_len);
+	r->pending_len = leftover_len;
+}
+
 /*
  * A websocket frame header is two bytes, and read() is entitled to
  * hand back one of them.
@@ -371,28 +432,42 @@ static int write_all_raw(int fd, const void *buf, size_t n)
  * not, and treated a one-byte read as a dead connection, discarding a
  * frame that was perfectly good and only late.
  */
-static int read_full(int fd, void *buf, size_t want)
+static int ws_read_full(struct ws_reader *r, void *buf, size_t want)
 {
 	unsigned char *p = buf;
 	size_t got = 0;
 
 	while (got < want) {
-		ssize_t n = read(fd, p + got, want - got);
+		ssize_t n;
 
-		if (n <= 0)
+		if (r->pending_pos < r->pending_len) {
+			size_t avail = r->pending_len - r->pending_pos;
+			size_t take = (avail > want - got) ? want - got : avail;
+
+			memcpy(p + got, r->pending + r->pending_pos, take);
+			r->pending_pos += take;
+			got += take;
+			continue;
+		}
+		n = read(r->fd, p + got, want - got);
+		if (n <= 0) {
+			r->last_n = n;
+			r->last_errno = errno;
 			return -1;
+		}
 		got += (size_t)n;
 	}
 	return 0;
 }
 
-static int recv_ws_frame(int fd, int *out_opcode, unsigned char *out_buf, size_t out_cap, size_t *out_len)
+static int recv_ws_frame(struct ws_reader *r, int *out_opcode, unsigned char *out_buf, size_t out_cap,
+                          size_t *out_len)
 {
 	unsigned char hdr[4];
 	int opcode;
 	size_t len7, payload_len;
 
-	if (read_full(fd, hdr, 2) != 0)
+	if (ws_read_full(r, hdr, 2) != 0)
 		return -1;
 	opcode = hdr[0] & 0x0f;
 	len7 = hdr[1] & 0x7f;
@@ -400,7 +475,7 @@ static int recv_ws_frame(int fd, int *out_opcode, unsigned char *out_buf, size_t
 	if (len7 == 126) {
 		unsigned char ext[2];
 
-		if (read_full(fd, ext, 2) != 0)
+		if (ws_read_full(r, ext, 2) != 0)
 			return -1;
 		payload_len = ((size_t)ext[0] << 8) | (size_t)ext[1];
 	} else if (len7 == 127) {
@@ -417,14 +492,14 @@ static int recv_ws_frame(int fd, int *out_opcode, unsigned char *out_buf, size_t
 		        payload_len, out_cap);
 		return -1;
 	}
-
 	/* The same loop the header now uses -- one implementation, not a
 	 * second copy of it three lines further down. */
-	if (payload_len > 0 && read_full(fd, out_buf, payload_len) != 0)
+	if (payload_len > 0 && ws_read_full(r, out_buf, payload_len) != 0)
 		return -1;
 	*out_opcode = opcode;
 	*out_len = payload_len;
 	return 0;
+}
 }
 
 #define TEST_WS_KEY "dGhlIHNhbXBsZSBub25jZQ=="
@@ -704,19 +779,44 @@ int main(void)
 			const char *ended = "frame limit reached";
 			int saw_marker_before_close = 0;
 			int saw_close = 0;
+			struct ws_reader reader;
+			size_t consumed = headers_end != NULL ? (size_t)(headers_end + 4 - resp) : got;
+			long long t0;
+
+			/*
+			 * Everything this read took past the handshake is the
+			 * front of the frame stream, not spare bytes -- see
+			 * struct ws_reader. Nothing to hand over is the ordinary
+			 * case; having some is the case that used to misalign
+			 * the reader for the rest of the build (#519).
+			 */
+			ws_reader_init(&reader, fd, resp + consumed, got > consumed ? got - consumed : 0);
+			if (got > consumed)
+				fprintf(stderr, "      handshake read carried %zu byte(s) of frame data\n",
+				        got - consumed);
 
 			/* #519: the paired reading -- what the job was doing when
 			 * the tail attached, against what it was doing when the
 			 * read gave up. A run that shows "building" at both ends
 			 * produced no output for five seconds while alive. */
 			report_job_state(&client, "slowbuild", "at attach");
+			t0 = now_ms();
 
 			while (frames < 4096) {
 				int opcode;
 				size_t len, tl = strlen(tail);
 
-				if (recv_ws_frame(fd, &opcode, buf + tl, sizeof(buf) - 8, &len) != 0) {
-					ended = "read failed or timed out";
+				if (recv_ws_frame(&reader, &opcode, buf + tl, sizeof(buf) - 8, &len) != 0) {
+					/* Which failure: a peer that closed without a
+					 * close frame, or five seconds of silence. They
+					 * point at different code and used to share one
+					 * message. */
+					if (reader.last_n == 0)
+						ended = "peer closed the socket";
+					else if (reader.last_errno == EAGAIN || reader.last_errno == EWOULDBLOCK)
+						ended = "no data within the 5 s receive timeout";
+					else
+						ended = "read error";
 					break;
 				}
 				frames++;
@@ -741,20 +841,20 @@ int main(void)
 					tail[tl + len] = '\0';
 				}
 			}
+			/*
+			 * Printed whether or not the assertions passed: a pass
+			 * that is one burst frame at exit and a pass that is four
+			 * live frames are the difference between this endpoint
+			 * streaming and this test being weaker than its name, and
+			 * only this line tells them apart.
+			 */
+			fprintf(stderr, "      live tail ended on: %s, after %zu frames, %zu bytes, %lld ms\n",
+			        ended, frames, bytes, now_ms() - t0);
 			CHECK(saw_marker_before_close,
 			      "at least one build output marker arrived live, before the close frame");
 			CHECK(saw_close, "daemon sent a real WS close frame once the build finished");
-			if (!saw_marker_before_close || !saw_close) {
-				fprintf(stderr, "      live tail ended on: %s, after %zu frames, %zu bytes\n",
-				        ended, frames, bytes);
-				/* #519: which of the two remaining causes this was.
-				 * "building" here means the read gave up while the
-				 * job was alive and silent -- the socket's 5 s
-				 * SO_RCVTIMEO is then the bug, not the close frame.
-				 * Anything else means the job ended and the close
-				 * frame did not arrive, which is the daemon's. */
+			if (!saw_marker_before_close || !saw_close)
 				report_job_state(&client, "slowbuild", "when the read gave up");
-			}
 		}
 		close(fd);
 	}
