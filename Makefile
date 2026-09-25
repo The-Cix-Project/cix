@@ -412,6 +412,15 @@ selftest: $(SELFTESTS) $(SELFTEST_HELPERS)
 # /cix-workload/cix-pkgbuild was OOM-killed (probe-cix-testreport@7-1,
 # 192.168.15.95, 2026-09-23).
 #
+# A test name may be repeated in TESTREPORT_ONLY to give an
+# intermittent failure several chances in one run, so each
+# iteration gets its own log, numbered by its position. Keyed by
+# name alone, the last run overwrote the others and the report
+# printed a PASSING log under "=== failing ===" -- measured on
+# 192.168.15.95, 2026-09-25, probe-cix-testreport@34-1, where
+# test_pkg_build_log ran five times, failed twice, and both
+# failing sections showed the fifth run's passing output (cix#519).
+#
 TESTREPORT_TIMEOUT ?= 300
 # Lines of each failing test's log to print. 12 keeps a full run readable;
 # raise it to diagnose one test.
@@ -425,19 +434,20 @@ testreport: all
 	for t in $(if $(TESTREPORT_ONLY),$(addprefix $(BUILD)/,$(TESTREPORT_ONLY)),$(BUILD)/test_*); do \
 		[ -x "$$t" ] || continue; \
 		n=$$(basename $$t); total=$$((total + 1)); \
-		if timeout $(TESTREPORT_TIMEOUT) ./$$t >$(BUILD)/testreport/$$n.log 2>&1; then \
+		log=$(BUILD)/testreport/$$n.$$total.log; \
+		if timeout $(TESTREPORT_TIMEOUT) ./$$t >$$log 2>&1; then \
 			passed="$$passed $$n"; printf '  %-34s PASS\n' "$$n"; \
 		else \
 			rc=$$?; \
-			if [ $$rc -eq 124 ]; then hung="$$hung $$n"; printf '  %-34s TIMEOUT\n' "$$n"; \
-			else failed="$$failed $$n"; printf '  %-34s FAIL (exit %s)\n' "$$n" "$$rc"; fi; \
+			if [ $$rc -eq 124 ]; then hung="$$hung $$n:$$total"; printf '  %-34s TIMEOUT\n' "$$n"; \
+			else failed="$$failed $$n:$$total"; printf '  %-34s FAIL (exit %s)\n' "$$n" "$$rc"; fi; \
 		fi; \
 		set -- $$(df -Pk /run | tail -n 1); printf '  %-34s /run holds %s KiB\n' '' "$$3"; \
 	done; \
 	echo; echo "=== failing ==="; \
-	for n in $$failed; do echo "--- $$n"; tail -n $(TESTREPORT_TAIL) $(BUILD)/testreport/$$n.log | sed 's/^/    /'; done; \
+	for e in $$failed; do n=$${e%:*}; i=$${e#*:}; echo "--- $$n (run $$i)"; tail -n $(TESTREPORT_TAIL) $(BUILD)/testreport/$$n.$$i.log | sed 's/^/    /'; done; \
 	echo; echo "=== timed out ==="; \
-	for n in $$hung; do echo "--- $$n"; tail -n $(TESTREPORT_TAIL) $(BUILD)/testreport/$$n.log | sed 's/^/    /'; done; \
+	for e in $$hung; do n=$${e%:*}; i=$${e#*:}; echo "--- $$n (run $$i)"; tail -n $(TESTREPORT_TAIL) $(BUILD)/testreport/$$n.$$i.log | sed 's/^/    /'; done; \
 	echo; echo "=== summary ==="; \
 	echo "  total    : $$total"; \
 	echo "  passed   : $$(echo $$passed | wc -w)"; \
