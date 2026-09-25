@@ -694,9 +694,22 @@ static const struct {
 	 * place meant to catch it. Every local test run was validating the
 	 * world being retired.
 	 */
+	/*
+	 * cbs, because a CPDL recipe is built BY it: cixd composes a build
+	 * environment holding the declared tools plus cbs itself, and with
+	 * cbs installed nowhere there is nothing to compose from --
+	 * "declared build tool \"cbs\" is not installed anywhere"
+	 * (probe-cix-testreport@16 on 192.168.15.95, 2026-09-24). It was
+	 * not needed while every fixture recipe was a shell one, and
+	 * test_kmod_build's became CPDL in v2.57.263 so it could read a
+	 * kmod-build's symbols through `args input` the way the real kernel
+	 * recipe does (#517). Its artifact is a .cixpkg, which is what
+	 * floor_artifact_find() above exists for.
+	 */
 	{ "bash", "5.2.37-2" }, { "coreutils", "9.11-3" }, { "tcc", "0.9.27-7" },
 	{ "glibc", "2.44-12" }, { "linux-headers", "6.18.40-4" },
 	{ "zlib", "1.3.2-11" }, { "flex", "2.6.4-2" }, { "binutils", "2.42-10" },
+	{ "cbs", "v0.1.55-1" },
 };
 
 /*
@@ -708,8 +721,8 @@ static const struct {
  * installs it into the default image itself. zlib and flex arrive as
  * binutils' runtime dependencies.
  */
-const char *const test_floor_install[] = { "bash", "coreutils", "tcc", "linux-headers",
-                                           "binutils", NULL };
+const char *const test_floor_install[] = { "bash",     "coreutils", "tcc", "linux-headers",
+                                           "binutils", "cbs",       NULL };
 
 static int sha256_file_hex(const char *path, char *out, size_t out_size)
 {
@@ -868,6 +881,36 @@ static int copy_tree_via_cp(const char *src, const char *dst)
 	return 0;
 }
 
+/*
+ * Which extension this floor artifact actually has, and its full path.
+ * Returns the extension, or NULL with out holding the .tar.gz path the
+ * caller should name in its error.
+ *
+ * Both exist and both are current: everything published before ADR-0307
+ * is a .tar.gz and everything since is a .cixpkg, which is why the
+ * daemon's own cache_artifact_path_existing() tries the two in this
+ * order rather than assuming. This used to hardcode .tar.gz, so the
+ * floor could hold nothing published recently -- including `cbs`,
+ * without which a composed build environment cannot build a CPDL recipe
+ * at all, and test_kmod_build's fixture became one in v2.57.263
+ * ("declared build tool \"cbs\" is not installed anywhere",
+ * probe-cix-testreport@16 on 192.168.15.95, 2026-09-24).
+ */
+static const char *floor_artifact_find(const char *artifacts_dir, const char *name,
+                                        const char *version, char *out, size_t out_size)
+{
+	static const char *const exts[] = { "cixpkg", "tar.gz" };
+	size_t i;
+
+	for (i = 0; i < sizeof(exts) / sizeof(exts[0]); i++) {
+		snprintf(out, out_size, "%s/%s-%s.%s", artifacts_dir, name, version, exts[i]);
+		if (access(out, R_OK) == 0)
+			return exts[i];
+	}
+	snprintf(out, out_size, "%s/%s-%s.tar.gz", artifacts_dir, name, version);
+	return NULL;
+}
+
 int test_image_fixture_seed_floor_packages(const char *data_dir, const char *artifacts_dir)
 {
 	char pkg_dir[PATH_MAX], cache_dir[PATH_MAX], recipes_dir[PATH_MAX];
@@ -885,12 +928,14 @@ int test_image_fixture_seed_floor_packages(const char *data_dir, const char *art
 		char src[PATH_MAX], dst[PATH_MAX];
 		char want[128], got[128];
 		char recipe_src[PATH_MAX], recipe_dst_dir[PATH_MAX];
+		const char *ext;
 
-		snprintf(src, sizeof(src), "%s/%s-%s.tar.gz", artifacts_dir, name, version);
-		if (access(src, R_OK) != 0) {
+		ext = floor_artifact_find(artifacts_dir, name, version, src, sizeof(src));
+		if (ext == NULL) {
 			fprintf(stderr,
-			        "floor package %s@%s is not present at %s -- fetch the real artifacts "
-			        "before running this test; they are not fabricated here\n",
+			        "floor package %s@%s is not present at %s (nor .cixpkg) -- fetch the "
+			        "real artifacts before running this test; they are not fabricated "
+			        "here\n",
 			        name, version, src);
 			return -1;
 		}
@@ -910,7 +955,7 @@ int test_image_fixture_seed_floor_packages(const char *data_dir, const char *art
 		/* Into the cache: pkg_cache_has() is a stat(), so a present
 		 * tarball makes this install a cache hit -- no build
 		 * environment, no network, exactly as on a fresh host. */
-		snprintf(dst, sizeof(dst), "%s/%s-%s.tar.gz", cache_dir, name, version);
+		snprintf(dst, sizeof(dst), "%s/%s-%s.%s", cache_dir, name, version, ext);
 		if (copy_tree_via_cp(src, dst) != 0)
 			return -1;
 
@@ -950,12 +995,21 @@ int test_image_fixture_clear_floor_cache(const char *data_dir)
 
 	snprintf(cache_dir, sizeof(cache_dir), "%s/rebuildable/pkg/cache", data_dir);
 	for (i = 0; i < sizeof(floor_packages) / sizeof(floor_packages[0]); i++) {
+		static const char *const exts[] = { "cixpkg", "tar.gz" };
 		char path[PATH_MAX];
+		size_t j;
 
-		snprintf(path, sizeof(path), "%s/%s-%s.tar.gz", cache_dir, floor_packages[i].name,
-		         floor_packages[i].version);
-		if (unlink(path) != 0 && errno != ENOENT)
-			return -1;
+		/* Both, because the seed writes whichever the artifact has
+		 * and this has to leave no cache hit behind either way -- a
+		 * missed one makes the very next install silently succeed
+		 * from cache, which is the opposite of what a caller clearing
+		 * the floor wants. */
+		for (j = 0; j < sizeof(exts) / sizeof(exts[0]); j++) {
+			snprintf(path, sizeof(path), "%s/%s-%s.%s", cache_dir,
+			         floor_packages[i].name, floor_packages[i].version, exts[j]);
+			if (unlink(path) != 0 && errno != ENOENT)
+				return -1;
+		}
 	}
 	return 0;
 }

@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The test floor carries cbs, so a CPDL fixture recipe can build in it (#517)
+
+A CPDL recipe is built BY cbs: cixd composes a build environment from the recipe's declared tools plus cbs itself, and with cbs installed nowhere there is nothing to compose from. `test_kmod_build`'s fixture kernel recipe became CPDL in v2.57.263 -- so it could read a kmod-build's symbols through `args input` the way the real kernel recipe does -- and the ADR-0209 floor had no cbs, so the test stopped running there: `declared build tool "cbs" is not installed anywhere` (probe-cix-testreport@16 on 192.168.15.95, 2026-09-24).
+
+The floor seeder also hardcoded `.tar.gz`, so it could hold nothing published since ADR-0307 made `.cixpkg` the artifact format -- cbs among them. It now finds the extension the way the daemon's own `cache_artifact_path_existing()` does, `.cixpkg` then `.tar.gz`, and `test_image_fixture_clear_floor_cache()` removes both so a cleared floor leaves no cache hit behind either way.
+
 ### Publishing an artifact by name means the hostbuild entry, so a host-built kernel reaches the cache (#520)
 
 A package name is not unique: it names one installed entry per image. Both publish entry points searched `g_packages` by name alone and took the first match, and nothing sorts that array. `kernel` is installed twice on 192.168.15.95 -- in `base` from a cached artifact, and as a `__hostbuild` -- in that order, so every publish of it meant the `base` entry.
