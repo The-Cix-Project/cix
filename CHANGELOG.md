@@ -6,6 +6,24 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The live-tail test discarded the front of its own frame stream (#519)
+
+`test_pkg_build_log`'s intermittent failure was in the test, not the daemon. Its read of the upgrade response stopped at `\r\n\r\n` and threw away whatever that same `read()` had taken past it. `try_pkg_build_log_upgrade()` writes the 101 and then, when the capture buffer is non-empty, the replay snapshot, as two writes on a blocking socket; on loopback TCP is free to deliver both in one segment.
+
+Measured on 192.168.15.95, 2026-09-25 (probe-cix-testreport@38-1, ten runs): **every run** carried leftover bytes -- seven carried 11, which is a whole frame (2-byte header plus `marker-1\n`), and three carried 2, which is the header alone. Discarding a whole frame costs one marker and the test still passes on the next. Discarding the header leaves the payload on the socket, so the next two bytes read are `m`, `a` -- parsed as opcode 0x0d with a 97-byte payload, against a stream that has about 46 bytes left in it. The reader then waits for bytes that never come, sees the socket close at teardown, and reports the close frame as payload: `0 frames, 0 bytes`, no close frame, from a daemon that did everything right.
+
+That is the whole intermittency, and the rates line up: 3 of 10 runs carried a split header, and 2 of 5 runs failed at v2.57.279.
+
+`struct ws_reader` keeps those bytes in front of the socket. `test_console_exec`, the precedent this test cites for speaking WebSocket by hand, already had `ws_take_leftover()` for exactly this -- the fix existed in the file the test was modelled on and was not carried across. #524 tracks the duplication.
+
+Three supporting changes, each of which was needed to see the above:
+
+- **`make testreport` writes one log per run** (`build/testreport/<name>.<n>.log`). A name may be repeated in `TESTREPORT_ONLY` to give an intermittent failure several chances; keyed by basename alone, the last run overwrote the rest, and `=== failing ===` then printed a *passing* log under two failing entries (probe-cix-testreport@34-1).
+- **With `TESTREPORT_ONLY` set, every run's log is printed**, passing or not. Naming a test means diagnosing it, and the frames/bytes/ms line -- the thing that distinguishes four live frames from one burst at exit -- only prints on a run whose log is shown.
+- **The test says which failure it hit**: a peer that closed without a close frame, five seconds of silence, or a real error, instead of one message for all three; and it prints the job's own state at the attach and at the give-up, and how long the read waited.
+
+The daemon is unchanged. Its only two paths that close a build's output pipe are the EOF handler, which calls `build_log_ws_teardown_all()` in the same breath, and `pkg_build_spawn_failed()`, which runs when no container was ever created and so no viewer can be attached.
+
 ### test_pkg, test_pkg_cache and test_kmod_build gate a release (#485)
 
 All three ran for the first time on a Cix host on 2026-09-25 (probe-cix-testreport@26, 192.168.15.95) and all three passed, unchanged. They are now in `SELFTESTS`, as `FLOOR_SELFTESTS`.
