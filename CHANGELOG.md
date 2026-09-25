@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The test floor waits for the C library before installing anything (#485)
+
+The daemon installs glibc into the default image itself when it finds none (#186), asynchronously, while it comes up. `test_floor_install_all()` never waited for that and raced it. Measured on 192.168.15.95, 2026-09-25 (probe-cix-testreport@24, cix v2.57.273, the first build whose `test_kmod_build` could print the daemon's own log): the daemon began unpacking glibc into `__pkgbuild-0` and never finished before the test gave up, while eleven floor installs ran past it, each logging `skipping the undeclared-link check -- declared dependency "glibc" is not installed in image "base"`, and the kmod-build that followed failed with `declared build tool "glibc" is not installed anywhere`. Teardown found glibc's extraction still half-written in `dest.cbs-tmp-PzNrAx`.
+
+It was intermittent exactly as a race is: the same floor failed with `CIXPKG-E4001` in one run and with no extraction error at all in the next, because what differed was timing rather than state. That cost three probes inspecting an artifact that was always fine and one filed against cbs -- cix-build-system#233 is a real diagnostic defect, since `cbs extract` reports a destination fault by naming the artifact, but it was a symptom here and not the cause.
+
 ### test_kmod_build prints the daemon's own log, not only the build's (#485)
 
 `logstore_write()` does not echo to stderr -- `daemon/src/logstore.c`'s only `fprintf` is for a malformed state file -- so everything cixd records about an install lands in the log store inside the test's `mkdtemp` data directory and is deleted with it. v2.57.272 added a line naming the destination, its parent and the `rmdir()` before cixd forks `cbs extract`, and **none of it reached the run that needed it** (probe-cix-testreport@23 on 192.168.15.95, 2026-09-25): the daemon lines that do appear in a test's output are its own `fprintf()`s, not its log. Both failure paths now print `GET /v1/system/logs?source=cixd&tail=40` as well, following the pattern `test_console_exec` already uses.

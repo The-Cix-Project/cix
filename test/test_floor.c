@@ -66,10 +66,76 @@ static int floor_install_one(const struct cix_client *c, const char *name)
 	return -1;
 }
 
+/*
+ * glibc, which nothing here installs, before anything that depends on
+ * it -- and everything does.
+ *
+ * The daemon installs the C library into the default image itself when
+ * it finds none (#186), asynchronously, as it comes up. Nothing waited
+ * for that, so the floor raced it and lost: measured on 192.168.15.95,
+ * 2026-09-25 (probe-cix-testreport@24, cix v2.57.273), the daemon began
+ * unpacking glibc into __pkgbuild-0 and never finished before the test
+ * gave up, while eleven floor installs ran past it, each one logging
+ *
+ *   pkg install: <name>: skipping the undeclared-link check --
+ *   declared dependency "glibc" is not installed in image "base" (#389)
+ *
+ * and the kmod-build that followed failed with "declared build tool
+ * \"glibc\" is not installed anywhere". Teardown then found glibc's
+ * extraction still on disk, half-written, in dest.cbs-tmp-PzNrAx.
+ *
+ * It was intermittent in exactly the way a race is: the same floor
+ * failed with CIXPKG-E4001 in one run and with no extraction error at
+ * all in the next, because what differed was timing rather than state
+ * -- which is what sent three probes into the artifact and one into
+ * cbs before the daemon's own log was readable here (#485).
+ *
+ * An absent entry counts as "not yet": the daemon may not have created
+ * it when the first poll lands.
+ */
+static int floor_wait_for_libc(const struct cix_client *c)
+{
+	struct cix_response r;
+	time_t start = time(NULL);
+	int i;
+
+	for (i = 0; i < FLOOR_POLLS; i++) {
+		const char *state = NULL;
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(c, "GET", "/v1/pkg/glibc@base", NULL, &r) == 0 &&
+		    r.json != NULL)
+			state = json_as_string(json_object_get(r.json, "state"));
+		if (state != NULL && strcmp(state, "installed") == 0) {
+			cix_response_free(&r);
+			fprintf(stderr, "    floor: glibc (the daemon's own) ready in %lds\n",
+			        (long)(time(NULL) - start));
+			return 0;
+		}
+		if (state != NULL && strcmp(state, "failed") == 0) {
+			const char *err = json_as_string(json_object_get(r.json, "error"));
+
+			fprintf(stderr, "FAIL: the daemon's own glibc install failed: %.240s\n",
+			        err != NULL ? err : "(no error recorded)");
+			cix_response_free(&r);
+			return -1;
+		}
+		cix_response_free(&r);
+		usleep(FLOOR_POLL_US);
+	}
+	fprintf(stderr,
+	        "FAIL: the daemon's own glibc install did not reach installed in %d s -- every "
+	        "floor package depends on it, so nothing after this would mean anything\n",
+	        FLOOR_POLLS * (FLOOR_POLL_US / 1000) / 1000);
+	return -1;
+}
+
 int test_floor_install_all(const struct cix_client *c)
 {
 	int i;
 
+	if (floor_wait_for_libc(c) != 0)
+		return -1;
 	for (i = 0; test_floor_install[i] != NULL; i++)
 		if (floor_install_one(c, test_floor_install[i]) != 0)
 			return -1;
