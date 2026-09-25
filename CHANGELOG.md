@@ -22,6 +22,12 @@ It is 64 now. The cost is bounded and small: `struct buildenv_tool` is 136 bytes
 
 The same constant was also the guard on how deep a dependency chain under one tool may be chased, so raising the breadth of an environment would silently have raised that too. They have nothing to do with each other and their errors always said so — "too deep" against "more than N packages"; only the numbers were entangled. Depth is now `PKG_BUILDENV_MAX_DEPTH`, still 32, which is far past anything real.
 
+### test_pkg_build_log says what the job was doing when the tail gave up (#519)
+
+The live tail intermittently gets its `101` and then neither a frame nor a close frame, reporting `0 frames, 0 bytes`. That single line is consistent with three different causes and distinguishes none of them: the build finished before the attach and nothing was left to send; the build was alive and produced no output inside the socket's 5 s `SO_RCVTIMEO`; or the connection really was on the attach list and teardown missed it.
+
+v2.57.277 ruled out the first — an attach whose output fd is already closed now answers 404 — and the failure survived, which means a guess was wrong rather than a fix being wrong. The test now reports the job's own state at both ends of the read, so the next occurrence names its cause instead of inviting a fourth guess: `building` at both ends means the timeout is the bug, anything else means the close frame is.
+
 ### A live-tail attach whose stream has already ended is a 404, not a hang (#519)
 
 `handle_pkg_build_output_event()` closes the build's output fd and calls `build_log_ws_teardown_all()` together at EOF, and that teardown is the only thing that ever sends a WebSocket close frame. An attach landing between those two facts — output finished, registry still showing the build container running — got its `101`, joined a list nothing would ever close, and sat until the client's own read timeout. It reported as `0 frames, 0 bytes` and no close frame, which reads as a dead endpoint rather than a race.

@@ -243,6 +243,46 @@ static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 }
 
 /* Polls GET /v1/pkg/{name} until its state matches want, or times out. */
+
+/*
+ * #519: what the job was doing, printed at the two moments that
+ * distinguish this bug's candidate causes.
+ *
+ * The live tail intermittently gets its 101 and then neither a frame
+ * nor a close frame, and reports "0 frames, 0 bytes" -- which is
+ * consistent with three different things and tells them apart from
+ * none of them: the build finished before the attach and nothing was
+ * left to send; the build was still running and had produced no output
+ * within the socket's 5 s SO_RCVTIMEO; or the conn really was on the
+ * attach list and teardown missed it.
+ *
+ * v2.57.277 ruled out the first -- the attach now answers 404 when the
+ * chain's output fd is already closed -- and the failure survived, so
+ * a guess was wrong rather than a fix being wrong. The remaining two
+ * are told apart by the job's own state at the moment the read gave
+ * up: still "building" means the timeout is the bug, anything else
+ * means the close frame is.
+ */
+static void report_job_state(const struct cix_client *c, const char *name, const char *when)
+{
+	struct cix_response r;
+	const char *state = NULL, *err = NULL;
+	char path[256];
+
+	memset(&r, 0, sizeof(r));
+	snprintf(path, sizeof(path), "/v1/pkg/%s", name);
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0 || r.json == NULL) {
+		fprintf(stderr, "      job state %s: GET /v1/pkg/%s unavailable (status=%d)\n", when,
+		        name, r.status);
+		cix_response_free(&r);
+		return;
+	}
+	state = json_as_string(json_object_get(r.json, "state"));
+	err = json_as_string(json_object_get(r.json, "error"));
+	fprintf(stderr, "      job state %s: %s%s%s\n", when, state != NULL ? state : "(none)",
+	        err != NULL && err[0] != '\0' ? ", error: " : "", err != NULL ? err : "");
+	cix_response_free(&r);
+}
 static int wait_for_pkg_state(const struct cix_client *c, const char *name, const char *want,
                                int max_attempts)
 {
@@ -665,6 +705,12 @@ int main(void)
 			int saw_marker_before_close = 0;
 			int saw_close = 0;
 
+			/* #519: the paired reading -- what the job was doing when
+			 * the tail attached, against what it was doing when the
+			 * read gave up. A run that shows "building" at both ends
+			 * produced no output for five seconds while alive. */
+			report_job_state(&client, "slowbuild", "at attach");
+
 			while (frames < 4096) {
 				int opcode;
 				size_t len, tl = strlen(tail);
@@ -698,9 +744,17 @@ int main(void)
 			CHECK(saw_marker_before_close,
 			      "at least one build output marker arrived live, before the close frame");
 			CHECK(saw_close, "daemon sent a real WS close frame once the build finished");
-			if (!saw_marker_before_close || !saw_close)
+			if (!saw_marker_before_close || !saw_close) {
 				fprintf(stderr, "      live tail ended on: %s, after %zu frames, %zu bytes\n",
 				        ended, frames, bytes);
+				/* #519: which of the two remaining causes this was.
+				 * "building" here means the read gave up while the
+				 * job was alive and silent -- the socket's 5 s
+				 * SO_RCVTIMEO is then the bug, not the close frame.
+				 * Anything else means the job ended and the close
+				 * frame did not arrive, which is the daemon's. */
+				report_job_state(&client, "slowbuild", "when the read gave up");
+			}
 		}
 		close(fd);
 	}
