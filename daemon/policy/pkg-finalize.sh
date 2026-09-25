@@ -32,7 +32,7 @@ set -e
 
 cix_finalize() {
 	local dest="$1"
-	local elfmagic armagic f base stem magic arsize t
+	local elfmagic armagic f base stem magic arsize t compiler_runtimes
 	local shared_stems=""
 	local -a elf_dyn=() elf_rel=() archives=()
 
@@ -187,9 +187,41 @@ cix_finalize() {
 	# would fail that build for no gain -- the archives this clause
 	# keeps are small, and the debug weight this policy exists to
 	# remove is in shared objects and executables.
+	#
+	# EXCEPT a compiler runtime, which is not a duplicate of its shared
+	# counterpart but the other half of a linking mode the driver
+	# offers (ADR-0310, #521). `gcc -static-libstdc++` looks for
+	# libstdc++.a specifically; dropping it does not make a package
+	# smaller, it makes that flag impossible, and the flag exists so a
+	# binary can carry the compiler's runtime and need only glibc
+	# wherever it runs.
+	#
+	# The asymmetry is what gave this away: `-static-libgcc` worked and
+	# `-static-libstdc++` did not, from the same flag pair with the
+	# same intent, because libgcc.a has no libgcc.so beside it -- the
+	# shared one is libgcc_s.so -- while libstdc++.a has libstdc++.so.
+	# A filename decided which half of one feature survived. Measured
+	# on 192.168.15.95, 2026-09-24: node's --partly-static died at
+	# `ld: cannot find -lstdc++` against gcc@16.2.0-17 built under this
+	# policy, while gcc@16.2.0-13, an artifact predating it, still
+	# carried the archive.
+	#
+	# Named, and named here rather than inferred, because there is no
+	# property of the FILE that distinguishes a toolchain's own runtime
+	# from any other library shipping both forms. This is gcc's runtime
+	# set; libtcc1.a needs no entry, having no shared counterpart to be
+	# dropped against. CLAUDE.md's "never -static" is about glibc, and
+	# -static-libstdc++ still links glibc dynamically.
+	#
+	compiler_runtimes="|libstdc++|libsupc++|libgcc|libgcc_eh|libgcc_s|libatomic|libgomp|libitm|libquadmath|libssp|libobjc|"
 	for f in "${archives[@]}"; do
 		base="${f##*/}"
 		stem="${base%.a}"
+		case "$compiler_runtimes" in
+		*"|$stem|"*)
+			continue
+			;;
+		esac
 		case "$shared_stems" in
 		*"|$stem|"*)
 			rm -f "$f"

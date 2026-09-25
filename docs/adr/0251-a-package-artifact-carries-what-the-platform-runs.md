@@ -86,6 +86,8 @@ linking or module loading silently:
 
 ### 2. Static archives are dropped where a shared library supersedes them
 
+*Amended by [ADR-0310](0310-a-compiler-runtime-archive-is-not-a-duplicate.md), 2026-09-25:* a compiler runtime archive is kept even when a shared object of the same stem ships beside it. `libstdc++.a` is not a duplicate of `libstdc++.so` but what `-static-libstdc++` links, and dropping it made that flag impossible while `-static-libgcc` kept working, purely because the shared libgcc is named `libgcc_s.so`. Everything else in this clause stands.
+
 CLAUDE.md's toolchain rule is "Dynamic linking against system glibc
 always — never `-static`". An archive whose shared counterpart ships
 beside it is therefore, on this platform, dead weight by charter.

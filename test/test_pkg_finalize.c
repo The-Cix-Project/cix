@@ -317,6 +317,21 @@ static void case_classification(const char *root)
 	snprintf(path, sizeof(path), "%s/usr/lib/libfoo.a", dest);
 	wr_ar(path);
 
+	/*
+	 * A compiler runtime WITH a shared counterpart -- kept anyway
+	 * (ADR-0310, #521). libstdc++.a is not a duplicate of libstdc++.so;
+	 * it is what `gcc -static-libstdc++` links, and dropping it made
+	 * that flag impossible platform-wide while -static-libgcc kept
+	 * working, because libgcc.a has no libgcc.so beside it. Both stems
+	 * are staged here so the pair is asserted together below.
+	 */
+	snprintf(path, sizeof(path), "%s/usr/lib64/libstdc++.so.6", dest);
+	wr_elf(path);
+	snprintf(path, sizeof(path), "%s/usr/lib64/libstdc++.a", dest);
+	wr_ar(path);
+	snprintf(path, sizeof(path), "%s/usr/lib64/libgcc.a", dest);
+	wr_ar(path);
+
 	/* archives WITHOUT one -- kept, and this is the important half */
 	snprintf(path, sizeof(path), "%s/usr/lib/libtcc1.a", dest);
 	wr_ar(path);
@@ -403,6 +418,16 @@ static void case_classification(const char *root)
 	/* #324: empty archive beside its own shared stem -- kept. */
 	want(dest, "usr/lib/libpthread.a", 1);
 	want(dest, "lib/x86_64-linux-gnu/libpthread.so.0", 1);
+
+	/*
+	 * #521: the compiler runtime survives its own shared counterpart.
+	 * libgcc.a is the control -- it was always kept, by the accident
+	 * that the shared one is libgcc_s.so rather than libgcc.so, and a
+	 * rule that kept only it would leave the asymmetry in place.
+	 */
+	want(dest, "usr/lib64/libstdc++.a", 1);
+	want(dest, "usr/lib64/libstdc++.so.6", 1);
+	want(dest, "usr/lib64/libgcc.a", 1);
 
 	want(dest, "usr/lib/libtcc1.a", 1);
 	want(dest, "usr/lib/libc_nonshared.a", 1);

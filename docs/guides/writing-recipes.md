@@ -463,7 +463,7 @@ The test to apply: *does everything this `.pc` file promises actually exist in `
 `pkg_install()` is finished when the package's files are in `$PKG_DESTDIR`. The daemon then runs a finalize phase over that tree, in your build container, before it becomes an artifact ([ADR-0251](../adr/0251-a-package-artifact-carries-what-the-platform-runs.md)). It:
 
 - **strips ELF output** — `--strip-unneeded` for shared objects and executables, `--strip-debug` for relocatable objects (ELF type `ET_REL`: `.o`, `.ko`, Go's `.syso` -- chosen by the ELF header, not the file name). An archive it keeps is left alone (`go-bootstrap` ships Go `.a` files that `strip` rejects);
-- **drops `libfoo.a` when `libfoo.so*` ships beside it** — this platform links dynamically always, so that archive is dead weight. An archive with **no** shared counterpart (`libtcc1.a`, `libgcc.a`, `libc_nonshared.a`) is kept;
+- **drops `libfoo.a` when `libfoo.so*` ships beside it** — this platform links dynamically always, so that archive is dead weight. An archive with **no** shared counterpart (`libtcc1.a`, `libgcc.a`, `libc_nonshared.a`) is kept; **A compiler runtime archive is kept regardless** (`libstdc++`, `libsupc++`, `libgcc*`, `libatomic`, `libgomp`, `libitm`, `libquadmath`, `libssp`, `libobjc`): it is not a duplicate but what `-static-libstdc++` and `-static-libgcc` link, and dropping `libstdc++.a` made the first of those impossible platform-wide while the second kept working purely because the shared libgcc is named `libgcc_s.so` ([ADR-0310](../adr/0310-a-compiler-runtime-archive-is-not-a-duplicate.md), #521).
 - **removes `*.la`**.
 
 It does **not** remove documentation or locale trees

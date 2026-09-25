@@ -14,6 +14,14 @@ They are separated in the Makefile rather than folded into the list above becaus
 
 `test_pkg` is the package manager's own test and gated nothing until now. `test_kmod_build` gated a shipped feature (#517) through eleven releases that each reported `SELFTEST: PASS`.
 
+### A compiler runtime archive survives the finalize policy (#521, ADR-0310)
+
+ADR-0251's clause 2 drops a static archive when a shared object of the same stem ships beside it. That is right for an ordinary library and wrong for the toolchain's own runtime: `gcc -static-libstdc++` links `libstdc++.a` specifically, so dropping it removes a linking mode rather than weight — and the mode exists so a binary can carry the compiler's runtime and need only glibc wherever it runs.
+
+The asymmetry is what exposed it. `-static-libgcc` worked and `-static-libstdc++` did not, from the same flag pair with the same intent, because `libgcc.a` has no `libgcc.so` beside it — the shared one is `libgcc_s.so`. A filename decided which half of one feature survived. Found on 192.168.15.95, 2026-09-24, when node's `--partly-static` died in 40 seconds at `ld: cannot find -lstdc++` against `gcc@16.2.0-17` built under the policy, while `gcc@16.2.0-13`, an artifact predating it, still carried the archive — #328's shape again, a pre-policy artifact masking a policy defect until something rebuilds.
+
+Eleven stems are named in `pkg-finalize.sh` rather than inferred, because nothing about the file distinguishes a toolchain's runtime from any other library shipping both forms. `test_pkg_finalize` stages `libstdc++.a` beside `libstdc++.so.6` and requires it to survive, with `libgcc.a` as the control that was always kept by accident of naming.
+
 ### The floor's glibc version has one definition again (#485)
 
 `TEST_FLOOR_GLIBC_VERSION` exists because moving the floor off libc-dev (#187) once left two tests asserting a version the floor no longer installed, which reports as a package never reaching `installed` and says nothing about a version. It happened again in exactly that shape: v2.57.271 moved the floor's glibc to 2.44-19 for the C.UTF-8 locale by editing the table's own literal, and the constant stayed at 2.44-12, so `test_rolling_restart` failed on `glibc@rollctrimg reaches installed` in the full-suite run at v2.57.275 (104 tests, 92 pass). `test_installer` reads the same constant.
