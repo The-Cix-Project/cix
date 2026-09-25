@@ -365,7 +365,7 @@ int main(void)
 			fprintf(stderr, "FAIL: backup pkg_recipes missing or not an object\n");
 			ok = 0;
 		} else {
-			const struct json_value *entry = json_object_get(recipes, "backuptestpkg/1.0-1");
+			const struct json_value *entry = json_object_get(recipes, "backuptestpkg/1.0-1/build.cbs");
 			const char *content = entry != NULL ? json_as_string(entry) : NULL;
 
 			if (content == NULL || strstr(content, "package \"backuptestpkg\"") == NULL) {
