@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cixd records what cbs is about to see before it unpacks a .cixpkg (#485, cix-build-system#233)
+
+`cbs extract` answers a DESTINATION fault with `<artifact>: error[CIXPKG-E4001]: artifact extraction failed`, naming the artifact. Measured on 192.168.15.95, 2026-09-25 (`probe-cixpkg-extract@4`): a destination whose parent is missing and a destination that already exists both produce that line and exit 4, and the same message covers an artifact that genuinely cannot be read. The daemon forks that child and keeps its stderr, so a reader got a message about bytes that were fine -- three probes went into the artifact before the destination was suspected.
+
+`cixpkg_unpack_start()` now logs the state cbs is about to see, where it is still knowable: the artifact and whether it is readable, whether the destination existed, what its `rmdir()` did, and whether the destination's parent is a directory. The completion path already reports `cbs extract exited %d`, so a failure now has both halves.
+
+Its four refusals also say which one they were. All returned a bare -1, which the caller renders as "start the cixpkg unpack" -- one message for a missing engine, a destination that would not go away, a failed `fork()` and a failed `pidfd_open()`.
+
 ### The test floor's glibc ships C.UTF-8, so a CPDL build in it can read an archive (#485)
 
 cbs takes a UTF-8 `LC_CTYPE` before reading an archive header (cix-build-system#232), and that locale ships at `/usr/lib/locale/C.utf8` only from glibc 2.44-19 (#518). The floor pinned 2.44-12, so every CPDL build there died at its first source: `error[CPDL-E6001]: source: source "kernel": cannot initialize a UTF-8 archive locale` (probe-cix-testreport@21 on 192.168.15.95, 2026-09-25). Found by the build-log printing added alongside it, in the first run that had it.

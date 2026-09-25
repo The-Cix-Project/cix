@@ -8921,20 +8921,81 @@ static int write_kmod_extra_config(const char *extra_dir, const char *symbols)
 static int cixpkg_unpack_start(const char *artifact, const char *dest_dir, pid_t *out_pid,
                                 int *out_pidfd)
 {
+	struct stat st;
+	char parent[PATH_MAX];
+	char *slash;
 	pid_t pid;
 	int pidfd;
+	int dest_existed;
+	int rmdir_errno = 0;
+	int parent_is_dir;
 
 	*out_pid = -1;
 	*out_pidfd = -1;
 
-	if (access(PKG_CBS_BIN, X_OK) != 0)
+	/*
+	 * Each refusal below says which one it was. They all returned a
+	 * bare -1, which the caller renders as "start the cixpkg unpack"
+	 * -- one message for a missing engine, a destination that would
+	 * not go away, and a fork that failed, which are three different
+	 * things to fix.
+	 */
+	if (access(PKG_CBS_BIN, X_OK) != 0) {
+		logstore_write("cixd", "error",
+		                "cixpkg unpack: %s is not executable, and nothing else reads this "
+		                "format (ADR-0307 clause 6)",
+		                PKG_CBS_BIN);
 		return -1;
-	if (rmdir(dest_dir) != 0 && errno != ENOENT)
-		return -1;
+	}
+
+	dest_existed = stat(dest_dir, &st) == 0;
+	if (rmdir(dest_dir) != 0) {
+		rmdir_errno = errno;
+		if (rmdir_errno != ENOENT) {
+			logstore_write("cixd", "error",
+			                "cixpkg unpack: rmdir(\"%s\") failed: %s -- cbs refuses a "
+			                "destination that already exists, so it is not started",
+			                dest_dir, strerror(rmdir_errno));
+			return -1;
+		}
+	}
+
+	/*
+	 * #485, and cix-build-system#233 is why this is worth a line of
+	 * its own: `cbs extract` answers a DESTINATION fault with
+	 * "<artifact>: error[CIXPKG-E4001]: artifact extraction failed",
+	 * naming the artifact. Measured on 192.168.15.95, 2026-09-25
+	 * (probe-cixpkg-extract@4): a destination whose parent is missing
+	 * and a destination that already exists produce that same line and
+	 * the same exit 4, and so, presumably, does an artifact that
+	 * genuinely cannot be read. The daemon keeps the child's stderr and
+	 * nothing else, so a reader gets a message about bytes that are
+	 * usually fine -- three probes went into the artifact before the
+	 * destination was suspected at all.
+	 *
+	 * So the state cbs is about to see is recorded here, where it is
+	 * still knowable, rather than inferred afterwards from a message
+	 * that points the wrong way. It stays once cbs#233 is fixed: the
+	 * fork loses this context either way.
+	 */
+	snprintf(parent, sizeof(parent), "%s", dest_dir);
+	slash = strrchr(parent, '/');
+	if (slash != NULL && slash != parent)
+		*slash = '\0';
+	parent_is_dir = stat(parent, &st) == 0 && S_ISDIR(st.st_mode);
+	logstore_write("cixd", "info",
+	                "cixpkg unpack: %s -> %s: artifact %s, destination %s, rmdir %s, parent "
+	                "\"%s\" %s",
+	                artifact, dest_dir, access(artifact, R_OK) == 0 ? "readable" : "NOT READABLE",
+	                dest_existed ? "existed" : "was already absent",
+	                rmdir_errno == 0 ? "removed it" : strerror(rmdir_errno), parent,
+	                parent_is_dir ? "is a directory" : "IS NOT A DIRECTORY");
 
 	pid = fork();
-	if (pid < 0)
+	if (pid < 0) {
+		logstore_write("cixd", "error", "cixpkg unpack: fork failed: %s", strerror(errno));
 		return -1;
+	}
 	if (pid == 0) {
 		char *argv[] = { (char *)PKG_CBS_BIN, (char *)"extract", (char *)artifact,
 		                 (char *)"--into", (char *)dest_dir, NULL };
@@ -8944,6 +9005,10 @@ static int cixpkg_unpack_start(const char *artifact, const char *dest_dir, pid_t
 	}
 	pidfd = sys_pidfd_open(pid, 0);
 	if (pidfd < 0) {
+		logstore_write("cixd", "error",
+		                "cixpkg unpack: pidfd_open on the cbs child failed: %s -- killed it "
+		                "rather than leave it untracked",
+		                strerror(errno));
 		kill(pid, SIGKILL);
 		waitpid(pid, NULL, 0);
 		return -1;
