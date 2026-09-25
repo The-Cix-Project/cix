@@ -18,8 +18,8 @@
  * Kept hermetic and gcc-free: the "package" installed is a real,
  * already-compiled test binary (build/daemon_child, dynamically linked
  * against system glibc like everything else this project produces) tar-
- * wrapped as the recipe's declared source, with a no-op build phase and
- * an install that just copies it -- pkg_seed_image_baseline()
+ * wrapped as the pkg_source payload, with a no-op pkg_build() and a
+ * pkg_install() that just copies it -- pkg_seed_image_baseline()
  * already stages the runtime lib closure (ld-linux/libc/...) onto
  * every image, so this binary runs inside the container with no
  * compiler ever invoked.
@@ -182,58 +182,6 @@ static int stage_binary_fixture(const char *scratch_dir, const char *version,
 
 	return compute_file_sha256(out_tarball_path, out_sha256, sha256_size);
 }
-/*
- * The rollsvc recipe, rendered once for all three call sites -- the
- * one written straight to disk below, and the 2.0 and 3.0 revisions
- * published over POST /v1/pkg/recipes later in this file. They were
- * three copies of the same text, and converting them to CPDL was a
- * chance to stop that rather than make it three CPDL copies (cix#516).
- *
- * rollsvc is already a real ELF binary in the tarball, so there is
- * nothing to compile: the build phase is a no-op and the install copies
- * it. chmod is explicit because this test runs the result -- a
- * container whose service binary is not executable fails at execve with
- * a message about the container, not about the mode.
- */
-static const char *rollsvc_recipe_text(const char *version, const char *tarball_path,
-                                        const char *sha256)
-{
-	static char buf[1600];
-
-	snprintf(buf, sizeof(buf),
-	         "package \"rollsvc\" {\n"
-	         "    version \"%s\"\n"
-	         "    release 1\n"
-	         "    format \"cixpkg\"\n"
-	         "\n"
-	         "    sources {\n"
-	         "        main \"rollsvc\" {\n"
-	         "            url \"%s\"\n"
-	         "            sha256 \"%s\"\n"
-	         "        }\n"
-	         "    }\n"
-	         "\n"
-	         "    requires {\n"
-	         "        build {\n"
-	         "            tool \"bash\"\n"
-	         "            tool \"coreutils\"\n"
-	         "        }\n"
-	         "    }\n"
-	         "\n"
-	         "    build {\n"
-	         "        run \"true\" {\n"
-	         "        }\n"
-	         "    }\n"
-	         "\n"
-	         "    install {\n"
-	         "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
-	         "        copy \"${src}/rollsvc/rollsvc-%s/rollsvc\" to \"${dest}/usr/bin/rollsvc\"\n"
-	         "        chmod 0755 \"${dest}/usr/bin/rollsvc\"\n"
-	         "    }\n"
-	         "}\n",
-	         version, test_http_src(tarball_path), sha256, version);
-	return buf;
-}
 
 static int write_binary_recipe(const char *pkg_state_dir, const char *version,
                                 const char *tarball_path, const char *sha256)
@@ -253,15 +201,22 @@ static int write_binary_recipe(const char *pkg_state_dir, const char *version,
 
 	snprintf(name_dir, sizeof(name_dir), "%s/recipes/rollsvc", pkg_state_dir);
 	mkdir(name_dir, 0755);
-	/* <version>-<release>, which is the store's shape whatever the
-	 * format -- only the filename says which it is (ADR-0305). */
-	snprintf(path, sizeof(path), "%s/%s-1", name_dir, version);
+	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
 	mkdir(path, 0755);
-	snprintf(path, sizeof(path), "%s/recipes/rollsvc/%s-1/build.cbs", pkg_state_dir, version);
+	snprintf(path, sizeof(path), "%s/recipes/rollsvc/%s/build.sh", pkg_state_dir, version);
 	f = fopen(path, "w");
 	if (f == NULL)
 		return -1;
-	fputs(rollsvc_recipe_text(version, tarball_path, sha256), f);
+	fprintf(f, "pkg_name=rollsvc\n");
+	fprintf(f, "pkg_version=%s\n", version);
+	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
+	fprintf(f, "pkg_sha256=%s\n", sha256);
+	fprintf(f, "pkg_depends=\"\"\n");
+	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n");
+	/* No compiler needed -- rollsvc is already a real ELF binary. */
+	fprintf(f, "pkg_build() {\n\t:\n}\n\n");
+	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
+	           "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n\tchmod +x \"$PKG_DESTDIR/usr/bin/rollsvc\"\n}\n");
 	fclose(f);
 	return 0;
 }
@@ -519,7 +474,17 @@ int main(void)
 		 * already-published version and reject the POST as a 409
 		 * (recipe versions are immutable). */
 		{
-			const char *content = rollsvc_recipe_text("2.0", tarball_v2, sha_v2);
+			char content[1200];
+
+			snprintf(content, sizeof(content),
+			         "pkg_name=rollsvc\npkg_version=2.0\npkg_source=%s\n"
+			         "pkg_sha256=%s\npkg_depends=\"\"\n"
+		         "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
+			         "pkg_build() {\n\t:\n}\n\n"
+			         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
+			         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n\tchmod +x "
+			         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n}\n",
+			         test_http_src(tarball_v2), sha_v2);
 
 			jw_init(&w);
 			jw_obj_open(&w);
@@ -527,8 +492,6 @@ int main(void)
 			jw_str(&w, "rollsvc");
 			jw_key(&w, "content");
 			jw_str(&w, content);
-			jw_key(&w, "format");
-			jw_str(&w, "pbs");
 			jw_obj_close(&w);
 			w.buf[w.len] = '\0';
 			snprintf(body, sizeof(body), "%s", w.buf);
@@ -654,7 +617,15 @@ int main(void)
 		                            sizeof(tarball_v3), sha_v3, sizeof(sha_v3)) == 0,
 		      "stage rollsvc 3.0 fixture");
 
-		snprintf(content, sizeof(content), "%s", rollsvc_recipe_text("3.0", tarball_v3, sha_v3));
+		snprintf(content, sizeof(content),
+		         "pkg_name=rollsvc\npkg_version=3.0\npkg_source=%s\n"
+		         "pkg_sha256=%s\npkg_depends=\"\"\n"
+		         "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
+		         "pkg_build() {\n\t:\n}\n\n"
+		         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
+		         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n\tchmod +x "
+		         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n}\n",
+		         test_http_src(tarball_v3), sha_v3);
 
 		jw_init(&w);
 		jw_obj_open(&w);
@@ -662,8 +633,6 @@ int main(void)
 		jw_str(&w, "rollsvc");
 		jw_key(&w, "content");
 		jw_str(&w, content);
-		jw_key(&w, "format");
-		jw_str(&w, "pbs");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		snprintf(body, sizeof(body), "%s", w.buf);
