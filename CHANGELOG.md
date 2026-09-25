@@ -14,6 +14,14 @@ They are separated in the Makefile rather than folded into the list above becaus
 
 `test_pkg` is the package manager's own test and gated nothing until now. `test_kmod_build` gated a shipped feature (#517) through eleven releases that each reported `SELFTEST: PASS`.
 
+### A composed build environment holds 64 packages, and depth is its own limit (#485)
+
+`PKG_BUILDENV_MAX_TOOLS` was 32, counted over the declared tools, their runtime dependencies and the implicit glibc and cbs — and it had stopped being generous. The full cix-tests suite needs a set of exactly 32, so it cannot declare one more, which is why `test_installer` and `test_targz` fail for want of `bzip2`: a package that exists, is built, and simply cannot be added. The recipe carrying that set has a comment apologising for dropping `minisign` to make room, which is what a binding limit looks like from the inside.
+
+It is 64 now. The cost is bounded and small: `struct buildenv_tool` is 136 bytes, so the array in `buildenv_image_for()` grows from 4.3 KB of stack to 8.7 KB and the canonical-name buffer from 4.2 KB to 8.4 KB. Composing a larger environment copies more files, which is proportional rather than a cliff, and a set nobody declares costs nothing since the hash of the declared set is what names the image.
+
+The same constant was also the guard on how deep a dependency chain under one tool may be chased, so raising the breadth of an environment would silently have raised that too. They have nothing to do with each other and their errors always said so — "too deep" against "more than N packages"; only the numbers were entangled. Depth is now `PKG_BUILDENV_MAX_DEPTH`, still 32, which is far past anything real.
+
 ### A live-tail attach whose stream has already ended is a 404, not a hang (#519)
 
 `handle_pkg_build_output_event()` closes the build's output fd and calls `build_log_ws_teardown_all()` together at EOF, and that teardown is the only thing that ever sends a WebSocket close frame. An attach landing between those two facts — output finished, registry still showing the build container running — got its `101`, joined a list nothing would ever close, and sat until the client's own read timeout. It reported as `0 frames, 0 bytes` and no close frame, which reads as a dead endpoint rather than a race.

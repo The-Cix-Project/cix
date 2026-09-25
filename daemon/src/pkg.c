@@ -5546,7 +5546,40 @@ static void pkg_migrate_flat_sandbox(const char *images_dir)
  * apply everywhere.
  */
 #define PKG_BUILDENV_IMAGE_PREFIX "__buildenv-"
-#define PKG_BUILDENV_MAX_TOOLS 32
+/*
+ * How many packages a composed environment may hold, counted over the
+ * declared tools, their runtime dependencies, and the implicit glibc
+ * and cbs.
+ *
+ * 64 since 2026-09-25, from 32, because 32 had become a real ceiling
+ * rather than a generous one: the full cix-tests suite needs a set of
+ * exactly 32 and so cannot declare one more, which is why
+ * `test_installer` and `test_targz` fail for want of `bzip2` -- a
+ * package that exists, is built, and simply cannot be added (#485).
+ * The recipe carrying that set has a comment apologising for dropping
+ * `minisign` to make room, which is the shape of a limit that has
+ * stopped being generous.
+ *
+ * The cost is bounded and small: struct buildenv_tool is 136 bytes, so
+ * the array in buildenv_image_for() grows from 4.3 KB of stack to 8.7
+ * KB, and the canonical-name buffer beside it from 4.2 KB to 8.4 KB.
+ * Composing a larger environment copies more files, which is
+ * proportional work rather than a cliff -- and a set nobody declares
+ * costs nothing, since the hash of the declared set is what names the
+ * image.
+ */
+#define PKG_BUILDENV_MAX_TOOLS 64
+/*
+ * How deep a dependency chain under one declared tool may go before
+ * it is refused as a cycle or a mistake. A SEPARATE limit, which
+ * shared PKG_BUILDENV_MAX_TOOLS until 2026-09-25 -- so raising the
+ * breadth of an environment silently raised the depth it would chase,
+ * and the two have nothing to do with each other. Their errors always
+ * said so ("too deep" against "more than N packages"); only the
+ * numbers were entangled. 32 is already far past anything real: the
+ * deepest chain in this corpus is a handful of links.
+ */
+#define PKG_BUILDENV_MAX_DEPTH 32
 
 struct buildenv_tool {
 	char name[PKG_NAME_MAX];
@@ -5667,7 +5700,7 @@ static int buildenv_add_tool(const char *name, const char *via, struct buildenv_
 		if (strcmp(out[i].name, bare_name) == 0)
 			return 0; /* already in the environment */
 	}
-	if (depth > PKG_BUILDENV_MAX_TOOLS) {
+	if (depth > PKG_BUILDENV_MAX_DEPTH) {
 		snprintf(err, err_size, "dependency chain under build tool \"%s\" is too deep", via);
 		return -1;
 	}
