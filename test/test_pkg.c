@@ -499,38 +499,41 @@ static void fixture_srcdir(const char *tarball_path, char *out, size_t out_size)
  * parts of usr/include, and any two packages built from a shared
  * upstream tree overlap.
  */
-static int write_shared_path_recipe(const char *name, const char *version,
-                                    const char *tarball_path, const char *sha256,
-                                    const char *shared_rel)
+static int write_shared_path_recipe(const struct cix_client *c, const char *name,
+                                    const char *version, const char *tarball_path,
+                                    const char *sha256, const char *shared_rel)
 {
-	char name_dir[256];
-	char path[300];
-	FILE *f;
+	char srcdir[160];
+	char build_body[512], install_body[768];
 
-	snprintf(name_dir, sizeof(name_dir), "%s/recipes/%s", g_pkg_state_dir, name);
-	mkdir(name_dir, 0755);
-	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
-	mkdir(path, 0755);
-	snprintf(path, sizeof(path), "%s/recipes/%s/%s/build.sh", g_pkg_state_dir, name, version);
-	f = fopen(path, "w");
-	if (f == NULL)
-		return -1;
-	fprintf(f, "pkg_name=%s\n", name);
-	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
-	fprintf(f, "pkg_sha256=%s\n", sha256);
-	fprintf(f, "pkg_depends=\"\"\n");
-	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n");
-	fprintf(f, "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
-	fprintf(f, "pkg_install() {\n"
-	           "\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n"
-	           "\tcp hello \"$PKG_DESTDIR/usr/bin/%s\"\n"
-	           "\tmkdir -p \"$(dirname \"$PKG_DESTDIR/%s\")\"\n"
-	           "\techo %s > \"$PKG_DESTDIR/%s\"\n"
-	           "}\n",
-	        name, shared_rel, name, shared_rel);
-	fclose(f);
-	return 0;
+	fixture_srcdir(tarball_path, srcdir, sizeof(srcdir));
+	snprintf(build_body, sizeof(build_body),
+	         "        cd \"${src}/%s/%s\" {\n"
+	         "            run \"tcc\" {\n"
+	         "                \"-o\" \"hello\" \"hello.c\"\n"
+	         "            }\n"
+	         "        }\n",
+	         name, srcdir);
+	/* One file of its own and one deliberately shared with another
+	 * package (#175). `mkdir` takes the shared file's parent because
+	 * the shell form did the same with dirname -- the path is a
+	 * caller's choice and need not be one level deep. */
+	snprintf(install_body, sizeof(install_body),
+	         "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
+	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s\"\n"
+	         "        mkdir \"${dest}/usr/share/shared175\"\n"
+	         "        write \"${dest}/%s\" \"\"\"\n"
+	         "            %s\n"
+	         "            \"\"\"\n",
+	         name, srcdir, name, shared_rel, name);
+
+	return publish_cpdl_recipe(c, name, version, tarball_path, sha256, "",
+	                            "            compiler \"tcc\"\n"
+	                            "            tool \"linux-headers\"\n"
+	                            "            tool \"bash\"\n"
+	                            "            tool \"coreutils\"\n"
+	                            "            tool \"binutils\"\n",
+	                            "", build_body, install_body);
 }
 
 /*
@@ -615,33 +618,29 @@ static int write_midfail_recipe(const struct cix_client *c, const char *name,
  * produced it -- so a test can tell WHICH of several installed copies
  * of a package ended up in a composed build environment.
  */
-static int write_stamped_recipe(const char *name, const char *version, const char *tarball_path,
+static int write_stamped_recipe(const struct cix_client *c, const char *name,
+                                 const char *version, const char *tarball_path,
                                  const char *sha256)
 {
-	char name_dir[256];
-	char path[300];
-	FILE *f;
+	char install_body[512];
 
-	snprintf(name_dir, sizeof(name_dir), "%s/recipes/%s", g_pkg_state_dir, name);
-	mkdir(name_dir, 0755);
-	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
-	mkdir(path, 0755);
-	snprintf(path, sizeof(path), "%s/recipes/%s/%s/build.sh", g_pkg_state_dir, name, version);
-	f = fopen(path, "w");
-	if (f == NULL)
-		return -1;
-	fprintf(f, "pkg_name=%s\n", name);
-	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
-	fprintf(f, "pkg_sha256=%s\n", sha256);
-	fprintf(f, "pkg_depends=\"\"\n");
-	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n");
-	fprintf(f, "pkg_build() {\n\ttrue\n}\n\n");
-	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/share\"\n"
-	           "\techo %s > \"$PKG_DESTDIR/usr/share/%s.version\"\n}\n",
-	        version, name);
-	fclose(f);
-	return 0;
+	/* The installed file records which version produced it, so a test
+	 * can tell WHICH of several installed copies reached a composed
+	 * build environment. */
+	snprintf(install_body, sizeof(install_body),
+	         "        mkdir \"${dest}/usr/share\" chmod 0755\n"
+	         "        write \"${dest}/usr/share/%s.version\" \"\"\"\n"
+	         "            %s\n"
+	         "            \"\"\"\n",
+	         name, version);
+
+	return publish_cpdl_recipe(c, name, version, tarball_path, sha256, "",
+	                            "            tool \"bash\"\n"
+	                            "            tool \"coreutils\"\n",
+	                            "",
+	                            "        run \"true\" {\n"
+	                            "        }\n",
+	                            install_body);
 }
 
 /*
@@ -2853,8 +2852,8 @@ int main(void)
 		FILE *sf;
 		char line[64];
 
-		if (write_stamped_recipe("stamped", "1.9", tarball_path, sha256) != 0 ||
-		    write_stamped_recipe("stamped", "1.10", tarball_path, sha256) != 0) {
+		if (write_stamped_recipe(&client, "stamped", "1.9", tarball_path, sha256) != 0 ||
+		    write_stamped_recipe(&client, "stamped", "1.10", tarball_path, sha256) != 0) {
 			fprintf(stderr, "FAIL: could not write the stamped recipes\n");
 			ok = 0;
 		}
@@ -5228,8 +5227,8 @@ skip_resume:
 		stage_ok = stage_fixture_tarball(scratch_dir, "shareda", "1.0", tarball,
 		                                 sizeof(tarball), sha, sizeof(sha)) == 0;
 		if (stage_ok &&
-		    (write_shared_path_recipe("shareda", "1.0", tarball, sha, shared_rel) != 0 ||
-		     write_shared_path_recipe("sharedb", "1.0", tarball, sha, shared_rel) != 0)) {
+		    (write_shared_path_recipe(&client, "shareda", "1.0", tarball, sha, shared_rel) != 0 ||
+		     write_shared_path_recipe(&client, "sharedb", "1.0", tarball, sha, shared_rel) != 0)) {
 			fprintf(stderr, "FAIL: could not write the shared-path recipes\n");
 			ok = 0;
 			stage_ok = 0;
