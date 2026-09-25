@@ -14,6 +14,12 @@ They are separated in the Makefile rather than folded into the list above becaus
 
 `test_pkg` is the package manager's own test and gated nothing until now. `test_kmod_build` gated a shipped feature (#517) through eleven releases that each reported `SELFTEST: PASS`.
 
+### The floor's glibc version has one definition again (#485)
+
+`TEST_FLOOR_GLIBC_VERSION` exists because moving the floor off libc-dev (#187) once left two tests asserting a version the floor no longer installed, which reports as a package never reaching `installed` and says nothing about a version. It happened again in exactly that shape: v2.57.271 moved the floor's glibc to 2.44-19 for the C.UTF-8 locale by editing the table's own literal, and the constant stayed at 2.44-12, so `test_rolling_restart` failed on `glibc@rollctrimg reaches installed` in the full-suite run at v2.57.275 (104 tests, 92 pass). `test_installer` reads the same constant.
+
+The constant existed and the table did not use it, which is the whole of the bug. The table uses it now, so the two cannot disagree, and the comment records both occurrences.
+
 ### The test floor waits for the C library before installing anything (#485)
 
 The daemon installs glibc into the default image itself when it finds none (#186), asynchronously, while it comes up. `test_floor_install_all()` never waited for that and raced it. Measured on 192.168.15.95, 2026-09-25 (probe-cix-testreport@24, cix v2.57.273, the first build whose `test_kmod_build` could print the daemon's own log): the daemon began unpacking glibc into `__pkgbuild-0` and never finished before the test gave up, while eleven floor installs ran past it, each logging `skipping the undeclared-link check -- declared dependency "glibc" is not installed in image "base"`, and the kmod-build that followed failed with `declared build tool "glibc" is not installed anywhere`. Teardown found glibc's extraction still half-written in `dest.cbs-tmp-PzNrAx`.

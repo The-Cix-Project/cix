@@ -716,7 +716,7 @@ static const struct {
 	 * floor_artifact_find() above exists for.
 	 */
 	{ "bash", "5.2.37-2" }, { "coreutils", "9.11-3" }, { "tcc", "0.9.27-7" },
-	{ "glibc", "2.44-19" }, { "linux-headers", "6.18.40-4" },
+	{ "glibc", TEST_FLOOR_GLIBC_VERSION }, { "linux-headers", "6.18.40-4" },
 	{ "zlib", "1.3.2-11" }, { "flex", "2.6.4-2" }, { "binutils", "2.42-10" },
 	/*
 	 * cbs and its runtime closure. cbs declares libarchive and zstd;

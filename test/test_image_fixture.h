@@ -222,8 +222,17 @@ int test_image_fixture_write_manifest(const char *image_dir, const char *version
  * the other two asserting a version that is no longer installed -- a
  * drift that reports as a package "never reaching installed" rather
  * than as a stale literal, which is a long way from the cause.
+ *
+ * IT HAPPENED AGAIN, in exactly the shape this comment describes, on
+ * 2026-09-24: the floor's glibc moved to 2.44-19 for the C.UTF-8
+ * locale (#518, #485) by editing the table's own literal, and this
+ * constant stayed at 2.44-12, so test_rolling_restart failed with
+ * "glibc@rollctrimg reaches installed" and said nothing about a
+ * version. The constant existed and the table did not use it, which is
+ * the whole of the bug -- so the table uses it now and the two cannot
+ * disagree.
  */
-#define TEST_FLOOR_GLIBC_VERSION "2.44-12"
+#define TEST_FLOOR_GLIBC_VERSION "2.44-19"
 
 /*
  * ADR-0209: seeds a test daemon's own package cache with REAL,
