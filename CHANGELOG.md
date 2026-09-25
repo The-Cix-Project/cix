@@ -14,6 +14,14 @@ They are separated in the Makefile rather than folded into the list above becaus
 
 `test_pkg` is the package manager's own test and gated nothing until now. `test_kmod_build` gated a shipped feature (#517) through eleven releases that each reported `SELFTEST: PASS`.
 
+### A live-tail attach whose stream has already ended is a 404, not a hang (#519)
+
+`handle_pkg_build_output_event()` closes the build's output fd and calls `build_log_ws_teardown_all()` together at EOF, and that teardown is the only thing that ever sends a WebSocket close frame. An attach landing between those two facts — output finished, registry still showing the build container running — got its `101`, joined a list nothing would ever close, and sat until the client's own read timeout. It reported as `0 frames, 0 bytes` and no close frame, which reads as a dead endpoint rather than a race.
+
+Intermittent exactly as a race is: the same assertion passed in probe-cix-testreport@8, @9, @10 and @14 and failed in @13 (192.168.15.95, 2026-09-23) and again in the full suite at v2.57.275. The shorter the build, the wider the window, and this fixture's whole build is a few `sleep 1`s.
+
+The attach guard now treats a closed output fd as a third case of the state it already reports — the same 404 it gives a client attaching in the first second of a job, or once the build is over. That keeps one contract rather than inventing a late-attach handshake: a build whose output has ended has no live tail.
+
 ### A compiler runtime archive survives the finalize policy (#521, ADR-0310)
 
 ADR-0251's clause 2 drops a static archive when a shared object of the same stem ships beside it. That is right for an ordinary library and wrong for the toolchain's own runtime: `gcc -static-libstdc++` links `libstdc++.a` specifically, so dropping it removes a linking mode rather than weight — and the mode exists so a binary can carry the compiler's runtime and need only glibc wherever it runs.

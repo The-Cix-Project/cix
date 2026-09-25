@@ -27524,7 +27524,7 @@ static enum console_route_result try_pkg_build_log_upgrade(struct conn *cc, cons
 	}
 	pkg_build_container_name(chain_idx, build_container_name, sizeof(build_container_name));
 	entry = registry_find(build_container_name);
-	if (entry == NULL || !entry->running) {
+	if (entry == NULL || !entry->running || pkg_build_output_fd(chain_idx) < 0) {
 		/*
 		 * The chain is real -- it just has no build container to
 		 * attach to at this instant, which is a different state from
@@ -27534,6 +27534,24 @@ static enum console_route_result try_pkg_build_log_upgrade(struct conn *cc, cons
 		 * last, after the build container is gone and the artifact is
 		 * being finalized. Both are transient, and saying so is the
 		 * difference between "wait" and "give up".
+		 *
+		 * The output fd is the third case and it is a RACE, not a
+		 * phase (#519). handle_pkg_build_output_event() closes that fd
+		 * and calls build_log_ws_teardown_all() together at EOF, and
+		 * that teardown is the only thing that ever sends a close
+		 * frame -- so an attach landing after it, while the registry
+		 * still shows the container running, joined a list nothing
+		 * would ever close and sat until the client's own read
+		 * timeout. Seen as "0 frames, no close frame" in
+		 * probe-cix-testreport@13 (192.168.15.95, 2026-09-23) and
+		 * again in the full suite at v2.57.275; the shorter the
+		 * build, the wider the window, and this fixture's whole build
+		 * is a few `sleep 1`s.
+		 *
+		 * Answering 404 rather than inventing a late-attach handshake
+		 * keeps one contract: a build whose output has ended has no
+		 * live tail, which is exactly what this endpoint already
+		 * tells a client attaching once the build is over.
 		 */
 		respond_error(cc->fd, 404, "Not Found",
 		              "that build has no live output right now -- it is fetching, "
