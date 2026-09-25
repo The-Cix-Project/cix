@@ -75,27 +75,64 @@ static pid_t start_daemon(void)
 	return pid;
 }
 
-/* A minimal but real recipe; `extra` is appended verbatim so a caller
- * can add an approval line or change a build step. */
+/*
+ * A minimal but real recipe. `extra` is a metadata line appended
+ * verbatim inside the metadata block, so a caller can add an artifact
+ * approval; `depends` names a runtime package, or is empty for none.
+ *
+ * CPDL since cix#516. The approval moved with it: a shell recipe
+ * carries it as pkg_artifact_sha256=, a PBS one as an "artifact_sha256"
+ * entry in metadata, and this test is about the rule that an approval
+ * is written once and never replaced -- which is a property of the
+ * daemon, not of either syntax.
+ */
 static char *recipe_text(const char *extra, const char *depends)
 {
 	static char buf[2048];
+	char runtime[256] = "";
+
+	if (depends != NULL && depends[0] != '\0')
+		snprintf(runtime, sizeof(runtime),
+		         "        runtime {\n"
+		         "            package \"%s\"\n"
+		         "        }\n",
+		         depends);
 
 	snprintf(buf, sizeof(buf),
-	         "pkg_name=\"approvaltest\"\n"
-	         "pkg_version=\"1.0-1\"\n"
-	         "pkg_source=\"https://example.invalid/approvaltest-1.0.tar.gz\"\n"
-	         "pkg_sha256=\"%064d\"\n"
-	         "pkg_depends=\"%s\"\n"
-	         "pkg_build_depends=\"bash coreutils\"\n"
+	         "package \"approvaltest\" {\n"
+	         "    version \"1.0\"\n"
+	         "    release 1\n"
+	         "    format \"cixpkg\"\n"
+	         "\n"
+	         "    sources {\n"
+	         "        main \"approvaltest\" {\n"
+	         "            url \"https://example.invalid/approvaltest-1.0.tar.gz\"\n"
+	         "            sha256 \"%064d\"\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    requires {\n"
+	         "        build {\n"
+	         "            tool \"bash\"\n"
+	         "            tool \"coreutils\"\n"
+	         "        }\n"
 	         "%s"
-	         "pkg_build() {\n"
-	         "\t:\n"
-	         "}\n"
-	         "pkg_install() {\n"
-	         "\t:\n"
+	         "    }\n"
+	         "\n"
+	         "    metadata {\n"
+	         "%s"
+	         "    }\n"
+	         "\n"
+	         "    build {\n"
+	         "        run \"true\" {\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    install {\n"
+	         "        mkdir \"${dest}/usr/share/approvaltest\"\n"
+	         "    }\n"
 	         "}\n",
-	         0, depends, extra);
+	         0, runtime, extra);
 	return buf;
 }
 
@@ -111,6 +148,8 @@ static int post_recipe(const struct cix_client *c, const char *content, int *out
 	jw_str(&w, "approvaltest");
 	jw_key(&w, "content");
 	jw_str(&w, content);
+	jw_key(&w, "format");
+	jw_str(&w, "pbs");
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -123,9 +162,9 @@ static int post_recipe(const struct cix_client *c, const char *content, int *out
 	return 0;
 }
 
-#define APPROVAL "pkg_artifact_sha256=\"" \
+#define APPROVAL "        \"artifact_sha256\" \"" \
 	"1111111111111111111111111111111111111111111111111111111111111111\"\n"
-#define APPROVAL2 "pkg_artifact_sha256=\"" \
+#define APPROVAL2 "        \"artifact_sha256\" \"" \
 	"2222222222222222222222222222222222222222222222222222222222222222\"\n"
 
 int main(void)
@@ -222,7 +261,7 @@ int main(void)
 	if (post_recipe(&client, recipe_text(APPROVAL, "somethingelse"), &status) != 0 ||
 	    status != 409) {
 		fprintf(stderr,
-		        "FAIL: an approval smuggled in alongside a changed pkg_depends should be "
+		        "FAIL: an approval smuggled in alongside a changed runtime dependency should be "
 		        "refused, status=%d\n",
 		        status);
 		ok = 0;

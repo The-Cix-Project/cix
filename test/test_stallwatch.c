@@ -698,23 +698,42 @@ int main(void)
 	 */
 	{
 		struct json_writer w;
-		/* Modelled on test_pkg_recipe_approval.c's own template --
-		 * a real, publishable recipe. It is never built here: the
-		 * roll gate holds its image before any build starts. */
+		/* Modelled on test_pkg_recipe_approval.c's own template -- a
+		 * real, publishable recipe, in CPDL since cix#516. It is never
+		 * built here: the roll gate holds its image before any build
+		 * starts, so what this needs from the recipe is that the daemon
+		 * accepts and records it. */
 		char recipe[1024];
 		int pending_before = 0, pending_after = 0;
 
 		snprintf(recipe, sizeof(recipe),
-		         "pkg_name=\"forgetpkg\"\n"
-		         "pkg_version=\"1.0-1\"\n"
-		         "pkg_source=\"https://example.invalid/forgetpkg-1.0.tar.gz\"\n"
-		         "pkg_sha256=\"%064d\"\n"
-		         "pkg_build_depends=\"bash coreutils\"\n"
-		         "pkg_build() {\n"
-		         "\t:\n"
-		         "}\n"
-		         "pkg_install() {\n"
-		         "\t:\n"
+		         "package \"forgetpkg\" {\n"
+		         "    version \"1.0\"\n"
+		         "    release 1\n"
+		         "    format \"cixpkg\"\n"
+		         "\n"
+		         "    sources {\n"
+		         "        main \"forgetpkg\" {\n"
+		         "            url \"https://example.invalid/forgetpkg-1.0.tar.gz\"\n"
+		         "            sha256 \"%064d\"\n"
+		         "        }\n"
+		         "    }\n"
+		         "\n"
+		         "    requires {\n"
+		         "        build {\n"
+		         "            tool \"bash\"\n"
+		         "            tool \"coreutils\"\n"
+		         "        }\n"
+		         "    }\n"
+		         "\n"
+		         "    build {\n"
+		         "        run \"true\" {\n"
+		         "        }\n"
+		         "    }\n"
+		         "\n"
+		         "    install {\n"
+		         "        mkdir \"${dest}/usr/share/forgetpkg\"\n"
+		         "    }\n"
 		         "}\n",
 		         0);
 
@@ -763,6 +782,8 @@ int main(void)
 		jw_str(&w, "forgetpkg");
 		jw_key(&w, "content");
 		jw_str(&w, recipe);
+		jw_key(&w, "format");
+		jw_str(&w, "pbs");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		memset(&r, 0, sizeof(r));

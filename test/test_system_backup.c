@@ -265,10 +265,27 @@ int main(void)
 		struct json_writer rw;
 
 		snprintf(recipe_body, sizeof(recipe_body),
-		         "pkg_name=backuptestpkg\npkg_version=1.0\n"
-		         "pkg_source=http://127.0.0.1:1/unreachable.tar.gz\n"
-		         "pkg_sha256=%s\npkg_depends=\"\"\n\n"
-		         "pkg_build() {\n\ttrue\n}\n\npkg_install() {\n\ttrue\n}\n",
+		         "package \"backuptestpkg\" {\n"
+		         "    version \"1.0\"\n"
+		         "    release 1\n"
+		         "    format \"cixpkg\"\n"
+		         "\n"
+		         "    sources {\n"
+		         "        main \"backuptestpkg\" {\n"
+		         "            url \"http://127.0.0.1:1/unreachable.tar.gz\"\n"
+		         "            sha256 \"%s\"\n"
+		         "        }\n"
+		         "    }\n"
+		         "\n"
+		         "    build {\n"
+		         "        run \"true\" {\n"
+		         "        }\n"
+		         "    }\n"
+		         "\n"
+		         "    install {\n"
+		         "        mkdir \"${dest}/usr/share/backuptestpkg\"\n"
+		         "    }\n"
+		         "}\n",
 		         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 		jw_init(&rw);
 		jw_obj_open(&rw);
@@ -276,6 +293,8 @@ int main(void)
 		jw_str(&rw, "backuptestpkg");
 		jw_key(&rw, "content");
 		jw_str(&rw, recipe_body);
+		jw_key(&rw, "format");
+		jw_str(&rw, "pbs");
 		jw_obj_close(&rw);
 		rw.buf[rw.len] = '\0';
 
