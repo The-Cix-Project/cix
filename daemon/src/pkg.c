@@ -9090,6 +9090,41 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	 * is what ADR-0199 decided and what this had been quietly
 	 * exempt from.
 	 */
+
+	/*
+	 * ADR-0309, step one of the retirement: cixd no longer BUILDS a
+	 * shell recipe.
+	 *
+	 * Here, and not at publish, and not at parse. A published shell
+	 * recipe stays fully readable -- its identity, its dependencies
+	 * and its artifact approval are still parsed -- so a package whose
+	 * artifact is already in the cache installs from it exactly as
+	 * before. That is the whole artifact tier, and it is why cix#527
+	 * does not block this step: those fixtures never build.
+	 *
+	 * Here specifically, rather than at the point the build command is
+	 * chosen further down, because that choice sits inside a branch
+	 * taken only when the recipe declares build dependencies -- a
+	 * shell recipe declaring none would have walked straight past a
+	 * refusal put there. This is the one place that means "a build is
+	 * about to happen", which is the condition being retired.
+	 *
+	 * Refusing rather than deleting PKG_BUILD_CMD outright is what
+	 * makes the remaining work measurable instead of inventoried:
+	 * every test that still needs the shell path now fails naming it,
+	 * and that list IS the list. Counting fixtures was the wrong
+	 * measure -- most of them never reach a build.
+	 */
+	if (!e->cache_hit && !recipe.is_pbs) {
+		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
+		         "this is a shell recipe and cixd no longer builds one (ADR-0309) -- convert "
+		         "it to CPDL, or install a version whose artifact is already published");
+		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
+		g_chains[chain_idx].name[0] = '\0';
+		g_chains[chain_idx].dep_queue_count = 0;
+		return 0;
+	}
+
 	if (e->cache_hit) {
 		/*
 		 * Issue #144: a precompiled package needs NO build environment.
