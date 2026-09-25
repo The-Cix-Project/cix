@@ -670,11 +670,8 @@ static const struct {
 	 * 2026-09-23). binutils was once removed from this floor because its
 	 * size pushed the package tests past a ten-minute timeout; cix-tests
 	 * runs each test under its own 300 s limit and will show if that
-	 * returns. Its runtime closure is zlib and flex, and flex@2.6.4-6 in turn
-	 * declares `runtime { package "m4" }`, which the 2.6.4-2 this floor used
-	 * to pin did not. That absence was the defect rather than the feature --
-	 * flex shells out to m4 for skeleton processing -- and it is why m4
-	 * joined this floor when the pins moved to CPDL (2026-09-25, cix#516).
+	 * returns. Its runtime closure is zlib and flex; flex 2.6.4-2 is the
+	 * approved revision that declares no m4.
 	 */
 	/*
 	 * glibc is the C library every composed build environment now gets
@@ -718,10 +715,9 @@ static const struct {
 	 * recipe does (#517). Its artifact is a .cixpkg, which is what
 	 * floor_artifact_find() above exists for.
 	 */
-	{ "bash", "5.2.37-6" }, { "coreutils", "9.11-8" }, { "tcc", "0.9.28rc-31" },
-	{ "glibc", TEST_FLOOR_GLIBC_VERSION }, { "linux-headers", "6.18.40-10" },
-	{ "zlib", "1.3.2-14" }, { "flex", "2.6.4-6" }, { "m4", "1.4.20-6" },
-	{ "binutils", "2.42-10" }, /* shell, held by #526 */
+	{ "bash", "5.2.37-2" }, { "coreutils", "9.11-3" }, { "tcc", "0.9.27-7" },
+	{ "glibc", TEST_FLOOR_GLIBC_VERSION }, { "linux-headers", "6.18.40-4" },
+	{ "zlib", "1.3.2-11" }, { "flex", "2.6.4-2" }, { "binutils", "2.42-10" },
 	/*
 	 * cbs and its runtime closure. cbs declares libarchive and zstd;
 	 * libarchive declares zlib, xz and zstd, and zlib is already here.
@@ -740,7 +736,7 @@ static const struct {
 	 * next run answers that instead of leaving it assumed.
 	 */
 	{ "cbs", "v0.1.55-1" }, { "libarchive", "3.8.1-5" }, { "zstd", "1.5.7-5" },
-	{ "xz", "5.8.3-10" },
+	{ "xz", "5.8.3-8" },
 };
 
 /*
@@ -759,8 +755,8 @@ static const struct {
  * rather than something resolved behind it.
  */
 const char *const test_floor_install[] = { "bash",       "coreutils", "tcc",  "linux-headers",
-                                           "m4",         "binutils",  "xz",   "zstd",
-                                           "libarchive", "cbs",       NULL };
+                                           "binutils",   "xz",        "zstd", "libarchive",
+                                           "cbs",        NULL };
 
 static int sha256_file_hex(const char *path, char *out, size_t out_size)
 {

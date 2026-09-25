@@ -13,57 +13,6 @@
 #define FLOOR_POLLS 600
 #define FLOOR_POLL_US 300000
 
-/*
- * One file each floor package is in the floor FOR, asserted against
- * the install's own file list.
- *
- * A count proves an artifact landed; it does not prove the package is
- * usable, and the two came apart on 192.168.15.95, 2026-09-25
- * (probe-cix-testreport@47): binutils reported "installed in 1s, 38
- * file(s)" and every fixture build still failed the finalize policy
- * with "the build image has no strip". Naming the file turns the next
- * run into a reading of whether strip is in the package or missing
- * from the composed environment -- two different bugs that the count
- * alone cannot tell apart (cix#516).
- *
- * Only the packages with an obvious single reason to be here. A
- * package with no entry is checked for a non-empty list and no more.
- */
-static const struct {
-	const char *name;
-	const char *path;
-} floor_required_file[] = {
-	{ "bash", "usr/bin/bash" },       { "coreutils", "usr/bin/cp" },
-	{ "tcc", "usr/bin/tcc" },         { "binutils", "usr/bin/strip" },
-	{ "m4", "usr/bin/m4" },           { "xz", "usr/bin/xz" },
-	{ "cbs", "usr/bin/cbs" },
-};
-
-/* Whether files[] carries path. Returns 1 when no entry names this
- * package, so an unlisted package is never failed by this check. */
-static int floor_files_have_required(const char *name, const struct json_value *files)
-{
-	size_t i, j;
-
-	for (i = 0; i < sizeof(floor_required_file) / sizeof(floor_required_file[0]); i++) {
-		if (strcmp(floor_required_file[i].name, name) != 0)
-			continue;
-		if (files == NULL || files->type != JSON_ARRAY)
-			return 0;
-		for (j = 0; j < files->u.array.count; j++) {
-			const char *s = json_as_string(files->u.array.items[j]);
-
-			if (s != NULL && strcmp(s, floor_required_file[i].path) == 0)
-				return 1;
-		}
-		fprintf(stderr, "FAIL: floor package %s installed without %s, which is what it is "
-		                "in this floor to provide\n",
-		        name, floor_required_file[i].path);
-		return 0;
-	}
-	return 1;
-}
-
 static int floor_install_one(const struct cix_client *c, const char *name)
 {
 	struct cix_response r;
@@ -94,20 +43,17 @@ static int floor_install_one(const struct cix_client *c, const char *name)
 			state = json_as_string(json_object_get(r.json, "state"));
 		if (state != NULL && strcmp(state, "installed") == 0) {
 			/*
-			 * What it delivered, not only what it says about
-			 * itself. "installed" is a state string, and this floor
-			 * exists to make a claim about CONTENT.
-			 *
-			 * Measured on 192.168.15.95, 2026-09-25
-			 * (probe-cix-testreport@46): binutils@2.42-13 reported
-			 * "installed in 0s" with no artifact unpack anywhere in
-			 * the daemon's log, and every fixture build then failed
-			 * the finalize policy with "the build image has no
-			 * strip" -- the one tool binutils is in this floor to
-			 * provide. A file count makes that a reading rather
-			 * than an inference (cix#516).
+			 * How many files it delivered, alongside how long it
+			 * took. Reported, not asserted: on 192.168.15.95,
+			 * 2026-09-25 the count came back 38 for a .cixpkg
+			 * install of binutils and 0 for a .tar.gz install of
+			 * the same package, so a zero does not yet distinguish
+			 * "installed nothing" from "this response does not
+			 * carry a file list for that path" (cix#526). The
+			 * number is what found the defect and is worth
+			 * printing; gating on it needs that question answered
+			 * first.
 			 */
-			int ok;
 			const struct json_value *files = json_object_get(r.json, "files");
 			size_t nfiles = (files != NULL && files->type == JSON_ARRAY)
 			                        ? files->u.array.count
@@ -118,18 +64,7 @@ static int floor_install_one(const struct cix_client *c, const char *name)
 			 * stderr: unbuffered, so it survives the test being killed. */
 			fprintf(stderr, "    floor: %s installed in %lds, %zu file(s)\n", name,
 			        (long)(time(NULL) - start), nfiles);
-			/* Both reads happen while r still owns the tree: files
-			 * points into it, so the free belongs after the check
-			 * and not before it. */
-			ok = (nfiles > 0 && floor_files_have_required(name, files));
 			cix_response_free(&r);
-			if (!ok) {
-				fprintf(stderr,
-				        "FAIL: floor package %s did not deliver what this floor needs "
-				        "(%zu file(s) installed)\n",
-				        name, nfiles);
-				return -1;
-			}
 			return 0;
 		}
 		if (state != NULL && strcmp(state, "failed") == 0) {
