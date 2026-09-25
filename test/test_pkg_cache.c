@@ -275,7 +275,6 @@ static int write_recipe(const char *pkg_state_dir, const char *name, const char 
 	fclose(f);
 	return 0;
 }
-}
 
 /*
  * The architecture an artifact server's names carry: uname(2)'s machine
