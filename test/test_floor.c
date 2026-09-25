@@ -42,12 +42,38 @@ static int floor_install_one(const struct cix_client *c, const char *name)
 		if (cix_client_request(c, "GET", buf, NULL, &r) == 0 && r.json != NULL)
 			state = json_as_string(json_object_get(r.json, "state"));
 		if (state != NULL && strcmp(state, "installed") == 0) {
-			cix_response_free(&r);
+			/*
+			 * What it delivered, not only what it says about
+			 * itself. "installed" is a state string, and this floor
+			 * exists to make a claim about CONTENT.
+			 *
+			 * Measured on 192.168.15.95, 2026-09-25
+			 * (probe-cix-testreport@46): binutils@2.42-13 reported
+			 * "installed in 0s" with no artifact unpack anywhere in
+			 * the daemon's log, and every fixture build then failed
+			 * the finalize policy with "the build image has no
+			 * strip" -- the one tool binutils is in this floor to
+			 * provide. A file count makes that a reading rather
+			 * than an inference (cix#516).
+			 */
+			const struct json_value *files = json_object_get(r.json, "files");
+			size_t nfiles = (files != NULL && files->type == JSON_ARRAY)
+			                        ? files->u.array.count
+			                        : 0;
+
 			/* Timed, because a slow floor is otherwise invisible inside
 			 * a test that later times out (probe-cix-testreport@7-1).
 			 * stderr: unbuffered, so it survives the test being killed. */
-			fprintf(stderr, "    floor: %s installed in %lds\n", name,
-			        (long)(time(NULL) - start));
+			fprintf(stderr, "    floor: %s installed in %lds, %zu file(s)\n", name,
+			        (long)(time(NULL) - start), nfiles);
+			cix_response_free(&r);
+			if (nfiles == 0) {
+				fprintf(stderr,
+				        "FAIL: floor package %s reports installed and lists no files "
+				        "-- the artifact did not land\n",
+				        name);
+				return -1;
+			}
 			return 0;
 		}
 		if (state != NULL && strcmp(state, "failed") == 0) {
