@@ -30,3 +30,17 @@
 int test_floor_install_all(const struct cix_client *c);
 
 #endif
+
+/*
+ * The last `lines` lines of the newest retained build log for `pkg`
+ * (0 = the whole log), on stderr. A failed build's own output is the
+ * only place its cause is written -- the package's error field carries
+ * an exit status and nothing more (cix#516).
+ *
+ * Here rather than in test_image_fixture, which is compiled into
+ * targets that link no HTTP client at all (test_overlay among them):
+ * an HTTP-using helper there is an incomplete type at compile and an
+ * undefined symbol at link. Every caller of this one already links
+ * test_floor.c.
+ */
+void test_print_build_log(const struct cix_client *c, const char *pkg, int lines);
