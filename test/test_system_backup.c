@@ -372,13 +372,15 @@ int main(void)
 				size_t k;
 
 				fprintf(stderr,
-				        "FAIL: backup pkg_recipes missing \"backuptestpkg/1.0-1\" key with real "
-				        "content (ADR-0120 regression: version-keyed layout not walked)\n");
+				        "FAIL: backup pkg_recipes missing \"backuptestpkg/1.0-1/build.cbs\" "
+				        "key with real content (ADR-0120 regression: version-keyed layout "
+				        "not walked)\n");
 				/* What IS in there. The key is the recipe store's own
-				 * <name>/<version> shape, and a CPDL recipe's version
-				 * carries its release, so an assertion written for one
-				 * format fails against the other with no way to tell
-				 * a wrong key from an absent recipe (cix#516). */
+				 * <name>/<version>/<filename> shape -- and a CPDL recipe changes
+				 * both halves at once: the release joins the version, and build.sh
+				 * becomes build.cbs. An assertion written for one format then fails
+				 * against the other with no way to tell a wrong key from an absent
+				 * recipe (cix#516). */
 				fprintf(stderr, "      pkg_recipes holds %zu key(s):",
 				        recipes->u.object.count);
 				for (k = 0; k < recipes->u.object.count; k++)
