@@ -706,6 +706,10 @@ static int poll_pkg_state(const struct cix_client *c, const char *name, char *ou
 			const char *err = json_str_field(r.json, "error");
 
 			fprintf(stderr, "    %s failed: %s\n", name, err != NULL ? err : "(no error field)");
+
+			/* And WHY, which the error field never says: it carries an
+			 * exit status and nothing more (cix#516). */
+			test_print_build_log(c, name, 40);
 		}
 		cix_response_free(&r);
 		if (strcmp(out_state, "fetching") != 0 && strcmp(out_state, "building") != 0)

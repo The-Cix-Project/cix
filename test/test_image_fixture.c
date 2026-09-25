@@ -1580,3 +1580,77 @@ const char *test_http_src(const char *abs_path)
 	}
 	return out;
 }
+
+/*
+ * The last `lines` lines of the newest retained build log whose name
+ * begins with "<pkg>-" (GET /v1/pkg/build-logs, then /{file}).
+ *
+ * A failed build's own output is the only place its cause is written:
+ * the package's `error` field says "build failed (exit status 3)" and
+ * nothing else, and logstore_write() does not echo to stderr, so a test
+ * that prints neither reports a number for a message. That cost a wrong
+ * cause reported as fact -- cix#516, where every package built from a
+ * converted fixture failed with exit 3 and the diagnosis came from a
+ * downstream symptom instead.
+ *
+ * Filtered by package name rather than taking the newest entry outright,
+ * because these tests build concurrently and the newest log is often
+ * another package's. `lines` of 0 prints the whole log.
+ */
+void test_print_build_log(const struct cix_client *c, const char *pkg, int lines)
+{
+	struct cix_response list, file;
+	const struct json_value *logs;
+	char prefix[80], path[400];
+	char found[192] = "";
+	size_t i;
+
+	memset(&list, 0, sizeof(list));
+	if (cix_client_request(c, "GET", "/v1/pkg/build-logs", NULL, &list) != 0 ||
+	    list.status != 200 || list.json == NULL) {
+		fprintf(stderr, "    (build log unavailable: GET /v1/pkg/build-logs status=%d)\n",
+		        list.status);
+		cix_response_free(&list);
+		return;
+	}
+	snprintf(prefix, sizeof(prefix), "%s-", pkg);
+	logs = json_object_get(list.json, "logs");
+	for (i = 0; logs != NULL && logs->type == JSON_ARRAY && i < logs->u.array.count; i++) {
+		const char *f = json_as_string(json_object_get(logs->u.array.items[i], "file"));
+
+		if (f != NULL && strncmp(f, prefix, strlen(prefix)) == 0) {
+			/* Copied before the free: f points into the tree below it. */
+			snprintf(found, sizeof(found), "%s", f);
+			break;
+		}
+	}
+	cix_response_free(&list);
+	if (found[0] == '\0') {
+		fprintf(stderr, "    (no retained build log for %s)\n", pkg);
+		return;
+	}
+
+	snprintf(path, sizeof(path), "/v1/pkg/build-logs/%s", found);
+	memset(&file, 0, sizeof(file));
+	if (cix_client_request(c, "GET", path, NULL, &file) != 0 || file.status != 200 ||
+	    file.body == NULL) {
+		fprintf(stderr, "    (build log %s unavailable: status=%d)\n", found, file.status);
+		cix_response_free(&file);
+		return;
+	}
+	if (lines <= 0) {
+		fprintf(stderr, "    --- build log %s (%d bytes) ---\n%.*s\n", found,
+		        (int)file.body_len, (int)file.body_len, file.body);
+	} else {
+		const char *start = file.body + file.body_len;
+		int seen = 0;
+
+		while (start > file.body && seen <= lines) {
+			start--;
+			if (*start == '\n')
+				seen++;
+		}
+		fprintf(stderr, "    --- build log %s (last %d lines) ---\n%s\n", found, lines, start);
+	}
+	cix_response_free(&file);
+}

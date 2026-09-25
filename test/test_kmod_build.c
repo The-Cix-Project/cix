@@ -299,62 +299,6 @@ static void print_daemon_log(const struct cix_client *c)
 	cix_response_free(&r);
 }
 
-/*
- * The failing build's own output, on stderr.
- *
- * Without this a failure here says only what the daemon's error field
- * says -- "build failed (exit status 3)" -- and the recipe's real
- * output is unreachable afterwards: it lives in THIS daemon's build-log
- * store, under the mkdtemp data directory that test_data_dir_cleanup()
- * removes when the test ends. probe-cix-testreport@20 (192.168.15.95,
- * 2026-09-25) reported an exit status and no cause, and the only way to
- * learn more was to reproduce the whole run.
- *
- * Newest log, and the endpoint is already tail-first for one larger
- * than its cap -- the end is where a failure is (#57).
- */
-static void print_failing_build_log(const struct cix_client *c)
-{
-	struct cix_response r;
-	const struct json_value *logs;
-	const char *file;
-	char fname[192];
-	char path[256];
-
-	memset(&r, 0, sizeof(r));
-	if (cix_client_request(c, "GET", "/v1/pkg/build-logs", NULL, &r) != 0 || r.status != 200) {
-		fprintf(stderr, "    (build log unavailable: GET /v1/pkg/build-logs status=%d)\n",
-		        r.status);
-		cix_response_free(&r);
-		return;
-	}
-	logs = json_object_get(r.json, "logs");
-	if (logs == NULL || logs->type != JSON_ARRAY || logs->u.array.count == 0) {
-		fprintf(stderr, "    (build log unavailable: this daemon kept none)\n");
-		cix_response_free(&r);
-		return;
-	}
-	file = json_as_string(json_object_get(logs->u.array.items[0], "file"));
-	if (file == NULL) {
-		fprintf(stderr, "    (build log unavailable: the newest entry names no file)\n");
-		cix_response_free(&r);
-		return;
-	}
-	/* Copied before the free: file points into the tree below it. */
-	snprintf(fname, sizeof(fname), "%s", file);
-	cix_response_free(&r);
-
-	snprintf(path, sizeof(path), "/v1/pkg/build-logs/%s", fname);
-	memset(&r, 0, sizeof(r));
-	if (cix_client_request(c, "GET", path, NULL, &r) != 0 || r.status != 200) {
-		fprintf(stderr, "    (build log %s unavailable: status=%d)\n", fname, r.status);
-		cix_response_free(&r);
-		return;
-	}
-	fprintf(stderr, "    --- %s (%d bytes) ---\n%.*s\n    --- end of %s ---\n", fname,
-	        (int)r.body_len, (int)r.body_len, r.body, fname);
-	cix_response_free(&r);
-}
 
 static int read_file_string(const char *path, char *out, size_t out_size)
 {
@@ -535,13 +479,13 @@ int main(void)
 		fprintf(stderr, "FAIL: kmod-build still in state '%s' after %d s\n", state,
 		        KMOD_POLLS * 3 / 10);
 		print_daemon_log(&client);
-		print_failing_build_log(&client);
+		test_print_build_log(&client, "kmod-build", 0);
 		ok = 0;
 	} else if (ok && strcmp(state, "installed") != 0) {
 		fprintf(stderr, "FAIL: kmod-build ended in state '%s', expected installed: %s\n", state,
 		        kmod_err[0] != '\0' ? kmod_err : "(no error field)");
 		print_daemon_log(&client);
-		print_failing_build_log(&client);
+		test_print_build_log(&client, "kmod-build", 0);
 		ok = 0;
 	}
 

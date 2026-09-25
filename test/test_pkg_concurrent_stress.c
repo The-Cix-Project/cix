@@ -236,57 +236,6 @@ static int write_recipe(const char *pkg_state_dir, const char *name, const char 
 	return 0;
 }
 
-/*
- * Prints the last `lines` lines of the newest retained build log for
- * `name` (GET /v1/pkg/build-logs, newest first, then /{file}). A failed
- * nested build's own output is the only place its cause is written.
- */
-static void print_build_log_tail(const struct cix_client *c, const char *name, int lines)
-{
-	struct cix_response list, file;
-	const struct json_value *logs;
-	char prefix[80], path[400];
-	const char *found = NULL;
-	size_t i;
-
-	memset(&list, 0, sizeof(list));
-	if (cix_client_request(c, "GET", "/v1/pkg/build-logs", NULL, &list) != 0 ||
-	    list.status != 200 || list.json == NULL) {
-		cix_response_free(&list);
-		return;
-	}
-	snprintf(prefix, sizeof(prefix), "%s-", name);
-	logs = json_object_get(list.json, "logs");
-	for (i = 0; logs != NULL && logs->type == JSON_ARRAY && i < logs->u.array.count; i++) {
-		const char *f = json_str_field(logs->u.array.items[i], "file");
-
-		if (f != NULL && strncmp(f, prefix, strlen(prefix)) == 0) {
-			found = f;
-			break;
-		}
-	}
-	if (found == NULL) {
-		fprintf(stderr, "    (no retained build log for %s)\n", name);
-		cix_response_free(&list);
-		return;
-	}
-	snprintf(path, sizeof(path), "/v1/pkg/build-logs/%s", found);
-	memset(&file, 0, sizeof(file));
-	if (cix_client_request(c, "GET", path, NULL, &file) == 0 && file.status == 200 &&
-	    file.body != NULL) {
-		const char *start = file.body + file.body_len;
-		int seen = 0;
-
-		while (start > file.body && seen <= lines) {
-			start--;
-			if (*start == '\n')
-				seen++;
-		}
-		fprintf(stderr, "    --- build log %s (last %d lines) ---\n%s\n", found, lines, start);
-	}
-	cix_response_free(&file);
-	cix_response_free(&list);
-}
 
 static int poll_pkg_state(const struct cix_client *c, const char *name, char *out_state,
                            size_t out_state_size, int max_attempts)
@@ -319,7 +268,7 @@ static int poll_pkg_state(const struct cix_client *c, const char *name, char *ou
 			const char *err = json_str_field(r.json, "error");
 
 			fprintf(stderr, "    %s failed: %s\n", name, err != NULL ? err : "(no error field)");
-			print_build_log_tail(c, name, 25);
+			test_print_build_log(c, name, 25);
 		}
 		cix_response_free(&r);
 		if (strcmp(out_state, "fetching") != 0 && strcmp(out_state, "building") != 0)

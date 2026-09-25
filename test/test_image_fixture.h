@@ -383,3 +383,11 @@ extern const char *const test_floor_install[];
 #define TEST_SETTLE_INTERVAL_US (100 * 1000)
 
 #endif /* TEST_IMAGE_FIXTURE_H */
+
+/*
+ * The last `lines` lines of the newest retained build log for `pkg`
+ * (0 = the whole log), on stderr. A failed build's own output is the
+ * only place its cause is written -- the package's error field carries
+ * an exit status and nothing more (cix#516).
+ */
+void test_print_build_log(const struct cix_client *c, const char *pkg, int lines);
