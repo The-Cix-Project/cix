@@ -412,6 +412,11 @@ selftest: $(SELFTESTS) $(SELFTEST_HELPERS)
 # /cix-workload/cix-pkgbuild was OOM-killed (probe-cix-testreport@7-1,
 # 192.168.15.95, 2026-09-23).
 #
+# Naming tests in TESTREPORT_ONLY means diagnosing them, so every
+# run's log is printed, passing or not. A pass that is one burst
+# frame at exit and a pass that is four live frames are different
+# outcomes, and the summary line cannot tell them apart.
+#
 # A test name may be repeated in TESTREPORT_ONLY to give an
 # intermittent failure several chances in one run, so each
 # iteration gets its own log, numbered by its position. Keyed by
@@ -430,11 +435,11 @@ TESTREPORT_ONLY ?=
 .PHONY: testreport
 testreport: all
 	@mkdir -p $(BUILD)/testreport; \
-	total=0; passed=""; failed=""; hung=""; \
+	total=0; all=""; passed=""; failed=""; hung=""; \
 	for t in $(if $(TESTREPORT_ONLY),$(addprefix $(BUILD)/,$(TESTREPORT_ONLY)),$(BUILD)/test_*); do \
 		[ -x "$$t" ] || continue; \
 		n=$$(basename $$t); total=$$((total + 1)); \
-		log=$(BUILD)/testreport/$$n.$$total.log; \
+		log=$(BUILD)/testreport/$$n.$$total.log; all="$$all $$n:$$total"; \
 		if timeout $(TESTREPORT_TIMEOUT) ./$$t >$$log 2>&1; then \
 			passed="$$passed $$n"; printf '  %-34s PASS\n' "$$n"; \
 		else \
@@ -444,8 +449,10 @@ testreport: all
 		fi; \
 		set -- $$(df -Pk /run | tail -n 1); printf '  %-34s /run holds %s KiB\n' '' "$$3"; \
 	done; \
-	echo; echo "=== failing ==="; \
-	for e in $$failed; do n=$${e%:*}; i=$${e#*:}; echo "--- $$n (run $$i)"; tail -n $(TESTREPORT_TAIL) $(BUILD)/testreport/$$n.$$i.log | sed 's/^/    /'; done; \
+	echo; if [ -n "$(TESTREPORT_ONLY)" ]; then \
+		echo "=== every run (TESTREPORT_ONLY named them, so all of them) ==="; show="$$all"; \
+	else echo "=== failing ==="; show="$$failed"; fi; \
+	for e in $$show; do n=$${e%:*}; i=$${e#*:}; echo "--- $$n (run $$i)"; tail -n $(TESTREPORT_TAIL) $(BUILD)/testreport/$$n.$$i.log | sed 's/^/    /'; done; \
 	echo; echo "=== timed out ==="; \
 	for e in $$hung; do n=$${e%:*}; i=$${e#*:}; echo "--- $$n (run $$i)"; tail -n $(TESTREPORT_TAIL) $(BUILD)/testreport/$$n.$$i.log | sed 's/^/    /'; done; \
 	echo; echo "=== summary ==="; \
