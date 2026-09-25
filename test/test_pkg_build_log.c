@@ -143,11 +143,11 @@ static int compute_file_sha256(const char *path, char *out_sha256, size_t sha256
 
 /*
  * A minimal, wrapping-directory tarball with one placeholder file --
- * this recipe's own pkg_build()/pkg_install() below are pure shell
- * (deliberately no compile step, so the only real timing this test
- * needs -- several observable seconds of build duration -- comes from
- * explicit sleeps, not from how fast gcc happens to run), but
- * pkg_source/pkg_sha256 are still required recipe fields.
+ * this recipe's build and install phases below run no compiler
+ * (deliberately, so the several observable seconds of build duration
+ * this test needs come from explicit sleeps rather than from how fast
+ * a compile happens to be), but a source and its checksum are still
+ * required recipe fields.
  */
 static int stage_tarball(const char *scratch_dir, char *out_tarball_path, size_t tarball_path_size,
                           char *out_sha256, size_t sha256_size)
@@ -163,7 +163,7 @@ static int stage_tarball(const char *scratch_dir, char *out_tarball_path, size_t
 	f = fopen(placeholder, "w");
 	if (f == NULL)
 		return -1;
-	fputs("unused -- pkg_build() below never reads this\n", f);
+	fputs("unused -- the build phase below never reads this\n", f);
 	fclose(f);
 
 	/*
@@ -173,8 +173,8 @@ static int stage_tarball(const char *scratch_dir, char *out_tarball_path, size_t
 	 * locale libarchive cannot represent that name, so the whole
 	 * extraction failed -- go1.24.9's source was refused with
 	 * "Pathname can't be converted from UTF-8 to current locale"
-	 * (192.168.15.95, 2026-09-23). pkg_build() below checks the file
-	 * arrived with its bytes intact.
+	 * (192.168.15.95, 2026-09-23). The build phase below checks that the
+	 * file arrived with its bytes intact.
 	 */
 	snprintf(placeholder, sizeof(placeholder), "%s/na\xc3\xafve-\xc3\xbc.txt", src_dir);
 	f = fopen(placeholder, "w");
@@ -192,43 +192,99 @@ static int stage_tarball(const char *scratch_dir, char *out_tarball_path, size_t
 }
 
 /*
- * pkg_build() emits four distinct, individually-`sleep`-separated
- * markers -- a live-tail client attached partway through must observe
- * at least one marker arrive strictly before the build's own overall
- * completion, proving genuine incremental delivery rather than a
- * single post-completion dump.
+ * The build phase emits four markers, each separated by a real
+ * `sleep 1` -- a live-tail client attached partway through must observe
+ * at least one arrive strictly before the build completes, proving
+ * incremental delivery rather than a single post-completion dump. The
+ * seconds come from the sleeps and not from a compile step, so the
+ * timing this test depends on does not vary with the box's load.
+ *
+ * CPDL, written straight into the daemon's recipe store, following
+ * write_kernel_fixture_recipe() in test_kmod_build.c -- the first
+ * fixture in this tree to convert (v2.57.263). The store keeps its
+ * <name>/<version>-<release>/ shape whatever the format; only the
+ * filename says which it is (ADR-0305).
+ *
+ * The non-ASCII name is checked with `ls` rather than a require clause
+ * because every require in the corpus is install-phase and this is a
+ * question about the extracted SOURCE: a mangled name fails the build
+ * exactly as the shell fixture's `test -f` did. #411 is the bug it
+ * guards -- cixd extracts with libarchive in-process, and in the C
+ * locale that name could not be represented, so go1.24.9's source was
+ * refused outright with "Pathname can't be converted from UTF-8 to
+ * current locale" (192.168.15.95, 2026-09-23).
  */
 static int write_slowbuild_recipe(const char *tarball_path, const char *sha256)
 {
-	char path[300];
+	char dir[PATH_MAX];
+	char path[PATH_MAX + 16];
 	FILE *f;
 
-	if (run_cmd("mkdir -p '%s/recipes/slowbuild/1.0'", g_pkg_state_dir) != 0)
+	snprintf(dir, sizeof(dir), "%s/recipes/slowbuild/1.0-1", g_pkg_state_dir);
+	if (run_cmd("mkdir -p '%s'", dir) != 0)
 		return -1;
-	snprintf(path, sizeof(path), "%s/recipes/slowbuild/1.0/build.sh", g_pkg_state_dir);
+	snprintf(path, sizeof(path), "%s/build.cbs", dir);
 	f = fopen(path, "w");
 	if (f == NULL)
 		return -1;
-	fprintf(f, "pkg_name=slowbuild\n");
-	fprintf(f, "pkg_version=1.0\n");
-	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
-	fprintf(f, "pkg_sha256=%s\n", sha256);
-	fprintf(f, "pkg_depends=\"\"\n");
-	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n");
-	fprintf(f, "pkg_build() {\n"
-	           "\ttest -f \"$(printf 'na\\303\\257ve-\\303\\274.txt')\"\n"
-	           "\techo marker-1\n"
-	           "\tsleep 1\n"
-	           "\techo marker-2\n"
-	           "\tsleep 1\n"
-	           "\techo marker-3\n"
-	           "\tsleep 1\n"
-	           "\techo marker-4\n"
-	           "}\n\n");
-	fprintf(f, "pkg_install() {\n"
-	           "\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n"
-	           "\techo done > \"$PKG_DESTDIR/usr/bin/slowbuild-marker\"\n"
-	           "}\n");
+	fprintf(f,
+	        "package \"slowbuild\" {\n"
+	        "    version \"1.0\"\n"
+	        "    release 1\n"
+	        "    format \"cixpkg\"\n"
+	        "\n"
+	        "    sources {\n"
+	        "        main \"slowbuild\" {\n"
+	        "            url \"%s\"\n"
+	        "            sha256 \"%s\"\n"
+	        "        }\n"
+	        "    }\n"
+	        "\n"
+	        "    requires {\n"
+	        "        build {\n"
+	        "            compiler \"tcc\"\n"
+	        "            tool \"linux-headers\"\n"
+	        "            tool \"bash\"\n"
+	        "            tool \"coreutils\"\n"
+	        "            tool \"binutils\"\n"
+	        "        }\n"
+	        "    }\n"
+	        "\n"
+	        "    build {\n"
+	        "        run \"ls\" {\n"
+	        "            \"${src}/slowbuild/slowbuild-1.0/na\xc3\xafve-\xc3\xbc.txt\"\n"
+	        "        }\n"
+	        "        run \"echo\" {\n"
+	        "            \"marker-1\"\n"
+	        "        }\n"
+	        "        run \"sleep\" {\n"
+	        "            \"1\"\n"
+	        "        }\n"
+	        "        run \"echo\" {\n"
+	        "            \"marker-2\"\n"
+	        "        }\n"
+	        "        run \"sleep\" {\n"
+	        "            \"1\"\n"
+	        "        }\n"
+	        "        run \"echo\" {\n"
+	        "            \"marker-3\"\n"
+	        "        }\n"
+	        "        run \"sleep\" {\n"
+	        "            \"1\"\n"
+	        "        }\n"
+	        "        run \"echo\" {\n"
+	        "            \"marker-4\"\n"
+	        "        }\n"
+	        "    }\n"
+	        "\n"
+	        "    install {\n"
+	        "        mkdir \"${dest}/usr/bin\"\n"
+	        "        write \"${dest}/usr/bin/slowbuild-marker\" \"\"\"\n"
+	        "            done\n"
+	        "            \"\"\"\n"
+	        "    }\n"
+	        "}\n",
+	        test_http_src(tarball_path), sha256);
 	fclose(f);
 	return 0;
 }
