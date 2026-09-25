@@ -1393,8 +1393,8 @@ int main(void)
 		    json_str_field(r.json, "version") != NULL)
 			snprintf(installed, sizeof(installed), "%s", json_str_field(r.json, "version"));
 		cix_response_free(&r);
-		if (strcmp(installed, "2.0") != 0) {
-			fprintf(stderr, "FAIL: #64 default policy installed '%s', expected 2.0 (highest)\n",
+		if (strcmp(installed, "2.0-1") != 0) {
+			fprintf(stderr, "FAIL: #64 default policy installed '%s', expected 2.0-1 (highest)\n",
 			        installed);
 			ok = 0;
 		}
@@ -1425,18 +1425,18 @@ int main(void)
 		    json_str_field(r.json, "version") != NULL)
 			snprintf(installed, sizeof(installed), "%s", json_str_field(r.json, "version"));
 		cix_response_free(&r);
-		if (strcmp(installed, "1.5") != 0) {
+		if (strcmp(installed, "1.5-1") != 0) {
 			fprintf(stderr,
-			        "FAIL: #64 newest policy installed '%s', expected 1.5 (published later)\n",
+			        "FAIL: #64 newest policy installed '%s', expected 1.5-1 (published later)\n",
 			        installed);
 			ok = 0;
 		}
 
-		/* pinned: held at 2.0 even with 1.5 newer and 3.0 published
+		/* pinned: held at 2.0-1 even with 1.5-1 newer and 3.0-1 published
 		 * after the pin -- a pin that drifts is not a pin. */
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "PUT", "/v1/pkg/policies/policypkg",
-		                       "{\"policy\":\"pinned\",\"version\":\"2.0\"}", &r) != 0 ||
+		                       "{\"policy\":\"pinned\",\"version\":\"2.0-1\"}", &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: #64 set pinned, status=%d\n", r.status);
 			ok = 0;
@@ -1463,8 +1463,8 @@ int main(void)
 		    json_str_field(r.json, "version") != NULL)
 			snprintf(installed, sizeof(installed), "%s", json_str_field(r.json, "version"));
 		cix_response_free(&r);
-		if (strcmp(installed, "2.0") != 0) {
-			fprintf(stderr, "FAIL: #64 pinned policy installed '%s', expected the held 2.0\n",
+		if (strcmp(installed, "2.0-1") != 0) {
+			fprintf(stderr, "FAIL: #64 pinned policy installed '%s', expected the held 2.0-1\n",
 			        installed);
 			ok = 0;
 		}
@@ -1824,7 +1824,7 @@ int main(void)
 
 	/*
 	 * Issue #127: a build tool may be version-pinned as name@version.
-	 * A pin to the version actually installed (greeter@1.0) must
+	 * A pin to the version actually installed (greeter@1.0-1) must
 	 * resolve and compose exactly like the bare-name case above; a pin
 	 * to a version that is NOT installed (greeter@9.9) must fail with
 	 * the same "not installed anywhere" refusal an entirely-unknown
@@ -1833,7 +1833,7 @@ int main(void)
 	 * string was compared against bare package names and matched
 	 * nothing, so even the correct pin failed).
 	 */
-	if (write_builddeps_recipe("pinnedgood", "1.0", tarball_path, sha256, "greeter@1.0") != 0 ||
+	if (write_builddeps_recipe("pinnedgood", "1.0", tarball_path, sha256, "greeter@1.0-1") != 0 ||
 	    write_builddeps_recipe("pinnedbad", "1.0", tarball_path, sha256, "greeter@9.9") != 0) {
 		fprintf(stderr, "FAIL: could not write the version-pinned build-deps recipes\n");
 		ok = 0;
@@ -2384,9 +2384,9 @@ int main(void)
 		} else {
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "GET", "/v1/pkg/leaf", NULL, &r) != 0 ||
-			    r.status != 200 || !str_eq(json_str_field(r.json, "available_version"), "2.0")) {
+			    r.status != 200 || !str_eq(json_str_field(r.json, "available_version"), "2.0-1")) {
 				fprintf(stderr,
-				        "FAIL: leaf should show available_version=2.0 before upgrading, got %s\n",
+				        "FAIL: leaf should show available_version=2.0-1 before upgrading, got %s\n",
 				        json_str_field(r.json, "available_version")
 				            ? json_str_field(r.json, "available_version")
 				            : "(null)");
