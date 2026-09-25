@@ -210,70 +210,98 @@ static int stage_source_tarball(const char *scratch_dir, const char *name, const
 	return compute_file_sha256(out_tarball_path, out_sha256, sha256_size);
 }
 
-static int write_recipe(const char *pkg_state_dir, const char *name, const char *version,
+/*
+ * Published through POST /v1/pkg/recipes, not written into the store.
+ *
+ * A CPDL recipe's identity comes from `cbs explain --json`, derived
+ * once at publish (ADR-0305) or by the daemon's startup sweep. A file
+ * dropped into the store while the daemon is already running gets
+ * neither, and every install of it is refused 400 -- and all five
+ * callers here run after start_daemon(). A shell recipe needed no
+ * derivation, which is why writing the file worked before and is the
+ * one thing a conversion cannot carry across (cix#516, measured by
+ * probe-cix-testreport@60 on 192.168.15.95, 2026-09-25).
+ *
+ * artifact_sha256 is optional and becomes an "artifact_sha256" entry
+ * in the metadata block -- this test is about the artifact tier, so
+ * the approval moves with the format rather than being dropped.
+ */
+static int write_recipe(const struct cix_client *c, const char *name, const char *version,
                          const char *source_url, const char *source_sha256,
                          const char *artifact_sha256)
 {
-	char name_dir[256], path[300];
+	struct json_writer w;
+	struct cix_response r;
 	char metadata[160] = "";
-	FILE *f;
+	char content[1800];
+	int ok;
 
 	if (artifact_sha256 != NULL && artifact_sha256[0] != '\0')
 		snprintf(metadata, sizeof(metadata), "        \"artifact_sha256\" \"%s\"\n",
 		         artifact_sha256);
 
-	snprintf(name_dir, sizeof(name_dir), "%s/recipes/%s", pkg_state_dir, name);
-	run_cmd("mkdir -p '%s'", name_dir);
-	snprintf(path, sizeof(path), "%s/%s-1", name_dir, version);
-	run_cmd("mkdir -p '%s'", path);
-	snprintf(path, sizeof(path), "%s/recipes/%s/%s-1/build.cbs", pkg_state_dir, name, version);
-	f = fopen(path, "w");
-	if (f == NULL)
-		return -1;
-	fprintf(f,
-	        "package \"%s\" {\n"
-	        "    version \"%s\"\n"
-	        "    release 1\n"
-	        "    format \"cixpkg\"\n"
-	        "\n"
-	        "    sources {\n"
-	        "        main \"%s\" {\n"
-	        "            url \"%s\"\n"
-	        "            sha256 \"%s\"\n"
-	        "        }\n"
-	        "    }\n"
-	        "\n"
-	        "    requires {\n"
-	        "        build {\n"
-	        "            compiler \"tcc\"\n"
-	        "            tool \"linux-headers\"\n"
-	        "            tool \"bash\"\n"
-	        "            tool \"coreutils\"\n"
-	        "            tool \"binutils\"\n"
-	        "        }\n"
-	        "    }\n"
-	        "\n"
-	        "    metadata {\n"
-	        "%s"
-	        "    }\n"
-	        "\n"
-	        "    build {\n"
-	        "        cd \"${src}/%s/%s-%s\" {\n"
-	        "            run \"tcc\" {\n"
-	        "                \"-o\" \"hello\" \"hello.c\"\n"
-	        "            }\n"
-	        "        }\n"
-	        "    }\n"
-	        "\n"
-	        "    install {\n"
-	        "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
-	        "        copy \"${src}/%s/%s-%s/hello\" to \"${dest}/usr/bin/%s\"\n"
-	        "    }\n"
-	        "}\n",
-	        name, version, name, source_url, source_sha256, metadata, name, name, version, name,
-	        name, version, name);
-	fclose(f);
-	return 0;
+	snprintf(content, sizeof(content),
+	         "package \"%s\" {\n"
+	         "    version \"%s\"\n"
+	         "    release 1\n"
+	         "    format \"cixpkg\"\n"
+	         "\n"
+	         "    sources {\n"
+	         "        main \"%s\" {\n"
+	         "            url \"%s\"\n"
+	         "            sha256 \"%s\"\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    requires {\n"
+	         "        build {\n"
+	         "            compiler \"tcc\"\n"
+	         "            tool \"linux-headers\"\n"
+	         "            tool \"bash\"\n"
+	         "            tool \"coreutils\"\n"
+	         "            tool \"binutils\"\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    metadata {\n"
+	         "%s"
+	         "    }\n"
+	         "\n"
+	         "    build {\n"
+	         "        cd \"${src}/%s/%s-%s\" {\n"
+	         "            run \"tcc\" {\n"
+	         "                \"-o\" \"hello\" \"hello.c\"\n"
+	         "            }\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    install {\n"
+	         "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
+	         "        copy \"${src}/%s/%s-%s/hello\" to \"${dest}/usr/bin/%s\"\n"
+	         "    }\n"
+	         "}\n",
+	         name, version, name, source_url, source_sha256, metadata, name, name, version, name,
+	         name, version, name);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "content");
+	jw_str(&w, content);
+	jw_key(&w, "format");
+	jw_str(&w, "pbs");
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	memset(&r, 0, sizeof(r));
+	ok = (cix_client_request(c, "POST", "/v1/pkg/recipes", w.buf, &r) == 0 && r.status == 204);
+	if (!ok)
+		fprintf(stderr, "      POST /v1/pkg/recipes %s@%s: status=%d %.200s\n", name, version,
+		        r.status, r.body != NULL ? r.body : "");
+	cix_response_free(&r);
+	jw_free(&w);
+	return ok ? 0 : -1;
 }
 
 /*
@@ -410,7 +438,7 @@ int main(void)
 		char source_url[600];
 
 		snprintf(source_url, sizeof(source_url), "%s", test_http_src(tarball_path));
-		CHECK(write_recipe(g_pkg_state_dir, "cachetest", "1.0", source_url, sha256, NULL) == 0,
+		CHECK(write_recipe(&client, "cachetest", "1.0", source_url, sha256, NULL) == 0,
 		      "write cachetest recipe");
 	}
 
@@ -491,7 +519,7 @@ int main(void)
 		if (stage_source_tarball(scratch_dir, "cachetest2", "1.0", tarball2, sizeof(tarball2),
 		                          sha2562, sizeof(sha2562)) == 0) {
 			snprintf(source_url2, sizeof(source_url2), "%s", test_http_src(tarball2));
-			CHECK(write_recipe(g_pkg_state_dir, "cachetest2", "1.0", source_url2, sha2562, NULL) ==
+			CHECK(write_recipe(&client, "cachetest2", "1.0", source_url2, sha2562, NULL) ==
 			              0,
 			      "write cachetest2 recipe");
 		}
@@ -629,7 +657,7 @@ int main(void)
 				cix_response_free(&r);
 			}
 
-			CHECK(write_recipe(g_pkg_state_dir, "artifacttest", "1.0",
+			CHECK(write_recipe(&client, "artifacttest", "1.0",
 			                    test_http_src("/nonexistent/artifacttest-1.0.tar"), artifact_sha,
 			                    artifact_sha) == 0,
 			      "write artifacttest recipe (broken source, real artifact checksum)");
@@ -698,7 +726,7 @@ int main(void)
 				               artifact_stage_dir, host_arch()) == 0,
 				      "publish the cix artifact under its own name");
 
-				CHECK(write_recipe(g_pkg_state_dir, "cix", "1.0",
+				CHECK(write_recipe(&client, "cix", "1.0",
 				                    test_http_src("/nonexistent/cix-1.0.tar"), artifact_sha,
 				                    artifact_sha) == 0,
 				      "write a cix recipe served only by the artifact tier");
@@ -792,7 +820,7 @@ int main(void)
 				cix_response_free(&r);
 			}
 
-			CHECK(write_recipe(g_pkg_state_dir, "pushtest", "1.0", source_url, push_sha256,
+			CHECK(write_recipe(&client, "pushtest", "1.0", source_url, push_sha256,
 			                    NULL) == 0,
 			      "write pushtest recipe (real source -- must genuinely build)");
 
@@ -896,14 +924,11 @@ int main(void)
 			 * the broken endpoint returned.
 			 */
 			{
-				char hb_recipe_dir[PATH_MAX];
-				char hb_recipe_path[PATH_MAX];
 				char hb_pushed[PATH_MAX];
 				char hb_headers[PATH_MAX];
 				char hb_tarball[512];
 				char hb_sha256[128];
 				int hb_ok = 1;
-				FILE *hf;
 
 				if (hb_ok && stage_source_tarball(scratch_dir, "hbpush", "1.0", hb_tarball,
 				                                   sizeof(hb_tarball), hb_sha256,
@@ -912,56 +937,68 @@ int main(void)
 				CHECK(hb_ok, "stage hbpush source tarball");
 
 				if (hb_ok) {
-					snprintf(hb_recipe_dir, sizeof(hb_recipe_dir), "%s/recipes/hbpush",
-					         g_pkg_state_dir);
-					mkdir(hb_recipe_dir, 0755);
-					snprintf(hb_recipe_dir, sizeof(hb_recipe_dir),
-					         "%s/recipes/hbpush/1.0-1", g_pkg_state_dir);
-					mkdir(hb_recipe_dir, 0755);
-					snprintf(hb_recipe_path, sizeof(hb_recipe_path),
-					         "%s/recipes/hbpush/1.0-1/build.cbs", g_pkg_state_dir);
-					hf = fopen(hb_recipe_path, "w");
-					if (hf == NULL) {
+					/* Published, not written: this runs long after
+					 * start_daemon(), and a CPDL recipe dropped into
+					 * the store then has no derived identity (cix#516). */
+					struct json_writer hw;
+					char hb_content[1400];
+
+					snprintf(hb_content, sizeof(hb_content),
+					         "package \"hbpush\" {\n"
+					         "    version \"1.0\"\n"
+					         "    release 1\n"
+					         "    format \"cixpkg\"\n"
+					         "\n"
+					         "    sources {\n"
+					         "        main \"hbpush\" {\n"
+					         "            url \"%s\"\n"
+					         "            sha256 \"%s\"\n"
+					         "        }\n"
+					         "    }\n"
+					         "\n"
+					         "    requires {\n"
+					         "        build {\n"
+					         "            compiler \"tcc\"\n"
+					         "            tool \"linux-headers\"\n"
+					         "            tool \"bash\"\n"
+					         "            tool \"coreutils\"\n"
+					         "            tool \"binutils\"\n"
+					         "        }\n"
+					         "    }\n"
+					         "\n"
+					         "    build {\n"
+					         "        cd \"${src}/hbpush/hbpush-1.0\" {\n"
+					         "            run \"tcc\" {\n"
+					         "                \"-o\" \"hello\" \"hello.c\"\n"
+					         "            }\n"
+					         "        }\n"
+					         "    }\n"
+					         "\n"
+					         "    install {\n"
+					         "        copy \"${src}/hbpush/hbpush-1.0/hello\" to \"${dest}/hello\"\n"
+					         "    }\n"
+					         "}\n",
+					         test_http_src(hb_tarball), hb_sha256);
+
+					jw_init(&hw);
+					jw_obj_open(&hw);
+					jw_key(&hw, "name");
+					jw_str(&hw, "hbpush");
+					jw_key(&hw, "content");
+					jw_str(&hw, hb_content);
+					jw_key(&hw, "format");
+					jw_str(&hw, "pbs");
+					jw_obj_close(&hw);
+					hw.buf[hw.len] = '\0';
+
+					memset(&r, 0, sizeof(r));
+					if (cix_client_request(&client, "POST", "/v1/pkg/recipes", hw.buf, &r) != 0 ||
+					    r.status != 204) {
+						fprintf(stderr, "      POST hbpush recipe: status=%d\n", r.status);
 						hb_ok = 0;
-					} else {
-						fprintf(hf,
-						        "package \"hbpush\" {\n"
-						        "    version \"1.0\"\n"
-						        "    release 1\n"
-						        "    format \"cixpkg\"\n"
-						        "\n"
-						        "    sources {\n"
-						        "        main \"hbpush\" {\n"
-						        "            url \"%s\"\n"
-						        "            sha256 \"%s\"\n"
-						        "        }\n"
-						        "    }\n"
-						        "\n"
-						        "    requires {\n"
-						        "        build {\n"
-						        "            compiler \"tcc\"\n"
-						        "            tool \"linux-headers\"\n"
-						        "            tool \"bash\"\n"
-						        "            tool \"coreutils\"\n"
-						        "            tool \"binutils\"\n"
-						        "        }\n"
-						        "    }\n"
-						        "\n"
-						        "    build {\n"
-						        "        cd \"${src}/hbpush/hbpush-1.0\" {\n"
-						        "            run \"tcc\" {\n"
-						        "                \"-o\" \"hello\" \"hello.c\"\n"
-						        "            }\n"
-						        "        }\n"
-						        "    }\n"
-						        "\n"
-						        "    install {\n"
-						        "        copy \"${src}/hbpush/hbpush-1.0/hello\" to \"${dest}/hello\"\n"
-						        "    }\n"
-						        "}\n",
-						        test_http_src(hb_tarball), hb_sha256);
-						fclose(hf);
 					}
+					cix_response_free(&r);
+					jw_free(&hw);
 				}
 
 				if (hb_ok) {
