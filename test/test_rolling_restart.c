@@ -18,8 +18,8 @@
  * Kept hermetic and gcc-free: the "package" installed is a real,
  * already-compiled test binary (build/daemon_child, dynamically linked
  * against system glibc like everything else this project produces) tar-
- * wrapped as the pkg_source payload, with a no-op pkg_build() and a
- * pkg_install() that just copies it -- pkg_seed_image_baseline()
+ * wrapped as the recipe's declared source, with a no-op build phase and
+ * an install that just copies it -- pkg_seed_image_baseline()
  * already stages the runtime lib closure (ld-linux/libc/...) onto
  * every image, so this binary runs inside the container with no
  * compiler ever invoked.
@@ -182,43 +182,99 @@ static int stage_binary_fixture(const char *scratch_dir, const char *version,
 
 	return compute_file_sha256(out_tarball_path, out_sha256, sha256_size);
 }
-
-static int write_binary_recipe(const char *pkg_state_dir, const char *version,
-                                const char *tarball_path, const char *sha256)
+/*
+ * The rollsvc recipe, rendered once for all three call sites -- the
+ * one written straight to disk below, and the 2.0 and 3.0 revisions
+ * published over POST /v1/pkg/recipes later in this file. They were
+ * three copies of the same text, and converting them to CPDL was a
+ * chance to stop that rather than make it three CPDL copies (cix#516).
+ *
+ * rollsvc is already a real ELF binary in the tarball, so there is
+ * nothing to compile: the build phase is a no-op and the install copies
+ * it. chmod is explicit because this test runs the result -- a
+ * container whose service binary is not executable fails at execve with
+ * a message about the container, not about the mode.
+ */
+static const char *rollsvc_recipe_text(const char *version, const char *tarball_path,
+                                        const char *sha256)
 {
-	char recipes_dir[256];
-	char name_dir[256];
-	char path[300];
-	FILE *f;
+	static char buf[1600];
 
-	/* Unlike the real POST /v1/pkg/recipes path (pkg_recipe_add()'s own
-	 * persist_mkdir_p()), this test writes recipe files directly to
-	 * disk and never calls that endpoint first, so nothing else has
-	 * created "recipes/" yet. */
-	snprintf(recipes_dir, sizeof(recipes_dir), "%s/recipes", pkg_state_dir);
-	mkdir(pkg_state_dir, 0755);
-	mkdir(recipes_dir, 0755);
+	snprintf(buf, sizeof(buf),
+	         "package \"rollsvc\" {\n"
+	         "    version \"%s\"\n"
+	         "    release 1\n"
+	         "    format \"cixpkg\"\n"
+	         "\n"
+	         "    sources {\n"
+	         "        main \"rollsvc\" {\n"
+	         "            url \"%s\"\n"
+	         "            sha256 \"%s\"\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    requires {\n"
+	         "        build {\n"
+	         "            tool \"bash\"\n"
+	         "            tool \"coreutils\"\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    build {\n"
+	         "        run \"true\" {\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    install {\n"
+	         "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
+	         "        copy \"${src}/rollsvc/rollsvc-%s/rollsvc\" to \"${dest}/usr/bin/rollsvc\"\n"
+	         "        chmod 0755 \"${dest}/usr/bin/rollsvc\"\n"
+	         "    }\n"
+	         "}\n",
+	         version, test_http_src(tarball_path), sha256, version);
+	return buf;
+}
+/*
+ * Publishes a rollsvc revision through the API rather than writing it
+ * into the store.
+ *
+ * That is not a stylistic preference. A CPDL recipe's identity comes
+ * from `cbs explain --json`, derived once at publish (ADR-0305) or by
+ * the daemon's startup sweep; a file dropped into the store while the
+ * daemon is already running gets neither, and every install of it is
+ * refused with 400. A shell recipe needed no such derivation, which is
+ * why writing the file worked before and is the one thing a conversion
+ * cannot carry over. Measured on 192.168.15.95, 2026-09-25
+ * (probe-cix-testreport@60): test_pkg_concurrent_stress writes its
+ * fixtures BEFORE start_daemon and passed; this test and test_images
+ * wrote theirs after and failed identically at POST install (cix#516).
+ */
+static int publish_rollsvc_recipe(const struct cix_client *c, const char *version,
+                                   const char *tarball_path, const char *sha256)
+{
+	struct json_writer w;
+	struct cix_response r;
+	int ok;
 
-	snprintf(name_dir, sizeof(name_dir), "%s/recipes/rollsvc", pkg_state_dir);
-	mkdir(name_dir, 0755);
-	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
-	mkdir(path, 0755);
-	snprintf(path, sizeof(path), "%s/recipes/rollsvc/%s/build.sh", pkg_state_dir, version);
-	f = fopen(path, "w");
-	if (f == NULL)
-		return -1;
-	fprintf(f, "pkg_name=rollsvc\n");
-	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
-	fprintf(f, "pkg_sha256=%s\n", sha256);
-	fprintf(f, "pkg_depends=\"\"\n");
-	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n");
-	/* No compiler needed -- rollsvc is already a real ELF binary. */
-	fprintf(f, "pkg_build() {\n\t:\n}\n\n");
-	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
-	           "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n\tchmod +x \"$PKG_DESTDIR/usr/bin/rollsvc\"\n}\n");
-	fclose(f);
-	return 0;
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, "rollsvc");
+	jw_key(&w, "content");
+	jw_str(&w, rollsvc_recipe_text(version, tarball_path, sha256));
+	jw_key(&w, "format");
+	jw_str(&w, "pbs");
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	memset(&r, 0, sizeof(r));
+	ok = (cix_client_request(c, "POST", "/v1/pkg/recipes", w.buf, &r) == 0 && r.status == 204);
+	if (!ok)
+		fprintf(stderr, "      POST /v1/pkg/recipes rollsvc %s: status=%d %.200s\n", version,
+		        r.status, r.body != NULL ? r.body : "");
+	cix_response_free(&r);
+	jw_free(&w);
+	return ok ? 0 : -1;
 }
 
 static int poll_pkg_installed_version(const struct cix_client *c, const char *pkg_at_image,
@@ -226,6 +282,9 @@ static int poll_pkg_installed_version(const struct cix_client *c, const char *pk
 {
 	int i;
 	char path[256];
+	char last_state[32] = "(never answered)";
+	char last_version[64] = "";
+	char last_error[240] = "";
 
 	snprintf(path, sizeof(path), "/v1/pkg/%s", pkg_at_image);
 	for (i = 0; i < max_attempts; i++) {
@@ -236,7 +295,14 @@ static int poll_pkg_installed_version(const struct cix_client *c, const char *pk
 		if (cix_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200) {
 			const char *st = json_str_field(r.json, "state");
 			const char *ver = json_str_field(r.json, "version");
+			const char *err = json_str_field(r.json, "error");
 
+			if (st != NULL)
+				snprintf(last_state, sizeof(last_state), "%s", st);
+			if (ver != NULL)
+				snprintf(last_version, sizeof(last_version), "%s", ver);
+			if (err != NULL)
+				snprintf(last_error, sizeof(last_error), "%s", err);
 			matched = st != NULL && strcmp(st, "installed") == 0 && ver != NULL &&
 			          strcmp(ver, want_version) == 0;
 		}
@@ -244,6 +310,28 @@ static int poll_pkg_installed_version(const struct cix_client *c, const char *pk
 		if (matched)
 			return 0;
 		usleep(200000);
+	}
+	/*
+	 * Say what it WAS, not only that it never became what was wanted.
+	 * A bare -1 here reported a build failure as a timeout and sent a
+	 * conversion back twice for want of one line (cix#516): the package
+	 * had reached "failed" in the first second and this loop then spent
+	 * its whole budget re-reading that. The build log is where the
+	 * cause is written -- the error field carries an exit status and no
+	 * more.
+	 */
+	fprintf(stderr, "      %s never reached installed/%s -- last state '%s', version '%s'%s%s\n",
+	        pkg_at_image, want_version, last_state, last_version,
+	        last_error[0] != '\0' ? ", error: " : "", last_error);
+	{
+		char bare[64];
+		char *at;
+
+		snprintf(bare, sizeof(bare), "%s", pkg_at_image);
+		at = strchr(bare, '@');
+		if (at != NULL)
+			*at = '\0';
+		test_print_build_log(c, bare, 40);
 	}
 	return -1;
 }
@@ -278,7 +366,6 @@ int main(void)
 	struct cix_client client;
 	struct cix_response r;
 	char scratch_dir[] = "/tmp/cix_test_rollrestart_XXXXXX";
-	char pkg_state_dir[PATH_MAX];
 	char image_dir[PATH_MAX];
 	char tarball_v1[512], sha_v1[128];
 	char tarball_v2[512], sha_v2[128];
@@ -308,7 +395,6 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	snprintf(pkg_state_dir, sizeof(pkg_state_dir), "%s/rebuildable/pkg", g_data_dir);
 	snprintf(image_dir, sizeof(image_dir), "%s/rebuildable/images/rollctrimg", g_data_dir);
 
 	daemon_pid = start_daemon();
@@ -367,8 +453,8 @@ int main(void)
 	CHECK(stage_binary_fixture(scratch_dir, "1.0", "build/daemon_child", tarball_v1,
 	                            sizeof(tarball_v1), sha_v1, sizeof(sha_v1)) == 0,
 	      "stage rollsvc 1.0 fixture");
-	CHECK(write_binary_recipe(pkg_state_dir, "1.0", tarball_v1, sha_v1) == 0,
-	      "write rollsvc 1.0 recipe");
+	CHECK(publish_rollsvc_recipe(&client, "1.0", tarball_v1, sha_v1) == 0,
+	      "publish rollsvc 1.0 recipe");
 
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/images", "{\"name\":\"rollctrimg\"}", &r) == 0 &&
@@ -394,7 +480,7 @@ int main(void)
 	          r.status == 202,
 	      "POST install rollsvc@rollctrimg");
 	cix_response_free(&r);
-	CHECK(poll_pkg_installed_version(&client, "rollsvc@rollctrimg", "1.0", ROLL_POLL_ATTEMPTS) == 0,
+	CHECK(poll_pkg_installed_version(&client, "rollsvc@rollctrimg", "1.0-1", ROLL_POLL_ATTEMPTS) == 0,
 	      "rollsvc@rollctrimg (1.0) reaches installed");
 
 	memset(&r, 0, sizeof(r));
@@ -463,28 +549,19 @@ int main(void)
 		struct json_writer w;
 		char body[2048];
 
-		/* Built purely in memory and published ONLY through POST
-		 * /v1/pkg/recipes -- unlike rollsvc 1.0 (write_binary_recipe(),
-		 * a direct on-disk write used once as setup before anything
-		 * else touches that version), this version must reach the
-		 * daemon exclusively through the real API call for
-		 * pkg_recipe_add()'s own trigger (queue_rolling_rebuilds_for())
-		 * to ever fire -- pre-writing the file first (as an earlier
-		 * draft of this test did) makes the daemon see an
-		 * already-published version and reject the POST as a 409
-		 * (recipe versions are immutable). */
+		/* Published through POST /v1/pkg/recipes, like 1.0 above, so
+		 * that pkg_recipe_add()'s own trigger
+		 * (queue_rolling_rebuilds_for()) fires for it -- that trigger
+		 * is what this block tests, and a recipe written to disk
+		 * never reaches it.
+		 *
+		 * 1.0 went the same way since cix#516: a CPDL recipe dropped
+		 * into the store while the daemon is running has no derived
+		 * identity and every install of it is refused 400. So the API
+		 * is no longer one of two options here, it is the only one.
+		 */
 		{
-			char content[1200];
-
-			snprintf(content, sizeof(content),
-			         "pkg_name=rollsvc\npkg_version=2.0\npkg_source=%s\n"
-			         "pkg_sha256=%s\npkg_depends=\"\"\n"
-		         "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
-			         "pkg_build() {\n\t:\n}\n\n"
-			         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
-			         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n\tchmod +x "
-			         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n}\n",
-			         test_http_src(tarball_v2), sha_v2);
+			const char *content = rollsvc_recipe_text("2.0", tarball_v2, sha_v2);
 
 			jw_init(&w);
 			jw_obj_open(&w);
@@ -492,6 +569,8 @@ int main(void)
 			jw_str(&w, "rollsvc");
 			jw_key(&w, "content");
 			jw_str(&w, content);
+			jw_key(&w, "format");
+			jw_str(&w, "pbs");
 			jw_obj_close(&w);
 			w.buf[w.len] = '\0';
 			snprintf(body, sizeof(body), "%s", w.buf);
@@ -617,15 +696,7 @@ int main(void)
 		                            sizeof(tarball_v3), sha_v3, sizeof(sha_v3)) == 0,
 		      "stage rollsvc 3.0 fixture");
 
-		snprintf(content, sizeof(content),
-		         "pkg_name=rollsvc\npkg_version=3.0\npkg_source=%s\n"
-		         "pkg_sha256=%s\npkg_depends=\"\"\n"
-		         "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
-		         "pkg_build() {\n\t:\n}\n\n"
-		         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
-		         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n\tchmod +x "
-		         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n}\n",
-		         test_http_src(tarball_v3), sha_v3);
+		snprintf(content, sizeof(content), "%s", rollsvc_recipe_text("3.0", tarball_v3, sha_v3));
 
 		jw_init(&w);
 		jw_obj_open(&w);
@@ -633,6 +704,8 @@ int main(void)
 		jw_str(&w, "rollsvc");
 		jw_key(&w, "content");
 		jw_str(&w, content);
+		jw_key(&w, "format");
+		jw_str(&w, "pbs");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		snprintf(body, sizeof(body), "%s", w.buf);
