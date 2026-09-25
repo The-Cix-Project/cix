@@ -712,12 +712,19 @@ static const struct {
 	/*
 	 * cbs and its runtime closure. cbs declares libarchive and zstd;
 	 * libarchive declares zlib, xz and zstd, and zlib is already here.
-	 * Seeded rather than listed in test_floor_install[] below, because
-	 * a runtime dependency installs itself when the cache holds it --
-	 * the same way zlib and flex arrive behind binutils. Without them
-	 * cbs's own install is refused before it starts: "a dependency of
-	 * this package could not be resolved" (probe-cix-testreport@18 on
-	 * 192.168.15.95, 2026-09-24).
+	 * Without them cbs's own install is refused before it starts: "a
+	 * dependency of this package could not be resolved"
+	 * (probe-cix-testreport@18 on 192.168.15.95, 2026-09-24).
+	 *
+	 * All three are in test_floor_install[] below as well, rather than
+	 * left to arrive behind cbs the way zlib and flex arrive behind
+	 * binutils. Seeding alone was tried first and the run that followed
+	 * reached "cbs installed in 0s" and then died with the build
+	 * container's pid 1 exiting 127 after 0s -- an execve that never
+	 * started, with nothing in the log saying whether cbs's libraries
+	 * had reached the container at all (probe-cix-testreport@19,
+	 * 2026-09-25). An explicit install is logged per package, so the
+	 * next run answers that instead of leaving it assumed.
 	 */
 	{ "cbs", "v0.1.55-1" }, { "libarchive", "3.8.1-5" }, { "zstd", "1.5.7-5" },
 	{ "xz", "5.8.3-8" },
@@ -731,9 +738,16 @@ static const struct {
  * probe-cix-testreport@2, 2026-09-23). glibc is not here: the daemon
  * installs it into the default image itself. zlib and flex arrive as
  * binutils' runtime dependencies.
+ *
+ * IN ORDER matters for the tail: xz and zstd carry no dependency of
+ * their own, libarchive wants both plus zlib, and cbs wants libarchive
+ * and zstd -- so each one's dependencies are already installed when it
+ * is reached, and a failure names the package that actually failed
+ * rather than something resolved behind it.
  */
-const char *const test_floor_install[] = { "bash",     "coreutils", "tcc", "linux-headers",
-                                           "binutils", "cbs",       NULL };
+const char *const test_floor_install[] = { "bash",       "coreutils", "tcc",  "linux-headers",
+                                           "binutils",   "xz",        "zstd", "libarchive",
+                                           "cbs",        NULL };
 
 static int sha256_file_hex(const char *path, char *out, size_t out_size)
 {
