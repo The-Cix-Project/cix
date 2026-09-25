@@ -386,6 +386,112 @@ static int write_recipe(const struct cix_client *c, const char *name, const char
 }
 
 /*
+ * One CPDL recipe, published through POST /v1/pkg/recipes.
+ *
+ * Every fixture writer in this file used to carry its own copy of the
+ * same scaffold -- store path, name, version, source, checksum -- and
+ * differ only in its build and install steps. Seven copies of a
+ * scaffold is what gets one of them fixed and the others missed, so
+ * this is the scaffold and the callers bring their bodies.
+ *
+ * Published rather than written to disk: a CPDL recipe's identity comes
+ * from `cbs explain --json`, derived at publish (ADR-0305) or by the
+ * daemon's startup sweep, and every caller here runs after the daemon
+ * is up. A shell recipe needed no derivation, which is why writing the
+ * file worked and is the one thing the conversion cannot carry across.
+ *
+ * `tools` is the lines inside requires{build{}}, so a caller that is
+ * testing declaration handling passes exactly what it means to declare
+ * and nothing is added behind it. `extra_sources`, `runtime`, and the
+ * two bodies are CPDL text, indented to sit where they are placed.
+ *
+ * srcdir is derived, not passed: several fixtures build different
+ * packages from ONE tarball (`relinked` from greeter-1.0.tarball), so
+ * the wrapping directory is not the package name -- assuming it was
+ * gave "cannot enter directory ${src}/relinked/relinked-1.0; errno=2"
+ * (CPDL-E4004, 192.168.15.95, 2026-09-25). stage_fixture_tarball()
+ * names a tarball after the directory it wraps, so the path says it.
+ */
+static int publish_cpdl_recipe(const struct cix_client *c, const char *name, const char *version,
+                                const char *tarball_path, const char *sha256,
+                                const char *extra_sources, const char *tools,
+                                const char *runtime, const char *build_body,
+                                const char *install_body)
+{
+	struct json_writer w;
+	struct cix_response r;
+	char content[4096];
+	int ok;
+
+	snprintf(content, sizeof(content),
+	         "package \"%s\" {\n"
+	         "    version \"%s\"\n"
+	         "    release 1\n"
+	         "    format \"cixpkg\"\n"
+	         "\n"
+	         "    sources {\n"
+	         "        main \"%s\" {\n"
+	         "            url \"%s\"\n"
+	         "            sha256 \"%s\"\n"
+	         "        }\n"
+	         "%s"
+	         "    }\n"
+	         "\n"
+	         "    requires {\n"
+	         "        build {\n"
+	         "%s"
+	         "        }\n"
+	         "%s"
+	         "    }\n"
+	         "\n"
+	         "    build {\n"
+	         "%s"
+	         "    }\n"
+	         "\n"
+	         "    install {\n"
+	         "%s"
+	         "    }\n"
+	         "}\n",
+	         name, version, name, test_http_src(tarball_path), sha256,
+	         extra_sources != NULL ? extra_sources : "", tools,
+	         runtime != NULL ? runtime : "", build_body, install_body);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "content");
+	jw_str(&w, content);
+	jw_key(&w, "format");
+	jw_str(&w, "pbs");
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	memset(&r, 0, sizeof(r));
+	ok = (cix_client_request(c, "POST", "/v1/pkg/recipes", w.buf, &r) == 0 && r.status == 204);
+	if (!ok)
+		fprintf(stderr, "      POST /v1/pkg/recipes %s@%s: status=%d %.200s\n", name, version,
+		        r.status, r.body != NULL ? r.body : "");
+	cix_response_free(&r);
+	jw_free(&w);
+	return ok ? 0 : -1;
+}
+
+/* The wrapping directory inside a fixture tarball -- see
+ * publish_cpdl_recipe() for why it is derived rather than assumed. */
+static void fixture_srcdir(const char *tarball_path, char *out, size_t out_size)
+{
+	const char *base = strrchr(tarball_path, '/');
+	size_t blen;
+
+	base = (base != NULL) ? base + 1 : tarball_path;
+	snprintf(out, out_size, "%s", base);
+	blen = strlen(out);
+	if (blen > 8 && strcmp(out + blen - 8, ".tarball") == 0)
+		out[blen - 8] = '\0';
+}
+
+/*
  * A recipe that installs one file of its own AND one deliberately
  * shared with another package (issue #175). Two packages owning one
  * path is normal, not pathological: glibc and linux-headers both own
@@ -546,39 +652,56 @@ static int write_stamped_recipe(const char *name, const char *version, const cha
  * else, so what this build ran against is a property of the recipe
  * rather than of whatever the shared sandbox happens to hold.
  */
-static int write_builddeps_recipe(const char *name, const char *version, const char *tarball_path,
+static int write_builddeps_recipe(const struct cix_client *c, const char *name,
+                                   const char *version, const char *tarball_path,
                                    const char *sha256, const char *build_depends)
 {
-	char name_dir[256];
-	char path[300];
-	FILE *f;
+	char srcdir[160];
+	char tools[512] = "";
+	char build_body[512], install_body[256];
+	const char *p = build_depends;
 
-	snprintf(name_dir, sizeof(name_dir), "%s/recipes/%s", g_pkg_state_dir, name);
-	mkdir(name_dir, 0755);
-	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
-	mkdir(path, 0755);
-	snprintf(path, sizeof(path), "%s/recipes/%s/%s/build.sh", g_pkg_state_dir, name, version);
-	f = fopen(path, "w");
-	if (f == NULL)
-		return -1;
-	fprintf(f, "pkg_name=%s\n", name);
-	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
-	fprintf(f, "pkg_sha256=%s\n", sha256);
-	fprintf(f, "pkg_depends=\"\"\n");
-	/* This writer takes its declaration from the caller -- that is its
+	/*
+	 * This writer takes its declaration from the caller -- that is its
 	 * whole purpose (proving a recipe's declared tools are honoured,
 	 * including a deliberately unavailable one). It must NOT also get
-	 * the standard floor: two pkg_build_depends lines mean the parser
-	 * reads the first, the caller's is silently ignored, and a test
-	 * that should fail passes instead. Which is exactly what happened. */
-	fprintf(f, "pkg_build_depends=\"%s\"\n\n", build_depends);
-	fprintf(f, "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
-	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
-	           "\"$PKG_DESTDIR/usr/bin/%s\"\n}\n",
-	        name);
-	fclose(f);
-	return 0;
+	 * the standard floor: under the shell form two pkg_build_depends
+	 * lines meant the parser read the first, the caller's was silently
+	 * ignored, and a test that should fail passed instead. In CPDL the
+	 * same rule holds for a different reason -- a second tool line is
+	 * simply appended, so an added floor would satisfy a declaration
+	 * the caller meant to be unsatisfiable.
+	 */
+	while (*p != '\0') {
+		const char *sp = strchr(p, ' ');
+		size_t n = (sp != NULL) ? (size_t)(sp - p) : strlen(p);
+		char one[128];
+
+		if (n > 0 && n < sizeof(one)) {
+			snprintf(one, sizeof(one), "%.*s", (int)n, p);
+			snprintf(tools + strlen(tools), sizeof(tools) - strlen(tools),
+			         "            tool \"%s\"\n", one);
+		}
+		if (sp == NULL)
+			break;
+		p = sp + 1;
+	}
+
+	fixture_srcdir(tarball_path, srcdir, sizeof(srcdir));
+	snprintf(build_body, sizeof(build_body),
+	         "        cd \"${src}/%s/%s\" {\n"
+	         "            run \"tcc\" {\n"
+	         "                \"-o\" \"hello\" \"hello.c\"\n"
+	         "            }\n"
+	         "        }\n",
+	         name, srcdir);
+	snprintf(install_body, sizeof(install_body),
+	         "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
+	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s\"\n",
+	         name, srcdir, name);
+
+	return publish_cpdl_recipe(c, name, version, tarball_path, sha256, "", tools, "", build_body,
+	                            install_body);
 }
 
 /* Multi-source recipe (ADR-0036): source 0 is the usual fixture
@@ -1737,7 +1860,7 @@ int main(void)
 	 * exactly the failure this replaces, and it would teach everyone
 	 * that the declaration is decorative.
 	 */
-	if (write_builddeps_recipe("declaredmissing", "1.0", tarball_path, sha256,
+	if (write_builddeps_recipe(&client, "declaredmissing", "1.0", tarball_path, sha256,
 	                            "nosuchbuildtool") != 0) {
 		fprintf(stderr, "FAIL: could not write the declared-build-deps recipe\n");
 		ok = 0;
@@ -1785,7 +1908,7 @@ int main(void)
 	 * covered, and a composition that failed for every input would
 	 * still have looked green.
 	 */
-	if (write_builddeps_recipe("declaredpresent", "1.0", tarball_path, sha256, "greeter") != 0) {
+	if (write_builddeps_recipe(&client, "declaredpresent", "1.0", tarball_path, sha256, "greeter") != 0) {
 		fprintf(stderr, "FAIL: could not write the available-build-deps recipe\n");
 		ok = 0;
 	}
@@ -1833,8 +1956,8 @@ int main(void)
 	 * string was compared against bare package names and matched
 	 * nothing, so even the correct pin failed).
 	 */
-	if (write_builddeps_recipe("pinnedgood", "1.0", tarball_path, sha256, "greeter@1.0-1") != 0 ||
-	    write_builddeps_recipe("pinnedbad", "1.0", tarball_path, sha256, "greeter@9.9") != 0) {
+	if (write_builddeps_recipe(&client, "pinnedgood", "1.0", tarball_path, sha256, "greeter@1.0-1") != 0 ||
+	    write_builddeps_recipe(&client, "pinnedbad", "1.0", tarball_path, sha256, "greeter@9.9") != 0) {
 		fprintf(stderr, "FAIL: could not write the version-pinned build-deps recipes\n");
 		ok = 0;
 	}
@@ -1922,7 +2045,7 @@ int main(void)
 	 * adds ITSELF to that same floor. The proof is that the upgrade
 	 * does not come back with the composition refusal.
 	 */
-	if (write_builddeps_recipe("selfdep", "1.0", tarball_path, sha256,
+	if (write_builddeps_recipe(&client, "selfdep", "1.0", tarball_path, sha256,
 	                           "tcc linux-headers bash coreutils binutils") != 0) {
 		fprintf(stderr, "FAIL: could not write the self-dependency recipe\n");
 		ok = 0;
@@ -1949,7 +2072,7 @@ int main(void)
 		                "exercising an in-place upgrade at all\n", state);
 		ok = 0;
 	} else {
-		if (write_builddeps_recipe("selfdep", "2.0", tarball_path, sha256,
+		if (write_builddeps_recipe(&client, "selfdep", "2.0", tarball_path, sha256,
 		                           "selfdep tcc linux-headers bash coreutils binutils") != 0) {
 			fprintf(stderr, "FAIL: could not write the self-declaring upgrade recipe\n");
 			ok = 0;
