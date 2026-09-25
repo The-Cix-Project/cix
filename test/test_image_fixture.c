@@ -719,7 +719,7 @@ static const struct {
 	 * floor_artifact_find() above exists for.
 	 */
 	{ "bash", "5.2.37-6" }, { "coreutils", "9.11-8" }, { "tcc", "0.9.28rc-31" },
-	{ "glibc", TEST_FLOOR_GLIBC_VERSION }, { "linux-headers", "6.18.40-9" },
+	{ "glibc", TEST_FLOOR_GLIBC_VERSION }, { "linux-headers", "6.18.40-10" },
 	{ "zlib", "1.3.2-14" }, { "flex", "2.6.4-6" }, { "m4", "1.4.20-6" },
 	{ "binutils", "2.42-13" },
 	/*
