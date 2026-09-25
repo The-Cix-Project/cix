@@ -500,7 +500,6 @@ static int recv_ws_frame(struct ws_reader *r, int *out_opcode, unsigned char *ou
 	*out_len = payload_len;
 	return 0;
 }
-}
 
 #define TEST_WS_KEY "dGhlIHNhbXBsZSBub25jZQ=="
 #define TEST_WS_ACCEPT "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
