@@ -9091,6 +9091,32 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	 * exempt from.
 	 */
 
+	/*
+	 * cix#516, measurement pass: refuse to BUILD a shell recipe, so
+	 * every test that still needs the shell path fails naming it.
+	 *
+	 * Temporary in intent and permanent in shape -- this is exactly the
+	 * refusal ADR-0309 ends with, applied early to produce a list. It
+	 * was in at v2.57.303, withdrawn at v2.57.305 because it turns
+	 * FLOOR_SELFTESTS red and blocks deploys, and it comes back the
+	 * same way each time there is a count to take.
+	 *
+	 * Here rather than where the build command is chosen: that choice
+	 * sits inside a branch taken only when a recipe declares build
+	 * dependencies, so a shell recipe declaring none walks straight
+	 * past a refusal put there. This is the one place that means "a
+	 * build is about to happen".
+	 */
+	if (!e->cache_hit && !recipe.is_pbs) {
+		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
+		         "this is a shell recipe and cixd no longer builds one (ADR-0309) -- convert "
+		         "it to CPDL, or install a version whose artifact is already published");
+		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
+		g_chains[chain_idx].name[0] = '\0';
+		g_chains[chain_idx].dep_queue_count = 0;
+		return 0;
+	}
+
 	if (e->cache_hit) {
 		/*
 		 * Issue #144: a precompiled package needs NO build environment.
