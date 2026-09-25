@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### test_kmod_build prints the failing build's own log (#485)
+
+A kmod-build that does not reach `installed` reported only the daemon's error field -- `build failed (exit status 3)` -- and the recipe's real output was unreachable afterwards, because it lives in that test daemon's own build-log store under the `mkdtemp` data directory the test removes when it ends. probe-cix-testreport@20 on 192.168.15.95 (2026-09-25) reported an exit status and no cause, and the only route to more was reproducing the whole run.
+
+Both failure paths now fetch the newest entry from `GET /v1/pkg/build-logs` and print `GET /v1/pkg/build-logs/{file}` to stderr, which is already tail-first for a log larger than its cap (#57).
+
 ### The test floor carries cbs, so a CPDL fixture recipe can build in it (#517)
 
 cbs and its runtime closure -- libarchive, zstd and xz -- are seeded and installed explicitly too, in dependency order, so each install is logged by name rather than assumed to have arrived behind cbs. A CPDL recipe is built BY cbs: cixd composes a build environment from the recipe's declared tools plus cbs itself, and with cbs installed nowhere there is nothing to compose from. `test_kmod_build`'s fixture kernel recipe became CPDL in v2.57.263 -- so it could read a kmod-build's symbols through `args input` the way the real kernel recipe does -- and the ADR-0209 floor had no cbs, so the test stopped running there: `declared build tool "cbs" is not installed anywhere` (probe-cix-testreport@16 on 192.168.15.95, 2026-09-24).
