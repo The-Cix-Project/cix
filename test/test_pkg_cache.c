@@ -215,30 +215,66 @@ static int write_recipe(const char *pkg_state_dir, const char *name, const char 
                          const char *artifact_sha256)
 {
 	char name_dir[256], path[300];
+	char metadata[160] = "";
 	FILE *f;
+
+	if (artifact_sha256 != NULL && artifact_sha256[0] != '\0')
+		snprintf(metadata, sizeof(metadata), "        \"artifact_sha256\" \"%s\"\n",
+		         artifact_sha256);
 
 	snprintf(name_dir, sizeof(name_dir), "%s/recipes/%s", pkg_state_dir, name);
 	run_cmd("mkdir -p '%s'", name_dir);
-	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
+	snprintf(path, sizeof(path), "%s/%s-1", name_dir, version);
 	run_cmd("mkdir -p '%s'", path);
-	snprintf(path, sizeof(path), "%s/recipes/%s/%s/build.sh", pkg_state_dir, name, version);
+	snprintf(path, sizeof(path), "%s/recipes/%s/%s-1/build.cbs", pkg_state_dir, name, version);
 	f = fopen(path, "w");
 	if (f == NULL)
 		return -1;
-	fprintf(f, "pkg_name=%s\n", name);
-	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=%s\n", source_url);
-	fprintf(f, "pkg_sha256=%s\n", source_sha256);
-	fprintf(f, "pkg_depends=\"\"\n");
-	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n");
-	if (artifact_sha256 != NULL && artifact_sha256[0] != '\0')
-		fprintf(f, "pkg_artifact_sha256=%s\n", artifact_sha256);
-	fprintf(f, "\npkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
-	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
-	           "\"$PKG_DESTDIR/usr/bin/%s\"\n}\n",
-	        name);
+	fprintf(f,
+	        "package \"%s\" {\n"
+	        "    version \"%s\"\n"
+	        "    release 1\n"
+	        "    format \"cixpkg\"\n"
+	        "\n"
+	        "    sources {\n"
+	        "        main \"%s\" {\n"
+	        "            url \"%s\"\n"
+	        "            sha256 \"%s\"\n"
+	        "        }\n"
+	        "    }\n"
+	        "\n"
+	        "    requires {\n"
+	        "        build {\n"
+	        "            compiler \"tcc\"\n"
+	        "            tool \"linux-headers\"\n"
+	        "            tool \"bash\"\n"
+	        "            tool \"coreutils\"\n"
+	        "            tool \"binutils\"\n"
+	        "        }\n"
+	        "    }\n"
+	        "\n"
+	        "    metadata {\n"
+	        "%s"
+	        "    }\n"
+	        "\n"
+	        "    build {\n"
+	        "        cd \"${src}/%s/%s-%s\" {\n"
+	        "            run \"tcc\" {\n"
+	        "                \"-o\" \"hello\" \"hello.c\"\n"
+	        "            }\n"
+	        "        }\n"
+	        "    }\n"
+	        "\n"
+	        "    install {\n"
+	        "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
+	        "        copy \"${src}/%s/%s-%s/hello\" to \"${dest}/usr/bin/%s\"\n"
+	        "    }\n"
+	        "}\n",
+	        name, version, name, source_url, source_sha256, metadata, name, name, version, name,
+	        name, version, name);
 	fclose(f);
 	return 0;
+}
 }
 
 /*
@@ -881,25 +917,52 @@ int main(void)
 					         g_pkg_state_dir);
 					mkdir(hb_recipe_dir, 0755);
 					snprintf(hb_recipe_dir, sizeof(hb_recipe_dir),
-					         "%s/recipes/hbpush/1.0", g_pkg_state_dir);
+					         "%s/recipes/hbpush/1.0-1", g_pkg_state_dir);
 					mkdir(hb_recipe_dir, 0755);
 					snprintf(hb_recipe_path, sizeof(hb_recipe_path),
-					         "%s/recipes/hbpush/1.0/build.sh", g_pkg_state_dir);
+					         "%s/recipes/hbpush/1.0-1/build.cbs", g_pkg_state_dir);
 					hf = fopen(hb_recipe_path, "w");
 					if (hf == NULL) {
 						hb_ok = 0;
 					} else {
 						fprintf(hf,
-						        "pkg_name=hbpush\npkg_version=1.0\n"
-						        "pkg_source=%s\npkg_sha256=%s\n"
-						        "pkg_depends=\"\"\n"
-						        "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
-						        "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
-						        "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n}\n",
+						        "package \"hbpush\" {\n"
+						        "    version \"1.0\"\n"
+						        "    release 1\n"
+						        "    format \"cixpkg\"\n"
+						        "\n"
+						        "    sources {\n"
+						        "        main \"hbpush\" {\n"
+						        "            url \"%s\"\n"
+						        "            sha256 \"%s\"\n"
+						        "        }\n"
+						        "    }\n"
+						        "\n"
+						        "    requires {\n"
+						        "        build {\n"
+						        "            compiler \"tcc\"\n"
+						        "            tool \"linux-headers\"\n"
+						        "            tool \"bash\"\n"
+						        "            tool \"coreutils\"\n"
+						        "            tool \"binutils\"\n"
+						        "        }\n"
+						        "    }\n"
+						        "\n"
+						        "    build {\n"
+						        "        cd \"${src}/hbpush/hbpush-1.0\" {\n"
+						        "            run \"tcc\" {\n"
+						        "                \"-o\" \"hello\" \"hello.c\"\n"
+						        "            }\n"
+						        "        }\n"
+						        "    }\n"
+						        "\n"
+						        "    install {\n"
+						        "        copy \"${src}/hbpush/hbpush-1.0/hello\" to \"${dest}/hello\"\n"
+						        "    }\n"
+						        "}\n",
 						        test_http_src(hb_tarball), hb_sha256);
 						fclose(hf);
 					}
-					CHECK(hb_ok, "write hbpush hostbuild recipe");
 				}
 
 				if (hb_ok) {

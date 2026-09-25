@@ -189,22 +189,49 @@ static int write_recipe(const char *pkg_state_dir, const char *name, const char 
 	char path[300];
 	FILE *f;
 
-	if (run_cmd("mkdir -p '%s/recipes/%s/1.0'", pkg_state_dir, name) != 0)
+	if (run_cmd("mkdir -p '%s/recipes/%s/1.0-1'", pkg_state_dir, name) != 0)
 		return -1;
-	snprintf(path, sizeof(path), "%s/recipes/%s/1.0/build.sh", pkg_state_dir, name);
+	snprintf(path, sizeof(path), "%s/recipes/%s/1.0-1/build.cbs", pkg_state_dir, name);
 	f = fopen(path, "w");
 	if (f == NULL)
 		return -1;
-	fprintf(f, "pkg_name=%s\n", name);
-	fprintf(f, "pkg_version=1.0\n");
-	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
-	fprintf(f, "pkg_sha256=%s\n", sha256);
-	fprintf(f, "pkg_depends=\"\"\n");
-	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n");
-	fprintf(f, "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
-	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
-	           "\"$PKG_DESTDIR/usr/bin/%s\"\n}\n",
-	        name);
+	fprintf(f,
+	        "package \"%s\" {\n"
+	        "    version \"1.0\"\n"
+	        "    release 1\n"
+	        "    format \"cixpkg\"\n"
+	        "\n"
+	        "    sources {\n"
+	        "        main \"%s\" {\n"
+	        "            url \"%s\"\n"
+	        "            sha256 \"%s\"\n"
+	        "        }\n"
+	        "    }\n"
+	        "\n"
+	        "    requires {\n"
+	        "        build {\n"
+	        "            compiler \"tcc\"\n"
+	        "            tool \"linux-headers\"\n"
+	        "            tool \"bash\"\n"
+	        "            tool \"coreutils\"\n"
+	        "            tool \"binutils\"\n"
+	        "        }\n"
+	        "    }\n"
+	        "\n"
+	        "    build {\n"
+	        "        cd \"${src}/%s/%s-1.0\" {\n"
+	        "            run \"tcc\" {\n"
+	        "                \"-o\" \"hello\" \"hello.c\"\n"
+	        "            }\n"
+	        "        }\n"
+	        "    }\n"
+	        "\n"
+	        "    install {\n"
+	        "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
+	        "        copy \"${src}/%s/%s-1.0/hello\" to \"${dest}/usr/bin/%s\"\n"
+	        "    }\n"
+	        "}\n",
+	        name, name, test_http_src(tarball_path), sha256, name, name, name, name, name);
 	fclose(f);
 	return 0;
 }

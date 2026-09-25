@@ -150,22 +150,62 @@ static int write_recipe(const char *name, const char *tarball_path)
 	char path[300];
 	FILE *f;
 
-	if (run_cmd("mkdir -p '%s/recipes/%s/1.0'", g_pkg_state_dir, name) != 0)
+	if (run_cmd("mkdir -p '%s/recipes/%s/1.0-1'", g_pkg_state_dir, name) != 0)
 		return -1;
-	snprintf(path, sizeof(path), "%s/recipes/%s/1.0/build.sh", g_pkg_state_dir, name);
+	snprintf(path, sizeof(path), "%s/recipes/%s/1.0-1/build.cbs", g_pkg_state_dir, name);
 	f = fopen(path, "w");
 	if (f == NULL)
 		return -1;
-	fprintf(f, "pkg_name=%s\n", name);
-	fprintf(f, "pkg_version=1.0\n");
-	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
+	/*
+	 * The declared sha256 is all zeroes on purpose: this recipe must
+	 * end FAILED, which is the property being tested, and it fails at
+	 * the checksum before any build runs.
+	 *
+	 * tcc rather than the gcc the shell fixture named, and the reason
+	 * is that the compiler is not inert here even though it never
+	 * runs: a declared build tool that is installed in no image is
+	 * refused outright when composing the build environment, which
+	 * would fail this package for a different reason than the one it
+	 * is here to demonstrate. tcc is in the ADR-0209 floor; gcc is
+	 * not.
+	 */
 	fprintf(f,
-	        "pkg_sha256=0000000000000000000000000000000000000000000000000000000000000000\n");
-	fprintf(f, "pkg_depends=\"\"\n\n");
-	fprintf(f, "pkg_build() {\n\tgcc -o hello hello.c\n}\n\n");
-	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
-	           "\"$PKG_DESTDIR/usr/bin/%s\"\n}\n",
-	        name);
+	        "package \"%s\" {\n"
+	        "    version \"1.0\"\n"
+	        "    release 1\n"
+	        "    format \"cixpkg\"\n"
+	        "\n"
+	        "    sources {\n"
+	        "        main \"%s\" {\n"
+	        "            url \"%s\"\n"
+	        "            sha256 \"%064d\"\n"
+	        "        }\n"
+	        "    }\n"
+	        "\n"
+	        "    requires {\n"
+	        "        build {\n"
+	        "            compiler \"tcc\"\n"
+	        "            tool \"linux-headers\"\n"
+	        "            tool \"bash\"\n"
+	        "            tool \"coreutils\"\n"
+	        "            tool \"binutils\"\n"
+	        "        }\n"
+	        "    }\n"
+	        "\n"
+	        "    build {\n"
+	        "        cd \"${src}/%s/%s-1.0\" {\n"
+	        "            run \"tcc\" {\n"
+	        "                \"-o\" \"hello\" \"hello.c\"\n"
+	        "            }\n"
+	        "        }\n"
+	        "    }\n"
+	        "\n"
+	        "    install {\n"
+	        "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
+	        "        copy \"${src}/%s/%s-1.0/hello\" to \"${dest}/usr/bin/%s\"\n"
+	        "    }\n"
+	        "}\n",
+	        name, name, test_http_src(tarball_path), 0, name, name, name, name, name);
 	fclose(f);
 	return 0;
 }
