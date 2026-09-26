@@ -3410,7 +3410,7 @@ int main(void)
 				cpdl_recipe_text(coll, sizeof(coll), coll_name, publish_as[i], api_tarball, api_sha,
 				                 NULL, CPDL_STD_TOOLS, NULL, "        run \"true\" {\n        }\n",
 				                 "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
-				                 "        write \"${dest}/usr/bin/collide\" \"\"\"x\"\"\"\n");
+				                 "        write \"${dest}/usr/bin/collide\" \"x\\n\"\n");
 				jw_init(&w);
 				jw_obj_open(&w);
 				jw_key(&w, "name");
@@ -3428,8 +3428,12 @@ int main(void)
 				} else if (r.status != 409) {
 					fprintf(stderr,
 					        "FAIL: #494 publishing %s@%s over a stored shell %s status=%d, want "
-					        "409 -- both resolve to the artifact name %s-9.9.9-1's shape\n",
-					        coll_name, publish_as[i], seeded[i], r.status, coll_name);
+					        "409 -- both resolve to the artifact %s-%s-1. A 400 here is the "
+					        "publish refusing the CPDL document itself, which is a different "
+					        "bug from the collision going undetected: read the daemon log for "
+					        "the cbs explain diagnostic before touching the collision check\n",
+					        coll_name, publish_as[i], seeded[i], r.status, coll_name,
+					        publish_as[i]);
 					ok = 0;
 				}
 				cix_response_free(&r);
@@ -3721,29 +3725,23 @@ skip_recipe_api:
 				ok = 0;
 				goto skip_rolling_rebuild;
 			}
-			snprintf(body2, sizeof(body2),
-			         "pkg_name=rollpkg\npkg_version=2.0\npkg_source=%s\n"
-			         "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
-			         "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
-			         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
-			         "\"$PKG_DESTDIR/usr/bin/rollpkg\"\n}\n",
-			         test_http_src(tarball2), sha2);
-			jw_init(&w);
-			jw_obj_open(&w);
-			jw_key(&w, "name");
-			jw_str(&w, "rollpkg");
-			jw_key(&w, "content");
-			jw_str(&w, body2);
-			jw_obj_close(&w);
-			w.buf[w.len] = '\0';
-			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
-			    r.status != 204) {
-				fprintf(stderr, "FAIL: publish rollpkg 2.0, status=%d\n", r.status);
+			/*
+			 * Publishing 2.0 is the ONLY action this scenario takes:
+			 * no install and no upgrade request follows, so whatever
+			 * happens next is the daemon's own rolling-rebuild
+			 * trigger rather than the test driving it.
+			 *
+			 * It goes through write_recipe(), which is what published
+			 * 1.0 a few lines above, rather than a hand-rolled POST
+			 * of shell text -- both because a new shell revision is
+			 * refused now (ADR-0309 clause 4) and because the two
+			 * versions of one fixture had no business being written
+			 * in two different languages by two different code paths.
+			 */
+			if (write_recipe(&client, "rollpkg", "2.0", tarball2, sha2, NULL) != 0) {
+				fprintf(stderr, "FAIL: publish rollpkg 2.0\n");
 				ok = 0;
 			}
-			cix_response_free(&r);
-			jw_free(&w);
 
 			/* No install/upgrade request follows -- the daemon's own
 			 * rolling-rebuild trigger must do this by itself. */
@@ -3759,7 +3757,7 @@ skip_recipe_api:
 					if (st != NULL)
 						snprintf(state, sizeof(state), "%s", st);
 					if (st != NULL && strcmp(st, "installed") == 0 && ver != NULL &&
-					    strcmp(ver, "2.0") == 0) {
+					    strcmp(ver, "2.0-1") == 0) {
 						cix_response_free(&r);
 						break;
 					}
@@ -3770,7 +3768,7 @@ skip_recipe_api:
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "GET", "/v1/pkg/rollpkg@rollingtest", NULL, &r) != 0 ||
 			    r.status != 200 || !str_eq(json_str_field(r.json, "state"), "installed") ||
-			    !str_eq(json_str_field(r.json, "version"), "2.0")) {
+			    !str_eq(json_str_field(r.json, "version"), "2.0-1")) {
 				fprintf(stderr,
 				        "FAIL: rollpkg@rollingtest was not auto-rebuilt to 2.0 (last state "
 				        "seen: %s)\n",
