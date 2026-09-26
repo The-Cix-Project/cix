@@ -126,17 +126,26 @@ int main(void)
 		FILE *p;
 
 		/*
-		 * This file is skipped, and it has to be: a gate that
-		 * forbids a string must contain that string to search for
-		 * it, so scanning itself would make it permanently red. The
-		 * exclusion is by exact path rather than by any cleverness
-		 * (splitting the literal, encoding it) precisely so that it
-		 * stays obvious to the next reader that ONE file is exempt
-		 * and which one.
+		 * TWO FILES ARE SKIPPED, and both for the same reason: they
+		 * are the ones whose job is to STATE the rule, so they have
+		 * to name the thing the rule forbids.
+		 *
+		 *   - this file, the gate itself
+		 *   - CLAUDE.md, which carries the mandate and the owner's
+		 *     wording of it
+		 *
+		 * The exclusion is by exact path rather than by any
+		 * cleverness (splitting the literal, encoding it) precisely
+		 * so it stays obvious to the next reader exactly which files
+		 * are exempt and why. Everything else in the tree -- product
+		 * C, headers, tests, every doc, the OpenAPI contract, the
+		 * changelog, the ADRs, the Makefile -- is scanned.
 		 */
 		snprintf(cmd, sizeof(cmd),
 		         "for f in %s; do [ -e \"$f\" ] || continue; "
 		         "[ \"$f\" = test/test_naming.c ] && continue; "
+		         "[ \"$f\" = ./CLAUDE.md ] && continue; "
+		         "[ \"$f\" = CLAUDE.md ] && continue; "
 		         "grep -Hni pbs \"$f\" 2>/dev/null; done",
 		         g_globs[i]);
 		p = popen(cmd, "r");
