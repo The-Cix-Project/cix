@@ -165,6 +165,20 @@ The REST daemon is the **only** process with direct access to the runtime librar
 
 Every change to the web dashboard follows [docs/guides/web-ux-guidelines.md](docs/guides/web-ux-guidelines.md) — the dashboard's design system: one widget per job, one source of truth for a resource's state and actions (every surface reads it, never re-derives it), and the decision logic that says which widget is correct so one is never swapped for another. It is binding, not advisory; if it is genuinely inadequate for a new need, change that document in the same commit rather than routing around it. The reference is `diskActionEligibility()` in `web/app.js` — one function decides a disk's actions, and both its detail page and its tree right-click menu render from it.
 
+## One Build System Mandate (no exceptions)
+
+**CBS is the build system. CPDL is the recipe language. `.cixpkg` is the artifact format. There is no second one of any of them, and there is no route back to one.**
+
+Stated by the owner on 2026-09-26, in these words: *"we should never ever have a tgz format package or a shell pkg recepie or builder"* — and, when I offered upstream a choice that included keeping tar.gz: *"why do we regress against my deliberate directions?"*
+
+- **A package artifact is `.cixpkg`.** Never `.tar.gz`, in the cache, on a host, in a test fixture, or as a hostbuild export. `format "tar.gz"` is not a thing this project may declare, request, or build for — see [ADR-0307](docs/adr/0307-a-recipe-declares-its-artifact-format.md).
+- **A recipe is CPDL.** Never `build.sh`. Publishing a new shell revision is refused in code ([ADR-0309](docs/adr/0309-the-shell-recipe-build-path-retires.md) clause 4); the remaining shell revisions and the shell build path in `cixd` retire under clause 3, tracked by **#516**.
+- **This is a direction, not a preference, and it is one-way.** When a decision touches either, the question is never "which option is better" — it is "how do we get rid of the legacy one". An upstream ticket asks CBS to make the legacy spelling *impossible*, never to keep supporting it: cbs#241 asks for `format "tar.gz"` to be rejected at parse, and asking for it to be supported would have been the wrong ticket.
+
+**Why this rule is written here rather than only in the ADRs.** It already existed, in ADR-0307, ADR-0309 and the owner's own instructions — and this file referenced none of them, which is how I came to draft an upstream ticket offering "support `format "tar.gz"`" as a legitimate resolution. A standing direction that lives only in ADRs and conversation is one a fresh session does not have. **When the owner states a direction, it belongs in this file in the same change**, not only in the artefact it happened to be about.
+
+**No debt register.** Do not keep a list here of what still violates this; an unmaintained inventory of debt reads as permission, which is the whole argument the No Stop-Gaps maxim already makes about #509. What remains is measured on the box and tracked in the issue tracker, where it can be closed.
+
 ## Environment notes
 
 - `pivot_root` and `clone3` have no glibc wrappers — call via `syscall(SYS_pivot_root, ...)` / `syscall(SYS_clone3, ...)`. `struct clone_args` is self-declared in `include/linux_compat.h` (never `#include <linux/sched.h>` — it clashes with glibc's `<sched.h>` over `CLONE_*` macros).
