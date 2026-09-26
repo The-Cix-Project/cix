@@ -22,7 +22,9 @@ version=0.2.57-359   release=1   doubled
 
 **Why the gate counts implementations instead of checking the format string.** Both names were well-formed in isolation. They were only wrong *relative to each other*, and neither file knew the other existed, so there was no single thing an assertion could have compared. `test_versioning` therefore asserts that exactly **one** place composes `<name>-<version>-<arch>`; a second one appearing is the regression, whatever it spells. Asserting the format string would have passed happily through all twenty releases.
 
-The malformed `cix-installer-0.2.57-359-1-x86_64.iso` is deleted from the cache, so one release has one installer.
+**Both malformed ISOs are deleted from the cache** — `cix-installer-0.2.57-359-1-x86_64.iso` and `cix-installer-2.57.339-1-1-x86_64.iso`, with their signatures. Exactly two existed, which is itself the proof of where the defect began: every installer up to `2.57.224` parses cleanly and only the two built between #434 and this fix are doubled.
+
+The first reason given for deleting was wrong and is recorded here rather than quietly dropped — it was "so one release has one installer", and that was already true: each release had exactly one ISO, malformed or not, and there was never a duplicate. The real reason is the owner's, and it is the better one: a name that the cache parses into the wrong version field is not history worth keeping, and leaving one while fixing the other would be the inconsistency. 15 installers remain, all well-formed and signed.
 
 ### The version is `0.2.x` and the release is the counter — `0.2.57-359` is live (ADR-0312)
 
