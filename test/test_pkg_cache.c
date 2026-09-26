@@ -222,7 +222,7 @@ static int stage_source_tarball(const char *scratch_dir, const char *name, const
  * TWO THINGS MOVE WITH THE CONVERSION and both are load-bearing here,
  * in a file whose whole subject is artifact caching and naming:
  * a CPDL version carries its release, so `1.0` becomes `1.0-1`; and a
- * PBS recipe always produces `.cixpkg` (ADR-0307), so a cached or
+ * CBS recipe always produces `.cixpkg` (ADR-0307), so a cached or
  * pushed artifact is `<name>-1.0-1[-<arch>].cixpkg`, never `.tar.gz`.
  *
  * write_recipe() below stays, shell and all. The two fixtures that
@@ -280,7 +280,7 @@ static int publish_cpdl_recipe(const struct cix_client *c, const char *name, con
 	jw_key(&w, "content");
 	jw_str(&w, content);
 	jw_key(&w, "format");
-	jw_str(&w, "pbs");
+	jw_str(&w, "cbs");
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -916,7 +916,7 @@ int main(void)
 				/* And it must be a real archive, not a truncated
 				 * upload that merely hashed consistently.
 				 *
-				 * `cbs extract` rather than `gzip -t`: a PBS recipe
+				 * `cbs extract` rather than `gzip -t`: a CBS recipe
 				 * publishes a .cixpkg (ADR-0307), which is CBS's own
 				 * container and not a gzip stream. The tool that reads
 				 * the format is the only honest validity check for it,

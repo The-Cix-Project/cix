@@ -3705,7 +3705,7 @@ static void do_system_backup(struct json_writer *w)
 				if (persist_read_file(script_path, &buf, &len) != 0 || buf == NULL)
 					continue;
 				/*
-				 * The filename segment appears ONLY for a PBS recipe, and
+				 * The filename segment appears ONLY for a CBS recipe, and
 				 * that asymmetry is deliberate rather than tidy.
 				 *
 				 * A shell recipe keeps the exact two-segment key ADR-0120
@@ -3718,7 +3718,7 @@ static void do_system_backup(struct json_writer *w)
 				 * in the backup rather than the one it described.
 				 *
 				 * So the incompatibility arrives only once a host actually
-				 * has a PBS recipe to lose, instead of immediately, for
+				 * has a CBS recipe to lose, instead of immediately, for
 				 * every box, in exchange for nothing.
 				 */
 				if (strcmp(filename, PKG_RECIPE_SHELL_FILE) == 0)
@@ -3909,11 +3909,11 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 
 				if (second != NULL &&
 				    (strcmp(second + 1, PKG_RECIPE_SHELL_FILE) != 0 &&
-				     strcmp(second + 1, PKG_RECIPE_PBS_FILE) != 0)) {
+				     strcmp(second + 1, PKG_RECIPE_CBS_FILE) != 0)) {
 					json_free(root);
 					snprintf(out_errmsg, out_errmsg_size,
 					         "pkg_recipes key %s names a recipe file that is neither "
-					         PKG_RECIPE_SHELL_FILE " nor " PKG_RECIPE_PBS_FILE,
+					         PKG_RECIPE_SHELL_FILE " nor " PKG_RECIPE_CBS_FILE,
 					         key);
 					return 400;
 				}
@@ -4023,7 +4023,7 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 				return 500;
 			}
 			/*
-			 * A PBS recipe's identity is DERIVED, so it is not in the
+			 * A CBS recipe's identity is DERIVED, so it is not in the
 			 * backup and must not be: explain.json is what one
 			 * particular cbs made of the document, and restoring a
 			 * copy taken months ago would resurrect that reading
@@ -4031,7 +4031,7 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 			 * which also proves the restored recipe is still readable
 			 * by the engine this host actually has (ADR-0305).
 			 */
-			if (strcmp(filename, PKG_RECIPE_PBS_FILE) == 0 &&
+			if (strcmp(filename, PKG_RECIPE_CBS_FILE) == 0 &&
 			    pkg_recipe_rederive_identity(path) != PKG_OK) {
 				json_free(root);
 				snprintf(out_errmsg, out_errmsg_size,
@@ -19645,7 +19645,7 @@ static void respond_pkg_recipe_error(int fd, enum pkg_error err)
 		 * generic sentence when it does not.
 		 *
 		 * That sentence is wrong for most of what this code covers,
-		 * and measurably so: a PBS recipe refused for declaring
+		 * and measurably so: a CBS recipe refused for declaring
 		 * `format "tar.gz"` (ADR-0307 clause 1) parsed perfectly and
 		 * its name matched, and telling its author otherwise sends
 		 * them to re-read syntax that is fine. Proven with a
@@ -22753,13 +22753,13 @@ static void handle_pkg_recipe_add(int fd, const char *body, size_t body_len)
 
 	/*
 	 * ADR-0305: which recipe language `content` is written in.
-	 * Omitted means "shell", so every client that predates PBS is
+	 * Omitted means "shell", so every client that predates CBS is
 	 * unchanged and nothing has to be migrated.
 	 *
 	 * A JSON object has no filename, which is why this field exists at
 	 * all -- and it is a routing hint that is VERIFIED rather than
 	 * trusted: pkg_recipe_add() validates the content with the parser
-	 * the format names (`cbs explain --json` for pbs, parse_recipe()
+	 * the format names (`cbs explain --json` for cbs, parse_recipe()
 	 * for shell), so a body whose format disagrees with its content is
 	 * refused and never becomes a stored file. From then on the
 	 * filename is the format and nothing asks again.
@@ -22769,11 +22769,11 @@ static void handle_pkg_recipe_add(int fd, const char *body, size_t body_len)
 
 		if (fmt == NULL || strcmp(fmt, "shell") == 0) {
 			format = PKG_RECIPE_SHELL;
-		} else if (strcmp(fmt, "pbs") == 0) {
-			format = PKG_RECIPE_PBS;
+		} else if (strcmp(fmt, "cbs") == 0) {
+			format = PKG_RECIPE_CBS;
 		} else {
 			json_free(root);
-			respond_error(fd, 400, "Bad Request", "format must be \"shell\" or \"pbs\"");
+			respond_error(fd, 400, "Bad Request", "format must be \"shell\" or \"cbs\"");
 			return;
 		}
 	}

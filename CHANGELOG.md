@@ -22,7 +22,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **`test_pkg_cache`'s four BUILD fixtures are CPDL**, and finding out *which* four took a red release to learn. #527 described the blocker as "a test whose fixture serves its own artifacts"; the v2.57.340 selftest said the opposite. `artifacttest` and `cix` — the two that serve artifacts — **passed**, because they install from a served artifact and never build, and the refusal sits in the cache-hit `else`. What failed is `cachetest`, `cachetest2`, `pushtest` and `hbpush`: ordinary build fixtures, all convertible. They now publish through `POST /v1/pkg/recipes`; the daemon starts before every one of them, so none needed the drop-in-before-startup case. #527 is corrected.
 
-The conversion's cost was the ripple, not the fixtures. A CPDL version carries its release and a PBS recipe always produces `.cixpkg`, so `cachetest-1.0.tar.gz` became `cachetest-1.0-1.cixpkg` and the pushed artifacts gained both — in a file whose entire subject is artifact caching, eviction, naming and pushing, so every one of those literals is part of what it asserts.
+The conversion's cost was the ripple, not the fixtures. A CPDL version carries its release and a CBS recipe always produces `.cixpkg`, so `cachetest-1.0.tar.gz` became `cachetest-1.0-1.cixpkg` and the pushed artifacts gained both — in a file whose entire subject is artifact caching, eviction, naming and pushing, so every one of those literals is part of what it asserts.
 
 **`test_pkg`'s `silenttool` fixture is dropped, and the door is closed rather than left ajar.** #302's hazard is a build that exits 0 while a tool it shelled out to was missing, and the phrase the scanner reads — `command not found` — is emitted by a **shell**. CPDL refuses command interpreters (`CPDL-E3006`), so the only way to produce it is through a third-party build tool that swallows the failure. `make` does; the ADR-0209 floor has none — its set is bash, coreutils, tcc, linux-headers, zlib, flex, binutils, glibc, cbs, libarchive, zstd, xz. So the gate is not convertible, it is *floor-blocked*, and restoring it means adding `make` to the floor with the six-way coupling that implies. The scanner itself is untouched product code and still guards the hazard in the full suite.
 
@@ -71,7 +71,7 @@ Getting the last ten inline fixtures across took four revisions, and **all five 
 
 **A real product bug fell out of the same work.** `pkg_resume_build()` set `PKG_BUILD_CMD` unconditionally while the install path branches on the recipe language, so resuming a CPDL build ran `/build/recipe.sh` and died. `pkg resume` has never worked for a CPDL recipe; it was invisible for as long as the resume fixtures were shell.
 
-**What is left is not conversion.** Three fixtures stay shell deliberately: `oldshell` *is* the clause 4 gate and exists to be refused; `silenttool` guards #302, where `|| true` lets a missing command reach exit 0 and CPDL has no interpreter to write that in, so it is a deletion dependent; and `test_pkg_cache.c`'s two artifact-tier fixtures serve `tar.gz` artifacts, which a PBS recipe cannot produce (**#527**).
+**What is left is not conversion.** Three fixtures stay shell deliberately: `oldshell` *is* the clause 4 gate and exists to be refused; `silenttool` guards #302, where `|| true` lets a missing command reach exit 0 and CPDL has no interpreter to write that in, so it is a deletion dependent; and `test_pkg_cache.c`'s two artifact-tier fixtures serve `tar.gz` artifacts, which a CBS recipe cannot produce (**#527**).
 
 **Clause 3, re-measured today** by joining `--json pkg recipes` against `--json pkg ls`: **65 of 179 installed versions** still resolve to a shell revision, across 53 packages. **45 of those 53 already have a CPDL revision published**, so they are an upgrade rather than authoring — and **the remaining 8 are all throwaway `probe-*` packages**. No real package needs a CPDL recipe written. The heavy upgrades in the 45 are glibc, gcc, kernel, python, cmake, binutils and elfutils.
 
@@ -83,9 +83,9 @@ Getting the last ten inline fixtures across took four revisions, and **all five 
 
 **The check's position is the whole of its correctness**, and it is gated as such. It sits *after* the immutability block, so re-offering a stored recipe is still `PKG_ERR_DUPLICATE` — `recipe-sync` calls this function for every file in the corpus every six hours and its last run counted `added=28 skipped=379`, so refusing earlier would turn each of those skips into an error, every window, with no symptom but a number in `pkg sync-status` that nobody reads. It also sits after the `only_approval` return, so a published shell recipe can still be given the checksum of the bytes it produced; ADR-0309 keeps them as immutable history, and a history that cannot approve its own artifact is not intact. `test_pkg` asserts both halves — 400 for a new shell revision, **409 for a stored one** — because only the second one pins the position.
 
-**Nothing legitimate is blocked, measured in this order.** `cix-recipes` holds 9 shell recipes and every one is already published, so sync adds none and gains no new error. The `probe-*` convention — the dependent ADR-0309 said needed "a CPDL template proven on a host: a `.cbs` with a deliberately wrong hash must still make the daemon log `computed=`" — has one, proven six times over rather than argued: `probe-cix-tarball@103-1` through `@113-1` are all `pbs`, and three more CPDL probes did exactly that today measuring the cbs v0.1.57/58/59 tarballs. And all 8 publishes in this project's own test suite send `"format": "pbs"`; the shell fixtures `fopen()` into the recipe store and never reach the publish endpoint, which is why the FLOOR_SELFTESTS are untouched by this.
+**Nothing legitimate is blocked, measured in this order.** `cix-recipes` holds 9 shell recipes and every one is already published, so sync adds none and gains no new error. The `probe-*` convention — the dependent ADR-0309 said needed "a CPDL template proven on a host: a `.cbs` with a deliberately wrong hash must still make the daemon log `computed=`" — has one, proven six times over rather than argued: `probe-cix-tarball@103-1` through `@113-1` are all `cbs`, and three more CPDL probes did exactly that today measuring the cbs v0.1.57/58/59 tarballs. And all 8 publishes in this project's own test suite send `"format": "cbs"`; the shell fixtures `fopen()` into the recipe store and never reach the publish endpoint, which is why the FLOOR_SELFTESTS are untouched by this.
 
-An omitted `format` still means shell (main.c's own comment says so, for clients predating PBS), so that is the exact shape the new refusal answers.
+An omitted `format` still means shell (main.c's own comment says so, for clients predating CBS), so that is the exact shape the new refusal answers.
 
 ### The live-tail test discarded the front of its own frame stream (#519)
 
@@ -426,13 +426,13 @@ in connection to download.savannah.gnu.org:443
 
 Not this host's egress: in the same window it fetched libnl from github.com and net-tools from sourceforge.net through the identical path, and `cixctl storage` reported 13.4 GiB free with health `ok` -- checked **first**, because a full disk is what a "flaky mirror" looked like in #503.
 
-Fixed by carrying the whole list. `parse_pbs_recipe()` records every url past the first into a pooled `mirror_url[]`/`mirror_source[]`/`mirror_count` on `struct pkg_recipe`, and the fetch child tries a source's own url and then each of its mirrors in document order, which is precedence order. Pooled rather than a `[PKG_MAX_SOURCES][N][PKG_URL_MAX]` block because mirrors are rare and that shape would add tens of kilobytes to a struct that lives on the stack of a dozen functions; the ceiling is 12 fallback urls across all sources, and a thirteenth is **refused at publish** rather than dropped -- a silently discarded mirror being the exact defect this removes.
+Fixed by carrying the whole list. `parse_cbs_recipe()` records every url past the first into a pooled `mirror_url[]`/`mirror_source[]`/`mirror_count` on `struct pkg_recipe`, and the fetch child tries a source's own url and then each of its mirrors in document order, which is precedence order. Pooled rather than a `[PKG_MAX_SOURCES][N][PKG_URL_MAX]` block because mirrors are rare and that shape would add tens of kilobytes to a struct that lives on the stack of a dozen functions; the ceiling is 12 fallback urls across all sources, and a thirteenth is **refused at publish** rather than dropped -- a silently discarded mirror being the exact defect this removes.
 
 Two details worth stating. **Every failed url is named**, not just the last one, because a fallback list whose failures collapse into a single message is how a misspelled mirror reads exactly like one that is down. And the `{{REPO_TOKEN}}` substitution and its redaction both cover mirrors, since a placeholder left in a mirror would surface only on the fallback path -- the one nobody exercises until it matters.
 
-The comment in `pbsrecipe.h` said the extra urls were "deliberately ignored". It was accurate about the code and wrong about the intent, and it is the reason nobody looked: it read as a design note rather than a gap. It now says what actually happens, and cites the recipe that found it. This is CLAUDE.md's rule about a comment being a claim -- a comment describing a deliberate limitation that is really a bug is what the next reader believes instead of reading the spec.
+The comment in `cbsrecipe.h` said the extra urls were "deliberately ignored". It was accurate about the code and wrong about the intent, and it is the reason nobody looked: it read as a design note rather than a gap. It now says what actually happens, and cites the recipe that found it. This is CLAUDE.md's rule about a comment being a claim -- a comment describing a deliberate limitation that is really a bug is what the next reader believes instead of reading the spec.
 
-`test_pbsrecipe`'s own `test_first_url_of_several()` asserted "the rest are ignored", so the bug had a passing test. It now walks the list, and asserts the four ways a reader can be wrong about it: order, a count that stops, a refusal past the end that leaves the caller's buffer alone, and a url too long for the buffer refused rather than truncated -- a truncated mirror is a url that fetches nothing and fails naming a host the recipe never wrote. That test is in `SELFTESTS`, so it runs on the box.
+`test_cbsrecipe`'s own `test_first_url_of_several()` asserted "the rest are ignored", so the bug had a passing test. It now walks the list, and asserts the four ways a reader can be wrong about it: order, a count that stops, a refusal past the end that leaves the caller's buffer alone, and a url too long for the buffer refused rather than truncated -- a truncated mirror is a url that fetches nothing and fails naming a host the recipe never wrote. That test is in `SELFTESTS`, so it runs on the box.
 
 ### I cited an issue number I had not filed, and it turned out to belong to something else (#505)
 
@@ -601,10 +601,10 @@ pkg: CPDL engine changed (cbs 0.1.29 -> cbs 0.1.29 f1a5c102...):
      re-derived 54 identities, 0 failed (ADR-0307 clause 7)
 ```
 
-`cbs 0.1.29 -> cbs 0.1.29` with a different key beside it is exactly the shape the log line was written to make legible, and the reason the version string was kept rather than replaced. All 54 PBS recipe versions still report `artifact_format: "cixpkg"` afterwards, so the re-derivation reproduced what was there rather than losing it — which is the property that makes re-deriving safe at all: the documents are derived from immutable recipes, so the answer cannot change, only become more complete.
+`cbs 0.1.29 -> cbs 0.1.29` with a different key beside it is exactly the shape the log line was written to make legible, and the reason the version string was kept rather than replaced. All 54 CBS recipe versions still report `artifact_format: "cixpkg"` afterwards, so the re-derivation reproduced what was there rather than losing it — which is the property that makes re-deriving safe at all: the documents are derived from immutable recipes, so the answer cannot change, only become more complete.
 
 
-Clause 7 re-derives every PBS recipe's `explain.json` when the engine that derived them changes, and decided "changed" by comparing `cbs --version`. That was wrong, and a real event showed it rather than review.
+Clause 7 re-derives every CBS recipe's `explain.json` when the engine that derived them changes, and decided "changed" by comparing `cbs --version`. That was wrong, and a real event showed it rather than review.
 
 cix-build-system closed **cbs#183** on 2026-09-21 with commit `f22e6aa` — a real change to `manifest.c`, adding the named rejection diagnostics this project asked for — pushed to `main` with **`VERSION` still reading `0.1.29`, the same as the tag**. That is not an oversight: upstream ships fixes between tags, and its own test suite asserts `cbs --version` equals `VERSION`, so a newer engine reports an older number by design. This project's own `cbs` recipe header already records the same behaviour biting once before (cix-build-system#172, where VERSION lagged the tag and a recipe had to pin a commit).
 
@@ -661,7 +661,7 @@ require file matches regular files only
 
 That is cix-build-system#175, stated plainly in the recipe guide, and applied correctly to libtool's soname link two recipes earlier in the same sitting. `xorriso` likewise: `xorrisofs`, `xorrecord` and `osirrox` all came through fine.
 
-**xorriso cost two more builds and both were worth it.** First the extracted directory: `cannot enter directory ${src}/xorriso/xorriso-1.5.8.pl02; errno=2`, because the `.pl02` patchlevel is in the tarball's name and not in the directory inside it. A shell recipe never learns that — cixd extracts with the wrapping directory stripped, so `./configure` runs from the extraction root — while a PBS recipe is handed `${src}/<source>/<top>` and must name `<top>` exactly. The revision that failed asked rather than guessed, with the prepare-phase `ls` that libxcrypt's conversion already established for this question, and the answer was in the log above the error. That `ls` stays: it costs one line and makes the next version bump diagnose itself.
+**xorriso cost two more builds and both were worth it.** First the extracted directory: `cannot enter directory ${src}/xorriso/xorriso-1.5.8.pl02; errno=2`, because the `.pl02` patchlevel is in the tarball's name and not in the directory inside it. A shell recipe never learns that — cixd extracts with the wrapping directory stripped, so `./configure` runs from the extraction root — while a CBS recipe is handed `${src}/<source>/<top>` and must name `<top>` exactly. The revision that failed asked rather than guessed, with the prepare-phase `ls` that libxcrypt's conversion already established for this question, and the answer was in the log above the error. That `ls` stays: it costs one line and makes the next version bump diagnose itself.
 
 Then the real find. The build succeeded and the install was refused by the #389 undeclared-link gate:
 
@@ -799,7 +799,7 @@ The new artifact is 10.9 MB against the old tarball's 54.2 MB. **Not a like-for-
 
 ### A metadata value that is too long says so (#493)
 
-`POST /v1/pkg/recipes` answered a PBS recipe whose `changelog` exceeded its 511-byte field with *"recipe content failed to parse, or its pkg_name= doesn't match name"*. Both things that sentence names are false — `cbs explain --json` had already succeeded on the recipe and the code reporting the error was reading its output, and the name matched — and both are expensive to go and check, so it sends the author hunting for a CPDL syntax error that does not exist. It happened twice in one afternoon, converting `xz` and `zlib`.
+`POST /v1/pkg/recipes` answered a CBS recipe whose `changelog` exceeded its 511-byte field with *"recipe content failed to parse, or its pkg_name= doesn't match name"*. Both things that sentence names are false — `cbs explain --json` had already succeeded on the recipe and the code reporting the error was reading its output, and the name matched — and both are expensive to go and check, so it sends the author hunting for a CPDL syntax error that does not exist. It happened twice in one afternoon, converting `xz` and `zlib`.
 
 The reason was in the log store and only there. Now it reaches the caller, with the limits, through the `pkg_recipe_add_last_error()` mechanism this release series already added for the `format "tar.gz"` refusal.
 
@@ -845,7 +845,7 @@ The path match is exact-or-child rather than a prefix, deliberately: `strncmp()`
 
 ### cbs is required in the control-plane root, and a .cixpkg is refused by name without it (#487, ADR-0307 clause 6)
 
-**Verified on 192.168.15.95, v2.57.232, 2026-09-21.** The assembly that produced this root is itself the first half of the proof: it went through the mandatory staging and the pre-seal check and sealed a root, which it now cannot do without `cbs`. The second half is that the booted root really carries it — republishing an already-published PBS recipe version answers `409 ... versions are immutable`, and reaching that refusal means `cbs explain --json` ran first, in this root. A root with no engine answers the same request with *"this host has no CPDL engine"* instead.
+**Verified on 192.168.15.95, v2.57.232, 2026-09-21.** The assembly that produced this root is itself the first half of the proof: it went through the mandatory staging and the pre-seal check and sealed a root, which it now cannot do without `cbs`. The second half is that the booted root really carries it — republishing an already-published CBS recipe version answers `409 ... versions are immutable`, and reaching that refusal means `cbs explain --json` ran first, in this root. A root with no engine answers the same request with *"this host has no CPDL engine"* instead.
 
 
 ADR-0307 flips to **Accepted** with this release, every clause implemented and proven. `test_docindex` caught the first attempt at that — the status line read `**Accepted and implemented**` and the gate requires a bare status word first, qualifying prose after. The fourth count-or-format guard to stop a release in this series, each on something genuinely new.
@@ -853,7 +853,7 @@ ADR-0307 flips to **Accepted** with this release, every clause implemented and p
 
 `mkbootroot` staged `cbs` behind a `stat()` and silently omitted it when absent. The comment above it argued for exactly that, and the argument is kept rather than deleted because it was right when it was written: *"a box whose cix-hosttools image predates `pkg install --image=cix-hosttools cbs` simply has no CPDL engine, which is a normal state rather than an assembly failure ... it fails loudly at the right moment instead: publishing a build.cbs on such a host is refused."*
 
-ADR-0307 makes it false. Refusing at publish covers a recipe arriving that cannot be read; it does nothing for the case that now exists, where an already-published package's artifact is a `.cixpkg` and nothing on the host can extract it. A root without `cbs` is no longer a root that cannot publish PBS recipes — it is a root that **cannot install packages**, and 25 of them are already published in that format.
+ADR-0307 makes it false. Refusing at publish covers a recipe arriving that cannot be read; it does nothing for the case that now exists, where an already-published package's artifact is a `.cixpkg` and nothing on the host can extract it. A root without `cbs` is no longer a root that cannot publish CBS recipes — it is a root that **cannot install packages**, and 25 of them are already published in that format.
 
 So the staging is mandatory, with a message naming the install that fixes it, and it is checked **again before the root is sealed** — the same reason `verify_platform_libs_intact()` exists rather than trusting the copy that staged those libraries: that check was written after a later staging step overwrote an earlier one and produced a root that panicked at boot, while both assemblies printed "wrote ..." and reported success.
 
@@ -861,7 +861,7 @@ So the staging is mandatory, with a message naming the install that fixes it, an
 
 And the daemon half: a cached `.cixpkg` on a host with no `cbs` is refused by name, with the install that fixes it, rather than through the generic prep-failure template that would have rendered it as *"unpacking (... failed)"* and buried the only actionable part. Clause 6 makes that unreachable on an assembled root; it stays because "unreachable" is a claim about today's assembly path and this is a claim about what the daemon does.
 
-### A PBS recipe publishes a .cixpkg, and unpacking one does not stop the control plane (#487, #497, ADR-0307 clauses 2 and 3)
+### A CBS recipe publishes a .cixpkg, and unpacking one does not stop the control plane (#487, #497, ADR-0307 clauses 2 and 3)
 
 **Verified on 192.168.15.95, v2.57.230, 2026-09-21.** `probe-cixpkg` installs an executable, a non-executable data file, and nothing else — chosen because a mode is the thing a format loses silently and a whole-artifact checksum cannot notice (#139).
 
@@ -913,7 +913,7 @@ Naming went first, in its own commit: `cache_tarball_path()` spelled `.tar.gz` i
 
 Three details worth the next reader's time. `dest_dir` is **removed** before the fork rather than after, because `cbs_cixpkg_extract()` refuses a destination that exists and the caller has just created one; `rmdir()` only succeeds on an empty directory, so it cannot quietly discard a populated tree. The re-entry check sits **first** in the prepare chain, because the branch it used to follow is `reset_build_container_dir()` — which on a resume would delete the tree the child just extracted, leaving an empty package that installs cleanly. And `test_blocking_waits` moves twice: `pkg.c` 8 → 9 for the `pidfd_open`-failure cleanup, argued in the table against that table's own rule (it *is* a wait after a signal, and it is in budget because the child has at most just `execve()`d and has opened nothing, not because the kill makes it safe); and `main.c` 23 → 24 for `handle_pkg_unpack_event()`, which needs no argument at all — a pidfd callback's child has already exited, which is the first category the table names as safe. The extraction itself adds no wait; that is the point of the clause. The guard caught the second one on the first build of `v2.57.229`, which is what it is for.
 
-**A consequence found by measuring, not anticipated by the ADR:** 25 of the 28 converted PBS recipes carry an approval over *tarball* bytes, and an approval is never replaced (`approve_pbs_artifact()` returns at *"approved already -- never a replacement (ADR-0107)"*). Each of them now asks for a `.cixpkg` that does not exist, rebuilds from source, publishes one, and cannot approve it. Nothing breaks; they fall out of the artifact tier until their next revision bump, which is clause 5's ordinary path. The owner's decision is to ship and let them bump naturally rather than mass-revising 25 recipes — the same reasoning recorded for the `ftp.gnu.org` mirror swap, where each publish queues a rolling rebuild of every image tracking it. Tracked in #497.
+**A consequence found by measuring, not anticipated by the ADR:** 25 of the 28 converted CBS recipes carry an approval over *tarball* bytes, and an approval is never replaced (`approve_cbs_artifact()` returns at *"approved already -- never a replacement (ADR-0107)"*). Each of them now asks for a `.cixpkg` that does not exist, rebuilds from source, publishes one, and cannot approve it. Nothing breaks; they fall out of the artifact tier until their next revision bump, which is clause 5's ordinary path. The owner's decision is to ship and let them bump naturally rather than mass-revising 25 recipes — the same reasoning recorded for the `ftp.gnu.org` mirror swap, where each publish queues a rolling rebuild of every image tracking it. Tracked in #497.
 
 ### The finalize policy is a program, and CBS runs it (#487, ADR-0307 clause 2, first half)
 
@@ -931,7 +931,7 @@ Six things at once, and none of them inferred: `--finalize-command` invoked the 
 The shell path needed no separate proof: `cix` is itself a shell recipe, so every one of these releases exercised `/build/finalize.sh "$PKG_DESTDIR"` in order to build at all.
 
 
-`daemon/policy/pkg-finalize.sh` was *sourced* — by the shell build command, reading `$PKG_DESTDIR` out of the environment. It is now **executed**, with the staged root as `$1`, and a PBS build reaches it as `cbs build --finalize-command /build/finalize.sh` rather than as a shell step afterwards.
+`daemon/policy/pkg-finalize.sh` was *sourced* — by the shell build command, reading `$PKG_DESTDIR` out of the environment. It is now **executed**, with the staged root as `$1`, and a CBS build reaches it as `cbs build --finalize-command /build/finalize.sh` rather than as a shell step afterwards.
 
 The reason is one file. ADR-0251's rules have to stay a single definition across both recipe languages, and CBS invokes an embedder's finalizer as `execlp(cmd, cmd, staged_root, NULL)` (cix-build-system `src/main.c:514`, read at tag `v0.1.29`) — so the only shape that serves both is a program taking one argument. ADR-0306's withdrawal of clause 4 already had to be made in one expression of these rules; a second expression is what that warns about.
 
@@ -941,17 +941,17 @@ Three details. The script gets `#!/usr/bin/bash` and not `/bin/bash`, because th
 
 `test_pkg_finalize` runs the policy the way the container does — through its own shebang, as a program — so the interpreter line and the executable bit are both part of what it asserts, and it gains a fifth case for the empty-argument refusal. It checks `X_OK` up front with a message saying why, rather than discovering a lost executable bit as an opaque `system()` failure.
 
-### The daemon reads the artifact format a PBS recipe declares, and rebuilds a stale identity (#487, #496, ADR-0307 clauses 1 and 7)
+### The daemon reads the artifact format a CBS recipe declares, and rebuilds a stale identity (#487, #496, ADR-0307 clauses 1 and 7)
 
 **Verified on 192.168.15.95, v2.57.227, 2026-09-19.** Three things, each answered by the host rather than by reading the code.
 
-*The sweep rebuilt what was stale.* Every one of the **50** published PBS recipe versions now reports `artifact_format: "cixpkg"` in `GET /v1/pkg/recipes` — including `zlib@1.3.2-14` and `vim@9.1.1428-4`, published on 2026-09-18 before the reassembly that put `cbs v0.1.29` on the host, whose documents therefore had no `format` key when they were written.
+*The sweep rebuilt what was stale.* Every one of the **50** published CBS recipe versions now reports `artifact_format: "cixpkg"` in `GET /v1/pkg/recipes` — including `zlib@1.3.2-14` and `vim@9.1.1428-4`, published on 2026-09-18 before the reassembly that put `cbs v0.1.29` on the host, whose documents therefore had no `format` key when they were written.
 
 *The listing reports both meanings separately.*
 
 ```
-bc   1.08.1-4    language=pbs  artifact_format=cixpkg
-zlib 1.3.2-14    language=pbs  artifact_format=cixpkg
+bc   1.08.1-4    language=cbs  artifact_format=cixpkg
+zlib 1.3.2-14    language=cbs  artifact_format=cixpkg
 ```
 
 *A `tar.gz` declaration is refused, and the caller is told why.* A throwaway probe recipe, identical to `probe-pbs/2` except for one line:
@@ -963,17 +963,17 @@ package "probe-pbs-targz" { version "1"  release 1  format "tar.gz"  ... }
 ```
 HTTP 400
 {"error":"it declares format \"tar.gz\", which `cbs build` refuses to execute
- (\"standalone builds require cixpkg\") -- a PBS recipe publishes a .cixpkg (ADR-0307)"}
+ (\"standalone builds require cixpkg\") -- a CBS recipe publishes a .cixpkg (ADR-0307)"}
 ```
 
 It is **not** kept in `recipes/`, and that is deliberate rather than tidiness: `pkg_sync_completed()` counts a refused recipe as `failed`, so a permanently-refusable recipe in the tree would report a failure on every repo sync, forever. The document is here instead, which is enough to run it again by hand.
 
 
-Stage 3's first half. CPDL has had two artifact formats and a per-recipe choice between them for as long as this project has written CPDL, and the daemon ignored the declaration entirely — twelve recipes claiming `format "cixpkg"` while every artifact published from one was a `.tar.gz`. `parse_pbs_recipe()` now reads `format` out of the explain document into `struct pkg_recipe`, and a PBS recipe declaring `tar.gz` is **refused at publish**, naming why: `cbs build` fails any recipe not declaring cixpkg with *"standalone builds require cixpkg"* (`src/package.c:305`), and the check is not conditional on an output path. Storing such a recipe means an immutable version that fails at build time, every time. The value is read rather than assumed precisely so that refusal is possible — assuming cixpkg would accept it happily and would encode a restriction that is CBS's to lift.
+Stage 3's first half. CPDL has had two artifact formats and a per-recipe choice between them for as long as this project has written CPDL, and the daemon ignored the declaration entirely — twelve recipes claiming `format "cixpkg"` while every artifact published from one was a `.tar.gz`. `parse_cbs_recipe()` now reads `format` out of the explain document into `struct pkg_recipe`, and a CBS recipe declaring `tar.gz` is **refused at publish**, naming why: `cbs build` fails any recipe not declaring cixpkg with *"standalone builds require cixpkg"* (`src/package.c:305`), and the check is not conditional on an output path. Storing such a recipe means an immutable version that fails at build time, every time. The value is read rather than assumed precisely so that refusal is possible — assuming cixpkg would accept it happily and would encode a restriction that is CBS's to lift.
 
-**And the derived documents on disk did not have the field.** `explain.json` is written once, at publish, by whichever `cbs` the host was running that day, and `format` only exists from `v0.1.26` (cix-build-system#173). Refusing a document without it makes the older half of the PBS corpus unbuildable; assuming a value is the thing clause 1 exists to prevent. So the document is treated as what it already claims to be: **derived state, rebuilt when its producer changes.** A published `(name, version)` is immutable (ADR-0107) and `cbs explain --json` is deterministic over the recipe text, so re-deriving cannot produce a different answer — only a more complete one.
+**And the derived documents on disk did not have the field.** `explain.json` is written once, at publish, by whichever `cbs` the host was running that day, and `format` only exists from `v0.1.26` (cix-build-system#173). Refusing a document without it makes the older half of the CBS corpus unbuildable; assuming a value is the thing clause 1 exists to prevent. So the document is treated as what it already claims to be: **derived state, rebuilt when its producer changes.** A published `(name, version)` is immutable (ADR-0107) and `cbs explain --json` is deterministic over the recipe text, so re-deriving cannot produce a different answer — only a more complete one.
 
-The sweep runs once at startup, and that is complete rather than merely cheap: the host's `cbs` is `/usr/bin/cbs` in the control-plane root, which `mkbootroot` stages from `cix-hosttools` and which is a read-only squashfs replaced only by `POST /system/update` and a reboot. **The engine cannot change while the daemon runs**, and every way it can change goes through a restart; a recipe published while the daemon is up is derived by that same engine at publish. So no window is missed, and no lazy read-side path is needed — which would be the far worse shape anyway, since `pbs_explain_path()`'s own comment records why a re-derive per read is forbidden (~1400 recipe files; #236 measured the event loop blocked for 10981 ms on a cheaper walk, twice, each needing a manual reset).
+The sweep runs once at startup, and that is complete rather than merely cheap: the host's `cbs` is `/usr/bin/cbs` in the control-plane root, which `mkbootroot` stages from `cix-hosttools` and which is a read-only squashfs replaced only by `POST /system/update` and a reboot. **The engine cannot change while the daemon runs**, and every way it can change goes through a restart; a recipe published while the daemon is up is derived by that same engine at publish. So no window is missed, and no lazy read-side path is needed — which would be the far worse shape anyway, since `cbs_explain_path()`'s own comment records why a re-derive per read is forbidden (~1400 recipe files; #236 measured the event loop blocked for 10981 ms on a cheaper walk, twice, each needing a manual reset).
 
 Staleness is the engine's version string (`cbs --version`, `src/main.c:664`) against the version the last sweep recorded — not a probe for one key. A key-absence test cannot tell *"this engine does not emit it"* from *"this recipe did not declare it"*, and it would have to be written again for the next key CBS adds. The new version is recorded only when every document was rebuilt: a partial sweep that recorded it would never retry, leaving whichever recipes failed permanently stale. Re-derivation itself reuses `pkg_recipe_rederive_identity()`, the primitive a backup restore already used, rather than a second copy of it.
 
@@ -985,7 +985,7 @@ Staleness is the engine's version string (`cbs --version`, `src/main.c:664`) aga
 
 **`GET /pkg/recipes`' `format` is now `language`.** It meant the recipe's *language* (ADR-0305) and the artifact format is a genuinely different thing in the same subsystem; two meanings for one key reads as a bug. A clean rename with no alias, alongside the new `artifact_format`. The ADR said the web dashboard was the other reader — checked while making the change, and it was wrong: neither `web/app.js` nor `cli/src/main.c` reads the key at all, and the ADR is corrected in place. The request field on `POST /pkg/recipes` keeps `format`, where it selects the language and collides with nothing.
 
-Two stale documentation claims corrected in the same change, both about CPDL having no home for embedder facts (cix-build-system#161, closed): `docs/api/openapi.yaml` said `changelog` is "always null for a PBS recipe", and `docs/api/README.md` said a PBS recipe "cannot carry an artifact checksum, so it rebuilds from source". Both read from the `metadata { }` block today.
+Two stale documentation claims corrected in the same change, both about CPDL having no home for embedder facts (cix-build-system#161, closed): `docs/api/openapi.yaml` said `changelog` is "always null for a CBS recipe", and `docs/api/README.md` said a CBS recipe "cannot carry an artifact checksum, so it rebuilds from source". Both read from the `metadata { }` block today.
 
 ### An ISO build no longer refuses over a seed artifact the host can reach (#495)
 
@@ -1049,7 +1049,7 @@ lrwxrwxrwx 15 /usr/lib/libmnl.so.0 -> libmnl.so.0.2.0
 Two things learned by being refused, both now facts about the platform rather than guesses:
 
 - **`target` belongs to `require symlink`, not `require file`.** `require file { target … }` is rejected with *"file assertion must use contains, same_as, or nonempty"*. A separate assertion kind is the better shape, and it cost one publish to find.
-- **A PBS recipe's sources are extracted INSIDE the build container by cbs**, where a shell recipe's are extracted host-side by cixd using the host's own tools. So a compressor the archive needs must be declared: `libmnl`'s `.tar.bz2` failed before any phase ran with *"cannot open archive: Can't initialize filter; unable to run program \"bzip2 -d\""*, and the shell revision never needed the declaration because it never did the work. Every converted recipe whose source is `.bz2` — or any format libarchive farms out — needs the same.
+- **A CBS recipe's sources are extracted INSIDE the build container by cbs**, where a shell recipe's are extracted host-side by cixd using the host's own tools. So a compressor the archive needs must be declared: `libmnl`'s `.tar.bz2` failed before any phase ran with *"cannot open archive: Can't initialize filter; unable to run program \"bzip2 -d\""*, and the shell revision never needed the declaration because it never did the work. Every converted recipe whose source is `.bz2` — or any format libarchive farms out — needs the same.
 
 Twenty-four converted.
 
@@ -1154,7 +1154,7 @@ with the daemon log naming both versions and the shared name in each direction. 
 
 Two things deliberately left: surfacing a 409 artifact push on the package entry (acceptance criterion 3) is a separate change to entry state and is not folded in — the publish-time refusal means a new recipe can no longer reach that situation. And the `test_pkg` case covering both orders is **not a gate**, because `test_pkg` is not in `SELFTESTS` (#224) and the helpers are `static` in pkg.c; the run above is the proof.
 
-Also corrects a comment in the same function that had gone false: it still said a PBS recipe has nowhere to carry an approval because CPDL rejects unknown keys (cix-build-system#161, closed) — the approval lives in `metadata { "artifact_sha256" }` and #492 writes it there.
+Also corrects a comment in the same function that had gone false: it still said a CBS recipe has nowhere to carry an approval because CPDL rejects unknown keys (cix-build-system#161, closed) — the approval lives in `metadata { "artifact_sha256" }` and #492 writes it there.
 
 ### Nine more packages convert to CPDL, and one of them was never actually built (#487, #491, #494)
 
@@ -1206,7 +1206,7 @@ So the honest gap is three shapes, not five categories, and two of the three are
 
 `docs/guides/writing-recipes.md` gains a **shell idiom → CPDL equivalent** table covering every row used in a real conversion here, a "what not to remove" note (ADR-0306's documentation rule and ADR-0251's already-handled `.a`/`.la`), the `require file` symlink trap, and the three gaps above so an author knows in advance what will not convert.
 
-Two bullets in that guide were also stale and are corrected: PBS recipes *can* now carry an artifact checksum and a changelog (in `metadata { }`) and *can* declare build capabilities — cix-build-system#161 and #162 closed, and the guide still said both were impossible.
+Two bullets in that guide were also stale and are corrected: CBS recipes *can* now carry an artifact checksum and a changelog (in `metadata { }`) and *can* declare build capabilities — cix-build-system#161 and #162 closed, and the guide still said both were impossible.
 
 ### xz, zlib and inetutils convert to CPDL (#487, #491)
 
@@ -1236,7 +1236,7 @@ Both library recipes also stop deleting `liblzma.a`/`.la` and `libz.a`. That is 
 
 One of those three builds was also my own error compounding it: `1.3.2-13`'s comment claimed `libz.so.1` was a real file in the build tree and only became a link at `make install`. It is a link in both. The build log said so plainly — zlib links its own test binaries against `libz.so.1.3.2` — and the comment was written from assumption rather than from that line.
 
-### A PBS recipe rejected for metadata length reports a parse failure (cix#493)
+### A CBS recipe rejected for metadata length reports a parse failure (cix#493)
 
 Found converting `xz` and `zlib`: a `changelog` slightly over its 511-byte field is refused with `recipe content failed to parse, or its pkg_name= doesn't match name`. The recipe parses — `cbs explain --json` had already succeeded on it — and the name matches. The real reason reaches the log store and nothing else: `a metadata value does not fit (artifact_sha256 max 64, changelog max 511)`.
 
@@ -1322,13 +1322,13 @@ One collision surfaced that would otherwise have been hit mid-implementation: `G
 
 Retirement of the tarball is a query a future ADR can run — no image manifest resolving any package to a shell revision — not a date, and not a count of `build.sh` files, which stays nonzero forever because old revisions never leave the tree.
 
-### cixd writes an artifact approval into a PBS recipe (#492)
+### cixd writes an artifact approval into a CBS recipe (#492)
 
 It could read one and not write one, so a converted package rebuilt from source on every install on every host, forever, unless its approval was added by hand. That was the gate on converting the corpus at any volume.
 
-`approve_pbs_artifact()` inserts the approval into the recipe's `metadata { }` block and refreshes the derived `explain.json` beside it. Three things make it a different operation from the shell writer rather than the same one with a different anchor:
+`approve_cbs_artifact()` inserts the approval into the recipe's `metadata { }` block and refreshes the derived `explain.json` beside it. Three things make it a different operation from the shell writer rather than the same one with a different anchor:
 
-- **It writes two files.** `parse_pbs_recipe()` reads `explain.json`, never the recipe (ADR-0305), so an approval written only into the `.cbs` would be invisible to every build — the recipe would say approved and the pipeline would rebuild forever. Recipe first, then `explain.json`: a crash between them reads as unapproved, which is the safe direction to fail; the reverse would leave an `explain.json` claiming an approval the recipe does not declare, so a re-derive would silently revoke it.
+- **It writes two files.** `parse_cbs_recipe()` reads `explain.json`, never the recipe (ADR-0305), so an approval written only into the `.cbs` would be invisible to every build — the recipe would say approved and the pipeline would rebuild forever. Recipe first, then `explain.json`: a crash between them reads as unapproved, which is the safe direction to fail; the reverse would leave an `explain.json` claiming an approval the recipe does not declare, so a re-derive would silently revoke it.
 - **The guard is semantic.** `recipe_adds_only_artifact_sha256()` walks lines, which is right for a format whose declarations *are* lines; CPDL's are keys inside a block. So "only the approval changed" is asked of the two explain documents via `jsondiff_equal_ignoring(..., "artifact_sha256")` — ADR-0292's existing diff, format-independent by construction, and stronger than a text diff: it catches a byte that changes what the recipe *means* and ignores one that does not. One rule, asked of each format's own authority — text for shell, cbs for CPDL, which is the seam ADR-0305 already draws.
 - **It refuses rather than guesses.** A `metadata { }` block must already exist on a line of its own; creating one would mean choosing a position in a document cixd does not parse, and CPDL fixes its declaration order (`CPDL-E3003`). Absent, or present only in upstream's single-line fixture form, is refused with a log line naming the three lines to add.
 
@@ -1340,11 +1340,11 @@ Not a sidecar, for a stronger reason than the one given when this was filed upst
 
 **Two bugs the probe caught, both in the new code.** The "already approved" test read the recipe *text* — `strstr(stored, "\"artifact_sha256\"")` — and release 1-2 silently gained nothing because that probe's own header quotes the key while explaining what an approval looks like. The check hit a comment; a real recipe documenting its own approval would have been permanently unapprovable. It now asks `explain.json`. Release 1-3 deliberately **keeps** the quoted key, because removing it would have hidden the bug rather than gated it. The same mistake appeared in the verification: searching the returned recipe for the string reported the *control* as approved, because the control's header contains the word — both checks now match the declaration's shape. Separately, restructuring moved several refusals to the cleanup label, which unlinks the candidate file, with a `PATH_MAX` buffer not yet built — initialised and guarded.
 
-**What it does not do:** the 88 recipes carrying approvals today are *shell* recipes. This makes a newly converted PBS recipe free after its first publish; each existing one becomes free only once converted and published. It is the enabler for conversion at volume, not the conversion.
+**What it does not do:** the 88 recipes carrying approvals today are *shell* recipes. This makes a newly converted CBS recipe free after its first publish; each existing one becomes free only once converted and published. It is the enabler for conversion at volume, not the conversion.
 
-### A PBS recipe's capability names and metadata are read (cix-build-system#161, #162)
+### A CBS recipe's capability names and metadata are read (cix-build-system#161, #162)
 
-Both gaps closed upstream on 2026-09-18. `pbs_explain_capability_count()` is gone, replaced by `pbs_explain_capabilities()` writing the **names** space-separated in the same shape `pkg_build_caps=` gives the shell path, and `pbs_explain_metadata()` reading `artifact_sha256` and `changelog` out of the opaque `metadata { }` block into the same `struct pkg_recipe` fields the shell keys land in. Neither format owns a second spelling of either list.
+Both gaps closed upstream on 2026-09-18. `cbs_explain_capability_count()` is gone, replaced by `cbs_explain_capabilities()` writing the **names** space-separated in the same shape `pkg_build_caps=` gives the shell path, and `cbs_explain_metadata()` reading `artifact_sha256` and `changelog` out of the opaque `metadata { }` block into the same `struct pkg_recipe` fields the shell keys land in. Neither format owns a second spelling of either list.
 
 **Proven on 192.168.15.95 with a control, because the first result was not one.** `probe-pbs-caps 1-2` declares `capability "CAP_SYS_ADMIN"`; its build container reported `CapEff=0x00000000b8a4fdff`, in which bit 21 is set. That alone proves nothing — bit 12 (`CAP_NET_ADMIN`) is set in the same mask and the recipe never declared it, so a set bit is equally consistent with the declaration having done nothing. `1-3` is identical minus the declaration:
 
@@ -1356,9 +1356,9 @@ XOR              : 0x00200000     -> bits differing: [21]
 
 One bit, and it is CAP_SYS_ADMIN. `CAP_NET_ADMIN` is set in both, so it comes from the baseline rather than the declaration.
 
-Two more results from the same probe. **Publishing it at all is half the proof**: before this, cixd refused any PBS recipe declaring a capability rather than building it without one, because a count of 1 does not say whether the recipe asked for `CAP_SYS_ADMIN` or `CAP_NET_ADMIN`. And `GET /v1/pkg/recipes/probe-pbs-caps` now reports a real `changelog`, where every PBS recipe reported `null` — CPDL has no `changelog` keyword, so that value can only have come through the metadata block.
+Two more results from the same probe. **Publishing it at all is half the proof**: before this, cixd refused any CBS recipe declaring a capability rather than building it without one, because a count of 1 does not say whether the recipe asked for `CAP_SYS_ADMIN` or `CAP_NET_ADMIN`. And `GET /v1/pkg/recipes/probe-pbs-caps` now reports a real `changelog`, where every CBS recipe reported `null` — CPDL has no `changelog` keyword, so that value can only have come through the metadata block.
 
-**An older cbs is refused, not read as zero.** `pbs_explain_capabilities()` returns a distinct result when the document reports a NUMBER rather than an array, and both the publish path and the build-time parse refuse on it, saying to upgrade cbs. cixd execs whichever cbs is installed, so a downgrade would otherwise turn a declared `CAP_SYS_ADMIN` into no capability at all in silence — the defect ADR-0304 was written about. A count of **zero** is genuinely none and is not refused. `test_pbsrecipe` carries both document shapes and is in `SELFTESTS`, so this is gated where `test_pkg` could not be (#224).
+**An older cbs is refused, not read as zero.** `cbs_explain_capabilities()` returns a distinct result when the document reports a NUMBER rather than an array, and both the publish path and the build-time parse refuse on it, saying to upgrade cbs. cixd execs whichever cbs is installed, so a downgrade would otherwise turn a declared `CAP_SYS_ADMIN` into no capability at all in silence — the defect ADR-0304 was written about. A count of **zero** is genuinely none and is not refused. `test_cbsrecipe` carries both document shapes and is in `SELFTESTS`, so this is gated where `test_pkg` could not be (#224).
 
 **The host's own cbs had to be upgraded first, and that is a deploy-order fact worth keeping**: `mkbootroot` stages `cbs` from `cix-hosttools`, not `cix-builder`, so `cbs` was upgraded there before the hostbuild. Otherwise the assembled root would carry v0.1.25-1, `cbs explain` at publish would still answer with a count, and a capability-declaring recipe would be refused by the very code this change adds.
 
@@ -1367,7 +1367,7 @@ Two more results from the same probe. **Publishing it at all is half the proof**
 - **CPDL fixes declaration order** (`CPDL-E3003`). It is `version, release, format, [license], [upstream], sources, requires, metadata, capability,` then phases.
 - **CPDL refuses `run "bash"`** (`CPDL-E3006`, "command interpreters are not valid run executables"). That is the language doing its job — a declarative recipe that can shell out is a shell recipe with extra syntax. The probe's first version used `bash -c` with shell arithmetic to test a capability bit; the rewrite prints all four masks with `grep` and the arithmetic is done in the report instead.
 
-**Half of #161's benefit is still unreachable and is filed rather than implied.** cixd can now *read* a PBS artifact approval and still cannot *write* one: `approve_published_artifact()` splices a line into shell text anchored on `pkg_sha256="`, and the CPDL equivalent inserts a key into a block that may not exist, needing a counterpart to `recipe_adds_only_artifact_sha256()` — the guard that permits exactly this one edit to an immutable recipe (ADR-0107). So a converted package rebuilds from source on every install unless its approval is hand-written, and 88 of 148 recipes carry one. Tracked as #492. The stale comment in that function claiming a `.cbs` has nowhere to carry a checksum is corrected in the same change, and its log line now says what is true and what to write by hand.
+**Half of #161's benefit is still unreachable and is filed rather than implied.** cixd can now *read* a CBS artifact approval and still cannot *write* one: `approve_published_artifact()` splices a line into shell text anchored on `pkg_sha256="`, and the CPDL equivalent inserts a key into a block that may not exist, needing a counterpart to `recipe_adds_only_artifact_sha256()` — the guard that permits exactly this one edit to an immutable recipe (ADR-0107). So a converted package rebuilds from source on every install unless its approval is hand-written, and 88 of 148 recipes carry one. Tracked as #492. The stale comment in that function claiming a `.cbs` has nowhere to carry a checksum is corrected in the same change, and its log line now says what is true and what to write by hand.
 
 ### cbs 0.1.25-6, built from `main` -- every upstream blocker closed and verified on Cix hardware
 
@@ -1383,7 +1383,7 @@ kconfig merge tests:  PASS (curated y/m/n states and deterministic order)
 
 `cli-contract-test.sh` asserts, among other things, `"capabilities":["CAP_ONE","CAP_TWO"]`, `"metadata":{"artifact_sha256":"deadbeef",...}` and `"license":"GPL-3.0-or-later"` out of `explain --json` -- so cix-build-system#162, #161 and #168 are verified by upstream's own gate running here, not by reading their commits. #159's seam is verified twice over, by the finalizer test and the policy test.
 
-**Both remaining stages of the PBS flip (#487) are therefore unblocked**: stage 3 (CIXPKG as the artifact format) needed #159; stage 4 (the `.cbs` as the only recipe file) needed #161 and #162.
+**Both remaining stages of the CBS flip (#487) are therefore unblocked**: stage 3 (CIXPKG as the artifact format) needed #159; stage 4 (the `.cbs` as the only recipe file) needed #161 and #162.
 
 **Three revisions were burned on the version string, and the lesson is upstream's contract rather than a bug.** Releases 4 and 5 passed `CBS_VERSION` explicitly so the binary would report the commit rather than the unbumped `0.1.25`. Release 4 failed `cli-build-test.sh`, which asserts the version's *format* (`^cbs [0-9][0-9A-Za-z._-]*$` -- no `+`). Release 5 passed that and failed `cli-contract-test.sh`, which asserts *equality* with the VERSION file. That second one is a contract, not a nit: upstream defines the version a `cbs` binary reports as the content of its VERSION file, which is exactly what #146 was filed about. Release 6 drops the override, reports `cbs 0.1.25` as its source tree declares, and keeps the provenance where it belongs -- the pinned commit, the release digit, and the recipe header.
 
@@ -1429,11 +1429,11 @@ Under clause 4 the first five would be gone and only the control would remain. A
 
 **And that number is the part of this change that is not finished.** Withdrawing clause 4 restores nothing for those 57 until each recipe is revised — 37 name `man`, `doc` or `info` directly and some, `xz` among them, remove the whole tree in one line. An earlier draft of this entry claimed none of them existed; the regex behind that anchored `rm` at the start of a line while every real one is tab-indented, so it reported zero against 57, and the false number reached a guide and a commit message before a real build contradicted it.
 
-`test_pkg_finalize`'s five assertions are **inverted rather than deleted** -- the fixture still stages all five trees plus a `usr/share/doc/zlib/COPYING`, so a reintroduced prune fails the gate instead of shipping quietly. Published artifacts are immutable (ADR-0107), so packages regain their licences at their next rebuild, which the PBS flip forces anyway.
+`test_pkg_finalize`'s five assertions are **inverted rather than deleted** -- the fixture still stages all five trees plus a `usr/share/doc/zlib/COPYING`, so a reintroduced prune fails the gate instead of shipping quietly. Published artifacts are immutable (ADR-0107), so packages regain their licences at their next rebuild, which the CBS flip forces anyway.
 
 Two follow-ons are filed upstream rather than solved here: preserving what lands on disk still cannot answer "what is this package licensed under", because most `make install` runs install no licence file at all (cix-build-system#168 asks CIXPKG to record it as a fact); and pruning should be a policy a build declares and reports rather than a shell function deleting files silently (cix-build-system#169) -- an invisible `rm -rf` is how a licence went missing with nothing in any build log naming it.
 
-### cbs builds itself, from a PBS recipe (ADR-0305, stage 2)
+### cbs builds itself, from a CBS recipe (ADR-0305, stage 2)
 
 The self-hosting step. `recipes/package/cbs/v0.1.25-3/build.cbs` is the build system's own recipe, written in the language the build system reads, and on 192.168.15.95:
 
@@ -1453,7 +1453,7 @@ cbs 0.1.25
 
 `depends 'libarchive zstd'` is the part worth pausing on: it was derived from `requires { runtime { package "libarchive" } }`, the free-form item keyword cix-build-system#160 asks upstream to bless. CPDL puts no allow-list on an item keyword and hands it to an embedder verbatim, so the form worked before it was blessed — and now a real package's runtime closure has come through it.
 
-**The entire upstream suite is the gate, and it passes offline**, which needed one non-obvious thing: 0.1.25's `make test` includes an `upstream-test` that builds `recipes/zstd.cbs` and therefore fetches, inside a container with no network. `upstream-smoke-test.sh` honours `CBS_UPSTREAM_CACHE`, and cixd already stages every declared source at `/build/cbscache/<sha256>` for a PBS build — which is exactly the digest-named layout CBS's own cache uses. So the variable points straight at the daemon's handoff directory: nothing copied, nothing invented, and the zstd tarball fetched and verified host-side like any other source.
+**The entire upstream suite is the gate, and it passes offline**, which needed one non-obvious thing: 0.1.25's `make test` includes an `upstream-test` that builds `recipes/zstd.cbs` and therefore fetches, inside a container with no network. `upstream-smoke-test.sh` honours `CBS_UPSTREAM_CACHE`, and cixd already stages every declared source at `/build/cbscache/<sha256>` for a CBS build — which is exactly the digest-named layout CBS's own cache uses. So the variable points straight at the daemon's handoff directory: nothing copied, nothing invented, and the zstd tarball fetched and verified host-side like any other source.
 
 It is a translation of the working shell recipe rather than a fresh design, deliberately — that recipe carries details won the hard way, and a rewrite that quietly dropped one would look like a success. The `replace` on the Makefile is the sharpest of them: a make command-line assignment cannot be appended to, so passing `CPPFLAGS` there discards the Makefile's own `-DCBS_VERSION` and the binary reports `cbs unknown`. CPDL improves on the shell form here, because `exactly 1` means an upstream rename fails the edit loudly instead of producing a binary that builds and lies about its version.
 
@@ -1461,7 +1461,7 @@ It is a translation of the working shell recipe rather than a fresh design, deli
 
 One finding for upstream along the way: **two of the three recipes CBS ships would not build.** `cbs_prepare_sources_with_events()` extracts every source into `<source_root>/<source-name>/`, main included, and `squashfs-tools.cbs` and `cix.cbs` both omit that segment from their paths. Their `recipe-test` only validates the corpus, never builds it, so nothing catches it. `gcc.cbs` has the right shape.
 
-### The first PBS package, built on a real host (ADR-0305)
+### The first CBS package, built on a real host (ADR-0305)
 
 Proven on 192.168.15.95, 2026-09-18, on `v2.57.216`:
 
@@ -1489,15 +1489,15 @@ staged /build/cbsws
 
 That last one had a second act worth recording: the empty 87-byte artifact was **published to the shared artifact cache**, so every later install of `1-1` took it as a cache hit and never built at all — which is why the version kept reporting `files []` after the harvest was fixed. Nothing was running. Filed as #486, and it is why the probe is version 2: a poisoned artifact cannot be rebuilt over.
 
-One maxim fix landed mid-stream, asked for directly: the string `.cbs` was in three places — the daemon, `cixctl` and the toolchain-policy gate — each independently knowing what makes a recipe PBS. Three literals spelling one rule is a parallel implementation of the rule ADR-0305 exists to state. One definition now, in `include/recipe_format.h`, shared rather than in the daemon's API header because `cixctl` is a pure REST client.
+One maxim fix landed mid-stream, asked for directly: the string `.cbs` was in three places — the daemon, `cixctl` and the toolchain-policy gate — each independently knowing what makes a recipe CBS. Three literals spelling one rule is a parallel implementation of the rule ADR-0305 exists to state. One definition now, in `include/recipe_format.h`, shared rather than in the daemon's API header because `cixctl` is a pure REST client.
 
 ### A recipe's format is its filename, and cixd learns to run one written in CPDL (ADR-0305)
 
-The first step of the owner-directed flip to PBS, and it decides less than full adoption needs, because two of the four stages depend on upstream work that is filed rather than assumed.
+The first step of the owner-directed flip to CBS, and it decides less than full adoption needs, because two of the four stages depend on upstream work that is filed rather than assumed.
 
-`<name>/<version>/build.sh` is a shell recipe; `<name>/<version>/build.cbs` is a PBS recipe in CPDL 0.1. Nothing sniffs content and no recipe declares what it is — **a filename cannot disagree with itself**, and it is also what CBS already insists on (`has_cbs_extension()` refuses any other path, in `build` as well as `explain`). A version holds one or the other, never both: publishing the second format is 409, and `pkg_recipe_file_in()` — the one function that resolves a version to its recipe — refuses to resolve a directory holding two rather than picking by if-order, which is exactly the defect #482 was.
+`<name>/<version>/build.sh` is a shell recipe; `<name>/<version>/build.cbs` is a CBS recipe in CPDL 0.1. Nothing sniffs content and no recipe declares what it is — **a filename cannot disagree with itself**, and it is also what CBS already insists on (`has_cbs_extension()` refuses any other path, in `build` as well as `explain`). A version holds one or the other, never both: publishing the second format is 409, and `pkg_recipe_file_in()` — the one function that resolves a version to its recipe — refuses to resolve a directory holding two rather than picking by if-order, which is exactly the defect #482 was.
 
-**cixd does not parse CPDL.** Identity comes from `cbs explain --json`, read by a new translation unit (`daemon/src/pbsrecipe.c`) through the daemon's existing JSON parser. A second CPDL parser here would be a parallel implementation of the language being adopted, and the two would diverge on precisely the documents where the grammar is subtle. The temptation was real and was refused once already: `explain --json` reports a capability **count**, not the names (cix-build-system#162), and ten lines scanning the `.cbs` for `capability "CAP_…"` would have worked — so instead a recipe declaring any capability is **refused at publish**, and `cix` itself (the one early package wanting `CAP_SYS_ADMIN`) cannot be flipped until upstream answers.
+**cixd does not parse CPDL.** Identity comes from `cbs explain --json`, read by a new translation unit (`daemon/src/cbsrecipe.c`) through the daemon's existing JSON parser. A second CPDL parser here would be a parallel implementation of the language being adopted, and the two would diverge on precisely the documents where the grammar is subtle. The temptation was real and was refused once already: `explain --json` reports a capability **count**, not the names (cix-build-system#162), and ten lines scanning the `.cbs` for `capability "CAP_…"` would have worked — so instead a recipe declaring any capability is **refused at publish**, and `cix` itself (the one early package wanting `CAP_SYS_ADMIN`) cannot be flipped until upstream answers.
 
 **cixd execs `cbs`; it does not link `libcbs`.** Linking is richer — `CbsFinalizePolicy` is a callback, and only a linked embedder can run ADR-0251's normalisation, which is what blocks the CIXPKG stage (cix-build-system#159). Against that: cixd is PID 1 on an installed host, where a segfault in linked third-party code is `Attempted to kill init!` rather than a failed build; a `cbs` upgrade must stay `pkg install cbs` rather than a control-plane rebuild and reboot; and vendoring a build system into the binary that boots the machine is out of proportion to one hook. The choice is cheap to revisit — only the call differs, and it lives in one function.
 
@@ -1511,7 +1511,7 @@ The build container needs no network and no token. CBS fetches sources itself ov
 
 `mkbootroot` stages `cbs` from cix-hosttools **tolerantly**, like `mkfs.btrfs` and unlike `host_tool_bins[]`: every entry there is unconditionally required because a dev-host fallback always exists, and there must be no fallback for this one — `cbs` is a Cix-built package and taking a build machine's copy is what the Build Provenance Mandate forbids. A box whose hosttools image predates it has no engine, which is a normal state that fails loudly at publish with the install that fixes it, rather than at `execve()`.
 
-`test_pbsrecipe` is in `SELFTESTS`, which is the point: `test_pkg` is not, and cannot run on a Cix host at all (#485), so a mapping written inside `pkg.c` would have been gated by nothing.
+`test_cbsrecipe` is in `SELFTESTS`, which is the point: `test_pkg` is not, and cannot run on a Cix host at all (#485), so a mapping written inside `pkg.c` would have been gated by nothing.
 
 ### A hostbuild composes its build environment like every other build (#482, ADR-0304)
 

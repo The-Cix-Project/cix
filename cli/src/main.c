@@ -297,12 +297,12 @@ static void print_usage(FILE *out)
 	        "  pkg rebuilds  -- image rebuilds this host has queued but not started.\n"
 	        "               Publishing a recipe queues one for every image tracking that\n"
 	        "               package `rolling`, which is real work nothing else reports.\n"
-	        "  pkg recipe add --name=NAME --file=PATH [--format=shell|pbs]  -- publishes a\n"
+	        "  pkg recipe add --name=NAME --file=PATH [--format=shell|cbs]  -- publishes a\n"
 	        "               new recipe version on this running system directly, no reinstall\n"
 	        "               needed (ADR-0040); an already-published (name,version) is\n"
 	        "               rejected, not overwritten (ADR-0107) -- bump the version to\n"
 	        "               publish a fix. The format comes from the filename: build.cbs is\n"
-	        "               a PBS recipe in CPDL, build.sh a shell one (ADR-0305), so\n"
+	        "               a CBS recipe in CPDL, build.sh a shell one (ADR-0305), so\n"
 	        "               --format= is only needed for content held in a file not named\n"
 	        "               for what it is\n"
 	        "  pkg recipe show NAME [--version=VERSION]  -- print a recipe's own raw content,\n"
@@ -14532,12 +14532,12 @@ static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int arg
 	}
 	if (name == NULL || file == NULL) {
 		fprintf(stderr,
-		        "usage: cixctl pkg recipe add --name=NAME --file=PATH [--format=shell|pbs]\n");
+		        "usage: cixctl pkg recipe add --name=NAME --file=PATH [--format=shell|cbs]\n");
 		return 2;
 	}
 	/*
 	 * ADR-0305: a recipe's format is its filename, so the ordinary case
-	 * needs no flag -- publishing a build.cbs makes it a PBS recipe and
+	 * needs no flag -- publishing a build.cbs makes it a CBS recipe and
 	 * a build.sh makes it a shell one, exactly as the file is named on
 	 * disk and exactly as it will be stored on the host. The flag exists
 	 * for the one case the extension cannot answer: content held in a
@@ -14548,17 +14548,17 @@ static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int arg
 	 */
 	if (format == NULL) {
 		size_t flen = strlen(file);
-		const size_t slen = sizeof(PKG_RECIPE_PBS_SUFFIX) - 1;
+		const size_t slen = sizeof(PKG_RECIPE_CBS_SUFFIX) - 1;
 
-		/* PKG_RECIPE_PBS_SUFFIX, not a literal: the daemon resolves a
+		/* PKG_RECIPE_CBS_SUFFIX, not a literal: the daemon resolves a
 		 * version to its recipe with the same constant, and two copies
 		 * of this string are two places that could disagree about what
-		 * a PBS recipe is. */
-		format = (flen >= slen && strcmp(file + flen - slen, PKG_RECIPE_PBS_SUFFIX) == 0)
-		             ? "pbs"
+		 * a CBS recipe is. */
+		format = (flen >= slen && strcmp(file + flen - slen, PKG_RECIPE_CBS_SUFFIX) == 0)
+		             ? "cbs"
 		             : "shell";
-	} else if (strcmp(format, "shell") != 0 && strcmp(format, "pbs") != 0) {
-		fprintf(stderr, "cixctl: --format= must be shell or pbs\n");
+	} else if (strcmp(format, "shell") != 0 && strcmp(format, "cbs") != 0) {
+		fprintf(stderr, "cixctl: --format= must be shell or cbs\n");
 		return 2;
 	}
 	if (read_local_file(file, &content, &content_len) != 0) {

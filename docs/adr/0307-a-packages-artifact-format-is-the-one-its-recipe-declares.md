@@ -15,7 +15,7 @@ control-plane root.
 Every clause is implemented and proven on the box:
 
 - **1 and 7** (`v2.57.227`): the daemon reads the declared format, all
-  50 published PBS recipe versions report `artifact_format: "cixpkg"`
+  50 published CBS recipe versions report `artifact_format: "cixpkg"`
   after the re-derivation sweep, and a recipe declaring
   `format "tar.gz"` is refused at publish with a message naming
   `cbs build`.
@@ -145,9 +145,9 @@ was never a choice to make. `tar.gz` is a value CPDL's grammar accepts
 and `cbs build` cannot execute. It is reachable only through the
 embedder API, which cixd does not use — cixd execs the binary.
 
-The consequence for this ADR is direct and it killed a clause: no PBS
+The consequence for this ADR is direct and it killed a clause: no CBS
 recipe can declare `tar.gz` and still build, so there is no route by
-which a PBS recipe produces a tarball, and any design that needed one —
+which a CBS recipe produces a tarball, and any design that needed one —
 a bootstrap exemption for `cbs` itself, for instance — has to solve its
 problem another way.
 
@@ -191,7 +191,7 @@ has produced four bogus bug reports from unmeasured assumptions about it.
 
 ## Decision
 
-**1. The recipe declares the format; the daemon obeys it.** A PBS
+**1. The recipe declares the format; the daemon obeys it.** A CBS
 recipe declaring `format "cixpkg"` publishes `<name>-<version>.cixpkg`. A
 shell recipe has no `format` field to read and therefore publishes
 `<name>-<version>.tar.gz`, permanently and by construction rather than by
@@ -203,7 +203,7 @@ that keeps coexistence from becoming a parallel implementation: the two
 formats are not two ways to ship a package, they are a property of which
 recipe built it.
 
-A PBS recipe declaring `format "tar.gz"` is **refused at publish**, with
+A CBS recipe declaring `format "tar.gz"` is **refused at publish**, with
 a message saying `cbs build` cannot execute it. The value is legal CPDL
 and unbuildable by the engine (measured above), so the only honest
 handling is to reject it at the boundary rather than store a recipe that
@@ -211,19 +211,19 @@ will fail at build time — the same posture publishing a `build.cbs` on a
 host with no `cbs` already takes.
 
 That refusal is why the daemon must **read** the declared value rather
-than assume `cixpkg` for every PBS recipe. Assuming would publish such a
+than assume `cixpkg` for every CBS recipe. Assuming would publish such a
 recipe happily and fail later, and it would encode a restriction that is
 CBS's to lift, not ours to bake in. The daemon learns it the same way it
-learns everything else about a PBS recipe: from the explain document,
-which `parse_pbs_recipe()` reads and the recipe file it never parses.
+learns everything else about a CBS recipe: from the explain document,
+which `parse_cbs_recipe()` reads and the recipe file it never parses.
 That document gained a `format` key on 2026-09-18
 (cix-build-system#173); the host must be running a `cbs` carrying it
 before any of this can be read — see **What this depended on**.
 
-**2. CBS packages a PBS build; cixd packages a shell build.** `cbs
+**2. CBS packages a CBS build; cixd packages a shell build.** `cbs
 build` gains `--output` — writing to `/build/artifact.cixpkg`, beside
 `recipe.cbs` and the finalize policy rather than inside the workspace
-CBS owns — and cixd stops tarring the staged tree for a PBS recipe. A
+CBS owns — and cixd stops tarring the staged tree for a CBS recipe. A
 shell recipe is packaged by cixd exactly as it is now.
 
 That direction costs the host less, not more, which is worth saying
@@ -278,7 +278,7 @@ carries and checks a digest per file, and refuses setuid modes and
 non-root ownership outright.
 
 **5. An approval does not cross formats.** `artifact_sha256` approves a
-specific byte sequence, so a recipe converted from shell to PBS is a new
+specific byte sequence, so a recipe converted from shell to CBS is a new
 revision with no approval and earns one on its first publish, by the
 mechanism [#492](https://git.home.arpa/itdlabs/cix/issues/492) already
 ships. The existing approvals stay valid for the revisions they name, and
@@ -290,8 +290,8 @@ rather than about what a host would fetch.
 
 **6. `cbs` must be in the control-plane root, and assembly fails without
 it.** A host that cannot extract a `.cixpkg` cannot install any package
-built by a PBS recipe, `cbs` itself included — and clause 1 plus the
-measurement above leave no escape through a tarball, because no PBS
+built by a CBS recipe, `cbs` itself included — and clause 1 plus the
+measurement above leave no escape through a tarball, because no CBS
 recipe can declare one. So the engine cannot be something a root might
 happen to have.
 
@@ -317,7 +317,7 @@ have policed it, and the open question it would have left for stage 4.
 engine that derived it changes** ([#496](https://git.home.arpa/itdlabs/cix/issues/496)).
 
 Clause 1 has the daemon read the declared format from the explain
-document, and `parse_pbs_recipe()` reads that document and never the
+document, and `parse_cbs_recipe()` reads that document and never the
 recipe. The documents already on disk were each derived by whichever
 `cbs` was on the host the day that version was published, and `format`
 only exists from `v0.1.26` — so most of them do not have it. Measured
@@ -356,7 +356,7 @@ sweep misses, and no need for a second, lazy path on the read side.
 Staleness is decided by the engine's own BYTES, not by probing for a
 key and not by the version string it prints. The daemon records
 `<version> <sha256 of /usr/bin/cbs>` from its last sweep and
-re-derives every PBS recipe's document when that changes.
+re-derives every CBS recipe's document when that changes.
 
 Keying on a key-absence test was rejected first: it cannot tell "this
 engine does not emit it" from "this recipe did not declare it", and it
@@ -380,11 +380,11 @@ digest tells an operator something two hashes would not: the engine
 moved without renaming itself.
 
 This does **not** re-derive on read, and the distinction matters. The
-comment above `pbs_explain_path()` records why: re-running `cbs explain`
+comment above `cbs_explain_path()` records why: re-running `cbs explain`
 per read would fork once per recipe file, of which there are ~1400, and
 #236 already measured the event loop blocked for 10981 ms on a
 comparable walk doing something cheaper — twice, each needing the host
-reset by hand. The sweep is bounded by the number of PBS recipes (28 at
+reset by hand. The sweep is bounded by the number of CBS recipes (28 at
 the time of writing), runs before the daemon serves anything, and then
 never again until the engine changes.
 
@@ -407,7 +407,7 @@ emitter at all — while `src/parser.c:792` parses the field and
 declaration and does not report it.
 
 That matters here more than it would anywhere else, because
-`parse_pbs_recipe()` reads `explain.json` and **never the recipe**. A
+`parse_cbs_recipe()` reads `explain.json` and **never the recipe**. A
 fact CBS does not put in that document is a fact cixd cannot have.
 
 It is a small ask, and the emitter is already extended this way:
@@ -425,7 +425,7 @@ build.sh` is nonzero permanently and means nothing.
 What matters is what can still be **installed**. The tarball is retired
 by a superseding ADR when **no image's manifest resolves any package to a
 shell revision** — for every image, every `name@version` in its manifest,
-looked up in `GET /v1/pkg/recipes`, reports its language as `pbs`. Every
+looked up in `GET /v1/pkg/recipes`, reports its language as `cbs`. Every
 term of that is already served over REST, and a `probe-*` recipe can run
 it and print the remaining shell revisions by name, which is also the
 most useful form of progress towards stage 4.
@@ -443,8 +443,8 @@ artifacts are immutable and stay readable.
 
 ## A consequence found while building it
 
-**25 of the 28 converted PBS recipes carry an approval over tarball
-bytes**, and an approval is never replaced (`approve_pbs_artifact()`
+**25 of the 28 converted CBS recipes carry an approval over tarball
+bytes**, and an approval is never replaced (`approve_cbs_artifact()`
 returns at *"approved already -- never a replacement (ADR-0107)"*). So
 on cut-over each of them asks the cache for a `.cixpkg` that does not
 exist, falls back to a source build, publishes a `.cixpkg`, and cannot
@@ -472,7 +472,7 @@ cost is a source rebuild rather than a failure. Tracked in
   it with a message naming `cbs`, exactly as the build path already does
   — never fall through to an extractor that cannot be correct.
 - **`GET /v1/pkg/recipes` already has a key called `format`, and it means
-  something else.** `daemon/src/pkg.c:6055` emits `"format": "pbs"|"shell"`
+  something else.** `daemon/src/pkg.c:6055` emits `"format": "cbs"|"shell"`
   — the recipe's *language*, per ADR-0305. Introducing an artifact format
   under the same name in the same subsystem is two meanings for one key
   and will read as a bug. The existing key is renamed to `"language"`,
@@ -497,12 +497,12 @@ cost is a source rebuild rather than a failure. Tracked in
 - **`daemon/policy/pkg-finalize.sh` becomes an executable**, since
   `--finalize-command` is `execlp`'d with the staged root as `$1` rather
   than sourced. It stays one file and one policy for both formats.
-- **`recipe.is_pbs` is not enough to name the artifact, and reaching for
+- **`recipe.is_cbs` is not enough to name the artifact, and reaching for
   it would be the bug.** It says which language the recipe is written in
   (`daemon/src/pkg.c:297`) — not which format it declared, and clause 6
-  makes `cbs` a PBS recipe that declares `tar.gz` on the day this ships.
+  makes `cbs` a CBS recipe that declares `tar.gz` on the day this ships.
   The parsed recipe gains a separate field carrying the declared format,
-  read from the explain document; `is_pbs` keeps the single job its
+  read from the explain document; `is_cbs` keeps the single job its
   comment gives it.
 - **Two traps that will otherwise each cost a build cycle.**
   `--finalize-command` is `execlp`'d *inside the build container*, so the

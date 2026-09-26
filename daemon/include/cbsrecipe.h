@@ -1,12 +1,12 @@
-#ifndef CIX_PBSRECIPE_H
-#define CIX_PBSRECIPE_H
+#ifndef CIX_CBSRECIPE_H
+#define CIX_CBSRECIPE_H
 
 #include <stddef.h>
 
 /*
- * Reading a PBS recipe's identity (ADR-0305).
+ * Reading a CBS recipe's identity (ADR-0305).
  *
- * A PBS recipe is a CPDL 0.1 document in a `build.cbs` file, and this
+ * A CBS recipe is a CPDL 0.1 document in a `build.cbs` file, and this
  * daemon does not parse CPDL -- `cbs explain --json` does, and this
  * module reads that JSON. A second CPDL parser in cixd would be a
  * parallel implementation of the language being adopted, and the two
@@ -19,7 +19,7 @@
  * package test (test_pkg) cannot run on a Cix host at all -- it needs
  * the ADR-0209 floor artifacts, a hand-fetched input that is not in
  * the source tarball (#485) -- so a mapping written inside pkg.c
- * would be gated by nothing. test_pbsrecipe drives these functions
+ * would be gated by nothing. test_cbsrecipe drives these functions
  * from literal JSON strings and runs anywhere.
  *
  * The accessors are getters rather than one struct-filling call so
@@ -29,7 +29,7 @@
  */
 
 /* Opaque handle over one parsed `cbs explain --json` document. */
-struct pbs_explain;
+struct cbs_explain;
 
 /*
  * Parses explain-JSON. Returns NULL and fills err on malformed input
@@ -37,12 +37,12 @@ struct pbs_explain;
  * release), which is the signal that the JSON did not come from
  * `cbs explain --json` at all.
  */
-struct pbs_explain *pbs_explain_parse(const char *text, size_t len, char *err, size_t err_size);
+struct cbs_explain *cbs_explain_parse(const char *text, size_t len, char *err, size_t err_size);
 
-void pbs_explain_free(struct pbs_explain *ex);
+void cbs_explain_free(struct cbs_explain *ex);
 
 /* The package name, exactly as the CPDL document declares it. */
-const char *pbs_explain_name(const struct pbs_explain *ex);
+const char *cbs_explain_name(const struct cbs_explain *ex);
 
 /*
  * cixd's own version string, which is CPDL's `version` and `release`
@@ -57,18 +57,18 @@ const char *pbs_explain_name(const struct pbs_explain *ex);
  *
  * Returns 0 on success, -1 if the result would not fit.
  */
-int pbs_explain_version(const struct pbs_explain *ex, char *out, size_t out_size);
+int cbs_explain_version(const struct cbs_explain *ex, char *out, size_t out_size);
 
 /* How many sources the document declares (ADR-0036's positional list). */
-int pbs_explain_source_count(const struct pbs_explain *ex);
+int cbs_explain_source_count(const struct cbs_explain *ex);
 
 /*
  * Source index's FIRST URL and its sha256.
  *
  * A source may declare several urls, which CPDL defines as ordered
  * mirrors for one source identity sharing this one checksum. This
- * accessor returns the first; pbs_explain_source_url() below reaches
- * the rest, and parse_pbs_recipe() records them so the fetch can fall
+ * accessor returns the first; cbs_explain_source_url() below reaches
+ * the rest, and parse_cbs_recipe() records them so the fetch can fall
  * back through the list.
  *
  * The comment here used to say the rest were "deliberately ignored",
@@ -81,24 +81,24 @@ int pbs_explain_source_count(const struct pbs_explain *ex);
  * Returns 0 on success, -1 if index is out of range or either value
  * would not fit.
  */
-int pbs_explain_source(const struct pbs_explain *ex, int index, char *url, size_t url_size,
+int cbs_explain_source(const struct cbs_explain *ex, int index, char *url, size_t url_size,
                         char *sha256, size_t sha256_size);
 
 /*
  * How many urls source `index` declares. 0 for an absent source, so a
  * caller may loop without checking the index separately.
  */
-int pbs_explain_source_url_count(const struct pbs_explain *ex, int index);
+int cbs_explain_source_url_count(const struct cbs_explain *ex, int index);
 
 /*
  * Source `index`'s url at `url_index`, in document order -- which is
  * mirror precedence order. url_index 0 is the same string
- * pbs_explain_source() returns.
+ * cbs_explain_source() returns.
  *
  * Returns 0 on success, -1 if either index is out of range or the
  * value would not fit.
  */
-int pbs_explain_source_url(const struct pbs_explain *ex, int index, int url_index, char *url,
+int cbs_explain_source_url(const struct cbs_explain *ex, int index, int url_index, char *url,
                             size_t url_size);
 
 /*
@@ -117,7 +117,7 @@ int pbs_explain_source_url(const struct pbs_explain *ex, int index, int url_inde
  *
  * Returns 0 on success, -1 if the joined list would not fit.
  */
-int pbs_explain_requires(const struct pbs_explain *ex, const char *role, const char *kind,
+int cbs_explain_requires(const struct cbs_explain *ex, const char *role, const char *kind,
                           char *out, size_t out_size);
 
 /*
@@ -133,12 +133,12 @@ int pbs_explain_requires(const struct pbs_explain *ex, const char *role, const c
  * caller means the sweep has not run or the engine is older than the
  * daemon requires, and both are refusals rather than defaults.
  */
-const char *pbs_explain_format(const struct pbs_explain *ex);
+const char *cbs_explain_format(const struct cbs_explain *ex);
 
 /* "" when the document declares none. Never NULL. */
-const char *pbs_explain_upstream(const struct pbs_explain *ex);
-const char *pbs_explain_toolchain(const struct pbs_explain *ex);
-const char *pbs_explain_toolchain_reason(const struct pbs_explain *ex);
+const char *cbs_explain_upstream(const struct cbs_explain *ex);
+const char *cbs_explain_toolchain(const struct cbs_explain *ex);
+const char *cbs_explain_toolchain_reason(const struct cbs_explain *ex);
 
 /*
  * The build capabilities the document declares, space-separated, in the
@@ -168,14 +168,14 @@ const char *pbs_explain_toolchain_reason(const struct pbs_explain *ex);
  * the recipe asked. The caller refuses the publish and says to upgrade
  * cbs. Guessing is the one thing that is not allowed here.
  */
-int pbs_explain_capabilities(const struct pbs_explain *ex, char *out, size_t out_size);
+int cbs_explain_capabilities(const struct cbs_explain *ex, char *out, size_t out_size);
 
 /*
  * One value out of the recipe's opaque `metadata { }` block
  * (cix-build-system#161), or "" written to out when the key is absent.
  *
  * CBS assigns these keys no meaning; the platform does. Two matter, and
- * they are the two that kept a PBS recipe from expressing everything a
+ * they are the two that kept a CBS recipe from expressing everything a
  * shell recipe can:
  *
  *   artifact_sha256   the platform's approval of one published byte
@@ -193,10 +193,10 @@ int pbs_explain_capabilities(const struct pbs_explain *ex, char *out, size_t out
  * Returns 0 on success (including "absent"), -1 on a bad argument or a
  * value that does not fit.
  */
-int pbs_explain_metadata(const struct pbs_explain *ex, const char *key, char *out,
+int cbs_explain_metadata(const struct cbs_explain *ex, const char *key, char *out,
                           size_t out_size);
 
 /* How many phases the document declares (1..5). */
-int pbs_explain_phase_count(const struct pbs_explain *ex);
+int cbs_explain_phase_count(const struct cbs_explain *ex);
 
-#endif /* CIX_PBSRECIPE_H */
+#endif /* CIX_CBSRECIPE_H */

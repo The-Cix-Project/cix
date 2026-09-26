@@ -371,7 +371,7 @@ static int write_recipe(const struct cix_client *c, const char *name, const char
 	jw_key(&w, "content");
 	jw_str(&w, content);
 	jw_key(&w, "format");
-	jw_str(&w, "pbs");
+	jw_str(&w, "cbs");
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -536,7 +536,7 @@ static int publish_cpdl_content(const struct cix_client *c, const char *name, co
 	jw_key(&w, "content");
 	jw_str(&w, content);
 	jw_key(&w, "format");
-	jw_str(&w, "pbs");
+	jw_str(&w, "cbs");
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -1188,7 +1188,7 @@ int main(void)
 	 * Published after the daemon is up, not before it: a CPDL recipe
 	 * needs its identity derived, and POST /v1/pkg/recipes is what
 	 * does that (cix#516). These five plus badsum used to be written
-	 * straight to disk here, which a shell recipe allowed and a PBS
+	 * straight to disk here, which a shell recipe allowed and a CBS
 	 * one does not.
 	 */
 	if (write_recipe(&client, "greeter", "1.0", tarball_path, sha256, "") != 0 ||
@@ -1333,7 +1333,7 @@ int main(void)
 	 *
 	 * Note the format field is omitted deliberately on the first
 	 * call: an absent format means shell (main.c's own comment says
-	 * so, for clients predating PBS), so this is the exact shape a
+	 * so, for clients predating CBS), so this is the exact shape a
 	 * legacy publisher sends.
 	 */
 	{
@@ -3434,7 +3434,7 @@ int main(void)
 		jw_key(&w, "content");
 		jw_str(&w, body);
 		jw_key(&w, "format");
-		jw_str(&w, "pbs");
+		jw_str(&w, "cbs");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		memset(&r, 0, sizeof(r));
@@ -3514,7 +3514,7 @@ int main(void)
 				jw_key(&w, "content");
 				jw_str(&w, coll);
 				jw_key(&w, "format");
-				jw_str(&w, "pbs");
+				jw_str(&w, "cbs");
 				jw_obj_close(&w);
 				w.buf[w.len] = '\0';
 				memset(&r, 0, sizeof(r));
@@ -3552,7 +3552,7 @@ int main(void)
 		jw_key(&w, "content");
 		jw_str(&w, "package \"malformed\" {\n    version \"1.0\"\n");
 		jw_key(&w, "format");
-		jw_str(&w, "pbs");
+		jw_str(&w, "cbs");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		memset(&r, 0, sizeof(r));
@@ -3572,7 +3572,7 @@ int main(void)
 		jw_key(&w, "content");
 		jw_str(&w, body);
 		jw_key(&w, "format");
-		jw_str(&w, "pbs");
+		jw_str(&w, "cbs");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		memset(&r, 0, sizeof(r));
@@ -3620,7 +3620,7 @@ int main(void)
 			jw_key(&w, "content");
 			jw_str(&w, body2);
 			jw_key(&w, "format");
-			jw_str(&w, "pbs");
+			jw_str(&w, "cbs");
 			jw_obj_close(&w);
 			w.buf[w.len] = '\0';
 			memset(&r, 0, sizeof(r));

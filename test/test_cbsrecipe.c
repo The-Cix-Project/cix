@@ -1,5 +1,5 @@
 /*
- * Reading a PBS recipe's identity out of `cbs explain --json`
+ * Reading a CBS recipe's identity out of `cbs explain --json`
  * (ADR-0305).
  *
  * The fixtures are the REAL output shape, transcribed from CBS's own
@@ -27,7 +27,7 @@
  * -- literal JSON in, answers out, no filesystem and no child process
  * -- so it runs in a build container and is a real gate.
  */
-#include "pbsrecipe.h"
+#include "cbsrecipe.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -73,7 +73,7 @@ static const char *const ZSTD_JSON =
 static void test_happy_path(void)
 {
 	char err[256] = {0};
-	struct pbs_explain *ex = pbs_explain_parse(ZSTD_JSON, strlen(ZSTD_JSON), err, sizeof(err));
+	struct cbs_explain *ex = cbs_explain_parse(ZSTD_JSON, strlen(ZSTD_JSON), err, sizeof(err));
 	char buf[512];
 	char url[1024];
 	char sha[128];
@@ -84,7 +84,7 @@ static void test_happy_path(void)
 		return;
 	}
 
-	expect_str("name", pbs_explain_name(ex), "zstd");
+	expect_str("name", cbs_explain_name(ex), "zstd");
 
 	/*
 	 * ADR-0307 clause 7: this fixture is a document as a cbs older
@@ -93,7 +93,7 @@ static void test_happy_path(void)
 	 * the daemon keys the re-derivation refusal on. A fixture that
 	 * carried the key would test the easy half only.
 	 */
-	expect_str("format absent in an old document", pbs_explain_format(ex), "");
+	expect_str("format absent in an old document", cbs_explain_format(ex), "");
 
 	/*
 	 * The fused version, and the whole reason this is worth asserting
@@ -102,13 +102,13 @@ static void test_happy_path(void)
 	 * publish 1.5.4 over the top of a different revision's directory,
 	 * and ADR-0107 immutability would then refuse the real one.
 	 */
-	if (pbs_explain_version(ex, buf, sizeof(buf)) != 0)
+	if (cbs_explain_version(ex, buf, sizeof(buf)) != 0)
 		fail("version fusion failed");
 	else
 		expect_str("fused version", buf, "1.5.4-1");
 
-	expect_int("source count", pbs_explain_source_count(ex), 1);
-	if (pbs_explain_source(ex, 0, url, sizeof(url), sha, sizeof(sha)) != 0) {
+	expect_int("source count", cbs_explain_source_count(ex), 1);
+	if (cbs_explain_source(ex, 0, url, sizeof(url), sha, sizeof(sha)) != 0) {
 		fail("source 0 could not be read");
 	} else {
 		expect_str("source url", url,
@@ -120,11 +120,11 @@ static void test_happy_path(void)
 	/* Build tools: compiler and tool are separate CPDL keywords and
 	 * both are pkg_build_depends to cixd, so each is asked for
 	 * separately and the caller joins them. */
-	if (pbs_explain_requires(ex, "build", "compiler", buf, sizeof(buf)) != 0)
+	if (cbs_explain_requires(ex, "build", "compiler", buf, sizeof(buf)) != 0)
 		fail("requires build/compiler failed");
 	else
 		expect_str("build compiler", buf, "tcc");
-	if (pbs_explain_requires(ex, "build", "tool", buf, sizeof(buf)) != 0)
+	if (cbs_explain_requires(ex, "build", "tool", buf, sizeof(buf)) != 0)
 		fail("requires build/tool failed");
 	else
 		expect_str("build tools", buf, "make bash coreutils binutils");
@@ -134,30 +134,30 @@ static void test_happy_path(void)
 	 * dependencies, and a package whose runtime closure is libc is
 	 * ordinary -- declared_provided_sonames() adds libc itself.
 	 */
-	if (pbs_explain_requires(ex, "runtime", "package", buf, sizeof(buf)) != 0)
+	if (cbs_explain_requires(ex, "runtime", "package", buf, sizeof(buf)) != 0)
 		fail("an absent runtime role was reported as an error");
 	else
 		expect_str("absent runtime role", buf, "");
 
 	/* null, not absent: str_or_empty() has to answer "" for both. */
-	expect_str("upstream when null", pbs_explain_upstream(ex), "");
-	expect_str("toolchain when null", pbs_explain_toolchain(ex), "");
+	expect_str("upstream when null", cbs_explain_upstream(ex), "");
+	expect_str("toolchain when null", cbs_explain_toolchain(ex), "");
 
-	if (pbs_explain_capabilities(ex, buf, sizeof(buf)) != 0)
+	if (cbs_explain_capabilities(ex, buf, sizeof(buf)) != 0)
 		fail("an empty capability array should read as none, not as an error");
 	else
 		expect_str("no capabilities declared", buf, "");
 
 	/* No metadata block at all is "absent", not an error -- exactly as
 	 * a shell recipe with no pkg_artifact_sha256= line parses fine. */
-	if (pbs_explain_metadata(ex, "artifact_sha256", buf, sizeof(buf)) != 0)
+	if (cbs_explain_metadata(ex, "artifact_sha256", buf, sizeof(buf)) != 0)
 		fail("an absent metadata block should not be an error");
 	else
 		expect_str("absent artifact_sha256", buf, "");
 
-	expect_int("phase count", pbs_explain_phase_count(ex), 4);
+	expect_int("phase count", cbs_explain_phase_count(ex), 4);
 
-	pbs_explain_free(ex);
+	cbs_explain_free(ex);
 }
 
 static void test_release_and_runtime(void)
@@ -183,7 +183,7 @@ static void test_release_and_runtime(void)
 	    "\"capabilities\":[\"CAP_SYS_ADMIN\"],"
 	    "\"phases\":[{\"name\":\"build\",\"operations\":2}]}";
 	char err[256] = {0};
-	struct pbs_explain *ex = pbs_explain_parse(json, strlen(json), err, sizeof(err));
+	struct cbs_explain *ex = cbs_explain_parse(json, strlen(json), err, sizeof(err));
 	char buf[512];
 	char url[1024];
 	char sha[128];
@@ -193,28 +193,28 @@ static void test_release_and_runtime(void)
 		return;
 	}
 
-	if (pbs_explain_version(ex, buf, sizeof(buf)) != 0)
+	if (cbs_explain_version(ex, buf, sizeof(buf)) != 0)
 		fail("version fusion failed for release 15");
 	else
 		expect_str("fused version carries the release", buf, "7.2.3-15");
 
 	/* Two positional sources (ADR-0036): the second is a plain file
 	 * copied into /build/extra, not a second mirror of the first. */
-	expect_int("two sources", pbs_explain_source_count(ex), 2);
-	if (pbs_explain_source(ex, 1, url, sizeof(url), sha, sizeof(sha)) != 0)
+	expect_int("two sources", cbs_explain_source_count(ex), 2);
+	if (cbs_explain_source(ex, 1, url, sizeof(url), sha, sizeof(sha)) != 0)
 		fail("source 1 could not be read");
 	else
 		expect_str("second source sha", sha,
 		           "a3fda92c6313292c48a4ad98728772aa156ea234bd048ae49811f6f5c171bc46");
 
-	if (pbs_explain_requires(ex, "runtime", "package", buf, sizeof(buf)) != 0)
+	if (cbs_explain_requires(ex, "runtime", "package", buf, sizeof(buf)) != 0)
 		fail("runtime packages failed");
 	else
 		expect_str("runtime packages", buf, "openssl libarchive curl");
 
-	expect_str("upstream", pbs_explain_upstream(ex), "kernel.org");
-	expect_str("toolchain", pbs_explain_toolchain(ex), "gcc");
-	expect_str("toolchain reason", pbs_explain_toolchain_reason(ex),
+	expect_str("upstream", cbs_explain_upstream(ex), "kernel.org");
+	expect_str("toolchain", cbs_explain_toolchain(ex), "gcc");
+	expect_str("toolchain reason", cbs_explain_toolchain_reason(ex),
 	           "the kernel does not build with TCC");
 
 	/*
@@ -225,7 +225,7 @@ static void test_release_and_runtime(void)
 	 * `pkg_build_caps=`, so both recipe formats hand
 	 * pkg_build_container_spec() the same string.
 	 */
-	if (pbs_explain_capabilities(ex, buf, sizeof(buf)) != 0)
+	if (cbs_explain_capabilities(ex, buf, sizeof(buf)) != 0)
 		fail("named capabilities could not be read");
 	else
 		expect_str("capability names", buf, "CAP_SYS_ADMIN");
@@ -234,24 +234,24 @@ static void test_release_and_runtime(void)
 	 * artifact_sha256 is the one that makes a conversion free: without
 	 * it a converted recipe rebuilds from source on every install on
 	 * every host, and 88 of 148 current recipes carry one. */
-	if (pbs_explain_metadata(ex, "artifact_sha256", buf, sizeof(buf)) != 0)
+	if (cbs_explain_metadata(ex, "artifact_sha256", buf, sizeof(buf)) != 0)
 		fail("artifact_sha256 could not be read out of metadata");
 	else
 		expect_str("artifact_sha256 from metadata", buf,
 		           "c09de99506f24a17786da6507775c2fb3e5e3882ec25e234f85632ec5f4607a8");
-	if (pbs_explain_metadata(ex, "changelog", buf, sizeof(buf)) != 0)
+	if (cbs_explain_metadata(ex, "changelog", buf, sizeof(buf)) != 0)
 		fail("changelog could not be read out of metadata");
 	else
 		expect_str("changelog from metadata", buf, "7.2.3-15: real revision note");
 
 	/* A key the platform does not understand is absent, not an error:
 	 * CBS assigns metadata no meaning, so an unknown key is ordinary. */
-	if (pbs_explain_metadata(ex, "no_such_key", buf, sizeof(buf)) != 0)
+	if (cbs_explain_metadata(ex, "no_such_key", buf, sizeof(buf)) != 0)
 		fail("an unknown metadata key should read as absent");
 	else
 		expect_str("unknown metadata key", buf, "");
 
-	pbs_explain_free(ex);
+	cbs_explain_free(ex);
 }
 
 /*
@@ -269,7 +269,7 @@ static void test_legacy_capability_count(void)
 	    "\"sha256\":\"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\"}],"
 	    "\"requires\":{},\"capabilities\":1,\"phases\":[]}";
 	char err[256] = {0};
-	struct pbs_explain *ex = pbs_explain_parse(json, strlen(json), err, sizeof(err));
+	struct cbs_explain *ex = cbs_explain_parse(json, strlen(json), err, sizeof(err));
 	char buf[256];
 
 	if (ex == NULL) {
@@ -277,13 +277,13 @@ static void test_legacy_capability_count(void)
 		return;
 	}
 	expect_int("a capability COUNT is reported as such, not as none",
-	           pbs_explain_capabilities(ex, buf, sizeof(buf)), 1);
+	           cbs_explain_capabilities(ex, buf, sizeof(buf)), 1);
 	expect_str("and writes no names", buf, "");
 
 	/* A count of ZERO is genuinely none, and must NOT be refused --
 	 * an older cbs building a recipe that declares no capability is
 	 * fine, and refusing it would break every such recipe. */
-	pbs_explain_free(ex);
+	cbs_explain_free(ex);
 	{
 		static const char *const zero =
 		    "{\"name\":\"legacy\",\"version\":\"1\",\"release\":1,"
@@ -291,16 +291,16 @@ static void test_legacy_capability_count(void)
 		    "\"urls\":[\"https://example.invalid/a.tar.gz\"],\"sha256\":\"00112233445566"
 		    "778899aabbccddeeff00112233445566778899aabbccddeeff\"}],"
 		    "\"requires\":{},\"capabilities\":[],\"phases\":[]}";
-		struct pbs_explain *z = pbs_explain_parse(zero, strlen(zero), err, sizeof(err));
+		struct cbs_explain *z = cbs_explain_parse(zero, strlen(zero), err, sizeof(err));
 
 		if (z == NULL) {
 			fail("the zero-count document failed to parse");
 			return;
 		}
 		expect_int("a count of zero is none, not a refusal",
-		           pbs_explain_capabilities(z, buf, sizeof(buf)), 0);
+		           cbs_explain_capabilities(z, buf, sizeof(buf)), 0);
 		expect_str("and writes no names", buf, "");
-		pbs_explain_free(z);
+		cbs_explain_free(z);
 	}
 }
 
@@ -314,7 +314,7 @@ static void test_first_url_of_several(void)
 	 * This test used to assert that "the rest are ignored", which was
 	 * true and was the bug: a recipe could declare three mirrors,
 	 * validate, publish, and have the fetch only ever try one
-	 * (#507). The accessors below are what parse_pbs_recipe() uses to
+	 * (#507). The accessors below are what parse_cbs_recipe() uses to
 	 * carry the whole list into struct pkg_recipe. */
 	static const char *const json =
 	    "{\"name\":\"m4\",\"version\":\"1.4.20\",\"release\":2,"
@@ -322,7 +322,7 @@ static void test_first_url_of_several(void)
 	    "\"https://ftp.gnu.org/gnu/m4/m4.tar.gz\"],\"sha256\":\"abc\"}],"
 	    "\"requires\":{},\"capabilities\":0,\"phases\":[]}";
 	char err[256] = {0};
-	struct pbs_explain *ex = pbs_explain_parse(json, strlen(json), err, sizeof(err));
+	struct cbs_explain *ex = cbs_explain_parse(json, strlen(json), err, sizeof(err));
 	char url[1024];
 	char sha[128];
 
@@ -330,7 +330,7 @@ static void test_first_url_of_several(void)
 		fail("the multi-URL document failed to parse");
 		return;
 	}
-	if (pbs_explain_source(ex, 0, url, sizeof(url), sha, sizeof(sha)) != 0)
+	if (cbs_explain_source(ex, 0, url, sizeof(url), sha, sizeof(sha)) != 0)
 		fail("multi-URL source could not be read");
 	else
 		expect_str("first URL is taken", url, "https://mirrors.kernel.org/m4.tar.gz");
@@ -341,36 +341,36 @@ static void test_first_url_of_several(void)
 	 * would try the fallback first and the author's stated primary
 	 * second, silently.
 	 */
-	expect_int("url count", pbs_explain_source_url_count(ex, 0), 2);
-	if (pbs_explain_source_url(ex, 0, 0, url, sizeof(url)) != 0)
+	expect_int("url count", cbs_explain_source_url_count(ex, 0), 2);
+	if (cbs_explain_source_url(ex, 0, 0, url, sizeof(url)) != 0)
 		fail("url 0 could not be read");
 	else
 		expect_str("url 0", url, "https://mirrors.kernel.org/m4.tar.gz");
-	if (pbs_explain_source_url(ex, 0, 1, url, sizeof(url)) != 0)
+	if (cbs_explain_source_url(ex, 0, 1, url, sizeof(url)) != 0)
 		fail("url 1 could not be read");
 	else
 		expect_str("url 1", url, "https://ftp.gnu.org/gnu/m4/m4.tar.gz");
 
 	/*
 	 * Past the end is -1, not the last url repeated and not a stale
-	 * buffer. parse_pbs_recipe() walks u = 1..count-1 and stops on
+	 * buffer. parse_cbs_recipe() walks u = 1..count-1 and stops on
 	 * the count, so an accessor that answered 0 here would loop
 	 * forever or record a duplicate mirror.
 	 */
 	url[0] = 'x';
 	url[1] = '\0';
 	expect_int("url past the end is refused",
-	           pbs_explain_source_url(ex, 0, 2, url, sizeof(url)), -1);
+	           cbs_explain_source_url(ex, 0, 2, url, sizeof(url)), -1);
 	expect_int("a negative url index is refused",
-	           pbs_explain_source_url(ex, 0, -1, url, sizeof(url)), -1);
+	           cbs_explain_source_url(ex, 0, -1, url, sizeof(url)), -1);
 	expect_int("a url of an absent source is refused",
-	           pbs_explain_source_url(ex, 1, 0, url, sizeof(url)), -1);
+	           cbs_explain_source_url(ex, 1, 0, url, sizeof(url)), -1);
 	expect_str("a refused read leaves the buffer alone", url, "x");
 
 	/* An absent source answers 0 urls rather than failing, so a
 	 * caller may loop on the count without a separate range check. */
-	expect_int("url count of an absent source", pbs_explain_source_url_count(ex, 1), 0);
-	expect_int("url count of a negative index", pbs_explain_source_url_count(ex, -1), 0);
+	expect_int("url count of an absent source", cbs_explain_source_url_count(ex, 1), 0);
+	expect_int("url count of a negative index", cbs_explain_source_url_count(ex, -1), 0);
 
 	/*
 	 * A url longer than the caller's buffer is refused, not
@@ -382,7 +382,7 @@ static void test_first_url_of_several(void)
 		char tiny[8];
 
 		expect_int("a url that does not fit is refused",
-		           pbs_explain_source_url(ex, 0, 0, tiny, sizeof(tiny)), -1);
+		           cbs_explain_source_url(ex, 0, 0, tiny, sizeof(tiny)), -1);
 	}
 
 	/* An empty requires object must answer "" for every question,
@@ -390,38 +390,38 @@ static void test_first_url_of_several(void)
 	{
 		char buf[64];
 
-		if (pbs_explain_requires(ex, "build", "tool", buf, sizeof(buf)) != 0)
+		if (cbs_explain_requires(ex, "build", "tool", buf, sizeof(buf)) != 0)
 			fail("empty requires was reported as an error");
 		else
 			expect_str("empty requires", buf, "");
 	}
-	pbs_explain_free(ex);
+	cbs_explain_free(ex);
 }
 
 static void test_rejections(void)
 {
 	char err[256];
-	struct pbs_explain *ex;
+	struct cbs_explain *ex;
 
 	/* Not JSON at all. The likeliest real cause is cbs writing a
 	 * diagnostic to stdout, or the exec failing and leaving an empty
 	 * buffer -- both must be refused rather than mapped onto an empty
 	 * recipe that fails later on a name mismatch. */
 	err[0] = '\0';
-	ex = pbs_explain_parse("not json", 8, err, sizeof(err));
+	ex = cbs_explain_parse("not json", 8, err, sizeof(err));
 	if (ex != NULL) {
 		fail("non-JSON input parsed");
-		pbs_explain_free(ex);
+		cbs_explain_free(ex);
 	} else if (err[0] == '\0') {
 		fail("non-JSON input set no error message");
 	}
 
 	/* Empty, which is what a failed exec leaves behind. */
 	err[0] = '\0';
-	ex = pbs_explain_parse("", 0, err, sizeof(err));
+	ex = cbs_explain_parse("", 0, err, sizeof(err));
 	if (ex != NULL) {
 		fail("empty input parsed");
-		pbs_explain_free(ex);
+		cbs_explain_free(ex);
 	} else if (err[0] == '\0') {
 		fail("empty input set no error message");
 	}
@@ -436,10 +436,10 @@ static void test_rejections(void)
 		static const char *const no_release = "{\"name\":\"x\",\"version\":\"1\"}";
 
 		err[0] = '\0';
-		ex = pbs_explain_parse(no_release, strlen(no_release), err, sizeof(err));
+		ex = cbs_explain_parse(no_release, strlen(no_release), err, sizeof(err));
 		if (ex != NULL) {
 			fail("a document with no release parsed");
-			pbs_explain_free(ex);
+			cbs_explain_free(ex);
 		}
 	}
 
@@ -448,10 +448,10 @@ static void test_rejections(void)
 		static const char *const no_name = "{\"version\":\"1\",\"release\":1}";
 
 		err[0] = '\0';
-		ex = pbs_explain_parse(no_name, strlen(no_name), err, sizeof(err));
+		ex = cbs_explain_parse(no_name, strlen(no_name), err, sizeof(err));
 		if (ex != NULL) {
 			fail("a document with no name parsed");
-			pbs_explain_free(ex);
+			cbs_explain_free(ex);
 		}
 	}
 }
@@ -463,7 +463,7 @@ static void test_truncation_is_refused(void)
 	 * fetched file and could only ever mismatch, reporting a
 	 * corrupt download for a recipe that was fine. */
 	char err[256] = {0};
-	struct pbs_explain *ex = pbs_explain_parse(ZSTD_JSON, strlen(ZSTD_JSON), err, sizeof(err));
+	struct cbs_explain *ex = cbs_explain_parse(ZSTD_JSON, strlen(ZSTD_JSON), err, sizeof(err));
 	char tiny[8];
 	char url[1024];
 	char sha[128];
@@ -472,28 +472,28 @@ static void test_truncation_is_refused(void)
 		fail("fixture failed to parse in the truncation test");
 		return;
 	}
-	if (pbs_explain_version(ex, tiny, 4) == 0)
+	if (cbs_explain_version(ex, tiny, 4) == 0)
 		fail("a version that does not fit was accepted");
 	else if (tiny[0] != '\0')
 		fail("a refused version left content in the buffer");
 
-	if (pbs_explain_source(ex, 0, tiny, sizeof(tiny), sha, sizeof(sha)) == 0)
+	if (cbs_explain_source(ex, 0, tiny, sizeof(tiny), sha, sizeof(sha)) == 0)
 		fail("a URL that does not fit was accepted");
-	if (pbs_explain_source(ex, 0, url, sizeof(url), tiny, sizeof(tiny)) == 0)
+	if (cbs_explain_source(ex, 0, url, sizeof(url), tiny, sizeof(tiny)) == 0)
 		fail("a checksum that does not fit was accepted");
 
-	if (pbs_explain_requires(ex, "build", "tool", tiny, sizeof(tiny)) == 0)
+	if (cbs_explain_requires(ex, "build", "tool", tiny, sizeof(tiny)) == 0)
 		fail("a tool list that does not fit was accepted");
 	else if (tiny[0] != '\0')
 		fail("a refused tool list left content in the buffer");
 
 	/* Out-of-range index. */
-	if (pbs_explain_source(ex, 7, url, sizeof(url), sha, sizeof(sha)) == 0)
+	if (cbs_explain_source(ex, 7, url, sizeof(url), sha, sizeof(sha)) == 0)
 		fail("an out-of-range source index was accepted");
-	if (pbs_explain_source(ex, -1, url, sizeof(url), sha, sizeof(sha)) == 0)
+	if (cbs_explain_source(ex, -1, url, sizeof(url), sha, sizeof(sha)) == 0)
 		fail("a negative source index was accepted");
 
-	pbs_explain_free(ex);
+	cbs_explain_free(ex);
 }
 
 static void test_null_safety(void)
@@ -502,25 +502,25 @@ static void test_null_safety(void)
 
 	/* Every accessor is called on a NULL handle somewhere in an error
 	 * path; none may crash and none may return NULL for a string. */
-	expect_str("name of NULL", pbs_explain_name(NULL), "");
-	expect_str("upstream of NULL", pbs_explain_upstream(NULL), "");
-	expect_str("toolchain of NULL", pbs_explain_toolchain(NULL), "");
-	expect_str("format of NULL", pbs_explain_format(NULL), "");
-	expect_str("toolchain reason of NULL", pbs_explain_toolchain_reason(NULL), "");
-	expect_int("source count of NULL", pbs_explain_source_count(NULL), 0);
+	expect_str("name of NULL", cbs_explain_name(NULL), "");
+	expect_str("upstream of NULL", cbs_explain_upstream(NULL), "");
+	expect_str("toolchain of NULL", cbs_explain_toolchain(NULL), "");
+	expect_str("format of NULL", cbs_explain_format(NULL), "");
+	expect_str("toolchain reason of NULL", cbs_explain_toolchain_reason(NULL), "");
+	expect_int("source count of NULL", cbs_explain_source_count(NULL), 0);
 	{
 		char buf[64];
 
-		expect_int("capabilities of NULL", pbs_explain_capabilities(NULL, buf, sizeof(buf)),
+		expect_int("capabilities of NULL", cbs_explain_capabilities(NULL, buf, sizeof(buf)),
 		           -1);
-		expect_int("metadata of NULL", pbs_explain_metadata(NULL, "k", buf, sizeof(buf)), -1);
+		expect_int("metadata of NULL", cbs_explain_metadata(NULL, "k", buf, sizeof(buf)), -1);
 	}
-	expect_int("phase count of NULL", pbs_explain_phase_count(NULL), 0);
-	if (pbs_explain_version(NULL, buf, sizeof(buf)) == 0)
+	expect_int("phase count of NULL", cbs_explain_phase_count(NULL), 0);
+	if (cbs_explain_version(NULL, buf, sizeof(buf)) == 0)
 		fail("version of NULL succeeded");
-	if (pbs_explain_requires(NULL, "build", "tool", buf, sizeof(buf)) == 0)
+	if (cbs_explain_requires(NULL, "build", "tool", buf, sizeof(buf)) == 0)
 		fail("requires of NULL succeeded");
-	pbs_explain_free(NULL);
+	cbs_explain_free(NULL);
 }
 
 /*
@@ -545,37 +545,37 @@ static void test_declared_format(void)
 	    "{\"name\":\"p\",\"version\":\"1\",\"release\":1,\"format\":null,"
 	    "\"sources\":[{\"name\":\"p\",\"urls\":[\"https://e/p.tar.gz\"],\"sha256\":\"aa\"}]}";
 	char err[256];
-	struct pbs_explain *ex;
+	struct cbs_explain *ex;
 
-	ex = pbs_explain_parse(CIXPKG, strlen(CIXPKG), err, sizeof(err));
+	ex = cbs_explain_parse(CIXPKG, strlen(CIXPKG), err, sizeof(err));
 	if (ex == NULL)
 		fail("a document declaring cixpkg failed to parse");
 	else
-		expect_str("declared cixpkg", pbs_explain_format(ex), "cixpkg");
-	pbs_explain_free(ex);
+		expect_str("declared cixpkg", cbs_explain_format(ex), "cixpkg");
+	cbs_explain_free(ex);
 
-	ex = pbs_explain_parse(TARGZ, strlen(TARGZ), err, sizeof(err));
+	ex = cbs_explain_parse(TARGZ, strlen(TARGZ), err, sizeof(err));
 	if (ex == NULL)
 		fail("a document declaring tar.gz failed to parse");
 	else
-		expect_str("declared tar.gz", pbs_explain_format(ex), "tar.gz");
-	pbs_explain_free(ex);
+		expect_str("declared tar.gz", cbs_explain_format(ex), "tar.gz");
+	cbs_explain_free(ex);
 
 	/* A JSON null is not a declaration. It must read the same as an
 	 * absent key -- "" -- and not as the string "null", which would
 	 * sail past the daemon's cixpkg comparison as an unknown format
 	 * rather than being caught as a missing one. */
-	ex = pbs_explain_parse(NULLFMT, strlen(NULLFMT), err, sizeof(err));
+	ex = cbs_explain_parse(NULLFMT, strlen(NULLFMT), err, sizeof(err));
 	if (ex == NULL)
 		fail("a document with a null format failed to parse");
 	else
-		expect_str("format declared null", pbs_explain_format(ex), "");
-	pbs_explain_free(ex);
+		expect_str("format declared null", cbs_explain_format(ex), "");
+	cbs_explain_free(ex);
 }
 
 int main(void)
 {
-	printf("=== PBS recipe identity (ADR-0305) ===\n");
+	printf("=== CBS recipe identity (ADR-0305) ===\n");
 	test_happy_path();
 	test_release_and_runtime();
 	test_legacy_capability_count();
@@ -586,9 +586,9 @@ int main(void)
 	test_declared_format();
 
 	if (g_failures != 0) {
-		printf("PBS RECIPE TEST: FAIL (%d failure(s))\n", g_failures);
+		printf("CBS RECIPE TEST: FAIL (%d failure(s))\n", g_failures);
 		return 1;
 	}
-	printf("PBS RECIPE TEST: PASS\n");
+	printf("CBS RECIPE TEST: PASS\n");
 	return 0;
 }

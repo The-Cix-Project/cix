@@ -474,7 +474,7 @@ See [`networking.md`](networking.md).
 | `pkg build-logs [--last \| --file=NAME]` | The complete retained output of recent builds (#57). No arguments lists them with sizes; `--last` prints the newest; `--file=` prints one |
 | `pkg buildenv [ls]` / `pkg buildenv rm NAME` | Composed build environments held on this host, and reclaim one now ([ADR-0221](../adr/0221-build-environments-are-reclaimed-by-last-use.md)) |
 | `pkg recipes` | Every published recipe version |
-| `pkg recipe add --name=NAME --file=PATH [--format=shell\|pbs]` | Publish a recipe version on this host. A published `(name, version)` is never overwritten. The format follows the file extension (`.cbs` is CPDL, `.sh` is shell); `--format=` is for a file not named that way |
+| `pkg recipe add --name=NAME --file=PATH [--format=shell\|cbs]` | Publish a recipe version on this host. A published `(name, version)` is never overwritten. The format follows the file extension (`.cbs` is CPDL, `.sh` is shell); `--format=` is for a file not named that way |
 | `pkg recipe show NAME [--version=VERSION]` | Print a recipe version; an omitted version means the highest |
 | `pkg recipe rm NAME [--version=VERSION]` | Remove one version, or every version when omitted |
 | `pkg repo-config show` | The recipe repository this host syncs from |

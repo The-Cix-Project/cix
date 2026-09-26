@@ -783,7 +783,7 @@ int main(void)
 		jw_key(&w, "content");
 		jw_str(&w, recipe);
 		jw_key(&w, "format");
-		jw_str(&w, "pbs");
+		jw_str(&w, "cbs");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		memset(&r, 0, sizeof(r));

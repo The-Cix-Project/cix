@@ -15,7 +15,7 @@
 #include "logstore.h"
 #include "elfcheck.h"
 #include "namecheck.h"
-#include "pbsrecipe.h"
+#include "cbsrecipe.h"
 #include "json.h"
 #include "jsondiff.h"
 #include "recipe_format.h"
@@ -166,12 +166,12 @@ struct pkg_entry {
 	 * the same for every recipe language (ADR-0305).
 	 *
 	 * A shell recipe's pkg_install() stages into /build/pkg-dest, a
-	 * fixed path. A PBS recipe stages wherever CBS's workspace puts
+	 * fixed path. A CBS recipe stages wherever CBS's workspace puts
 	 * it: `cbs build --staged W` creates W/src, W/build, W/dest and
 	 * W/cache, and an install phase's ${dest} is W/dest. Pointing the
 	 * variable at that subdirectory is one assignment; the
 	 * alternative was moving the tree afterwards in the build
-	 * command, which would have made every PBS recipe depend on mv
+	 * command, which would have made every CBS recipe depend on mv
 	 * and rmdir being present -- tools a recipe declares, or does
 	 * not.
 	 */
@@ -184,7 +184,7 @@ struct pkg_entry {
 	 * pkg_build_completed() has no recipe in scope -- it is handed a
 	 * container name and an exit status -- so re-deriving would mean
 	 * looking the recipe up again and trusting the answer to match.
-	 * It did not match once already: the first PBS build harvested
+	 * It did not match once already: the first CBS build harvested
 	 * build/pkg-dest while the build staged into the cbs workspace,
 	 * and published a package with zero files and a state of
 	 * "installed". Remembering beats re-deriving.
@@ -196,7 +196,7 @@ struct pkg_entry {
 	 * pkg_build_completed() is handed a container name and an exit
 	 * status and has no recipe in scope, so the alternative is
 	 * looking the recipe up again and trusting the answer to match.
-	 * It did not match once already -- the first PBS build harvested
+	 * It did not match once already -- the first CBS build harvested
 	 * the wrong directory and published a package with zero files
 	 * and a state of "installed". Remembering beats re-deriving, and
 	 * a format read at prepare time is the one the build was
@@ -307,14 +307,14 @@ struct pkg_recipe {
 	 * than being re-derived from a path at each of the places that
 	 * need it, which is how the two could disagree.
 	 */
-	int is_pbs;
+	int is_cbs;
 	/*
 	 * Which artifact format this version publishes (ADR-0307):
 	 * PKG_ARTIFACT_FORMAT_CIXPKG or PKG_ARTIFACT_FORMAT_TARGZ, never
 	 * empty on a recipe that parsed.
 	 *
-	 * Separate from is_pbs above, and reaching for that instead would
-	 * be the bug. is_pbs says which LANGUAGE the recipe is written in;
+	 * Separate from is_cbs above, and reaching for that instead would
+	 * be the bug. is_cbs says which LANGUAGE the recipe is written in;
 	 * this says what the recipe DECLARED, read from the explain
 	 * document. They are not the same question -- CPDL accepts
 	 * `format "tar.gz"`, which `cbs build` then refuses to execute
@@ -1857,7 +1857,7 @@ static int parse_shell_recipe(const char *path, struct pkg_recipe *out)
  * Runs `cbs explain --json` over one CPDL document and returns its
  * stdout (ADR-0305).
  *
- * This is the ONLY place this daemon learns what a PBS recipe
+ * This is the ONLY place this daemon learns what a CBS recipe
  * declares, and it runs exactly once per published version, at
  * publish. cixd does not parse CPDL: a second parser here would be a
  * parallel implementation of the language being adopted, and the two
@@ -2023,23 +2023,23 @@ static int run_cbs_explain(const char *recipe_path, char *out, size_t out_size, 
 }
 
 /*
- * Is this path a PBS recipe (ADR-0305)?
+ * Is this path a CBS recipe (ADR-0305)?
  *
  * Not a heuristic: the filename IS the format, so this reads the one
  * source of truth rather than guessing from content. `.cbs` is CBS's
  * own requirement and not our preference -- has_cbs_extension()
  * refuses any other path, in both `cbs explain` and `cbs build`.
  */
-static int recipe_path_is_pbs(const char *path)
+static int recipe_path_is_cbs(const char *path)
 {
 	size_t len;
 
 	if (path == NULL)
 		return 0;
 	len = strlen(path);
-	if (len < sizeof(PKG_RECIPE_PBS_SUFFIX) - 1)
+	if (len < sizeof(PKG_RECIPE_CBS_SUFFIX) - 1)
 		return 0;
-	return strcmp(path + len - (sizeof(PKG_RECIPE_PBS_SUFFIX) - 1), PKG_RECIPE_PBS_SUFFIX) == 0;
+	return strcmp(path + len - (sizeof(PKG_RECIPE_CBS_SUFFIX) - 1), PKG_RECIPE_CBS_SUFFIX) == 0;
 }
 
 /*
@@ -2057,7 +2057,7 @@ static int recipe_path_is_pbs(const char *path)
  * (name, version) immutable, so the document this file describes
  * cannot change under it.
  */
-static void pbs_explain_path(const char *recipe_path, char *out, size_t out_size)
+static void cbs_explain_path(const char *recipe_path, char *out, size_t out_size)
 {
 	const char *slash = strrchr(recipe_path, '/');
 
@@ -2086,10 +2086,10 @@ static int append_words(char *dst, size_t cap, const char *words)
 }
 
 /*
- * Maps a PBS recipe's declarations onto this daemon's own fields, out
+ * Maps a CBS recipe's declarations onto this daemon's own fields, out
  * of the explain.json written at publish (ADR-0305).
  *
- * Every field a shell recipe can declare, a PBS recipe now can too.
+ * Every field a shell recipe can declare, a CBS recipe now can too.
  * Three of them could not until cix-build-system#161 and #162 closed,
  * and this comment said so; it is corrected rather than deleted because
  * the reason they were empty is worth keeping:
@@ -2118,17 +2118,17 @@ static int append_words(char *dst, size_t cap, const char *words)
  * A name appearing in both roles is harmless -- buildenv_add_tool()
  * dedups by name, and a recipe's own pin still wins the slot.
  */
-static int parse_pbs_recipe(const char *path, struct pkg_recipe *out)
+static int parse_cbs_recipe(const char *path, struct pkg_recipe *out)
 {
 	char explain_path[PATH_MAX];
 	char err[256];
 	char *buf = NULL;
 	size_t len = 0;
-	struct pbs_explain *ex;
+	struct cbs_explain *ex;
 	int count;
 	int i;
 
-	pbs_explain_path(path, explain_path, sizeof(explain_path));
+	cbs_explain_path(path, explain_path, sizeof(explain_path));
 	if (persist_read_file(explain_path, &buf, &len) != 0 || buf == NULL) {
 		logstore_write("cixd", "error",
 		               "pkg: %s has no derived identity beside it (%s) -- it was not "
@@ -2136,26 +2136,26 @@ static int parse_pbs_recipe(const char *path, struct pkg_recipe *out)
 		               path, explain_path);
 		return -1;
 	}
-	ex = pbs_explain_parse(buf, len, err, sizeof(err));
+	ex = cbs_explain_parse(buf, len, err, sizeof(err));
 	free(buf);
 	if (ex == NULL) {
 		logstore_write("cixd", "error", "pkg: %s: %s", explain_path, err);
 		return -1;
 	}
 
-	snprintf(out->name, sizeof(out->name), "%s", pbs_explain_name(ex));
-	if (pbs_explain_version(ex, out->version, sizeof(out->version)) != 0) {
+	snprintf(out->name, sizeof(out->name), "%s", cbs_explain_name(ex));
+	if (cbs_explain_version(ex, out->version, sizeof(out->version)) != 0) {
 		logstore_write("cixd", "error", "pkg: %s: version and release do not fit a version string",
 		               explain_path);
-		pbs_explain_free(ex);
+		cbs_explain_free(ex);
 		return -1;
 	}
 
-	count = pbs_explain_source_count(ex);
+	count = cbs_explain_source_count(ex);
 	if (count <= 0 || count > PKG_MAX_SOURCES) {
 		logstore_write("cixd", "error", "pkg: %s: %d sources, but 1..%d is supported",
 		               explain_path, count, PKG_MAX_SOURCES);
-		pbs_explain_free(ex);
+		cbs_explain_free(ex);
 		return -1;
 	}
 	out->mirror_count = 0;
@@ -2163,11 +2163,11 @@ static int parse_pbs_recipe(const char *path, struct pkg_recipe *out)
 		int urls;
 		int u;
 
-		if (pbs_explain_source(ex, i, out->source[i], PKG_URL_MAX, out->sha256[i],
+		if (cbs_explain_source(ex, i, out->source[i], PKG_URL_MAX, out->sha256[i],
 		                        PKG_SHA256_MAX) != 0) {
 			logstore_write("cixd", "error", "pkg: %s: source %d has no usable url/sha256 pair",
 			               explain_path, i);
-			pbs_explain_free(ex);
+			cbs_explain_free(ex);
 			return -1;
 		}
 		/*
@@ -2181,21 +2181,21 @@ static int parse_pbs_recipe(const char *path, struct pkg_recipe *out)
 		 * exists to remove, and a recipe author who declared one has
 		 * to be able to believe it is there.
 		 */
-		urls = pbs_explain_source_url_count(ex, i);
+		urls = cbs_explain_source_url_count(ex, i);
 		for (u = 1; u < urls; u++) {
 			if (out->mirror_count >= PKG_MAX_MIRRORS) {
 				logstore_write("cixd", "error",
 				               "pkg: %s: more than %d mirror urls across all sources",
 				               explain_path, PKG_MAX_MIRRORS);
-				pbs_explain_free(ex);
+				cbs_explain_free(ex);
 				return -1;
 			}
-			if (pbs_explain_source_url(ex, i, u, out->mirror_url[out->mirror_count],
+			if (cbs_explain_source_url(ex, i, u, out->mirror_url[out->mirror_count],
 			                            PKG_URL_MAX) != 0) {
 				logstore_write("cixd", "error",
 				               "pkg: %s: source %d url %d is not a usable string",
 				               explain_path, i, u);
-				pbs_explain_free(ex);
+				cbs_explain_free(ex);
 				return -1;
 			}
 			out->mirror_source[out->mirror_count] = i;
@@ -2204,10 +2204,10 @@ static int parse_pbs_recipe(const char *path, struct pkg_recipe *out)
 	}
 	out->source_count = count;
 
-	if (pbs_explain_requires(ex, "runtime", "package", out->depends, sizeof(out->depends)) != 0) {
+	if (cbs_explain_requires(ex, "runtime", "package", out->depends, sizeof(out->depends)) != 0) {
 		logstore_write("cixd", "error", "pkg: %s: the runtime package list does not fit",
 		               explain_path);
-		pbs_explain_free(ex);
+		cbs_explain_free(ex);
 		return -1;
 	}
 
@@ -2222,20 +2222,20 @@ static int parse_pbs_recipe(const char *path, struct pkg_recipe *out)
 			for (ki = 0; ki < sizeof(kinds) / sizeof(kinds[0]); ki++) {
 				char one[PKG_DEPENDS_MAX];
 
-				if (pbs_explain_requires(ex, roles[ri], kinds[ki], one, sizeof(one)) != 0 ||
+				if (cbs_explain_requires(ex, roles[ri], kinds[ki], one, sizeof(one)) != 0 ||
 				    append_words(out->build_depends, sizeof(out->build_depends), one) != 0) {
 					logstore_write("cixd", "error",
 					               "pkg: %s: the %s/%s list does not fit the build "
 					               "declaration",
 					               explain_path, roles[ri], kinds[ki]);
-					pbs_explain_free(ex);
+					cbs_explain_free(ex);
 					return -1;
 				}
 			}
 		}
 	}
 
-	snprintf(out->upstream, sizeof(out->upstream), "%s", pbs_explain_upstream(ex));
+	snprintf(out->upstream, sizeof(out->upstream), "%s", cbs_explain_upstream(ex));
 
 	/*
 	 * Capabilities by name. A return of 1 is the installed cbs still
@@ -2245,7 +2245,7 @@ static int parse_pbs_recipe(const char *path, struct pkg_recipe *out)
 	 * a downgrade must not quietly drop what the recipe declares.
 	 */
 	{
-		int caps = pbs_explain_capabilities(ex, out->build_caps, sizeof(out->build_caps));
+		int caps = cbs_explain_capabilities(ex, out->build_caps, sizeof(out->build_caps));
 
 		if (caps != 0) {
 			logstore_write("cixd", "error",
@@ -2255,7 +2255,7 @@ static int parse_pbs_recipe(const char *path, struct pkg_recipe *out)
 			               caps == 1 ? "the installed cbs reports a capability COUNT "
 			                            "rather than names; upgrade cbs"
 			                          : "the declared capabilities do not fit");
-			pbs_explain_free(ex);
+			cbs_explain_free(ex);
 			return -1;
 		}
 	}
@@ -2273,7 +2273,7 @@ static int parse_pbs_recipe(const char *path, struct pkg_recipe *out)
 	 * default here is the assumption clause 1 exists to prevent.
 	 */
 	{
-		const char *fmt = pbs_explain_format(ex);
+		const char *fmt = cbs_explain_format(ex);
 
 		if (fmt[0] == '\0') {
 			logstore_write("cixd", "error",
@@ -2281,21 +2281,21 @@ static int parse_pbs_recipe(const char *path, struct pkg_recipe *out)
 			               "older than v0.1.26, and re-deriving it is what ADR-0307 clause 7 "
 			               "does at startup; this daemon could not",
 			               explain_path);
-			pbs_explain_free(ex);
+			cbs_explain_free(ex);
 			return -1;
 		}
 		if (snprintf(out->artifact_format, sizeof(out->artifact_format), "%s", fmt) >=
 		    (int)sizeof(out->artifact_format)) {
 			logstore_write("cixd", "error", "pkg: %s: artifact format \"%s\" does not fit",
 			               explain_path, fmt);
-			pbs_explain_free(ex);
+			cbs_explain_free(ex);
 			return -1;
 		}
 	}
 
-	if (pbs_explain_metadata(ex, "artifact_sha256", out->artifact_sha256,
+	if (cbs_explain_metadata(ex, "artifact_sha256", out->artifact_sha256,
 	                          sizeof(out->artifact_sha256)) != 0 ||
-	    pbs_explain_metadata(ex, "changelog", out->changelog, sizeof(out->changelog)) != 0) {
+	    cbs_explain_metadata(ex, "changelog", out->changelog, sizeof(out->changelog)) != 0) {
 		/* The same limits as the publish path's own message (#493).
 		 * Unreachable in practice, since publish refuses such a
 		 * recipe before it is ever stored -- but this reads a
@@ -2305,11 +2305,11 @@ static int parse_pbs_recipe(const char *path, struct pkg_recipe *out)
 		               "pkg: %s: a metadata value does not fit (artifact_sha256 max %d "
 		               "bytes, changelog max %d)",
 		               explain_path, PKG_SHA256_MAX - 1, PKG_CHANGELOG_MAX - 1);
-		pbs_explain_free(ex);
+		cbs_explain_free(ex);
 		return -1;
 	}
 
-	pbs_explain_free(ex);
+	cbs_explain_free(ex);
 	return 0;
 }
 
@@ -2317,7 +2317,7 @@ static int parse_pbs_recipe(const char *path, struct pkg_recipe *out)
  * One recipe, whichever language it is written in (ADR-0305).
  *
  * Every caller in this file goes through here and none of them knows
- * which format it got, which is the whole design: a PBS recipe reaches
+ * which format it got, which is the whole design: a CBS recipe reaches
  * dependency resolution, the build container, the artifact name and
  * the pipeline as the same struct a shell recipe does. The formats
  * differ in how a declaration is WRITTEN, never in how it is resolved
@@ -2325,10 +2325,10 @@ static int parse_pbs_recipe(const char *path, struct pkg_recipe *out)
  */
 static int parse_recipe(const char *path, struct pkg_recipe *out)
 {
-	if (recipe_path_is_pbs(path)) {
+	if (recipe_path_is_cbs(path)) {
 		memset(out, 0, sizeof(*out));
-		out->is_pbs = 1;
-		if (parse_pbs_recipe(path, out) != 0)
+		out->is_cbs = 1;
+		if (parse_cbs_recipe(path, out) != 0)
 			return -1;
 		substitute_repo_token(out);
 		if (!pkg_name_is_valid(out->name))
@@ -2388,7 +2388,7 @@ int pkg_version_compare(const char *a, const char *b)
 /*
  * The recipe file inside one version directory, whichever language it
  * is written in (ADR-0305): build.sh for a shell recipe, build.cbs
- * for a PBS one. Fills out_path and, when out_created is non-NULL,
+ * for a CBS one. Fills out_path and, when out_created is non-NULL,
  * the file's mtime -- which ADR-0107 immutability makes a real
  * "first published" timestamp (see recipe_created_at()).
  *
@@ -2405,18 +2405,18 @@ int pkg_recipe_file_in(const char *version_dir, char *out_path, size_t out_path_
                         long *out_created, const char **out_filename)
 {
 	char shell_path[PATH_MAX];
-	char pbs_path[PATH_MAX];
+	char cbs_path[PATH_MAX];
 	struct stat shell_st;
-	struct stat pbs_st;
+	struct stat cbs_st;
 	int have_shell;
-	int have_pbs;
+	int have_cbs;
 
 	snprintf(shell_path, sizeof(shell_path), "%s/%s", version_dir, PKG_RECIPE_SHELL_FILE);
 	have_shell = stat(shell_path, &shell_st) == 0 && S_ISREG(shell_st.st_mode);
-	snprintf(pbs_path, sizeof(pbs_path), "%s/%s", version_dir, PKG_RECIPE_PBS_FILE);
-	have_pbs = stat(pbs_path, &pbs_st) == 0 && S_ISREG(pbs_st.st_mode);
+	snprintf(cbs_path, sizeof(cbs_path), "%s/%s", version_dir, PKG_RECIPE_CBS_FILE);
+	have_cbs = stat(cbs_path, &cbs_st) == 0 && S_ISREG(cbs_st.st_mode);
 
-	if (have_shell && have_pbs) {
+	if (have_shell && have_cbs) {
 		logstore_write("cixd", "error",
 		               "pkg: %s holds both a build.sh and a build.cbs -- refusing to choose "
 		               "a recipe language (ADR-0305)",
@@ -2431,12 +2431,12 @@ int pkg_recipe_file_in(const char *version_dir, char *out_path, size_t out_path_
 			*out_filename = PKG_RECIPE_SHELL_FILE;
 		return 0;
 	}
-	if (have_pbs) {
-		snprintf(out_path, out_path_size, "%s", pbs_path);
+	if (have_cbs) {
+		snprintf(out_path, out_path_size, "%s", cbs_path);
 		if (out_created != NULL)
-			*out_created = (long)pbs_st.st_mtime;
+			*out_created = (long)cbs_st.st_mtime;
 		if (out_filename != NULL)
-			*out_filename = PKG_RECIPE_PBS_FILE;
+			*out_filename = PKG_RECIPE_CBS_FILE;
 		return 0;
 	}
 	return -1;
@@ -2445,7 +2445,7 @@ int pkg_recipe_file_in(const char *version_dir, char *out_path, size_t out_path_
 /*
  * Resolves name (and optional specific version) to the path of its
  * recipe under ADR-0107's version-keyed layout:
- * <g_recipes_dir>/<name>/<version>/build.sh, or build.cbs for a PBS
+ * <g_recipes_dir>/<name>/<version>/build.sh, or build.cbs for a CBS
  * recipe (ADR-0305 -- pkg_recipe_file_in() above decides which, and it is
  * the only place that does). version NULL or ""
  * resolves to the highest available version for name
@@ -2666,7 +2666,7 @@ static int copy_file_simple(const char *src, const char *dst)
  *
  * Written into the build container beside recipe.sh and RUN after the
  * install phase -- by the build command for a shell recipe, and by
- * `cbs build --finalize-command` for a PBS one (ADR-0307 clause 2).
+ * `cbs build --finalize-command` for a CBS one (ADR-0307 clause 2).
  * It used to be sourced, reading $PKG_DESTDIR out of the environment;
  * CBS runs an embedder's finalizer as `execlp(cmd, cmd, staged_root,
  * NULL)`, so the only way one policy file can serve both languages is
@@ -2721,7 +2721,7 @@ static int write_finalize_script(const char *upperdir)
 }
 
 /*
- * A PBS recipe's build (ADR-0305).
+ * A CBS recipe's build (ADR-0305).
  *
  * `cbs build --staged W` treats W as a WORKSPACE, not as the staged
  * tree: it creates W/src, W/build, W/dest and W/cache under it, and an
@@ -2729,7 +2729,7 @@ static int write_finalize_script(const char *upperdir)
  * per-entry rather than being the fixed /build/pkg-dest a shell recipe
  * uses -- pointing the variable at the subdirectory costs one
  * assignment, where moving the tree afterwards would have made every
- * PBS recipe depend on mv and rmdir being among the tools it declared.
+ * CBS recipe depend on mv and rmdir being among the tools it declared.
  *
  * No --output, deliberately: this is stage 1, cixd still finalizes and
  * packages exactly as it does for a shell recipe, and CBS writes no
@@ -2741,7 +2741,7 @@ static int write_finalize_script(const char *upperdir)
  * the repo token, nor should it.
  *
  * --events human, and this was learned the hard way rather than
- * chosen: without it a failing phase prints NOTHING. The first PBS
+ * chosen: without it a failing phase prints NOTHING. The first CBS
  * build on a real host produced a two-line log -- cbs's own "build
  * failed: recipe, staged tree, or package output was rejected" and
  * nothing else -- which is the same defect as #484's silent kernel
@@ -2791,7 +2791,7 @@ static const char *pkg_host_arch(void);
  * One definition with both roots, the same shape as PKG_DEST_REL_*
  * above and for the same reason: the path the container is told to
  * write and the path cixd harvests are one string, so they cannot
- * disagree. They already did once -- the first PBS build harvested
+ * disagree. They already did once -- the first CBS build harvested
  * the shell destination while the build staged into the workspace,
  * and published a package with zero files and a state of
  * "installed".
@@ -2817,9 +2817,9 @@ static const char *pkg_host_arch(void);
  * different prefix.
  *
  * ONE definition, because two disagreed and the failure was silent.
- * A shell recipe stages into build/pkg-dest; a PBS recipe stages
+ * A shell recipe stages into build/pkg-dest; a CBS recipe stages
  * wherever cbs's workspace puts it, which is <workspace>/dest. The
- * first PBS build set the container's PKG_DESTDIR to the workspace's
+ * first CBS build set the container's PKG_DESTDIR to the workspace's
  * dest and left cixd harvesting the shell path, so the install phase
  * ran, wrote its file, and the package was published with ZERO files
  * and a state of "installed". Nothing failed; the answer was just
@@ -2830,11 +2830,11 @@ static const char *pkg_host_arch(void);
  * harvests are the same string with different roots.
  */
 #define PKG_DEST_REL_SHELL "build/pkg-dest"
-#define PKG_DEST_REL_PBS PKG_CBS_WORKSPACE_REL "/dest"
+#define PKG_DEST_REL_CBS PKG_CBS_WORKSPACE_REL "/dest"
 
-static const char *pkg_dest_rel(int is_pbs)
+static const char *pkg_dest_rel(int is_cbs)
 {
-	return is_pbs ? PKG_DEST_REL_PBS : PKG_DEST_REL_SHELL;
+	return is_cbs ? PKG_DEST_REL_CBS : PKG_DEST_REL_SHELL;
 }
 
 /*
@@ -4898,7 +4898,7 @@ void pkg_repoint(const char *pkg_dir, const char *installed_state_path, const ch
  * exists from cbs v0.1.26 (cix-build-system#173), and clause 1 reads
  * the declared artifact format out of this document, so every
  * document written by an older engine is missing the field the daemon
- * now needs. Refusing those would make the older half of the PBS
+ * now needs. Refusing those would make the older half of the CBS
  * corpus unbuildable; assuming a value is what clause 1 exists to
  * prevent.
  *
@@ -4911,7 +4911,7 @@ void pkg_repoint(const char *pkg_dir, const char *installed_state_path, const ch
  * published while the daemon is up is derived by that same engine at
  * publish. So there is no window a startup sweep misses, and no need
  * for a second, lazy path on the read side -- which would be the far
- * worse shape anyway: see pbs_explain_path()'s own comment for why a
+ * worse shape anyway: see cbs_explain_path()'s own comment for why a
  * re-derive per read is forbidden (~1400 recipe files, and #236
  * measured the event loop blocked for 10981 ms on a cheaper walk).
  *
@@ -5056,7 +5056,7 @@ static void explain_sweep_if_engine_changed(void)
 	cbs_engine_version(version, sizeof(version));
 	if (version[0] == '\0') {
 		/* No engine on this host. Not an error in itself -- a box
-		 * that installs no PBS recipe never needs one -- and saying
+		 * that installs no CBS recipe never needs one -- and saying
 		 * so once at startup beats a refusal per recipe later. */
 		g_explain_sweep.ran = 1;
 		g_explain_sweep.no_engine = 1;
@@ -5118,7 +5118,7 @@ static void explain_sweep_if_engine_changed(void)
 			if (pkg_recipe_file_in(version_dir, recipe_path, sizeof(recipe_path), NULL,
 			                        NULL) != 0)
 				continue;
-			if (!recipe_path_is_pbs(recipe_path))
+			if (!recipe_path_is_cbs(recipe_path))
 				continue; /* a shell recipe has no derived identity */
 			/*
 			 * The same primitive a backup restore uses, not a
@@ -6615,7 +6615,7 @@ void pkg_write_json_recipes(struct json_writer *w)
 				 * for one key reads as a bug, so this took the word its
 				 * own comment already used. A clean rename, no alias. */
 				jw_key(w, "language");
-				jw_str(w, recipe_path_is_pbs(path) ? "pbs" : "shell");
+				jw_str(w, recipe_path_is_cbs(path) ? "cbs" : "shell");
 				/* ADR-0307: what this version PUBLISHES, which the recipe
 				 * declares and the language does not imply. */
 				jw_key(w, "artifact_format");
@@ -7240,7 +7240,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 	char *explain_json = NULL;
 	struct pkg_recipe parsed;
 	struct stat st;
-	const int is_pbs = format == PKG_RECIPE_PBS;
+	const int is_cbs = format == PKG_RECIPE_CBS;
 
 	if (out_was_approval != NULL)
 		*out_was_approval = 0;
@@ -7257,12 +7257,12 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 	 * staged content is parsed below), same ".name.recipe.new"
 	 * dotfile-hiding convention this always used.
 	 *
-	 * A PBS recipe's staging file keeps the .cbs extension, and that
+	 * A CBS recipe's staging file keeps the .cbs extension, and that
 	 * is not cosmetic: has_cbs_extension() in cbs refuses any other
 	 * path outright, in `explain` as well as `build`, so a staging
 	 * file without it cannot be read at all (ADR-0305). */
 	if (snprintf(staging_path, sizeof(staging_path), "%s/.%s.recipe.new%s", g_recipes_dir, name,
-	             is_pbs ? PKG_RECIPE_PBS_SUFFIX : "") >= (int)sizeof(staging_path))
+	             is_cbs ? PKG_RECIPE_CBS_SUFFIX : "") >= (int)sizeof(staging_path))
 		return PKG_ERR_INVALID_NAME;
 	/* #405: never store a live repo token. Everything below -- the
 	 * write, the immutability check and the approval comparison --
@@ -7281,13 +7281,13 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 
 	/*
 	 * Identity. This is the one place the two formats genuinely
-	 * differ, and the PBS side cannot go through parse_recipe():
+	 * differ, and the CBS side cannot go through parse_recipe():
 	 * that reads the derived explain.json beside a build.cbs, and at
 	 * this moment there is no such file -- producing it is what this
 	 * branch does.
 	 */
-	if (is_pbs) {
-		struct pbs_explain *ex;
+	if (is_cbs) {
+		struct cbs_explain *ex;
 		char err[512];
 		size_t json_len = 0;
 
@@ -7305,7 +7305,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 			free(explain_json);
 			return PKG_ERR_INVALID_RECIPE;
 		}
-		ex = pbs_explain_parse(explain_json, json_len, err, sizeof(err));
+		ex = cbs_explain_parse(explain_json, json_len, err, sizeof(err));
 		if (ex == NULL) {
 			logstore_write("cixd", "error", "pkg: recipe %s rejected: %s", name, err);
 			unlink(staging_path);
@@ -7314,9 +7314,9 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 			return PKG_ERR_INVALID_RECIPE;
 		}
 		memset(&parsed, 0, sizeof(parsed));
-		snprintf(parsed.name, sizeof(parsed.name), "%s", pbs_explain_name(ex));
-		if (pbs_explain_version(ex, parsed.version, sizeof(parsed.version)) != 0) {
-			pbs_explain_free(ex);
+		snprintf(parsed.name, sizeof(parsed.name), "%s", cbs_explain_name(ex));
+		if (cbs_explain_version(ex, parsed.version, sizeof(parsed.version)) != 0) {
+			cbs_explain_free(ex);
 			unlink(staging_path);
 			free(redacted);
 			free(explain_json);
@@ -7338,7 +7338,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 		 * a declared capability into none at all with nothing said.
 		 */
 		{
-			int caps = pbs_explain_capabilities(ex, parsed.build_caps,
+			int caps = cbs_explain_capabilities(ex, parsed.build_caps,
 			                                     sizeof(parsed.build_caps));
 
 			if (caps != 0) {
@@ -7350,7 +7350,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 				               caps == 1 ? "the installed cbs reports a capability "
 				                            "COUNT rather than names; upgrade cbs"
 				                          : "its declared capabilities do not fit");
-				pbs_explain_free(ex);
+				cbs_explain_free(ex);
 				unlink(staging_path);
 				free(redacted);
 				free(explain_json);
@@ -7365,7 +7365,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 		 * "standalone builds require cixpkg" (src/package.c:305), and
 		 * the check is not conditional on an output path -- so
 		 * `format "tar.gz"` is legal CPDL that this platform's only
-		 * way of running a PBS recipe cannot execute. Storing such a
+		 * way of running a CBS recipe cannot execute. Storing such a
 		 * recipe means an immutable version that fails at build time,
 		 * every time; refusing it here costs the author one edit
 		 * before anything is published.
@@ -7376,7 +7376,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 		 * is CBS's to lift rather than ours to encode.
 		 */
 		{
-			const char *fmt = pbs_explain_format(ex);
+			const char *fmt = cbs_explain_format(ex);
 
 			if (fmt[0] == '\0' || strcmp(fmt, PKG_ARTIFACT_FORMAT_CIXPKG) != 0) {
 				snprintf(g_recipe_add_err, sizeof(g_recipe_add_err), "%s",
@@ -7385,11 +7385,11 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 				               "than v0.1.26 (cix-build-system#173) and this daemon cannot "
 				               "tell what the recipe declared"
 				             : "it declares format \"tar.gz\", which `cbs build` refuses to "
-				               "execute (\"standalone builds require cixpkg\") -- a PBS "
+				               "execute (\"standalone builds require cixpkg\") -- a CBS "
 				               "recipe publishes a .cixpkg (ADR-0307)");
 				logstore_write("cixd", "error", "pkg: recipe %s rejected: %s", name,
 				               g_recipe_add_err);
-				pbs_explain_free(ex);
+				cbs_explain_free(ex);
 				unlink(staging_path);
 				free(redacted);
 				free(explain_json);
@@ -7402,7 +7402,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 		 * block (cix-build-system#161, closed). Optional, exactly as
 		 * `pkg_artifact_sha256=` and `pkg_changelog=` are optional in
 		 * a shell recipe -- and read here rather than at build time so
-		 * a PBS recipe and a shell recipe reach the same fields of the
+		 * a CBS recipe and a shell recipe reach the same fields of the
 		 * same struct, and the rest of the pipeline cannot tell which
 		 * format it came from.
 		 *
@@ -7414,9 +7414,9 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 		 * and one rule checked in one of two places is how the two
 		 * formats start to differ.
 		 */
-		if (pbs_explain_metadata(ex, "artifact_sha256", parsed.artifact_sha256,
+		if (cbs_explain_metadata(ex, "artifact_sha256", parsed.artifact_sha256,
 		                          sizeof(parsed.artifact_sha256)) != 0 ||
-		    pbs_explain_metadata(ex, "changelog", parsed.changelog,
+		    cbs_explain_metadata(ex, "changelog", parsed.changelog,
 		                          sizeof(parsed.changelog)) != 0) {
 			/*
 			 * #493: the caller gets this, not the generic parse
@@ -7438,13 +7438,13 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 			         "max %d)",
 			         PKG_SHA256_MAX - 1, PKG_CHANGELOG_MAX - 1);
 			logstore_write("cixd", "error", "pkg: recipe %s: %s", name, g_recipe_add_err);
-			pbs_explain_free(ex);
+			cbs_explain_free(ex);
 			unlink(staging_path);
 			free(redacted);
 			free(explain_json);
 			return PKG_ERR_INVALID_RECIPE;
 		}
-		pbs_explain_free(ex);
+		cbs_explain_free(ex);
 		if (strcmp(parsed.name, name) != 0) {
 			unlink(staging_path);
 			free(redacted);
@@ -7471,9 +7471,9 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 	snprintf(name_dir, sizeof(name_dir), "%s/%s", g_recipes_dir, name);
 	snprintf(version_dir, sizeof(version_dir), "%s/%s", name_dir, parsed.version);
 	snprintf(recipe_path, sizeof(recipe_path), "%s/%s", version_dir,
-	         is_pbs ? PKG_RECIPE_PBS_FILE : PKG_RECIPE_SHELL_FILE);
+	         is_cbs ? PKG_RECIPE_CBS_FILE : PKG_RECIPE_SHELL_FILE);
 	snprintf(other_path, sizeof(other_path), "%s/%s", version_dir,
-	         is_pbs ? PKG_RECIPE_SHELL_FILE : PKG_RECIPE_PBS_FILE);
+	         is_cbs ? PKG_RECIPE_SHELL_FILE : PKG_RECIPE_CBS_FILE);
 	/*
 	 * #494: refuse a version whose ARTIFACT name another version
 	 * already owns. Checked before the immutability tests below
@@ -7505,7 +7505,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 		logstore_write("cixd", "error",
 		               "pkg: recipe %s@%s is already published as %s -- a version holds one "
 		               "recipe language, never both (ADR-0305)",
-		               name, parsed.version, is_pbs ? "a shell recipe" : "a PBS recipe");
+		               name, parsed.version, is_cbs ? "a shell recipe" : "a CBS recipe");
 		unlink(staging_path);
 		free(redacted);
 		free(explain_json);
@@ -7522,17 +7522,17 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 		 * recipe_adds_only_artifact_sha256() for why this is not a
 		 * hole in immutability but the completion of it.
 		 *
-		 * It does not apply to a PBS recipe, and the reason has
+		 * It does not apply to a CBS recipe, and the reason has
 		 * CHANGED since this was written. It used to be that CPDL
 		 * rejected unknown package keys, so a build.cbs had no line
-		 * to add (cix-build-system#161). That closed: a PBS recipe
+		 * to add (cix-build-system#161). That closed: a CBS recipe
 		 * carries its approval in `metadata { "artifact_sha256" }`,
 		 * and #492 writes it there directly after a successful build
-		 * rather than through this republish path. So a PBS recipe
+		 * rather than through this republish path. So a CBS recipe
 		 * DOES take a cache hit, and the old warning that it could
 		 * not is no longer true of anything.
 		 */
-		if (!is_pbs && persist_read_file(recipe_path, &stored, &stored_len) == 0 &&
+		if (!is_cbs && persist_read_file(recipe_path, &stored, &stored_len) == 0 &&
 		    stored != NULL) {
 			only_approval = recipe_adds_only_artifact_sha256(stored, content);
 			free(stored);
@@ -7583,11 +7583,11 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 	 * `cix-recipes` holds 9 shell recipes and every one is already
 	 * published, so sync adds none; the `probe-*` convention has its
 	 * CPDL template and it is proven on this host, not argued --
-	 * `probe-cix-tarball@103-1` through `@113-1` are all `pbs`, and
+	 * `probe-cix-tarball@103-1` through `@113-1` are all `cbs`, and
 	 * each made the daemon log `computed=<64 hex>` from a
 	 * deliberately wrong hash, which is exactly the proof ADR-0309
 	 * asks that dependent for; and all 8 publishes in this project's
-	 * own test suite send `"format": "pbs"` (the shell fixtures
+	 * own test suite send `"format": "cbs"` (the shell fixtures
 	 * fopen() into the recipe store and never reach this function at
 	 * all, which is why FLOOR_SELFTESTS are unaffected).
 	 *
@@ -7597,7 +7597,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 	 * reading and building every one. That is ADR-0309 clause 3 and
 	 * it is a separate change (#516).
 	 */
-	if (!is_pbs) {
+	if (!is_cbs) {
 		snprintf(g_recipe_add_err, sizeof(g_recipe_add_err),
 		         "shell recipes are history: a new revision is written in CPDL "
 		         "(ADR-0309 clause 4). Published shell revisions keep working and "
@@ -7628,10 +7628,10 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 	 * opposite failure instead: an explain.json with no recipe, which
 	 * nothing looks for and the next publish overwrites.
 	 */
-	if (is_pbs) {
+	if (is_cbs) {
 		char explain_path[PATH_MAX];
 
-		pbs_explain_path(recipe_path, explain_path, sizeof(explain_path));
+		cbs_explain_path(recipe_path, explain_path, sizeof(explain_path));
 		if (persist_atomic_write(explain_path, explain_json, strlen(explain_json)) != 0) {
 			unlink(staging_path);
 			free(explain_json);
@@ -7651,7 +7651,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
  * Re-derives the explain.json beside an already-written build.cbs
  * (ADR-0305).
  *
- * Exists for one caller: a system restore. A PBS recipe's identity is
+ * Exists for one caller: a system restore. A CBS recipe's identity is
  * DERIVED state and is deliberately absent from a backup -- it is
  * what one particular cbs made of the document, and restoring a copy
  * taken months ago would resurrect that reading instead of the
@@ -7674,7 +7674,7 @@ enum pkg_error pkg_recipe_rederive_identity(const char *recipe_path)
 	size_t json_len = 0;
 	enum pkg_error rc = PKG_OK;
 
-	if (recipe_path == NULL || !recipe_path_is_pbs(recipe_path))
+	if (recipe_path == NULL || !recipe_path_is_cbs(recipe_path))
 		return PKG_ERR_INVALID_RECIPE;
 
 	json = malloc(PKG_EXPLAIN_MAX);
@@ -7686,7 +7686,7 @@ enum pkg_error pkg_recipe_rederive_identity(const char *recipe_path)
 		free(json);
 		return PKG_ERR_INVALID_RECIPE;
 	}
-	pbs_explain_path(recipe_path, explain_path, sizeof(explain_path));
+	cbs_explain_path(recipe_path, explain_path, sizeof(explain_path));
 	if (persist_atomic_write(explain_path, json, strlen(json)) != 0)
 		rc = PKG_ERR_PERSIST_FAILED;
 	free(json);
@@ -7720,7 +7720,7 @@ enum pkg_error pkg_recipe_delete(const char *name, const char *version)
 		{
 			char explain_path[PATH_MAX];
 
-			pbs_explain_path(recipe_path, explain_path, sizeof(explain_path));
+			cbs_explain_path(recipe_path, explain_path, sizeof(explain_path));
 			unlink(explain_path);
 		}
 		if (unlink(recipe_path) != 0 || rmdir(version_dir) != 0)
@@ -7750,7 +7750,7 @@ enum pkg_error pkg_recipe_delete(const char *name, const char *version)
 			if (pkg_recipe_file_in(version_dir, recipe_path, sizeof(recipe_path), NULL, NULL) == 0) {
 				char explain_path[PATH_MAX];
 
-				pbs_explain_path(recipe_path, explain_path, sizeof(explain_path));
+				cbs_explain_path(recipe_path, explain_path, sizeof(explain_path));
 				unlink(explain_path);
 				unlink(recipe_path);
 			}
@@ -9168,7 +9168,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		int envr;
 
 		/*
-		 * A PBS recipe does not declare the engine that runs it
+		 * A CBS recipe does not declare the engine that runs it
 		 * (ADR-0305), and that is the one place this daemon does not
 		 * follow "everything needs declares" literally.
 		 *
@@ -9187,7 +9187,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		 * seen first and this append is then a no-op.
 		 */
 		snprintf(declared, sizeof(declared), "%s", recipe.build_depends);
-		if (recipe.is_pbs && append_words(declared, sizeof(declared), "cbs") != 0) {
+		if (recipe.is_cbs && append_words(declared, sizeof(declared), "cbs") != 0) {
 			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 			         "the declared build tool list has no room for the cbs engine");
 			logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
@@ -9267,13 +9267,13 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 
 	snprintf(src_dir, sizeof(src_dir), "%s/build/src", e->build_upperdir);
 	snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_upperdir,
-	         pkg_dest_rel(recipe.is_pbs));
+	         pkg_dest_rel(recipe.is_cbs));
 	/* ADR-0305: cbs refuses any recipe path not ending in .cbs
 	 * (has_cbs_extension(), in `build` as well as `explain`), so the
 	 * name this is staged under is load-bearing rather than cosmetic --
 	 * a build.cbs copied in as recipe.sh could not be built at all. */
 	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe%s", e->build_upperdir,
-	         recipe.is_pbs ? PKG_RECIPE_PBS_SUFFIX : ".sh");
+	         recipe.is_cbs ? PKG_RECIPE_CBS_SUFFIX : ".sh");
 	snprintf(extra_dir, sizeof(extra_dir), "%s/build/extra", e->build_upperdir);
 
 	{
@@ -9522,7 +9522,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	 * {{REPO_TOKEN}} substitution (#405) happens host-side precisely so
 	 * a credential never reaches a build.
 	 */
-	if (!e->cache_hit && recipe.is_pbs) {
+	if (!e->cache_hit && recipe.is_cbs) {
 		char cbs_cache_dir[PATH_MAX];
 
 		char cbs_ws_dir[PATH_MAX];
@@ -9590,7 +9590,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	 * do. */
 	if (e->cache_hit)
 		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), ":");
-	else if (recipe.is_pbs)
+	else if (recipe.is_cbs)
 		/* See PKG_CBS_WORKSPACE for why the cache is pre-filled and
 		 * why the finalize policy is CBS's own --finalize-command,
 		 * and PKG_CBS_ARTIFACT for where --output writes. */
@@ -9656,7 +9656,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	e->build_argv[1] = "-c";
 	e->build_argv[2] = e->build_argv_cmd;
 	e->build_argv[3] = NULL;
-	snprintf(e->build_dest_rel, sizeof(e->build_dest_rel), "%s", pkg_dest_rel(recipe.is_pbs));
+	snprintf(e->build_dest_rel, sizeof(e->build_dest_rel), "%s", pkg_dest_rel(recipe.is_cbs));
 	snprintf(e->artifact_format, sizeof(e->artifact_format), "%s", recipe.artifact_format);
 	snprintf(e->build_destdir_env, sizeof(e->build_destdir_env), "PKG_DESTDIR=/%s",
 	         e->build_dest_rel);
@@ -10114,7 +10114,7 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
 		 *
 		 * 127 is worth distinguishing because it is the one cause
 		 * an operator can act on directly: cbs is what reads this
-		 * format, and a host without it cannot install a PBS
+		 * format, and a host without it cannot install a CBS
 		 * package at all (ADR-0307 clause 6).
 		 */
 		if (exit_status == 127)
@@ -10252,9 +10252,9 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 		return PKG_ERR_INVALID_RECIPE;
 
 	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe%s", e->build_upperdir,
-	         recipe.is_pbs ? PKG_RECIPE_PBS_SUFFIX : PKG_RECIPE_SHELL_SUFFIX);
+	         recipe.is_cbs ? PKG_RECIPE_CBS_SUFFIX : PKG_RECIPE_SHELL_SUFFIX);
 	snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_upperdir,
-	         pkg_dest_rel(recipe.is_pbs));
+	         pkg_dest_rel(recipe.is_cbs));
 	snprintf(extra_dir, sizeof(extra_dir), "%s/build/extra", e->build_upperdir);
 
 	if (copy_file_simple(recipe_path, recipe_dst) != 0)
@@ -10297,7 +10297,7 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	 * It was invisible for as long as it existed because every
 	 * fixture that exercises resume was written in shell; converting
 	 * them (cix#516) is what surfaced it. Note the line below already
-	 * asked `recipe.is_pbs` for the destination directory, so the
+	 * asked `recipe.is_cbs` for the destination directory, so the
 	 * format was known here all along and only the command ignored
 	 * it.
 	 *
@@ -10305,7 +10305,7 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	 * precisely because a build failed, so there is nothing cached to
 	 * short-circuit to.
 	 */
-	if (recipe.is_pbs)
+	if (recipe.is_cbs)
 		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd),
 		         "set -e; cbs build /build/recipe.cbs --arch %s --staged %s --cache %s "
 		         "--output %s --finalize-command /build/finalize.sh --events human%s",
@@ -10323,7 +10323,7 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	e->build_argv[1] = "-c";
 	e->build_argv[2] = e->build_argv_cmd;
 	e->build_argv[3] = NULL;
-	snprintf(e->build_dest_rel, sizeof(e->build_dest_rel), "%s", pkg_dest_rel(recipe.is_pbs));
+	snprintf(e->build_dest_rel, sizeof(e->build_dest_rel), "%s", pkg_dest_rel(recipe.is_cbs));
 	snprintf(e->artifact_format, sizeof(e->artifact_format), "%s", recipe.artifact_format);
 	snprintf(e->build_destdir_env, sizeof(e->build_destdir_env), "PKG_DESTDIR=/%s",
 	         e->build_dest_rel);
@@ -12570,7 +12570,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			 * a flag.
 			 *
 			 * A shell build leaves a directory, so cixd tars it.
-			 * A PBS build leaves a finished .cixpkg -- CBS wrote
+			 * A CBS build leaves a finished .cixpkg -- CBS wrote
 			 * it, inside the container, after the finalize policy
 			 * ran (src/package.c:374 then :389) -- so cixd takes
 			 * the file. Taking a file is strictly less host work
@@ -12579,9 +12579,9 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			 * branch is a rename.
 			 *
 			 * Read from the entry rather than re-derived, and the
-			 * format rather than is_pbs: the recipe declared it
-			 * (a PBS recipe declaring tar.gz is refused at
-			 * publish, so in practice these agree -- but is_pbs
+			 * format rather than is_cbs: the recipe declared it
+			 * (a CBS recipe declaring tar.gz is refused at
+			 * publish, so in practice these agree -- but is_cbs
 			 * says which LANGUAGE was used, which is not the
 			 * question being asked here).
 			 */
@@ -13547,7 +13547,7 @@ enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd)
  */
 /*
  * #505: the recipe repository is FLAT, and a recipe is one file named
- * "<name>@<version>.<ext>" -- sh for a shell recipe, cbs for a PBS one
+ * "<name>@<version>.<ext>" -- sh for a shell recipe, cbs for a CBS one
  * (ADR-0305), json for a deployment definition.
  *
  * It was "<name>/<version>/build.<ext>" until 2026-09-21: two
@@ -13926,7 +13926,7 @@ int pkg_sync_merge(void)
 			size_t content_len;
 			const char *ext;
 			enum pkg_error rc;
-			int is_pbs;
+			int is_cbs;
 
 			if (recipe_file_split(name_de->d_name, name, sizeof(name), version,
 			                      sizeof(version), &ext) != 0)
@@ -13940,9 +13940,9 @@ int pkg_sync_merge(void)
 			 * skipped here rather than being mistaken for a recipe.
 			 */
 			if (strcmp(ext, "cbs") == 0)
-				is_pbs = 1;
+				is_cbs = 1;
 			else if (strcmp(ext, "sh") == 0)
-				is_pbs = 0;
+				is_cbs = 0;
 			else
 				continue;
 
@@ -13965,7 +13965,7 @@ int pkg_sync_merge(void)
 				int was_approval = 0;
 
 				rc = pkg_recipe_add(name, content,
-				                    is_pbs ? PKG_RECIPE_PBS : PKG_RECIPE_SHELL,
+				                    is_cbs ? PKG_RECIPE_CBS : PKG_RECIPE_SHELL,
 				                    &was_approval);
 				free(content);
 				/* #404: an approval applied to an already-published
@@ -14123,7 +14123,7 @@ static long long g_cache_max_bytes = PKG_CACHE_DEFAULT_MAX_BYTES;
  * (ADR-0307).
  *
  * Two formats, and which one a version uses is a property of the
- * recipe that built it -- a PBS recipe declares `format "cixpkg"`, a
+ * recipe that built it -- a CBS recipe declares `format "cixpkg"`, a
  * shell recipe has no field to declare and is tar.gz by construction.
  * One version is one byte sequence in one format; the same version is
  * never published twice in two.
@@ -16221,13 +16221,13 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
  * and this path cannot drift from it.
  */
 /*
- * Writing an artifact approval into a PBS recipe (#492).
+ * Writing an artifact approval into a CBS recipe (#492).
  *
  * The shell writer above splices `pkg_artifact_sha256="..."` into
  * build.sh. This is its CPDL counterpart, and it differs in three ways
  * that are each the point rather than an implementation detail.
  *
- * FIRST: it writes TWO files. parse_pbs_recipe() reads the derived
+ * FIRST: it writes TWO files. parse_cbs_recipe() reads the derived
  * explain.json beside the recipe, never the recipe itself (ADR-0305),
  * so an approval written only into the .cbs would be invisible to
  * every build -- the recipe would say approved and the pipeline would
@@ -16264,7 +16264,7 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
  * The approval travels with the recipe because the recipe is what
  * travels.
  */
-static int pbs_metadata_insert_point(const char *text, size_t *out_off)
+static int cbs_metadata_insert_point(const char *text, size_t *out_off)
 {
 	const char *p = text;
 
@@ -16302,7 +16302,7 @@ static int pbs_metadata_insert_point(const char *text, size_t *out_off)
 	}
 }
 
-static void approve_pbs_artifact(const char *recipe_path, const char *name, const char *version,
+static void approve_cbs_artifact(const char *recipe_path, const char *name, const char *version,
                                   const char *sha)
 {
 	char explain_path[PATH_MAX];
@@ -16335,7 +16335,7 @@ static void approve_pbs_artifact(const char *recipe_path, const char *name, cons
 	 * declaration. explain.json is the parsed answer and is what the
 	 * build path reads anyway, so it is the only thing worth asking.
 	 */
-	pbs_explain_path(recipe_path, explain_path, sizeof(explain_path));
+	cbs_explain_path(recipe_path, explain_path, sizeof(explain_path));
 	if (persist_read_file(explain_path, &old_json, &old_len) != 0 || old_json == NULL)
 		goto done;
 	old_root = json_parse(old_json, old_len);
@@ -16345,7 +16345,7 @@ static void approve_pbs_artifact(const char *recipe_path, const char *name, cons
 	                                    "artifact_sha256")) != NULL)
 		goto done; /* approved already -- never a replacement (ADR-0107) */
 
-	if (pbs_metadata_insert_point(stored, &insert_off) != 0) {
+	if (cbs_metadata_insert_point(stored, &insert_off) != 0) {
 		logstore_write("cixd", "info",
 		               "pkg: %s@%s published, but its recipe has no `metadata {` block on a "
 		               "line of its own, so this daemon will not write the approval and the "
@@ -16475,22 +16475,22 @@ static void approve_published_artifact(const char *name, const char *version)
 		return;
 	if (persist_read_file(recipe_path, &stored, &stored_len) != 0 || stored == NULL) {
 		/*
-		 * A PBS recipe (ADR-0305) reaches here because this function
+		 * A CBS recipe (ADR-0305) reaches here because this function
 		 * only ever opens build.sh, so persist_read_file() fails for
-		 * one. Its approval is written by approve_pbs_artifact()
+		 * one. Its approval is written by approve_cbs_artifact()
 		 * above, which is a different operation rather than the same
 		 * one with a different anchor: the approval goes into a
 		 * `metadata { }` block, the guard is an explain diff rather
 		 * than a line diff, and explain.json has to move with the
 		 * recipe or the approval is invisible to every build (#492).
 		 */
-		char pbs_path[PATH_MAX];
+		char cbs_path[PATH_MAX];
 		struct stat st;
 
-		if ((size_t)snprintf(pbs_path, sizeof(pbs_path), "%s/%s/%s/%s", g_recipes_dir, name,
-		                      version, PKG_RECIPE_PBS_FILE) < sizeof(pbs_path) &&
-		    stat(pbs_path, &st) == 0)
-			approve_pbs_artifact(pbs_path, name, version, sha);
+		if ((size_t)snprintf(cbs_path, sizeof(cbs_path), "%s/%s/%s/%s", g_recipes_dir, name,
+		                      version, PKG_RECIPE_CBS_FILE) < sizeof(cbs_path) &&
+		    stat(cbs_path, &st) == 0)
+			approve_cbs_artifact(cbs_path, name, version, sha);
 		return;
 	}
 

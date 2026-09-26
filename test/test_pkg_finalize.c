@@ -600,7 +600,7 @@ int main(void)
 	/*
 	 * X_OK as well as R_OK since ADR-0307 clause 2: the policy is
 	 * execve()d, by this test and by CBS's --finalize-command alike,
-	 * so losing the executable bit in the repo breaks every PBS build
+	 * so losing the executable bit in the repo breaks every CBS build
 	 * on the box with an exit 127 that names nothing useful. Checked
 	 * here, where the message can say so, rather than discovered as a
 	 * failing system() below.

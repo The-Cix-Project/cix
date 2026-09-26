@@ -1161,7 +1161,7 @@ int main(int argc, char **argv)
 		}
 		/*
 		 * cbs -- PKG_CBS_BIN, daemon/src/pkg.c (ADR-0305). The CPDL
-		 * engine: cixd runs `cbs explain --json` to read a PBS recipe's
+		 * engine: cixd runs `cbs explain --json` to read a CBS recipe's
 		 * identity at publish, and `cbs build` runs the recipe inside
 		 * the build container.
 		 *
@@ -1189,7 +1189,7 @@ int main(int argc, char **argv)
 		 * nothing for the case that now exists, where an ALREADY
 		 * PUBLISHED package's artifact is a .cixpkg and nothing on the
 		 * host can extract it. A root without cbs is no longer a root
-		 * that cannot publish PBS recipes -- it is a root that cannot
+		 * that cannot publish CBS recipes -- it is a root that cannot
 		 * install packages, and 25 of them are already published in
 		 * that format. Failing here, where the fix is one install away,
 		 * beats failing on a box that has already booted the root.
@@ -1211,7 +1211,7 @@ int main(int argc, char **argv)
 				fprintf(stderr,
 				        "no cix-hosttools root given, so this root would carry no CPDL "
 				        "engine -- and a root with no /usr/bin/cbs cannot install any "
-				        "package built by a PBS recipe, itself included (ADR-0307 "
+				        "package built by a CBS recipe, itself included (ADR-0307 "
 				        "clause 6)\n");
 				return 1;
 			}
@@ -1223,7 +1223,7 @@ int main(int argc, char **argv)
 			if (stat(src, &st) != 0) {
 				fprintf(stderr,
 				        "%s is absent, so this root would carry no CPDL engine and could "
-				        "not install any package built by a PBS recipe (ADR-0307 clause "
+				        "not install any package built by a CBS recipe (ADR-0307 clause "
 				        "6). Fix it with: pkg install --image=cix-hosttools cbs\n",
 				        src);
 				return 1;

@@ -1,9 +1,9 @@
 /*
- * Reading a PBS recipe's identity out of `cbs explain --json`
- * (ADR-0305). See pbsrecipe.h for why this is a separate translation
+ * Reading a CBS recipe's identity out of `cbs explain --json`
+ * (ADR-0305). See cbsrecipe.h for why this is a separate translation
  * unit and why the accessors are getters rather than one struct fill.
  */
-#include "pbsrecipe.h"
+#include "cbsrecipe.h"
 
 #include "json.h"
 
@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct pbs_explain {
+struct cbs_explain {
 	struct json_value *root;
 };
 
@@ -26,9 +26,9 @@ static const char *str_or_empty(const struct json_value *v)
 	return s != NULL ? s : "";
 }
 
-struct pbs_explain *pbs_explain_parse(const char *text, size_t len, char *err, size_t err_size)
+struct cbs_explain *cbs_explain_parse(const char *text, size_t len, char *err, size_t err_size)
 {
-	struct pbs_explain *ex;
+	struct cbs_explain *ex;
 	struct json_value *root;
 	const struct json_value *v;
 
@@ -77,7 +77,7 @@ struct pbs_explain *pbs_explain_parse(const char *text, size_t len, char *err, s
 	return ex;
 }
 
-void pbs_explain_free(struct pbs_explain *ex)
+void cbs_explain_free(struct cbs_explain *ex)
 {
 	if (ex == NULL)
 		return;
@@ -85,14 +85,14 @@ void pbs_explain_free(struct pbs_explain *ex)
 	free(ex);
 }
 
-const char *pbs_explain_name(const struct pbs_explain *ex)
+const char *cbs_explain_name(const struct cbs_explain *ex)
 {
 	if (ex == NULL)
 		return "";
 	return str_or_empty(json_object_get(ex->root, "name"));
 }
 
-int pbs_explain_version(const struct pbs_explain *ex, char *out, size_t out_size)
+int cbs_explain_version(const struct cbs_explain *ex, char *out, size_t out_size)
 {
 	const char *version;
 	long long release;
@@ -110,7 +110,7 @@ int pbs_explain_version(const struct pbs_explain *ex, char *out, size_t out_size
 	return 0;
 }
 
-static const struct json_value *sources_array(const struct pbs_explain *ex)
+static const struct json_value *sources_array(const struct cbs_explain *ex)
 {
 	const struct json_value *v;
 
@@ -122,14 +122,14 @@ static const struct json_value *sources_array(const struct pbs_explain *ex)
 	return v;
 }
 
-int pbs_explain_source_count(const struct pbs_explain *ex)
+int cbs_explain_source_count(const struct cbs_explain *ex)
 {
 	const struct json_value *v = sources_array(ex);
 
 	return v == NULL ? 0 : (int)v->u.array.count;
 }
 
-int pbs_explain_source_url_count(const struct pbs_explain *ex, int index)
+int cbs_explain_source_url_count(const struct cbs_explain *ex, int index)
 {
 	const struct json_value *sources = sources_array(ex);
 	const struct json_value *source;
@@ -146,7 +146,7 @@ int pbs_explain_source_url_count(const struct pbs_explain *ex, int index)
 	return (int)urls->u.array.count;
 }
 
-int pbs_explain_source_url(const struct pbs_explain *ex, int index, int url_index, char *url,
+int cbs_explain_source_url(const struct cbs_explain *ex, int index, int url_index, char *url,
                             size_t url_size)
 {
 	const struct json_value *sources = sources_array(ex);
@@ -171,7 +171,7 @@ int pbs_explain_source_url(const struct pbs_explain *ex, int index, int url_inde
 	return 0;
 }
 
-int pbs_explain_source(const struct pbs_explain *ex, int index, char *url, size_t url_size,
+int cbs_explain_source(const struct cbs_explain *ex, int index, char *url, size_t url_size,
                         char *sha256, size_t sha256_size)
 {
 	const struct json_value *sources = sources_array(ex);
@@ -201,7 +201,7 @@ int pbs_explain_source(const struct pbs_explain *ex, int index, char *url, size_
 	return 0;
 }
 
-int pbs_explain_requires(const struct pbs_explain *ex, const char *role, const char *kind,
+int cbs_explain_requires(const struct cbs_explain *ex, const char *role, const char *kind,
                           char *out, size_t out_size)
 {
 	const struct json_value *requires_obj;
@@ -240,35 +240,35 @@ int pbs_explain_requires(const struct pbs_explain *ex, const char *role, const c
 	return 0;
 }
 
-const char *pbs_explain_format(const struct pbs_explain *ex)
+const char *cbs_explain_format(const struct cbs_explain *ex)
 {
 	if (ex == NULL)
 		return "";
 	return str_or_empty(json_object_get(ex->root, "format"));
 }
 
-const char *pbs_explain_upstream(const struct pbs_explain *ex)
+const char *cbs_explain_upstream(const struct cbs_explain *ex)
 {
 	if (ex == NULL)
 		return "";
 	return str_or_empty(json_object_get(ex->root, "upstream"));
 }
 
-const char *pbs_explain_toolchain(const struct pbs_explain *ex)
+const char *cbs_explain_toolchain(const struct cbs_explain *ex)
 {
 	if (ex == NULL)
 		return "";
 	return str_or_empty(json_object_get(ex->root, "toolchain"));
 }
 
-const char *pbs_explain_toolchain_reason(const struct pbs_explain *ex)
+const char *cbs_explain_toolchain_reason(const struct cbs_explain *ex)
 {
 	if (ex == NULL)
 		return "";
 	return str_or_empty(json_object_get(ex->root, "toolchain_reason"));
 }
 
-int pbs_explain_capabilities(const struct pbs_explain *ex, char *out, size_t out_size)
+int cbs_explain_capabilities(const struct cbs_explain *ex, char *out, size_t out_size)
 {
 	const struct json_value *v;
 	size_t i;
@@ -307,7 +307,7 @@ int pbs_explain_capabilities(const struct pbs_explain *ex, char *out, size_t out
 	return 0;
 }
 
-int pbs_explain_metadata(const struct pbs_explain *ex, const char *key, char *out,
+int cbs_explain_metadata(const struct cbs_explain *ex, const char *key, char *out,
                           size_t out_size)
 {
 	const struct json_value *block;
@@ -330,7 +330,7 @@ int pbs_explain_metadata(const struct pbs_explain *ex, const char *key, char *ou
 	return 0;
 }
 
-int pbs_explain_phase_count(const struct pbs_explain *ex)
+int cbs_explain_phase_count(const struct cbs_explain *ex)
 {
 	const struct json_value *v;
 

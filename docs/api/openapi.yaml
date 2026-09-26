@@ -8858,7 +8858,7 @@ paths:
         already-published (name, version) pair is 409 Conflict, never a silent
         overwrite -- fixing a mistake means bumping the version and publishing again.
         Two formats are accepted, and format says which: a shell recipe (build.sh) or
-        a PBS recipe in CPDL (build.cbs, ADR-0305). A version may hold one or the
+        a CBS recipe in CPDL (build.cbs, ADR-0305). A version may hold one or the
         other, never both -- publishing the second format for a version that already
         has one is 409, for the same One Source of Truth reason a republish is.
       operationId: addPkgRecipe
@@ -8878,20 +8878,20 @@ paths:
                   description: >
                     The full text of the recipe. For format "shell" (the default) that is a
                     build.sh file (pkg_name=/pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=/
-                    pkg_changelog=). For format "pbs" it is a CPDL 0.1 document -- a single
+                    pkg_changelog=). For format "cbs" it is a CPDL 0.1 document -- a single
                     package block declaring version, release, format, sources and requires,
                     with up to five phases.
                 format:
                   type: string
-                  enum: [shell, pbs]
+                  enum: [shell, cbs]
                   default: shell
                   description: >
                     Which recipe language content is written in, and therefore which filename
-                    it is stored under: "shell" -> build.sh, "pbs" -> build.cbs (ADR-0305 --
+                    it is stored under: "shell" -> build.sh, "cbs" -> build.cbs (ADR-0305 --
                     a recipe's format is its filename, because a filename cannot disagree with
                     itself). Omitted means "shell", so every pre-existing client is unchanged.
                     This field is a routing hint that is verified immediately rather than
-                    trusted: "pbs" content must satisfy `cbs explain --json` and "shell"
+                    trusted: "cbs" content must satisfy `cbs explain --json` and "shell"
                     content must parse as a shell recipe, so a body whose format disagrees
                     with its content is refused with 400 and never becomes a stored file.
       responses:
@@ -8899,13 +8899,13 @@ paths:
           description: Recipe version published
         "400":
           description: >
-            name/content missing, name invalid, format not one of shell/pbs, or content
+            name/content missing, name invalid, format not one of shell/cbs, or content
             failed to parse in the declared format / its own declared name doesn't match name.
-            For format "pbs" this includes any CPDL validation error -- the diagnostic names
+            For format "cbs" this includes any CPDL validation error -- the diagnostic names
             the CPDL error code (e.g. CPDL-E3001) and the line it was raised on.
 
 
-            Also (#493) a PBS recipe whose `metadata { }` holds a value longer than
+            Also (#493) a CBS recipe whose `metadata { }` holds a value longer than
             the field it lands in -- `changelog` is capped at 511 bytes and
             `artifact_sha256` at 64. The message says so and carries both limits,
             rather than the parse sentence: such a recipe parsed perfectly and its
@@ -8914,7 +8914,7 @@ paths:
             and `zlib` with a changelog a few bytes over.
 
 
-            Also (ADR-0307 clause 1) a PBS recipe declaring `format "tar.gz"`. That is legal
+            Also (ADR-0307 clause 1) a CBS recipe declaring `format "tar.gz"`. That is legal
             CPDL and `cbs build` refuses to execute it -- *"standalone builds require
             cixpkg"* -- so storing it would mean an immutable version that fails at build
             time, every time. The message says exactly that rather than the generic
@@ -8945,7 +8945,7 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500":
           description: >
-            Validated but writing the recipe file to disk failed. For format "pbs" this also
+            Validated but writing the recipe file to disk failed. For format "cbs" this also
             covers a failure to persist the derived explain.json beside it, which is written
             in the same operation because every later read uses it instead of re-running the
             parser (ADR-0305).
@@ -8960,7 +8960,7 @@ paths:
         One recipe version's own {name,version,format,depends,content,created_at} -- the
         raw recipe text too, unlike GET /pkg/recipes' list-view metadata-only shape.
         content is whichever file holds that version, and format says which language it
-        is in: a shell build.sh or a PBS build.cbs in CPDL (ADR-0305).
+        is in: a shell build.sh or a CBS build.cbs in CPDL (ADR-0305).
         Powers the web dashboard's per-package Recipe tab (view, and edit-then-publish
         as a new version through POST /pkg/recipes). An optional ?version= query
         parameter selects a specific published version; omitted resolves to the
@@ -14805,7 +14805,7 @@ components:
 
             Keyed `<name>/<version>` under ADR-0107's version-keyed
             layout; this said "keyed by package name" from before that
-            layout existed. A PBS recipe (ADR-0305) takes a third
+            layout existed. A CBS recipe (ADR-0305) takes a third
             segment naming its file, `<name>/<version>/build.cbs`,
             because the filename is what tells a restore which language
             it is holding. A shell recipe deliberately keeps the bare
@@ -14815,7 +14815,7 @@ components:
             every key three segments would have cost every recipe in a
             backup restored onto the other boot slot. The
             incompatibility therefore arrives only for a host that
-            actually has a PBS recipe to lose.
+            actually has a CBS recipe to lose.
         site_config:
           type: string
           description: >
@@ -18975,14 +18975,14 @@ components:
             hostbuild has no image to merge into (ADR-0303, #465). This
             said "must leave this empty" until then, which was true of the
             refusal that used to reject such a recipe outright.
-            For a PBS recipe (build.cbs) this value is derived from
+            For a CBS recipe (build.cbs) this value is derived from
             `requires { runtime { package "..." } }` (ADR-0305).
         language:
           type: string
-          enum: [shell, pbs]
+          enum: [shell, cbs]
           description: >
             Which language this published version is written in, and therefore which
-            file holds it: "shell" -> build.sh, "pbs" -> build.cbs in CPDL 0.1
+            file holds it: "shell" -> build.sh, "cbs" -> build.cbs in CPDL 0.1
             (ADR-0305). Not a property a recipe declares -- it IS the filename, so it
             cannot disagree with what the daemon will actually run.
 
@@ -18998,7 +18998,7 @@ components:
           type: string
           enum: [cixpkg, "tar.gz"]
           description: >
-            What this version publishes (ADR-0307). A PBS recipe DECLARES it -- CPDL
+            What this version publishes (ADR-0307). A CBS recipe DECLARES it -- CPDL
             requires exactly one `format` declaration per package -- and the daemon
             reads it from the derived explain document rather than assuming, so that
             a recipe declaring "tar.gz" can be refused at publish: `cbs build` cannot
@@ -19024,11 +19024,11 @@ components:
             real multi-paragraph release note.
 
 
-            This said "always null for a PBS recipe, because CPDL rejects
+            This said "always null for a CBS recipe, because CPDL rejects
             unknown package keys" and that is no longer true of anything:
             cix-build-system#161 closed, a build.cbs carries one in its
             opaque `metadata { "changelog" }` block, and the daemon reads it
-            from there (`parse_pbs_recipe()`).
+            from there (`parse_cbs_recipe()`).
         created_at:
           type: integer
           description: >

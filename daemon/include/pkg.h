@@ -767,12 +767,12 @@ enum pkg_error pkg_recipe_get(const char *name, const char *version, struct json
  *
  * format says which language content is written in, and therefore
  * which filename it is stored under (ADR-0305): PKG_RECIPE_SHELL is a
- * build.sh, PKG_RECIPE_PBS a build.cbs in CPDL 0.1. A version holds
+ * build.sh, PKG_RECIPE_CBS a build.cbs in CPDL 0.1. A version holds
  * one or the other and never both -- publishing the second format for
  * a version that already has one is PKG_ERR_DUPLICATE, for the same
  * One Source of Truth reason a republish is.
  *
- * For PKG_RECIPE_PBS the validation is `cbs explain --json` rather
+ * For PKG_RECIPE_CBS the validation is `cbs explain --json` rather
  * than parse_recipe(), and its output is persisted as explain.json
  * beside the recipe. Two extra refusals apply, each because CPDL 0.1
  * cannot express what this daemon would need: a recipe declaring any
@@ -784,7 +784,7 @@ enum pkg_error pkg_recipe_get(const char *name, const char *version, struct json
 /*
  * The recipe file inside one published version directory, whichever
  * language it is written in (ADR-0305): build.sh for a shell recipe,
- * build.cbs for a PBS one. Fills out_path; out_created (the file's
+ * build.cbs for a CBS one. Fills out_path; out_created (the file's
  * mtime, which ADR-0107 immutability makes a real "first published"
  * timestamp) and out_filename (the bare "build.sh"/"build.cbs", which
  * is what tells a caller the format) are both optional.
@@ -808,7 +808,7 @@ enum pkg_recipe_format {
 	 * the format that has always existed rather than the new one.
 	 */
 	PKG_RECIPE_SHELL = 0,
-	PKG_RECIPE_PBS = 1
+	PKG_RECIPE_CBS = 1
 };
 
 enum pkg_error pkg_recipe_add(const char *name, const char *content,
@@ -846,7 +846,7 @@ const char *pkg_recipe_add_last_error(void);
  */
 /*
  * Re-derives the explain.json beside an already-written build.cbs
- * (ADR-0305). For a system restore: a PBS recipe's identity is
+ * (ADR-0305). For a system restore: a CBS recipe's identity is
  * derived state, deliberately absent from a backup, and re-deriving
  * also proves the restored document is readable by the cbs this host
  * actually has. PKG_ERR_INVALID_RECIPE if it is not.

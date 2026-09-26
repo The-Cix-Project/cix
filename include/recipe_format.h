@@ -2,10 +2,10 @@
 #define CIX_RECIPE_FORMAT_H
 
 /*
- * What makes a recipe a PBS recipe (ADR-0305): its filename.
+ * What makes a recipe a CBS recipe (ADR-0305): its filename.
  *
  * `<name>/<version>/build.sh` is a shell recipe and
- * `<name>/<version>/build.cbs` a PBS recipe in CPDL 0.1. Nothing sniffs
+ * `<name>/<version>/build.cbs` a CBS recipe in CPDL 0.1. Nothing sniffs
  * content and no recipe declares its own language, because a filename
  * cannot disagree with what will actually run.
  *
@@ -31,9 +31,9 @@
  * refuses any recipe path that does not end in it, in `build` as well
  * as `explain`.
  */
-#define PKG_RECIPE_PBS_SUFFIX ".cbs"
+#define PKG_RECIPE_CBS_SUFFIX ".cbs"
 #define PKG_RECIPE_SHELL_SUFFIX ".sh"
-#define PKG_RECIPE_PBS_FILE "build" PKG_RECIPE_PBS_SUFFIX
+#define PKG_RECIPE_CBS_FILE "build" PKG_RECIPE_CBS_SUFFIX
 #define PKG_RECIPE_SHELL_FILE "build" PKG_RECIPE_SHELL_SUFFIX
 
 #endif /* CIX_RECIPE_FORMAT_H */

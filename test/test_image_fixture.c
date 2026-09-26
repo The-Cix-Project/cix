@@ -836,7 +836,7 @@ static int recipe_artifact_sha(const char *name, const char *version, char *out,
 	int found = 0;
 
 	/*
-	 * ADR-0305: a recipe is a shell one or a PBS one, and which is
+	 * ADR-0305: a recipe is a shell one or a CBS one, and which is
 	 * decided by the extension. Both are tried because the corpus
 	 * holds a mix and a package converts on its own schedule -- a
 	 * fixture that only knew build.sh would start failing the day the
@@ -863,7 +863,7 @@ static int recipe_artifact_sha(const char *name, const char *version, char *out,
 			found = 1;
 			break;
 		}
-		/* PBS: "artifact_sha256" "<64 hex>" inside the metadata
+		/* CBS: "artifact_sha256" "<64 hex>" inside the metadata
 		 * block, so indented rather than at the line start. */
 		p = strstr(line, "\"artifact_sha256\"");
 		if (p != NULL) {

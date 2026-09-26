@@ -218,7 +218,7 @@ static int publish_recipe(const struct cix_client *c, const char *name, const ch
 	jw_key(&w, "content");
 	jw_str(&w, content);
 	jw_key(&w, "format");
-	jw_str(&w, "pbs");
+	jw_str(&w, "cbs");
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 

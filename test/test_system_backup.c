@@ -294,7 +294,7 @@ int main(void)
 		jw_key(&rw, "content");
 		jw_str(&rw, recipe_body);
 		jw_key(&rw, "format");
-		jw_str(&rw, "pbs");
+		jw_str(&rw, "cbs");
 		jw_obj_close(&rw);
 		rw.buf[rw.len] = '\0';
 
