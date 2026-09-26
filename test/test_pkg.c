@@ -776,8 +776,13 @@ static int write_multisrc_recipe(const struct cix_client *c, const char *name,
 	         "        mkdir \"${dest}/usr/share\" chmod 0755\n"
 	         "        mkdir \"${dest}/usr/share/multisrc\" chmod 0755\n"
 	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s\"\n"
-	         "        copy \"${src}/extra1/extra1.txt\" to "
-	         "\"${dest}/usr/share/multisrc/extra1.txt\"\n",
+	         /* materialize, not copy: an `extra` source is NOT placed
+	          * under ${src} -- only `main` is. Measured by
+	          * probe-plainsrc@1-1 on 192.168.15.95, 2026-09-26, whose
+	          * ${src} held the main source and nothing else. The copy
+	          * this replaces failed naming its DESTINATION, which had
+	          * just been created; the bogus path was the source. */
+	         "        materialize $source.extra1 to \"${dest}/usr/share/multisrc/extra1.txt\"\n",
 	         name, srcdir, name);
 
 	return publish_cpdl_recipe(c, name, version, tarball_path, tarball_sha256, extra_sources,
