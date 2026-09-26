@@ -717,7 +717,7 @@ static const struct {
 	 */
 	{ "bash", "5.2.37-6" }, { "coreutils", "9.11-8" }, { "tcc", "0.9.28rc-31" },
 	{ "glibc", TEST_FLOOR_GLIBC_VERSION }, { "linux-headers", "6.18.40-10" },
-	{ "zlib", "1.3.2-14" }, { "flex", "2.6.4-6" }, { "binutils", "2.42-14" },
+	{ "zlib", "1.3.2-15" }, { "flex", "2.6.4-6" }, { "binutils", "2.42-14" },
 	/*
 	 * cbs and its runtime closure. cbs declares libarchive and zstd;
 	 * libarchive declares zlib, xz and zstd, and zlib is already here.
@@ -736,7 +736,7 @@ static const struct {
 	 * next run answers that instead of leaving it assumed.
 	 */
 	{ "cbs", "v0.1.63-2" }, { "libarchive", "3.8.1-5" }, { "zstd", "1.5.7-5" },
-	{ "xz", "5.8.3-10" },
+	{ "xz", "5.8.3-11" },
 };
 
 /*
