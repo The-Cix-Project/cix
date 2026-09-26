@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### ADR-0309 clause 3: the light two thirds are done, and the sweep was also the first verification (#516)
+
+**82 shell-installed entries across 53 packages → 12 across 9**, on 192.168.15.95, measured before and after by joining `--json pkg ls` against `--json pkg recipes`. 63 upgrades run strictly serially, plus 8 probe packages removed outright.
+
+**Nearly all of it was a download, not a build.** Most upgrades completed in 0–8 seconds from the local artifact cache; `btrfs-progs` at 70 seconds was the only real source build among the ones that succeeded. That was the open question when the batch started and the reason it ran one at a time rather than being priced up front.
+
+**The sweep doubled as the first real test of those CPDL recipes.** The corpus conversion published them; nothing had built them. 62 of 63 installed at the version asked for. The one that did not is a structural blocker rather than a recipe bug:
+
+> `/build/recipe.cbs:14:1: error[CPDL-E4001]: runtime: manifest: usr/libexec/ssh-keysign has mode 4711; CIXPKG refuses setuid and setgid`
+
+`openssh@10.4p1-12` compiles, links and installs correctly and is then refused by the package format. The shell revision shipped a `.tar.gz`, which carries a setuid bit; a CPDL recipe must produce a `.cixpkg` (ADR-0307), and CIXPKG rejects setuid by design — the same shape as its hard-link refusal (cbs#182), which CLAUDE.md already classes as a contract to build to rather than a workaround to route around. `ssh-keysign` is setuid root solely so a client can sign with the host key for **host-based authentication**. So the real question is whether Cix's openssh supports host-based auth at all, and that is a product decision, not a packaging one: dropping the binary is honest, and `chmod`-ing the setuid bit off would leave a binary that exists and silently cannot do its one job. Left blocked and stated, per the rule that says so is a finished outcome.
+
+**`cix-builder` was verified after the fact, not assumed.** Twelve of its packages changed — curl, diffutils, gawk, grep, gzip, make, ncurses, patch, sed, util-linux, xz, zlib — so `probe-cpdlpaths@1-1` was re-run against the rebuilt image and composed a build container and executed every step of its recipe, failing only at its own deliberate `run "false"`.
+
+**What remains is the 9 the cost rule reserves**: glibc (×3 images), gcc (×2), kernel, binutils, cmake, elfutils, python, plus `openssh` above and the stale `cix @ base v2.57.167` entry, which is a base-image artefact rather than a hostbuild and is a different operation.
+
 ### Every test fixture that can be CPDL now is (#516)
 
 `test_pkg` is green at v2.57.338 with **SELFTEST: PASS across 95 tests**, and `test_pkg`, `test_pkg_cache` and `test_kmod_build` — the three ADR-0209 floor tests that gate every release — all pass. Nothing in the test suite hands cixd a shell recipe to *build* any more.
