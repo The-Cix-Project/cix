@@ -12657,6 +12657,50 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	if (!is_final) {
 		enum pkg_error perr;
 
+		/*
+		 * #531: the unpack flag belongs to the PACKAGE, not to the
+		 * chain slot, and it was only ever cleared when a slot was
+		 * handed out.
+		 *
+		 * The invariant is already written where it is cleared: "a
+		 * slot that came back round would otherwise report the
+		 * previous job's unpack as this one's, and skip the
+		 * extraction this job needs." That is exactly right and it
+		 * was applied one level too coarsely -- the next DEPENDENCY
+		 * in a chain is a different package needing its own
+		 * extraction, just as surely as the next job is.
+		 *
+		 * Left set, pkg_prepare_build_and_start()'s re-entry guard
+		 * takes its "already unpacked" branch for every dependency
+		 * after the first: no reset_build_container_dir(), no
+		 * dest_dir, and no unpack. Each one then merges whatever the
+		 * PREVIOUS package left in the shared container's dest, and
+		 * installs cleanly with the wrong contents.
+		 *
+		 * Measured on 192.168.15.95, 2026-09-26, installing binutils
+		 * into a fresh image: binutils declares zlib and flex at
+		 * runtime, so the chain is zlib, m4, flex, binutils. ONE
+		 * unpack was logged (zlib's), all four reported installed in
+		 * the same second, and all four recorded zlib's seven files.
+		 * The image really did receive only zlib, which is why every
+		 * later build in it failed finalize with "this package
+		 * produced ELF output but the build image has no strip" --
+		 * binutils was installed, and binutils was not there.
+		 *
+		 * Why it stayed latent is worth recording, because it is
+		 * not rarity: 163 of the corpus's 473 CPDL recipes declare
+		 * runtime dependencies. It is that resolve_chain() returns
+		 * early for anything already installed ("already
+		 * satisfied"), so a queue longer than ONE entry only forms
+		 * when the dependencies are genuinely absent -- a fresh
+		 * image, or a dependency a recipe has only just declared.
+		 * Every install into an established image has a
+		 * single-entry queue, never reaches this advance, and is
+		 * correct. That is also why the reproduction needs a new
+		 * image and cannot be seen on a working one.
+		 */
+		g_chains[chain_idx].unpacked = 0;
+
 		g_chains[chain_idx].dep_queue_pos++;
 		perr = start_fetch_for(g_chains[chain_idx].dep_queue[g_chains[chain_idx].dep_queue_pos],
 		                        chain_idx, out_pid, out_pidfd);

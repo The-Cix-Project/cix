@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A chained install unpacked only its first package, and the rest silently inherited its files (#531)
+
+`g_chains[].unpacked` is a per-**package** fact stored on a per-**chain** struct, and it was cleared in only one place: `chain_alloc()`, when a slot is handed out. The next *dependency* in a chain never cleared it. So `pkg_prepare_build_and_start()` took its "already unpacked" re-entry branch for every entry after the first — no `reset_build_container_dir()`, no fresh `dest_dir`, no extraction — and each package merged whatever the previous one had left in the shared build container's dest, then installed cleanly.
+
+**Measured on 192.168.15.95, 2026-09-26.** `pkg install binutils --version=2.42-15` into a brand-new image: binutils declares `zlib` and `flex` as runtime dependencies, so the chain resolved to zlib, m4, flex, binutils. One unpack was logged — zlib's. All four reported `installed` within the same second, and all four recorded zlib's identical seven-file list. The image had received zlib and nothing else. Installing the same `binutils@2.42-15` into `cix-builder`, where no chain forms, records 161 files including `usr/bin/strip`.
+
+That is the whole of the "binutils installed 7 file(s)" mystery cix#529 spent cycles on. Three release-gating tests had been failing with *"this package produced ELF output but the build image has no strip"* — binutils was installed, and binutils was not there. Both readings of that 7 called for opposite fixes, and the file **names** (`test_floor` now prints them for any list under twelve) separated them instantly where the count could not.
+
+**Why it survived this long is not rarity.** 163 of the corpus's 473 CPDL recipes declare runtime dependencies. It is that `resolve_chain()` returns early for anything already installed, so a queue longer than one entry only forms when the dependencies are genuinely **absent** — a fresh image, or a dependency a recipe has only just declared. Every install into an established image has a single-entry queue and never reaches the advance at all. It is also why the reproduction needs a new image, and why no amount of re-running it on a working one would have shown anything.
+
+The fix is one line — clear the flag when the chain advances — and it makes every entry in a chain behave exactly the way the first entry always did.
+
 ### The shell build path is gone (#516, ADR-0309 clause 3)
 
 `PKG_BUILD_CMD` and both its call sites are removed. cixd can no longer build a `build.sh`; it refuses, naming the version and what to install instead.
