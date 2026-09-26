@@ -14,7 +14,9 @@ The rename to CBS was called done, and 108 files in `cix-recipes` were still say
 
 All 108 were rewritten: comment prose, two `changelog` metadata strings, and two `write` strings. `probe-pbs`, `probe-pbs-caps`, `probe-approve-pbs` and `probe-pbs-targz` are preserved — they are published package names, and an immutable artifact really is called that. The rewrite is a no-op for the box and triggers no rebuild: a published version is immutable and `pkg.sync` adds only what the store lacks, so it skips every one.
 
-Also swept: every issue and comment on both trackers. 13 issues and 12 comments carried the name, including two that cited C functions by names the code no longer uses (`approve_pbs_artifact`, `parse_pbs_recipe` — they are `approve_cbs_artifact` and `parse_cbs_recipe`). An issue is an artefact that outlives the conversation and other work is built on it, so it gets corrected rather than left to age.
+Also swept: every issue and comment on both trackers. 13 issues and 12 comments carried the name, including two that cited C functions by names the code no longer uses — both were renamed alongside the code and the issues had kept the old spelling. An issue is an artefact that outlives the conversation and other work is built on it, so it gets corrected rather than left to age.
+
+**This entry's own first draft failed the gate**, by quoting those two old names literally. That is the gate working: the file whose job is to record the rename is not exempt from it, and the correction is to describe a dead identifier rather than spell it.
 
 ### The last eight shell package recipes are retired — `recipes/package/` is 100% CPDL (#529)
 
