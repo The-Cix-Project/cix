@@ -1581,3 +1581,43 @@ const char *test_http_src(const char *abs_path)
 	return out;
 }
 
+
+/*
+ * A shell recipe written into the recipe store rather than published.
+ * See test_image_fixture.h for why that distinction is the point.
+ *
+ * Each level is created separately because the daemon may not have
+ * made them yet -- a test that seeds before its first install finds
+ * <pkg_state_dir> itself absent -- and mkdir() creates one level at a
+ * time. EEXIST is the ordinary case for the outer two and is not an
+ * error; the fopen() is what actually reports a bad path.
+ */
+int test_seed_shell_recipe(const char *pkg_state_dir, const char *name, const char *version,
+                           const char *content)
+{
+	char dir[PATH_MAX];
+	char path[PATH_MAX];
+	FILE *f;
+
+	if (snprintf(dir, sizeof(dir), "%s/recipes", pkg_state_dir) >= (int)sizeof(dir))
+		return -1;
+	mkdir(pkg_state_dir, 0755);
+	mkdir(dir, 0755);
+	if (snprintf(dir, sizeof(dir), "%s/recipes/%s", pkg_state_dir, name) >= (int)sizeof(dir))
+		return -1;
+	mkdir(dir, 0755);
+	if (snprintf(dir, sizeof(dir), "%s/recipes/%s/%s", pkg_state_dir, name, version) >=
+	    (int)sizeof(dir))
+		return -1;
+	mkdir(dir, 0755);
+	if (snprintf(path, sizeof(path), "%s/build.sh", dir) >= (int)sizeof(path))
+		return -1;
+	f = fopen(path, "w");
+	if (f == NULL)
+		return -1;
+	if (fputs(content, f) == EOF) {
+		fclose(f);
+		return -1;
+	}
+	return fclose(f) == 0 ? 0 : -1;
+}

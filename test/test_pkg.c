@@ -413,18 +413,37 @@ static int write_recipe(const struct cix_client *c, const char *name, const char
  * (CPDL-E4004, 192.168.15.95, 2026-09-25). stage_fixture_tarball()
  * names a tarball after the directory it wraps, so the path says it.
  */
-static int publish_cpdl_recipe(const struct cix_client *c, const char *name, const char *version,
-                                const char *tarball_path, const char *sha256,
-                                const char *extra_sources, const char *tools,
-                                const char *runtime, const char *build_body,
-                                const char *install_body)
-{
-	struct json_writer w;
-	struct cix_response r;
-	char content[4096];
-	int ok;
+/*
+ * The build tools nearly every fixture here declares: the compiler,
+ * and the four packages a `tcc -o hello hello.c` plus a copy actually
+ * needs in a composed build container. `bash` is not optional and is
+ * not a dependency of what the phase invokes -- without it the build
+ * container's PID 1 cannot start the phase at all and the failure
+ * presents as a timeout (cbs#224).
+ */
+#define CPDL_STD_TOOLS                                                                             \
+	"            compiler \"tcc\"\n"                                                               \
+	"            tool \"linux-headers\"\n"                                                         \
+	"            tool \"bash\"\n"                                                                  \
+	"            tool \"coreutils\"\n"                                                             \
+	"            tool \"binutils\"\n"
 
-	snprintf(content, sizeof(content),
+/*
+ * The CPDL text alone, without publishing it.
+ *
+ * Split out of publish_cpdl_recipe() for the recipe-API block, which
+ * is the one caller that needs the document rather than the effect:
+ * it posts the same content under a deliberately wrong name, posts it
+ * again under the right one, and later compares `GET
+ * /v1/pkg/recipes/{name}`'s `content` field against it byte for byte.
+ * A helper that only ever published could not express any of those.
+ */
+static void cpdl_recipe_text(char *out, size_t out_size, const char *name, const char *version,
+                              const char *tarball_path, const char *sha256,
+                              const char *extra_sources, const char *tools, const char *runtime,
+                              const char *build_body, const char *install_body)
+{
+	snprintf(out, out_size,
 	         "package \"%s\" {\n"
 	         "    version \"%s\"\n"
 	         "    release 1\n"
@@ -456,6 +475,21 @@ static int publish_cpdl_recipe(const struct cix_client *c, const char *name, con
 	         name, version, name, test_http_src(tarball_path), sha256,
 	         extra_sources != NULL ? extra_sources : "", tools,
 	         runtime != NULL ? runtime : "", build_body, install_body);
+}
+
+static int publish_cpdl_recipe(const struct cix_client *c, const char *name, const char *version,
+                                const char *tarball_path, const char *sha256,
+                                const char *extra_sources, const char *tools,
+                                const char *runtime, const char *build_body,
+                                const char *install_body)
+{
+	struct json_writer w;
+	struct cix_response r;
+	char content[4096];
+	int ok;
+
+	cpdl_recipe_text(content, sizeof(content), name, version, tarball_path, sha256, extra_sources,
+	                 tools, runtime, build_body, install_body);
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -3163,8 +3197,10 @@ int main(void)
 	 * DELETE must remove it and make a subsequent install fail again. */
 	{
 		char api_tarball[512], api_sha[128];
-		char body[2048];
-		char body2[2048];
+		char api_srcdir[160];
+		char api_build[512], api_install[768];
+		char body[4096];
+		char body2[4096];
 		struct json_writer w;
 
 		if (stage_fixture_tarball(scratch_dir, "apirecipe", "1.0", api_tarball,
@@ -3173,21 +3209,30 @@ int main(void)
 			ok = 0;
 			goto skip_recipe_api;
 		}
-		snprintf(body, sizeof(body),
-		         "pkg_name=apirecipe\npkg_version=1.0\npkg_source=%s\n"
-		         "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
-		         "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
-		         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
-		         "\"$PKG_DESTDIR/usr/bin/apirecipe\"\n}\n",
-		         test_http_src(api_tarball), api_sha);
+		fixture_srcdir(api_tarball, api_srcdir, sizeof(api_srcdir));
+		snprintf(api_build, sizeof(api_build),
+		         "        cd \"${src}/apirecipe/%s\" {\n"
+		         "            run \"tcc\" {\n"
+		         "                \"-o\" \"hello\" \"hello.c\"\n"
+		         "            }\n"
+		         "        }\n",
+		         api_srcdir);
+		snprintf(api_install, sizeof(api_install),
+		         "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
+		         "        copy \"${src}/apirecipe/%s/hello\" to \"${dest}/usr/bin/apirecipe\"\n",
+		         api_srcdir);
+		cpdl_recipe_text(body, sizeof(body), "apirecipe", "1.0", api_tarball, api_sha, NULL,
+		                 CPDL_STD_TOOLS, NULL, api_build, api_install);
 
-		/* name/pkg_name= mismatch -> 400, nothing written */
+		/* name/declared-name mismatch -> 400, nothing written */
 		jw_init(&w);
 		jw_obj_open(&w);
 		jw_key(&w, "name");
 		jw_str(&w, "wrongname");
 		jw_key(&w, "content");
 		jw_str(&w, body);
+		jw_key(&w, "format");
+		jw_str(&w, "pbs");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		memset(&r, 0, sizeof(r));
@@ -3207,76 +3252,101 @@ int main(void)
 		 * the first to build can ever publish -- the second rebuilds
 		 * from source forever and can never be approved.
 		 *
-		 * Both orders, because the check has to hold whichever is
-		 * published first, and a 409 that is NOT the immutability
-		 * 409: this version is not published, and saying it is sends
-		 * the author looking for a recipe that does not exist.
+		 * A 409 that is NOT the immutability 409: this version is not
+		 * published, and saying it is sends the author looking for a
+		 * recipe that does not exist.
+		 *
+		 * THE COLLIDING PAIR IS NECESSARILY MIXED-LANGUAGE NOW, and
+		 * that is not a weaker test than the two shell recipes this
+		 * used to publish -- it is the only form of the collision
+		 * that is still reachable. A CPDL version always carries a
+		 * release, so the release-less `9.9.9` half simply cannot be
+		 * written in CPDL; and under ADR-0309 clause 4 a new shell
+		 * revision cannot be published at all. What remains, and what
+		 * a real host will actually hit, is a NEW CPDL revision
+		 * landing on the artifact name an OLD shell revision already
+		 * owns -- 65 of 181 installed versions here are still shell,
+		 * so there is a large supply of old halves.
+		 *
+		 * Hence: seed the shell side into the store the way it got
+		 * there historically, then publish the CPDL side and require
+		 * the refusal. Both spellings of the seeded version are
+		 * covered, because `collide0-9.9.9-1` is the artifact name
+		 * whether the recipe said `9.9.9` or `9.9.9-1`, and that
+		 * equivalence is the whole bug.
 		 */
 		{
 			char coll[2048];
 			char coll_name[32];
 			int i;
-			static const char *const pairs[][2] = {
-				{ "9.9.9", "9.9.9-1" },
-				{ "8.8.8-1", "8.8.8" },
-			};
+			/* what the stored shell recipe says its version is; the
+			 * CPDL recipe published against it is always the bare
+			 * form, which release 1 makes equal to the `-1` form. */
+			static const char *const seeded[] = { "9.9.9-1", "8.8.8" };
+			static const char *const publish_as[] = { "9.9.9", "8.8.8" };
 
 			for (i = 0; i < 2; i++) {
-				int first_status = 0, second_status = 0;
-				int k;
+				snprintf(coll_name, sizeof(coll_name), "collide%d", i);
+				snprintf(coll, sizeof(coll),
+				         "pkg_name=%s\npkg_version=%s\n"
+				         "pkg_source=%s\npkg_sha256=%s\n"
+				         "pkg_depends=\"\"\npkg_build_depends=\"\"\n"
+				         "pkg_build() { :; }\n"
+				         "pkg_install() { mkdir -p \"$PKG_DESTDIR/usr/bin\"; "
+				         ": > \"$PKG_DESTDIR/usr/bin/collide\"; }\n",
+				         coll_name, seeded[i], test_http_src(api_tarball), api_sha);
+				if (test_seed_shell_recipe(g_pkg_state_dir, coll_name, seeded[i], coll) != 0) {
+					fprintf(stderr, "FAIL: #494 could not seed %s@%s\n", coll_name, seeded[i]);
+					ok = 0;
+					continue;
+				}
 
-				for (k = 0; k < 2; k++) {
-					snprintf(coll, sizeof(coll),
-					         "pkg_name=collide%d\npkg_version=%s\n"
-					         "pkg_source=%s\npkg_sha256=%s\n"
-					         "pkg_depends=\"\"\npkg_build_depends=\"\"\n"
-					         "pkg_build() { :; }\n"
-					         "pkg_install() { mkdir -p \"$PKG_DESTDIR/usr/bin\"; "
-					         ": > \"$PKG_DESTDIR/usr/bin/collide\"; }\n",
-					         i, pairs[i][k], api_tarball, api_sha);
-					jw_init(&w);
-					jw_obj_open(&w);
-					jw_key(&w, "name");
-					snprintf(coll_name, sizeof(coll_name), "collide%d", i);
-					jw_str(&w, coll_name);
-					jw_key(&w, "content");
-					jw_str(&w, coll);
-					jw_obj_close(&w);
-					w.buf[w.len] = '\0';
-					memset(&r, 0, sizeof(r));
-					if (cix_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0) {
-						fprintf(stderr, "FAIL: #494 publish request failed\n");
-						ok = 0;
-					}
-					if (k == 0)
-						first_status = r.status;
-					else
-						second_status = r.status;
-					cix_response_free(&r);
-					jw_free(&w);
-				}
-				if (first_status != 204) {
-					fprintf(stderr, "FAIL: #494 first publish (%s) status=%d, want 204\n",
-					        pairs[i][0], first_status);
+				cpdl_recipe_text(coll, sizeof(coll), coll_name, publish_as[i], api_tarball, api_sha,
+				                 NULL, CPDL_STD_TOOLS, NULL, "        run \"true\" {\n        }\n",
+				                 "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
+				                 "        write \"${dest}/usr/bin/collide\" \"\"\"x\"\"\"\n");
+				jw_init(&w);
+				jw_obj_open(&w);
+				jw_key(&w, "name");
+				jw_str(&w, coll_name);
+				jw_key(&w, "content");
+				jw_str(&w, coll);
+				jw_key(&w, "format");
+				jw_str(&w, "pbs");
+				jw_obj_close(&w);
+				w.buf[w.len] = '\0';
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0) {
+					fprintf(stderr, "FAIL: #494 publish request failed\n");
 					ok = 0;
-				}
-				if (second_status != 409) {
+				} else if (r.status != 409) {
 					fprintf(stderr,
-					        "FAIL: #494 publishing %s after %s status=%d, want 409 -- both "
-					        "publish under the same artifact name\n",
-					        pairs[i][1], pairs[i][0], second_status);
+					        "FAIL: #494 publishing %s@%s over a stored shell %s status=%d, want "
+					        "409 -- both resolve to the artifact name %s-9.9.9-1's shape\n",
+					        coll_name, publish_as[i], seeded[i], r.status, coll_name);
 					ok = 0;
 				}
+				cix_response_free(&r);
+				jw_free(&w);
 			}
 		}
 
-		/* outright malformed content (no pkg_source=) -> 400 */
+		/*
+		 * Outright malformed content -> 400. A CPDL document with a
+		 * package block and nothing else: no sources, no build, no
+		 * install. `cbs explain` rejects it, which is the parser this
+		 * format names, and the point of the case is that the publish
+		 * validates with that parser rather than storing first and
+		 * discovering the problem at build time.
+		 */
 		jw_init(&w);
 		jw_obj_open(&w);
 		jw_key(&w, "name");
 		jw_str(&w, "malformed");
 		jw_key(&w, "content");
-		jw_str(&w, "pkg_name=malformed\npkg_version=1.0\n");
+		jw_str(&w, "package \"malformed\" {\n    version \"1.0\"\n");
+		jw_key(&w, "format");
+		jw_str(&w, "pbs");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		memset(&r, 0, sizeof(r));
@@ -3295,6 +3365,8 @@ int main(void)
 		jw_str(&w, "apirecipe");
 		jw_key(&w, "content");
 		jw_str(&w, body);
+		jw_key(&w, "format");
+		jw_str(&w, "pbs");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		memset(&r, 0, sizeof(r));
@@ -3331,21 +3403,18 @@ int main(void)
 		/* ADR-0107: publish a second, distinct version of the same
 		 * name -- immutable-per-version, not an upsert, so this must
 		 * NOT reject the first version (a genuinely different
-		 * pkg_version=) and both versions must coexist afterward. */
+		 * version) and both versions must coexist afterward. */
 		{
-			snprintf(body2, sizeof(body2),
-			         "pkg_name=apirecipe\npkg_version=2.0\npkg_source=%s\n"
-			         "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
-			         "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
-			         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
-			         "\"$PKG_DESTDIR/usr/bin/apirecipe\"\n}\n",
-			         test_http_src(api_tarball), api_sha);
+			cpdl_recipe_text(body2, sizeof(body2), "apirecipe", "2.0", api_tarball, api_sha, NULL,
+			                 CPDL_STD_TOOLS, NULL, api_build, api_install);
 			jw_init(&w);
 			jw_obj_open(&w);
 			jw_key(&w, "name");
 			jw_str(&w, "apirecipe");
 			jw_key(&w, "content");
 			jw_str(&w, body2);
+			jw_key(&w, "format");
+			jw_str(&w, "pbs");
 			jw_obj_close(&w);
 			w.buf[w.len] = '\0';
 			memset(&r, 0, sizeof(r));
@@ -3376,9 +3445,9 @@ int main(void)
 
 				if (!str_eq(json_str_field(item, "name"), "apirecipe"))
 					continue;
-				if (str_eq(json_str_field(item, "version"), "1.0"))
+				if (str_eq(json_str_field(item, "version"), "1.0-1"))
 					found_v1 = 1;
-				else if (str_eq(json_str_field(item, "version"), "2.0"))
+				else if (str_eq(json_str_field(item, "version"), "2.0-1"))
 					found_v2 = 1;
 			}
 			if (!found_v1 || !found_v2) {
@@ -3400,7 +3469,7 @@ int main(void)
 			fprintf(stderr, "FAIL: GET recipe content, status=%d\n", r.status);
 			ok = 0;
 		} else if (!str_eq(json_str_field(r.json, "name"), "apirecipe") ||
-		           !str_eq(json_str_field(r.json, "version"), "2.0") ||
+		           !str_eq(json_str_field(r.json, "version"), "2.0-1") ||
 		           !str_eq(json_str_field(r.json, "content"), body2)) {
 			fprintf(stderr, "FAIL: GET recipe content mismatch after upsert\n");
 			ok = 0;

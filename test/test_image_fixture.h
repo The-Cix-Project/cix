@@ -379,6 +379,27 @@ int test_http_server_stop(pid_t pid);
 /* The floor packages a test installs explicitly, NULL-terminated (test_image_fixture.c). */
 extern const char *const test_floor_install[];
 
+/*
+ * Write a shell recipe straight into a daemon's recipe store, at
+ * <pkg_state_dir>/recipes/<name>/<version>/build.sh, creating the
+ * directories it needs. `pkg_state_dir` is the daemon's
+ * <data-dir>/rebuildable/pkg.
+ *
+ * Deliberately not a publish. Under ADR-0309 clause 4 the publish
+ * endpoint refuses a shell revision it does not already hold, so a
+ * test that needs a PUBLISHED shell recipe to exist -- to re-offer it,
+ * to approve its artifact, to collide with it -- is describing the
+ * state of a real host, where such recipes were published long before
+ * the refusal existed. Seeding reproduces that state; publishing would
+ * be asking for the one thing the platform no longer does.
+ *
+ * Shared rather than copied because two tests need it and they are
+ * separate binaries: test_pkg (#494's artifact-name collision) and
+ * test_pkg_recipe_approval (every case in it is a republish).
+ */
+int test_seed_shell_recipe(const char *pkg_state_dir, const char *name, const char *version,
+                           const char *content);
+
 #define TEST_SETTLE_ATTEMPTS 200
 #define TEST_SETTLE_INTERVAL_US (100 * 1000)
 

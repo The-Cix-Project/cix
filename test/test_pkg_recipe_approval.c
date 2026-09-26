@@ -152,10 +152,29 @@ int main(void)
 		return 1;
 	}
 
-	/* 1. First publication, with no approval -- the ordinary case. */
-	if (post_recipe(&client, recipe_text("", ""), &status) != 0 || status != 204) {
-		fprintf(stderr, "FAIL: first publish, status=%d\n", status);
-		ok = 0;
+	/*
+	 * 1. The recipe exists, published before ADR-0309 clause 4 -- which
+	 * is the only way a shell recipe can exist now, so it is seeded
+	 * into the store rather than posted.
+	 *
+	 * This is not a weakening of the test, because the publish
+	 * endpoint was never this test's subject: everything below is a
+	 * REPUBLISH of a version already on disk, which is exactly what
+	 * recipe_adds_only_artifact_sha256() governs and exactly what
+	 * clause 4's refusal is positioned after. A host running this code
+	 * has a store full of shell recipes published long ago and no way
+	 * to add another; seeding reproduces that, and posting would have
+	 * been asking the platform for the one thing it no longer does.
+	 */
+	{
+		char pkg_state_dir[PATH_MAX];
+
+		snprintf(pkg_state_dir, sizeof(pkg_state_dir), "%s/rebuildable/pkg", g_data_dir);
+		if (test_seed_shell_recipe(pkg_state_dir, "approvaltest", "1.0-1",
+		                           recipe_text("", "")) != 0) {
+			fprintf(stderr, "FAIL: could not seed the approvaltest recipe\n");
+			ok = 0;
+		}
 	}
 
 	/* 2. Republishing it unchanged is still refused. The relaxation is
