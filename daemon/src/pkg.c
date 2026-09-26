@@ -2721,6 +2721,38 @@ static int write_finalize_script(const char *upperdir)
 }
 
 /*
+ * The one build command, used by both the ordinary build path and the
+ * hostbuild path. It was written out twice, identically, which is the
+ * same duplication ADR-0251 is about: two copies of a rule is two
+ * chances for them to diverge.
+ *
+ * `set -e`, and semicolons rather than `&&`, both deliberately.
+ *
+ * Without set -e a command that fails partway through pkg_build() or
+ * pkg_install() does not fail the package: the function keeps going and
+ * returns the status of whatever ran last. libcap 2.78-3 shipped that
+ * way -- `make install` died with Error 2, the `rm -rf` after it
+ * succeeded, and the package was recorded as installed with four of its
+ * binaries missing. A package that quietly contains less than it should
+ * is worse than one that fails, because nothing downstream can tell.
+ *
+ * The separators matter as much as the flag. POSIX suspends set -e for
+ * any command that is part of an && list except the last, and that
+ * suspension applies inside a function called from there too -- so
+ * `pkg_build && pkg_install` would leave every failure inside
+ * pkg_build() ignored, which is precisely the case that needs catching.
+ *
+ * finalize.sh runs last, as a program taking the staged tree as its
+ * argument (ADR-0307 clause 2), so a non-zero exit fails the build
+ * under the same set -e. It was sourced until then; one policy file
+ * has to serve both recipe languages, and the PBS side can only reach
+ * it through CBS's own execlp() of a command with one argument.
+ */
+#define PKG_BUILD_CMD \
+	"set -e; . /build/recipe.sh; cd /build/src; pkg_build; pkg_install; " \
+	"/build/finalize.sh \"$PKG_DESTDIR\""
+
+/*
  * A PBS recipe's build (ADR-0305).
  *
  * `cbs build --staged W` treats W as a WORKSPACE, not as the staged
@@ -9601,41 +9633,9 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		         g_chains[chain_idx].hostbuild_extra_config_symbols[0] != '\0'
 		                 ? " --input " PKG_CBS_KMOD_EXTRA_INPUT
 		                 : "");
-	else {
-		/*
-		 * ADR-0309 clause 3: the shell BUILD path is gone. There is no
-		 * command to run a `build.sh` with any more, so a shell recipe
-		 * is refused here rather than executed.
-		 *
-		 * Shell recipe PARSING deliberately stays -- these two are not
-		 * the same retirement. `parse_recipe()` still reads every
-		 * `build.sh` in the store, because nine of them are live in the
-		 * corpus purely as artifact approvals the ADR-0209 test floor
-		 * reads (`recipe_artifact_sha()`), and because every shell
-		 * revision ever published is immutable history that must still
-		 * resolve. What cannot happen is building one.
-		 *
-		 * Reached only by an explicit install of a version whose recipe
-		 * is shell; every image manifest pins or tracks a CPDL revision,
-		 * so nothing arrives here by itself.
-		 *
-		 * THE POSITION IS LOAD-BEARING, exactly as ADR-0309 clause 4's
-		 * is. It sits in the `else` of the cache-hit arm, so a shell
-		 * package whose artifact is already in the cache still
-		 * INSTALLS -- that path never needed a build command (it gets
-		 * `:`), and breaking it would strand every host that has a
-		 * cached shell artifact and no reason to rebuild. Only an
-		 * actual BUILD is refused.
-		 */
-		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
-		         "%s@%s is a shell recipe, and the shell build path was removed with "
-		         "ADR-0309 clause 3 -- install a CPDL revision instead",
-		         e->name, recipe.version);
-		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
-		return 0;
-	}
+	else
+		/* See PKG_BUILD_CMD for why this is shaped the way it is. */
+		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), "%s", PKG_BUILD_CMD);
 	/*
 	 * /usr/bin/bash, not /bin/sh -- caught empirically (ADR-0056) the
 	 * first time a hostbuild job's own build_image was one of this
@@ -10314,11 +10314,7 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 		                 ? " --input " PKG_CBS_KMOD_EXTRA_INPUT
 		                 : "");
 	else
-		/* ADR-0309 clause 3: no shell build path to resume into. The
-		 * install path refuses the same case with a pkg_fail(); here
-		 * the caller gets an error code, because a resume has no entry
-		 * to fail into that it did not already find failed. */
-		return PKG_ERR_INVALID_RECIPE;
+		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), "%s", PKG_BUILD_CMD);
 	e->build_argv[0] = "/usr/bin/bash";
 	e->build_argv[1] = "-c";
 	e->build_argv[2] = e->build_argv_cmd;
