@@ -316,6 +316,40 @@ static int publish_hello_recipe(const struct cix_client *c, const char *name, co
 	return publish_cpdl_recipe(c, name, version, source_url, sha256, build_body, install_body);
 }
 
+/*
+ * The daemon that knows WHY a fixture build failed is this test's own,
+ * and its log store lives under the mkdtemp data directory the test
+ * deletes on exit -- so a failure here has historically been a bare
+ * "exited (status 3) after 0s" with the reason already destroyed.
+ *
+ * That cost a full release cycle on 2026-09-26 (cix#529): the floor
+ * artifacts moved to .cixpkg, a fixture build started failing at 0s,
+ * and nothing in the release log said more than the exit status.
+ * test_kmod_build and test_console_exec already fetch their daemon's
+ * log for exactly this reason; this one did not.
+ */
+static void print_daemon_log(const struct cix_client *c)
+{
+	struct cix_response r;
+	size_t i;
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "GET", "/v1/system/logs?source=cixd&tail=40", NULL, &r) != 0 ||
+	    r.status != 200 || r.json == NULL || r.json->type != JSON_ARRAY) {
+		fprintf(stderr, "    (daemon log unavailable: GET /v1/system/logs status=%d)\n",
+		        r.status);
+		cix_response_free(&r);
+		return;
+	}
+	for (i = 0; i < r.json->u.array.count; i++) {
+		const char *msg = json_as_string(json_object_get(r.json->u.array.items[i], "msg"));
+
+		if (msg != NULL)
+			fprintf(stderr, "    dlog: %.300s\n", msg);
+	}
+	cix_response_free(&r);
+}
+
 static int write_recipe(const char *pkg_state_dir, const char *name, const char *version,
                          const char *source_url, const char *source_sha256,
                          const char *artifact_sha256)
@@ -501,8 +535,16 @@ int main(void)
 	              r.status == 202,
 	      "POST /v1/pkg/install cachetest@imgA (real build)");
 	cix_response_free(&r);
-	CHECK(wait_for_pkg_state(&client, "cachetest", "imgA", "installed", 300) == 0,
-	      "cachetest@imgA reaches state=installed");
+	{
+		/* The first build in this file. If it fails, every later
+		 * assertion fails with it and none of them says why, so the
+		 * daemon's own log is printed here and nowhere else. */
+		int built = wait_for_pkg_state(&client, "cachetest", "imgA", "installed", 300) == 0;
+
+		CHECK(built, "cachetest@imgA reaches state=installed");
+		if (!built)
+			print_daemon_log(&client);
+	}
 
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 200,
