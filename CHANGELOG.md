@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The ADR-0209 test floor is now all `.cixpkg` (#529)
+
+Every artifact the floor seeds from is a CBS artifact: bash 5.2.37-6, coreutils 9.11-8, tcc 0.9.28rc-31, linux-headers 6.18.40-10, zlib 1.3.2-15, flex 2.6.4-6, binutils 2.42-15, xz 5.8.3-11 — plus **m4 1.4.20-6**, which is new to the list because `flex@2.6.4-6` declares it as a runtime dependency where the shell `flex@2.6.4-2` declared none, and binutils cannot resolve without it.
+
+**It was bumped, reverted, bumped and reverted again before this, and none of those were the floor's fault.** The floor's binutils entry kept reporting seven files, three release-gating tests kept failing with *"this package produced ELF output but the build image has no strip"*, and each round produced a new theory about the artifact. The cause was [#531](#a-chained-install-unpacked-only-its-first-package-and-the-rest-silently-inherited-its-files-531), a daemon defect: a chained install unpacked only its first package, so binutils' entry held zlib's files and the build image genuinely had no `strip`. binutils was installed, and binutils was not there.
+
+What turned that from a sixth guess into a finding was one diagnostic — `test_floor` printing the file **names** for any list under twelve, rather than only the count. `usr/include/zlib.h` under a package called binutils answers in one line a question five rounds of counting could not.
+
+Before re-applying, all thirteen declared artifacts were re-checked against the cache by name **and** sha256; every one present and byte-identical. The pinned `cix-recipes` corpus commit is unchanged, since it already carries every recipe the list names. Verified by the v2.57.356 hostbuild: `SELFTEST: PASS` with `test_kmod_build`, `test_pkg` and `test_pkg_cache` all green on the `.cixpkg` floor.
+
 ### A chained install unpacked only its first package, and the rest silently inherited its files (#531)
 
 `g_chains[].unpacked` is a per-**package** fact stored on a per-**chain** struct, and it was cleared in only one place: `chain_alloc()`, when a slot is handed out. The next *dependency* in a chain never cleared it. So `pkg_prepare_build_and_start()` took its "already unpacked" re-entry branch for every entry after the first — no `reset_build_container_dir()`, no fresh `dest_dir`, no extraction — and each package merged whatever the previous one had left in the shared build container's dest, then installed cleanly.
