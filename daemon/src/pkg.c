@@ -15409,26 +15409,87 @@ const char *pkg_artifact_arch(void)
  * report it rather than guess a format, because guessing is the bug
  * this exists to fix.
  */
+/*
+ * The version/release split THE CACHE performs on an artifact name:
+ * a trailing `-<digits>` is the release, and a name without one is
+ * release 1 (pkg.h's PKG_ERR_ARTIFACT_NAME_TAKEN note records this,
+ * measured -- `wget@1.25.0` and `wget@1.25.0-1` resolve to the same
+ * stored artifact).
+ *
+ * Used only when no recipe is readable. It is deliberately the same
+ * rule the reader applies, which is what makes it safe here and not
+ * a guess: whatever this produces, the cache will independently
+ * derive from the filename, so the metadata written INTO the
+ * artifact and the name it is stored under agree by construction.
+ * That is exactly the property a made-up split would not have, and
+ * why the recipe is still preferred when there is one -- it is
+ * authoritative for the cases the convention gets wrong
+ * (`v2.2.0-rc1` has a trailing `1` that is not a release, and both
+ * this and the cache read it as release 1 with the version intact,
+ * which is consistent even where it is not what CPDL declared).
+ */
+static void split_version_by_cache_convention(const char *fused, char *out_version,
+                                               size_t out_version_size, long long *out_release)
+{
+	const char *dash = strrchr(fused, '-');
+	const char *p;
+
+	snprintf(out_version, out_version_size, "%s", fused);
+	*out_release = 1;
+	if (dash == NULL || dash[1] == '\0')
+		return;
+	for (p = dash + 1; *p != '\0'; p++)
+		if (*p < '0' || *p > '9')
+			return; /* not all digits -- not a release */
+	*out_release = atoll(dash + 1);
+	if ((size_t)(dash - fused) < out_version_size)
+		out_version[dash - fused] = '\0';
+}
+
 enum pkg_error pkg_hostbuild_package_info(const char *name, const char *version, char *out_format,
                                            size_t out_format_size, char *out_bare_version,
                                            size_t out_bare_version_size, long long *out_release)
 {
 	struct pkg_recipe recipe;
 	char recipe_path[PATH_MAX];
+	char bare[PKG_VERSION_MAX];
+	long long release = 1;
+	const char *format = PKG_ARTIFACT_FORMAT_CIXPKG;
 
 	if (name == NULL || version == NULL)
 		return PKG_ERR_NOT_FOUND;
-	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0)
-		return PKG_ERR_NOT_FOUND;
+
 	memset(&recipe, 0, sizeof(recipe));
-	if (parse_recipe(recipe_path, &recipe) != 0)
-		return PKG_ERR_INVALID_RECIPE;
+	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) == 0 &&
+	    parse_recipe(recipe_path, &recipe) == 0) {
+		format = recipe.artifact_format;
+		snprintf(bare, sizeof(bare), "%s", recipe.bare_version);
+		release = recipe.release;
+	} else {
+		/*
+		 * A hostbuild whose recipe is no longer in the store. Real,
+		 * not hypothetical: 610 cix recipes were removed on
+		 * 2026-09-26 (ADR-0313) while their packages stayed
+		 * installed, and a test fixture can seed an installed entry
+		 * with no recipe at all.
+		 *
+		 * The format defaults to CIXPKG and never to tar.gz. An
+		 * unknown format is not a reason to emit the one format the
+		 * One Build System Mandate says must not exist -- that is
+		 * precisely the silent default this issue is about
+		 * (cix#528). The split then follows the cache's own
+		 * convention so the artifact's metadata matches the name it
+		 * will be stored under.
+		 */
+		split_version_by_cache_convention(version, bare, sizeof(bare), &release);
+	}
+
 	if (out_format != NULL)
-		snprintf(out_format, out_format_size, "%s", recipe.artifact_format);
+		snprintf(out_format, out_format_size, "%s", format);
 	if (out_bare_version != NULL)
-		snprintf(out_bare_version, out_bare_version_size, "%s", recipe.bare_version);
+		snprintf(out_bare_version, out_bare_version_size, "%s", bare);
 	if (out_release != NULL)
-		*out_release = recipe.release;
+		*out_release = release;
 	return PKG_OK;
 }
 

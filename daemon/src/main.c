@@ -9405,14 +9405,7 @@ static void publish_hostbuild_artifact(const char *name)
 	{
 		char format[PKG_ARTIFACT_FORMAT_MAX];
 
-		if (pkg_hostbuild_package_info(name, version, format, sizeof(format), NULL, 0, NULL) !=
-		    PKG_OK) {
-			logstore_write("cixd", "warning",
-			                "artifact publish: %s@%s has no readable recipe, so its artifact "
-			                "format is unknown and it will not be published",
-			                name, version);
-			return;
-		}
+		(void)pkg_hostbuild_package_info(name, version, format, sizeof(format), NULL, 0, NULL);
 		pkg_artifact_cache_path_for(name, version, format, dest, sizeof(dest));
 	}
 	snprintf(g_artifact_export_publish_name, sizeof(g_artifact_export_publish_name), "%s", name);
@@ -9651,16 +9644,10 @@ static int artifact_export_start(enum artifact_export_kind kind, const char *nam
 	 * a subsystem nobody has looked at.
 	 */
 	pkg_format[0] = '\0';
-	if (kind == ARTIFACT_EXPORT_KIND_HOSTBUILD) {
-		if (pkg_hostbuild_package_info(name, version, pkg_format, sizeof(pkg_format),
-		                                pkg_bare_version, sizeof(pkg_bare_version),
-		                                &pkg_release) != PKG_OK) {
-			snprintf(err_msg, err_msg_size,
-			         "no readable recipe for %s@%s, so its artifact format is unknown", name,
-			         version);
-			return -1;
-		}
-	}
+	if (kind == ARTIFACT_EXPORT_KIND_HOSTBUILD)
+		(void)pkg_hostbuild_package_info(name, version, pkg_format, sizeof(pkg_format),
+		                                  pkg_bare_version, sizeof(pkg_bare_version),
+		                                  &pkg_release);
 
 	if (dest_override != NULL)
 		snprintf(g_artifact_export_path, sizeof(g_artifact_export_path), "%s", dest_override);
