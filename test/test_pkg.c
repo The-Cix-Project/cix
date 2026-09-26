@@ -4548,7 +4548,18 @@ skip_pin_isolation:
 			struct stat hb_st;
 			int hb_i;
 
-			snprintf(hb_tarball, sizeof(hb_tarball), "%s/cache/hbtest-1.0.tar.gz",
+			/* 1.0-1, not 1.0: hbtest's recipe is CPDL now, and a
+			 * CPDL version always carries its release. The suffix
+			 * does NOT move with it -- a hostbuild's artifact is a
+			 * directory this host assembled, and
+			 * publish_hostbuild_artifact() names it through
+			 * pkg_artifact_cache_path() ->
+			 * cache_artifact_path_existing(), whose fallback when
+			 * nothing exists yet is PKG_ARTIFACT_FORMAT_TARGZ. The
+			 * recipe's declared format never reaches that call, so
+			 * this stays .tar.gz even though the recipe builds a
+			 * .cixpkg. */
+			snprintf(hb_tarball, sizeof(hb_tarball), "%s/cache/hbtest-1.0-1.tar.gz",
 			         g_pkg_state_dir);
 			for (hb_i = 0; hb_i < 200; hb_i++) {
 				if (stat(hb_tarball, &hb_st) == 0 && hb_st.st_size > 0)
@@ -5433,12 +5444,19 @@ skip_keep_on_failure:
 		/* the marker really is there -- proof the container's own
 		 * overlay genuinely has real build state, not just an empty
 		 * preserved shell. */
-		/* /build/.resumed_marker, matching where the recipe's
-		 * `${build}` actually is -- the shell form wrote it under
-		 * /build/src, and CPDL's own source root is elsewhere, so
-		 * this path moved with the recipe. */
+		/* /build/cbsws/build/.resumed_marker -- where the recipe's
+		 * `${build}` actually is. The shell form wrote it under
+		 * /build/src; cixd stages cbs's workspace at /build/cbsws
+		 * (PKG_CBS_WORKSPACE) and cbs puts ${build}, ${src} and
+		 * ${dest} beneath it, so this path moved with the recipe.
+		 * MEASURED on 192.168.15.95, 2026-09-26, by
+		 * recipes/package/probe-cpdlpaths@1, which echoes all three:
+		 * build=/build/cbsws/build, src=/build/cbsws/src,
+		 * dest=/build/cbsws/dest. It was guessed as /build twice
+		 * before that, and 404'd twice. */
 		snprintf(rs_container_path, sizeof(rs_container_path),
-		         "/v1/containers/%s/files?path=%%2Fbuild%%2F.resumed_marker", kept_name);
+		         "/v1/containers/%s/files?path=%%2Fbuild%%2Fcbsws%%2Fbuild%%2F.resumed_marker",
+		         kept_name);
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "GET", rs_container_path, NULL, &r) != 0 ||
 		    r.status != 200) {
@@ -5495,8 +5513,10 @@ skip_keep_on_failure:
 			const char *ver = json_str_field(r.json, "version");
 			const struct json_value *jkbc = json_object_get(r.json, "kept_build_container");
 
-			if (ver == NULL || strcmp(ver, "1.1") != 0) {
-				fprintf(stderr, "FAIL: resumeme (resumed) version='%s', expected 1.1\n",
+			/* 1.1-1, not 1.1: a CPDL version always carries its
+			 * release, and publish_cpdl_recipe() emits release 1. */
+			if (ver == NULL || strcmp(ver, "1.1-1") != 0) {
+				fprintf(stderr, "FAIL: resumeme (resumed) version='%s', expected 1.1-1\n",
 				        ver != NULL ? ver : "(null)");
 				ok = 0;
 			}
