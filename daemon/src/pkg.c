@@ -949,6 +949,21 @@ static int chain_alloc(void)
 			 * slot that came back round would otherwise report the
 			 * previous job's unpack as this one's, and skip the
 			 * extraction this job needs.
+			 *
+			 * NOT THE ONLY CLEAR, and reading it as one cost #531:
+			 * unpacked is per-PACKAGE, and a chain installs several
+			 * in the same slot, so pkg_build_completed() clears it
+			 * again on every chain advance. The sentence above is
+			 * true of a reused slot and was quietly assumed to be
+			 * the whole lifecycle; it is half of it.
+			 *
+			 * The other three fields here do not need that, and the
+			 * distinction is the thing to carry away: fetch_pid and
+			 * fetch_resolved_version/_depends are all set by
+			 * start_fetch_for(), which every chain advance calls, so
+			 * they refresh per package on their own. Only a field
+			 * set by a COMPLETION and cleared on handout has this
+			 * shape. If a future field does, clear it in both places.
 			 */
 			g_chains[i].unpacked = 0;
 			/*
