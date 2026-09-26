@@ -155,10 +155,23 @@ int main(void)
 		return 1;
 	}
 
-	/* --- an INCOMPLETE PUT --- */
+	/*
+	 * --- an INCOMPLETE PUT ---
+	 *
+	 * EXACTLY 400, not merely "not 201". The first draft of this
+	 * check was `status != 201`, which a test that never reached the
+	 * server also satisfies: put_raw() returns -1 on a failed
+	 * connect, and -1 != 201. Both assertions in this case would then
+	 * have passed for the worst possible reason -- nothing happened.
+	 *
+	 * That is the exact shape this project's "reintroduce the bug and
+	 * watch the test catch it" rule exists to expose, and it is
+	 * cheaper to make the assertion unable to pass vacuously than to
+	 * demonstrate once that it does not.
+	 */
 	status = put_raw(port, "thing.tar.gz", "SHORT", 5, 100000);
-	check(status != 201,
-	      "incomplete PUT is not reported as 201 Created");
+	check(status == 400,
+	      "incomplete PUT is refused with 400, not reported as created");
 	got = slurp(target, &got_len);
 	check(got != NULL && got_len == strlen(original) && strcmp(got, original) == 0,
 	      "incomplete PUT left the existing file untouched");
