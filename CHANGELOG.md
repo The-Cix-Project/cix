@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The naming gate now scans the recipe corpus, because the first sweep stopped at this repository's edge (#516)
+
+The rename to CBS was called done, and 108 files in `cix-recipes` were still saying the old name. The reason is worth more than the count: ADR-0308 had moved the recipes into their own repository, and `test_naming` scans the tree it lives in. A gate whose scope is "the tree" silently stops being a gate the moment part of the system leaves that tree.
+
+`test_naming` now also scans the corpus, resolved the same way every other test resolves it — `CIX_RECIPES_DIR`, defaulting to `../cix-recipes/recipes`. When the corpus is absent it says so and skips rather than failing: a clean checkout of this repository alone does not have it, and a build container has neither egress nor the host's filesystem, so failing on absence would fail every release for something that is not a naming regression. The skip prints a line; it does not pass quietly.
+
+All 108 were rewritten: comment prose, two `changelog` metadata strings, and two `write` strings. `probe-pbs`, `probe-pbs-caps`, `probe-approve-pbs` and `probe-pbs-targz` are preserved — they are published package names, and an immutable artifact really is called that. The rewrite is a no-op for the box and triggers no rebuild: a published version is immutable and `pkg.sync` adds only what the store lacks, so it skips every one.
+
+Also swept: every issue and comment on both trackers. 13 issues and 12 comments carried the name, including two that cited C functions by names the code no longer uses (`approve_pbs_artifact`, `parse_pbs_recipe` — they are `approve_cbs_artifact` and `parse_cbs_recipe`). An issue is an artefact that outlives the conversation and other work is built on it, so it gets corrected rather than left to age.
+
 ### The last eight shell package recipes are retired — `recipes/package/` is 100% CPDL (#529)
 
 `bash@5.2.37-2`, `binutils@2.42-10`, `coreutils@9.11-3`, `flex@2.6.4-2`, `linux-headers@6.18.40-4`, `tcc@0.9.27-7`, `xz@5.8.3-8`, `zlib@1.3.2-11`. They existed for exactly one reason — they carried the `pkg_artifact_sha256` approvals for the `.tar.gz` artifacts the ADR-0209 floor seeded from — and the floor's move to `.cixpkg` above left nothing reading them. Checked rather than assumed: the only remaining mentions of those eight versions anywhere in this tree are prose inside comments.

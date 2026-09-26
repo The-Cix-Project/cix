@@ -36,6 +36,14 @@
  *     documents wrong.
  *
  * Anything else containing "pbs" in any case is a regression.
+ *
+ * SCOPE: this repository's C, headers, tests, docs, OpenAPI contract,
+ * changelog, ADRs and Makefile -- AND the recipe corpus in the
+ * cix-recipes repository when it is present beside this one. The
+ * corpus was added after the first sweep was called done and 108
+ * recipe files were still saying the name: a gate that scans "the
+ * tree" scans the tree it lives in, and ADR-0308 had moved the
+ * recipes out of it.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -115,16 +123,40 @@ static int line_has_stray(char *line)
 	return find_ci(line, "pbs") != NULL;
 }
 
+/*
+ * Scan one popen'd `grep -Hni pbs` stream, printing and counting every
+ * line that still says the name once the allowed spellings are blanked.
+ * Shared by the repository scan and the recipe-corpus scan below, which
+ * differ only in which files they feed it.
+ */
+static int scan_stream(const char *cmd, int *strays)
+{
+	char line[8192];
+	FILE *p = popen(cmd, "r");
+
+	if (p == NULL)
+		return -1;
+	while (fgets(line, sizeof(line), p) != NULL) {
+		char copy[8192];
+
+		snprintf(copy, sizeof(copy), "%s", line);
+		if (line_has_stray(copy)) {
+			/* Print the ORIGINAL, not the blanked copy. */
+			fputs(line, stdout);
+			(*strays)++;
+		}
+	}
+	pclose(p);
+	return 0;
+}
+
 int main(void)
 {
 	char cmd[2048];
-	char line[8192];
 	int strays = 0;
 	int i;
 
 	for (i = 0; i < NGLOBS; i++) {
-		FILE *p;
-
 		/*
 		 * TWO FILES ARE SKIPPED, and both for the same reason: they
 		 * are the ones whose job is to STATE the rule, so they have
@@ -148,22 +180,55 @@ int main(void)
 		         "[ \"$f\" = CLAUDE.md ] && continue; "
 		         "grep -Hni pbs \"$f\" 2>/dev/null; done",
 		         g_globs[i]);
-		p = popen(cmd, "r");
-		if (p == NULL) {
+		if (scan_stream(cmd, &strays) != 0) {
 			printf("NAMING RESULT: FAIL (cannot scan %s)\n", g_globs[i]);
 			return 1;
 		}
-		while (fgets(line, sizeof(line), p) != NULL) {
-			char copy[8192];
+	}
 
-			snprintf(copy, sizeof(copy), "%s", line);
-			if (line_has_stray(copy)) {
-				/* Print the ORIGINAL, not the blanked copy. */
-				fputs(line, stdout);
-				strays++;
+	/*
+	 * THE RECIPE CORPUS TOO, because the first sweep stopped at this
+	 * repository's edge and 108 recipe files were still saying the
+	 * name a full session after the rename was called done. The
+	 * recipes are their own repository (ADR-0308), which is exactly
+	 * what made them invisible: a gate that scans "the tree" scans the
+	 * tree it lives in.
+	 *
+	 * Scanned when the corpus is THERE and skipped, loudly, when it is
+	 * not. That is not a loophole, it is the only correct behaviour:
+	 * a clean checkout of this repository alone does not have it (see
+	 * CLAUDE.md, "Where the recipes are"), and a build container has
+	 * neither egress nor the host's filesystem, so failing on absence
+	 * would fail every release for a reason that is not a naming
+	 * regression. The skip line says so rather than passing quietly.
+	 *
+	 * The path rule mirrors test_recipes_root() -- CIX_RECIPES_DIR,
+	 * defaulting to ../cix-recipes/recipes -- deliberately expressed
+	 * here in the shell rather than by linking test_image_fixture.c,
+	 * which is compiled into cixd and would drag the entire daemon
+	 * into a two-hundred-line naming linter. One env var with one
+	 * default is the whole rule; if it ever grows past that, this is
+	 * the second place to change.
+	 */
+	{
+		const char *env = getenv("CIX_RECIPES_DIR");
+		const char *root = (env != NULL && env[0] != '\0') ? env : "../cix-recipes/recipes";
+
+		if (access(root, R_OK) != 0) {
+			printf("naming: recipe corpus not present at %s -- NOT scanned "
+			       "(set CIX_RECIPES_DIR, or clone cix-recipes beside this "
+			       "repository, to gate it)\n",
+			       root);
+		} else {
+			snprintf(cmd, sizeof(cmd),
+			         "find %s -type f \\( -name '*.cbs' -o -name '*.sh' -o "
+			         "-name '*.json' \\) -exec grep -Hni pbs {} + 2>/dev/null",
+			         root);
+			if (scan_stream(cmd, &strays) != 0) {
+				printf("NAMING RESULT: FAIL (cannot scan %s)\n", root);
+				return 1;
 			}
 		}
-		pclose(p);
 	}
 
 	if (strays != 0) {
