@@ -1591,9 +1591,6 @@ int main(void)
 	 * the first, fix the second. The kind is a field now.
 	 */
 	{
-		char path[PATH_MAX];
-		FILE *f;
-
 		/* Unreachable by construction: 192.0.2.0/24 is TEST-NET-1,
 		 * reserved for documentation and routed nowhere. The URL is
 		 * the fixture, so this one names its own source rather than
@@ -1663,99 +1660,6 @@ int main(void)
 				        "FAIL: #101 a recipe whose build step failed reported stage '%s', expected "
 				        "build\n",
 				        kind != NULL ? kind : "(null)");
-				ok = 0;
-			}
-		}
-		cix_response_free(&r);
-
-		/*
-		 * Issue #302: a build that exits 0 while the shell reported
-		 * a missing command must be REFUSED, not installed.
-		 *
-		 * This is the silent half of the class and the reason the
-		 * check exists at all. gettext's environment was missing
-		 * find, cmp and xargs; none of the three changed an exit
-		 * status, and libtool quietly produced a static archive
-		 * without the convenience-archive objects while configure
-		 * quietly answered two feature probes from a tool that was
-		 * not there.
-		 *
-		 * The recipe below reproduces exactly that shape: a real
-		 * command that genuinely is not there, followed by a
-		 * successful exit. Deliberately a real missing command
-		 * rather than an echo of the phrase -- an echo would prove
-		 * the scanner reads text, not that it catches the thing
-		 * that actually happens.
-		 *
-		 * THIS FIXTURE STAYS SHELL AND RETIRES WITH THE SHELL BUILD
-		 * PATH RATHER THAN CONVERTING (cix#516). The hazard it
-		 * guards is shell-specific by construction: `|| true` is what
-		 * lets a missing command reach exit 0, and CPDL has no
-		 * interpreter to write it in -- a `run` naming an executable
-		 * that is not there fails the phase immediately, which is the
-		 * opposite of the shape under test. Rewriting it as an `echo`
-		 * of the phrase is exactly what the paragraph above rules
-		 * out.
-		 *
-		 * So when the shell path goes, this case goes with it, and
-		 * that is the correct outcome rather than a gap: the scanner
-		 * exists because shell can hide a missing command, and
-		 * nothing in CPDL can. It is a DELETION dependent of ADR-0309
-		 * clause 3, not a conversion one.
-		 */
-		snprintf(path, sizeof(path), "%s/recipes/silenttool", g_pkg_state_dir);
-		mkdir(path, 0755);
-		snprintf(path, sizeof(path), "%s/recipes/silenttool/1.0", g_pkg_state_dir);
-		mkdir(path, 0755);
-		snprintf(path, sizeof(path), "%s/recipes/silenttool/1.0/build.sh", g_pkg_state_dir);
-		f = fopen(path, "w");
-		if (f != NULL) {
-			fprintf(f, "pkg_name=silenttool\npkg_version=1.0\n");
-			fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
-			fprintf(f, "pkg_sha256=%s\npkg_depends=\"\"\n"
-			           "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n",
-			        sha256);
-			fprintf(f, "pkg_build() {\n"
-			           "\tcix_no_such_tool_302 || true\n"
-			           "\ttrue\n"
-			           "}\n\n"
-			           "pkg_install() {\n\ttrue\n}\n");
-			fclose(f);
-		}
-
-		memset(&r, 0, sizeof(r));
-		cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"silenttool\"}", &r);
-		cix_response_free(&r);
-		if (poll_pkg_state(&client, "silenttool", state, sizeof(state), 90) != 0 ||
-		    strcmp(state, "failed") != 0) {
-			fprintf(stderr,
-			        "FAIL: #302 a build that exited 0 with a missing command ended in state "
-			        "'%s', expected failed\n",
-			        state);
-			ok = 0;
-		}
-		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "GET", "/v1/pkg/silenttool", NULL, &r) != 0 ||
-		    r.status != 200) {
-			fprintf(stderr, "FAIL: #302 GET silenttool, status=%d\n", r.status);
-			ok = 0;
-		} else {
-			const char *kind = json_str_field(r.json, "stage");
-			const char *err = json_str_field(r.json, "error");
-
-			if (kind == NULL || strcmp(kind, "build") != 0) {
-				fprintf(stderr, "FAIL: #302 missing-tool failure reported stage '%s', "
-				                "expected build\n",
-				        kind != NULL ? kind : "(null)");
-				ok = 0;
-			}
-			/* The message must NAME the tool. A failure that says
-			 * only "build failed" puts the reader back where
-			 * gettext's eight revisions started. */
-			if (err == NULL || strstr(err, "cix_no_such_tool_302") == NULL) {
-				fprintf(stderr,
-				        "FAIL: #302 the failure does not name the missing tool: '%s'\n",
-				        err != NULL ? err : "(null)");
 				ok = 0;
 			}
 		}
