@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cmake's own gate rotted, and cost 44 minutes to find out (#530)
+
+`cmake@4.4.3-4` — the CPDL conversion — built cmake completely, bootstrap and all, and then failed on its own two-line test program: the gate's `main.c` called `printf` with no `#include <stdio.h>`. An implicit function declaration is an error in current gcc and was a warning when the fixture was written. `[build] FAILED (2651523 ms)`.
+
+**The include is added rather than the `printf` dropped.** The issue offered both, and only one is right: the gate *runs* the binary and requires its stdout to contain `cmake-gate-ok`, which is what proves the cmake just built produces a **working** binary and not merely a linked one. Dropping the `printf` would have quietly demoted an end-to-end gate to a compile check — a strictly worse test that still passes, which is the kind of change nobody notices.
+
+**The ordering improvement the issue also asked for is not expressible, and that is recorded rather than worked around.** Nothing about the fixture depends on the cmake being built, so checking it should cost milliseconds up front instead of 44 minutes at the end. But CPDL refuses a compiler as a run executable — `run "/usr/bin/gcc"` is `CPDL-E3006, "command interpreters are not valid run executables"`, absolute path or not — so a recipe cannot compile anything except through its declared `compiler` and the build system it drives. That is a deliberate CBS policy, so the recipe adapts to it and carries a comment saying why, rather than a ticket asking CBS to relax it.
+
+**What it buys:** cmake was installed from a *shell* recipe (`4.4.3-3`). `-5` is the CPDL conversion actually landing, which is one of the last shell-built packages gone.
+
+**The general point, which is the reason this was worth the cycle:** a gate's fixture is code and ages like code. This one was correct when written and was rotted by a change in gcc, not by anything in cmake — and it sat at the end of the most expensive build in the corpus.
+
 ### A hostbuild exports the format its recipe declares (#528)
 
 Every hostbuild published a `.tar.gz`, whatever its recipe said — the last source of tarballs in the system, and one that survived the entire recipe conversion: even with every recipe CPDL, `cix`, `kernel` and `isotools` still exported tarballs.
