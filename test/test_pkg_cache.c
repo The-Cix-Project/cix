@@ -310,7 +310,7 @@ static int publish_hello_recipe(const struct cix_client *c, const char *name, co
 	         "        }\n",
 	         name, name, version);
 	snprintf(install_body, sizeof(install_body),
-	         "        mkdir \"${dest}/usr/bin\" parents chmod 0755\n"
+	         "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
 	         "        copy \"${src}/%s/%s-%s/hello\" to \"${dest}/usr/bin/%s\"\n",
 	         name, name, version, name);
 	return publish_cpdl_recipe(c, name, version, source_url, sha256, build_body, install_body);
@@ -914,9 +914,17 @@ int main(void)
 				      "X-Cix-Sha256 matches the bytes that arrived");
 
 				/* And it must be a real archive, not a truncated
-				 * upload that merely hashed consistently. */
-				CHECK(run_cmd("gzip -t '%s' 2>/dev/null", pushed) == 0,
-				      "the received artifact is a valid gzip");
+				 * upload that merely hashed consistently.
+				 *
+				 * `cbs extract` rather than `gzip -t`: a PBS recipe
+				 * publishes a .cixpkg (ADR-0307), which is CBS's own
+				 * container and not a gzip stream. The tool that reads
+				 * the format is the only honest validity check for it,
+				 * and cixd itself verifies artifacts by forking this
+				 * same command (ADR-0305). */
+				CHECK(run_cmd("cbs extract '%s' --into '%s/pushcheck' >/dev/null 2>&1", pushed,
+				               scratch_dir) == 0,
+				      "the received artifact is a valid cixpkg");
 			}
 
 			/*
@@ -1034,8 +1042,9 @@ int main(void)
 					CHECK(access(hb_pushed, R_OK) == 0,
 					      "the hostbuild artifact actually arrived at the "
 					      "artifact server");
-					CHECK(run_cmd("gzip -t '%s' 2>/dev/null", hb_pushed) == 0,
-					      "the published hostbuild artifact is a valid gzip");
+					CHECK(run_cmd("cbs extract '%s' --into '%s/hbcheck' >/dev/null 2>&1",
+					               hb_pushed, scratch_dir) == 0,
+					      "the published hostbuild artifact is a valid cixpkg");
 				}
 			}
 
