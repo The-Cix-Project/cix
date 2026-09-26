@@ -439,7 +439,7 @@ static int write_recipe(const struct cix_client *c, const char *name, const char
  * A helper that only ever published could not express any of those.
  */
 static void cpdl_recipe_text(char *out, size_t out_size, const char *name, const char *version,
-                              const char *tarball_path, const char *sha256,
+                              const char *source_url, const char *sha256,
                               const char *extra_sources, const char *tools, const char *runtime,
                               const char *build_body, const char *install_body)
 {
@@ -472,24 +472,62 @@ static void cpdl_recipe_text(char *out, size_t out_size, const char *name, const
 	         "%s"
 	         "    }\n"
 	         "}\n",
-	         name, version, name, test_http_src(tarball_path), sha256,
+	         name, version, name, source_url, sha256,
 	         extra_sources != NULL ? extra_sources : "", tools,
 	         runtime != NULL ? runtime : "", build_body, install_body);
 }
 
-static int publish_cpdl_recipe(const struct cix_client *c, const char *name, const char *version,
-                                const char *tarball_path, const char *sha256,
-                                const char *extra_sources, const char *tools,
-                                const char *runtime, const char *build_body,
-                                const char *install_body)
+/*
+ * The same document, written into the recipe store instead of posted.
+ *
+ * Only for a fixture created BEFORE start_daemon(). A `.cbs` dropped
+ * in while the daemon is running has no derived identity and every
+ * install of it is refused 400 (ADR-0305) -- but one present at
+ * startup is picked up by the daemon's own sweep, which derives the
+ * identity exactly as a publish would. `test_pkg_concurrent_stress`
+ * has relied on that for a while; `chatty` is the only fixture in
+ * this file that needs it, because its whole purpose is to have
+ * produced build-log output before the first install runs.
+ *
+ * Anything created after the daemon is up goes through
+ * publish_cpdl_recipe() instead, and the difference is not stylistic.
+ */
+static int write_cpdl_recipe_file(const char *name, const char *version,
+                                   const char *tarball_path, const char *sha256,
+                                   const char *tools, const char *build_body,
+                                   const char *install_body)
+{
+	char dir[PATH_MAX];
+	char path[PATH_MAX];
+	char content[4096];
+	FILE *f;
+
+	cpdl_recipe_text(content, sizeof(content), name, version, test_http_src(tarball_path), sha256, NULL, tools,
+	                 NULL, build_body, install_body);
+	snprintf(dir, sizeof(dir), "%s/recipes/%s", g_pkg_state_dir, name);
+	mkdir(dir, 0755);
+	snprintf(dir, sizeof(dir), "%s/recipes/%s/%s", g_pkg_state_dir, name, version);
+	mkdir(dir, 0755);
+	snprintf(path, sizeof(path), "%s/build.cbs", dir);
+	f = fopen(path, "w");
+	if (f == NULL)
+		return -1;
+	if (fputs(content, f) == EOF) {
+		fclose(f);
+		return -1;
+	}
+	return fclose(f) == 0 ? 0 : -1;
+}
+
+/* POST one already-rendered CPDL document. The two publish helpers
+ * differ only in how they name the source, so the request itself is
+ * written once. */
+static int publish_cpdl_content(const struct cix_client *c, const char *name, const char *version,
+                                 const char *content)
 {
 	struct json_writer w;
 	struct cix_response r;
-	char content[4096];
 	int ok;
-
-	cpdl_recipe_text(content, sizeof(content), name, version, tarball_path, sha256, extra_sources,
-	                 tools, runtime, build_body, install_body);
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -510,6 +548,41 @@ static int publish_cpdl_recipe(const struct cix_client *c, const char *name, con
 	cix_response_free(&r);
 	jw_free(&w);
 	return ok ? 0 : -1;
+}
+
+static int publish_cpdl_recipe(const struct cix_client *c, const char *name, const char *version,
+                                const char *tarball_path, const char *sha256,
+                                const char *extra_sources, const char *tools,
+                                const char *runtime, const char *build_body,
+                                const char *install_body)
+{
+	char content[4096];
+
+	cpdl_recipe_text(content, sizeof(content), name, version, test_http_src(tarball_path), sha256,
+	                 extra_sources, tools, runtime, build_body, install_body);
+	return publish_cpdl_content(c, name, version, content);
+}
+
+/*
+ * Publish a recipe whose source is somewhere other than the fixture
+ * HTTP server.
+ *
+ * One fixture needs this and it is not an edge case: `unreachable`
+ * points at 192.0.2.1, TEST-NET-1, reserved for documentation and
+ * routed nowhere, because its whole subject is what a fetch failure
+ * reports. A helper that can only name a file the test is serving
+ * cannot express "a source that does not answer".
+ */
+static int publish_cpdl_recipe_url(const struct cix_client *c, const char *name,
+                                    const char *version, const char *source_url,
+                                    const char *sha256, const char *tools,
+                                    const char *build_body, const char *install_body)
+{
+	char content[4096];
+
+	cpdl_recipe_text(content, sizeof(content), name, version, source_url, sha256, NULL, tools,
+	                 NULL, build_body, install_body);
+	return publish_cpdl_content(c, name, version, content);
 }
 
 /* The wrapping directory inside a fixture tarball -- see
@@ -1061,28 +1134,41 @@ int main(void)
 	/* Issue #57: a recipe that actually PRINTS, so the persisted build
 	 * log has content to assert on -- greeter's own build is silent on
 	 * success, and "the file exists" would pass against a log that
-	 * never recorded a byte. Same layout write_recipe() uses
-	 * (recipes/<name>/<version>/build.sh), only the body differs. */
+	 * never recorded a byte.
+	 *
+	 * Written into the store rather than published, because it has to
+	 * exist before the daemon starts -- see write_cpdl_recipe_file()
+	 * for why that is the one case where dropping the file in is
+	 * correct rather than a mistake. */
 	{
-		char dir[300];
-		char path[400];
-		FILE *f;
+		char srcdir[160];
+		char build_body[640], install_body[512];
 
-		snprintf(dir, sizeof(dir), "%s/recipes/chatty", g_pkg_state_dir);
-		mkdir(dir, 0755);
-		snprintf(dir, sizeof(dir), "%s/recipes/chatty/1.0", g_pkg_state_dir);
-		mkdir(dir, 0755);
-		snprintf(path, sizeof(path), "%s/build.sh", dir);
-		f = fopen(path, "w");
-		if (f != NULL) {
-			fprintf(f, "pkg_name=chatty\npkg_version=1.0\n");
-			fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
-			fprintf(f, "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n", sha256);
-			fprintf(f, "pkg_build() {\n\techo BUILD_LOG_MARKER_ONE\n\ttcc -o hello hello.c\n"
-			           "\techo BUILD_LOG_MARKER_TWO\n}\n\n");
-			fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n"
-			           "\tcp hello \"$PKG_DESTDIR/usr/bin/chatty\"\n}\n");
-			fclose(f);
+		fixture_srcdir(tarball_path, srcdir, sizeof(srcdir));
+		/* The two markers bracket the compile, so an assertion that
+		 * finds both has proof the log captured the whole phase and
+		 * not just its first line. */
+		snprintf(build_body, sizeof(build_body),
+		         "        cd \"${src}/chatty/%s\" {\n"
+		         "            run \"echo\" {\n"
+		         "                \"BUILD_LOG_MARKER_ONE\"\n"
+		         "            }\n"
+		         "            run \"tcc\" {\n"
+		         "                \"-o\" \"hello\" \"hello.c\"\n"
+		         "            }\n"
+		         "            run \"echo\" {\n"
+		         "                \"BUILD_LOG_MARKER_TWO\"\n"
+		         "            }\n"
+		         "        }\n",
+		         srcdir);
+		snprintf(install_body, sizeof(install_body),
+		         "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
+		         "        copy \"${src}/chatty/%s/hello\" to \"${dest}/usr/bin/chatty\"\n",
+		         srcdir);
+		if (write_cpdl_recipe_file("chatty", "1.0", tarball_path, sha256, CPDL_STD_TOOLS,
+		                            build_body, install_body) != 0) {
+			fprintf(stderr, "FAIL: could not write the chatty recipe\n");
+			ok = 0;
 		}
 	}
 
@@ -1509,34 +1595,26 @@ int main(void)
 		FILE *f;
 
 		/* Unreachable by construction: 192.0.2.0/24 is TEST-NET-1,
-		 * reserved for documentation and routed nowhere. */
-		snprintf(path, sizeof(path), "%s/recipes/unreachable", g_pkg_state_dir);
-		mkdir(path, 0755);
-		snprintf(path, sizeof(path), "%s/recipes/unreachable/1.0", g_pkg_state_dir);
-		mkdir(path, 0755);
-		snprintf(path, sizeof(path), "%s/recipes/unreachable/1.0/build.sh", g_pkg_state_dir);
-		f = fopen(path, "w");
-		if (f != NULL) {
-			fprintf(f, "pkg_name=unreachable\npkg_version=1.0\n");
-			fprintf(f, "pkg_source=https://192.0.2.1/nothing.tar.gz\n");
-			fprintf(f, "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n", sha256);
-			fprintf(f, "pkg_build() {\n\ttrue\n}\n\npkg_install() {\n\ttrue\n}\n");
-			fclose(f);
+		 * reserved for documentation and routed nowhere. The URL is
+		 * the fixture, so this one names its own source rather than
+		 * pointing at the test's HTTP server. */
+		if (publish_cpdl_recipe_url(&client, "unreachable", "1.0",
+		                             "https://192.0.2.1/nothing.tar.gz", sha256, CPDL_STD_TOOLS,
+		                             "        run \"true\" {\n        }\n",
+		                             "        mkdir \"${dest}/usr/share\" chmod 0755\n") != 0) {
+			fprintf(stderr, "FAIL: could not publish the unreachable recipe\n");
+			ok = 0;
 		}
 
-		/* Builds fine, fails in its own build step. */
-		snprintf(path, sizeof(path), "%s/recipes/badbuild", g_pkg_state_dir);
-		mkdir(path, 0755);
-		snprintf(path, sizeof(path), "%s/recipes/badbuild/1.0", g_pkg_state_dir);
-		mkdir(path, 0755);
-		snprintf(path, sizeof(path), "%s/recipes/badbuild/1.0/build.sh", g_pkg_state_dir);
-		f = fopen(path, "w");
-		if (f != NULL) {
-			fprintf(f, "pkg_name=badbuild\npkg_version=1.0\n");
-			fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
-			fprintf(f, "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n", sha256);
-			fprintf(f, "pkg_build() {\n\texit 7\n}\n\npkg_install() {\n\ttrue\n}\n");
-			fclose(f);
+		/* Builds fine, fails in its own build step. `false` rather
+		 * than the shell form's `exit 7`: CPDL has no interpreter to
+		 * run (CPDL-E3006), and the assertion below is on the failing
+		 * STAGE, not on which nonzero code it was. */
+		if (publish_cpdl_recipe(&client, "badbuild", "1.0", tarball_path, sha256, NULL,
+		                         CPDL_STD_TOOLS, NULL, "        run \"false\" {\n        }\n",
+		                         "        mkdir \"${dest}/usr/share\" chmod 0755\n") != 0) {
+			fprintf(stderr, "FAIL: could not publish the badbuild recipe\n");
+			ok = 0;
 		}
 
 		memset(&r, 0, sizeof(r));
@@ -1582,7 +1660,7 @@ int main(void)
 
 			if (kind == NULL || strcmp(kind, "build") != 0) {
 				fprintf(stderr,
-				        "FAIL: #101 a recipe whose build exited 7 reported stage '%s', expected "
+				        "FAIL: #101 a recipe whose build step failed reported stage '%s', expected "
 				        "build\n",
 				        kind != NULL ? kind : "(null)");
 				ok = 0;
@@ -1608,6 +1686,22 @@ int main(void)
 		 * rather than an echo of the phrase -- an echo would prove
 		 * the scanner reads text, not that it catches the thing
 		 * that actually happens.
+		 *
+		 * THIS FIXTURE STAYS SHELL AND RETIRES WITH THE SHELL BUILD
+		 * PATH RATHER THAN CONVERTING (cix#516). The hazard it
+		 * guards is shell-specific by construction: `|| true` is what
+		 * lets a missing command reach exit 0, and CPDL has no
+		 * interpreter to write it in -- a `run` naming an executable
+		 * that is not there fails the phase immediately, which is the
+		 * opposite of the shape under test. Rewriting it as an `echo`
+		 * of the phrase is exactly what the paragraph above rules
+		 * out.
+		 *
+		 * So when the shell path goes, this case goes with it, and
+		 * that is the correct outcome rather than a gap: the scanner
+		 * exists because shell can hide a missing command, and
+		 * nothing in CPDL can. It is a DELETION dependent of ADR-0309
+		 * clause 3, not a conversion one.
 		 */
 		snprintf(path, sizeof(path), "%s/recipes/silenttool", g_pkg_state_dir);
 		mkdir(path, 0755);
@@ -3425,7 +3519,7 @@ int main(void)
 		         "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
 		         "        copy \"${src}/apirecipe/%s/hello\" to \"${dest}/usr/bin/apirecipe\"\n",
 		         api_srcdir);
-		cpdl_recipe_text(body, sizeof(body), "apirecipe", "1.0", api_tarball, api_sha, NULL,
+		cpdl_recipe_text(body, sizeof(body), "apirecipe", "1.0", test_http_src(api_tarball), api_sha, NULL,
 		                 CPDL_STD_TOOLS, NULL, api_build, api_install);
 
 		/* name/declared-name mismatch -> 400, nothing written */
@@ -3505,7 +3599,7 @@ int main(void)
 					continue;
 				}
 
-				cpdl_recipe_text(coll, sizeof(coll), coll_name, publish_as[i], api_tarball, api_sha,
+				cpdl_recipe_text(coll, sizeof(coll), coll_name, publish_as[i], test_http_src(api_tarball), api_sha,
 				                 NULL, CPDL_STD_TOOLS, NULL, "        run \"true\" {\n        }\n",
 				                 "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
 				                 "        write \"${dest}/usr/bin/collide\" \"x\\n\"\n");
@@ -3613,7 +3707,7 @@ int main(void)
 		 * NOT reject the first version (a genuinely different
 		 * version) and both versions must coexist afterward. */
 		{
-			cpdl_recipe_text(body2, sizeof(body2), "apirecipe", "2.0", api_tarball, api_sha, NULL,
+			cpdl_recipe_text(body2, sizeof(body2), "apirecipe", "2.0", test_http_src(api_tarball), api_sha, NULL,
 			                 CPDL_STD_TOOLS, NULL, api_build, api_install);
 			jw_init(&w);
 			jw_obj_open(&w);
@@ -4149,10 +4243,8 @@ skip_pin_isolation:
 	 * ordinary install.
 	 */
 	{
-		char hb_recipe_path[PATH_MAX];
 		char hb_artifact_file[PATH_MAX];
 		char hb_state[32];
-		FILE *f;
 		int i;
 		struct stat st;
 
@@ -4183,14 +4275,6 @@ skip_pin_isolation:
 			snprintf(hb_recipe_dir, sizeof(hb_recipe_dir), "%s/recipes/hbtest/1.0", g_pkg_state_dir);
 			mkdir(hb_recipe_dir, 0755);
 		}
-		snprintf(hb_recipe_path, sizeof(hb_recipe_path), "%s/recipes/hbtest/1.0/build.sh",
-		         g_pkg_state_dir);
-		f = fopen(hb_recipe_path, "w");
-		if (f == NULL) {
-			fprintf(stderr, "FAIL: could not write hbtest.recipe\n");
-			ok = 0;
-			goto skip_hostbuild;
-		}
 		/*
 		 * This build sleeps for the same reason slowhold's and
 		 * hbconcurrent's do -- see write_recipe(), which explains the
@@ -4220,12 +4304,30 @@ skip_pin_isolation:
 		 * coreutils is in this recipe's own declared build tools, so
 		 * `sleep` is genuinely present rather than assumed.
 		 */
-		fprintf(f, "pkg_name=hbtest\npkg_version=1.0\npkg_source=%s\n"
-		           "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
-		           "pkg_build() {\n\tsleep 5\n\ttcc -o hello hello.c\n}\n\n"
-		           "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n}\n",
-		        test_http_src(tarball_path), sha256);
-		fclose(f);
+		{
+			char hb_srcdir[160];
+			char hb_build[512], hb_install[512];
+
+			fixture_srcdir(tarball_path, hb_srcdir, sizeof(hb_srcdir));
+			snprintf(hb_build, sizeof(hb_build),
+			         "        cd \"${src}/hbtest/%s\" {\n"
+			         "            run \"sleep\" {\n"
+			         "                \"5\"\n"
+			         "            }\n"
+			         "            run \"tcc\" {\n"
+			         "                \"-o\" \"hello\" \"hello.c\"\n"
+			         "            }\n"
+			         "        }\n",
+			         hb_srcdir);
+			snprintf(hb_install, sizeof(hb_install),
+			         "        copy \"${src}/hbtest/%s/hello\" to \"${dest}/hello\"\n", hb_srcdir);
+			if (publish_cpdl_recipe(&client, "hbtest", "1.0", tarball_path, sha256, NULL,
+			                         CPDL_STD_TOOLS, NULL, hb_build, hb_install) != 0) {
+				fprintf(stderr, "FAIL: could not publish the hbtest recipe\n");
+				ok = 0;
+				goto skip_hostbuild;
+			}
+		}
 
 		/* start it -> 202, fetching */
 		/*
@@ -4592,28 +4694,25 @@ skip_pin_isolation:
 			 * the list grew by twelve at each step.
 			 */
 			{
-				char v11_dir[PATH_MAX];
-				char v11_path[PATH_MAX];
-				FILE *vf;
+				char v11_srcdir[160];
+				char v11_build[512], v11_install[512];
 				int started = 0;
 
-				snprintf(v11_dir, sizeof(v11_dir), "%s/recipes/hbtest/1.1",
-				         g_pkg_state_dir);
-				mkdir(v11_dir, 0755);
-				snprintf(v11_path, sizeof(v11_path), "%s/build.sh", v11_dir);
-				vf = fopen(v11_path, "w");
-				if (vf == NULL) {
-					fprintf(stderr, "FAIL: could not write hbtest 1.1 recipe\n");
+				fixture_srcdir(tarball_path, v11_srcdir, sizeof(v11_srcdir));
+				snprintf(v11_build, sizeof(v11_build),
+				         "        cd \"${src}/hbtest/%s\" {\n"
+				         "            run \"tcc\" {\n"
+				         "                \"-o\" \"hello\" \"hello.c\"\n"
+				         "            }\n"
+				         "        }\n",
+				         v11_srcdir);
+				snprintf(v11_install, sizeof(v11_install),
+				         "        copy \"${src}/hbtest/%s/hello\" to \"${dest}/hello\"\n",
+				         v11_srcdir);
+				if (publish_cpdl_recipe(&client, "hbtest", "1.1", tarball_path, sha256, NULL,
+				                         CPDL_STD_TOOLS, NULL, v11_build, v11_install) != 0) {
+					fprintf(stderr, "FAIL: could not publish the hbtest 1.1 recipe\n");
 					ok = 0;
-				} else {
-					fprintf(vf,
-					        "pkg_name=hbtest\npkg_version=1.1\npkg_source=%s\n"
-					        "pkg_sha256=%s\npkg_depends=\"\"\n"
-					        "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
-					        "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
-					        "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n}\n",
-					        test_http_src(tarball_path), sha256);
-					fclose(vf);
 				}
 
 				/* 409 can also mean an earlier job is still
@@ -4773,21 +4872,35 @@ skip_pin_isolation:
 			         g_pkg_state_dir);
 			mkdir(hb_recipe_dir, 0755);
 		}
-		snprintf(hb_recipe_path, sizeof(hb_recipe_path), "%s/recipes/hbdepstest/1.0/build.sh",
-		         g_pkg_state_dir);
-		f = fopen(hb_recipe_path, "w");
-		if (f == NULL) {
-			fprintf(stderr, "FAIL: could not write hbdepstest.recipe\n");
-			ok = 0;
-			goto skip_hostbuild;
+		{
+			char hd_srcdir[160];
+			char hd_build[512], hd_install[512];
+
+			fixture_srcdir(tarball_path, hd_srcdir, sizeof(hd_srcdir));
+			snprintf(hd_build, sizeof(hd_build),
+			         "        cd \"${src}/hbdepstest/%s\" {\n"
+			         "            run \"tcc\" {\n"
+			         "                \"-o\" \"hello\" \"hello.c\"\n"
+			         "            }\n"
+			         "        }\n",
+			         hd_srcdir);
+			snprintf(hd_install, sizeof(hd_install),
+			         "        copy \"${src}/hbdepstest/%s/hello\" to \"${dest}/hello\"\n",
+			         hd_srcdir);
+			/* The runtime dependency is this fixture's subject -- a
+			 * hostbuild whose recipe declares one must still be
+			 * accepted -- so it is declared, not dropped. */
+			if (publish_cpdl_recipe(&client, "hbdepstest", "1.0", tarball_path, sha256, NULL,
+			                         CPDL_STD_TOOLS,
+			                         "        runtime {\n"
+			                         "            package \"nosuchdep\"\n"
+			                         "        }\n",
+			                         hd_build, hd_install) != 0) {
+				fprintf(stderr, "FAIL: could not publish the hbdepstest recipe\n");
+				ok = 0;
+				goto skip_hostbuild;
+			}
 		}
-		fprintf(f, "pkg_name=hbdepstest\npkg_version=1.0\npkg_source=%s\n"
-		           "pkg_sha256=%s\npkg_depends=\"nosuchdep\"\n"
-		           "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
-		           "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
-		           "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n}\n",
-		        test_http_src(tarball_path), sha256);
-		fclose(f);
 
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
@@ -5041,34 +5154,20 @@ skip_hostbuild:
 	 * the same failure WITHOUT the flag must still tear down
 	 * immediately, exactly like every pre-existing caller's behavior. */
 	{
-		char kf_recipe_dir[PATH_MAX];
-		char kf_recipe_path[PATH_MAX];
 		char kept_name[64];
 		char kf_container_path[300];
-		FILE *f;
 
-		snprintf(kf_recipe_dir, sizeof(kf_recipe_dir), "%s/recipes/keepfail", g_pkg_state_dir);
-		mkdir(kf_recipe_dir, 0755);
-		snprintf(kf_recipe_dir, sizeof(kf_recipe_dir), "%s/recipes/keepfail/1.0", g_pkg_state_dir);
-		mkdir(kf_recipe_dir, 0755);
-		snprintf(kf_recipe_path, sizeof(kf_recipe_path), "%s/recipes/keepfail/1.0/build.sh",
-		         g_pkg_state_dir);
-		f = fopen(kf_recipe_path, "w");
-		if (f == NULL) {
-			fprintf(stderr, "FAIL: could not write keepfail.recipe\n");
+		/* A real, valid source/checksum -- fetch succeeds and a real
+		 * build container spawns, extracting the source before the
+		 * build phase deliberately fails, distinguishing this from
+		 * badsum's own fetch-stage-only failure (step 7). */
+		if (publish_cpdl_recipe(&client, "keepfail", "1.0", tarball_path, sha256, NULL,
+		                         CPDL_STD_TOOLS, NULL, "        run \"false\" {\n        }\n",
+		                         "        mkdir \"${dest}/usr/bin\" chmod 0755\n") != 0) {
+			fprintf(stderr, "FAIL: could not publish the keepfail recipe\n");
 			ok = 0;
 			goto skip_keep_on_failure;
 		}
-		/* A real, valid source/checksum -- fetch succeeds and a real
-		 * build container spawns, extracting hello.c into /build/src/
-		 * before pkg_build() deliberately fails, distinguishing this
-		 * from badsum's own fetch-stage-only failure (step 7). */
-		fprintf(f, "pkg_name=keepfail\npkg_version=1.0\npkg_source=%s\n"
-		           "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
-		           "pkg_build() {\n\texit 1\n}\n\n"
-		           "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n}\n",
-		        test_http_src(tarball_path), sha256);
-		fclose(f);
 
 		/* 18a. WITHOUT keep_on_failure: unchanged pre-existing
 		 * behavior -- the failed build container is gone immediately,
@@ -5283,30 +5382,32 @@ skip_keep_on_failure:
 	 * restart would run) would still have; the resumed recipe's own
 	 * pkg_build() fails loudly if that marker is missing. */
 	{
-		char rs_recipe_dir[PATH_MAX];
-		char rs_recipe_path[PATH_MAX];
 		char kept_name[64];
 		char rs_container_path[300];
-		FILE *f;
 
-		snprintf(rs_recipe_dir, sizeof(rs_recipe_dir), "%s/recipes/resumeme", g_pkg_state_dir);
-		mkdir(rs_recipe_dir, 0755);
-		snprintf(rs_recipe_dir, sizeof(rs_recipe_dir), "%s/recipes/resumeme/1.0", g_pkg_state_dir);
-		mkdir(rs_recipe_dir, 0755);
-		snprintf(rs_recipe_path, sizeof(rs_recipe_path), "%s/recipes/resumeme/1.0/build.sh",
-		         g_pkg_state_dir);
-		f = fopen(rs_recipe_path, "w");
-		if (f == NULL) {
-			fprintf(stderr, "FAIL: could not write resumeme 1.0 recipe\n");
+		/*
+		 * Leaves a marker, then fails. 1.1 below checks the marker is
+		 * still there, which is the whole proof that a resume reuses
+		 * the kept container rather than quietly starting over.
+		 *
+		 * `${build}` rather than the shell form's literal
+		 * /build/src: CPDL's workspace is not the shell path's (the
+		 * daemon puts it under /build/cbsws), so the variable is the
+		 * only spelling that is right in both, and `${build}` sits
+		 * outside any source tree where a re-extract could clobber
+		 * it.
+		 */
+		if (publish_cpdl_recipe(&client, "resumeme", "1.0", tarball_path, sha256, NULL,
+		                         CPDL_STD_TOOLS, NULL,
+		                         "        run \"touch\" {\n"
+		                         "            \"${build}/.resumed_marker\"\n"
+		                         "        }\n"
+		                         "        run \"false\" {\n        }\n",
+		                         "        mkdir \"${dest}/usr/bin\" chmod 0755\n") != 0) {
+			fprintf(stderr, "FAIL: could not publish the resumeme 1.0 recipe\n");
 			ok = 0;
 			goto skip_resume;
 		}
-		fprintf(f, "pkg_name=resumeme\npkg_version=1.0\npkg_source=%s\n"
-		           "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
-		           "pkg_build() {\n\ttouch /build/src/.resumed_marker\n\texit 1\n}\n\n"
-		           "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n}\n",
-		        test_http_src(tarball_path), sha256);
-		fclose(f);
 
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/pkg/install",
@@ -5364,23 +5465,22 @@ skip_keep_on_failure:
 		/* publish a "fixed" 1.1 -- its own pkg_build() checks the
 		 * marker survived (i.e. this really is a resume, not a
 		 * disguised fresh restart) and, if so, succeeds. */
-		snprintf(rs_recipe_dir, sizeof(rs_recipe_dir), "%s/recipes/resumeme/1.1", g_pkg_state_dir);
-		mkdir(rs_recipe_dir, 0755);
-		snprintf(rs_recipe_path, sizeof(rs_recipe_path), "%s/recipes/resumeme/1.1/build.sh",
-		         g_pkg_state_dir);
-		f = fopen(rs_recipe_path, "w");
-		if (f == NULL) {
-			fprintf(stderr, "FAIL: could not write resumeme 1.1 recipe\n");
+		/* `test -f` in place of the shell form's `[ -f ... ] || exit 1`:
+		 * coreutils' test is an ordinary program, and a nonzero exit
+		 * fails the phase, which is exactly the assertion. */
+		if (publish_cpdl_recipe(&client, "resumeme", "1.1", tarball_path, sha256, NULL,
+		                         CPDL_STD_TOOLS, NULL,
+		                         "        run \"test\" {\n"
+		                         "            \"-f\" \"${build}/.resumed_marker\"\n"
+		                         "        }\n",
+		                         "        mkdir \"${dest}/usr/share\" chmod 0755\n"
+		                         "        mkdir \"${dest}/usr/share/resumeme\" chmod 0755\n"
+		                         "        write \"${dest}/usr/share/resumeme/stamp\" "
+		                         "\"resumed\\n\"\n") != 0) {
+			fprintf(stderr, "FAIL: could not publish the resumeme 1.1 recipe\n");
 			ok = 0;
 			goto skip_resume;
 		}
-		fprintf(f, "pkg_name=resumeme\npkg_version=1.1\npkg_source=%s\n"
-		           "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
-		           "pkg_build() {\n\t[ -f /build/src/.resumed_marker ] || exit 1\n}\n\n"
-		           "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/share/resumeme\"\n"
-		           "\techo resumed > \"$PKG_DESTDIR/usr/share/resumeme/stamp\"\n}\n",
-		        test_http_src(tarball_path), sha256);
-		fclose(f);
 
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/pkg/resume", "{\"name\":\"resumeme\"}", &r) !=
@@ -5628,13 +5728,10 @@ skip_resume:
 	 * file is not the copy glibc installed.
 	 */
 	{
-		char zz_dir[300];
-		char zz_path[400];
 		char state[64];
 		char zz_scratch[] = "/tmp/cix_test_186_XXXXXX";
 		char zz_tarball[512];
 		char zz_sha[128];
-		FILE *zf;
 		int ok186 = 1;
 
 		/* Its own scratch: the suite's shared one is removed well
@@ -5648,28 +5745,28 @@ skip_resume:
 			ok186 = 0;
 		}
 
-		snprintf(zz_dir, sizeof(zz_dir), "%s/recipes/zzlibc", g_pkg_state_dir);
-		mkdir(zz_dir, 0755);
-		snprintf(zz_dir, sizeof(zz_dir), "%s/recipes/zzlibc/1.0", g_pkg_state_dir);
-		mkdir(zz_dir, 0755);
-		snprintf(zz_path, sizeof(zz_path), "%s/build.sh", zz_dir);
-		zf = ok186 ? fopen(zz_path, "w") : NULL;
-		if (zf == NULL && ok186) {
-			fprintf(stderr, "FAIL: #186 could not write zzlibc recipe\n");
-			ok = 0;
-			ok186 = 0;
-		} else {
-			fprintf(zf,
-			        "pkg_name=zzlibc\npkg_version=1.0\npkg_source=%s\n"
-			        "pkg_sha256=%s\npkg_depends=\"\"\n"
-			        "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
-			        "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
-			        "pkg_install() {\n"
-			        "\tmkdir -p \"$PKG_DESTDIR/lib/x86_64-linux-gnu\"\n"
-			        "\techo not-a-real-libc > "
-			        "\"$PKG_DESTDIR/lib/x86_64-linux-gnu/libc.so.6\"\n}\n",
-			        test_http_src(zz_tarball), zz_sha);
-			fclose(zf);
+		if (ok186) {
+			char zz_srcdir[160];
+			char zz_build[512];
+
+			fixture_srcdir(zz_tarball, zz_srcdir, sizeof(zz_srcdir));
+			snprintf(zz_build, sizeof(zz_build),
+			         "        cd \"${src}/zzlibc/%s\" {\n"
+			         "            run \"tcc\" {\n"
+			         "                \"-o\" \"hello\" \"hello.c\"\n"
+			         "            }\n"
+			         "        }\n",
+			         zz_srcdir);
+			if (publish_cpdl_recipe(&client, "zzlibc", "1.0", zz_tarball, zz_sha, NULL,
+			                         CPDL_STD_TOOLS, NULL, zz_build,
+			                         "        mkdir \"${dest}/lib\" chmod 0755\n"
+			                         "        mkdir \"${dest}/lib/x86_64-linux-gnu\" chmod 0755\n"
+			                         "        write \"${dest}/lib/x86_64-linux-gnu/libc.so.6\" "
+			                         "\"not-a-real-libc\\n\"\n") != 0) {
+				fprintf(stderr, "FAIL: #186 could not publish the zzlibc recipe\n");
+				ok = 0;
+				ok186 = 0;
+			}
 		}
 
 		if (ok186) {
@@ -5708,26 +5805,29 @@ skip_resume:
 		/* Now a package declaring it, so composition must copy zzlibc
 		 * after glibc and land on the same path. */
 		if (ok186) {
-			snprintf(zz_dir, sizeof(zz_dir), "%s/recipes/collide", g_pkg_state_dir);
-			mkdir(zz_dir, 0755);
-			snprintf(zz_dir, sizeof(zz_dir), "%s/recipes/collide/1.0", g_pkg_state_dir);
-			mkdir(zz_dir, 0755);
-			snprintf(zz_path, sizeof(zz_path), "%s/build.sh", zz_dir);
-			zf = fopen(zz_path, "w");
-			if (zf == NULL) {
-				fprintf(stderr, "FAIL: #186 could not write collide recipe\n");
+			char co_srcdir[160];
+			char co_build[512], co_install[512];
+
+			fixture_srcdir(zz_tarball, co_srcdir, sizeof(co_srcdir));
+			snprintf(co_build, sizeof(co_build),
+			         "        cd \"${src}/collide/%s\" {\n"
+			         "            run \"tcc\" {\n"
+			         "                \"-o\" \"hello\" \"hello.c\"\n"
+			         "            }\n"
+			         "        }\n",
+			         co_srcdir);
+			snprintf(co_install, sizeof(co_install),
+			         "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
+			         "        copy \"${src}/collide/%s/hello\" to \"${dest}/usr/bin/collide\"\n",
+			         co_srcdir);
+			/* zzlibc among the build tools is the point of #186: this
+			 * package is built against a libc another package owns. */
+			if (publish_cpdl_recipe(&client, "collide", "1.0", zz_tarball, zz_sha, NULL,
+			                         CPDL_STD_TOOLS "            tool \"zzlibc\"\n", NULL,
+			                         co_build, co_install) != 0) {
+				fprintf(stderr, "FAIL: #186 could not publish the collide recipe\n");
 				ok = 0;
 				ok186 = 0;
-			} else {
-				fprintf(zf,
-				        "pkg_name=collide\npkg_version=1.0\npkg_source=%s\n"
-				        "pkg_sha256=%s\npkg_depends=\"\"\n"
-				        "pkg_build_depends=\"tcc linux-headers bash coreutils binutils zzlibc\"\n\n"
-				        "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
-				        "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n"
-				        "\tcp hello \"$PKG_DESTDIR/usr/bin/collide\"\n}\n",
-				        test_http_src(zz_tarball), zz_sha);
-				fclose(zf);
 			}
 		}
 
@@ -5789,7 +5889,6 @@ skip_resume:
 	 * other way a build can die.
 	 */
 	{
-		char cdir[PATH_MAX], cpath[PATH_MAX];
 		char c_scratch[] = "/tmp/cix_test_cancel_XXXXXX";
 		char c_tarball[512], c_sha[128];
 		FILE *cf;
@@ -5817,25 +5916,17 @@ skip_resume:
 		cix_response_free(&r);
 
 		/* A build that would never finish on its own. */
-		snprintf(cdir, sizeof(cdir), "%s/recipes/sleeper", g_pkg_state_dir);
-		mkdir(cdir, 0755);
-		snprintf(cdir, sizeof(cdir), "%s/recipes/sleeper/1.0", g_pkg_state_dir);
-		mkdir(cdir, 0755);
-		snprintf(cpath, sizeof(cpath), "%s/build.sh", cdir);
-		cf = okc ? fopen(cpath, "w") : NULL;
-		if (cf == NULL && okc) {
-			fprintf(stderr, "FAIL: #213 could not write sleeper recipe\n");
+		/* A build that would never finish on its own -- #213 cancels
+		 * it. coreutils is declared, so `sleep` is really there. */
+		if (okc && publish_cpdl_recipe(&client, "sleeper", "1.0", c_tarball, c_sha, NULL,
+		                                CPDL_STD_TOOLS, NULL,
+		                                "        run \"sleep\" {\n"
+		                                "            \"600\"\n"
+		                                "        }\n",
+		                                "        mkdir \"${dest}/usr/share\" chmod 0755\n") != 0) {
+			fprintf(stderr, "FAIL: #213 could not publish the sleeper recipe\n");
 			ok = 0;
 			okc = 0;
-		} else if (cf != NULL) {
-			fprintf(cf,
-			        "pkg_name=sleeper\npkg_version=1.0\npkg_source=%s\n"
-			        "pkg_sha256=%s\npkg_depends=\"\"\n"
-			        "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
-			        "pkg_build() {\n\tsleep 600\n}\n\n"
-			        "pkg_install() {\n\ttrue\n}\n",
-			        test_http_src(c_tarball), c_sha);
-			fclose(cf);
 		}
 
 		if (okc) {
