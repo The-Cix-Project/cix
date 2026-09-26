@@ -6,6 +6,24 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A hostbuild exports the format its recipe declares (#528)
+
+Every hostbuild published a `.tar.gz`, whatever its recipe said — the last source of tarballs in the system, and one that survived the entire recipe conversion: even with every recipe CPDL, `cix`, `kernel` and `isotools` still exported tarballs.
+
+**The cause was a reader used as a writer.** `publish_hostbuild_artifact()` named its destination with `pkg_artifact_cache_path()` → `cache_artifact_path_existing()`, which looks for a file that exists and falls back to `PKG_ARTIFACT_FORMAT_TARGZ` when none does. It returns early when the artifact already exists, so **the fallback was the only branch it could ever reach** and the recipe's declared format never entered the call. There is now a writer's counterpart, `pkg_artifact_cache_path_for()`, which must be told the format.
+
+**What unblocked it** was cbs#247 closing the same day: `cbs package ROOT --name --version --release --arch --output` writes a CIXPKG from a tree the caller assembled, which is what a hostbuild is. Nothing could do that before, which is why the export tarred unconditionally. The argv was read off the binary rather than the ticket's prose (`probe-cbspackage@3`) — cbs#243 is what happens when a claim about cbs comes from prose.
+
+**Version and release are carried unjoined, from the explain document**, never split back out of the fused string. `0.2.57-361` splits and `v2.2.0-rc1` does not, and nothing in the string distinguishes them; the cache guesses, which is fine for a filename and not for metadata written *into* an artifact. When no recipe is readable the format defaults to **cixpkg, never tar.gz** — an unknown format is no reason to emit the one format the One Build System Mandate forbids — and the split then follows the cache's own convention, so metadata and stored name agree by construction. That path is real: ADR-0313 removed 610 cix recipes while their packages stayed installed.
+
+**The floor moved too**, which was most of the work: cbs `v0.1.63-2` → `v0.1.71-1` across all six coupling points, since v0.1.63 predates the `package` verb and the floor could not otherwise have run this code. The cix recipe also gained `tool "cbs"` — `/usr/bin/cbs` was simply absent from the selftest's own build container.
+
+**Two tests had written their own fix in advance.** `test_pkg_cache`'s comment read *"when #528 is fixed, this becomes `.cixpkg` and the gzip check below becomes `cbs extract`, the way pushtest's already is"*, and that is what was applied. `test_artifact_export` additionally proves the no-recipe path, its fixture being seeded with no recipe at all.
+
+**A latent race surfaced and was fixed rather than papered over.** Only one export runs at a time, and a publish starts one; two tests issued their next request immediately afterwards. That was always a race and always invisible, because `targz_run()` over a two-file tree finished inside the round trip. `cbs package` writes a manifest and digests and does not. The daemon's 409 is correct; the callers now wait for the slot.
+
+**Verified on the running daemon, not only in tests**: `cixctl pkg artifact-export libmnl` → `libmnl-1.0.5-7.cixpkg`, with cixd logging `libmnl@1.0.5-7 ready at .../exports/libmnl-1.0.5-7.cixpkg`. The release carrying the fix is itself still a tarball (`cix-0.2.57-364.tar.gz`), because its own export ran under the old daemon — every hostbuild after it is a cixpkg. Image exports are deliberately unchanged: `image_artifact_sha256` territory (ADR-0123), its own consumer, and converting it here would widen the fix into a subsystem nobody has looked at.
+
 ### An incomplete PUT to the test artifact server reported success and destroyed the file already there (#533)
 
 `test_pkg_cache` failed a release with `FAIL: the published hostbuild artifact is a valid gzip`, and passed on an unchanged re-run. Root cause found in the test fixture's own PUT handler, not in anything it was testing.
