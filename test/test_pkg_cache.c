@@ -1123,31 +1123,31 @@ int main(void)
 
 				if (hb_ok) {
 					/*
-					 * `.tar.gz`, NOT `.cixpkg`, even though hbpush's
-					 * recipe is CPDL and declares cixpkg -- and this
-					 * assertion is the proof of issue #528 rather than
-					 * an inconsistency in the test.
+					 * `.cixpkg`, because a hostbuild now exports the
+					 * format its recipe declares (#528, fixed).
 					 *
-					 * A hostbuild's artifact is a DIRECTORY this host
-					 * assembled, and publish_hostbuild_artifact() names
-					 * it through pkg_artifact_cache_path() ->
-					 * cache_artifact_path_existing(), whose fallback
-					 * when nothing exists yet is
-					 * PKG_ARTIFACT_FORMAT_TARGZ. The recipe's declared
-					 * format never reaches that call. So converting the
-					 * recipe moved the VERSION here (1.0 -> 1.0-1) and
-					 * left the suffix alone, which is exactly what #528
-					 * says and is why that issue survives the whole
-					 * recipe conversion.
+					 * This assertion used to read `.tar.gz` and was
+					 * the PROOF of that issue rather than an
+					 * inconsistency: publish_hostbuild_artifact()
+					 * named the destination through
+					 * pkg_artifact_cache_path() ->
+					 * cache_artifact_path_existing(), a reader whose
+					 * fallback when nothing exists is
+					 * PKG_ARTIFACT_FORMAT_TARGZ -- and it only ever
+					 * runs when nothing exists. The recipe's declared
+					 * format never reached the call, so converting
+					 * hbpush's recipe moved the VERSION here (1.0 ->
+					 * 1.0-1) and left the suffix untouched.
 					 *
-					 * When #528 is fixed, this becomes `.cixpkg` and the
-					 * gzip check below becomes `cbs extract`, the way
-					 * pushtest's already is.
+					 * What closed it was cbs#247 landing `cbs
+					 * package`, which writes a CIXPKG from a tree the
+					 * caller assembled -- until then nothing could,
+					 * which is why the export tarred unconditionally.
 					 */
-					snprintf(hb_pushed, sizeof(hb_pushed), "%s/hbpush-1.0-1-%s.tar.gz",
+					snprintf(hb_pushed, sizeof(hb_pushed), "%s/hbpush-1.0-1-%s.cixpkg",
 					         push_dir, host_arch());
 					snprintf(hb_headers, sizeof(hb_headers),
-					         "%s/hbpush-1.0-1-%s.tar.gz.headers", push_dir, host_arch());
+					         "%s/hbpush-1.0-1-%s.cixpkg.headers", push_dir, host_arch());
 					/* Nothing should have published it yet -- a
 					 * hostbuild produces no cache tarball, which
 					 * is the whole defect. */
@@ -1169,11 +1169,13 @@ int main(void)
 					CHECK(access(hb_pushed, R_OK) == 0,
 					      "the hostbuild artifact actually arrived at the "
 					      "artifact server");
-					/* gzip, not cbs extract -- see the naming comment
-					 * above: a hostbuild export is a tarball whatever
-					 * its recipe declares (#528). */
-					CHECK(run_cmd("gzip -t '%s' 2>/dev/null", hb_pushed) == 0,
-					      "the published hostbuild artifact is a valid gzip");
+					/* cbs extract, the way pushtest's already is: a
+					 * hostbuild export is a CIXPKG now (#528), so the
+					 * engine that writes it is the one that reads it
+					 * back. `gzip -t` here was the old shape. */
+					CHECK(run_cmd("cbs extract '%s' --into '%s/hbcheck' >/dev/null 2>&1",
+					              hb_pushed, scratch_dir) == 0,
+					      "the published hostbuild artifact is a valid cixpkg");
 				}
 			}
 

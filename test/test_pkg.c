@@ -4452,18 +4452,20 @@ skip_pin_isolation:
 			struct stat hb_st;
 			int hb_i;
 
-			/* 1.0-1, not 1.0: hbtest's recipe is CPDL now, and a
-			 * CPDL version always carries its release. The suffix
-			 * does NOT move with it -- a hostbuild's artifact is a
-			 * directory this host assembled, and
-			 * publish_hostbuild_artifact() names it through
-			 * pkg_artifact_cache_path() ->
-			 * cache_artifact_path_existing(), whose fallback when
-			 * nothing exists yet is PKG_ARTIFACT_FORMAT_TARGZ. The
-			 * recipe's declared format never reaches that call, so
-			 * this stays .tar.gz even though the recipe builds a
-			 * .cixpkg. */
-			snprintf(hb_tarball, sizeof(hb_tarball), "%s/cache/hbtest-1.0-1.tar.gz",
+			/* 1.0-1, not 1.0: hbtest's recipe is CPDL, and a CPDL
+			 * version always carries its release.
+			 *
+			 * And `.cixpkg`, which it was not until #528. The suffix
+			 * used to be stuck at .tar.gz because
+			 * publish_hostbuild_artifact() named the destination
+			 * through pkg_artifact_cache_path() ->
+			 * cache_artifact_path_existing(), a reader whose fallback
+			 * when nothing exists is PKG_ARTIFACT_FORMAT_TARGZ -- and
+			 * it only ever runs when nothing exists, so the recipe's
+			 * declared format never reached the call. Converting this
+			 * fixture moved the version and left the suffix, which is
+			 * precisely what that issue described. Both move now. */
+			snprintf(hb_tarball, sizeof(hb_tarball), "%s/cache/hbtest-1.0-1.cixpkg",
 			         g_pkg_state_dir);
 			for (hb_i = 0; hb_i < 200; hb_i++) {
 				if (stat(hb_tarball, &hb_st) == 0 && hb_st.st_size > 0)

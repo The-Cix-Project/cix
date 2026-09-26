@@ -225,7 +225,7 @@ int main(void)
 	char state[32];
 	long long size = -1;
 	char dl_path[256];
-	char out_tar[PATH_MAX];
+	char out_artifact[PATH_MAX];
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0) {
 		fprintf(stderr, "could not create test data dir\n");
@@ -301,10 +301,10 @@ int main(void)
 		FILE *out;
 		long long got = 0;
 
-		snprintf(out_tar, sizeof(out_tar), "%s/pulled.tar.gz", g_data_dir);
-		out = fopen(out_tar, "wb");
+		snprintf(out_artifact, sizeof(out_artifact), "%s/pulled.cixpkg", g_data_dir);
+		out = fopen(out_artifact, "wb");
 		if (out == NULL) {
-			fail("cannot open %s", out_tar);
+			fail("cannot open %s", out_artifact);
 		} else {
 			while (got < size) {
 				long long want = size - got;
@@ -329,23 +329,36 @@ int main(void)
 			if (got != size)
 				fail("downloaded %lld bytes, size_bytes said %lld", got, size);
 
-			/* A real gzip holding both seeded files, at top level
-			 * (tar -C <src> . ), which is the shape a consuming host
-			 * extracts straight into place. */
-			if (run_cmd("gzip -t '%s' 2>/dev/null", out_tar) != 0)
-				fail("downloaded artifact is not a valid gzip");
-			if (run_cmd("tar -tzf '%s' 2>/dev/null | grep -q '^\\./bzImage$'", out_tar) != 0)
-				fail("downloaded artifact does not contain ./bzImage");
-			if (run_cmd("tar -tzf '%s' 2>/dev/null | "
-			            "grep -q '^\\./lib/modules/1.2.3/modules.dep$'",
-			            out_tar) != 0)
+			/*
+			 * A real CIXPKG holding both seeded files, which is the
+			 * shape a consuming host extracts straight into place.
+			 *
+			 * This was `gzip -t` until #528: a hostbuild exported a
+			 * tarball whatever its recipe declared. It is `cbs
+			 * extract` now, because the engine that writes the
+			 * artifact is the one that reads it back.
+			 *
+			 * Note this fixture is seeded straight into
+			 * pkg_installed.json with NO recipe in the store, so it
+			 * exercises pkg_hostbuild_package_info()'s no-recipe
+			 * path -- which defaults to CIXPKG rather than tar.gz,
+			 * an unknown format being no reason to emit the one
+			 * format the One Build System Mandate forbids. That path
+			 * is real and not synthetic: ADR-0313 removed 610 cix
+			 * recipes while their packages stayed installed.
+			 */
+			if (run_cmd("cbs extract '%s' --into '%s/unpacked' >/dev/null 2>&1", out_artifact,
+			            g_data_dir) != 0)
+				fail("downloaded artifact is not a valid cixpkg");
+			if (run_cmd("test -f '%s/unpacked/bzImage'", g_data_dir) != 0)
+				fail("downloaded artifact does not contain bzImage");
+			if (run_cmd("test -f '%s/unpacked/lib/modules/1.2.3/modules.dep'", g_data_dir) != 0)
 				fail("downloaded artifact does not contain the nested module file");
-			/* Content, not just presence -- an archive that lists the
+			/* Content, not just presence -- an artifact that lists the
 			 * right names while carrying the wrong bytes is exactly
 			 * the class of bug #122 was. */
-			if (run_cmd("tar -xzOf '%s' ./bzImage 2>/dev/null | grep -q '^fake-bzImage-bytes$'",
-			            out_tar) != 0)
-				fail("./bzImage content did not survive the round trip");
+			if (run_cmd("grep -q '^fake-bzImage-bytes$' '%s/unpacked/bzImage'", g_data_dir) != 0)
+				fail("bzImage content did not survive the round trip");
 		}
 	}
 
