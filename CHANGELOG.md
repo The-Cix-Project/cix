@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The last eight shell package recipes are retired — `recipes/package/` is 100% CPDL (#529)
+
+`bash@5.2.37-2`, `binutils@2.42-10`, `coreutils@9.11-3`, `flex@2.6.4-2`, `linux-headers@6.18.40-4`, `tcc@0.9.27-7`, `xz@5.8.3-8`, `zlib@1.3.2-11`. They existed for exactly one reason — they carried the `pkg_artifact_sha256` approvals for the `.tar.gz` artifacts the ADR-0209 floor seeded from — and the floor's move to `.cixpkg` above left nothing reading them. Checked rather than assumed: the only remaining mentions of those eight versions anywhere in this tree are prose inside comments.
+
+**0 shell, 477 CPDL** in `recipes/package/`. The 59 `.sh` files that remain in the recipes repository are *image* recipes, a different mechanism from the package build path ADR-0309 clause 3 governs.
+
+They are moved to `trash/` rather than deleted, and deliberately **not** removed from the box's recipe store. A published version is immutable history and must still resolve; git is what refills the store, so removing the files is what stops them coming back, while the store keeps what it already has. That is the same distinction the sync note in `CLAUDE.md` draws — `pkg recipe rm` edits the store, git edits what refills it, and only one of the two has a timer attached.
+
 ### The ADR-0209 test floor is now all `.cixpkg` (#529)
 
 Every artifact the floor seeds from is a CBS artifact: bash 5.2.37-6, coreutils 9.11-8, tcc 0.9.28rc-31, linux-headers 6.18.40-10, zlib 1.3.2-15, flex 2.6.4-6, binutils 2.42-15, xz 5.8.3-11 — plus **m4 1.4.20-6**, which is new to the list because `flex@2.6.4-6` declares it as a runtime dependency where the shell `flex@2.6.4-2` declared none, and binutils cannot resolve without it.

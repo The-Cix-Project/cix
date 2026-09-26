@@ -670,8 +670,12 @@ static const struct {
 	 * 2026-09-23). binutils was once removed from this floor because its
 	 * size pushed the package tests past a ten-minute timeout; cix-tests
 	 * runs each test under its own 300 s limit and will show if that
-	 * returns. Its runtime closure is zlib and flex; flex 2.6.4-2 is the
-	 * approved revision that declares no m4.
+	 * returns. Its runtime closure is zlib and flex, and since the
+	 * floor moved to .cixpkg (#529) that flex is 2.6.4-6, which
+	 * declares m4 -- so m4 is in the list below as flex's own runtime
+	 * dependency. This sentence used to end "flex 2.6.4-2 is the
+	 * approved revision that declares no m4", which the list two dozen
+	 * lines down had already contradicted.
 	 */
 	/*
 	 * glibc is the C library every composed build environment now gets
