@@ -64,6 +64,27 @@ static int floor_install_one(const struct cix_client *c, const char *name)
 			 * stderr: unbuffered, so it survives the test being killed. */
 			fprintf(stderr, "    floor: %s installed in %lds, %zu file(s)\n", name,
 			        (long)(time(NULL) - start), nfiles);
+			/*
+			 * A suspiciously small list gets NAMED, not just
+			 * counted. cix#529 spent cycles on "binutils
+			 * installed 7 file(s)" -- a number that is either a
+			 * real truncated install or an artefact of which
+			 * entry GET /v1/pkg/<name> resolved to (cix#520,
+			 * cix#526, which is why the count above is reported
+			 * and not asserted). Those two readings call for
+			 * opposite fixes and the number cannot tell them
+			 * apart; the file names can, instantly.
+			 */
+			if (nfiles > 0 && nfiles < 12) {
+				size_t fi;
+
+				for (fi = 0; fi < nfiles; fi++) {
+					const char *fn = json_as_string(files->u.array.items[fi]);
+
+					if (fn != NULL)
+						fprintf(stderr, "      floor: %s file: %s\n", name, fn);
+				}
+			}
 			cix_response_free(&r);
 			return 0;
 		}
