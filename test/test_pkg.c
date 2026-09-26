@@ -2203,11 +2203,34 @@ int main(void)
 		fprintf(stderr, "FAIL: #127 correctly-pinned install never settled (last '%s')\n", state);
 		ok = 0;
 	} else {
+		/*
+		 * The end state, asserted -- which this case did not do until
+		 * now, and the omission hid a real failure.
+		 *
+		 * It settled for ruling out two specific error strings, so a
+		 * build that failed for any OTHER reason counted as a pass.
+		 * Measured on 192.168.15.95, 2026-09-26: converting this
+		 * fixture to CPDL made its build fail with `CPDL-E3004:
+		 * invalid dependency name` -- the test floor's cbs predates
+		 * version-pinned tools -- and the run reported no failure at
+		 * all. The whole point of this case is that a pin to an
+		 * INSTALLED version resolves and the package builds, so
+		 * "installed" is the claim and it belongs here.
+		 */
+		if (strcmp(state, "installed") != 0) {
+			fprintf(stderr, "FAIL: #127 correctly-pinned install ended '%s', expected "
+			                "installed\n",
+			        state);
+			ok = 0;
+		}
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "GET", "/v1/pkg/pinnedgood", NULL, &r) == 0 &&
 		    r.status == 200) {
 			const char *err = json_str_field(r.json, "error");
 
+			/* Kept alongside the state check, not replaced by it: this
+			 * names the specific cause the case was written for, and a
+			 * named cause is worth more than "not installed". */
 			if (err != NULL && (strstr(err, "compose") != NULL ||
 			                    strstr(err, "not installed anywhere") != NULL)) {
 				fprintf(stderr, "FAIL: #127 greeter@1.0 (the installed version) did not "

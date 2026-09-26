@@ -735,7 +735,7 @@ static const struct {
 	 * 2026-09-25). An explicit install is logged per package, so the
 	 * next run answers that instead of leaving it assumed.
 	 */
-	{ "cbs", "v0.1.55-1" }, { "libarchive", "3.8.1-5" }, { "zstd", "1.5.7-5" },
+	{ "cbs", "v0.1.63-2" }, { "libarchive", "3.8.1-5" }, { "zstd", "1.5.7-5" },
 	{ "xz", "5.8.3-8" },
 };
 
