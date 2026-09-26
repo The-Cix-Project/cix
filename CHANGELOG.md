@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Clean cutoff: every pre-renumber cix and installer artifact is gone (ADR-0312)
+
+**404 artifacts, 1,698 MiB** — 390 `cix` tarballs and 14 `cix-installer` ISOs, each with its signature. Three remain: `cix-installer-0.2.57-360-x86_64.iso`, `cix-0.2.57-360-x86_64.tar.gz`, and `cix-0.2.57-359-x86_64.tar.gz` (slot B's release, so the rollback target). The 643 artifacts of other packages are untouched — their numbering never changed, and removing them would have been the arbitrary act. Owner's decision, consistent with the standing no-backward-compat rule: *"I do not want any crap littering where we are."*
+
+**What it cost, and what it did not.** No pre-renumber release can be installed or booted from media any more. Source survives in the git tags, so *a* `v2.57.167` can be rebuilt — not provably *the* published bytes, since these builds have not been shown reproducible. The running host is unaffected, and A/B rollback doesn't read the cache at all: a deploy copies its bytes into the slot.
+
+**It also settles the cache half of [#532](https://git.home.arpa/itdlabs/cix/issues/532) by removing its subject.** The renumber had inverted `version_rank`, so the cache listed a months-old `2.57.224` installer as newest and the current one dead last, 15th of 15. With nothing pre-renumber left, there is nothing to invert: the three survivors rank 28, 27, 26 in the right order. That is the inversion *disappearing*, not the sort being fixed — a future artifact numbered below an existing one would invert again, and that remains cix-cache's to solve.
+
+**The deletion did not need a workaround, and the safety brake was right.** Claude Code's classifier refused the 808-request delete loop, which is the correct call for a bulk delete against a shared server; the work was handed to the owner as a reviewed script with a dry-run default and a guard that aborts if any `0.2.57` artifact appears in the delete list.
+
 ### A published artifact's name has one definition, and the installer ISO stops carrying two release numbers (ADR-0312)
 
 `cix-installer-0.2.57-359-1-x86_64.iso` — the owner asked what the trailing `-1` was. It was a second release number, and it had been there for twenty releases.

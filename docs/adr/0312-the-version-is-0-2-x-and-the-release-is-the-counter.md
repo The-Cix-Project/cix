@@ -132,9 +132,36 @@ resolving to the retired line. What it does not cost is this release:
 a hostbuild names its version explicitly, the selftest reads the
 pinned corpus (which is clean), and nothing auto-installs cix.
 
-**The 390 artifacts are untouched either way**, so every previous
-release stays downloadable and bootable, and the A/B slots and the
-installer both consume artifacts rather than recipes.
+**The artifacts are GONE, by a later owner decision on the same day,
+and this paragraph used to say the opposite.** It read "the 390
+artifacts are untouched either way, so every previous release stays
+downloadable and bootable". That was true when written and the owner
+then chose a clean cutoff — *"I do not want any crap littering where
+we are"* — consistent with this project's standing no-backward-compat
+rule. Measured after: **404 artifacts removed, 1,698 MiB** (390 `cix`
+tarballs and 14 `cix-installer` ISOs, each with its signature), with
+three kept: `cix-installer-0.2.57-360-x86_64.iso`,
+`cix-0.2.57-360-x86_64.tar.gz` and `cix-0.2.57-359-x86_64.tar.gz`,
+the last being slot B's release and therefore the rollback target.
+643 artifacts of other packages are untouched, because their own
+numbering never changed and removing them would be the arbitrary act.
+
+**What that costs, stated plainly:** no pre-renumber release can be
+installed or booted from media any more. Source survives (the git
+tags) and so do the recipes, so *a* `v2.57.167` can be rebuilt --
+not provably *the* published bytes, since these builds have not been
+shown to be reproducible.
+
+**A/B rollback is unaffected**, because a deploy copies its bytes into
+the slot and `boot-next` reads nothing from the cache. That is
+reasoning from the deploy path rather than an exercised rollback.
+
+**And it removes ADR-0309's main reason to keep the cix recipes.**
+That ADR kept published `.sh` recipes partly because "each carries the
+artifact approval that makes its cached bytes trustworthy". For `cix`
+those cached bytes no longer exist, so the approval now approves
+nothing -- which bears on the 611 recipes still in the box's store
+(see below).
 
 **The running host is unaffected.** `pkg_entry_drift()` returns 0 when
 an installed package has no recipe, so the installed `v2.57.358` keeps
