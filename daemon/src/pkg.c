@@ -10286,7 +10286,35 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	snprintf(g_chains[chain_idx].fetch_resolved_depends,
 	         sizeof(g_chains[chain_idx].fetch_resolved_depends), "%s", recipe.depends);
 
-	snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), "%s", PKG_BUILD_CMD);
+	/*
+	 * The build command depends on the recipe's LANGUAGE, exactly as
+	 * it does on the install path -- this branch was missing, and
+	 * resuming a CPDL build ran `/build/recipe.sh` and died with
+	 * "/usr/bin/bash: line 1: /build/recipe.sh: No such file or
+	 * directory" (measured on 192.168.15.95, 2026-09-26, log
+	 * resumeme-1.1-1-1790405232).
+	 *
+	 * It was invisible for as long as it existed because every
+	 * fixture that exercises resume was written in shell; converting
+	 * them (cix#516) is what surfaced it. Note the line below already
+	 * asked `recipe.is_pbs` for the destination directory, so the
+	 * format was known here all along and only the command ignored
+	 * it.
+	 *
+	 * No cache-hit arm, unlike the install path: a resume exists
+	 * precisely because a build failed, so there is nothing cached to
+	 * short-circuit to.
+	 */
+	if (recipe.is_pbs)
+		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd),
+		         "set -e; cbs build /build/recipe.cbs --arch %s --staged %s --cache %s "
+		         "--output %s --finalize-command /build/finalize.sh --events human%s",
+		         pkg_host_arch(), PKG_CBS_WORKSPACE, PKG_CBS_CACHE_DIR, PKG_CBS_ARTIFACT,
+		         g_chains[chain_idx].hostbuild_extra_config_symbols[0] != '\0'
+		                 ? " --input " PKG_CBS_KMOD_EXTRA_INPUT
+		                 : "");
+	else
+		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), "%s", PKG_BUILD_CMD);
 	e->build_argv[0] = "/usr/bin/bash";
 	e->build_argv[1] = "-c";
 	e->build_argv[2] = e->build_argv_cmd;

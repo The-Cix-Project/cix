@@ -4264,17 +4264,9 @@ skip_pin_isolation:
 		 * That whole mechanism is gone.
 		 */
 
-		/* A plain hand-written recipe (not stage_fixture_tarball(), no
-		 * DESTDIR/usr/bin convention needed -- pkg_install() below
-		 * just drops its output at a fixed, predictable name). */
-		{
-			char hb_recipe_dir[PATH_MAX];
-
-			snprintf(hb_recipe_dir, sizeof(hb_recipe_dir), "%s/recipes/hbtest", g_pkg_state_dir);
-			mkdir(hb_recipe_dir, 0755);
-			snprintf(hb_recipe_dir, sizeof(hb_recipe_dir), "%s/recipes/hbtest/1.0", g_pkg_state_dir);
-			mkdir(hb_recipe_dir, 0755);
-		}
+		/* A plain recipe (not stage_fixture_tarball(), no DESTDIR/usr/bin
+		 * convention needed -- the install phase below just drops its
+		 * output at a fixed, predictable name). */
 		/*
 		 * This build sleeps for the same reason slowhold's and
 		 * hbconcurrent's do -- see write_recipe(), which explains the
@@ -4863,16 +4855,6 @@ skip_pin_isolation:
 		 * exercises the depends path rather than PKG_ERR_BUSY.
 		 */
 		{
-			char hb_recipe_dir[PATH_MAX];
-
-			snprintf(hb_recipe_dir, sizeof(hb_recipe_dir), "%s/recipes/hbdepstest",
-			         g_pkg_state_dir);
-			mkdir(hb_recipe_dir, 0755);
-			snprintf(hb_recipe_dir, sizeof(hb_recipe_dir), "%s/recipes/hbdepstest/1.0",
-			         g_pkg_state_dir);
-			mkdir(hb_recipe_dir, 0755);
-		}
-		{
 			char hd_srcdir[160];
 			char hd_build[512], hd_install[512];
 
@@ -5451,8 +5433,12 @@ skip_keep_on_failure:
 		/* the marker really is there -- proof the container's own
 		 * overlay genuinely has real build state, not just an empty
 		 * preserved shell. */
+		/* /build/.resumed_marker, matching where the recipe's
+		 * `${build}` actually is -- the shell form wrote it under
+		 * /build/src, and CPDL's own source root is elsewhere, so
+		 * this path moved with the recipe. */
 		snprintf(rs_container_path, sizeof(rs_container_path),
-		         "/v1/containers/%s/files?path=%%2Fbuild%%2Fsrc%%2F.resumed_marker", kept_name);
+		         "/v1/containers/%s/files?path=%%2Fbuild%%2F.resumed_marker", kept_name);
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "GET", rs_container_path, NULL, &r) != 0 ||
 		    r.status != 200) {
