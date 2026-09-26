@@ -1348,26 +1348,57 @@ static void http_header_value(const char *req, const char *name, char *out, size
  * root/<basename of the path>, and root/<basename>.headers records the
  * Authorization and X-Cix-Sha256 headers, one per line, so a test can
  * assert on exactly what arrived. It verifies nothing itself.
+ *
+ * A PUT IS ATOMIC HERE: the body goes to `<path>.part` and is renamed
+ * into place only once Content-Length bytes have actually arrived. An
+ * incomplete one answers 400 and leaves whatever was already at that
+ * path untouched.
+ *
+ * That is not defensive habit, it is cix#533. This function used to
+ * `fopen(path, "wb")` -- truncating immediately -- read until the
+ * first `read()` that returned <= 0, and then reply "201 Created"
+ * whatever had arrived. Two things followed, and the second is what
+ * made it expensive:
+ *
+ *   - a short read left a TRUNCATED file, and said 201 about it, so
+ *     the corruption was silent at the only point that could have
+ *     caught it;
+ *   - because the open truncates before any body is read, a second
+ *     PUT of the same name DESTROYS a good file already there. The
+ *     hbpush case does push the same artifact name twice, so a single
+ *     short read on the second one turns a correct first upload into
+ *     an empty file.
+ *
+ * It presented as `FAIL: the published hostbuild artifact is a valid
+ * gzip`, intermittently, in a FLOOR_SELFTEST -- so it failed a
+ * RELEASE at random, and looked exactly like a regression in whatever
+ * change happened to be in flight. It cost a full investigation of an
+ * unrelated artifact-naming change before an unchanged re-run passed.
+ *
+ * `read()` is also now retried on EINTR rather than treated as
+ * end-of-body, which is the most likely way the short read happened:
+ * nothing here blocks signals.
  */
 static void http_serve_put(int fd, const char *root, const char *upath, const char *req,
                            size_t used)
 {
 	const char *base = strrchr(upath, '/');
 	const char *body = strstr(req, "\r\n\r\n");
-	char path[PATH_MAX], hpath[PATH_MAX + 16], value[512];
+	char path[PATH_MAX], part[PATH_MAX + 8], hpath[PATH_MAX + 16], value[512];
 	long long want, have;
 	FILE *out;
 
 	base = base != NULL ? base + 1 : upath;
 	if (body == NULL || base[0] == '\0' ||
-	    snprintf(path, sizeof(path), "%s/%s", root, base) >= (int)sizeof(path)) {
+	    snprintf(path, sizeof(path), "%s/%s", root, base) >= (int)sizeof(path) ||
+	    snprintf(part, sizeof(part), "%s.part", path) >= (int)sizeof(part)) {
 		http_serve_reply(fd, "400 Bad Request", 0);
 		return;
 	}
 	body += 4;
 	http_header_value(req, "Content-Length", value, sizeof(value));
 	want = atoll(value);
-	out = fopen(path, "wb");
+	out = fopen(part, "wb");
 	if (out == NULL) {
 		http_serve_reply(fd, "500 Internal Server Error", 0);
 		return;
@@ -1382,12 +1413,27 @@ static void http_serve_put(int fd, const char *root, const char *upath, const ch
 		size_t chunk = (size_t)(want - have) < sizeof(buf) ? (size_t)(want - have) : sizeof(buf);
 		ssize_t got = read(fd, buf, chunk);
 
+		if (got < 0 && errno == EINTR)
+			continue;
 		if (got <= 0)
 			break;
 		fwrite(buf, 1, (size_t)got, out);
 		have += got;
 	}
-	fclose(out);
+	if (fclose(out) != 0 || have != want) {
+		/* Say so, and do not disturb what is already at `path`. A
+		 * test asserting on a previous good upload keeps passing;
+		 * one asserting on this upload fails with a status rather
+		 * than with mysterious bytes. */
+		unlink(part);
+		http_serve_reply(fd, "400 Bad Request", 0);
+		return;
+	}
+	if (rename(part, path) != 0) {
+		unlink(part);
+		http_serve_reply(fd, "500 Internal Server Error", 0);
+		return;
+	}
 	snprintf(hpath, sizeof(hpath), "%s.headers", path);
 	out = fopen(hpath, "w");
 	if (out != NULL) {

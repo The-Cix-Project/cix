@@ -6,6 +6,23 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An incomplete PUT to the test artifact server reported success and destroyed the file already there (#533)
+
+`test_pkg_cache` failed a release with `FAIL: the published hostbuild artifact is a valid gzip`, and passed on an unchanged re-run. Root cause found in the test fixture's own PUT handler, not in anything it was testing.
+
+`http_serve_put()` opened the destination with `fopen(path, "wb")` — **truncating before reading a single body byte** — read until the first `read()` returning `<= 0`, and then answered `201 Created` regardless of how much had arrived. Two consequences, and the second is what made it expensive:
+
+- a short read left a **truncated file and called it success**, so the corruption was silent at the exact point that could have caught it;
+- because the truncation happens at open, a second PUT of the same name **destroys a good file already there**. The hbpush scenario pushes the same artifact name twice, so one short read on the second turns a correct first upload into an empty one.
+
+**A PUT is now atomic**: the body goes to `<path>.part` and is renamed into place only once `Content-Length` bytes have actually arrived. An incomplete one answers `400` and leaves the existing file untouched. `read()` is retried on `EINTR` rather than treated as end-of-body, which is the most likely way the short read happened — nothing there blocks signals. Atomicity is what makes the *duplicate* push harmless too: the second rename either replaces the file whole or doesn't happen, so a reader never sees a partial.
+
+**Gated deterministically by a new `test_http_put`**, in SELFTESTS. The original failure needed a timing accident inside a multi-minute scenario; this declares a `Content-Length` larger than the body it sends, closes, and asserts on both the status and the bytes on disk. No daemon, no containers, no timing. It also asserts a complete PUT still replaces the file exactly, and that no `.part` survives either outcome.
+
+Checked for other copies before fixing, per the lesson of #331/#519 — a protocol-level fix isn't finished until every other reader of that shape has been looked at. There is exactly one PUT-accepting server in the tree.
+
+**Why this mattered beyond one red build.** `test_pkg_cache` is a FLOOR_SELFTEST, so it gates every release; a random failure there costs a full build cycle and reads exactly like a regression in whatever change is in flight. It did: it appeared in the first build after an artifact-naming change and cost a round of investigation into that change before the re-run cleared it.
+
 ### The cix release recipes retire with their artifacts, and `available` finally tells the truth (ADR-0313, #532)
 
 610 of 613 cix recipe versions removed from the box's recipe store, keeping `0.2.57-358`, `-359` and `-360`. This is the second half of the clean cutoff; the first removed the artifacts those recipes named.
