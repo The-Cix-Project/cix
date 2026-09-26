@@ -715,9 +715,9 @@ static const struct {
 	 * recipe does (#517). Its artifact is a .cixpkg, which is what
 	 * floor_artifact_find() above exists for.
 	 */
-	{ "bash", "5.2.37-6" }, { "coreutils", "9.11-8" }, { "tcc", "0.9.28rc-31" },
-	{ "glibc", TEST_FLOOR_GLIBC_VERSION }, { "linux-headers", "6.18.40-10" },
-	{ "zlib", "1.3.2-15" }, { "flex", "2.6.4-6" }, { "binutils", "2.42-14" },
+	{ "bash", "5.2.37-2" }, { "coreutils", "9.11-3" }, { "tcc", "0.9.27-7" },
+	{ "glibc", TEST_FLOOR_GLIBC_VERSION }, { "linux-headers", "6.18.40-4" },
+	{ "zlib", "1.3.2-11" }, { "flex", "2.6.4-2" }, { "binutils", "2.42-10" },
 	/*
 	 * cbs and its runtime closure. cbs declares libarchive and zstd;
 	 * libarchive declares zlib, xz and zstd, and zlib is already here.
@@ -735,15 +735,8 @@ static const struct {
 	 * 2026-09-25). An explicit install is logged per package, so the
 	 * next run answers that instead of leaving it assumed.
 	 */
-	{ "cbs", "v0.1.70-3" }, { "libarchive", "3.8.1-5" }, { "zstd", "1.5.7-5" },
-	{ "xz", "5.8.3-11" },
-	/* m4, because flex@2.6.4-6 declares it as a RUNTIME dependency
-	 * where the shell flex@2.6.4-2 this floor used to pin did not.
-	 * Bumping flex to its only CPDL revision (cix#529) pulled m4 in
-	 * with it, and binutils -- whose own runtime deps are zlib and
-	 * flex -- could not resolve until m4 was here. m4 declares no
-	 * runtime package of its own, so it is a leaf. */
-	{ "m4", "1.4.20-6" },
+	{ "cbs", "v0.1.63-2" }, { "libarchive", "3.8.1-5" }, { "zstd", "1.5.7-5" },
+	{ "xz", "5.8.3-8" },
 };
 
 /*
