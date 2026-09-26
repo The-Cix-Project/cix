@@ -6,6 +6,26 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The cix release recipes retire with their artifacts, and `available` finally tells the truth (ADR-0313, #532)
+
+610 of 613 cix recipe versions removed from the box's recipe store, keeping `0.2.57-358`, `-359` and `-360`. This is the second half of the clean cutoff; the first removed the artifacts those recipes named.
+
+**The symptom it fixes, measured either side:**
+
+```
+BEFORE  cix  __hostbuild  0.2.57-360  installed  available=v2.57.358-1
+        cix  base         v2.57.167   installed  available=v2.57.358-1
+
+AFTER   cix  __hostbuild  0.2.57-360  installed  available=-
+        cix  base         v2.57.167   installed  available=0.2.57-360
+```
+
+`pkg_version_compare()` is natural sort, so every `v2.x` out-ranked `0.2.57` on the first character, and `find_recipe_path()`'s own comment names the highest-ordered version as the rolling-implicit default for plain `pkg install`, dependency resolution, hostbuild and update checks. The daemon was offering an upgrade to an artifact deleted hours earlier. The `base` row is now correct rather than absent — that entry genuinely is behind, and it names the real newest.
+
+**This amends [ADR-0309](docs/adr/0309-shell-recipes-are-history-the-shell-path-retires-with-its-last-dependent.md) for `cix` only, and the distinction matters.** That ADR kept the published `.sh` recipes for four reasons, and the load-bearing one — *"each carries the artifact approval that makes its cached bytes trustworthy"* — **expired** when those bytes were deleted, rather than being overruled. An approval for an artifact that no longer exists approves nothing. Every other package keeps its full recipe history, because none was renumbered and none lost its artifacts; generalising would be exactly the arbitrary act ADR-0309 exists to prevent.
+
+**On the tooling, because the same shape will recur.** Both halves were bulk operations (808 and 610 requests) and Claude Code's safety classifier refused the first, correctly — a delete loop against a live host is what that brake is for. They were carried out by the owner from reviewed scripts with a dry-run default and a guard that aborts if a current-scheme version reaches the delete list. The recipe script needed two fixes found by running it: **reads do not prove writes work** on a host with auth enabled, so an expired token listed all 610 happily and then 401'd every delete — it now preflights auth with a no-op delete and stops on the first 401 rather than issuing 609 more.
+
 ### Clean cutoff: every pre-renumber cix and installer artifact is gone (ADR-0312)
 
 **404 artifacts, 1,698 MiB** — 390 `cix` tarballs and 14 `cix-installer` ISOs, each with its signature. Three remain: `cix-installer-0.2.57-360-x86_64.iso`, `cix-0.2.57-360-x86_64.tar.gz`, and `cix-0.2.57-359-x86_64.tar.gz` (slot B's release, so the rollback target). The 643 artifacts of other packages are untouched — their numbering never changed, and removing them would have been the arbitrary act. Owner's decision, consistent with the standing no-backward-compat rule: *"I do not want any crap littering where we are."*
