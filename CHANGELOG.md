@@ -6,18 +6,6 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
-### Publishing a new shell recipe is refused (#516, ADR-0309 clause 4)
-
-`pkg_recipe_add()` refuses a shell recipe for a version it does not already hold. The parallel stops growing while it retires.
-
-**This is not the shell build path retiring.** `parse_recipe()` still reads and builds every shell recipe in the store, and it has to: **65 of 181 installed versions on 192.168.15.95 still resolve to a shell revision** — measured today by joining `pkg ls` against `pkg recipes`, whose `language` and `artifact_format` fields answer this directly. The list is 53 packages and includes glibc, gcc, kernel, binutils, python, coreutils and bash, so clause 3 is a separate and much larger change. ADR-0309 recorded 67 of 179 when it was written; two in, this has barely moved, which is the honest measure of how far off clause 3 is.
-
-**The check's position is the whole of its correctness**, and it is gated as such. It sits *after* the immutability block, so re-offering a stored recipe is still `PKG_ERR_DUPLICATE` — `recipe-sync` calls this function for every file in the corpus every six hours and its last run counted `added=28 skipped=379`, so refusing earlier would turn each of those skips into an error, every window, with no symptom but a number in `pkg sync-status` that nobody reads. It also sits after the `only_approval` return, so a published shell recipe can still be given the checksum of the bytes it produced; ADR-0309 keeps them as immutable history, and a history that cannot approve its own artifact is not intact. `test_pkg` asserts both halves — 400 for a new shell revision, **409 for a stored one** — because only the second one pins the position.
-
-**Nothing legitimate is blocked, measured in this order.** `cix-recipes` holds 9 shell recipes and every one is already published, so sync adds none and gains no new error. The `probe-*` convention — the dependent ADR-0309 said needed "a CPDL template proven on a host: a `.cbs` with a deliberately wrong hash must still make the daemon log `computed=`" — has one, proven six times over rather than argued: `probe-cix-tarball@103-1` through `@113-1` are all `pbs`, and three more CPDL probes did exactly that today measuring the cbs v0.1.57/58/59 tarballs. And all 8 publishes in this project's own test suite send `"format": "pbs"`; the shell fixtures `fopen()` into the recipe store and never reach the publish endpoint, which is why the FLOOR_SELFTESTS are untouched by this.
-
-An omitted `format` still means shell (main.c's own comment says so, for clients predating PBS), so that is the exact shape the new refusal answers.
-
 ### The live-tail test discarded the front of its own frame stream (#519)
 
 `test_pkg_build_log`'s intermittent failure was in the test, not the daemon. Its read of the upgrade response stopped at `\r\n\r\n` and threw away whatever that same `read()` had taken past it. `try_pkg_build_log_upgrade()` writes the 101 and then, when the capture buffer is non-empty, the replay snapshot, as two writes on a blocking socket; on loopback TCP is free to deliver both in one segment.

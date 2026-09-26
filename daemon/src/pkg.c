@@ -7588,60 +7588,6 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 	}
 	free(redacted);
 
-	/*
-	 * ADR-0309 clause 4: a NEW shell revision is refused, so the
-	 * parallel stops growing while it retires.
-	 *
-	 * Position is the whole of this check's correctness, and it is
-	 * the last thing in this function that could have been put
-	 * earlier and been wrong:
-	 *
-	 * - AFTER the immutability block above, so re-offering a recipe
-	 *   already in the store still returns PKG_ERR_DUPLICATE. That
-	 *   is what `recipe-sync` relies on: it calls this function for
-	 *   every file in the corpus every six hours and counted
-	 *   `added=28 skipped=379` on its last run. Refusing earlier
-	 *   would turn each of those skips into an error, every window.
-	 * - AFTER the `only_approval` return, so a PUBLISHED shell
-	 *   recipe can still be given the checksum of the bytes it
-	 *   produced (recipe_adds_only_artifact_sha256()). ADR-0309
-	 *   keeps published shell recipes as immutable history, and a
-	 *   history that cannot approve its own artifact is not intact.
-	 * - BEFORE the version directory is created, so a refusal leaves
-	 *   nothing behind.
-	 *
-	 * Nothing legitimate is blocked as of 2026-09-26, which is why
-	 * this costs nothing now (measured, in this order):
-	 * `cix-recipes` holds 9 shell recipes and every one is already
-	 * published, so sync adds none; the `probe-*` convention has its
-	 * CPDL template and it is proven on this host, not argued --
-	 * `probe-cix-tarball@103-1` through `@113-1` are all `pbs`, and
-	 * each made the daemon log `computed=<64 hex>` from a
-	 * deliberately wrong hash, which is exactly the proof ADR-0309
-	 * asks that dependent for; and all 8 publishes in this project's
-	 * own test suite send `"format": "pbs"` (the shell fixtures
-	 * fopen() into the recipe store and never reach this function at
-	 * all, which is why FLOOR_SELFTESTS are unaffected).
-	 *
-	 * This does NOT retire the shell BUILD path. 65 of 181 installed
-	 * versions still resolve to a shell revision here -- glibc, gcc,
-	 * kernel and binutils among them -- and parse_recipe() keeps
-	 * reading and building every one. That is ADR-0309 clause 3 and
-	 * it is a separate change (#516).
-	 */
-	if (!is_pbs) {
-		snprintf(g_recipe_add_err, sizeof(g_recipe_add_err),
-		         "shell recipes are history: a new revision is written in CPDL "
-		         "(ADR-0309 clause 4). Published shell revisions keep working and "
-		         "still build -- only a new one is refused");
-		logstore_write("cixd", "error",
-		               "pkg: recipe %s@%s refused: a new shell revision (ADR-0309 clause 4)",
-		               name, parsed.version);
-		unlink(staging_path);
-		free(explain_json);
-		return PKG_ERR_INVALID_RECIPE;
-	}
-
 	if (persist_mkdir_p(version_dir) != 0) {
 		unlink(staging_path);
 		free(explain_json);
