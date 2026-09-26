@@ -1765,6 +1765,14 @@ static void str_replace_all(char *buf, size_t cap, const char *needle, const cha
  *
  * Shrinks in place -- a token is 40 characters and the placeholder is
  * 14, so no reallocation and no truncation is possible here.
+ *
+ * WHAT THIS DOES NOT DO, because the paragraph above reads as though
+ * it does and #502 was filed from believing it. "The recipes that
+ * already exist stop being served" is true only of recipes carrying
+ * THIS token. One carrying `osakka:<password>@` basic auth holds a
+ * different secret, matches nothing here, and was served in full.
+ * Shape-based redaction is redact_url_userinfo() below, and the
+ * serving and logging paths run both.
  */
 static void redact_repo_token(char *buf, size_t cap)
 {
@@ -1773,6 +1781,89 @@ static void redact_repo_token(char *buf, size_t cap)
 	if (buf == NULL || tok == NULL || tok[0] == '\0')
 		return;
 	str_replace_all(buf, cap, tok, "{{REPO_TOKEN}}");
+}
+
+/*
+ * Every `scheme://user:secret@host` in `buf` loses its userinfo.
+ *
+ * THE DIFFERENCE FROM redact_repo_token() IS THE WHOLE POINT, and
+ * #502 is what happens without it. That function substitutes exactly
+ * one string -- whatever pkg_repo_token() returns -- so it protects
+ * recipes carrying THAT token and nothing else. A recipe carrying
+ * `https://osakka:<password>@git.home.arpa/...` uses basic auth, a
+ * different secret from the configured API token, so there was
+ * nothing to match and `pkg recipe show` served the credential in
+ * full. It then reached git, in a repository whose whole point is
+ * being readable.
+ *
+ * A credential is recognisable by SHAPE, not by equality with a
+ * string the daemon happens to know. Redacting the userinfo
+ * component covers every case including ones this host has never
+ * held -- which is the property that makes it a guarantee rather
+ * than a list.
+ *
+ * USERINFO THAT IS ALREADY A PLACEHOLDER IS LEFT ALONE. When the
+ * serving path runs redact_repo_token() first, a known token becomes
+ * `{{REPO_TOKEN}}`, which is not a secret, is exactly what the git
+ * corpus carries, and is more useful to a reader than `REDACTED`.
+ * Blanking it too would make the endpoint's output differ from the
+ * recipe's canonical form for no gain.
+ *
+ * Not used on the WRITE path, where redact_repo_token()'s
+ * substitution is functional rather than protective: it normalises a
+ * live token to the placeholder that substitute_repo_token() expands
+ * again at fetch time. Replacing an arbitrary credential with
+ * `REDACTED` there would store a URL that cannot fetch, turning a
+ * disclosure into a broken package.
+ */
+static void redact_url_userinfo(char *buf, size_t cap)
+{
+	static const char marker[] = "REDACTED";
+	const size_t marker_len = sizeof(marker) - 1;
+	char *p;
+
+	if (buf == NULL || cap == 0)
+		return;
+	p = buf;
+	while ((p = strstr(p, "://")) != NULL) {
+		char *authority = p + 3;
+		char *at = NULL;
+		char *q;
+		size_t span;
+		size_t len;
+
+		/* The authority ends at the first delimiter; an '@' after
+		 * one belongs to a path or query and is not userinfo. */
+		for (q = authority; *q != '\0'; q++) {
+			if (*q == '/' || *q == '?' || *q == '#' || *q == ' ' || *q == '\t' ||
+			    *q == '\n' || *q == '"' || *q == '\'')
+				break;
+			if (*q == '@')
+				at = q;
+		}
+		if (at == NULL) {
+			p = authority;
+			continue;
+		}
+		span = (size_t)(at - authority);
+		/* Already a placeholder -- see the comment above. */
+		if (memmem(authority, span, "{{", 2) != NULL) {
+			p = at;
+			continue;
+		}
+		len = strlen(buf);
+		if (len - span + marker_len + 1 > cap) {
+			/* Cannot fit the marker. Leave this one rather than
+			 * truncate the document, and keep scanning: a buffer
+			 * this tight is not a reason to stop protecting the
+			 * rest of it. */
+			p = at;
+			continue;
+		}
+		memmove(authority + marker_len, at, len - (size_t)(at - buf) + 1);
+		memcpy(authority, marker, marker_len);
+		p = authority + marker_len;
+	}
 }
 
 /*
@@ -6701,6 +6792,9 @@ enum pkg_error pkg_recipe_get(const char *name, const char *version, struct json
 	 * put a live token here. Redacted on the way out, which is what
 	 * covers the ones already on disk. */
 	redact_repo_token(content, content_len + 1);
+	/* #502: and any OTHER credential, by shape. The line above only
+	 * covers the configured token. */
+	redact_url_userinfo(content, content_len + 1);
 
 	jw_obj_open(w);
 	jw_key(w, "name");
@@ -7271,6 +7365,36 @@ const char *pkg_recipe_add_last_error(void)
 	return g_recipe_add_err;
 }
 
+/*
+ * #503: PKG_ERR_PERSIST_FAILED, with the errno recorded so the
+ * client is told WHY.
+ *
+ * Every one of these sites used to `return PKG_ERR_PERSIST_FAILED`
+ * bare, and respond_pkg_recipe_error() turns that into
+ * `500 "recipe operation failed"` -- no cause, no errno, nothing.
+ *
+ * On 2026-09-21 that was the entire diagnosis available while
+ * /var/lib/cix sat at 0.0 GiB free: every `POST /v1/pkg/recipes`
+ * answered a bare 500, for any package. A write failing for want of
+ * space is distinguishable from every other failure and is the
+ * single most actionable thing the daemon could say; it said the
+ * least actionable thing instead, and the disk being full was found
+ * by looking, an hour later.
+ *
+ * Reuses the existing last-error channel rather than inventing one,
+ * and captures errno AT the failure rather than trusting it to
+ * survive the unwinding.
+ */
+static enum pkg_error recipe_persist_failed(const char *what)
+{
+	int e = errno;
+
+	snprintf(g_recipe_add_err, sizeof(g_recipe_add_err), "could not %s: %s", what,
+	         e != 0 ? strerror(e) : "no error reported");
+	logstore_write("cixd", "error", "pkg recipe: %s", g_recipe_add_err);
+	return PKG_ERR_PERSIST_FAILED;
+}
+
 enum pkg_error pkg_recipe_add(const char *name, const char *content,
                                enum pkg_recipe_format format, int *out_was_approval)
 {
@@ -7293,7 +7417,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 		return PKG_ERR_INVALID_NAME;
 
 	if (persist_mkdir_p(g_recipes_dir) != 0)
-		return PKG_ERR_PERSIST_FAILED;
+		return recipe_persist_failed("create the recipe directory");
 
 	/* Staged under g_recipes_dir itself (not yet inside any
 	 * name/version subdirectory -- the version isn't known until the
@@ -7314,12 +7438,12 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 	 * does, rather than a second, secret-bearing version of it. */
 	redacted = strdup(content);
 	if (redacted == NULL)
-		return PKG_ERR_PERSIST_FAILED;
+		return recipe_persist_failed("copy the recipe text");
 	redact_repo_token(redacted, strlen(redacted) + 1);
 	content = redacted;
 	if (persist_atomic_write(staging_path, content, strlen(content)) != 0) {
 		free(redacted);
-		return PKG_ERR_PERSIST_FAILED;
+		return recipe_persist_failed("write the staged recipe");
 	}
 
 	/*
@@ -7338,7 +7462,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 		if (explain_json == NULL) {
 			unlink(staging_path);
 			free(redacted);
-			return PKG_ERR_PERSIST_FAILED;
+			return recipe_persist_failed("allocate the explain buffer");
 		}
 		if (run_cbs_explain(staging_path, explain_json, PKG_EXPLAIN_MAX, &json_len, err,
 		                     sizeof(err)) != 0) {
@@ -7588,7 +7712,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 		}
 		if (rename(staging_path, recipe_path) != 0) {
 			unlink(staging_path);
-			return PKG_ERR_PERSIST_FAILED;
+			return recipe_persist_failed("move the recipe into place");
 		}
 		logstore_write("cixd", "info",
 		                "pkg: recipe %s@%s approved its published artifact", name,
@@ -7739,6 +7863,9 @@ enum pkg_error pkg_recipe_rederive_identity(const char *recipe_path)
 enum pkg_error pkg_recipe_delete(const char *name, const char *version)
 {
 	char name_dir[PATH_MAX];
+	/* #503: shared with pkg_recipe_add() via respond_pkg_recipe_error(),
+	 * so it must not report that function's last message. */
+	g_recipe_add_err[0] = '\0';
 
 	if (!pkg_name_is_valid(name))
 		return PKG_ERR_INVALID_NAME;
@@ -7767,7 +7894,7 @@ enum pkg_error pkg_recipe_delete(const char *name, const char *version)
 			unlink(explain_path);
 		}
 		if (unlink(recipe_path) != 0 || rmdir(version_dir) != 0)
-			return PKG_ERR_PERSIST_FAILED;
+			return recipe_persist_failed("remove the recipe version");
 		/* Leave name_dir itself if other versions remain -- rmdir()
 		 * on a non-empty directory harmlessly fails and is ignored. */
 		rmdir(name_dir);
@@ -7803,7 +7930,7 @@ enum pkg_error pkg_recipe_delete(const char *name, const char *version)
 		if (!found)
 			return PKG_ERR_NOT_FOUND;
 		if (rmdir(name_dir) != 0)
-			return PKG_ERR_PERSIST_FAILED;
+			return recipe_persist_failed("remove the recipe directory");
 		return PKG_OK;
 	}
 }
@@ -8472,8 +8599,10 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 				 * same discipline as pkg_sync_start's own child
 				 * (#405/#410). */
 				redact_repo_token(curl_err, sizeof(curl_err));
+				redact_url_userinfo(curl_err, sizeof(curl_err));
 				snprintf(url_shown, sizeof(url_shown), "%s", url);
 				redact_repo_token(url_shown, sizeof(url_shown));
+				redact_url_userinfo(url_shown, sizeof(url_shown));
 				/*
 				 * Every failed url is named, not just the last.
 				 * A fallback list whose failures collapse into one
@@ -9971,6 +10100,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 				snprintf(url_redacted, sizeof(url_redacted), "%s",
 				         recipe.source[i][0] != '\0' ? recipe.source[i] : "(none)");
 				redact_repo_token(url_redacted, sizeof(url_redacted));
+				redact_url_userinfo(url_redacted, sizeof(url_redacted));
 				logstore_write("cixd", "error",
 				                "pkg %s@%s: source %d %s. path=%s bytes=%lld computed=%s "
 				                "declared=%s url=%s",
@@ -13593,6 +13723,7 @@ enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd)
 			 * "both sides of persistence" discipline #405/#60 already
 			 * established for recipe content. */
 			redact_repo_token(curl_err, sizeof(curl_err));
+			redact_url_userinfo(curl_err, sizeof(curl_err));
 			efd = open(err_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 			if (efd >= 0) {
 				ssize_t ignored = write(efd, curl_err, strlen(curl_err));

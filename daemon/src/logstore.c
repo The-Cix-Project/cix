@@ -78,6 +78,14 @@ static int g_kmsg_fd = -1;
 static FILE *g_current_fp;
 static uint64_t g_current_seq;
 static long g_current_size;
+/*
+ * #503: the store's own write failures, kept where a full disk
+ * cannot erase them. Sticky from the first failure until a write
+ * succeeds again, and reported by logstore_tail_ex() on every read.
+ */
+static int g_write_fail_errno;
+static long long g_write_fail_first_ts;
+static long g_write_fail_count;
 
 static int save_state(void)
 {
@@ -406,10 +414,50 @@ static void write_entry(const char *source, const char *level, const char *conta
 	jw_obj_close(&w);
 
 	if (ensure_current_segment_open() == 0 && g_current_fp != NULL) {
-		fwrite(w.buf, 1, w.len, g_current_fp);
-		fputc('\n', g_current_fp);
-		fflush(g_current_fp);
-		g_current_size += (long)w.len + 1;
+		int failed;
+
+		errno = 0;
+		if (fwrite(w.buf, 1, w.len, g_current_fp) != w.len)
+			failed = 1;
+		else if (fputc('\n', g_current_fp) == EOF)
+			failed = 1;
+		else
+			failed = (fflush(g_current_fp) != 0);
+
+		/*
+		 * #503: these three return values were all discarded, and
+		 * that is how a full disk became invisible.
+		 *
+		 * When /var/lib/cix reached 0.0 GiB free, this function kept
+		 * being called and kept writing nothing. The store froze at
+		 * the exact second the failing build started, so the one
+		 * place an operator looks -- and the place `image gc` tells
+		 * them to look, "see the log store" -- had no record of the
+		 * thing that broke it. A logger that goes quiet exactly when
+		 * things break is worse than no logger, because silence
+		 * reads as "nothing happened".
+		 *
+		 * The failure is kept IN MEMORY, which is the only place
+		 * left that still works, and logstore_tail_ex() reports it
+		 * on every read.
+		 */
+		if (failed) {
+			if (g_write_fail_count == 0) {
+				g_write_fail_errno = errno;
+				g_write_fail_first_ts = (long long)time(NULL);
+			}
+			g_write_fail_count++;
+			clearerr(g_current_fp);
+		} else {
+			if (g_write_fail_count != 0) {
+				/* Recovered. Say so in the store itself, now that
+				 * it can hold it, and stop reporting. */
+				g_write_fail_count = 0;
+				g_write_fail_errno = 0;
+				g_write_fail_first_ts = 0;
+			}
+			g_current_size += (long)w.len + 1;
+		}
 	}
 	jw_free(&w);
 }
@@ -496,6 +544,39 @@ struct tail_entry {
 	char msg[LOGSTORE_MSG_MAX];
 };
 
+
+/*
+ * #503: appends the store's own "I cannot write" entry, if it cannot.
+ *
+ * Called from every exit of logstore_tail_ex(), including the two
+ * that return an empty array early, because a reader who gets `[]`
+ * is exactly the reader most likely to conclude nothing happened.
+ */
+static void emit_write_failure_entry(struct json_writer *w)
+{
+	char msg[LOGSTORE_MSG_MAX];
+
+	if (g_write_fail_count == 0)
+		return;
+	snprintf(msg, sizeof(msg),
+	         "log store cannot write: %s (%ld entr%s lost since %lld). Entries are missing "
+	         "from this response and from disk; free space on the data directory's "
+	         "filesystem is the usual cause.",
+	         strerror(g_write_fail_errno), g_write_fail_count,
+	         g_write_fail_count == 1 ? "y" : "ies", g_write_fail_first_ts);
+	jw_obj_open(w);
+	jw_key(w, "ts");
+	jw_int(w, (long long)time(NULL));
+	jw_key(w, "source");
+	jw_str(w, "logstore");
+	jw_key(w, "level");
+	jw_str(w, "err");
+	jw_key(w, "container");
+	jw_str(w, "");
+	jw_key(w, "msg");
+	jw_str(w, msg);
+	jw_obj_close(w);
+}
 /*
  * Rotate the first n entries left by k, in place (#450). Three
  * reversals: reverse [0,k), reverse [k,n), reverse [0,n). Used to
@@ -550,6 +631,7 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 			 * already 400s a malformed regex before ever reaching
 			 * here; this is just defense in depth. */
 			jw_arr_open(w);
+			emit_write_failure_entry(w);
 			jw_arr_close(w);
 			return;
 		}
@@ -561,6 +643,7 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 		if (have_re)
 			regfree(&re);
 		jw_arr_open(w);
+		emit_write_failure_entry(w);
 		jw_arr_close(w);
 		return;
 	}
@@ -693,6 +776,7 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 		jw_str(w, ring[idx].msg);
 		jw_obj_close(w);
 	}
+	emit_write_failure_entry(w);
 	jw_arr_close(w);
 	free(ring);
 	if (have_re)

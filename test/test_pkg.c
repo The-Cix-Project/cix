@@ -3682,6 +3682,78 @@ int main(void)
 		}
 		cix_response_free(&r);
 
+		/*
+		 * #502: the endpoint must not serve a credential, and NOT
+		 * ONLY the one the daemon happens to hold.
+		 *
+		 * redact_repo_token() substitutes exactly one string --
+		 * whatever pkg_repo_token() returns -- so a recipe carrying
+		 * `user:password@` basic auth matched nothing and
+		 * `pkg recipe show` served it in full. It then reached git,
+		 * in a repository whose whole point is being readable.
+		 *
+		 * The secret here is deliberately NOT the configured token:
+		 * a test using that one would pass against the old code and
+		 * prove nothing. What is asserted is the shape-based
+		 * redaction, which is the guarantee -- a credential is
+		 * recognisable by being userinfo, not by equality with a
+		 * string this host knows.
+		 */
+		{
+			char cred_body[4096];
+			char cred_url[512];
+			const char *served;
+			static const char cred_secret[] = "n0t-the-repo-token-pa55";
+
+			snprintf(cred_url, sizeof(cred_url),
+			         "https://someuser:%s@example.invalid/x.tar.gz", cred_secret);
+			cpdl_recipe_text(cred_body, sizeof(cred_body), "credrecipe", "1.0", cred_url,
+			                 api_sha, NULL, CPDL_STD_TOOLS, NULL, api_build, api_install);
+			jw_init(&w);
+			jw_obj_open(&w);
+			jw_key(&w, "name");
+			jw_str(&w, "credrecipe");
+			jw_key(&w, "content");
+			jw_str(&w, cred_body);
+			jw_key(&w, "format");
+			jw_str(&w, "cbs");
+			jw_obj_close(&w);
+			w.buf[w.len] = '\0';
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
+			    r.status != 204) {
+				fprintf(stderr, "FAIL: publish credrecipe, status=%d\n", r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/recipes/credrecipe", NULL, &r) !=
+			        0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: GET credrecipe, status=%d\n", r.status);
+				ok = 0;
+			} else {
+				served = json_str_field(r.json, "content");
+				if (served == NULL) {
+					fprintf(stderr, "FAIL: credrecipe served no content\n");
+					ok = 0;
+				} else if (strstr(served, cred_secret) != NULL) {
+					fprintf(stderr,
+					        "FAIL: GET /v1/pkg/recipes/credrecipe served the credential "
+					        "(#502) -- the userinfo of a source url must be redacted "
+					        "whether or not it is the configured token\n");
+					ok = 0;
+				} else if (strstr(served, "REDACTED") == NULL) {
+					fprintf(stderr,
+					        "FAIL: credrecipe's userinfo was neither served nor redacted "
+					        "-- expected REDACTED in the content\n");
+					ok = 0;
+				}
+			}
+			cix_response_free(&r);
+		}
+
 		/* An unknown recipe name -> 404, not a raw-id-style fallback
 		 * (there is no such fallback for recipes -- a name either has
 		 * a recipe on file or it doesn't). */

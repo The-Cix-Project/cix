@@ -19759,6 +19759,18 @@ static void respond_pkg_recipe_error(int fd, enum pkg_error err)
 		              "another version of this package already publishes under the same artifact name (a missing release reads as release 1) -- choose a different release number; see the daemon log for which version and which name");
 		break;
 	case PKG_ERR_PERSIST_FAILED:
+		/*
+		 * #503: with the reason, which used to be discarded. A bare
+		 * "recipe operation failed" was the whole of what the API
+		 * said while /var/lib/cix was at 0.0 GiB free -- for every
+		 * package, on every attempt. The errno is captured at the
+		 * failing syscall (recipe_add_persist_failed()), so ENOSPC
+		 * arrives here as ENOSPC.
+		 */
+		respond_error(fd, 500, "Internal Server Error",
+		              pkg_recipe_add_last_error()[0] != '\0' ? pkg_recipe_add_last_error()
+		                                                      : "recipe operation failed");
+		break;
 	default:
 		respond_error(fd, 500, "Internal Server Error", "recipe operation failed");
 		break;
