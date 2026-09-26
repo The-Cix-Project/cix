@@ -59,6 +59,27 @@ const char *cbs_explain_name(const struct cbs_explain *ex);
  */
 int cbs_explain_version(const struct cbs_explain *ex, char *out, size_t out_size);
 
+/*
+ * The SAME two fields, unjoined: CPDL's `version` into out_version,
+ * CPDL's `release` into out_release.
+ *
+ * Read from the explain document, never by splitting what
+ * cbs_explain_version() produced. That distinction is the whole
+ * reason this exists: the trailing `-N` of the fused string is not
+ * reliably the release. `v2.2.0-rc1` is a real published cix version
+ * whose last hyphen introduces a pre-release tag, and `0.2.57-361`
+ * is one whose last hyphen introduces a release, and nothing in the
+ * string tells them apart. The cache guesses (a trailing run of
+ * digits, absent meaning 1) and is right often enough for a
+ * filename; a caller that must hand `--version` and `--release` to
+ * `cbs package` separately cannot guess at all, because the guess
+ * would be written INTO the artifact's own metadata.
+ *
+ * Returns 0 on success, -1 if the version would not fit.
+ */
+int cbs_explain_version_parts(const struct cbs_explain *ex, char *out_version,
+                              size_t out_version_size, long long *out_release);
+
 /* How many sources the document declares (ADR-0036's positional list). */
 int cbs_explain_source_count(const struct cbs_explain *ex);
 

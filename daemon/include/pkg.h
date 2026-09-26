@@ -610,6 +610,50 @@ void pkg_write_json_recipes(struct json_writer *w);
 enum pkg_error pkg_artifact_publish(const char *name);
 enum pkg_error pkg_artifact_publish_in(const char *name, const char *image);
 void pkg_artifact_cache_path(const char *name, const char *version, char *out, size_t out_size);
+/*
+ * The same path for a WRITER, which must say which format it is about
+ * to create. The reader above falls back to `.tar.gz` when no file
+ * exists -- correct for "where is it", and the whole of cix#528 when
+ * used for "where shall I put it", since the hostbuild publisher only
+ * ever calls it when nothing exists.
+ */
+void pkg_artifact_cache_path_for(const char *name, const char *version, const char *format,
+                                  char *out, size_t out_size);
+/* The filename suffix a format is written with (".cixpkg"/".tar.gz"),
+ * so a caller naming an artifact outside the cache maps format to
+ * suffix through this rather than a second time of its own. */
+const char *pkg_artifact_suffix(const char *format);
+
+/* The architecture this host stamps into artifact names, exported so
+ * the hostbuild exporter passes `cbs package --arch` the same value
+ * the artifact name already carries rather than asking uname itself
+ * (cix#528). */
+const char *pkg_artifact_arch(void);
+
+/*
+ * The CPDL engine (ADR-0305). Staged into the control-plane root by
+ * mkbootroot from the cix-hosttools image, and TOLERANTLY -- a box
+ * whose hosttools image predates `pkg install --image=cix-hosttools
+ * cbs` simply has no engine, which is a normal state. So every use of
+ * this path checks it is there first and says what to install when it
+ * is not, rather than failing at execve() with ENOENT.
+ *
+ * In the header rather than pkg.c since cix#528: the hostbuild
+ * exporter in main.c execs it too, to write a CIXPKG from a staged
+ * tree, and two spellings of one path is how they drift apart.
+ */
+#define PKG_CBS_BIN "/usr/bin/cbs"
+/*
+ * For an installed hostbuild: its recipe's declared artifact format,
+ * and CPDL's `version`/`release` unjoined, which is what
+ * `cbs package --version X --release N` requires and what the fused
+ * version string cannot be split back into (`v2.2.0-rc1` versus
+ * `0.2.57-361`). PKG_ERR_NOT_FOUND if the version has no readable
+ * recipe -- report it, do not guess a format.
+ */
+enum pkg_error pkg_hostbuild_package_info(const char *name, const char *version, char *out_format,
+                                           size_t out_format_size, char *out_bare_version,
+                                           size_t out_bare_version_size, long long *out_release);
 int pkg_artifact_cache_has(const char *name, const char *version);
 
 /*

@@ -59,16 +59,6 @@ extern char **environ;
 #define PKG_UNSQUASHFS_BIN "/usr/bin/unsquashfs"
 
 /*
- * The CPDL engine (ADR-0305). Staged into the control-plane root by
- * mkbootroot from the cix-hosttools image, and TOLERANTLY -- a box
- * whose hosttools image predates `pkg install --image=cix-hosttools
- * cbs` simply has no engine, which is a normal state. So every use of
- * this path checks it is there first and says what to install when it
- * is not, rather than failing at execve() with ENOENT.
- */
-#define PKG_CBS_BIN "/usr/bin/cbs"
-
-/*
  * Ceiling on one `cbs explain --json` document (ADR-0305).
  *
  * Generous rather than tight, and heap-allocated rather than a stack
@@ -300,6 +290,24 @@ struct pkg_entry {
 struct pkg_recipe {
 	char name[PKG_NAME_MAX];
 	char version[PKG_VERSION_MAX];
+	/*
+	 * The two halves `version` above is the join of (ADR-0305):
+	 * CPDL's own `version` and `release`, carried separately because
+	 * they cannot be recovered from the join.
+	 *
+	 * `0.2.57-361` splits into 0.2.57 and 361; `v2.2.0-rc1` does not
+	 * split at all, its last hyphen introducing a pre-release tag.
+	 * Nothing in the string distinguishes the two cases. The cache
+	 * guesses -- trailing digits are the release, absent means 1 --
+	 * which is good enough to name a file and not good enough to
+	 * write into an artifact's own metadata, which is what
+	 * `cbs package --version X --release N` does (cix#528).
+	 *
+	 * A shell recipe has no release concept, so it keeps
+	 * release 1 -- the same value the cache already infers for it.
+	 */
+	char bare_version[PKG_VERSION_MAX];
+	long long release;
 	/*
 	 * Which language this recipe is written in (ADR-0305). Set by
 	 * parse_recipe() from the file's own name, because the filename
@@ -2165,6 +2173,16 @@ static int parse_cbs_recipe(const char *path, struct pkg_recipe *out)
 		cbs_explain_free(ex);
 		return -1;
 	}
+	/* The same two fields unjoined, for anything that must hand them
+	 * over separately (cix#528). Read from the document, never split
+	 * back out of out->version -- see struct pkg_recipe. */
+	if (cbs_explain_version_parts(ex, out->bare_version, sizeof(out->bare_version),
+	                               &out->release) != 0) {
+		logstore_write("cixd", "error", "pkg: %s: version does not fit on its own",
+		               explain_path);
+		cbs_explain_free(ex);
+		return -1;
+	}
 
 	count = cbs_explain_source_count(ex);
 	if (count <= 0 || count > PKG_MAX_SOURCES) {
@@ -2359,6 +2377,16 @@ static int parse_recipe(const char *path, struct pkg_recipe *out)
 	 * down somewhere that could drift from what the code does.
 	 */
 	snprintf(out->artifact_format, sizeof(out->artifact_format), "%s", PKG_ARTIFACT_FORMAT_TARGZ);
+	/*
+	 * And no release field either, so its whole version string is the
+	 * version and the release is 1 -- which is not a default invented
+	 * here, it is the value the artifact cache already infers for a
+	 * name with no trailing -N (see PKG_ERR_ARTIFACT_NAME_TAKEN's own
+	 * note in pkg.h). Set explicitly so the field is never left at
+	 * zero for a caller that reads it.
+	 */
+	snprintf(out->bare_version, sizeof(out->bare_version), "%s", out->version);
+	out->release = 1;
 	return 0;
 }
 
@@ -15332,6 +15360,76 @@ static void pkg_artifact_push_enqueue(const char *name, const char *version)
 void pkg_artifact_cache_path(const char *name, const char *version, char *out, size_t out_size)
 {
 	(void)cache_artifact_path_existing(name, version, out, out_size);
+}
+
+/*
+ * The cache path a package of THIS format would occupy, for a caller
+ * that is about to create it.
+ *
+ * pkg_artifact_cache_path() above answers "where is it", by looking
+ * for a file that exists and falling back to `.tar.gz` when none
+ * does. That fallback is right for a reader and silently wrong for a
+ * writer: the hostbuild publisher calls it precisely when nothing
+ * exists yet -- it returns early when pkg_artifact_cache_has() is
+ * true -- so the fallback was the only branch it ever took, and every
+ * hostbuild published a tarball no matter what its recipe declared
+ * (cix#528). A writer must say which format it is writing.
+ */
+void pkg_artifact_cache_path_for(const char *name, const char *version, const char *format,
+                                  char *out, size_t out_size)
+{
+	cache_artifact_path(name, version, format, out, out_size);
+}
+
+/* The filename suffix a format is written with, exported so the
+ * hostbuild exporter in main.c names its output the same way this
+ * file does rather than mapping format to suffix a second time. */
+const char *pkg_artifact_suffix(const char *format)
+{
+	return artifact_suffix(format);
+}
+
+const char *pkg_artifact_arch(void)
+{
+	return pkg_host_arch();
+}
+
+/*
+ * What `cbs package` needs to turn a staged hostbuild tree into a
+ * CIXPKG: the declared artifact format, and the version/release split
+ * that cannot be recovered from the fused version string.
+ *
+ * Its own function rather than more out-parameters on
+ * pkg_hostbuild_artifact_info(), which answers a different question
+ * (where are the bytes) for two other callers.
+ *
+ * Returns PKG_ERR_NOT_FOUND when the version has no readable recipe.
+ * That is a real possibility -- a recipe can be removed from the
+ * store while its package stays installed -- and the caller must
+ * report it rather than guess a format, because guessing is the bug
+ * this exists to fix.
+ */
+enum pkg_error pkg_hostbuild_package_info(const char *name, const char *version, char *out_format,
+                                           size_t out_format_size, char *out_bare_version,
+                                           size_t out_bare_version_size, long long *out_release)
+{
+	struct pkg_recipe recipe;
+	char recipe_path[PATH_MAX];
+
+	if (name == NULL || version == NULL)
+		return PKG_ERR_NOT_FOUND;
+	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0)
+		return PKG_ERR_NOT_FOUND;
+	memset(&recipe, 0, sizeof(recipe));
+	if (parse_recipe(recipe_path, &recipe) != 0)
+		return PKG_ERR_INVALID_RECIPE;
+	if (out_format != NULL)
+		snprintf(out_format, out_format_size, "%s", recipe.artifact_format);
+	if (out_bare_version != NULL)
+		snprintf(out_bare_version, out_bare_version_size, "%s", recipe.bare_version);
+	if (out_release != NULL)
+		*out_release = recipe.release;
+	return PKG_OK;
 }
 
 /*

@@ -9394,7 +9394,27 @@ static void publish_hostbuild_artifact(const char *name)
 	if (!is_hostbuild || pkg_artifact_cache_has(name, version))
 		return;
 
-	pkg_artifact_cache_path(name, version, dest, sizeof(dest));
+	/*
+	 * The path this will be WRITTEN to, in the format the recipe
+	 * declares (ADR-0307) -- not pkg_artifact_cache_path(), whose
+	 * job is to find a file that exists and which therefore always
+	 * fell through to its `.tar.gz` default here, because this
+	 * function returns above when the artifact already exists. Every
+	 * hostbuild published a tarball for that one reason (cix#528).
+	 */
+	{
+		char format[PKG_ARTIFACT_FORMAT_MAX];
+
+		if (pkg_hostbuild_package_info(name, version, format, sizeof(format), NULL, 0, NULL) !=
+		    PKG_OK) {
+			logstore_write("cixd", "warning",
+			                "artifact publish: %s@%s has no readable recipe, so its artifact "
+			                "format is unknown and it will not be published",
+			                name, version);
+			return;
+		}
+		pkg_artifact_cache_path_for(name, version, format, dest, sizeof(dest));
+	}
 	snprintf(g_artifact_export_publish_name, sizeof(g_artifact_export_publish_name), "%s", name);
 	if (artifact_export_start(ARTIFACT_EXPORT_KIND_HOSTBUILD, name, dest, err, sizeof(err)) != 0) {
 		g_artifact_export_publish_name[0] = '\0';
@@ -9402,7 +9422,7 @@ static void publish_hostbuild_artifact(const char *name)
 		 * unnoticed for five releases behind a message that asserted
 		 * the wrong cause. */
 		logstore_write("cixd", "warning",
-		                "artifact publish: could not build a tarball for %s@%s, so it will "
+		                "artifact publish: could not build an artifact for %s@%s, so it will "
 		                "not be published: %s",
 		                name, version, err);
 	}
@@ -9575,6 +9595,9 @@ static int artifact_export_start(enum artifact_export_kind kind, const char *nam
 	char version[IMAGE_VERSION_MAX];
 	char src[PATH_MAX];
 	char out_dir[PATH_MAX];
+	char pkg_format[PKG_ARTIFACT_FORMAT_MAX];
+	char pkg_bare_version[PKG_VERSION_MAX];
+	long long pkg_release = 1;
 	pid_t pid;
 	int pidfd;
 
@@ -9615,11 +9638,36 @@ static int artifact_export_start(enum artifact_export_kind kind, const char *nam
 		snprintf(err_msg, err_msg_size, "could not create %s: %s", out_dir, strerror(errno));
 		return -1;
 	}
+	/*
+	 * cix#528: a HOSTBUILD's format is the one its recipe declares
+	 * (ADR-0307), and since cbs#247 there is something that can
+	 * write it -- `cbs package`, which turns a tree the caller
+	 * assembled into a CIXPKG. Before that, nothing could, which is
+	 * why this path tarred unconditionally.
+	 *
+	 * An IMAGE export is deliberately untouched and stays a tarball:
+	 * it is image_artifact_sha256 territory (ADR-0123) with its own
+	 * consumer, and converting it here would be widening a fix into
+	 * a subsystem nobody has looked at.
+	 */
+	pkg_format[0] = '\0';
+	if (kind == ARTIFACT_EXPORT_KIND_HOSTBUILD) {
+		if (pkg_hostbuild_package_info(name, version, pkg_format, sizeof(pkg_format),
+		                                pkg_bare_version, sizeof(pkg_bare_version),
+		                                &pkg_release) != PKG_OK) {
+			snprintf(err_msg, err_msg_size,
+			         "no readable recipe for %s@%s, so its artifact format is unknown", name,
+			         version);
+			return -1;
+		}
+	}
+
 	if (dest_override != NULL)
 		snprintf(g_artifact_export_path, sizeof(g_artifact_export_path), "%s", dest_override);
 	else
-		snprintf(g_artifact_export_path, sizeof(g_artifact_export_path), "%s/%s-%s.tar.gz",
-		         out_dir, name, version);
+		snprintf(g_artifact_export_path, sizeof(g_artifact_export_path), "%s/%s-%s%s", out_dir,
+		         name, version,
+		         pkg_format[0] != '\0' ? pkg_artifact_suffix(pkg_format) : ".tar.gz");
 	unlink(g_artifact_export_path);
 
 	/*
@@ -9659,6 +9707,32 @@ static int artifact_export_start(enum artifact_export_kind kind, const char *nam
 		if (pid == 0) {
 			if (errpipe[1] >= 0)
 				dup2(errpipe[1], 2);
+			/*
+			 * A CIXPKG is written by CBS, never by this process.
+			 * The argv was read off the binary rather than from
+			 * cbs#247's prose (`probe-cbspackage@3` on
+			 * 192.168.15.95, 2026-09-26, cbs 0.1.71):
+			 *
+			 *   cbs package ROOT --name NAME --version VERSION
+			 *       --release N --arch ARCH --output FILE
+			 *       [--license SPDX]
+			 *
+			 * and it answers "--name, --version, --release,
+			 * --arch, and --output are required" if any is
+			 * missing. Reading it that way is the cbs#243 lesson:
+			 * a claim about cbs taken from prose has already
+			 * diverged from its source once.
+			 */
+			if (strcmp(pkg_format, PKG_ARTIFACT_FORMAT_CIXPKG) == 0) {
+				char release_str[32];
+
+				snprintf(release_str, sizeof(release_str), "%lld", pkg_release);
+				execl(PKG_CBS_BIN, "cbs", "package", src, "--name", name, "--version",
+				      pkg_bare_version, "--release", release_str, "--arch", pkg_artifact_arch(),
+				      "--output", g_artifact_export_path, (char *)NULL);
+				fprintf(stderr, "execve %s: %s\n", PKG_CBS_BIN, strerror(errno));
+				_exit(127);
+			}
 			_exit(targz_run(src, g_artifact_export_path));
 		}
 		if (errpipe[1] >= 0)

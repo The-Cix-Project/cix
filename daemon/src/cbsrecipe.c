@@ -110,6 +110,24 @@ int cbs_explain_version(const struct cbs_explain *ex, char *out, size_t out_size
 	return 0;
 }
 
+int cbs_explain_version_parts(const struct cbs_explain *ex, char *out_version,
+                              size_t out_version_size, long long *out_release)
+{
+	const char *version;
+	int n;
+
+	if (ex == NULL || out_version == NULL || out_version_size == 0 || out_release == NULL)
+		return -1;
+	version = str_or_empty(json_object_get(ex->root, "version"));
+	*out_release = (long long)json_as_number(json_object_get(ex->root, "release"));
+	n = snprintf(out_version, out_version_size, "%s", version);
+	if (n < 0 || (size_t)n >= out_version_size) {
+		out_version[0] = '\0';
+		return -1;
+	}
+	return 0;
+}
+
 static const struct json_value *sources_array(const struct cbs_explain *ex)
 {
 	const struct json_value *v;
