@@ -683,39 +683,95 @@ static int write_stamped_recipe(const struct cix_client *c, const char *name,
  * else, so what this build ran against is a property of the recipe
  * rather than of whatever the shared sandbox happens to hold.
  */
-static int write_builddeps_recipe(const char *name, const char *version, const char *tarball_path,
+/*
+ * A space-separated build-tool list, as CPDL `tool` declarations.
+ *
+ * The callers' strings are unchanged by the move to CPDL, because
+ * the pinned spelling is the same one they already used: the CPDL
+ * spec's own example is `tool "tcc@0.9.27-7"` and upstream's
+ * `tests/fixtures/valid/complete.cbs` carries `tool "ninja@1.12.1-2"`
+ * (read from cbs v0.1.63 by probe-cbs-toolpin@1-1, rather than
+ * guessed). So "greeter@1.0-1" travels through as-is.
+ *
+ * Everything is emitted as `tool`, including the compiler. That is
+ * what the shell form's flat pkg_build_depends meant, and the spec
+ * pins tcc as a tool in the very line quoted above, so the two
+ * spellings do not differ in what they declare.
+ */
+static void cpdl_tools_from_list(char *out, size_t out_size, const char *list)
+{
+	size_t len = 0;
+	const char *p = list;
+
+	out[0] = '\0';
+	while (*p != '\0') {
+		const char *start;
+
+		while (*p == ' ')
+			p++;
+		start = p;
+		while (*p != '\0' && *p != ' ')
+			p++;
+		if (p == start)
+			break;
+		len += (size_t)snprintf(out + len, out_size - len, "            tool \"%.*s\"\n",
+		                        (int)(p - start), start);
+		if (len >= out_size)
+			return;
+	}
+}
+
+/*
+ * Issue #109: a recipe that DECLARES its build tools. The build
+ * container is then composed from exactly those packages and nothing
+ * else, so what this build ran against is a property of the recipe
+ * rather than of whatever the shared sandbox happens to hold.
+ */
+static int write_builddeps_recipe(const struct cix_client *c, const char *name,
+                                   const char *version, const char *tarball_path,
                                    const char *sha256, const char *build_depends)
 {
-	char name_dir[256];
-	char path[300];
-	FILE *f;
+	char tools[1024];
+	char srcdir[160];
+	char build_body[512], install_body[768];
 
-	snprintf(name_dir, sizeof(name_dir), "%s/recipes/%s", g_pkg_state_dir, name);
-	mkdir(name_dir, 0755);
-	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
-	mkdir(path, 0755);
-	snprintf(path, sizeof(path), "%s/recipes/%s/%s/build.sh", g_pkg_state_dir, name, version);
-	f = fopen(path, "w");
-	if (f == NULL)
-		return -1;
-	fprintf(f, "pkg_name=%s\n", name);
-	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
-	fprintf(f, "pkg_sha256=%s\n", sha256);
-	fprintf(f, "pkg_depends=\"\"\n");
-	/* This writer takes its declaration from the caller -- that is its
-	 * whole purpose (proving a recipe's declared tools are honoured,
-	 * including a deliberately unavailable one). It must NOT also get
-	 * the standard floor: two pkg_build_depends lines mean the parser
-	 * reads the first, the caller's is silently ignored, and a test
-	 * that should fail passes instead. Which is exactly what happened. */
-	fprintf(f, "pkg_build_depends=\"%s\"\n\n", build_depends);
-	fprintf(f, "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
-	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
-	           "\"$PKG_DESTDIR/usr/bin/%s\"\n}\n",
-	        name);
-	fclose(f);
-	return 0;
+	/*
+	 * This writer takes its declaration from the caller and adds
+	 * nothing -- that is its whole purpose (proving a recipe's
+	 * declared tools are honoured, including a deliberately
+	 * unavailable one, and a pin to a version that is not installed).
+	 *
+	 * The shell form had a sharper reason for the same rule: two
+	 * pkg_build_depends lines meant the parser read the first and
+	 * silently ignored the caller's, so a test that should fail
+	 * passed instead, which is exactly what happened once. CPDL
+	 * cannot hide a declaration that way -- every `tool` line is
+	 * additive and visible -- but the rule stands regardless, because
+	 * a fixture whose declaration is partly written by its helper is
+	 * no longer testing what its call site says it is.
+	 *
+	 * The consequence is that a caller whose build must actually RUN
+	 * has to name the whole floor itself, `bash` included: without
+	 * bash the build container's PID 1 cannot start the phase at all
+	 * and the failure presents as a timeout (cbs#224, measured here
+	 * 2026-09-26). `selfdep` and the observing fixture already did
+	 * this; `declaredpresent` and `pinnedgood` now do too.
+	 */
+	cpdl_tools_from_list(tools, sizeof(tools), build_depends);
+	fixture_srcdir(tarball_path, srcdir, sizeof(srcdir));
+	snprintf(build_body, sizeof(build_body),
+	         "        cd \"${src}/%s/%s\" {\n"
+	         "            run \"tcc\" {\n"
+	         "                \"-o\" \"hello\" \"hello.c\"\n"
+	         "            }\n"
+	         "        }\n",
+	         name, srcdir);
+	snprintf(install_body, sizeof(install_body),
+	         "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
+	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s\"\n",
+	         name, srcdir, name);
+	return publish_cpdl_recipe(c, name, version, tarball_path, sha256, NULL, tools, NULL,
+	                            build_body, install_body);
 }
 
 /* Multi-source recipe (ADR-0036): source 0 is the usual fixture
@@ -732,32 +788,40 @@ static int write_builddeps_recipe(const char *name, const char *version, const c
  * afterwards without the environment still existing, which it will not
  * (ADR-0209 tears it down with the build).
  */
-static int write_observing_recipe(const char *name, const char *version, const char *tarball_path,
+static int write_observing_recipe(const struct cix_client *c, const char *name,
+                                   const char *version, const char *tarball_path,
                                    const char *sha256, const char *build_depends)
 {
-	char name_dir[256];
-	char path[300];
-	FILE *f;
+	char tools[1024];
 
-	snprintf(name_dir, sizeof(name_dir), "%s/recipes/%s", g_pkg_state_dir, name);
-	mkdir(name_dir, 0755);
-	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
-	mkdir(path, 0755);
-	snprintf(path, sizeof(path), "%s/recipes/%s/%s/build.sh", g_pkg_state_dir, name, version);
-	f = fopen(path, "w");
-	if (f == NULL)
-		return -1;
-	fprintf(f, "pkg_name=%s\n", name);
-	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=%s\n", test_http_src(tarball_path));
-	fprintf(f, "pkg_sha256=%s\n", sha256);
-	fprintf(f, "pkg_depends=\"\"\n");
-	fprintf(f, "pkg_build_depends=\"%s\"\n\n", build_depends);
-	fprintf(f, "pkg_build() {\n\ttrue\n}\n\n");
-	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/share\"\n"
-	           "\tcp /usr/share/stamped.version \"$PKG_DESTDIR/usr/share/observed.version\"\n}\n");
-	fclose(f);
-	return 0;
+	cpdl_tools_from_list(tools, sizeof(tools), build_depends);
+	/*
+	 * `run "cp"` rather than CPDL's own `copy`, and that is the one
+	 * substantive difference from the shell form.
+	 *
+	 * The file being read is `/usr/share/stamped.version`, which the
+	 * declared build tool left in the composed environment -- it is
+	 * not under ${src}, ${build} or ${dest}, and CPDL's filesystem
+	 * operations are confined to those roots (its own suite calls the
+	 * property "confinement"). coreutils' cp is an ordinary program
+	 * and is declared by every caller of this helper, so the copy
+	 * goes through a `run`, which is unremarkable in an install phase
+	 * -- 262 of them across the corpus.
+	 *
+	 * Reading a path outside the recipe's roots is the whole point of
+	 * this fixture rather than an accident of it: the installed
+	 * package has to record which version of its declared tool the
+	 * build genuinely ran against, observable afterwards when the
+	 * build environment no longer exists (ADR-0209 tears it down).
+	 */
+	return publish_cpdl_recipe(c, name, version, tarball_path, sha256, NULL, tools, NULL,
+	                            "        run \"true\" {\n"
+	                            "        }\n",
+	                            "        mkdir \"${dest}/usr/share\" chmod 0755\n"
+	                            "        run \"cp\" {\n"
+	                            "            \"/usr/share/stamped.version\"\n"
+	                            "            \"${dest}/usr/share/observed.version\"\n"
+	                            "        }\n");
 }
 
 static int write_multisrc_recipe(const struct cix_client *c, const char *name,
@@ -2012,7 +2076,7 @@ int main(void)
 	 * exactly the failure this replaces, and it would teach everyone
 	 * that the declaration is decorative.
 	 */
-	if (write_builddeps_recipe("declaredmissing", "1.0", tarball_path, sha256,
+	if (write_builddeps_recipe(&client, "declaredmissing", "1.0", tarball_path, sha256,
 	                            "nosuchbuildtool") != 0) {
 		fprintf(stderr, "FAIL: could not write the declared-build-deps recipe\n");
 		ok = 0;
@@ -2060,7 +2124,13 @@ int main(void)
 	 * covered, and a composition that failed for every input would
 	 * still have looked green.
 	 */
-	if (write_builddeps_recipe("declaredpresent", "1.0", tarball_path, sha256, "greeter") != 0) {
+	/* The floor is named here rather than added by the writer: this
+	 * fixture's build must actually RUN, and without `bash` the build
+	 * container's PID 1 cannot start the phase at all (cbs#224). The
+	 * declaration under test is `greeter`; the rest is what compiling
+	 * one hello.c needs. */
+	if (write_builddeps_recipe(&client, "declaredpresent", "1.0", tarball_path, sha256,
+	                            "greeter tcc linux-headers bash coreutils binutils") != 0) {
 		fprintf(stderr, "FAIL: could not write the available-build-deps recipe\n");
 		ok = 0;
 	}
@@ -2108,8 +2178,13 @@ int main(void)
 	 * string was compared against bare package names and matched
 	 * nothing, so even the correct pin failed).
 	 */
-	if (write_builddeps_recipe("pinnedgood", "1.0", tarball_path, sha256, "greeter@1.0-1") != 0 ||
-	    write_builddeps_recipe("pinnedbad", "1.0", tarball_path, sha256, "greeter@9.9") != 0) {
+	/* `greeter@1.0-1` is the pin under test -- greeter is published by
+	 * write_recipe() at version 1.0 release 1, so that is its real
+	 * identity. The floor beside it is what the build needs to run at
+	 * all, same reason as declaredpresent above. */
+	if (write_builddeps_recipe(&client, "pinnedgood", "1.0", tarball_path, sha256,
+	                            "greeter@1.0-1 tcc linux-headers bash coreutils binutils") != 0 ||
+	    write_builddeps_recipe(&client, "pinnedbad", "1.0", tarball_path, sha256, "greeter@9.9") != 0) {
 		fprintf(stderr, "FAIL: could not write the version-pinned build-deps recipes\n");
 		ok = 0;
 	}
@@ -2197,7 +2272,7 @@ int main(void)
 	 * adds ITSELF to that same floor. The proof is that the upgrade
 	 * does not come back with the composition refusal.
 	 */
-	if (write_builddeps_recipe("selfdep", "1.0", tarball_path, sha256,
+	if (write_builddeps_recipe(&client, "selfdep", "1.0", tarball_path, sha256,
 	                           "tcc linux-headers bash coreutils binutils") != 0) {
 		fprintf(stderr, "FAIL: could not write the self-dependency recipe\n");
 		ok = 0;
@@ -2224,14 +2299,14 @@ int main(void)
 		                "exercising an in-place upgrade at all\n", state);
 		ok = 0;
 	} else {
-		if (write_builddeps_recipe("selfdep", "2.0", tarball_path, sha256,
+		if (write_builddeps_recipe(&client, "selfdep", "2.0", tarball_path, sha256,
 		                           "selfdep tcc linux-headers bash coreutils binutils") != 0) {
 			fprintf(stderr, "FAIL: could not write the self-declaring upgrade recipe\n");
 			ok = 0;
 		}
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/pkg/install",
-		                       "{\"name\":\"selfdep\",\"version\":\"2.0\",\"upgrade\":true}",
+		                       "{\"name\":\"selfdep\",\"version\":\"2.0-1\",\"upgrade\":true}",
 		                       &r) != 0 ||
 		    r.status != 202) {
 			fprintf(stderr, "FAIL: #166 self-declaring upgrade, status=%d\n", r.status);
@@ -3069,7 +3144,7 @@ int main(void)
 		 * test anyway, because it proves what the build actually had
 		 * rather than what was lying around when it finished.
 		 */
-		if (write_observing_recipe("usesstamped", "1.0", tarball_path, sha256,
+		if (write_observing_recipe(&client, "usesstamped", "1.0", tarball_path, sha256,
 		                            "stamped@1.9-1 tcc linux-headers bash coreutils") != 0)
 			ok = 0;
 		memset(&r, 0, sizeof(r));
