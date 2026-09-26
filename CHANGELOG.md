@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Every test fixture that can be CPDL now is (#516)
+
+`test_pkg` is green at v2.57.338 with **SELFTEST: PASS across 95 tests**, and `test_pkg`, `test_pkg_cache` and `test_kmod_build` — the three ADR-0209 floor tests that gate every release — all pass. Nothing in the test suite hands cixd a shell recipe to *build* any more.
+
+Getting the last ten inline fixtures across took four revisions, and **all five failures were one rule**: paths, keys and versions move when a recipe converts.
+
+- `hbtest`'s cache artifact is `hbtest-1.0-1.tar.gz`. Only the version moved. The suffix does **not**, and reading the lookup rather than the writer is how the first fix got it wrong: `publish_hostbuild_artifact()` names the file through `pkg_artifact_cache_path()` → `cache_artifact_path_existing()`, whose fallback when nothing exists yet is `PKG_ARTIFACT_FORMAT_TARGZ`. The recipe's declared format never reaches that call, so a hostbuild's export stays a tarball of an assembled directory however the recipe is written.
+- The resume marker (ADR-0177/#46) lives at `/build/cbsws/build/.resumed_marker`. It was guessed as `/build` twice and 404'd twice, while the recipe's own `test -f "${build}/..."` passed both times — so the mechanism under test was correct throughout and the *outer* read was measuring the wrong tree. `probe-cpdlpaths@1-1` settled it by echoing all three: **`${build}`, `${src}` and `${dest}` are `/build/cbsws/{build,src,dest}`**, and `/build/src` also exists, laid down for a CPDL recipe too, which is exactly what made the wrong guess look plausible. A variable is not a path until something prints it.
+- `resumeme` resumes to `1.1-1`, and `POST /v1/pkg/hostbuild` must ask for `"version":"1.1-1"` as well. That last one hid behind its own diagnostic: the 100-retry loop discarded every response, so a 404 for a recipe version that does not exist was reported as `hbtest 1.1 hostbuild never started`, which reads as a scheduler that would not pick the job up. It now keeps the last status and body.
+
+**A real product bug fell out of the same work.** `pkg_resume_build()` set `PKG_BUILD_CMD` unconditionally while the install path branches on the recipe language, so resuming a CPDL build ran `/build/recipe.sh` and died. `pkg resume` has never worked for a CPDL recipe; it was invisible for as long as the resume fixtures were shell.
+
+**What is left is not conversion.** Three fixtures stay shell deliberately: `oldshell` *is* the clause 4 gate and exists to be refused; `silenttool` guards #302, where `|| true` lets a missing command reach exit 0 and CPDL has no interpreter to write that in, so it is a deletion dependent; and `test_pkg_cache.c`'s two artifact-tier fixtures serve `tar.gz` artifacts, which a PBS recipe cannot produce (**#527**).
+
+**Clause 3, re-measured today** by joining `--json pkg recipes` against `--json pkg ls`: **65 of 179 installed versions** still resolve to a shell revision, across 53 packages. **45 of those 53 already have a CPDL revision published**, so they are an upgrade rather than authoring — and **the remaining 8 are all throwaway `probe-*` packages**. No real package needs a CPDL recipe written. The heavy upgrades in the 45 are glibc, gcc, kernel, python, cmake, binutils and elfutils.
+
 ### Publishing a new shell recipe is refused (#516, ADR-0309 clause 4)
 
 `pkg_recipe_add()` refuses a shell recipe for a version it does not already hold. The parallel stops growing while it retires.
