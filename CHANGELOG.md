@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The shell build path is gone (#516, ADR-0309 clause 3)
+
+`PKG_BUILD_CMD` and both its call sites are removed. cixd can no longer build a `build.sh`; it refuses, naming the version and what to install instead.
+
+**Shell recipe PARSING deliberately stays, and the two are not the same retirement.** `parse_recipe()` still reads every `build.sh` in the store, because eight live in the corpus purely as the artifact approvals the ADR-0209 floor reads (`recipe_artifact_sha()`, cix#529 tracks their removal) and because every shell revision ever published is immutable history that must still resolve. What cannot happen is *building* one.
+
+**The refusal's position is load-bearing**, the same way clause 4's is. It sits in the `else` of the cache-hit arm, so a shell package whose artifact is already cached still **installs** — that path never needed a build command, it gets `:`, and breaking it would strand every host holding a cached shell artifact with no reason to rebuild.
+
+**What made this safe was the manifests, not the package upgrades.** The obvious reading was that clause 3 needed all ten remaining shell-installed versions rebuilt at CPDL revisions — glibc ×3, gcc ×2, the kernel — which is hours of serial building. It did not. What an image rebuild actually tries to build is what its **manifest pins**, and **80 pins across six images named a shell revision** — far more than the 11 installed versions, because a manifest can pin a version that is not installed. All 80 now name their CPDL successor. `image manifest set` triggers no build, so the whole re-pointing cost nothing and took seconds; verified afterwards that zero pins name a shell recipe. The package upgrades are ordinary maintenance and continue at their own pace.
+
+**Two shell-syntax dependents went with it.**
+
+`daemon/src/kernelrecipe.c`, its header and `test_kernelrecipe.c` are deleted. It was a pure text transform over `pkg_version=`/`pkg_source=`/`pkg_sha256=`, so it could not parse the kernel's own recipe any more — that has been CPDL since `7.2.3-17`. Nothing in the daemon called it and its test was in no gate, so it had been quietly broken and unexercised. #65's kernel channel wants re-specifying against CPDL's structured `sources` block rather than porting a line-oriented transform; `sources { main "linux" { url … sha256 … } }` is a far safer thing to rewrite than a two-field space-separated string where only the first field may move.
+
+`test_pkg`'s `silenttool` fixture is **replaced, not dropped** — and the replacement is a better test. #302's scanner is not dead: it catches a third-party build system that swallows a missing tool, which is the actual hazard (gettext's environment had no `find`, `cmp` or `xargs`; none changed an exit status and libtool shipped an archive without the objects). The shell fixture reproduced that with `cix_no_such_tool_302 || true` inside a `pkg_build()`, which CPDL has no interpreter to write. It does not need one: the fixture tarball's **own Makefile** now carries that target and the CPDL recipe calls it. make hiding the failure is precisely the case the scanner exists for, where a CPDL `run` naming an absent executable would simply fail and prove nothing.
+
 ### cbs v0.1.67 lands four fixes Cix asked for, and openssh converts on the back of one (#516)
 
 Five tickets filed upstream on 2026-09-26 and four fixed the same day, stacking into one release. Verified on 192.168.15.95 rather than taken from the resolutions:
