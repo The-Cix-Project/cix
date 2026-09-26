@@ -435,12 +435,45 @@ int main(void)
 			fail("could not create test image (status %d)", r.status);
 		cix_response_free(&r);
 	}
-	if (cix_client_request(&c, "POST", "/v1/images/expimg/export", "", &r) == 0) {
-		if (r.status != 202)
-			fail("image export POST: expected 202, got %d", r.status);
-		cix_response_free(&r);
-	} else {
-		fail("image export POST failed");
+	/*
+	 * Retried while the daemon answers 409, because the publish just
+	 * above starts an export of its own and only ONE runs at a time
+	 * -- `artifact_export_start()` refuses a second with "an export
+	 * of X is already running".
+	 *
+	 * This loop is new with #528 and the race it covers is not. The
+	 * publish export used to be targz_run() over a two-file tree,
+	 * which finished inside the round trip, so the next request
+	 * always found the slot free by luck. `cbs package` writes a
+	 * manifest and digests and takes longer, and the test failed
+	 * with `expected 202, got 409` the first time it ran. A caller
+	 * that must not collide has to wait for the slot rather than
+	 * assume the previous export was quick.
+	 */
+	{
+		int posted = 0;
+		int attempt;
+
+		for (attempt = 0; attempt < 200; attempt++) {
+			if (cix_client_request(&c, "POST", "/v1/images/expimg/export", "", &r) != 0) {
+				fail("image export POST failed");
+				break;
+			}
+			if (r.status == 202) {
+				posted = 1;
+				cix_response_free(&r);
+				break;
+			}
+			if (r.status != 409) {
+				fail("image export POST: expected 202, got %d", r.status);
+				cix_response_free(&r);
+				break;
+			}
+			cix_response_free(&r);
+			usleep(100000);
+		}
+		if (attempt >= 200 && !posted)
+			fail("image export POST still 409 after 20s -- the export slot never freed");
 	}
 	size = -1;
 	if (poll_export(&c, "/v1/images/expimg/export", state, sizeof(state), &size) != 0)

@@ -1153,13 +1153,45 @@ int main(void)
 					 * is the whole defect. */
 					run_cmd("rm -f '%s' '%s'", hb_pushed, hb_headers);
 
-					memset(&r, 0, sizeof(r));
-					CHECK(cix_client_request(&client, "POST",
-					                          "/v1/pkg/hbpush/artifact/publish", "",
-					                          &r) == 0 &&
-					              r.status == 202,
-					      "POST /v1/pkg/hbpush/artifact/publish accepted");
-					cix_response_free(&r);
+					/*
+					 * Retried while the daemon answers 409: the
+					 * hostbuild's own automatic publish may still be
+					 * exporting, and only one export runs at a time
+					 * ("an export of X is already running").
+					 *
+					 * The race predates #528 and was invisible
+					 * because the export was targz_run() over a tiny
+					 * tree and finished inside the round trip.
+					 * `cbs package` writes a manifest and digests,
+					 * so the slot is genuinely still held and this
+					 * failed on its first run.
+					 */
+					{
+						int hb_posted = 0;
+						int hb_try;
+
+						for (hb_try = 0; hb_try < 200; hb_try++) {
+							memset(&r, 0, sizeof(r));
+							if (cix_client_request(&client, "POST",
+							                        "/v1/pkg/hbpush/artifact/publish", "",
+							                        &r) != 0) {
+								cix_response_free(&r);
+								break;
+							}
+							if (r.status == 202) {
+								hb_posted = 1;
+								cix_response_free(&r);
+								break;
+							}
+							if (r.status != 409) {
+								cix_response_free(&r);
+								break;
+							}
+							cix_response_free(&r);
+							usleep(100000);
+						}
+						CHECK(hb_posted, "POST /v1/pkg/hbpush/artifact/publish accepted");
+					}
 
 					for (i = 0; i < 150; i++) {
 						if (access(hb_headers, R_OK) == 0)
