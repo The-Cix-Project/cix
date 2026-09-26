@@ -1,8 +1,8 @@
-# ADR-0312: The version is `0.2.x`, the release is the counter, and the `v2.57` line is retired
+# 0312 — the version is `0.2.x`, the release is the counter, and the `v2.57` line is retired
 
-- **Status:** Accepted
-- **Date:** 2026-09-26
-- **Supersedes:** nothing. The scheme it replaces was never written down, which is part of why it drifted.
+## Status
+
+Accepted. Supersedes nothing: the scheme it replaces was never written down anywhere, which is a large part of why it drifted.
 
 ## Context
 
