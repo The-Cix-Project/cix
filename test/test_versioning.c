@@ -162,6 +162,63 @@ static void check_retired_line(void)
 	}
 }
 
+/*
+ * A published artifact's name has ONE definition,
+ * `pkg_artifact_published_name()` in daemon/src/pkg.c, and the way
+ * this went wrong is the reason the check is shaped like this.
+ *
+ * The installer ISO used to build its own name in main.c with its own
+ * format string and a hardcoded release. When #434 changed the
+ * version string it was handed -- to the cix artifact version, which
+ * already ends in a release -- that literal became a second release
+ * number, and twenty releases published as
+ * `cix-installer-0.2.57-359-1-x86_64.iso`: version `0.2.57-359`,
+ * release `1`, two releases for one artifact.
+ *
+ * ASSERTING THE FORMAT STRING WOULD NOT HAVE CAUGHT IT, which is the
+ * whole point. Both names were well-formed in isolation; they were
+ * only wrong relative to each other, and neither file knew the other
+ * existed. So what is gated is the COUNT: exactly one place composes
+ * `<name>-<version>-<arch>`, and a second one appearing is the
+ * regression, whatever it happens to spell.
+ */
+static void check_one_artifact_namer(void)
+{
+	char line[4096];
+	int composers = 0;
+	FILE *p;
+
+	/*
+	 * A composer is an snprintf whose literal ends in the arch-and-
+	 * suffix tail this convention uses. pkg_artifact_published_name()
+	 * is the one legitimate hit; anything else is a second namer.
+	 */
+	p = popen("grep -rn '\"%s-%s-%s%s\"' daemon/src/*.c 2>/dev/null", "r");
+	if (p == NULL) {
+		fail("could not scan for artifact-name composers");
+		return;
+	}
+	while (fgets(line, sizeof(line), p) != NULL) {
+		printf("  artifact-name composer: %s", line);
+		composers++;
+	}
+	pclose(p);
+
+	if (composers > 1) {
+		fail("more than one place composes a published artifact name.\n"
+		     "  There is exactly one definition -- pkg_artifact_published_name()\n"
+		     "  in daemon/src/pkg.c -- and callers pass a suffix to it. A second\n"
+		     "  one is how the installer ISO came to carry two release numbers\n"
+		     "  for twenty releases (ADR-0312): both spellings were fine on their\n"
+		     "  own and wrong relative to each other, so there was nothing a\n"
+		     "  format-string assertion could have compared them against");
+	} else if (composers == 0) {
+		fail("no artifact-name composer found at all -- pkg_artifact_published_name()\n"
+		     "  is expected to compose \"%s-%s-%s%s\". If it was deliberately\n"
+		     "  rewritten, update this check to match the new one definition");
+	}
+}
+
 int main(void)
 {
 	const char *v = CIX_BUILD_VERSION;
@@ -177,6 +234,7 @@ int main(void)
 		check_shape(v);
 	}
 	check_retired_line();
+	check_one_artifact_namer();
 
 	if (g_failures != 0) {
 		printf("VERSIONING RESULT: FAIL (%d)\n", g_failures);

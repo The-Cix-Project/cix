@@ -6,6 +6,24 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A published artifact's name has one definition, and the installer ISO stops carrying two release numbers (ADR-0312)
+
+`cix-installer-0.2.57-359-1-x86_64.iso` — the owner asked what the trailing `-1` was. It was a second release number, and it had been there for twenty releases.
+
+**The name was assembled in two places.** The package layer builds `<name>-<version>-<arch><suffix>`; the ISO publisher built its own, in `main.c`, with its own `uname()`, its own format string and a hardcoded `-1`. That literal was *correct when written* — back at `2.57.224` the version it was handed was the running daemon's tag, with no release, so `1` was the installer's own release and the name parsed cleanly. **#434** then changed the input to the cix **artifact** version, which already ends in a release, and the literal was never removed. The cache's own listing preserves the moment it broke:
+
+```
+version=2.57.224     release=1   correct
+version=2.57.339-1   release=1   doubled, first bad one
+version=0.2.57-359   release=1   doubled
+```
+
+**The fix is deleting one of the two implementations, not correcting it.** `pkg_artifact_published_name()` now owns the name, sitting beside `pkg_host_arch()` where that file's own comment already said artifact naming belongs; the package layer's publish URL and the ISO publisher both call it, and the ISO passes `.iso` / `.iso.minisig` as a suffix rather than composing anything. An installer ISO is an ordinary published artifact and is now named like one: **`cix-installer-0.2.57-360-x86_64.iso`**, which the cache reads as version `0.2.57`, release `360` — matching the cix package exactly.
+
+**Why the gate counts implementations instead of checking the format string.** Both names were well-formed in isolation. They were only wrong *relative to each other*, and neither file knew the other existed, so there was no single thing an assertion could have compared. `test_versioning` therefore asserts that exactly **one** place composes `<name>-<version>-<arch>`; a second one appearing is the regression, whatever it spells. Asserting the format string would have passed happily through all twenty releases.
+
+The malformed `cix-installer-0.2.57-359-1-x86_64.iso` is deleted from the cache, so one release has one installer.
+
 ### The version is `0.2.x` and the release is the counter — `0.2.57-359` is live (ADR-0312)
 
 A release is now **`<version>-<release>`**: version `0.2.57`, release `358`, then `359`. The previous scheme, `v2.57.358`, had a major of 2 and a minor of 57 that had climbed for years without either ever marking a compatibility boundary — a platform that has not shipped a 1.0, numbering itself as though it had shipped two. It was written down nowhere, which is how it got there.

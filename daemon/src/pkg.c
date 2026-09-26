@@ -16748,6 +16748,43 @@ static const char *pkg_host_arch(void)
 	return arch;
 }
 
+/*
+ * THE name a published artifact has: `<name>-<version>-<arch><suffix>`.
+ *
+ * `version` is the complete release identity and already carries the
+ * release -- `0.2.57-359`, not `0.2.57` (ADR-0312). Nothing here adds
+ * a release component, because there is nothing left to add.
+ *
+ * ONE FUNCTION, because there used to be two and they diverged. The
+ * installer ISO built its own name with its own snprintf in main.c,
+ * and when #434 changed what version string it was handed -- from the
+ * running daemon's tag to the cix ARTIFACT version, which ends in a
+ * release -- its hardcoded trailing `-1` became a SECOND release
+ * number. The cache's listing preserves the moment it broke:
+ *
+ *   version=2.57.224     release=1   correct
+ *   version=2.57.339-1   release=1   doubled, first bad one
+ *   version=0.2.57-359   release=1   doubled
+ *
+ * Twenty releases shipped malformed. No test caught it, and no test
+ * reasonably could have: the two names were assembled in different
+ * files from different inputs, so there was no single thing to
+ * assert. That is what makes this a parallel implementation rather
+ * than a typo, and why the fix is to delete one of them rather than
+ * to correct it.
+ *
+ * `suffix` is passed rather than derived from a package format,
+ * because an ISO and its detached signature are published through
+ * this same convention and are not package formats -- see
+ * artifact_suffix() for the package side, which now calls here.
+ */
+void pkg_artifact_published_name(const char *name, const char *version, const char *suffix,
+                                  char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s-%s-%s%s", name != NULL ? name : "",
+	         version != NULL ? version : "", pkg_host_arch(), suffix != NULL ? suffix : "");
+}
+
 static void pkg_artifact_build_request(const char *name, const char *version, const char *format,
                                         char *out_url, size_t out_url_size, char *out_header,
                                         size_t out_header_size)
@@ -16786,8 +16823,16 @@ static void pkg_artifact_build_request(const char *name, const char *version, co
 	 * src/store.c rather than assumed, because four bogus bug
 	 * reports have been filed against it from assumptions.
 	 */
-	snprintf(out_url, out_url_size, "%.*s/%s-%s-%s%s", (int)len, g_artifact_base_url, name,
-	         version, pkg_host_arch(), artifact_suffix(format));
+	{
+		/* Through pkg_artifact_published_name(), never composed here:
+		 * that function is the one definition of what a published
+		 * artifact is called, and the ISO publisher calls it too. */
+		char basename[PKG_NAME_MAX + PKG_VERSION_MAX + 64];
+
+		pkg_artifact_published_name(name, version, artifact_suffix(format), basename,
+		                             sizeof(basename));
+		snprintf(out_url, out_url_size, "%.*s/%s", (int)len, g_artifact_base_url, basename);
+	}
 	if (g_artifact_token[0] != '\0')
 		snprintf(out_header, out_header_size, "Authorization: Bearer %s", g_artifact_token);
 	else

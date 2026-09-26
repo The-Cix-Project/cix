@@ -10482,36 +10482,48 @@ static const char *iso_publish_state_str(void)
 }
 
 /*
- * The cache's canonical installer name:
- * cix-installer-<version>-<release>-<arch>.iso.
+ * The ISO's published name, which is an ORDINARY published artifact
+ * name and is therefore not computed here.
  *
- * The architecture is in the name because a checksum cannot tell an
- * aarch64 image from an x86_64 one -- only the name can. The version
- * is this build's own, with its leading "v" stripped: the cache splits
- * name/version/release itself, and "v2.4.0" would make the version
- * field disagree with every package already published from the same
- * tag.
+ * This function used to build it itself -- its own uname(), its own
+ * format string, its own hardcoded release. That was a second
+ * implementation of pkg_artifact_published_name(), and it drifted the
+ * way a second implementation does: #434 changed `ver` from the
+ * running daemon's tag to the cix ARTIFACT version, which already
+ * ends in a release, and the hardcoded trailing `-1` stayed. Twenty
+ * releases published as `cix-installer-<ver>-1-<arch>.iso`, which the
+ * cache reads as two release numbers for one artifact. Nothing
+ * asserted it, and nothing reasonably could have: there was no single
+ * definition to assert against. Now there is one, in pkg.c, beside
+ * pkg_host_arch(), and this calls it.
+ *
+ * Carried over from the comment this replaces, because it is the
+ * reason the shared convention has an arch at all: a checksum cannot
+ * tell an aarch64 image from an x86_64 one, only the name can.
  */
 static void iso_publish_canonical_name(char *out, size_t out_size, const char *suffix)
 {
-	struct utsname uts;
-	const char *arch = "unknown";
 	/*
-	 * #434: the version the built ISO actually carries, read back from
-	 * its own signature (which #434 fixed to stamp the cix ARTIFACT
-	 * version, not the running daemon's). The published name must match
-	 * the signed built_version, or the cache gets bytes under a name
-	 * claiming a different release. Falls back to CIX_BUILD_VERSION only
-	 * when no ISO has been signed this session (g_iso_built_version
-	 * empty) -- in which case there is nothing to publish anyway.
+	 * #434: the version the built ISO actually carries, read back
+	 * from its own signature (which #434 fixed to stamp the cix
+	 * ARTIFACT version, not the running daemon's). The published name
+	 * must match the signed built_version, or the cache gets bytes
+	 * under a name claiming a different release. Falls back to
+	 * CIX_BUILD_VERSION only when no ISO has been signed this session
+	 * -- in which case there is nothing to publish anyway.
 	 */
 	const char *ver = g_iso_built_version[0] != '\0' ? g_iso_built_version : CIX_BUILD_VERSION;
+	char iso_suffix[32];
 
-	if (uname(&uts) == 0 && uts.machine[0] != '\0')
-		arch = uts.machine;
+	/*
+	 * Kept for an ISO rebuilt from an artifact predating ADR-0312,
+	 * whose version still carries the old `v` prefix. Nothing built
+	 * from here on can, and test_versioning enforces that.
+	 */
 	if (ver[0] == 'v')
 		ver++;
-	snprintf(out, out_size, "cix-installer-%s-1-%s.iso%s", ver, arch, suffix);
+	snprintf(iso_suffix, sizeof(iso_suffix), ".iso%s", suffix != NULL ? suffix : "");
+	pkg_artifact_published_name("cix-installer", ver, iso_suffix, out, out_size);
 }
 
 static int start_iso_publish_upload(enum iso_publish_step step)

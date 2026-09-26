@@ -1746,6 +1746,25 @@ enum pkg_error pkg_artifact_push_request(const char *remote_name, char *out_url,
 int pkg_artifact_push_is_enabled(void);
 
 /*
+ * THE name a published artifact has: `<name>-<version>-<arch><suffix>`.
+ *
+ * `version` is the complete release identity and already carries the
+ * release (`0.2.57-359`, ADR-0312), so nothing adds a release
+ * component here. `suffix` is given rather than derived from a
+ * package format, because an installer ISO and its detached signature
+ * go out under this same convention and are not package formats.
+ *
+ * Exported for exactly one reason: main.c's ISO publisher used to
+ * build this name itself, and drifted (a hardcoded release, doubled
+ * once #434 changed the version it was handed). Two implementations
+ * of one name cannot be gated by asserting either of them, so there
+ * is now one. Do not reintroduce a second.
+ */
+void pkg_artifact_published_name(const char *name, const char *version, const char *suffix,
+                                  char *out, size_t out_size);
+
+
+/*
  * ---- ADR-0221 / issue #112: build-environment reclamation ----
  *
  * Composed environments are reclaimed by LAST USE rather than by
