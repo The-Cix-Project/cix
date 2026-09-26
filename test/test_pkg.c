@@ -4699,6 +4699,8 @@ skip_pin_isolation:
 			{
 				char v11_srcdir[160];
 				char v11_build[512], v11_install[512];
+				char last_hb_body[256];
+				int last_hb_status;
 				int started = 0;
 
 				fixture_srcdir(tarball_path, v11_srcdir, sizeof(v11_srcdir));
@@ -4719,23 +4721,44 @@ skip_pin_isolation:
 				}
 
 				/* 409 can also mean an earlier job is still
-				 * draining -- retry rather than race it. */
+				 * draining -- retry rather than race it.
+				 *
+				 * The last response is kept so a failure can name
+				 * its cause. It used to be discarded, and the
+				 * resulting "never started" is what a 404 for a
+				 * version that does not exist looked like -- a
+				 * whole release cycle spent on a message that
+				 * described the symptom and hid the reason. */
+				last_hb_status = -1;
+				last_hb_body[0] = '\0';
 				for (i = 0; ok && i < 100; i++) {
 					memset(&r, 0, sizeof(r));
 					if (cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
+					                        /* 1.1-1: publish_cpdl_recipe() emits
+					                         * release 1, so the recipe this asks
+					                         * the daemon to build is stored under
+					                         * the release-carrying version. Asking
+					                         * for "1.1" finds no recipe, and the
+					                         * 100-retry loop below reports that as
+					                         * "never started". */
 					                        "{\"name\":\"hbtest\","
-					                        "\"version\":\"1.1\",\"upgrade\":true}",
+					                        "\"version\":\"1.1-1\",\"upgrade\":true}",
 					                        &r) == 0 &&
 					    r.status == 202) {
 						cix_response_free(&r);
 						started = 1;
 						break;
 					}
+					last_hb_status = r.status;
+					snprintf(last_hb_body, sizeof(last_hb_body), "%s",
+					         r.body != NULL ? r.body : "(null)");
 					cix_response_free(&r);
 					usleep(300000);
 				}
 				if (ok && !started) {
-					fprintf(stderr, "FAIL: hbtest 1.1 hostbuild never started\n");
+					fprintf(stderr,
+					        "FAIL: hbtest 1.1 hostbuild never started, last status=%d body=%s\n",
+					        last_hb_status, last_hb_body);
 					ok = 0;
 				}
 			}
