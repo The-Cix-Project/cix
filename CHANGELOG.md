@@ -6,6 +6,21 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cbs v0.1.67 lands four fixes Cix asked for, and openssh converts on the back of one (#516)
+
+Five tickets filed upstream on 2026-09-26 and four fixed the same day, stacking into one release. Verified on 192.168.15.95 rather than taken from the resolutions:
+
+- **cbs#241** — `format "tar.gz"` is now rejected at validation, `CPDL-E3004: validation: artifact format must be cixpkg`, and it fires inside `cbs explain`, so a recipe declaring it is refused before it is ever stored. Cix keeps its own boundary check regardless, for the reason the capability check beside it already gives: cixd execs whichever cbs is on the host, and an older one lets it through silently.
+- **cbs#243** — `mkdir PATH parents` created three missing levels in one statement.
+- **cbs#240** — `privileged file "${dest}/…" mode 04711`: per-path, non-glob, exact mode match, repeatable, and undeclared setuid/setgid still refused. **`openssh@10.4p1-13` is built and installed on the strength of it.** `-12` compiled, linked and installed perfectly and was refused at manifest construction; the bit exists only so an unprivileged client can sign with the host key for host-based authentication. It is declared rather than dropped, because removing a capability to satisfy a packaging limit is the wrong order once the limit has an expression — and exact-match means an upstream that starts shipping 4755 fails here instead of quietly widening it.
+- **cbs#242** — packaging-policy refusals are `CPDL-E4007` now, distinct from a run's exit status.
+
+**cbs v0.1.68 was deliberately not taken.** Its tree differs from v0.1.67 in `VERSION` and documentation only — nothing under `src/` or `tests/` — so installing it would cost a build, two installs, an assembly and a reboot for no functional change.
+
+**openssh was the last structurally-blocked package.** Shell-installed on the box is now **11 entries across 8 packages**, and every one is either the heavy set held for an explicit decision (glibc ×3, gcc ×2, kernel, binutils, cmake, elfutils, python) or the stale `cix @ base v2.57.167`, which is a base-image artefact rather than a hostbuild.
+
+**The expensive lesson was about versions, not features.** `cbs` is installed in **four independent places**: `cix-builder` (the package-build engine), `cix-hosttools` (a *staging source* that nothing executes), the **booted control-plane root** (`PKG_CBS_BIN`, what cixd execs for `explain`), and the test floor. `mkbootroot` bakes the third in at assembly, so upgrading the package in both images and probing immediately answered with the old parser — twice, producing two conclusions that were drawn, nearly reported, and are withdrawn. It presented as `CPDL-E2001: parse: expected 'phase operation', found 'parents'`, which reads as "the feature is not there" and means "you are talking to last week's binary". The route is `assembly start` → `update --image=…` → reboot, and CLAUDE.md now carries the table.
+
 ### ADR-0309 clause 3: the light two thirds are done, and the sweep was also the first verification (#516)
 
 **82 shell-installed entries across 53 packages → 12 across 9**, on 192.168.15.95, measured before and after by joining `--json pkg ls` against `--json pkg recipes`. 63 upgrades run strictly serially, plus 8 probe packages removed outright.
