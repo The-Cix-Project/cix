@@ -882,23 +882,11 @@ $(BUILD)/test_fresh_output_dir: test/test_fresh_output_dir.c daemon/src/persist.
 $(BUILD)/test_pgpverify: test/test_pgpverify.c daemon/src/pgpverify.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_pgpverify.c daemon/src/pgpverify.c -lssl -lcrypto -o $@
 
-# ADR-0254's last link: the recipe revision a channel proposes. Pure
-# text transform, tested against the REAL kernel recipe -- a generator
-# that works on an invented one and not the actual file is worthless.
-
 $(BUILD)/test_scheduler: test/test_scheduler.c daemon/src/scheduler.c daemon/src/persist.c daemon/src/json.c | $(BUILD)
 	$(CC) $(DAEMON_CFLAGS) $^ -o $@
 
 $(BUILD)/test_pipeline: test/test_pipeline.c daemon/src/pipeline.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_pipeline.c daemon/src/pipeline.c -o $@
-
-# #505: NOT in SELFTESTS. It reads the kernel recipe out of the
-# cix-recipes sibling checkout, which a build container does not have,
-# so in a release selftest it would fail on a missing file rather than
-# on anything about the recipe. Run it locally with both repos cloned
-# side by side, or with CIX_RECIPES_DIR set.
-$(BUILD)/test_kernelrecipe: test/test_kernelrecipe.c daemon/src/kernelrecipe.c test/test_image_fixture.c | $(BUILD)
-	$(CC) $(CFLAGS) -Idaemon/include -Itest test/test_kernelrecipe.c daemon/src/kernelrecipe.c test/test_image_fixture.c -o $@
 
 $(BUILD)/test_srcdepth: test/test_srcdepth.c daemon/src/srcdepth.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_srcdepth.c daemon/src/srcdepth.c -o $@
