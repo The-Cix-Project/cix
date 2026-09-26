@@ -1195,11 +1195,17 @@ int main(void)
 		                                 "000000000000\n"
 		                                 "pkg_build() {\n\ttrue\n}\n"
 		                                 "pkg_install() {\n\ttrue\n}\n";
+		static const char stored_body[] = "pkg_name=storedshell\n"
+		                                  "pkg_version=1.0\n"
+		                                  "pkg_source=https://192.0.2.1/x.tar.gz\n"
+		                                  "pkg_sha256="
+		                                  "0000000000000000000000000000000000000000000000000000"
+		                                  "000000000000\n"
+		                                  "pkg_build() {\n\ttrue\n}\n"
+		                                  "pkg_install() {\n\ttrue\n}\n";
 		char body[2048];
-		char dir[PATH_MAX];
 		char path[PATH_MAX];
 		struct json_writer sw;
-		FILE *sf;
 
 		jw_init(&sw);
 		jw_obj_open(&sw);
@@ -1237,38 +1243,16 @@ int main(void)
 		 * publish endpoint. Re-offering it must be a duplicate, not
 		 * the clause 4 refusal.
 		 */
-		snprintf(dir, sizeof(dir), "%s/recipes/storedshell", g_pkg_state_dir);
-		mkdir(dir, 0755);
-		snprintf(dir, sizeof(dir), "%s/recipes/storedshell/1.0", g_pkg_state_dir);
-		mkdir(dir, 0755);
-		snprintf(path, sizeof(path), "%s/build.sh", dir);
-		sf = fopen(path, "w");
-		if (sf == NULL) {
-			fprintf(stderr, "FAIL: could not write %s\n", path);
+		if (test_seed_shell_recipe(g_pkg_state_dir, "storedshell", "1.0", stored_body) != 0) {
+			fprintf(stderr, "FAIL: could not seed the storedshell recipe\n");
 			ok = 0;
 		} else {
-			fputs("pkg_name=storedshell\n", sf);
-			fputs("pkg_version=1.0\n", sf);
-			fputs("pkg_source=https://192.0.2.1/x.tar.gz\n", sf);
-			fputs("pkg_sha256="
-			      "0000000000000000000000000000000000000000000000000000000000000000\n",
-			      sf);
-			fputs("pkg_build() {\n\ttrue\n}\n", sf);
-			fputs("pkg_install() {\n\ttrue\n}\n", sf);
-			fclose(sf);
-
 			jw_init(&sw);
 			jw_obj_open(&sw);
 			jw_key(&sw, "name");
 			jw_str(&sw, "storedshell");
 			jw_key(&sw, "content");
-			jw_str(&sw, "pkg_name=storedshell\n"
-			            "pkg_version=1.0\n"
-			            "pkg_source=https://192.0.2.1/x.tar.gz\n"
-			            "pkg_sha256="
-			            "0000000000000000000000000000000000000000000000000000000000000000\n"
-			            "pkg_build() {\n\ttrue\n}\n"
-			            "pkg_install() {\n\ttrue\n}\n");
+			jw_str(&sw, stored_body);
 			jw_obj_close(&sw);
 			sw.buf[sw.len] = '\0';
 			snprintf(body, sizeof(body), "%s", sw.buf);
