@@ -210,6 +210,112 @@ static int stage_source_tarball(const char *scratch_dir, const char *name, const
 	return compute_file_sha256(out_tarball_path, out_sha256, sha256_size);
 }
 
+/*
+ * ADR-0309 clause 3: the fixtures that BUILD are CPDL.
+ *
+ * `stage_source_tarball()` wraps its tree in `<name>-<version>/`, and
+ * cbs unpacks a declared source under `${src}/<source-name>/`, so a
+ * build phase reaches the tree at `${src}/<name>/<name>-<version>`.
+ * That is the one piece of path arithmetic the shell form did not
+ * need, because cixd extracted straight into /build/src.
+ *
+ * TWO THINGS MOVE WITH THE CONVERSION and both are load-bearing here,
+ * in a file whose whole subject is artifact caching and naming:
+ * a CPDL version carries its release, so `1.0` becomes `1.0-1`; and a
+ * PBS recipe always produces `.cixpkg` (ADR-0307), so a cached or
+ * pushed artifact is `<name>-1.0-1[-<arch>].cixpkg`, never `.tar.gz`.
+ *
+ * write_recipe() below stays, shell and all. The two fixtures that
+ * still use it -- `artifacttest` and `cix` -- SERVE a prebuilt
+ * `tar.gz` artifact and are installed from it without ever building,
+ * so they never reach the refused path (cix#527, whose description had
+ * this split backwards until the v2.57.340 selftest measured it).
+ */
+static int publish_cpdl_recipe(const struct cix_client *c, const char *name, const char *version,
+                               const char *source_url, const char *sha256,
+                               const char *build_body, const char *install_body)
+{
+	char content[4096];
+	struct json_writer w;
+	struct cix_response r;
+	int ok;
+
+	snprintf(content, sizeof(content),
+	         "package \"%s\" {\n"
+	         "    version \"%s\"\n"
+	         "    release 1\n"
+	         "    format \"cixpkg\"\n"
+	         "\n"
+	         "    sources {\n"
+	         "        main \"%s\" {\n"
+	         "            url \"%s\"\n"
+	         "            sha256 \"%s\"\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    requires {\n"
+	         "        build {\n"
+	         "            compiler \"tcc\"\n"
+	         "            tool \"linux-headers\"\n"
+	         "            tool \"bash\"\n"
+	         "            tool \"coreutils\"\n"
+	         "            tool \"binutils\"\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    build {\n"
+	         "%s"
+	         "    }\n"
+	         "\n"
+	         "    install {\n"
+	         "%s"
+	         "    }\n"
+	         "}\n",
+	         name, version, name, source_url, sha256, build_body, install_body);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "content");
+	jw_str(&w, content);
+	jw_key(&w, "format");
+	jw_str(&w, "pbs");
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	memset(&r, 0, sizeof(r));
+	ok = (cix_client_request(c, "POST", "/v1/pkg/recipes", w.buf, &r) == 0 && r.status == 204);
+	if (!ok)
+		fprintf(stderr, "      POST /v1/pkg/recipes %s@%s: status=%d %.200s\n", name, version,
+		        r.status, r.body != NULL ? r.body : "");
+	cix_response_free(&r);
+	jw_free(&w);
+	return ok ? 0 : -1;
+}
+
+/* The ordinary compile-and-install fixture, as CPDL: build `hello`
+ * inside the tarball's own wrapper directory, install it under the
+ * package's own name. */
+static int publish_hello_recipe(const struct cix_client *c, const char *name, const char *version,
+                                const char *source_url, const char *sha256)
+{
+	char build_body[512], install_body[512];
+
+	snprintf(build_body, sizeof(build_body),
+	         "        cd \"${src}/%s/%s-%s\" {\n"
+	         "            run \"tcc\" {\n"
+	         "                \"-o\" \"hello\" \"hello.c\"\n"
+	         "            }\n"
+	         "        }\n",
+	         name, name, version);
+	snprintf(install_body, sizeof(install_body),
+	         "        mkdir \"${dest}/usr/bin\" parents chmod 0755\n"
+	         "        copy \"${src}/%s/%s-%s/hello\" to \"${dest}/usr/bin/%s\"\n",
+	         name, name, version, name);
+	return publish_cpdl_recipe(c, name, version, source_url, sha256, build_body, install_body);
+}
+
 static int write_recipe(const char *pkg_state_dir, const char *name, const char *version,
                          const char *source_url, const char *source_sha256,
                          const char *artifact_sha256)
@@ -375,7 +481,7 @@ int main(void)
 		char source_url[600];
 
 		snprintf(source_url, sizeof(source_url), "%s", test_http_src(tarball_path));
-		CHECK(write_recipe(g_pkg_state_dir, "cachetest", "1.0", source_url, sha256, NULL) == 0,
+		CHECK(publish_hello_recipe(&client, "cachetest", "1.0", source_url, sha256) == 0,
 		      "write cachetest recipe");
 	}
 
@@ -411,7 +517,7 @@ int main(void)
 	{
 		char cache_tarball[PATH_MAX];
 
-		snprintf(cache_tarball, sizeof(cache_tarball), "%s/cachetest-1.0.tar.gz", g_cache_dir);
+		snprintf(cache_tarball, sizeof(cache_tarball), "%s/cachetest-1.0-1.cixpkg", g_cache_dir);
 		CHECK(access(cache_tarball, F_OK) == 0, "cache tarball actually exists on disk");
 	}
 
@@ -456,7 +562,7 @@ int main(void)
 		if (stage_source_tarball(scratch_dir, "cachetest2", "1.0", tarball2, sizeof(tarball2),
 		                          sha2562, sizeof(sha2562)) == 0) {
 			snprintf(source_url2, sizeof(source_url2), "%s", test_http_src(tarball2));
-			CHECK(write_recipe(g_pkg_state_dir, "cachetest2", "1.0", source_url2, sha2562, NULL) ==
+			CHECK(publish_hello_recipe(&client, "cachetest2", "1.0", source_url2, sha2562) ==
 			              0,
 			      "write cachetest2 recipe");
 		}
@@ -503,7 +609,7 @@ int main(void)
 		{
 			char old_cache_tarball[PATH_MAX];
 
-			snprintf(old_cache_tarball, sizeof(old_cache_tarball), "%s/cachetest-1.0.tar.gz",
+			snprintf(old_cache_tarball, sizeof(old_cache_tarball), "%s/cachetest-1.0-1.cixpkg",
 			         g_cache_dir);
 			CHECK(access(old_cache_tarball, F_OK) != 0,
 			      "the older cachetest-1.0 cache entry was actually evicted");
@@ -757,9 +863,8 @@ int main(void)
 				cix_response_free(&r);
 			}
 
-			CHECK(write_recipe(g_pkg_state_dir, "pushtest", "1.0", source_url, push_sha256,
-			                    NULL) == 0,
-			      "write pushtest recipe (real source -- must genuinely build)");
+			CHECK(publish_hello_recipe(&client, "pushtest", "1.0", source_url, push_sha256) == 0,
+			      "publish pushtest recipe (real source -- must genuinely build)");
 
 			memset(&r, 0, sizeof(r));
 			CHECK(cix_client_request(&client, "POST", "/v1/pkg/install",
@@ -772,8 +877,8 @@ int main(void)
 
 			/* The push is asynchronous by design (it must never block
 			 * the event loop), so the arrival is polled, not assumed. */
-			snprintf(pushed, sizeof(pushed), "%s/pushtest-1.0-%s.tar.gz", push_dir, host_arch());
-			snprintf(headers_path, sizeof(headers_path), "%s/pushtest-1.0-%s.tar.gz.headers",
+			snprintf(pushed, sizeof(pushed), "%s/pushtest-1.0-1-%s.cixpkg", push_dir, host_arch());
+			snprintf(headers_path, sizeof(headers_path), "%s/pushtest-1.0-1-%s.cixpkg.headers",
 			         push_dir, host_arch());
 			for (i = 0; i < 100; i++) {
 				if (access(headers_path, R_OK) == 0)
@@ -861,14 +966,11 @@ int main(void)
 			 * the broken endpoint returned.
 			 */
 			{
-				char hb_recipe_dir[PATH_MAX];
-				char hb_recipe_path[PATH_MAX];
 				char hb_pushed[PATH_MAX];
 				char hb_headers[PATH_MAX];
 				char hb_tarball[512];
 				char hb_sha256[128];
 				int hb_ok = 1;
-				FILE *hf;
 
 				if (hb_ok && stage_source_tarball(scratch_dir, "hbpush", "1.0", hb_tarball,
 				                                   sizeof(hb_tarball), hb_sha256,
@@ -877,29 +979,19 @@ int main(void)
 				CHECK(hb_ok, "stage hbpush source tarball");
 
 				if (hb_ok) {
-					snprintf(hb_recipe_dir, sizeof(hb_recipe_dir), "%s/recipes/hbpush",
-					         g_pkg_state_dir);
-					mkdir(hb_recipe_dir, 0755);
-					snprintf(hb_recipe_dir, sizeof(hb_recipe_dir),
-					         "%s/recipes/hbpush/1.0", g_pkg_state_dir);
-					mkdir(hb_recipe_dir, 0755);
-					snprintf(hb_recipe_path, sizeof(hb_recipe_path),
-					         "%s/recipes/hbpush/1.0/build.sh", g_pkg_state_dir);
-					hf = fopen(hb_recipe_path, "w");
-					if (hf == NULL) {
-						hb_ok = 0;
-					} else {
-						fprintf(hf,
-						        "pkg_name=hbpush\npkg_version=1.0\n"
-						        "pkg_source=%s\npkg_sha256=%s\n"
-						        "pkg_depends=\"\"\n"
-						        "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n\n"
-						        "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
-						        "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n}\n",
-						        test_http_src(hb_tarball), hb_sha256);
-						fclose(hf);
-					}
-					CHECK(hb_ok, "write hbpush hostbuild recipe");
+					/* A hostbuild's own install puts its output at the
+					 * root of the staged tree, not under usr/bin, so
+					 * this one does not use publish_hello_recipe(). */
+					hb_ok = publish_cpdl_recipe(
+					                &client, "hbpush", "1.0", test_http_src(hb_tarball), hb_sha256,
+					                "        cd \"${src}/hbpush/hbpush-1.0\" {\n"
+					                "            run \"tcc\" {\n"
+					                "                \"-o\" \"hello\" \"hello.c\"\n"
+					                "            }\n"
+					                "        }\n",
+					                "        copy \"${src}/hbpush/hbpush-1.0/hello\" to "
+					                "\"${dest}/hello\"\n") == 0;
+					CHECK(hb_ok, "publish hbpush hostbuild recipe");
 				}
 
 				if (hb_ok) {
@@ -917,10 +1009,10 @@ int main(void)
 				}
 
 				if (hb_ok) {
-					snprintf(hb_pushed, sizeof(hb_pushed), "%s/hbpush-1.0-%s.tar.gz",
+					snprintf(hb_pushed, sizeof(hb_pushed), "%s/hbpush-1.0-1-%s.cixpkg",
 					         push_dir, host_arch());
 					snprintf(hb_headers, sizeof(hb_headers),
-					         "%s/hbpush-1.0-%s.tar.gz.headers", push_dir, host_arch());
+					         "%s/hbpush-1.0-1-%s.cixpkg.headers", push_dir, host_arch());
 					/* Nothing should have published it yet -- a
 					 * hostbuild produces no cache tarball, which
 					 * is the whole defect. */
