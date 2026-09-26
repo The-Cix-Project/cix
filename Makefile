@@ -46,7 +46,7 @@ SELFTESTS = \
 	$(BUILD)/test_curl_guards \
 	$(BUILD)/test_timebounds \
 	$(BUILD)/test_procfuse \
-	$(BUILD)/test_lint $(BUILD)/test_naming \
+	$(BUILD)/test_lint $(BUILD)/test_naming $(BUILD)/test_versioning \
 	$(BUILD)/test_osrelease \
 	$(BUILD)/test_json $(BUILD)/test_jsondiff $(BUILD)/test_nsswitch $(BUILD)/test_nicreport \
 	$(BUILD)/test_cbsrecipe \
@@ -464,7 +464,7 @@ testreport: all
 
 .PHONY: all clean aggressive
 
-all: $(BUILD)/cix-init $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/test_container_pty $(BUILD)/pty_child $(BUILD)/cixd $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/cixctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_slow_client $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_network_interfaces $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_ntp $(BUILD)/test_ldap $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/cix-install $(BUILD)/cix-recover $(BUILD)/test_dual_console $(BUILD)/dual_console_child $(BUILD)/console_term_child $(BUILD)/console_input_child $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/mktoolchainimage $(BUILD)/test_console_pki_bootstrap $(BUILD)/test_console_exec $(BUILD)/test_container_lifecycle $(BUILD)/output_child $(BUILD)/stats_child $(BUILD)/test_container_stats $(BUILD)/test_disk_quota $(BUILD)/test_diskpart $(BUILD)/test_sysctl $(BUILD)/test_kmod $(BUILD)/test_kmod_build $(BUILD)/test_routes $(BUILD)/test_management_address $(BUILD)/test_pkg_build_log $(BUILD)/test_pkg_concurrent_stress $(BUILD)/test_pkg_sync $(BUILD)/test_pkg_cache $(BUILD)/test_image_recipe $(BUILD)/test_container_recipe $(BUILD)/test_rolling_restart $(BUILD)/syslog_recv_child $(BUILD)/test_syslogfwd $(BUILD)/test_hostproc $(BUILD)/test_tls_throttle $(BUILD)/test_https_chain $(BUILD)/test_layout_upgrade $(BUILD)/test_treecopy $(BUILD)/test_storage_placement $(BUILD)/test_backup_config $(BUILD)/test_container_storage_migrate $(BUILD)/test_container_dns_servers $(BUILD)/test_hostauth $(BUILD)/test_device_hotplug $(BUILD)/test_subid $(BUILD)/test_volume $(BUILD)/volume_child $(BUILD)/test_userns_run $(BUILD)/run_child $(BUILD)/test_factory_reset $(BUILD)/test_boot_console $(BUILD)/test_signing_keys $(BUILD)/test_pkg_recipe_approval $(BUILD)/test_stallwatch $(BUILD)/test_kernelpolicy $(BUILD)/test_dhcp $(BUILD)/test_artifact_export $(BUILD)/test_esp $(BUILD)/test_btrfs $(BUILD)/test_direct_rootfs $(BUILD)/test_targz $(BUILD)/targz_probe $(BUILD)/test_childdiag $(BUILD)/apigen $(BUILD)/test_apigen $(BUILD)/test_apiroute $(BUILD)/test_api_surfaces $(BUILD)/test_docindex $(BUILD)/test_web_vt $(BUILD)/test_web_syntax $(BUILD)/test_secrets $(BUILD)/test_curl_guards $(BUILD)/test_timebounds $(BUILD)/test_procfuse $(BUILD)/test_lint $(BUILD)/test_naming $(BUILD)/test_osrelease $(BUILD)/test_json $(BUILD)/test_jsondiff $(BUILD)/test_cbsrecipe $(BUILD)/test_nsswitch $(BUILD)/test_nicreport $(BUILD)/test_blocking_waits $(BUILD)/test_listenbind $(BUILD)/test_bootorder $(BUILD)/test_pkg_finalize $(BUILD)/test_fresh_output_dir $(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc $(BUILD)/test_releasekey $(BUILD)/test_aggressive $(BUILD)/cix-boot.efi $(BUILD)/cix-xorriso
+all: $(BUILD)/cix-init $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/test_container_pty $(BUILD)/pty_child $(BUILD)/cixd $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/cixctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_slow_client $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_network_interfaces $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_ntp $(BUILD)/test_ldap $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/cix-install $(BUILD)/cix-recover $(BUILD)/test_dual_console $(BUILD)/dual_console_child $(BUILD)/console_term_child $(BUILD)/console_input_child $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/mktoolchainimage $(BUILD)/test_console_pki_bootstrap $(BUILD)/test_console_exec $(BUILD)/test_container_lifecycle $(BUILD)/output_child $(BUILD)/stats_child $(BUILD)/test_container_stats $(BUILD)/test_disk_quota $(BUILD)/test_diskpart $(BUILD)/test_sysctl $(BUILD)/test_kmod $(BUILD)/test_kmod_build $(BUILD)/test_routes $(BUILD)/test_management_address $(BUILD)/test_pkg_build_log $(BUILD)/test_pkg_concurrent_stress $(BUILD)/test_pkg_sync $(BUILD)/test_pkg_cache $(BUILD)/test_image_recipe $(BUILD)/test_container_recipe $(BUILD)/test_rolling_restart $(BUILD)/syslog_recv_child $(BUILD)/test_syslogfwd $(BUILD)/test_hostproc $(BUILD)/test_tls_throttle $(BUILD)/test_https_chain $(BUILD)/test_layout_upgrade $(BUILD)/test_treecopy $(BUILD)/test_storage_placement $(BUILD)/test_backup_config $(BUILD)/test_container_storage_migrate $(BUILD)/test_container_dns_servers $(BUILD)/test_hostauth $(BUILD)/test_device_hotplug $(BUILD)/test_subid $(BUILD)/test_volume $(BUILD)/volume_child $(BUILD)/test_userns_run $(BUILD)/run_child $(BUILD)/test_factory_reset $(BUILD)/test_boot_console $(BUILD)/test_signing_keys $(BUILD)/test_pkg_recipe_approval $(BUILD)/test_stallwatch $(BUILD)/test_kernelpolicy $(BUILD)/test_dhcp $(BUILD)/test_artifact_export $(BUILD)/test_esp $(BUILD)/test_btrfs $(BUILD)/test_direct_rootfs $(BUILD)/test_targz $(BUILD)/targz_probe $(BUILD)/test_childdiag $(BUILD)/apigen $(BUILD)/test_apigen $(BUILD)/test_apiroute $(BUILD)/test_api_surfaces $(BUILD)/test_docindex $(BUILD)/test_web_vt $(BUILD)/test_web_syntax $(BUILD)/test_secrets $(BUILD)/test_curl_guards $(BUILD)/test_timebounds $(BUILD)/test_procfuse $(BUILD)/test_lint $(BUILD)/test_naming $(BUILD)/test_versioning $(BUILD)/test_osrelease $(BUILD)/test_json $(BUILD)/test_jsondiff $(BUILD)/test_cbsrecipe $(BUILD)/test_nsswitch $(BUILD)/test_nicreport $(BUILD)/test_blocking_waits $(BUILD)/test_listenbind $(BUILD)/test_bootorder $(BUILD)/test_pkg_finalize $(BUILD)/test_fresh_output_dir $(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc $(BUILD)/test_releasekey $(BUILD)/test_aggressive $(BUILD)/cix-boot.efi $(BUILD)/cix-xorriso
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -475,13 +475,29 @@ $(BUILD):
 # build-system layer (Makefile shelling out to git here is the one place
 # that happens; the actual C compilation stays TCC-only per CLAUDE.md).
 #
+# THE VERSION SCHEME (ADR-0312): a release is `<version>-<release>`,
+# the version is 0.2.x and the release is the counter. `0.2.57-358`,
+# then `0.2.57-359`. ONE STRING EVERYWHERE -- the git tag, CIX_VERSION,
+# CIX_BUILD_VERSION, the recipe identity (`version "0.2.57"` +
+# `release 358`) and the artifact name are all spelled identically,
+# with NO `v` prefix. The recipe passes `CIX_VERSION=${version}-${release}`
+# for exactly that reason: `${version}` alone would report 0.2.57 for
+# every release in the 0.2.57 line and make two builds indistinguishable.
+#
+# Cix is pre-1.0 and the leading 0 says so. The scheme this replaced
+# (`v2.57.358`) claimed two major generations of stable interface that
+# never existed; it was never written down anywhere, which is how it
+# drifted there. $(BUILD)/test_versioning gates the shape, because a
+# convention in prose does not hold -- the same reason test_naming
+# gates the CBS name.
+#
 # CIX_VERSION (optional make variable): an on-box hostbuild compiles from
 # a Gitea archive tarball with no .git directory at all, so `git describe`
 # there can only ever fail -- every self-hosted build used to report
 # "unknown" (user-reported: `cixctl boot` on a freshly-deployed box gave
 # no way to tell WHICH build was running beyond its timestamp). The recipe
 # already knows the exact tag it fetched (its own pkg_version), so it
-# passes it explicitly (`make CIX_VERSION=v1.XX.0 ...`, cix.recipe);
+# passes it explicitly (`make CIX_VERSION=0.2.57-358 ...`, the cix recipe);
 # git describe stays the dev-tree default, "unknown" the last resort.
 ifeq ($(strip $(CIX_VERSION)),)
 VERSION_CMD = git -C $(CURDIR) describe --tags --always --dirty 2>/dev/null || echo unknown
@@ -935,6 +951,8 @@ $(BUILD)/test_procfuse: test/test_procfuse.c daemon/src/procfuse.c daemon/src/pr
 $(BUILD)/test_lint: test/test_lint.c | $(BUILD)
 	$(CC) $(CFLAGS) test/test_lint.c -o $@
 
+$(BUILD)/test_versioning: test/test_versioning.c $(BUILD)/version.h | $(BUILD)
+	$(CC) $(CFLAGS) -I$(BUILD) test/test_versioning.c -o $@
 
 $(BUILD)/test_naming: test/test_naming.c | $(BUILD)
 	$(CC) $(CFLAGS) test/test_naming.c -o $@

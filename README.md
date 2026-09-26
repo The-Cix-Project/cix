@@ -8,6 +8,14 @@ Cix name and marks are governed separately by [TRADEMARK.md](TRADEMARK.md).
 
 Cix OS is a rolling-release hardware and workload orchestration platform, compiled entirely from source: a hand-rolled container runtime on raw Linux namespaces and cgroups, OverlayFS-based image layering, a 100% custom C networking data plane, and a REST control layer for the host, containers, hardware, disks, networks, DNS, PKI, and more — no runc, no Open vSwitch, no eBPF-based networking dataplane. Cix's own code is compiled exclusively with the Tiny C Compiler (TCC); third-party packages build with TCC by default and with Cix's own self-hosted gcc where TCC cannot ([ADR-0224](docs/adr/0224-the-toolchain-tenet.md), [ADR-0226](docs/adr/0226-gcc-is-an-ordinary-choice-for-third-party-packages.md)). Every capability, including hardware itself, is a first-class API resource; containers are where all real work happens, the host is the thinnest possible layer underneath them. Full charter: [`docs/mission/MISSION.md`](docs/mission/MISSION.md).
 
+## Versioning
+
+A release is **`<version>-<release>`**: the version is `0.2.x`, and the release is the counter. `0.2.57-358`, then `0.2.57-359`.
+
+The git tag, the build version `cixctl boot` reports, the os-release `BUILD_ID`, the recipe identity (`version "0.2.57"` + `release 358`) and the artifact name are **one string, spelled identically, with no `v` prefix** — `0.2.57-358`.
+
+The leading `0` is not modesty, it is accurate: Cix has not shipped a stable interface, so it has not shipped a 1.0. Rolling-release means there are no curated milestones to number — `git tag --sort=v:refname` is the list of releases, and [`CHANGELOG.md`](CHANGELOG.md) says what each one changed. The reasoning, and what the previous scheme cost, is in [ADR-0312](docs/adr/0312-the-version-is-0-2-x-and-the-release-is-the-counter.md).
+
 ## The Name
 
 **Cix** — pronounced *six*. Two halves, each naming a real part of what this is:

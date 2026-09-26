@@ -165,6 +165,33 @@ The REST daemon is the **only** process with direct access to the runtime librar
 
 Every change to the web dashboard follows [docs/guides/web-ux-guidelines.md](docs/guides/web-ux-guidelines.md) — the dashboard's design system: one widget per job, one source of truth for a resource's state and actions (every surface reads it, never re-derives it), and the decision logic that says which widget is correct so one is never swapped for another. It is binding, not advisory; if it is genuinely inadequate for a new need, change that document in the same commit rather than routing around it. The reference is `diskActionEligibility()` in `web/app.js` — one function decides a disk's actions, and both its detail page and its tree right-click menu render from it.
 
+## Versioning (no exceptions)
+
+**A release is `<version>-<release>`. The version is `0.2.x`. The release is the counter.** `0.2.57-358`, then `0.2.57-359`, then `0.2.57-360`. See [ADR-0312](docs/adr/0312-the-version-is-0-2-x-and-the-release-is-the-counter.md).
+
+Stated by the owner on 2026-09-26: *"I think it's 0.2.57 release 358, right? But if this is the case, I want this plastered on CLAUDE.md and our readme files and our build files so that we don't mix things up, and we want consistency moving forwards, I want to stop exaggerating with versioning."*
+
+- **ONE STRING, EVERYWHERE, with no `v` prefix.** The git tag, `CIX_VERSION`, `CIX_BUILD_VERSION`, `cixctl boot`, the os-release `BUILD_ID`, the recipe identity and the artifact name are all spelled identically:
+
+  | Where | Value |
+  |---|---|
+  | git tag | `0.2.57-358` |
+  | recipe | `version "0.2.57"` + `release 358` |
+  | `make` | `CIX_VERSION=${version}-${release}` |
+  | artifact | `cix-0.2.57-358-x86_64.cixpkg` |
+
+  The recipe passes `${version}-${release}` and not `${version}`, because the latter reports `0.2.57` for every release in the line and makes two builds indistinguishable in `cixctl boot`.
+
+- **cix is an ordinary package in this respect.** All 477 CPDL recipes carry `version` + `release`; the old scheme was the odd one out, cramming everything into `version` and pinning `release` at 1 forever.
+
+- **The leading 0 is a claim, and it is true.** Cix has not shipped a stable interface, so it has not shipped a 1.0. The scheme this replaced (`v2.57.358`) asserted two major generations of one. Raising the major is a deliberate act — it changes this section, the README, the Makefile block and `test_versioning` together, and it needs a reason beyond "it has been a while".
+
+- **Never publish a cix recipe outside the `0.x` line.** The `v2.57` line is retired and its 37 recipes are in `trash/`. This is load-bearing, not tidiness: `pkg_version_compare()` is natural sort, so `0.2.57` loses to `v2.57.358` on the first character (`'0'` is a digit, `'v'` is not, so bytes decide and `0x30 < 0x76`) — and `find_recipe_path()`'s own comment says the highest-ordered version is *"the 'rolling implicit' default every pre-existing, non-manifest-aware caller (plain `pkg install NAME`, dependency resolution, hostbuild, update-candidate checks) relies on."* Put one back and a version-less `pkg install cix` silently resolves to the retired line, forever. **`test_versioning` is the gate**, in SELFTESTS.
+
+- **The artifacts are untouched.** All 390 published `cix` artifacts stay downloadable, installable and bootable; only the rebuild-from-recipe path for the frozen line is gone.
+
+- **An epoch was measured and rejected, so don't reach for it again.** dpkg's `1:0.2.57` cannot work here: the artifact cache answers **HTTP 400** to a colon in an artifact name where the same name without one answers 404 (measured 2026-09-26). The cache's own `version_rank` will therefore rank new releases below old ones in its listing until cix-cache learns the scheme — that is display ordering in a service this project does not own, it decides nothing here, and it is a ticket there rather than a workaround here.
+
 ## One Build System Mandate (no exceptions)
 
 **CBS is the build system. CPDL is the recipe language. `.cixpkg` is the artifact format. There is no second one of any of them, and there is no route back to one.**
