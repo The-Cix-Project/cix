@@ -1132,6 +1132,128 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	/*
+	 * 2b. ADR-0309 clause 4: publishing a NEW shell revision is
+	 * refused, and an ALREADY-PUBLISHED one still answers duplicate.
+	 *
+	 * Both halves matter and the second is the one that can silently
+	 * break. `recipe-sync` re-offers every file in the corpus every
+	 * six hours and relies on duplicates being cheap -- its last run
+	 * on 192.168.15.95 counted `added=28 skipped=379`. If the refusal
+	 * were placed before the immutability check rather than after it,
+	 * each of those 379 skips would become an error, every window,
+	 * and the only symptom would be a number in `pkg sync-status`
+	 * that nobody reads. So this asserts 400 for the new one and 409
+	 * for the stored one, which pins the check's position rather than
+	 * merely its existence.
+	 *
+	 * Note the format field is omitted deliberately on the first
+	 * call: an absent format means shell (main.c's own comment says
+	 * so, for clients predating PBS), so this is the exact shape a
+	 * legacy publisher sends.
+	 */
+	{
+		static const char shell_body[] = "pkg_name=oldshell\n"
+		                                 "pkg_version=1.0\n"
+		                                 "pkg_source=https://192.0.2.1/x.tar.gz\n"
+		                                 "pkg_sha256="
+		                                 "0000000000000000000000000000000000000000000000000000"
+		                                 "000000000000\n"
+		                                 "pkg_build() {\n\ttrue\n}\n"
+		                                 "pkg_install() {\n\ttrue\n}\n";
+		char body[2048];
+		char dir[PATH_MAX];
+		char path[PATH_MAX];
+		struct json_writer sw;
+		FILE *sf;
+
+		jw_init(&sw);
+		jw_obj_open(&sw);
+		jw_key(&sw, "name");
+		jw_str(&sw, "oldshell");
+		jw_key(&sw, "content");
+		jw_str(&sw, shell_body);
+		jw_obj_close(&sw);
+		sw.buf[sw.len] = '\0';
+		snprintf(body, sizeof(body), "%s", sw.buf);
+		jw_free(&sw);
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pkg/recipes", body, &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr,
+			        "FAIL: publishing a new shell recipe expected 400 (ADR-0309 clause 4), "
+			        "got %d %.200s\n",
+			        r.status, r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* It must not have landed: a refused publish leaves nothing. */
+		snprintf(path, sizeof(path), "%s/recipes/oldshell/1.0/build.sh", g_pkg_state_dir);
+		if (access(path, F_OK) == 0) {
+			fprintf(stderr, "FAIL: refused shell recipe was stored anyway at %s\n", path);
+			ok = 0;
+		}
+
+		/*
+		 * Now the same content for a version that IS in the store,
+		 * put there the way every shell fixture in this file does it
+		 * -- straight into the recipe directory, never through the
+		 * publish endpoint. Re-offering it must be a duplicate, not
+		 * the clause 4 refusal.
+		 */
+		snprintf(dir, sizeof(dir), "%s/recipes/storedshell", g_pkg_state_dir);
+		mkdir(dir, 0755);
+		snprintf(dir, sizeof(dir), "%s/recipes/storedshell/1.0", g_pkg_state_dir);
+		mkdir(dir, 0755);
+		snprintf(path, sizeof(path), "%s/build.sh", dir);
+		sf = fopen(path, "w");
+		if (sf == NULL) {
+			fprintf(stderr, "FAIL: could not write %s\n", path);
+			ok = 0;
+		} else {
+			fputs("pkg_name=storedshell\n", sf);
+			fputs("pkg_version=1.0\n", sf);
+			fputs("pkg_source=https://192.0.2.1/x.tar.gz\n", sf);
+			fputs("pkg_sha256="
+			      "0000000000000000000000000000000000000000000000000000000000000000\n",
+			      sf);
+			fputs("pkg_build() {\n\ttrue\n}\n", sf);
+			fputs("pkg_install() {\n\ttrue\n}\n", sf);
+			fclose(sf);
+
+			jw_init(&sw);
+			jw_obj_open(&sw);
+			jw_key(&sw, "name");
+			jw_str(&sw, "storedshell");
+			jw_key(&sw, "content");
+			jw_str(&sw, "pkg_name=storedshell\n"
+			            "pkg_version=1.0\n"
+			            "pkg_source=https://192.0.2.1/x.tar.gz\n"
+			            "pkg_sha256="
+			            "0000000000000000000000000000000000000000000000000000000000000000\n"
+			            "pkg_build() {\n\ttrue\n}\n"
+			            "pkg_install() {\n\ttrue\n}\n");
+			jw_obj_close(&sw);
+			sw.buf[sw.len] = '\0';
+			snprintf(body, sizeof(body), "%s", sw.buf);
+			jw_free(&sw);
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/recipes", body, &r) != 0 ||
+			    r.status != 409) {
+				fprintf(stderr,
+				        "FAIL: re-publishing a STORED shell recipe expected 409 duplicate "
+				        "(the clause 4 refusal must sit after the immutability check, or "
+				        "recipe-sync turns 379 skips into 379 errors), got %d %.200s\n",
+				        r.status, r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+	}
+
 	/* 3. real install: greeter -> 202, fetching */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"greeter\"}", &r) != 0 ||
