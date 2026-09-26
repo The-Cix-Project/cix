@@ -44,8 +44,7 @@ the 477 CPDL recipes already has it, and the old scheme was the odd one
 out — it put the whole thing in `version` and left `release` pinned at
 1 forever. This makes cix an ordinary package.
 
-**The `v2.57` recipe line is retired from the store**, and that is the
-load-bearing half of this decision rather than tidying.
+**The `v2.57` recipe line is retired from the CORPUS**, so nothing re-adds it and no future cix recipe may sit outside the `0.x` line. Removing the 611 copies already in the box's recipe store is a separate, larger act -- see Consequences.
 
 ## Why the old line had to go
 
@@ -94,17 +93,48 @@ the same trap for #508's automated rollout.
 
 ## Consequences
 
-**What is given up.** The 37 `cix@v2.57.*` recipes no longer resolve,
-so those host releases cannot be rebuilt from source. They are moved to
-`trash/` in the recipes repository rather than deleted, so the text
-survives in git.
+**Retirement has two halves and they are not the same act.** This is
+the CLAUDE.md distinction — `pkg recipe rm` edits the store, git edits
+what refills it — and it decides what is actually given up:
 
-**What is not given up, and this is the part that matters.** The 390
-`cix` artifacts in the cache are untouched. Every previous release
-stays downloadable, installable and bootable; only the
-rebuild-from-recipe path for a frozen line goes away. Nobody has ever
-rebuilt an old host release from its recipe, and the A/B slots and the
-installer both consume artifacts.
+- **The git half, done here.** The 37 `cix@v2.57.*.cbs` files move to
+  `trash/`, so nothing re-adds them and `test_versioning` keeps them
+  out. The box's store is untouched by this, so **every old release
+  stays installable**: its recipe is still there, carrying the artifact
+  approval that makes its cached bytes trustworthy.
+- **The store half, NOT done here.** Removing them from the store is
+  what actually makes `0.2.57` the highest cix recipe, and it is
+  larger and costlier than the git half by an order of magnitude.
+
+**Measured on 192.168.15.95, 2026-09-26, and it is why the store half
+is deferred rather than done:** the store holds **611** cix recipe
+versions, not 37 — **568 shell and 43 CPDL** — because it has
+accumulated every cix release since `v1.4.0`. Two consequences:
+
+1. Removing a recipe from the store removes that version's artifact
+   approval, so that release becomes **uninstallable**, not merely
+   unrebuildable. An earlier draft of this ADR claimed only
+   rebuild-from-recipe was lost. That was wrong, and it was wrong
+   because it reasoned about the git half and described the store half.
+2. 568 of the 611 are shell recipes, which [ADR-0309](0309-shell-recipes-are-history-the-shell-path-retires-with-its-last-dependent.md)
+   explicitly decided must stay — *"the 1,502 published `.sh` files
+   STAY ... each carries the artifact approval that makes its cached
+   bytes trustworthy ... `cix@*.sh` is the platform's own release
+   record."* Removing them is a reversal of an accepted decision and
+   belongs to the owner, not to this change.
+
+**So the trap is live on the box and is recorded rather than worked
+around.** `pkg ls` reports `cix base v2.57.167 installed` with
+`available v2.57.358-1`: the daemon's `recipe_latest_version("cix")`
+is still the retired line. What that costs is a wrong "available"
+column on the cix package and a version-less `pkg install cix`
+resolving to the retired line. What it does not cost is this release:
+a hostbuild names its version explicitly, the selftest reads the
+pinned corpus (which is clean), and nothing auto-installs cix.
+
+**The 390 artifacts are untouched either way**, so every previous
+release stays downloadable and bootable, and the A/B slots and the
+installer both consume artifacts rather than recipes.
 
 **The running host is unaffected.** `pkg_entry_drift()` returns 0 when
 an installed package has no recipe, so the installed `v2.57.358` keeps
