@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The version is `0.2.x` and the release is the counter — `0.2.57-359` is live (ADR-0312)
+
+A release is now **`<version>-<release>`**: version `0.2.57`, release `358`, then `359`. The previous scheme, `v2.57.358`, had a major of 2 and a minor of 57 that had climbed for years without either ever marking a compatibility boundary — a platform that has not shipped a 1.0, numbering itself as though it had shipped two. It was written down nowhere, which is how it got there.
+
+**One string, everywhere, no `v` prefix.** Verified on 192.168.15.95 after the deploy — `cixctl boot`, the installed package, the git tag and the artifact name are all `0.2.57-359`. cix also stops being the odd recipe out: it now uses the `version`/`release` split all 477 CPDL recipes already have, instead of cramming everything into `version` and pinning `release` at 1 forever. The recipe passes `CIX_VERSION=${version}-${release}` rather than `${version}`, because the latter would report `0.2.57` for every release in the line.
+
+Plastered where it cannot be missed, as instructed: a mandate section in `CLAUDE.md`, a section in `README.md`, the Makefile's own version block, and **`test_versioning`** in SELFTESTS — prose did not hold the naming rule either.
+
+**The ordering hazard, and why the fix is a retirement rather than a comparator change.** `pkg_version_compare()` is dpkg-style natural sort, so `0.2.57` loses to `v2.57.358` on the very first character: `'0'` is a digit and `'v'` is not, so the byte comparison runs and `0x30 < 0x76`. That is not cosmetic — `find_recipe_path()`'s own comment calls the highest-ordered version *"the 'rolling implicit' default every pre-existing, non-manifest-aware caller (plain `pkg install NAME`, dependency resolution, hostbuild, update-candidate checks) relies on."* So the 37 `cix@v2.57.*` recipes are retired to `trash/`, and `test_versioning` keeps any cix recipe outside the `0.x` line from coming back.
+
+**A dpkg epoch was measured and rejected, which is worth recording so nobody re-proposes it.** `1:0.2.57` cannot be an artifact name here: the cache answers **HTTP 400** to a colon where the same name without one answers 404. That also removes the benefit most often claimed for it — that the cache would rank releases correctly — since `version_rank` is that service's own code.
+
+**What was checked rather than assumed, because the frightening cases turned out to be fine.** A/B boot entry ordering does not read the release string at all: the entry's `version` directive is `(long)time(NULL)` under a fixed `sort-key cix`, so a renumber cannot select the wrong slot. `cix` is not ISO-seeded (`g_seed_packages` is glibc, zlib, dnsmasq), `__hostbuild` has no manifest entries, there is no downgrade guard, `pkg_recipe_latest_version()` has no callers, the two scheduled jobs do not select by version, and every `v2.57` literal in `test/*.c` is a comment citation.
+
+**What is left, and it is bigger than it looked.** The box's recipe store holds **611** cix recipe versions, not the 37 in the corpus — 43 CPDL and **568 shell** — so the daemon still reports the retired line as latest (`pkg ls` shows `cix base v2.57.167` with `available v2.57.358-1`). Clearing it means removing recipes from the store, which removes each version's artifact approval and makes that release **uninstallable**, not merely unrebuildable — and 568 of them are the shell recipes [ADR-0309](docs/adr/0309-shell-recipes-are-history-the-shell-path-retires-with-its-last-dependent.md) decided must stay. That is an owner decision and is #532. It costs a wrong `available` column and a version-less resolution; it does not affect releases, which name their version explicitly.
+
 ### The naming gate now scans the recipe corpus, because the first sweep stopped at this repository's edge (#516)
 
 The rename to CBS was called done, and 108 files in `cix-recipes` were still saying the old name. The reason is worth more than the count: ADR-0308 had moved the recipes into their own repository, and `test_naming` scans the tree it lives in. A gate whose scope is "the tree" silently stops being a gate the moment part of the system leaves that tree.
