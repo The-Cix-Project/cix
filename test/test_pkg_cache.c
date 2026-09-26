@@ -350,6 +350,67 @@ static void print_daemon_log(const struct cix_client *c)
 	cix_response_free(&r);
 }
 
+/*
+ * The BUILD log, which is a different store from the one above and is
+ * the only place cbs's own stderr goes.
+ *
+ * logstore_write() does not echo to stderr, so a daemon diagnostic
+ * never reaches a build's captured output -- and the converse is what
+ * bites here: cbs's complaint never reaches the daemon log. A fixture
+ * build that dies with "exited (status 3) after 0s" has its actual
+ * reason in <cache>/build-logs, and for a test daemon that store is
+ * deleted with the mkdtemp data directory the moment the test ends.
+ *
+ * cix#529 spent four release cycles inferring causes that could have
+ * been read here: a dependency that did not resolve, an engine
+ * version skew, a CPDL keyword the floor's cbs predated. Each guess
+ * cost a full hostbuild. This prints the newest log's tail instead.
+ */
+static void print_last_build_log(const struct cix_client *c)
+{
+	struct cix_response r;
+	const struct json_value *logs;
+	const char *file;
+	char path[512];
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "GET", "/v1/pkg/build-logs", NULL, &r) != 0 || r.status != 200 ||
+	    r.json == NULL) {
+		fprintf(stderr, "    (build-log list unavailable: status=%d)\n", r.status);
+		cix_response_free(&r);
+		return;
+	}
+	/* Newest first, per the endpoint's own contract, so [0] is the
+	 * build that just failed. */
+	logs = json_object_get(r.json, "logs");
+	if (logs == NULL || logs->type != JSON_ARRAY || logs->u.array.count == 0) {
+		fprintf(stderr, "    (no build logs kept)\n");
+		cix_response_free(&r);
+		return;
+	}
+	file = json_as_string(json_object_get(logs->u.array.items[0], "file"));
+	if (file == NULL) {
+		cix_response_free(&r);
+		return;
+	}
+	snprintf(path, sizeof(path), "/v1/pkg/build-logs/%s", file);
+	cix_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0 || r.status != 200 || r.body == NULL) {
+		fprintf(stderr, "    (build log %s unavailable: status=%d)\n", file, r.status);
+		cix_response_free(&r);
+		return;
+	}
+	fprintf(stderr, "    --- build log %s (last 2KB) ---\n", file);
+	if (r.body_len > 2048)
+		fprintf(stderr, "%.2048s\n", r.body + (r.body_len - 2048));
+	else
+		fprintf(stderr, "%.*s\n", (int)r.body_len, r.body);
+	fprintf(stderr, "    --- end build log ---\n");
+	cix_response_free(&r);
+}
+
 static int write_recipe(const char *pkg_state_dir, const char *name, const char *version,
                          const char *source_url, const char *source_sha256,
                          const char *artifact_sha256)
@@ -542,8 +603,10 @@ int main(void)
 		int built = wait_for_pkg_state(&client, "cachetest", "imgA", "installed", 300) == 0;
 
 		CHECK(built, "cachetest@imgA reaches state=installed");
-		if (!built)
+		if (!built) {
 			print_daemon_log(&client);
+			print_last_build_log(&client);
+		}
 	}
 
 	memset(&r, 0, sizeof(r));
