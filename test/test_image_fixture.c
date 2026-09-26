@@ -737,6 +737,13 @@ static const struct {
 	 */
 	{ "cbs", "v0.1.63-2" }, { "libarchive", "3.8.1-5" }, { "zstd", "1.5.7-5" },
 	{ "xz", "5.8.3-11" },
+	/* m4, because flex@2.6.4-6 declares it as a RUNTIME dependency
+	 * where the shell flex@2.6.4-2 this floor used to pin did not.
+	 * Bumping flex to its only CPDL revision (cix#529) pulled m4 in
+	 * with it, and binutils -- whose own runtime deps are zlib and
+	 * flex -- could not resolve until m4 was here. m4 declares no
+	 * runtime package of its own, so it is a leaf. */
+	{ "m4", "1.4.20-6" },
 };
 
 /*
