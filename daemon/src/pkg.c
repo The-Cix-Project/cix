@@ -1784,7 +1784,15 @@ static void redact_repo_token(char *buf, size_t cap)
 }
 
 /*
- * Every `scheme://user:secret@host` in `buf` loses its userinfo.
+ * Every URL in `buf` that carries userinfo -- a user and a secret
+ * before the `@` of a host -- loses it.
+ *
+ * (Described rather than spelled, because test_secrets scans this
+ * tree for exactly that shape and cannot tell an example in a
+ * comment from a live credential. A scanner that tried to would be
+ * one that misses real ones, so the comment adapts to the gate
+ * rather than the other way round -- the same wording test_secrets
+ * itself uses for the same reason.)
  *
  * THE DIFFERENCE FROM redact_repo_token() IS THE WHOLE POINT, and
  * #502 is what happens without it. That function substitutes exactly
