@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. Decides [ADR-0309](0309-shell-recipes-are-history-the-shell-path-retires-with-its-last-dependent.md) clause 5, which listed four options and explicitly left the choice to the owner. Nothing in this ADR changes behaviour; it records what is already true so that the shell build path can retire without the question being answered by default. Needs the owner's acceptance before [#516](https://git.home.arpa/itdlabs/cix/issues/516) closes.
+Proposed. Decides [ADR-0309](0309-shell-recipes-are-history-the-shell-path-retires-with-its-last-dependent.md) clause 5, which listed four options and explicitly left the choice to the owner. Nothing in this ADR changes behaviour; it records what is already true so that the shell build path can retire without the question being answered by default. Also amends ADR-0309 clause 1, since the owner deleted `trash/` on 2026-09-27 and the corpus no longer keeps the published shell files. Needs the owner's acceptance before [#516](https://git.home.arpa/itdlabs/cix/issues/516) closes.
 
 ## Context
 
@@ -35,8 +35,22 @@ The reasoning is not that the shell recipe was replaced by something, but that i
 
 What is genuinely lost is the ability to reconstruct the engine from source *on a machine that has never run Cix*, using nothing but the corpus. That was already impossible: cixd is the thing that reads recipes, and cixd is Cix.
 
+## Amending ADR-0309 clause 1: the corpus no longer keeps the shell files
+
+Clause 1 decided that published shell recipes stay **"in the repository and on hosts."** On 2026-09-27 the owner deleted `trash/` — 1,584 files, 22 MB, `cbs@v0.1.25-1.sh` among them. The second half of that clause is unchanged; the first is now git history rather than a checked-out tree, and this ADR records the change rather than leaving ADR-0309 quietly false.
+
+The four reasons clause 1 gave are worth re-reading against what was actually deleted, because three of them were never about the repository:
+
+- **A published revision is immutable.** True, and enforced *server-side*: a recipe published to a host cannot be overwritten or removed by anything happening in the corpus. Deleting the file changes nothing about the copies that matter.
+- **Its approval is what makes its cached artifact trustworthy.** The approval lives in the host's own published copy, which is what `pkg install` reads. The corpus copy only ever fed the sync, and the sync only *adds*. The one exception was real and is now spent: the ADR-0209 test floor read eight of these files directly through `recipe_artifact_sha()`, which is why those eight were held back on 2026-09-25 — and all twelve floor pins now name a CPDL revision, so none is read any more. Verified before deleting.
+- **67 installed versions are built from one.** Their recipes are published on the host and stay there. Nothing about an installed package consults the corpus.
+- **The release record.** The git tags are the release record, and the files remain in this repository's history.
+
+So what was deleted is a *checked-out copy* of history that three other mechanisms already hold. That is a materially smaller claim than clause 1's wording implies, and stating it plainly is the point of this section: clause 1 read as though the files themselves were load-bearing, and only one of its four reasons ever made them so.
+
 ## Consequences
 
 - ADR-0309 clause 5 is decided, and clause 3's last precondition is met.
+- ADR-0309 clause 1 is amended as above: hosts keep their published shell recipes, the corpus does not.
 - No code changes. `mkbootroot`'s existing refusal to seal a root without cbs becomes load-bearing for this decision as well as for ADR-0307 clause 6, so it must not be relaxed without superseding this ADR.
-- The `trash/` directory holding the superseded shell recipes, `cbs@v0.1.25-1.sh` among them, can be deleted when the owner is satisfied — its contents are no longer a bootstrap route, only history that the artifact store and the release record already hold.
+- A future reader looking for a deleted shell recipe finds it in git history, on any host that published it, or not at all — and the third case is fine, because nothing reads it.

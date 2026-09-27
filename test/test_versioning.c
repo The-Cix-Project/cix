@@ -158,7 +158,7 @@ static void check_retired_line(void)
 		     "  pkg_version_compare() ranks it ABOVE every 0.2.x release, so the\n"
 		     "  highest cix recipe would be the retired one -- and that is what\n"
 		     "  plain `pkg install cix`, dependency resolution, hostbuild and every\n"
-		     "  update check resolve to. Move it to trash/ and `pkg recipe rm` it");
+		     "  update check resolve to. Delete it from the corpus and `pkg recipe rm` it");
 	}
 }
 
