@@ -18,7 +18,7 @@ approval matches a published .tar.gz   :  4   (was 22)
 approval matches nothing published     :  0
 ```
 
-Each flip is a release bump and nothing else. The new revision carries no approval, builds, publishes a signed `.cixpkg` and earns an approval over its own bytes — ADR-0307 clause 5's path, used as intended — and every approval was read back and compared against the published sha before being written into the corpus, so none is a copy of anything.
+Each flip is a release bump and nothing else, across 37 (image, package) upgrades counted from `pkg ls`. The new revision carries no approval, builds, publishes a signed `.cixpkg` and earns an approval over its own bytes — ADR-0307 clause 5's path, used as intended — and every approval was read back and compared against the published sha before being written into the corpus, so none is a copy of anything.
 
 **`cix-builder`, `cix-hosttools` and `kernel-builder` took most of these**, so the build environment was rebuilt underneath itself. Verified by using it rather than by inspecting it: `0.2.57-372` built the whole platform in the rebuilt `cix-builder`, passed the selftest, assembled, staged, booted, and all 12 containers came back running and ready.
 
