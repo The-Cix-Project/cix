@@ -346,7 +346,7 @@ static int raw_connect(int port)
 	 * which is the ceiling itself. That is the tell. The test never
 	 * learned how much longer the child actually needed, so "slow" and
 	 * "never produced a byte at all" were indistinguishable -- the same
-	 * failure mode the READ_TIMEOUT/READ_PEER_CLOSED split was added to
+	 * failure mode the WS_STOP_TIMEOUT/WS_STOP_PEER_CLOSED split was added to
 	 * fix, one level up. Both runs also printed clean loop figures
 	 * (worst_pass_ms=22, slow_passes=0), so the daemon was turning
 	 * normally throughout and this is CPU starvation of the container's

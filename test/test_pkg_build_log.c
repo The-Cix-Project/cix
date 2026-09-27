@@ -773,13 +773,11 @@ int main(void)
 					/* Which failure: a peer that closed without a
 					 * close frame, or five seconds of silence. They
 					 * point at different code and used to share one
-					 * message. */
-					if (reader.last_n == 0)
-						ended = "peer closed the socket";
-					else if (reader.last_errno == EAGAIN || reader.last_errno == EWOULDBLOCK)
-						ended = "no data within the 5 s receive timeout";
-					else
-						ended = "read error";
+					 * message. The reader classifies it now -- the
+					 * same split test_console_exec had made for
+					 * itself, which is one of the things that turned
+					 * out to exist twice (cix#524). */
+					ended = ws_stop_str(&reader);
 					break;
 				}
 				frames++;
