@@ -227,12 +227,28 @@ static int do_one_request(const struct cix_client *c, const char *method, const 
 	out->json = NULL;
 	out->body = NULL;
 	out->body_len = 0;
+	out->content_length = -1;
 	out->content_type[0] = '\0';
 	if (body_start != NULL) {
 		size_t headers_len = (size_t)(body_start - rb.buf);
+		char clen[32];
 
 		find_header_value(rb.buf, headers_len, "Content-Type", out->content_type,
 		                   sizeof(out->content_type));
+		/*
+		 * Read rather than assumed from body_len, because a HEAD
+		 * response declares a length it does not send (#498).
+		 * Absent or unparseable leaves -1, which is "the response
+		 * did not say" and not "zero".
+		 */
+		find_header_value(rb.buf, headers_len, "Content-Length", clen, sizeof(clen));
+		if (clen[0] != '\0') {
+			char *end = NULL;
+			long v = strtol(clen, &end, 10);
+
+			if (end != clen && v >= 0)
+				out->content_length = v;
+		}
 
 		body_start += 4;
 		json_len = rb.len - (size_t)(body_start - rb.buf);

@@ -96,6 +96,24 @@ int http_write_response_hdrs(int fd, int status, const char *status_text,
                               const char *body, size_t body_len);
 
 /*
+ * The same response with the content omitted -- a HEAD (#498).
+ *
+ * content_length is what a GET of the same resource would have
+ * returned, not zero: RFC 9110 defines HEAD's header section as the
+ * one GET would send, and "how big is this, without downloading it"
+ * is most of the reason the method exists. A caller that knows the
+ * size from a stat() rather than from bytes in hand should pass that
+ * -- reading a file only to discard it would defeat the point.
+ *
+ * Shares one header formatter with http_write_response_hdrs(), so a
+ * HEAD and a GET cannot come to describe the same resource
+ * differently.
+ */
+int http_write_response_head(int fd, int status, const char *status_text,
+                             const char *content_type, const char *extra_headers,
+                             size_t content_length);
+
+/*
  * Puts fd back into blocking mode. Every response-writing call site
  * (respond_json() in main.c, static_serve() in staticfile.c) must call
  * this before http_write_response(), per that function's contract

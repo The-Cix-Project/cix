@@ -367,13 +367,17 @@ enum pkg_error {
 	 * at the dependency rather than at the package.
 	 */
 	PKG_ERR_DEP_UNRESOLVABLE,
-	PKG_ERR_TARGET_IMAGE_NOT_FOUND /* pkg_image_recipe_apply_start(): the recipe itself parsed
-	                                 * fine, but the image it names doesn't exist yet -- distinct
-	                                 * from PKG_ERR_INVALID_RECIPE (a genuine parse failure) and
-	                                 * from PKG_ERR_NOT_FOUND (the recipe itself missing), which
-	                                 * this used to collapse into, misleadingly reporting a real
-	                                 * "create the image first" situation as if the recipe's own
-	                                 * content were malformed. */,
+	PKG_ERR_TARGET_IMAGE_NOT_FOUND /* the image a request names does not exist. From
+	                                 * pkg_image_recipe_apply_start(), where the recipe itself
+	                                 * parsed fine -- distinct from PKG_ERR_INVALID_RECIPE (a
+	                                 * genuine parse failure) and from PKG_ERR_NOT_FOUND (the
+	                                 * recipe itself missing), which this used to collapse into,
+	                                 * misleadingly reporting a real "create the image first"
+	                                 * situation as if the recipe's own content were malformed.
+	                                 * Also from pkg_install_start() since #500, for the same
+	                                 * reason in the other direction: an install into an image
+	                                 * that was never created used to be accepted and fail at
+	                                 * unpack, blaming the artifact. */,
 	PKG_ERR_NOT_INSTALLED, /* the package row exists but is not INSTALLED -- a failed or
 	                        * in-flight build. Distinct from PKG_ERR_NOT_FOUND (no such
 	                        * package at all) for the same reason

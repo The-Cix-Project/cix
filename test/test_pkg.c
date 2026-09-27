@@ -1317,6 +1317,65 @@ int main(void)
 	cix_response_free(&r);
 
 	/*
+	 * 2a. #500: an install into an image that does not exist is
+	 * refused here, and leaves nothing behind.
+	 *
+	 * The real one was `--image=jump` for `jumpbox`. It was accepted:
+	 * it created a package row against the nonexistent image,
+	 * resolved and started the dependency, and settled minutes later
+	 * into `failed:unpack/failed -- could not unpack (extract cached
+	 * artifact failed)`. That message names the artifact and the
+	 * unpacker, and the unpacker was new at the time, so the obvious
+	 * reading was that the new code had broken. Both were fine; the
+	 * destination directory simply did not exist. The row then had to
+	 * be removed by hand.
+	 *
+	 * Three assertions, because the refusal alone is not the whole
+	 * fix:
+	 *
+	 *  - 400, not a 202 followed by a slow failure;
+	 *  - the response repeats the image name back. A typo is
+	 *    precisely the case where a message that does not quote what
+	 *    you sent tells you nothing, and `jump` against `jumpbox` is
+	 *    the shape that defeats a reader;
+	 *  - GET /v1/pkg gains no row. This is the part that cost manual
+	 *    cleanup, and it is only true because the check sits ahead of
+	 *    chain_alloc() -- move it later and this assertion is what
+	 *    notices.
+	 *
+	 * A recipe deliberately never enters it: the package name here
+	 * has no recipe at all, so if the image check were ever reordered
+	 * behind the recipe lookup this would start reporting the wrong
+	 * cause, and the message assertion below would catch that too.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/pkg/install",
+	                       "{\"name\":\"greeter\",\"image\":\"nosuchimage\"}", &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: install into a nonexistent image expected 400, got %d\n", r.status);
+		ok = 0;
+	} else if (r.body == NULL || strstr(r.body, "nosuchimage") == NULL) {
+		fprintf(stderr,
+		        "FAIL: the refusal must quote the image name back, so a typo is visible: %s\n",
+		        r.body != NULL ? r.body : "(no body)");
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET", "/v1/pkg", NULL, &r) != 0 || r.status != 200) {
+		fprintf(stderr, "FAIL: GET /v1/pkg after the refused install: status %d\n", r.status);
+		ok = 0;
+	} else if (r.body != NULL && strstr(r.body, "nosuchimage") != NULL) {
+		fprintf(stderr,
+		        "FAIL: a refused install left a package row behind for an image that does not "
+		        "exist: %s\n",
+		        r.body);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/*
 	 * 2b. ADR-0309 clause 4: publishing a NEW shell revision is
 	 * refused, and an ALREADY-PUBLISHED one still answers duplicate.
 	 *

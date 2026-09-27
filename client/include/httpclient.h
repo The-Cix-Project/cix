@@ -29,6 +29,17 @@ struct cix_response {
 	char content_type[CIX_CONTENT_TYPE_MAX]; /* empty string if no Content-Type header was present */
 	char *body;                             /* raw response body, NUL-terminated; NULL if empty */
 	size_t body_len;
+	/*
+	 * What the response's own Content-Length header declared, or -1
+	 * if it carried none. Distinct from body_len, which is what
+	 * actually arrived -- for every ordinary response the two agree,
+	 * and for a HEAD they deliberately do not (#498): a HEAD
+	 * declares the size a GET would have returned and sends no
+	 * bytes, so the only way to check that a HEAD described its
+	 * resource correctly is to read the header rather than count
+	 * the body.
+	 */
+	long content_length;
 	struct json_value *json; /* NULL if the body was empty or not valid JSON (e.g. a 204) */
 };
 

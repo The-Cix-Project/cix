@@ -179,6 +179,26 @@ int image_ondisk_versions(const char *name, char out[][IMAGE_VERSION_MAX], int m
  */
 enum image_error image_delete_version(const char *name, const char *version);
 
+/*
+ * Does this name refer to a real image? Nonzero if yes.
+ *
+ * The one definition of "exists" (#500): a valid name whose
+ * manifest.json is there -- exactly the predicate image_list_names()
+ * already applies to each directory it walks, so anything this
+ * answers yes to is something `image ls` lists, and a caller checking
+ * up front can never disagree with what the operator was shown. It is
+ * a directory listing and a stat, deliberately cheap enough to call
+ * on the admission path of a request.
+ *
+ * This exists because an install into an image that was never created
+ * used to be accepted, resolve dependencies, fork a build, and fail
+ * several minutes later at "could not unpack (extract cached artifact
+ * failed)" -- a message pointing at the artifact and at the unpacker,
+ * neither of which was at fault, leaving a permanently-failed row for
+ * an image that does not exist.
+ */
+int image_exists(const char *name);
+
 int image_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
 
 /* {"images": [...]} entries, each just {"name": "..."} -- deliberately

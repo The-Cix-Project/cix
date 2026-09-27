@@ -509,6 +509,17 @@ enum image_error image_delete_version(const char *name, const char *version)
 	return IMAGE_OK;
 }
 
+int image_exists(const char *name)
+{
+	char path[PATH_MAX];
+	struct stat st;
+
+	if (!image_name_is_valid(name))
+		return 0;
+	manifest_path(name, path, sizeof(path));
+	return stat(path, &st) == 0;
+}
+
 int image_list_names(char names[][PKG_IMAGE_NAME_MAX], int max)
 {
 	DIR *d;
@@ -519,13 +530,12 @@ int image_list_names(char names[][PKG_IMAGE_NAME_MAX], int max)
 	if (d == NULL)
 		return 0;
 	while (count < max && (ent = readdir(d)) != NULL) {
-		char path[PATH_MAX];
-		struct stat st;
-
 		if (ent->d_name[0] == '.')
 			continue;
-		manifest_path(ent->d_name, path, sizeof(path));
-		if (stat(path, &st) == 0)
+		/* The same predicate a caller gets from image_exists(), so
+		 * this listing and an up-front existence check can never
+		 * disagree about what an image is (#500). */
+		if (image_exists(ent->d_name))
 			snprintf(names[count++], PKG_IMAGE_NAME_MAX, "%s", ent->d_name);
 	}
 	closedir(d);
@@ -550,14 +560,7 @@ void image_write_json_list(struct json_writer *w)
 
 enum image_error image_write_json_one(const char *name, struct json_writer *w)
 {
-	char path[PATH_MAX];
-	struct stat st;
-
-	if (!image_name_is_valid(name))
-		return IMAGE_ERR_NOT_FOUND;
-
-	manifest_path(name, path, sizeof(path));
-	if (stat(path, &st) != 0)
+	if (!image_exists(name))
 		return IMAGE_ERR_NOT_FOUND;
 
 	jw_obj_open(w);

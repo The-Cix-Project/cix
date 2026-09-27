@@ -6,6 +6,30 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### HEAD is a read, and an install into an image that does not exist is refused (#498, #500)
+
+**#498 — the authorization gate asked "is this a `GET`", and `HEAD` is not `GET`.** So `curl -sI https://<host>/app.js` answered `401` while the identical request as a `GET` answered `200`, and each one was additionally audited as a refused *write* — the log gained warnings for something that is not one. This was never a regression: the gate has had that shape for as long as it has existed.
+
+`HEAD` is by definition `GET` without a body, so every argument for leaving reads open applies to it unchanged. It is folded into one `is_read` rather than given its own term, which keeps the two gated identity reads (#490) and the console upgrade gated for `HEAD` exactly as they are for `GET` — a gate that a change of verb can step around is not a gate, and `test_hostauth` now asserts both directions.
+
+**Fixing the gate alone would have moved it from `401` to `404`, which is the part worth recording.** The static-asset fallthrough asked the same "is this a `GET`" question the gate did, so a `HEAD` still fell through to "no such endpoint" for a file that is plainly there. Two sites, one bug, and the first one read like the whole of it.
+
+**A `HEAD` returns no body — including the error responses**, which the report flagged as the untested other half and which it was. `HEAD` can reach exactly three responses: a static asset, the gate's `401`, and the `404` every `/v1/...` path gives it. All three now send headers only, with `Content-Length` describing what a `GET` would have returned, because that is most of why the method exists. For a static asset the length comes from the `fstat()` the ETag already needed and **the file is never read** — reading it to discard it would defeat the point.
+
+Deliberately *not* a request-scoped flag on the response writers. One would have covered all ~300 `respond_error()`/`respond_json()` call sites for free, and would also have meant an ordinary `GET` could silently lose its body if it were ever set at the wrong moment — there are responses written before a request is even parsed ("request too large", "malformed request") that would inherit a stale value. Three explicit call sites cannot do that.
+
+**`HEAD /v1/...` is a `404`, and that is the scope line.** The router is keyed on the methods `openapi.yaml` declares and none declares `HEAD`. Making the API itself `HEAD`-aware is a change to the contract rather than to asset serving; `test_web` asserts the `404` so that if it ever changes it changes because someone decided to.
+
+**#500 — `--image=jump` for `jumpbox` was accepted.** It created a package row against an image that does not exist, resolved and started the dependency, and settled minutes later into `failed:unpack/failed -- could not unpack (extract cached artifact failed)`. That message names the artifact and the unpacker, the unpack path was new at the time, and so the obvious reading was that the new code had broken. Both were fine: the destination directory simply was not there. The row then had to be removed by hand.
+
+The image is known at request time, so it is checked there — `400`, quoting the name back, before `chain_alloc()` so a doomed request never takes a job slot and never leaves a row. Quoting the name is not decoration: a typo is precisely the case where a message that does not repeat what you sent tells you nothing, and `jump` against `jumpbox` is the shape that defeats a reader.
+
+`image_exists()` is now the one definition of the question — the same valid-name-plus-`stat(manifest.json)` predicate `image_list_names()` already applied per directory, which `image_write_json_one()` had a third copy of. Anything it answers yes to is something `image ls` lists, so an up-front check can never disagree with what the operator was shown.
+
+`400` and not the `404` `respond_image_recipe_error()` gives the same `PKG_ERR_TARGET_IMAGE_NOT_FOUND`, and the difference is not an oversight: there the image is the resource the URI addresses, here the endpoint exists and the caller has put an unusable value in a body field.
+
+**And the log line names its destination.** Every one of these preparation steps has two operands — the thing being read and the place it is going — and the message named only the first. That is the same shape as `CIXPKG-E4001` and cbs's `copy`, both of which report a failure against the operand that is fine, and each cost a round of investigation against the wrong subsystem.
+
 ### Intel I225/I226 2.5GbE works, and a full disk now says so (#479, #503)
 
 **#479 — `igc` was absent from the kernel config entirely.** Not `=m`, not `=y`, no symbol. I225/I226 has been standard on consumer and small-server boards since roughly 2021, which made this the most likely single reason a modern machine had no usable Ethernet on Cix — in the installer and on the installed system alike.

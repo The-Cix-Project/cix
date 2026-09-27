@@ -40,6 +40,14 @@ void respond_json(int fd, int status, const char *status_text, struct json_write
 void respond_error(int fd, int status, const char *status_text, const char *msg);
 
 /*
+ * The same refusal with the content omitted, for a request that was a
+ * HEAD (#498) -- same status, same Content-Length, no body, which is
+ * what RFC 9110 requires of every HEAD response including an error.
+ * See the definition for why only dispatch() has any use for it.
+ */
+void respond_error_head(int fd, int status, const char *status_text, const char *msg);
+
+/*
  * The reason phrase for a status this daemon actually returns.
  *
  * Deliberately not a complete table: it exists for the handlers that

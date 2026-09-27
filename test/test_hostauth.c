@@ -224,6 +224,48 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	/*
+	 * And a HEAD is a read (#498), which it was not until this gate
+	 * stopped asking "is this a GET". `curl -sI` on a static asset
+	 * answered 401 for as long as the gate existed, and every one of
+	 * those was additionally audited as a refused write.
+	 *
+	 * Asserted here and not in test_web because it can only be
+	 * asserted here: hostauth_authorize_write() returns true
+	 * unconditionally while gating is inactive, so on a daemon with
+	 * no admin account a HEAD would sail through the gate and prove
+	 * nothing about it. This is the one test that has gating
+	 * genuinely on. What comes back is the dashboard's index -- a 200
+	 * or a 404 depending on whether the asset is staged where this
+	 * daemon is looking, and either one is the gate having let it
+	 * past. A 401 is the failure.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "HEAD", "/", NULL, &r) != 0 || r.status == 401) {
+		fprintf(stderr,
+		        "FAIL: unauthenticated HEAD on a static asset after gating activated must not "
+		        "be refused as a write, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/*
+	 * The other half, and the reason HEAD was folded into the read
+	 * test rather than given its own exemption: the gated reads stay
+	 * gated for HEAD. A gate a change of verb can step around is not
+	 * a gate.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "HEAD", "/v1/ldap/users", NULL, &r) != 0 || r.status != 401) {
+		fprintf(stderr,
+		        "FAIL: HEAD on a gated identity read must still be 401 (#490 must survive "
+		        "#498), got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
 	/* 6. Wrong password -> 401, no token issued. */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/login",

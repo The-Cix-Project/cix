@@ -19689,6 +19689,26 @@ static void respond_pkg_error(int fd, enum pkg_error err)
 	case PKG_ERR_INVALID_TOOLCHAIN:
 		respond_error(fd, 400, "Bad Request", "toolchain_path missing, unreadable, or not a regular file");
 		break;
+	case PKG_ERR_TARGET_IMAGE_NOT_FOUND:
+		/*
+		 * #500. 400 and not the 404 respond_image_recipe_error()
+		 * gives the same enum, and the difference is not an
+		 * oversight: there the image is the resource the URI
+		 * addresses, so its absence is the request's target being
+		 * absent. Here the endpoint exists and is reachable, and
+		 * the caller has put an unusable value in a body field --
+		 * which is what 400 means. Same cause, two honest answers,
+		 * because HTTP status describes the request and not the
+		 * internal reason.
+		 *
+		 * handle_pkg_install() answers this one itself so it can
+		 * quote the name back; this is the wording every other
+		 * caller gets.
+		 */
+		respond_error(fd, 400, "Bad Request",
+		              "no such image -- create it first (POST /v1/images), or see "
+		              "GET /v1/images for the ones that exist");
+		break;
 	case PKG_ERR_SPAWN_FAILED:
 	case PKG_ERR_PERSIST_FAILED:
 	default:
@@ -23000,6 +23020,34 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 	perr = pkg_install_start(name, image, version, upgrade, keep_on_failure, started_name,
 	                          sizeof(started_name), &pid, &pidfd, &chain_idx);
 	if (perr != PKG_OK) {
+		/*
+		 * #500: quote the image back. The typo that produced the
+		 * issue was `--image=jump` for `jumpbox`, and a caller
+		 * looking at a message that does not repeat what they sent
+		 * has no way to see the difference between the two -- which
+		 * is precisely the reading a typo defeats. Only here,
+		 * because this is the one caller that has the operator's own
+		 * spelling in hand; respond_pkg_error() carries the generic
+		 * wording for the rest.
+		 */
+		if (perr == PKG_ERR_TARGET_IMAGE_NOT_FOUND) {
+			char msg[256];
+
+			/*
+			 * An omitted image is the default one, which is
+			 * created at startup -- so reaching here with none
+			 * given means that image has since been destroyed,
+			 * and printing an empty name for it would say
+			 * nothing at all.
+			 */
+			snprintf(msg, sizeof(msg),
+			         "no image called \"%s\" -- nothing was installed and no package entry "
+			         "was created. GET /v1/images lists the images that exist",
+			         (image != NULL && image[0] != '\0') ? image : PKG_DEFAULT_IMAGE);
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", msg);
+			return;
+		}
 		json_free(root);
 		respond_pkg_error(fd, perr);
 		return;
@@ -26387,6 +26435,24 @@ static void op_deleteStoragePartition(const struct api_ctx *ctx)
 static void dispatch(int fd, const struct http_request *req)
 {
 	/*
+	 * #498. Used three times below -- the authorization gate, the
+	 * static-asset branch, and the /v1/... 404 -- which are exactly
+	 * the three responses a HEAD can reach. A local rather than the
+	 * strcmp() repeated at each: the three have to agree, and the
+	 * only way to be sure they do is for there to be one answer.
+	 *
+	 * Deliberately not a flag on the response writers. A
+	 * request-scoped global that suppresses bodies would cover every
+	 * one of the ~300 respond_error()/respond_json() call sites for
+	 * free, and would also mean a GET could silently lose its body if
+	 * that global were ever set at the wrong moment -- there are
+	 * responses written before a request is even parsed ("request too
+	 * large", "malformed request") which would inherit a stale value.
+	 * Three explicit call sites cannot do that.
+	 */
+	const int is_head = strcmp(req->method, "HEAD") == 0;
+
+	/*
 	 * Issue #100: what the loop is working on, readable by the
 	 * watchdog process. Set before any handler runs and cleared after,
 	 * so a request that never returns is named in the stall record
@@ -26508,12 +26574,24 @@ static void dispatch(int fd, const struct http_request *req)
 	 *
 	 * Every other GET stays exempt by construction (needs_auth stays
 	 * 0).
+	 *
+	 * #498: HEAD counts as a read here, which it had never done. The
+	 * gate asked "is this a GET", so HEAD took the write path and
+	 * `curl -sI https://<host>/app.js` answered 401 while the same
+	 * request as GET answered 200 -- and each one was additionally
+	 * audited as a refused write, so the log gained warnings for
+	 * something that is not one. HEAD is by definition GET without a
+	 * body, so every argument for leaving reads open applies to it
+	 * unchanged; folding it into is_read rather than adding a second
+	 * term also keeps the console upgrade and the two identity reads
+	 * gated for HEAD exactly as they are for GET, which is the point
+	 * -- a gate that a change of verb can step around is not a gate.
 	 */
 	{
 		size_t path_len = strlen(req->path);
 		static const char *const LDAP_USERS = "/v1/ldap/users";
-		int is_get = strcmp(req->method, "GET") == 0;
-		int is_console = is_get &&
+		int is_read = strcmp(req->method, "GET") == 0 || is_head;
+		int is_console = is_read &&
 		                  strncmp(req->path, CONTAINERS_PREFIX, strlen(CONTAINERS_PREFIX)) == 0 &&
 		                  path_len > 8 && strcmp(req->path + path_len - 8, "/console") == 0;
 		/*
@@ -26524,14 +26602,14 @@ static void dispatch(int fd, const struct http_request *req)
 		 * the wrong shape.
 		 */
 		int is_identity_read =
-		    is_get && (strcmp(req->path, "/v1/system/hostauth/sessions") == 0 ||
-		               strcmp(req->path, LDAP_USERS) == 0 ||
-		               (strncmp(req->path, LDAP_USERS, strlen(LDAP_USERS)) == 0 &&
-		                req->path[strlen(LDAP_USERS)] == '/'));
+		    is_read && (strcmp(req->path, "/v1/system/hostauth/sessions") == 0 ||
+		                strcmp(req->path, LDAP_USERS) == 0 ||
+		                (strncmp(req->path, LDAP_USERS, strlen(LDAP_USERS)) == 0 &&
+		                 req->path[strlen(LDAP_USERS)] == '/'));
 		int is_login = strcmp(req->method, "POST") == 0 &&
 		               (strcmp(req->path, "/v1/login") == 0 ||
 		                strcmp(req->path, "/v1/logout") == 0);
-		int needs_auth = (!is_get && !is_login) || is_console || is_identity_read;
+		int needs_auth = (!is_read && !is_login) || is_console || is_identity_read;
 
 		if (needs_auth) {
 			char token_hdr[HOSTAUTH_TOKEN_LEN + 32];
@@ -26547,8 +26625,12 @@ static void dispatch(int fd, const struct http_request *req)
 				 * used to leave no trace beyond the caller's own 401. */
 				logstore_write("audit", "warn", "%s %s %s REFUSED (not authorized)", audit_who(),
 				                req->method, req->path);
-				respond_error(fd, 401, "Unauthorized",
-				              "authentication required -- POST /v1/login first");
+				if (is_head)
+					respond_error_head(fd, 401, "Unauthorized",
+					                    "authentication required -- POST /v1/login first");
+				else
+					respond_error(fd, 401, "Unauthorized",
+					              "authentication required -- POST /v1/login first");
 				return;
 			}
 		}
@@ -26610,15 +26692,32 @@ static void dispatch(int fd, const struct http_request *req)
 	 * unrecognized /v1/... path still falls through to the JSON 404
 	 * below, unchanged.
 	 */
+	/*
+	 * #498's second half, and the one that actually makes a HEAD
+	 * work. Opening the authorization gate to HEAD above only moved
+	 * `curl -sI /app.js` from 401 to 404: this branch asked the same
+	 * "is this a GET" question the gate did, so a HEAD fell through
+	 * to "no such endpoint" for a file that is plainly there.
+	 *
+	 * Only static assets learn the method. A HEAD of a /v1/... path
+	 * still 404s, because api_route_match() is keyed on the methods
+	 * docs/api/openapi.yaml declares and none of them declares HEAD
+	 * -- making the router HEAD-aware is a change to the API
+	 * contract, not to asset serving, and is not what the report was
+	 * about.
+	 */
 	if (strncmp(req->path, "/v1/", 4) != 0) {
-		if (strcmp(req->method, "GET") == 0)
-			static_serve(fd, g_web_root, req->path, req->headers, req->headers_len);
+		if (is_head || strcmp(req->method, "GET") == 0)
+			static_serve(fd, g_web_root, req->path, req->headers, req->headers_len, is_head);
 		else
 			respond_error(fd, 404, "Not Found", "no such endpoint");
 		return;
 	}
 
-	respond_error(fd, 404, "Not Found", "no such endpoint");
+	if (is_head)
+		respond_error_head(fd, 404, "Not Found", "no such endpoint");
+	else
+		respond_error(fd, 404, "Not Found", "no such endpoint");
 }
 
 #define CONSOLE_SUFFIX "/console"

@@ -239,9 +239,23 @@ static int http_emit(int fd, const void *buf, size_t n)
 	return tls_write_all(fd, buf, n);
 }
 
-int http_write_response_hdrs(int fd, int status, const char *status_text,
-                              const char *content_type, const char *extra_headers,
-                              const char *body, size_t body_len)
+/*
+ * The one place a response's header section is formatted (#498).
+ *
+ * Both public writers below are thin wrappers on this, and that is
+ * the point: a HEAD's header section must be the one a GET would have
+ * produced, byte for byte and Content-Length included. Two formatters
+ * side by side would be free to drift into describing the same
+ * resource differently, which is the one thing a HEAD must never do.
+ *
+ * Note what omit_body does NOT do: it does not zero Content-Length.
+ * RFC 9110 is explicit that HEAD's headers describe the content a GET
+ * would have sent, and a client asking "how big is this" is most of
+ * why the method exists.
+ */
+static int write_response(int fd, int status, const char *status_text, const char *content_type,
+                           const char *extra_headers, const char *body, size_t body_len,
+                           int omit_body)
 {
 	char header[512];
 	int hlen;
@@ -260,9 +274,24 @@ int http_write_response_hdrs(int fd, int status, const char *status_text,
 
 	if (http_emit(fd, header, (size_t)hlen) != 0)
 		return -1;
-	if (body_len > 0 && http_emit(fd, body, body_len) != 0)
+	if (!omit_body && body_len > 0 && http_emit(fd, body, body_len) != 0)
 		return -1;
 	return 0;
+}
+
+int http_write_response_hdrs(int fd, int status, const char *status_text,
+                              const char *content_type, const char *extra_headers,
+                              const char *body, size_t body_len)
+{
+	return write_response(fd, status, status_text, content_type, extra_headers, body, body_len, 0);
+}
+
+int http_write_response_head(int fd, int status, const char *status_text,
+                             const char *content_type, const char *extra_headers,
+                             size_t content_length)
+{
+	return write_response(fd, status, status_text, content_type, extra_headers, NULL,
+	                       content_length, 1);
 }
 
 int http_set_blocking(int fd)

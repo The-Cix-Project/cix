@@ -22,8 +22,16 @@
  * If-None-Match: every response carries an ETag and Cache-Control:
  * no-cache, so a browser revalidates rather than guessing at freshness
  * (#230), and an unchanged file costs a 304 instead of a download.
+ *
+ * head_only serves a HEAD: every header a GET would carry, including
+ * the file's real Content-Length, and no body (#498). The file is not
+ * read at all in that case -- the length comes from the fstat() this
+ * function already does for the ETag, because reading a file in order
+ * to discard it is exactly what the method exists to avoid. It still
+ * opens the file, so a HEAD of something missing is the same 404 a
+ * GET would be, and a conditional HEAD still gets its 304.
  */
 void static_serve(int fd, const char *web_root, const char *req_path, const char *req_headers,
-                  size_t req_headers_len);
+                  size_t req_headers_len, int head_only);
 
 #endif /* STATICFILE_H */

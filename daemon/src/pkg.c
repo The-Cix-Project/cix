@@ -8730,6 +8730,32 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
 		return PKG_ERR_INVALID_NAME;
 	if (image != NULL && image[0] != '\0' && !pkg_image_is_valid(image))
 		return PKG_ERR_INVALID_NAME;
+	/*
+	 * #500: the destination has to be a real image, and this is the
+	 * last moment the answer is cheap.
+	 *
+	 * `--image=jump` for `jumpbox` was accepted: it created a package
+	 * row against an image that does not exist, resolved and started
+	 * the dependency, and failed minutes later with "could not unpack
+	 * (extract cached artifact failed)" -- which names the artifact
+	 * and the unpacker, both of which were fine. The destination
+	 * directory was simply not there. It then left a permanently
+	 * failed row for a nonexistent image, to be removed by hand.
+	 *
+	 * Before pkg_any_job_busy()/chain_alloc() deliberately: a request
+	 * that cannot succeed should not take a job slot on its way to
+	 * being refused, and should not be answered "busy" on a box that
+	 * happens to be building something, which would send the caller
+	 * back to retry a typo.
+	 *
+	 * On the normalized name, so an explicit --image=base is checked
+	 * exactly as an omitted one is. The default image is created at
+	 * startup, so the normalized form always exists on a running
+	 * daemon; checking it anyway keeps this one rule rather than one
+	 * rule and an exemption.
+	 */
+	if (!image_exists(normalize_image(image)))
+		return PKG_ERR_TARGET_IMAGE_NOT_FOUND;
 	if (pkg_any_job_busy())
 		return PKG_ERR_BUSY;
 	chain_idx = chain_alloc();
@@ -9673,15 +9699,27 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			}
 
 			if (prep_step != NULL) {
+				/*
+				 * The destination, named (#500). "extract cached
+				 * artifact failed" points at the artifact and at
+				 * the unpacker, and every one of these steps has
+				 * two operands -- the thing being read and the
+				 * place it is going -- while the message named
+				 * only the first. That is the same shape as
+				 * CIXPKG-E4001 and cbs's `copy`, both of which
+				 * report a failure against the operand that is
+				 * fine; each cost a round of investigation
+				 * against the wrong subsystem.
+				 */
 				if (prep_errno != 0)
 					logstore_write("cixd", "error",
-					                "pkg %s@%s: could not prepare build container (%s): %s",
-					                e->name, g_chains[chain_idx].image, prep_step,
+					                "pkg %s@%s: could not prepare build container (%s, into %s): %s",
+					                e->name, g_chains[chain_idx].image, prep_step, dest_dir,
 					                strerror(prep_errno));
 				else
 					logstore_write("cixd", "error",
-					                "pkg %s@%s: could not prepare build container (%s) -- see run_subprocess detail above",
-					                e->name, g_chains[chain_idx].image, prep_step);
+					                "pkg %s@%s: could not prepare build container (%s, into %s) -- see run_subprocess detail above",
+					                e->name, g_chains[chain_idx].image, prep_step, dest_dir);
 				if (prep_stage == PIPELINE_UNPACK)
 					pkg_fail(e, is_final_upgrade, prep_stage, "%s (%s failed)",
 					         pipeline_stage_verb(prep_stage), prep_step);

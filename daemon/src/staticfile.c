@@ -26,10 +26,14 @@ static const char *content_type_for(const char *path)
 	return "application/octet-stream";
 }
 
-static void respond_plain(int fd, int status, const char *status_text, const char *msg)
+static void respond_plain(int fd, int status, const char *status_text, const char *msg,
+                           int head_only)
 {
 	http_set_blocking(fd);
-	http_write_response(fd, status, status_text, "text/plain", msg, strlen(msg));
+	if (head_only)
+		http_write_response_head(fd, status, status_text, "text/plain", NULL, strlen(msg));
+	else
+		http_write_response(fd, status, status_text, "text/plain", msg, strlen(msg));
 }
 
 /*
@@ -82,7 +86,7 @@ static const char *etag_match_start(const char *v)
 }
 
 void static_serve(int fd, const char *web_root, const char *req_path, const char *req_headers,
-                  size_t req_headers_len)
+                  size_t req_headers_len, int head_only)
 {
 	char full_path[PATH_MAX];
 	char etag[64];
@@ -96,7 +100,7 @@ void static_serve(int fd, const char *web_root, const char *req_path, const char
 	ssize_t n;
 
 	if (strstr(req_path, "..") != NULL) {
-		respond_plain(fd, 400, "Bad Request", "bad path\n");
+		respond_plain(fd, 400, "Bad Request", "bad path\n", head_only);
 		return;
 	}
 
@@ -104,19 +108,19 @@ void static_serve(int fd, const char *web_root, const char *req_path, const char
 		rel = "/index.html";
 
 	if (snprintf(full_path, sizeof(full_path), "%s%s", web_root, rel) >= (int)sizeof(full_path)) {
-		respond_plain(fd, 400, "Bad Request", "path too long\n");
+		respond_plain(fd, 400, "Bad Request", "path too long\n", head_only);
 		return;
 	}
 
 	file_fd = open(full_path, O_RDONLY);
 	if (file_fd < 0) {
-		respond_plain(fd, 404, "Not Found", "not found\n");
+		respond_plain(fd, 404, "Not Found", "not found\n", head_only);
 		return;
 	}
 
 	if (fstat(file_fd, &st) != 0) {
 		close(file_fd);
-		respond_plain(fd, 500, "Internal Server Error", "error\n");
+		respond_plain(fd, 500, "Internal Server Error", "error\n", head_only);
 		return;
 	}
 
@@ -140,10 +144,29 @@ void static_serve(int fd, const char *web_root, const char *req_path, const char
 		return;
 	}
 
+	/*
+	 * HEAD, after the conditional check above so a revalidating HEAD
+	 * still gets its 304, and before the read so the bytes are never
+	 * touched. Content-Length is the file's real size from the fstat()
+	 * the ETag already needed -- which is the one place this diverges
+	 * from the GET below, and deliberately: GET reports what it
+	 * actually read, so a short read (an I/O error part way through a
+	 * regular file) sends a truncated body with a matching length,
+	 * while HEAD reports what the file says it holds. HEAD is a
+	 * question about the resource, not about one transfer of it.
+	 */
+	if (head_only) {
+		close(file_fd);
+		http_set_blocking(fd);
+		http_write_response_head(fd, 200, "OK", content_type_for(full_path), extra,
+		                          (size_t)st.st_size);
+		return;
+	}
+
 	buf = st.st_size > 0 ? malloc((size_t)st.st_size) : NULL;
 	if (st.st_size > 0 && buf == NULL) {
 		close(file_fd);
-		respond_plain(fd, 500, "Internal Server Error", "error\n");
+		respond_plain(fd, 500, "Internal Server Error", "error\n", head_only);
 		return;
 	}
 
