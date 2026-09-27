@@ -42,6 +42,7 @@
 #include <string.h>
 #include <sys/ioctl.h> /* FICLONE, #236 */
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/sysmacros.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
@@ -421,6 +422,53 @@ struct pkg_recipe {
 
 static struct pkg_entry g_packages[PKG_MAX_PACKAGES];
 static char g_pkg_dir[PATH_MAX];
+
+/*
+ * " -- and <dir> has N MiB free, which is very likely the cause", or
+ * "" when space is not short.
+ *
+ * #503: a full /var/lib/cix reported itself as three different
+ * misleading messages and one silence. Two of the three are the
+ * failures this decorates:
+ *
+ *   fetch failed (curl exit status 1)
+ *   build failed (exit status 3)
+ *
+ * The first is a ~150 MB download into a partition with no room and
+ * reads exactly like the documented flaky-mirror class -- a wrong
+ * diagnosis was filed and committed on the strength of it before
+ * anyone checked free space. The second came with a 65-byte log
+ * holding one line written before the disk filled.
+ *
+ * Neither errno is reachable here: curl and cbs are child processes
+ * and all that survives is an exit status. So rather than thread a
+ * cause that does not exist, this ASKS THE FILESYSTEM at the moment
+ * of failure. That is a correlation and is deliberately worded as
+ * one -- "very likely the cause", never "the cause" -- because a
+ * build can fail on its own merits on a host that also happens to
+ * be low. A wrong certainty here would be the same error the
+ * mirror diagnosis was.
+ *
+ * Silent when space is fine, so an ordinary failure message is
+ * unchanged.
+ */
+#define PKG_DISK_PRESSURE_MIB 256
+
+static void disk_pressure_note(char *out, size_t out_size)
+{
+	struct statvfs st;
+	unsigned long long free_mib;
+
+	out[0] = '\0';
+	if (g_pkg_dir[0] == '\0' || statvfs(g_pkg_dir, &st) != 0)
+		return;
+	free_mib = ((unsigned long long)st.f_bavail * (unsigned long long)st.f_frsize) / (1024ULL * 1024ULL);
+	if (free_mib >= PKG_DISK_PRESSURE_MIB)
+		return;
+	snprintf(out, out_size,
+	         " -- and %s has %llu MiB free, which is very likely the cause", g_pkg_dir,
+	         free_mib);
+}
 
 /*
  * ADR-0272: pipeline runs -- what has happened to an atom, as opposed
@@ -9984,12 +10032,20 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			/* Never reached curl -- a precondition failed, and the
 			 * sidecar says which. */
 			pkg_fail(e, is_final_upgrade, PIPELINE_FETCH, "%s", detail);
-		else if (detail_len > 0)
-			pkg_fail(e, is_final_upgrade, PIPELINE_FETCH,
-			         "fetch failed (curl exit status %d): %s", exit_status, detail);
-		else
-			pkg_fail(e, is_final_upgrade, PIPELINE_FETCH, "fetch failed (curl exit status %d)",
-			         exit_status);
+		else {
+			/* #503: a fetch into a partition with no room fails as a
+			 * bare curl exit 1, which reads exactly like the
+			 * documented flaky-mirror class -- and was filed as one. */
+			char disk[256];
+
+			disk_pressure_note(disk, sizeof(disk));
+			if (detail_len > 0)
+				pkg_fail(e, is_final_upgrade, PIPELINE_FETCH,
+				         "fetch failed (curl exit status %d): %s%s", exit_status, detail, disk);
+			else
+				pkg_fail(e, is_final_upgrade, PIPELINE_FETCH,
+				         "fetch failed (curl exit status %d)%s", exit_status, disk);
+		}
 		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
 		g_chains[chain_idx].name[0] = '\0';
 		g_chains[chain_idx].dep_queue_count = 0;
@@ -12396,8 +12452,14 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			pkg_fail(e, is_upgrade, PIPELINE_BUILD,
 			         "build failed (exit 127 -- see build output in logs)");
 		} else {
-			pkg_fail(e, is_upgrade, PIPELINE_BUILD, "build failed (exit status %d)",
-			         exit_status);
+			/* #503: the build that started this was exit 3 with a
+			 * 65-byte log -- one line, written before the disk
+			 * filled. Nothing in either said so. */
+			char disk[256];
+
+			disk_pressure_note(disk, sizeof(disk));
+			pkg_fail(e, is_upgrade, PIPELINE_BUILD, "build failed (exit status %d)%s",
+			         exit_status, disk);
 		}
 		if (captured_len > 0)
 			logstore_write("cixd", "error", "pkg %s@%s: build output: %s", e->name,
