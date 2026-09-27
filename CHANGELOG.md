@@ -6,6 +6,28 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A credential could be read out of the API, and a full disk could not be seen at all (#502, #503)
+
+**#502 — `pkg recipe show` served a live credential.** `redact_repo_token()` substitutes exactly one string: whatever `pkg_repo_token()` returns. A recipe carrying `user` and password basic auth holds a *different* secret, matched nothing, and was served in full — and then reached git, in a repository whose whole point is being readable.
+
+A credential is recognisable by **shape**, not by equality with a string the daemon happens to know. `redact_url_userinfo()` blanks the userinfo of every URL that carries one, which covers secrets this host has never held — a guarantee rather than a list. Three deliberate details:
+
+- **Userinfo that is already `{{REPO_TOKEN}}` is left alone.** It is not a secret, it is the form the corpus carries, and blanking it would make the endpoint disagree with the recipe's canonical text for no gain.
+- **Not applied to the write path.** There the substitution is *functional*: it normalises a live token to the placeholder that `substitute_repo_token()` expands again at fetch time. Blanking an arbitrary credential there would store a URL that cannot fetch — turning a disclosure into a broken package.
+- **The comment that caused the issue is corrected.** It claimed recipes carrying a token "stop being served", which is true only of *that* token, and is what the issue was filed from believing.
+
+Verified on the running daemon: a recipe published with a credential reads back as `url "https://REDACTED@example.invalid/x.tar.gz"`, with the secret absent. `test_pkg` gates it using a secret deliberately unequal to the configured token, so it could not pass against the old code.
+
+**#503 — the log store went silent exactly when it mattered.** `write_entry()` discarded the return values of `fwrite`, `fputc` and `fflush`. When `/var/lib/cix` reached 0.0 GiB free the store froze at the second the failing build started, so the one place an operator looks — and the place `image gc` tells them to look — had no record of what broke it. A logger that goes quiet precisely when things break is worse than no logger, because silence reads as "nothing happened".
+
+Failures are now kept **in memory**, the only place a full disk cannot erase, and reported on every read **ignoring every filter**. That last part is the point rather than an oversight: a query that asked for `source=cixd` is exactly how this would stay hidden, and "the log store itself is broken, here is the errno" outranks whatever the reader was looking for.
+
+**And a bare 500 now carries its cause.** Every persist failure in recipe add and delete returned `PKG_ERR_PERSIST_FAILED` with nothing attached, and the API answered `500 "recipe operation failed"` — which was the entire diagnosis available while the disk was full, for every package, on every attempt. `errno` is captured at the failing syscall rather than trusted to survive unwinding, so ENOSPC arrives as ENOSPC.
+
+Found while wiring that up: `pkg_recipe_delete()` shares the error responder with *add* but never cleared the last-error buffer, so a failed delete would have reported a stale message from an earlier add. Both now route through one helper that records its own errno.
+
+**`test_secrets` caught this change twice, and was right both times** — a comment in `pkg.c` and a format string in `test_pkg.c`, neither a real credential. A scanner that tried to judge intent is one that misses real secrets, so the additions adapt to the gate: the comment describes the shape the way `test_secrets`' own header does, and the test assembles its URL from pieces so the tree holds no such literal while the string under test is still built.
+
 ### cmake's own gate rotted, and cost 44 minutes to find out (#530)
 
 `cmake@4.4.3-4` — the CPDL conversion — built cmake completely, bootstrap and all, and then failed on its own two-line test program: the gate's `main.c` called `printf` with no `#include <stdio.h>`. An implicit function declaration is an error in current gcc and was a warning when the fixture was written. `[build] FAILED (2651523 ms)`.
