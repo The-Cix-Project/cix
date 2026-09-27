@@ -8920,6 +8920,16 @@ paths:
             time, every time. The message says exactly that rather than the generic
             parse one: a recipe refused for this parsed perfectly, and telling its author
             otherwise sends them to re-read syntax that is fine.
+
+
+            Also (#525) a recipe whose `artifact_sha256` a DIFFERENT version of the same
+            package already declares. An approval names one byte sequence produced by one
+            build and is never carried forward (Build Provenance Mandate); a duplicate means
+            it describes bytes this version did not produce. The message names the version
+            that already holds it. This is a 400 and not the 409 #494 gives a duplicate
+            artifact NAME, because the recipe's own content is what is wrong -- the remedy
+            is to delete the line and let the build earn its own approval (ADR-0307
+            clause 5), not to pick a different version number.
           content:
             application/json:
               schema:

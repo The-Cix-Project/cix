@@ -7411,6 +7411,146 @@ static int artifact_name_is_taken(const char *name_dir, const char *version, cha
 	return taken;
 }
 
+/*
+ * The artifact approval a PUBLISHED version declares, read out of the
+ * store (#525). Returns 0 and fills out on success.
+ *
+ * Read rather than parsed, deliberately. parse_recipe() on a CPDL
+ * revision means forking `cbs explain`, and the caller below asks this
+ * of every sibling version of one package -- 33 for `cbs` today --
+ * on a path `recipe-sync` walks for ~400 files every six hours.
+ * Two small file reads per sibling is the difference between a gate
+ * that can exist and one that cannot.
+ *
+ * Each format is read from the file that IS its authority, the seam
+ * ADR-0305 already draws: explain.json for a CPDL revision (which is
+ * what parse_cbs_recipe() reads -- never the .cbs), and the recipe
+ * text for a shell one.
+ *
+ * KEYED ON THE EXACT KEY, never on "a 64-hex run". Both formats carry
+ * source checksums in the same file -- `pkg_sha256=` and the sources'
+ * own `"sha256"` -- and those are the same shape as an approval. A
+ * looser scan would report a SOURCE checksum collision, which is not
+ * only legitimate but expected the moment two revisions build the
+ * same tarball.
+ */
+static int stored_approval(const char *version_dir, char *out, size_t out_size)
+{
+	/* One 64-hex value, so one length, named once. */
+	static const size_t SHA_LEN = PKG_SHA256_MAX - 1;
+	static const struct {
+		const char *file;
+		const char *key;
+	} WHERE[] = {
+		{ "explain.json", "\"artifact_sha256\"" },
+		{ PKG_RECIPE_SHELL_FILE, "pkg_artifact_sha256=" },
+	};
+	size_t w;
+
+	for (w = 0; w < sizeof(WHERE) / sizeof(WHERE[0]); w++) {
+		char path[PATH_MAX];
+		char *buf = NULL;
+		size_t len = 0;
+		const char *p;
+		int found = 0;
+
+		snprintf(path, sizeof(path), "%s/%s", version_dir, WHERE[w].file);
+		if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)
+			continue;
+		p = strstr(buf, WHERE[w].key);
+		if (p != NULL) {
+			size_t i;
+
+			p += strlen(WHERE[w].key);
+			/* Past the separator and any quoting: `"k": "v"` and
+			 * `pkg_artifact_sha256="v"` and a bare `=v` all land
+			 * on the first hex digit. */
+			while (*p == ':' || *p == ' ' || *p == '\t' || *p == '"' || *p == '\'')
+				p++;
+			for (i = 0; i < SHA_LEN; i++) {
+				char c = p[i];
+
+				if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+					break;
+			}
+			if (i == SHA_LEN && out_size > SHA_LEN) {
+				memcpy(out, p, SHA_LEN);
+				out[SHA_LEN] = '\0';
+				found = 1;
+			}
+		}
+		free(buf);
+		if (found)
+			return 0;
+	}
+	return -1;
+}
+
+/*
+ * Does another version of this package already declare this exact
+ * approval? (#525)
+ *
+ * An approval names ONE byte sequence, produced by ONE build, and the
+ * Build Provenance Mandate says it is never carried forward. It was,
+ * repeatedly, and always the same way: a revision was derived from the
+ * one before it by copying the file and editing the version, which
+ * takes the previous revision's approval with it.
+ *
+ * Measured on 192.168.15.95 and in the corpus, 2026-09-27, before this
+ * existed. `cbs` had TEN revisions -- v0.1.30-1 through v0.1.45-1 --
+ * all declaring 4973529c7b3d..., which is v0.1.30-1's real artifact.
+ * Of the other nine, three have a published artifact that says
+ * otherwise (the artifact server's own X-Cix-Sha256 for v0.1.31-1,
+ * v0.1.32-1 and v0.1.34-1 is b656c146..., 647478df... and
+ * 3db7affb..., at 61650, 65701 and 69192 bytes against v0.1.30-1's
+ * 60860), and six have no artifact at all, so their approval would
+ * refuse whatever they built. `linux-headers` had the same shape at
+ * three revisions, and that one was found the expensive way: through
+ * an ADR-0209 floor failure a fortnight later that read as a fetch
+ * problem.
+ *
+ * This is one string comparison per sibling at publish, and it would
+ * have caught every one of them on the day it was written.
+ *
+ * WHAT IT COSTS. Two revisions CAN legitimately produce identical
+ * bytes -- a recipe edit that changes only a comment, over the same
+ * source, would -- and this refuses the second. That is the right
+ * trade: the operator deletes the line and lets the build earn its
+ * own approval, which is ADR-0307 clause 5's path and costs one
+ * publish, while the failure this prevents is silent and surfaces
+ * weeks later somewhere else.
+ */
+static int approval_is_taken(const char *name_dir, const char *version, const char *sha,
+                             char *out_other, size_t out_other_size)
+{
+	DIR *d;
+	struct dirent *e;
+	int taken = 0;
+
+	if (sha == NULL || sha[0] == '\0')
+		return 0;
+	d = opendir(name_dir);
+	if (d == NULL)
+		return 0;
+	while ((e = readdir(d)) != NULL) {
+		char version_dir[PATH_MAX];
+		char have[PKG_SHA256_MAX];
+
+		if (e->d_name[0] == '.' || strcmp(e->d_name, version) == 0)
+			continue;
+		snprintf(version_dir, sizeof(version_dir), "%s/%s", name_dir, e->d_name);
+		if (stored_approval(version_dir, have, sizeof(have)) != 0)
+			continue;
+		if (strcmp(have, sha) == 0) {
+			snprintf(out_other, out_other_size, "%s", e->d_name);
+			taken = 1;
+			break;
+		}
+	}
+	closedir(d);
+	return taken;
+}
+
 /* See pkg_recipe_add_last_error()'s declaration for why this exists.
  * Cleared at the top of every publish, so it can never describe an
  * older refusal than the one the caller is reporting. */
@@ -7831,6 +7971,58 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 		unlink(staging_path);
 		free(explain_json);
 		return PKG_ERR_INVALID_RECIPE;
+	}
+
+	/*
+	 * #525: refuse an approval another revision of this package
+	 * already declares.
+	 *
+	 * POSITION IS THE WHOLE OF THIS CHECK'S CORRECTNESS, for exactly
+	 * the reason the ADR-0309 block above spells out, and the
+	 * measurement is the same one:
+	 *
+	 * - AFTER the immutability block, so re-offering a recipe already
+	 *   in the store still returns PKG_ERR_DUPLICATE. `recipe-sync`
+	 *   calls this for every file in the corpus every six hours and
+	 *   counted `added=28 skipped=379` on its last run. **86 of those
+	 *   files carry a duplicated approval today** -- 73
+	 *   probe-cix-testreport revisions, 10 cbs, 3 linux-headers --
+	 *   so refusing before the immutability test would turn 86 quiet
+	 *   skips into 86 errors, every window, forever. This is not a
+	 *   hypothetical ordering risk; it is the state of the corpus
+	 *   right now.
+	 * - AFTER the shell refusal, because a new shell revision has a
+	 *   more actionable thing wrong with it and should be told that
+	 *   one.
+	 * - BEFORE the version directory is created, so a refusal leaves
+	 *   nothing behind.
+	 *
+	 * It does NOT reach approve_cbs_artifact(), and it should not:
+	 * that writes the sha a build just produced, at the one moment
+	 * the bytes are known. A duplicate arriving that way would mean
+	 * two revisions really did build identical bytes, which is not
+	 * the defect this is for.
+	 */
+	{
+		char other_version[PKG_VERSION_MAX];
+
+		other_version[0] = '\0';
+		if (approval_is_taken(name_dir, parsed.version, parsed.artifact_sha256, other_version,
+		                       sizeof(other_version))) {
+			snprintf(g_recipe_add_err, sizeof(g_recipe_add_err),
+			         "this artifact_sha256 is already %s@%s's approval -- an approval names "
+			         "one byte sequence from one build and is never carried forward. Drop "
+			         "the line and let the build earn its own (ADR-0307 clause 5)",
+			         name, other_version);
+			logstore_write("cixd", "error",
+			               "pkg: recipe %s@%s refused -- its artifact_sha256 %s is already "
+			               "%s@%s's approval, so it describes bytes this version did not "
+			               "produce (#525)",
+			               name, parsed.version, parsed.artifact_sha256, name, other_version);
+			unlink(staging_path);
+			free(explain_json);
+			return PKG_ERR_INVALID_RECIPE;
+		}
 	}
 
 	if (persist_mkdir_p(version_dir) != 0) {

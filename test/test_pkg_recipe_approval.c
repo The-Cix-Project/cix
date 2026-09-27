@@ -123,6 +123,39 @@ static int post_recipe(const struct cix_client *c, const char *content, int *out
 	return 0;
 }
 
+/*
+ * A CPDL publish, for #525's case below. post_recipe() above sends no
+ * format, which means shell -- refused outright for a NEW revision
+ * since ADR-0309 clause 4, so it cannot reach a check that sits after
+ * that refusal.
+ */
+static int post_cbs_recipe(const struct cix_client *c, const char *name, const char *content,
+                            int *out_status)
+{
+	struct json_writer w;
+	struct cix_response r;
+	int rc;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "content");
+	jw_str(&w, content);
+	jw_key(&w, "format");
+	jw_str(&w, "cbs");
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	rc = cix_client_request(c, "POST", "/v1/pkg/recipes", w.buf, &r);
+	jw_free(&w);
+	if (rc != 0)
+		return -1;
+	*out_status = r.status;
+	cix_response_free(&r);
+	return 0;
+}
+
 #define APPROVAL "pkg_artifact_sha256=\"" \
 	"1111111111111111111111111111111111111111111111111111111111111111\"\n"
 #define APPROVAL2 "pkg_artifact_sha256=\"" \
@@ -245,6 +278,156 @@ int main(void)
 		        "refused, status=%d\n",
 		        status);
 		ok = 0;
+	}
+
+	/*
+	 * 6. #525: a DIFFERENT version of the same package may not declare
+	 * an approval an existing version already holds.
+	 *
+	 * Everything above is about one version naming two byte sequences.
+	 * This is the mirror of it -- two versions naming one -- and it
+	 * had gone unchecked, so it happened repeatedly and always the
+	 * same way: a revision derived from its predecessor by copying the
+	 * file and editing the version, taking the previous approval with
+	 * it. Measured in the corpus on 2026-09-27: `cbs` carried one
+	 * approval across TEN revisions, v0.1.30-1 through v0.1.45-1, and
+	 * three of those have a published artifact whose real checksum
+	 * (the artifact server's own X-Cix-Sha256) says otherwise.
+	 * `linux-headers` had it across three, and that one surfaced only
+	 * through an ADR-0209 floor failure a fortnight later that read as
+	 * a fetch problem.
+	 *
+	 * CPDL rather than shell, for two reasons that are the same
+	 * reason: a new shell revision is refused by ADR-0309 clause 4
+	 * before it could ever reach this check, and every recipe in the
+	 * corpus is CPDL anyway, so this is the shape the defect actually
+	 * arrives in.
+	 *
+	 * The FIRST publish must succeed. Without that assertion a
+	 * refusal at the second proves nothing -- it would pass equally
+	 * if CPDL publishing were broken outright.
+	 */
+	{
+		static const char DUP[] =
+		    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+		char recipe[1200];
+		int first = 0, second = 0;
+
+		snprintf(recipe, sizeof(recipe),
+		         "package \"dupapproval\" {\n"
+		         "    version \"1.0\"\n"
+		         "    release %d\n"
+		         "    format \"cixpkg\"\n"
+		         "\n"
+		         "    sources {\n"
+		         "        main \"dupapproval\" {\n"
+		         "            url \"https://example.invalid/dupapproval-1.0.tar.gz\"\n"
+		         "            sha256 \"%064d\"\n"
+		         "        }\n"
+		         "    }\n"
+		         "\n"
+		         "    requires {\n"
+		         "        build {\n"
+		         "            tool \"bash\"\n"
+		         "            tool \"coreutils\"\n"
+		         "        }\n"
+		         "    }\n"
+		         "\n"
+		         "    metadata {\n"
+		         "        \"artifact_sha256\" \"%s\"\n"
+		         "    }\n"
+		         "\n"
+		         "    build {\n"
+		         "        run \"true\" {\n"
+		         "        }\n"
+		         "    }\n"
+		         "\n"
+		         "    install {\n"
+		         "        mkdir \"${dest}/usr/share/dupapproval\"\n"
+		         "    }\n"
+		         "}\n",
+		         1, 0, DUP);
+		if (post_cbs_recipe(&client, "dupapproval", recipe, &first) != 0 ||
+		    (first != 201 && first != 204)) {
+			fprintf(stderr,
+			        "FAIL: the first dupapproval revision must publish, status=%d -- without "
+			        "it the refusal below proves nothing\n",
+			        first);
+			ok = 0;
+		}
+
+		/* Byte-identical but for the release, which is exactly how
+		 * every real instance of this was produced. */
+		snprintf(recipe, sizeof(recipe),
+		         "package \"dupapproval\" {\n"
+		         "    version \"1.0\"\n"
+		         "    release %d\n"
+		         "    format \"cixpkg\"\n"
+		         "\n"
+		         "    sources {\n"
+		         "        main \"dupapproval\" {\n"
+		         "            url \"https://example.invalid/dupapproval-1.0.tar.gz\"\n"
+		         "            sha256 \"%064d\"\n"
+		         "        }\n"
+		         "    }\n"
+		         "\n"
+		         "    requires {\n"
+		         "        build {\n"
+		         "            tool \"bash\"\n"
+		         "            tool \"coreutils\"\n"
+		         "        }\n"
+		         "    }\n"
+		         "\n"
+		         "    metadata {\n"
+		         "        \"artifact_sha256\" \"%s\"\n"
+		         "    }\n"
+		         "\n"
+		         "    build {\n"
+		         "        run \"true\" {\n"
+		         "        }\n"
+		         "    }\n"
+		         "\n"
+		         "    install {\n"
+		         "        mkdir \"${dest}/usr/share/dupapproval\"\n"
+		         "    }\n"
+		         "}\n",
+		         2, 0, DUP);
+		if (post_cbs_recipe(&client, "dupapproval", recipe, &second) != 0 || second != 400) {
+			fprintf(stderr,
+			        "FAIL: a second revision reusing release 1's approval must be refused 400, "
+			        "status=%d\n",
+			        second);
+			ok = 0;
+		}
+
+		/*
+		 * And the store did not gain it -- asked of that exact
+		 * version rather than by searching a listing, so it cannot
+		 * be satisfied by some other package's "1.0-2". A refusal
+		 * that leaves the version half-published is the same defect
+		 * in a new place, and the check sits before the version
+		 * directory is created precisely so it cannot.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/pkg/recipes/dupapproval?version=1.0-2", NULL,
+		                        &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: the refused revision was published anyway, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* The first one is still there, so the refusal was targeted. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/pkg/recipes/dupapproval?version=1.0-1", NULL,
+		                        &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: the refusal took the first revision with it, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
 	}
 
 	kill(daemon_pid, SIGTERM);

@@ -6,6 +6,31 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An approval belongs to one build, and publishing now enforces it (#525)
+
+`cbs` — the CPDL engine every host runs — carried **one artifact approval across ten revisions**, `v0.1.30-1` through `v0.1.45-1`, all declaring `4973529c7b3d…`. That is `v0.1.30-1`'s real artifact. Of the other nine, three have a published artifact that says otherwise, measured from the artifact server's own `X-Cix-Sha256`:
+
+| revision | declared | actually served | bytes |
+|---|---|---|---|
+| `v0.1.30-1` | `4973529c…` | `4973529c…` | 60860 |
+| `v0.1.31-1` | `4973529c…` | `b656c146…` | 61650 |
+| `v0.1.32-1` | `4973529c…` | `647478df…` | 65701 |
+| `v0.1.34-1` | `4973529c…` | `3db7affb…` | 69192 |
+
+The remaining six have no published artifact at all, so their copied approval would refuse whatever they built. `linux-headers` had the identical shape across three revisions and was found the expensive way — an ADR-0209 floor failure a fortnight later that read as a fetch problem.
+
+**Not republished, deliberately.** Nothing references any of the ten: no image manifest pins a `cbs` version, and the test floor pins `v0.1.71-1`, whose approval is correct and unique. Rewriting ten historical revisions would change nothing an operator can do. The finding is on the issue; the shipping change is the gate.
+
+**The gate.** Publishing a recipe whose `artifact_sha256` a different version of the same package already declares is refused with a 400 naming that version. One string comparison per sibling, and it would have caught every instance on the day it was written.
+
+**Position is the whole of its correctness**, for the same reason ADR-0309 clause 4's refusal is positioned where it is, and this time the number was measured rather than reasoned about: **86 files in the corpus carry a duplicated approval today** — 73 `probe-cix-testreport`, 10 `cbs`, 3 `linux-headers`. `recipe-sync` re-offers every corpus file every six hours and relies on an already-published one costing a quiet `409`. Refusing before the immutability test would turn 86 silent skips into 86 errors, every window, forever.
+
+That left exactly one real conflict: **`probe-cix-testreport@41-1` is in the corpus and not in the store**, so it is a genuinely new publish and the gate would refuse it every window. Its copied approval is dropped in `cix-recipes`. Re-measured afterwards: zero unpublished corpus recipes would now be refused.
+
+**What the gate costs.** Two revisions genuinely can produce identical bytes — a recipe edit changing only a comment, over the same source, would — and this refuses the second. That is the right trade: the author deletes the line and lets the build earn its own approval (ADR-0307 clause 5), one publish, against a failure that is otherwise silent and surfaces weeks later somewhere else.
+
+Reading a sibling's approval does **not** parse it. `parse_recipe()` on a CPDL revision forks `cbs explain`, and this asks the question of every sibling — 33 for `cbs` — on a path that walks ~480 files every six hours. It reads each format's own authority instead: `explain.json` for CPDL (what `parse_cbs_recipe()` reads, never the `.cbs`), the recipe text for shell. Keyed on the exact key, never on "a 64-hex run": both formats carry *source* checksums of the same shape in the same file, and two revisions sharing one of those is expected rather than wrong.
+
 ### HEAD is a read (#498), and #500's stated cause is wrong (#500)
 
 **#498 — the authorization gate asked "is this a `GET`", and `HEAD` is not `GET`.** So `curl -sI https://<host>/app.js` answered `401` while the identical request as a `GET` answered `200`, and each one was additionally audited as a refused *write* — the log gained warnings for something that is not one. This was never a regression: the gate has had that shape for as long as it has existed.
