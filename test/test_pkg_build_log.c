@@ -448,7 +448,7 @@ static int write_all_raw(int fd, const void *buf, size_t n)
  * frames and no close frame, one with the job still "building" at
  * the 5 s give-up and one with it already "installed" -- a spread
  * that fits a misaligned reader and nothing else (#519).
- */
+ *
  * Both of those readings are now one implementation, in test_ws.c --
  * the struct, the leftover pushback and the short-read-tolerant fill
  * that used to live here moved there when test_console_exec turned
