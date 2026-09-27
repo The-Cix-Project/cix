@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### `cixctl pkg-build-config set --max-concurrent-jobs=N` had never worked
+
+```c
+if (strncmp(argv[i], "--max-concurrent-jobs=", 23) == 0)
+```
+
+The literal is **22** bytes. Comparing 23 includes its own NUL, so the match succeeded only for an argument that ended there — the flag with no value — and every real invocation fell through to `unknown pkg-build-config set option`. The offset that reads the value was wrong the same way, so even a match would have dropped the first digit of N. Its two siblings, `--memory-max=` and `--cpu-max=`, are counted correctly.
+
+ADR-0157 made the concurrent-build limit operator-controlled and this is the CLI route to it, so that control has been unreachable for as long as it has existed while `cixctl help` advertised it throughout. Found by hand, trying to set it to 1 for a supervised batch of rebuilds.
+
+**Nothing was in a position to catch it, which is the more interesting half.** `test_clitree` already checks that every flag `cmdtree.h` offers exists as a literal in `main.c` and that every literal in `main.c` is in the table — and both were satisfied, because the literal is present and correct. The flag existed everywhere except in the one comparison that had to be right.
+
+So `test_clitree` gains check 8: every `strncmp(argv[i], "--flag=", N)` must have `N` equal to the literal's length. That guards **183 flags**, all currently correct, and catches the off-by-one in either direction — one byte short would make `--memory-maxX=` match `--memory-max=`.
+
+The fix stays in this file's one idiom rather than switching those three to `sizeof(lit) - 1`: a second spelling among 183 of the first is worse than the first, and the gate is what actually prevents recurrence. Verified on 192.168.15.95 by round-tripping two different values, so the value is read and not merely matched.
+
 ### An approval belongs to one build, and publishing now enforces it (#525)
 
 `cbs` — the CPDL engine every host runs — carried **one artifact approval across ten revisions**, `v0.1.30-1` through `v0.1.45-1`, all declaring `4973529c7b3d…`. That is `v0.1.30-1`'s real artifact. Of the other nine, three have a published artifact that says otherwise, measured from the artifact server's own `X-Cix-Sha256`:

@@ -438,6 +438,66 @@ int main(void)
 		}
 	}
 
+	/*
+	 * 8: a flag matched by a hand-counted prefix length must be
+	 * matched by the RIGHT one.
+	 *
+	 * `strncmp(argv[i], "--max-concurrent-jobs=", 23)` shipped with
+	 * 23 against a 22-byte literal. Comparing one byte too many
+	 * includes the literal's own NUL, so it matched only an argument
+	 * that ended there -- the flag with no value -- and every real
+	 * invocation fell through to "unknown option". The offset used to
+	 * read the value was wrong the same way, so even a match would
+	 * have dropped the first character of it.
+	 *
+	 * Nothing caught it. `cixctl help` advertised the flag, cmdtree.h
+	 * offered it for completion, and checks 3 and 5 above were both
+	 * satisfied -- because the LITERAL is present and correct in
+	 * main.c, which is all they ask. The flag existed everywhere
+	 * except in the one comparison that had to be right, and
+	 * ADR-0157's operator control over build concurrency was
+	 * unreachable from the CLI for as long as it had existed. Found
+	 * by hand, trying to use it.
+	 *
+	 * Off-by-one in the other direction is just as bad and is caught
+	 * by the same equality: a length one short makes `--memory-maxX=`
+	 * match `--memory-max=`.
+	 */
+	for (off = 0; off < g_src_len;) {
+		const char *at = strstr(g_src + off, "strncmp(argv[");
+		const char *quote, *end, *comma;
+		char flag[160];
+		size_t len;
+		long declared;
+
+		if (at == NULL)
+			break;
+		off = (size_t)(at - g_src) + 1;
+		quote = strchr(at, '"');
+		if (quote == NULL)
+			continue;
+		end = strchr(quote + 1, '"');
+		if (end == NULL)
+			continue;
+		len = (size_t)(end - (quote + 1));
+		if (len == 0 || len >= sizeof(flag))
+			continue;
+		memcpy(flag, quote + 1, len);
+		flag[len] = '\0';
+		/* Only the prefix form has a length to get wrong. */
+		if (flag[len - 1] != '=')
+			continue;
+		comma = strchr(end, ',');
+		if (comma == NULL)
+			continue;
+		declared = strtol(comma + 1, NULL, 10);
+		if (declared > 0 && (size_t)declared != len)
+			fail("cli/src/main.c compares %zu bytes of \"%s\" against %ld -- the flag can "
+			     "never match with a value, and the offset that reads the value is wrong "
+			     "the same way",
+			     len, flag, declared);
+	}
+
 	free(g_src);
 	if (g_failures > 0) {
 		fprintf(stderr, "test_clitree: %d failure(s)\n", g_failures);

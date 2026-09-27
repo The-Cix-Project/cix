@@ -7938,9 +7938,27 @@ static int cmd_pkg_build_config_set(const struct cix_client *c, int json_mode, i
 	struct json_writer w;
 	struct cix_response r;
 
+	/*
+	 * 22, not 23. `--max-concurrent-jobs=` is 22 bytes, and comparing
+	 * 23 included the literal's own NUL -- so this matched only an
+	 * argument that ENDED there, the flag with no value, and every
+	 * real invocation fell through to "unknown option". The offset
+	 * was wrong the same way, so even a match would have dropped the
+	 * first digit of N. ADR-0157 made the concurrent-build limit
+	 * operator-controlled and this is the CLI route to it; it has
+	 * been unreachable for as long as it has existed, while `cixctl
+	 * help` advertised it throughout. Found by hand, trying to set it
+	 * to 1 for a supervised batch of rebuilds.
+	 *
+	 * Left in this file's one idiom rather than rewritten to
+	 * sizeof(): 183 other flags here are matched the same way, and a
+	 * second spelling in one of them is worse than the first. What
+	 * stops this recurring is test_clitree's check 8, which compares
+	 * every such length against its literal -- all 183 of them.
+	 */
 	for (i = 0; i < argc; i++) {
-		if (strncmp(argv[i], "--max-concurrent-jobs=", 23) == 0)
-			max_jobs = argv[i] + 23;
+		if (strncmp(argv[i], "--max-concurrent-jobs=", 22) == 0)
+			max_jobs = argv[i] + 22;
 		else if (strncmp(argv[i], "--memory-max=", 13) == 0)
 			memory_max = argv[i] + 13;
 		else if (strncmp(argv[i], "--cpu-max=", 10) == 0)
