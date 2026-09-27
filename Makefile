@@ -715,7 +715,7 @@ $(BUILD)/test_routes: test/test_routes.c test/test_image_fixture.c $(CLIENT_SRCS
 $(BUILD)/test_management_address: test/test_management_address.c test/test_image_fixture.c $(CLIENT_SRCS) $(NETPLANE_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_console_exec: test/test_console_exec.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_console_exec: test/test_console_exec.c test/test_ws.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_aggressive: test/test_aggressive.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
@@ -781,7 +781,7 @@ $(BUILD)/test_pki: test/test_pki.c test/test_image_fixture.c $(CLIENT_SRCS) | $(
 $(BUILD)/test_pkg: test/test_pkg.c test/test_image_fixture.c test/test_floor.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_pkg_build_log: test/test_pkg_build_log.c test/test_image_fixture.c test/test_floor.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_pkg_build_log: test/test_pkg_build_log.c test/test_ws.c test/test_image_fixture.c test/test_floor.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_pkg_concurrent_stress: test/test_pkg_concurrent_stress.c test/test_image_fixture.c test/test_floor.c $(CLIENT_SRCS) | $(BUILD)

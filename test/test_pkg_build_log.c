@@ -12,6 +12,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_ws.h"
 #include "test_floor.h"
 
 #include <stdint.h>
@@ -448,122 +449,17 @@ static int write_all_raw(int fd, const void *buf, size_t n)
  * the 5 s give-up and one with it already "installed" -- a spread
  * that fits a misaligned reader and nothing else (#519).
  */
-struct ws_reader {
-	int fd;
-	/* Sized to the handshake buffer it drains, so the whole of a
-	 * coalesced read always fits. */
-	unsigned char pending[2048];
-	size_t pending_len;
-	size_t pending_pos;
-	/* What the last failed read saw, so a caller can say which of
-	 * "the peer closed" (0) and "nothing arrived in time" (-1 with
-	 * EAGAIN) it hit -- they are different bugs and read_full used to
-	 * report both as -1. */
-	ssize_t last_n;
-	int last_errno;
-};
-
-static void ws_reader_init(struct ws_reader *r, int fd, const void *leftover, size_t leftover_len)
-{
-	memset(r, 0, sizeof(*r));
-	r->fd = fd;
-	r->last_n = 1;
-	if (leftover_len > sizeof(r->pending)) {
-		fprintf(stderr, "    ws: %zu leftover handshake bytes exceed this reader's %zu\n",
-		        leftover_len, sizeof(r->pending));
-		leftover_len = sizeof(r->pending);
-	}
-	memcpy(r->pending, leftover, leftover_len);
-	r->pending_len = leftover_len;
-}
-
-/*
- * A websocket frame header is two bytes, and read() is entitled to
- * hand back one of them.
- *
- * That is not pedantry here: it is the whole of a flake that has
- * failed the build gate repeatedly on three different assertions of
- * this file -- "received 0 bytes", the SIGWINCH resize, and the
- * initial report -- because losing any single frame presents as
- * whatever that frame was carrying never arriving. A short read is
- * likeliest exactly when the box is busy, which is why it shows up in
- * a build container and never in a quiet hand-run.
- *
- * The payload loop below has always looped. The two header reads did
- * not, and treated a one-byte read as a dead connection, discarding a
- * frame that was perfectly good and only late.
+ * Both of those readings are now one implementation, in test_ws.c --
+ * the struct, the leftover pushback and the short-read-tolerant fill
+ * that used to live here moved there when test_console_exec turned
+ * out to have its own copy of all three (cix#524). What stays here is
+ * the thin naming this file's call sites already use.
  */
-static int ws_read_full(struct ws_reader *r, void *buf, size_t want)
+static int recv_ws_frame(struct ws_reader *r, int *out_opcode, unsigned char *out_buf,
+                          size_t out_cap, size_t *out_len)
 {
-	unsigned char *p = buf;
-	size_t got = 0;
-
-	while (got < want) {
-		ssize_t n;
-
-		if (r->pending_pos < r->pending_len) {
-			size_t avail = r->pending_len - r->pending_pos;
-			size_t take = (avail > want - got) ? want - got : avail;
-
-			memcpy(p + got, r->pending + r->pending_pos, take);
-			r->pending_pos += take;
-			got += take;
-			continue;
-		}
-		n = read(r->fd, p + got, want - got);
-		if (n <= 0) {
-			r->last_n = n;
-			r->last_errno = errno;
-			return -1;
-		}
-		got += (size_t)n;
-	}
-	return 0;
+	return ws_recv_frame(r, out_opcode, out_buf, out_cap, out_len);
 }
-
-static int recv_ws_frame(struct ws_reader *r, int *out_opcode, unsigned char *out_buf, size_t out_cap,
-                          size_t *out_len)
-{
-	unsigned char hdr[4];
-	int opcode;
-	size_t len7, payload_len;
-
-	if (ws_read_full(r, hdr, 2) != 0)
-		return -1;
-	opcode = hdr[0] & 0x0f;
-	len7 = hdr[1] & 0x7f;
-
-	if (len7 == 126) {
-		unsigned char ext[2];
-
-		if (ws_read_full(r, ext, 2) != 0)
-			return -1;
-		payload_len = ((size_t)ext[0] << 8) | (size_t)ext[1];
-	} else if (len7 == 127) {
-		/* The 64-bit form. ws_write_frame() never sends it (its
-		 * payload is capped at 64 KiB), so meeting one is a protocol
-		 * fault to report, not a length to read as 127 bytes. */
-		fprintf(stderr, "    ws: unexpected 64-bit length frame\n");
-		return -1;
-	} else {
-		payload_len = len7;
-	}
-	if (payload_len > out_cap) {
-		fprintf(stderr, "    ws: %zu-byte frame exceeds this reader's %zu-byte buffer\n",
-		        payload_len, out_cap);
-		return -1;
-	}
-	/* The same loop the header now uses -- one implementation, not a
-	 * second copy of it three lines further down. */
-	if (payload_len > 0 && ws_read_full(r, out_buf, payload_len) != 0)
-		return -1;
-	*out_opcode = opcode;
-	*out_len = payload_len;
-	return 0;
-}
-
-#define TEST_WS_KEY "dGhlIHNhbXBsZSBub25jZQ=="
-#define TEST_WS_ACCEPT "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
 
 /*
  * One handshake attempt against an arbitrary query string, returning
@@ -846,11 +742,16 @@ int main(void)
 			/*
 			 * Everything this read took past the handshake is the
 			 * front of the frame stream, not spare bytes -- see
-			 * struct ws_reader. Nothing to hand over is the ordinary
-			 * case; having some is the case that used to misalign
-			 * the reader for the rest of the build (#519).
+			 * test_ws.h. Nothing to hand over is the ordinary case;
+			 * having some is the case that used to misalign the
+			 * reader for the rest of the build (#519).
+			 *
+			 * The reader computes the offset itself now rather than
+			 * being handed one: that arithmetic was the bug, and it
+			 * existed twice.
 			 */
-			ws_reader_init(&reader, fd, resp + consumed, got > consumed ? got - consumed : 0);
+			CHECK(ws_reader_adopt_handshake(&reader, fd, resp, got, headers_end) == 0,
+			      "the handshake leftover fits the frame reader");
 			if (got > consumed)
 				fprintf(stderr, "      handshake read carried %zu byte(s) of frame data\n",
 				        got - consumed);

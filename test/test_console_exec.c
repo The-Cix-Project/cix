@@ -22,6 +22,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_ws.h"
 
 #include <stdint.h>
 #include <arpa/inet.h>
@@ -46,14 +47,17 @@ static char g_data_dir[PATH_MAX];
 static char g_image_root[PATH_MAX];
 static char g_container_defs_path[PATH_MAX];
 
-/* RFC 6455's own worked example (section 1.3) -- already independently
- * confirmed correct against a real `openssl dgst -sha1 -binary |
- * openssl base64 -A` pipeline and against ws_compute_accept() directly
- * while building this phase. Reusing this fixed, known-correct vector
- * here proves the *wiring* (the real value that reaches a real HTTP
- * response), not the SHA-1/base64 math a second time. */
-#define TEST_WS_KEY "dGhlIHNhbXBsZSBub25jZQ=="
-#define TEST_WS_ACCEPT "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+/* TEST_WS_KEY / TEST_WS_ACCEPT are in test_ws.h, shared with
+ * test_pkg_build_log which had its own identical pair (cix#524).
+ *
+ * The reason for using this vector rather than computing one is kept
+ * here because it is the reason this file has always used it: RFC
+ * 6455's own worked example (section 1.3), independently confirmed
+ * against a real `openssl dgst -sha1 -binary | openssl base64 -A`
+ * pipeline and against ws_compute_accept() directly while this phase
+ * was built. A fixed, known-correct vector proves the WIRING -- the
+ * real value reaching a real HTTP response -- not the SHA-1/base64
+ * math a second time. */
 
 static int g_failures;
 
@@ -395,207 +399,83 @@ static int write_all_raw(int fd, const void *buf, size_t n)
 /* Sends one masked (client-to-server, per RFC 6455) text/binary frame. */
 static int send_ws_frame(int fd, int opcode, const void *payload, size_t len)
 {
-	unsigned char header[8];
-	unsigned char mask[4] = { 0x11, 0x22, 0x33, 0x44 };
-	unsigned char *masked;
-	size_t hlen;
-	size_t i;
-	int rc;
-
-	header[0] = (unsigned char)(0x80 | opcode);
-	if (len < 126) {
-		header[1] = (unsigned char)(0x80 | len);
-		hlen = 2;
-	} else {
-		header[1] = 0x80 | 126;
-		header[2] = (unsigned char)((len >> 8) & 0xff);
-		header[3] = (unsigned char)(len & 0xff);
-		hlen = 4;
-	}
-
-	masked = malloc(len);
-	if (masked == NULL && len > 0)
-		return -1;
-	for (i = 0; i < len; i++)
-		masked[i] = ((const unsigned char *)payload)[i] ^ mask[i % 4];
-
-	rc = write_all_raw(fd, header, hlen);
-	if (rc == 0)
-		rc = write_all_raw(fd, mask, 4);
-	if (rc == 0 && len > 0)
-		rc = write_all_raw(fd, masked, len);
-	free(masked);
-	return rc;
+	/* The masking and framing moved to test_ws.c with the reader
+	 * (cix#524); the name stays because ten call sites below use it. */
+	return ws_send_frame(fd, opcode, payload, len);
 }
-
-/* Reads exactly one complete (unmasked, server-to-client) WS frame,
- * blocking as needed. Very small/trusting -- this is a test client
- * against a daemon we control, not a hardened general-purpose one. */
 /*
- * A websocket frame header is two bytes, and read() is entitled to
- * hand back one of them.
+ * WHAT THIS FILE PAID TO LEARN, kept here because it is this file's
+ * history; the mechanism it taught is in test_ws.h.
  *
- * That is not pedantry here: it is the whole of a flake that has
- * failed the build gate repeatedly on three different assertions of
- * this file -- "received 0 bytes", the SIGWINCH resize, and the
- * initial report -- because losing any single frame presents as
- * whatever that frame was carrying never arriving. A short read is
- * likeliest exactly when the box is busy, which is why it shows up in
- * a build container and never in a quiet hand-run.
+ * #331/#291. This test failed intermittently four times and every
+ * report said "read failed or peer closed", because the fill folded a
+ * TIMEOUT and a CLOSED PEER into the same -1. Those are opposite
+ * faults with opposite fixes: a timeout means the container's child
+ * had not produced its first byte inside the budget on a loaded
+ * two-CPU box, and a close means the session really did collapse,
+ * which is a daemon bug. Four investigations had no way to tell
+ * which, and the attempt before that one raised the budget from 2 s
+ * to 10 s -- a change that cannot distinguish them either. That is
+ * why the shared reader reports WS_STOP_TIMEOUT and
+ * WS_STOP_PEER_CLOSED separately rather than -1.
  *
- * The payload loop below has always looped. The two header reads did
- * not, and treated a one-byte read as a dead connection, discarding a
- * frame that was perfectly good and only late.
+ * And a short read. A frame header is two bytes and read() may hand
+ * back one; treating that as a dead connection failed this file's
+ * gate on three different assertions -- "received 0 bytes", the
+ * SIGWINCH resize, and the initial report -- because losing any
+ * single frame presents as whatever it carried never arriving. It
+ * showed up in a busy build container and never in a quiet hand-run.
  */
 /*
- * Why a read stopped, kept apart rather than collapsed into -1.
+ * THE WEBSOCKET CLIENT LIVES IN test_ws.c NOW (cix#524).
  *
- * #331/#291. This test has failed intermittently four times and every
- * report said "read failed or peer closed", because read_full() folded
- * a TIMEOUT and a CLOSED PEER into the same -1. Those are opposite
- * faults with opposite fixes: a timeout means the container's child had
- * not produced its first byte inside the budget on a loaded two-CPU
- * box, and a close means the session really did collapse, which is a
- * daemon bug. Four investigations had no way to tell which, and the
- * previous attempt at this raised the budget from 2 s to 10 s -- a
- * change that cannot distinguish them either.
+ * The enum, the pushback buffer, the short-read-tolerant fill and the
+ * frame parser that used to be written out here are shared with
+ * test_pkg_build_log, which had grown its own copy of all four -- and
+ * paid for the difference between them once already (#519). See
+ * test_ws.h for the hazard they both exist to handle.
+ *
+ * What stays is the naming this file's own call sites use, so the
+ * thirty-odd of them below did not have to be rewritten to move the
+ * implementation. The fd is stamped on the shared reader at each call
+ * because that is how this file has always passed it -- per call,
+ * with the pushback held aside -- and preserving that shape is what
+ * keeps this change to the reader rather than to the test.
  */
-enum read_stop {
-	READ_OK = 0,
-	READ_TIMEOUT,     /* SO_RCVTIMEO expired: nothing arrived in time */
-	READ_PEER_CLOSED, /* orderly close: the session ended */
-	READ_ERROR        /* anything else, errno preserved */
-};
+static struct ws_reader g_ws;
 
-static enum read_stop g_last_stop = READ_OK;
-
-static const char *read_stop_name(enum read_stop s)
+static const char *read_stop_name(void)
 {
-	switch (s) {
-	case READ_OK:
-		return "ok";
-	case READ_TIMEOUT:
-		return "TIMED OUT waiting for the first byte";
-	case READ_PEER_CLOSED:
-		return "PEER CLOSED the session";
-	default:
-		return "read error";
-	}
+	return ws_stop_str(&g_ws);
 }
-
-/*
- * Bytes that arrived in the same read() as the 101, held until the
- * frame reader asks for them (#331).
- *
- * Every upgrade site below reads into a response buffer until it sees
- * "\r\n\r\n" and then stops looking. One read() routinely returns the
- * handshake response AND the first websocket frame, because the daemon
- * writes the 101 and then relays whatever the exec'd process has
- * already produced -- and console_term_child reports before it does
- * anything else. Everything past the header terminator used to be
- * dropped with the response buffer, and recv_ws_frame() then read from
- * a socket those bytes had already left.
- *
- * It failed as a HANG, not as corruption: the test waited 30 seconds
- * for a frame that had already been delivered and thrown away, while
- * the exec'd process sat in pause() having written it. Five of the last
- * ten cix releases failed this way, in clusters, which is what made it
- * read as flakiness in the daemon rather than a bug in the reader.
- *
- * Deliberately reset by ws_take_leftover() at every upgrade rather than
- * only filled: a scenario that left bytes here would otherwise feed
- * them to the NEXT scenario's frame parser, which is a worse and much
- * stranger failure than the one being fixed.
- */
-static unsigned char g_ws_pushback[4096];
-static size_t g_ws_pushback_len;
 
 /*
  * Records whatever `resp` holds past the end of the headers. `got` is
- * the byte count, not strlen: these are frame bytes and may contain
- * NUL.
+ * a byte count, not strlen: these are frame bytes and may contain NUL.
+ *
+ * Reset at every upgrade rather than only filled -- a scenario that
+ * left bytes here would otherwise feed them to the NEXT scenario's
+ * frame parser, which is a worse and much stranger failure than the
+ * one being fixed. ws_reader_adopt_handshake() memsets, so that
+ * property is now structural rather than remembered.
+ *
+ * The fd is filled in by the first read; -1 here would be a bug only
+ * if something read before an upgrade, which nothing does.
  */
 static void ws_take_leftover(const char *resp, size_t got, const char *headers_end)
 {
-	size_t off;
-
-	g_ws_pushback_len = 0;
-	if (headers_end == NULL)
-		return;
-	off = (size_t)(headers_end - resp) + 4;
-	if (got <= off)
-		return;
-	if (got - off > sizeof(g_ws_pushback))
-		return; /* cannot happen with the response buffers in use here */
-	memcpy(g_ws_pushback, resp + off, got - off);
-	g_ws_pushback_len = got - off;
+	(void)ws_reader_adopt_handshake(&g_ws, -1, resp, got, headers_end);
 }
 
-static int read_full(int fd, void *buf, size_t want)
+/* No read_full() wrapper: its only caller was the frame parser that
+ * moved to test_ws.c, so keeping one here would be an unused static
+ * and -Werror would say so. ws_read_full() is still exported for a
+ * future caller that needs raw bytes rather than a frame. */
+static int recv_ws_frame(int fd, int *out_opcode, unsigned char *out_buf, size_t out_cap,
+                          size_t *out_len)
 {
-	unsigned char *p = buf;
-	size_t got = 0;
-
-	/* Anything the handshake over-read is consumed first, in order,
-	 * before the socket is touched. */
-	if (g_ws_pushback_len > 0) {
-		size_t take = g_ws_pushback_len < want ? g_ws_pushback_len : want;
-
-		memcpy(p, g_ws_pushback, take);
-		memmove(g_ws_pushback, g_ws_pushback + take, g_ws_pushback_len - take);
-		g_ws_pushback_len -= take;
-		got = take;
-	}
-
-	while (got < want) {
-		ssize_t n = read(fd, p + got, want - got);
-
-		if (n == 0) {
-			g_last_stop = READ_PEER_CLOSED;
-			return -1;
-		}
-		if (n < 0) {
-			g_last_stop = (errno == EAGAIN || errno == EWOULDBLOCK) ? READ_TIMEOUT : READ_ERROR;
-			return -1;
-		}
-		got += (size_t)n;
-	}
-	return 0;
-}
-
-static int recv_ws_frame(int fd, int *out_opcode, unsigned char *out_buf, size_t out_cap, size_t *out_len)
-{
-	unsigned char hdr[4];
-	int opcode;
-	size_t len7, payload_len, extra = 0;
-
-	if (read_full(fd, hdr, 2) != 0)
-		return -1;
-	opcode = hdr[0] & 0x0f;
-	len7 = hdr[1] & 0x7f;
-
-	if (len7 == 126) {
-		unsigned char ext[2];
-
-		if (read_full(fd, ext, 2) != 0)
-			return -1;
-		payload_len = ((size_t)ext[0] << 8) | (size_t)ext[1];
-	} else {
-		payload_len = len7;
-	}
-	(void)extra;
-
-	if (payload_len > out_cap)
-		return -1;
-
-	/* The same loop the header now uses -- one implementation, not a
-	 * second copy of it three lines further down. */
-	if (payload_len > 0 && read_full(fd, out_buf, payload_len) != 0)
-		return -1;
-
-	*out_opcode = opcode;
-	*out_len = payload_len;
-	return 0;
+	g_ws.fd = fd;
+	return ws_recv_frame(&g_ws, out_opcode, out_buf, out_cap, out_len);
 }
 
 int main(void)
@@ -1077,7 +957,7 @@ int main(void)
 				struct timespec t_wait0;
 
 				acc[0] = '\0';
-				g_last_stop = READ_OK;
+				g_ws.stop = WS_STOP_NONE;
 				clock_gettime(CLOCK_MONOTONIC, &t_wait0);
 				for (attempts = 0; attempts < 20 && !found; attempts++) {
 					int opcode;
@@ -1121,7 +1001,7 @@ int main(void)
 					        "  wanted: %s\n  got (%zu bytes in %d frame(s) after %ldms, "
 					        "ended: %s): %s\n",
 					        geom[gi].expect, acc_len, frames, waited_ms,
-					        recv_failed ? read_stop_name(g_last_stop)
+					        recv_failed ? read_stop_name()
 					                    : "20 frames without a match",
 					        acc_len > 0 ? acc : "(nothing)");
 					report_loop_health(&client);
@@ -1234,7 +1114,7 @@ int main(void)
 				        "  wanted: INPUT-ECHO:console-input-probe\n"
 				        "  got (%zu bytes in %d frame(s), ready=%d sent=%d, ended: %s): %s\n",
 				        acc_len, frames, ready, sent,
-				        recv_failed ? read_stop_name(g_last_stop)
+				        recv_failed ? read_stop_name()
 				                    : "40 frames without a match",
 				        acc_len > 0 ? acc : "(nothing)");
 				report_loop_health(&client);
@@ -1320,7 +1200,7 @@ int main(void)
 			if (!saw_first) {
 				fprintf(stderr, "  got (%zu bytes in %d frame(s), ended: %s): %s\n", acc_len,
 				        first_frames,
-				        first_recv_failed ? read_stop_name(g_last_stop)
+				        first_recv_failed ? read_stop_name()
 				                          : "20 frames without a match",
 				        acc_len > 0 ? acc : "(nothing)");
 				report_loop_health(&client);
