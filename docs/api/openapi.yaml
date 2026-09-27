@@ -19066,7 +19066,7 @@ components:
 
     ImageGcResult:
       type: object
-      required: [dry_run, measured, reclaimed, collected, kept, failed]
+      required: [dry_run, measured, reclaimed, collected, kept, failed, failures]
       properties:
         dry_run:
           type: boolean
@@ -19103,8 +19103,34 @@ components:
           type: integer
           description: >
             Versions that were unreferenced but could not be removed. One
-            stubborn version does not stop the rest being reclaimed; the
-            reason is written to the log store.
+            stubborn version does not stop the rest being reclaimed. The exact
+            total, however many; `failures` below names the first few with
+            their reasons.
+        failures:
+          type: array
+          description: >
+            Why the failures failed, in the response itself rather than only in
+            the log store (#503). Capped, so a pass that fails wholesale still
+            returns a readable reply -- 77 versions failed in one pass on
+            2026-09-21 -- while `failed` above stays the true total. That
+            incident is the reason this field exists: the run reported "77
+            could not be removed (see the log store)" while the log store was
+            frozen by the same full disk, so the only pointer to the reason led
+            somewhere that could not answer.
+          items:
+            type: object
+            required: [image, version, error]
+            properties:
+              image:
+                type: string
+              version:
+                type: string
+              error:
+                type: string
+                description: >
+                  Human-readable, not an enum number. A delete or persist
+                  failure names free space on the data directory, since that
+                  is overwhelmingly the cause.
         apparent_bytes_total:
           type: integer
           nullable: true

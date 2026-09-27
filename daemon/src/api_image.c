@@ -150,6 +150,49 @@ static int image_version_is_referenced(const char *image, const char *version)
 }
 
 /*
+ * How many failed versions a gc response names individually.
+ *
+ * Bounded because a pass can fail wholesale rather than one-off:
+ * 77 did, on 2026-09-21, when /var/lib/cix filled (#503). The
+ * `failed` count stays exact; this caps only the detail, so the
+ * reply is readable and its size does not depend on how bad the
+ * day is.
+ */
+#define GC_FAILURE_REPORT_MAX 8
+
+/*
+ * An image_error as something an operator can act on.
+ *
+ * #503: `image gc` reported `77 could not be removed (see the log
+ * store)` while the log store was itself frozen by the same full
+ * disk, so the only pointer to the reason led somewhere that could
+ * not answer. The response now carries the reason, and a bare enum
+ * number would not have been one -- the log line said `(%d)`.
+ */
+static const char *image_gc_error_text(enum image_error e)
+{
+	switch (e) {
+	case IMAGE_OK:
+		return "no error";
+	case IMAGE_ERR_NOT_FOUND:
+		return "no such version (it may have been removed already)";
+	case IMAGE_ERR_PROTECTED:
+		return "protected";
+	case IMAGE_ERR_IN_USE:
+		return "a running container references it";
+	case IMAGE_ERR_HAS_PACKAGES:
+		return "packages are still tracked against it";
+	case IMAGE_ERR_DELETE_FAILED:
+		return "delete failed -- check free space on the data directory";
+	case IMAGE_ERR_PERSIST_FAILED:
+		return "could not persist the change -- check free space on the data directory";
+	default:
+		break;
+	}
+	return "unknown error";
+}
+
+/*
  * POST /v1/images/gc -- reclaim image versions nothing references.
  *
  * This exists because there was no reclamation anywhere in the API at
@@ -193,6 +236,11 @@ void handle_images_gc(int fd, const char *body, size_t body_len)
 	int image_count, i, j;
 	int collected = 0, kept = 0, failed = 0;
 	long long total_bytes = 0;
+	struct {
+		char image[PKG_IMAGE_NAME_MAX];
+		char version[IMAGE_VERSION_MAX];
+		enum image_error err;
+	} failures[GC_FAILURE_REPORT_MAX];
 
 	if (pkg_active_chain_indices(active) > 0) {
 		respond_error(fd, 409, "Conflict",
@@ -252,6 +300,28 @@ void handle_images_gc(int fd, const char *body, size_t body_len)
 					logstore_write("cixd", "error",
 					                "image gc: could not remove %s@%s (%d)", names[i],
 					                versions[j], (int)ierr);
+					/*
+					 * #503: and in the RESPONSE, not only the log.
+					 *
+					 * `failed` was a bare count whose detail lived in
+					 * the log store alone, and `image gc` tells the
+					 * operator to "see the log store" -- which, when
+					 * /var/lib/cix filled, was frozen at the second
+					 * the trouble started. So the one message that
+					 * knew 77 versions had resisted pointed at the
+					 * one place that could not say why.
+					 *
+					 * A response that carries its own failures needs
+					 * nothing else to be readable, which is the
+					 * property that was missing.
+					 */
+					if (failed < GC_FAILURE_REPORT_MAX) {
+						snprintf(failures[failed].image, sizeof(failures[failed].image), "%s",
+						         names[i]);
+						snprintf(failures[failed].version, sizeof(failures[failed].version),
+						         "%s", versions[j]);
+						failures[failed].err = ierr;
+					}
 					failed++;
 					continue;
 				}
@@ -278,6 +348,31 @@ void handle_images_gc(int fd, const char *body, size_t body_len)
 	jw_int(&w, kept);
 	jw_key(&w, "failed");
 	jw_int(&w, failed);
+	/*
+	 * #503: the detail behind that count, in the response itself.
+	 * Capped, because a pass can fail wholesale -- 77 did -- and a
+	 * reply naming every one is neither readable nor bounded;
+	 * `failed` above stays the true total, so the two together say
+	 * "this many, and here are the first few, and why".
+	 */
+	jw_key(&w, "failures");
+	jw_arr_open(&w);
+	{
+		int f;
+		int shown = failed < GC_FAILURE_REPORT_MAX ? failed : GC_FAILURE_REPORT_MAX;
+
+		for (f = 0; f < shown; f++) {
+			jw_obj_open(&w);
+			jw_key(&w, "image");
+			jw_str(&w, failures[f].image);
+			jw_key(&w, "version");
+			jw_str(&w, failures[f].version);
+			jw_key(&w, "error");
+			jw_str(&w, image_gc_error_text(failures[f].err));
+			jw_obj_close(&w);
+		}
+	}
+	jw_arr_close(&w);
 	jw_key(&w, "apparent_bytes_total");
 	if (measure)
 		jw_int(&w, total_bytes);
