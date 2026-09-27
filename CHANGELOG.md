@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Every tar.gz-era approval is gone: #497 reaches zero
+
+```
+approval matches the published .cixpkg : 80
+approval matches a published .tar.gz   :  0   (was 22, and 25 when filed)
+approval matches nothing published     :  0
+```
+
+The last three were the hard-link refusals, and **none of them was a revision bump** — which is what the issue proposed and what worked for 18 of 22:
+
+- **gzip** — `gunzip`, `uncompress` and `zcat` hard-linked to the binary by `install-exec-hook`. Three `remove` + `symlink` pairs, the same three lines `automake@1.16.5-4` already uses. Behaviour is unchanged as a property of gzip rather than an assumption: it decides what to do from `argv[0]`, so a symlink named `zcat` is `zcat` exactly as a hard link was.
+- **gawk** — `gawk-5.3.0` hard-linked to `gawk`. One pair, and the direction is not arbitrary: `gawk` is the real binary, so the *versioned* name becomes the link. `usr/bin/awk` was untouched — already a symlink, which is why the link count was 2 and not 3.
+- **ncurses** — `tic` hard-links aliases across **2903** terminfo entries, so nothing could be relinked by hand. ncurses ships `--enable-symlinks`, quoted from its own configure. **Asked before it was used:** autoconf ignores an unrecognised `--enable-*` silently, so a guessed flag would have configured, compiled, installed hard links anyway and failed at the manifest exactly as before — having spent a full ncurses build to learn nothing. A one-minute probe read the flag out of `configure` instead. `--with-manpage-symlinks` applies the same policy to the 933 man pages.
+
+The ncurses recipe's `replace glob "**/Makefile" … exactly 4` assertion survived the new flags unchanged, which was the other thing a configure change could have moved.
+
 ### 18 of 22 tar.gz-era approvals replaced; the other 4 need a recipe change (#497)
 
 A CPDL recipe converted before the artifact-format flip declares `format "cixpkg"` while its approval was earned over a `.tar.gz`. The fetch asks for a `.cixpkg` that does not exist, falls back to building from source, and the approval writer then declines to replace what is already there — so that version rebuilds from source on **every fresh host, permanently**. That is #145's cost, paid by every new install, and invisible here because this box has all of them in its local package cache.
