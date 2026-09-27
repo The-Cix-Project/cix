@@ -8731,31 +8731,33 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
 	if (image != NULL && image[0] != '\0' && !pkg_image_is_valid(image))
 		return PKG_ERR_INVALID_NAME;
 	/*
-	 * #500: the destination has to be a real image, and this is the
-	 * last moment the answer is cheap.
+	 * NO CHECK THAT THE IMAGE EXISTS, and that is deliberate (#500).
 	 *
-	 * `--image=jump` for `jumpbox` was accepted: it created a package
-	 * row against an image that does not exist, resolved and started
-	 * the dependency, and failed minutes later with "could not unpack
-	 * (extract cached artifact failed)" -- which names the artifact
-	 * and the unpacker, both of which were fine. The destination
-	 * directory was simply not there. It then left a permanently
-	 * failed row for a nonexistent image, to be removed by hand.
+	 * One was written here and reverted before it shipped. #500
+	 * reports that `--image=jump` for `jumpbox` was accepted and
+	 * failed minutes later at "could not unpack (extract cached
+	 * artifact failed)", and states the absent image as the cause.
+	 * That cause is false, and two independent things say so.
 	 *
-	 * Before pkg_any_job_busy()/chain_alloc() deliberately: a request
-	 * that cannot succeed should not take a job slot on its way to
-	 * being refused, and should not be answered "busy" on a box that
-	 * happens to be building something, which would send the caller
-	 * back to retry a typo.
+	 * The code: dest_dir is built under the BUILD CONTAINER's own
+	 * upperdir, not under the image, so whether the image exists
+	 * cannot decide whether an extraction into it works.
 	 *
-	 * On the normalized name, so an explicit --image=base is checked
-	 * exactly as an omitted one is. The default image is created at
-	 * startup, so the normalized form always exists on a running
-	 * daemon; checking it anyway keeps this one rule rather than one
-	 * rule and an exemption.
+	 * The box, which is what settles it. On 192.168.15.95,
+	 * 2026-09-27, `pkg install --name=ncurses
+	 * --image=nosuchimage-probe` against a daemon with no such image
+	 * reached state `installed`, and `image ls` then LISTED
+	 * `nosuchimage-probe`. Installing into an image that does not
+	 * exist yet is how one gets created and populated -- a working
+	 * capability, not an accident: test_pkg_cache installs into
+	 * imgA/imgB/imgC/imgD and test_pkg into zzlibc, none of which any
+	 * test ever creates, and the refusal failed all of them.
+	 *
+	 * So a typo really does cost a slow, misdirected failure, and the
+	 * reason is not this. What #500 leaves behind is the message,
+	 * which named one of its two operands -- see the prepare-step log
+	 * line further down.
 	 */
-	if (!image_exists(normalize_image(image)))
-		return PKG_ERR_TARGET_IMAGE_NOT_FOUND;
 	if (pkg_any_job_busy())
 		return PKG_ERR_BUSY;
 	chain_idx = chain_alloc();

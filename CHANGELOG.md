@@ -6,7 +6,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
-### HEAD is a read, and an install into an image that does not exist is refused (#498, #500)
+### HEAD is a read (#498), and #500's stated cause is wrong (#500)
 
 **#498 — the authorization gate asked "is this a `GET`", and `HEAD` is not `GET`.** So `curl -sI https://<host>/app.js` answered `401` while the identical request as a `GET` answered `200`, and each one was additionally audited as a refused *write* — the log gained warnings for something that is not one. This was never a regression: the gate has had that shape for as long as it has existed.
 
@@ -20,15 +20,17 @@ Deliberately *not* a request-scoped flag on the response writers. One would have
 
 **`HEAD /v1/...` is a `404`, and that is the scope line.** The router is keyed on the methods `openapi.yaml` declares and none declares `HEAD`. Making the API itself `HEAD`-aware is a change to the contract rather than to asset serving; `test_web` asserts the `404` so that if it ever changes it changes because someone decided to.
 
-**#500 — `--image=jump` for `jumpbox` was accepted.** It created a package row against an image that does not exist, resolved and started the dependency, and settled minutes later into `failed:unpack/failed -- could not unpack (extract cached artifact failed)`. That message names the artifact and the unpacker, the unpack path was new at the time, and so the obvious reading was that the new code had broken. Both were fine: the destination directory simply was not there. The row then had to be removed by hand.
+**#500 — the fix was written, refused by the gate, and reverted, and the finding is what shipped.** The issue reports that `--image=jump` for `jumpbox` was accepted and failed minutes later at `could not unpack (extract cached artifact failed)`, and states the absent image as the cause. It is not. An up-front refusal was built on that sentence, and `test_pkg` and `test_pkg_cache` failed the release immediately: `test_pkg_cache` installs into `imgA`/`imgB`/`imgC`/`imgD` and `test_pkg` into `zzlibc`, and **no test creates any of them.**
 
-The image is known at request time, so it is checked there — `400`, quoting the name back, before `chain_alloc()` so a doomed request never takes a job slot and never leaves a row. Quoting the name is not decoration: a typo is precisely the case where a message that does not repeat what you sent tells you nothing, and `jump` against `jumpbox` is the shape that defeats a reader.
+Measured on 192.168.15.95 rather than argued: `pkg install --name=ncurses --image=nosuchimage-probe` against a daemon with no such image reached state `installed`, and `image ls` then **listed** `nosuchimage-probe`. Installing into an image that does not exist yet is how one gets created and populated — a working capability, and the code says the same thing independently, since `dest_dir` is built under the *build container's* upperdir and not under the image at all.
 
-`image_exists()` is now the one definition of the question — the same valid-name-plus-`stat(manifest.json)` predicate `image_list_names()` already applied per directory, which `image_write_json_one()` had a third copy of. Anything it answers yes to is something `image ls` lists, so an up-front check can never disagree with what the operator was shown.
+So the typo really does cost a slow, misdirected failure, and the reason is something else; `pkg_cache_extract()` fails when there is no cached artifact under that name, or when a `.cixpkg` reaches the tarball extractor — the flip #497/#499 are about, and which was mid-flight on the day this was reported. The cause is not established and is not guessed at. `pkg_install_start()` now carries the disproof where the next person will write the same check, and the issue has been corrected.
 
-`400` and not the `404` `respond_image_recipe_error()` gives the same `PKG_ERR_TARGET_IMAGE_NOT_FOUND`, and the difference is not an oversight: there the image is the resource the URI addresses, here the endpoint exists and the caller has put an unusable value in a body field.
+**What did survive is the message.** Every one of these preparation steps has two operands — the thing being read and the place it is going — and the log line named only the first. That is the same shape as `CIXPKG-E4001` and cbs's `copy`, both of which report a failure against the operand that is fine, and each cost a round of investigation against the wrong subsystem.
 
-**And the log line names its destination.** Every one of these preparation steps has two operands — the thing being read and the place it is going — and the message named only the first. That is the same shape as `CIXPKG-E4001` and cbs's `copy`, both of which report a failure against the operand that is fine, and each cost a round of investigation against the wrong subsystem.
+`image_exists()` also stays, as one internal predicate: valid name plus `stat(manifest.json)`, which `image_list_names()` and `image_write_json_one()` each had their own copy of.
+
+**The gate is the reason this is a paragraph rather than an outage.** `test_pkg` and `test_pkg_cache` have only gated releases since #485, weeks ago; before that, a change resting on a wrong cause would have reached a box.
 
 ### Intel I225/I226 2.5GbE works, and a full disk now says so (#479, #503)
 

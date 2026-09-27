@@ -10603,22 +10603,13 @@ paths:
                 $ref: "#/components/schemas/PkgEntry"
         "400":
           description: >
-            name missing; no such recipe / it failed to parse; the "image" names an image
-            that does not exist; or a dependency it names (transitively) is missing its own
-            recipe or forms a circular dependency.
+            name missing; no such recipe / it failed to parse; or a dependency it names
+            (transitively) is missing its own recipe or forms a circular dependency.
 
 
             #318: the dependency case is now distinguished in the message rather than
             reported as though the package's own recipe were at fault, and the daemon log
             names the dependency and why it could not be resolved.
-
-
-            #500: the image is checked here rather than discovered at unpack. A typo used
-            to be accepted -- it created a package entry against the nonexistent image,
-            resolved and started the dependency, and failed minutes later with "could not
-            unpack (extract cached artifact failed)", which names the artifact and the
-            unpacker while the destination was what did not exist. The refusal quotes the
-            image name back, and no package entry is created.
           content:
             application/json:
               schema:

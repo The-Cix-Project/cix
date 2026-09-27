@@ -509,7 +509,17 @@ enum image_error image_delete_version(const char *name, const char *version)
 	return IMAGE_OK;
 }
 
-int image_exists(const char *name)
+/*
+ * Does this name refer to a real image? The one definition: a valid
+ * name whose manifest.json is there -- image_create() writes that file
+ * last precisely so its presence is the "this exists" signal.
+ *
+ * It had two other copies, spelled identically, in the listing below
+ * and in image_write_json_one(); they are now this one call, so the
+ * listing and any other caller cannot come to disagree about what an
+ * image is.
+ */
+static int image_exists(const char *name)
 {
 	char path[PATH_MAX];
 	struct stat st;
@@ -532,9 +542,6 @@ int image_list_names(char names[][PKG_IMAGE_NAME_MAX], int max)
 	while (count < max && (ent = readdir(d)) != NULL) {
 		if (ent->d_name[0] == '.')
 			continue;
-		/* The same predicate a caller gets from image_exists(), so
-		 * this listing and an up-front existence check can never
-		 * disagree about what an image is (#500). */
 		if (image_exists(ent->d_name))
 			snprintf(names[count++], PKG_IMAGE_NAME_MAX, "%s", ent->d_name);
 	}

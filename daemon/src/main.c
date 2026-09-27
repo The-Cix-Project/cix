@@ -19689,26 +19689,6 @@ static void respond_pkg_error(int fd, enum pkg_error err)
 	case PKG_ERR_INVALID_TOOLCHAIN:
 		respond_error(fd, 400, "Bad Request", "toolchain_path missing, unreadable, or not a regular file");
 		break;
-	case PKG_ERR_TARGET_IMAGE_NOT_FOUND:
-		/*
-		 * #500. 400 and not the 404 respond_image_recipe_error()
-		 * gives the same enum, and the difference is not an
-		 * oversight: there the image is the resource the URI
-		 * addresses, so its absence is the request's target being
-		 * absent. Here the endpoint exists and is reachable, and
-		 * the caller has put an unusable value in a body field --
-		 * which is what 400 means. Same cause, two honest answers,
-		 * because HTTP status describes the request and not the
-		 * internal reason.
-		 *
-		 * handle_pkg_install() answers this one itself so it can
-		 * quote the name back; this is the wording every other
-		 * caller gets.
-		 */
-		respond_error(fd, 400, "Bad Request",
-		              "no such image -- create it first (POST /v1/images), or see "
-		              "GET /v1/images for the ones that exist");
-		break;
 	case PKG_ERR_SPAWN_FAILED:
 	case PKG_ERR_PERSIST_FAILED:
 	default:
@@ -23020,34 +23000,6 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 	perr = pkg_install_start(name, image, version, upgrade, keep_on_failure, started_name,
 	                          sizeof(started_name), &pid, &pidfd, &chain_idx);
 	if (perr != PKG_OK) {
-		/*
-		 * #500: quote the image back. The typo that produced the
-		 * issue was `--image=jump` for `jumpbox`, and a caller
-		 * looking at a message that does not repeat what they sent
-		 * has no way to see the difference between the two -- which
-		 * is precisely the reading a typo defeats. Only here,
-		 * because this is the one caller that has the operator's own
-		 * spelling in hand; respond_pkg_error() carries the generic
-		 * wording for the rest.
-		 */
-		if (perr == PKG_ERR_TARGET_IMAGE_NOT_FOUND) {
-			char msg[256];
-
-			/*
-			 * An omitted image is the default one, which is
-			 * created at startup -- so reaching here with none
-			 * given means that image has since been destroyed,
-			 * and printing an empty name for it would say
-			 * nothing at all.
-			 */
-			snprintf(msg, sizeof(msg),
-			         "no image called \"%s\" -- nothing was installed and no package entry "
-			         "was created. GET /v1/images lists the images that exist",
-			         (image != NULL && image[0] != '\0') ? image : PKG_DEFAULT_IMAGE);
-			json_free(root);
-			respond_error(fd, 400, "Bad Request", msg);
-			return;
-		}
 		json_free(root);
 		respond_pkg_error(fd, perr);
 		return;
