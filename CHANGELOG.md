@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Intel I225/I226 2.5GbE works, and a full disk now says so (#479, #503)
+
+**#479 — `igc` was absent from the kernel config entirely.** Not `=m`, not `=y`, no symbol. I225/I226 has been standard on consumer and small-server boards since roughly 2021, which made this the most likely single reason a modern machine had no usable Ethernet on Cix — in the installer and on the installed system alike.
+
+Proven end to end on the running host: `igc.ko` is in the `kernel@7.2.3-18` artifact, and `cixctl kmod load igc` reports `igc  139264  used_by=0  Live`. `used_by=0` is the correct result here, not a failure — this box has virtio, and a clean load with nothing bound is exactly what a machine without the chipset should show.
+
+**`=m`, not `=y`**, deliberately. #429's argument for building `usb-storage` in does not transfer: that has to work before the root disk can be seen at all, whereas nothing about mounting root needs a NIC. Every other driver on the list is `=m` reached through `CIX_NIC_MODULES`, so a lone `=y` would be an asymmetry wanting its own justification rather than a safety margin.
+
+Three places moved together, which is what `bootmodules.h` exists for: the config symbol, the module list, and `nicreport.c`'s gap message — leaving the last would have been a stale claim of exactly the kind #442 was about.
+
+**A near-miss worth recording.** Grepping `CONFIG_TG3` finds nothing, and I briefly concluded a second driver was silently missing too. It is built by **`CONFIG_TIGON3`** — the Kconfig symbol and the module name differ. The config now says so, because the check that misleads is the obvious one.
+
+**And a test that would have lied.** `test_nicreport` asserted the message names `bnx2` *and* `igc` as gaps. That assertion still passes today — because `igc` now appears in the same message's `Supported:` list. It would have stayed green while asserting the opposite of the truth. It now checks `bnx2` alone, plus that the message no longer claims any driver is absent from the config.
+
+**#503 — the last two parts.** `image gc` now reports *why* each version resisted, in the response: it used to give a bare count and say "see the log store", which on 2026-09-21 pointed at a store frozen by the same full disk that caused the 77 failures. And a fetch or build that fails on a full disk says so — neither errno is reachable, since curl and cbs are child processes and only an exit status survives, so the filesystem is asked at the moment of failure. That is worded as a correlation, never a cause, because a build can fail on its own merits on a host that happens to be low; claiming certainty would repeat the mistake that made this issue expensive, when `curl exit 1` was diagnosed as a flaky mirror and committed as such.
+
 ### cmake is CPDL-built, and 124 of 131 installed versions now are (#534, #530)
 
 `cmake@4.4.3-6` builds, gates and installs: `language=cbs`, artifact `cmake-4.4.3-6-x86_64.cixpkg`, `[100%] Built target cixgate`. That completes the conversion #530 and #534 were jointly blocking, and it was the last *ordinary* package still installed from a shell recipe.
