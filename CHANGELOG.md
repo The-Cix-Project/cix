@@ -6,6 +6,35 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### 18 of 22 tar.gz-era approvals replaced; the other 4 need a recipe change (#497)
+
+A CPDL recipe converted before the artifact-format flip declares `format "cixpkg"` while its approval was earned over a `.tar.gz`. The fetch asks for a `.cixpkg` that does not exist, falls back to building from source, and the approval writer then declines to replace what is already there — so that version rebuilds from source on **every fresh host, permanently**. That is #145's cost, paid by every new install, and invisible here because this box has all of them in its local package cache.
+
+Re-measured from what the artifact server actually serves for each latest revision, rather than from the recipe count the issue was filed on: **22**, not 25. Afterwards:
+
+```
+approval matches the published .cixpkg : 76   (was 58)
+approval matches a published .tar.gz   :  4   (was 22)
+approval matches nothing published     :  0
+```
+
+Each flip is a release bump and nothing else. The new revision carries no approval, builds, publishes a signed `.cixpkg` and earns an approval over its own bytes — ADR-0307 clause 5's path, used as intended — and every approval was read back and compared against the published sha before being written into the corpus, so none is a copy of anything.
+
+**`cix-builder`, `cix-hosttools` and `kernel-builder` took most of these**, so the build environment was rebuilt underneath itself. Verified by using it rather than by inspecting it: `0.2.57-372` built the whole platform in the rebuilt `cix-builder`, passed the selftest, assembled, staged, booted, and all 12 containers came back running and ready.
+
+**The four that cannot bump are the finding.** Their `.tar.gz` predates rules CIXPKG enforces on its manifest, so the same sources that produced a valid tarball produce no valid `.cixpkg`:
+
+```
+gzip     usr/bin/gunzip is a hard link (link count 2)
+gawk     usr/bin/gawk is a hard link (link count 2)
+ncurses  usr/share/terminfo/d/dec-vt340 is a hard link (link count 4)
+mtr      usr/sbin/mtr-packet has mode 4755; setuid is refused
+```
+
+All four attempted revisions were withdrawn with `pkg recipe rm` and kept out of `cix-recipes`, so the six-hourly sync cannot re-add a recipe that cannot build. The first three want symlinks — the convention `perl` already follows, since cbs refuses hard links by design — and `mtr` wants a decision rather than a fix, because dropping setuid on `mtr-packet` means it can no longer open a raw socket.
+
+**The issue's own proposal was to let these bump naturally, and that is now measurably wrong.** `xz` and `zlib` left the list since it was filed, but not by being touched in the ordinary way — #516 moved the test floor onto new revisions of them. `sed`, `grep`, `patch`, `bc` and `psmisc` are finished packages nobody has a reason to touch again, so "when it next bumps" was never going to arrive.
+
 ### `cixctl pkg-build-config set --max-concurrent-jobs=N` had never worked
 
 ```c
