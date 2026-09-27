@@ -93,11 +93,17 @@ const char *nicreport_no_nic_reason(const struct nic_load_result *r, int nics_fo
 	 */
 	supported_list(mods, sizeof(mods));
 	snprintf(out, out_size,
+	         /* igc left this list with #479 -- it is built and loaded
+	          * now, and is in `Supported` above. Saying otherwise
+	          * would be a stale claim of exactly the kind #442 was
+	          * about: a message that sends an operator looking for
+	          * the wrong cause. bnx2 remains, for the recorded
+	          * firmware reason. */
 	         "no real NIC visible. All %d drivers loaded cleanly, so the media is fine and\n"
 	         "  this machine's Ethernet is not one of them. Supported: %s.\n"
-	         "  Known gaps: Broadcom NetXtreme II (bnx2, needs a firmware blob) and Intel\n"
-	         "  I225/I226 2.5G (igc, not in the kernel config at all). Install on `lo` and\n"
-	         "  set the real interface afterwards with `cixctl management-network set`.",
+	         "  Known gap: Broadcom NetXtreme II (bnx2, needs a firmware blob this image\n"
+	         "  does not carry). Install on `lo` and set the real interface afterwards\n"
+	         "  with `cixctl management-network set`.",
 	         r->loaded, mods);
 	return out;
 }

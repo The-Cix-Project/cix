@@ -33,10 +33,18 @@
  * linux-firmware blobs is separate scope. A machine with only a
  * NetXtreme II is therefore still unserved here, which is an honest
  * gap, not a silent one.
+ *
+ * `igc` joins the list with #479, and its absence was the other kind
+ * of gap -- not recorded anywhere, just missing. Intel I225/I226 has
+ * been standard on consumer and small-server boards since roughly
+ * 2021, and `CONFIG_IGC` was not in the kernel config at all, so a
+ * machine with one had no Ethernet in the installer or afterwards.
+ * Adding it here and adding the symbol there are one change: this
+ * header exists precisely so the two lists cannot drift.
  */
 #define CIX_NIC_MODULES                                                                            \
 	{                                                                                              \
-		"e1000e", "igb", "ixgbe", "r8169", "tg3"                                                   \
+		"e1000e", "igb", "igc", "ixgbe", "r8169", "tg3"                                            \
 	}
 
 #endif

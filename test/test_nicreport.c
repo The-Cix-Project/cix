@@ -134,9 +134,25 @@ static void test_all_loaded_no_nic(void)
 	 */
 	CHECK(has(out, "media is fine"),
 	      "blames the media on the one case that is genuinely the machine: %s", out);
-	CHECK(has(out, "bnx2") && has(out, "igc"),
-	      "does not name the two recorded driver gaps, so an operator with an I226 is told "
-	      "nothing: %s",
+	/*
+	 * bnx2 alone now. igc left this assertion with #479: it is built
+	 * (CONFIG_IGC=m) and in CIX_NIC_MODULES, so it is covered by the
+	 * supported-driver loop below instead.
+	 *
+	 * Worth spelling out why it was not simply left in place. The
+	 * old check was `has(out, "bnx2") && has(out, "igc")`, and it
+	 * would STILL PASS today -- because `igc` now appears in the
+	 * "Supported:" list that the same message carries. It would have
+	 * gone on being green while asserting the opposite of the truth,
+	 * which is worse than failing.
+	 */
+	CHECK(has(out, "bnx2"),
+	      "does not name the remaining recorded driver gap, so an operator with a "
+	      "NetXtreme II is told nothing: %s",
+	      out);
+	CHECK(!has(out, "not in the kernel config"),
+	      "still claims a driver is absent from the kernel config; igc was added in #479 "
+	      "and this message must not outlive it: %s",
 	      out);
 	for (i = 0; i < sizeof(mods) / sizeof(mods[0]); i++)
 		CHECK(has(out, mods[i]), "does not name supported driver %s: %s", mods[i], out);
