@@ -33,6 +33,12 @@ mtr      usr/sbin/mtr-packet has mode 4755; setuid is refused
 
 All four attempted revisions were withdrawn with `pkg recipe rm` and kept out of `cix-recipes`, so the six-hourly sync cannot re-add a recipe that cannot build. The first three want symlinks — the convention `perl` already follows, since cbs refuses hard links by design — and `mtr` wants a decision rather than a fix, because dropping setuid on `mtr-packet` means it can no longer open a raw socket.
 
+**`mtr` is since done, and it needed no capability at all** — 4 left, now 3. The obvious replacement for its setuid bit, a `cap_net_raw+ep` file capability, **cannot be expressed in a `.cixpkg`**: `CbsManifestEntry` carries type, mode, uid, gid, size, digest and target, and `xattr`/`security.capability` appear nowhere in cbs. A *container* capability is no substitute either — it lands on root, and the people who run mtr in `jump` are LDAP accounts over sshd, uid 10001 and 10002.
+
+It turned out to need nothing. `packet/probe_unix.c` falls back to `socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP)` with `IP_RECVERR` — a ping socket — when the raw one is refused, and `jump` already sets `net.ipv4.ping_group_range` to `0 65534`. Least privilege here is none.
+
+The whole fallback sits behind `#ifdef HAVE_LINUX_ERRQUEUE_H`, so the build now **asserts** that define. Without the gate, losing `<linux/errqueue.h>` would give an mtr that compiles, installs, works as root and fails for every real user with `Failure to open IPv4 sockets` — the exact shape a green build hides. **Not verified: that an unprivileged login actually traces**; the compile-time half is gated and the sysctl confirmed, but running mtr as uid 10002 needs an interactive shell in that container. One `ssh` and `mtr -r -c1` settles it.
+
 **The issue's own proposal was to let these bump naturally, and that is now measurably wrong.** `xz` and `zlib` left the list since it was filed, but not by being touched in the ordinary way — #516 moved the test floor onto new revisions of them. `sed`, `grep`, `patch`, `bc` and `psmisc` are finished packages nobody has a reason to touch again, so "when it next bumps" was never going to arrive.
 
 ### `cixctl pkg-build-config set --max-concurrent-jobs=N` had never worked
