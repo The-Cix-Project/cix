@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cmake is CPDL-built, and 124 of 131 installed versions now are (#534, #530)
+
+`cmake@4.4.3-6` builds, gates and installs: `language=cbs`, artifact `cmake-4.4.3-6-x86_64.cixpkg`, `[100%] Built target cixgate`. That completes the conversion #530 and #534 were jointly blocking, and it was the last *ordinary* package still installed from a shell recipe.
+
+**What #534 actually was.** `4.4.3-5` built clean and was refused at install: `usr/bin/cmake` links `libstdc++.so.6` and nothing declared a provider. gcc was declared as a **build** tool, which puts it in the build sandbox and not in the target image — so the link was recorded and the dependency was not, and the install-time gate refused it (#389), rightly, since an image without libstdc++ crashes cmake at `execve`.
+
+**It was never a conversion regression**, which is the part worth keeping: the installed shell recipe `4.4.3-3` declares `pkg_depends="openssl"` too and has the identical gap. It installed only because that gate did not run against it. The conversion exposed a latent hole rather than creating one.
+
+**The fix was a decision already taken, not a new one.** Two options were on the table — declare `gcc` at runtime, or build a split `libstdc++` package — and the second was tempting because making the whole compiler a runtime dependency of cmake sounds heavy. But `node@24.21.0-2` already declares `package "gcc"` at runtime, for exactly this reason, with the same measurement recorded in its own comment. A split package for cmake would have been a parallel implementation of a September decision. Finding that cost one `grep`; the deliberation it replaced would have cost considerably more.
+
+**Where the One Build System Mandate now stands**, measured rather than estimated: **124 of 131 installed package versions are CPDL-built.** The seven that are not are exactly the heavy toolchain — `binutils@2.42-8`, `elfutils@0.192-9`, `gcc@16.2.0-13`, `glibc@2.44-12`, `glibc@2.44-14`, `kernel@7.2.3-3`, `python@3.13.5-5`. Each is a long rebuild rather than a recipe problem, which is precisely why they were left behind during ADR-0309 clause 3.
+
 ### A credential could be read out of the API, and a full disk could not be seen at all (#502, #503)
 
 **#502 — `pkg recipe show` served a live credential.** `redact_repo_token()` substitutes exactly one string: whatever `pkg_repo_token()` returns. A recipe carrying `user` and password basic auth holds a *different* secret, matched nothing, and was served in full — and then reached git, in a repository whose whole point is being readable.
