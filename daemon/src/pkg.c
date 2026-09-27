@@ -9538,6 +9538,24 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	*out_compose_pid = -1;
 	*out_compose_pidfd = -1;
 
+	/*
+	 * NO SHELL-RECIPE REFUSAL HERE, deliberately, and it was tried.
+	 *
+	 * A refusal at the top of this function reads as the obvious place
+	 * -- it is the one point every build passes through. It is wrong,
+	 * and the existing refusal further down says why: it sits in the
+	 * `else` of the CACHE-HIT arm, so a shell package whose artifact
+	 * is already cached still installs. That path never needed a build
+	 * command at all (it gets `:`), and refusing it up here would
+	 * strand every host holding a cached shell artifact -- which,
+	 * measured on 192.168.15.95, is most of the toolchain: gcc,
+	 * glibc, kernel, python, binutils and elfutils are all installed
+	 * from a shell revision today.
+	 *
+	 * ADR-0309 clause 3 retires BUILDING from a shell recipe, not
+	 * installing what one already built.
+	 */
+
 	snprintf(container_base, sizeof(container_base), "%s/%s", g_containers_dir,
 	         e->build_container_name);
 	/*
@@ -10720,10 +10738,35 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
 		return PKG_ERR_INVALID_RECIPE;
 
+	/*
+	 * The fourth build path, and the one that does NOT go through
+	 * pkg_prepare_build_and_start() -- it reuses a kept container by
+	 * index rather than composing a new one, so the refusal there
+	 * does not cover it (ADR-0309 clause 3, #516).
+	 *
+	 * A resume can only reach a shell recipe by resuming a container
+	 * kept from a build that started before this path retired, which
+	 * is a window of one daemon restart. Refused anyway: "unreachable"
+	 * is a claim about today's state, and this is a claim about what
+	 * the daemon does.
+	 */
+	if (!recipe.is_cbs) {
+		/* Logged rather than routed through pkg_recipe_add_last_error():
+		 * that channel belongs to publishing and is cleared at the top
+		 * of every publish, so borrowing it here would let this text
+		 * surface under an unrelated recipe error, and be erased by an
+		 * unrelated publish. The caller gets PKG_ERR_INVALID_RECIPE;
+		 * the log carries the reason. */
+		logstore_write("cixd", "error",
+		                "pkg resume %s@%s: shell recipe, and the shell build path retired with "
+		                "ADR-0309 clause 3 -- a kept container cannot be resumed against it",
+		                name, recipe.version);
+		return PKG_ERR_INVALID_RECIPE;
+	}
+
 	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe%s", e->build_upperdir,
-	         recipe.is_cbs ? PKG_RECIPE_CBS_SUFFIX : PKG_RECIPE_SHELL_SUFFIX);
-	snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_upperdir,
-	         pkg_dest_rel(recipe.is_cbs));
+	         PKG_RECIPE_CBS_SUFFIX);
+	snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_upperdir, PKG_DEST_REL_CBS);
 	snprintf(extra_dir, sizeof(extra_dir), "%s/build/extra", e->build_upperdir);
 
 	if (copy_file_simple(recipe_path, recipe_dst) != 0)
@@ -10774,25 +10817,24 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	 * precisely because a build failed, so there is nothing cached to
 	 * short-circuit to.
 	 */
-	if (recipe.is_cbs)
-		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd),
-		         "set -e; cbs build /build/recipe.cbs --arch %s --staged %s --cache %s "
-		         "--output %s --finalize-command /build/finalize.sh --events human%s",
-		         pkg_host_arch(), PKG_CBS_WORKSPACE, PKG_CBS_CACHE_DIR, PKG_CBS_ARTIFACT,
-		         g_chains[chain_idx].hostbuild_extra_config_symbols[0] != '\0'
-		                 ? " --input " PKG_CBS_KMOD_EXTRA_INPUT
-		                 : "");
-	else
-		/* ADR-0309 clause 3: no shell build path to resume into. The
-		 * install path refuses the same case with a pkg_fail(); here
-		 * the caller gets an error code, because a resume has no entry
-		 * to fail into that it did not already find failed. */
-		return PKG_ERR_INVALID_RECIPE;
+	/* Unconditional: the shell case returned above, before any of the
+	 * staging this function does. It used to be refused HERE instead,
+	 * which is after copy_file_simple(), write_finalize_script() and a
+	 * delete-and-recreate of dest_dir -- so a refused resume had
+	 * already destroyed the kept container's output tree on its way to
+	 * saying no. A refusal should leave what it refused alone. */
+	snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd),
+	         "set -e; cbs build /build/recipe.cbs --arch %s --staged %s --cache %s "
+	         "--output %s --finalize-command /build/finalize.sh --events human%s",
+	         pkg_host_arch(), PKG_CBS_WORKSPACE, PKG_CBS_CACHE_DIR, PKG_CBS_ARTIFACT,
+	         g_chains[chain_idx].hostbuild_extra_config_symbols[0] != '\0'
+	                 ? " --input " PKG_CBS_KMOD_EXTRA_INPUT
+	                 : "");
 	e->build_argv[0] = "/usr/bin/bash";
 	e->build_argv[1] = "-c";
 	e->build_argv[2] = e->build_argv_cmd;
 	e->build_argv[3] = NULL;
-	snprintf(e->build_dest_rel, sizeof(e->build_dest_rel), "%s", pkg_dest_rel(recipe.is_cbs));
+	snprintf(e->build_dest_rel, sizeof(e->build_dest_rel), "%s", PKG_DEST_REL_CBS);
 	snprintf(e->artifact_format, sizeof(e->artifact_format), "%s", recipe.artifact_format);
 	snprintf(e->build_destdir_env, sizeof(e->build_destdir_env), "PKG_DESTDIR=/%s",
 	         e->build_dest_rel);
