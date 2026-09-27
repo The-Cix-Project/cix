@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A refused resume no longer destroys the container it refused (#516)
+
+`pkg_resume_build()` refuses a shell recipe — ADR-0309 clause 3, correctly — but it did so **after** `copy_file_simple()`, `write_finalize_script()` and a delete-and-recreate of `dest_dir`. So a refused resume had already wiped the kept container's output tree on its way to saying no. A refusal should leave what it refused alone; it now returns before any staging.
+
+Not testable, and the reason is the retirement itself: a kept container for a shell build cannot be created any more, so the window is one daemon restart across the boundary and no fixture can reach it.
+
+**And a refusal I wrote, then removed, which is the more useful half.** A shell-recipe refusal at the top of `pkg_prepare_build_and_start()` reads as obviously right — it is the one point every build passes through. It is wrong. The existing refusal sits in the `else` of the **cache-hit** arm, so a shell package whose artifact is already cached still installs; that path never needed a build command at all (it gets `:`). Refusing at the top would strand every host holding a cached shell artifact — on this box, most of the toolchain: `gcc@16.2.0-13`, `glibc@2.44-12`/`-14`, `kernel@7.2.3-3`, `python@3.13.5-5`, `binutils@2.42-8`, `elfutils@0.192-9`. Clause 3 retires **building** from a shell recipe, not installing what one already built. The non-refusal is now commented in the place the wrong one went.
+
+**#516's checklist was well behind its own state**, re-measured rather than recalled: all 12 ADR-0209 floor pins are CPDL, `kernelrecipe.c` and `test_kernelrecipe` are gone, `recipes/package/` holds **0** `.sh` files, and the test files writing shell fixtures are down from the ADR's 12 to 5 — three of which only mention `pkg_build()` in a comment, and two of which write one *deliberately*, to prove that publishing a new shell revision is refused and that a published one can still be given its approval.
+
+**ADR-0314 (Proposed)** decides ADR-0309 clause 5: the cbs bootstrap seed is the previous Cix root. It changes nothing — `mkbootroot` already refuses to seal a control-plane root without `/usr/bin/cbs`, so every booting host carries a Cix-built engine and building cbs is an ordinary upgrade. It exists because clause 5 asked for an explicit decision and `cbs@v0.1.25-1.sh` leaving the corpus had answered it by default. It needs the owner's acceptance.
+
 ### Every tar.gz-era approval is gone: #497 reaches zero
 
 ```
