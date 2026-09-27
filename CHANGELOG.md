@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### One WebSocket frame reader for the test tree, and it found a third copy of the same bug (#524)
+
+`test_console_exec` and `test_pkg_build_log` each spoke RFC 6455 by hand — two handshake-leftover handlers, two short-read-tolerant fills, two frame parsers, two copies of the RFC's worked-example key. The second cited the first as precedent and then did not inherit its fix, which is what **#519** cost: all ten runs of `probe-cix-testreport@38-1` carried leftover bytes and three carried a split frame header, presenting as `0 frames, 0 bytes` from a daemon doing everything right.
+
+`test/test_ws.{c,h}` is now the one implementation. Call sites are untouched — each file keeps thin local names over the shared calls, which held this to about forty lines of test change rather than forty edited call sites in the heavier one. `test_console_exec` passes in the gate with it, a real 92-second run.
+
+**The consolidation fixed something, which is the argument for doing it rather than leaving two correct copies.** Both leftover handlers *lost data* when it did not fit, and differently — `test_console_exec` dropped the **whole** leftover silently, `test_pkg_build_log` truncated it with a warning. Both are #519 again: losing any of it misaligns the stream exactly as losing all of it does. Each relied on a comment about buffer sizes elsewhere in its own file to argue it could not happen. The shared `ws_reader_adopt_handshake()` refuses instead, so a reader cannot start misaligned and the caller gets a failed assertion rather than a ghost. It also computes the leftover offset itself — `test_pkg_build_log` was handed a precomputed one, and that arithmetic was the bug.
+
+**And it surfaced a test nobody compiles.** `test_pkg_build_log` is not in `SELFTESTS` — it tails a live build, which is a poor thing to do from inside one — so `make selftest` never built it and **no release had an opinion about whether it still compiled**. That is how a test rots: correct the day it is written, untouched afterwards. The cix recipe now builds it explicitly, one `tcc` invocation, compiled but not run. Running it is a separate question; #480 is the general form.
+
 ### ADR-0314 accepted, `trash/` deleted, and the shell recipe retirement is finished (#516)
 
 The owner accepted ADR-0314 and deleted `trash/` — 1,584 files, 22 MB of superseded shell recipes, `cbs@v0.1.25-1.sh` among them.
