@@ -1165,10 +1165,25 @@ int main(int argc, char **argv)
 		 * identity at publish, and `cbs build` runs the recipe inside
 		 * the build container.
 		 *
-		 * REQUIRED (ADR-0307 clause 6), and kept out of
-		 * host_tool_bins[] all the same: every entry there has a
-		 * dev-host fallback, and there is no fallback for this one and
-		 * there must not be. `cbs` is a Cix-built package
+		 * REQUIRED, FOR TWO INDEPENDENT REASONS. Either alone is
+		 * enough to keep this, which is the point of saying so:
+		 *
+		 *   1. ADR-0307 clause 6 -- a root with no cbs cannot EXTRACT
+		 *      a .cixpkg, so it cannot install packages at all.
+		 *   2. ADR-0314 -- the cbs bootstrap seed IS the previous Cix
+		 *      root. Building cbs from source needs a working cbs, and
+		 *      this staging is what guarantees every booting host has
+		 *      one. A root sealed without it could never build another
+		 *      engine, including its own replacement.
+		 *
+		 * So a future reader who finds a case where reason 1 does not
+		 * apply must not relax this: reason 2 is untouched by
+		 * anything about artifact formats, and relaxing it would need
+		 * ADR-0314 superseded.
+		 *
+		 * Kept out of host_tool_bins[] all the same: every entry there
+		 * has a dev-host fallback, and there is no fallback for this
+		 * one and there must not be. `cbs` is a Cix-built package
 		 * (recipes/package/cbs, built by TCC from an upstream tarball
 		 * pinned by commit), no dev host has one in /usr/bin, and
 		 * taking a foreign binary from a build machine into the

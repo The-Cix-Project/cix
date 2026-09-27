@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### ADR-0314 accepted, `trash/` deleted, and the shell recipe retirement is finished (#516)
+
+The owner accepted ADR-0314 and deleted `trash/` — 1,584 files, 22 MB of superseded shell recipes, `cbs@v0.1.25-1.sh` among them.
+
+**Accepting changed nothing that runs, and the owner asked exactly the right question about that.** What it changes is what can happen next. The CBS bootstrap seed is now a recorded decision — the previous Cix root, Cix-built, no external seed — rather than an answer that arrived because a file got moved. And `mkbootroot`'s refusal to seal a control-plane root without `/usr/bin/cbs` now carries **two independent reasons** instead of one: ADR-0307 clause 6 (a root without cbs cannot extract a `.cixpkg`) and ADR-0314 (it is the only thing guaranteeing every host has an engine to build the next engine with). The code says so, so a reader who finds a case where the first does not apply cannot relax it on that ground alone.
+
+**The deletion was checked, not assumed.** Nothing read `trash/` — it sat outside `recipes/`, the only tree the sync walks, and the single grep hit in the cix repo was advice text inside a `test_versioning` failure message, now corrected. The eight files that genuinely *were* load-bearing — read by the ADR-0209 floor through `recipe_artifact_sha()` — stopped being so when all twelve floor pins moved to CPDL.
+
+**ADR-0309 clause 1 is amended, not quietly broken.** It said published shell recipes stay "in the repository and on hosts"; the second half is unchanged, the first is now git history. ADR-0309 is append-only, so ADR-0314 carries the amendment. Worth stating that three of clause 1's four reasons were never about the repository at all: immutability is enforced server-side, the approval that makes a cached artifact trustworthy lives in the host's own published copy, and the release record is the git tags.
+
 ### A refused resume no longer destroys the container it refused (#516)
 
 `pkg_resume_build()` refuses a shell recipe — ADR-0309 clause 3, correctly — but it did so **after** `copy_file_simple()`, `write_finalize_script()` and a delete-and-recreate of `dest_dir`. So a refused resume had already wiped the kept container's output tree on its way to saying no. A refusal should leave what it refused alone; it now returns before any staging.

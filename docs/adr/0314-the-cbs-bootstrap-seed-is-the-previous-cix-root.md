@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. Decides [ADR-0309](0309-shell-recipes-are-history-the-shell-path-retires-with-its-last-dependent.md) clause 5, which listed four options and explicitly left the choice to the owner. Nothing in this ADR changes behaviour; it records what is already true so that the shell build path can retire without the question being answered by default. Also amends ADR-0309 clause 1, since the owner deleted `trash/` on 2026-09-27 and the corpus no longer keeps the published shell files. Needs the owner's acceptance before [#516](https://git.home.arpa/itdlabs/cix/issues/516) closes.
+Accepted. Decides [ADR-0309](0309-shell-recipes-are-history-the-shell-path-retires-with-its-last-dependent.md) clause 5, which listed four options and explicitly left the choice to the owner. Nothing in this ADR changes behaviour; it records what is already true so that the shell build path can retire without the question being answered by default. Also amends ADR-0309 clause 1, since the owner deleted `trash/` on 2026-09-27 and the corpus no longer keeps the published shell files. Accepted by the owner on 2026-09-27, after asking what acceptance changes: nothing runs differently, and that is the point -- it records a decision that had otherwise been made by a file moving to `trash/`, and gives `mkbootroot`'s refusal to seal a root without `/usr/bin/cbs` a second, independent reason so it cannot be relaxed on ADR-0307 grounds alone.
 
 ## Context
 
