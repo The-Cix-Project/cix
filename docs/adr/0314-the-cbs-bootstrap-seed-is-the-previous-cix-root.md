@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed.** Decides [ADR-0309](0309-shell-recipes-are-history-the-shell-path-retires-with-its-last-dependent.md) clause 5, which listed four options and explicitly left the choice to the owner. Nothing in this ADR changes behaviour; it records what is already true so that the shell build path can retire without the question being answered by default. Needs the owner's acceptance before [#516](https://git.home.arpa/itdlabs/cix/issues/516) closes.
+Proposed. Decides [ADR-0309](0309-shell-recipes-are-history-the-shell-path-retires-with-its-last-dependent.md) clause 5, which listed four options and explicitly left the choice to the owner. Nothing in this ADR changes behaviour; it records what is already true so that the shell build path can retire without the question being answered by default. Needs the owner's acceptance before [#516](https://git.home.arpa/itdlabs/cix/issues/516) closes.
 
 ## Context
 
