@@ -3319,14 +3319,24 @@ static int extract_archive_to(const char *archive_path, const char *dest_dir,
 	struct archive_entry *entry;
 	int rc = -1;
 
+	/*
+	 * Every exit from this function logs (#504). A caller reporting
+	 * "the step's own error is logged immediately above" depends on
+	 * it, and four exits here used to return silently.
+	 */
 	a = archive_read_new();
-	if (a == NULL)
+	if (a == NULL) {
+		logstore_write("cixd", "error", "extract %s: archive_read_new failed (out of memory)",
+		               archive_path);
 		return -1;
+	}
 	archive_read_support_filter_all(a);
 	archive_read_support_format_all(a);
 
 	ext = archive_write_disk_new();
 	if (ext == NULL) {
+		logstore_write("cixd", "error",
+		               "extract %s: archive_write_disk_new failed (out of memory)", archive_path);
 		archive_read_free(a);
 		return -1;
 	}
@@ -3391,8 +3401,12 @@ static int extract_archive_to(const char *archive_path, const char *dest_dir,
 			name = slash + 1;
 		}
 
-		if ((size_t)snprintf(full, sizeof(full), "%s/%s", dest_dir, name) >= sizeof(full))
+		if ((size_t)snprintf(full, sizeof(full), "%s/%s", dest_dir, name) >= sizeof(full)) {
+			logstore_write("cixd", "error",
+			               "extract %s: member \"%s\" is too long to place under %s",
+			               archive_path, name, dest_dir);
 			goto out;
+		}
 		archive_entry_set_pathname(entry, full);
 
 		/*
@@ -3447,8 +3461,12 @@ static int extract_archive_to(const char *archive_path, const char *dest_dir,
 				}
 				h = hslash + 1;
 			}
-			if ((size_t)snprintf(hfull, sizeof(hfull), "%s/%s", dest_dir, h) >= sizeof(hfull))
+			if ((size_t)snprintf(hfull, sizeof(hfull), "%s/%s", dest_dir, h) >= sizeof(hfull)) {
+				logstore_write("cixd", "error",
+				               "extract %s: hard-link target \"%s\" is too long to place under %s",
+				               archive_path, h, dest_dir);
 				goto out;
+			}
 			archive_entry_set_hardlink(entry, hfull);
 		}
 
@@ -3586,12 +3604,31 @@ static int stage_main_source(const char *src_path, const char *dest_dir, const c
 	if (file_is_archive(src_path))
 		return extract_tarball(src_path, dest_dir);
 
+	/*
+	 * Every -1 below logs first (#504). Its caller's failure message
+	 * says the step's own error is "logged immediately above", and
+	 * these three returns used to log nothing -- so that sentence would
+	 * have sent the reader to a line that did not exist, which is the
+	 * exact failure #504 was.
+	 */
 	url_basename(url, base, sizeof(base));
-	if (base[0] == '\0')
+	if (base[0] == '\0') {
+		logstore_write("cixd", "error",
+		               "stage source %s: its url \"%s\" has no basename to stage it under",
+		               src_path, url);
 		return -1;
-	if ((size_t)snprintf(dst, sizeof(dst), "%s/%s", dest_dir, base) >= sizeof(dst))
+	}
+	if ((size_t)snprintf(dst, sizeof(dst), "%s/%s", dest_dir, base) >= sizeof(dst)) {
+		logstore_write("cixd", "error", "stage source %s: destination path under %s is too long",
+		               src_path, dest_dir);
 		return -1;
-	return copy_file_simple(src_path, dst);
+	}
+	if (copy_file_simple(src_path, dst) != 0) {
+		logstore_write("cixd", "error", "stage source %s -> %s: %s", src_path, dst,
+		               strerror(errno));
+		return -1;
+	}
+	return 0;
 }
 
 /*
@@ -9809,6 +9846,10 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				 */
 			} else if (reset_build_container_dir(container_base) != 0) {
 				prep_step = "reset build container dir";
+				/* A filesystem operation, so errno names the cause --
+				 * it was discarded here, and the message then pointed
+				 * at a subprocess this step never ran (#504). */
+				prep_errno = errno;
 			} else if (persist_mkdir_p(dest_dir) != 0) {
 				prep_step = "create dest dir";
 				prep_errno = errno;
@@ -9929,8 +9970,37 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 					                e->name, g_chains[chain_idx].image, prep_step, dest_dir,
 					                strerror(prep_errno));
 				else
+					/*
+					 * #504: this used to say "see run_subprocess
+					 * detail above", and for eight days that sent the
+					 * reader to a line that was never written. NONE of
+					 * the steps that reach here is a subprocess any
+					 * more -- extraction, staging and the container
+					 * reset all became in-process in the #352/#410/
+					 * #411 shell-out audits, and the message was not
+					 * updated with them. The real reason was logged
+					 * the whole time, one line up, by
+					 * extract_archive_to():
+					 *
+					 *   extract .../glibc-2.44-16.tar.gz: write header
+					 *   for ".../POSIX_V6_LP64_OFF64" failed:
+					 *   Hard-link target './usr/bin/getconf' does not
+					 *   exist.
+					 *
+					 * which is #506's bug, fixed three hours after
+					 * #504 was filed, under a different number, with
+					 * nobody connecting the two.
+					 *
+					 * So this names no mechanism. Every step that
+					 * lands here now logs its own reason before
+					 * returning (see pkg_cache_extract(),
+					 * stage_main_source()); the ones whose failure is
+					 * a plain syscall set prep_errno instead and take
+					 * the branch above.
+					 */
 					logstore_write("cixd", "error",
-					                "pkg %s@%s: could not prepare build container (%s, into %s) -- see run_subprocess detail above",
+					                "pkg %s@%s: could not prepare build container (%s, into %s) -- "
+					                "the step's own error is logged immediately above",
 					                e->name, g_chains[chain_idx].image, prep_step, dest_dir);
 				if (prep_stage == PIPELINE_UNPACK)
 					pkg_fail(e, is_final_upgrade, prep_stage, "%s (%s failed)",
@@ -15175,8 +15245,21 @@ static int pkg_cache_extract(const char *name, const char *version, const char *
 {
 	char path[PATH_MAX];
 
-	if (!cache_artifact_path_existing(name, version, path, sizeof(path)))
+	if (!cache_artifact_path_existing(name, version, path, sizeof(path))) {
+		/* The one failure here that logged nothing at all, so its
+		 * caller's "error logged immediately above" would have been
+		 * false (#504). */
+		/* Stated as what is known and no further: the job was marked a
+		 * cache hit (e->cache_hit, set when it started) and the
+		 * artifact is not there now. WHY is not known here -- the
+		 * caller's own lookup discards its result -- so this does not
+		 * guess at removal or renaming. */
+		logstore_write("cixd", "error",
+		               "pkg %s@%s: no cached artifact to extract -- the job was marked a "
+		               "cache hit when it started, and none is in the cache now",
+		               name, version);
 		return -1;
+	}
 	if (strcmp(artifact_format_of_path(path), PKG_ARTIFACT_FORMAT_CIXPKG) == 0) {
 		logstore_write("cixd", "error",
 		               "pkg %s@%s: %s is a CIXPKG and this is the tarball extractor -- the "

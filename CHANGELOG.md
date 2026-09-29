@@ -6,6 +6,29 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### #504's cause was logged all along; the message pointed somewhere else (#504)
+
+#504 reported that glibc failed to unpack on the `chrony` image *"reproducibly, with no reason recorded"*. The reason **was** recorded — one line above the failure, on both occasions:
+
+```
+extract .../glibc-2.44-16.tar.gz: write header for ".../usr/libexec/getconf/POSIX_V6_LP64_OFF64"
+failed: Hard-link target './usr/bin/getconf' does not exist.
+```
+
+That is **#506's bug**: the tarball extractor rewrote each member's path onto the destination but not a hard link's *target*, so libarchive resolved `./usr/bin/getconf` against the daemon's working directory and found nothing. #504 failed at 17:44 and 17:52 on 2026-09-21; #506 was filed three hours later from `keepalived` and fixed overnight in `65b21996`. **Same bug, two issues, never connected.**
+
+**Proven, not inferred.** The same `glibc-2.44-16.tar.gz` that failed then was installed today into a scratch image through the same extractor and succeeded, with both the link target `usr/bin/getconf` and the link `usr/libexec/getconf/POSIX_V6_LP64_OFF64` present. `chrony` itself took `glibc@2.44-19` on the first attempt — though that is a `.cixpkg` and goes through `cbs extract`, so on its own it proved nothing about this path, which is why the scratch test was needed.
+
+**Why it stayed unsolved for eight days is the part that is fixed here.** The failure said:
+
+```
+could not prepare build container (extract cached artifact) -- see run_subprocess detail above
+```
+
+and extraction **is not a subprocess**. None of the four steps that print that sentence is, any more — extraction, source staging and the container reset all became in-process code in the #352/#410/#411 shell-out audits, and the message was never updated with them. So it sent every reader to a line that could not exist, and the real reason, sitting directly above, read as unrelated.
+
+It now says the step's own error is logged immediately above — and that claim is made **true** rather than hoped: every exit of the four steps behind it was audited, and six were found that logged nothing (two allocation failures and two path-length limits in the extractor, two bare returns in source staging, and a cache miss). Each now says what it is. The container reset, a plain filesystem operation, carries its errno instead of discarding it — checked first that its helper sets errno on every failure, including `split_parent_leaf()`'s `EINVAL`/`ENAMETOOLONG`, so the errno cannot be stale.
+
 ### One WebSocket frame reader for the test tree, and it found a third copy of the same bug (#524)
 
 `test_console_exec` and `test_pkg_build_log` each spoke RFC 6455 by hand — two handshake-leftover handlers, two short-read-tolerant fills, two frame parsers, two copies of the RFC's worked-example key. The second cited the first as precedent and then did not inherit its fix, which is what **#519** cost: all ten runs of `probe-cix-testreport@38-1` carried leftover bytes and three carried a split frame header, presenting as `0 frames, 0 bytes` from a daemon doing everything right.
