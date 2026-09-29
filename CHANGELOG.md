@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The test floor runs cbs v0.1.97
+
+The ADR-0209 test floor seeds its own cbs, and that engine is what runs every build inside `test_pkg`, `test_pkg_cache` and `test_kmod_build`. It moves from v0.1.71-1 to v0.1.97-1, the version the host, `cix-builder` and `cix-hosttools` have run since earlier the same day, so a floor test now builds with the engine a real build uses. The six links moved together: the floor list in `test_image_fixture.c`; the release recipe's `extra "cbs"` URL, its checksum (`df6522…`, read from the cache's listing and equal to the approval the box recorded), and the `materialize` filename; and the pinned `cix-recipes` commit (`71f4a42`, which carries `cbs@v0.1.97-1` with that approval), whose archive checksum was measured on the box (`probe-cix-tarball@230`).
+
+Also removed from the box's recipe store on the owner's instruction: `openssh@10.4p1-13` and `probe-privmkdir@1-1`, the two recipes the engine sweep named in 0.2.57-383. Both were superseded on 2026-09-26 for a declaration order cbs v0.1.69 and later reject; neither is installed or pinned anywhere, and neither is in the corpus, so a sync cannot restore them.
+
 ### The engine sweep names the recipes it could not re-derive
 
 When the CPDL engine changes, `cixd` re-derives every stored recipe's identity and reports `re-derived N identities, M failed`. The per-recipe line naming each failure was written from inside `pkg_init()`, which runs before `logstore_init()`, so `write_entry()` dropped it. Every sweep on 192.168.15.95 since the host engine left cbs 0.1.67 reported `2 failed`; not one of the named lines was in 1.5 MB of `cixd` log (measured 2026-09-29, after upgrading the host engine to cbs 0.1.97). The names are now recorded during the sweep and logged by `pkg_log_explain_sweep()`, once the log store exists — the pattern the comment on that struct already prescribed.
