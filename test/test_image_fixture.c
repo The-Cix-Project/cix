@@ -498,6 +498,40 @@ int test_image_fixture_stage_toolchain(const char *image_root)
 	return 0;
 }
 
+int test_pkg_config_seed_cleared(const char *pkg_state_dir)
+{
+	/*
+	 * ADR-0315: a host with no saved repo or artifact config starts
+	 * pointed at the public catalogue and cache. A test daemon must
+	 * not reach the internet, and in a build container it cannot (no
+	 * egress), so every test daemon starts as an operator who has
+	 * CLEARED both -- written as the same files a clearing PUT
+	 * persists, not through a test-only switch.
+	 */
+	static const char *const cleared[][2] = {
+		{"repo_config.json",
+		 "{\"repo_url\":\"\",\"repo_kind\":\"gitea\",\"ref\":\"master\",\"auth_token\":\"\"}\n"},
+		{"artifact_config.json", "{\"base_url\":\"\",\"auth_token\":\"\",\"push_enabled\":false}\n"},
+	};
+	char cfg[PATH_MAX];
+	size_t i;
+	FILE *f;
+
+	if (test_mkdir_p(pkg_state_dir) != 0)
+		return -1;
+	for (i = 0; i < sizeof(cleared) / sizeof(cleared[0]); i++) {
+		if (snprintf(cfg, sizeof(cfg), "%s/%s", pkg_state_dir, cleared[i][0]) >= (int)sizeof(cfg))
+			return -1;
+		f = fopen(cfg, "w");
+		if (f == NULL)
+			return -1;
+		fputs(cleared[i][1], f);
+		if (fclose(f) != 0)
+			return -1;
+	}
+	return 0;
+}
+
 int test_data_dir_create(char *out_path, size_t out_size)
 {
 	/*
@@ -560,6 +594,13 @@ int test_data_dir_create(char *out_path, size_t out_size)
 			return -1;
 		fputs("{\"userns_default\": false}\n", f);
 		fclose(f);
+	}
+	{
+		char pkg_dir[PATH_MAX];
+
+		snprintf(pkg_dir, sizeof(pkg_dir), "%s/rebuildable/pkg", tmpl);
+		if (test_pkg_config_seed_cleared(pkg_dir) != 0)
+			return -1;
 	}
 	return 0;
 }

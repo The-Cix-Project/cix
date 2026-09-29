@@ -163,6 +163,15 @@ int test_image_fixture_stage_toolchain(const char *image_root);
 int test_data_dir_create(char *out_path, size_t out_size);
 
 /*
+ * ADR-0315: writes a cleared repo_config.json and artifact_config.json
+ * into pkg_state_dir (creating it), so a test daemon starts with no
+ * recipe repo and no artifact cache rather than the public defaults.
+ * test_data_dir_create() calls it; a test that wipes its pkg state dir
+ * between runs calls it again after the wipe. Returns 0 or -1.
+ */
+int test_pkg_config_seed_cleared(const char *pkg_state_dir);
+
+/*
  * Recursively removes a directory created by test_data_dir_create()
  * above (shells out to `rm -rf`, same precedent test_pki.c's own
  * cleanup already uses -- this is disposable test scratch space, not

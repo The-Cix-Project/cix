@@ -1541,10 +1541,23 @@ int pkg_rename_image(const char *old_image, const char *new_image);
 #define PKGREPO_REF_MAX 128
 #define PKGREPO_TOKEN_MAX 256
 
-/* Loads any persisted repo config (or leaves the defaults: kind
- * "gitea", ref "master", no URL/token/interval configured) -- same
- * "missing file is not an error, just first-ever startup" tolerance
- * every other *_init() in this codebase already has. */
+/*
+ * ADR-0315: the public recipe catalogue is the built-in default, so a
+ * freshly installed host can `pkg sync` with no configuration at all.
+ * A default is only what a host starts with -- the first PUT that
+ * changes or clears any field is persisted, and a persisted file is
+ * read as-is from then on (an empty repo_url in it means "cleared",
+ * not "use the default").
+ */
+#define PKG_DEFAULT_REPO_URL "https://github.com/The-Cix-Project/cix-recipes"
+#define PKG_DEFAULT_REPO_KIND "github"
+#define PKG_DEFAULT_REPO_REF "main"
+
+/* Loads any persisted repo config. With no file -- a host that has
+ * never had its repo config set -- the PKG_DEFAULT_REPO_* catalogue
+ * stands, with no token; same "missing file is not an error, just
+ * first-ever startup" tolerance every other *_init() in this codebase
+ * already has. */
 int pkg_repo_init(const char *config_path);
 
 /* ADR-0141 Phase 4: path-only repoint -- see pkg_repoint()'s own doc comment. */
@@ -1729,9 +1742,18 @@ enum pkg_error pkg_build_set_cpu_max(const char *cpu_max);
 #define PKGARTIFACT_URL_MAX 512
 #define PKGARTIFACT_TOKEN_MAX 256
 
-/* Loads any persisted artifact-server config (default: unconfigured --
- * every install simply builds from source, same as before this part
- * existed). */
+/*
+ * ADR-0315: the public artifact cache is the built-in default for
+ * PULLING, with no token and with push off -- publishing stays an
+ * operator's deliberate act (#129). Same persistence rule as the repo
+ * default above: a saved empty base_url means "cleared".
+ */
+#define PKG_DEFAULT_ARTIFACT_URL "https://cache.cix.world"
+
+/* Loads any persisted artifact-server config. With no file the
+ * PKG_DEFAULT_ARTIFACT_URL cache stands, pull-only (no token, push
+ * off). A miss or a failed fetch there falls back to building from
+ * source, exactly as an unconfigured host always has. */
 int pkg_artifact_init(const char *config_path);
 
 /* ADR-0141 Phase 4: path-only repoint -- see pkg_repoint()'s own doc comment. */

@@ -6,6 +6,19 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A fresh host starts on the public recipe catalogue and artifact cache
+
+A freshly installed host used to have no recipe repository and no artifact server set, so before its first install an operator had to know both addresses. A host that has never saved either config now starts on the public ones ([ADR-0315](docs/adr/0315-the-public-catalogue-and-cache-are-the-defaults.md)):
+
+- recipe catalogue `https://github.com/The-Cix-Project/cix-recipes`, kind `github`, ref `main`, no token;
+- artifact cache `https://cache.cix.world`, no token, push off.
+
+So a new install needs only `cixctl pkg sync --wait` before `pkg install`. Anonymous sync from that catalogue was measured on 192.168.15.95 before shipping (`state=success, added=28, skipped=522`), then the box's own LAN config was put back.
+
+The defaults apply only when no config file has been saved. The first `PUT` saves the whole config, and `--url=` (an empty value) clears a source for good, across restarts and upgrades. A host that already saved its sources, as 192.168.15.95 has, is unchanged. Nothing syncs automatically; when to sync stays a `pkg.sync` schedule.
+
+Tests: every test data directory now starts with a cleared repo and artifact config, written as the same files a clearing `PUT` saves, so no test daemon reaches the internet (`test_pkg_config_seed_cleared()`, also called by the three tests that wipe their pkg state between runs). `test_pkg`, a floor selftest, checks the defaults on a data directory with no saved config, clears both, restarts, and checks the clear held. Docs: `openapi.yaml` and `docs/api/README.md` (which also stop describing the GitHub path as unverified and the artifact name as `.tar.gz`), `installing.md` gains "Recipes and artifacts on a fresh install", and the quickstart gains the sync step.
+
 ### Package drift: 24 behind to 2, and the 2 are deliberate
 
 `GET /v1/pkg/drift` reported 24 image-package pairs behind their latest recipe. They read as the painful residue of the CPDL flip — toolchain, glibc, the kernel, python. Measured before touching any of them: **every target already had a built artifact in the cache**, so not one needed a source build. It was installs, not rebuilds.

@@ -9046,7 +9046,12 @@ paths:
       x-cix-expose: [cli, web]
       responses:
         "200":
-          description: Current repo config (repo_url is empty when nothing is configured yet)
+          description: >
+            Current repo config. A host that has never saved one reports the
+            built-in default (ADR-0315): repo_url
+            https://github.com/The-Cix-Project/cix-recipes, repo_kind github,
+            ref main, no token. repo_url is empty only when an operator has
+            cleared it.
           content:
             application/json:
               schema:
@@ -9078,7 +9083,7 @@ paths:
                   enum: [gitea, github, gitlab]
                 ref:
                   type: string
-                  description: Branch/tag to fetch; defaults to "master" if never set
+                  description: Branch/tag to fetch; "main" (the ADR-0315 default) until set otherwise
                 auth_token:
                   type: string
                   description: Write-only; "" clears an existing token, omitted leaves it unchanged
@@ -9695,7 +9700,11 @@ paths:
       x-cix-expose: [cli, web]
       responses:
         "200":
-          description: Current artifact-server config (base_url is empty when none is configured)
+          description: >
+            Current artifact-server config. A host that has never saved one
+            reports the built-in default (ADR-0315): base_url
+            https://cache.cix.world, no token, push off. base_url is empty
+            only when an operator has cleared it.
           content:
             application/json:
               schema:
@@ -19176,8 +19185,9 @@ components:
         repo_url:
           type: string
           description: >
-            Empty when no repo has ever been configured on this host.
-            Only <scheme>://<host>/<owner>/<repo> is ever read from
+            https://github.com/The-Cix-Project/cix-recipes on a host that
+            has never saved a repo config (ADR-0315); empty when an operator
+            has cleared it. Only <scheme>://<host>/<owner>/<repo> is ever read from
             this -- a real forge browse URL pasted verbatim (e.g.
             ".../owner/repo/src/branch/<ref>/<path>") also works,
             since anything past the repo segment is ignored (ADR-0133).
@@ -19186,7 +19196,7 @@ components:
           enum: [gitea, github, gitlab]
         ref:
           type: string
-          description: Branch/tag fetched on sync; "master" until explicitly set otherwise.
+          description: Branch/tag fetched on sync; "main" (the ADR-0315 default) until explicitly set otherwise.
         auth_token_set:
           type: boolean
           description: Whether an auth token is currently stored -- the token itself is never returned.
@@ -19293,10 +19303,11 @@ components:
         base_url:
           type: string
           description: >
-            Empty when no artifact server is configured. A plain HTTP(S)
-            location -- never a git forge; recipe artifacts are fetched at
-            <base_url>/<name>-<version>.tar.gz, the same naming convention
-            the local cache uses.
+            https://cache.cix.world on a host that has never saved an
+            artifact config (ADR-0315); empty when an operator has cleared
+            it. A plain HTTP(S) location -- never a git forge; artifacts are
+            fetched at <base_url>/<name>-<version>-<arch>.cixpkg, the same
+            arch-stamped name the local cache uses.
         auth_token_set:
           type: boolean
           description: Whether a bearer auth token is currently stored -- the token itself is never returned.

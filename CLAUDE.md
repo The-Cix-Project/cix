@@ -208,6 +208,15 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 
 **No debt register.** Do not keep a list here of what still violates this; an unmaintained inventory of debt reads as permission, which is the whole argument the No Stop-Gaps maxim already makes about #509. What remains is measured on the box and tracked in the issue tracker, where it can be closed.
 
+## Default package sources
+
+**A host that has never saved a repo or artifact config starts on the public catalogue (`https://github.com/The-Cix-Project/cix-recipes`, `github`, `main`) and the public cache (`https://cache.cix.world`, pull-only).** Stated by the owner on 2026-09-29: *"yes, both are defaults moving forwards, and can be changed if the use wants to? right?"* — see [ADR-0315](docs/adr/0315-the-public-catalogue-and-cache-are-the-defaults.md).
+
+- **Changeable and clearable, for good.** The first PUT saves the config; a saved empty URL means cleared and is never replaced by the default again. Do not add anything that re-applies a default over a saved value.
+- **Never push by default, never a token by default.** Publishing is the operator's act (#129).
+- **Tests never use the defaults' network.** Test data directories start cleared (`test_pkg_config_seed_cleared()`); a new test that wipes its pkg state dir must call it again.
+- **192.168.15.95 has its own saved config** (LAN gitea with a token, LAN cache with push). A test there that points it at the public sources restores that config straight afterwards, and does not send the LAN token to GitHub.
+
 ## Environment notes
 
 - `pivot_root` and `clone3` have no glibc wrappers — call via `syscall(SYS_pivot_root, ...)` / `syscall(SYS_clone3, ...)`. `struct clone_args` is self-declared in `include/linux_compat.h` (never `#include <linux/sched.h>` — it clashes with glibc's `<sched.h>` over `CLONE_*` macros).

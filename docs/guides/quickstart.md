@@ -22,6 +22,12 @@ cixctl login --username=<user>      # prompts for the password
 
 ## 3. Put a program in the default image
 
+A fresh host already points at the public recipe catalogue and the public artifact cache ([ADR-0315](../adr/0315-the-public-catalogue-and-cache-are-the-defaults.md)), but it does not fetch the catalogue by itself. Do that once, first:
+
+```sh
+cixctl pkg sync --wait              # pulls the recipe catalogue from GitHub
+```
+
 Every host has an image called `base` from its first boot. An image gets even its C library as a package, and a container on an image with no C library is refused with an error naming what to install. At startup the daemon installs `glibc` into `base` by itself when it can do that from an already-built artifact, so check first:
 
 ```sh
@@ -37,7 +43,7 @@ cixctl pkg install --name=coreutils
 cixctl pkg ls                       # repeat until both show "installed"
 ```
 
-`pkg install` uses an already-built artifact when one is available and builds from the recipe otherwise. Where recipes and artifacts come from on a fresh box (the installer's package seed, a configured artifact cache, a recipe repository) is in [installing.md](installing.md#building-the-iso) and [writing-recipes.md](writing-recipes.md).
+`pkg install` uses an already-built artifact when one is available and builds from the recipe otherwise. Where recipes and artifacts come from on a fresh box (the installer's package seed, the public catalogue and cache, or your own) is in [installing.md](installing.md#recipes-and-artifacts-on-a-fresh-install).
 
 ## 4. Create a network
 

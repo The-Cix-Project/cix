@@ -153,6 +153,19 @@ This platform's own `.internal` DNS (the `dns-1`/`dns-2` containers) is a
 separate mechanism; see the DNS section of
 [`docs/api/README.md`](../api/README.md).
 
+### Recipes and artifacts on a fresh install
+
+A host that has never had its package sources set starts on the public ones ([ADR-0315](../adr/0315-the-public-catalogue-and-cache-are-the-defaults.md)):
+
+| | Default | Changed with |
+|---|---|---|
+| Recipe catalogue | `https://github.com/The-Cix-Project/cix-recipes`, kind `github`, ref `main`, no token | `cixctl pkg repo-config set` |
+| Artifact cache | `https://cache.cix.world`, pull-only (no token, push off) | `cixctl pkg artifact-config set` |
+
+Nothing is fetched until you ask: run `cixctl pkg sync --wait` once to pull the catalogue. From then on `pkg install` fetches a package from the cache instead of building it when its recipe carries an artifact checksum (`artifact_sha256`), or when the artifact is signed by a key this host trusts. Both need the outbound DNS above. A package missing from the cache, or a cache that cannot be reached, is built from its recipe instead.
+
+To use your own sources, set them; to use none, clear them with `--url=` (an empty value). Either is saved and survives reboots and upgrades, and a cleared source stays cleared. The defaults apply only to a host that has never saved a setting.
+
 **Console login**: the installed system drops straight into an interactive `cixctl` shell on both the video console and the serial console once boot completes, with no username or password to start it ([ADR-0034](../adr/0034-console-login-via-supervised-cixctl.md)). The shell is an ordinary API client on `127.0.0.1`: once host-auth write-gating is active ([ADR-0144](../adr/0144-host-authentication-and-real-ldap.md)), mutating commands there need `login` like anywhere else. Typing `exit`/`quit`/Ctrl-D ends the session and a fresh one starts automatically a couple of seconds later.
 
 ## Changing the address, port, or enabling HTTPS after install

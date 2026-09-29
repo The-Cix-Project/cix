@@ -146,6 +146,8 @@ static void reset_pkg_state(void)
 
 	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_pkg_state_dir);
 	system(cmd);
+	if (test_pkg_config_seed_cleared(g_pkg_state_dir) != 0)
+		fprintf(stderr, "reset: could not re-seed the cleared pkg config in %s\n", g_pkg_state_dir);
 	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_images_base_dir);
 	system(cmd);
 	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_images_router_dir);
@@ -1080,6 +1082,148 @@ static int poll_pkg_state(const struct cix_client *c, const char *name, char *ou
 	return -1;
 }
 
+/*
+ * ADR-0315: the public catalogue and cache are what a host starts
+ * with, and an operator can clear either for good.
+ *
+ * Runs against its own data directory, before anything else, because
+ * every other daemon in this test starts from the cleared config
+ * test_data_dir_create() seeds -- so this is the one place a daemon
+ * sees no saved config at all. Nothing here syncs or installs, so the
+ * defaults are read and never contacted.
+ */
+static int read_small_file(const char *path, char *out, size_t out_size)
+{
+	FILE *f = fopen(path, "r");
+	size_t n;
+
+	if (f == NULL)
+		return -1;
+	n = fread(out, 1, out_size - 1, f);
+	out[n] = '\0';
+	fclose(f);
+	return 0;
+}
+
+static int check_pkg_config(const struct cix_client *c, const char *want_repo_url,
+                            const char *want_kind, const char *want_ref,
+                            const char *want_artifact_url, const char *when)
+{
+	struct cix_response r;
+	int ok = 1;
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "GET", "/v1/pkg/repo-config", NULL, &r) != 0 || r.status != 200 ||
+	    !str_eq(json_str_field(r.json, "repo_url"), want_repo_url) ||
+	    !str_eq(json_str_field(r.json, "repo_kind"), want_kind) ||
+	    !str_eq(json_str_field(r.json, "ref"), want_ref)) {
+		fprintf(stderr, "FAIL: repo-config %s: want %s %s %s, got status=%d url=%s kind=%s ref=%s\n",
+		        when, want_repo_url, want_kind, want_ref, r.status,
+		        r.json ? json_str_field(r.json, "repo_url") : "(none)",
+		        r.json ? json_str_field(r.json, "repo_kind") : "(none)",
+		        r.json ? json_str_field(r.json, "ref") : "(none)");
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "GET", "/v1/pkg/artifact-config", NULL, &r) != 0 || r.status != 200 ||
+	    !str_eq(json_str_field(r.json, "base_url"), want_artifact_url) ||
+	    json_object_get(r.json, "push_enabled") == NULL ||
+	    json_object_get(r.json, "push_enabled")->type != JSON_BOOL ||
+	    json_object_get(r.json, "push_enabled")->u.boolean) {
+		fprintf(stderr, "FAIL: artifact-config %s: want base_url=%s push off, got status=%d\n",
+		        when, want_artifact_url, r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+	return ok;
+}
+
+static int test_pkg_config_defaults(void)
+{
+	char saved_data_dir[PATH_MAX];
+	char dir[PATH_MAX], path[PATH_MAX], content[1024];
+	struct cix_client c;
+	struct cix_response r;
+	pid_t pid;
+	int ok = 1;
+
+	snprintf(saved_data_dir, sizeof(saved_data_dir), "%s", g_data_dir);
+	if (test_data_dir_create(dir, sizeof(dir)) != 0) {
+		fprintf(stderr, "FAIL: defaults: could not create a data dir\n");
+		return 0;
+	}
+	/* Undo the harness's cleared seed: this daemon must see no file. */
+	snprintf(path, sizeof(path), "%s/rebuildable/pkg/repo_config.json", dir);
+	unlink(path);
+	snprintf(path, sizeof(path), "%s/rebuildable/pkg/artifact_config.json", dir);
+	unlink(path);
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", dir);
+
+	cix_client_init(&c, "127.0.0.1", TEST_PORT);
+	pid = start_daemon();
+	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+		fprintf(stderr, "FAIL: defaults: daemon never accepted connections\n");
+		ok = 0;
+		goto out;
+	}
+	ok &= check_pkg_config(&c, "https://github.com/The-Cix-Project/cix-recipes", "github", "main",
+	                       "https://cache.cix.world", "with no saved config");
+
+	/* Clear both, as an operator would. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "PUT", "/v1/pkg/repo-config", "{\"repo_url\":\"\"}", &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: defaults: clearing repo_url returned %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "PUT", "/v1/pkg/artifact-config", "{\"base_url\":\"\"}", &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: defaults: clearing base_url returned %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/* The clear is on disk, as an explicit empty value ... */
+	snprintf(path, sizeof(path), "%s/rebuildable/pkg/repo_config.json", dir);
+	if (read_small_file(path, content, sizeof(content)) != 0 ||
+	    strstr(content, "\"repo_url\":\"\"") == NULL) {
+		fprintf(stderr, "FAIL: defaults: cleared repo_url was not persisted\n");
+		ok = 0;
+	}
+	snprintf(path, sizeof(path), "%s/rebuildable/pkg/artifact_config.json", dir);
+	if (read_small_file(path, content, sizeof(content)) != 0 ||
+	    strstr(content, "\"base_url\":\"\"") == NULL) {
+		fprintf(stderr, "FAIL: defaults: cleared base_url was not persisted\n");
+		ok = 0;
+	}
+
+	/* ... and a restart does not bring the defaults back. */
+	if (stop_daemon(pid) != 0) {
+		fprintf(stderr, "FAIL: defaults: daemon did not stop cleanly\n");
+		ok = 0;
+	}
+	pid = start_daemon();
+	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+		fprintf(stderr, "FAIL: defaults: daemon did not come back after restart\n");
+		ok = 0;
+		goto out;
+	}
+	ok &= check_pkg_config(&c, "", "github", "main", "", "after clearing and restarting");
+
+out:
+	if (pid > 0 && stop_daemon(pid) != 0) {
+		fprintf(stderr, "FAIL: defaults: daemon did not stop cleanly\n");
+		ok = 0;
+	}
+	test_data_dir_cleanup(dir);
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", saved_data_dir);
+	return ok;
+}
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -1098,6 +1242,9 @@ int main(void)
 	snprintf(g_pkgbuild_rootfs, sizeof(g_pkgbuild_rootfs), "%s/rebuildable/images/pkgbuild", g_data_dir);
 	snprintf(g_images_base_dir, sizeof(g_images_base_dir), "%s/rebuildable/images/base", g_data_dir);
 	snprintf(g_images_router_dir, sizeof(g_images_router_dir), "%s/rebuildable/images/router", g_data_dir);
+
+	if (!test_pkg_config_defaults())
+		ok = 0;
 
 	reset_pkg_state();
 	run_cmd("mkdir -p '%s/recipes'", g_pkg_state_dir);

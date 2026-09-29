@@ -101,6 +101,8 @@ static void reset_state(void)
 
 	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_pkg_state_dir);
 	system(cmd);
+	if (test_pkg_config_seed_cleared(g_pkg_state_dir) != 0)
+		fprintf(stderr, "reset: could not re-seed the cleared pkg config in %s\n", g_pkg_state_dir);
 	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_images_base_dir);
 	system(cmd);
 	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_pkgbuild_rootfs);

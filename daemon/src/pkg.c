@@ -13758,9 +13758,9 @@ enum pkg_error pkg_delete(const char *name, const char *image)
 /* ---- pkg/ redesign Part 2 (ADR-0121): configurable repo + pkg sync ---- */
 
 static char g_repo_config_path[PATH_MAX];
-static char g_repo_url[PKGREPO_URL_MAX];
-static char g_repo_kind[PKGREPO_KIND_MAX] = "gitea";
-static char g_repo_ref[PKGREPO_REF_MAX] = "master";
+static char g_repo_url[PKGREPO_URL_MAX] = PKG_DEFAULT_REPO_URL;
+static char g_repo_kind[PKGREPO_KIND_MAX] = PKG_DEFAULT_REPO_KIND;
+static char g_repo_ref[PKGREPO_REF_MAX] = PKG_DEFAULT_REPO_REF;
 static char g_repo_auth_token[PKGREPO_TOKEN_MAX];
 
 
@@ -13844,9 +13844,9 @@ int pkg_repo_init(const char *config_path)
 	    (int)sizeof(g_repo_config_path))
 		return -1;
 
-	g_repo_url[0] = '\0';
-	snprintf(g_repo_kind, sizeof(g_repo_kind), "gitea");
-	snprintf(g_repo_ref, sizeof(g_repo_ref), "master");
+	snprintf(g_repo_url, sizeof(g_repo_url), "%s", PKG_DEFAULT_REPO_URL);
+	snprintf(g_repo_kind, sizeof(g_repo_kind), "%s", PKG_DEFAULT_REPO_KIND);
+	snprintf(g_repo_ref, sizeof(g_repo_ref), "%s", PKG_DEFAULT_REPO_REF);
 	g_repo_auth_token[0] = '\0';
 	g_repo_legacy_sync_interval = 0;
 
@@ -14002,17 +14002,19 @@ static int parse_repo_url(char *out_scheme, size_t scheme_sz, char *out_host, si
  * "generic REST archive API" abstraction, because there isn't one:
  * gitea/github/gitlab each have a genuinely different URL shape and
  * auth convention (confirmed directly before choosing this design,
- * see ADR-0121). Only gitea (git.home.arpa) is actually reachable
- * from this project's own dev/test environment; github/gitlab follow
- * the identical documented pattern each forge's own API reference
- * specifies, but are unverified against a real github.com/gitlab.com
- * account here -- flagged honestly, not silently assumed working.
+ * see ADR-0121). gitea is exercised by every sync on 192.168.15.95
+ * (git.home.arpa). github.com was measured there on 2026-09-29: repo
+ * github.com/The-Cix-Project/cix-recipes, ref main, NO token --
+ * POST /v1/pkg/sync ended state=success, added=28 skipped=522. That is
+ * the ADR-0315 default, so the anonymous public path is the one
+ * proven. gitlab follows GitLab's documented API and has not been run
+ * against a real instance.
  */
 static int build_sync_fetch_request(char *out_url, size_t out_url_size, char *out_header,
                                      size_t out_header_size)
 {
 	char scheme[16], host[256], owner[256], repo[256];
-	const char *ref = g_repo_ref[0] != '\0' ? g_repo_ref : "master";
+	const char *ref = g_repo_ref[0] != '\0' ? g_repo_ref : PKG_DEFAULT_REPO_REF;
 
 	out_header[0] = '\0';
 	if (!pkg_repo_is_configured())
@@ -15510,7 +15512,7 @@ enum pkg_error pkg_build_set_cpu_max(const char *cpu_max)
  * recipe's own git-tracked checksum.
  */
 
-static char g_artifact_base_url[PKGARTIFACT_URL_MAX];
+static char g_artifact_base_url[PKGARTIFACT_URL_MAX] = PKG_DEFAULT_ARTIFACT_URL;
 static char g_artifact_token[PKGARTIFACT_TOKEN_MAX];
 static char g_artifact_config_path[PATH_MAX];
 /* Issue #129: whether a fresh local build publishes its own result to
@@ -15557,7 +15559,7 @@ int pkg_artifact_init(const char *config_path)
 	if (snprintf(g_artifact_config_path, sizeof(g_artifact_config_path), "%s", config_path) >=
 	    (int)sizeof(g_artifact_config_path))
 		return -1;
-	g_artifact_base_url[0] = '\0';
+	snprintf(g_artifact_base_url, sizeof(g_artifact_base_url), "%s", PKG_DEFAULT_ARTIFACT_URL);
 	g_artifact_token[0] = '\0';
 	g_artifact_push_enabled = 0;
 

@@ -477,7 +477,7 @@ See [`networking.md`](networking.md).
 | `pkg recipe add --name=NAME --file=PATH [--format=shell\|cbs]` | Publish a recipe version on this host. A published `(name, version)` is never overwritten. The format follows the file extension (`.cbs` is CPDL, `.sh` is shell); `--format=` is for a file not named that way |
 | `pkg recipe show NAME [--version=VERSION]` | Print a recipe version; an omitted version means the highest |
 | `pkg recipe rm NAME [--version=VERSION]` | Remove one version, or every version when omitted |
-| `pkg repo-config show` | The recipe repository this host syncs from |
+| `pkg repo-config show` | The recipe repository this host syncs from (on a host that never set one, the public catalogue -- [ADR-0315](../adr/0315-the-public-catalogue-and-cache-are-the-defaults.md)) |
 | `pkg repo-config set [--url=URL] [--kind=gitea\|github\|gitlab] [--ref=REF] [--token=TOKEN \| --clear-token]` | Change only the flags given. How often it syncs is a schedule (`pkg.sync` action) |
 | `pkg sync [--wait] [--refetch=NAME@VERSION]` | Fetch the repository and merge its recipes (additive; an existing version is never overwritten). `--refetch=` lets this one sync replace exactly one already-seen version (#59) |
 | `pkg sync-status` | The latest sync's outcome |
