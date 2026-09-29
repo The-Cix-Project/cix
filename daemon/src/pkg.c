@@ -793,6 +793,13 @@ struct pkg_chain {
 	 */
 	char fetch_resolved_version[PKG_VERSION_MAX];
 	char fetch_resolved_depends[PKG_DEPENDS_MAX];
+	/* #380: the recipe FILE start_fetch_for() resolved, read again by
+	 * every stage after it -- see fetched_recipe_path(). The file, not
+	 * a version to look up: a store directory is not always named by
+	 * the recipe's own version string (a fixture dropped into the
+	 * store before the daemon starts is not), so a lookup by that
+	 * string can miss the very recipe the fetch read. */
+	char fetch_resolved_recipe_path[PATH_MAX];
 };
 
 static struct pkg_chain g_chains[PKG_MAX_CONCURRENT_JOBS];
@@ -8458,31 +8465,38 @@ static const char *current_fetch_effective_version(int chain_idx)
 }
 
 /*
- * #380: the recipe revision the CURRENT fetch resolved, for every stage
- * after it.
+ * #380: the recipe the CURRENT fetch resolved, for every stage after it.
  *
  * current_fetch_effective_version() answers "which version should this
  * fetch resolve", and for anything installed without a version that is
  * NULL -- "whatever is highest right now". start_fetch_for() resolved
- * it once and recorded the answer in fetch_resolved_version. The stages
- * after it -- fetch completion (the checksum), build-environment
- * completion and unpack completion -- each resolved it AGAIN, so if a
- * newer revision was published while a download ran (the six-hourly
- * recipe-sync does exactly that), they verified the downloaded bytes
- * against a different revision's sha256 -- a checksum failure that
- * survives any change of source url -- or, when the new revision kept
- * the source, built the new revision's steps on the old revision's
- * download, while pkg_build_completed() and the build log, which read
- * fetch_resolved_version, named the old one.
+ * it once. The stages after it -- fetch completion (the checksum),
+ * build-environment completion and unpack completion -- each resolved
+ * it AGAIN, so if a newer revision was published while a download ran
+ * (the six-hourly recipe-sync does exactly that), they worked from a
+ * different recipe than the fetch: a checksum failure that survives
+ * any change of source url, or, when the new revision kept the source,
+ * the new revision's steps built on the old revision's download while
+ * pkg_build_completed() and the build log named the old one.
+ * Reproduced on 192.168.15.95, 2026-09-29, with probe-slowfetch: 1-6
+ * published while 1-5 was fetching sent staging looking for 1-6's
+ * source file.
  *
- * One pipeline, one revision: every stage after the fetch uses the one
- * the fetch resolved.
+ * So every stage after the fetch reads the FILE start_fetch_for()
+ * resolved (fetch_resolved_recipe_path) -- the same principle #326
+ * applied to the version string. Falls back to resolving only for a
+ * slot that has not recorded one, which no stage after a fetch is.
  */
-static const char *fetched_recipe_version(int chain_idx)
+static int fetched_recipe_path(int chain_idx, const char *name, char *out, size_t out_size)
 {
-	if (g_chains[chain_idx].fetch_resolved_version[0] != '\0')
-		return g_chains[chain_idx].fetch_resolved_version;
-	return current_fetch_effective_version(chain_idx);
+	const char *path = g_chains[chain_idx].fetch_resolved_recipe_path;
+
+	if (path[0] != '\0') {
+		if (snprintf(out, out_size, "%s", path) >= (int)out_size)
+			return -1;
+		return 0;
+	}
+	return find_recipe_path(name, current_fetch_effective_version(chain_idx), out, out_size);
 }
 
 /* ADR-0122: forward declarations -- defined below (near the end of this
@@ -8599,6 +8613,8 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	 */
 	snprintf(g_chains[chain_idx].fetch_resolved_version,
 	         sizeof(g_chains[chain_idx].fetch_resolved_version), "%s", recipe.version);
+	snprintf(g_chains[chain_idx].fetch_resolved_recipe_path,
+	         sizeof(g_chains[chain_idx].fetch_resolved_recipe_path), "%s", recipe_path);
 	snprintf(g_chains[chain_idx].fetch_resolved_depends,
 	         sizeof(g_chains[chain_idx].fetch_resolved_depends), "%s", recipe.depends);
 	/*
@@ -10522,8 +10538,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		return 0;
 	}
 
-	if (find_recipe_path(e->name, fetched_recipe_version(chain_idx), recipe_path,
-	                      sizeof(recipe_path)) != 0 ||
+	if (fetched_recipe_path(chain_idx, e->name, recipe_path, sizeof(recipe_path)) != 0 ||
 	    parse_recipe(recipe_path, &recipe) != 0) {
 		pkg_fail(e, is_final_upgrade, PIPELINE_AUTHOR, "recipe became unreadable mid-install");
 		g_chains[chain_idx].name[0] = '\0';
@@ -10760,8 +10775,7 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 		return 0;
 	}
 
-	if (find_recipe_path(e->name, fetched_recipe_version(chain_idx), recipe_path,
-	                      sizeof(recipe_path)) != 0 ||
+	if (fetched_recipe_path(chain_idx, e->name, recipe_path, sizeof(recipe_path)) != 0 ||
 	    parse_recipe(recipe_path, &recipe) != 0) {
 		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 		         "the recipe became unreadable while its build environment was composed");
@@ -10838,8 +10852,7 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
 		return 0;
 	}
 
-	if (find_recipe_path(e->name, fetched_recipe_version(chain_idx), recipe_path,
-	                      sizeof(recipe_path)) != 0 ||
+	if (fetched_recipe_path(chain_idx, e->name, recipe_path, sizeof(recipe_path)) != 0 ||
 	    parse_recipe(recipe_path, &recipe) != 0) {
 		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 		         "the recipe became unreadable while its artifact was unpacked");
@@ -11014,6 +11027,8 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	 */
 	snprintf(g_chains[chain_idx].fetch_resolved_version,
 	         sizeof(g_chains[chain_idx].fetch_resolved_version), "%s", recipe.version);
+	snprintf(g_chains[chain_idx].fetch_resolved_recipe_path,
+	         sizeof(g_chains[chain_idx].fetch_resolved_recipe_path), "%s", recipe_path);
 	snprintf(g_chains[chain_idx].fetch_resolved_depends,
 	         sizeof(g_chains[chain_idx].fetch_resolved_depends), "%s", recipe.depends);
 
