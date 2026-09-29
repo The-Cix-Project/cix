@@ -299,6 +299,23 @@ static const struct cli_node n_hostauth_sessions_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
+static const struct cli_node n_hostauth_permissions_subs[] = {
+	{ "ls", NULL, NULL },
+	{ "rm", NULL, NULL },
+	{ "set", NULL, NULL },
+	{ "vocabulary", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
+/* ADR-0317 (#544): app passwords -- the same three verbs for your own
+ * (`app-password`) and for anyone's (`ldap user app-password`). */
+static const struct cli_node n_app_password_subs[] = {
+	{ "add", NULL, NULL },
+	{ "ls", NULL, NULL },
+	{ "rm", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
 static const char *const n_iso_build_flags[] = {
 	"--disk=",
 	"--gateway=",
@@ -1139,6 +1156,7 @@ static const struct cli_node n_ldap_user_subs[] = {
 	{ "ls", NULL, NULL },
 	{ "rm", NULL, NULL },
 	{ "update", n_ldap_user_body_flags, NULL },
+	{ "app-password", NULL, n_app_password_subs },
 	{ NULL, NULL, NULL },
 };
 
@@ -1475,6 +1493,8 @@ static const struct cli_node CLI_TREE[] = {
 	{ "assembly", NULL, n_assembly_subs },
 	{ "hostauth-config", NULL, n_hostauth_config_subs },
 	{ "hostauth-sessions", NULL, n_hostauth_sessions_subs },
+	{ "hostauth-permissions", NULL, n_hostauth_permissions_subs },
+	{ "app-password", NULL, n_app_password_subs },
 	{ "iso", NULL, n_iso_subs },
 	{ "routes", NULL, n_routes_subs },
 	{ "storage", NULL, n_storage_subs },

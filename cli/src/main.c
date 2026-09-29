@@ -229,6 +229,8 @@ static void print_usage(FILE *out)
 	        "               [--primarygroup=N] [--secondary-groups=N,N,...] ...\n"
 	        "  ldap user ls\n"
 	        "  ldap user rm NAME\n"
+	        "  ldap user app-password ls USER | add USER NAME | rm USER NAME  -- anyone's\n"
+	        "               app passwords (ADR-0317); `add` prints the secret once\n"
 	        "  ldap config show  -- uid/gid floor, the client login settings, and which\n"
 	        "               listeners the registered servers serve\n"
 	        "  ldap config set [--start-uid=N --start-gid=N] [--client-uri=URIS]\n"
@@ -353,6 +355,13 @@ static void print_usage(FILE *out)
 	        "  hostauth-sessions ls  -- every active session (username, expires-in) -- never\n"
 	        "               a raw token, before or after issuance\n"
 	        "  hostauth-sessions revoke USERNAME  -- log that user out everywhere (ADR-0152)\n"
+	        "  hostauth-permissions ls  -- which permissions each group grants (ADR-0317)\n"
+	        "  hostauth-permissions vocabulary  -- every permission the API declares\n"
+	        "  hostauth-permissions set GROUP PERMISSION...  -- replace what GROUP grants\n"
+	        "  hostauth-permissions rm GROUP  -- GROUP grants nothing (refused if it would\n"
+	        "               leave nobody holding identity:write)\n"
+	        "  app-password ls|add NAME|rm NAME  -- your own app passwords, the machine\n"
+	        "               credential scripts send as HTTP Basic (needs a login session)\n"
 	        "  rolling-config show  -- current daemon-wide rolling-restart jitter window default\n"
 	        "               (Part 5, ADR-0124)\n"
 	        "  rolling-config set --jitter-window-seconds=N  -- 0-3600, 0 = no jitter (restart\n"
@@ -9084,6 +9093,257 @@ static int cmd_hostauth_sessions(const struct cix_client *c, int json_mode, int 
 	return 2;
 }
 
+/*
+ * ---- ADR-0317 (#544): permissions and app passwords ----
+ */
+
+/* "GROUP: word word ..." per group, in the mapping's order. */
+static void fmt_permission_groups(const struct json_value *v)
+{
+	const struct json_value *groups = json_object_get(v, "groups");
+	size_t i, j;
+
+	if (groups == NULL || groups->type != JSON_OBJECT)
+		return;
+	if (groups->u.object.count == 0) {
+		printf("no group holds any permission\n");
+		return;
+	}
+	for (i = 0; i < groups->u.object.count; i++) {
+		const struct json_value *words = groups->u.object.values[i];
+
+		printf("%s:", groups->u.object.keys[i]);
+		for (j = 0; words != NULL && words->type == JSON_ARRAY && j < words->u.array.count; j++)
+			printf(" %s", json_as_string(words->u.array.items[j]));
+		printf("\n");
+	}
+}
+
+static void fmt_permission_vocabulary(const struct json_value *v)
+{
+	const struct json_value *vocab = json_object_get(v, "vocabulary");
+	size_t i;
+
+	for (i = 0; vocab != NULL && vocab->type == JSON_ARRAY && i < vocab->u.array.count; i++)
+		printf("%s\n", json_as_string(vocab->u.array.items[i]));
+}
+
+static int cmd_hostauth_permissions(const struct cix_client *c, int json_mode, int argc,
+                                    char **argv)
+{
+	struct cix_response r;
+	char path[256];
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: cixctl hostauth-permissions ls  -- what each group grants\n"
+		                "       cixctl hostauth-permissions vocabulary  -- every permission\n"
+		                "       cixctl hostauth-permissions set GROUP PERMISSION...\n"
+		                "       cixctl hostauth-permissions rm GROUP\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "ls") == 0 || strcmp(sub, "vocabulary") == 0) {
+		if (cix_client_request(c, CIX_API_getHostauthPermissions_METHOD,
+		                       CIX_API_getHostauthPermissions, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode,
+		            strcmp(sub, "ls") == 0 ? fmt_permission_groups : fmt_permission_vocabulary);
+	}
+	if (strcmp(sub, "set") == 0) {
+		struct json_writer w;
+		int i, rc;
+
+		if (argc < 3) {
+			fprintf(stderr, "usage: cixctl hostauth-permissions set GROUP PERMISSION...\n"
+			                "       (replaces what GROUP grants; `rm GROUP` removes it)\n");
+			return 2;
+		}
+		snprintf(path, sizeof(path), CIX_API_putHostauthGroupPermissions, argv[1]);
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "permissions");
+		jw_arr_open(&w);
+		for (i = 2; i < argc; i++)
+			jw_str(&w, argv[i]);
+		jw_arr_close(&w);
+		jw_obj_close(&w);
+		rc = cix_client_request(c, CIX_API_putHostauthGroupPermissions_METHOD, path, w.buf, &r);
+		jw_free(&w);
+		if (rc != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_permission_groups);
+	}
+	if (strcmp(sub, "rm") == 0) {
+		if (argc < 2) {
+			fprintf(stderr, "usage: cixctl hostauth-permissions rm GROUP\n");
+			return 2;
+		}
+		snprintf(path, sizeof(path), CIX_API_deleteHostauthGroupPermissions, argv[1]);
+		if (cix_client_request(c, CIX_API_deleteHostauthGroupPermissions_METHOD, path, NULL, &r) !=
+		    0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_removed);
+	}
+	fprintf(stderr, "cixctl: unknown hostauth-permissions subcommand '%s'\n", sub);
+	return 2;
+}
+
+static void fmt_app_passwords(const struct json_value *v)
+{
+	const struct json_value *list = json_object_get(v, "app_passwords");
+	size_t i;
+
+	if (list == NULL || list->type != JSON_ARRAY)
+		return;
+	if (list->u.array.count == 0) {
+		printf("no app passwords\n");
+		return;
+	}
+	for (i = 0; i < list->u.array.count; i++) {
+		const struct json_value *ap = list->u.array.items[i];
+		time_t created = (time_t)json_as_number(json_object_get(ap, "created"));
+		struct tm tm;
+		char when[32] = "-";
+
+		if (gmtime_r(&created, &tm) != NULL)
+			strftime(when, sizeof(when), "%Y-%m-%dT%H:%M:%SZ", &tm);
+		printf("%s  created=%s\n", json_str_field(ap, "name"), when);
+	}
+}
+
+/*
+ * The secret is on stdout, alone on its line, so `cixctl ... | tail -1`
+ * captures it; the warning is on stderr. It exists nowhere else: the
+ * daemon keeps only its hash (ADR-0317 section 8).
+ */
+static void fmt_app_password_created(const struct json_value *v)
+{
+	fprintf(stderr, "app password \"%s\" created -- shown this once; use it as HTTP Basic "
+	                "(USER:PASSWORD) on any request\n",
+	        json_str_field(v, "name"));
+	printf("%s\n", json_str_field(v, "password"));
+}
+
+/*
+ * One implementation for both scopes: app_password_list/add/rm take the
+ * path, so `ldap user app-password` (anyone's, identity:*)
+ * and `app-password` (your own, a login session) differ only in the
+ * URL they name.
+ */
+static int app_password_list(const struct cix_client *c, int json_mode, const char *method,
+                             const char *path)
+{
+	struct cix_response r;
+
+	if (cix_client_request(c, method, path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_app_passwords);
+}
+
+static int app_password_add(const struct cix_client *c, int json_mode, const char *method,
+                            const char *path, const char *name)
+{
+	struct cix_response r;
+	struct json_writer w;
+	int rc;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_obj_close(&w);
+	rc = cix_client_request(c, method, path, w.buf, &r);
+	jw_free(&w);
+	if (rc != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_app_password_created);
+}
+
+static int app_password_rm(const struct cix_client *c, int json_mode, const char *method,
+                           const char *path)
+{
+	struct cix_response r;
+
+	if (cix_client_request(c, method, path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+/* cixctl ldap user app-password ls|add|rm USER [NAME] */
+static int cmd_ldap_user_app_password(const struct cix_client *c, int json_mode, int argc,
+                                      char **argv)
+{
+	char path[256];
+
+	if (argc < 2) {
+		fprintf(stderr, "usage: cixctl ldap user app-password ls USER\n"
+		                "       cixctl ldap user app-password add USER NAME\n"
+		                "       cixctl ldap user app-password rm USER NAME\n");
+		return 2;
+	}
+	if (strcmp(argv[0], "ls") == 0) {
+		snprintf(path, sizeof(path), CIX_API_listLdapUserAppPasswords, argv[1]);
+		return app_password_list(c, json_mode, CIX_API_listLdapUserAppPasswords_METHOD, path);
+	}
+	if (argc < 3) {
+		fprintf(stderr, "usage: cixctl ldap user app-password %s USER NAME\n", argv[0]);
+		return 2;
+	}
+	if (strcmp(argv[0], "add") == 0) {
+		snprintf(path, sizeof(path), CIX_API_createLdapUserAppPassword, argv[1]);
+		return app_password_add(c, json_mode, CIX_API_createLdapUserAppPassword_METHOD, path,
+		                        argv[2]);
+	}
+	if (strcmp(argv[0], "rm") == 0) {
+		snprintf(path, sizeof(path), CIX_API_deleteLdapUserAppPassword, argv[1], argv[2]);
+		return app_password_rm(c, json_mode, CIX_API_deleteLdapUserAppPassword_METHOD, path);
+	}
+	fprintf(stderr, "cixctl: unknown ldap user app-password subcommand '%s'\n", argv[0]);
+	return 2;
+}
+
+/* cixctl app-password ls|add|rm [NAME] -- your own, with a login session. */
+static int cmd_app_password(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: cixctl app-password ls\n"
+		                "       cixctl app-password add NAME\n"
+		                "       cixctl app-password rm NAME\n");
+		return 2;
+	}
+	if (strcmp(argv[0], "ls") == 0)
+		return app_password_list(c, json_mode, CIX_API_listOwnAppPasswords_METHOD,
+		                         CIX_API_listOwnAppPasswords);
+	if (argc < 2) {
+		fprintf(stderr, "usage: cixctl app-password %s NAME\n", argv[0]);
+		return 2;
+	}
+	if (strcmp(argv[0], "add") == 0)
+		return app_password_add(c, json_mode, CIX_API_createOwnAppPassword_METHOD,
+		                        CIX_API_createOwnAppPassword, argv[1]);
+	if (strcmp(argv[0], "rm") == 0) {
+		snprintf(path, sizeof(path), CIX_API_deleteOwnAppPassword, argv[1]);
+		return app_password_rm(c, json_mode, CIX_API_deleteOwnAppPassword_METHOD, path);
+	}
+	fprintf(stderr, "cixctl: unknown app-password subcommand '%s'\n", argv[0]);
+	return 2;
+}
+
 struct cli_sysctl {
 	char key[128]; /* matches daemon's CONTAINER_SYSCTL_KEY_MAX */
 	char value[64]; /* matches daemon's CONTAINER_SYSCTL_VALUE_MAX */
@@ -12736,7 +12996,8 @@ static int cmd_ldap_user(const struct cix_client *c, int json_mode, int argc, ch
 		                "--primarygroup=N ...\n"
 		                "       cixctl ldap user update --name=NAME ...\n"
 		                "       cixctl ldap user ls\n"
-		                "       cixctl ldap user rm NAME\n");
+		                "       cixctl ldap user rm NAME\n"
+		                "       cixctl ldap user app-password ls|add|rm USER [NAME]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -12748,6 +13009,8 @@ static int cmd_ldap_user(const struct cix_client *c, int json_mode, int argc, ch
 		return cmd_ldap_user_ls(c, json_mode);
 	if (strcmp(sub, "rm") == 0)
 		return cmd_ldap_user_rm(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "app-password") == 0)
+		return cmd_ldap_user_app_password(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "cixctl: unknown ldap user subcommand '%s'\n", sub);
 	return 2;
@@ -17647,6 +17910,10 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_hostauth_config(client, json_mode, argc, argv);
 	if (strcmp(cmd, "hostauth-sessions") == 0)
 		return cmd_hostauth_sessions(client, json_mode, argc, argv);
+	if (strcmp(cmd, "hostauth-permissions") == 0)
+		return cmd_hostauth_permissions(client, json_mode, argc, argv);
+	if (strcmp(cmd, "app-password") == 0)
+		return cmd_app_password(client, json_mode, argc, argv);
 	if (strcmp(cmd, "iso") == 0)
 		return cmd_iso(client, json_mode, argc, argv);
 	if (strcmp(cmd, "routes") == 0)
@@ -17833,12 +18100,15 @@ static int tokenize_line(char *line, char **tokens, int max_tokens)
  * shell_prompt_init() below, so the prompt actually identifies *which*
  * box this session is talking to (useful the moment an operator has
  * more than one Cix install reachable) and *whether* it's currently
- * privileged to write. Falls back to the literal string "cix" (site
+ * privileged to write. On a gated host without a session it reads
+ * "<host> (login required)> " instead (#544): the site name is then a
+ * refused read, so <host> is the address this shell connected to.
+ * Otherwise falls back to the literal string "cix" (site
  * config's own documented default) if the fetch fails for any reason
  * -- never leaves the prompt blank. Re-run after every "login"/
  * "logout" command (see the dispatch loops below) so the prompt
  * reflects a state change immediately, not just at shell startup. */
-#define SHELL_PROMPT_MAX 96
+#define SHELL_PROMPT_MAX 128
 static char g_shell_prompt[SHELL_PROMPT_MAX] = "cix> ";
 
 static void shell_prompt_init(const struct cix_client *client)
@@ -17873,6 +18143,33 @@ static void shell_prompt_init(const struct cix_client *client)
 		cix_response_free(&whoami_r);
 	}
 
+	/*
+	 * #544: on a gated host every read needs a login (ADR-0317), GET
+	 * /v1/system/site included -- so without a session the name above
+	 * was refused and the prompt fell back to a bare "cix", naming no
+	 * host at all. The address this shell is connected to is what the
+	 * operator typed, so it is the honest fallback; and health, which
+	 * stays public, says whether a login is what is missing.
+	 */
+	if (!authenticated) {
+		struct cix_response health_r;
+		int gated = 0;
+
+		if (strcmp(fqdn, "cix") == 0)
+			snprintf(fqdn, sizeof(fqdn), "%s", client->host);
+		if (cix_client_request(client, CIX_API_getHealth_METHOD, CIX_API_getHealth, NULL,
+		                       &health_r) == 0) {
+			const struct json_value *jg = json_object_get(health_r.json, "auth_gating_active");
+
+			gated = health_r.status == 200 && jg != NULL && jg->type == JSON_BOOL &&
+			        jg->u.boolean;
+			cix_response_free(&health_r);
+		}
+		if (gated) {
+			snprintf(g_shell_prompt, sizeof(g_shell_prompt), "%s (login required)> ", fqdn);
+			return;
+		}
+	}
 	snprintf(g_shell_prompt, sizeof(g_shell_prompt), "%s%s ", fqdn, authenticated ? "#" : ">");
 }
 

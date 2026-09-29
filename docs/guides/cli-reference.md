@@ -100,7 +100,7 @@ Eleven sections can be applied, the ones a single setter owns: site, daemon, res
 
 | Command | |
 |---|---|
-| `login [--username=NAME] [--password=PASS]` | Authenticate. Prompts for whichever is not given, with echo off for the password. Saves the session token to `~/.cixctl_token` (mode `0600`). Succeeds with nothing enforced on a daemon where write-gating was never activated |
+| `login [--username=NAME] [--password=PASS]` | Authenticate. Prompts for whichever is not given, with echo off for the password. Saves the session token to `~/.cixctl_token` (mode `0600`). Succeeds with nothing enforced on a daemon where gating was never activated. In the interactive shell the prompt reads `HOST (login required)>` when the host is gated and there is no session (#544) |
 | `logout` | End the current session, if any, and remove the saved token. Always succeeds |
 | `site show` | This install's `instance_name`/`site_name`/`domain_suffix` |
 | `site set [--instance-name=NAME] [--site-name=NAME] [--domain-suffix=NAME]` | Set them |
@@ -108,6 +108,11 @@ Eleven sections can be applied, the ones a single setter owns: site, daemon, res
 | `hostauth-config set [--admin-group=NAME ...] [--idle-timeout-seconds=N] [--ldap-enable \| --ldap-disable] [--ldap-server=HOST ...] [--ldap-port=N] [--ldap-tls \| --no-ldap-tls] [--ldap-base-dn=NAME]` | Change only the flags given (the command fetches the current config first). Write-gating activates as soon as a real user is a member of one of `admin_groups`. `--ldap-tls` (#416) is the daemon's own bind over LDAPS; `ldap config set --client-tls` is the separate switch for LDAP clients in containers. `--ldap-enable` is refused (409) when no root CA is bootstrapped |
 | `hostauth-sessions ls` | Every active session (username, expires-in), never a token ([ADR-0152](../adr/0152-hostauth-session-introspection.md)) |
 | `hostauth-sessions revoke USERNAME` | Revoke every session that user holds |
+| `hostauth-permissions ls` | Which permissions each group grants ([ADR-0317](../adr/0317-permissions-are-declared-by-the-api-contract.md)); a user holds the union over their groups |
+| `hostauth-permissions vocabulary` | Every permission the API declares |
+| `hostauth-permissions set GROUP PERMISSION...` | Replace what GROUP grants. A word outside the vocabulary is refused, naming it; a change that would leave nobody holding `identity:write` is refused with 409 |
+| `hostauth-permissions rm GROUP` | GROUP grants nothing, under the same refusal |
+| `app-password ls` / `app-password add NAME` / `app-password rm NAME` | Your own app passwords: the machine credential a script sends as HTTP Basic (`USER:PASSWORD`) on each request, with your permissions. `add` prints the secret on stdout, once; the daemon keeps only a hash. Needs a login session -- an app password cannot manage app passwords |
 
 ## Boot, updates and the control plane
 
@@ -441,6 +446,7 @@ See [`networking.md`](networking.md).
 | `ldap user add --name=NAME [--uidnumber=N] --primarygroup=N [--secondary-groups=N,N,...] [--givenname=S] [--sn=S] [--mail=S] [--loginshell=S] [--homedirectory=S] [--password=S] [--disabled] [--ssh-key=S] [--can-search]` | Create a user; the uid is allocated when omitted. `--ssh-key=` is served as glauth's `sshkeys` attribute; `--can-search` grants the search right a bind/service account needs |
 | `ldap user update --name=NAME [--new-name=NEWNAME] ...` | Replace a user's fields (same flags as `add`) |
 | `ldap user ls` / `ldap user rm NAME` | List / remove |
+| `ldap user app-password ls USER` / `add USER NAME` / `rm USER NAME` | Anyone's app passwords (needs `identity:read` / `identity:write`). Revoking takes effect on the next request |
 | `ldap config show` | The uid/gid allocation floor, the client login settings, `effective_client_uri` (what `--ldap-client` containers receive now), and the listeners the servers serve |
 | `ldap config set [--start-uid=N --start-gid=N] [--client-uri=URIS] [--base-dn=DN] [--bind-dn=DN] [--bind-password=PW] [--client-tls \| --no-client-tls] [--server-plaintext \| --no-server-plaintext] [--server-plaintext-port=N] [--server-tls \| --no-server-tls] [--server-tls-port=N] [--restart-servers]` | Change only the flags given. `--client-tls` picks which enabled listener clients use (see [LDAP over TLS](security.md#ldap-over-tls)). The `--server-*` flags set each glauth's listeners (#419, [ADR-0282](../adr/0282-glauths-listeners-are-configuration.md)); glauth reads listeners only at startup, so add `--restart-servers` to restart them one at a time |
 

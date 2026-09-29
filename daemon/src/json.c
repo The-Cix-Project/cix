@@ -573,6 +573,18 @@ static void jw_raw(struct json_writer *w, const char *s, size_t n)
 	jw_ensure(w, n);
 	memcpy(w->buf + w->len, s, n);
 	w->len += n;
+	/*
+	 * Keep the buffer a C string. jw_ensure() already reserves the byte
+	 * (`extra + 1`); nothing wrote it, and cixctl passes w.buf to a
+	 * client that sends strlen(body) bytes -- so a request body ran on
+	 * into whatever realloc() left behind. Measured 2026-09-30: `cixctl
+	 * app-password add` sent a body cixd refused as "invalid JSON body"
+	 * while the identical JSON from curl was accepted (#544). Most cixctl
+	 * callers terminate w.buf by hand after building (`w.buf[w.len] =
+	 * '\0';`); that is now redundant rather than required, which is the
+	 * point -- the new call sites that forgot it were the failure.
+	 */
+	w->buf[w->len] = '\0';
 }
 
 static void jw_raw_str(struct json_writer *w, const char *s)

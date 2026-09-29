@@ -6,6 +6,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cixctl manages permissions and app passwords, and its shell says when a login is needed (#544, ADR-0317)
+
+The first half of the last RBAC step. New commands, each one HTTP call:
+
+- `hostauth-permissions ls | vocabulary | set GROUP PERMISSION... | rm GROUP` -- the group -> permission mapping.
+- `app-password ls | add NAME | rm NAME` -- your own app passwords, through `/v1/whoami/app-passwords`, which needs a login session.
+- `ldap user app-password ls USER | add USER NAME | rm USER NAME` -- anyone's.
+
+`add` prints the secret alone on stdout, once, and a note on stderr. A 403 already printed the daemon's message, which names the missing permission. The nine operations are now `x-cix-expose: [cli]`.
+
+**The interactive shell's prompt on a gated host.** Without a session, `GET /v1/system/site` is now a refused read, so the prompt fell back to a bare `cix` and named no host. It now reads `<host> (login required)> `, where `<host>` is the address the shell connected to and "login required" comes from the public health check.
+
+**JSON writer buffers are now always NUL-terminated.** `jw_raw()` reserved the terminator byte and never wrote it, and cixctl sends request bodies as `strlen(w.buf)` bytes, so a body could run on into whatever `realloc()` left behind. Most CLI callers terminate by hand; the new ones did not, and `cixctl app-password add` was refused as `invalid JSON body` while the same JSON from curl was accepted (measured against 192.168.15.95, 2026-09-30). Fixed in the writer, so no caller depends on remembering.
+
 ### App passwords: machine credentials accepted per request as HTTP Basic (#543, ADR-0317)
 
 The fifth of six steps for role-based access control. A user holds up to 8 named app passwords, kept with the user in cixd's own record store as bcrypt hashes. `POST /v1/ldap/users/{name}/app-passwords` (`identity:write`) generates one and returns the secret in its `201` only; `GET` lists names and creation times; `DELETE .../{app}` revokes. `/v1/whoami/app-passwords` does the same for the session's own user and needs `authenticated`, which an app password does not satisfy -- so a leaked one cannot mint successors. Any operation accepts an app password as HTTP Basic, with exactly its user's permissions; the main password is not accepted per request. Requests made with one are audited as `user (app-password NAME)`.
