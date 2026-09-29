@@ -532,7 +532,7 @@ $(BUILD)/test_container_pty: test/test_container_pty.c test/test_image_fixture.c
 $(BUILD)/pty_child: test/pty_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/cixd: daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c $(BUILD)/version.h $(BUILD)/generated/api_routes.h $(BUILD)/generated/config_sections.h $(BUILD)/generated/pkg_finalize.h web/api.js | $(BUILD)
+$(BUILD)/cixd: daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c $(BUILD)/version.h $(BUILD)/generated/api_routes.h $(BUILD)/generated/permissions.h $(BUILD)/generated/config_sections.h $(BUILD)/generated/pkg_finalize.h web/api.js | $(BUILD)
 	$(CC) $(DAEMON_CFLAGS) daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c -lssl -lcrypto -larchive -lcurl -o $@
 
 $(BUILD)/test_daemon: test/test_daemon.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
@@ -849,6 +849,14 @@ web/api.js: docs/api/openapi.yaml $(BUILD)/apigen
 $(BUILD)/generated/api_routes.h: docs/api/openapi.yaml $(BUILD)/apigen
 	@mkdir -p $(BUILD)/generated
 	$(BUILD)/apigen docs/api/openapi.yaml --emit-routes $@
+
+# ADR-0317 (#540): the closed permission vocabulary, for hostauth.c. From
+# the spec's x-cix-permissions, the list apigen checks every operation's
+# x-cix-permission against -- so the daemon's "every permission" has the
+# same single source as the contract's.
+$(BUILD)/generated/permissions.h: docs/api/openapi.yaml $(BUILD)/apigen
+	@mkdir -p $(BUILD)/generated
+	$(BUILD)/apigen docs/api/openapi.yaml --emit-permissions $@
 
 # The config section vocabulary (ADR-0206). Generated from the
 # ConfigDocument schema so the section list has exactly one definition:

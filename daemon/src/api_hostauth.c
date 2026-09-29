@@ -156,6 +156,11 @@ void handle_whoami(int fd, const char *req_headers, size_t req_headers_len)
 		jw_str(&w, username);
 	else
 		jw_null(&w);
+	/* ADR-0317 (#540): what this session may do -- the union over the
+	 * user's groups -- so a client can show only the actions it will
+	 * be allowed (#544). Empty when not authenticated. */
+	jw_key(&w, "permissions");
+	hostauth_write_user_permissions_json(&w, authenticated ? username : NULL);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -359,6 +364,113 @@ void handle_hostauth_sessions_get(int fd)
 void handle_hostauth_sessions_revoke(int fd, const char *username)
 {
 	hostauth_revoke_sessions_for_user(username);
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+/*
+ * ---- ADR-0317 (#540): the group -> permission mapping ----
+ */
+
+/* GET /v1/system/hostauth/permissions */
+void handle_hostauth_permissions_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	hostauth_write_permissions_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* Answers a refused mapping change, naming what was wrong. */
+static void respond_perm_error(int fd, enum hostauth_perm_error err, const char *detail)
+{
+	char msg[256];
+
+	switch (err) {
+	case HOSTAUTH_PERM_ERR_INVALID_GROUP:
+		respond_error(fd, 400, "Bad Request", "invalid group name");
+		return;
+	case HOSTAUTH_PERM_ERR_UNKNOWN_PERMISSION:
+		snprintf(msg, sizeof(msg),
+		         "\"%s\" is not a permission -- GET /v1/system/hostauth/permissions lists "
+		         "the vocabulary",
+		         detail);
+		respond_error(fd, 400, "Bad Request", msg);
+		return;
+	case HOSTAUTH_PERM_ERR_FULL:
+		snprintf(msg, sizeof(msg), "the mapping already holds %d groups",
+		         HOSTAUTH_PERM_GROUPS_MAX);
+		respond_error(fd, 409, "Conflict", msg);
+		return;
+	case HOSTAUTH_PERM_ERR_TOO_MANY_ADMIN_GROUPS:
+		snprintf(msg, sizeof(msg),
+		         "at most %d groups may hold every permission -- admin_groups lists them, "
+		         "and a group left off it would silently not be an admin",
+		         HOSTAUTH_ADMIN_GROUPS_MAX);
+		respond_error(fd, 409, "Conflict", msg);
+		return;
+	case HOSTAUTH_PERM_ERR_LOCKOUT:
+		respond_error(fd, 409, "Conflict",
+		              "this would leave no enabled user holding identity:write -- the permission "
+		              "that grants permissions must keep a holder (ADR-0317)");
+		return;
+	case HOSTAUTH_PERM_ERR_PERSIST_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error", "failed to persist the permission mapping");
+		return;
+	}
+}
+
+/* PUT /v1/system/hostauth/permissions/{group} */
+void handle_hostauth_permissions_put(int fd, const char *group, const char *body, size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	const struct json_value *list;
+	const char *words[HOSTAUTH_PERMISSIONS_PER_REQUEST_MAX];
+	char detail[HOSTAUTH_PERMISSION_MAX];
+	enum hostauth_perm_error err;
+	size_t i;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	list = json_object_get(root, "permissions");
+	if (list == NULL || list->type != JSON_ARRAY ||
+	    list->u.array.count > HOSTAUTH_PERMISSIONS_PER_REQUEST_MAX) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "permissions must be a list of permission words");
+		return;
+	}
+	for (i = 0; i < list->u.array.count; i++) {
+		words[i] = json_as_string(list->u.array.items[i]);
+		if (words[i] == NULL) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "every permission must be a string");
+			return;
+		}
+	}
+	err = hostauth_set_group_permissions(group, words, (int)list->u.array.count, detail,
+	                                     sizeof(detail));
+	json_free(root);
+	if (err != HOSTAUTH_PERM_OK) {
+		respond_perm_error(fd, err, detail);
+		return;
+	}
+	handle_hostauth_permissions_get(fd);
+}
+
+/* DELETE /v1/system/hostauth/permissions/{group} */
+void handle_hostauth_permissions_delete(int fd, const char *group)
+{
+	enum hostauth_perm_error err = hostauth_set_group_permissions(group, NULL, 0, NULL, 0);
+
+	if (err != HOSTAUTH_PERM_OK) {
+		respond_perm_error(fd, err, "");
+		return;
+	}
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }

@@ -121,6 +121,247 @@ static int request_with_token(const struct cix_client *c, const char *method, co
 	return cix_client_request_with_auth(c, method, path, token, body, r);
 }
 
+/*
+ * ADR-0317 (#540): the group -> permission mapping, on a daemon of its
+ * own. No user is in an admin group at any point here, so write-gating
+ * stays inactive and every request goes without credentials except
+ * /v1/whoami, which is asked with a real session.
+ */
+static int body_has(const struct cix_response *r, const char *needle)
+{
+	return r->body != NULL && strstr(r->body, needle) != NULL;
+}
+
+static int expect_status(const struct cix_client *c, const char *method, const char *path,
+                         const char *body, int want, const char *what)
+{
+	struct cix_response r;
+	int ok = 1;
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, method, path, body, &r) != 0 || r.status != want) {
+		fprintf(stderr, "FAIL: #540 %s: expected %d, got %d (%.200s)\n", what, want, r.status,
+		        r.body != NULL ? r.body : "");
+		ok = 0;
+	}
+	cix_response_free(&r);
+	return ok;
+}
+
+static int test_permission_mapping(void)
+{
+	char saved_data_dir[PATH_MAX], dir[PATH_MAX], path[PATH_MAX], file[4096];
+	struct cix_client c;
+	struct cix_response r;
+	pid_t pid;
+	int ok = 1;
+	FILE *f;
+	size_t n;
+
+	snprintf(saved_data_dir, sizeof(saved_data_dir), "%s", g_data_dir);
+	if (test_data_dir_create(dir, sizeof(dir)) != 0)
+		return 0;
+	/* A pre-#540 state file: admin_groups and no "permissions". */
+	snprintf(path, sizeof(path), "%s/state/hostauth_config.json", dir);
+	f = fopen(path, "w");
+	if (f == NULL) {
+		fprintf(stderr, "FAIL: #540 could not write the pre-#540 state file\n");
+		test_data_dir_cleanup(dir);
+		return 0;
+	}
+	fputs("{\"admin_groups\":[\"legacyadmins\"],\"idle_timeout_seconds\":900}\n", f);
+	fclose(f);
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", dir);
+
+	cix_client_init(&c, "127.0.0.1", TEST_PORT);
+	pid = start_daemon();
+	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+		fprintf(stderr, "FAIL: #540 daemon never accepted connections\n");
+		ok = 0;
+		goto out;
+	}
+
+	/* 1. Migration: the old admin group now holds every permission. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "GET", "/v1/system/hostauth/permissions", NULL, &r) != 0 ||
+	    r.status != 200 || r.json == NULL) {
+		fprintf(stderr, "FAIL: #540 GET permissions, status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const struct json_value *vocab = json_object_get(r.json, "vocabulary");
+		const struct json_value *groups = json_object_get(r.json, "groups");
+		const struct json_value *legacy = json_object_get(groups, "legacyadmins");
+
+		if (vocab == NULL || vocab->type != JSON_ARRAY || vocab->u.array.count < 10 ||
+		    legacy == NULL || legacy->type != JSON_ARRAY ||
+		    legacy->u.array.count != vocab->u.array.count) {
+			fprintf(stderr, "FAIL: #540 a pre-#540 admin group was not migrated to every "
+			                "permission: %.300s\n",
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+	}
+	cix_response_free(&r);
+
+	/* 2. A group granted some permissions is not an admin group. */
+	ok &= expect_status(&c, "PUT", "/v1/system/hostauth/permissions/operators",
+	                    "{\"permissions\":[\"containers:read\",\"containers:operate\"]}", 200,
+	                    "PUT a partial group");
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "GET", "/v1/system/hostauth-config", NULL, &r) != 0 ||
+	    r.json == NULL) {
+		ok = 0;
+	} else {
+		const struct json_value *admins = json_object_get(r.json, "admin_groups");
+
+		if (admins == NULL || admins->type != JSON_ARRAY || admins->u.array.count != 1 ||
+		    !str_eq(json_as_string(admins->u.array.items[0]), "legacyadmins")) {
+			fprintf(stderr, "FAIL: #540 admin_groups is not exactly the groups holding every "
+			                "permission: %.200s\n",
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+	}
+	cix_response_free(&r);
+
+	/* 3. A word outside the vocabulary is refused, by name. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "PUT", "/v1/system/hostauth/permissions/operators",
+	                       "{\"permissions\":[\"containers:fly\"]}", &r) != 0 ||
+	    r.status != 400 || !body_has(&r, "containers:fly")) {
+		fprintf(stderr, "FAIL: #540 an unknown permission must be a 400 naming it, got %d "
+		                "(%.200s)\n",
+		        r.status, r.body != NULL ? r.body : "");
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/* 4. Union: a user in two groups holds both groups' permissions. */
+	ok &= expect_status(&c, "POST", "/v1/ldap/groups", "{\"name\":\"permg1\",\"gidnumber\":7301}",
+	                    201, "create permg1");
+	ok &= expect_status(&c, "POST", "/v1/ldap/groups", "{\"name\":\"permg2\",\"gidnumber\":7302}",
+	                    201, "create permg2");
+	ok &= expect_status(&c, "PUT", "/v1/system/hostauth/permissions/permg1",
+	                    "{\"permissions\":[\"containers:read\"]}", 200, "grant permg1");
+	ok &= expect_status(&c, "PUT", "/v1/system/hostauth/permissions/permg2",
+	                    "{\"permissions\":[\"images:write\"]}", 200, "grant permg2");
+	ok &= expect_status(&c, "POST", "/v1/ldap/users",
+	                    "{\"name\":\"permuser\",\"uidnumber\":7310,\"primarygroup\":7301,"
+	                    "\"secondary_groups\":[7302],\"password\":\"union of two groups\"}",
+	                    201, "create permuser");
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "POST", "/v1/login",
+	                       "{\"username\":\"permuser\",\"password\":\"union of two groups\"}",
+	                       &r) != 0 ||
+	    r.status != 200 || r.json == NULL || json_str_field(r.json, "token") == NULL) {
+		fprintf(stderr, "FAIL: #540 login as permuser, status=%d\n", r.status);
+		ok = 0;
+		cix_response_free(&r);
+	} else {
+		char tok[128];
+		struct cix_response w;
+
+		snprintf(tok, sizeof(tok), "%s", json_str_field(r.json, "token"));
+		cix_response_free(&r);
+		memset(&w, 0, sizeof(w));
+		if (request_with_token(&c, "GET", "/v1/whoami", tok, NULL, &w) != 0 || w.json == NULL) {
+			ok = 0;
+		} else {
+			const struct json_value *p = json_object_get(w.json, "permissions");
+
+			if (p == NULL || p->type != JSON_ARRAY || p->u.array.count != 2 ||
+			    !body_has(&w, "\"containers:read\"") || !body_has(&w, "\"images:write\"")) {
+				fprintf(stderr, "FAIL: #540 whoami must report exactly the union of the "
+				                "user's groups: %.300s\n",
+				        w.body != NULL ? w.body : "");
+				ok = 0;
+			}
+		}
+		cix_response_free(&w);
+	}
+
+	/* 5. No lockout: once someone holds identity:write, nothing may
+	 * leave nobody holding it. */
+	ok &= expect_status(&c, "POST", "/v1/ldap/groups", "{\"name\":\"keepers\",\"gidnumber\":7303}",
+	                    201, "create keepers");
+	ok &= expect_status(&c, "PUT", "/v1/system/hostauth/permissions/keepers",
+	                    "{\"permissions\":[\"identity:write\"]}", 200, "grant keepers");
+	ok &= expect_status(&c, "POST", "/v1/ldap/users",
+	                    "{\"name\":\"keeper\",\"uidnumber\":7311,\"primarygroup\":7303}", 201,
+	                    "create keeper");
+	ok &= expect_status(&c, "PUT", "/v1/system/hostauth/permissions/keepers",
+	                    "{\"permissions\":[\"identity:read\"]}", 409,
+	                    "taking identity:write from its only holder");
+	ok &= expect_status(&c, "DELETE", "/v1/system/hostauth/permissions/keepers", NULL, 409,
+	                    "deleting the only identity:write grant");
+
+	/* 6. A rename carries the grants; a deleted group takes them with it. */
+	ok &= expect_status(&c, "PUT", "/v1/ldap/groups/permg1",
+	                    "{\"gidnumber\":7301,\"name\":\"permg1renamed\"}", 200, "rename permg1");
+	ok &= expect_status(&c, "POST", "/v1/ldap/groups", "{\"name\":\"permg3\",\"gidnumber\":7304}",
+	                    201, "create permg3");
+	ok &= expect_status(&c, "PUT", "/v1/system/hostauth/permissions/permg3",
+	                    "{\"permissions\":[\"pki:read\"]}", 200, "grant permg3");
+	ok &= expect_status(&c, "DELETE", "/v1/ldap/groups/permg3", NULL, 204, "delete permg3");
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "GET", "/v1/system/hostauth/permissions", NULL, &r) != 0 ||
+	    r.json == NULL) {
+		ok = 0;
+	} else {
+		const struct json_value *groups = json_object_get(r.json, "groups");
+
+		if (json_object_get(groups, "permg1renamed") == NULL ||
+		    json_object_get(groups, "permg1") != NULL) {
+			fprintf(stderr, "FAIL: #540 a renamed group's grants did not move with it: %.300s\n",
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		if (json_object_get(groups, "permg3") != NULL) {
+			fprintf(stderr, "FAIL: #540 a deleted group is still in the mapping, so a new "
+			                "group of that name would inherit its grants\n");
+			ok = 0;
+		}
+	}
+	cix_response_free(&r);
+
+	/* 7. The state file carries the mapping, and admin_groups for a
+	 * rollback to a pre-#540 build; a restart keeps the mapping. */
+	f = fopen(path, "r");
+	n = f != NULL ? fread(file, 1, sizeof(file) - 1, f) : 0;
+	file[n] = '\0';
+	if (f != NULL)
+		fclose(f);
+	if (strstr(file, "\"permissions\"") == NULL || strstr(file, "\"admin_groups\"") == NULL ||
+	    strstr(file, "\"operators\"") == NULL) {
+		fprintf(stderr, "FAIL: #540 the state file does not carry both the mapping and "
+		                "admin_groups: %.300s\n",
+		        file);
+		ok = 0;
+	}
+	if (stop_daemon(pid) != 0)
+		ok = 0;
+	pid = start_daemon();
+	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+		ok = 0;
+		goto out;
+	}
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "GET", "/v1/system/hostauth/permissions", NULL, &r) != 0 ||
+	    !body_has(&r, "\"operators\":[\"containers:read\",\"containers:operate\"]")) {
+		fprintf(stderr, "FAIL: #540 the mapping did not survive a restart: %.300s\n",
+		        r.body != NULL ? r.body : "");
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+out:
+	if (pid > 0 && stop_daemon(pid) != 0)
+		ok = 0;
+	test_data_dir_cleanup(dir);
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", saved_data_dir);
+	return ok;
+}
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -1188,6 +1429,8 @@ int main(void)
 	}
 
 	test_data_dir_cleanup(g_data_dir);
+	if (!test_permission_mapping())
+		ok = 0;
 	printf(ok ? "HOSTAUTH RESULT: PASS\n" : "HOSTAUTH RESULT: FAIL\n");
 	return ok ? 0 : 1;
 }

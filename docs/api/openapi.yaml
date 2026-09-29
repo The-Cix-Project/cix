@@ -332,7 +332,7 @@ paths:
         (`host.site.tld>` unauthenticated, `host.site.tld#`
         authenticated) is the first real caller.
       operationId: getWhoami
-      x-cix-permission: authenticated
+      x-cix-permission: public
       x-cix-expose: [cli]
       responses:
         "200":
@@ -341,7 +341,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [authenticated, username]
+                required: [authenticated, username, permissions]
                 properties:
                   authenticated:
                     type: boolean
@@ -349,6 +349,15 @@ paths:
                     type: string
                     nullable: true
                     description: The session's real username when authenticated; null otherwise.
+                  permissions:
+                    type: array
+                    items:
+                      type: string
+                    description: >
+                      The permissions this session holds -- the union over the
+                      user's groups (ADR-0317) -- in vocabulary order, so a
+                      client can offer only what it will be allowed. Empty when
+                      not authenticated.
 
   /system/hostauth-config:
     get:
@@ -480,6 +489,107 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/hostauth/permissions:
+    get:
+      summary: What each group is granted, and the words it can be granted (ADR-0317)
+      description: >
+        The group -> permission mapping (ADR-0317 section 5) and the closed
+        vocabulary it draws from -- the spec's own x-cix-permissions. A user
+        holds the union of the permissions of every group they are in,
+        primary and secondary; there is no deny. `admin_groups` in
+        `GET /v1/system/hostauth-config` is derived from this: the groups
+        holding every permission. Nothing enforces the mapping yet (#541);
+        until then authorisation is still the admin-group rule, which this
+        mapping now drives.
+      operationId: getHostauthPermissions
+      x-cix-permission: identity:read
+      x-cix-expose: []
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The mapping and the vocabulary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HostauthPermissions"
+  /system/hostauth/permissions/{group}:
+    put:
+      summary: Set exactly the permissions one group grants (ADR-0317)
+      description: >
+        Replaces the group's permission set with `permissions`; an empty
+        list removes the group from the mapping. Every word must be in the
+        vocabulary (`GET /v1/system/hostauth/permissions`). Refused with
+        `409` when it would leave no enabled user holding `identity:write`
+        while one does now -- the permission that grants permissions must
+        always have a holder once it has had one (ADR-0317 section 6).
+      operationId: putHostauthGroupPermissions
+      x-cix-permission: identity:write
+      x-cix-expose: []
+      parameters:
+        - name: group
+          in: path
+          required: true
+          schema:
+            type: string
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [permissions]
+              properties:
+                permissions:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: The mapping after the change (same shape as GET)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HostauthPermissions"
+        "400":
+          description: An invalid group name, or a word outside the vocabulary (named in the error)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The change would leave no enabled user holding identity:write, or more groups holding every permission than admin_groups can list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Remove a group from the permission mapping (ADR-0317)
+      description: >
+        Same as PUT with an empty list, and refused with 409 for the same
+        reason.
+      operationId: deleteHostauthGroupPermissions
+      x-cix-permission: identity:write
+      x-cix-expose: []
+      parameters:
+        - name: group
+          in: path
+          required: true
+          schema:
+            type: string
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: Removed (or was not in the mapping)
+        "409":
+          description: The change would leave no enabled user holding identity:write
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /system/hostauth/sessions:
     get:
       summary: >
@@ -16042,6 +16152,22 @@ components:
             file to consult, and nothing changes a container's quota
             after creation. null means no quota.
 
+    HostauthPermissions:
+      type: object
+      required: [vocabulary, groups]
+      properties:
+        vocabulary:
+          type: array
+          items:
+            type: string
+          description: Every permission there is -- the spec's x-cix-permissions, generated into the daemon.
+        groups:
+          type: object
+          description: Group name -> the permissions it grants.
+          additionalProperties:
+            type: array
+            items:
+              type: string
     HostauthConfig:
       type: object
       required: [admin_groups, idle_timeout_seconds, ldap_enabled, ldap_servers, ldap_port, ldap_tls, ldap_base_dn]

@@ -38,7 +38,7 @@ The annotation names the **permission the operation requires**, not the roles th
 A permission is `<area>:<verb>`, or one of two special values:
 
 - **`public`**: needs no session.
-- **`authenticated`**: needs any valid session (`/v1/logout`, `/v1/whoami`).
+- **`authenticated`**: needs any valid session (`/v1/logout`; `/v1/whoami` is `public`, see section 3).
 
 **Verbs:**
 
@@ -69,6 +69,7 @@ Key material was already kept out of every GET (verified 2026-09-29): PKI return
 - `POST /v1/login`: it is how a caller gets a session at all.
 - The dashboard's own static files: not API operations, so not in the contract. Without them the login page could not load.
 - `GET /v1/health`: the liveness probe that monitors and load balancers poll, which they cannot log in to. Proposed, and the owner may take it back. It reports liveness only.
+- `GET /v1/whoami`: added while implementing #540. Its whole job is to tell a caller who may not be logged in whether they are, and since #540 what their session may do; `cixctl`'s shell prompt asks it without a session. Gated, a logged-out caller would get 401 instead of `authenticated: false`. It returns nothing about anyone but the caller.
 
 Everything else is `<area>:read` or stricter. Reads still work where they do today in two cases:
 

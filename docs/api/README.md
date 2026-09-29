@@ -17,6 +17,9 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | PUT | `/system/hostauth-config` | Replace host-auth config (full replacement of admin_groups/idle_timeout_seconds; ldap_* fields optional, including `ldap_tls` for the daemon's own bind) |
 | GET | `/system/hostauth/sessions` | Every active session (username, expires-in) -- never a raw token, before or after issuance (ADR-0152). **Needs a token** once gating is active ([#490](https://git.home.arpa/itdlabs/cix/issues/490)) |
 | DELETE | `/system/hostauth/sessions/{username}` | Revoke every active session for that user -- "log out everywhere" |
+| GET | `/system/hostauth/permissions` | The permission vocabulary, and which permissions each group holds (ADR-0317) |
+| PUT | `/system/hostauth/permissions/{group}` | Replace one group's permissions; `[]` removes its entry. Refused (409) if it would leave nobody holding `identity:write` |
+| DELETE | `/system/hostauth/permissions/{group}` | Remove one group's entry, under the same refusal |
 | GET | `/system/boot` | Build version/time, A/B slot, kernel version (`uname`), and which device backs each of the platform's five partitions this boot |
 | GET | `/system/stalls` | Times the control plane stopped going round its own loop, recorded by a watchdog process (issue #100) — each record names the daemon's own child processes and what each was doing, so a `wchan` of `do_wait` says *which* wait (issue #399) |
 | GET | `/system/kernel-policy` | Which kernel line this box tracks, what that channel currently points at, and how far behind the running kernel is (issue #65) |
@@ -680,14 +683,20 @@ Deliberately *not* done: making gating fail closed when its precondition is brok
 
 Each operation in `openapi.yaml` carries `x-cix-permission`, naming the one permission a caller needs. The words come from the spec's own top-level `x-cix-permissions` list, a closed vocabulary:
 
-- `public`: no session needed. Only `POST /v1/login` and `GET /v1/health`.
-- `authenticated`: any valid session. `POST /v1/logout` and `GET /v1/whoami`.
+- `public`: no session needed. Only `POST /v1/login`, `GET /v1/health`, and `GET /v1/whoami`, which answers "am I logged in, and what may I do" to a caller who may not be.
+- `authenticated`: any valid session. `POST /v1/logout`.
 - `<area>:read|operate|write` for the areas containers, images, volumes, networks, storage, devices, packages, services, identity, pki, schedules, config and system. `operate` changes the running state of something that exists without creating or destroying it; today that is container start, stop, pause, unpause and service start, stop and restart.
 - `containers:console`: an interactive shell in a container, which is more than any `write`.
 
 `apigen` refuses to generate if an operation has no permission, names one outside the list, or names two, so an endpoint with no stated authorisation cannot be added. Each permission is generated into the route table.
 
-**Declared, not yet enforced.** Until [#541](https://git.home.arpa/itdlabs/cix/issues/541) moves the check to the route table, authorisation is still the rule above: admin-group sessions for writes, and open reads apart from the console and the identity reads. When it lands, every read needs a login except the two `public` operations, a missing session answers `401`, and a session without the permission answers `403` naming it.
+**Which groups hold which permissions ([#540](https://git.home.arpa/itdlabs/cix/issues/540)).** `GET /system/hostauth/permissions` returns `{"vocabulary": [...], "groups": {"<group>": ["containers:read", ...]}}`, and `PUT /system/hostauth/permissions/{group}` with `{"permissions": [...]}` replaces one group's set. A user holds the union over every group they are in. A word outside the vocabulary is a `400` naming it. `GET /whoami` reports the caller's own set as `permissions`.
+
+The mapping is the one stored statement; `admin_groups` in `hostauth-config` is derived from it -- the groups holding every permission. A `PUT /system/hostauth-config` naming a group grants it every permission, and a group that held every permission and is no longer named loses its entry. On the first start after upgrading, each existing admin group is granted every permission, so nobody gains or loses anything. Deleting an LDAP group removes its entry, so a new group of the same name inherits nothing; renaming one moves its grants.
+
+Once any enabled user holds `identity:write` -- the permission that changes this mapping -- a change that would leave nobody holding it is refused with `409`. Before that, on a fresh box, the mapping is freely editable.
+
+**Declared, not yet enforced.** Until [#541](https://git.home.arpa/itdlabs/cix/issues/541) moves the check to the route table, authorisation is still the rule above: admin-group sessions for writes, and open reads apart from the console and the identity reads. When it lands, every read needs a login except the three `public` operations, a missing session answers `401`, and a session without the permission answers `403` naming it.
 
 ## Creating a network
 

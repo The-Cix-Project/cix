@@ -1803,9 +1803,17 @@ enum ldap_record_error ldap_group_delete(const char *name)
 	if (g == NULL)
 		return LDAP_RECORD_ERR_NOT_FOUND;
 
-	memset(g, 0, sizeof(*g));
-	if (save_groups_state() != 0)
-		return LDAP_RECORD_ERR_PERSIST_FAILED;
+	{
+		char gone[LDAP_GROUP_NAME_MAX];
+
+		snprintf(gone, sizeof(gone), "%s", g->name);
+		memset(g, 0, sizeof(*g));
+		if (save_groups_state() != 0)
+			return LDAP_RECORD_ERR_PERSIST_FAILED;
+		/* ADR-0317 (#540): its grants go with it, or the next group
+		 * created under this name would inherit them. */
+		hostauth_forget_group(gone);
+	}
 
 	ldap_record_sync_all();
 	return LDAP_RECORD_OK;

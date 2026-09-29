@@ -194,12 +194,14 @@ int main(void)
 	 * 305 as of the interface flap: POST /system/interfaces/{name}/flap.
 	 * 307 as of #469: GET and POST /system/boot-manager.
 	 * 309 as of ADR-0292: POST /config and POST /config/diff.
+	 * 312 as of #540: GET /system/hostauth/permissions, and PUT and
+	 *     DELETE /system/hostauth/permissions/{group}.
 	 */
 	status = run_apigen("docs/api/openapi.yaml", NULL, out, sizeof(out));
 	if (status != 0)
 		fail("apigen rejected the real spec: %.300s", out);
-	else if (atoi(out) != 309)
-		fail("apigen found %d operations in the real spec, expected 309 -- if the spec "
+	else if (atoi(out) != 312)
+		fail("apigen found %d operations in the real spec, expected 312 -- if the spec "
 		     "genuinely changed, update this number deliberately; a silently different "
 		     "count is how a lost route hides",
 		     atoi(out));
@@ -365,9 +367,9 @@ int main(void)
 			}
 			fclose(f);
 			unlink(routes_path);
-			if (rows != 309 || with_permission != rows)
+			if (rows != 312 || with_permission != rows)
 				fail("the generated route table has %d rows and %d carry a permission; "
-				     "expected 309 and 309 (ADR-0317)",
+				     "expected 312 and 312 (ADR-0317)",
 				     rows, with_permission);
 		}
 	}
@@ -465,10 +467,10 @@ int main(void)
 			fclose(f);
 			unlink(hdr_path);
 		}
-		if (defines != 309)
-			fail("CLI header has %d path defines, expected one per operation (309)", defines);
-		if (methods != 309)
-			fail("CLI header has %d method defines, expected one per operation (309)", methods);
+		if (defines != 312)
+			fail("CLI header has %d path defines, expected one per operation (312)", defines);
+		if (methods != 312)
+			fail("CLI header has %d method defines, expected one per operation (312)", methods);
 		if (braces != 0)
 			fail("%d CLI path define(s) still contain '{' -- a parameter was not converted "
 			     "to %%s and would put a literal brace in the URL",

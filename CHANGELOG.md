@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Groups hold permissions, and admin groups are the ones holding all of them (#540, ADR-0317)
+
+The second of six steps for role-based access control. A mapping from group to permission set is now the one stored statement of who may do what, in `hostauth_config.json` under `permissions`. `GET /v1/system/hostauth/permissions` lists the vocabulary and the mapping; `PUT /v1/system/hostauth/permissions/{group}` replaces one group's set and `DELETE` removes it. A user holds the union over their groups, and `GET /v1/whoami` now reports it as `permissions`. `whoami` is also `public` now: it answers "am I logged in, and what may I do" to a caller who may not be.
+
+`admin_groups` is derived from the mapping -- the groups holding every permission -- so every existing admin-group check, and #370's guards, answer from it unchanged. `PUT /v1/system/hostauth-config` still takes `admin_groups`: a named group is granted every permission, and a formerly-full group no longer named loses its entry. A state file from before this change has each admin group granted every permission on first start, written back at once. `admin_groups` stays in the file so a rollback to the other slot's older build still finds its admins.
+
+Once any enabled user holds `identity:write`, a mapping change that would leave nobody holding it is refused with `409`. Deleting an LDAP group removes its entry, so a new group of that name inherits nothing; renaming one moves its grants. The vocabulary comes from the contract: `apigen --emit-permissions` generates it into `build/generated/permissions.h`. **Enforcement is unchanged** until #541; `test_hostauth` covers the migration, the union, the refusals, rename, delete and a restart.
+
 ### Every API operation declares the permission it requires (#539, ADR-0317)
 
 The first of six steps for role-based access control ([ADR-0317](docs/adr/0317-permissions-are-declared-by-the-api-contract.md), accepted 2026-09-29). All 309 operations in `openapi.yaml` now carry `x-cix-permission`, one each, from a closed vocabulary the spec declares at its top level (`x-cix-permissions`): `public`, `authenticated`, `<area>:read|operate|write` over thirteen areas, and `containers:console`.

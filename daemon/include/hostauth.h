@@ -112,17 +112,76 @@ enum hostauth_config_error hostauth_set_config(const char *const *admin_groups, 
 void hostauth_write_config_json(struct json_writer *w);
 
 /* Called by ldap_group_rename() (ADR-0147) before it commits an LDAP
- * group rename -- if old_name currently appears in admin_groups, it's
- * rewritten to new_name in place and persisted, so a renamed admin
- * group never silently drops out of write-gating (the exact class of
- * incident ADR-0146 already closed once for a different cause; a
- * rename that orphaned admin_groups would be a self-inflicted repeat
- * of it). A no-op, returning 1, if old_name isn't currently an admin
- * group at all. Returns 0 on a real persist failure -- the caller
- * (ldap_group_rename()) treats that as reason to refuse the rename
- * outright rather than leave admin_groups and the group's own name
- * inconsistent. */
+ * group rename. ADR-0317 (#540): the permission mapping is keyed by
+ * group name, so if old_name has an entry -- any grant at all, not only
+ * every permission -- it is renamed in place, admin_groups is
+ * re-derived, and both are persisted. A renamed group therefore never
+ * silently loses its grants, and a renamed admin group never drops out
+ * of write-gating (the class of incident ADR-0146 closed once already).
+ * A no-op, returning 1, if old_name has no entry. Returns 0 on a real
+ * persist failure -- the caller treats that as reason to refuse the
+ * rename outright rather than leave the mapping and the group's own
+ * name inconsistent. The name is historical: it predates the mapping. */
 int hostauth_rename_admin_group(const char *old_name, const char *new_name);
+
+/*
+ * ---- ADR-0317 (#540): the group -> permission mapping ----
+ *
+ * The one stored statement of who may do what: a group name maps to a
+ * set of words from the closed vocabulary the API contract declares
+ * (x-cix-permissions, generated into build/generated/permissions.h).
+ * A user holds the union of the permissions of every group they are
+ * in, primary and secondary; there is no deny.
+ *
+ * admin_groups is DERIVED from this -- the groups holding every
+ * permission -- so every admin-group function above answers from the
+ * mapping and #370's guards (last admin, disable, de-admin) protect the
+ * groups that hold everything. hostauth_set_config() still takes an
+ * admin_groups list, read as: a named group is granted every
+ * permission; a group that held every permission and is no longer
+ * named loses its grants. Nothing enforces the mapping per operation
+ * until #541.
+ */
+#define HOSTAUTH_PERM_GROUPS_MAX 32
+#define HOSTAUTH_PERMISSION_MAX 48
+/* How many words one PUT may name: the whole vocabulary fits with room. */
+#define HOSTAUTH_PERMISSIONS_PER_REQUEST_MAX 64
+
+enum hostauth_perm_error {
+	HOSTAUTH_PERM_OK = 0,
+	HOSTAUTH_PERM_ERR_INVALID_GROUP,
+	HOSTAUTH_PERM_ERR_UNKNOWN_PERMISSION, /* the offending word is written to detail */
+	HOSTAUTH_PERM_ERR_FULL,               /* HOSTAUTH_PERM_GROUPS_MAX groups already mapped */
+	/* More groups would hold every permission than admin_groups can
+	 * list (HOSTAUTH_ADMIN_GROUPS_MAX) -- the derived list must stay
+	 * whole, or a group holding everything would silently not be an
+	 * admin under today's enforcement. */
+	HOSTAUTH_PERM_ERR_TOO_MANY_ADMIN_GROUPS,
+	/* Would leave no enabled user holding identity:write while one
+	 * does now (ADR-0317 section 6). */
+	HOSTAUTH_PERM_ERR_LOCKOUT,
+	HOSTAUTH_PERM_ERR_PERSIST_FAILED,
+};
+
+/* Replaces the permissions group grants with exactly perms[0..count);
+ * count == 0 removes the group from the mapping. Nothing is changed
+ * unless the whole request is accepted. */
+enum hostauth_perm_error hostauth_set_group_permissions(const char *group, const char *const *perms,
+                                                         int count, char *detail,
+                                                         size_t detail_size);
+/* Whether username holds permission through any of their groups. */
+int hostauth_user_has_permission(const char *username, const char *permission);
+/* Whether permission is a word in the contract's vocabulary. */
+int hostauth_permission_is_known(const char *permission);
+/* {"vocabulary": [...], "groups": {"<group>": [...]}} */
+void hostauth_write_permissions_json(struct json_writer *w);
+/* Called by ldap_group_delete() once the group is gone: removes the
+ * group from the mapping, so a later group created with the same name
+ * does not inherit what the deleted one was granted. */
+void hostauth_forget_group(const char *name);
+/* The permissions username holds (the union over their groups), as a
+ * JSON array in vocabulary order; [] for NULL. */
+void hostauth_write_user_permissions_json(struct json_writer *w, const char *username);
 
 /* True once at least one user is a member of a configured admin group
  * -- the bootstrap-safety check every write-gating decision starts

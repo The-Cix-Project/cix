@@ -4,6 +4,10 @@
 #include "persist.h"
 #include "pki.h"
 #include "logstore.h"
+#include "namecheck.h"
+
+/* ADR-0317: the contract's permission vocabulary (apigen --emit-permissions). */
+#include "generated/permissions.h"
 
 #include <fcntl.h>
 #include <limits.h>
@@ -38,6 +42,116 @@ static struct hostauth_config g_config = { { { 0 } },      0, 900, 0, { { 0 } },
                                             HOSTAUTH_LDAP_DEFAULT_PORT, 0, { 0 } };
 static char g_config_path[PATH_MAX];
 
+/*
+ * ADR-0317 (#540): the group -> permission mapping, the one stored
+ * statement of who may do what. g_config.admin_groups above is a cache
+ * DERIVED from it by derive_admin_groups() -- the groups holding every
+ * permission -- so every existing admin-group function, and #370's
+ * guards built on them, answer from the mapping unchanged.
+ *
+ * `has` is indexed by position in cix_permissions[], the vocabulary
+ * apigen generates from the contract's x-cix-permissions: the same list
+ * every operation's x-cix-permission was checked against, so "every
+ * permission" means the same thing here as in the contract.
+ */
+struct perm_group {
+	char name[HOSTAUTH_GROUP_NAME_MAX];
+	unsigned char has[CIX_PERMISSION_COUNT];
+};
+static struct perm_group g_perm_groups[HOSTAUTH_PERM_GROUPS_MAX];
+static int g_perm_group_count;
+
+static int perm_index(const char *word)
+{
+	int i;
+
+	if (word == NULL)
+		return -1;
+	for (i = 0; i < CIX_PERMISSION_COUNT; i++) {
+		if (strcmp(cix_permissions[i], word) == 0)
+			return i;
+	}
+	return -1;
+}
+
+static int perm_group_holds_all(const struct perm_group *pg)
+{
+	int i;
+
+	for (i = 0; i < CIX_PERMISSION_COUNT; i++) {
+		if (!pg->has[i])
+			return 0;
+	}
+	return 1;
+}
+
+static int perm_group_find(const struct perm_group *groups, int count, const char *name)
+{
+	int i;
+
+	for (i = 0; i < count; i++) {
+		if (strcmp(groups[i].name, name) == 0)
+			return i;
+	}
+	return -1;
+}
+
+static int count_groups_holding_all(const struct perm_group *groups, int count)
+{
+	int i, n = 0;
+
+	for (i = 0; i < count; i++)
+		n += perm_group_holds_all(&groups[i]);
+	return n;
+}
+
+/*
+ * Rebuilds g_config.admin_groups from the mapping, in mapping order.
+ * Every writer of the mapping calls this, so the cache cannot drift.
+ * The writers refuse a change that would need more than
+ * HOSTAUTH_ADMIN_GROUPS_MAX entries (HOSTAUTH_PERM_ERR_TOO_MANY_ADMIN_
+ * GROUPS); a hand-edited state file is the only way past that, and is
+ * truncated here with the reason on stderr.
+ */
+static void derive_admin_groups(void)
+{
+	int i;
+
+	memset(g_config.admin_groups, 0, sizeof(g_config.admin_groups));
+	g_config.admin_group_count = 0;
+	for (i = 0; i < g_perm_group_count; i++) {
+		if (!perm_group_holds_all(&g_perm_groups[i]))
+			continue;
+		if (g_config.admin_group_count >= HOSTAUTH_ADMIN_GROUPS_MAX) {
+			fprintf(stderr,
+			        "host auth: more than %d groups hold every permission; \"%s\" and any "
+			        "after it are not admin groups until that is reduced\n",
+			        HOSTAUTH_ADMIN_GROUPS_MAX, g_perm_groups[i].name);
+			break;
+		}
+		snprintf(g_config.admin_groups[g_config.admin_group_count],
+		         sizeof(g_config.admin_groups[0]), "%s", g_perm_groups[i].name);
+		g_config.admin_group_count++;
+	}
+}
+
+static void write_mapping_groups(struct json_writer *w)
+{
+	int i, j;
+
+	jw_obj_open(w);
+	for (i = 0; i < g_perm_group_count; i++) {
+		jw_key(w, g_perm_groups[i].name);
+		jw_arr_open(w);
+		for (j = 0; j < CIX_PERMISSION_COUNT; j++) {
+			if (g_perm_groups[i].has[j])
+				jw_str(w, cix_permissions[j]);
+		}
+		jw_arr_close(w);
+	}
+	jw_obj_close(w);
+}
+
 struct hostauth_session {
 	char token[HOSTAUTH_TOKEN_LEN + 1];
 	char username[HOSTAUTH_USERNAME_MAX];
@@ -47,13 +161,28 @@ struct hostauth_session {
 
 static struct hostauth_session g_sessions[HOSTAUTH_SESSION_MAX];
 
+static void write_config_fields(struct json_writer *w);
+
+/*
+ * The state file holds the mapping ("permissions") AND the derived
+ * admin_groups. The mapping is what this build reads back; admin_groups
+ * is kept in the file for one reason: a box that rolls back to its
+ * other A/B slot runs a build older than #540, which reads only
+ * admin_groups -- without it, that build would see no admin groups,
+ * and with no admin groups gating is off. This build never reads
+ * admin_groups back while "permissions" is present.
+ */
 static int save_config(void)
 {
 	struct json_writer w;
 	int rc;
 
 	jw_init(&w);
-	hostauth_write_config_json(&w);
+	jw_obj_open(&w);
+	write_config_fields(&w);
+	jw_key(&w, "permissions");
+	write_mapping_groups(&w);
+	jw_obj_close(&w);
 	rc = persist_atomic_write(g_config_path, w.buf, w.len);
 	jw_free(&w);
 	return rc;
@@ -129,7 +258,78 @@ static int load_config(void)
 	if (jldapbasedn != NULL && json_as_string(jldapbasedn) != NULL)
 		snprintf(g_config.ldap_base_dn, sizeof(g_config.ldap_base_dn), "%s", json_as_string(jldapbasedn));
 
-	json_free(root);
+	/*
+	 * ADR-0317 (#540): the mapping, or the migration into it.
+	 *
+	 * With "permissions" present it is the truth and admin_groups is
+	 * re-derived from it below; the file's own admin_groups is only
+	 * there for an older build after a rollback (see save_config()).
+	 *
+	 * Without it, the file predates #540, and every group in its
+	 * admin_groups is granted every permission -- nobody gains or
+	 * loses anything, and no operator step is needed (ADR-0317
+	 * section 7). Written back at once, so the migration happens once.
+	 */
+	g_perm_group_count = 0;
+	memset(g_perm_groups, 0, sizeof(g_perm_groups));
+	{
+		const struct json_value *jperms = json_object_get(root, "permissions");
+		int migrated = 0;
+		size_t i, j;
+
+		if (jperms != NULL && jperms->type == JSON_OBJECT) {
+			for (i = 0; i < jperms->u.object.count &&
+			            g_perm_group_count < HOSTAUTH_PERM_GROUPS_MAX;
+			     i++) {
+				const struct json_value *words = jperms->u.object.values[i];
+				struct perm_group *pg = &g_perm_groups[g_perm_group_count];
+
+				if (!simple_name_is_valid(jperms->u.object.keys[i], HOSTAUTH_GROUP_NAME_MAX) ||
+				    words == NULL || words->type != JSON_ARRAY)
+					continue;
+				snprintf(pg->name, sizeof(pg->name), "%s", jperms->u.object.keys[i]);
+				for (j = 0; j < words->u.array.count; j++) {
+					int idx = perm_index(json_as_string(words->u.array.items[j]));
+
+					/* A word this build's vocabulary lacks -- written
+					 * by a newer build, or a hand edit -- grants
+					 * nothing here and is dropped at the next save. */
+					if (idx >= 0)
+						pg->has[idx] = 1;
+					else
+						fprintf(stderr,
+						        "host auth: group \"%s\" names \"%s\", which is not a "
+						        "permission in this build; ignored\n",
+						        pg->name,
+						        json_as_string(words->u.array.items[j]) != NULL
+						                ? json_as_string(words->u.array.items[j])
+						                : "(not a string)");
+				}
+				g_perm_group_count++;
+			}
+		} else {
+			int k;
+
+			for (k = 0; k < g_config.admin_group_count; k++) {
+				struct perm_group *pg = &g_perm_groups[g_perm_group_count++];
+
+				snprintf(pg->name, sizeof(pg->name), "%s", g_config.admin_groups[k]);
+				memset(pg->has, 1, sizeof(pg->has));
+			}
+			migrated = g_config.admin_group_count > 0;
+		}
+		derive_admin_groups();
+		json_free(root);
+		if (migrated) {
+			fprintf(stderr,
+			        "host auth: migrated %d admin group(s) into the permission mapping, each "
+			        "granted every permission (ADR-0317)\n",
+			        g_perm_group_count);
+			if (save_config() != 0)
+				fprintf(stderr, "host auth: could not write the migrated mapping back; it "
+				                "will be derived again at the next start\n");
+		}
+	}
 	return 0;
 }
 
@@ -182,6 +382,8 @@ enum hostauth_config_error hostauth_set_config(const char *const *admin_groups, 
                                                 int ldap_port, int ldap_tls, const char *ldap_base_dn)
 {
 	struct hostauth_config old = g_config;
+	struct perm_group old_groups[HOSTAUTH_PERM_GROUPS_MAX];
+	int old_group_count;
 	int i;
 
 	if (admin_group_count < 0 || admin_group_count > HOSTAUTH_ADMIN_GROUPS_MAX)
@@ -204,10 +406,45 @@ enum hostauth_config_error hostauth_set_config(const char *const *admin_groups, 
 	if (ldap_enabled && ldap_tls && !pki_ca_bootstrapped())
 		return HOSTAUTH_CONFIG_ERR_NO_CA;
 
-	memset(g_config.admin_groups, 0, sizeof(g_config.admin_groups));
-	for (i = 0; i < admin_group_count; i++)
-		snprintf(g_config.admin_groups[i], sizeof(g_config.admin_groups[0]), "%s", admin_groups[i]);
-	g_config.admin_group_count = admin_group_count;
+	/*
+	 * ADR-0317 (#540): admin_groups is read into the mapping, never
+	 * stored beside it. A named group is granted every permission; a
+	 * group that held every permission and is no longer named loses
+	 * its grants entirely. A group granted only some permissions is
+	 * neither, and is left as it is.
+	 */
+	memcpy(old_groups, g_perm_groups, sizeof(old_groups));
+	old_group_count = g_perm_group_count;
+	for (i = 0; i < g_perm_group_count;) {
+		int named = 0;
+		int k;
+
+		for (k = 0; k < admin_group_count; k++)
+			named |= strcmp(admin_groups[k], g_perm_groups[i].name) == 0;
+		if (!named && perm_group_holds_all(&g_perm_groups[i])) {
+			g_perm_groups[i] = g_perm_groups[--g_perm_group_count];
+			memset(&g_perm_groups[g_perm_group_count], 0, sizeof(g_perm_groups[0]));
+			continue;
+		}
+		i++;
+	}
+	for (i = 0; i < admin_group_count; i++) {
+		int at = perm_group_find(g_perm_groups, g_perm_group_count, admin_groups[i]);
+
+		if (at < 0) {
+			if (g_perm_group_count >= HOSTAUTH_PERM_GROUPS_MAX ||
+			    !simple_name_is_valid(admin_groups[i], HOSTAUTH_GROUP_NAME_MAX)) {
+				memcpy(g_perm_groups, old_groups, sizeof(old_groups));
+				g_perm_group_count = old_group_count;
+				return HOSTAUTH_CONFIG_ERR_INVALID_FIELD;
+			}
+			at = g_perm_group_count++;
+			snprintf(g_perm_groups[at].name, sizeof(g_perm_groups[at].name), "%s",
+			         admin_groups[i]);
+		}
+		memset(g_perm_groups[at].has, 1, sizeof(g_perm_groups[at].has));
+	}
+	derive_admin_groups();
 	g_config.idle_timeout_seconds = idle_timeout_seconds;
 
 	g_config.ldap_enabled = ldap_enabled ? 1 : 0;
@@ -221,6 +458,8 @@ enum hostauth_config_error hostauth_set_config(const char *const *admin_groups, 
 
 	if (save_config() != 0) {
 		g_config = old;
+		memcpy(g_perm_groups, old_groups, sizeof(old_groups));
+		g_perm_group_count = old_group_count;
 		return HOSTAUTH_CONFIG_ERR_PERSIST_FAILED;
 	}
 	return HOSTAUTH_CONFIG_OK;
@@ -228,19 +467,23 @@ enum hostauth_config_error hostauth_set_config(const char *const *admin_groups, 
 
 int hostauth_rename_admin_group(const char *old_name, const char *new_name)
 {
+	/*
+	 * ADR-0317 (#540): the mapping is keyed by group name, so a rename
+	 * moves the group's grants with it -- every group's, not only an
+	 * admin group's, or renaming a partly-privileged group would
+	 * silently strip it. admin_groups is re-derived.
+	 */
 	struct hostauth_config old = g_config;
-	int i, changed = 0;
+	struct perm_group old_entry;
+	int at = perm_group_find(g_perm_groups, g_perm_group_count, old_name);
 
-	for (i = 0; i < g_config.admin_group_count; i++) {
-		if (strcmp(g_config.admin_groups[i], old_name) == 0) {
-			snprintf(g_config.admin_groups[i], sizeof(g_config.admin_groups[0]), "%s", new_name);
-			changed = 1;
-		}
-	}
-	if (!changed)
+	if (at < 0)
 		return 1;
-
+	old_entry = g_perm_groups[at];
+	snprintf(g_perm_groups[at].name, sizeof(g_perm_groups[at].name), "%s", new_name);
+	derive_admin_groups();
 	if (save_config() != 0) {
+		g_perm_groups[at] = old_entry;
 		g_config = old;
 		return 0;
 	}
@@ -249,9 +492,15 @@ int hostauth_rename_admin_group(const char *old_name, const char *new_name)
 
 void hostauth_write_config_json(struct json_writer *w)
 {
+	jw_obj_open(w);
+	write_config_fields(w);
+	jw_obj_close(w);
+}
+
+static void write_config_fields(struct json_writer *w)
+{
 	int i;
 
-	jw_obj_open(w);
 	jw_key(w, "admin_groups");
 	jw_arr_open(w);
 	for (i = 0; i < g_config.admin_group_count; i++)
@@ -281,7 +530,6 @@ void hostauth_write_config_json(struct json_writer *w)
 	 */
 	jw_key(w, "gating_active");
 	jw_bool(w, hostauth_gating_active());
-	jw_obj_close(w);
 }
 
 /*
@@ -794,4 +1042,190 @@ int hostauth_authorize_write(const char *token)
 			return 1;
 	}
 	return 0;
+}
+
+/*
+ * ---- ADR-0317 (#540): the permission mapping's own operations ----
+ */
+
+int hostauth_permission_is_known(const char *permission)
+{
+	return perm_index(permission) >= 0;
+}
+
+/* Whether username holds permission (by index) through any group in
+ * the given mapping -- the current one, or a proposed one being judged
+ * by a guard before it is applied. */
+static int user_holds_under(const struct perm_group *groups, int count, const char *username,
+                            int idx)
+{
+	int i;
+
+	for (i = 0; i < count; i++) {
+		if (groups[i].has[idx] && ldap_user_is_in_group(username, groups[i].name))
+			return 1;
+	}
+	return 0;
+}
+
+int hostauth_user_has_permission(const char *username, const char *permission)
+{
+	int idx = perm_index(permission);
+
+	if (username == NULL || idx < 0)
+		return 0;
+	return user_holds_under(g_perm_groups, g_perm_group_count, username, idx);
+}
+
+struct holder_query {
+	const struct perm_group *groups;
+	int count;
+	int idx;
+};
+
+static int one_holder(const char *username, void *ctx)
+{
+	const struct holder_query *q = ctx;
+
+	return user_holds_under(q->groups, q->count, username, q->idx); /* 1 stops the walk */
+}
+
+/* Whether any user holds the permission under the given mapping. */
+static int any_user_holds(const struct perm_group *groups, int count, int idx)
+{
+	struct holder_query q;
+
+	q.groups = groups;
+	q.count = count;
+	q.idx = idx;
+	return ldap_user_for_each(one_holder, &q);
+}
+
+enum hostauth_perm_error hostauth_set_group_permissions(const char *group, const char *const *perms,
+                                                         int count, char *detail,
+                                                         size_t detail_size)
+{
+	struct perm_group proposed[HOSTAUTH_PERM_GROUPS_MAX];
+	int proposed_count = g_perm_group_count;
+	unsigned char has[CIX_PERMISSION_COUNT];
+	int identity_write = perm_index("identity:write");
+	int at, i, any = 0;
+
+	if (detail != NULL && detail_size > 0)
+		detail[0] = '\0';
+	if (!simple_name_is_valid(group, HOSTAUTH_GROUP_NAME_MAX))
+		return HOSTAUTH_PERM_ERR_INVALID_GROUP;
+	memset(has, 0, sizeof(has));
+	for (i = 0; i < count; i++) {
+		int idx = perm_index(perms[i]);
+
+		if (idx < 0) {
+			if (detail != NULL && detail_size > 0)
+				snprintf(detail, detail_size, "%s", perms[i] != NULL ? perms[i] : "");
+			return HOSTAUTH_PERM_ERR_UNKNOWN_PERMISSION;
+		}
+		has[idx] = 1;
+		any = 1;
+	}
+
+	/* Build the mapping the request proposes, then judge it whole. */
+	memcpy(proposed, g_perm_groups, sizeof(proposed));
+	at = perm_group_find(proposed, proposed_count, group);
+	if (!any) {
+		if (at >= 0) {
+			proposed[at] = proposed[--proposed_count];
+			memset(&proposed[proposed_count], 0, sizeof(proposed[0]));
+		}
+	} else {
+		if (at < 0) {
+			if (proposed_count >= HOSTAUTH_PERM_GROUPS_MAX)
+				return HOSTAUTH_PERM_ERR_FULL;
+			at = proposed_count++;
+			memset(&proposed[at], 0, sizeof(proposed[at]));
+			snprintf(proposed[at].name, sizeof(proposed[at].name), "%s", group);
+		}
+		memcpy(proposed[at].has, has, sizeof(has));
+	}
+	if (count_groups_holding_all(proposed, proposed_count) > HOSTAUTH_ADMIN_GROUPS_MAX)
+		return HOSTAUTH_PERM_ERR_TOO_MANY_ADMIN_GROUPS;
+	/*
+	 * ADR-0317 section 6: once someone holds the permission that grants
+	 * permissions, a change may not leave nobody holding it. Before
+	 * anyone does -- a fresh box -- the mapping is freely editable,
+	 * the same "never refuse turning protection ON" posture as
+	 * hostauth_would_gate().
+	 */
+	if (identity_write >= 0 && any_user_holds(g_perm_groups, g_perm_group_count, identity_write) &&
+	    !any_user_holds(proposed, proposed_count, identity_write))
+		return HOSTAUTH_PERM_ERR_LOCKOUT;
+
+	{
+		struct perm_group old[HOSTAUTH_PERM_GROUPS_MAX];
+		int old_count = g_perm_group_count;
+		struct hostauth_config old_config = g_config;
+
+		memcpy(old, g_perm_groups, sizeof(old));
+		memcpy(g_perm_groups, proposed, sizeof(proposed));
+		g_perm_group_count = proposed_count;
+		derive_admin_groups();
+		if (save_config() != 0) {
+			memcpy(g_perm_groups, old, sizeof(old));
+			g_perm_group_count = old_count;
+			g_config = old_config;
+			return HOSTAUTH_PERM_ERR_PERSIST_FAILED;
+		}
+	}
+	return HOSTAUTH_PERM_OK;
+}
+
+void hostauth_forget_group(const char *name)
+{
+	struct hostauth_config old_config = g_config;
+	struct perm_group old_entry;
+	int at = perm_group_find(g_perm_groups, g_perm_group_count, name);
+
+	if (at < 0)
+		return;
+	old_entry = g_perm_groups[at];
+	g_perm_groups[at] = g_perm_groups[--g_perm_group_count];
+	memset(&g_perm_groups[g_perm_group_count], 0, sizeof(g_perm_groups[0]));
+	derive_admin_groups();
+	if (save_config() != 0) {
+		/* The group is gone either way; what failed is recording that
+		 * its grants went with it. Kept in memory, and said, rather
+		 * than quietly dropped. */
+		g_perm_groups[g_perm_group_count++] = old_entry;
+		g_config = old_config;
+		fprintf(stderr, "host auth: could not persist removing deleted group \"%s\" from the "
+		                "permission mapping\n", name);
+	}
+}
+
+void hostauth_write_permissions_json(struct json_writer *w)
+{
+	int i;
+
+	jw_obj_open(w);
+	jw_key(w, "vocabulary");
+	jw_arr_open(w);
+	for (i = 0; i < CIX_PERMISSION_COUNT; i++)
+		jw_str(w, cix_permissions[i]);
+	jw_arr_close(w);
+	jw_key(w, "groups");
+	write_mapping_groups(w);
+	jw_obj_close(w);
+}
+
+/* The permissions username holds, as a JSON array in vocabulary order
+ * -- the union over every group they are in. [] for NULL. */
+void hostauth_write_user_permissions_json(struct json_writer *w, const char *username)
+{
+	int i;
+
+	jw_arr_open(w);
+	for (i = 0; username != NULL && i < CIX_PERMISSION_COUNT; i++) {
+		if (user_holds_under(g_perm_groups, g_perm_group_count, username, i))
+			jw_str(w, cix_permissions[i]);
+	}
+	jw_arr_close(w);
 }

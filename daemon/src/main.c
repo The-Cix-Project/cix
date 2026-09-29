@@ -26261,6 +26261,22 @@ static void op_revokeHostauthSessions(const struct api_ctx *ctx)
 	handle_hostauth_sessions_revoke(ctx->fd, ctx->p[0]);
 }
 
+/* ADR-0317 (#540): the group -> permission mapping. */
+static void op_getHostauthPermissions(const struct api_ctx *ctx)
+{
+	handle_hostauth_permissions_get(ctx->fd);
+}
+
+static void op_putHostauthGroupPermissions(const struct api_ctx *ctx)
+{
+	handle_hostauth_permissions_put(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_deleteHostauthGroupPermissions(const struct api_ctx *ctx)
+{
+	handle_hostauth_permissions_delete(ctx->fd, ctx->p[0]);
+}
+
 static void op_setServerHealthDrain(const struct api_ctx *ctx)
 {
 	handle_serverhealth_set(ctx->fd, ctx->p[0], ctx->p[1], ctx->req->body,
