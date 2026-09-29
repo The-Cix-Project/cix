@@ -5225,6 +5225,11 @@ static struct {
 	 * compare unequal forever, re-deriving on every boot. */
 	char from[256];
 	char to[256];
+	/* Which recipes failed, for the same reason as the counts: named
+	 * at sweep time, said once the log store exists. Bounded; names
+	 * that do not fit are counted in failed_unnamed. */
+	char failed_names[1024];
+	int failed_unnamed;
 } g_explain_sweep;
 
 void pkg_log_explain_sweep(void)
@@ -5244,6 +5249,12 @@ void pkg_log_explain_sweep(void)
 	               g_explain_sweep.from[0] != '\0' ? g_explain_sweep.from : "none recorded",
 	               g_explain_sweep.to, g_explain_sweep.rederived,
 	               g_explain_sweep.rederived == 1 ? "y" : "ies", g_explain_sweep.failed);
+	if (g_explain_sweep.failed_names[0] != '\0')
+		logstore_write("cixd", "warn",
+		               "pkg: engine sweep could not re-derive %s%s -- those recipes keep "
+		               "their old identity until they are re-derived",
+		               g_explain_sweep.failed_names,
+		               g_explain_sweep.failed_unnamed > 0 ? " (and more not listed)" : "");
 }
 
 static void explain_sweep_if_engine_changed(void)
@@ -5357,16 +5368,25 @@ static void explain_sweep_if_engine_changed(void)
 			 */
 			if (pkg_recipe_rederive_identity(recipe_path) != PKG_OK) {
 				/*
-				 * Named here, not only counted: on 2026-09-23 the
+				 * Named, not only counted: on 2026-09-23 the
 				 * cbs 0.1.34 -> 0.1.52 sweep reported "1 failed"
-				 * and nothing anywhere said which recipe, because
-				 * only one of pkg_recipe_rederive_identity()'s
-				 * failure paths logs.
+				 * and nothing anywhere said which recipe. The
+				 * first fix logged the name right here, which is
+				 * before logstore_init() -- so it was dropped too,
+				 * and every sweep from 0.1.71 to 0.1.97 on
+				 * 192.168.15.95 reported "2 failed" with no name
+				 * anywhere in 1.5 MB of cixd log (2026-09-29).
+				 * Recorded here, logged by pkg_log_explain_sweep().
 				 */
-				logstore_write("cixd", "warn",
-				               "pkg: engine sweep could not re-derive %s@%s -- that "
-				               "recipe keeps its old identity until it is re-derived",
-				               nde->d_name, vde->d_name);
+				size_t used = strlen(g_explain_sweep.failed_names);
+				int n = snprintf(g_explain_sweep.failed_names + used,
+				                 sizeof(g_explain_sweep.failed_names) - used, "%s%s@%s",
+				                 used > 0 ? ", " : "", nde->d_name, vde->d_name);
+
+				if (n < 0 || (size_t)n >= sizeof(g_explain_sweep.failed_names) - used) {
+					g_explain_sweep.failed_names[used] = '\0';
+					g_explain_sweep.failed_unnamed++;
+				}
 				g_explain_sweep.failed++;
 				continue;
 			}

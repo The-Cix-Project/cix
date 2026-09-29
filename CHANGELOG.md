@@ -6,6 +6,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The engine sweep names the recipes it could not re-derive
+
+When the CPDL engine changes, `cixd` re-derives every stored recipe's identity and reports `re-derived N identities, M failed`. The per-recipe line naming each failure was written from inside `pkg_init()`, which runs before `logstore_init()`, so `write_entry()` dropped it. Every sweep on 192.168.15.95 since the host engine left cbs 0.1.67 reported `2 failed`; not one of the named lines was in 1.5 MB of `cixd` log (measured 2026-09-29, after upgrading the host engine to cbs 0.1.97). The names are now recorded during the sweep and logged by `pkg_log_explain_sweep()`, once the log store exists — the pattern the comment on that struct already prescribed.
+
 ### A fresh host syncs its recipe catalogue at first boot and every 6 hours
 
 Follows the entry below: a fresh host had the public catalogue set but fetched it only when asked. A host that has never saved a schedule file now starts with `recipe-sync`, `pkg.sync` every 6 hours ([ADR-0316](docs/adr/0316-a-fresh-host-syncs-recipes-on-a-schedule.md)). An every-N job that has never run is due at once, so the first sync happens at first boot. `cixctl pkg sync-status` says how it went; a first-boot sync fails if DNS was not set yet, and `cixctl pkg sync --wait` runs another straight away.
