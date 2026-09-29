@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Package drift: 24 behind to 3, and the 3 are deliberate
+
+`GET /v1/pkg/drift` reported 24 image-package pairs behind their latest recipe. They read as the painful residue of the CPDL flip — toolchain, glibc, the kernel, python. Measured before touching any of them: **every target already had a built artifact in the cache**, so not one needed a source build. It was installs, not rebuilds.
+
+Twenty upgraded, serially, each checked for the version it *reached* rather than the one requested — `glibc`, `binutils`, `elfutils`, `xz` and `zlib` in `kernel-builder`; `glibc`, `python`, `kernel` and `zlib` in `base`; `libuv` in `cix-builder`; `xz` and `zlib` in `cix-hosttools` and `jumpbox`; `zlib`, `binutils` and `linux-headers` in `cpdl-stage`.
+
+**Five were removed rather than upgraded**, because upgrading them would have been wrong: `base` carried a retired-line `cix@v2.57.167`, `probe-pbs-caps`, `probe-approve-pbs` and a `probe-cix-testreport`, and `cpdl-stage` another probe. `drift` was offering to "upgrade" the `cix` one to `0.2.57-379` — a control-plane hostbuild artifact into the default image. Nothing depended on any of them and no running container uses either image.
+
+**The declared pins were reconciled too**, the lesson #497 left: `--upgrade` moves what is installed and not what the manifest declares. Eleven pins now match.
+
+**Two of those went *backwards*, deliberately.** `gcc` was pinned to `16.2.0-17` in `cix-builder` and `kernel-builder` while `16.2.0-13` was installed — and `-17` is the revision that ships **no** `libstdc++.a` (re-measured: `-13` has 1, `-17` has 0), which is #521. What had been keeping those images safe was only that pinned entries are never auto-moved; the *declared intent* was the broken version. They now pin `-13`, what is actually and deliberately kept, until #521 is fixed. That is the first of the three remaining: `gcc` in two images, held on purpose. The third is `libmnl@__hostbuild`, which the next hostbuild refreshes.
+
+**And one declared package was never installed:** `jumpbox`'s manifest pinned `ca-certificates@2026.09.03-2` and nothing was there. Installed from its existing artifact.
+
+**`kernel-builder` is not verified by this release.** Its `glibc` moved seven revisions, `binutils` seven and `elfutils` five, and the only proof of a kernel build environment is a kernel build. That costs about fifty minutes and is the owner's call; until then, the next kernel build is the first thing to exercise it.
+
 ### #504's cause was logged all along; the message pointed somewhere else (#504)
 
 #504 reported that glibc failed to unpack on the `chrony` image *"reproducibly, with no reason recorded"*. The reason **was** recorded — one line above the failure, on both occasions:
