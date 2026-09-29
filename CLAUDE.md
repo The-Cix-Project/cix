@@ -210,7 +210,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 
 ## Authorisation (RBAC)
 
-**Permissions are declared by the API contract, not by a policy file and not in handlers** -- the owner's direction on #304 (2026-09-14), recorded as [ADR-0317](docs/adr/0317-permissions-are-declared-by-the-api-contract.md) (Proposed until the owner accepts it). Each operation will carry one `x-cix-permission`; `apigen` generates the check; one enforcement point after routing. Until ADR-0317's implementation lands, the ADR-0144 binary admin-group rule is what runs -- do not add per-handler permission checks in the meantime, they would be the parallel implementation the ADR exists to prevent.
+**Permissions are declared by the API contract, not by a policy file and not in handlers** -- the owner's direction on #304 (2026-09-14), with three decisions of 2026-09-29: the annotation is mandatory (the method rule only seeds it once); **every read needs a login** (public: login, the dashboard's static files, health); and **machine credentials are glauth-style app passwords on the user** -- "Glauth handles app passwords, which I think should be the same" -- never a separate token store, recorded as [ADR-0317](docs/adr/0317-permissions-are-declared-by-the-api-contract.md) (Proposed until the owner accepts it). Each operation will carry one `x-cix-permission`; `apigen` generates the check; one enforcement point after routing. Until ADR-0317's implementation lands, the ADR-0144 binary admin-group rule is what runs -- do not add per-handler permission checks in the meantime, they would be the parallel implementation the ADR exists to prevent.
 
 ## Default package sources
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. Written for #304, on the owner's decision of 2026-09-14 (*"write the RBAC ADR; the model is spec-driven"*) and their direction on the same issue that the contract states the policy and the enforcement is generated from it. Raised again by the owner on 2026-09-29, because Cix is now being downloaded by people other than its developers. Nothing is implemented; the implementation issues follow acceptance.
+Proposed. The owner decided sections 1 and 3 on 2026-09-29 and raised section 8; it becomes Accepted when they accept the whole. Written for #304, on the owner's decision of 2026-09-14 (*"write the RBAC ADR; the model is spec-driven"*) and their direction on the same issue that the contract states the policy and the enforcement is generated from it. Raised again by the owner on 2026-09-29, because Cix is now being downloaded by people other than its developers. Nothing is implemented; the implementation issues follow acceptance.
 
 ## What changes when this is accepted
 
@@ -31,7 +31,7 @@ The annotation names the **permission the operation requires**, not the roles th
 
 **One permission per operation**, not a list. "Requires A or B" almost always means the vocabulary is wrong, and a list invites the drift the annotation exists to prevent.
 
-**The owner's 2026-09-14 wording and the build-failure rule need reconciling, and that is the owner's call.** That decision said *default method-derived (GET→read, mutating→write), with per-operation overrides*. A default makes "no stated policy" representable again. Proposed: the method-derived rule is used **once**, to seed the annotation onto all 309 operations in one reviewed commit, and from then on every operation states its permission explicitly.
+**The method-derived rule seeds, it does not default.** The owner's 2026-09-14 decision said *default method-derived (GET→read, mutating→write), with per-operation overrides*. A default would make "no stated policy" representable again. Decided by the owner on 2026-09-29: the method-derived rule is used **once**, to seed the annotation onto all 309 operations in one reviewed commit, and from then on every operation states its permission explicitly.
 
 ### 2. The vocabulary is small and closed
 
@@ -58,19 +58,22 @@ A permission is `<area>:<verb>`, or one of two special values:
 
 The complete per-operation table is the first implementation issue. It is generated from the seed rule, then reviewed operation by operation. It is **not** written into this ADR, because it would be a second copy of the contract.
 
-### 3. Reads: open where they describe the machine, stated per operation
+### 3. Reads need a login
 
-**This is the largest behavioural decision here, and it is the owner's.**
+Decided by the owner on 2026-09-29: **every read needs an authenticated caller**, not only writes. Today every GET except the console and the two identity reads is open, which is free reconnaissance for anyone who can reach the port: the disks, containers, networks, installed packages and site configuration of a box on a network Cix does not control. It also means reads such as the backup bundle (`GET /v1/system/backup`), whose container definitions can carry secrets in their environment variables, need no gate of their own.
 
-Today every GET except the console and the two identity reads is open. The dashboard's first load, `cixctl health` and `cixctl boot`, the box's console shell (ADR-0034) and much of the test suite depend on that.
+Key material was already kept out of every GET (verified 2026-09-29): PKI returns certificates, never keys; signing keys report presence and fingerprint only; tokens report `auth_token_set`. So this closes what a stranger learns about the machine, not a key leak.
 
-Proposed: reads that describe the machine stay open, but as an explicit `public` on each operation, never as a default. The identity reads and the console stay gated. Any read that exposes something a stranger should not have is marked `<area>:read`. The seed commit's review is where that list is settled.
+**What stays `public`, and why each one must:**
 
-Two candidates to look at first. The backup bundle (`GET /v1/system/backup`) carries container definitions, including their environment variables, which operators put secrets in. The full configuration (`GET /v1/config`) is the second.
+- `POST /v1/login`: it is how a caller gets a session at all.
+- The dashboard's own static files: not API operations, so not in the contract. Without them the login page could not load.
+- `GET /v1/health`: the liveness probe that monitors and load balancers poll, which they cannot log in to. Proposed, and the owner may take it back. It reports liveness only.
 
-Verified on 2026-09-29: key material is already kept out of every GET. PKI returns certificates, never keys. Signing keys report presence and fingerprint only. Tokens report `auth_token_set`.
+Everything else is `<area>:read` or stricter. Reads still work where they do today in two cases:
 
-The alternative, *every read needs a session*, is coherent and closes reconnaissance entirely. But it changes the dashboard's first-load flow and every unauthenticated caller, and it deserves its own decision rather than riding in here.
+- **A fresh install.** Gating activates only once someone holds `identity:write` (section 6), so a box with no users answers as it does now. The test suite runs that way too.
+- **The console shell (ADR-0034).** It is an ordinary API client, so on a box where gating is active it needs `login` before it can read. That is the consequence of the decision, stated rather than left to be discovered, and the console already tells the operator to log in when a request is refused.
 
 ### 4. One enforcement point, after the route is matched
 
@@ -110,7 +113,22 @@ The standard groups that the owner's decision says are provisioned at init follo
 
 They are created only where absent, and an existing group of the same name is never re-granted.
 
-### 8. Gates
+### 8. Machine credentials are app passwords, the same ones glauth uses
+
+Raised by the owner on 2026-09-29: *"should we add token storage? Glauth handles app passwords, which I think should be the same?"* Yes, and it is what keeps this from becoming a second credential system.
+
+Automation, CI and #391's agent need a credential that is not an interactive login with an idle timeout. There is to be **no separate API-token store**. Instead:
+
+- **Stored with the user.** A user holds any number of named **app passwords**, kept in `cixd`'s own record store beside the main password. They are hashed with bcrypt exactly as `passbcrypt` is today, never stored or returned in clear, and shown once, at creation.
+- **Rendered into glauth** in its app-password field, so the same credential authenticates an application's LDAP bind. `cixd` already renders the main password into glauth's `passbcrypt` (`daemon/src/ldap.c`). glauth's config has app-password fields (`passappbcrypt`); the implementation verifies the field name and encoding against the pinned glauth source before relying on it, as `passbcrypt`'s hex encoding was verified.
+- **Accepted by the API on each request**, as HTTP Basic (`username` + app password), with no session to expire. That is what scripts need. The main password keeps going through `POST /v1/login` and a session; it is not accepted per request.
+- **No scopes.** An app password carries its user's permissions, no more and no less. Least privilege for a machine is a dedicated user in a narrower group: #391's agent is a user such as `agent-1` in a group granted `containers:operate` and every `read`. Per-credential scopes would be a second permission model beside the group one.
+- **Revocation takes effect at once.** Deleting an app password removes it from the store and from glauth's rendered config. The API checks the store on every request, so nothing cached keeps working.
+- **Audited by name.** Every request authenticated by an app password is audited as `user` plus the app password's name, so a leaked credential can be traced to what it did and revoked without touching the user's other credentials.
+
+Managing a user's app passwords needs `identity:write`, or for a user's own app passwords `authenticated`: people may rotate their own machine credentials without being able to grant anything.
+
+### 9. Gates
 
 Implementation issues must carry:
 
@@ -119,12 +137,16 @@ Implementation issues must carry:
 - Dispatcher tests for: 401 without a session, 403 with a session lacking the permission (the body names it), and 200 with it.
 - A test that a user in two groups holds the union.
 - A test that the last `identity:write` holder cannot be removed.
+- App passwords: a request authenticated by one gets exactly its user's permissions; the main password is refused per request; a deleted app password is refused on the very next request and is gone from glauth's rendered config; the audit line names the app password.
+- With reads gated: an unauthenticated GET on a gated box gets 401, `/v1/health` still answers, and a box with no `identity:write` holder still answers everything.
 
 ## What this rejects
 
 - **Roles named in the contract** (`x-cix-rbac-role`): the owner's direction on #304. Adding a role would mean editing every operation it reaches, and the contract would encode a customer's organisation.
 - **A policy file beside the contract**: two sources of truth, which drift.
 - **Deny rules**: they make "what can this user do" undecidable by reading one list.
+- **A separate API-token store**: a second credential system beside the one glauth already renders, with its own storage, rotation and revocation to keep in step. App passwords are the one mechanism (section 8).
+- **Per-credential scopes**: a second permission model beside groups. A narrower machine is a narrower user.
 - **Permissions stored in LDAP attributes**: they would put `cixd`'s authorisation in the directory, which in live-LDAP mode `cixd` does not control.
 - **Keeping the path-based gate and adding checks to handlers**: that is how an endpoint ends up with no check.
 
@@ -136,4 +158,5 @@ Each is its own issue:
 2. The mapping store, its API, and the migration.
 3. The enforcement point, with 401 and 403.
 4. The standard groups at init.
-5. `cixctl` and the dashboard.
+5. App passwords: store, glauth rendering, per-request Basic authentication and audit.
+6. `cixctl` and the dashboard, including the dashboard's logged-out first screen now that reads need a login.
