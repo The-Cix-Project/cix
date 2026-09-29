@@ -22,9 +22,12 @@
 #include "test_image_fixture.h"
 
 #include <limits.h>
+#include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -122,24 +125,107 @@ static int request_with_token(const struct cix_client *c, const char *method, co
 }
 
 /*
+ * #541: once gating is active every read needs a session too. From
+ * step 12 on idle_timeout_seconds is 0, so a session is single-use and
+ * a read consumes it exactly as a write does -- each read here logs in
+ * afresh, which is also what an operator with that setting does.
+ */
+static int admin_get(const struct cix_client *c, const char *path, struct cix_response *r)
+{
+	struct cix_response l;
+	char tok[128] = "";
+
+	memset(&l, 0, sizeof(l));
+	if (cix_client_request(c, "POST", "/v1/login",
+	                       "{\"username\":\"root_admin\",\"password\":\"correct horse battery "
+	                       "staple\"}",
+	                       &l) == 0 &&
+	    l.status == 200 && json_str_field(l.json, "token") != NULL)
+		snprintf(tok, sizeof(tok), "%s", json_str_field(l.json, "token"));
+	cix_response_free(&l);
+	return request_with_token(c, "GET", path, tok, NULL, r);
+}
+
+/*
+ * #541: a WebSocket upgrade, sent raw -- the client library speaks plain
+ * HTTP and cannot. The console and the build-log stream are answered
+ * before the daemon's ordinary dispatch, which is why they were never
+ * gated by the check this test otherwise exercises; this is how the
+ * test reaches them. extra is one more header line with its CRLF, or
+ * "". Returns the response's status code, -1 if there was none.
+ */
+static int ws_upgrade_status(const char *path, const char *extra)
+{
+	struct sockaddr_in sa;
+	struct timeval tv = { 10, 0 };
+	char req[1024], resp[256];
+	size_t got = 0;
+	int fd, n, status = -1;
+
+	fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (fd < 0)
+		return -1;
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons(TEST_PORT);
+	sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+		close(fd);
+		return -1;
+	}
+	n = snprintf(req, sizeof(req),
+	             "GET %s HTTP/1.1\r\n"
+	             "Host: 127.0.0.1\r\n"
+	             "Upgrade: websocket\r\n"
+	             "Connection: Upgrade\r\n"
+	             "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+	             "Sec-WebSocket-Version: 13\r\n"
+	             "%s"
+	             "\r\n",
+	             path, extra);
+	if (n < 0 || (size_t)n >= sizeof(req) || write(fd, req, (size_t)n) != n) {
+		close(fd);
+		return -1;
+	}
+	while (got < sizeof(resp) - 1) {
+		ssize_t r = read(fd, resp + got, sizeof(resp) - 1 - got);
+
+		if (r <= 0)
+			break;
+		got += (size_t)r;
+		resp[got] = '\0';
+		if (strstr(resp, "\r\n") != NULL)
+			break;
+	}
+	resp[got] = '\0';
+	if (sscanf(resp, "HTTP/1.1 %d", &status) != 1)
+		status = -1;
+	close(fd);
+	return status;
+}
+
+/*
  * ADR-0317 (#540): the group -> permission mapping, on a daemon of its
- * own. No user is in an admin group at any point here, so write-gating
- * stays inactive and every request goes without credentials except
- * /v1/whoami, which is asked with a real session.
+ * own, and (#541) the refusals that keep someone holding identity:write.
+ * Until step 5 nobody holds identity:write, so gating is inactive and
+ * requests go without credentials (whoami is asked with a real
+ * session); from step 5 on, keeper holds it and every request carries
+ * keeper's session.
  */
 static int body_has(const struct cix_response *r, const char *needle)
 {
 	return r->body != NULL && strstr(r->body, needle) != NULL;
 }
 
-static int expect_status(const struct cix_client *c, const char *method, const char *path,
-                         const char *body, int want, const char *what)
+static int expect_status(const struct cix_client *c, const char *token, const char *method,
+                         const char *path, const char *body, int want, const char *what)
 {
 	struct cix_response r;
 	int ok = 1;
 
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(c, method, path, body, &r) != 0 || r.status != want) {
+	if (request_with_token(c, method, path, token, body, &r) != 0 || r.status != want) {
 		fprintf(stderr, "FAIL: #540 %s: expected %d, got %d (%.200s)\n", what, want, r.status,
 		        r.body != NULL ? r.body : "");
 		ok = 0;
@@ -148,9 +234,30 @@ static int expect_status(const struct cix_client *c, const char *method, const c
 	return ok;
 }
 
+/* Logs in as user; 1 with the session token in out, 0 otherwise. */
+static int login_as(const struct cix_client *c, const char *user, const char *password, char *out,
+                    size_t out_size)
+{
+	char body[256];
+	struct cix_response r;
+	int ok = 0;
+
+	snprintf(body, sizeof(body), "{\"username\":\"%s\",\"password\":\"%s\"}", user, password);
+	memset(&r, 0, sizeof(r));
+	out[0] = '\0';
+	if (cix_client_request(c, "POST", "/v1/login", body, &r) == 0 && r.status == 200 &&
+	    json_str_field(r.json, "token") != NULL) {
+		snprintf(out, out_size, "%s", json_str_field(r.json, "token"));
+		ok = 1;
+	}
+	cix_response_free(&r);
+	return ok;
+}
+
 static int test_permission_mapping(void)
 {
 	char saved_data_dir[PATH_MAX], dir[PATH_MAX], path[PATH_MAX], file[4096];
+	char ktok[128] = "";
 	struct cix_client c;
 	struct cix_response r;
 	pid_t pid;
@@ -204,7 +311,7 @@ static int test_permission_mapping(void)
 	cix_response_free(&r);
 
 	/* 2. A group granted some permissions is not an admin group. */
-	ok &= expect_status(&c, "PUT", "/v1/system/hostauth/permissions/operators",
+	ok &= expect_status(&c, NULL, "PUT", "/v1/system/hostauth/permissions/operators",
 	                    "{\"permissions\":[\"containers:read\",\"containers:operate\"]}", 200,
 	                    "PUT a partial group");
 	memset(&r, 0, sizeof(r));
@@ -237,15 +344,15 @@ static int test_permission_mapping(void)
 	cix_response_free(&r);
 
 	/* 4. Union: a user in two groups holds both groups' permissions. */
-	ok &= expect_status(&c, "POST", "/v1/ldap/groups", "{\"name\":\"permg1\",\"gidnumber\":7301}",
+	ok &= expect_status(&c, NULL, "POST", "/v1/ldap/groups", "{\"name\":\"permg1\",\"gidnumber\":7301}",
 	                    201, "create permg1");
-	ok &= expect_status(&c, "POST", "/v1/ldap/groups", "{\"name\":\"permg2\",\"gidnumber\":7302}",
+	ok &= expect_status(&c, NULL, "POST", "/v1/ldap/groups", "{\"name\":\"permg2\",\"gidnumber\":7302}",
 	                    201, "create permg2");
-	ok &= expect_status(&c, "PUT", "/v1/system/hostauth/permissions/permg1",
+	ok &= expect_status(&c, NULL, "PUT", "/v1/system/hostauth/permissions/permg1",
 	                    "{\"permissions\":[\"containers:read\"]}", 200, "grant permg1");
-	ok &= expect_status(&c, "PUT", "/v1/system/hostauth/permissions/permg2",
+	ok &= expect_status(&c, NULL, "PUT", "/v1/system/hostauth/permissions/permg2",
 	                    "{\"permissions\":[\"images:write\"]}", 200, "grant permg2");
-	ok &= expect_status(&c, "POST", "/v1/ldap/users",
+	ok &= expect_status(&c, NULL, "POST", "/v1/ldap/users",
 	                    "{\"name\":\"permuser\",\"uidnumber\":7310,\"primarygroup\":7301,"
 	                    "\"secondary_groups\":[7302],\"password\":\"union of two groups\"}",
 	                    201, "create permuser");
@@ -280,31 +387,79 @@ static int test_permission_mapping(void)
 		cix_response_free(&w);
 	}
 
-	/* 5. No lockout: once someone holds identity:write, nothing may
-	 * leave nobody holding it. */
-	ok &= expect_status(&c, "POST", "/v1/ldap/groups", "{\"name\":\"keepers\",\"gidnumber\":7303}",
-	                    201, "create keepers");
-	ok &= expect_status(&c, "PUT", "/v1/system/hostauth/permissions/keepers",
-	                    "{\"permissions\":[\"identity:write\"]}", 200, "grant keepers");
-	ok &= expect_status(&c, "POST", "/v1/ldap/users",
-	                    "{\"name\":\"keeper\",\"uidnumber\":7311,\"primarygroup\":7303}", 201,
-	                    "create keeper");
-	ok &= expect_status(&c, "PUT", "/v1/system/hostauth/permissions/keepers",
+	/*
+	 * 5. No lockout: once someone holds identity:write, nothing may
+	 * leave nobody holding it.
+	 *
+	 * This is also where gating turns ON (#541): it is active while
+	 * any enabled user holds identity:write, so from the moment keeper
+	 * exists every request below needs keeper's session -- and keepers
+	 * is given identity:read as well, since reading the mapping is a
+	 * read like any other. Everything above ran on an ungated box,
+	 * which is the other half of the rule: a box where nobody can
+	 * grant permissions answers everything.
+	 */
+	ok &= expect_status(&c, NULL, "POST", "/v1/ldap/groups",
+	                    "{\"name\":\"keepers\",\"gidnumber\":7303}", 201, "create keepers");
+	ok &= expect_status(&c, NULL, "PUT", "/v1/system/hostauth/permissions/keepers",
+	                    "{\"permissions\":[\"identity:read\",\"identity:write\"]}", 200,
+	                    "grant keepers");
+	ok &= expect_status(&c, NULL, "POST", "/v1/ldap/users",
+	                    "{\"name\":\"keeper\",\"uidnumber\":7311,\"primarygroup\":7303,"
+	                    "\"password\":\"keeps the keys\"}",
+	                    201, "create keeper");
+	ok &= expect_status(&c, NULL, "GET", "/v1/system/hostauth/permissions", NULL, 401,
+	                    "an unauthenticated read once someone holds identity:write");
+	if (!login_as(&c, "keeper", "keeps the keys", ktok, sizeof(ktok))) {
+		fprintf(stderr, "FAIL: #540 login as keeper\n");
+		ok = 0;
+	}
+	ok &= expect_status(&c, ktok, "PUT", "/v1/system/hostauth/permissions/keepers",
 	                    "{\"permissions\":[\"identity:read\"]}", 409,
 	                    "taking identity:write from its only holder");
-	ok &= expect_status(&c, "DELETE", "/v1/system/hostauth/permissions/keepers", NULL, 409,
+	ok &= expect_status(&c, ktok, "DELETE", "/v1/system/hostauth/permissions/keepers", NULL, 409,
 	                    "deleting the only identity:write grant");
+	/* #541's user- and group-side refusals: the same rule, reached
+	 * through the directory instead of the mapping. */
+	ok &= expect_status(&c, ktok, "DELETE", "/v1/ldap/groups/keepers", NULL, 409,
+	                    "deleting the only group granting identity:write");
+	ok &= expect_status(&c, ktok, "PUT", "/v1/ldap/groups/keepers",
+	                    "{\"name\":\"keepers\",\"gidnumber\":7399}", 409,
+	                    "renumbering the only group granting identity:write");
+	ok &= expect_status(&c, ktok, "DELETE", "/v1/ldap/users/keeper", NULL, 409,
+	                    "deleting the only holder of identity:write");
+	ok &= expect_status(&c, ktok, "PUT", "/v1/ldap/users/keeper",
+	                    "{\"name\":\"keeper\",\"uidnumber\":7311,\"primarygroup\":7303,"
+	                    "\"disabled\":true}",
+	                    409, "disabling the only holder of identity:write");
+	ok &= expect_status(&c, ktok, "PUT", "/v1/system/hostauth-config",
+	                    "{\"admin_groups\":[],\"idle_timeout_seconds\":900}", 200,
+	                    "clearing admin_groups when the grantor is not in a full group");
+	/* With a second user holding identity:write, removing one of them
+	 * is an ordinary act: only the LAST holder is protected. */
+	ok &= expect_status(&c, ktok, "POST", "/v1/ldap/groups",
+	                    "{\"name\":\"legacyadmins\",\"gidnumber\":7305}", 201,
+	                    "create legacyadmins");
+	ok &= expect_status(&c, ktok, "PUT", "/v1/system/hostauth/permissions/legacyadmins",
+	                    "{\"permissions\":[\"identity:read\",\"identity:write\"]}", 200,
+	                    "grant legacyadmins");
+	ok &= expect_status(&c, ktok, "POST", "/v1/ldap/users",
+	                    "{\"name\":\"second\",\"uidnumber\":7312,\"primarygroup\":7305}", 201,
+	                    "create a second grantor");
+	ok &= expect_status(&c, ktok, "DELETE", "/v1/ldap/users/second", NULL, 204,
+	                    "deleting a grantor while another remains");
 
 	/* 6. A rename carries the grants; a deleted group takes them with it. */
-	ok &= expect_status(&c, "PUT", "/v1/ldap/groups/permg1",
+	ok &= expect_status(&c, ktok, "PUT", "/v1/ldap/groups/permg1",
 	                    "{\"gidnumber\":7301,\"name\":\"permg1renamed\"}", 200, "rename permg1");
-	ok &= expect_status(&c, "POST", "/v1/ldap/groups", "{\"name\":\"permg3\",\"gidnumber\":7304}",
-	                    201, "create permg3");
-	ok &= expect_status(&c, "PUT", "/v1/system/hostauth/permissions/permg3",
+	ok &= expect_status(&c, ktok, "POST", "/v1/ldap/groups",
+	                    "{\"name\":\"permg3\",\"gidnumber\":7304}", 201, "create permg3");
+	ok &= expect_status(&c, ktok, "PUT", "/v1/system/hostauth/permissions/permg3",
 	                    "{\"permissions\":[\"pki:read\"]}", 200, "grant permg3");
-	ok &= expect_status(&c, "DELETE", "/v1/ldap/groups/permg3", NULL, 204, "delete permg3");
+	ok &= expect_status(&c, ktok, "DELETE", "/v1/ldap/groups/permg3", NULL, 204,
+	                    "delete permg3");
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&c, "GET", "/v1/system/hostauth/permissions", NULL, &r) != 0 ||
+	if (request_with_token(&c, "GET", "/v1/system/hostauth/permissions", ktok, NULL, &r) != 0 ||
 	    r.json == NULL) {
 		ok = 0;
 	} else {
@@ -325,7 +480,8 @@ static int test_permission_mapping(void)
 	cix_response_free(&r);
 
 	/* 7. The state file carries the mapping, and admin_groups for a
-	 * rollback to a pre-#540 build; a restart keeps the mapping. */
+	 * rollback to a pre-#540 build; a restart keeps the mapping.
+	 * Sessions live in memory, so the read after it logs in again. */
 	f = fopen(path, "r");
 	n = f != NULL ? fread(file, 1, sizeof(file) - 1, f) : 0;
 	file[n] = '\0';
@@ -345,8 +501,12 @@ static int test_permission_mapping(void)
 		ok = 0;
 		goto out;
 	}
+	if (!login_as(&c, "keeper", "keeps the keys", ktok, sizeof(ktok))) {
+		fprintf(stderr, "FAIL: #540 login as keeper after the restart\n");
+		ok = 0;
+	}
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&c, "GET", "/v1/system/hostauth/permissions", NULL, &r) != 0 ||
+	if (request_with_token(&c, "GET", "/v1/system/hostauth/permissions", ktok, NULL, &r) != 0 ||
 	    !body_has(&r, "\"operators\":[\"containers:read\",\"containers:operate\"]")) {
 		fprintf(stderr, "FAIL: #540 the mapping did not survive a restart: %.300s\n",
 		        r.body != NULL ? r.body : "");
@@ -456,10 +616,18 @@ int main(void)
 	}
 	cix_response_free(&r);
 
-	/* Reads still work with zero credentials, always. */
+	/*
+	 * #541 (ADR-0317 section 3): reads need a session too, once gating
+	 * is active. This used to assert the opposite -- "reads still work
+	 * with zero credentials, always" -- which was the rule until the
+	 * route table carried a permission for every operation. The pair
+	 * that makes it mean something, a 200 for the same read WITH a
+	 * session, is asserted at step 8 once root_admin has logged in.
+	 * GET /v1/health is public and stays open (step 9a).
+	 */
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "GET", "/v1/ldap/groups", NULL, &r) != 0 || r.status != 200) {
-		fprintf(stderr, "FAIL: unauthenticated GET after gating activated expected 200, got %d\n",
+	if (cix_client_request(&client, "GET", "/v1/ldap/groups", NULL, &r) != 0 || r.status != 401) {
+		fprintf(stderr, "FAIL: unauthenticated GET after gating activated expected 401, got %d\n",
 		        r.status);
 		ok = 0;
 	}
@@ -472,7 +640,7 @@ int main(void)
 	 * those was additionally audited as a refused write.
 	 *
 	 * Asserted here and not in test_web because it can only be
-	 * asserted here: hostauth_authorize_write() returns true
+	 * asserted here: hostauth_authorize() answers OK
 	 * unconditionally while gating is inactive, so on a daemon with
 	 * no admin account a HEAD would sail through the gate and prove
 	 * nothing about it. This is the one test that has gating
@@ -543,6 +711,15 @@ int main(void)
 	                        "{\"name\":\"unrelated\",\"gidnumber\":7003}", &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: authenticated write expected 201, got %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/* ... and the read step 5 was refused, now with the token. */
+	memset(&r, 0, sizeof(r));
+	if (request_with_token(&client, "GET", "/v1/ldap/groups", token, NULL, &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: authenticated GET ldap groups expected 200, got %d\n", r.status);
 		ok = 0;
 	}
 	cix_response_free(&r);
@@ -652,7 +829,7 @@ int main(void)
 	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "GET", "/v1/system/hostauth-config", NULL, &r) != 0 ||
+	if (admin_get(&client, "/v1/system/hostauth-config", &r) != 0 ||
 	    r.status != 200 || r.json == NULL || json_bool_field(r.json, "gating_active") != 1) {
 		fprintf(stderr, "FAIL: hostauth-config must report gating_active true, status=%d\n",
 		        r.status);
@@ -670,7 +847,8 @@ int main(void)
 	cix_response_free(&r);
 
 	/* 9a. #490: the identity reads need a credential once gating is
-	 * active, unlike every other GET.
+	 * active. They were the first reads to (#490); since #541 every read
+	 * does, and these two stay here as the ones that did first.
 	 *
 	 * Asserted before 9b below reads the same endpoint WITH a token,
 	 * because the pair is what means something: either alone is
@@ -693,9 +871,8 @@ int main(void)
 	}
 	cix_response_free(&r);
 	/* The control that keeps this from passing on a daemon that
-	 * simply refuses everything: an ordinary machine-describing GET
-	 * is still open, which is the line #490 moved rather than
-	 * erased. */
+	 * simply refuses everything: GET /v1/health is public (ADR-0317
+	 * section 3) and answers without a session. */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "GET", "/v1/health", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: unauthenticated GET health expected 200, got %d\n", r.status);
@@ -747,6 +924,50 @@ int main(void)
 		}
 	}
 	cix_response_free(&r);
+
+	/*
+	 * 9d. #541: the WebSocket upgrades are gated too. Measured on
+	 * 192.168.15.95 at 0.2.57-391, before this: an upgrade of a
+	 * container console with no credential at all reached the console
+	 * handler, because upgrades are answered before the dispatcher the
+	 * old gate lived in. A 404 below ("no such running container") is
+	 * the handler having been reached, i.e. the session accepted; the
+	 * browser's subprotocol form must be accepted exactly as the
+	 * header is.
+	 */
+	{
+		char hdr[256];
+		int st;
+
+		st = ws_upgrade_status("/v1/containers/nosuch/console", "");
+		if (st != 401) {
+			fprintf(stderr, "FAIL: a console upgrade with no credential expected 401, got %d\n",
+			        st);
+			ok = 0;
+		}
+		snprintf(hdr, sizeof(hdr), "Authorization: Bearer %s\r\n", token);
+		st = ws_upgrade_status("/v1/containers/nosuch/console", hdr);
+		if (st != 404) {
+			fprintf(stderr, "FAIL: a console upgrade with a session header expected to reach "
+			                "the handler (404), got %d\n",
+			        st);
+			ok = 0;
+		}
+		snprintf(hdr, sizeof(hdr), "Sec-WebSocket-Protocol: cix, cix.bearer.%s\r\n", token);
+		st = ws_upgrade_status("/v1/containers/nosuch/console", hdr);
+		if (st != 404) {
+			fprintf(stderr, "FAIL: a console upgrade with the session as a subprotocol expected "
+			                "to reach the handler (404), got %d\n",
+			        st);
+			ok = 0;
+		}
+		st = ws_upgrade_status("/v1/pkg/build/log?name=nosuch", "");
+		if (st != 401) {
+			fprintf(stderr, "FAIL: a build-log upgrade with no credential expected 401, got %d\n",
+			        st);
+			ok = 0;
+		}
+	}
 
 	/* 9c. Revoking root_admin's sessions logs it out everywhere -- its
 	 * existing token stops working immediately. This DELETE is itself
@@ -835,14 +1056,108 @@ int main(void)
 		}
 		cix_response_free(&r);
 
-		memset(&r, 0, sizeof(r));
+		/*
+		 * #541: a valid session without the permission is 403, not
+		 * 401, and the body names what was missing: a 401 here
+		 * would send the person to log in again, which cannot help.
+		 * plain_user's only group (engineers, 7001) grants nothing yet.
+		 */
 		if (plain_token[0] != '\0') {
+			memset(&r, 0, sizeof(r));
 			if (request_with_token(&client, "POST", "/v1/ldap/groups", plain_token,
 			                        "{\"name\":\"shouldfail\",\"gidnumber\":7005}", &r) != 0 ||
-			    r.status != 401) {
+			    r.status != 403 || r.json == NULL ||
+			    !str_eq(json_str_field(r.json, "permission"), "identity:write")) {
 				fprintf(stderr,
-				        "FAIL: authenticated-but-not-admin write expected 401, got %d\n",
+				        "FAIL: a write without the permission expected 403 naming "
+				        "identity:write, got %d (%.200s)\n",
+				        r.status, r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			/* Reads too: no grant, no read. */
+			memset(&r, 0, sizeof(r));
+			if (request_with_token(&client, "GET", "/v1/containers", plain_token, NULL, &r) !=
+			        0 ||
+			    r.status != 403 || r.json == NULL ||
+			    !str_eq(json_str_field(r.json, "permission"), "containers:read")) {
+				fprintf(stderr, "FAIL: a read without the permission expected 403 naming "
+				                "containers:read, got %d\n",
 				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			/* Granted to engineers, it takes effect on the next request
+			 * of a session opened before the grant: membership and the
+			 * mapping are read per request, never cached in a session. */
+			memset(&r, 0, sizeof(r));
+			if (request_with_token(&client, "PUT", "/v1/system/hostauth/permissions/engineers",
+			                        token, "{\"permissions\":[\"containers:read\"]}", &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: grant engineers containers:read, status=%d\n", r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (request_with_token(&client, "GET", "/v1/containers", plain_token, NULL, &r) !=
+			        0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: a granted read expected 200, got %d\n", r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			/* ... and read is not write. */
+			memset(&r, 0, sizeof(r));
+			if (request_with_token(&client, "POST", "/v1/containers", plain_token, "{}", &r) !=
+			        0 ||
+			    r.status != 403 || r.json == NULL ||
+			    !str_eq(json_str_field(r.json, "permission"), "containers:write")) {
+				fprintf(stderr, "FAIL: containers:read must not allow a create, expected 403 "
+				                "naming containers:write, got %d\n",
+				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			/* HEAD answers as its GET does (#498): 403 for a read this
+			 * session lacks, never a 404 that would hide the gate. */
+			memset(&r, 0, sizeof(r));
+			if (request_with_token(&client, "HEAD", "/v1/ldap/users", plain_token, NULL, &r) !=
+			        0 ||
+			    r.status != 403) {
+				fprintf(stderr, "FAIL: HEAD of an ungranted read expected 403, got %d\n",
+				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			/* A shell is not a read: containers:read does not open a
+			 * console, through the upgrade path either. */
+			{
+				char hdr[256];
+				int st;
+
+				snprintf(hdr, sizeof(hdr), "Sec-WebSocket-Protocol: cix, cix.bearer.%s\r\n",
+				         plain_token);
+				st = ws_upgrade_status("/v1/containers/nosuch/console", hdr);
+				if (st != 403) {
+					fprintf(stderr, "FAIL: a console upgrade without containers:console "
+					                "expected 403, got %d\n",
+					        st);
+					ok = 0;
+				}
+			}
+
+			/* whoami reports exactly what was granted. */
+			memset(&r, 0, sizeof(r));
+			if (request_with_token(&client, "GET", "/v1/whoami", plain_token, NULL, &r) != 0 ||
+			    r.status != 200 || r.body == NULL ||
+			    strstr(r.body, "\"permissions\":[\"containers:read\"]") == NULL) {
+				fprintf(stderr, "FAIL: whoami must report plain_user's one permission: %.200s\n",
+				        r.body != NULL ? r.body : "");
 				ok = 0;
 			}
 			cix_response_free(&r);
@@ -1056,7 +1371,7 @@ int main(void)
 #undef RELOGIN_ROOT_ADMIN
 
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "GET", "/v1/system/hostauth-config", NULL, &r) != 0 ||
+		if (admin_get(&client, "/v1/system/hostauth-config", &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET hostauth-config after LDAP setup, status=%d\n", r.status);
 			ok = 0;
@@ -1239,8 +1554,7 @@ int main(void)
 				cix_response_free(&r);
 
 				memset(&r, 0, sizeof(r));
-				if (cix_client_request(&client, "GET", "/v1/system/hostauth-config", NULL,
-				                        &r) != 0 ||
+				if (admin_get(&client, "/v1/system/hostauth-config", &r) != 0 ||
 				    r.status != 200) {
 					fprintf(stderr, "FAIL: GET hostauth-config after ldap_tls, status=%d\n",
 					        r.status);
@@ -1304,7 +1618,7 @@ int main(void)
 		 * "root-admins", not "admins" -- the daemon-side propagation,
 		 * not anything this test itself did. */
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "GET", "/v1/system/hostauth-config", NULL, &r) != 0 ||
+		if (admin_get(&client, "/v1/system/hostauth-config", &r) != 0 ||
 		    r.status != 200 ||
 		    memmem(r.body, r.body_len, "\"root-admins\"", strlen("\"root-admins\"")) == NULL ||
 		    memmem(r.body, r.body_len, "\"admins\"", strlen("\"admins\"")) != NULL) {
@@ -1382,7 +1696,7 @@ int main(void)
 		int saw_refusal = 0;
 
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "GET", "/v1/system/logs?source=audit&tail=200", NULL, &r) !=
+		if (admin_get(&client, "/v1/system/logs?source=audit&tail=200", &r) !=
 		        0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET the audit log, status=%d\n", r.status);

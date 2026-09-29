@@ -766,6 +766,45 @@ function promptReauth() {
 		openModal("login-form", "Log in");
 }
 
+/*
+ * #541: once a host is gated every read needs a session, so a
+ * dashboard opened without one would show every panel failing and
+ * never say why -- #538's bug over the whole page, since the refreshers
+ * run as a background sweep and promptReauth() above deliberately
+ * ignores their 401s.
+ *
+ * So the first health answer reporting gating on, while this page has
+ * no live session, opens the login form -- once per page load. Not on
+ * every poll: closing the form is the person's choice, and a form that
+ * reopens on a timer is the bug #490 fixed. A stored token that has
+ * lapsed counts as no session; GET /v1/whoami is public and says
+ * which, without spending a single-use token to find out.
+ */
+let loginOfferedOnLoad = false;
+
+async function offerLoginIfGated(gatingActive) {
+	if (loginOfferedOnLoad || gatingActive !== true)
+		return;
+	loginOfferedOnLoad = true;
+	if (authToken) {
+		try {
+			const me = await apiRequest("GET", CIX_API.getWhoami());
+
+			if (me && me.authenticated)
+				return;
+		} catch (e) {
+			/* Unanswered: leave the stored session alone rather than
+			 * sign someone out on a transport error. */
+			return;
+		}
+		setAuth(null, null);
+	}
+	if (modalOverlay.hidden) {
+		openModal("login-form", "Log in");
+		document.getElementById("lf-username").focus();
+	}
+}
+
 authActionBtn.addEventListener("click", async () => {
 	if (authToken) {
 		try {
@@ -1367,6 +1406,7 @@ async function refreshHealth() {
 		 * clears by itself the moment gating is configured.
 		 */
 		updateAuthGatingBanner(health && health.auth_gating_active);
+		offerLoginIfGated(health && health.auth_gating_active);
 
 		/* Back after an absence: the daemon may have restarted into a
 		 * different build, so re-ask rather than keep showing the one
@@ -3328,7 +3368,17 @@ function openConsole(name) {
 
 	const proto = location.protocol === "https:" ? "wss:" : "ws:";
 	const query = "?" + params.join("&");
-	const ws = new WebSocket(proto + "//" + location.host + CIX_API.consoleContainer(name) + query);
+	/*
+	 * #541: a browser WebSocket cannot set an Authorization header, so
+	 * the session rides as a subprotocol: "cix" plus "cix.bearer.<token>".
+	 * The daemon reads the token from the second and selects the first
+	 * in its 101, which the browser requires to be one it offered. With
+	 * no session there is nothing to offer, and an ungated host answers
+	 * as before.
+	 */
+	const wsProtocols = authToken ? ["cix", "cix.bearer." + authToken] : [];
+	const ws = new WebSocket(proto + "//" + location.host + CIX_API.consoleContainer(name) + query,
+		wsProtocols);
 
 	ws.binaryType = "arraybuffer";
 	const decoder = new TextDecoder();

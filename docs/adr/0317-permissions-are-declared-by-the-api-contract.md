@@ -38,7 +38,7 @@ The annotation names the **permission the operation requires**, not the roles th
 A permission is `<area>:<verb>`, or one of two special values:
 
 - **`public`**: needs no session.
-- **`authenticated`**: needs any valid session (`/v1/logout`; `/v1/whoami` is `public`, see section 3).
+- **`authenticated`**: needs any valid session. No operation uses it after #541 (`/v1/logout` and `/v1/whoami` are both `public`, see section 3); it stays in the vocabulary for operations every user may perform on their own account.
 
 **Verbs:**
 
@@ -70,6 +70,7 @@ Key material was already kept out of every GET (verified 2026-09-29): PKI return
 - The dashboard's own static files: not API operations, so not in the contract. Without them the login page could not load.
 - `GET /v1/health`: the liveness probe that monitors and load balancers poll, which they cannot log in to. Proposed, and the owner may take it back. It reports liveness only.
 - `GET /v1/whoami`: added while implementing #540. Its whole job is to tell a caller who may not be logged in whether they are, and since #540 what their session may do; `cixctl`'s shell prompt asks it without a session. Gated, a logged-out caller would get 401 instead of `authenticated: false`. It returns nothing about anyone but the caller.
+- `POST /v1/logout`: moved from `authenticated` while implementing #541. It revokes only the token it is given, and its contract has always been "idempotent: always `204`" -- the old gate exempted it by path for that reason. Requiring a live session would turn a repeat logout, or a logout after the session lapsed, into a 401, which is a regression for `cixctl` and the dashboard and protects nothing: whoever can present the token could already use it.
 
 Everything else is `<area>:read` or stricter. Reads still work where they do today in two cases:
 
@@ -80,10 +81,11 @@ Everything else is `<area>:read` or stricter. Reads still work where they do tod
 
 The check moves from the path-based block **before** routing to a single check **after** the generated table has matched a route and **before** its handler is called. That is the only place the route's permission is known. No handler can then forget the check, and none can run without it.
 
-- The exemptions become annotations. Login is `public`, logout `authenticated`, the console `containers:console`, the identity reads `identity:read`.
+- The exemptions become annotations. Login and logout are `public` (logout: see section 3), the console `containers:console`, the identity reads `identity:read`.
 - **HEAD takes its GET's permission** (#498: a gate that a change of verb steps around is not a gate).
 - **No session** → `401`.
 - **A valid session without the permission** → `403`, naming the permission required. This is the "name the offender" posture of #282. It also separates the two cases that are both 401 today.
+- **The two WebSocket upgrades take the same check** (found implementing #541). The container console and the build-log stream are answered before the generated-table dispatch, by their own upgrade handlers, so the old path-based block never saw them either: on 192.168.15.95 at 0.2.57-391, with gating active, a console upgrade with no credential reached the console handler. Each handler now calls the same check with its own route's permission as soon as it recognises its path. A browser cannot set an `Authorization` header on a WebSocket, so the dashboard offers its token as a subprotocol (`cix.bearer.<token>`, beside `cix`, which the daemon selects), as Kubernetes does for its browser consoles.
 
 ### 5. Groups hold permissions; users hold the union
 

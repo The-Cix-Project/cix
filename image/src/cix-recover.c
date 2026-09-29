@@ -4,8 +4,10 @@
  * media as cix-install (a second GRUB menu entry, see
  * mkinstalleriso.c), but never reformats or reinstalls anything. It
  * mounts the ALREADY-INSTALLED system's own real containers partition
- * read-write, resets exactly one field (admin_groups, back to "no one
- * is an admin yet") in the persisted host-auth config, and leaves
+ * read-write, resets who may administer it (admin_groups, back to "no one
+ * is an admin yet", and with it the ADR-0317 permission mapping, which
+ * the rewritten file no longer carries) in the persisted host-auth
+ * config, and leaves
  * everything else -- every container, every LDAP record, the LDAP
  * backend settings themselves -- completely untouched.
  *
@@ -269,12 +271,12 @@ static int recover_main(void)
 
 	dual_printf("\n");
 	dual_printf("=====================================================================\n");
-	dual_printf("  Cix Recovery: reset host-auth admin_groups (ADR-0146)\n");
+	dual_printf("  Cix Recovery: reset host-auth admin groups and permissions (ADR-0146)\n");
 	dual_printf("=====================================================================\n");
-	dual_printf("This resets ONLY the admin_groups list in the already-installed\n");
-	dual_printf("system's own persisted host-auth config back to empty -- the same\n");
-	dual_printf("state a fresh install starts in, where every cixd API write is\n");
-	dual_printf("open with no login required. Nothing else is touched: no container,\n");
+	dual_printf("This resets the admin_groups list and every group's permissions in the\n");
+	dual_printf("already-installed system's persisted host-auth config back to empty --\n");
+	dual_printf("the same state a fresh install starts in, where every cixd API request\n");
+	dual_printf("is answered with no login required. Nothing else is touched: no container,\n");
 	dual_printf("no LDAP user/group record, no LDAP backend setting, no data of any\n");
 	dual_printf("kind is modified or deleted.\n");
 	dual_printf("\n");
@@ -326,8 +328,8 @@ static int recover_main(void)
 	jport = json_object_get(root, "ldap_port");
 	base_dn = json_as_string(json_object_get(root, "ldap_base_dn"));
 
-	dual_printf("Current config found. admin_groups will be reset to empty; every\n");
-	dual_printf("other field (idle_timeout_seconds=%ld, ldap_enabled=%s, ldap_port=%ld,\n"
+	dual_printf("Current config found. admin_groups and permissions will be reset to empty;\n");
+	dual_printf("these fields (idle_timeout_seconds=%ld, ldap_enabled=%s, ldap_port=%ld,\n"
 	            "ldap_base_dn=%s) is preserved exactly as-is.\n",
 	            (long)json_as_number(jidle),
 	            (jldapen != NULL && jldapen->type == JSON_BOOL && jldapen->u.boolean) ? "true"
@@ -382,9 +384,9 @@ static int recover_main(void)
 	if (umount(g_mount_point) != 0)
 		dual_perror("umount");
 
-	dual_printf("\nDone -- admin_groups reset to empty on %s.\n", g_device);
+	dual_printf("\nDone -- admin_groups and permissions reset to empty on %s.\n", g_device);
 	dual_printf("Remove this recovery media and reboot into the normal installed\n");
-	dual_printf("system; every cixd API write is\n");
+	dual_printf("system; every cixd API request is\n");
 	dual_printf("open again until you configure a real admin group (cixctl\n");
 	dual_printf("hostauth-config set --admin-group=...).\n");
 	return 0;

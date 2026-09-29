@@ -71,6 +71,9 @@ enum hostauth_config_error {
 	 * bootstrap the CA, which a generic "invalid field" would not
 	 * name. */
 	HOSTAUTH_CONFIG_ERR_NO_CA,
+	/* ADR-0317 section 6 (#541): the admin_groups given would leave no
+	 * enabled user holding identity:write while one does now. */
+	HOSTAUTH_CONFIG_ERR_LOCKOUT,
 };
 
 /* Full replacement, matching daemon-config's own "only fields given
@@ -183,58 +186,53 @@ void hostauth_forget_group(const char *name);
  * JSON array in vocabulary order; [] for NULL. */
 void hostauth_write_user_permissions_json(struct json_writer *w, const char *username);
 
-/* True once at least one user is a member of a configured admin group
- * -- the bootstrap-safety check every write-gating decision starts
- * from. False (writes stay open) if no admin group is configured, or
- * none has a member yet. */
 /*
- * The predicates that protect gating's own preconditions (#370).
+ * Gating, and the one invariant that protects it (ADR-0317 section 6,
+ * #541; #370 before it).
  *
- * Gating is active only while an admin group is configured AND an
- * enabled user is in one. Five ordinary operations could quietly break
- * the second half -- deleting the admin group, renaming it or changing
- * its gidnumber, deleting the last admin, disabling or de-admining
- * them, and pointing admin_groups at an empty group. Each one turns
- * authentication off for the whole API while leaving the configuration
- * looking correct, which is exactly what nobody would look for.
+ * Gating is active while at least one enabled user holds
+ * identity:write -- the permission that changes the mapping, and so
+ * the one that can grant every other. Before anyone holds it, on a
+ * fresh install or in the test suite, every operation answers without
+ * a session; that is what keeps a new box from locking itself out of
+ * the API that would explain why.
  *
- * The chosen fix is to make those transitions UNREACHABLE through the
- * API rather than to make hostauth_gating_active() fail closed. Failing
- * closed would turn an orphaned config into an API lockout whose only
- * recovery is ADR-0146's cix-recover boot entry, on a host with no
- * shell -- trading a silent hole for a new way to brick the box. So the
- * guards refuse the operation, with 409 and a message naming the fix,
- * and gating's own definition is left alone.
+ * Once someone holds it, no ordinary operation may leave nobody
+ * holding it: that would turn authentication off for the whole API
+ * while the configuration still looked correct -- #370's five
+ * incidents, restated for permissions. The guards refuse such a change
+ * with 409 rather than making gating fail closed, which would trade a
+ * silent hole for an API lockout recoverable only through ADR-0146's
+ * cix-recover boot entry. The predicates below are the whole rule;
+ * the mapping's own writers (hostauth_set_config() and
+ * hostauth_set_group_permissions()) apply the same test to the mapping
+ * they propose.
  *
- * That leaves one residual case this cannot guard: state arriving from
- * outside the API, such as a restored or hand-edited config file. That
- * is what the visibility half of #370 is for -- gating_active is
- * reported by GET /system/hostauth-config and GET /health, logged at
- * boot when inactive, and banner-ed in the dashboard, so an open
- * control plane is never silent even when it was not reached through a
- * guarded path.
+ * State arriving from outside the API -- a restored or hand-edited
+ * config file -- cannot be guarded, so gating_active is reported by
+ * GET /system/hostauth-config and GET /health, logged at boot when
+ * inactive, and shown by the dashboard.
  */
-int hostauth_admin_user_count(void);
-int hostauth_group_is_admin_group(const char *group_name);
-int hostauth_user_is_admin(const char *username);
-
-/*
- * Would a user carrying exactly these gids be an admin? The user-PUT
- * guard needs to judge the record a request PROPOSES, before it is
- * applied -- the stored record cannot answer that, since the question
- * is precisely whether the change removes the last admin.
- */
-int hostauth_gids_are_admin(int primarygroup, const int *secondary_groups, int secondary_count,
-                             int disabled);
-
-/*
- * Would gating be active if admin_groups were exactly this list? The
- * hostauth-config PUT guard's own predicate -- it must judge the config
- * a request PROPOSES rather than the one in force.
- */
-int hostauth_would_gate(const char *const *admin_groups, int admin_group_count);
-
 int hostauth_gating_active(void);
+
+/*
+ * Would a user change still leave someone holding identity:write?
+ * Judges the record the request PROPOSES -- these gids, this disabled
+ * flag, or deletion -- since the stored record cannot answer what the
+ * change does. 1 (allowed) while gating is inactive, or while any
+ * OTHER user holds it.
+ */
+int hostauth_user_change_keeps_grantor(const char *username, int primarygroup,
+                                       const int *secondary_groups, int secondary_count,
+                                       int disabled, int deleting);
+
+/*
+ * Would deleting this group, or changing its gidnumber (which orphans
+ * every member: users carry gids), still leave someone holding
+ * identity:write through some OTHER group? 1 while gating is inactive
+ * or the group grants no identity:write.
+ */
+int hostauth_group_change_keeps_grantor(const char *group);
 
 enum hostauth_login_result {
 	HOSTAUTH_LOGIN_OK = 0,
@@ -315,16 +313,33 @@ void hostauth_write_sessions_json(struct json_writer *w);
 int hostauth_revoke_sessions_for_user(const char *username);
 
 /*
- * The one real authorization decision dispatch() consults for every
- * mutating request: returns 1 if the write should proceed. That's
- * true when gating isn't active at all (hostauth_gating_active() ==
- * 0), OR token names a live session whose user is currently a member
- * of at least one configured admin group (checked live via ldap_user_
- * is_in_group(), never cached in the session -- a membership change
- * takes effect on this request, not at next login). token may be
- * NULL (no Authorization header at all), always false in that case
- * once gating is active.
+ * The one authorization decision (ADR-0317 section 4, #541): may the
+ * caller presenting token run an operation that requires permission?
+ * dispatch() asks it once per request, after the generated route table
+ * has matched and before the handler runs, with the permission the
+ * contract declares for that operation.
+ *
+ *   public            OK, and the token is not looked at -- so a
+ *                     single-use session is never consumed by it.
+ *   gating inactive   OK (see hostauth_gating_active()).
+ *   no valid session  NO_SESSION (the caller answers 401). The token
+ *                     IS checked here, which refreshes its idle window
+ *                     and consumes a single-use one: this is the one
+ *                     real check per request.
+ *   authenticated     OK for any valid session.
+ *   anything else     OK when the session's user holds it through one
+ *                     of their groups, read live -- a membership
+ *                     change takes effect on the next request, not the
+ *                     next login -- and FORBIDDEN (403) otherwise.
+ *
+ * A NULL permission is FORBIDDEN: apigen refuses a spec without one,
+ * so it cannot happen, and if it ever did it must not fail open.
  */
-int hostauth_authorize_write(const char *token);
+enum hostauth_authz {
+	HOSTAUTH_AUTHZ_OK = 0,
+	HOSTAUTH_AUTHZ_NO_SESSION,
+	HOSTAUTH_AUTHZ_FORBIDDEN,
+};
+enum hostauth_authz hostauth_authorize(const char *token, const char *permission);
 
 #endif /* HOSTAUTH_H */

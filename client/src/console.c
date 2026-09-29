@@ -299,6 +299,13 @@ static int do_ws_handshake(const struct cix_client *c, const char *label, const 
 		return -1;
 	}
 
+	/*
+	 * #541: the upgrade carries the session like any other request. The
+	 * console and the build-log stream are answered before the daemon's
+	 * ordinary dispatch, and until #541 nothing authorized them there, so
+	 * this header was never missed; once gating is active, an upgrade
+	 * without it is a 401.
+	 */
 	rlen = snprintf(req, sizeof(req),
 	                 "GET %s HTTP/1.1\r\n"
 	                 "Host: %s:%d\r\n"
@@ -306,8 +313,10 @@ static int do_ws_handshake(const struct cix_client *c, const char *label, const 
 	                 "Connection: Upgrade\r\n"
 	                 "Sec-WebSocket-Key: %s\r\n"
 	                 "Sec-WebSocket-Version: 13\r\n"
+	                 "%s%s%s"
 	                 "\r\n",
-	                 path, c->host, c->port, key);
+	                 path, c->host, c->port, key, c->token[0] != '\0' ? "Authorization: Bearer " : "",
+	                 c->token, c->token[0] != '\0' ? "\r\n" : "");
 	if (rlen < 0 || (size_t)rlen >= sizeof(req) || cix_write_all(fd, req, (size_t)rlen) != 0) {
 		fprintf(stderr, "%s: failed to send the upgrade request\n", label);
 		close(fd);

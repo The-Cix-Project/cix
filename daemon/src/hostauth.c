@@ -135,6 +135,9 @@ static void derive_admin_groups(void)
 	}
 }
 
+/* Defined with the mapping's own operations, at the end of this file. */
+static int any_user_holds(const struct perm_group *groups, int count, int idx);
+
 static void write_mapping_groups(struct json_writer *w)
 {
 	int i, j;
@@ -444,6 +447,26 @@ enum hostauth_config_error hostauth_set_config(const char *const *admin_groups, 
 		}
 		memset(g_perm_groups[at].has, 1, sizeof(g_perm_groups[at].has));
 	}
+	/*
+	 * #541 (ADR-0317 section 6): the translation above can take
+	 * identity:write away from everyone -- admin_groups [] on a box
+	 * whose only holders are in a full group. Judged on the mapping
+	 * just built, against the one in force, the same test
+	 * hostauth_set_group_permissions() applies. It replaces #370's
+	 * separate "would these admin_groups gate" pre-check in the
+	 * handler, which asked about admin groups rather than about who
+	 * can still grant permissions.
+	 */
+	{
+		int idx = perm_index("identity:write");
+
+		if (idx >= 0 && any_user_holds(old_groups, old_group_count, idx) &&
+		    !any_user_holds(g_perm_groups, g_perm_group_count, idx)) {
+			memcpy(g_perm_groups, old_groups, sizeof(old_groups));
+			g_perm_group_count = old_group_count;
+			return HOSTAUTH_CONFIG_ERR_LOCKOUT;
+		}
+	}
 	derive_admin_groups();
 	g_config.idle_timeout_seconds = idle_timeout_seconds;
 
@@ -533,133 +556,70 @@ static void write_config_fields(struct json_writer *w)
 }
 
 /*
- * The invariant this file protects, in one place (#370).
+ * Gating and its invariant (ADR-0317 section 6, #541) -- see the
+ * header for the rule. Every predicate here is a direct scan of the
+ * user table against the mapping, recomputed per call rather than
+ * cached, for the reason #370 gave: nothing then has to be kept in
+ * sync with every possible user, group or mapping change.
  *
- * "Gating is active" means: an admin group is configured AND at least
- * one enabled user is in one of them. Both halves matter, and the
- * second is what made this dangerous -- with an admin group configured
- * and nobody in it, every mutating request on the API is permitted,
- * silently, with the configuration still looking correct.
- *
- * Five ordinary operations could reach that state: deleting the admin
- * group, renaming it or changing its gidnumber (membership is by gid
- * and the config names it by name, so either orphans it), deleting the
- * last admin user, disabling or de-admining them, and pointing
- * admin_groups at a group with no members. None of them looks like
- * "turn authentication off", and all five did exactly that.
- *
- * These three are the predicates the guards ask. They exist so the
- * guards do not each grow their own copy of the rule -- and
- * hostauth_gating_active() below is now written in terms of the first
- * of them, so there is one definition of "an admin user" rather than
- * two that can drift.
+ * #370 asked the same questions of admin groups. Since #540 an admin
+ * group is only a group holding every permission, and what actually
+ * decides whether anyone can still administer the box is whether
+ * anyone holds identity:write -- the permission that grants the rest.
+ * So that is what these ask.
  */
-static int count_one_admin(const char *username, void *ctx)
+int hostauth_gating_active(void)
 {
-	if (hostauth_user_is_admin(username))
-		(*(int *)ctx)++;
-	/*
-	 * Always 0: ldap_user_for_each() stops at the first callback that
-	 * returns true, and a count needs the whole walk. Reused rather
-	 * than open-coding a second loop over the user table.
-	 */
-	return 0;
+	int idx = perm_index("identity:write");
+
+	return idx >= 0 && any_user_holds(g_perm_groups, g_perm_group_count, idx);
 }
 
-int hostauth_admin_user_count(void)
-{
-	int n = 0;
-
-	ldap_user_for_each(count_one_admin, &n);
-	return n;
-}
-
-/*
- * Would gating be active if admin_groups were exactly this list?
- *
- * Asked by the hostauth-config PUT guard, which must judge the config
- * a request PROPOSES. Deliberately NOT "refuse any config with no
- * members": setting admin_groups before the admin users exist is the
- * ordinary way an operator turns gating on for the first time, and
- * refusing it would obstruct enabling authentication in order to
- * protect authentication. The guard only refuses a change that would
- * turn ACTIVE gating off -- see its call site.
- */
-struct proposed_groups {
-	const char *const *names;
-	int count;
+/* Holds permission idx through a group other than skip_group, as a
+ * user other than skip_user (either may be NULL). */
+struct other_holder {
+	const char *skip_user;
+	const char *skip_group;
+	int idx;
 };
 
-static int user_in_proposed(const char *username, void *ctx)
+static int holds_elsewhere(const char *username, void *ctx)
 {
-	const struct proposed_groups *p = ctx;
-	int j;
-
-	for (j = 0; j < p->count; j++) {
-		if (ldap_user_is_in_group(username, p->names[j]))
-			return 1; /* short-circuits the walk: one is enough */
-	}
-	return 0;
-}
-
-int hostauth_would_gate(const char *const *admin_groups, int admin_group_count)
-{
-	struct proposed_groups p;
-
-	if (admin_groups == NULL || admin_group_count == 0)
-		return 0;
-	p.names = admin_groups;
-	p.count = admin_group_count;
-	return ldap_user_for_each(user_in_proposed, &p);
-}
-
-int hostauth_group_is_admin_group(const char *group_name)
-{
+	const struct other_holder *q = ctx;
 	int i;
 
-	if (group_name == NULL)
+	if (q->skip_user != NULL && strcmp(username, q->skip_user) == 0)
 		return 0;
-	for (i = 0; i < g_config.admin_group_count; i++) {
-		if (strcmp(g_config.admin_groups[i], group_name) == 0)
-			return 1;
-	}
-	return 0;
-}
-
-int hostauth_user_is_admin(const char *username)
-{
-	int i;
-
-	if (username == NULL)
-		return 0;
-	for (i = 0; i < g_config.admin_group_count; i++) {
-		if (ldap_user_is_in_group(username, g_config.admin_groups[i]))
-			return 1;
+	for (i = 0; i < g_perm_group_count; i++) {
+		if (!g_perm_groups[i].has[q->idx])
+			continue;
+		if (q->skip_group != NULL && strcmp(g_perm_groups[i].name, q->skip_group) == 0)
+			continue;
+		if (ldap_user_is_in_group(username, g_perm_groups[i].name))
+			return 1; /* stops the walk: one is enough */
 	}
 	return 0;
 }
 
 /*
- * Would a user carrying exactly these gids be an admin? Asked by the
- * user-PUT guard, which has to judge the record the request PROPOSES,
- * before it is applied -- the existing record is no help there, since
- * the whole question is whether the change removes the last admin.
- *
- * Resolves each configured admin group NAME to its gid rather than the
- * other way round: the config names groups by name, a user carries
- * gids, and going name -> gid needs no reverse lookup and no second
- * copy of the membership rule.
+ * Would a user carrying exactly these gids hold permission idx? Goes
+ * group name -> gid, since the mapping names groups and a user carries
+ * gids; that needs no reverse lookup and no second copy of the
+ * membership rule.
  */
-int hostauth_gids_are_admin(int primarygroup, const int *secondary_groups, int secondary_count,
-                             int disabled)
+static int gids_hold(int idx, int primarygroup, const int *secondary_groups, int secondary_count,
+                     int disabled)
 {
 	int i, j;
 
 	if (disabled)
 		return 0;
-	for (i = 0; i < g_config.admin_group_count; i++) {
-		const struct ldap_group *g = ldap_group_find(g_config.admin_groups[i]);
+	for (i = 0; i < g_perm_group_count; i++) {
+		const struct ldap_group *g;
 
+		if (!g_perm_groups[i].has[idx])
+			continue;
+		g = ldap_group_find(g_perm_groups[i].name);
 		if (g == NULL)
 			continue;
 		if (primarygroup == g->gidnumber)
@@ -672,29 +632,34 @@ int hostauth_gids_are_admin(int primarygroup, const int *secondary_groups, int s
 	return 0;
 }
 
-int hostauth_gating_active(void)
+int hostauth_user_change_keeps_grantor(const char *username, int primarygroup,
+                                       const int *secondary_groups, int secondary_count,
+                                       int disabled, int deleting)
 {
-	/*
-	 * A real, direct scan every call -- no cached "does an admin
-	 * exist" flag to keep in sync with every possible LDAP user/group
-	 * mutation (a disable, a group deletion, a group-membership
-	 * change). Cheap (LDAP_USER_MAX is 256, this runs once per
-	 * mutating request at most) and always correct, the same
-	 * "recompute, don't cache" posture this project's own live
-	 * /proc/mounts disk checks already established (ADR-0099).
-	 * ldap_user_for_each() is the one real enumeration primitive this
-	 * needs (daemon/src/ldap.c, added alongside it) -- reused as-is,
-	 * not a second "walk every user" loop invented here.
-	 *
-	 * #370: the walk now goes through hostauth_admin_user_count(), so
-	 * "is there an admin" and "how many admins are there" cannot give
-	 * different answers -- the guards that protect this invariant need
-	 * the count, and two loops meaning the same thing is how they
-	 * would drift.
-	 */
-	if (g_config.admin_group_count == 0)
-		return 0;
-	return hostauth_admin_user_count() > 0;
+	struct other_holder q;
+	int idx = perm_index("identity:write");
+
+	if (idx < 0 || !hostauth_gating_active())
+		return 1;
+	q.skip_user = username;
+	q.skip_group = NULL;
+	q.idx = idx;
+	if (ldap_user_for_each(holds_elsewhere, &q))
+		return 1;
+	return !deleting && gids_hold(idx, primarygroup, secondary_groups, secondary_count, disabled);
+}
+
+int hostauth_group_change_keeps_grantor(const char *group)
+{
+	struct other_holder q;
+	int idx = perm_index("identity:write");
+
+	if (idx < 0 || !hostauth_gating_active())
+		return 1;
+	q.skip_user = NULL;
+	q.skip_group = group;
+	q.idx = idx;
+	return ldap_user_for_each(holds_elsewhere, &q);
 }
 
 static void generate_token(char out[HOSTAUTH_TOKEN_LEN + 1])
@@ -1028,20 +993,20 @@ int hostauth_peek_token(const char *token, char *out_username, size_t out_userna
 	return 0;
 }
 
-int hostauth_authorize_write(const char *token)
+enum hostauth_authz hostauth_authorize(const char *token, const char *permission)
 {
 	char username[HOSTAUTH_USERNAME_MAX];
-	int i;
 
-	if (!hostauth_gating_active())
-		return 1;
+	if (permission == NULL)
+		return HOSTAUTH_AUTHZ_FORBIDDEN;
+	if (strcmp(permission, "public") == 0 || !hostauth_gating_active())
+		return HOSTAUTH_AUTHZ_OK;
 	if (!hostauth_check_token(token, username, sizeof(username)))
-		return 0;
-	for (i = 0; i < g_config.admin_group_count; i++) {
-		if (ldap_user_is_in_group(username, g_config.admin_groups[i]))
-			return 1;
-	}
-	return 0;
+		return HOSTAUTH_AUTHZ_NO_SESSION;
+	if (strcmp(permission, "authenticated") == 0 ||
+	    hostauth_user_has_permission(username, permission))
+		return HOSTAUTH_AUTHZ_OK;
+	return HOSTAUTH_AUTHZ_FORBIDDEN;
 }
 
 /*
@@ -1152,8 +1117,9 @@ enum hostauth_perm_error hostauth_set_group_permissions(const char *group, const
 	 * ADR-0317 section 6: once someone holds the permission that grants
 	 * permissions, a change may not leave nobody holding it. Before
 	 * anyone does -- a fresh box -- the mapping is freely editable,
-	 * the same "never refuse turning protection ON" posture as
-	 * hostauth_would_gate().
+	 * the same "never refuse turning protection ON" posture #370 took,
+	 * and the same test as hostauth_set_config() and the user and group
+	 * guards (hostauth_*_change_keeps_grantor()).
 	 */
 	if (identity_write >= 0 && any_user_holds(g_perm_groups, g_perm_group_count, identity_write) &&
 	    !any_user_holds(proposed, proposed_count, identity_write))

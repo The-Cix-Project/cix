@@ -300,11 +300,11 @@ paths:
         Idempotent: always `204`, whether the presented token names a
         real, still-live session or not -- a client never needs to
         know or care whether its session had already lapsed
-        server-side. Also exempt from write-gating, the same as
-        `POST /login` (a client that isn't authenticated has nothing
-        meaningful to log out of, but the call still succeeds).
+        server-side. So it is `public` (ADR-0317): requiring a live
+        session would turn a repeat logout into a 401. It revokes only
+        the token the caller itself presents.
       operationId: postLogout
-      x-cix-permission: authenticated
+      x-cix-permission: public
       x-cix-expose: [cli, web]
       security:
         - bearerAuth: []
@@ -317,15 +317,15 @@ paths:
       summary: Is the caller's own bearer token currently authenticated (ADR-0164)
       description: >
         Introspection only, and read-only in a stronger sense than an
-        ordinary GET: it never mutates a session, unlike a request
-        that goes through the real write-gating check
-        (`hostauth_authorize_write()`/`hostauth_check_token()`), which
-        under a single-use config (`idle_timeout_seconds: 0`) would
-        consume the token just by checking it. Exists because write-
-        gating leaves every ordinary GET open regardless of auth state
-        (by design), so there was previously no way for a client to
-        answer "is my token still good" without attempting a real
-        mutation. No `Authorization` header, or one naming an unknown/
+        ordinary GET: it never mutates a session. It is `public`
+        (ADR-0317), so the authorization check that every other
+        operation passes through (`hostauth_authorize()`, which under
+        a single-use config -- `idle_timeout_seconds: 0` -- consumes
+        the token just by checking it) never looks at its token.
+        That makes it the one way for a client to answer "is my token
+        still good, and what may I do" without spending the token on
+        the question.
+        No `Authorization` header, or one naming an unknown/
         expired/absent session, both report `authenticated: false` --
         this endpoint doesn't distinguish "never logged in" from
         "session lapsed." `cixctl`'s own interactive shell prompt
@@ -333,7 +333,7 @@ paths:
         authenticated) is the first real caller.
       operationId: getWhoami
       x-cix-permission: public
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Always 200, whether authenticated or not -- see authenticated field
@@ -20330,24 +20330,21 @@ components:
       type: http
       scheme: bearer
       description: >
-        ADR-0144's write-gating: every POST/PUT/DELETE, plus the
-        container console (`GET .../console`, a WebSocket upgrade that
-        is arbitrary command execution in real effect, gated by intent
-        rather than HTTP method), needs a valid `Authorization: Bearer
-        <token>` from `POST /login` naming a user in one of the
-        configured `admin_groups` (`GET/PUT /system/hostauth-config`).
-        Every other `GET` stays open, with two exceptions that
-        describe people rather than the machine and need a token
-        once gating is active (#490): `GET /system/hostauth/sessions`
-        and `GET /ldap/users` (and one user by name). `POST /login`
-        and `POST /logout` are the only requests exempt by path. Gating itself only
-        activates once at least one such admin-group user actually
-        exists (`hostauth_gating_active()`) -- a fresh install can
-        never lock itself out of its own API, and every mutating
-        operation in this document behaves exactly as documented
-        whether or not gating happens to be active on a given
-        deployment. This scheme is referenced explicitly on `POST
-        /logout` and `PUT /system/hostauth-config` above as the two
-        operations most directly about authentication itself; it is
-        the same requirement every other mutating operation in this
-        document is subject to, not repeated on each one individually.
+        ADR-0317: every operation requires the permission its
+        `x-cix-permission` names, checked once per request after the
+        route matches (#541). `public` operations -- login, logout,
+        health, whoami -- need nothing; every other needs a valid
+        `Authorization: Bearer <token>` from `POST /login` whose user
+        holds that permission through one of their groups
+        (`GET/PUT /system/hostauth/permissions`). No valid session is
+        `401`; a session without the permission is `403` with
+        `{"error": ..., "permission": "<word>"}`. Gating only activates
+        once at least one enabled user holds `identity:write`
+        (`hostauth_gating_active()`) -- a fresh install can never lock
+        itself out of its own API, and every operation in this
+        document behaves exactly as documented whether or not gating
+        is active on a given deployment. This scheme is referenced
+        explicitly on `POST /logout` and `PUT /system/hostauth-config`
+        as the two operations most directly about authentication
+        itself; the requirement applies to every non-`public`
+        operation, not repeated on each one individually.

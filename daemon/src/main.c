@@ -26472,6 +26472,223 @@ static void op_deleteStoragePartition(const struct api_ctx *ctx)
 	handle_disk_partition_delete(ctx->fd, ctx->p[0], ctx->p[1]);
 }
 
+/*
+ * #541: how a browser presents its session on a WebSocket upgrade. The
+ * browser WebSocket API cannot set an Authorization header -- the only
+ * request header a page controls is Sec-WebSocket-Protocol -- so the
+ * dashboard offers two subprotocols, "cix" and "cix.bearer.<token>",
+ * the same arrangement Kubernetes uses for its own browser consoles.
+ * The token entry is read here and never echoed: the 101 selects "cix"
+ * (ws_selected_protocol()), which RFC 6455 section 4.1 requires to be
+ * one the client offered, or the browser drops the connection.
+ * cixctl sends an ordinary Authorization header instead, and that
+ * header wins when both are present.
+ *
+ * Tokens are hex (hostauth.c generate_token()), which the subprotocol
+ * token grammar allows, so no encoding is needed.
+ */
+#define WS_BEARER_PREFIX "cix.bearer."
+
+static int ws_offered_protocols(const struct http_request *req, char *buf, size_t buf_size)
+{
+	char upgrade_val[32];
+
+	if (http_find_header(req->headers, req->headers_len, "Upgrade", upgrade_val,
+	                      sizeof(upgrade_val)) < 0 ||
+	    strcasecmp(upgrade_val, "websocket") != 0)
+		return 0;
+	return http_find_header(req->headers, req->headers_len, "Sec-WebSocket-Protocol", buf,
+	                        buf_size) >= 0;
+}
+
+/* Calls fn on each comma-separated entry, trimmed; stops when it returns 1. */
+static int ws_protocol_each(const char *list, int (*fn)(const char *entry, size_t len, void *ctx),
+                            void *ctx)
+{
+	const char *p = list;
+
+	while (*p != '\0') {
+		const char *end;
+		size_t len;
+
+		while (*p == ' ' || *p == '\t' || *p == ',')
+			p++;
+		end = p;
+		while (*end != '\0' && *end != ',')
+			end++;
+		len = (size_t)(end - p);
+		while (len > 0 && (p[len - 1] == ' ' || p[len - 1] == '\t'))
+			len--;
+		if (len > 0 && fn(p, len, ctx))
+			return 1;
+		p = end;
+	}
+	return 0;
+}
+
+struct ws_bearer_out {
+	char *out;
+	size_t size;
+};
+
+static int ws_take_bearer(const char *entry, size_t len, void *ctx)
+{
+	struct ws_bearer_out *o = ctx;
+	size_t plen = strlen(WS_BEARER_PREFIX);
+
+	if (len <= plen || strncmp(entry, WS_BEARER_PREFIX, plen) != 0 || len - plen >= o->size)
+		return 0;
+	memcpy(o->out, entry + plen, len - plen);
+	o->out[len - plen] = '\0';
+	return 1;
+}
+
+static int ws_is_cix(const char *entry, size_t len, void *ctx)
+{
+	(void)ctx;
+	return len == 3 && strncmp(entry, "cix", 3) == 0;
+}
+
+/* The bearer token a WebSocket upgrade carries in its subprotocols. */
+static int ws_protocol_bearer(const struct http_request *req, char *out, size_t out_size)
+{
+	char list[512];
+	struct ws_bearer_out o;
+
+	if (!ws_offered_protocols(req, list, sizeof(list)))
+		return 0;
+	o.out = out;
+	o.size = out_size;
+	return ws_protocol_each(list, ws_take_bearer, &o);
+}
+
+/* The Sec-WebSocket-Protocol line a 101 must carry: "cix" when the
+ * client offered it, nothing when it offered no subprotocols at all
+ * (cixctl, the tests). */
+static const char *ws_selected_protocol(const struct http_request *req)
+{
+	char list[512];
+
+	if (ws_offered_protocols(req, list, sizeof(list)) && ws_protocol_each(list, ws_is_cix, NULL))
+		return "Sec-WebSocket-Protocol: cix\r\n";
+	return "";
+}
+
+/*
+ * ADR-0317 section 4 (#541): the one authorization check, asked by
+ * dispatch() for every API operation after the generated table has
+ * matched its route and before anything else about the request is
+ * looked at -- so an unauthenticated caller cannot learn the
+ * operation's query-parameter contract from its 400s either.
+ *
+ * It replaces a gate that ran BEFORE routing and decided by path:
+ * every non-GET, plus the container console and the identity reads
+ * (#490), with login and logout exempted by name. Each of those
+ * exceptions is now an annotation in docs/api/openapi.yaml
+ * (x-cix-permission), which apigen refuses to leave out, so there is
+ * no list here to fall out of step with the routes.
+ *
+ * 401 when there is no valid session and 403 when the session's user
+ * lacks the permission, which the body names. The 401 message is kept
+ * byte for byte: cixctl relays it. What is audited: every refusal
+ * except a 401 on an <area>:read operation, which is what a dashboard
+ * polling without a session produces every few seconds -- auditing
+ * those would be the #490 wall again, server-side. A 403 on a read IS
+ * audited: that is a logged-in user reaching past their grants. Also
+ * called, through authorize_upgrade_route(), by the two WebSocket
+ * upgrades that are answered before dispatch().
+ *
+ * Returns 1 when the handler may run; otherwise the response has been
+ * written.
+ */
+static int authorize_route(int fd, const struct http_request *req, const struct api_route *route,
+                           int is_head)
+{
+	char token_hdr[HOSTAUTH_TOKEN_LEN + 32];
+	char ws_token[HOSTAUTH_TOKEN_LEN + 1];
+	const char *bearer = NULL;
+	/* A read in the sense the audit rule means: an operation whose
+	 * permission is `<area>:read`. The console is a GET and is not
+	 * one -- a refused shell is worth a line. */
+	int is_read = route->permission != NULL && strstr(route->permission, ":read") != NULL;
+
+	if (http_find_header(req->headers, req->headers_len, "Authorization", token_hdr,
+	                      sizeof(token_hdr)) >= 0)
+		bearer = strncmp(token_hdr, "Bearer ", 7) == 0 ? token_hdr + 7 : token_hdr;
+	else if (ws_protocol_bearer(req, ws_token, sizeof(ws_token)))
+		bearer = ws_token;
+
+	switch (hostauth_authorize(bearer, route->permission)) {
+	case HOSTAUTH_AUTHZ_OK:
+		return 1;
+	case HOSTAUTH_AUTHZ_NO_SESSION:
+		if (!is_read)
+			logstore_write("audit", "warn", "%s %s %s REFUSED (no session)", audit_who(),
+			               req->method, req->path);
+		if (is_head)
+			respond_error_head(fd, 401, "Unauthorized",
+			                    "authentication required -- POST /v1/login first");
+		else
+			respond_error(fd, 401, "Unauthorized",
+			              "authentication required -- POST /v1/login first");
+		return 0;
+	case HOSTAUTH_AUTHZ_FORBIDDEN:
+	default: {
+		char msg[256];
+		const char *perm = route->permission != NULL ? route->permission : "(undeclared)";
+
+		logstore_write("audit", "warn", "%s %s %s REFUSED (lacks %s)", audit_who(), req->method,
+		               req->path, perm);
+		snprintf(msg, sizeof(msg),
+		         "permission \"%s\" is required for %s, and none of your groups grants it",
+		         perm, route->op_id);
+		if (is_head) {
+			respond_error_head(fd, 403, "Forbidden", msg);
+		} else {
+			struct json_writer w;
+
+			jw_init(&w);
+			jw_obj_open(&w);
+			jw_key(&w, "error");
+			jw_str(&w, msg);
+			jw_key(&w, "permission");
+			jw_str(&w, perm);
+			jw_obj_close(&w);
+			respond_json(fd, 403, "Forbidden", &w);
+			jw_free(&w);
+		}
+		return 0;
+	}
+	}
+}
+
+/*
+ * #541: the two WebSocket upgrades -- the container console and the
+ * build-log stream -- are answered before dispatch() by
+ * try_console_upgrade() and try_pkg_build_log_upgrade(), so the check
+ * in dispatch() never sees them. Neither did the path-based gate it
+ * replaced: measured on 192.168.15.95 at 0.2.57-391 (gating active),
+ * an upgrade of GET /v1/containers/jump/console with no credential at
+ * all reached the console handler, which answered 500 from starting
+ * the session rather than 401. Each handler calls this once it has
+ * recognised its own path, so the same route row and the same rule
+ * decide, and dispatch() cannot check the same token a second time.
+ */
+static int authorize_upgrade_route(int fd, const struct http_request *req)
+{
+	char params[APIROUTE_MAX_PARAMS][APIROUTE_PARAM_MAX];
+	int idx = api_route_match(g_api_routes, (int)(sizeof(g_api_routes) / sizeof(g_api_routes[0])),
+	                          req->method, req->path, params);
+
+	if (idx < 0) {
+		/* A handler recognised a path the contract does not declare:
+		 * refused, rather than run with no stated permission. */
+		respond_error(fd, 404, "Not Found", "no such endpoint");
+		return 0;
+	}
+	return authorize_route(fd, req, &g_api_routes[idx], 0);
+}
+
 static void dispatch(int fd, const struct http_request *req)
 {
 	/*
@@ -26559,124 +26776,6 @@ static void dispatch(int fd, const struct http_request *req)
 		logstore_write("audit", "info", "%s %s %s", audit_who(), req->method, req->path);
 
 	/*
-	 * ADR-0144: write-gating -- the one authorization check every
-	 * mutating request goes through, dispatch-wide, before any route
-	 * below ever sees it. "Mutating" means every non-GET verb, plus
-	 * two deliberate GET-verb exceptions -- so the function's name
-	 * now reads narrower than its job, which is authorization and
-	 * not writes specifically. The first is the container console
-	 * upgrade is, in real effect, arbitrary command execution inside a
-	 * container, judged here by intent rather than HTTP method (the
-	 * same reasoning the audit-log exclusion just above already
-	 * applies the other way -- a GET is usually "just a query," this
-	 * one specifically isn't). The second is the identity reads,
-	 * below. hostauth_authorize_write() itself
-	 * returns true unconditionally while gating isn't active yet (no
-	 * admin-group user exists) -- a fresh install is never locked out
-	 * of its own API by this. POST /v1/login and POST /v1/logout are
-	 * the only two requests exempted by path -- login is how a token
-	 * is obtained at all, and logout only ever revokes the caller's
-	 * own token (it used to be exempt by being routed before this
-	 * block; now that every operation dispatches through the one
-	 * generated table below, the exemption is stated instead of
-	 * implied by ordering, ADR-0218).
-	 *
-	 * The IDENTITY reads are the second GET-verb exception (#490).
-	 * Most open GETs describe the machine -- its disks, containers,
-	 * packages. These two describe PEOPLE, and answer the two
-	 * questions an attacker asks first: which accounts are real and
-	 * privileged, and whether an administrator is at the keyboard
-	 * right now. `GET /v1/system/hostauth/sessions` returns
-	 * `expires_in_seconds`, which counts down and refreshes on use,
-	 * so polling it tracks a live operator's working window; and
-	 * `GET /v1/ldap/users` returns not a list of names but a profile
-	 * per account -- `mail`, `givenname`/`sn`, `homedirectory`,
-	 * `loginshell`, `ssh_public_key`, `primarygroup`,
-	 * `secondary_groups`, `has_password`, `disabled`. Neither is
-	 * catastrophic on a trusted LAN; both are free reconnaissance for
-	 * anyone who can reach port 80, and this platform is meant for
-	 * networks we do not control.
-	 *
-	 * The question the issue could not answer from outside, because
-	 * it decides whether gating the roster is a policy change or a
-	 * functional one: DOES NAME RESOLUTION GO THROUGH IT? It does
-	 * not. `nslcd` resolves over LDAP against the directory server
-	 * -- `uri`/`base`/`binddn`/`bindpw` in the /etc/nslcd.conf this
-	 * daemon writes -- and nothing in the tree reads this endpoint
-	 * except the dashboard, cixctl and the tests. So gating it takes
-	 * nothing away from anything that was working.
-	 *
-	 * The escape hatch #370 needed is inherited rather than rebuilt:
-	 * hostauth_authorize_write() returns true unconditionally while
-	 * gating is inactive, so a fresh install with no admin account
-	 * still answers these reads openly and cannot lock itself out of
-	 * the API that would explain why.
-	 *
-	 * Every other GET stays exempt by construction (needs_auth stays
-	 * 0).
-	 *
-	 * #498: HEAD counts as a read here, which it had never done. The
-	 * gate asked "is this a GET", so HEAD took the write path and
-	 * `curl -sI https://<host>/app.js` answered 401 while the same
-	 * request as GET answered 200 -- and each one was additionally
-	 * audited as a refused write, so the log gained warnings for
-	 * something that is not one. HEAD is by definition GET without a
-	 * body, so every argument for leaving reads open applies to it
-	 * unchanged; folding it into is_read rather than adding a second
-	 * term also keeps the console upgrade and the two identity reads
-	 * gated for HEAD exactly as they are for GET, which is the point
-	 * -- a gate that a change of verb can step around is not a gate.
-	 */
-	{
-		size_t path_len = strlen(req->path);
-		static const char *const LDAP_USERS = "/v1/ldap/users";
-		int is_read = strcmp(req->method, "GET") == 0 || is_head;
-		int is_console = is_read &&
-		                  strncmp(req->path, CONTAINERS_PREFIX, strlen(CONTAINERS_PREFIX)) == 0 &&
-		                  path_len > 8 && strcmp(req->path + path_len - 8, "/console") == 0;
-		/*
-		 * Exact path or a child of it, never a prefix match:
-		 * strncmp() alone would also gate a future /v1/ldap/usersets
-		 * and, worse, would silently stop gating the day the roster
-		 * moved -- a security check that fails open on a rename is
-		 * the wrong shape.
-		 */
-		int is_identity_read =
-		    is_read && (strcmp(req->path, "/v1/system/hostauth/sessions") == 0 ||
-		                strcmp(req->path, LDAP_USERS) == 0 ||
-		                (strncmp(req->path, LDAP_USERS, strlen(LDAP_USERS)) == 0 &&
-		                 req->path[strlen(LDAP_USERS)] == '/'));
-		int is_login = strcmp(req->method, "POST") == 0 &&
-		               (strcmp(req->path, "/v1/login") == 0 ||
-		                strcmp(req->path, "/v1/logout") == 0);
-		int needs_auth = (!is_read && !is_login) || is_console || is_identity_read;
-
-		if (needs_auth) {
-			char token_hdr[HOSTAUTH_TOKEN_LEN + 32];
-			const char *bearer = NULL;
-
-			if (http_find_header(req->headers, req->headers_len, "Authorization", token_hdr,
-			                      sizeof(token_hdr)) >= 0) {
-				bearer = strncmp(token_hdr, "Bearer ", 7) == 0 ? token_hdr + 7 : token_hdr;
-			}
-			if (!hostauth_authorize_write(bearer)) {
-				/* Audited too. A refused write is a real event --
-				 * more interesting than most that succeed -- and it
-				 * used to leave no trace beyond the caller's own 401. */
-				logstore_write("audit", "warn", "%s %s %s REFUSED (not authorized)", audit_who(),
-				                req->method, req->path);
-				if (is_head)
-					respond_error_head(fd, 401, "Unauthorized",
-					                    "authentication required -- POST /v1/login first");
-				else
-					respond_error(fd, 401, "Unauthorized",
-					              "authentication required -- POST /v1/login first");
-				return;
-			}
-		}
-	}
-
-	/*
 	 * ADR-0218: every API operation dispatches through the one table
 	 * generated from docs/api/openapi.yaml. There is no second route
 	 * to a handler and no handler outside the table -- an operation
@@ -26693,9 +26792,31 @@ static void dispatch(int fd, const struct http_request *req)
 		                          (int)(sizeof(g_api_routes) / sizeof(g_api_routes[0])),
 		                          req->method, req->path, params);
 
+		/*
+		 * #498 and #541: a HEAD takes its GET's permission. The table
+		 * declares no HEAD operations, so a HEAD of an API path matches
+		 * nothing and then 404s below -- running a GET handler for it
+		 * would be a change to the contract, not to authorization. But
+		 * it is authorized first, against the GET it shadows, so a
+		 * gated read cannot be probed by changing the verb: without a
+		 * session HEAD /v1/ldap/users answers 401 exactly as its GET
+		 * does, not 404.
+		 */
+		if (idx < 0 && is_head) {
+			int get_idx = api_route_match(g_api_routes,
+			                              (int)(sizeof(g_api_routes) / sizeof(g_api_routes[0])),
+			                              "GET", req->path, params);
+
+			if (get_idx >= 0 && !authorize_route(fd, req, &g_api_routes[get_idx], 1))
+				return;
+		}
+
 		if (idx >= 0) {
 			struct api_ctx ctx;
 			char bad_param[64];
+
+			if (!authorize_route(fd, req, &g_api_routes[idx], is_head))
+				return;
 
 			/*
 			 * The route is known, so its declared parameters are
@@ -27264,6 +27385,10 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	 * these branches, so CONSOLE_FAILED (caller runs its normal
 	 * teardown on cc) is correct throughout this section. */
 
+	/* #541: authorized as its route, before anything else is looked at. */
+	if (!authorize_upgrade_route(cc->fd, req))
+		return CONSOLE_FAILED;
+
 	if (http_find_header(req->headers, req->headers_len, "Upgrade", upgrade_val, sizeof(upgrade_val)) < 0 ||
 	    strcasecmp(upgrade_val, "websocket") != 0) {
 		respond_error(cc->fd, 400, "Bad Request", "this endpoint requires Upgrade: websocket");
@@ -27490,9 +27615,9 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	                 "HTTP/1.1 101 Switching Protocols\r\n"
 	                 "Upgrade: websocket\r\n"
 	                 "Connection: Upgrade\r\n"
-	                 "Sec-WebSocket-Accept: %s\r\n"
+	                 "Sec-WebSocket-Accept: %s\r\n%s"
 	                 "\r\n",
-	                 accept_val);
+	                 accept_val, ws_selected_protocol(req));
 	if (rlen < 0 || (size_t)rlen >= sizeof(response)) {
 		kill(exec_pid, SIGKILL);
 		/* #399: no wait here either -- the pidfd registered right
@@ -27634,6 +27759,10 @@ static enum console_route_result try_pkg_build_log_upgrade(struct conn *cc, cons
 	qlen = strcspn(req->path, "?");
 	if (qlen != strlen(PKG_BUILD_LOG_PATH) || strncmp(req->path, PKG_BUILD_LOG_PATH, qlen) != 0)
 		return CONSOLE_NOT_MATCHED;
+
+	/* #541: authorized as its route, before anything else is looked at. */
+	if (!authorize_upgrade_route(cc->fd, req))
+		return CONSOLE_FAILED;
 
 	if (http_find_header(req->headers, req->headers_len, "Upgrade", upgrade_val, sizeof(upgrade_val)) < 0 ||
 	    strcasecmp(upgrade_val, "websocket") != 0) {
@@ -27806,9 +27935,9 @@ static enum console_route_result try_pkg_build_log_upgrade(struct conn *cc, cons
 	                 "HTTP/1.1 101 Switching Protocols\r\n"
 	                 "Upgrade: websocket\r\n"
 	                 "Connection: Upgrade\r\n"
-	                 "Sec-WebSocket-Accept: %s\r\n"
+	                 "Sec-WebSocket-Accept: %s\r\n%s"
 	                 "\r\n",
-	                 accept_val);
+	                 accept_val, ws_selected_protocol(req));
 	if (rlen < 0 || (size_t)rlen >= sizeof(response)) {
 		respond_error(cc->fd, 500, "Internal Server Error", "failed to build handshake response");
 		return CONSOLE_FAILED;
@@ -30869,10 +30998,10 @@ static int cixd_main(int argc, char **argv)
 	if (boot_subsystem_init(init_mode, "hostauth", hostauth_init(HOSTAUTH_CONFIG_PATH)) != 0)
 		return 1;
 	/*
-	 * #370: say so, every boot, when this host will answer a mutating
+	 * #370: say so, every boot, when this host will answer any API
 	 * request from anyone who can reach it. Placed after BOTH ldap_init()
-	 * and hostauth_init(): gating is "an admin group is configured AND
-	 * an enabled user is in it", and the user table is ldap's -- asking
+	 * and hostauth_init(): gating is "an enabled user holds identity:write"
+	 * (ADR-0317, #541), and the user table is ldap's -- asking
 	 * before ldap_init() would read an empty table and report the
 	 * control plane open on every boot regardless of the truth.
 	 *
@@ -30884,9 +31013,10 @@ static int cixd_main(int argc, char **argv)
 	 */
 	if (!hostauth_gating_active())
 		logstore_write("cixd", "warning",
-		               "write authentication is NOT active: every mutating API request will be "
-		               "accepted without a credential. Configure admin_groups via "
-		               "PUT /v1/system/hostauth-config and put an enabled user in one.");
+		               "authentication is NOT active: every API request will be accepted "
+		               "without a credential. Grant identity:write to a group "
+		               "(PUT /v1/system/hostauth/permissions/{group}, or admin_groups via "
+		               "PUT /v1/system/hostauth-config) and put an enabled user in it.");
 	if (boot_subsystem_init(init_mode, "devicemap", devicemap_init(DEVICEMAP_STATE_PATH)) != 0)
 		return 1;
 	/* diskrole_init()/diskformat_remount_present_role_disks() now run
