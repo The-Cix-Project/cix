@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. The owner decided sections 1 and 3 on 2026-09-29 and raised section 8; it becomes Accepted when they accept the whole. Written for #304, on the owner's decision of 2026-09-14 (*"write the RBAC ADR; the model is spec-driven"*) and their direction on the same issue that the contract states the policy and the enforcement is generated from it. Raised again by the owner on 2026-09-29, because Cix is now being downloaded by people other than its developers. Nothing is implemented; the implementation issues follow acceptance.
+Accepted by the owner on 2026-09-29, with sections 1, 3 and 8 decided the same day -- including that the API accepts an app password on each request. Written for #304, on the owner's decision of 2026-09-14 (*"write the RBAC ADR; the model is spec-driven"*) and their direction on the same issue that the contract states the policy and the enforcement is generated from it. Raised again by the owner on 2026-09-29, because Cix is now being downloaded by people other than its developers. Nothing is implemented; the implementation issues follow acceptance.
 
 ## What changes when this is accepted
 
@@ -121,7 +121,7 @@ Automation, CI and #391's agent need a credential that is not an interactive log
 
 - **Stored with the user.** A user holds any number of named **app passwords**, kept in `cixd`'s own record store beside the main password. They are hashed with bcrypt exactly as `passbcrypt` is today, never stored or returned in clear, and shown once, at creation.
 - **Rendered into glauth** in its app-password field, so the same credential authenticates an application's LDAP bind. `cixd` already renders the main password into glauth's `passbcrypt` (`daemon/src/ldap.c`). glauth's config has app-password fields (`passappbcrypt`); the implementation verifies the field name and encoding against the pinned glauth source before relying on it, as `passbcrypt`'s hex encoding was verified.
-- **Accepted by the API on each request**, as HTTP Basic (`username` + app password), with no session to expire. That is what scripts need. The main password keeps going through `POST /v1/login` and a session; it is not accepted per request.
+- **Accepted by the API on each request** (decided by the owner, 2026-09-29), as HTTP Basic (`username` + app password), with no session to expire. That is what scripts need. The main password keeps going through `POST /v1/login` and a session; it is not accepted per request.
 - **No scopes.** An app password carries its user's permissions, no more and no less. Least privilege for a machine is a dedicated user in a narrower group: #391's agent is a user such as `agent-1` in a group granted `containers:operate` and every `read`. Per-credential scopes would be a second permission model beside the group one.
 - **Revocation takes effect at once.** Deleting an app password removes it from the store and from glauth's rendered config. The API checks the store on every request, so nothing cached keeps working.
 - **Audited by name.** Every request authenticated by an app password is audited as `user` plus the app password's name, so a leaked credential can be traced to what it did and revoked without touching the user's other credentials.
