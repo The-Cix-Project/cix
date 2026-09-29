@@ -29,6 +29,7 @@
 #include "resolv.h"
 #include "signingkeys.h"
 #include "releasekey.h"
+#include "base64.h"
 #include "childdiag.h"
 #include "swap.h"
 #include "syslogfwd.h"
@@ -26291,6 +26292,55 @@ static void op_deleteHostauthGroupPermissions(const struct api_ctx *ctx)
 	handle_hostauth_permissions_delete(ctx->fd, ctx->p[0]);
 }
 
+static void op_listLdapUserAppPasswords(const struct api_ctx *ctx)
+{
+	handle_ldap_app_passwords_list(ctx->fd, ctx->p[0]);
+}
+
+static void op_createLdapUserAppPassword(const struct api_ctx *ctx)
+{
+	handle_ldap_app_password_create(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_deleteLdapUserAppPassword(const struct api_ctx *ctx)
+{
+	handle_ldap_app_password_delete(ctx->fd, ctx->p[0], ctx->p[1]);
+}
+
+/*
+ * #543: the /whoami/app-passwords forms act for the session's own user.
+ * The route table has already required `authenticated` -- a session,
+ * never an app password -- whenever gating is active. On an ungated
+ * host every request passes that check, so a request with no session
+ * has no user to act for: that is the 401 here, not a permission check.
+ */
+static int own_user_or_401(const struct api_ctx *ctx)
+{
+	if (ctx->user != NULL && ctx->user[0] != '\0')
+		return 1;
+	respond_error(ctx->fd, 401, "Unauthorized",
+	              "authentication required -- POST /v1/login first");
+	return 0;
+}
+
+static void op_listOwnAppPasswords(const struct api_ctx *ctx)
+{
+	if (own_user_or_401(ctx))
+		handle_ldap_app_passwords_list(ctx->fd, ctx->user);
+}
+
+static void op_createOwnAppPassword(const struct api_ctx *ctx)
+{
+	if (own_user_or_401(ctx))
+		handle_ldap_app_password_create(ctx->fd, ctx->user, ctx->req->body, ctx->req->body_len);
+}
+
+static void op_deleteOwnAppPassword(const struct api_ctx *ctx)
+{
+	if (own_user_or_401(ctx))
+		handle_ldap_app_password_delete(ctx->fd, ctx->user, ctx->p[0]);
+}
+
 static void op_setServerHealthDrain(const struct api_ctx *ctx)
 {
 	handle_serverhealth_set(ctx->fd, ctx->p[0], ctx->p[1], ctx->req->body,
@@ -26451,9 +26501,91 @@ static char g_req_user[HOSTAUTH_USERNAME_MAX];
  * audit line has a subject in the same column and the trail stays
  * greppable by a fixed shape.
  */
+/*
+ * ADR-0317 section 8 (#543): whether this request presented an app
+ * password (HTTP Basic), and if it verified, its name. 0: no Basic
+ * credential; 1: verified, g_req_user is its user; -1: presented and
+ * refused. Reset with g_req_user by resolve_request_identity().
+ */
+static int g_req_basic;
+static char g_req_app[LDAP_APP_PASSWORD_NAME_MAX];
+
+/*
+ * The one place a request's credential is read, for everything that
+ * needs to know who is asking: the audit line, authorize_route(), and
+ * the WebSocket upgrades that are answered before dispatch() (which
+ * call it themselves, through authorize_upgrade_route()). Called once
+ * per request, so an app password is verified once and a single-use
+ * session is only peeked at here -- the consuming check stays in
+ * hostauth_authorize().
+ *
+ * A Bearer header names a session (peeked, and its idle window slid,
+ * #379). A Basic header is `user:app-password`, split at the FIRST
+ * colon (a username cannot contain one; a secret is hex), checked
+ * against the user's app passwords only -- the main password is never
+ * compared, so it is refused per request as ADR-0317 section 8 says.
+ */
+static void resolve_request_identity(const struct http_request *req)
+{
+	char hdr[512];
+
+	g_req_user[0] = '\0';
+	g_req_app[0] = '\0';
+	g_req_basic = 0;
+	if (http_find_header(req->headers, req->headers_len, "Authorization", hdr, sizeof(hdr)) < 0)
+		return;
+	if (strncmp(hdr, "Basic ", 6) == 0) {
+		unsigned char raw[384];
+		char *colon;
+		int n = base64_decode(hdr + 6, raw, sizeof(raw) - 1);
+
+		g_req_basic = -1;
+		if (n <= 0)
+			return;
+		raw[n] = '\0';
+		if (memchr(raw, '\0', (size_t)n) != NULL)
+			return;
+		colon = strchr((char *)raw, ':');
+		if (colon == NULL)
+			return;
+		*colon = '\0';
+		if (ldap_app_password_check((const char *)raw, colon + 1, g_req_app, sizeof(g_req_app))) {
+			snprintf(g_req_user, sizeof(g_req_user), "%s", (const char *)raw);
+			g_req_basic = 1;
+		}
+		explicit_bzero(raw, sizeof(raw));
+		return;
+	}
+	{
+		const char *bearer = strncmp(hdr, "Bearer ", 7) == 0 ? hdr + 7 : hdr;
+
+		if (!hostauth_peek_token(bearer, g_req_user, sizeof(g_req_user)))
+			g_req_user[0] = '\0';
+		else
+			/* #379: a served request is activity, whatever its
+			 * method. Sliding only on writes logged out a client
+			 * that polled a build to completion. */
+			hostauth_touch_token(bearer);
+	}
+}
+
+/*
+ * "-" rather than an empty field when nobody is authenticated, so every
+ * audit line has a subject in the same column and the trail stays
+ * greppable by a fixed shape. A request made with an app password names
+ * it (#543), so a leaked one can be traced to what it did and revoked
+ * without touching the user's other credentials.
+ */
 static const char *audit_who(void)
 {
-	return g_req_user[0] != '\0' ? g_req_user : "-";
+	static char who[HOSTAUTH_USERNAME_MAX + LDAP_APP_PASSWORD_NAME_MAX + 32];
+
+	if (g_req_user[0] == '\0')
+		return "-";
+	if (g_req_basic != 1)
+		return g_req_user;
+	snprintf(who, sizeof(who), "%s (app-password %s)", g_req_user, g_req_app);
+	return who;
 }
 
 static void op_addStoragePartition(const struct api_ctx *ctx)
@@ -26611,14 +26743,23 @@ static int authorize_route(int fd, const struct http_request *req, const struct 
 	 * permission is `<area>:read`. The console is a GET and is not
 	 * one -- a refused shell is worth a line. */
 	int is_read = route->permission != NULL && strstr(route->permission, ":read") != NULL;
+	enum hostauth_authz authz;
 
-	if (http_find_header(req->headers, req->headers_len, "Authorization", token_hdr,
-	                      sizeof(token_hdr)) >= 0)
-		bearer = strncmp(token_hdr, "Bearer ", 7) == 0 ? token_hdr + 7 : token_hdr;
-	else if (ws_protocol_bearer(req, ws_token, sizeof(ws_token)))
-		bearer = ws_token;
+	/* #543: an app password, already verified (or refused) once for
+	 * this request by resolve_request_identity(). */
+	if (g_req_basic != 0) {
+		authz = hostauth_authorize_app_password(g_req_basic == 1 ? g_req_user : NULL,
+		                                        route->permission);
+	} else {
+		if (http_find_header(req->headers, req->headers_len, "Authorization", token_hdr,
+		                      sizeof(token_hdr)) >= 0)
+			bearer = strncmp(token_hdr, "Bearer ", 7) == 0 ? token_hdr + 7 : token_hdr;
+		else if (ws_protocol_bearer(req, ws_token, sizeof(ws_token)))
+			bearer = ws_token;
+		authz = hostauth_authorize(bearer, route->permission);
+	}
 
-	switch (hostauth_authorize(bearer, route->permission)) {
+	switch (authz) {
 	case HOSTAUTH_AUTHZ_OK:
 		return 1;
 	case HOSTAUTH_AUTHZ_NO_SESSION:
@@ -26679,6 +26820,10 @@ static int authorize_upgrade_route(int fd, const struct http_request *req)
 	char params[APIROUTE_MAX_PARAMS][APIROUTE_PARAM_MAX];
 	int idx = api_route_match(g_api_routes, (int)(sizeof(g_api_routes) / sizeof(g_api_routes[0])),
 	                          req->method, req->path, params);
+
+	/* Upgrades never reach dispatch(), where every other request's
+	 * credential is read -- so read it here, once (#543). */
+	resolve_request_identity(req);
 
 	if (idx < 0) {
 		/* A handler recognised a path the contract does not declare:
@@ -26754,23 +26899,7 @@ static void dispatch(int fd, const struct http_request *req)
 	 * first and checking after is one consume, in the right place;
 	 * checking twice would burn a single-use token on a log line.
 	 */
-	{
-		char hdr[HOSTAUTH_TOKEN_LEN + 32];
-
-		g_req_user[0] = '\0';
-		if (http_find_header(req->headers, req->headers_len, "Authorization", hdr, sizeof(hdr)) >=
-		    0) {
-			const char *bearer = strncmp(hdr, "Bearer ", 7) == 0 ? hdr + 7 : hdr;
-
-			if (!hostauth_peek_token(bearer, g_req_user, sizeof(g_req_user)))
-				g_req_user[0] = '\0';
-			else
-				/* #379: a served request is activity, whatever its
-				 * method. Sliding only on writes logged out a client
-				 * that polled a build to completion. */
-				hostauth_touch_token(bearer);
-		}
-	}
+	resolve_request_identity(req);
 
 	if (strcmp(req->method, "GET") != 0)
 		logstore_write("audit", "info", "%s %s %s", audit_who(), req->method, req->path);

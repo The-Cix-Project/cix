@@ -356,4 +356,18 @@ enum hostauth_authz {
 };
 enum hostauth_authz hostauth_authorize(const char *token, const char *permission);
 
+/*
+ * ADR-0317 section 8 (#543): hostauth_authorize() for a request that
+ * presented an app password (HTTP Basic) instead of a session. username
+ * is the user the app password verified as (ldap_app_password_check()),
+ * or NULL when it did not verify -- NO_SESSION, a 401, like any missing
+ * credential. The permissions are exactly the user's, with one
+ * exception: `authenticated` is refused. It means "any valid session",
+ * and it is what guards a user managing their OWN app passwords; if an
+ * app password satisfied it, a leaked one could mint successors that
+ * outlive its own revocation. Managing app passwords with one needs
+ * identity:write, like managing anyone's.
+ */
+enum hostauth_authz hostauth_authorize_app_password(const char *username, const char *permission);
+
 #endif /* HOSTAUTH_H */

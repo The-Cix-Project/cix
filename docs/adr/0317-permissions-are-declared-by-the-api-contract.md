@@ -133,6 +133,8 @@ Automation, CI and #391's agent need a credential that is not an interactive log
 
 Managing a user's app passwords needs `identity:write`, or for a user's own app passwords `authenticated`: people may rotate their own machine credentials without being able to grant anything.
 
+Two details settled while implementing #543, neither of which changes a decision above. **The bcrypt comparison is memoized, not the check.** One comparison at cost 12 measured about 400 ms on 192.168.15.95 (2026-09-29, a failed `POST /v1/login`, against 0.7 ms for `/v1/health`), and the control plane is a single event loop, so a per-request bcrypt would let one polling script stall the host. cixd still reads the user's current app passwords on every request; what it remembers, in memory only, is that a given secret (as a SHA-256) verified against a given stored hash. The memo is reached only through a hash the store still holds, so revoking an app password ends it at once, and the stored hash is bcrypt as this section says. **`authenticated` means a login session.** An app password satisfies every permission its user holds except `authenticated`, so it cannot manage app passwords through the self-service endpoints -- otherwise a leaked credential could mint successors that outlive its own revocation. The API authenticates app passwords from cixd's own store and never through glauth, so they work on a host with no LDAP server; the `passappbcrypt` rendering is a copy for LDAP clients.
+
 ### 9. Gates
 
 Implementation issues must carry:

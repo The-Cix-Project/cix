@@ -359,6 +359,112 @@ paths:
                       client can offer only what it will be allowed. Empty when
                       not authenticated.
 
+  /whoami/app-passwords:
+    get:
+      summary: List the caller's own app passwords (ADR-0317 section 8)
+      description: >
+        The same as `GET /ldap/users/{name}/app-passwords` for the session's
+        own user. Needs a login session: an app password does not satisfy
+        `authenticated`, so a leaked one cannot mint successors.
+      operationId: listOwnAppPasswords
+      x-cix-permission: authenticated
+      x-cix-expose: []
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The caller's app passwords
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  app_passwords:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AppPassword"
+        "401":
+          description: No session identifies a user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: Create an app password for the caller (ADR-0317 section 8)
+      description: >
+        The same as `POST /ldap/users/{name}/app-passwords` for the
+        session's own user, so people rotate their own machine credentials
+        without being able to grant anything.
+      operationId: createOwnAppPassword
+      x-cix-permission: authenticated
+      x-cix-expose: []
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        "201":
+          description: Created; `password` is shown this once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppPasswordCreated"
+        "400":
+          description: An invalid app password name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: No session identifies a user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: An app password of that name exists already, or there are 8
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /whoami/app-passwords/{app}:
+    delete:
+      summary: Revoke one of the caller's own app passwords (ADR-0317 section 8)
+      operationId: deleteOwnAppPassword
+      x-cix-permission: authenticated
+      x-cix-expose: []
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: Revoked
+        "401":
+          description: No session identifies a user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No app password of that name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/hostauth-config:
     get:
       summary: Current host-authentication configuration (ADR-0144)
@@ -8497,6 +8603,130 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /ldap/users/{name}/app-passwords:
+    get:
+      summary: List a user's app passwords (ADR-0317 section 8)
+      description: >
+        Names and creation times only. A secret is shown once, when it is
+        created, and a hash never leaves the host.
+      operationId: listLdapUserAppPasswords
+      x-cix-permission: identity:read
+      x-cix-expose: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The user's app passwords
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  app_passwords:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AppPassword"
+        "404":
+          description: No such user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: Create an app password for a user (ADR-0317 section 8)
+      description: >
+        cixd generates the secret (128 random bits, hex) and returns it in
+        this response only; it keeps a bcrypt hash, rendered into glauth as
+        `passappbcrypt` so the same credential works for an LDAP bind. The
+        API accepts it on any request as HTTP Basic (`name:secret`), with
+        exactly the user's permissions except `authenticated`. At most 8
+        per user.
+      operationId: createLdapUserAppPassword
+      x-cix-permission: identity:write
+      x-cix-expose: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: "[A-Za-z0-9._-]{1,63}, unique per user"
+      responses:
+        "201":
+          description: Created; `password` is shown this once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppPasswordCreated"
+        "400":
+          description: An invalid app password name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The user already has an app password of that name, or has 8
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /ldap/users/{name}/app-passwords/{app}:
+    delete:
+      summary: Revoke a user's app password (ADR-0317 section 8)
+      description: >
+        Removes it from the store and from glauth's rendered config. The API
+        checks the store on every request, so the next request presenting it
+        is refused.
+      operationId: deleteLdapUserAppPassword
+      x-cix-permission: identity:write
+      x-cix-expose: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: Revoked
+        "404":
+          description: No such user, or no app password of that name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /ldap/config:
     get:
       summary: >
@@ -16151,6 +16381,29 @@ components:
             read live -- a project quota has no per-container kernel
             file to consult, and nothing changes a container's quota
             after creation. null means no quota.
+
+    AppPassword:
+      type: object
+      required: [name, created]
+      properties:
+        name:
+          type: string
+        created:
+          type: integer
+          description: Unix seconds
+
+    AppPasswordCreated:
+      type: object
+      required: [name, created, password]
+      properties:
+        name:
+          type: string
+        created:
+          type: integer
+          description: Unix seconds
+        password:
+          type: string
+          description: The secret, shown in this response only
 
     HostauthPermissions:
       type: object

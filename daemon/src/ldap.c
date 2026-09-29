@@ -17,7 +17,11 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
+
+#include <openssl/crypto.h>
+#include <openssl/sha.h>
 
 static struct ldap_server_binding g_bindings[LDAP_SERVER_MAX];
 static char g_state_path[PATH_MAX];
@@ -373,6 +377,25 @@ static void write_user_persist_one(const struct ldap_user *u, struct json_writer
 	jw_bool(w, u->can_search != 0);
 	jw_key(w, "ssh_public_key");
 	jw_str(w, u->ssh_public_key);
+	/* #543: hashes only, and only here -- ldap_user_write_json_one()
+	 * never carries them. */
+	jw_key(w, "app_passwords");
+	jw_arr_open(w);
+	{
+		int i;
+
+		for (i = 0; i < u->app_password_count; i++) {
+			jw_obj_open(w);
+			jw_key(w, "name");
+			jw_str(w, u->app_passwords[i].name);
+			jw_key(w, "passbcrypt");
+			jw_str(w, u->app_passwords[i].passbcrypt);
+			jw_key(w, "created");
+			jw_int(w, u->app_passwords[i].created);
+			jw_obj_close(w);
+		}
+	}
+	jw_arr_close(w);
 	jw_obj_close(w);
 }
 
@@ -404,6 +427,9 @@ static int save_groups_state(void)
 	jw_free(&w);
 	return rc;
 }
+
+/* #543: an app password's name; defined with the app-password code. */
+static int app_name_is_valid(const char *s);
 
 static int load_users_state(void)
 {
@@ -474,6 +500,28 @@ static int load_users_state(void)
 		u->can_search = json_as_number(json_object_get(item, "can_search")) != 0;
 		if (ssh_public_key != NULL)
 			strncpy(u->ssh_public_key, ssh_public_key, sizeof(u->ssh_public_key) - 1);
+		/* #543: absent in every file written before it. An entry that
+		 * is not well-formed is skipped rather than failing the load. */
+		{
+			const struct json_value *japps = json_object_get(item, "app_passwords");
+			size_t j;
+
+			for (j = 0; japps != NULL && japps->type == JSON_ARRAY && j < japps->u.array.count &&
+			            u->app_password_count < LDAP_APP_PASSWORDS_MAX;
+			     j++) {
+				const struct json_value *ja = japps->u.array.items[j];
+				const char *an = json_as_string(json_object_get(ja, "name"));
+				const char *ah = json_as_string(json_object_get(ja, "passbcrypt"));
+				struct ldap_app_password *ap = &u->app_passwords[u->app_password_count];
+
+				if (!app_name_is_valid(an) || ah == NULL || strlen(ah) != PWHASH_BCRYPT_LEN)
+					continue;
+				snprintf(ap->name, sizeof(ap->name), "%s", an);
+				snprintf(ap->passbcrypt, sizeof(ap->passbcrypt), "%s", ah);
+				ap->created = (long long)json_as_number(json_object_get(ja, "created"));
+				u->app_password_count++;
+			}
+		}
 		count++;
 	}
 	json_free(root);
@@ -1029,6 +1077,24 @@ static void toml_append_raw(char *buf, size_t bufsize, size_t *off, const char *
 	*off += len;
 }
 
+/*
+ * A bcrypt string as glauth reads it: hex of its bytes, as a TOML
+ * string. glauth hex-decodes passbcrypt and every passappbcrypt entry
+ * before the bcrypt compare (see render_users_groups_toml()), so the
+ * literal "$2b$12$..." would parse and then fail every bind. One
+ * encoder for both fields.
+ */
+static void toml_append_bcrypt_hex(char *buf, size_t bufsize, size_t *off, const char *hash)
+{
+	char hex[PWHASH_BCRYPT_LEN * 2 + 1];
+	size_t k;
+
+	for (k = 0; hash[k] != '\0' && k < PWHASH_BCRYPT_LEN; k++)
+		snprintf(hex + k * 2, 3, "%02x", (unsigned char)hash[k]);
+	hex[k * 2] = '\0';
+	toml_append_string(buf, bufsize, off, hex);
+}
+
 static void toml_append_int(char *buf, size_t bufsize, size_t *off, int v)
 {
 	char num[16];
@@ -1120,15 +1186,28 @@ static size_t render_users_groups_toml(char *buf, size_t bufsize)
 			 * the string's own bytes, not a real transcoding -- glauth
 			 * hex-decodes it right back before ever touching bcrypt.
 			 */
-			char passbcrypt_hex[PWHASH_BCRYPT_LEN * 2 + 1];
-			size_t k;
-
-			for (k = 0; u->passbcrypt[k] != '\0' && k < sizeof(u->passbcrypt) - 1; k++)
-				snprintf(passbcrypt_hex + k * 2, 3, "%02x", (unsigned char)u->passbcrypt[k]);
-			passbcrypt_hex[k * 2] = '\0';
-
 			toml_append_raw(buf, bufsize, &off, "\npassbcrypt = ");
-			toml_append_string(buf, bufsize, &off, passbcrypt_hex);
+			toml_append_bcrypt_hex(buf, bufsize, &off, u->passbcrypt);
+		}
+		if (u->app_password_count > 0) {
+			/*
+			 * ADR-0317 section 8 (#543): glauth's User.PassAppBcrypt
+			 * []string, TOML key passappbcrypt, each entry hex-decoded
+			 * before the bcrypt compare exactly as passbcrypt is -- read
+			 * from the pinned glauth 2.4.0 source by
+			 * probe-glauth-apppass@1 on 192.168.15.95, 2026-09-29
+			 * (pkg/config/config.go:94; pkg/handler/ldapopshelper.go:
+			 * 133-146, which checks app passwords before the main one).
+			 */
+			int a;
+
+			toml_append_raw(buf, bufsize, &off, "\npassappbcrypt = [");
+			for (a = 0; a < u->app_password_count; a++) {
+				if (a > 0)
+					toml_append_raw(buf, bufsize, &off, ", ");
+				toml_append_bcrypt_hex(buf, bufsize, &off, u->app_passwords[a].passbcrypt);
+			}
+			toml_append_raw(buf, bufsize, &off, "]");
 		}
 		if (u->ssh_public_key[0] != '\0') {
 			/*
@@ -1562,13 +1641,14 @@ static int ldap_write_config_file(const char *full_path)
 	/*
 	 * Sized comfortably above LDAP_USER_MAX * (worst-case escaped
 	 * field lengths) + LDAP_GROUP_MAX * (worst case) -- see
-	 * render_users_groups_toml()'s own field list; ~1.6KB/user *
-	 * 256 + ~150B/group * 64 is under 420KB, so this is a defensive
+	 * render_users_groups_toml()'s own field list; ~1.6KB/user plus up
+	 * to ~1KB of passappbcrypt (#543: 8 x 124 hex bytes) *
+	 * 256 + ~150B/group * 64 is under 700KB, so this is a defensive
 	 * backstop that should never actually trigger, not a real,
 	 * silent record-dropping path (same posture as dns_write_hosts_
 	 * file()'s own sizing comment).
 	 */
-	static char rendered[524288];
+	static char rendered[1048576];
 	size_t rendered_len;
 	char *final_buf;
 	size_t final_len;
@@ -2087,6 +2167,183 @@ int ldap_user_check_password(const char *user_name, const char *password)
 	if (u == NULL || u->disabled || u->passbcrypt[0] == '\0' || password == NULL)
 		return 0;
 	return pwhash_bcrypt_check(password, u->passbcrypt);
+}
+
+/*
+ * ---- ADR-0317 section 8 (#543): app passwords ----
+ */
+
+static int app_name_is_valid(const char *s)
+{
+	size_t i, len;
+
+	if (s == NULL)
+		return 0;
+	len = strlen(s);
+	if (len == 0 || len >= LDAP_APP_PASSWORD_NAME_MAX)
+		return 0;
+	for (i = 0; i < len; i++) {
+		char c = s[i];
+
+		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+		      c == '.' || c == '_' || c == '-'))
+			return 0;
+	}
+	return 1;
+}
+
+enum ldap_record_error ldap_app_password_create(const char *user_name, const char *app_name,
+                                                char out_secret[LDAP_PROVISION_SECRET_LEN + 1],
+                                                long long *out_created)
+{
+	struct ldap_user *u = ldap_user_find(user_name);
+	struct ldap_app_password *ap;
+	char secret[LDAP_PROVISION_SECRET_LEN + 1];
+	int i;
+
+	if (u == NULL)
+		return LDAP_RECORD_ERR_NOT_FOUND;
+	if (!app_name_is_valid(app_name))
+		return LDAP_RECORD_ERR_INVALID_NAME;
+	for (i = 0; i < u->app_password_count; i++) {
+		if (strcmp(u->app_passwords[i].name, app_name) == 0)
+			return LDAP_RECORD_ERR_DUPLICATE;
+	}
+	if (u->app_password_count >= LDAP_APP_PASSWORDS_MAX)
+		return LDAP_RECORD_ERR_FULL;
+	if (ldap_generate_secret(secret) != 0)
+		return LDAP_RECORD_ERR_PERSIST_FAILED;
+
+	ap = &u->app_passwords[u->app_password_count];
+	memset(ap, 0, sizeof(*ap));
+	if (pwhash_bcrypt_new(secret, ap->passbcrypt, sizeof(ap->passbcrypt)) != 0) {
+		memset(ap, 0, sizeof(*ap));
+		return LDAP_RECORD_ERR_PERSIST_FAILED;
+	}
+	snprintf(ap->name, sizeof(ap->name), "%s", app_name);
+	ap->created = (long long)time(NULL);
+	u->app_password_count++;
+	if (save_users_state() != 0) {
+		u->app_password_count--;
+		memset(ap, 0, sizeof(*ap));
+		return LDAP_RECORD_ERR_PERSIST_FAILED;
+	}
+	ldap_record_sync_all();
+	memcpy(out_secret, secret, sizeof(secret));
+	if (out_created != NULL)
+		*out_created = ap->created;
+	return LDAP_RECORD_OK;
+}
+
+enum ldap_record_error ldap_app_password_delete(const char *user_name, const char *app_name)
+{
+	struct ldap_user *u = ldap_user_find(user_name);
+	struct ldap_app_password gone;
+	int i, at = -1;
+
+	if (u == NULL || app_name == NULL)
+		return LDAP_RECORD_ERR_NOT_FOUND;
+	for (i = 0; i < u->app_password_count; i++) {
+		if (strcmp(u->app_passwords[i].name, app_name) == 0)
+			at = i;
+	}
+	if (at < 0)
+		return LDAP_RECORD_ERR_NOT_FOUND;
+	gone = u->app_passwords[at];
+	for (i = at; i + 1 < u->app_password_count; i++)
+		u->app_passwords[i] = u->app_passwords[i + 1];
+	u->app_password_count--;
+	memset(&u->app_passwords[u->app_password_count], 0, sizeof(u->app_passwords[0]));
+	if (save_users_state() != 0) {
+		for (i = u->app_password_count; i > at; i--)
+			u->app_passwords[i] = u->app_passwords[i - 1];
+		u->app_passwords[at] = gone;
+		u->app_password_count++;
+		return LDAP_RECORD_ERR_PERSIST_FAILED;
+	}
+	ldap_record_sync_all();
+	return LDAP_RECORD_OK;
+}
+
+int ldap_app_passwords_write_json(const char *user_name, struct json_writer *w)
+{
+	const struct ldap_user *u = ldap_user_find(user_name);
+	int i;
+
+	if (u == NULL)
+		return -1;
+	jw_arr_open(w);
+	for (i = 0; i < u->app_password_count; i++) {
+		jw_obj_open(w);
+		jw_key(w, "name");
+		jw_str(w, u->app_passwords[i].name);
+		jw_key(w, "created");
+		jw_int(w, u->app_passwords[i].created);
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
+	return 0;
+}
+
+/*
+ * The memo ldap_app_password_check() consults before paying for bcrypt:
+ * a stored hash, and the SHA-256 of the one secret that verified against
+ * it. Only a verified pair is ever written, so a hit answers both ways --
+ * the same digest matches, any other digest cannot, since only one
+ * secret was ever generated for that hash. Memory only, replaced in
+ * rotation when full; reached only through a hash the user's record
+ * still holds, so a deleted app password's entry is simply never looked
+ * at again.
+ */
+#define APP_MEMO_MAX 64
+
+static struct {
+	char hash[PWHASH_BCRYPT_LEN + 1];
+	unsigned char digest[SHA256_DIGEST_LENGTH];
+} g_app_memo[APP_MEMO_MAX];
+static int g_app_memo_next;
+
+static int app_memo_find(const char *hash)
+{
+	int i;
+
+	for (i = 0; i < APP_MEMO_MAX; i++) {
+		if (g_app_memo[i].hash[0] != '\0' && strcmp(g_app_memo[i].hash, hash) == 0)
+			return i;
+	}
+	return -1;
+}
+
+int ldap_app_password_check(const char *user_name, const char *secret, char *out_app,
+                            size_t out_app_size)
+{
+	const struct ldap_user *u = ldap_user_find(user_name);
+	unsigned char digest[SHA256_DIGEST_LENGTH];
+	int i;
+
+	if (u == NULL || u->disabled || secret == NULL || secret[0] == '\0')
+		return 0;
+	SHA256((const unsigned char *)secret, strlen(secret), digest);
+	for (i = 0; i < u->app_password_count; i++) {
+		const struct ldap_app_password *ap = &u->app_passwords[i];
+		int m = app_memo_find(ap->passbcrypt);
+
+		if (m >= 0) {
+			if (CRYPTO_memcmp(g_app_memo[m].digest, digest, sizeof(digest)) != 0)
+				continue;
+		} else {
+			if (!pwhash_bcrypt_check(secret, ap->passbcrypt))
+				continue;
+			m = g_app_memo_next;
+			g_app_memo_next = (g_app_memo_next + 1) % APP_MEMO_MAX;
+			snprintf(g_app_memo[m].hash, sizeof(g_app_memo[m].hash), "%s", ap->passbcrypt);
+			memcpy(g_app_memo[m].digest, digest, sizeof(digest));
+		}
+		if (out_app != NULL && out_app_size > 0)
+			snprintf(out_app, out_app_size, "%s", ap->name);
+		return 1;
+	}
+	return 0;
 }
 
 int ldap_user_for_each(int (*fn)(const char *name, void *ctx), void *ctx)

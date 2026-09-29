@@ -13,6 +13,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/login` | Authenticate, get a session token (ADR-0144) -- `public`, needs no session |
 | POST | `/logout` | Invalidate the current session (idempotent, `public`) |
 | GET | `/whoami` | Is the caller's own bearer token currently authenticated, and its permissions -- `public`, never consumes a single-use session (ADR-0164) |
+| GET, POST | `/whoami/app-passwords` | The same, for the session's own user -- needs a login session, not an app password (#543) |
+| DELETE | `/whoami/app-passwords/{app}` | Revoke one of your own |
 | GET | `/system/hostauth-config` | Current admin-group list, session idle timeout, live-LDAP backend config |
 | PUT | `/system/hostauth-config` | Replace host-auth config (full replacement of admin_groups/idle_timeout_seconds; ldap_* fields optional, including `ldap_tls` for the daemon's own bind) |
 | GET | `/system/hostauth/sessions` | Every active session (username, expires-in) -- never a raw token, before or after issuance (ADR-0152) |
@@ -242,6 +244,9 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/ldap/users/{name}` | Inspect one LDAP user |
 | PUT | `/ldap/users/{name}` | Update an existing LDAP user (full field replacement; `password` omitted keeps the existing credential); a real, different `name` in the body renames it (ADR-0147) |
 | DELETE | `/ldap/users/{name}` | Delete an LDAP user |
+| GET | `/ldap/users/{name}/app-passwords` | A user's app passwords: names and creation times, never a secret or hash ([#543](https://git.home.arpa/itdlabs/cix/issues/543)) |
+| POST | `/ldap/users/{name}/app-passwords` | Create one: `{"name": ...}`; the `201` carries the generated secret, shown this once |
+| DELETE | `/ldap/users/{name}/app-passwords/{app}` | Revoke one; the next request presenting it is refused |
 | GET | `/ldap/config` | Fetch the current `start_uid`/`start_gid` auto-allocation floor (task #748) |
 | PUT | `/ldap/config` | Set the `start_uid`/`start_gid` floor -- takes effect for future allocations only, does not renumber existing records |
 | GET | `/pki/ca` | Inspect the root CA (never includes the private key) |
@@ -640,7 +645,7 @@ Both clients use this. `cixctl console` sends the terminal it is running in; the
 
 ## Host authentication (ADR-0144)
 
-One rule applies uniformly, not per-endpoint: **every operation needs a session holding the permission its `x-cix-permission` names**, except the four `public` ones — `POST /login`, `POST /logout`, `GET /health` and `GET /whoami` (the full model is [below](#every-operation-declares-the-permission-it-requires-adr-0317)). A session is an `Authorization: Bearer <token>` from `POST /login`. No valid session answers `401`, with the message `authentication required -- POST /v1/login first`; a valid session whose user lacks the permission answers `403` with `{"error": "...", "permission": "<word>"}`, because logging in again cannot fix that. The dashboard's static assets are not API operations and stay open. `openapi.yaml`'s `components.securitySchemes.bearerAuth` carries this note once rather than repeating it on every operation.
+One rule applies uniformly, not per-endpoint: **every operation needs a session (or an [app password](#every-operation-declares-the-permission-it-requires-adr-0317)) holding the permission its `x-cix-permission` names**, except the four `public` ones — `POST /login`, `POST /logout`, `GET /health` and `GET /whoami` (the full model is [below](#every-operation-declares-the-permission-it-requires-adr-0317)). A session is an `Authorization: Bearer <token>` from `POST /login`. No valid session answers `401`, with the message `authentication required -- POST /v1/login first`; a valid session whose user lacks the permission answers `403` with `{"error": "...", "permission": "<word>"}`, because logging in again cannot fix that. The dashboard's static assets are not API operations and stay open. `openapi.yaml`'s `components.securitySchemes.bearerAuth` carries this note once rather than repeating it on every operation.
 
 The check runs once per request, after the generated route table has matched the operation and before anything else about the request is looked at — so an unknown `/v1/...` path is a `404` with or without a session, and an unauthenticated caller cannot learn an operation's query-parameter contract from its `400`s. Until [#541](https://git.home.arpa/itdlabs/cix/issues/541) the check ran before routing and decided by path: every non-`GET`, plus the container console and the identity reads, with login and logout exempted by name. Those exceptions are annotations now, and `apigen` refuses a spec that leaves one out.
 
@@ -691,6 +696,24 @@ Each operation in `openapi.yaml` carries `x-cix-permission`, naming the one perm
 The mapping is the one stored statement; `admin_groups` in `hostauth-config` is derived from it -- the groups holding every permission. A `PUT /system/hostauth-config` naming a group grants it every permission, and a group that held every permission and is no longer named loses its entry. On the first start after upgrading to #540, each existing admin group was granted every permission, so nobody gained or lost anything. Deleting an LDAP group removes its entry, so a new group of the same name inherits nothing; renaming one moves its grants.
 
 **Standard groups ([#542](https://git.home.arpa/itdlabs/cix/issues/542), ADR-0317 section 7).** A host is given three groups, in the directory and in the mapping: `cix-admins` (every permission), `cix-operators` (`public`, every `read`, every `operate`) and `cix-readers` (every `read`). The sets are derived from the vocabulary by suffix, so a permission added to the contract lands in them without a code change. It happens once per host — `hostauth_config.json` records it — so a standard group you delete stays deleted, the same rule the default package sources and schedule follow. A group that already exists under one of those names, in the directory or the mapping, is never re-granted: on a host whose own admin group is already called `cix-admins`, that group keeps exactly what it had. They start with no members, so they change nothing until someone is put in one.
+
+**App passwords: machine credentials ([#543](https://git.home.arpa/itdlabs/cix/issues/543), ADR-0317 section 8).** A script, CI job or agent does not log in; it presents an **app password** on every request as HTTP Basic:
+
+```
+POST /v1/ldap/users/agent-1/app-passwords        (identity:write)
+{"name": "ci"}
+-> 201 {"name": "ci", "created": 1790720000, "password": "3f9c..."}   (shown this once)
+
+GET /v1/containers
+Authorization: Basic base64("agent-1:3f9c...")
+```
+
+- **It carries exactly its user's permissions**, so least privilege for a machine is a dedicated user in a narrower group -- there are no per-credential scopes. The one exception is `authenticated`, which means a *session*: an app password cannot manage app passwords through `/whoami/app-passwords`, so a leaked one cannot mint successors that outlive its revocation.
+- **The main password is not accepted per request** -- it goes through `POST /login` and a session. Basic is checked against the user's app passwords only.
+- **cixd checks its own store on every request**, which is what makes revocation immediate and what makes it work on a host with no LDAP server at all. A bcrypt comparison costs about 400 ms on 192.168.15.95 and the control plane is a single event loop, so a verified secret is remembered in memory against the stored hash it matched (as a SHA-256); the memo is only ever reached through a hash the store still holds, so revoking one ends it at once. A user holds at most 8.
+- **They are rendered into glauth** as `passappbcrypt`, hex-encoded like `passbcrypt` (measured against the pinned glauth 2.4.0 source), so the same credential works for an LDAP bind. That is a copy for LDAP clients, made only when a glauth server is registered; it is never how the API authenticates.
+- **Audited by name**: a request made with one is logged as `user (app-password NAME)`.
+- `GET /whoami` describes a *session*, so it answers `authenticated: false` to a request carrying only an app password.
 
 ## Creating a network
 

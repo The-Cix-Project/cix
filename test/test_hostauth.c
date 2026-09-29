@@ -17,6 +17,7 @@
  * part of ADR-0144 for how, and for the real hex-encoding bug that
  * verification found in ldap.c's own TOML rendering).
  */
+#include "base64.h"
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
@@ -202,6 +203,71 @@ static int ws_upgrade_status(const char *path, const char *extra)
 	if (sscanf(resp, "HTTP/1.1 %d", &status) != 1)
 		status = -1;
 	close(fd);
+	return status;
+}
+
+/*
+ * #543: one request authenticated with an app password as HTTP Basic,
+ * sent raw because the client library sends only Bearer tokens. The
+ * daemon closes the connection after its response, so this reads to
+ * EOF. Returns the status (-1 if none) and copies the body into body.
+ */
+static int basic_request(const char *method, const char *path, const char *user,
+                         const char *secret, const char *req_body, char *body, size_t body_size)
+{
+	struct sockaddr_in sa;
+	struct timeval tv = { 30, 0 };
+	char cred[256], cred_b64[400], req[2048], resp[16384];
+	const char *hdr_end;
+	size_t got = 0;
+	int fd, n, status = -1;
+
+	if (body_size > 0)
+		body[0] = '\0';
+	snprintf(cred, sizeof(cred), "%s:%s", user, secret);
+	if (base64_encode((const unsigned char *)cred, strlen(cred), cred_b64, sizeof(cred_b64)) != 0)
+		return -1;
+	fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (fd < 0)
+		return -1;
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons(TEST_PORT);
+	sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+		close(fd);
+		return -1;
+	}
+	n = snprintf(req, sizeof(req),
+	             "%s %s HTTP/1.1\r\n"
+	             "Host: 127.0.0.1\r\n"
+	             "Authorization: Basic %s\r\n"
+	             "Content-Type: application/json\r\n"
+	             "Content-Length: %zu\r\n"
+	             "Connection: close\r\n"
+	             "\r\n"
+	             "%s",
+	             method, path, cred_b64, req_body != NULL ? strlen(req_body) : 0,
+	             req_body != NULL ? req_body : "");
+	if (n < 0 || (size_t)n >= sizeof(req) || write(fd, req, (size_t)n) != n) {
+		close(fd);
+		return -1;
+	}
+	while (got < sizeof(resp) - 1) {
+		ssize_t r = read(fd, resp + got, sizeof(resp) - 1 - got);
+
+		if (r <= 0)
+			break;
+		got += (size_t)r;
+	}
+	resp[got] = '\0';
+	close(fd);
+	if (sscanf(resp, "HTTP/1.1 %d", &status) != 1)
+		return -1;
+	hdr_end = strstr(resp, "\r\n\r\n");
+	if (hdr_end != NULL && body_size > 0)
+		snprintf(body, body_size, "%s", hdr_end + 4);
 	return status;
 }
 
@@ -1344,6 +1410,152 @@ int main(void)
 				}
 			}
 
+			/*
+			 * #543 (ADR-0317 section 8): app passwords. An admin makes
+			 * one for plain_user; it is accepted per request as HTTP
+			 * Basic with exactly plain_user's permissions; the main
+			 * password is not; revocation is immediate; and the audit
+			 * line names it.
+			 */
+			{
+				char secret[128] = "", own_secret[128] = "", body[4096];
+				int st;
+
+				memset(&r, 0, sizeof(r));
+				if (request_with_token(&client, "POST", "/v1/ldap/users/plain_user/app-passwords",
+				                        token, "{\"name\":\"ci\"}", &r) != 0 ||
+				    r.status != 201 || r.json == NULL ||
+				    json_str_field(r.json, "password") == NULL) {
+					fprintf(stderr, "FAIL: #543 create an app password, status=%d (%.200s)\n",
+					        r.status, r.body != NULL ? r.body : "");
+					ok = 0;
+				} else {
+					snprintf(secret, sizeof(secret), "%s", json_str_field(r.json, "password"));
+				}
+				cix_response_free(&r);
+
+				/* Its user's read, twice: the second is the memoized path. */
+				st = basic_request("GET", "/v1/containers", "plain_user", secret, NULL, body,
+				                   sizeof(body));
+				if (st != 200) {
+					fprintf(stderr, "FAIL: #543 a granted read by app password expected 200, "
+					                "got %d\n",
+					        st);
+					ok = 0;
+				}
+				st = basic_request("GET", "/v1/containers", "plain_user", secret, NULL, body,
+				                   sizeof(body));
+				if (st != 200) {
+					fprintf(stderr, "FAIL: #543 the same read a second time expected 200, got %d\n",
+					        st);
+					ok = 0;
+				}
+				/* ... and nothing more than its user holds. */
+				st = basic_request("POST", "/v1/containers", "plain_user", secret, "{}", body,
+				                   sizeof(body));
+				if (st != 403 || strstr(body, "containers:write") == NULL) {
+					fprintf(stderr, "FAIL: #543 an app password must carry exactly its user's "
+					                "permissions, expected 403 naming containers:write, got %d "
+					                "(%.200s)\n",
+					        st, body);
+					ok = 0;
+				}
+				/* The main password is not accepted per request. */
+				st = basic_request("GET", "/v1/containers", "plain_user", "plainpassword123", NULL,
+				                   body, sizeof(body));
+				if (st != 401) {
+					fprintf(stderr, "FAIL: #543 the main password as HTTP Basic expected 401, "
+					                "got %d\n",
+					        st);
+					ok = 0;
+				}
+				st = basic_request("GET", "/v1/containers", "plain_user", "0123456789abcdef", NULL,
+				                   body, sizeof(body));
+				if (st != 401) {
+					fprintf(stderr, "FAIL: #543 a wrong app password expected 401, got %d\n", st);
+					ok = 0;
+				}
+
+				/* Own app passwords need a session, not an app password. */
+				memset(&r, 0, sizeof(r));
+				if (request_with_token(&client, "POST", "/v1/whoami/app-passwords", plain_token,
+				                        "{\"name\":\"own\"}", &r) != 0 ||
+				    r.status != 201 || r.json == NULL ||
+				    json_str_field(r.json, "password") == NULL) {
+					fprintf(stderr, "FAIL: #543 a user creating their own app password with a "
+					                "session expected 201, got %d\n",
+					        r.status);
+					ok = 0;
+				} else {
+					snprintf(own_secret, sizeof(own_secret), "%s",
+					         json_str_field(r.json, "password"));
+				}
+				cix_response_free(&r);
+				st = basic_request("POST", "/v1/whoami/app-passwords", "plain_user", secret,
+				                   "{\"name\":\"minted\"}", body, sizeof(body));
+				if (st != 403) {
+					fprintf(stderr, "FAIL: #543 an app password must not mint app passwords, "
+					                "expected 403, got %d\n",
+					        st);
+					ok = 0;
+				}
+
+				/* A listing carries names, never a hash or a secret. */
+				memset(&r, 0, sizeof(r));
+				if (request_with_token(&client, "GET", "/v1/ldap/users/plain_user/app-passwords",
+				                        token, NULL, &r) != 0 ||
+				    r.status != 200 || r.body == NULL || strstr(r.body, "\"ci\"") == NULL ||
+				    strstr(r.body, "\"own\"") == NULL || strstr(r.body, "passbcrypt") != NULL ||
+				    strstr(r.body, "$2") != NULL ||
+				    (secret[0] != '\0' && strstr(r.body, secret) != NULL)) {
+					fprintf(stderr, "FAIL: #543 the listing must name both and reveal neither: "
+					                "%.300s\n",
+					        r.body != NULL ? r.body : "");
+					ok = 0;
+				}
+				cix_response_free(&r);
+
+				/* The audit trail names the app password. The refused
+				 * create above is a write, so it was audited. */
+				memset(&r, 0, sizeof(r));
+				if (request_with_token(&client, "GET", "/v1/system/logs?source=audit&tail=50",
+				                        token, NULL, &r) != 0 ||
+				    r.body == NULL || strstr(r.body, "plain_user (app-password ci)") == NULL) {
+					fprintf(stderr, "FAIL: #543 the audit log does not name the app password\n");
+					ok = 0;
+				}
+				cix_response_free(&r);
+
+				/* Revoked: the very next request is refused, and the
+				 * user's other app password still works. */
+				memset(&r, 0, sizeof(r));
+				if (request_with_token(&client, "DELETE",
+				                        "/v1/ldap/users/plain_user/app-passwords/ci", token, NULL,
+				                        &r) != 0 ||
+				    r.status != 204) {
+					fprintf(stderr, "FAIL: #543 revoke an app password, status=%d\n", r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+				st = basic_request("GET", "/v1/containers", "plain_user", secret, NULL, body,
+				                   sizeof(body));
+				if (st != 401) {
+					fprintf(stderr, "FAIL: #543 a revoked app password expected 401 at once, "
+					                "got %d\n",
+					        st);
+					ok = 0;
+				}
+				st = basic_request("GET", "/v1/containers", "plain_user", own_secret, NULL, body,
+				                   sizeof(body));
+				if (st != 200) {
+					fprintf(stderr, "FAIL: #543 revoking one app password must leave the other, "
+					                "expected 200, got %d\n",
+					        st);
+					ok = 0;
+				}
+				explicit_bzero(secret, sizeof(secret));
+				explicit_bzero(own_secret, sizeof(own_secret));
+			}
 			/* whoami reports exactly what was granted. */
 			memset(&r, 0, sizeof(r));
 			if (request_with_token(&client, "GET", "/v1/whoami", plain_token, NULL, &r) != 0 ||

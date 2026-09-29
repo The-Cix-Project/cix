@@ -1,5 +1,6 @@
 #include "releasekey.h"
 
+#include "base64.h"
 #include "opensslrun.h"
 
 #include <dirent.h>
@@ -107,17 +108,6 @@ static void key_id(const unsigned char pub[ED25519_PUB_LEN], unsigned char out[R
 	memcpy(out, digest, RELEASEKEY_ID_LEN);
 }
 
-/* Standard base64, no wrapping -- minisign expects one line. */
-static int b64(const unsigned char *in, size_t in_len, char *out, size_t out_size)
-{
-	int n;
-
-	if (out_size < ((in_len + 2) / 3) * 4 + 1)
-		return -1;
-	n = EVP_EncodeBlock((unsigned char *)out, in, (int)in_len);
-	return n > 0 ? 0 : -1;
-}
-
 enum releasekey_error releasekey_set(const char *pem, size_t pem_len)
 {
 	char tmp[PATH_MAX];
@@ -176,7 +166,7 @@ enum releasekey_error releasekey_public(char *out, size_t out_size)
 	blob[1] = 'd';
 	key_id(pub, blob + 2);
 	memcpy(blob + 2 + RELEASEKEY_ID_LEN, pub, ED25519_PUB_LEN);
-	if (b64(blob, sizeof(blob), encoded, sizeof(encoded)) != 0)
+	if (base64_encode(blob, sizeof(blob), encoded, sizeof(encoded)) != 0)
 		return RELEASEKEY_ERR_IO;
 	if ((size_t)snprintf(out, out_size, "untrusted comment: cix release signing key\n%s\n",
 	                      encoded) >= out_size)
@@ -287,8 +277,8 @@ enum releasekey_error releasekey_sign_file(const char *path, const char *sig_pat
 	sig_blob[1] = 'd';
 	key_id(pub, sig_blob + 2);
 	memcpy(sig_blob + 2 + RELEASEKEY_ID_LEN, sig, ED25519_SIG_LEN);
-	if (b64(sig_blob, sizeof(sig_blob), sig_b64, sizeof(sig_b64)) != 0 ||
-	    b64(gsig, ED25519_SIG_LEN, gsig_b64, sizeof(gsig_b64)) != 0)
+	if (base64_encode(sig_blob, sizeof(sig_blob), sig_b64, sizeof(sig_b64)) != 0 ||
+	    base64_encode(gsig, ED25519_SIG_LEN, gsig_b64, sizeof(gsig_b64)) != 0)
 		return RELEASEKEY_ERR_IO;
 
 	f = fopen(sig_path, "w");
@@ -319,45 +309,6 @@ enum releasekey_error releasekey_sign_file(const char *path, const char *sig_pat
  */
 static const unsigned char g_ed25519_spki_prefix[12] = { 0x30, 0x2a, 0x30, 0x05, 0x06, 0x03,
 	                                                  0x2b, 0x65, 0x70, 0x03, 0x21, 0x00 };
-
-/*
- * Standard base64 in, raw bytes out.
- *
- * EVP_DecodeBlock reports the PADDED length -- it decodes '=' to zero
- * bytes and counts them -- so the padding has to be subtracted here or
- * a 74-byte signature blob reads back as 75 and every length check
- * downstream is off by one. It also accepts only whole 4-character
- * groups, which is why a length that is not a multiple of four is
- * rejected before it is handed over rather than after.
- *
- * `out` must hold (strlen(in) / 4) * 3 bytes -- that PADDED length, not
- * the number of bytes you expect back. Sizing it to the expected result
- * is the mistake this paragraph exists for: a 64-byte signature needs
- * 66 bytes here, and a destination of exactly 64 makes the guard below
- * refuse the decode. It fails closed, which is the right direction and
- * is also indistinguishable from a malformed file -- so a programming
- * error presents as "nothing verifies", which is how it reached a real
- * build (#403).
- */
-static int unb64(const char *in, unsigned char *out, size_t out_size)
-{
-	size_t len = strlen(in);
-	size_t pad = 0;
-	int n;
-
-	if (len == 0 || len % 4 != 0)
-		return -1;
-	if (in[len - 1] == '=')
-		pad++;
-	if (len >= 2 && in[len - 2] == '=')
-		pad++;
-	if ((len / 4) * 3 > out_size)
-		return -1;
-	n = EVP_DecodeBlock(out, (const unsigned char *)in, (int)len);
-	if (n < 0 || (size_t)n != (len / 4) * 3)
-		return -1;
-	return (int)((size_t)n - pad);
-}
 
 /* One Ed25519 signature check: `sig` over the whole of `in_path`. */
 static int verify_raw(const unsigned char pub[ED25519_PUB_LEN], const char *in_path,
@@ -443,7 +394,7 @@ static int read_public_key_file(const char *path, unsigned char out_id[RELEASEKE
 			line[--len] = '\0';
 		if (len == 0 || strncmp(line, "untrusted comment:", 18) == 0)
 			continue;
-		n = unb64(line, blob, sizeof(blob));
+		n = base64_decode(line, blob, sizeof(blob));
 		got = 1;
 		break;
 	}
@@ -532,7 +483,7 @@ enum releasekey_error releasekey_verify_file(const char *path, const char *sig_p
 	 * this daemon cannot compute and must therefore refuse rather than
 	 * verify the wrong way round -- releasekey_sign_file() writes "Ed"
 	 * for the same reason. */
-	n = unb64(lines[1], blob, sizeof(blob));
+	n = base64_decode(lines[1], blob, sizeof(blob));
 	if (n != 2 + RELEASEKEY_ID_LEN + ED25519_SIG_LEN || blob[0] != 'E' || blob[1] != 'd')
 		return RELEASEKEY_ERR_BAD_SIG;
 	memcpy(key_id_want, blob + 2, RELEASEKEY_ID_LEN);
@@ -543,7 +494,7 @@ enum releasekey_error releasekey_verify_file(const char *path, const char *sig_p
 	 *
 	 * EVP_DecodeBlock writes the PADDED length -- 66 bytes for the 88
 	 * base64 characters a 64-byte signature becomes -- so a destination
-	 * sized to the signature is two bytes short and unb64()'s own guard
+	 * sized to the signature is two bytes short and base64_decode()'s own guard
 	 * refuses the whole decode. That failed closed, which is the right
 	 * direction, but it failed closed for EVERYTHING: measured on
 	 * 192.168.15.95, every verification returned "not a parseable
@@ -552,7 +503,7 @@ enum releasekey_error releasekey_verify_file(const char *path, const char *sig_p
 	{
 		unsigned char gbuf[96];
 
-		n = unb64(lines[3], gbuf, sizeof(gbuf));
+		n = base64_decode(lines[3], gbuf, sizeof(gbuf));
 		if (n != ED25519_SIG_LEN)
 			return RELEASEKEY_ERR_BAD_SIG;
 		memcpy(gsig, gbuf, ED25519_SIG_LEN);

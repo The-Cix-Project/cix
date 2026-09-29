@@ -706,3 +706,106 @@ void handle_ldap_user_delete(int fd, const char *name)
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
+
+/*
+ * ---- ADR-0317 section 8 (#543): app passwords ----
+ *
+ * Reached as /ldap/users/{name}/app-passwords (identity:read/write) and
+ * as /whoami/app-passwords (authenticated), which passes the session's
+ * own user. Authorization is the route table's, never checked here.
+ */
+void handle_ldap_app_passwords_list(int fd, const char *user)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "app_passwords");
+	if (ldap_app_passwords_write_json(user, &w) != 0) {
+		jw_free(&w);
+		respond_error(fd, 404, "Not Found", "no such LDAP user");
+		return;
+	}
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+void handle_ldap_app_password_create(int fd, const char *user, const char *body, size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	char secret[LDAP_PROVISION_SECRET_LEN + 1];
+	char app[LDAP_APP_PASSWORD_NAME_MAX];
+	long long created = 0;
+	enum ldap_record_error rerr;
+	struct json_writer w;
+	const char *name;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	name = json_as_string(json_object_get(root, "name"));
+	if (name == NULL || strlen(name) >= sizeof(app)) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "name must be an app password name: [A-Za-z0-9._-]{1,63}");
+		return;
+	}
+	snprintf(app, sizeof(app), "%s", name);
+	json_free(root);
+
+	rerr = ldap_app_password_create(user, app, secret, &created);
+	switch (rerr) {
+	case LDAP_RECORD_OK:
+		break;
+	case LDAP_RECORD_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such LDAP user");
+		return;
+	case LDAP_RECORD_ERR_INVALID_NAME:
+		respond_error(fd, 400, "Bad Request",
+		              "name must be an app password name: [A-Za-z0-9._-]{1,63}");
+		return;
+	case LDAP_RECORD_ERR_DUPLICATE:
+		respond_error(fd, 409, "Conflict", "this user already has an app password of that name");
+		return;
+	case LDAP_RECORD_ERR_FULL:
+		respond_error(fd, 409, "Conflict",
+		              "this user already has 8 app passwords, the most one may hold -- revoke one "
+		              "first");
+		return;
+	default:
+		respond_error(fd, 500, "Internal Server Error", "failed to persist the app password");
+		return;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, app);
+	jw_key(&w, "created");
+	jw_int(&w, created);
+	jw_key(&w, "password");
+	jw_str(&w, secret);
+	jw_obj_close(&w);
+	respond_json(fd, 201, "Created", &w);
+	explicit_bzero(secret, sizeof(secret));
+	explicit_bzero(w.buf, w.len);
+	jw_free(&w);
+}
+
+void handle_ldap_app_password_delete(int fd, const char *user, const char *app)
+{
+	enum ldap_record_error rerr = ldap_app_password_delete(user, app);
+
+	if (rerr == LDAP_RECORD_ERR_NOT_FOUND) {
+		respond_error(fd, 404, "Not Found", "no such LDAP user, or no app password of that name");
+		return;
+	}
+	if (rerr != LDAP_RECORD_OK) {
+		respond_error(fd, 500, "Internal Server Error", "failed to persist the revocation");
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}

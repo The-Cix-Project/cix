@@ -27,6 +27,12 @@ void handle_ldap_server_list(int fd);
 void handle_ldap_user_create(int fd, const char *body, size_t body_len);
 void handle_ldap_user_delete(int fd, const char *name);
 void handle_ldap_user_get_one(int fd, const char *name);
+
+/* ADR-0317 section 8 (#543): one user's app passwords. The /whoami
+ * forms call these with the session's own user. */
+void handle_ldap_app_passwords_list(int fd, const char *user);
+void handle_ldap_app_password_create(int fd, const char *user, const char *body, size_t body_len);
+void handle_ldap_app_password_delete(int fd, const char *user, const char *app);
 void handle_ldap_user_list(int fd);
 void handle_ldap_user_update(int fd, const char *name, const char *body, size_t body_len);
 
