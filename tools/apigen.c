@@ -632,6 +632,10 @@ static void emit_web(const char *out_path, const char *spec)
 		}
 		fprintf(o, "`,\n");
 		fprintf(o, "\t%s_METHOD: \"%s\",\n", g_ops[i].op_id, g_ops[i].method);
+		/* ADR-0317 (#544): the permission this operation requires, so
+		 * the dashboard can tell what a session may do without a second
+		 * copy of the policy in JS (sessionMay() in web/app.js). */
+		fprintf(o, "\t%s_PERMISSION: \"%s\",\n", g_ops[i].op_id, g_ops[i].permission);
 	}
 	fprintf(o, "};\n");
 	fclose(o);

@@ -49,9 +49,10 @@
 			<ul class="menu-dropdown-menu" data-menu="logo" hidden>
 				<li><button type="button" id="menu-about" data-modal="about-form" data-title="About Cix">About Cix</button></li>
 				<li class="menu-divider"></li>
-				<li><button type="button" id="menu-reboot" class="menu-item-danger">Reboot</button></li>
-				<li><button type="button" id="menu-shutdown" class="menu-item-danger">Shutdown</button></li>
+				<li><button type="button" id="menu-reboot" class="menu-item-danger" data-op="rebootSystem">Reboot</button></li>
+				<li><button type="button" id="menu-shutdown" class="menu-item-danger" data-op="shutdownSystem">Shutdown</button></li>
 				<li class="menu-divider"></li>
+				<li><button type="button" id="menu-own-app-passwords" hidden>My App Passwords</button></li>
 				<li><button type="button" id="menu-auth-action">Log in</button></li>
 			</ul>
 		</div>
@@ -59,32 +60,32 @@
 		<div class="menu-dropdown">
 			<button type="button" class="menu-dropdown-toggle" data-menu="containers">Containers</button>
 			<ul class="menu-dropdown-menu" data-menu="containers" hidden>
-				<li><button type="button" data-modal="run-form" data-title="Run a container">New Container</button></li>
+				<li><button type="button" data-modal="run-form" data-op="createContainer" data-title="Run a container">New Container</button></li>
 			</ul>
 		</div>
 
 		<div class="menu-dropdown">
 			<button type="button" class="menu-dropdown-toggle" data-menu="networks">Networks</button>
 			<ul class="menu-dropdown-menu" data-menu="networks" hidden>
-				<li><button type="button" data-modal="network-form" data-title="Create network">New Network</button></li>
+				<li><button type="button" data-modal="network-form" data-op="createNetwork" data-title="Create network">New Network</button></li>
 			</ul>
 		</div>
 
 		<div class="menu-dropdown">
 			<button type="button" class="menu-dropdown-toggle" data-menu="storage">Storage</button>
 			<ul class="menu-dropdown-menu" data-menu="storage" hidden>
-				<li><button type="button" data-modal="volume-form" data-title="Create volume">New Volume</button></li>
-				<li><button type="button" data-modal="diskrole-form" data-title="Assign disk role">Assign Disk Role</button></li>
+				<li><button type="button" data-modal="volume-form" data-op="createVolume" data-title="Create volume">New Volume</button></li>
+				<li><button type="button" data-modal="diskrole-form" data-op="createStorageRole" data-title="Assign disk role">Assign Disk Role</button></li>
 			</ul>
 		</div>
 
 		<div class="menu-dropdown">
 			<button type="button" class="menu-dropdown-toggle" data-menu="pipeline">Software</button>
 			<ul class="menu-dropdown-menu" data-menu="pipeline" hidden>
-				<li><button type="button" data-modal="image-form" data-title="Create image">New Image</button></li>
-				<li><button type="button" data-modal="pkg-install-form" data-title="Install a package">Install Package</button></li>
-				<li><button type="button" data-modal="pkg-recipe-form" data-title="Add or update a recipe">New/Update Recipe</button></li>
-				<li><button type="button" data-modal="pkg-bootstrap-form" data-title="Bootstrap build image">Bootstrap Build Image</button></li>
+				<li><button type="button" data-modal="image-form" data-op="createImage" data-title="Create image">New Image</button></li>
+				<li><button type="button" data-modal="pkg-install-form" data-op="pkgInstall" data-title="Install a package">Install Package</button></li>
+				<li><button type="button" data-modal="pkg-recipe-form" data-op="addPkgRecipe" data-title="Add or update a recipe">New/Update Recipe</button></li>
+				<li><button type="button" data-modal="pkg-bootstrap-form" data-op="pkgBootstrap" data-title="Bootstrap build image">Bootstrap Build Image</button></li>
 			</ul>
 		</div>
 
@@ -94,42 +95,43 @@
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">PKI</button>
 					<ul class="menu-submenu-menu" hidden>
-						<li><button type="button" data-modal="pki-cert-form" data-title="Issue certificate">Issue Certificate</button></li>
+						<li><button type="button" data-modal="pki-cert-form" data-op="createPkiCert" data-title="Issue certificate">Issue Certificate</button></li>
 					</ul>
 				</li>
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">DNS</button>
 					<ul class="menu-submenu-menu" hidden>
-						<li><button type="button" data-modal="dns-record-form" data-title="Create DNS record">New Record</button></li>
-						<li><button type="button" data-modal="dns-server-form" data-title="Register DNS server">Register Server</button></li>
+						<li><button type="button" data-modal="dns-record-form" data-op="createDnsRecord" data-title="Create DNS record">New Record</button></li>
+						<li><button type="button" data-modal="dns-server-form" data-op="createDnsServer" data-title="Register DNS server">Register Server</button></li>
 					</ul>
 				</li>
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">LDAP</button>
 					<ul class="menu-submenu-menu" hidden>
-						<li><button type="button" data-modal="ldap-user-form" data-title="Create LDAP user">New User</button></li>
-						<li><button type="button" data-modal="ldap-group-form" data-title="Create LDAP group">New Group</button></li>
-						<li><button type="button" data-modal="ldap-server-form" data-title="Register LDAP server">Register Server</button></li>
+						<li><button type="button" data-modal="ldap-user-form" data-op="createLdapUser" data-title="Create LDAP user">New User</button></li>
+						<li><button type="button" data-modal="ldap-group-form" data-op="createLdapGroup" data-title="Create LDAP group">New Group</button></li>
+						<li><button type="button" id="menu-grant-permissions" data-op="putHostauthGroupPermissions">Grant Permissions</button></li>
+						<li><button type="button" data-modal="ldap-server-form" data-op="createLdapServer" data-title="Register LDAP server">Register Server</button></li>
 					</ul>
 				</li>
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">NTP</button>
 					<ul class="menu-submenu-menu" hidden>
-						<li><button type="button" data-modal="ntp-server-form" data-title="Register NTP server">Register Server</button></li>
+						<li><button type="button" data-modal="ntp-server-form" data-op="createNtpServer" data-title="Register NTP server">Register Server</button></li>
 					</ul>
 				</li>
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">DHCP</button>
 					<ul class="menu-submenu-menu" hidden>
-						<li><button type="button" data-modal="dhcp-server-form" data-title="Register DHCP server">Register Server</button></li>
-						<li><button type="button" data-modal="dhcp-range-form" data-title="DHCP range">New/Edit Range</button></li>
-						<li><button type="button" data-modal="dhcp-static-modal-form" data-title="Reserve an address">Reserve an Address</button></li>
+						<li><button type="button" data-modal="dhcp-server-form" data-op="registerDhcpServer" data-title="Register DHCP server">Register Server</button></li>
+						<li><button type="button" data-modal="dhcp-range-form" data-op="setDhcpNetwork" data-title="DHCP range">New/Edit Range</button></li>
+						<li><button type="button" data-modal="dhcp-static-modal-form" data-op="addDhcpReservation" data-title="Reserve an address">Reserve an Address</button></li>
 					</ul>
 				</li>
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">Syslog</button>
 					<ul class="menu-submenu-menu" hidden>
-						<li><button type="button" data-modal="syslog-target-form" data-title="Register syslog forward target">Register Target</button></li>
+						<li><button type="button" data-modal="syslog-target-form" data-op="createSyslogTarget" data-title="Register syslog forward target">Register Target</button></li>
 					</ul>
 				</li>
 			</ul>
@@ -141,16 +143,16 @@
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">Daemon</button>
 					<ul class="menu-submenu-menu" hidden>
-						<li><button type="button" data-modal="route-add-form" data-title="Add route">Add Route</button></li>
-						<li><button type="button" data-modal="sysctl-set-form" data-title="Set a sysctl">Set Sysctl</button></li>
+						<li><button type="button" data-modal="route-add-form" data-op="postSystemRoute" data-title="Add route">Add Route</button></li>
+						<li><button type="button" data-modal="sysctl-set-form" data-op="putSystemSysctl" data-title="Set a sysctl">Set Sysctl</button></li>
 					</ul>
 				</li>
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">Devices</button>
 					<ul class="menu-submenu-menu" hidden>
-						<li><button type="button" data-modal="devicemap-form" data-title="Name a device">Name a Device Mapping</button></li>
-						<li><button type="button" data-modal="kmod-load-form" data-title="Load a kernel module">Load Module</button></li>
-						<li><button type="button" data-modal="kmodconfig-set-form" data-title="Configure a kernel module">Configure Module</button></li>
+						<li><button type="button" data-modal="devicemap-form" data-op="createDeviceMap" data-title="Name a device">Name a Device Mapping</button></li>
+						<li><button type="button" data-modal="kmod-load-form" data-op="postKmodLoad" data-title="Load a kernel module">Load Module</button></li>
+						<li><button type="button" data-modal="kmodconfig-set-form" data-op="putKmodConfig" data-title="Configure a kernel module">Configure Module</button></li>
 					</ul>
 				</li>
 			</ul>
@@ -186,13 +188,23 @@
 
 	<main>
 	<div id="content-scroll">
-		<!-- #370: shown whenever the daemon reports write authentication
-		     is not in force. An open control plane used to render exactly
-		     like a secured one. -->
+		<!-- #370: shown whenever the daemon reports authentication is not
+		     in force. An open control plane used to render exactly like a
+		     secured one. -->
 		<div id="auth-gating-banner" class="auth-gating-banner" hidden>
-			<strong>No write authentication.</strong>
-			This host accepts every create, change and delete from anyone who can reach it.
-			Configure an admin group under <em>System &rarr; Host Auth</em> and put an enabled user in it.
+			<strong>No authentication.</strong>
+			This host answers every request, reads and changes alike, from anyone who can reach it.
+			Grant a group <code>identity:write</code> (<em>Services &rarr; LDAP &rarr; Grant Permissions</em>; every
+			admin group has it) and put an enabled user in it.
+		</div>
+		<!-- #544: the host is gated and this page has no session, so every
+		     panel's read is refused and the background refresh is paused.
+		     Standing condition, so a banner; the login form is offered once
+		     per page load on top of it. -->
+		<div id="login-required-banner" class="auth-gating-banner" hidden>
+			<strong>Log in to see this host.</strong>
+			Every read here needs a session; the panels are paused until you log in
+			(<em>Cix menu &rarr; Log in</em>).
 		</div>
 		<section id="status" class="status" hidden></section>
 
@@ -998,6 +1010,7 @@
 				<button type="button" class="tab-button" data-tab="processes">Processes</button>
 				<button type="button" class="tab-button" data-tab="host-swap">Swap</button>
 				<button type="button" class="tab-button" data-tab="hostauth-sessions">Sessions</button>
+				<button type="button" class="tab-button" data-tab="hostauth-permissions">Permissions</button>
 				<button type="button" class="tab-button" data-tab="running-config">Running Config</button>
 				<button type="button" class="tab-button" data-tab="site">Name</button>
 				<button type="button" class="tab-button" data-tab="logs">Log Store</button>
@@ -1091,6 +1104,27 @@
 						</tr>
 					</thead>
 					<tbody id="hostauth-sessions-body">
+						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+<div class="tab-panel" data-tab="hostauth-permissions" hidden>
+			<div class="view-list">
+				<p class="hint">Which permissions each group grants (ADR-0317). A user holds every
+					permission of every group they are in, read on each request, so a change applies
+					at once. A group holding all of them is an admin group. Grant a group with
+					<em>Services &rarr; LDAP &rarr; Grant Permissions</em>; a change that would leave nobody
+					holding <code>identity:write</code> is refused.</p>
+				<table id="hostauth-permissions">
+					<thead>
+						<tr>
+							<th>Group</th>
+							<th>Permissions</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="hostauth-permissions-body">
 						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
 					</tbody>
 				</table>
@@ -3552,6 +3586,57 @@
 					</label>
 					<button type="submit" id="lgf-submit">Create</button>
 				</form>
+			</div>
+
+			<!-- ADR-0317 (#544): what one group grants. The choices are built
+			     from the vocabulary GET /v1/system/hostauth/permissions
+			     returns, never from a list kept here. -->
+			<div id="modal-permissions-form" hidden>
+				<form id="permissions-form">
+					<label>
+						Group
+						<input type="text" id="pf-group" pattern="[a-z_][a-z0-9_-]*" required>
+					</label>
+					<fieldset>
+						<legend>Permissions</legend>
+						<div id="pf-choices"></div>
+					</fieldset>
+					<p class="hint">A user holds every permission of every group they are in. Clearing
+						them all removes the group from the mapping.</p>
+					<button type="submit" id="pf-submit">Grant</button>
+				</form>
+			</div>
+
+			<!-- ADR-0317 (#544): one user's app passwords -- anyone's, from the
+			     LDAP users table, or your own, from the Cix menu. The secret of
+			     a new one is shown here, once, in a field you can copy from;
+			     never in a status message, which would put it in a toast. -->
+			<div id="modal-app-passwords-form" hidden>
+				<p class="hint" id="apf-scope"></p>
+				<table>
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Created</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="apf-body">
+						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+				<form id="app-passwords-form">
+					<label>
+						New app password
+						<input type="text" id="apf-name" pattern="[A-Za-z0-9._\-]{1,63}" placeholder="a name, e.g. ci" required>
+					</label>
+					<button type="submit">Create</button>
+				</form>
+				<div id="apf-secret" hidden>
+					<p class="hint">Shown this once -- copy it now; the host keeps only a hash. A
+						script sends it as HTTP Basic, <code>USER:PASSWORD</code>, on each request.</p>
+					<input type="text" id="apf-secret-value" readonly>
+				</div>
 			</div>
 
 			<div id="modal-ldap-user-form" hidden>

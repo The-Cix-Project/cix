@@ -368,7 +368,7 @@ paths:
         `authenticated`, so a leaked one cannot mint successors.
       operationId: listOwnAppPasswords
       x-cix-permission: authenticated
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       security:
         - bearerAuth: []
       responses:
@@ -397,7 +397,7 @@ paths:
         without being able to grant anything.
       operationId: createOwnAppPassword
       x-cix-permission: authenticated
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       security:
         - bearerAuth: []
       requestBody:
@@ -440,7 +440,7 @@ paths:
       summary: Revoke one of the caller's own app passwords (ADR-0317 section 8)
       operationId: deleteOwnAppPassword
       x-cix-permission: authenticated
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       parameters:
         - name: app
           in: path
@@ -609,7 +609,7 @@ paths:
         mapping now drives.
       operationId: getHostauthPermissions
       x-cix-permission: identity:read
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       security:
         - bearerAuth: []
       responses:
@@ -631,7 +631,7 @@ paths:
         always have a holder once it has had one (ADR-0317 section 6).
       operationId: putHostauthGroupPermissions
       x-cix-permission: identity:write
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       parameters:
         - name: group
           in: path
@@ -678,7 +678,7 @@ paths:
         reason.
       operationId: deleteHostauthGroupPermissions
       x-cix-permission: identity:write
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       parameters:
         - name: group
           in: path
@@ -8611,7 +8611,7 @@ paths:
         created, and a hash never leaves the host.
       operationId: listLdapUserAppPasswords
       x-cix-permission: identity:read
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       parameters:
         - name: name
           in: path
@@ -8649,7 +8649,7 @@ paths:
         per user.
       operationId: createLdapUserAppPassword
       x-cix-permission: identity:write
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       parameters:
         - name: name
           in: path
@@ -8703,7 +8703,7 @@ paths:
         is refused.
       operationId: deleteLdapUserAppPassword
       x-cix-permission: identity:write
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       parameters:
         - name: name
           in: path

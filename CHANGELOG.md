@@ -6,6 +6,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The dashboard knows what the session may do, and manages permissions and app passwords (#544, ADR-0317)
+
+The last of six steps for role-based access control, and the dashboard half of #544.
+
+**One source for what the session may do.** apigen now emits each operation's permission into `web/api.js` as `<opId>_PERMISSION`, so the dashboard holds no copy of the policy. `sessionMay(opId)` answers from that, from `GET /v1/whoami` (the session's permissions) and from `GET /v1/health` (whether the host enforces anything); `sessionRefusal(opId)` says why not. Header entries carry `data-op` and are disabled with that reason when the session lacks the permission, and so are the Permissions tab's and the app-password modal's buttons and the LDAP users' new *App passwords* button. The console asks for `containers:console` before connecting, because a refused WebSocket upgrade reaches a browser only as a closed socket. `docs/guides/web-ux-guidelines.md` makes this the rule for every surface.
+
+**A gated host with no session.** A *Log in to see this host* banner stands, and the background refresh pauses rather than sending ~30 refused reads every 30 s; logging in resumes it at once. The login form is still offered once per page load. The gating banner is reworded for #541: without authentication the host answers reads as well as changes.
+
+**Refused reads say which.** `apiRequest()` now carries a 403's `permission`, and `refusalText()` turns a failure into "log in to see ...", "your groups do not grant X ..." or the error. The LDAP users and sessions panels use it, and no longer skip their read when the page holds no token -- on an ungated host they needed none.
+
+**Host > Permissions** lists what each group grants, with *Edit* and *Remove*, and *Services > LDAP > Grant Permissions* opens a form built from the vocabulary the daemon returns. **App passwords** are managed per user from the LDAP users table and for yourself from *My App Passwords* in the Cix menu; a new secret is shown once, in the dialog, and cleared when it closes. The nine operations are now `x-cix-expose: [cli, web]`.
+
+Not everything is converted: the remaining panels' refused reads and the existing eligibility functions and context menus are #548. Verified by `test_web_syntax` and `test_api_surfaces`, and by reading, not by a browser render.
+
 ### cixctl manages permissions and app passwords, and its shell says when a login is needed (#544, ADR-0317)
 
 The first half of the last RBAC step. New commands, each one HTTP call:

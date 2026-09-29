@@ -64,6 +64,14 @@ Two widgets that look similar are still not interchangeable: a **badge** carries
 
 **Actions come from one eligibility source per resource.** For every resource that has conditional actions, one function returns which apply (see `diskActionEligibility`). Every surface — detail page, context menu, any future one — renders from it. Adding a surface never means re-deriving the rules.
 
+**What the session may do is asked in one place: `sessionMay(opId)`** ([ADR-0317](../adr/0317-permissions-are-declared-by-the-api-contract.md), #544). The permission each operation needs is generated from the contract into `CIX_API.<opId>_PERMISSION` (`web/api.js`); what the session holds comes from `GET /v1/whoami`; whether the host enforces anything comes from `GET /v1/health`. So:
+
+- An eligibility function includes `sessionMay(opId)` for each action it offers, and an action the session lacks is **disabled with `sessionRefusal(opId)` as its reason** -- a grant or a login would unblock it, so disabled, never hidden.
+- A header entry or other standalone control names its operation with `data-op="<opId>"`, and `applySessionEligibility()` enables it or disables it with the reason. No control decides this itself.
+- A panel whose read fails says so through `refusalText(e, what)`: "log in" for a 401, the missing permission (from the 403 body) for a 403, the error otherwise -- never "no <things>", which claims the host was asked.
+- **Never write a permission word in app.js.** The contract owns the policy; the dashboard only asks.
+- Not yet applied everywhere: the remaining panels' refused reads, the existing eligibility functions and the context menus are [#548](https://git.home.arpa/itdlabs/cix/issues/548).
+
 **Disabled-with-reason vs hidden.** If an action *could* apply to this kind of resource but is refused *right now*, show it **disabled with its reason** (a mounted partition's "Delete", greyed, titled "Unmount it first"). If the action *never* applies to this kind of resource, **omit it entirely** (a whole disk has no "Grow"). The test: would unblocking one condition make it work? Disable it. Is it categorically wrong here? Hide it. Both the detail page and the context menu follow this — `addContextMenuItem` supports the disabled+reason form for exactly this.
 
 **Destructive actions** are `.button-danger`, are placed **last** in any action group, are gated by a **`confirm`** whose question names the specific target, and end in a `showStatus` toast. All four, every time — a destructive action missing any one of them is incomplete.
@@ -86,6 +94,7 @@ When in doubt, copy the shape of these — they are the canonical form of each p
 - **Key–value detail:** `fieldBlock(label, value)` into a `.detail-table`.
 - **List with empty state:** `simpleTableRows(body, columns, colCount, emptyText)`.
 - **Context menu item, incl. disabled+reason:** `addContextMenuItem(item)`.
+- **What the session may do:** `sessionMay(opId)`, `sessionRefusal(opId)`, `data-op` + `applySessionEligibility()`, `refusalText(e, what)`.
 - **Badge:** `.badge` + one of the four semantic modifiers.
 
 ## How this standard has already been applied

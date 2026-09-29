@@ -65,6 +65,7 @@ const POLL_INTERVAL_MS = 2000;
  * resource per poll cycle, not a second fetch path per view. */
 const cache = {
 	containers: [],
+	hostauthPermissions: null, /* #544: GET /v1/system/hostauth/permissions */
 	networks: [],
 	routes: [],
 	images: [],
@@ -427,6 +428,13 @@ function closeModal() {
 	dnsRecordEditName = null;
 	document.getElementById("df-name").readOnly = false;
 	document.getElementById("df-submit").textContent = "Create";
+	/* #544: the permissions form's edit state, and a new app password's
+	 * secret -- which must not stay in the page once its modal is shut. */
+	permissionsEditGroup = null;
+	document.getElementById("pf-group").readOnly = false;
+	appPasswordScope = null;
+	document.getElementById("apf-secret-value").value = "";
+	document.getElementById("apf-secret").hidden = true;
 	ldapGroupEditName = null;
 	document.getElementById("lgf-name").readOnly = false;
 	document.getElementById("lgf-submit").textContent = "Create";
@@ -731,6 +739,8 @@ function setAuth(token, username) {
 		storageRemove("cix-auth-username");
 	}
 	updateAuthUi();
+	/* #544: what the new session may do (or that there is none). */
+	refreshSessionPermissions();
 }
 
 /*
@@ -767,38 +777,136 @@ function promptReauth() {
 }
 
 /*
- * #541: once a host is gated every read needs a session, so a
- * dashboard opened without one would show every panel failing and
- * never say why -- #538's bug over the whole page, since the refreshers
- * run as a background sweep and promptReauth() above deliberately
- * ignores their 401s.
+ * ADR-0317 (#544): what this session may do -- the one place the
+ * dashboard answers it, and every surface asks here.
  *
- * So the first health answer reporting gating on, while this page has
+ * The permission an operation needs comes from the contract: apigen
+ * emits `<opId>_PERMISSION` into CIX_API (web/api.js), so there is no
+ * second copy of the policy in this file. What the session HOLDS comes
+ * from GET /v1/whoami (public, and it never spends a single-use token);
+ * whether the host enforces anything comes from GET /v1/health. An
+ * ungated host allows everything, as the daemon does.
+ *
+ * Looked up by operation name rather than by `CIX_API.<op>_PERMISSION`,
+ * so asking about an operation is not mistaken for calling it by
+ * test_api_surfaces, which decides from the source which operations
+ * the dashboard uses.
+ */
+let hostGated = false;
+let sessionAuthenticated = false;
+let sessionPermissions = new Set();
+let sessionChecked = false; /* whoami answered at least once this page load */
+
+function permissionFor(opId) {
+	return CIX_API[opId + "_PERMISSION"];
+}
+
+function sessionMay(opId) {
+	const permission = permissionFor(opId);
+
+	if (permission === undefined)
+		return false; /* an operation the contract does not name: never offer it */
+	if (permission === "public" || !hostGated)
+		return true;
+	if (!sessionAuthenticated)
+		return false;
+	return permission === "authenticated" || sessionPermissions.has(permission);
+}
+
+/* Why sessionMay(opId) said no, in words: the reason a disabled
+ * control carries. */
+function sessionRefusal(opId) {
+	const permission = permissionFor(opId);
+
+	if (!sessionAuthenticated)
+		return "Log in first -- this host needs a session";
+	return "Needs the " + permission + " permission, which none of your groups grants";
+}
+
+/*
+ * Every control tagged data-op="<opId>" -- the header's "New ..." and
+ * power entries -- is enabled exactly when the session may perform that
+ * operation, and otherwise disabled with its reason (web-ux-guidelines:
+ * disabled-with-reason, since logging in or a grant would unblock it).
+ */
+function applySessionEligibility() {
+	for (const el of document.querySelectorAll("[data-op]")) {
+		const may = sessionMay(el.dataset.op);
+
+		el.disabled = !may;
+		el.title = may ? "" : sessionRefusal(el.dataset.op);
+	}
+	const banner = document.getElementById("login-required-banner");
+
+	if (banner)
+		banner.hidden = !(hostGated && !sessionAuthenticated);
+	/* Your own app passwords need a login session (ADR-0317 section 8). */
+	document.getElementById("menu-own-app-passwords").hidden = !sessionAuthenticated;
+}
+
+/*
+ * #544: what a panel says when its read fails -- in one place, so every
+ * panel that uses it tells a refused read apart from a broken one. A 401
+ * means there is no session; a 403 names the permission the session
+ * lacks (the daemon puts it in the body, ADR-0317); anything else is a
+ * real failure. `what` is the panel's subject, e.g. "LDAP users".
+ * Never "no <things>": nothing was read, so that would be a claim about
+ * the host that was never checked (#538).
+ */
+function refusalText(e, what) {
+	if (e && e.status === 401)
+		return "Log in to see " + what;
+	if (e && e.status === 403)
+		return "Your groups do not grant " + (e.permission || "the permission") +
+		       ", which is needed to see " + what;
+	return "Could not load " + what + ": " + (e && e.message ? e.message : "unknown error");
+}
+
+async function refreshSessionPermissions() {
+	try {
+		const me = await apiRequest("GET", CIX_API.getWhoami());
+		const wasAuthenticated = sessionAuthenticated;
+
+		sessionAuthenticated = !!(me && me.authenticated);
+		/* A session just began: sweep on the next tick rather than up
+		 * to SWEEP_INTERVAL_MS later, so the page fills in at once. */
+		if (sessionAuthenticated && !wasAuthenticated)
+			lastSweepAt = 0;
+		sessionPermissions = new Set((me && me.permissions) || []);
+		sessionChecked = true;
+	} catch (e) {
+		/* Unanswered: keep what is known rather than sign someone out
+		 * on a transport error. */
+		return;
+	}
+	applySessionEligibility();
+}
+
+/*
+ * #541: the first health answer reporting gating on, while this page has
  * no live session, opens the login form -- once per page load. Not on
  * every poll: closing the form is the person's choice, and a form that
  * reopens on a timer is the bug #490 fixed. A stored token that has
- * lapsed counts as no session; GET /v1/whoami is public and says
- * which, without spending a single-use token to find out.
+ * lapsed counts as no session and is cleared. The standing reminder
+ * after that is the login-required banner, and the background sweep
+ * stays quiet meanwhile (poll()).
  */
 let loginOfferedOnLoad = false;
 
-async function offerLoginIfGated(gatingActive) {
-	if (loginOfferedOnLoad || gatingActive !== true)
+async function noteHostGating(gatingActive) {
+	const gated = gatingActive === true;
+	const changed = gated !== hostGated;
+
+	hostGated = gated;
+	if (changed || !sessionChecked)
+		await refreshSessionPermissions();
+	if (loginOfferedOnLoad || !hostGated)
 		return;
 	loginOfferedOnLoad = true;
-	if (authToken) {
-		try {
-			const me = await apiRequest("GET", CIX_API.getWhoami());
-
-			if (me && me.authenticated)
-				return;
-		} catch (e) {
-			/* Unanswered: leave the stored session alone rather than
-			 * sign someone out on a transport error. */
-			return;
-		}
+	if (sessionAuthenticated)
+		return;
+	if (authToken)
 		setAuth(null, null);
-	}
 	if (modalOverlay.hidden) {
 		openModal("login-form", "Log in");
 		document.getElementById("lf-username").focus();
@@ -1299,10 +1407,17 @@ async function apiRequest(method, path, body, timeoutMs) {
 		const err = new Error(message);
 
 		err.status = res.status;
+		/* #544: a 403 names the permission it wanted (ADR-0317). */
+		err.permission = json && json.permission ? json.permission : undefined;
 		if (method !== "GET")
 			logLine(method, path, "-> " + res.status + " " + message, "error");
 		if (res.status === 401 && path !== CIX_API.postLogin())
 			promptReauth();
+		if (res.status === 401 && path !== CIX_API.postLogin() && sessionAuthenticated) {
+			/* #544: the session this page believed in is gone. */
+			sessionAuthenticated = false;
+			applySessionEligibility();
+		}
 		throw err;
 	}
 	if (method !== "GET")
@@ -1406,7 +1521,7 @@ async function refreshHealth() {
 		 * clears by itself the moment gating is configured.
 		 */
 		updateAuthGatingBanner(health && health.auth_gating_active);
-		offerLoginIfGated(health && health.auth_gating_active);
+		noteHostGating(health && health.auth_gating_active);
 
 		/* Back after an absence: the daemon may have restarted into a
 		 * different build, so re-ask rather than keep showing the one
@@ -1700,6 +1815,7 @@ const CATEGORY_VIEWS = {
 	"build-overview": "view-integration",
 	"pkg-build-config": "view-integration",
 	"hostauth-sessions": "view-host",
+	"hostauth-permissions": "view-host",
 	"host-stats": "view-host",
 	processes: "view-host",
 	"syslog-targets": "view-syslog-targets",
@@ -1969,6 +2085,8 @@ function renderCurrentView() {
 			renderAllStoragePlacements();
 		if (onPageOf("backup"))
 			renderBackupConfig();
+		if (onPageOf("hostauth-permissions"))
+			refreshHostauthPermissions();
 		if (onPageOf("hostauth-sessions"))
 			refreshHostauthSessions();
 
@@ -3314,6 +3432,16 @@ function openConsole(name) {
 	const statusEl = document.getElementById("cd-console-status");
 
 	outputEl.textContent = "";
+	/*
+	 * #544: a refused WebSocket upgrade reaches the page only as a closed
+	 * socket -- the browser exposes no status -- so a session without
+	 * containers:console would see a console that just dies. Ask first,
+	 * and say why instead of connecting.
+	 */
+	if (!sessionMay("consoleContainer")) {
+		statusEl.textContent = sessionRefusal("consoleContainer");
+		return;
+	}
 	statusEl.textContent = "connecting…";
 
 	const encoder = new TextEncoder();
@@ -8180,6 +8308,15 @@ function renderLdapUsers(users, emptyText = "No LDAP users") {
 		editButton.addEventListener("click", () => editLdapUser(u));
 		actionCell.appendChild(editButton);
 
+		/* #544: that user's machine credentials. */
+		const appPasswordsButton = document.createElement("button");
+
+		appPasswordsButton.textContent = "App passwords";
+		appPasswordsButton.disabled = !sessionMay("listLdapUserAppPasswords");
+		appPasswordsButton.title = appPasswordsButton.disabled ? sessionRefusal("listLdapUserAppPasswords") : "";
+		appPasswordsButton.addEventListener("click", () => openAppPasswords({ user: u.name }));
+		actionCell.appendChild(appPasswordsButton);
+
 		const rmButton = document.createElement("button");
 
 		rmButton.textContent = "Remove";
@@ -8193,47 +8330,27 @@ function renderLdapUsers(users, emptyText = "No LDAP users") {
 }
 
 /*
- * One of the two reads that need a credential (#490), so it does not
- * ask when there is none.
- *
- * Not an optimisation. This refresher is in ALL_REFRESHERS, which the
- * sweep runs for every visitor on every page -- so without this guard
- * an idle unauthenticated tab sends a request that cannot succeed on
- * every cycle, and each one writes an audit warning on the host. A
- * dashboard left open overnight fills the audit log with its own
- * failures.
- *
- * The panel renders empty rather than stale: showing the last roster
- * read before the session lapsed would be a list of real people that
- * is no longer being refreshed, which is worse than showing nothing.
+ * The panel renders empty rather than stale on a refused read: showing
+ * the last roster read before a session lapsed would be a list of real
+ * people that is no longer being refreshed, which is worse than showing
+ * nothing. It used to skip the read itself when this page held no
+ * token (#490); since #544 the sweep pauses as a whole on a gated host
+ * without a session (poll()), which covers that case once for every
+ * panel -- and on an ungated host this read needs no token at all.
  */
 async function refreshLdapUsers() {
-	if (!authToken) {
-		/*
-		 * Empty, but never "No LDAP users": that is a claim about the
-		 * directory, and without a session nothing was read from it.
-		 * An operator who had not logged in was told the users did
-		 * not exist (reported by the owner, 2026-09-29, with three
-		 * users present).
-		 */
-		cache.ldapUsers = [];
-		renderLdapUsers(cache.ldapUsers, "Log in to see LDAP users -- this list is only shown to a logged-in session");
-		return;
-	}
 	try {
 		const data = await apiRequest("GET", CIX_API.listLdapUsers());
 
 		cache.ldapUsers = data.users;
 		renderLdapUsers(cache.ldapUsers);
 	} catch (e) {
-		/* A lapsed session is a 401 here, and a refresher's 401 does
-		 * not open the login form (see the sweep guard) -- so without
-		 * this the panel stayed on "Loading..." or the last roster,
-		 * saying nothing about why. */
+		/* A refresher's 401 does not open the login form (the sweep
+		 * guard), so the panel says why it is empty. Never "No LDAP
+		 * users": nothing was read (#538, reported by the owner
+		 * 2026-09-29 with three users present). */
 		cache.ldapUsers = [];
-		renderLdapUsers(cache.ldapUsers,
-		                e.status === 401 ? "Your session has ended -- log in again to see LDAP users"
-		                                 : "Could not load LDAP users: " + e.message);
+		renderLdapUsers(cache.ldapUsers, refusalText(e, "LDAP users"));
 	}
 }
 
@@ -11026,18 +11143,14 @@ let rollingConfigDirty = false;
  * view refresher rather than the global sweep, but the reasoning and
  * the cost are the same. */
 async function refreshHostauthSessions() {
-	if (!authToken) {
-		/* As refreshLdapUsers(): not "No active sessions", which is a
-		 * claim nothing was asked about. */
-		renderHostauthSessions([], "Log in to see active sessions -- this list is only shown to a logged-in session");
-		return;
-	}
 	try {
 		const data = await apiRequest("GET", CIX_API.listHostauthSessions());
 
 		renderHostauthSessions(data.sessions || []);
 	} catch (e) {
-		showStatus("Failed to load active sessions: " + e.message, true);
+		/* As refreshLdapUsers(): the panel says why, never "No active
+		 * sessions", which is a claim nothing was asked about. */
+		renderHostauthSessions([], refusalText(e, "active sessions"));
 	}
 }
 
@@ -11091,6 +11204,273 @@ function renderHostauthSessions(sessions, emptyText = "No active sessions") {
 		body.appendChild(row);
 	}
 }
+
+/* ---------- ADR-0317 (#544): group permissions ---------- */
+
+async function refreshHostauthPermissions() {
+	try {
+		cache.hostauthPermissions = await apiRequest("GET", CIX_API.getHostauthPermissions());
+		renderHostauthPermissions(cache.hostauthPermissions);
+	} catch (e) {
+		cache.hostauthPermissions = null;
+		renderHostauthPermissions(null, refusalText(e, "group permissions"));
+	}
+}
+
+function renderHostauthPermissions(data, emptyText = "No group holds any permission") {
+	const body = document.getElementById("hostauth-permissions-body");
+	const groups = data && data.groups ? Object.keys(data.groups) : [];
+
+	body.textContent = "";
+	if (groups.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 3;
+		cell.className = "empty";
+		cell.textContent = emptyText;
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+
+	for (const group of groups) {
+		const words = data.groups[group] || [];
+		const row = document.createElement("tr");
+		const nameCell = document.createElement("td");
+		const wordsCell = document.createElement("td");
+		const actionCell = document.createElement("td");
+		const editButton = document.createElement("button");
+		const rmButton = document.createElement("button");
+
+		nameCell.textContent = group;
+		wordsCell.textContent = data.vocabulary && words.length === data.vocabulary.length
+			? "every permission (" + words.length + ")"
+			: words.join(", ");
+
+		editButton.textContent = "Edit";
+		editButton.className = "button-small";
+		editButton.disabled = !sessionMay("putHostauthGroupPermissions");
+		editButton.title = editButton.disabled ? sessionRefusal("putHostauthGroupPermissions") : "";
+		editButton.addEventListener("click", () => openPermissionsForm(group));
+		actionCell.appendChild(editButton);
+
+		/* Destructive, so last, danger-styled and confirmed (web-ux-guidelines). */
+		rmButton.textContent = "Remove";
+		rmButton.className = "button-small button-danger";
+		rmButton.disabled = !sessionMay("deleteHostauthGroupPermissions");
+		rmButton.title = rmButton.disabled ? sessionRefusal("deleteHostauthGroupPermissions") : "";
+		rmButton.addEventListener("click", async () => {
+			if (!confirm("Remove every permission group \"" + group + "\" grants? Its members lose them on their next request."))
+				return;
+			try {
+				await apiRequest("DELETE", CIX_API.deleteHostauthGroupPermissions(group));
+				showStatus("Removed the permissions of " + group);
+				await refreshHostauthPermissions();
+				await refreshSessionPermissions();
+			} catch (e) {
+				showStatus("Failed to remove the permissions of " + group + ": " + e.message, true);
+			}
+		});
+		actionCell.appendChild(rmButton);
+
+		row.appendChild(nameCell);
+		row.appendChild(wordsCell);
+		row.appendChild(actionCell);
+		body.appendChild(row);
+	}
+}
+
+/*
+ * The one form for granting: a new group from the Services menu, or an
+ * existing one from its row's Edit. The checkboxes are the vocabulary
+ * the daemon returned -- the contract's list, never one kept here.
+ */
+let permissionsEditGroup = null;
+
+async function openPermissionsForm(group) {
+	openModal("permissions-form", group === null ? "Grant permissions" : "Permissions of " + group);
+	permissionsEditGroup = group;
+
+	const groupInput = document.getElementById("pf-group");
+	const choices = document.getElementById("pf-choices");
+
+	groupInput.value = group === null ? "" : group;
+	groupInput.readOnly = group !== null;
+	document.getElementById("pf-submit").textContent = group === null ? "Grant" : "Save";
+	choices.textContent = "Loading…";
+	try {
+		if (cache.hostauthPermissions === null || cache.hostauthPermissions === undefined)
+			cache.hostauthPermissions = await apiRequest("GET", CIX_API.getHostauthPermissions());
+	} catch (e) {
+		choices.textContent = refusalText(e, "the permission vocabulary");
+		return;
+	}
+
+	const held = new Set(group !== null ? cache.hostauthPermissions.groups[group] || [] : []);
+
+	choices.textContent = "";
+	for (const word of cache.hostauthPermissions.vocabulary || []) {
+		const label = document.createElement("label");
+		const box = document.createElement("input");
+
+		label.className = "checkbox";
+		box.type = "checkbox";
+		box.value = word;
+		box.checked = held.has(word);
+		label.appendChild(box);
+		label.appendChild(document.createTextNode(" " + word));
+		choices.appendChild(label);
+	}
+}
+
+document.getElementById("menu-grant-permissions").addEventListener("click", () => openPermissionsForm(null));
+
+document.getElementById("permissions-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const group = document.getElementById("pf-group").value.trim();
+	const permissions = Array.from(document.querySelectorAll("#pf-choices input[type=checkbox]"))
+		.filter((box) => box.checked)
+		.map((box) => box.value);
+
+	try {
+		await apiRequest("PUT", CIX_API.putHostauthGroupPermissions(group), { permissions: permissions });
+		closeModal();
+		showStatus(permissions.length === 0 ? "Removed the permissions of " + group
+		                                    : "Saved the permissions of " + group);
+		await refreshHostauthPermissions();
+		await refreshSessionPermissions();
+	} catch (e) {
+		/* A 409 is the daemon refusing to leave nobody holding
+		 * identity:write; its message says so, shown as it is. */
+		showStatus("Failed to save the permissions of " + group + ": " + e.message, true);
+	}
+});
+
+/* ---------- ADR-0317 (#544): app passwords ---------- */
+
+/*
+ * One modal for both scopes: a user's (from the LDAP users table,
+ * identity:read/write) and your own (from the Cix menu, a login
+ * session). The scope decides only which operations are called, and
+ * sessionMay() is asked about exactly those.
+ */
+let appPasswordScope = null;
+
+function appPasswordOps(scope) {
+	if (scope.own)
+		return {
+			list: () => CIX_API.listOwnAppPasswords(),
+			create: () => CIX_API.createOwnAppPassword(),
+			remove: (app) => CIX_API.deleteOwnAppPassword(app),
+			listOp: "listOwnAppPasswords",
+			createOp: "createOwnAppPassword",
+			removeOp: "deleteOwnAppPassword",
+		};
+	return {
+		list: () => CIX_API.listLdapUserAppPasswords(scope.user),
+		create: () => CIX_API.createLdapUserAppPassword(scope.user),
+		remove: (app) => CIX_API.deleteLdapUserAppPassword(scope.user, app),
+		listOp: "listLdapUserAppPasswords",
+		createOp: "createLdapUserAppPassword",
+		removeOp: "deleteLdapUserAppPassword",
+	};
+}
+
+function openAppPasswords(scope) {
+	openModal("app-passwords-form", scope.own ? "My app passwords" : "App passwords of " + scope.user);
+	appPasswordScope = scope;
+	document.getElementById("apf-scope").textContent = scope.own
+		? "Machine credentials for your own account. Each carries your permissions, and managing them needs a login session."
+		: "Machine credentials for " + scope.user + ". Each carries that user's permissions.";
+	document.getElementById("apf-secret").hidden = true;
+	document.getElementById("apf-secret-value").value = "";
+	document.getElementById("app-passwords-form").reset();
+
+	const createButton = document.querySelector("#app-passwords-form button[type=submit]");
+	const ops = appPasswordOps(scope);
+
+	createButton.disabled = !sessionMay(ops.createOp);
+	createButton.title = createButton.disabled ? sessionRefusal(ops.createOp) : "";
+	refreshAppPasswords();
+}
+
+async function refreshAppPasswords() {
+	const scope = appPasswordScope;
+	const ops = appPasswordOps(scope);
+	const body = document.getElementById("apf-body");
+	let list;
+
+	try {
+		const data = await apiRequest("GET", ops.list());
+
+		list = data.app_passwords || [];
+	} catch (e) {
+		simpleTableRows(body, [], 3, refusalText(e, "these app passwords"));
+		return;
+	}
+	if (appPasswordScope !== scope)
+		return; /* the modal moved on while this was in flight */
+	body.textContent = "";
+	if (list.length === 0) {
+		simpleTableRows(body, [], 3, "No app passwords");
+		return;
+	}
+	for (const ap of list) {
+		const row = document.createElement("tr");
+		const nameCell = document.createElement("td");
+		const createdCell = document.createElement("td");
+		const actionCell = document.createElement("td");
+		const revokeButton = document.createElement("button");
+
+		nameCell.textContent = ap.name;
+		createdCell.textContent = new Date(ap.created * 1000).toISOString().replace(".000Z", "Z");
+		revokeButton.textContent = "Revoke";
+		revokeButton.className = "button-small button-danger";
+		revokeButton.disabled = !sessionMay(ops.removeOp);
+		revokeButton.title = revokeButton.disabled ? sessionRefusal(ops.removeOp) : "";
+		revokeButton.addEventListener("click", async () => {
+			if (!confirm("Revoke app password \"" + ap.name + "\"? Anything using it is refused from its next request."))
+				return;
+			try {
+				await apiRequest("DELETE", ops.remove(ap.name));
+				showStatus("Revoked app password " + ap.name);
+				await refreshAppPasswords();
+			} catch (e) {
+				showStatus("Failed to revoke app password " + ap.name + ": " + e.message, true);
+			}
+		});
+		actionCell.appendChild(revokeButton);
+		row.appendChild(nameCell);
+		row.appendChild(createdCell);
+		row.appendChild(actionCell);
+		body.appendChild(row);
+	}
+}
+
+document.getElementById("app-passwords-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const scope = appPasswordScope;
+	const name = document.getElementById("apf-name").value.trim();
+
+	try {
+		const created = await apiRequest("POST", appPasswordOps(scope).create(), { name: name });
+
+		/* The secret goes into the modal's own field, where it can be
+		 * copied, and nowhere else -- not a status message. */
+		document.getElementById("apf-secret-value").value = created.password;
+		document.getElementById("apf-secret").hidden = false;
+		document.getElementById("app-passwords-form").reset();
+		showStatus("Created app password " + name + " -- copy it now, it is not shown again");
+		await refreshAppPasswords();
+	} catch (e) {
+		showStatus("Failed to create app password " + name + ": " + e.message, true);
+	}
+});
+
+document.getElementById("menu-own-app-passwords").addEventListener("click", () => openAppPasswords({ own: true }));
 
 async function refreshRollingConfig() {
 	try {
@@ -15065,6 +15445,15 @@ async function poll() {
 	 * stay honest for anyone who looks back at the tab, and nothing
 	 * else is being read by anybody. */
 	if (document.hidden)
+		return;
+	/*
+	 * #544: a gated host with no session refuses every read, so the
+	 * sweep would be ~30 doomed requests every 30 s -- #490's wall of
+	 * refusals, on the host. The login-required banner says why the
+	 * panels are still; health above keeps running, so logging in (or
+	 * the host being opened up) resumes everything on the next tick.
+	 */
+	if (hostGated && !sessionAuthenticated)
 		return;
 
 	const now = Date.now();
