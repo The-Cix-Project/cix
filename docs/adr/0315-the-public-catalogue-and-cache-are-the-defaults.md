@@ -28,7 +28,7 @@ The values are `PKG_DEFAULT_REPO_URL`/`_KIND`/`_REF` and `PKG_DEFAULT_ARTIFACT_U
 
 **Pull only, never push.** The default cache carries no token and push stays off. Publishing is an outward act an operator opts into ([ADR-0201](0201-artifacts-are-retrievable-and-self-publishing.md), #129); a default must never make a host publish.
 
-**No automatic sync.** The default says where recipes come from, not when. A fresh host still fetches the catalogue only when asked (`cixctl pkg sync`), or when an operator adds a `pkg.sync` schedule ([ADR-0257](0257-one-scheduler-structured-schedules.md)). Whether a fresh host should also get a default schedule is a separate decision and is not made here.
+**No automatic sync.** The default says where recipes come from, not when. A fresh host still fetches the catalogue only when asked (`cixctl pkg sync`), or when an operator adds a `pkg.sync` schedule ([ADR-0257](0257-one-scheduler-structured-schedules.md)). Whether a fresh host should also get a default schedule was left as a separate decision; [ADR-0316](0316-a-fresh-host-syncs-recipes-on-a-schedule.md) makes it.
 
 ### Consequences
 

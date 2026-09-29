@@ -134,6 +134,12 @@ const struct schedule_action *scheduler_action_find(const char *name);
 
 int scheduler_init(const char *state_path);
 void scheduler_repoint(const char *state_path);
+/*
+ * Whether scheduler_init() found a saved schedule file -- even an
+ * empty one. ADR-0316: a host with none gets the default schedules;
+ * a saved file, including one an operator emptied, is left alone.
+ */
+int scheduler_state_was_saved(void);
 
 /*
  * Parses and validates a job from a request body, then stores it.

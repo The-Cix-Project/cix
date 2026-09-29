@@ -9919,7 +9919,10 @@ paths:
         operator had set an interval, each owning its own copy of "is it
         on", "how often" and "when did it last run" -- two of which back
         things up to a disk and already shared a tick without sharing
-        anything else (issue #96).
+        anything else (issue #96). A host that has never saved a schedule
+        starts with one, recipe-sync (pkg.sync every 6 hours, ADR-0316);
+        once any schedule is saved, including an empty list, nothing is
+        added by default again.
       operationId: listSchedules
       x-cix-expose: [cli, web]
       responses:

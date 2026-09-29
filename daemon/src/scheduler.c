@@ -18,6 +18,8 @@ static struct schedule g_jobs[SCHEDULER_MAX_JOBS];
 static struct schedule_action g_actions[SCHEDULER_MAX_ACTIONS];
 static size_t g_action_count;
 static char g_state_path[512];
+/* ADR-0316: set when scheduler_init() read a saved file. */
+static int g_state_was_saved;
 
 /*
  * json.h exposes no as_bool -- callers test the node type directly, so
@@ -386,11 +388,13 @@ int scheduler_init(const char *state_path)
 	struct json_value *root;
 
 	memset(g_jobs, 0, sizeof(g_jobs));
+	g_state_was_saved = 0;
 	snprintf(g_state_path, sizeof(g_state_path), "%s", state_path != NULL ? state_path : "");
 	if (g_state_path[0] == '\0')
 		return 0;
 	if (persist_read_file(g_state_path, &buf, &len) != 0 || buf == NULL)
 		return 0; /* nothing scheduled yet is the normal fresh state */
+	g_state_was_saved = 1;
 	root = json_parse(buf, len);
 	free(buf);
 	if (root == NULL)
@@ -398,6 +402,11 @@ int scheduler_init(const char *state_path)
 	load_from(root);
 	json_free(root);
 	return 0;
+}
+
+int scheduler_state_was_saved(void)
+{
+	return g_state_was_saved;
 }
 
 void scheduler_repoint(const char *state_path)

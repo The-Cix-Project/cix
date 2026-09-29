@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A fresh host syncs its recipe catalogue at first boot and every 6 hours
+
+Follows the entry below: a fresh host had the public catalogue set but fetched it only when asked. A host that has never saved a schedule file now starts with `recipe-sync`, `pkg.sync` every 6 hours ([ADR-0316](docs/adr/0316-a-fresh-host-syncs-recipes-on-a-schedule.md)). An every-N job that has never run is due at once, so the first sync happens at first boot. `cixctl pkg sync-status` says how it went; a first-boot sync fails if DNS was not set yet, and `cixctl pkg sync --wait` runs another straight away.
+
+Created only when no schedule file was ever saved (`scheduler_state_was_saved()`), and after the ADR-0257 legacy migration so a migrated interval wins. Creating it saves the file, so deleting or changing `recipe-sync` sticks. 192.168.15.95 already has a saved `recipe-sync` and is unchanged.
+
+Tests: every test data directory starts with an empty saved schedule list, so no test daemon runs anything on a clock. `test_pkg` checks the default on a data directory with no schedule file (repo still cleared, so the sync it fires reaches no network), deletes it, restarts, and checks it stays deleted.
+
 ### A fresh host starts on the public recipe catalogue and artifact cache
 
 A freshly installed host used to have no recipe repository and no artifact server set, so before its first install an operator had to know both addresses. A host that has never saved either config now starts on the public ones ([ADR-0315](docs/adr/0315-the-public-catalogue-and-cache-are-the-defaults.md)):

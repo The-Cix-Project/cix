@@ -6174,6 +6174,40 @@ static void migrate_legacy_intervals(void)
 		pkg_repo_clear_legacy_sync_interval();
 }
 
+/*
+ * ADR-0316: a host that has never saved a schedule file starts with a
+ * six-hourly recipe sync, so it follows the catalogue ADR-0315 points
+ * it at without anyone arranging it. An every-N job that has never
+ * run is due at once, so the first sync happens at first boot.
+ *
+ * Only when no file was ever saved: creating the job saves one, so
+ * from then on an operator who deletes or changes recipe-sync keeps
+ * what they chose. The same rule ADR-0315 applies to the sources.
+ */
+#define DEFAULT_RECIPE_SYNC_NAME "recipe-sync"
+#define DEFAULT_RECIPE_SYNC_SECONDS (6 * 3600)
+
+static void seed_default_schedules(void)
+{
+	char body[128];
+	char err[256];
+
+	if (scheduler_state_was_saved() || scheduler_find(DEFAULT_RECIPE_SYNC_NAME) != NULL)
+		return;
+	snprintf(body, sizeof(body), "{\"action\":\"pkg.sync\",\"schedule\":{\"every\":{\"seconds\":%d}}}",
+	         DEFAULT_RECIPE_SYNC_SECONDS);
+	if (scheduler_set_from_json(DEFAULT_RECIPE_SYNC_NAME, body, strlen(body), err, sizeof(err)) !=
+	    SCHEDULE_OK) {
+		logstore_write("cixd", "error", "could not create the default %s schedule: %s",
+		               DEFAULT_RECIPE_SYNC_NAME, err);
+		return;
+	}
+	logstore_write("cixd", "info",
+	               "no schedules were saved on this host -- created the default \"%s\" "
+	               "(pkg.sync every %d hours, ADR-0316)",
+	               DEFAULT_RECIPE_SYNC_NAME, DEFAULT_RECIPE_SYNC_SECONDS / 3600);
+}
+
 static void arm_scheduler_timer(void)
 {
 	struct itimerspec its;
@@ -30414,6 +30448,7 @@ static int cixd_main(int argc, char **argv)
 	scheduler_register_action("pkg.sync", "fetch recipes from the configured repo",
 	                           action_pkg_sync);
 	migrate_legacy_intervals();
+	seed_default_schedules(); /* ADR-0316 -- after migration, so a migrated interval wins */
 	/* Issue #51: applied here, not just on PUT -- the kernel default is
 	 * deliberately off, so this is the setting's only chance to survive
 	 * a reboot. */

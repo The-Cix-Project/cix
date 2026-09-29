@@ -22,10 +22,11 @@ cixctl login --username=<user>      # prompts for the password
 
 ## 3. Put a program in the default image
 
-A fresh host already points at the public recipe catalogue and the public artifact cache ([ADR-0315](../adr/0315-the-public-catalogue-and-cache-are-the-defaults.md)), but it does not fetch the catalogue by itself. Do that once, first:
+A fresh host already points at the public recipe catalogue and artifact cache ([ADR-0315](../adr/0315-the-public-catalogue-and-cache-are-the-defaults.md)) and fetches the catalogue at first boot ([ADR-0316](../adr/0316-a-fresh-host-syncs-recipes-on-a-schedule.md)). Check that it did:
 
 ```sh
-cixctl pkg sync --wait              # pulls the recipe catalogue from GitHub
+cixctl pkg sync-status              # state=success once the catalogue is in
+cixctl pkg sync --wait              # only if it failed, e.g. DNS was not set yet
 ```
 
 Every host has an image called `base` from its first boot. An image gets even its C library as a package, and a container on an image with no C library is refused with an error naming what to install. At startup the daemon installs `glibc` into `base` by itself when it can do that from an already-built artifact, so check first:

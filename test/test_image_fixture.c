@@ -594,6 +594,18 @@ int test_data_dir_create(char *out_path, size_t out_size)
 			return -1;
 		fputs("{\"userns_default\": false}\n", f);
 		fclose(f);
+		/*
+		 * ADR-0316: a host with no saved schedules gets a recipe sync
+		 * that fires at startup. A test daemon starts as a host whose
+		 * schedules were saved empty, so nothing runs on a clock
+		 * unless the test asks for it.
+		 */
+		snprintf(cfg, sizeof(cfg), "%s/schedules.json", cfg_dir);
+		f = fopen(cfg, "w");
+		if (f == NULL)
+			return -1;
+		fputs("{\"schedules\":[]}\n", f);
+		fclose(f);
 	}
 	{
 		char pkg_dir[PATH_MAX];

@@ -214,6 +214,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 
 - **Changeable and clearable, for good.** The first PUT saves the config; a saved empty URL means cleared and is never replaced by the default again. Do not add anything that re-applies a default over a saved value.
 - **Never push by default, never a token by default.** Publishing is the operator's act (#129).
+- **And a default `recipe-sync` schedule** (`pkg.sync` every 6 hours, [ADR-0316](docs/adr/0316-a-fresh-host-syncs-recipes-on-a-schedule.md)), stated by the owner the same day: *"add a default recipe-sync schedule too"*. Same rule: created only on a host that never saved a schedule file, and a deleted one stays deleted. Test data dirs start with `state/schedules.json` saved empty.
 - **Tests never use the defaults' network.** Test data directories start cleared (`test_pkg_config_seed_cleared()`); a new test that wipes its pkg state dir must call it again.
 - **192.168.15.95 has its own saved config** (LAN gitea with a token, LAN cache with push). A test there that points it at the public sources restores that config straight afterwards, and does not send the LAN token to GitHub.
 

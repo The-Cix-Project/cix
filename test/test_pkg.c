@@ -1224,6 +1224,105 @@ out:
 	return ok;
 }
 
+/*
+ * ADR-0316: a host that has never saved a schedule file gets a
+ * six-hourly recipe-sync, and an operator who deletes it keeps it
+ * deleted.
+ *
+ * The data dir keeps its cleared repo config, so the sync the new job
+ * fires at startup fails with "no repo configured" and reaches no
+ * network; only schedules.json is removed.
+ */
+static int get_schedule(const struct cix_client *c, const char *name, struct cix_response *r)
+{
+	char path[128];
+
+	snprintf(path, sizeof(path), "/v1/schedules/%s", name);
+	memset(r, 0, sizeof(*r));
+	return cix_client_request(c, "GET", path, NULL, r);
+}
+
+static int test_schedule_defaults(void)
+{
+	char saved_data_dir[PATH_MAX];
+	char dir[PATH_MAX], path[PATH_MAX];
+	struct cix_client c;
+	struct cix_response r;
+	const struct json_value *every;
+	pid_t pid;
+	int ok = 1;
+
+	snprintf(saved_data_dir, sizeof(saved_data_dir), "%s", g_data_dir);
+	if (test_data_dir_create(dir, sizeof(dir)) != 0) {
+		fprintf(stderr, "FAIL: schedule defaults: could not create a data dir\n");
+		return 0;
+	}
+	snprintf(path, sizeof(path), "%s/state/schedules.json", dir);
+	unlink(path);
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", dir);
+
+	cix_client_init(&c, "127.0.0.1", TEST_PORT);
+	pid = start_daemon();
+	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+		fprintf(stderr, "FAIL: schedule defaults: daemon never accepted connections\n");
+		ok = 0;
+		goto out;
+	}
+
+	if (get_schedule(&c, "recipe-sync", &r) != 0 || r.status != 200 ||
+	    !str_eq(json_str_field(r.json, "action"), "pkg.sync")) {
+		fprintf(stderr, "FAIL: schedule defaults: no pkg.sync recipe-sync on a fresh host (%d)\n",
+		        r.status);
+		ok = 0;
+	} else {
+		every = json_object_get(json_object_get(r.json, "schedule"), "every");
+		if (json_as_number(json_object_get(every, "seconds")) != 21600 ||
+		    json_object_get(r.json, "enabled") == NULL ||
+		    json_object_get(r.json, "enabled")->type != JSON_BOOL ||
+		    !json_object_get(r.json, "enabled")->u.boolean) {
+			fprintf(stderr, "FAIL: schedule defaults: recipe-sync is not an enabled "
+			                "every-21600-seconds job\n");
+			ok = 0;
+		}
+	}
+	cix_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "DELETE", "/v1/schedules/recipe-sync", NULL, &r) != 0 ||
+	    r.status != 204) {
+		fprintf(stderr, "FAIL: schedule defaults: deleting recipe-sync returned %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	if (stop_daemon(pid) != 0) {
+		fprintf(stderr, "FAIL: schedule defaults: daemon did not stop cleanly\n");
+		ok = 0;
+	}
+	pid = start_daemon();
+	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+		fprintf(stderr, "FAIL: schedule defaults: daemon did not come back after restart\n");
+		ok = 0;
+		goto out;
+	}
+	if (get_schedule(&c, "recipe-sync", &r) != 0 || r.status != 404) {
+		fprintf(stderr, "FAIL: schedule defaults: a deleted recipe-sync came back after a "
+		                "restart (%d)\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+out:
+	if (pid > 0 && stop_daemon(pid) != 0) {
+		fprintf(stderr, "FAIL: schedule defaults: daemon did not stop cleanly\n");
+		ok = 0;
+	}
+	test_data_dir_cleanup(dir);
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", saved_data_dir);
+	return ok;
+}
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -1244,6 +1343,8 @@ int main(void)
 	snprintf(g_images_router_dir, sizeof(g_images_router_dir), "%s/rebuildable/images/router", g_data_dir);
 
 	if (!test_pkg_config_defaults())
+		ok = 0;
+	if (!test_schedule_defaults())
 		ok = 0;
 
 	reset_pkg_state();
