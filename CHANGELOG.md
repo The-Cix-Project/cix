@@ -6,6 +6,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A client no longer waits for a forked child to see its response end (#537)
+
+`cixctl pkg install` for a package whose first source url timed out took 135 s to return, while `/v1/health` answered in 9-15 ms and `curl` had the same request's `202` in 3.5 ms (measured on 192.168.15.95). The daemon had replied and `close()`d, but the package fetch child -- forked without an exec -- held an inherited copy of the client socket, so the connection stayed up until the fetch finished, and `cixctl`, which reads to EOF, waited with it. Client sockets are now ended with `shutdown()` before `close()` (`close_client_socket()`), for the HTTP connection teardown and the build-log and console WebSocket closes.
+
 ### Every stage after a fetch uses the revision the fetch resolved (#380)
 
 An install without a version resolves "the highest revision there is". `start_fetch_for()` did that once and recorded the answer, but the three stages after it -- fetch completion (the checksum), build-environment completion and unpack completion -- each resolved it again. When a newer revision was published during a download (the six-hourly recipe-sync does exactly that), those stages worked from a different recipe than the fetch had. With a different source, that is a checksum failure that survives any change of source url, which is what #380 recorded. With the same source, the build ran the new revision's steps on the old revision's download, while `pkg_build_completed()` and the build log named the old one.

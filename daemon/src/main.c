@@ -1505,6 +1505,30 @@ static void drain_pending_free(void)
 }
 
 /*
+ * Closes a CLIENT socket so the client sees the connection end now.
+ *
+ * shutdown() before close(), because close() only drops this
+ * process's descriptor. Every child the daemon forks without an exec
+ * -- the package fetch child is one; it runs libcurl in-process --
+ * inherits every client socket open at that moment, and a connection
+ * stays up until the last copy is closed. A client that reads to EOF
+ * then waits for the child: measured on 192.168.15.95, 2026-09-29,
+ * `cixctl pkg install` took 135 s to return for a package whose first
+ * source url timed out, while `curl` on the same request had its 202
+ * in 3.5 ms (it stops at Content-Length) and /v1/health answered in
+ * 9-15 ms throughout. shutdown() ends the connection itself, whoever
+ * still holds a descriptor for it. Nothing hands a client socket to a
+ * child on purpose -- console WebSockets are relayed by this process
+ * -- so there is no holder this can cut off that should have kept it.
+ * Sockets only: a pty or pipe is closed with plain close().
+ */
+static void close_client_socket(int fd)
+{
+	shutdown(fd, SHUT_RDWR);
+	close(fd);
+}
+
+/*
  * Kills (if still running -- SIGKILL is a harmless no-op/ESRCH if the
  * shell already exited on its own) and reaps the exec'd process, tears
  * down both fds/epoll registrations, and queues both conns for
@@ -1557,7 +1581,7 @@ static void console_session_teardown(struct console_exec_session *sess)
 		tls_unregister(sess->ws_conn->fd);
 		SSL_free(sess->ws_conn->ssl);
 	}
-	close(sess->ws_conn->fd);
+	close_client_socket(sess->ws_conn->fd);
 	ws_conn_free(&sess->ws_conn->ws);
 	sess->ws_conn->kind = CONN_DEAD;
 	queue_conn_free(sess->ws_conn);
@@ -8207,7 +8231,7 @@ static void build_log_ws_broadcast(int chain_idx, const void *data, size_t len)
 		if (ws_write_frame(cc->fd, WS_OPCODE_TEXT, data, len) != 0) {
 			cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 			ws_conn_free(&cc->ws);
-			close(cc->fd);
+			close_client_socket(cc->fd);
 			g_build_log_ws_conns[i] = g_build_log_ws_conns[g_build_log_ws_conn_count - 1];
 			g_build_log_ws_conn_count--;
 			free(cc);
@@ -8238,7 +8262,7 @@ static void build_log_ws_teardown_all(int chain_idx)
 		ws_write_frame(cc->fd, WS_OPCODE_CLOSE, NULL, 0);
 		cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 		ws_conn_free(&cc->ws);
-		close(cc->fd);
+		close_client_socket(cc->fd);
 		free(cc);
 		g_build_log_ws_conns[i] = g_build_log_ws_conns[g_build_log_ws_conn_count - 1];
 		g_build_log_ws_conn_count--;
@@ -28287,7 +28311,7 @@ static void client_conn_teardown(struct conn *cc)
 		tls_unregister(cc->fd);
 		SSL_free(cc->ssl);
 	}
-	close(cc->fd);
+	close_client_socket(cc->fd);
 	http_conn_free(&cc->http);
 	free(cc);
 }
