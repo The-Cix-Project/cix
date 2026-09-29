@@ -19,7 +19,7 @@ This split is deliberate and load-bearing: a recipe's shell code never runs on t
 
 ## Two recipe languages (ADR-0305)
 
-A recipe is written in one of two languages: a **shell recipe**, `<name>@<version>.sh`, which most of this guide describes, or a **CBS recipe**, `<name>@<version>.cbs`, written in CPDL 0.1 and built by [cix-build-system](https://git.home.arpa/itdlabs/cix-build-system) rather than by a shell.
+A recipe is written in one of two languages: a **shell recipe**, `<name>@<version>.sh`, which most of this guide describes, or a **CBS recipe**, `<name>@<version>.cbs`, written in CPDL 1.0 and built by [cix-build-system](https://git.home.arpa/itdlabs/cix-build-system) rather than by a shell.
 
 **The filename is the format.** A `.sh` file is a shell recipe, a `.cbs` file a CBS one, and a version holds one or the other — never both, which is refused at publish. Nothing sniffs the content and no recipe declares its own language, because a filename cannot disagree with what will actually run. `cixctl pkg recipe add` takes the format from the file you point it at, so publishing one needs no extra flag:
 

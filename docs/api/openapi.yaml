@@ -8878,7 +8878,7 @@ paths:
                   description: >
                     The full text of the recipe. For format "shell" (the default) that is a
                     build.sh file (pkg_name=/pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=/
-                    pkg_changelog=). For format "cbs" it is a CPDL 0.1 document -- a single
+                    pkg_changelog=). For format "cbs" it is a CPDL 1.0 document -- a single
                     package block declaring version, release, format, sources and requires,
                     with up to five phases.
                 format:
@@ -19004,7 +19004,7 @@ components:
           enum: [shell, cbs]
           description: >
             Which language this published version is written in, and therefore which
-            file holds it: "shell" -> build.sh, "cbs" -> build.cbs in CPDL 0.1
+            file holds it: "shell" -> build.sh, "cbs" -> build.cbs in CPDL 1.0
             (ADR-0305). Not a property a recipe declares -- it IS the filename, so it
             cannot disagree with what the daemon will actually run.
 

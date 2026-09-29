@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### CPDL is 1.0: cbs v0.1.98 on the host, both images and the test floor
+
+CBS promoted the recipe language from CPDL 0.1 to CPDL 1.0 in v0.1.98. It is a relabel, not a language change: the grammar, keywords and validation rules are unchanged (the spec diff is the version label throughout, plus a note that an incompatible revision would need a new spec). What changes is text and one fingerprint input: `cbs validate` prints `valid CPDL 1.0`, `cbs explain` prints `CPDL 1.0 execution plan`, `cbs --capabilities` gains a `cpdl_contract` field, and the contract string is part of the build fingerprint, so every key changes once. Nothing in `cixd` parses those strings.
+
+cbs v0.1.98-1 was built on 192.168.15.95 (34 suites PASS) and installed in `cix-builder` and `cix-hosttools`; this release's assembly carries it into the host root, and the ADR-0209 floor moves to it with the corpus pin `abf605c`. `openapi.yaml`, `docs/api/README.md` and `writing-recipes.md` now say CPDL 1.0. ADRs keep "CPDL 0.1" where they recorded it: it was the language's name when each was written.
+
 ### The test floor runs cbs v0.1.97
 
 The ADR-0209 test floor seeds its own cbs, and that engine is what runs every build inside `test_pkg`, `test_pkg_cache` and `test_kmod_build`. It moves from v0.1.71-1 to v0.1.97-1, the version the host, `cix-builder` and `cix-hosttools` have run since earlier the same day, so a floor test now builds with the engine a real build uses. The six links moved together: the floor list in `test_image_fixture.c`; the release recipe's `extra "cbs"` URL, its checksum (`df6522…`, read from the cache's listing and equal to the approval the box recorded), and the `materialize` filename; and the pinned `cix-recipes` commit (`71f4a42`, which carries `cbs@v0.1.97-1` with that approval), whose archive checksum was measured on the box (`probe-cix-tarball@230`).

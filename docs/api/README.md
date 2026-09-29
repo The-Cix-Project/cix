@@ -1065,13 +1065,13 @@ The filter is on the endpoint rather than in each client on purpose. A dashboard
 
 ## Two recipe languages, and the filename is which (ADR-0305)
 
-A recipe version holds either a shell `build.sh` or a CBS recipe in CPDL 0.1, `build.cbs` — never both. `POST /pkg/recipes` takes `format: "shell" | "cbs"`, defaulting to `shell`, and that decides the filename it is stored under.
+A recipe version holds either a shell `build.sh` or a CBS recipe in CPDL 1.0, `build.cbs` — never both. `POST /pkg/recipes` takes `format: "shell" | "cbs"`, defaulting to `shell`, and that decides the filename it is stored under.
 
 The field is a routing hint, verified rather than trusted: `cbs` content must satisfy `cbs explain --json` and `shell` content must parse as a shell header, so a body whose `format` disagrees with its content is refused with 400 and never becomes a stored file. From then on nothing asks again — **the filename is the format**, which is the one representation that cannot disagree with what the daemon will actually run.
 
 What a CBS recipe declares maps onto the same fields every other endpoint already reports:
 
-| cixd | CPDL 0.1 |
+| cixd | CPDL 1.0 |
 |---|---|
 | version | `version` + `release`, joined as `<version>-<release>` |
 | source / sha256 | `sources { main "…" { url … sha256 … } }` |
