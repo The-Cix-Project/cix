@@ -2215,24 +2215,44 @@ int ldap_uid_alloc(void)
 	}
 }
 
+/*
+ * A gid is free only if no group has it AND no user carries it.
+ *
+ * The second half is #542's. Membership is by gid, and a user keeps
+ * their gids when the group behind one is deleted or renumbered (the
+ * reason #370 guards those operations for admin groups), so an
+ * orphaned gid can sit on a user indefinitely. A new group handed that
+ * gid would silently take that user in -- and since ADR-0317 a group
+ * carries permissions, so that is a grant nobody made.
+ */
+static int gid_in_use(int gid)
+{
+	int i, j;
+
+	for (i = 0; i < LDAP_GROUP_MAX; i++) {
+		if (g_groups[i].name[0] != '\0' && g_groups[i].gidnumber == gid)
+			return 1;
+	}
+	for (i = 0; i < LDAP_USER_MAX; i++) {
+		if (g_users[i].name[0] == '\0')
+			continue;
+		if (g_users[i].primarygroup == gid)
+			return 1;
+		for (j = 0; j < g_users[i].secondary_group_count; j++) {
+			if (g_users[i].secondary_groups[j] == gid)
+				return 1;
+		}
+	}
+	return 0;
+}
+
 int ldap_gid_alloc(void)
 {
 	int gid = g_config.start_gid;
-	int i;
 
-	for (;;) {
-		int in_use = 0;
-
-		for (i = 0; i < LDAP_GROUP_MAX; i++) {
-			if (g_groups[i].name[0] != '\0' && g_groups[i].gidnumber == gid) {
-				in_use = 1;
-				break;
-			}
-		}
-		if (!in_use)
-			return gid;
+	while (gid_in_use(gid))
 		gid++;
-	}
+	return gid;
 }
 
 int ldap_generate_secret(char out[LDAP_PROVISION_SECRET_LEN + 1])

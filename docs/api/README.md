@@ -690,6 +690,8 @@ Each operation in `openapi.yaml` carries `x-cix-permission`, naming the one perm
 
 The mapping is the one stored statement; `admin_groups` in `hostauth-config` is derived from it -- the groups holding every permission. A `PUT /system/hostauth-config` naming a group grants it every permission, and a group that held every permission and is no longer named loses its entry. On the first start after upgrading to #540, each existing admin group was granted every permission, so nobody gained or lost anything. Deleting an LDAP group removes its entry, so a new group of the same name inherits nothing; renaming one moves its grants.
 
+**Standard groups ([#542](https://git.home.arpa/itdlabs/cix/issues/542), ADR-0317 section 7).** A host is given three groups, in the directory and in the mapping: `cix-admins` (every permission), `cix-operators` (`public`, every `read`, every `operate`) and `cix-readers` (every `read`). The sets are derived from the vocabulary by suffix, so a permission added to the contract lands in them without a code change. It happens once per host — `hostauth_config.json` records it — so a standard group you delete stays deleted, the same rule the default package sources and schedule follow. A group that already exists under one of those names, in the directory or the mapping, is never re-granted: on a host whose own admin group is already called `cix-admins`, that group keeps exactly what it had. They start with no members, so they change nothing until someone is put in one.
+
 ## Creating a network
 
 ```
@@ -2125,7 +2127,7 @@ PUT /v1/ldap/config
 {"start_uid": 50000, "start_gid": 50000}
 ```
 
-`start_uid`/`start_gid` (task #748) are the floors `ldap_uid_alloc()`/`ldap_gid_alloc()` scan upward from when `POST /v1/ldap/users`/`POST /v1/ldap/groups` omits `uidnumber`/`gidnumber`. Both default to `10000` until changed. Setting a new floor takes effect immediately for the *next* auto-allocation only — it never renumbers any user or group that already exists, and both values must be positive integers (`400` otherwise). Persisted to `<data-dir>/ldap_config.json`, survives a daemon restart.
+`start_uid`/`start_gid` (task #748) are the floors `ldap_uid_alloc()`/`ldap_gid_alloc()` scan upward from when `POST /v1/ldap/users`/`POST /v1/ldap/groups` omits `uidnumber`/`gidnumber`. A gid counts as taken if a group has it or any user still carries it as a primary or secondary group: membership is by gid, so a new group handed an orphaned gid would silently take its users in, and since ADR-0317 a group carries permissions ([#542](https://git.home.arpa/itdlabs/cix/issues/542)). Both default to `10000` until changed. Setting a new floor takes effect immediately for the *next* auto-allocation only — it never renumbers any user or group that already exists, and both values must be positive integers (`400` otherwise). Persisted to `<data-dir>/ldap_config.json`, survives a daemon restart.
 
 ### Real, live-LDAP SSH login (ADR-0144 task #838)
 

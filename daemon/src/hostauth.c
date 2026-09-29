@@ -61,6 +61,15 @@ struct perm_group {
 static struct perm_group g_perm_groups[HOSTAUTH_PERM_GROUPS_MAX];
 static int g_perm_group_count;
 
+/*
+ * ADR-0317 section 7 (#542): whether this host has already been given
+ * the standard groups. Recorded so they are provisioned once, not on
+ * every boot: a standard group the operator deleted stays deleted, the
+ * same rule ADR-0315 and ADR-0316 apply to the other defaults a fresh
+ * host is given. Persisted beside the mapping.
+ */
+static int g_standard_groups_provisioned;
+
 static int perm_index(const char *word)
 {
 	int i;
@@ -185,6 +194,8 @@ static int save_config(void)
 	write_config_fields(&w);
 	jw_key(&w, "permissions");
 	write_mapping_groups(&w);
+	jw_key(&w, "standard_groups_provisioned");
+	jw_bool(&w, g_standard_groups_provisioned);
 	jw_obj_close(&w);
 	rc = persist_atomic_write(g_config_path, w.buf, w.len);
 	jw_free(&w);
@@ -260,6 +271,14 @@ static int load_config(void)
 	jldapbasedn = json_object_get(root, "ldap_base_dn");
 	if (jldapbasedn != NULL && json_as_string(jldapbasedn) != NULL)
 		snprintf(g_config.ldap_base_dn, sizeof(g_config.ldap_base_dn), "%s", json_as_string(jldapbasedn));
+
+	/* #542: absent in every file written before it, which is what makes
+	 * the first boot of that build provision the standard groups. */
+	{
+		const struct json_value *jprov = json_object_get(root, "standard_groups_provisioned");
+
+		g_standard_groups_provisioned = jprov != NULL && jprov->type == JSON_BOOL && jprov->u.boolean;
+	}
 
 	/*
 	 * ADR-0317 (#540): the mapping, or the migration into it.
@@ -1194,4 +1213,109 @@ void hostauth_write_user_permissions_json(struct json_writer *w, const char *use
 			jw_str(w, cix_permissions[i]);
 	}
 	jw_arr_close(w);
+}
+
+/*
+ * ---- ADR-0317 section 7 (#542): the standard groups ----
+ *
+ * cix-admins holds every permission, cix-operators `public` plus every
+ * read and every operate, cix-readers every read -- the sets section 7
+ * names, derived from the vocabulary by suffix so a permission added to
+ * the contract lands in the right group without an edit here.
+ */
+static int word_is_area(const char *word, const char *verb)
+{
+	const char *colon = strchr(word, ':');
+
+	return colon != NULL && strcmp(colon + 1, verb) == 0;
+}
+
+static int grants_admin(const char *word)
+{
+	(void)word;
+	return 1;
+}
+
+static int grants_operator(const char *word)
+{
+	return strcmp(word, "public") == 0 || word_is_area(word, "read") ||
+	       word_is_area(word, "operate");
+}
+
+static int grants_reader(const char *word)
+{
+	return word_is_area(word, "read");
+}
+
+static const struct {
+	const char *name;
+	int (*grants)(const char *word);
+} standard_groups[] = {
+	{ "cix-admins", grants_admin },
+	{ "cix-operators", grants_operator },
+	{ "cix-readers", grants_reader },
+};
+
+int hostauth_provision_standard_groups(void)
+{
+	size_t s;
+	int complete = 1, changed = 0;
+
+	if (g_standard_groups_provisioned)
+		return 0;
+	for (s = 0; s < sizeof(standard_groups) / sizeof(standard_groups[0]); s++) {
+		const char *name = standard_groups[s].name;
+		struct perm_group *pg;
+		struct ldap_group *g;
+		enum ldap_record_error rerr;
+		int i, gid;
+
+		/* Section 7: "an existing group of the same name is never
+		 * re-granted" -- existing in the directory, or already in
+		 * the mapping. On 192.168.15.95 cix-admins is the directory's
+		 * own admin group, and it keeps exactly what it has. */
+		if (ldap_group_find(name) != NULL ||
+		    perm_group_find(g_perm_groups, g_perm_group_count, name) >= 0)
+			continue;
+		if (g_perm_group_count >= HOSTAUTH_PERM_GROUPS_MAX ||
+		    (standard_groups[s].grants == grants_admin &&
+		     count_groups_holding_all(g_perm_groups, g_perm_group_count) >=
+		         HOSTAUTH_ADMIN_GROUPS_MAX)) {
+			logstore_write("hostauth", "warning",
+			               "standard group %s not provisioned: the permission mapping is full",
+			               name);
+			complete = 0;
+			continue;
+		}
+		gid = ldap_gid_alloc();
+		rerr = ldap_group_create(name, gid, &g);
+		if (rerr != LDAP_RECORD_OK) {
+			logstore_write("hostauth", "warning",
+			               "standard group %s not provisioned: creating it in the directory "
+			               "failed (err=%d); retried at the next start",
+			               name, (int)rerr);
+			complete = 0;
+			continue;
+		}
+		pg = &g_perm_groups[g_perm_group_count++];
+		memset(pg, 0, sizeof(*pg));
+		snprintf(pg->name, sizeof(pg->name), "%s", name);
+		for (i = 0; i < CIX_PERMISSION_COUNT; i++)
+			pg->has[i] = (unsigned char)standard_groups[s].grants(cix_permissions[i]);
+		changed = 1;
+		logstore_write("hostauth", "info", "standard group %s provisioned (gid %d)", name, gid);
+	}
+	if (changed)
+		derive_admin_groups();
+	/* Only once every standard group exists or was deliberately found
+	 * already there; a failure is retried at the next start, and the
+	 * groups already made are skipped then as existing. */
+	g_standard_groups_provisioned = complete;
+	if ((changed || complete) && save_config() != 0) {
+		logstore_write("hostauth", "err",
+		               "could not persist the standard groups' permissions; the groups "
+		               "exist in the directory and will not be re-granted");
+		return -1;
+	}
+	return complete ? 0 : -1;
 }

@@ -187,6 +187,20 @@ void hostauth_forget_group(const char *name);
 void hostauth_write_user_permissions_json(struct json_writer *w, const char *username);
 
 /*
+ * ADR-0317 section 7 (#542): gives a host the standard groups --
+ * cix-admins (every permission), cix-operators (`public`, every read,
+ * every operate), cix-readers (every read) -- creating each in the
+ * directory and in the mapping. Once per host: a marker persisted with
+ * the mapping keeps a group the operator deleted from coming back. A
+ * group that already exists, in the directory or the mapping, is never
+ * re-granted. Called at boot after ldap_init() and hostauth_init();
+ * returns -1 (logged, and retried at the next start) if any could not
+ * be made. New groups take gids from ldap_gid_alloc(), which skips any
+ * gid a user still carries.
+ */
+int hostauth_provision_standard_groups(void);
+
+/*
  * Gating, and the one invariant that protects it (ADR-0317 section 6,
  * #541; #370 before it).
  *

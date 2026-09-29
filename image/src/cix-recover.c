@@ -258,7 +258,7 @@ static int recover_main(void)
 	char *raw = NULL;
 	size_t raw_len = 0;
 	struct json_value *root;
-	const struct json_value *jidle, *jldapen, *jservers, *jport;
+	const struct json_value *jidle, *jldapen, *jservers, *jport, *jldaptls, *jprov;
 	const char *base_dn;
 	char config_path[600];
 	char line[64];
@@ -327,13 +327,17 @@ static int recover_main(void)
 	jservers = json_object_get(root, "ldap_servers");
 	jport = json_object_get(root, "ldap_port");
 	base_dn = json_as_string(json_object_get(root, "ldap_base_dn"));
+	jldaptls = json_object_get(root, "ldap_tls");
+	jprov = json_object_get(root, "standard_groups_provisioned");
 
 	dual_printf("Current config found. admin_groups and permissions will be reset to empty;\n");
-	dual_printf("these fields (idle_timeout_seconds=%ld, ldap_enabled=%s, ldap_port=%ld,\n"
-	            "ldap_base_dn=%s) is preserved exactly as-is.\n",
+	dual_printf("these fields (idle_timeout_seconds=%ld, ldap_enabled=%s, ldap_tls=%s,\n"
+	            "ldap_port=%ld, ldap_base_dn=%s) are preserved exactly as-is.\n",
 	            (long)json_as_number(jidle),
 	            (jldapen != NULL && jldapen->type == JSON_BOOL && jldapen->u.boolean) ? "true"
 	                                                                                  : "false",
+	            (jldaptls != NULL && jldaptls->type == JSON_BOOL && jldaptls->u.boolean) ? "true"
+	                                                                                     : "false",
 	            (long)json_as_number(jport), base_dn != NULL && base_dn[0] != '\0' ? base_dn : "-");
 	dual_printf("\n");
 	dual_printf("Type RESET (all capitals) and press Enter to proceed, anything else to\n");
@@ -369,6 +373,18 @@ static int recover_main(void)
 	jw_int(&w, (long long)json_as_number(jport));
 	jw_key(&w, "ldap_base_dn");
 	jw_str(&w, base_dn != NULL ? base_dn : "");
+	/* #546: carried through like the fields above -- dropping it turned
+	 * the daemon's LDAPS bind off on every recovery. */
+	jw_key(&w, "ldap_tls");
+	jw_bool(&w, jldaptls != NULL && jldaptls->type == JSON_BOOL && jldaptls->u.boolean);
+	/* #542: kept, so a recovery does not re-provision a standard group
+	 * the operator had deleted. The groups that exist are never
+	 * re-granted either way, so this cannot hand back what the reset
+	 * took away. */
+	if (jprov != NULL && jprov->type == JSON_BOOL) {
+		jw_key(&w, "standard_groups_provisioned");
+		jw_bool(&w, jprov->u.boolean);
+	}
 	jw_obj_close(&w);
 	json_free(root);
 

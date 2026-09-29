@@ -498,7 +498,9 @@ int ldap_uid_alloc(void);
 
 /* The ldap_uid_alloc() analog for gidnumber, seeded from
  * ldap_config_get()->start_gid -- used by POST /v1/ldap/groups when
- * the caller omits gidnumber entirely (task #748). */
+ * the caller omits gidnumber entirely (task #748), and by the standard
+ * groups (#542). Skips any gid a user still carries, not only those a
+ * group has: a new group handed an orphaned gid would take its users. */
 int ldap_gid_alloc(void);
 
 #define LDAP_PROVISION_SECRET_LEN 32 /* hex-encoded random bytes */

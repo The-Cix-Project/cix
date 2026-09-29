@@ -116,6 +116,8 @@ The standard groups that the owner's decision says are provisioned at init follo
 
 They are created only where absent, and an existing group of the same name is never re-granted.
 
+Two details settled while implementing #542. **Once per host**: a marker in `hostauth_config.json` records that the groups were provisioned, so one the operator deleted stays deleted -- the rule ADR-0315 and ADR-0316 already apply to a fresh host's other defaults. **"Existing" means the directory or the mapping**: on 192.168.15.95 the directory's own admin group was already called `cix-admins`, and it keeps exactly its own grants. New groups take gids from `ldap_gid_alloc()`, which since #542 also skips any gid a user still carries, so a standard group cannot adopt users whose old group was deleted.
+
 ### 8. Machine credentials are app passwords, the same ones glauth uses
 
 Raised by the owner on 2026-09-29: *"should we add token storage? Glauth handles app passwords, which I think should be the same?"* Yes, and it is what keeps this from becoming a second credential system.

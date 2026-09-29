@@ -268,7 +268,9 @@ static int test_permission_mapping(void)
 	snprintf(saved_data_dir, sizeof(saved_data_dir), "%s", g_data_dir);
 	if (test_data_dir_create(dir, sizeof(dir)) != 0)
 		return 0;
-	/* A pre-#540 state file: admin_groups and no "permissions". */
+	/* A pre-#540 state file: admin_groups and no "permissions". It
+	 * carries the #542 marker, so the standard groups stay out of what
+	 * this scenario counts; test_standard_groups() covers them. */
 	snprintf(path, sizeof(path), "%s/state/hostauth_config.json", dir);
 	f = fopen(path, "w");
 	if (f == NULL) {
@@ -276,7 +278,9 @@ static int test_permission_mapping(void)
 		test_data_dir_cleanup(dir);
 		return 0;
 	}
-	fputs("{\"admin_groups\":[\"legacyadmins\"],\"idle_timeout_seconds\":900}\n", f);
+	fputs("{\"admin_groups\":[\"legacyadmins\"],\"idle_timeout_seconds\":900,"
+	      "\"standard_groups_provisioned\":true}\n",
+	      f);
 	fclose(f);
 	snprintf(g_data_dir, sizeof(g_data_dir), "%s", dir);
 
@@ -518,6 +522,195 @@ out:
 	if (pid > 0 && stop_daemon(pid) != 0)
 		ok = 0;
 	test_data_dir_cleanup(dir);
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", saved_data_dir);
+	return ok;
+}
+
+/*
+ * ADR-0317 section 7 (#542): -1 when group is absent from the mapping,
+ * otherwise whether it holds word.
+ */
+static int mapping_group_has(const struct json_value *groups, const char *group, const char *word)
+{
+	const struct json_value *arr = json_object_get(groups, group);
+	size_t i;
+
+	if (arr == NULL || arr->type != JSON_ARRAY)
+		return -1;
+	for (i = 0; i < arr->u.array.count; i++) {
+		if (str_eq(json_as_string(arr->u.array.items[i]), word))
+			return 1;
+	}
+	return 0;
+}
+
+/* GETs the mapping's "groups" into *r; NULL on failure. */
+static const struct json_value *get_mapping_groups(const struct cix_client *c,
+                                                   struct cix_response *r)
+{
+	memset(r, 0, sizeof(*r));
+	if (cix_client_request(c, "GET", "/v1/system/hostauth/permissions", NULL, r) != 0 ||
+	    r->status != 200 || r->json == NULL)
+		return NULL;
+	return json_object_get(r->json, "groups");
+}
+
+/*
+ * ADR-0317 section 7 (#542): the standard groups. A host with no record
+ * of having provisioned them gets cix-admins (everything), cix-operators
+ * (public, every read, every operate) and cix-readers (every read), in
+ * the directory and in the mapping; once, so a deleted one stays
+ * deleted; and a group that already existed under one of those names
+ * keeps its own grants. Nobody is a member of any of them here, so
+ * gating stays off and every request goes without credentials.
+ */
+static int test_standard_groups(void)
+{
+	char saved_data_dir[PATH_MAX], dir[PATH_MAX], path[PATH_MAX];
+	struct cix_client c;
+	struct cix_response r;
+	const struct json_value *groups;
+	pid_t pid = -1;
+	int ok = 1;
+
+	snprintf(saved_data_dir, sizeof(saved_data_dir), "%s", g_data_dir);
+	cix_client_init(&c, "127.0.0.1", TEST_PORT);
+
+	/* 1. A fresh host: test_data_dir_create() seeds the marker, so
+	 * removing its file is what makes this one fresh. */
+	if (test_data_dir_create(dir, sizeof(dir)) != 0)
+		return 0;
+	snprintf(path, sizeof(path), "%s/state/hostauth_config.json", dir);
+	unlink(path);
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", dir);
+	pid = start_daemon();
+	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+		fprintf(stderr, "FAIL: #542 daemon never accepted connections\n");
+		ok = 0;
+		goto out;
+	}
+	groups = get_mapping_groups(&c, &r);
+	if (groups == NULL) {
+		fprintf(stderr, "FAIL: #542 GET permissions, status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const struct json_value *vocab = json_object_get(r.json, "vocabulary");
+		const struct json_value *admins = json_object_get(groups, "cix-admins");
+
+		if (vocab == NULL || admins == NULL || admins->type != JSON_ARRAY ||
+		    admins->u.array.count != vocab->u.array.count) {
+			fprintf(stderr, "FAIL: #542 cix-admins must hold every permission: %.300s\n",
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		if (mapping_group_has(groups, "cix-operators", "public") != 1 ||
+		    mapping_group_has(groups, "cix-operators", "containers:read") != 1 ||
+		    mapping_group_has(groups, "cix-operators", "containers:operate") != 1 ||
+		    mapping_group_has(groups, "cix-operators", "containers:write") != 0 ||
+		    mapping_group_has(groups, "cix-operators", "containers:console") != 0 ||
+		    mapping_group_has(groups, "cix-operators", "identity:write") != 0) {
+			fprintf(stderr, "FAIL: #542 cix-operators must be public + every read + every "
+			                "operate, nothing else: %.300s\n",
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		if (mapping_group_has(groups, "cix-readers", "containers:read") != 1 ||
+		    mapping_group_has(groups, "cix-readers", "identity:read") != 1 ||
+		    mapping_group_has(groups, "cix-readers", "containers:operate") != 0 ||
+		    mapping_group_has(groups, "cix-readers", "public") != 0 ||
+		    mapping_group_has(groups, "cix-readers", "images:write") != 0) {
+			fprintf(stderr, "FAIL: #542 cix-readers must be every read, nothing else: %.300s\n",
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+	}
+	cix_response_free(&r);
+
+	/* ... and they are real directory groups, so users can be put in them. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "GET", "/v1/ldap/groups", NULL, &r) != 0 || r.status != 200 ||
+	    !body_has(&r, "\"cix-admins\"") || !body_has(&r, "\"cix-operators\"") ||
+	    !body_has(&r, "\"cix-readers\"")) {
+		fprintf(stderr, "FAIL: #542 the standard groups are not in the directory: %.300s\n",
+		        r.body != NULL ? r.body : "");
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/* 2. Once per host: a deleted one stays deleted, and a changed one
+	 * is not re-granted, across a restart. */
+	ok &= expect_status(&c, NULL, "DELETE", "/v1/ldap/groups/cix-readers", NULL, 204,
+	                    "delete cix-readers");
+	ok &= expect_status(&c, NULL, "PUT", "/v1/system/hostauth/permissions/cix-operators",
+	                    "{\"permissions\":[\"containers:read\"]}", 200, "narrow cix-operators");
+	if (stop_daemon(pid) != 0)
+		ok = 0;
+	pid = start_daemon();
+	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+		ok = 0;
+		goto out;
+	}
+	groups = get_mapping_groups(&c, &r);
+	if (groups == NULL || mapping_group_has(groups, "cix-readers", "containers:read") != -1 ||
+	    mapping_group_has(groups, "cix-operators", "containers:operate") != 0) {
+		fprintf(stderr, "FAIL: #542 a restart must not bring back a deleted standard group or "
+		                "re-grant a changed one: %.300s\n",
+		        r.body != NULL ? r.body : "");
+		ok = 0;
+	}
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "GET", "/v1/ldap/groups", NULL, &r) != 0 ||
+	    body_has(&r, "\"cix-readers\"")) {
+		fprintf(stderr, "FAIL: #542 a deleted standard group came back in the directory\n");
+		ok = 0;
+	}
+	cix_response_free(&r);
+	if (stop_daemon(pid) != 0)
+		ok = 0;
+	pid = -1;
+	test_data_dir_cleanup(dir);
+
+	/* 3. A directory group already called cix-operators, made before
+	 * the host was provisioned, keeps its own grants -- none. */
+	if (test_data_dir_create(dir, sizeof(dir)) != 0) {
+		ok = 0;
+		goto restore;
+	}
+	snprintf(path, sizeof(path), "%s/state/hostauth_config.json", dir);
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", dir);
+	pid = start_daemon();
+	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+		ok = 0;
+		goto out;
+	}
+	ok &= expect_status(&c, NULL, "POST", "/v1/ldap/groups",
+	                    "{\"name\":\"cix-operators\",\"gidnumber\":7401}", 201,
+	                    "create a pre-existing cix-operators");
+	if (stop_daemon(pid) != 0)
+		ok = 0;
+	unlink(path); /* now the host has never been provisioned */
+	pid = start_daemon();
+	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+		ok = 0;
+		goto out;
+	}
+	groups = get_mapping_groups(&c, &r);
+	if (groups == NULL || mapping_group_has(groups, "cix-operators", "public") != -1 ||
+	    mapping_group_has(groups, "cix-readers", "containers:read") != 1 ||
+	    mapping_group_has(groups, "cix-admins", "identity:write") != 1) {
+		fprintf(stderr, "FAIL: #542 a pre-existing cix-operators must not be granted anything, "
+		                "and the other two must still be provisioned: %.300s\n",
+		        r.body != NULL ? r.body : "");
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+out:
+	if (pid > 0 && stop_daemon(pid) != 0)
+		ok = 0;
+	test_data_dir_cleanup(dir);
+restore:
 	snprintf(g_data_dir, sizeof(g_data_dir), "%s", saved_data_dir);
 	return ok;
 }
@@ -1744,6 +1937,8 @@ int main(void)
 
 	test_data_dir_cleanup(g_data_dir);
 	if (!test_permission_mapping())
+		ok = 0;
+	if (!test_standard_groups())
 		ok = 0;
 	printf(ok ? "HOSTAUTH RESULT: PASS\n" : "HOSTAUTH RESULT: FAIL\n");
 	return ok ? 0 : 1;

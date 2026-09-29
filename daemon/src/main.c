@@ -30998,6 +30998,13 @@ static int cixd_main(int argc, char **argv)
 	if (boot_subsystem_init(init_mode, "hostauth", hostauth_init(HOSTAUTH_CONFIG_PATH)) != 0)
 		return 1;
 	/*
+	 * ADR-0317 section 7 (#542): the standard groups, once per host. Not
+	 * a boot failure when it cannot finish -- it logs, and the next start
+	 * retries whatever is missing. Before the gating warning below, which
+	 * it cannot change: a new group has no members.
+	 */
+	hostauth_provision_standard_groups();
+	/*
 	 * #370: say so, every boot, when this host will answer any API
 	 * request from anyone who can reach it. Placed after BOTH ldap_init()
 	 * and hostauth_init(): gating is "an enabled user holds identity:write"
