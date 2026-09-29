@@ -14772,6 +14772,20 @@ static int create_container_from_body(const char *body, size_t body_len,
 				logstore_write("pki", "err",
 				               "%s: could not read certificate \"%s\" to stage it (err=%d)",
 				               name, cert_name, (int)rerr);
+				/*
+				 * #545: this used to log and carry on, so the create
+				 * answered 201 for a container with no identity in it --
+				 * the outcome the staging failure just below refuses, and
+				 * for the same reason. The log store line alone was
+				 * invisible to the caller. Refused the same way.
+				 */
+				if (created_here)
+					pki_cert_delete(cert_name);
+				snprintf(err_msg, err_msg_size,
+				         "could not read the certificate \"%s\" to stage it (err=%d)",
+				         cert_name, (int)rerr);
+				json_free(root);
+				return 500;
 			} else {
 				char crt_path[PATH_MAX], key_path[PATH_MAX];
 				int staged;

@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### test_pki no longer reads a container's files before it has its own root (#545)
+
+`test_pki` failed the first release build of 0.2.57-390 and of 0.2.57-391 on 192.168.15.95, each time at a `stat()` of `/proc/<pid>/root/etc/cix-tls/tls.key` taken straight after the container's 201; a second build of the same 390 source passed. `container_create()` returns once the child is cloned, and for a container with no network and no user namespace nothing waits for it to exec. So the reply can arrive while the child is still mounting, and `/proc/<pid>/root` is then the daemon's own tree. That race is read from the code, not caught in the act. The test now waits until the child's `comm` is no longer the daemon's -- it becomes `cix-init` only at the exec, which follows `pivot_root` -- before each such read.
+
+Separately, a create asking for `pki_cert` or `pki_issue` whose certificate could not be read went on to answer 201 with no identity in the container, logging the failure only to the log store. It now refuses with 500 naming the certificate, as the staging failure next to it already did.
+
 ### Groups hold permissions, and admin groups are the ones holding all of them (#540, ADR-0317)
 
 The second of six steps for role-based access control. A mapping from group to permission set is now the one stored statement of who may do what, in `hostauth_config.json` under `permissions`. `GET /v1/system/hostauth/permissions` lists the vocabulary and the mapping; `PUT /v1/system/hostauth/permissions/{group}` replaces one group's set and `DELETE` removes it. A user holds the union over their groups, and `GET /v1/whoami` now reports it as `permissions`. `whoami` is also `public` now: it answers "am I logged in, and what may I do" to a caller who may not be.
