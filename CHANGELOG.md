@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Every stage after a fetch uses the revision the fetch resolved (#380)
+
+An install without a version resolves "the highest revision there is". `start_fetch_for()` did that once and recorded the answer, but the three stages after it -- fetch completion (the checksum), build-environment completion and unpack completion -- each resolved it again. When a newer revision was published during a download (the six-hourly recipe-sync does exactly that), those stages worked from a different recipe than the fetch had. With a different source, that is a checksum failure that survives any change of source url, which is what #380 recorded. With the same source, the build ran the new revision's steps on the old revision's download, while `pkg_build_completed()` and the build log named the old one.
+
+Reproduced on 192.168.15.95 (`probe-slowfetch`: a first url at 192.0.2.1, which times out, ahead of the real one, so the fetch takes about two minutes): installing 1-5 unpinned and publishing 1-6 mid-fetch failed at staging, looking for `c0-probe-slowfetch-1-6-0.src` while the fetch had downloaded 1-5's. The stages now use `fetched_recipe_version()`, the revision the fetch recorded.
+
 ### Two builds of one package no longer share a download (#501)
 
 Every file a fetch writes under the sources directory -- each source, the precompiled-artifact download and its signature, and the error and note sidecars -- was named from the package alone (name, version, index; the sidecars by name only). Publishing a recipe queues a rebuild of every image tracking it, so two builds of one `name@version` ran at once, and each fetch starts by `unlink()`ing its path and downloading into it. The second build detached the first build's half-written file and the first then checksummed the second's partial download.

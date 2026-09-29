@@ -8457,6 +8457,34 @@ static const char *current_fetch_effective_version(int chain_idx)
 	return NULL;
 }
 
+/*
+ * #380: the recipe revision the CURRENT fetch resolved, for every stage
+ * after it.
+ *
+ * current_fetch_effective_version() answers "which version should this
+ * fetch resolve", and for anything installed without a version that is
+ * NULL -- "whatever is highest right now". start_fetch_for() resolved
+ * it once and recorded the answer in fetch_resolved_version. The stages
+ * after it -- fetch completion (the checksum), build-environment
+ * completion and unpack completion -- each resolved it AGAIN, so if a
+ * newer revision was published while a download ran (the six-hourly
+ * recipe-sync does exactly that), they verified the downloaded bytes
+ * against a different revision's sha256 -- a checksum failure that
+ * survives any change of source url -- or, when the new revision kept
+ * the source, built the new revision's steps on the old revision's
+ * download, while pkg_build_completed() and the build log, which read
+ * fetch_resolved_version, named the old one.
+ *
+ * One pipeline, one revision: every stage after the fetch uses the one
+ * the fetch resolved.
+ */
+static const char *fetched_recipe_version(int chain_idx)
+{
+	if (g_chains[chain_idx].fetch_resolved_version[0] != '\0')
+		return g_chains[chain_idx].fetch_resolved_version;
+	return current_fetch_effective_version(chain_idx);
+}
+
 /* ADR-0122: forward declarations -- defined below (near the end of this
  * file, alongside the rest of the local-cache/artifact-server module)
  * but needed here since start_fetch_for()/pkg_fetch_completed()/
@@ -10494,7 +10522,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		return 0;
 	}
 
-	if (find_recipe_path(e->name, current_fetch_effective_version(chain_idx), recipe_path,
+	if (find_recipe_path(e->name, fetched_recipe_version(chain_idx), recipe_path,
 	                      sizeof(recipe_path)) != 0 ||
 	    parse_recipe(recipe_path, &recipe) != 0) {
 		pkg_fail(e, is_final_upgrade, PIPELINE_AUTHOR, "recipe became unreadable mid-install");
@@ -10732,7 +10760,7 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 		return 0;
 	}
 
-	if (find_recipe_path(e->name, current_fetch_effective_version(chain_idx), recipe_path,
+	if (find_recipe_path(e->name, fetched_recipe_version(chain_idx), recipe_path,
 	                      sizeof(recipe_path)) != 0 ||
 	    parse_recipe(recipe_path, &recipe) != 0) {
 		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
@@ -10810,7 +10838,7 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
 		return 0;
 	}
 
-	if (find_recipe_path(e->name, current_fetch_effective_version(chain_idx), recipe_path,
+	if (find_recipe_path(e->name, fetched_recipe_version(chain_idx), recipe_path,
 	                      sizeof(recipe_path)) != 0 ||
 	    parse_recipe(recipe_path, &recipe) != 0) {
 		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
