@@ -208,6 +208,10 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 
 **No debt register.** Do not keep a list here of what still violates this; an unmaintained inventory of debt reads as permission, which is the whole argument the No Stop-Gaps maxim already makes about #509. What remains is measured on the box and tracked in the issue tracker, where it can be closed.
 
+## Authorisation (RBAC)
+
+**Permissions are declared by the API contract, not by a policy file and not in handlers** -- the owner's direction on #304 (2026-09-14), recorded as [ADR-0317](docs/adr/0317-permissions-are-declared-by-the-api-contract.md) (Proposed until the owner accepts it). Each operation will carry one `x-cix-permission`; `apigen` generates the check; one enforcement point after routing. Until ADR-0317's implementation lands, the ADR-0144 binary admin-group rule is what runs -- do not add per-handler permission checks in the meantime, they would be the parallel implementation the ADR exists to prevent.
+
 ## Default package sources
 
 **A host that has never saved a repo or artifact config starts on the public catalogue (`https://github.com/The-Cix-Project/cix-recipes`, `github`, `main`) and the public cache (`https://cache.cix.world`, pull-only).** Stated by the owner on 2026-09-29: *"yes, both are defaults moving forwards, and can be changed if the use wants to? right?"* — see [ADR-0315](docs/adr/0315-the-public-catalogue-and-cache-are-the-defaults.md).
