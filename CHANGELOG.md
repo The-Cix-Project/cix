@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Two builds of one package no longer share a download (#501)
+
+Every file a fetch writes under the sources directory -- each source, the precompiled-artifact download and its signature, and the error and note sidecars -- was named from the package alone (name, version, index; the sidecars by name only). Publishing a recipe queues a rebuild of every image tracking it, so two builds of one `name@version` ran at once, and each fetch starts by `unlink()`ing its path and downloading into it. The second build detached the first build's half-written file and the first then checksummed the second's partial download.
+
+Reproduced on 192.168.15.95 before the fix (`probe-srcrace@1`, the kernel tarball, installed into two images one second apart): **both** builds failed `checksum mismatch (source 0)`, reading 197,485,496 and 209,991,476 bytes. A four-second gap did not reproduce it -- the first download had finished -- which is why this looked intermittent.
+
+Every such file is now keyed by the build slot too (`c<slot>-<name>-<version>-<i>.src`, `.artifact-c<slot>-…`, `.fetcherr-c<slot>-…`, `.fetchnote-c<slot>-…`). A slot runs one package at a time, so each file is private to one build. Downloading to a temporary name and renaming would not have been enough: a later rename could still replace bytes one build had verified with bytes it had not, between its check and its staging. The five copies of the source-path `snprintf` are now one helper.
+
+Each fetch now also clears its own slot's previous files, and any still named the old way, before it writes -- so the directory is bounded at one package per slot. Before, nothing ever removed a fetched source.
+
 ### CPDL is 1.0: cbs v0.1.98 on the host, both images and the test floor
 
 CBS promoted the recipe language from CPDL 0.1 to CPDL 1.0 in v0.1.98. It is a relabel, not a language change: the grammar, keywords and validation rules are unchanged (the spec diff is the version label throughout, plus a note that an incompatible revision would need a new spec). What changes is text and one fingerprint input: `cbs validate` prints `valid CPDL 1.0`, `cbs explain` prints `CPDL 1.0 execution plan`, `cbs --capabilities` gains a `cpdl_contract` field, and the contract string is part of the build fingerprint, so every key changes once. Nothing in `cixd` parses those strings.

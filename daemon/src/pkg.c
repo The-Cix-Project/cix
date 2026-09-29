@@ -1400,9 +1400,9 @@ int pkg_active_chain_indices(int *out_indices)
  * output a long-running build can produce, so there is no deadlock
  * risk to design around and no need for incremental draining.
  */
-static void fetch_error_sidecar_path(const char *name, char *out, size_t out_size)
+static void fetch_error_sidecar_path(int chain_idx, const char *name, char *out, size_t out_size)
 {
-	snprintf(out, out_size, "%s/.fetcherr-%s", g_sources_dir, name);
+	snprintf(out, out_size, "%s/.fetcherr-c%d-%s", g_sources_dir, chain_idx, name);
 }
 
 /*
@@ -1412,9 +1412,110 @@ static void fetch_error_sidecar_path(const char *name, char *out, size_t out_siz
  * failure, so a note about a fallback that then worked would be lost
  * there.
  */
-static void fetch_note_sidecar_path(const char *name, char *out, size_t out_size)
+static void fetch_note_sidecar_path(int chain_idx, const char *name, char *out, size_t out_size)
 {
-	snprintf(out, out_size, "%s/.fetchnote-%s", g_sources_dir, name);
+	snprintf(out, out_size, "%s/.fetchnote-c%d-%s", g_sources_dir, chain_idx, name);
+}
+
+/*
+ * #501: EVERY file a fetch writes under g_sources_dir is keyed by the
+ * build slot (chain_idx), not only by the package.
+ *
+ * These paths used to be name-version-index (sources, the artifact
+ * download) or just the name (the two sidecars). Publishing a recipe
+ * queues a rebuild of every image tracking it, so two builds of one
+ * name@version run in different slots at once -- and each fetch starts
+ * by unlink()ing its path and downloading into it. The second build's
+ * unlink detached the first build's half-written file, so the first
+ * then checksummed the second's partial download. Observed on
+ * 192.168.15.95, 2026-09-21: kmod@34.2-7 for cix-kmod failed with 323584
+ * bytes hashing wrong while cix-builder fetched the same url into the
+ * same path in the same window. Downloading to a temporary name and
+ * renaming would not have been enough: a later rename could still
+ * replace bytes one build had verified with bytes it had not, between
+ * its check and its staging. A slot runs one package at a time, so the
+ * slot is the unit that makes every one of these files private.
+ *
+ * The slot goes FIRST ("c3-..."), so sources_clear_slot() can match a
+ * slot by prefix -- "c1-" cannot match "c10-".
+ */
+static void source_download_path(int chain_idx, const char *name, const char *version, int index,
+                                 char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/c%d-%s-%s-%d.src", g_sources_dir, chain_idx, name, version,
+	         index);
+}
+
+/* "c<digits>-", the slot marker every name above starts with (after the
+ * sidecar or artifact prefix, where there is one). */
+static int slot_marked(const char *s, int *out_slot)
+{
+	int slot = 0;
+	const char *p = s;
+
+	if (*p++ != 'c' || *p < '0' || *p > '9')
+		return 0;
+	while (*p >= '0' && *p <= '9')
+		slot = slot * 10 + (*p++ - '0');
+	if (*p != '-')
+		return 0;
+	*out_slot = slot;
+	return 1;
+}
+
+/*
+ * Removes what a slot's previous fetch left in g_sources_dir, and any
+ * file still named the pre-#501 way. Called by each fetch child before
+ * it writes anything.
+ *
+ * A slot runs its packages one after another, and by the time it starts
+ * the next fetch the previous package has been staged into its build
+ * container (pkg_prepare_build_and_start()); a resume reuses that kept
+ * container and never reads a source file. So nothing of this slot's is
+ * still needed, and the directory stays bounded at one package per slot
+ * -- where before #501 nothing ever removed a source at all, and every
+ * name@version fetched stayed on disk.
+ *
+ * The pre-#501 names ("<name>-<version>-<i>.src", ".artifact-<name>-...",
+ * ".fetcherr-<name>", ".fetchnote-<name>") are read by nothing once this
+ * build runs, so they go too. ".artifact-push.status" is the push
+ * worker's and is kept.
+ */
+static void sources_clear_slot(int chain_idx)
+{
+	static const char *const prefixes[] = { ".artifact-", ".fetcherr-", ".fetchnote-" };
+	DIR *dir = opendir(g_sources_dir);
+	struct dirent *de;
+
+	if (dir == NULL)
+		return;
+	while ((de = readdir(dir)) != NULL) {
+		const char *rest = de->d_name;
+		size_t i, n = strlen(de->d_name);
+		int slot;
+		int ours = 0;
+		char path[PATH_MAX];
+
+		if (strcmp(de->d_name, ".artifact-push.status") == 0)
+			continue;
+		for (i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+			if (strncmp(de->d_name, prefixes[i], strlen(prefixes[i])) == 0) {
+				rest = de->d_name + strlen(prefixes[i]);
+				ours = 1;
+				break;
+			}
+		}
+		if (!ours && !(n > 4 && strcmp(de->d_name + n - 4, ".src") == 0))
+			continue;
+		/* Another slot's file, current naming: not this fetch's to touch. */
+		if (slot_marked(rest, &slot) && slot != chain_idx)
+			continue;
+		if (snprintf(path, sizeof(path), "%s/%s", g_sources_dir, de->d_name) >=
+		    (int)sizeof(path))
+			continue;
+		unlink(path);
+	}
+	closedir(dir);
 }
 
 
@@ -8387,8 +8488,8 @@ static void pkg_artifact_push_enqueue(const char *name, const char *version);
 static void pkg_artifact_build_request(const char *name, const char *version, const char *format,
                                         char *out_url, size_t out_url_size, char *out_header,
                                         size_t out_header_size);
-static void artifact_sentinel_path(const char *name, const char *version, const char *format,
-                                    char *out, size_t out_size);
+static void artifact_sentinel_path(int chain_idx, const char *name, const char *version,
+                                   const char *format, char *out, size_t out_size);
 
 /*
  * Starts the fetch for a single package already known to have a valid
@@ -8515,7 +8616,10 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 		int j;
 		char fetch_err_path[PATH_MAX];
 
-		fetch_error_sidecar_path(recipe.name, fetch_err_path, sizeof(fetch_err_path));
+		/* #501: nothing this slot fetched before is needed any more,
+		 * and nothing another slot is fetching is touched. */
+		sources_clear_slot(chain_idx);
+		fetch_error_sidecar_path(chain_idx, recipe.name, fetch_err_path, sizeof(fetch_err_path));
 		unlink(fetch_err_path);
 
 		if (cache_hit) {
@@ -8573,7 +8677,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			pkg_artifact_build_request(recipe.name, recipe.version, recipe.artifact_format,
 			                            artifact_url, sizeof(artifact_url), artifact_header,
 			                            sizeof(artifact_header));
-			artifact_sentinel_path(recipe.name, recipe.version, recipe.artifact_format,
+			artifact_sentinel_path(chain_idx, recipe.name, recipe.version, recipe.artifact_format,
 			                        artifact_path, sizeof(artifact_path));
 			unlink(artifact_path);
 
@@ -8680,7 +8784,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 				char note_path[PATH_MAX];
 				int nfd;
 
-				fetch_note_sidecar_path(recipe.name, note_path, sizeof(note_path));
+				fetch_note_sidecar_path(chain_idx, recipe.name, note_path, sizeof(note_path));
 				nfd = open(note_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 				if (nfd >= 0) {
 					char note[640];
@@ -8822,8 +8926,8 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			 * resume, so this only ever helps, never masks a bad
 			 * download.
 			 */
-			snprintf(src_tarball_path, sizeof(src_tarball_path), "%s/%s-%s-%d.src",
-			         g_sources_dir, recipe.name, recipe.version, j);
+			source_download_path(chain_idx, recipe.name, recipe.version, j, src_tarball_path,
+			                     sizeof(src_tarball_path));
 
 			/*
 			 * source[j] first, then every mirror declared for it,
@@ -9803,8 +9907,8 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		char main_src_path[PATH_MAX];
 		char tmp_dir[PATH_MAX];
 
-		snprintf(main_src_path, sizeof(main_src_path), "%s/%s-%s-0.src", g_sources_dir, e->name,
-		         recipe.version);
+		source_download_path(chain_idx, e->name, recipe.version, 0, main_src_path,
+		                     sizeof(main_src_path));
 		/*
 		 * /tmp -- caught empirically (ADR-0056), same session as the
 		 * /bin/sh discovery above: this project's own from-recipe
@@ -10055,8 +10159,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		for (i = 1; i < recipe.source_count; i++) {
 			char src_path[PATH_MAX], extra_dst[PATH_MAX], extra_basename[PATH_MAX];
 
-			snprintf(src_path, sizeof(src_path), "%s/%s-%s-%d.src", g_sources_dir, e->name,
-			         recipe.version, i);
+			source_download_path(chain_idx, e->name, recipe.version, i, src_path, sizeof(src_path));
 			url_basename(recipe.source[i], extra_basename, sizeof(extra_basename));
 			snprintf(extra_dst, sizeof(extra_dst), "%s/%s", extra_dir, extra_basename);
 			if (copy_file_simple(src_path, extra_dst) != 0) {
@@ -10134,8 +10237,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		for (i = 0; i < recipe.source_count; i++) {
 			char src_path[PATH_MAX], cache_dst[PATH_MAX];
 
-			snprintf(src_path, sizeof(src_path), "%s/%s-%s-%d.src", g_sources_dir, e->name,
-			         recipe.version, i);
+			source_download_path(chain_idx, e->name, recipe.version, i, src_path, sizeof(src_path));
 			snprintf(cache_dst, sizeof(cache_dst), "%s/%s", cbs_cache_dir, recipe.sha256[i]);
 			if (copy_file_simple(src_path, cache_dst) != 0) {
 				logstore_write("cixd", "error",
@@ -10301,7 +10403,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		char note[512];
 		int nfd;
 
-		fetch_note_sidecar_path(e->name, note_path, sizeof(note_path));
+		fetch_note_sidecar_path(chain_idx, e->name, note_path, sizeof(note_path));
 		nfd = open(note_path, O_RDONLY);
 		if (nfd >= 0) {
 			ssize_t n = read(nfd, note, sizeof(note) - 1);
@@ -10322,7 +10424,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		int fd;
 
 		detail[0] = '\0';
-		fetch_error_sidecar_path(e->name, fetch_err_path, sizeof(fetch_err_path));
+		fetch_error_sidecar_path(chain_idx, e->name, fetch_err_path, sizeof(fetch_err_path));
 		fd = open(fetch_err_path, O_RDONLY);
 		if (fd >= 0) {
 			ssize_t n = read(fd, detail, sizeof(detail) - 1);
@@ -10414,7 +10516,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		char artifact_sentinel[PATH_MAX];
 		struct stat st;
 
-		artifact_sentinel_path(e->name, recipe.version, recipe.artifact_format,
+		artifact_sentinel_path(chain_idx, e->name, recipe.version, recipe.artifact_format,
 		                        artifact_sentinel, sizeof(artifact_sentinel));
 		if (stat(artifact_sentinel, &st) == 0 && S_ISREG(st.st_mode)) {
 			pkg_cache_save_from_file(e->name, recipe.version, recipe.artifact_format,
@@ -10441,8 +10543,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			struct stat sst;
 			const char *why = NULL;
 
-			snprintf(src_path, sizeof(src_path), "%s/%s-%s-%d.src", g_sources_dir, e->name,
-			         recipe.version, i);
+			source_download_path(chain_idx, e->name, recipe.version, i, src_path, sizeof(src_path));
 			/*
 			 * #332: this reported only that two hashes differed, and
 			 * threw away every fact that would say WHY.
@@ -17702,10 +17803,10 @@ int pkg_artifact_push_is_enabled(void)
  * cache -- deliberately under g_sources_dir (not g_cache_dir): an
  * unverified download never touches the cache directory at all, only
  * a file that has already passed the recipe's own sha256 check does. */
-static void artifact_sentinel_path(const char *name, const char *version, const char *format,
-                                    char *out, size_t out_size)
+static void artifact_sentinel_path(int chain_idx, const char *name, const char *version,
+                                   const char *format, char *out, size_t out_size)
 {
-	snprintf(out, out_size, "%s/.artifact-%s-%s%s", g_sources_dir, name, version,
+	snprintf(out, out_size, "%s/.artifact-c%d-%s-%s%s", g_sources_dir, chain_idx, name, version,
 	         artifact_suffix(format));
 }
 
