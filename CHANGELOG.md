@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Every API operation declares the permission it requires (#539, ADR-0317)
+
+The first of six steps for role-based access control ([ADR-0317](docs/adr/0317-permissions-are-declared-by-the-api-contract.md), accepted 2026-09-29). All 309 operations in `openapi.yaml` now carry `x-cix-permission`, one each, from a closed vocabulary the spec declares at its top level (`x-cix-permissions`): `public`, `authenticated`, `<area>:read|operate|write` over thirteen areas, and `containers:console`.
+
+The annotations were seeded once from the method rule (GET -> read, mutating -> write) plus an area map from the path, then reviewed. The review changed two: `POST /config/diff` changes nothing, so it is `config:read`; `POST /system/ping` is a diagnostic, so it is `networks:read`. Seven container verbs are `containers:operate`, and reboot and shutdown stay `system:write`.
+
+`apigen` reads the vocabulary and refuses a spec where an operation has no permission, names one outside the list, names two, or where the list is missing or malformed. It generates each permission into `struct api_route`. `test_apigen` covers each refusal and checks that all 309 generated routes carry one. **Nothing is enforced yet**: that is #541, so this change alters no runtime behaviour.
+
 ### The dashboard no longer says "No LDAP users" when it has no session (#538)
 
 Listing LDAP users needs a login (#490). Without a session the dashboard rendered its empty table, which reads "No LDAP users" -- a claim about the directory, when nothing had been read -- and the owner, looking for a user that did exist, was told it did not. With a session that had lapsed, the background refresh's 401 was not caught, so the panel stayed on "Loading..." with no reason. The panel now says to log in, or that the session has ended, or shows the error; the active-sessions panel had the same shape and gets the same fix. The directory itself was measured correct: three users listed, and a user created through the API appeared in both glauth servers' configuration.

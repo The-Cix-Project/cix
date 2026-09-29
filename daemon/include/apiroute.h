@@ -118,6 +118,16 @@ struct api_route {
 	 */
 	const char *const *query_params;
 	int n_query_params;
+	/*
+	 * ADR-0317 (#539): the one permission this operation requires,
+	 * from the spec's x-cix-permission and checked by apigen against
+	 * the spec's closed x-cix-permissions vocabulary -- "public",
+	 * "authenticated" or "<area>:<verb>". Never NULL in the generated
+	 * table: apigen refuses to generate one without it. Enforced by
+	 * the dispatcher once RBAC 3/6 (#541) lands; until then it is
+	 * declared and generated, not yet checked.
+	 */
+	const char *permission;
 };
 
 /*

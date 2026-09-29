@@ -210,8 +210,17 @@ int main(void)
 	if (status != 0)
 		fail("apigen --list rejected the real spec: %.300s", out);
 
+	/*
+	 * Every fixture carries a permission vocabulary (ADR-0317), because
+	 * apigen refuses a spec without one before reading anything else --
+	 * without it each case below would be refused for that instead of
+	 * for the fault it exists to test, and pass for the wrong reason.
+	 */
+#define VOCAB "x-cix-permissions:\n  - public\n  - things:read\n"
+
 	/* 2. A method with no operationId: cannot be dispatched to. */
 	expect_refusal("an operation with no operationId",
+	               VOCAB
 	               "paths:\n"
 	               "  /thing:\n"
 	               "    get:\n"
@@ -220,13 +229,16 @@ int main(void)
 
 	/* 3. A duplicate id: the join key stops being a key. */
 	expect_refusal("a duplicate operationId",
+	               VOCAB
 	               "paths:\n"
 	               "  /a:\n"
 	               "    get:\n"
 	               "      operationId: sameName\n"
+	               "      x-cix-permission: public\n"
 	               "  /b:\n"
 	               "    get:\n"
-	               "      operationId: sameName\n",
+	               "      operationId: sameName\n"
+	               "      x-cix-permission: public\n",
 	               "duplicate");
 
 	/* 4. Something that is not an HTTP method directly under a path.
@@ -234,6 +246,7 @@ int main(void)
 	 * use it, and apigen must stop rather than guess -- if the spec
 	 * starts using it, that is a deliberate change to this tool. */
 	expect_refusal("a non-method key under a path",
+	               VOCAB
 	               "paths:\n"
 	               "  /thing:\n"
 	               "    parameters:\n"
@@ -242,6 +255,7 @@ int main(void)
 
 	/* 5. A key under paths: that is not a path at all. */
 	expect_refusal("a non-path key under paths:",
+	               VOCAB
 	               "paths:\n"
 	               "  notapath:\n"
 	               "    get:\n"
@@ -251,8 +265,55 @@ int main(void)
 	/* 6. An empty paths section. Emitting an empty table would unroute
 	 * the entire API, and a build that succeeds while doing so is worse
 	 * than one that stops. */
-	expect_refusal("a spec with no operations", "paths:\ncomponents:\n  schemas: {}\n",
+	expect_refusal("a spec with no operations", VOCAB "paths:\ncomponents:\n  schemas: {}\n",
 	               "no operations");
+
+	/*
+	 * 7-11. ADR-0317 (#539): the permission annotation. An operation
+	 * with no stated permission, or one outside the closed vocabulary,
+	 * must not build -- that is what makes "an endpoint with no
+	 * authorisation" unrepresentable rather than something to audit.
+	 */
+	expect_refusal("an operation with no x-cix-permission",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: noPermission\n",
+	               "has no x-cix-permission");
+	expect_refusal("an operation naming a permission outside the vocabulary",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: unknownPermission\n"
+	               "      x-cix-permission: things:write\n",
+	               "not in x-cix-permissions");
+	expect_refusal("an operation declaring two permissions",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: twoPermissions\n"
+	               "      x-cix-permission: public\n"
+	               "      x-cix-permission: things:read\n",
+	               "twice");
+	expect_refusal("a spec with no permission vocabulary",
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: noVocabulary\n"
+	               "      x-cix-permission: public\n",
+	               "no x-cix-permissions");
+	expect_refusal("a malformed vocabulary word",
+	               "x-cix-permissions:\n  - Things:Read\n"
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: badWord\n"
+	               "      x-cix-permission: Things:Read\n",
+	               "is not a permission");
+#undef VOCAB
 
 	/*
 	 * The CLI header (ADR-0218 layer 1). Its job is that a channel
@@ -261,6 +322,56 @@ int main(void)
 	 * %s -- a define that still contained "{name}" would compile
 	 * fine at the call site and produce a literal brace in the URL.
 	 */
+	{
+		/*
+		 * ADR-0317 (#539): the refusals above prove apigen will not
+		 * generate without a permission; this proves the one it did
+		 * generate carries each operation's into its route row. A
+		 * refusal rule and a missing emit would otherwise pass together
+		 * while the dispatcher read NULL from every route.
+		 */
+		char routes_path[256];
+		char buf[1024];
+		FILE *f;
+		int rows = 0, with_permission = 0;
+
+		snprintf(routes_path, sizeof(routes_path), "/tmp/apigen_routes_%d.h", (int)getpid());
+		snprintf(buf, sizeof(buf), "--emit-routes %s", routes_path);
+		status = run_apigen("docs/api/openapi.yaml", buf, out, sizeof(out));
+		if (status != 0)
+			fail("apigen --emit-routes failed: %.200s", out);
+		f = fopen(routes_path, "r");
+		if (f == NULL) {
+			fail("apigen --emit-routes wrote no header");
+		} else {
+			while (fgets(buf, sizeof(buf), f) != NULL) {
+				const char *open;
+				size_t n;
+
+				if (strstr(buf, "\t{ \"") != buf || strstr(buf, ", op_") == NULL)
+					continue;
+				rows++;
+				/* A row ends `, "<permission>" },`: cut the `" },` and
+				 * the permission is what follows the last quote. */
+				n = strlen(buf);
+				while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == ' '))
+					buf[--n] = '\0';
+				if (n < 4 || strcmp(buf + n - 4, "\" },") != 0)
+					continue;
+				buf[n - 4] = '\0';
+				open = strrchr(buf, '"');
+				if (open != NULL && open[1] != '\0')
+					with_permission++;
+			}
+			fclose(f);
+			unlink(routes_path);
+			if (rows != 309 || with_permission != rows)
+				fail("the generated route table has %d rows and %d carry a permission; "
+				     "expected 309 and 309 (ADR-0317)",
+				     rows, with_permission);
+		}
+	}
+
 	{
 		/*
 		 * The generated section table and the generated reconcile

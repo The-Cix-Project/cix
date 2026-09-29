@@ -42,6 +42,8 @@
 #define APIGEN_MAX_QUERY 12
 #define APIGEN_QNAME_MAX 48
 #define APIGEN_MAX_COMP_PARAMS 128
+#define APIGEN_MAX_PERMS 64
+#define APIGEN_PERM_MAX 48
 
 struct api_op {
 	char method[12];   /* uppercased: GET, POST, ... */
@@ -49,6 +51,10 @@ struct api_op {
 	char op_id[APIGEN_ID_MAX];
 	char expose[APIGEN_EXPOSE_MAX]; /* raw list contents, "" when absent */
 	int rest_param;
+	/* ADR-0317 (#539): the one permission this operation requires,
+	 * from x-cix-permission; "" until read, and a build failure if
+	 * it is still "" once the spec has been read. */
+	char permission[APIGEN_PERM_MAX];
 	int line;
 	/*
 	 * The query parameters this operation DECLARES (#282).
@@ -257,6 +263,106 @@ static void load_component_params(const char *spec)
 	fclose(f);
 }
 
+/*
+ * ADR-0317 (#539): the closed permission vocabulary, read from the
+ * spec's own top-level `x-cix-permissions:` list -- the contract
+ * declares both the words and which operation needs which, so there
+ * is no second copy of the list anywhere to drift from it.
+ *
+ * A word is `public`, `authenticated`, or `<area>:<verb>` in lowercase
+ * letters and hyphens. An empty list, a malformed word or a duplicate
+ * is a build failure: every operation's annotation is checked against
+ * this, so a sloppy vocabulary would make that check meaningless.
+ */
+static char g_perms[APIGEN_MAX_PERMS][APIGEN_PERM_MAX];
+static int g_perm_count;
+
+static int perm_word_is_valid(const char *w)
+{
+	const char *colon = strchr(w, ':');
+	const char *p;
+
+	if (strcmp(w, "public") == 0 || strcmp(w, "authenticated") == 0)
+		return 1;
+	if (colon == NULL || colon == w || colon[1] == '\0' || strchr(colon + 1, ':') != NULL)
+		return 0;
+	for (p = w; *p != '\0'; p++) {
+		if (p == colon)
+			continue;
+		if (!((*p >= 'a' && *p <= 'z') || *p == '-'))
+			return 0;
+	}
+	return 1;
+}
+
+static int perm_is_known(const char *w)
+{
+	int i;
+
+	for (i = 0; i < g_perm_count; i++) {
+		if (strcmp(g_perms[i], w) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static void load_permission_vocabulary(const char *spec)
+{
+	FILE *f = fopen(spec, "r");
+	char line[4096];
+	int lineno = 0;
+	int in_vocab = 0;
+	int seen = 0;
+
+	if (f == NULL)
+		return;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		char key[APIGEN_PATH_MAX];
+		char w[APIGEN_PERM_MAX];
+		const char *text;
+		int ind;
+
+		lineno++;
+		if (is_ignorable(line))
+			continue;
+		ind = indent_of(line);
+		if (ind == 0) {
+			in_vocab = key_at(line, 0, key, sizeof(key)) &&
+			           strcmp(key, "x-cix-permissions") == 0;
+			seen |= in_vocab;
+			continue;
+		}
+		if (!in_vocab)
+			continue;
+		text = line + ind;
+		if (ind != 2 || text[0] != '-')
+			die_at(spec, lineno, "x-cix-permissions holds a list of words, one \"- word\" per line");
+		text++;
+		while (*text == ' ')
+			text++;
+		snprintf(w, sizeof(w), "%s", text);
+		strip_eol(w);
+		if (!perm_word_is_valid(w))
+			die_at(spec, lineno,
+			       "\"%s\" is not a permission -- a permission is public, authenticated, "
+			       "or <area>:<verb> in lowercase letters and hyphens (ADR-0317)",
+			       w);
+		if (perm_is_known(w))
+			die_at(spec, lineno, "permission \"%s\" is listed twice", w);
+		if (g_perm_count >= APIGEN_MAX_PERMS)
+			die_at(spec, lineno, "more than %d permissions", APIGEN_MAX_PERMS);
+		snprintf(g_perms[g_perm_count++], APIGEN_PERM_MAX, "%s", w);
+	}
+	fclose(f);
+	if (!seen || g_perm_count == 0) {
+		fprintf(stderr,
+		        "apigen: %s declares no x-cix-permissions vocabulary -- every operation's "
+		        "x-cix-permission is checked against it (ADR-0317)\n",
+		        spec);
+		exit(1);
+	}
+}
+
 /* Adds one declared query parameter to an operation, ignoring repeats. */
 static void op_add_query(int op, const char *name, const char *spec, int lineno)
 {
@@ -390,12 +496,12 @@ static void emit_routes(const char *out_path, const char *spec)
 				fprintf(o, "\"%s\", ", seg);
 		}
 		if (g_ops[i].n_query > 0)
-			fprintf(o, "}, op_%s, \"%s\", %d, q_%s, %d },\n", g_ops[i].op_id,
+			fprintf(o, "}, op_%s, \"%s\", %d, q_%s, %d, \"%s\" },\n", g_ops[i].op_id,
 			        g_ops[i].op_id, g_ops[i].rest_param, g_ops[i].op_id,
-			        g_ops[i].n_query);
+			        g_ops[i].n_query, g_ops[i].permission);
 		else
-			fprintf(o, "}, op_%s, \"%s\", %d, NULL, 0 },\n", g_ops[i].op_id,
-			        g_ops[i].op_id, g_ops[i].rest_param);
+			fprintf(o, "}, op_%s, \"%s\", %d, NULL, 0, \"%s\" },\n", g_ops[i].op_id,
+			        g_ops[i].op_id, g_ops[i].rest_param, g_ops[i].permission);
 	}
 	fprintf(o, "};\n");
 	fclose(o);
@@ -815,6 +921,8 @@ int main(int argc, char **argv)
 	/* Parameters referenced by $ref must be known before the paths are
 	 * read, and components: comes after paths: in the file (#282). */
 	load_component_params(spec);
+	/* ADR-0317: the words every x-cix-permission is checked against. */
+	load_permission_vocabulary(spec);
 
 	f = fopen(spec, "r");
 	if (f == NULL) {
@@ -919,6 +1027,22 @@ int main(int argc, char **argv)
 					       "x-cix-rest-param only takes the value true -- omit it "
 					       "entirely for an ordinary single-segment parameter");
 				g_ops[cur_op].rest_param = 1;
+			} else if (strcmp(key, "x-cix-permission") == 0) {
+				char v[APIGEN_PERM_MAX];
+
+				snprintf(v, sizeof(v), "%s", value_of(line));
+				strip_eol(v);
+				if (g_ops[cur_op].permission[0] != '\0')
+					die_at(spec, lineno,
+					       "%s %s declares x-cix-permission twice -- one permission per "
+					       "operation (ADR-0317)",
+					       g_ops[cur_op].method, g_ops[cur_op].path);
+				if (!perm_is_known(v))
+					die_at(spec, lineno,
+					       "%s %s requires \"%s\", which is not in x-cix-permissions -- "
+					       "the vocabulary is closed (ADR-0317)",
+					       g_ops[cur_op].method, g_ops[cur_op].path, v);
+				snprintf(g_ops[cur_op].permission, sizeof(g_ops[cur_op].permission), "%s", v);
 			} else if (strcmp(key, "x-cix-expose") == 0) {
 				char v[APIGEN_EXPOSE_MAX];
 
@@ -1011,6 +1135,19 @@ int main(int argc, char **argv)
 			       "%s %s has no operationId -- it is the join key between the spec, the "
 			       "daemon handler and each channel, so an operation without one cannot "
 			       "be routed",
+			       g_ops[i].method, g_ops[i].path);
+	}
+	/*
+	 * ADR-0317 (#539): every operation states the permission it
+	 * requires. A default would make "no stated policy" representable
+	 * again, so a missing one is a build failure, not a fallback --
+	 * the owner's decision of 2026-09-29.
+	 */
+	for (i = 0; i < g_op_count; i++) {
+		if (g_ops[i].permission[0] == '\0')
+			die_at(spec, g_ops[i].line,
+			       "%s %s has no x-cix-permission -- every operation must state the "
+			       "permission it requires (ADR-0317)",
 			       g_ops[i].method, g_ops[i].path);
 	}
 	for (i = 0; i < g_op_count; i++) {

@@ -676,6 +676,19 @@ Deliberately *not* done: making gating fail closed when its precondition is brok
 
 **One directory, two interchangeable ways to check a password.** `POST /login` always checks against this platform's own LDAP user store (`POST /ldap/users`, below) — the same store, the same `passbcrypt` field, regardless of which path answers. With `ldap_enabled: false` (the default), it's a local, in-process bcrypt check, no network call. With `ldap_enabled: true`, a real LDAP simple-bind is attempted first against each server in `ldap_servers`, in order (a hand-rolled minimal LDAPv3 client, `daemon/src/ldapclient.c` — no `libldap` dependency, matching this project's own precedent for the daemon's other wire protocols); the first server to answer authoritatively — a successful bind, or a real credential rejection — decides the outcome, and only when every configured server is unreachable does this fall back to the local check. The fallback changes *availability*, never *which password is actually correct*.
 
+### Every operation declares the permission it requires (ADR-0317)
+
+Each operation in `openapi.yaml` carries `x-cix-permission`, naming the one permission a caller needs. The words come from the spec's own top-level `x-cix-permissions` list, a closed vocabulary:
+
+- `public`: no session needed. Only `POST /v1/login` and `GET /v1/health`.
+- `authenticated`: any valid session. `POST /v1/logout` and `GET /v1/whoami`.
+- `<area>:read|operate|write` for the areas containers, images, volumes, networks, storage, devices, packages, services, identity, pki, schedules, config and system. `operate` changes the running state of something that exists without creating or destroying it; today that is container start, stop, pause, unpause and service start, stop and restart.
+- `containers:console`: an interactive shell in a container, which is more than any `write`.
+
+`apigen` refuses to generate if an operation has no permission, names one outside the list, or names two, so an endpoint with no stated authorisation cannot be added. Each permission is generated into the route table.
+
+**Declared, not yet enforced.** Until [#541](https://git.home.arpa/itdlabs/cix/issues/541) moves the check to the route table, authorisation is still the rule above: admin-group sessions for writes, and open reads apart from the console and the identity reads. When it lands, every read needs a login except the two `public` operations, a missing session answers `401`, and a session without the permission answers `403` naming it.
+
 ## Creating a network
 
 ```
