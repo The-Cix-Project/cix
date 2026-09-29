@@ -6,6 +6,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The dashboard no longer says "No LDAP users" when it has no session (#538)
+
+Listing LDAP users needs a login (#490). Without a session the dashboard rendered its empty table, which reads "No LDAP users" -- a claim about the directory, when nothing had been read -- and the owner, looking for a user that did exist, was told it did not. With a session that had lapsed, the background refresh's 401 was not caught, so the panel stayed on "Loading..." with no reason. The panel now says to log in, or that the session has ended, or shows the error; the active-sessions panel had the same shape and gets the same fix. The directory itself was measured correct: three users listed, and a user created through the API appeared in both glauth servers' configuration.
+
 ### A client no longer waits for a forked child to see its response end (#537)
 
 `cixctl pkg install` for a package whose first source url timed out took 135 s to return, while `/v1/health` answered in 9-15 ms and `curl` had the same request's `202` in 3.5 ms (measured on 192.168.15.95). The daemon had replied and `close()`d, but the package fetch child -- forked without an exec -- held an inherited copy of the client socket, so the connection stayed up until the fetch finished, and `cixctl`, which reads to EOF, waited with it. Client sockets are now ended with `shutdown()` before `close()` (`close_client_socket()`), for the HTTP connection teardown and the build-log and console WebSocket closes.

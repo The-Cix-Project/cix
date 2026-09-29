@@ -8094,7 +8094,7 @@ function editLdapUser(user) {
 	document.getElementById("luf-submit").textContent = "Save";
 }
 
-function renderLdapUsers(users) {
+function renderLdapUsers(users, emptyText = "No LDAP users") {
 	const body = document.getElementById("ldap-users-body");
 
 	body.textContent = "";
@@ -8104,7 +8104,7 @@ function renderLdapUsers(users) {
 
 		cell.colSpan = 9;
 		cell.className = "empty";
-		cell.textContent = "No LDAP users";
+		cell.textContent = emptyText;
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -8159,13 +8159,32 @@ function renderLdapUsers(users) {
  */
 async function refreshLdapUsers() {
 	if (!authToken) {
+		/*
+		 * Empty, but never "No LDAP users": that is a claim about the
+		 * directory, and without a session nothing was read from it.
+		 * An operator who had not logged in was told the users did
+		 * not exist (reported by the owner, 2026-09-29, with three
+		 * users present).
+		 */
 		cache.ldapUsers = [];
-		renderLdapUsers(cache.ldapUsers);
+		renderLdapUsers(cache.ldapUsers, "Log in to see LDAP users -- this list is only shown to a logged-in session");
 		return;
 	}
-	const data = await apiRequest("GET", CIX_API.listLdapUsers());
-	cache.ldapUsers = data.users;
-	renderLdapUsers(cache.ldapUsers);
+	try {
+		const data = await apiRequest("GET", CIX_API.listLdapUsers());
+
+		cache.ldapUsers = data.users;
+		renderLdapUsers(cache.ldapUsers);
+	} catch (e) {
+		/* A lapsed session is a 401 here, and a refresher's 401 does
+		 * not open the login form (see the sweep guard) -- so without
+		 * this the panel stayed on "Loading..." or the last roster,
+		 * saying nothing about why. */
+		cache.ldapUsers = [];
+		renderLdapUsers(cache.ldapUsers,
+		                e.status === 401 ? "Your session has ended -- log in again to see LDAP users"
+		                                 : "Could not load LDAP users: " + e.message);
+	}
 }
 
 async function removeLdapUser(name) {
@@ -10958,7 +10977,9 @@ let rollingConfigDirty = false;
  * the cost are the same. */
 async function refreshHostauthSessions() {
 	if (!authToken) {
-		renderHostauthSessions([]);
+		/* As refreshLdapUsers(): not "No active sessions", which is a
+		 * claim nothing was asked about. */
+		renderHostauthSessions([], "Log in to see active sessions -- this list is only shown to a logged-in session");
 		return;
 	}
 	try {
@@ -10970,7 +10991,7 @@ async function refreshHostauthSessions() {
 	}
 }
 
-function renderHostauthSessions(sessions) {
+function renderHostauthSessions(sessions, emptyText = "No active sessions") {
 	const body = document.getElementById("hostauth-sessions-body");
 
 	body.textContent = "";
@@ -10980,7 +11001,7 @@ function renderHostauthSessions(sessions) {
 
 		cell.colSpan = 3;
 		cell.className = "empty";
-		cell.textContent = "No active sessions";
+		cell.textContent = emptyText;
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
