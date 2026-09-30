@@ -636,6 +636,9 @@ static void emit_web(const char *out_path, const char *spec)
 		 * the dashboard can tell what a session may do without a second
 		 * copy of the policy in JS (sessionMay() in web/app.js). */
 		fprintf(o, "\t%s_PERMISSION: \"%s\",\n", g_ops[i].op_id, g_ops[i].permission);
+		/* #548: the path template, so the dashboard can tell which
+		 * operation a request is (its pre-check in apiRequest()). */
+		fprintf(o, "\t%s_PATH: \"/v1%s\",\n", g_ops[i].op_id, g_ops[i].path);
 	}
 	fprintf(o, "};\n");
 	fclose(o);

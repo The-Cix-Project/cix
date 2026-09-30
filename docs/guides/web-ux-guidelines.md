@@ -68,9 +68,10 @@ Two widgets that look similar are still not interchangeable: a **badge** carries
 
 - An eligibility function includes `sessionMay(opId)` for each action it offers, and an action the session lacks is **disabled with `sessionRefusal(opId)` as its reason** -- a grant or a login would unblock it, so disabled, never hidden.
 - A header entry or other standalone control names its operation with `data-op="<opId>"`, and `applySessionEligibility()` enables it or disables it with the reason. No control decides this itself.
-- A panel whose read fails says so through `refusalText(e, what)`: "log in" for a 401, the missing permission (from the 403 body) for a 403, the error otherwise -- never "no <things>", which claims the host was asked.
+- A control built at render time -- a row's Remove, a context-menu item -- names its operation too: `gateAction(button, opId)` after it is built, or `op: "<opId>"` on a context-menu item. `gateAction()` only ever *disables*, so it composes with a control's own reason to be disabled (a stopped container's service buttons stay disabled whichever reason came first). A persistent control that must also be re-enabled -- a modal's own submit button -- sets `disabled`/`title` from `sessionMay()` directly, as the `data-op` controls do.
+- A panel whose read fails says so through `refusalText(e, what)`: "log in" for a 401, the missing permission (from the 403 body) for a 403, the error otherwise -- never "no <things>", which claims the host was asked. A list panel's empty state is `emptyStateText(listOp, what, "No <things>")`, which shows the refusal whenever that read was refused and the ordinary text otherwise.
+- `apiRequest()` refuses a request the session may not make **before sending it**, with the same error shape a daemon 401/403 has (plus `local`), from the contract's `<opId>_PATH` templates. It is a mirror of the daemon's rule, not a second one: whoami is re-read every sweep, and where the two could disagree -- a grant made a moment ago -- the next sweep catches up.
 - **Never write a permission word in app.js.** The contract owns the policy; the dashboard only asks.
-- Not yet applied everywhere: the remaining panels' refused reads, the existing eligibility functions and the context menus are [#548](https://git.home.arpa/itdlabs/cix/issues/548).
 
 **Disabled-with-reason vs hidden.** If an action *could* apply to this kind of resource but is refused *right now*, show it **disabled with its reason** (a mounted partition's "Delete", greyed, titled "Unmount it first"). If the action *never* applies to this kind of resource, **omit it entirely** (a whole disk has no "Grow"). The test: would unblocking one condition make it work? Disable it. Is it categorically wrong here? Hide it. Both the detail page and the context menu follow this — `addContextMenuItem` supports the disabled+reason form for exactly this.
 
@@ -94,7 +95,7 @@ When in doubt, copy the shape of these — they are the canonical form of each p
 - **Key–value detail:** `fieldBlock(label, value)` into a `.detail-table`.
 - **List with empty state:** `simpleTableRows(body, columns, colCount, emptyText)`.
 - **Context menu item, incl. disabled+reason:** `addContextMenuItem(item)`.
-- **What the session may do:** `sessionMay(opId)`, `sessionRefusal(opId)`, `data-op` + `applySessionEligibility()`, `refusalText(e, what)`.
+- **What the session may do:** `sessionMay(opId)`, `sessionRefusal(opId)`, `data-op` + `applySessionEligibility()`, `gateAction(el, opId)`, `refusalText(e, what)`, `emptyStateText(op, what, text)`.
 - **Badge:** `.badge` + one of the four semantic modifiers.
 
 ## How this standard has already been applied
@@ -104,5 +105,6 @@ Every place the dashboard had drifted from the principles above has been folded 
 - **Disk action drift** — the exemplar this document is built around. The right-click menu and the detail page decided a disk's actions separately and disagreed (the online data-directory grow reached one and not the other). `diskActionEligibility(d)` is now the single source both read (One Source of Truth).
 - **Ad-hoc badge classes** ([#459](https://git.home.arpa/itdlabs/cix/issues/459)). The `badge-*` class was built inline at nine call sites, each with its own `state === … ? …` ladder. Collapsed into one `statusBadge(kind)` helper, so the vocabulary and the state→colour mapping live once.
 - **The `pipeline-badge` parallel** ([#460](https://git.home.arpa/itdlabs/cix/issues/460)). The build pipeline had its own `pipeline-badge` status-pill system. Removed; the pipeline now uses the one `.badge` widget through `statusBadge(pipelineStatusKind(status))` (No Parallel Implementations).
+- **Every action and every list panel asks the session** ([#548](https://git.home.arpa/itdlabs/cix/issues/548)). #544 put `sessionMay()` in place for the header and two panels; the rest of the dashboard offered actions a session would be refused and, for a refused read, claimed "No <things>". Now 64 render-time buttons use `gateAction()`, 16 context-menu items carry `op`, 23 list panels use `emptyStateText()`, and `apiRequest()` pre-checks every request -- all reading the one session source.
 
 When a new drift is found and fixed, add it here as a worked example in the same change — and when a new violation is found but not yet fixed, file it in the issue tracker rather than leaving it only in prose.

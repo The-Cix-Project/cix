@@ -829,6 +829,82 @@ function sessionRefusal(opId) {
  * operation, and otherwise disabled with its reason (web-ux-guidelines:
  * disabled-with-reason, since logging in or a grant would unblock it).
  */
+/*
+ * #548: which operation a request is, from the contract's own path
+ * templates (`<opId>_PATH`, generated into web/api.js). Matched with the
+ * daemon's precedence (daemon/src/apiroute.c): among templates of the
+ * same length, a literal segment beats a {parameter}, leftmost first --
+ * so GET /v1/containers/recipes is listContainerRecipes, never
+ * getContainer with name "recipes". Built once, by iterating the table,
+ * so nothing here names an operation.
+ */
+const OP_INDEX = (() => {
+	const list = [];
+
+	for (const key of Object.keys(CIX_API)) {
+		if (!key.endsWith("_PATH"))
+			continue;
+
+		const op = key.slice(0, -"_PATH".length);
+
+		list.push({ op: op, method: CIX_API[op + "_METHOD"], segs: CIX_API[key].split("/") });
+	}
+	list.sort((a, b) => {
+		for (let i = 0; i < Math.min(a.segs.length, b.segs.length); i++) {
+			const la = !a.segs[i].startsWith("{");
+			const lb = !b.segs[i].startsWith("{");
+
+			if (la !== lb)
+				return la ? -1 : 1;
+		}
+		return 0;
+	});
+	return list;
+})();
+
+function opForRequest(method, path) {
+	const segs = path.split("?")[0].split("/");
+
+	for (const entry of OP_INDEX) {
+		if (entry.method !== method || entry.segs.length !== segs.length)
+			continue;
+		if (entry.segs.every((s, i) => s.startsWith("{") || s === segs[i]))
+			return entry.op;
+	}
+	return undefined;
+}
+
+/*
+ * #548: reads this session was refused -- by the pre-check or by the
+ * daemon -- keyed by operation, cleared when the same read succeeds.
+ * What a panel's empty state reads (emptyStateText()), so a refused
+ * read is never shown as "No <things>" (#538's claim about a host that
+ * was not asked).
+ */
+const refusedReads = new Map();
+
+function emptyStateText(opId, what, normalText) {
+	const refusal = refusedReads.get(opId);
+
+	return refusal ? refusalText(refusal, what) : normalText;
+}
+
+/*
+ * #548: a control the dashboard builds at render time names the
+ * operation it performs here, the way a static one carries data-op.
+ * Only ever DISABLES -- with sessionRefusal() as its reason -- so a
+ * control that is already disabled for its own reason (a stopped
+ * container's service buttons, a mounted partition's delete) stays
+ * disabled whichever reason came first. Returns el, to chain.
+ */
+function gateAction(el, opId) {
+	if (!sessionMay(opId)) {
+		el.disabled = true;
+		el.title = sessionRefusal(opId);
+	}
+	return el;
+}
+
 function applySessionEligibility() {
 	for (const el of document.querySelectorAll("[data-op]")) {
 		const may = sessionMay(el.dataset.op);
@@ -1340,6 +1416,31 @@ function ledBlink(led) {
 const HEALTH_TIMEOUT_MS = 1500;
 
 async function apiRequest(method, path, body, timeoutMs) {
+	/*
+	 * #548: a request this session is known not to be allowed is refused
+	 * here, without a request -- the same error shape a daemon 401/403
+	 * has, plus `local`. Without it, a session narrower than a panel's
+	 * read sent that read on every sweep, and the daemon audited every
+	 * refusal. This is a mirror of the daemon's rule, not a second rule:
+	 * sessionMay() reads the contract's permission and whoami's grants,
+	 * both re-read every sweep (poll()), and where they could disagree
+	 * -- a grant made a moment ago -- the next sweep catches up.
+	 */
+	const reqOp = opForRequest(method === "HEAD" ? "GET" : method, path);
+
+	if (reqOp !== undefined && !sessionMay(reqOp)) {
+		const err = new Error(sessionAuthenticated
+			? "permission \"" + permissionFor(reqOp) + "\" is required for " + reqOp +
+			  ", and none of your groups grants it"
+			: "authentication required -- POST /v1/login first");
+
+		err.status = sessionAuthenticated ? 403 : 401;
+		err.permission = permissionFor(reqOp);
+		err.local = true;
+		if (method === "GET")
+			refusedReads.set(reqOp, err);
+		throw err;
+	}
 	ledBlink(ledTx);
 	const opts = { method: method, headers: {} };
 
@@ -1409,6 +1510,8 @@ async function apiRequest(method, path, body, timeoutMs) {
 		err.status = res.status;
 		/* #544: a 403 names the permission it wanted (ADR-0317). */
 		err.permission = json && json.permission ? json.permission : undefined;
+		if (method === "GET" && reqOp !== undefined && (res.status === 401 || res.status === 403))
+			refusedReads.set(reqOp, err);
 		if (method !== "GET")
 			logLine(method, path, "-> " + res.status + " " + message, "error");
 		if (res.status === 401 && path !== CIX_API.postLogin())
@@ -1422,6 +1525,8 @@ async function apiRequest(method, path, body, timeoutMs) {
 	}
 	if (method !== "GET")
 		logLine(method, path, "-> " + res.status, "ok");
+	if (method === "GET" && reqOp !== undefined)
+		refusedReads.delete(reqOp);
 	return json;
 }
 
@@ -2878,7 +2983,7 @@ function renderContainers(containers) {
 
 		cell.colSpan = 5;
 		cell.className = "empty";
-		cell.textContent = "No containers";
+		cell.textContent = emptyStateText("listContainers", "containers", "No containers");
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -2913,6 +3018,7 @@ function renderContainers(containers) {
 		const rmButton = document.createElement("button");
 
 		rmButton.textContent = "Remove";
+		gateAction(rmButton, "deleteContainer");
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", () => removeContainer(c.name));
 		actionCell.appendChild(rmButton);
@@ -3176,6 +3282,9 @@ function renderServicesTable(c) {
 			b.className = "secondary";
 			b.textContent = action;
 			b.disabled = c.status !== "running";
+			gateAction(b, action === "start" ? "startContainerService"
+			              : action === "stop" ? "stopContainerService"
+			              : "restartContainerService");
 			b.addEventListener("click", () => containerServiceAction(c.name, s.name, action));
 			actions.appendChild(b);
 		}
@@ -4302,6 +4411,7 @@ function renderProcessesTable(procs) {
 		cmdCell.title = p.command_line;
 
 		killButton.textContent = "Kill";
+		gateAction(killButton, "killSystemProcess");
 		killButton.className = "button-danger button-small";
 		killButton.addEventListener("click", () => killProcess(p.pid, p.command_line));
 		actionCell.appendChild(killButton);
@@ -4883,7 +4993,7 @@ function renderNetworks(networks) {
 
 		cell.colSpan = 5;
 		cell.className = "empty";
-		cell.textContent = "No networks";
+		cell.textContent = emptyStateText("listNetworks", "networks", "No networks");
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -4912,6 +5022,7 @@ function renderNetworks(networks) {
 		const rmButton = document.createElement("button");
 
 		rmButton.textContent = "Remove";
+		gateAction(rmButton, "deleteNetwork");
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", () => removeNetwork(n.name));
 		actionCell.appendChild(rmButton);
@@ -4974,7 +5085,7 @@ function renderDhcpServers(servers) {
 	const body = document.querySelector("#dhcp-servers-table tbody");
 
 	if (!dhcpFillTable(body, servers, 4,
-	                    "No DHCP server registered — register one from the Services menu"))
+	                    emptyStateText("getDhcpServers", "DHCP servers", "No DHCP server registered — register one from the Services menu")))
 		return;
 	for (const srv of servers) {
 		const row = document.createElement("tr");
@@ -4991,6 +5102,7 @@ function renderDhcpServers(servers) {
 		del.type = "button";
 		del.className = "button-small";
 		del.textContent = "Unregister";
+		gateAction(del, "unregisterDhcpServer");
 		del.addEventListener("click", async () => {
 			try {
 				await apiRequest("DELETE", CIX_API.unregisterDhcpServer(srv.container));
@@ -5011,7 +5123,7 @@ function renderDhcpRanges(networks) {
 	const configured = networks.filter((n) => n.enabled || n.server_count !== 0 || n.range_start !== null);
 
 	if (!dhcpFillTable(body, configured, 6,
-	                    "No range configured — add one from the Services menu"))
+	                    emptyStateText("getDhcp", "DHCP ranges", "No range configured — add one from the Services menu")))
 		return;
 	for (const n of configured) {
 		const row = document.createElement("tr");
@@ -5040,6 +5152,7 @@ function renderDhcpRanges(networks) {
 		edit.type = "button";
 		edit.className = "button-small";
 		edit.textContent = "Edit";
+		gateAction(edit, "setDhcpNetwork");
 		edit.addEventListener("click", () => openDhcpRangeModal(n.network));
 		actions.appendChild(edit);
 		{
@@ -5056,6 +5169,7 @@ function renderDhcpRanges(networks) {
 			remove.type = "button";
 			remove.className = "button-small";
 			remove.textContent = "Remove";
+			gateAction(remove, "deleteDhcpNetwork");
 			remove.addEventListener("click", async () => {
 				if (!confirm('Remove the DHCP configuration for "' + n.network +
 				             '"? The range and its server assignments are deleted. To stop ' +
@@ -5080,7 +5194,7 @@ function renderDhcpStatic(entries) {
 	const body = document.querySelector("#dhcp-static-table tbody");
 
 	if (!dhcpFillTable(body, entries, 4,
-	                    "No reservations — every client gets an address from the range"))
+	                    emptyStateText("getDhcp", "DHCP reservations", "No reservations — every client gets an address from the range")))
 		return;
 	for (const e of entries) {
 		const row = document.createElement("tr");
@@ -5096,6 +5210,7 @@ function renderDhcpStatic(entries) {
 		del.type = "button";
 		del.className = "button-small";
 		del.textContent = "Remove";
+		gateAction(del, "deleteDhcpReservation");
 		del.addEventListener("click", async () => {
 			try {
 				await apiRequest("DELETE", CIX_API.deleteDhcpReservation(e.mac));
@@ -5112,7 +5227,7 @@ function renderDhcpStatic(entries) {
 }
 
 function renderLeaseRows(tbody, leases) {
-	if (!dhcpFillTable(tbody, leases, 5, "No leases — nothing has asked for an address yet"))
+	if (!dhcpFillTable(tbody, leases, 5, emptyStateText("getDhcpLeases", "DHCP leases", "No leases — nothing has asked for an address yet")))
 		return;
 	for (const l of leases) {
 		const row = document.createElement("tr");
@@ -5592,6 +5707,7 @@ function renderNetworkDetail(name) {
 			const rmButton = document.createElement("button");
 
 			rmButton.textContent = "Detach";
+			gateAction(rmButton, "detachNetworkInterface");
 			rmButton.className = "button-danger button-small";
 			rmButton.addEventListener("click", () => detachInterface(n.name, att.ifname));
 			actionCell.appendChild(rmButton);
@@ -5672,7 +5788,7 @@ function renderImages(images) {
 
 		cell.colSpan = 2;
 		cell.className = "empty";
-		cell.textContent = "No images";
+		cell.textContent = emptyStateText("listImages", "images", "No images");
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -5688,6 +5804,7 @@ function renderImages(images) {
 		const rmButton = document.createElement("button");
 
 		rmButton.textContent = "Remove";
+		gateAction(rmButton, "deleteImage");
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", () => removeImage(img.name));
 		actionCell.appendChild(rmButton);
@@ -5983,6 +6100,7 @@ function renderImageDetailManifest(name, data) {
 			const rmButton = document.createElement("button");
 
 			rmButton.textContent = "Remove";
+			gateAction(rmButton, "unsetImageManifestEntry");
 			rmButton.className = "button-danger";
 			rmButton.addEventListener("click", async () => {
 				try {
@@ -6118,6 +6236,7 @@ function renderImageDetailPackages(name) {
 			const rmButton = document.createElement("button");
 
 			rmButton.textContent = "Remove";
+			gateAction(rmButton, "deletePkg");
 			rmButton.className = "button-danger";
 			rmButton.addEventListener("click", async () => {
 				await removePkg(pkg.name, pkg.image);
@@ -6179,6 +6298,7 @@ function renderImageDetailRecipes(name) {
 			const rmButton = document.createElement("button");
 
 			rmButton.textContent = "Remove from image";
+			gateAction(rmButton, "deletePkg");
 			rmButton.className = "button-danger";
 			rmButton.addEventListener("click", async () => {
 				await removePkg(r.name, name);
@@ -6191,6 +6311,7 @@ function renderImageDetailRecipes(name) {
 			const installButton = document.createElement("button");
 
 			installButton.textContent = "Install onto this image";
+			gateAction(installButton, "pkgInstall");
 			installButton.addEventListener("click", async () => {
 				try {
 					await apiRequest("POST", CIX_API.pkgInstall(), { name: r.name, image: name });
@@ -6266,7 +6387,7 @@ function renderDevices() {
 
 			cell.colSpan = 6;
 			cell.className = "empty";
-			cell.textContent = "No devices discovered on this bus";
+			cell.textContent = emptyStateText("listDevices", "devices", "No devices discovered on this bus");
 			row.appendChild(cell);
 			tbody.appendChild(row);
 			continue;
@@ -6342,6 +6463,7 @@ function deviceRow(d, mappedName) {
 
 		btn.type = "button";
 		btn.textContent = "Name…";
+		gateAction(btn, "createDeviceMap");
 		btn.addEventListener("click", () => {
 			document.getElementById("dmf-name").value = "";
 			document.getElementById("dmf-kind").value = "exact";
@@ -6377,7 +6499,7 @@ function renderDeviceMapsTable() {
 
 		cell.colSpan = 6;
 		cell.className = "empty";
-		cell.textContent = "No named devices yet";
+		cell.textContent = emptyStateText("listDeviceMaps", "device names", "No named devices yet");
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -6425,6 +6547,7 @@ function renderDeviceMapsTable() {
 		removeBtn.type = "button";
 		removeBtn.className = "button-danger";
 		removeBtn.textContent = "Remove";
+		gateAction(removeBtn, "deleteDeviceMap");
 		removeBtn.addEventListener("click", () => removeDeviceMap(m.name));
 		actionCell.appendChild(removeBtn);
 		row.appendChild(actionCell);
@@ -6757,7 +6880,7 @@ function renderDisks() {
 
 		cell.colSpan = 9;
 		cell.className = "empty";
-		cell.textContent = "No disks found";
+		cell.textContent = emptyStateText("listStorage", "disks", "No disks found");
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -7008,6 +7131,7 @@ function diskRow(d) {
 
 		assignBtn.type = "button";
 		assignBtn.textContent = "Assign role…";
+		gateAction(assignBtn, "createStorageRole");
 		assignBtn.addEventListener("click", () => {
 			populateDiskRoleSelect(true);
 			document.getElementById("drf-disk-name").value = d.name;
@@ -7023,6 +7147,7 @@ function diskRow(d) {
 		removeRoleBtn.type = "button";
 		removeRoleBtn.className = "button-small";
 		removeRoleBtn.textContent = "Remove role";
+		gateAction(removeRoleBtn, "deleteStorageRole");
 		removeRoleBtn.addEventListener("click", () => removeDiskRole(d.name));
 		actionCell.appendChild(removeRoleBtn);
 
@@ -7032,6 +7157,7 @@ function diskRow(d) {
 		formatBtn.type = "button";
 		formatBtn.className = "button-danger button-small";
 		formatBtn.textContent = "Format…";
+		gateAction(formatBtn, "formatStorage");
 		formatBtn.addEventListener("click", () => formatDisk(d.name, fsSelect.value));
 
 		actionCell.appendChild(fsSelect);
@@ -7325,6 +7451,7 @@ function renderDiskRoleTab(d, role) {
 
 		assignBtn.type = "button";
 		assignBtn.textContent = "Assign a role…";
+		gateAction(assignBtn, "createStorageRole");
 		assignBtn.addEventListener("click", () => openAssignRole(d.name));
 		actions.appendChild(assignBtn);
 	}
@@ -7333,6 +7460,7 @@ function renderDiskRoleTab(d, role) {
 
 		removeBtn.type = "button";
 		removeBtn.textContent = "Remove role";
+		gateAction(removeBtn, "deleteStorageRole");
 		removeBtn.addEventListener("click", () => removeDiskRole(d.name));
 		actions.appendChild(removeBtn);
 	}
@@ -7343,6 +7471,7 @@ function renderDiskRoleTab(d, role) {
 		formatBtn.type = "button";
 		formatBtn.className = "button-danger";
 		formatBtn.textContent = "Format…";
+		gateAction(formatBtn, "formatStorage");
 		formatBtn.addEventListener("click", () => formatDisk(d.name, fsSelect.value));
 		actions.appendChild(fsSelect);
 		actions.appendChild(formatBtn);
@@ -7352,6 +7481,7 @@ function renderDiskRoleTab(d, role) {
 
 		unmountBtn.type = "button";
 		unmountBtn.textContent = "Unmount";
+		gateAction(unmountBtn, "unmountStorage");
 		unmountBtn.addEventListener("click", () => unmountDisk(d.name));
 		actions.appendChild(unmountBtn);
 	}
@@ -7360,6 +7490,7 @@ function renderDiskRoleTab(d, role) {
 
 		growBtn.type = "button";
 		growBtn.textContent = "Grow…";
+		gateAction(growBtn, "resizeStoragePartition");
 		growBtn.addEventListener("click", () => growPartition(d));
 		actions.appendChild(growBtn);
 	}
@@ -7370,6 +7501,7 @@ function renderDiskRoleTab(d, role) {
 		delBtn.className = "button-danger";
 		delBtn.textContent = "Delete this partition";
 		delBtn.disabled = e.delDisabled;
+		gateAction(delBtn, "deleteStoragePartition");
 		delBtn.title = e.delDisabled ? "Unmount it first." : "";
 		delBtn.addEventListener("click", () => deletePartition(d.parent_disk, d.name));
 		actions.appendChild(delBtn);
@@ -7992,7 +8124,7 @@ function renderDnsRecords(records) {
 
 		cell.colSpan = 4;
 		cell.className = "empty";
-		cell.textContent = "No DNS records";
+		cell.textContent = emptyStateText("listDnsRecords", "DNS records", "No DNS records");
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -8017,12 +8149,14 @@ function renderDnsRecords(records) {
 		const editButton = document.createElement("button");
 
 		editButton.textContent = "Edit";
+		gateAction(editButton, "updateDnsRecord");
 		editButton.addEventListener("click", () => editDnsRecord(rec));
 		actionCell.appendChild(editButton);
 
 		const rmButton = document.createElement("button");
 
 		rmButton.textContent = "Remove";
+		gateAction(rmButton, "deleteDnsRecord");
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", () => removeDnsRecord(rec.name));
 		actionCell.appendChild(rmButton);
@@ -8060,7 +8194,7 @@ function renderDnsServers(servers) {
 
 		cell.colSpan = 3;
 		cell.className = "empty";
-		cell.textContent = "No DNS server bindings";
+		cell.textContent = emptyStateText("listDnsServers", "DNS servers", "No DNS server bindings");
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -8081,6 +8215,7 @@ function renderDnsServers(servers) {
 		const rmButton = document.createElement("button");
 
 		rmButton.textContent = "Unregister";
+		gateAction(rmButton, "deleteDnsServer");
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", () => removeDnsServer(s.container));
 		actionCell.appendChild(rmButton);
@@ -8118,7 +8253,7 @@ function renderLdapServers(servers) {
 
 		cell.colSpan = 3;
 		cell.className = "empty";
-		cell.textContent = "No LDAP server bindings";
+		cell.textContent = emptyStateText("listLdapServers", "LDAP servers", "No LDAP server bindings");
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -8139,6 +8274,7 @@ function renderLdapServers(servers) {
 		const rmButton = document.createElement("button");
 
 		rmButton.textContent = "Unregister";
+		gateAction(rmButton, "deleteLdapServer");
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", () => removeLdapServer(s.container));
 		actionCell.appendChild(rmButton);
@@ -8191,7 +8327,7 @@ function renderLdapGroups(groups) {
 
 		cell.colSpan = 3;
 		cell.className = "empty";
-		cell.textContent = "No LDAP groups";
+		cell.textContent = emptyStateText("listLdapGroups", "LDAP groups", "No LDAP groups");
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -8212,12 +8348,14 @@ function renderLdapGroups(groups) {
 		const editButton = document.createElement("button");
 
 		editButton.textContent = "Edit";
+		gateAction(editButton, "updateLdapGroup");
 		editButton.addEventListener("click", () => editLdapGroup(g));
 		actionCell.appendChild(editButton);
 
 		const rmButton = document.createElement("button");
 
 		rmButton.textContent = "Remove";
+		gateAction(rmButton, "deleteLdapGroup");
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", () => removeLdapGroup(g.name));
 		actionCell.appendChild(rmButton);
@@ -8305,6 +8443,7 @@ function renderLdapUsers(users, emptyText = "No LDAP users") {
 		const editButton = document.createElement("button");
 
 		editButton.textContent = "Edit";
+		gateAction(editButton, "updateLdapUser");
 		editButton.addEventListener("click", () => editLdapUser(u));
 		actionCell.appendChild(editButton);
 
@@ -8312,14 +8451,14 @@ function renderLdapUsers(users, emptyText = "No LDAP users") {
 		const appPasswordsButton = document.createElement("button");
 
 		appPasswordsButton.textContent = "App passwords";
-		appPasswordsButton.disabled = !sessionMay("listLdapUserAppPasswords");
-		appPasswordsButton.title = appPasswordsButton.disabled ? sessionRefusal("listLdapUserAppPasswords") : "";
+		gateAction(appPasswordsButton, "listLdapUserAppPasswords");
 		appPasswordsButton.addEventListener("click", () => openAppPasswords({ user: u.name }));
 		actionCell.appendChild(appPasswordsButton);
 
 		const rmButton = document.createElement("button");
 
 		rmButton.textContent = "Remove";
+		gateAction(rmButton, "deleteLdapUser");
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", () => removeLdapUser(u.name));
 		actionCell.appendChild(rmButton);
@@ -8388,7 +8527,7 @@ async function refreshBuildLogs() {
 
 			td.colSpan = 4;
 			td.className = "empty";
-			td.textContent = "No builds recorded yet";
+			td.textContent = emptyStateText("listBuildLogs", "build logs", "No builds recorded yet");
 			tr.appendChild(td);
 			body.appendChild(tr);
 			return;
@@ -8658,6 +8797,7 @@ async function refreshSchedules() {
 
 			run.type = "button";
 			run.textContent = "Run now";
+			gateAction(run, "runSchedule");
 			run.addEventListener("click", async () => {
 				try {
 					await apiRequest("POST", CIX_API.runSchedule(s.name), {});
@@ -8673,6 +8813,7 @@ async function refreshSchedules() {
 
 			toggle.type = "button";
 			toggle.textContent = s.enabled === false ? "Enable" : "Disable";
+			gateAction(toggle, "setSchedule");
 			toggle.addEventListener("click", async () => {
 				try {
 					await apiRequest("PUT", CIX_API.setSchedule(s.name), {
@@ -8695,6 +8836,7 @@ async function refreshSchedules() {
 			del.type = "button";
 			del.className = "button-danger";
 			del.textContent = "Delete";
+			gateAction(del, "deleteSchedule");
 			del.addEventListener("click", async () => {
 				if (!confirm("Delete schedule \"" + s.name + "\"?"))
 					return;
@@ -9164,6 +9306,7 @@ function renderEspEntries(data) {
 		 * disabling it here as well makes that a visible rule rather
 		 * than a surprise 409. */
 		rmButton.disabled = !!e.is_running_slot;
+		gateAction(rmButton, "deleteEspEntry");
 		if (e.is_running_slot)
 			rmButton.title = "This is the entry the running system booted from";
 		rmButton.addEventListener("click", () => removeEspEntry(e.name));
@@ -9674,7 +9817,7 @@ function renderNtpServers(servers) {
 
 		cell.colSpan = 2;
 		cell.className = "empty";
-		cell.textContent = "No NTP server bindings";
+		cell.textContent = emptyStateText("listNtpServers", "NTP servers", "No NTP server bindings");
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -9691,6 +9834,7 @@ function renderNtpServers(servers) {
 		const rmButton = document.createElement("button");
 
 		rmButton.textContent = "Unregister";
+		gateAction(rmButton, "deleteNtpServer");
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", () => removeNtpServer(s.container));
 		actionCell.appendChild(rmButton);
@@ -9745,7 +9889,7 @@ function renderSyslogTargets(targets) {
 
 		cell.colSpan = 2;
 		cell.className = "empty";
-		cell.textContent = "No syslog forward targets registered";
+		cell.textContent = emptyStateText("listSyslogTargets", "syslog targets", "No syslog forward targets registered");
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -9762,6 +9906,7 @@ function renderSyslogTargets(targets) {
 		const rmButton = document.createElement("button");
 
 		rmButton.textContent = "Unregister";
+		gateAction(rmButton, "deleteSyslogTarget");
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", () => removeSyslogTarget(t.container));
 		actionCell.appendChild(rmButton);
@@ -9865,7 +10010,7 @@ function renderTlsThrottleStatus(entries) {
 
 		cell.colSpan = 6;
 		cell.className = "empty";
-		cell.textContent = "No sources currently tracked";
+		cell.textContent = emptyStateText("getSystemTlsThrottleStatus", "throttled sources", "No sources currently tracked");
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -10086,7 +10231,7 @@ function renderPkiCerts(certs) {
 
 		cell.colSpan = 6;
 		cell.className = "empty";
-		cell.textContent = "No certificates issued";
+		cell.textContent = emptyStateText("listPkiCerts", "certificates", "No certificates issued");
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -10119,6 +10264,7 @@ function renderPkiCerts(certs) {
 		const rmButton = document.createElement("button");
 
 		rmButton.textContent = "Remove";
+		gateAction(rmButton, "deletePkiCert");
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", () => removePkiCert(cert.name));
 		actionCell.appendChild(rmButton);
@@ -10204,6 +10350,7 @@ function renderPackagesList() {
 			const rmButton = document.createElement("button");
 
 			rmButton.textContent = "Remove";
+			gateAction(rmButton, "deletePkg");
 			rmButton.className = "button-danger";
 			rmButton.addEventListener("click", () => removePkg(pkg.name, pkg.image));
 			actionCell.appendChild(rmButton);
@@ -10269,7 +10416,7 @@ function renderRecipesList() {
 
 		cell.colSpan = 4;
 		cell.className = "empty";
-		cell.textContent = cache.pkgRecipes.length === 0 ? "No recipes" : "No match";
+		cell.textContent = cache.pkgRecipes.length === 0 ? emptyStateText("listPkgRecipes", "recipes", "No recipes") : "No match";
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -10295,6 +10442,7 @@ function renderRecipesList() {
 		const rmButton = document.createElement("button");
 
 		rmButton.textContent = "Delete";
+		gateAction(rmButton, "deletePkgRecipe");
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", () => removePkgRecipe(latest.name, latest.version));
 		actionCell.appendChild(rmButton);
@@ -10501,6 +10649,7 @@ function renderPackageDetailVersions(name, allVersions) {
 		const rmButton = document.createElement("button");
 
 		rmButton.textContent = "Delete";
+		gateAction(rmButton, "deletePkgRecipe");
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", () => removePkgRecipe(v.name, v.version));
 		actionCell.appendChild(rmButton);
@@ -10595,6 +10744,7 @@ function renderPackageDetailInstalled(name) {
 			const rmButton = document.createElement("button");
 
 			rmButton.textContent = "Remove";
+			gateAction(rmButton, "deletePkgRecipe");
 			rmButton.className = "button-danger";
 			rmButton.addEventListener("click", async () => {
 				await removePkg(pkg.name, pkg.image);
@@ -10672,7 +10822,7 @@ function renderImageRecipesTable() {
 
 		cell.colSpan = 2;
 		cell.className = "empty";
-		cell.textContent = cache.imageRecipes.length === 0 ? "No image recipes" : "No match";
+		cell.textContent = cache.imageRecipes.length === 0 ? emptyStateText("listImageRecipes", "image recipes", "No image recipes") : "No match";
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -10689,6 +10839,7 @@ function renderImageRecipesTable() {
 
 		const applyButton = document.createElement("button");
 		applyButton.textContent = "Apply";
+		gateAction(applyButton, "applyImageRecipe");
 		applyButton.addEventListener("click", async () => {
 			try {
 				const result = await apiRequest("POST", CIX_API.applyImageRecipe(r.name));
@@ -10708,6 +10859,7 @@ function renderImageRecipesTable() {
 
 		const editButton = document.createElement("button");
 		editButton.textContent = "Edit";
+		gateAction(editButton, "addImageRecipe");
 		editButton.addEventListener("click", async () => {
 			let content = "";
 
@@ -10725,6 +10877,7 @@ function renderImageRecipesTable() {
 
 		const rmButton = document.createElement("button");
 		rmButton.textContent = "Delete";
+		gateAction(rmButton, "deleteImageRecipe");
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", async () => {
 			try {
@@ -10772,7 +10925,7 @@ function renderContainerRecipesTable() {
 
 		cell.colSpan = 2;
 		cell.className = "empty";
-		cell.textContent = cache.containerRecipes.length === 0 ? "No container recipes" : "No match";
+		cell.textContent = cache.containerRecipes.length === 0 ? emptyStateText("listDeployments", "container recipes", "No container recipes") : "No match";
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -10789,6 +10942,7 @@ function renderContainerRecipesTable() {
 
 		const applyButton = document.createElement("button");
 		applyButton.textContent = "Apply…";
+		gateAction(applyButton, "applyDeployment");
 		applyButton.addEventListener("click", () => {
 			openModal("container-recipe-apply-form", "Apply recipe: " + r.name);
 			document.getElementById("craf-name").value = r.name;
@@ -10798,6 +10952,7 @@ function renderContainerRecipesTable() {
 
 		const editButton = document.createElement("button");
 		editButton.textContent = "Edit";
+		gateAction(editButton, "addDeployment");
 		editButton.addEventListener("click", async () => {
 			let content = "";
 
@@ -10814,6 +10969,7 @@ function renderContainerRecipesTable() {
 
 		const rmButton = document.createElement("button");
 		rmButton.textContent = "Delete";
+		gateAction(rmButton, "deleteDeployment");
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", async () => {
 			try {
@@ -11200,6 +11356,7 @@ function renderHostauthSessions(sessions, emptyText = "No active sessions") {
 		const revokeButton = document.createElement("button");
 
 		revokeButton.textContent = "Log out everywhere";
+		gateAction(revokeButton, "revokeHostauthSessions");
 		revokeButton.className = "button-danger";
 		revokeButton.addEventListener("click", async () => {
 			try {
@@ -11262,16 +11419,14 @@ function renderHostauthPermissions(data, emptyText = "No group holds any permiss
 
 		editButton.textContent = "Edit";
 		editButton.className = "button-small";
-		editButton.disabled = !sessionMay("putHostauthGroupPermissions");
-		editButton.title = editButton.disabled ? sessionRefusal("putHostauthGroupPermissions") : "";
+		gateAction(editButton, "putHostauthGroupPermissions");
 		editButton.addEventListener("click", () => openPermissionsForm(group));
 		actionCell.appendChild(editButton);
 
 		/* Destructive, so last, danger-styled and confirmed (web-ux-guidelines). */
 		rmButton.textContent = "Remove";
 		rmButton.className = "button-small button-danger";
-		rmButton.disabled = !sessionMay("deleteHostauthGroupPermissions");
-		rmButton.title = rmButton.disabled ? sessionRefusal("deleteHostauthGroupPermissions") : "";
+		gateAction(rmButton, "deleteHostauthGroupPermissions");
 		rmButton.addEventListener("click", async () => {
 			if (!confirm("Remove every permission group \"" + group + "\" grants? Its members lose them on their next request."))
 				return;
@@ -11440,8 +11595,7 @@ async function refreshAppPasswords() {
 		createdCell.textContent = new Date(ap.created * 1000).toISOString().replace(".000Z", "Z");
 		revokeButton.textContent = "Revoke";
 		revokeButton.className = "button-small button-danger";
-		revokeButton.disabled = !sessionMay(ops.removeOp);
-		revokeButton.title = revokeButton.disabled ? sessionRefusal(ops.removeOp) : "";
+		gateAction(revokeButton, ops.removeOp);
 		revokeButton.addEventListener("click", async () => {
 			if (!confirm("Revoke app password \"" + ap.name + "\"? Anything using it is refused from its next request."))
 				return;
@@ -12516,6 +12670,7 @@ function appendRouteRow(tbody, route) {
 	row.appendChild(iface);
 
 	rmButton.textContent = "Remove";
+	gateAction(rmButton, "deleteSystemRoute");
 	rmButton.className = "button-danger";
 	rmButton.addEventListener("click", () => removeRoute(route));
 	actionCell.appendChild(rmButton);
@@ -12606,6 +12761,7 @@ function renderSysctlList() {
 		key.className = "processes-cmdline";
 		value.textContent = formatSysctlValue(s.value);
 		rmButton.textContent = "Remove";
+		gateAction(rmButton, "deleteSystemSysctl");
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", () => removeSysctl(s.key));
 		actionCell.appendChild(rmButton);
@@ -12815,6 +12971,7 @@ function renderKmodList() {
 			usedBy.textContent = m.used_by_count + (m.used_by && m.used_by.length > 0 ? " [" + m.used_by.join(",") + "]" : "");
 			state.textContent = m.state;
 			unloadButton.textContent = "Unload";
+			gateAction(unloadButton, "deleteKmod");
 			unloadButton.className = "button-danger";
 			unloadButton.addEventListener("click", () => unloadKmod(m.name));
 			actionCell.appendChild(unloadButton);
@@ -12848,6 +13005,7 @@ function renderKmodList() {
 			: "(none)";
 		autoload.textContent = c.autoload ? "yes" : "no";
 		rmButton.textContent = "Remove";
+		gateAction(rmButton, "deleteKmodConfig");
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", () => removeKmodConfig(c.name));
 		actionCell.appendChild(rmButton);
@@ -13340,10 +13498,12 @@ async function renderVolumeBackups(volumeName, fresh) {
 		restore.type = "button";
 		restore.className = "button-danger button-small";
 		restore.textContent = "Restore";
+		gateAction(restore, "restoreVolume");
 		restore.addEventListener("click", () => restoreVolumeSnapshot(volumeName, snap.stamp));
 		del.type = "button";
 		del.className = "button-small";
 		del.textContent = "Delete";
+		gateAction(del, "deleteVolumeSnapshot");
 		del.addEventListener("click", async () => {
 			if (!confirm("Delete snapshot " + snap.stamp + "?"))
 				return;
@@ -13658,7 +13818,7 @@ async function refreshVolumes() {
 
 		cell.colSpan = 7;
 		cell.className = "empty";
-		cell.textContent = "No volumes";
+		cell.textContent = emptyStateText("listVolumes", "volumes", "No volumes");
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -13704,6 +13864,7 @@ async function refreshVolumes() {
 		del.type = "button";
 		del.className = "danger";
 		del.textContent = "Delete";
+		gateAction(del, "deleteVolume");
 		del.addEventListener("click", async () => {
 			if (!confirm("Delete volume \"" + v.name + "\"? This permanently destroys its data."))
 				return;
@@ -13861,6 +14022,7 @@ async function refreshServerHealth() {
 
 		btn.type = "button";
 		btn.textContent = s.drained ? "Undrain" : "Drain";
+		gateAction(btn, "setServerHealthDrain");
 		btn.addEventListener("click", async () => {
 			try {
 				await apiRequest("PUT", CIX_API.setServerHealthDrain(s.kind, s.container),
@@ -14749,6 +14911,7 @@ async function openPipelineDrawer(kind, row) {
 		cancel.type = "button";
 		cancel.className = "btn-small";
 		cancel.textContent = "Cancel the in-flight build";
+		gateAction(cancel, "pkgCancel");
 		cancel.addEventListener("click", async () => {
 			cancel.disabled = true;
 			try {
@@ -15485,6 +15648,10 @@ async function poll() {
 
 	if (sweeping) {
 		lastSweepAt = now;
+		/* #548: grants change elsewhere -- another admin, another tab --
+		 * and apiRequest()'s pre-check must not act on stale ones for
+		 * longer than a sweep. One public, unaudited request. */
+		await refreshSessionPermissions();
 		await runRefreshers(ALL_REFRESHERS);
 	} else {
 		await runRefreshers(CORE_REFRESHERS);
@@ -15529,6 +15696,11 @@ function addContextMenuItem(item) {
 			item.action();
 		});
 	}
+	/* #548: an item names the operation it performs (`op`), and the
+	 * session decides whether it is offered -- disabled with the reason,
+	 * never hidden, and never re-enabling an item disabled above. */
+	if (item.op)
+		gateAction(button, item.op);
 	li.appendChild(button);
 	contextMenu.appendChild(li);
 }
@@ -15545,7 +15717,7 @@ function contextMenuItemsFor(category, name) {
 		const c = cache.containers.find((x) => x.name === name);
 		const status = c ? c.status : "running";
 		const items = [
-			{ label: "Open console", danger: false, action: () => { location.hash = "#containers/" + encodeURIComponent(name); } },
+			{ label: "Open console", danger: false, op: "consoleContainer", action: () => { location.hash = "#containers/" + encodeURIComponent(name); } },
 		];
 
 		/*
@@ -15562,11 +15734,11 @@ function contextMenuItemsFor(category, name) {
 		const alive = status === "running" || status === "paused";
 		const revivable = status === "stopped" || status === "exited";
 
-		if (revivable) items.push({ label: "Start", danger: false, action: () => startContainer(name) });
-		if (status === "running") items.push({ label: "Pause", danger: false, action: () => pauseContainer(name) });
-		if (status === "paused") items.push({ label: "Unpause", danger: false, action: () => unpauseContainer(name) });
-		if (alive) items.push({ label: "Stop", danger: false, action: () => stopContainer(name) });
-		items.push({ label: "Remove", danger: true, action: () => removeContainer(name) });
+		if (revivable) items.push({ label: "Start", danger: false, op: "startContainer", action: () => startContainer(name) });
+		if (status === "running") items.push({ label: "Pause", danger: false, op: "pauseContainer", action: () => pauseContainer(name) });
+		if (status === "paused") items.push({ label: "Unpause", danger: false, op: "unpauseContainer", action: () => unpauseContainer(name) });
+		if (alive) items.push({ label: "Stop", danger: false, op: "stopContainer", action: () => stopContainer(name) });
+		items.push({ label: "Remove", danger: true, op: "deleteContainer", action: () => removeContainer(name) });
 		return items;
 	}
 	/*
@@ -15590,30 +15762,30 @@ function contextMenuItemsFor(category, name) {
 		const items = [];
 
 		if (e.addPartition)
-			items.push({ label: "Add a partition\u2026", danger: false,
+			items.push({ label: "Add a partition\u2026", danger: false, op: "addStoragePartition",
 			             action: () => { location.hash = "storage/" + encodeURIComponent(name); } });
 		if (e.assignRole)
-			items.push({ label: "Assign a role\u2026", danger: false, action: () => openAssignRole(name) });
+			items.push({ label: "Assign a role\u2026", danger: false, op: "createStorageRole", action: () => openAssignRole(name) });
 		if (e.removeRole)
-			items.push({ label: "Remove role", danger: false, action: () => removeDiskRole(name) });
+			items.push({ label: "Remove role", danger: false, op: "deleteStorageRole", action: () => removeDiskRole(name) });
 		if (e.format) {
-			items.push({ label: "Format as btrfs", danger: true, action: () => formatDisk(name, "btrfs") });
-			items.push({ label: "Format as ext4", danger: true, action: () => formatDisk(name, "ext4") });
+			items.push({ label: "Format as btrfs", danger: true, op: "formatStorage", action: () => formatDisk(name, "btrfs") });
+			items.push({ label: "Format as ext4", danger: true, op: "formatStorage", action: () => formatDisk(name, "ext4") });
 		}
 		if (e.unmount)
-			items.push({ label: "Unmount", danger: false, action: () => unmountDisk(name) });
+			items.push({ label: "Unmount", danger: false, op: "unmountStorage", action: () => unmountDisk(name) });
 		if (e.grow)
-			items.push({ label: "Grow\u2026", danger: false, action: () => growPartition(d) });
+			items.push({ label: "Grow\u2026", danger: false, op: "resizeStoragePartition", action: () => growPartition(d) });
 		if (e.del)
-			items.push({ label: "Delete partition", danger: true, disabled: e.delDisabled,
+			items.push({ label: "Delete partition", danger: true, op: "deleteStoragePartition", disabled: e.delDisabled,
 			             title: e.delDisabled ? "Unmount it first." : "",
 			             action: () => deletePartition(d.parent_disk, name) });
 		return items.length ? items : null;
 	}
 	if (category === "volumes")
-		return [{ label: "Delete volume", danger: true, action: () => deleteVolumeByName(name) }];
+		return [{ label: "Delete volume", danger: true, op: "deleteVolume", action: () => deleteVolumeByName(name) }];
 	if (category === "networks")
-		return [{ label: "Remove", danger: true, action: () => removeNetwork(name) }];
+		return [{ label: "Remove", danger: true, op: "deleteNetwork", action: () => removeNetwork(name) }];
 	return null;
 }
 
