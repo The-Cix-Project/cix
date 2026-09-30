@@ -17457,6 +17457,28 @@ components:
                 description: Unix time the outcome became final.
               duration_seconds:
                 type: integer
+              stages:
+                type: array
+                nullable: true
+                description: >
+                  How long each stage of this run took (#424), in the
+                  order it went through them. Each stage ends where the
+                  next began, and the last where the run ended. A stage
+                  the run never reached or skipped has no entry rather
+                  than a zero: a cache hit composes no build, so it has
+                  fetch and install only. `null` for a run recorded
+                  before stage times were kept.
+                items:
+                  type: object
+                  required: [stage, started_at, seconds]
+                  properties:
+                    stage:
+                      type: string
+                      enum: [fetch, build, install]
+                    started_at:
+                      type: integer
+                    seconds:
+                      type: integer
               stage:
                 type: string
                 description: The stage the run ended at. Meaningful only when status is not ok.
@@ -20595,6 +20617,38 @@ components:
             past fetching has no build start at all, and those are
             among the runs most worth looking at. `null` until the
             build phase begins, and whenever no run is open.
+        current_stage:
+          type: string
+          nullable: true
+          enum: [fetch, build, install]
+          description: >
+            The stage now in flight (#424), the one `stage_started_at` and
+            `stage_seconds` time. A cache hit reports `fetch` until its
+            install begins: its build container is a no-op that builds
+            nothing, and its run record has no build stage either. `null`
+            when no run is open.
+        install_started_at:
+          type: integer
+          nullable: true
+          description: >
+            Unix epoch seconds at which the INSTALL stage began -- a
+            successful build's output starting into the image (#424).
+            `null` until then, and whenever no run is open.
+        stage_started_at:
+          type: integer
+          nullable: true
+          description: >
+            When `current_stage` began (#424): `install_started_at`
+            once set, else `build_started_at` (not for a cache hit), else
+            `run_started_at`.
+            `null` when no run is open.
+        stage_seconds:
+          type: integer
+          nullable: true
+          description: >
+            How long the stage now in flight has been going, computed by
+            the daemon for the same no-skew reason as `run_seconds`
+            (#424). `null` when no run is open.
         run_seconds:
           type: integer
           nullable: true

@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A build run says how long each stage took, and which stage it is in now (#424)
+
+The owner asked for *"for each stage a timer as it's handling it"*. A run record had only a start, an end and a total: 320 seconds, with nothing saying how much was fetch, build or install. The daemon now keeps each stage's start, and each surface reports it.
+
+- **History:** every run record carries `stages`, `{stage, started_at, seconds}` for each of fetch, build and install that it went through. Each ends where the next began, so the seconds sum to `duration_seconds` exactly. A stage the run skipped has no entry rather than a zero: a cache hit builds nothing, so it records fetch and install only. Records from before this report `stages: null`. It is additive, so no existing field changed shape.
+- **Live:** a job in flight reports `current_stage`, `stage_started_at`, a daemon-computed `stage_seconds` (the same no-skew reasoning as #423's `run_seconds`) and `install_started_at`. A cache hit reads `fetch` until its install begins, to match its record.
+- **Surfaces:** the Build overview card ticks `in build 5m 03s` beside `running`. The pipeline drawer's history lines show the split, `320s (fetch 4s, build 310s, install 6s)`. `cixctl pipeline runs` prints a `stages:` line under each run.
+- **A bug fixed on the way:** an entry is reused across runs, and an upgrade is not memset. So `build_started_at`, reported since #423, carried the previous run's value while a new run was still fetching. Both clocks are now cleared when a run opens.
+- **Tests:** `test_pkg` (FLOOR_SELFTESTS) checks that a real from-source install of `greeter` records fetch, build and install in order, with seconds summing exactly to the run's duration.
+
+Deliberately not in this change: phases inside the build stage (#388, ADR-0275). Those need the build's own structured events, and a phase can gain a duration the same way when it gets there.
+
 ### Build logs open in one floating window that follows a running build (#433)
 
 Every build log in the dashboard now opens in one floating window, `#build-log-window`. The Build overview and the Log tab each had their own inline viewer before this, and both were a snapshot of the moment they were opened. The close half of #433 shipped in v2.57.132; this is the rest. The window:

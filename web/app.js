@@ -15260,6 +15260,12 @@ async function openPipelineDrawer(kind, row) {
 				const bad = run.status && run.status !== "ok";
 				const when = run.ended_at ? new Date(run.ended_at * 1000).toLocaleString() : "";
 				const secs = run.duration_seconds || 0;
+				/* #424: where the time went, stage by stage. A run from
+				 * before stage times were kept has stages: null and shows
+				 * the total alone. */
+				const split = Array.isArray(run.stages) && run.stages.length > 0
+					? " (" + run.stages.map((s) => s.stage + " " + boDuration(s.seconds)).join(", ") + ")"
+					: "";
 
 				el.className = "dg-run" + (bad ? " dg-run-bad" : "");
 				/* The image is named on every line: a run is a
@@ -15267,7 +15273,7 @@ async function openPipelineDrawer(kind, row) {
 				 * image reads as one stream of contradictory outcomes. */
 				el.textContent = when + " · " + (run.image || "-") + " · " +
 					(bad ? run.stage + "/" + run.status : "ok") +
-					" · " + secs + "s · " + (run.trigger || "-") +
+					" · " + secs + "s" + split + " · " + (run.trigger || "-") +
 					(run.error ? " — " + run.error : "");
 				runsBox.appendChild(el);
 			}
@@ -15722,6 +15728,23 @@ async function refreshBuildOverview() {
 				dd.dataset.baseSeconds = String(e.run_seconds);
 				dd.dataset.baseAt = String(Date.now());
 				dd.textContent = boDuration(e.run_seconds);
+				dl.appendChild(dt);
+				dl.appendChild(dd);
+			}
+			/* #424: the stage now in flight and how long it has been in
+			 * it, ticking from the daemon's own stage_seconds exactly as
+			 * "running" ticks from run_seconds. The daemon names the
+			 * stage -- current_stage -- so nothing here re-derives it
+			 * from timestamps. */
+			if (e.current_stage && e.stage_seconds !== null && e.stage_seconds !== undefined) {
+				const dd = document.createElement("dd");
+				const dt = document.createElement("dt");
+
+				dt.textContent = "in " + e.current_stage;
+				dd.className = "bo-elapsed";
+				dd.dataset.baseSeconds = String(e.stage_seconds);
+				dd.dataset.baseAt = String(Date.now());
+				dd.textContent = boDuration(e.stage_seconds);
 				dl.appendChild(dt);
 				dl.appendChild(dd);
 			}

@@ -246,6 +246,9 @@ struct pkg_entry {
 	 * real wedge going unnoticed). 0 until the first byte. */
 	time_t last_output_at;
 	time_t build_started_at;
+	/* #424: when the install stage began -- a successful build's output
+	 * starting into the image. 0 until then. */
+	time_t install_started_at;
 	/*
 	 * ADR-0272: when this entry's current run began, and what caused
 	 * it. Set once at the single point a job starts (state ->
@@ -511,6 +514,12 @@ struct pkg_run {
 	char error[PKG_RUN_ERROR_MAX];   /* "" on success */
 	time_t started_at;
 	time_t ended_at;
+	/* #424: when the build and install stages began, 0 for a stage this
+	 * run did not have; stages_known is 0 for a record loaded from before
+	 * these were kept. */
+	time_t build_started_at;
+	time_t install_started_at;
+	int stages_known;
 	enum pipeline_stage stage;
 	enum pipeline_status status;
 };
@@ -4989,6 +4998,46 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 		jw_int(w, (long long)e->build_started_at);
 	else
 		jw_null(w);
+	/*
+	 * #424: the stage now in flight, when it began, and how long it has
+	 * been going -- stage_seconds server-computed for the same no-skew
+	 * reason as run_seconds below. The current stage is the latest one
+	 * whose clock has started: install, else build, else fetch.
+	 */
+	{
+		/* A cache hit's no-op build container builds nothing, and its
+		 * run record leaves the build stage out, so the live view does
+		 * too: it is still fetching until the install begins. */
+		int built = e->build_started_at > 0 && !e->cache_hit;
+		enum pipeline_stage now = e->install_started_at > 0 ? PIPELINE_INSTALL
+		                          : built                   ? PIPELINE_BUILD
+		                                                    : PIPELINE_FETCH;
+		time_t stage_at = e->install_started_at > 0 ? e->install_started_at
+		                  : built                   ? e->build_started_at
+		                                            : e->run_started_at;
+
+		jw_key(w, "current_stage");
+		if (e->run_started_at > 0)
+			jw_str(w, pipeline_stage_name(now));
+		else
+			jw_null(w);
+
+		jw_key(w, "install_started_at");
+		if (e->run_started_at > 0 && e->install_started_at > 0)
+			jw_int(w, (long long)e->install_started_at);
+		else
+			jw_null(w);
+		jw_key(w, "stage_started_at");
+		if (e->run_started_at > 0)
+			jw_int(w, (long long)stage_at);
+		else
+			jw_null(w);
+		jw_key(w, "stage_seconds");
+		if (e->run_started_at > 0)
+			jw_int(w, (long long)(time(NULL) - stage_at));
+		else
+			jw_null(w);
+	}
 	jw_key(w, "run_seconds");
 	if (e->run_started_at > 0)
 		jw_int(w, (long long)(time(NULL) - e->run_started_at));
@@ -8625,6 +8674,15 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	 * ways consuming a module static here got it wrong.
 	 */
 	e->run_started_at = time(NULL);
+	/*
+	 * #424: this run's stage clocks start empty. An entry is reused across
+	 * runs (an upgrade of an installed package is not memset), and a
+	 * build_started_at left from the last run read as this run having
+	 * started building while it was still fetching -- #423's own field
+	 * included.
+	 */
+	e->build_started_at = 0;
+	e->install_started_at = 0;
 	snprintf(e->run_trigger, sizeof(e->run_trigger), "%s", g_chains[chain_idx].run_trigger);
 	e->error[0] = '\0';
 	e->status = PIPELINE_OK; /* the previous attempt's outcome is not this
@@ -11433,6 +11491,12 @@ static void pkg_runs_render(struct json_writer *w)
 		jw_int(w, (long long)g_runs[i].started_at);
 		jw_key(w, "ended_at");
 		jw_int(w, (long long)g_runs[i].ended_at);
+		if (g_runs[i].stages_known) {
+			jw_key(w, "build_started_at");
+			jw_int(w, (long long)g_runs[i].build_started_at);
+			jw_key(w, "install_started_at");
+			jw_int(w, (long long)g_runs[i].install_started_at);
+		}
 		jw_key(w, "stage");
 		jw_str(w, pipeline_stage_name(g_runs[i].stage));
 		jw_key(w, "status");
@@ -11520,6 +11584,12 @@ static void pkg_run_close(struct pkg_entry *e)
 	snprintf(r->error, sizeof(r->error), "%s", e->error);
 	r->started_at = e->run_started_at;
 	r->ended_at = time(NULL);
+	/* #424: when each later stage began. A cache hit spawns a no-op build
+	 * container to keep one code path, but builds nothing, so it records no
+	 * build stage. */
+	r->build_started_at = e->cache_hit ? 0 : e->build_started_at;
+	r->install_started_at = e->install_started_at;
+	r->stages_known = 1;
 	r->stage = e->stage;
 	/*
 	 * A run's status is the entry's, with one substitution: an entry
@@ -11687,6 +11757,16 @@ static void pkg_runs_load(void)
 		snprintf(r->error, sizeof(r->error), "%s", sv != NULL ? sv : "");
 		r->started_at = (time_t)json_as_number(json_object_get(o, "started_at"));
 		r->ended_at = (time_t)json_as_number(json_object_get(o, "ended_at"));
+		/* #424: absent from a record written before stage times were kept,
+		 * which then reports "stages": null rather than inventing any. */
+		{
+			const struct json_value *jb = json_object_get(o, "build_started_at");
+			const struct json_value *ji = json_object_get(o, "install_started_at");
+
+			r->stages_known = jb != NULL;
+			r->build_started_at = jb != NULL ? (time_t)json_as_number(jb) : 0;
+			r->install_started_at = ji != NULL ? (time_t)json_as_number(ji) : 0;
+		}
 		if (pipeline_stage_from_name(json_as_string(json_object_get(o, "stage")), &r->stage) != 0)
 			r->stage = PIPELINE_DISCOVER;
 		if (pipeline_status_from_name(json_as_string(json_object_get(o, "status")),
@@ -11711,6 +11791,49 @@ int pkg_run_retention_set(int keep)
 	pkg_runs_trim();
 	pkg_runs_save();
 	return 0;
+}
+
+/*
+ * #424: a run's stages as {stage, started_at, seconds}, in the order it
+ * went through them. Each stage ends where the next began, and the last
+ * where the run ended. A stage the run never reached, or skipped -- a
+ * cache hit composes no build -- has no entry rather than a zero:
+ * "took no time" and "did not happen" are different answers, the same
+ * distinction ADR-0275 draws with `not-implemented` for phases.
+ */
+static void run_stages_write_json(struct json_writer *w, time_t started, time_t build_at,
+                                  time_t install_at, time_t ended)
+{
+	struct {
+		enum pipeline_stage stage;
+		time_t at;
+	} s[3];
+	int n = 0, k;
+
+	s[n].stage = PIPELINE_FETCH;
+	s[n++].at = started;
+	if (build_at > 0 && build_at >= started) {
+		s[n].stage = PIPELINE_BUILD;
+		s[n++].at = build_at;
+	}
+	if (install_at > 0 && install_at >= started) {
+		s[n].stage = PIPELINE_INSTALL;
+		s[n++].at = install_at;
+	}
+	jw_arr_open(w);
+	for (k = 0; k < n; k++) {
+		time_t end = k + 1 < n ? s[k + 1].at : ended;
+
+		jw_obj_open(w);
+		jw_key(w, "stage");
+		jw_str(w, pipeline_stage_name(s[k].stage));
+		jw_key(w, "started_at");
+		jw_int(w, (long long)s[k].at);
+		jw_key(w, "seconds");
+		jw_int(w, (long long)(end > s[k].at ? end - s[k].at : 0));
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
 }
 
 void pkg_runs_write_json(struct json_writer *w, const char *name, const char *image, int limit)
@@ -11760,6 +11883,12 @@ void pkg_runs_write_json(struct json_writer *w, const char *name, const char *im
 		jw_int(w, (long long)r->ended_at);
 		jw_key(w, "duration_seconds");
 		jw_int(w, (long long)(r->ended_at > r->started_at ? r->ended_at - r->started_at : 0));
+		jw_key(w, "stages");
+		if (r->stages_known)
+			run_stages_write_json(w, r->started_at, r->build_started_at, r->install_started_at,
+			                      r->ended_at);
+		else
+			jw_null(w); /* a run recorded before #424 kept no stage times */
 		jw_key(w, "stage");
 		jw_str(w, pipeline_stage_name(r->stage));
 		jw_key(w, "status");
@@ -13092,6 +13221,9 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	 * overwrite this back to PKG_STATE_FAILED on their own failure
 	 * path, so a failed merge never leaves a falsely-INSTALLED entry.
 	 */
+	/* #424: the install stage begins here, where a successful build's
+	 * output starts going into the image. */
+	e->install_started_at = time(NULL);
 	e->state = PKG_STATE_INSTALLED;
 	e->error[0] = '\0';
 	e->status = PIPELINE_OK; /* a success that leaves a failed status set

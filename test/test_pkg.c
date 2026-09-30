@@ -1830,8 +1830,46 @@ int main(void)
 					const char *nm = json_str_field(runs->u.array.items[k], "name");
 
 					if (st != NULL && strcmp(st, "ok") == 0 && nm != NULL &&
-					    strcmp(nm, "greeter") == 0)
+					    strcmp(nm, "greeter") == 0) {
+						const struct json_value *run = runs->u.array.items[k];
+						const struct json_value *sg = json_object_get(run, "stages");
+						static const char *const want[] = { "fetch", "build", "install" };
+						long total = 0;
+						size_t s;
+
 						saw_ok = 1;
+						/*
+						 * #424: a built-from-source run passes through
+						 * fetch, build and install, in that order, and
+						 * each stage ends where the next began -- so
+						 * their seconds add up to the run's duration
+						 * exactly, not approximately.
+						 */
+						if (sg == NULL || sg->type != JSON_ARRAY || sg->u.array.count != 3) {
+							fprintf(stderr, "FAIL: #424 greeter's run has no fetch/build/install "
+							                "stages\n");
+							ok = 0;
+							continue;
+						}
+						for (s = 0; s < 3; s++) {
+							const char *sn = json_str_field(sg->u.array.items[s], "stage");
+
+							if (sn == NULL || strcmp(sn, want[s]) != 0) {
+								fprintf(stderr, "FAIL: #424 stage %zu is %s, expected %s\n", s,
+								        sn != NULL ? sn : "(none)", want[s]);
+								ok = 0;
+							}
+							total += (long)json_as_number(
+							    json_object_get(sg->u.array.items[s], "seconds"));
+						}
+						if (total !=
+						    (long)json_as_number(json_object_get(run, "duration_seconds"))) {
+							fprintf(stderr, "FAIL: #424 stage seconds sum to %ld, run took %ld\n",
+							        total,
+							        (long)json_as_number(json_object_get(run, "duration_seconds")));
+							ok = 0;
+						}
+					}
 				}
 			}
 			if (!saw_ok) {

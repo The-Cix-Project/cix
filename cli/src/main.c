@@ -16329,6 +16329,24 @@ static void fmt_pipeline_runs(const struct json_value *root)
 		        log == NULL || log[0] == '\0'
 		            ? "(none)"
 		            : (avail != NULL && avail->type == JSON_BOOL && avail->u.boolean ? log : "(pruned)"));
+		/* #424: where the time went. Absent for a run recorded before
+		 * stage times were kept, whose `stages` is null. */
+		{
+			const struct json_value *st = json_object_get(r, "stages");
+			size_t k;
+
+			if (st != NULL && st->type == JSON_ARRAY && st->u.array.count > 0) {
+				printf("    stages:");
+				for (k = 0; k < st->u.array.count; k++) {
+					const struct json_value *s = st->u.array.items[k];
+					const char *sn = json_str_field(s, "stage");
+
+					printf("%s %s %lds", k == 0 ? "" : ",", sn != NULL ? sn : "?",
+					       (long)json_as_number(json_object_get(s, "seconds")));
+				}
+				printf("\n");
+			}
+		}
 		if (err != NULL && err[0] != '\0')
 			printf("    %s\n", err);
 	}
