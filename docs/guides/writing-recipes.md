@@ -473,6 +473,22 @@ install {
 
 cbs refuses any setuid or setgid entry that is not declared, and refuses a declared one whose staged mode differs. The installer keeps a declared mode from cix 0.2.57-417 on (#552; 416 failed to compile); before that it masked every file to `0777`, so no setuid bit reached any image. Leave a program unprivileged when it has an unprivileged route: `ping` and `mtr` use ICMP datagram sockets through `net.ipv4.ping_group_range`, not setuid. `linux-pam` and `openssh` are the worked examples.
 
+### Moving a file between packages
+
+A path in an image belongs to one installed package ([ADR-0319](../adr/0319-a-path-belongs-to-one-package.md)). An install that ships a path another installed package owns is refused, naming both packages and the path. When a file really is moving, from `util-linux` into its own `libuuid` package for example, the package receiving it says so at package level, after `requires` and before the first phase:
+
+```
+requires {
+    ...
+}
+
+replaces {
+    package "util-linux"
+}
+```
+
+The install is then allowed, and every path it shares with `util-linux` becomes its own: `util-linux` no longer lists them, and removing `util-linux` leaves them in place. It works only in that direction. The package giving the file up needs no declaration, and naming a package you do not take files from changes nothing. Needs cbs v0.1.99 (cix-build-system#275) and cix 0.2.57-423.
+
 ## What you do NOT have to clean up
 
 `pkg_install()` is finished when the package's files are in `$PKG_DESTDIR`. The daemon then runs a finalize phase over that tree, in your build container, before it becomes an artifact ([ADR-0251](../adr/0251-a-package-artifact-carries-what-the-platform-runs.md)). It:

@@ -258,6 +258,36 @@ int cbs_explain_requires(const struct cbs_explain *ex, const char *role, const c
 	return 0;
 }
 
+int cbs_explain_replaces(const struct cbs_explain *ex, char *out, size_t out_size)
+{
+	const struct json_value *items;
+	size_t i;
+	size_t off = 0;
+
+	if (ex == NULL || out == NULL || out_size == 0)
+		return -1;
+	out[0] = '\0';
+
+	/* cbs v0.1.99 (cbs#275): absent when the recipe declares none. */
+	items = json_object_get(ex->root, "replaces");
+	if (items == NULL || items->type != JSON_ARRAY)
+		return 0;
+	for (i = 0; i < items->u.array.count; i++) {
+		const char *value = json_as_string(items->u.array.items[i]);
+		int n;
+
+		if (value == NULL || value[0] == '\0')
+			continue;
+		n = snprintf(out + off, out_size - off, "%s%s", off > 0 ? " " : "", value);
+		if (n < 0 || (size_t)n >= out_size - off) {
+			out[0] = '\0';
+			return -1;
+		}
+		off += (size_t)n;
+	}
+	return 0;
+}
+
 const char *cbs_explain_format(const struct cbs_explain *ex)
 {
 	if (ex == NULL)

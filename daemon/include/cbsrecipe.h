@@ -158,6 +158,13 @@ const char *cbs_explain_format(const struct cbs_explain *ex);
 
 /* "" when the document declares none. Never NULL. */
 const char *cbs_explain_upstream(const struct cbs_explain *ex);
+
+/*
+ * The packages this recipe may take over files from (cbs#275, cix#553):
+ * the top-level `replaces` array of `cbs explain --json`, written into out
+ * space-separated, "" when it declares none. -1 if it does not fit.
+ */
+int cbs_explain_replaces(const struct cbs_explain *ex, char *out, size_t out_size);
 const char *cbs_explain_toolchain(const struct cbs_explain *ex);
 const char *cbs_explain_toolchain_reason(const struct cbs_explain *ex);
 

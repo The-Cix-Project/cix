@@ -234,7 +234,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 **A path in an image belongs to exactly one installed package.** An install whose files include a path another installed package in that image owns is refused, naming both packages and the path, unless the installing package declares that it replaces that package. That is Debian's `Replaces:` rule, and the owner's decision of 2026-09-30 (#553). It replaces "the last install wins", which let coreutils 9.11-8's bundled `libcap.so.2` sit under libcap's name. Every build that composed libcap then got coreutils' link without its target, which is what broke every build in the #510 rollout.
 
 - **A package's own previous version is not another package.** An ordinary upgrade is unaffected, and giving a path up is always allowed.
-- **Moving a path needs the declaration.** CPDL has none yet (cix-build-system#275, both spellings measured refused on cbs v0.1.98). Until it lands, a move takes two published revisions: the giver drops the path, then the receiver claims it.
+- **Moving a path needs the declaration**: `replaces { package "NAME" }` at package level in the receiving recipe (cbs v0.1.99, cix-build-system#275). The named package's shared paths then change owner; nothing else is allowed through.
 - **A collision is a recipe bug to fix, never a path to exempt.** Do not add an allow-list.
 
 ## An image's policy decides how its three copies agree

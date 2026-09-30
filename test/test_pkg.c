@@ -688,7 +688,8 @@ static int write_suid_recipe(const struct cix_client *c, const char *name, const
  */
 static int write_shared_path_recipe(const struct cix_client *c, const char *name,
                                     const char *version, const char *tarball_path,
-                                    const char *sha256, const char *shared_rel)
+                                    const char *sha256, const char *shared_rel,
+                                    const char *decls)
 {
 	char srcdir[160];
 	char build_body[512], install_body[768];
@@ -714,13 +715,20 @@ static int write_shared_path_recipe(const struct cix_client *c, const char *name
 	         "            \"\"\"\n",
 	         name, srcdir, name, shared_rel, name);
 
-	return publish_cpdl_recipe(c, name, version, tarball_path, sha256, "",
-	                            "            compiler \"tcc\"\n"
-	                            "            tool \"linux-headers\"\n"
-	                            "            tool \"bash\"\n"
-	                            "            tool \"coreutils\"\n"
-	                            "            tool \"binutils\"\n",
-	                            "", build_body, install_body);
+	{
+		char content[4096];
+
+		/* decls: package-level declarations, e.g. `replaces` (#553). */
+		cpdl_recipe_text_decl(content, sizeof(content), name, version,
+		                      test_http_src(tarball_path), sha256, "",
+		                      "            compiler \"tcc\"\n"
+		                      "            tool \"linux-headers\"\n"
+		                      "            tool \"bash\"\n"
+		                      "            tool \"coreutils\"\n"
+		                      "            tool \"binutils\"\n",
+		                      "", decls, build_body, install_body);
+		return publish_cpdl_content(c, name, version, content);
+	}
 }
 
 /*
@@ -6203,10 +6211,10 @@ skip_resume:
 		           stage_fixture_tarball(scratch_dir, "shareda", "1.1", tarball2,
 		                                 sizeof(tarball2), sha2, sizeof(sha2)) == 0;
 		if (stage_ok &&
-		    (write_shared_path_recipe(&client, "shareda", "1.0", tarball, sha, shared_rel) != 0 ||
-		     write_shared_path_recipe(&client, "shareda", "1.1", tarball2, sha2, shared_rel) !=
+		    (write_shared_path_recipe(&client, "shareda", "1.0", tarball, sha, shared_rel, NULL) != 0 ||
+		     write_shared_path_recipe(&client, "shareda", "1.1", tarball2, sha2, shared_rel, NULL) !=
 		             0 ||
-		     write_shared_path_recipe(&client, "sharedb", "1.0", tarball, sha, shared_rel) != 0)) {
+		     write_shared_path_recipe(&client, "sharedb", "1.0", tarball, sha, shared_rel, NULL) != 0)) {
 			fprintf(stderr, "FAIL: could not write the shared-path recipes\n");
 			ok = 0;
 			stage_ok = 0;
@@ -6290,8 +6298,64 @@ skip_resume:
 			}
 		}
 
-		/* Nothing else owns the shared path, so a delete takes it too --
-		 * and the fix must not turn delete into a no-op. */
+		/*
+		 * A path may MOVE when the receiver declares it (cbs#275):
+		 * sharedc installs the same shared path with
+		 * `replaces { package "shareda" }`, and is allowed. The path then
+		 * belongs to sharedc alone, so deleting shareda keeps it, and
+		 * deleting sharedc finally takes it.
+		 */
+		if (stage_ok &&
+		    write_shared_path_recipe(&client, "sharedc", "1.0", tarball, sha, shared_rel,
+		                             "    replaces {\n        package \"shareda\"\n    }\n\n") !=
+		        0) {
+			fprintf(stderr, "FAIL: #553 could not publish sharedc (replaces shareda)\n");
+			ok = 0;
+			stage_ok = 0;
+		}
+		if (stage_ok) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"sharedc\"}",
+			                       &r) != 0 ||
+			    (r.status != 202 && r.status != 200))
+				stage_ok = 0;
+			cix_response_free(&r);
+			if (!stage_ok ||
+			    poll_pkg_state(&client, "sharedc", st, sizeof(st), 240) != 0 ||
+			    !str_eq(st, "installed")) {
+				fprintf(stderr, "FAIL: #553 sharedc, which replaces shareda, did not install "
+				                "(state=%s)\n", st);
+				ok = 0;
+				stage_ok = 0;
+			}
+		}
+		if (stage_ok) {
+			static const char *const who[] = { "shareda", "sharedc" };
+			int w;
+
+			for (w = 0; w < 2; w++) {
+				char path[64];
+				int has = 0;
+
+				snprintf(path, sizeof(path), "/v1/pkg/%s", who[w]);
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", path, NULL, &r) == 0 && r.json != NULL) {
+					const struct json_value *files = json_object_get(r.json, "files");
+					size_t k;
+
+					for (k = 0; files != NULL && files->type == JSON_ARRAY &&
+					            k < files->u.array.count; k++)
+						if (str_eq(json_as_string(files->u.array.items[k]), shared_rel))
+							has = 1;
+				}
+				cix_response_free(&r);
+				if (has != (w == 1)) {
+					fprintf(stderr, "FAIL: #553 after the takeover %s %s %s\n", who[w],
+					        has ? "still lists" : "does not list", shared_rel);
+					ok = 0;
+				}
+			}
+		}
 		if (stage_ok) {
 			memset(&r, 0, sizeof(r));
 			cix_client_request(&client, "DELETE", "/v1/pkg/shareda", NULL, &r);
@@ -6300,9 +6364,19 @@ skip_resume:
 				ok = 0;
 			}
 			cix_response_free(&r);
-			if (access(base_path("/usr/bin/shareda"), F_OK) == 0 ||
-			    access(base_path("/usr/share/shared175/common.txt"), F_OK) == 0) {
-				fprintf(stderr, "FAIL: #553 deleting shareda left its files behind\n");
+			if (access(base_path("/usr/bin/shareda"), F_OK) == 0) {
+				fprintf(stderr, "FAIL: #553 deleting shareda left its own file behind\n");
+				ok = 0;
+			}
+			if (access(base_path("/usr/share/shared175/common.txt"), F_OK) != 0) {
+				fprintf(stderr, "FAIL: #553 deleting shareda took a path sharedc now owns\n");
+				ok = 0;
+			}
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "DELETE", "/v1/pkg/sharedc", NULL, &r);
+			cix_response_free(&r);
+			if (access(base_path("/usr/share/shared175/common.txt"), F_OK) == 0) {
+				fprintf(stderr, "FAIL: #553 deleting sharedc, the path's owner, left it\n");
 				ok = 0;
 			}
 		}
@@ -6386,7 +6460,7 @@ skip_resume:
 		stage_ok = stage_fixture_tarball(scratch_dir, "dedup551", "1.0", tarball,
 		                                 sizeof(tarball), sha, sizeof(sha)) == 0 &&
 		           write_shared_path_recipe(&client, "dedup551", "1.0", tarball, sha,
-		                                    "usr/share/shared175/d551.txt") == 0 &&
+		                                    "usr/share/shared175/d551.txt", NULL) == 0 &&
 		           create_image(&client, "img551") == 0;
 		if (!stage_ok) {
 			fprintf(stderr, "FAIL: #551 could not set up dedup551 in img551\n");

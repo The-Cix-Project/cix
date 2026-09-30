@@ -361,6 +361,9 @@ struct pkg_recipe {
 	int mirror_source[PKG_MAX_MIRRORS];
 	int mirror_count;
 	char depends[PKG_DEPENDS_MAX];
+	/* cix#553: packages whose files this one may take over (CPDL
+	 * `replaces`, cbs v0.1.99). Space-separated; "" for none. */
+	char replaces[PKG_DEPENDS_MAX];
 	/*
 	 * Issue #109: the tools that must be present to BUILD this package,
 	 * as opposed to `depends` above, which is what the built thing
@@ -803,6 +806,7 @@ struct pkg_chain {
 	 */
 	char fetch_resolved_version[PKG_VERSION_MAX];
 	char fetch_resolved_depends[PKG_DEPENDS_MAX];
+	char fetch_resolved_replaces[PKG_DEPENDS_MAX]; /* cix#553: the recipe's `replaces` */
 	/*
 	 * #552: this job's tree was unpacked from a legacy .tar.gz artifact.
 	 * A .cixpkg or a CPDL build only carries a setuid or setgid file the
@@ -1059,6 +1063,7 @@ static int chain_alloc(void)
 			 */
 			g_chains[i].fetch_resolved_version[0] = '\0';
 			g_chains[i].fetch_resolved_depends[0] = '\0';
+			g_chains[i].fetch_resolved_replaces[0] = '\0';
 			/* ADR-0272: requested unless a caller says otherwise, so
 			 * a hostbuild and every other direct entry point are
 			 * right without having to remember to say so. */
@@ -1748,10 +1753,11 @@ static void pkg_entry_free_files(struct pkg_entry *e)
  * and the path (path_owner_gate()). It is Debian's rule. A package's
  * own previous version is not "another package", so an ordinary
  * upgrade is unaffected. Moving a path between packages needs the
- * installing package to declare that it replaces the other one, which
- * CPDL cannot say yet (cix-build-system#275). Until then a move takes
- * two published revisions: the giver drops the path, then the receiver
- * claims it.
+ * installing package to declare that it replaces the other one: CPDL's
+ * `replaces { package "NAME" }` (cbs v0.1.99, cix-build-system#275). The
+ * gate then lets exactly those packages' paths through, and once the
+ * install is verified transfer_replaced_paths() takes them out of the
+ * previous owner's manifest, so the path is still owned once.
  *
  * Scoped to one image because that is the unit a manifest describes:
  * the same package installed into two images owns two independent sets
@@ -1846,6 +1852,23 @@ static void path_claim_index_free(struct path_claim_index *idx)
 	idx->count = 0;
 }
 
+/* Is name one of the space-separated names in list? "" matches nothing. */
+static int name_in_list(const char *list, const char *name)
+{
+	size_t nlen = strlen(name);
+	const char *p = list;
+
+	while (p != NULL && *p != '\0') {
+		const char *end = strchr(p, ' ');
+		size_t len = end != NULL ? (size_t)(end - p) : strlen(p);
+
+		if (len == nlen && strncmp(p, name, nlen) == 0)
+			return 1;
+		p = end != NULL ? end + 1 : NULL;
+	}
+	return 0;
+}
+
 /*
  * Walks a staged install tree and stops at the first regular file or
  * symlink another package owns -- the two kinds merge_tree() records in
@@ -1855,7 +1878,8 @@ static void path_claim_index_free(struct path_claim_index *idx)
  */
 static int path_owner_walk(const struct pkg_entry *self, const char *image,
                            const struct path_claim_index *idx, const char *root,
-                           const char *relpath, char *err, size_t err_size)
+                           const char *relpath, const char *replaces, char *err,
+                           size_t err_size)
 {
 	char dir[PATH_MAX];
 	DIR *d;
@@ -1888,16 +1912,19 @@ static int path_owner_walk(const struct pkg_entry *self, const char *image,
 			         "owns it: %s", rel, strerror(errno));
 			r = -1;
 		} else if (S_ISDIR(st.st_mode)) {
-			r = path_owner_walk(self, image, idx, root, rel, err, err_size);
+			r = path_owner_walk(self, image, idx, root, rel, replaces, err, err_size);
 		} else if (S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) {
 			owner = path_claim_owner(idx, rel);
-			if (owner != NULL) {
+			/* A package the recipe declares it replaces (cbs#275) may
+			 * hand over its paths; nothing else may. */
+			if (owner != NULL && !name_in_list(replaces, owner->name)) {
 				snprintf(err, err_size,
 				         "%s@%s installs \"%s\", which %s@%s already owns in image \"%s\" "
-				         "-- a path belongs to one package (#553), so drop it from one of "
-				         "the two recipes",
+				         "-- a path belongs to one package (#553): drop it from one of the "
+				         "two recipes, or, if the file is moving, declare "
+				         "replaces { package \"%s\" } in this one",
 				         self->name, self->version, rel, owner->name,
-				         owner->version, image);
+				         owner->version, image, owner->name);
 				r = 1;
 			}
 		}
@@ -1913,7 +1940,7 @@ static int path_owner_walk(const struct pkg_entry *self, const char *image,
  * to proceed, nonzero with the refusal in err.
  */
 static int path_owner_gate(const struct pkg_entry *self, const char *image, const char *dest_dir,
-                           char *err, size_t err_size)
+                           const char *replaces, char *err, size_t err_size)
 {
 	struct path_claim_index idx;
 	int r;
@@ -1923,7 +1950,8 @@ static int path_owner_gate(const struct pkg_entry *self, const char *image, cons
 		         normalize_image(image), strerror(errno));
 		return -1;
 	}
-	r = path_owner_walk(self, normalize_image(image), &idx, dest_dir, "", err, err_size);
+	r = path_owner_walk(self, normalize_image(image), &idx, dest_dir, "", replaces, err,
+	                    err_size);
 	path_claim_index_free(&idx);
 	return r;
 }
@@ -2712,6 +2740,12 @@ static int parse_cbs_recipe(const char *path, struct pkg_recipe *out)
 
 	if (cbs_explain_requires(ex, "runtime", "package", out->depends, sizeof(out->depends)) != 0) {
 		logstore_write("cixd", "error", "pkg: %s: the runtime package list does not fit",
+		               explain_path);
+		cbs_explain_free(ex);
+		return -1;
+	}
+	if (cbs_explain_replaces(ex, out->replaces, sizeof(out->replaces)) != 0) {
+		logstore_write("cixd", "error", "pkg: %s: the replaces list does not fit",
 		               explain_path);
 		cbs_explain_free(ex);
 		return -1;
@@ -9000,6 +9034,8 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	         sizeof(g_chains[chain_idx].fetch_resolved_recipe_path), "%s", recipe_path);
 	snprintf(g_chains[chain_idx].fetch_resolved_depends,
 	         sizeof(g_chains[chain_idx].fetch_resolved_depends), "%s", recipe.depends);
+	snprintf(g_chains[chain_idx].fetch_resolved_replaces,
+	         sizeof(g_chains[chain_idx].fetch_resolved_replaces), "%s", recipe.replaces);
 	g_chains[chain_idx].tree_from_targz = 0;
 	/*
 	 * ADR-0272: a run opens here, at the single place a job begins --
@@ -11434,6 +11470,8 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	         sizeof(g_chains[chain_idx].fetch_resolved_recipe_path), "%s", recipe_path);
 	snprintf(g_chains[chain_idx].fetch_resolved_depends,
 	         sizeof(g_chains[chain_idx].fetch_resolved_depends), "%s", recipe.depends);
+	snprintf(g_chains[chain_idx].fetch_resolved_replaces,
+	         sizeof(g_chains[chain_idx].fetch_resolved_replaces), "%s", recipe.replaces);
 
 	/*
 	 * The build command depends on the recipe's LANGUAGE, exactly as
@@ -13205,6 +13243,62 @@ enum pkg_error pkg_cancel(const char *name, const char *image,
 	return PKG_OK;
 }
 
+static int cstr_ptr_cmp(const void *a, const void *b)
+{
+	return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/*
+ * cix#553: after a verified install whose recipe declares `replaces`,
+ * each named package still installed in the image gives up the paths
+ * the new package now holds, so every path is owned exactly once again.
+ * Done after the install rather than at the gate, so a failed install
+ * leaves the previous owner's manifest untouched -- and uninstalling
+ * that package later no longer deletes files that are not its own.
+ */
+static void transfer_replaced_paths(const char *image, const struct pkg_entry *self,
+                                    const char *replaces)
+{
+	const char **mine;
+	int i, f;
+
+	if (replaces == NULL || replaces[0] == '\0' || self->file_count <= 0)
+		return;
+	mine = malloc((size_t)self->file_count * sizeof(*mine));
+	if (mine == NULL)
+		return;
+	for (f = 0; f < self->file_count; f++)
+		mine[f] = self->files[f];
+	qsort(mine, (size_t)self->file_count, sizeof(*mine), cstr_ptr_cmp);
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		struct pkg_entry *o = &g_packages[i];
+		int kept = 0, taken = 0;
+
+		if (o == self || !o->in_use || o->state != PKG_STATE_INSTALLED ||
+		    strcmp(normalize_image(o->image), image) != 0 || !name_in_list(replaces, o->name))
+			continue;
+		for (f = 0; f < o->file_count; f++) {
+			const char *key = o->files[f];
+
+			if (bsearch(&key, mine, (size_t)self->file_count, sizeof(*mine), cstr_ptr_cmp) !=
+			    NULL) {
+				free(o->files[f]);
+				taken++;
+			} else {
+				o->files[kept++] = o->files[f];
+			}
+		}
+		o->file_count = kept;
+		if (taken > 0)
+			logstore_write("cixd", "info",
+			               "image %s: %s@%s took over %d path(s) from %s@%s, which it "
+			               "declares it replaces (cix#553)",
+			               image, self->name, self->version, taken, o->name, o->version);
+	}
+	free(mine);
+}
+
 /*
  * ADR-0320: an explicit install moves the image's pin for that package
  * to the version it installed, so the manifest and the installed set do
@@ -13789,7 +13883,8 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 
 		/* #553, at the same point and for the same reasons: nothing is
 		 * staged, and the message names both packages and the path. */
-		if (path_owner_gate(e, g_chains[chain_idx].image, dest_dir, refused,
+		if (path_owner_gate(e, g_chains[chain_idx].image, dest_dir,
+		                    g_chains[chain_idx].fetch_resolved_replaces, refused,
 		                    sizeof(refused)) != 0) {
 			logstore_write("cixd", "error", "pkg install: %s: %s", e->name, refused);
 			pkg_fail(e, 0, PIPELINE_INSTALL, refused);
@@ -13857,6 +13952,9 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * rolling rebuild installs exactly the pin and needs nothing. */
 		if (strcmp(g_chains[chain_idx].run_trigger, PKG_RUN_TRIGGER_REQUEST) == 0)
 			pin_follows_install(g_chains[chain_idx].image, e->name, e->version);
+		/* cix#553: paths this package declared it takes over change owner. */
+		transfer_replaced_paths(normalize_image(g_chains[chain_idx].image), e,
+		                        g_chains[chain_idx].fetch_resolved_replaces);
 
 		/*
 		 * #289: the package installed headers -- do they resolve?
