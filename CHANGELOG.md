@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Failed authentication is throttled per address, before any password is checked (#547)
+
+A failed login cost a bcrypt comparison -- 0.39 to 0.42 s each on 192.168.15.95, against 0.0007 s for `/v1/health` -- on cixd's single event loop, and nothing limited them. Anyone who could reach port 80 could stall the control plane and guess passwords at full speed, and #543's app passwords made every endpoint a place to try.
+
+`connthrottle` now keeps a second count per address, for failed authentication: a wrong `POST /v1/login` password, or an HTTP Basic app password that does not verify (malformed included). It shares the throttle's `threshold`, `window_seconds` and `block_seconds` (default 20 in 60 s, 5 minutes). Past the threshold that address's logins get `429` with the seconds remaining, and its app passwords `429` instead of "log in first" -- on both listeners, and **before** the password is looked at, so a blocked attempt costs nothing and even the right password waits. It is counted apart from the TLS-handshake count because any well-formed request clears that one, and failed logins are well-formed; only a successful authentication clears this one. A request carrying no credential never counts. Loopback stays exempt. A block is audited once, naming the address; `tls-throttle status` (CLI, dashboard and API) shows `auth_fail_count` and `auth_blocked_until`. A failed login's audit line now names its address too.
+
+Corrected on the way: the throttle config's contract and README said a TLS block applied on both listeners; since ADR-0137 it is the HTTPS listener only. `test_hostauth` tests from 127.0.0.2, which the daemon treats as an ordinary peer: three wrong logins, then the right password is `429`, an app password is `429`, a request with no credential is still `401`, 127.0.0.1 is untouched, the block is audited, it lifts after `block_seconds`, and a success clears the count. Bcrypt still runs on the event loop for a valid login or a memo miss; moving it off is a larger change this does not make.
+
 ### The dashboard knows what the session may do, and manages permissions and app passwords (#544, ADR-0317)
 
 The last of six steps for role-based access control, and the dashboard half of #544.

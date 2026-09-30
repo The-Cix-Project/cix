@@ -370,4 +370,14 @@ enum hostauth_authz hostauth_authorize(const char *token, const char *permission
  */
 enum hostauth_authz hostauth_authorize_app_password(const char *username, const char *permission);
 
+/*
+ * #547: records a failed authentication from peer_ip (a wrong login
+ * password, or an HTTP Basic app password that did not verify) against
+ * connthrottle's authentication class, and audits once -- at the moment
+ * the failure trips a block -- rather than on every refusal during it,
+ * which would rebuild #490's wall of lines. A request that presented
+ * no credential is never passed here.
+ */
+void hostauth_note_auth_failure(const char *peer_ip);
+
 #endif /* HOSTAUTH_H */

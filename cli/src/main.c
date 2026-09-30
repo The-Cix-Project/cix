@@ -8743,6 +8743,11 @@ static void fmt_tls_throttle_status_line(const struct json_value *v)
 	       (jblocked != NULL && jblocked->type == JSON_BOOL && jblocked->u.boolean) ? "true" : "false");
 	if (blocked_until > 0)
 		printf(" blocked_until=%ld", blocked_until);
+	/* #547: the authentication class, on the same line. */
+	printf(" auth_fail_count=%ld", (long)json_as_number(json_object_get(v, "auth_fail_count")));
+	if ((long)json_as_number(json_object_get(v, "auth_blocked_until")) > 0)
+		printf(" auth_blocked_until=%ld",
+		       (long)json_as_number(json_object_get(v, "auth_blocked_until")));
 	printf("\n");
 }
 

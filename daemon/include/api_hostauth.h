@@ -20,7 +20,7 @@ void handle_hostauth_sessions_revoke(int fd, const char *username);
 void handle_hostauth_permissions_get(int fd);
 void handle_hostauth_permissions_put(int fd, const char *group, const char *body, size_t body_len);
 void handle_hostauth_permissions_delete(int fd, const char *group);
-void handle_login(int fd, const char *body, size_t body_len);
+void handle_login(int fd, const char *peer_ip, const char *body, size_t body_len);
 void handle_logout(int fd, const char *req_headers, size_t req_headers_len);
 void handle_whoami(int fd, const char *req_headers, size_t req_headers_len);
 

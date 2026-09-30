@@ -5,6 +5,7 @@
 #include "pki.h"
 #include "logstore.h"
 #include "namecheck.h"
+#include "connthrottle.h"
 
 /* ADR-0317: the contract's permission vocabulary (apigen --emit-permissions). */
 #include "generated/permissions.h"
@@ -1334,4 +1335,16 @@ enum hostauth_authz hostauth_authorize_app_password(const char *username, const 
 		return HOSTAUTH_AUTHZ_FORBIDDEN;
 	return hostauth_user_has_permission(username, permission) ? HOSTAUTH_AUTHZ_OK
 	                                                          : HOSTAUTH_AUTHZ_FORBIDDEN;
+}
+
+void hostauth_note_auth_failure(const char *peer_ip)
+{
+	if (connthrottle_record_auth_failure(peer_ip)) {
+		struct throttle_config cfg = connthrottle_config_get();
+
+		logstore_write("audit", "warn",
+		               "%s authentication blocked for %d seconds after %d failed attempts "
+		               "within %d seconds",
+		               peer_ip, cfg.block_seconds, cfg.threshold, cfg.window_seconds);
+	}
 }

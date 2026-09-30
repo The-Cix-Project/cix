@@ -80,6 +80,10 @@ struct api_ctx {
 	 * for one that can change the box.
 	 */
 	const char *user;
+	/* #547: the address the request came from, "" when unknown -- for
+	 * the authentication throttle, which login consults before it checks
+	 * a password. Never NULL. */
+	const char *peer_ip;
 };
 
 typedef void (*api_op_fn)(const struct api_ctx *ctx);

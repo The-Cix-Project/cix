@@ -9863,7 +9863,7 @@ function renderTlsThrottleStatus(entries) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
 
-		cell.colSpan = 4;
+		cell.colSpan = 6;
 		cell.className = "empty";
 		cell.textContent = "No sources currently tracked";
 		row.appendChild(cell);
@@ -9891,6 +9891,18 @@ function renderTlsThrottleStatus(entries) {
 			? new Date(e.blocked_until * 1000).toLocaleTimeString()
 			: "";
 		row.appendChild(untilCell);
+
+		/* #547: the authentication class -- failed logins and app
+		 * passwords from this address, and its block. */
+		const authFailCell = document.createElement("td");
+		authFailCell.textContent = e.auth_fail_count || 0;
+		row.appendChild(authFailCell);
+
+		const authUntilCell = document.createElement("td");
+		authUntilCell.textContent = e.auth_blocked_until
+			? new Date(e.auth_blocked_until * 1000).toLocaleTimeString()
+			: "";
+		row.appendChild(authUntilCell);
 
 		body.appendChild(row);
 	}

@@ -2,6 +2,7 @@
 #include "api_hostauth.h"
 
 #include "apiresp.h"
+#include "connthrottle.h"
 #include "daemonpaths.h"
 #include "http.h"
 #include "json.h"
@@ -19,7 +20,7 @@
  * this part of the ADR yet, that's a later part's own addition to
  * this same function's internals, not a new endpoint.
  */
-void handle_login(int fd, const char *body, size_t body_len)
+void handle_login(int fd, const char *peer_ip, const char *body, size_t body_len)
 {
 	struct json_value *root;
 	const char *username, *password;
@@ -27,6 +28,28 @@ void handle_login(int fd, const char *body, size_t body_len)
 	char who[HOSTAUTH_USERNAME_MAX];
 	int expires_in_seconds;
 	enum hostauth_login_result lerr;
+
+	/*
+	 * #547: asked BEFORE the password is checked, because checking it is
+	 * the expensive part -- a bcrypt comparison, ~400 ms on
+	 * 192.168.15.95 on the single event loop. A source over the failure
+	 * threshold is answered at once with 429, whatever it sends, even
+	 * the right password: the block is per address, so a legitimate
+	 * user behind the same address waits it out too.
+	 */
+	{
+		int wait = connthrottle_auth_blocked(peer_ip);
+
+		if (wait > 0) {
+			char msg[160];
+
+			snprintf(msg, sizeof(msg),
+			         "too many failed logins from %s -- try again in %d seconds", peer_ip,
+			         wait);
+			respond_error(fd, 429, "Too Many Requests", msg);
+			return;
+		}
+	}
 
 	root = json_parse(body, body_len);
 	if (root == NULL) {
@@ -63,8 +86,9 @@ void handle_login(int fd, const char *body, size_t body_len)
 		 * useful lines this trail can carry -- never the password, and
 		 * never a hint about which half was wrong.
 		 */
-		logstore_write("audit", "warn", "%s login REFUSED (invalid username or password)",
-		                who);
+		logstore_write("audit", "warn", "%s login REFUSED (invalid username or password) from %s",
+		                who, peer_ip[0] != '\0' ? peer_ip : "-");
+		hostauth_note_auth_failure(peer_ip);
 		respond_error(fd, 401, "Unauthorized", "invalid username or password");
 		return;
 	}
@@ -74,6 +98,8 @@ void handle_login(int fd, const char *body, size_t body_len)
 		return;
 	}
 
+	/* #547: a successful authentication is what clears the count. */
+	connthrottle_record_auth_success(peer_ip);
 	logstore_write("audit", "info", "%s logged in", who);
 
 	{

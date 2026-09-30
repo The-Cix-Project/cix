@@ -13,6 +13,12 @@ struct throttle_entry {
 	time_t window_start;
 	time_t blocked_until; /* 0 = not currently blocked */
 	time_t last_logged;   /* 0 = never logged yet -- connthrottle_should_log_failure() */
+	/* #547: the authentication class -- failed credential checks,
+	 * counted apart from TLS handshakes and never cleared by a merely
+	 * well-formed request (connthrottle.h). */
+	int auth_fail_count;
+	time_t auth_window_start;
+	time_t auth_blocked_until; /* 0 = not currently blocked */
 };
 
 static char g_config_path[512];
@@ -174,6 +180,9 @@ static struct throttle_entry *get_or_create_entry(const char *ip, time_t now)
 	e->window_start = now;
 	e->blocked_until = 0;
 	e->last_logged = 0;
+	e->auth_fail_count = 0;
+	e->auth_window_start = now;
+	e->auth_blocked_until = 0;
 	return e;
 }
 
@@ -264,6 +273,68 @@ void connthrottle_record_success(const char *ip)
 	e->blocked_until = 0;
 }
 
+/*
+ * #547: failed authentication. The same rolling window, threshold and
+ * block length as the TLS class, counted on their own fields: the TLS
+ * count is cleared by any well-formed request (connthrottle_record_
+ * success()), which would let an attacker's own well-formed failed
+ * logins reset their count on every attempt.
+ */
+int connthrottle_auth_blocked(const char *ip)
+{
+	struct throttle_entry *e;
+	time_t now;
+
+	if (!g_config.enabled || ip == NULL || ip[0] == '\0' || is_loopback(ip))
+		return 0;
+	e = find_entry(ip);
+	if (e == NULL || e->auth_blocked_until == 0)
+		return 0;
+	now = time(NULL);
+	if (now >= e->auth_blocked_until) {
+		e->auth_blocked_until = 0;
+		e->auth_fail_count = 0;
+		return 0;
+	}
+	return (int)(e->auth_blocked_until - now);
+}
+
+int connthrottle_record_auth_failure(const char *ip)
+{
+	struct throttle_entry *e;
+	time_t now;
+
+	if (!g_config.enabled || ip == NULL || ip[0] == '\0' || is_loopback(ip))
+		return 0;
+	now = time(NULL);
+	e = get_or_create_entry(ip, now);
+	if (e == NULL)
+		return 0;
+	if (now - e->auth_window_start > g_config.window_seconds) {
+		e->auth_window_start = now;
+		e->auth_fail_count = 0;
+	}
+	e->auth_fail_count++;
+	if (e->auth_fail_count >= g_config.threshold && e->auth_blocked_until == 0) {
+		e->auth_blocked_until = now + g_config.block_seconds;
+		return 1;
+	}
+	return 0;
+}
+
+void connthrottle_record_auth_success(const char *ip)
+{
+	struct throttle_entry *e;
+
+	if (ip == NULL || ip[0] == '\0')
+		return;
+	e = find_entry(ip);
+	if (e == NULL)
+		return;
+	e->auth_fail_count = 0;
+	e->auth_blocked_until = 0;
+}
+
 void connthrottle_write_status_json(struct json_writer *w)
 {
 	int i;
@@ -288,6 +359,13 @@ void connthrottle_write_status_json(struct json_writer *w)
 		jw_bool(w, blocked);
 		jw_key(w, "blocked_until");
 		jw_int(w, blocked ? (long long)e->blocked_until : 0);
+		/* #547: the authentication class. */
+		jw_key(w, "auth_fail_count");
+		jw_int(w, e->auth_fail_count);
+		jw_key(w, "auth_blocked_until");
+		jw_int(w, e->auth_blocked_until != 0 && now < e->auth_blocked_until
+		              ? (long long)e->auth_blocked_until
+		              : 0);
 		jw_obj_close(w);
 	}
 	jw_arr_close(w);

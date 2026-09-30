@@ -292,6 +292,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "429":
+          description: >
+            Too many failed authentications from this address (#547): past
+            the throttle's `threshold` within `window_seconds`, logins from
+            it are refused for `block_seconds` before any password is
+            checked -- the right one included. The message says how long.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /logout:
     post:
@@ -4554,11 +4564,19 @@ paths:
       description: >
         Fields omitted from the body are left unchanged, same convention
         GET/PUT /system/daemon-config and PUT /pkg/repo-config already use.
-        A source that fails `threshold` HTTPS handshakes within
-        `window_seconds` is refused outright -- on both the HTTPS and plain
-        HTTP listeners -- for `block_seconds`. Loopback (127.0.0.1) is never
-        throttled, so this daemon's own local admin access can't be locked
-        out by a hostile source sharing the box.
+        The thresholds govern two separate counts per source address.
+        **Failed HTTPS handshakes**: a source that fails `threshold` of
+        them within `window_seconds` has its HTTPS connections refused
+        for `block_seconds` (the HTTPS listener only, ADR-0137); any
+        well-formed request clears that count. **Failed authentication**
+        (#547): a wrong login password or an HTTP Basic app password that
+        does not verify, counted apart and cleared only by a successful
+        authentication; past `threshold`, the source's login and app
+        password attempts get `429` for `block_seconds` on both
+        listeners, before any password is checked -- a check is a bcrypt
+        comparison, ~400 ms. A request carrying no credential never
+        counts. Loopback (127.0.0.1) is exempt from both, so this
+        daemon's own local admin access can't be locked out.
       operationId: putSystemTlsThrottle
       x-cix-permission: config:write
       x-cix-expose: [cli, web]
@@ -20192,7 +20210,7 @@ components:
 
     TlsThrottleStatusEntry:
       type: object
-      required: [ip, fail_count, blocked, blocked_until]
+      required: [ip, fail_count, blocked, blocked_until, auth_fail_count, auth_blocked_until]
       properties:
         ip:
           type: string
@@ -20204,6 +20222,12 @@ components:
         blocked_until:
           type: integer
           description: Unix seconds the block lifts at, or 0 if not currently blocked.
+        auth_fail_count:
+          type: integer
+          description: Failed authentications (#547) counted within the current window.
+        auth_blocked_until:
+          type: integer
+          description: Unix seconds this source's authentication block lifts at, or 0.
 
     PkgCancelRequest:
       type: object

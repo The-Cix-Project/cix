@@ -22,6 +22,7 @@
 #include "json.h"
 #include "test_image_fixture.h"
 
+#include <arpa/inet.h>
 #include <limits.h>
 #include <netinet/in.h>
 #include <signal.h>
@@ -207,30 +208,43 @@ static int ws_upgrade_status(const char *path, const char *extra)
 }
 
 /*
- * #543: one request authenticated with an app password as HTTP Basic,
- * sent raw because the client library sends only Bearer tokens. The
- * daemon closes the connection after its response, so this reads to
- * EOF. Returns the status (-1 if none) and copies the body into body.
+ * One raw HTTP request, sent without the client library -- which sends
+ * only Bearer tokens and always from 127.0.0.1. src_ip binds the source
+ * address when not NULL: the #547 authentication throttle exempts
+ * loopback's 127.0.0.1 exactly as the TLS throttle does, so a test of
+ * it connects from another loopback address (127.0.0.2), which the
+ * daemon sees as an ordinary peer. auth_line is one header line with
+ * its CRLF, or "". The daemon closes the connection after its response,
+ * so this reads to EOF. Returns the status (-1 if none) and copies the
+ * body into body.
  */
-static int basic_request(const char *method, const char *path, const char *user,
-                         const char *secret, const char *req_body, char *body, size_t body_size)
+static int raw_http(const char *src_ip, const char *method, const char *path,
+                    const char *auth_line, const char *req_body, char *body, size_t body_size)
 {
 	struct sockaddr_in sa;
 	struct timeval tv = { 30, 0 };
-	char cred[256], cred_b64[400], req[2048], resp[16384];
+	char req[2048], resp[16384];
 	const char *hdr_end;
 	size_t got = 0;
 	int fd, n, status = -1;
 
 	if (body_size > 0)
 		body[0] = '\0';
-	snprintf(cred, sizeof(cred), "%s:%s", user, secret);
-	if (base64_encode((const unsigned char *)cred, strlen(cred), cred_b64, sizeof(cred_b64)) != 0)
-		return -1;
 	fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd < 0)
 		return -1;
 	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	if (src_ip != NULL) {
+		struct sockaddr_in src;
+
+		memset(&src, 0, sizeof(src));
+		src.sin_family = AF_INET;
+		if (inet_pton(AF_INET, src_ip, &src.sin_addr) != 1 ||
+		    bind(fd, (struct sockaddr *)&src, sizeof(src)) != 0) {
+			close(fd);
+			return -1;
+		}
+	}
 	memset(&sa, 0, sizeof(sa));
 	sa.sin_family = AF_INET;
 	sa.sin_port = htons(TEST_PORT);
@@ -242,13 +256,13 @@ static int basic_request(const char *method, const char *path, const char *user,
 	n = snprintf(req, sizeof(req),
 	             "%s %s HTTP/1.1\r\n"
 	             "Host: 127.0.0.1\r\n"
-	             "Authorization: Basic %s\r\n"
+	             "%s"
 	             "Content-Type: application/json\r\n"
 	             "Content-Length: %zu\r\n"
 	             "Connection: close\r\n"
 	             "\r\n"
 	             "%s",
-	             method, path, cred_b64, req_body != NULL ? strlen(req_body) : 0,
+	             method, path, auth_line, req_body != NULL ? strlen(req_body) : 0,
 	             req_body != NULL ? req_body : "");
 	if (n < 0 || (size_t)n >= sizeof(req) || write(fd, req, (size_t)n) != n) {
 		close(fd);
@@ -269,6 +283,26 @@ static int basic_request(const char *method, const char *path, const char *user,
 	if (hdr_end != NULL && body_size > 0)
 		snprintf(body, body_size, "%s", hdr_end + 4);
 	return status;
+}
+
+/* #543: one request authenticated with an app password as HTTP Basic. */
+static int basic_request_from(const char *src_ip, const char *method, const char *path,
+                              const char *user, const char *secret, const char *req_body,
+                              char *body, size_t body_size)
+{
+	char cred[256], cred_b64[400], line[480];
+
+	snprintf(cred, sizeof(cred), "%s:%s", user, secret);
+	if (base64_encode((const unsigned char *)cred, strlen(cred), cred_b64, sizeof(cred_b64)) != 0)
+		return -1;
+	snprintf(line, sizeof(line), "Authorization: Basic %s\r\n", cred_b64);
+	return raw_http(src_ip, method, path, line, req_body, body, body_size);
+}
+
+static int basic_request(const char *method, const char *path, const char *user,
+                         const char *secret, const char *req_body, char *body, size_t body_size)
+{
+	return basic_request_from(NULL, method, path, user, secret, req_body, body, body_size);
 }
 
 /*
@@ -777,6 +811,140 @@ out:
 		ok = 0;
 	test_data_dir_cleanup(dir);
 restore:
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", saved_data_dir);
+	return ok;
+}
+
+/*
+ * #547: failed authentication is throttled per source address, before
+ * the password is checked. From 127.0.0.2 -- 127.0.0.1 is exempt, as it
+ * is from the TLS throttle -- with the threshold at 3 and a 3-second
+ * block. Gating is on (an admin exists), so a throttled app password
+ * has something to be refused from.
+ */
+static int login_from(const char *src_ip, const char *user, const char *password)
+{
+	char req[256], body[1024];
+
+	snprintf(req, sizeof(req), "{\"username\":\"%s\",\"password\":\"%s\"}", user, password);
+	return raw_http(src_ip, "POST", "/v1/login", "", req, body, sizeof(body));
+}
+
+static int test_auth_throttle(void)
+{
+	char saved_data_dir[PATH_MAX], dir[PATH_MAX], tok[128] = "", body[4096];
+	struct cix_client c;
+	struct cix_response r;
+	pid_t pid;
+	int ok = 1, st, i;
+
+	snprintf(saved_data_dir, sizeof(saved_data_dir), "%s", g_data_dir);
+	if (test_data_dir_create(dir, sizeof(dir)) != 0)
+		return 0;
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", dir);
+	cix_client_init(&c, "127.0.0.1", TEST_PORT);
+	pid = start_daemon();
+	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+		fprintf(stderr, "FAIL: #547 daemon never accepted connections\n");
+		ok = 0;
+		goto out;
+	}
+
+	/* Gating on: an admin group with a member. */
+	ok &= expect_status(&c, NULL, "PUT", "/v1/system/hostauth-config",
+	                    "{\"admin_groups\":[\"thradmins\"],\"idle_timeout_seconds\":900}", 200,
+	                    "configure admin_groups");
+	ok &= expect_status(&c, NULL, "POST", "/v1/ldap/groups",
+	                    "{\"name\":\"thradmins\",\"gidnumber\":7501}", 201, "create thradmins");
+	ok &= expect_status(&c, NULL, "POST", "/v1/ldap/users",
+	                    "{\"name\":\"thradmin\",\"uidnumber\":7510,\"primarygroup\":7501,"
+	                    "\"password\":\"the right one\"}",
+	                    201, "create thradmin");
+	if (!login_as(&c, "thradmin", "the right one", tok, sizeof(tok))) {
+		fprintf(stderr, "FAIL: #547 login from 127.0.0.1\n");
+		ok = 0;
+	}
+	ok &= expect_status(&c, tok, "PUT", "/v1/system/tls-throttle",
+	                    "{\"threshold\":3,\"window_seconds\":60,\"block_seconds\":3}", 200,
+	                    "set the throttle to 3 failures, 3 s block");
+
+	/* 1. Three wrong passwords from one address trip the block ... */
+	for (i = 0; i < 3; i++) {
+		st = login_from("127.0.0.2", "thradmin", "wrong");
+		if (st != 401) {
+			fprintf(stderr, "FAIL: #547 wrong login %d from 127.0.0.2 expected 401, got %d\n",
+			        i + 1, st);
+			ok = 0;
+		}
+	}
+	/* 2. ... after which even the RIGHT password is 429 from there: the
+	 * check comes before the password is looked at, which is the point
+	 * (each look is a ~400 ms bcrypt), and the block is per address, so
+	 * a real user behind it waits too. */
+	st = login_from("127.0.0.2", "thradmin", "the right one");
+	if (st != 429) {
+		fprintf(stderr, "FAIL: #547 a blocked address must get 429 even with the right "
+		                "password, got %d\n",
+		        st);
+		ok = 0;
+	}
+	/* 3. An app password from the blocked address: 429, not "log in". */
+	st = basic_request_from("127.0.0.2", "GET", "/v1/ldap/groups", "thradmin",
+	                        "0123456789abcdef0123456789abcdef", NULL, body, sizeof(body));
+	if (st != 429) {
+		fprintf(stderr, "FAIL: #547 HTTP Basic from a blocked address expected 429, got %d\n",
+		        st);
+		ok = 0;
+	}
+	/* 4. A request with no credential is not an authentication attempt:
+	 * still the ordinary 401. */
+	st = raw_http("127.0.0.2", "GET", "/v1/ldap/groups", "", NULL, body, sizeof(body));
+	if (st != 401) {
+		fprintf(stderr, "FAIL: #547 no credential from a blocked address must still be 401, "
+		                "got %d\n",
+		        st);
+		ok = 0;
+	}
+	/* 5. Another address is unaffected (127.0.0.1 is exempt anyway). */
+	if (!login_as(&c, "thradmin", "the right one", tok, sizeof(tok))) {
+		fprintf(stderr, "FAIL: #547 a block on 127.0.0.2 must not touch 127.0.0.1\n");
+		ok = 0;
+	}
+	/* 6. The block is audited once, naming the address. */
+	memset(&r, 0, sizeof(r));
+	if (request_with_token(&c, "GET", "/v1/system/logs?source=audit&tail=60", tok, NULL, &r) != 0 ||
+	    r.body == NULL || strstr(r.body, "127.0.0.2 authentication blocked") == NULL) {
+		fprintf(stderr, "FAIL: #547 the block is not audited with its address\n");
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/* 7. It ends: past block_seconds the right password works again. */
+	sleep(4);
+	st = login_from("127.0.0.2", "thradmin", "the right one");
+	if (st != 200) {
+		fprintf(stderr, "FAIL: #547 after the block the right password expected 200, got %d\n",
+		        st);
+		ok = 0;
+	}
+	/* 8. A success clears the count: 2 wrong, 1 right, 2 wrong is never
+	 * 3 in a row, so the next right password still works. */
+	login_from("127.0.0.2", "thradmin", "wrong");
+	login_from("127.0.0.2", "thradmin", "wrong");
+	login_from("127.0.0.2", "thradmin", "the right one");
+	login_from("127.0.0.2", "thradmin", "wrong");
+	login_from("127.0.0.2", "thradmin", "wrong");
+	st = login_from("127.0.0.2", "thradmin", "the right one");
+	if (st != 200) {
+		fprintf(stderr, "FAIL: #547 a successful login must clear the failure count, got %d\n",
+		        st);
+		ok = 0;
+	}
+
+out:
+	if (pid > 0 && stop_daemon(pid) != 0)
+		ok = 0;
+	test_data_dir_cleanup(dir);
 	snprintf(g_data_dir, sizeof(g_data_dir), "%s", saved_data_dir);
 	return ok;
 }
@@ -2151,6 +2319,8 @@ int main(void)
 	if (!test_permission_mapping())
 		ok = 0;
 	if (!test_standard_groups())
+		ok = 0;
+	if (!test_auth_throttle())
 		ok = 0;
 	printf(ok ? "HOSTAUTH RESULT: PASS\n" : "HOSTAUTH RESULT: FAIL\n");
 	return ok ? 0 : 1;

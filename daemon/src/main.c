@@ -23966,7 +23966,7 @@ static void op_getHealth(const struct api_ctx *ctx)
 /* POST /v1/login */
 static void op_postLogin(const struct api_ctx *ctx)
 {
-	handle_login(ctx->fd, ctx->req->body, ctx->req->body_len);
+	handle_login(ctx->fd, ctx->peer_ip, ctx->req->body, ctx->req->body_len);
 }
 
 /* POST /v1/logout */
@@ -26497,6 +26497,14 @@ static void op_createStoragePartitionTable(const struct api_ctx *ctx)
 static char g_req_user[HOSTAUTH_USERNAME_MAX];
 
 /*
+ * #547: the address this request came from, for the authentication
+ * throttle (connthrottle.h), which has to be asked before a credential
+ * is checked. Set with g_response_conn, before the WebSocket upgrades
+ * and dispatch() both, so every credential check sees it.
+ */
+static char g_req_peer_ip[CONNTHROTTLE_IP_MAX];
+
+/*
  * "-" rather than an empty field when nobody is authenticated, so every
  * audit line has a subject in the same column and the trail stays
  * greppable by a fixed shape.
@@ -26505,7 +26513,9 @@ static char g_req_user[HOSTAUTH_USERNAME_MAX];
  * ADR-0317 section 8 (#543): whether this request presented an app
  * password (HTTP Basic), and if it verified, its name. 0: no Basic
  * credential; 1: verified, g_req_user is its user; -1: presented and
- * refused. Reset with g_req_user by resolve_request_identity().
+ * refused; -2: not checked, because its source is over the #547
+ * authentication-failure threshold. Reset with g_req_user by
+ * resolve_request_identity().
  */
 static int g_req_basic;
 static char g_req_app[LDAP_APP_PASSWORD_NAME_MAX];
@@ -26536,23 +26546,40 @@ static void resolve_request_identity(const struct http_request *req)
 		return;
 	if (strncmp(hdr, "Basic ", 6) == 0) {
 		unsigned char raw[384];
-		char *colon;
-		int n = base64_decode(hdr + 6, raw, sizeof(raw) - 1);
+		char *colon = NULL;
+		int n;
 
-		g_req_basic = -1;
-		if (n <= 0)
+		/*
+		 * #547: a source over the failure threshold is not checked at
+		 * all -- checking is a bcrypt comparison on a memo miss, and
+		 * that cost is the reason for the block. -2 makes
+		 * authorize_route() answer 429, not "log in first".
+		 */
+		if (connthrottle_auth_blocked(g_req_peer_ip) > 0) {
+			g_req_basic = -2;
 			return;
-		raw[n] = '\0';
-		if (memchr(raw, '\0', (size_t)n) != NULL)
-			return;
-		colon = strchr((char *)raw, ':');
-		if (colon == NULL)
-			return;
-		*colon = '\0';
-		if (ldap_app_password_check((const char *)raw, colon + 1, g_req_app, sizeof(g_req_app))) {
-			snprintf(g_req_user, sizeof(g_req_user), "%s", (const char *)raw);
-			g_req_basic = 1;
 		}
+		g_req_basic = -1;
+		n = base64_decode(hdr + 6, raw, sizeof(raw) - 1);
+		if (n > 0) {
+			raw[n] = '\0';
+			if (memchr(raw, '\0', (size_t)n) == NULL)
+				colon = strchr((char *)raw, ':');
+		}
+		if (colon != NULL) {
+			*colon = '\0';
+			if (ldap_app_password_check((const char *)raw, colon + 1, g_req_app,
+			                            sizeof(g_req_app))) {
+				snprintf(g_req_user, sizeof(g_req_user), "%s", (const char *)raw);
+				g_req_basic = 1;
+			}
+		}
+		/* A presented credential counts whether it failed on its secret
+		 * or was malformed; only a verified one clears the count. */
+		if (g_req_basic == 1)
+			connthrottle_record_auth_success(g_req_peer_ip);
+		else
+			hostauth_note_auth_failure(g_req_peer_ip);
 		explicit_bzero(raw, sizeof(raw));
 		return;
 	}
@@ -26759,6 +26786,18 @@ static int authorize_route(int fd, const struct http_request *req, const struct 
 		authz = hostauth_authorize(bearer, route->permission);
 	}
 
+	/* #547: a throttled app password is refused as such, not as a
+	 * missing session -- "log in first" would be the wrong advice from
+	 * an address that is blocked for that too. */
+	if (authz == HOSTAUTH_AUTHZ_NO_SESSION && g_req_basic == -2) {
+		const char *msg = "too many failed authentications from this address -- try again later";
+
+		if (is_head)
+			respond_error_head(fd, 429, "Too Many Requests", msg);
+		else
+			respond_error(fd, 429, "Too Many Requests", msg);
+		return 0;
+	}
 	switch (authz) {
 	case HOSTAUTH_AUTHZ_OK:
 		return 1;
@@ -26969,6 +27008,7 @@ static void dispatch(int fd, const struct http_request *req)
 			ctx.fd = fd;
 			ctx.req = req;
 			ctx.user = g_req_user;
+			ctx.peer_ip = g_req_peer_ip;
 			ctx.p[0] = params[0];
 			ctx.p[1] = params[1];
 			g_api_routes[idx].fn(&ctx);
@@ -28825,6 +28865,7 @@ static void handle_client_event(struct conn *cc)
 			 * silently swallow frames meant for the wire.
 			 */
 			g_response_conn = cc;
+			snprintf(g_req_peer_ip, sizeof(g_req_peer_ip), "%s", cc->peer_ip);
 
 			cr = try_console_upgrade(cc, &req);
 

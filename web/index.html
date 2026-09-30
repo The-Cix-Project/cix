@@ -1321,18 +1321,21 @@
 					<button type="submit">Save</button>
 				</form>
 				<p class="hint">Log interval caps how often a repeatedly-failing source's own log line is written (0 logs every single failure) -- independent of the threshold/block above, since a source can flood the log store long before it ever fails enough to actually be blocked (e.g. a browser retrying against an untrusted cert).</p>
+				<p class="hint">The threshold, window and block also govern failed <em>authentication</em> (#547): wrong login passwords and app passwords that do not verify, counted per address apart from failed handshakes. Past the threshold, that address's logins get 429 for the block duration on both listeners, before any password is checked. Only a successful login clears it; loopback is exempt.</p>
 				<h3>Currently tracked</h3>
 				<table id="tls-throttle-status">
 					<thead>
 						<tr>
 							<th>IP</th>
-							<th>Failures</th>
+							<th>Failed handshakes</th>
 							<th>Blocked</th>
 							<th>Blocked until</th>
+							<th>Failed logins</th>
+							<th>Logins blocked until</th>
 						</tr>
 					</thead>
 					<tbody id="tls-throttle-status-body">
-						<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
+						<tr><td colspan="6" class="empty">Loading&hellip;</td></tr>
 					</tbody>
 				</table>
 			</div>

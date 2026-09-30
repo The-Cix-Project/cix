@@ -71,9 +71,11 @@ int connthrottle_config_set(int enabled_flag, int threshold, int window_seconds,
 
 /* 1 if ip is currently blocked (and throttling is enabled), 0 otherwise.
  * Enforced by the caller against the HTTPS listener only (ADR-0137,
- * accept_loop()'s is_tls guard) -- only a failed TLS handshake can ever
- * cause a block in the first place, so this is never checked against
- * the plain HTTP listener. */
+ * accept_loop()'s is_tls guard) -- this is the TLS class, which only a
+ * failed TLS handshake can trip. The authentication class (#547, below)
+ * is a separate count with its own block, enforced where credentials are
+ * checked rather than here; they share the configuration above. This
+ * class is never checked against the plain HTTP listener. */
 int connthrottle_should_block(const char *ip);
 
 /*
@@ -128,7 +130,33 @@ int connthrottle_should_log_failure(const char *ip);
  */
 void connthrottle_record_success(const char *ip);
 
-/* {"entries": [{"ip":"...", "fail_count":N, "blocked":bool, "blocked_until":unix-ts-or-0}, ...]} */
+/*
+ * #547: the authentication class -- a presented credential that failed
+ * (a wrong login password, an HTTP Basic app password that did not
+ * verify). Each failed check costs a bcrypt comparison, measured at
+ * ~400 ms on 192.168.15.95 (2026-09-29) on a single-threaded event loop,
+ * so an unthrottled source could stall the control plane and guess
+ * passwords at full speed.
+ *
+ * Same window, threshold and block length as the TLS class, counted
+ * apart from it: connthrottle_record_success() clears the TLS count on
+ * any well-formed request, which an attacker's own failed logins are.
+ * Only a SUCCESSFUL authentication clears this one. A request carrying
+ * no credential never counts. Keyed by source IP, so clients behind one
+ * NAT share a count; enforced on BOTH listeners, at the credential
+ * check and before bcrypt runs, which is what makes a blocked attempt
+ * cheap. Loopback is exempt, as for the TLS class.
+ *
+ * connthrottle_auth_blocked: seconds of block remaining, 0 when not
+ * blocked. connthrottle_record_auth_failure: 1 when this failure
+ * tripped a block (the caller audits it, once per block), 0 otherwise.
+ */
+int connthrottle_auth_blocked(const char *ip);
+int connthrottle_record_auth_failure(const char *ip);
+void connthrottle_record_auth_success(const char *ip);
+
+/* {"entries": [{"ip":"...", "fail_count":N, "blocked":bool, "blocked_until":unix-ts-or-0,
+ *               "auth_fail_count":N, "auth_blocked_until":unix-ts-or-0}, ...]} */
 void connthrottle_write_status_json(struct json_writer *w);
 
 #endif /* CONNTHROTTLE_H */

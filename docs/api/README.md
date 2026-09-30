@@ -106,7 +106,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | PUT | `/system/rolling-config` | Set the jitter window -- 0 disables jitter, restart happens immediately |
 | GET | `/system/pkg-build-config` | The configured pkg install/hostbuild concurrency ceiling (`max_concurrent_jobs`) and per-build memory/CPU cgroup limits (`memory_max`/`cpu_max`, ADR-0165), plus `active_jobs`/`active_job_names` showing what currently holds those slots |
 | PUT | `/system/pkg-build-config` | Partial update -- only the fields given are changed; `max_concurrent_jobs` 1-10 (lowering it doesn't disrupt jobs already in flight); `memory_max`/`cpu_max` apply to every build's own sandbox from the next build onward, 0/null means unlimited |
-| GET | `/system/tls-throttle` | Per-source-IP throttling config for repeated failed HTTPS handshakes |
+| GET | `/system/tls-throttle` | Per-source-IP throttling config for repeated failed HTTPS handshakes and failed authentication (#547) |
 | PUT | `/system/tls-throttle` | Partially update it -- fields omitted are left unchanged |
 | GET | `/system/tls-throttle/status` | Every source currently tracked for failed handshakes, live |
 | GET | `/system/ntp` | Upstream NTP server address list used to sync the host clock |
@@ -856,7 +856,7 @@ GET /v1/system/tls-throttle
 {"enabled": true, "threshold": 20, "window_seconds": 60, "block_seconds": 300, "log_interval_seconds": 5}
 ```
 
-Found live, not designed speculatively: a sustained flood of failed HTTPS handshakes from an untrusting client (several hundred/minute, since this daemon deliberately never does HTTP keep-alive — every attempt is a brand-new TCP+TLS connection) had no peer IP in its own log line and no way to stop the daemon spending a real `accept4()`+`SSL_new()`+`SSL_accept()` attempt on every single one. A source that fails `threshold` handshakes within `window_seconds` is refused outright — a bare `close()`, before any allocation or TLS negotiation — on **both** the HTTPS and plain HTTP listeners, for `block_seconds`. One shared in-memory table, checked once per `accept4()` regardless of which listener it came in on.
+Found live, not designed speculatively: a sustained flood of failed HTTPS handshakes from an untrusting client (several hundred/minute, since this daemon deliberately never does HTTP keep-alive — every attempt is a brand-new TCP+TLS connection) had no peer IP in its own log line and no way to stop the daemon spending a real `accept4()`+`SSL_new()`+`SSL_accept()` attempt on every single one. A source that fails `threshold` handshakes within `window_seconds` is refused outright — a bare `close()`, before any allocation or TLS negotiation — on the HTTPS listener, for `block_seconds`. It is not enforced on plain HTTP ([ADR-0137](../adr/0137-tls-throttle-block-scoped-to-https-listener.md)): a failed handshake says nothing about a plain-HTTP client, and enforcing it there stranded an admin path behind an untrusted-cert browser's retries. One shared in-memory table.
 
 `log_interval_seconds` is a second, independent knob: caps how often a "handshake failed" log line is actually written for a given source (`0` logs every single failure). **Found live, again**: a legitimate desktop's own browser repeatedly failing TLS against an untrusted self-signed cert — not a hostile source — flooded the consolidated log store at 10+ lines/sec, crowding out everything else in its rotation window, long before `threshold` failures would ever justify a block. The failure is still counted toward `threshold`/`window_seconds` every time regardless of this setting — only the *logging* is rate-limited, never the accounting a real block still needs to be accurate.
 
@@ -872,12 +872,15 @@ GET /v1/system/tls-throttle/status
 ```
 
 ```json
-{"entries": [{"ip": "203.0.113.9", "fail_count": 24, "blocked": true, "blocked_until": 1786490300}]}
+{"entries": [{"ip": "203.0.113.9", "fail_count": 24, "blocked": true, "blocked_until": 1786490300,
+              "auth_fail_count": 0, "auth_blocked_until": 0}]}
 ```
 
 Every source currently tracked — live, read-only, in-memory state. `fail_count` is the count within the current rolling window; `blocked_until` is Unix seconds, `0` when not currently blocked. A clean, complete HTTP request (any status code — even a 404 proves the client speaks HTTP correctly) or a successful TLS handshake both reset a source's own count, so a client that had a handful of transient failures and then behaved normally isn't left one failure away from a block.
 
-**Loopback (`127.0.0.1`) is never throttled or tracked, deliberately** — `cixctl`'s own default `--host=` is `127.0.0.1`, and since a block applies uniformly across both listeners, tripping it from loopback would lock out this daemon's own local admin access entirely, the same class of hazard as a firewall rule that can shut out its own operator. A genuinely hostile source is, by definition, never loopback.
+**Loopback (`127.0.0.1`) is never throttled or tracked, deliberately** — `cixctl`'s own default `--host=` is `127.0.0.1`, and tripping a block from loopback would lock out this daemon's own local admin access entirely, the same class of hazard as a firewall rule that can shut out its own operator. A genuinely hostile source is, by definition, never loopback.
+
+**Failed authentication is a second, separate count ([#547](https://git.home.arpa/itdlabs/cix/issues/547)).** The same `threshold`, `window_seconds` and `block_seconds` govern failed credential checks: a wrong password at `POST /login`, or an HTTP Basic app password that does not verify. Each such check is a bcrypt comparison, measured at about 400 ms on 192.168.15.95, on the single event loop -- so without this, anyone who could reach the port could stall the control plane and guess passwords at full speed. Past the threshold, that address's logins and app passwords get `429` for `block_seconds`, on **both** listeners, and the check comes **before** the password is looked at: a blocked attempt costs nothing, and the right password is refused too until the block ends. It is counted apart from failed handshakes because a well-formed request clears that count, and an attacker's failed logins are well-formed; only a **successful** authentication clears this one. A request that presents no credential never counts, so a dashboard polling without a session cannot trip it. Keyed by address, so clients behind one NAT share it. Each block is audited once, as `<ip> authentication blocked for N seconds after M failed attempts`; the status above shows it as `auth_fail_count` and `auth_blocked_until`.
 
 ## The box's own kernel routing table
 
