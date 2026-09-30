@@ -4483,6 +4483,41 @@ static int produce_fail(const char *image, const char *staging, const char *step
 }
 
 /*
+ * How many of e's recorded files are absent under rootfs, and the first
+ * one. lstat, not stat: a dangling symlink is a file the package really
+ * installed. A path too long to build cannot be checked, so it is not
+ * counted against the tree. Shared by the post-install check (#281) and
+ * the dedup check below (#551), which ask the same question of two trees.
+ */
+static int files_missing_in(const char *rootfs, const struct pkg_entry *e, char *first_missing,
+                            size_t first_missing_size)
+{
+	char path[PATH_MAX];
+	struct stat st;
+	int missing = 0;
+	int i;
+
+	if (first_missing != NULL && first_missing_size > 0)
+		first_missing[0] = '\0';
+	if (e == NULL)
+		return 0;
+	for (i = 0; i < e->file_count; i++) {
+		const char *rel = e->files[i];
+
+		while (*rel == '/')
+			rel++;
+		if (snprintf(path, sizeof(path), "%s/%s", rootfs, rel) >= (int)sizeof(path))
+			continue;
+		if (lstat(path, &st) != 0) {
+			if (missing == 0 && first_missing != NULL && first_missing_size > 0)
+				snprintf(first_missing, first_missing_size, "%s", rel);
+			missing++;
+		}
+	}
+	return missing;
+}
+
+/*
  * Did this package's own files actually reach the image's current
  * rootfs? (#281)
  *
@@ -4528,41 +4563,6 @@ static int installed_files_missing(const char *image, const struct pkg_entry *e,
 		           * error, and guessing here would report the wrong one. */
 	image_version_rootfs_path(image, version, rootfs, sizeof(rootfs));
 	return files_missing_in(rootfs, e, first_missing, first_missing_size);
-}
-
-/*
- * How many of e's recorded files are absent under rootfs, and the first
- * one. lstat, not stat: a dangling symlink is a file the package really
- * installed. A path too long to build cannot be checked, so it is not
- * counted against the tree. Shared by the post-install check (#281) and
- * the dedup check below (#551), which ask the same question of two trees.
- */
-static int files_missing_in(const char *rootfs, const struct pkg_entry *e, char *first_missing,
-                            size_t first_missing_size)
-{
-	char path[PATH_MAX];
-	struct stat st;
-	int missing = 0;
-	int i;
-
-	if (first_missing != NULL && first_missing_size > 0)
-		first_missing[0] = '\0';
-	if (e == NULL)
-		return 0;
-	for (i = 0; i < e->file_count; i++) {
-		const char *rel = e->files[i];
-
-		while (*rel == '/')
-			rel++;
-		if (snprintf(path, sizeof(path), "%s/%s", rootfs, rel) >= (int)sizeof(path))
-			continue;
-		if (lstat(path, &st) != 0) {
-			if (missing == 0 && first_missing != NULL && first_missing_size > 0)
-				snprintf(first_missing, first_missing_size, "%s", rel);
-			missing++;
-		}
-	}
-	return missing;
 }
 
 /*
