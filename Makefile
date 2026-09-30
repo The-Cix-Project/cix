@@ -995,7 +995,7 @@ $(BUILD)/test_apigen: test/test_apigen.c $(BUILD)/apigen | $(BUILD)
 $(BUILD)/test_treecopy: test/test_treecopy.c daemon/src/treecopy.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_treecopy.c daemon/src/treecopy.c -o $@
 
-$(BUILD)/mkbootroot: image/src/mkbootroot.c test/test_image_fixture.c daemon/src/persist.c daemon/src/osrelease.c $(BUILD)/version.h | $(BUILD)
+$(BUILD)/mkbootroot: image/src/mkbootroot.c test/test_image_fixture.c daemon/src/persist.c daemon/src/osrelease.c src/btrfs.c $(BUILD)/version.h | $(BUILD)
 	$(CC) $(CFLAGS) -Itest -Idaemon/include -Ibuild $(filter %.c,$^) -o $@
 
 $(BUILD)/test_mkbootroot_firmware: test/test_mkbootroot_firmware.c | $(BUILD)
@@ -1133,8 +1133,8 @@ $(BUILD)/console_term_child: test/console_term_child.c | $(BUILD)
 $(BUILD)/dual_console_child: test/dual_console_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/mkinstalleriso: image/src/mkinstalleriso.c test/test_image_fixture.c daemon/src/persist.c include/mkinstalleriso_args.h | $(BUILD)
-	$(CC) $(CFLAGS) -Itest -Idaemon/include image/src/mkinstalleriso.c test/test_image_fixture.c daemon/src/persist.c -o $@
+$(BUILD)/mkinstalleriso: image/src/mkinstalleriso.c test/test_image_fixture.c daemon/src/persist.c src/btrfs.c include/mkinstalleriso_args.h | $(BUILD)
+	$(CC) $(CFLAGS) -Itest -Idaemon/include image/src/mkinstalleriso.c test/test_image_fixture.c daemon/src/persist.c src/btrfs.c -o $@
 
 $(BUILD)/mktoolchainimage: image/src/mktoolchainimage.c test/test_image_fixture.c | $(BUILD)
 	$(CC) $(CFLAGS) -Itest $^ -o $@

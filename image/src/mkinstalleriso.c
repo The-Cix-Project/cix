@@ -31,6 +31,7 @@
  */
 #include "bootmodules.h"
 #include "mkinstalleriso_args.h"
+#include "btrfs.h"
 #include "persist.h"
 #include "libdirs.h"
 #include "test_image_fixture.h"
@@ -1087,15 +1088,18 @@ int main(int argc, char **argv)
 		char seed_dst[PATH_MAX];
 
 		/*
-		 * Deliberately NOT pre-created: this copy is `cp -a src dst`,
-		 * and cp's rule is that an existing directory destination means
+		 * Created by the copy, not before it. Until 0.2.57-415 this was
+		 * `cp -a src dst`, where an existing directory destination means
 		 * "copy INTO here" -- which silently produced payload/seed/seed
-		 * and an installed box that found no recipes. The destination
-		 * must not exist so it becomes the copy rather than its parent.
+		 * and an installed box that found no recipes. cix_tree_copy()
+		 * fills an existing directory instead of nesting in it, and it
+		 * runs in-process, because the control-plane root this runs on
+		 * has had no cp since 0.2.57-412 (#464).
 		 */
 		snprintf(seed_dst, sizeof(seed_dst), "%s/payload/seed", stage_dir);
-		if (test_image_fixture_copy_dir_recursive(seed_dir, seed_dst) != 0) {
-			fprintf(stderr, "staging the package seed from %s failed\n", seed_dir);
+		if (cix_tree_copy(seed_dir, seed_dst) != 0) {
+			fprintf(stderr, "staging the package seed from %s failed: %s\n", seed_dir,
+			        strerror(errno));
 			return 1;
 		}
 		printf("staged the package seed from %s\n", seed_dir);

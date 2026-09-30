@@ -28,6 +28,7 @@
 #include "persist.h"
 #include "version.h"
 #include "libdirs.h"
+#include "btrfs.h"
 #include "test_image_fixture.h"
 
 #include <dirent.h>
@@ -48,6 +49,24 @@ static int ensure_dir(const char *path)
 {
 	if (mkdir(path, 0755) != 0 && errno != EEXIST) {
 		perror(path);
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * Copies the tree at src to dst in-process, as `cp -a` would (owner,
+ * mode, times, symlinks as symlinks), and names both paths on failure.
+ *
+ * In-process because this runs on the control-plane root, which has had
+ * no cp since 0.2.57-412 (#464). The firmware, module and locale copies
+ * below forked `cp -a` until then, and the first assembly run on a 412
+ * root failed with `execve cp: No such file or directory`.
+ */
+static int stage_tree(const char *src, const char *dst)
+{
+	if (cix_tree_copy(src, dst) != 0) {
+		fprintf(stderr, "copying %s to %s: %s\n", src, dst, strerror(errno));
 		return -1;
 	}
 	return 0;
@@ -1415,7 +1434,7 @@ int main(int argc, char **argv)
 			if (stat(loc_src, &lst) == 0 && S_ISDIR(lst.st_mode)) {
 				if (ensure_dir_path_under(image_root, "usr/lib/locale") != 0)
 					return 1;
-				if (test_image_fixture_copy_dir_recursive(loc_src, loc_dst) != 0)
+				if (stage_tree(loc_src, loc_dst) != 0)
 					return 1;
 				fprintf(stderr, "staged the C.UTF-8 locale from %s\n", host_tools_dir);
 			} else {
@@ -1604,7 +1623,7 @@ int main(int argc, char **argv)
 		/* Recursive, and the destination is created BY the copy --
 		 * same contract the modules staging below relies on, which is
 		 * why "lib" alone is pre-created here. */
-		if (test_image_fixture_copy_dir_recursive(firmware_dir, fw_dst) != 0)
+		if (stage_tree(firmware_dir, fw_dst) != 0)
 			return 1;
 		/*
 		 * stderr, not stdout. Every other progress line here is
@@ -1623,14 +1642,11 @@ int main(int argc, char **argv)
 	 * fatal if it fails" posture as firmware_dir above -- an operator
 	 * who asked for module support and didn't get it should find out
 	 * now, not at first real modprobe on the installed system.
-	 * test_image_fixture_copy_dir_recursive() (real `cp -a`) is used
-	 * here, not the flat copy_dir_files() above, since modules_dir
-	 * nests by kernel/drivers/... -- its own contract requires the
-	 * destination to not already exist, so unlike firmware_dir's own
-	 * lib/firmware (created BY its own recursive copy), only
-	 * "lib" itself is pre-created here; "lib/modules" is created BY
-	 * the copy, fresh, every run (mksquashfs's own -noappend already
-	 * means every run starts from a clean image_root regardless). */
+	 * stage_tree() is used here, not the flat copy_dir_files() above,
+	 * since modules_dir nests by kernel/drivers/.... "lib" is
+	 * pre-created and "lib/modules" is created by the copy, fresh,
+	 * every run (mksquashfs's -noappend already means every run starts
+	 * from a clean image_root regardless). */
 	if (modules_dir[0] != '\0') {
 		char modules_dst[PATH_MAX];
 
@@ -1641,7 +1657,7 @@ int main(int argc, char **argv)
 			fprintf(stderr, "path too long: %s/lib/modules\n", image_root);
 			return 1;
 		}
-		if (test_image_fixture_copy_dir_recursive(modules_dir, modules_dst) != 0)
+		if (stage_tree(modules_dir, modules_dst) != 0)
 			return 1;
 	}
 
@@ -1655,9 +1671,7 @@ int main(int argc, char **argv)
 	 * still works correctly either way -- kmod's own tools dispatch on
 	 * argv[0], which is identical regardless of whether that path was
 	 * reached via a symlink or a real file. usr/bin already exists
-	 * (cixd/cixctl staged there above), so the flat copy merges
-	 * into it rather than needing test_image_fixture_copy_dir_recursive()'s
-	 * own "destination must not exist" contract.
+	 * (cixd/cixctl staged there above), so the flat copy merges into it.
 	 */
 	if (kmod_bin_dir[0] != '\0') {
 		char kmod_dst[PATH_MAX];

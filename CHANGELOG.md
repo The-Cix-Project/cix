@@ -6,6 +6,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Bootroot assembly and ISO builds copy trees in-process, so they run on a root with no cp (#464)
+
+0.2.57-412 took `cp` out of the control-plane root. `mkbootroot` still forked `cp -a` for three trees: the C.UTF-8 locale, firmware and kernel modules. `mkinstalleriso` still forked it for the package seed. 412 deployed only because its own assembly ran on 411, which still had `cp`. The next assembly, 0.2.57-414's, ran on a 412 root and failed with `execve cp: No such file or directory`, so nothing could be deployed after 412. Both tools now copy with `cix_tree_copy()`, #464's in-process `cp -a`, and `mkbootroot` names both paths and the errno when a copy fails. The forking copier, `test_image_fixture_copy_dir_recursive()`, is now used only by test code.
+
 ### The mkinstalleriso argument list is defined once, and a release runs it (#480)
 
 cixd and `mkinstalleriso` each wrote the ISO builder's argument list by hand: the daemon filled `argv[1]` to `argv[15]`, and `mkinstalleriso` read them behind an `argc != 16` and a usage line kept in step by eye. The count went wrong twice, and both times `POST /v1/system/iso` answered with a fragment of usage text. Nothing caught it, because the only test that ran `mkinstalleriso`, `test_installer`, boots QEMU and runs in no gate. Both ends now index by name from `include/mkinstalleriso_args.h`: the count is the list's length and the usage line is generated from it. The new `test_mkinstalleriso_args` in SELFTESTS runs the real binary, with no VM, and checks three things: one argument short and one too many exit 2 with that usage line, and the daemon's count gets past the check.
