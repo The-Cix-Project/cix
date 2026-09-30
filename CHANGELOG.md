@@ -6,6 +6,21 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### ADR-0318: an upstream release rolls only when upstream signs it, and the platform writes the next recipe (#508)
+
+The owner wants hibr to follow its releases without a hand-written recipe per release, and chose both open questions on 2026-09-30: signed release assets, and recipes committed to cix-recipes. ADR-0318 records the design.
+
+- **Discovery:** a `gitea-releases` kind reads the repository named by the recipe's own source URL.
+- **Authentication:** the release's uploaded tarball is checked by minisign, with the trusted comment compared in full. Keys live in a per-package trust store kept apart from Cix's artifact keys. There is no trust-on-first-use.
+- **Writing the recipe:** the daemon writes the next revision from the newest one (new version, release 1, url, sha256; `artifact_sha256` dropped). It commits it to cix-recipes first, then publishes it. Committing is opt-in, and a host without it writes nothing.
+- **Schedule:** a default hourly `pkg.discover`. It supersedes one consequence of ADR-0255, "the daemon no longer generates recipes".
+
+**Nothing is implemented yet, and two things outside this repository come first, both measured or filed today:**
+- **CPDL refuses the kind.** `upstream "gitea-releases"` fails at publish with `CPDL-E3006: validation: unsupported upstream discovery provider` (cix-build-system#274).
+- **hibr publishes no signed release** (hibr#62).
+
+jumpbox already tracks hibr `rolling` (`jumpbox@2.9.0`), so once a revision exists the rest (rebuild, and `jump` following it) is the path measured working today with `hibr@0.49.1-2`.
+
 ### A checksum mismatch carries the full computed hash (#513, part 2)
 
 A source that hashed to the wrong value failed with `... bytes hash to 87b7d88d539b..., recipe declares 42fb146b90a6... -- full hashes, path and url in the log store`. The 12-character prefix is the one thing an operator needs in full to re-pin a recipe, and a prefix cannot be written into one. The message now carries the whole 64-character computed hash, which leads so that a run record's 192-byte copy keeps it. It keeps a prefix of the declared hash, which the recipe already holds in full, and names the log store's exact address for path and url: `GET /v1/system/logs?source=cixd`.

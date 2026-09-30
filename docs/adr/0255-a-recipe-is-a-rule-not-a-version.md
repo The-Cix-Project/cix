@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted, with one consequence superseded by [ADR-0318](0318-an-upstream-release-is-authenticated-by-a-signed-asset.md): the platform does write the next revision of a recipe whose upstream publishes signed releases.
 
 Supersedes one sentence of [ADR-0193](0193-kernel-release-channel-policy.md) — "The channel reports; it does not act." — and completes the follow-on that ADR named for itself. Extends [ADR-0188](0188-per-package-rolling-policy.md) with a second, orthogonal policy axis rather than replacing its one. Builds directly on [ADR-0254](0254-upstream-checksums-are-verified-not-computed.md), which is the property that makes acting safe.
 
