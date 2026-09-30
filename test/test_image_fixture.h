@@ -5,6 +5,16 @@
 #include <sys/types.h>
 
 /*
+ * Two source files implement this header. test_image_fixture.c is linked
+ * into cixd, mkbootroot and mkinstalleriso, so it runs no program at all.
+ * test_image_fixture_host.c holds the functions that fork one (`cp -a`,
+ * `sha256sum`) and is linked only by tests and mktoolchainimage:
+ * test_image_fixture_copy_dir_recursive(), _stage_toolchain(),
+ * _seed_floor_packages(), _clear_floor_cache() and test_floor_install
+ * (#554).
+ */
+
+/*
  * Stages a minimal test image at image_root: child_binary_path (built
  * on the host, e.g. "build/daemon_child") copied to
  * <image_root>/bin/<child_basename>, plus the dynamic linker/libc it

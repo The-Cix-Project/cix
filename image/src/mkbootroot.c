@@ -29,6 +29,7 @@
 #include "version.h"
 #include "libdirs.h"
 #include "btrfs.h"
+#include "controlplane_programs.h"
 #include "test_image_fixture.h"
 
 #include <dirent.h>
@@ -644,6 +645,50 @@ static int verify_platform_libs_intact(const char *image_root, const char *host_
 	if (checked > 0)
 		fprintf(stderr, "verified %d platform libraries survived staging intact\n", checked);
 	return 0;
+}
+
+/*
+ * #554: refuses a root missing any program in
+ * include/controlplane_programs.h, naming it. Each must be a regular
+ * file, following symlinks, with an execute bit. A CP_KMOD program is
+ * required only when the kmod image's usr/bin was given (have_kmod).
+ *
+ * Written after 0.2.57-414: 412 dropped `cp` from the root while
+ * mkbootroot still forked it, and nothing noticed until an assembly
+ * ran on that root. Returns 0, or 1 with the reason on stderr.
+ */
+static int verify_controlplane_programs(const char *image_root, int have_kmod)
+{
+	static const struct {
+		const char *path;
+		enum controlplane_program_source source;
+	} programs[] = {
+#define CP_ENTRY_(id, path, source) { path, source },
+		CONTROLPLANE_PROGRAMS(CP_ENTRY_)
+#undef CP_ENTRY_
+	};
+	size_t i;
+	int missing = 0;
+
+	for (i = 0; i < sizeof(programs) / sizeof(programs[0]); i++) {
+		char p[PATH_MAX];
+		struct stat st;
+
+		if (programs[i].source == CP_KMOD && !have_kmod)
+			continue;
+		if (snprintf(p, sizeof(p), "%s%s", image_root, programs[i].path) >= (int)sizeof(p)) {
+			fprintf(stderr, "path too long: %s%s\n", image_root, programs[i].path);
+			return 1;
+		}
+		if (stat(p, &st) != 0 || !S_ISREG(st.st_mode) || (st.st_mode & 0111) == 0) {
+			fprintf(stderr,
+			        "the assembled root has no executable %s, which code running on the "
+			        "control plane executes (include/controlplane_programs.h, #554)\n",
+			        programs[i].path);
+			missing++;
+		}
+	}
+	return missing > 0 ? 1 : 0;
 }
 
 int main(int argc, char **argv)
@@ -1761,33 +1806,14 @@ int main(int argc, char **argv)
 		if (verify_platform_libs_intact(image_root, host_tools_dir) != 0)
 			return 1;
 		/*
-		 * ADR-0307 clause 6, checked again at the seal rather than
-		 * only where it was staged -- the same reason
-		 * verify_platform_libs_intact() above exists rather than
-		 * trusting the copy that put those libraries there. That one
-		 * was written after a later staging step overwrote an earlier
-		 * one and produced a root that panicked at boot; both
-		 * assemblies printed "wrote ..." and reported success.
-		 *
-		 * This is cheaper than that check and answers a smaller
-		 * question -- is the engine still in the root about to be
-		 * sealed -- but it is the same class of question, and the
-		 * answer matters as much: a root without it installs nothing.
+		 * #554: every program code on this root executes, checked at the
+		 * seal rather than trusted from the step that staged it -- the
+		 * reason verify_platform_libs_intact() above exists. This
+		 * replaces a check for /usr/bin/cbs alone (ADR-0307 clause 6),
+		 * which is one entry of the list.
 		 */
-		{
-			char cbs_path[PATH_MAX];
-			struct stat cst;
-
-			snprintf(cbs_path, sizeof(cbs_path), "%s/usr/bin/cbs", image_root);
-			if (stat(cbs_path, &cst) != 0 || !S_ISREG(cst.st_mode)) {
-				fprintf(stderr,
-				        "the assembled root has no %s -- it was staged and is gone, so "
-				        "something later in this assembly removed or replaced it "
-				        "(ADR-0307 clause 6)\n",
-				        cbs_path);
-				return 1;
-			}
-		}
+		if (verify_controlplane_programs(image_root, kmod_bin_dir[0] != '\0') != 0)
+			return 1;
 		if (run_mksquashfs(use_mksquashfs, image_root, out_path, host_tools_dir) != 0)
 			return 1;
 	}
