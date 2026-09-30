@@ -458,6 +458,21 @@ A `.pc` file is a **claim about what your package provides** — include paths, 
 
 The test to apply: *does everything this `.pc` file promises actually exist in `$PKG_DESTDIR`?* If yes, ship it. If no, either ship the missing pieces or strip the `.pc` — never ship a `.pc` that describes files you deleted.
 
+### Setuid and setgid files
+
+A file that must be setuid or setgid is declared at package level, before the first phase, and given that exact mode in `install`:
+
+```
+privileged file "${dest}/sbin/unix_chkpwd" mode 04755
+...
+install {
+    ...
+    chmod 04755 "${dest}/sbin/unix_chkpwd"
+}
+```
+
+cbs refuses any setuid or setgid entry that is not declared, and refuses a declared one whose staged mode differs. The installer keeps a declared mode from cix 0.2.57-416 on (#552); before that it masked every file to `0777`, so no setuid bit reached any image. Leave a program unprivileged when it has an unprivileged route: `ping` and `mtr` use ICMP datagram sockets through `net.ipv4.ping_group_range`, not setuid. `linux-pam` and `openssh` are the worked examples.
+
 ## What you do NOT have to clean up
 
 `pkg_install()` is finished when the package's files are in `$PKG_DESTDIR`. The daemon then runs a finalize phase over that tree, in your build container, before it becomes an artifact ([ADR-0251](../adr/0251-a-package-artifact-carries-what-the-platform-runs.md)). It:

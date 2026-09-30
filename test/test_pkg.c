@@ -464,11 +464,15 @@ static int write_recipe(const struct cix_client *c, const char *name, const char
  * again under the right one, and later compares `GET
  * /v1/pkg/recipes/{name}`'s `content` field against it byte for byte.
  * A helper that only ever published could not express any of those.
+ *
+ * `decls` goes at package level, before the first phase, where CPDL
+ * puts declarations such as `privileged file` (#552). NULL for none.
  */
-static void cpdl_recipe_text(char *out, size_t out_size, const char *name, const char *version,
-                              const char *source_url, const char *sha256,
-                              const char *extra_sources, const char *tools, const char *runtime,
-                              const char *build_body, const char *install_body)
+static void cpdl_recipe_text_decl(char *out, size_t out_size, const char *name,
+                                  const char *version, const char *source_url,
+                                  const char *sha256, const char *extra_sources,
+                                  const char *tools, const char *runtime, const char *decls,
+                                  const char *build_body, const char *install_body)
 {
 	snprintf(out, out_size,
 	         "package \"%s\" {\n"
@@ -491,6 +495,7 @@ static void cpdl_recipe_text(char *out, size_t out_size, const char *name, const
 	         "%s"
 	         "    }\n"
 	         "\n"
+	         "%s"
 	         "    build {\n"
 	         "%s"
 	         "    }\n"
@@ -501,7 +506,17 @@ static void cpdl_recipe_text(char *out, size_t out_size, const char *name, const
 	         "}\n",
 	         name, version, name, source_url, sha256,
 	         extra_sources != NULL ? extra_sources : "", tools,
-	         runtime != NULL ? runtime : "", build_body, install_body);
+	         runtime != NULL ? runtime : "", decls != NULL ? decls : "", build_body,
+	         install_body);
+}
+
+static void cpdl_recipe_text(char *out, size_t out_size, const char *name, const char *version,
+                              const char *source_url, const char *sha256,
+                              const char *extra_sources, const char *tools, const char *runtime,
+                              const char *build_body, const char *install_body)
+{
+	cpdl_recipe_text_decl(out, out_size, name, version, source_url, sha256, extra_sources, tools,
+	                      runtime, NULL, build_body, install_body);
 }
 
 /*
@@ -624,6 +639,44 @@ static void fixture_srcdir(const char *tarball_path, char *out, size_t out_size)
 	blen = strlen(out);
 	if (blen > 8 && strcmp(out + blen - 8, ".tarball") == 0)
 		out[blen - 8] = '\0';
+}
+
+/*
+ * A recipe that installs one setuid file, declared as CPDL requires
+ * (#552): cbs refuses an undeclared setuid entry, and the installer
+ * keeps a declared one.
+ */
+static int write_suid_recipe(const struct cix_client *c, const char *name, const char *version,
+                             const char *tarball_path, const char *sha256)
+{
+	char srcdir[160];
+	char build_body[512], install_body[768], decls[256];
+	char content[4096];
+
+	fixture_srcdir(tarball_path, srcdir, sizeof(srcdir));
+	snprintf(build_body, sizeof(build_body),
+	         "        cd \"${src}/%s/%s\" {\n"
+	         "            run \"tcc\" {\n"
+	         "                \"-o\" \"hello\" \"hello.c\"\n"
+	         "            }\n"
+	         "        }\n",
+	         name, srcdir);
+	snprintf(install_body, sizeof(install_body),
+	         "        mkdir \"${dest}/usr/libexec/%s\" parents chmod 0755\n"
+	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/libexec/%s/helper\"\n"
+	         "        chmod 04711 \"${dest}/usr/libexec/%s/helper\"\n",
+	         name, name, srcdir, name, name);
+	snprintf(decls, sizeof(decls),
+	         "    privileged file \"${dest}/usr/libexec/%s/helper\" mode 04711\n\n", name);
+	cpdl_recipe_text_decl(content, sizeof(content), name, version, test_http_src(tarball_path),
+	                      sha256, NULL,
+	                      "            compiler \"tcc\"\n"
+	                      "            tool \"linux-headers\"\n"
+	                      "            tool \"bash\"\n"
+	                      "            tool \"coreutils\"\n"
+	                      "            tool \"binutils\"\n",
+	                      NULL, decls, build_body, install_body);
+	return publish_cpdl_content(c, name, version, content);
 }
 
 /*
@@ -6142,6 +6195,57 @@ skip_resume:
 			if (access(base_path("/usr/bin/shareda"), F_OK) == 0 ||
 			    access(base_path("/usr/share/shared175/common.txt"), F_OK) == 0) {
 				fprintf(stderr, "FAIL: #553 deleting shareda left its files behind\n");
+				ok = 0;
+			}
+		}
+	}
+
+	/*
+	 * #552: a setuid file the recipe declares arrives setuid.
+	 *
+	 * cbs carries a declared `privileged file` mode in the .cixpkg and
+	 * refuses any other setuid entry, but the installer masked every
+	 * mode to 0777, so openssh's declared 04711 ssh-keysign reached
+	 * jumpbox as 0711 (probe-setuid@1-1 on 192.168.15.95, 2026-09-30).
+	 */
+	{
+		char sha[65];
+		char tarball[PATH_MAX];
+		char st_s[64];
+		struct stat sst;
+		int stage_ok;
+
+		stage_ok = stage_fixture_tarball(scratch_dir, "suid552", "1.0", tarball,
+		                                 sizeof(tarball), sha, sizeof(sha)) == 0 &&
+		           write_suid_recipe(&client, "suid552", "1.0", tarball, sha) == 0;
+		if (!stage_ok) {
+			fprintf(stderr, "FAIL: #552 could not publish the suid552 recipe\n");
+			ok = 0;
+		}
+		if (stage_ok) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"suid552\"}",
+			                       &r) != 0 ||
+			    (r.status != 202 && r.status != 200)) {
+				fprintf(stderr, "FAIL: #552 install suid552 status=%d\n", r.status);
+				ok = 0;
+				stage_ok = 0;
+			}
+			cix_response_free(&r);
+		}
+		if (stage_ok && (poll_pkg_state(&client, "suid552", st_s, sizeof(st_s), 240) != 0 ||
+		                 !str_eq(st_s, "installed"))) {
+			fprintf(stderr, "FAIL: #552 suid552 did not install (state=%s)\n", st_s);
+			ok = 0;
+			stage_ok = 0;
+		}
+		if (stage_ok) {
+			if (stat(base_path("/usr/libexec/suid552/helper"), &sst) != 0) {
+				fprintf(stderr, "FAIL: #552 helper not installed: %s\n", strerror(errno));
+				ok = 0;
+			} else if ((sst.st_mode & 07777) != 04711) {
+				fprintf(stderr, "FAIL: #552 a declared 04711 file installed as %04o\n",
+				        (unsigned)(sst.st_mode & 07777));
 				ok = 0;
 			}
 		}

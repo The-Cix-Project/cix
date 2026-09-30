@@ -802,6 +802,15 @@ struct pkg_chain {
 	 */
 	char fetch_resolved_version[PKG_VERSION_MAX];
 	char fetch_resolved_depends[PKG_DEPENDS_MAX];
+	/*
+	 * #552: this job's tree was unpacked from a legacy .tar.gz artifact.
+	 * A .cixpkg or a CPDL build only carries a setuid or setgid file the
+	 * recipe declared (`privileged file`; cbs refuses any other), so the
+	 * install keeps those bits. A .tar.gz has no such declaration, so its
+	 * bits are masked as they always were. Reset for each job where the
+	 * fetch resolves its recipe; set only by the .tar.gz cache-hit branch.
+	 */
+	int tree_from_targz;
 	/* #380: the recipe FILE start_fetch_for() resolved, read again by
 	 * every stage after it -- see fetched_recipe_path(). The file, not
 	 * a version to look up: a store directory is not always named by
@@ -4027,8 +4036,18 @@ static int merge_fail(const char *relpath, const char *step, int use_errno)
 	return -1;
 }
 
+/*
+ * keep_privileged (#552): whether a copied file keeps its setuid, setgid
+ * and sticky bits. Nonzero only for a tree cbs produced -- a CPDL build
+ * or an extracted .cixpkg -- because cbs refuses any setuid or setgid
+ * entry the recipe did not declare with `privileged file`, so what
+ * arrives here is what the recipe asked for. Everything else is masked
+ * to 0777, as every install was until 2026-09-30: that mask is how
+ * openssh's declared 04711 ssh-keysign reached jumpbox as 0711
+ * (probe-setuid@1-1, 192.168.15.95).
+ */
 static int merge_tree(const char *src_root, const char *dst_root, const char *relpath,
-                       struct pkg_entry *e)
+                       struct pkg_entry *e, int keep_privileged)
 {
 	char src_dir[PATH_MAX];
 	DIR *d;
@@ -4064,7 +4083,7 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 		if (S_ISDIR(st.st_mode)) {
 			snprintf(dst_path, sizeof(dst_path), "%s/%s", dst_root, child_rel);
 			persist_mkdir_p(dst_path);
-			if (merge_tree(src_root, dst_root, child_rel, e) != 0) {
+			if (merge_tree(src_root, dst_root, child_rel, e, keep_privileged) != 0) {
 				closedir(d);
 				return -1; /* already reported, one level down */
 			}
@@ -4138,7 +4157,7 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 				closedir(d);
 				return merge_fail(child_rel, "copying a regular file", 1);
 			}
-			chmod(dst_path, st.st_mode & 0777);
+			chmod(dst_path, st.st_mode & (keep_privileged ? 07777 : 0777));
 			if (pkg_entry_add_file(e, child_rel) != 0) {
 				closedir(d);
 				return merge_fail(child_rel, "recording the file in the package manifest", 0);
@@ -5996,7 +6015,7 @@ static int sandbox_migrate_mutate(const char *staging_rootfs, void *ctx_v)
 {
 	struct sandbox_migrate_ctx *ctx = ctx_v;
 
-	if (merge_tree(ctx->flat_rootfs, staging_rootfs, "", NULL) != 0) {
+	if (merge_tree(ctx->flat_rootfs, staging_rootfs, "", NULL, 0) != 0) {
 		logstore_write("cixd", "error",
 		               "build sandbox migration: merging %s into the staging tree failed: %s",
 		               ctx->flat_rootfs, strerror(errno));
@@ -8839,6 +8858,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	         sizeof(g_chains[chain_idx].fetch_resolved_recipe_path), "%s", recipe_path);
 	snprintf(g_chains[chain_idx].fetch_resolved_depends,
 	         sizeof(g_chains[chain_idx].fetch_resolved_depends), "%s", recipe.depends);
+	g_chains[chain_idx].tree_from_targz = 0;
 	/*
 	 * ADR-0272: a run opens here, at the single place a job begins --
 	 * so every atom of a chain gets one, not just the package that was
@@ -10331,6 +10351,8 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 					int reported = 0;
 
 					warn_unexecutable_binaries(dest_dir, e->name, 0, &reported);
+					/* #552: no privileged-file declarations in a .tar.gz. */
+					g_chains[chain_idx].tree_from_targz = 1;
 				}
 			} else if (persist_mkdir_p(src_dir) != 0) {
 				prep_step = "create src dir";
@@ -12571,6 +12593,8 @@ struct install_mutate_ctx {
 	const char *dest_dir;
 	struct pkg_entry *e;
 	int is_upgrade;
+	/* #552: keep declared setuid/setgid bits -- see merge_tree(). */
+	int keep_privileged;
 };
 
 /*
@@ -12849,7 +12873,7 @@ static int install_mutate(const char *staging_rootfs, void *ctx_v)
 	}
 	if (pkg_seed_image_baseline(staging_rootfs) != PKG_OK)
 		return -1;
-	return merge_tree(ctx->dest_dir, staging_rootfs, "", ctx->e);
+	return merge_tree(ctx->dest_dir, staging_rootfs, "", ctx->e, ctx->keep_privileged);
 }
 
 /*
@@ -13539,7 +13563,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * output tree.
 		 */
 		if (persist_fresh_output_dir(artifact_dir) != 0 ||
-		    merge_tree(dest_dir, artifact_dir, "", e) != 0) {
+		    merge_tree(dest_dir, artifact_dir, "", e, !g_chains[chain_idx].tree_from_targz) != 0) {
 			pkg_fail(e, 0, PIPELINE_INSTALL, "failed to harvest the built artifact");
 			g_chains[chain_idx].name[0] = '\0';
 			g_chains[chain_idx].dep_queue_count = 0;
@@ -13604,6 +13628,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		ctx.dest_dir = dest_dir;
 		ctx.e = e;
 		ctx.is_upgrade = is_upgrade;
+		ctx.keep_privileged = !g_chains[chain_idx].tree_from_targz;
 		if (image_produce_new_version(g_chains[chain_idx].image, install_mutate, &ctx, NULL) !=
 		    0) {
 			const char *why = pkg_last_image_produce_failure();
