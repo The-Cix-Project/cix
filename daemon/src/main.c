@@ -25491,6 +25491,57 @@ static void op_approvePipeline(const struct api_ctx *ctx)
 	}
 }
 
+/*
+ * POST /v1/pipeline/revoke (#381) -- withdraw a grant that has not been
+ * used. A deploy grant has no queue to drop it, so without this an
+ * approval typed against the wrong image path stayed in force until an
+ * update for that path went straight through a gate that read as on.
+ * The audit line names both the revoker and the original grantor: the
+ * pair is the record of a decision being taken back.
+ */
+static void op_revokePipelineApproval(const struct api_ctx *ctx)
+{
+	struct json_value *root;
+	const char *gate, *target;
+	char granted_by[64];
+	int rc;
+
+	root = json_parse(ctx->req->body, ctx->req->body_len);
+	if (root == NULL || root->type != JSON_OBJECT) {
+		json_free(root);
+		respond_error(ctx->fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	gate = json_as_string(json_object_get(root, "gate"));
+	target = json_as_string(json_object_get(root, "target"));
+	if (gate == NULL || target == NULL) {
+		json_free(root);
+		respond_error(ctx->fd, 400, "Bad Request", "gate and target are both required");
+		return;
+	}
+	granted_by[0] = '\0';
+	rc = pkg_approval_revoke(gate, target, granted_by, sizeof(granted_by));
+	if (rc == PKG_APPROVE_OK)
+		logstore_write("audit", "info", "%s REVOKED gate %s for %s (granted by %s)",
+		               audit_who(), gate, target, granted_by);
+	json_free(root);
+	switch (rc) {
+	case PKG_APPROVE_OK:
+		http_write_response(ctx->fd, 204, "No Content", "application/json", "", 0);
+		return;
+	case PKG_APPROVE_UNKNOWN_GATE:
+		respond_error(ctx->fd, 400, "Bad Request",
+		              "gate must be one of \"publish\", \"roll\" or \"deploy\", and target "
+		              "must not be empty");
+		return;
+	default:
+		respond_error(ctx->fd, 404, "Not Found",
+		              "no approval is outstanding for that gate and target -- GET "
+		              "/v1/pipeline/approvals lists what is granted");
+		return;
+	}
+}
+
 /* GET /v1/pkg/source-catalogue (ADR-0255) */
 static void op_getSourceCatalogue(const struct api_ctx *ctx)
 {

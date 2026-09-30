@@ -85,6 +85,7 @@ static const char *const n_pipeline_config_flags[] = {
 static const struct cli_node n_pipeline_subs[] = {
 	{ "approvals", NULL, NULL },
 	{ "approve", NULL, NULL },
+	{ "revoke", NULL, NULL },
 	{ "config", n_pipeline_config_flags, NULL },
 	{ "runs", n_pipeline_runs_flags, NULL },
 	{ NULL, NULL, NULL },

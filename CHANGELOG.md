@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An unused pipeline approval can be revoked (#381)
+
+`POST /v1/pipeline/revoke` (`cixctl pipeline revoke GATE TARGET`) drops an outstanding grant for one `(gate, target)` pair, so the change it allowed is held again. ADR-0273 shipped `POST /pipeline/approve` with no way back. For `roll` and `publish` that mostly corrected itself, because taking an image out of the rebuild queue forgets its grant. A `deploy` grant has no queue, though, and only a `POST /system/update` for that exact image path spent it. So a deploy approval against the wrong path, or one granted and then reconsidered, stayed in force, and the gate read as on while letting that path through.
+
+A revoke is accepted with the gate on or off, since a grant survives the gate being toggled. It answers 404 when nothing is outstanding and 400 for an unknown gate. It writes the audit line `<who> REVOKED gate <gate> for <target> (granted by <who>)`. `test_stallwatch` (SELFTESTS) grants a deploy approval, switches the gate off, revokes, then checks that the grant is gone from `GET /pipeline/approvals`, that a second revoke is a 404, and that the audit line is present. `cixctl help` also lists `pipeline approvals | approve | revoke` now; `approve` had never been listed.
+
+Whether a deploy grant should also expire is not decided here.
+
 ### An install into an image that does not exist is refused (#500)
 
 `POST /v1/pkg/install` with an `image` that has no manifest now answers **400** before any work starts: `no image called "jump" -- create it first with cixctl image create --name=jump (POST /v1/images), or check the name with cixctl image ls`. Nothing is created. It used to be accepted and to create the image as a side effect, which is how `--image=jump`, a typo for `jumpbox`, became a new image with a failed entry in it on 192.168.15.95 on 2026-09-21. The owner's decision of 2026-09-30: there is one way to make an image, `POST /v1/images`.

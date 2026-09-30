@@ -10869,7 +10869,8 @@ paths:
       description: >
         Grants permission for one `(gate, target)` pair. The grant is
         consumed when that change goes through, so approving does not
-        turn the gate off.
+        turn the gate off. Until it is used, POST /pipeline/revoke takes it
+        back (#381).
 
 
         **A target that is not currently held is refused with 409.**
@@ -10927,6 +10928,65 @@ paths:
           description: >
             Nothing is holding that target, or it is already approved.
             Nothing is changed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /pipeline/revoke:
+    post:
+      summary: Withdraw an approval that has not been used yet (#381)
+      description: >
+        Drops the grant for one `(gate, target)` pair, so the change it
+        allowed is held again. This is the way back from
+        `POST /pipeline/approve`.
+
+
+        It matters most for `deploy`. `roll` and `publish` grants are
+        dropped by themselves when their target leaves its queue, but a
+        `deploy` grant has no queue behind it and is spent only by a
+        `POST /system/update` for that exact image path. Without this
+        endpoint, an approval typed against the wrong path, or granted
+        and then reconsidered, stays in `granted` until that update runs.
+        Meanwhile the gate reads as on and does not hold that one target.
+
+
+        A revoke is accepted whether the gate is on or off, because a
+        grant outlives a gate being switched off and on again. Every
+        revoke writes an audit line naming who revoked it, the gate, the
+        target, and who had granted it (ADR-0271).
+      operationId: revokePipelineApproval
+      x-cix-permission: packages:write
+      x-cix-expose: [cli]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [gate, target]
+              properties:
+                gate:
+                  type: string
+                  enum: [publish, roll, deploy]
+                target:
+                  type: string
+                  description: >
+                    Exactly as `GET /pipeline/approvals` lists it under
+                    `granted`.
+      responses:
+        "204":
+          description: Revoked; the target is held again if its gate is on
+        "400":
+          description: Unknown gate, or a missing field
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: >
+            No approval is outstanding for that pair: never granted,
+            already used, or already revoked. Nothing is changed.
           content:
             application/json:
               schema:

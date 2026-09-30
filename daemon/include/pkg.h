@@ -775,12 +775,22 @@ int pkg_run_retention_set(int keep);
 #define PKG_APPROVE_NOT_HELD (-2)
 #define PKG_APPROVE_ALREADY (-3)
 #define PKG_APPROVE_FULL (-4)
+#define PKG_APPROVE_NOT_GRANTED (-5)
 
 int pkg_gate_enabled(const char *gate);
 int pkg_gate_set(const char *gate, int on);
 int pkg_target_is_queued(const char *gate, const char *target);
 int pkg_approval_grant(const char *gate, const char *target, const char *who);
 int pkg_approval_take_deploy(const char *target);
+/*
+ * #381: drops an outstanding grant, so its target is held again. Works
+ * with the gate on or off -- a grant outlives a gate toggle. On success
+ * copies who had granted it into granted_by (for the audit line) and
+ * returns PKG_APPROVE_OK; PKG_APPROVE_UNKNOWN_GATE for a bad gate or an
+ * empty target; PKG_APPROVE_NOT_GRANTED when no grant is outstanding.
+ */
+int pkg_approval_revoke(const char *gate, const char *target, char *granted_by,
+                        size_t granted_by_size);
 void pkg_approvals_write_json(struct json_writer *w);
 enum pkg_error pkg_artifact_publish_resolve(const char *name, char *out_version,
                                              size_t out_version_size, int *out_is_hostbuild);

@@ -20,9 +20,10 @@ Reach for it before the build log, not after. Build logs are capped at forty fil
 cixctl pipeline config --gate-roll=on
 cixctl pipeline approvals            # what is waiting for you
 cixctl pipeline approve roll base    # let that one through
+cixctl pipeline revoke roll base     # take it back, if it has not gone through yet
 ```
 
-An approval covers one `(gate, target)` and is consumed when that change goes through, so approving is not the same as switching the gate off. A target nothing is holding is refused — you cannot approve in advance. Held items also show up in `cixctl pipeline` as `blocked`, naming `approval` as what they wait on. Note the same person may request and approve; a gate holds automation, not a person (roles are #304).
+An approval covers one `(gate, target)` and is consumed when that change goes through, so approving is not the same as switching the gate off. Until then `cixctl pipeline revoke` takes it back -- the only way to clear a `deploy` approval you no longer want, since nothing else ever drops one (#381). A target nothing is holding is refused — you cannot approve in advance. Held items also show up in `cixctl pipeline` as `blocked`, naming `approval` as what they wait on. Note the same person may request and approve; a gate holds automation, not a person (roles are #304).
 
 **Optional external syslog forwarding** — if you already run syslog tooling and want this platform's container logs to also reach it, register a running syslog-server container (e.g. `syslog-1` running `sysklogd`) as a forward target: `cixctl syslog target register --container=NAME` (ADR-0127). Every container-sourced log line is then also sent as a real RFC 3164 UDP datagram — alongside, never instead of, the consolidated log store above, which stays the one source of truth this API and the web UI ever read from.
 

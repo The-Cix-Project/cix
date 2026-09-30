@@ -15988,6 +15988,29 @@ int pkg_approval_grant(const char *gate, const char *target, const char *who)
 	return PKG_APPROVE_OK;
 }
 
+/*
+ * #381: the way back from pkg_approval_grant(). Deliberately not gated
+ * on the gate being on: a grant survives the gate being switched off and
+ * on again, so it must be revocable in either state, or turning a gate
+ * off would strand a grant nothing could reach.
+ */
+int pkg_approval_revoke(const char *gate, const char *target, char *granted_by,
+                        size_t granted_by_size)
+{
+	int i;
+
+	if (gate_flag(gate) == NULL || target == NULL || target[0] == '\0')
+		return PKG_APPROVE_UNKNOWN_GATE;
+	i = approval_index(gate, target);
+	if (i < 0)
+		return PKG_APPROVE_NOT_GRANTED;
+	if (granted_by != NULL && granted_by_size > 0)
+		snprintf(granted_by, granted_by_size, "%s", g_approvals[i].who);
+	approval_drop_at(i);
+	pkg_runs_save();
+	return PKG_APPROVE_OK;
+}
+
 static int g_push_in_flight;
 static struct pkg_push_job g_push_current;
 

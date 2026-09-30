@@ -285,6 +285,9 @@ static void print_usage(FILE *out)
 	        "  pipeline [--all]  -- where every package stands in the eleven-stage pipeline,\n"
 	        "               and what is stopping it (ADR-0256). Hides ok/not-implemented\n"
 	        "               rows unless --all\n"
+	        "  pipeline approvals | approve GATE TARGET | revoke GATE TARGET  -- what the\n"
+	        "               publish/roll/deploy gates hold, let one through, or take an\n"
+	        "               unused approval back (ADR-0273, #381)\n"
 	        "  pkg bootstrap [--toolchain=PATH]  -- stages a package-build toolchain into the\n"
 	        "               pkgbuild image; no --toolchain= copies live from this daemon's own\n"
 	        "               host (dev/test convenience, empty on a real minimal install);\n"
@@ -16578,13 +16581,16 @@ static int cmd_pipeline(const struct cix_client *c, int json_mode, int argc, cha
 		return emit(&r, json_mode, fmt_pipeline_approvals);
 	}
 
-	/* ADR-0273: let one held change through. */
-	if (argc > 0 && strcmp(argv[0], "approve") == 0) {
+	/* ADR-0273: let one held change through -- and #381: take a grant
+	 * back before it is used. Same arguments, same body, two operations. */
+	if (argc > 0 && (strcmp(argv[0], "approve") == 0 || strcmp(argv[0], "revoke") == 0)) {
+		int revoke = strcmp(argv[0], "revoke") == 0;
 		char body[512];
 		struct json_writer bw;
 
 		if (argc != 3) {
-			fprintf(stderr, "usage: cixctl pipeline approve <publish|roll|deploy> <target>\n");
+			fprintf(stderr, "usage: cixctl pipeline %s <publish|roll|deploy> <target>\n",
+			        argv[0]);
 			return 2;
 		}
 		jw_init(&bw);
@@ -16596,8 +16602,11 @@ static int cmd_pipeline(const struct cix_client *c, int json_mode, int argc, cha
 		jw_obj_close(&bw);
 		snprintf(body, sizeof(body), "%s", bw.buf != NULL ? bw.buf : "{}");
 		jw_free(&bw);
-		if (cix_client_request(c, CIX_API_approvePipeline_METHOD, CIX_API_approvePipeline, body,
-		                        &r) != 0) {
+		if (cix_client_request(c,
+		                        revoke ? CIX_API_revokePipelineApproval_METHOD
+		                               : CIX_API_approvePipeline_METHOD,
+		                        revoke ? CIX_API_revokePipelineApproval : CIX_API_approvePipeline,
+		                        body, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}

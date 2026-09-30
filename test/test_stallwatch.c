@@ -674,6 +674,93 @@ int main(void)
 	}
 
 	/*
+	 * #381: an unused grant can be taken back. Deploy is the gate this
+	 * matters for -- it has no queue to drop a grant -- and it is also
+	 * the one gate that accepts a target as given, so the grant can be
+	 * made here without any queue at all.
+	 *
+	 * The gate is switched OFF before revoking, on purpose: a grant
+	 * outlives a gate toggle, so a revoke that only worked with the gate
+	 * on would strand exactly the grants an operator most wants gone.
+	 */
+	{
+		const char *pair = "{\"gate\":\"deploy\",\"target\":\"/cix-test/revoke-me\"}";
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/system/pipeline-config",
+		                        "{\"gate_deploy\":true}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #381 PUT gate_deploy true, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pipeline/approve", pair, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: #381 approve deploy, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/system/pipeline-config",
+		                        "{\"gate_deploy\":false}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #381 PUT gate_deploy false, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pipeline/revoke", pair, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: #381 revoke with the gate off expected 204, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/pipeline/approvals", NULL, &r) != 0 ||
+		    r.status != 200 || r.body == NULL || strstr(r.body, "/cix-test/revoke-me") != NULL) {
+			fprintf(stderr, "FAIL: #381 the revoked grant is still listed: %.300s\n",
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* Taking back what is not there is a 404, and changes nothing. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pipeline/revoke", pair, &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: #381 a second revoke expected 404, got %d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pipeline/revoke",
+		                        "{\"gate\":\"nosuchgate\",\"target\":\"x\"}", &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: #381 revoke on an unknown gate expected 400, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* The audit record is the point of a gate (ADR-0271), and a
+		 * revoke names the grant it undid. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/system/logs?source=audit&tail=50", NULL,
+		                        &r) != 0 ||
+		    r.status != 200 || r.body == NULL ||
+		    strstr(r.body, "REVOKED gate deploy for /cix-test/revoke-me") == NULL) {
+			fprintf(stderr, "FAIL: #381 no audit line for the revoke: %.300s\n",
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		cix_response_free(&r);
+	}
+
+	/*
 	 * #382: deleting an image takes its queue entry and its approval
 	 * with it.
 	 *

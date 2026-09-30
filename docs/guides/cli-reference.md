@@ -511,6 +511,7 @@ See [`networking.md`](networking.md).
 | `pipeline runs [--name=NAME] [--image=IMAGE] [--limit=N]` | What has happened to a package, as a log ([ADR-0272](../adr/0272-a-pipeline-run-is-a-log-entry-not-join-state.md)) |
 | `pipeline approvals` | What is held waiting for a person, and what has been approved ([ADR-0273](../adr/0273-a-gate-holds-automation-where-a-change-escapes-its-blast-radius.md)) |
 | `pipeline approve publish\|roll\|deploy TARGET` | Let one held change through |
+| `pipeline revoke publish\|roll\|deploy TARGET` | Take back an approval that has not been used yet (#381) |
 | `pipeline config [--run-retention=N] [--gate-publish=on\|off] [--gate-roll=on\|off] [--gate-deploy=on\|off]` | Pipeline settings |
 
 See [`writing-recipes.md`](writing-recipes.md) for the recipe format, and [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) / [`building-cix.md`](building-cix.md) for the runbooks built on `pkg hostbuild`.

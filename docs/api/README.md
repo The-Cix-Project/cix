@@ -1440,6 +1440,7 @@ There are three because there are three escape points, not because three is tidy
 cixctl pipeline config --gate-roll=on
 cixctl pipeline approvals                        # what is waiting, and what is allowed
 cixctl pipeline approve roll base                # let one through
+cixctl pipeline revoke roll base                 # take it back before it is used (#381)
 ```
 
 **A held item is `blocked`, not a new status.** It reports `blocked_on: {kind: "approval", name: "<gate>"}`. An earlier sketch added `awaiting-approval` as a sixth `pipeline_status`; that was wrong, and the reason was already written on the enum — `PIPELINE_BLOCKED` means *"waiting on something outside this stage, or a person"*. A sixth member would have been a second way to say what the set already said.
@@ -1447,6 +1448,8 @@ cixctl pipeline approve roll base                # let one through
 **`pending` is derived, `granted` is stored.** What is waiting is computed from the live queues and the gate flags at read time and is stored nowhere — turn a gate off and nothing is waiting, with no state to reconcile. Only what a person has *allowed* is kept, and it is consumed when that change goes through, so approving does not turn the gate off. An approval is an input to a decision, in the same class as the gate flags themselves; ADR-0256's rule is about storing a *position*, and this is not one.
 
 **You cannot approve what nobody has asked for.** A target that is not currently held is refused with 409. Pre-approving is a standing permission dressed as a decision, and it would make the audit line claim a person approved a specific change they never saw.
+
+**An approval can be taken back until it is used** (`POST /pipeline/revoke`, the same `{gate, target}`, #381). A `roll` or `publish` grant is dropped by itself when its target leaves the queue, but a `deploy` grant has no queue behind it. Only an update for that exact image path spends it. Without a revoke, a deploy approval typed against the wrong path, or granted and then reconsidered, stayed in force: the gate read as on and still let that one path straight through. A revoke works with the gate on or off, since a grant survives the gate being switched off and on. It answers 404 when nothing is outstanding. Its audit line names who revoked and who had granted.
 
 `deploy` is the one exception, and the asymmetry is real rather than an oversight: `publish` and `roll` hold items that sit in a queue, so "held" is a readable fact, while an update is a single synchronous request with nothing behind it. A deploy target is accepted as given, and the 409 from `POST /system/update` names the exact target to approve.
 
