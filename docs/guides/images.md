@@ -30,7 +30,27 @@ cixctl pkg install --name=glibc --image=dns
 cixctl pkg install --name=dnsmasq --image=dns
 ```
 
-`apply-recipe` only declares: it is refused while a package job is running, and no package is installed until `pkg install` runs.
+By default `apply-recipe` only declares: no package is installed until `pkg install` runs, or `image materialize` does it and waits. The image's policy can change that (below).
+
+## How the recipe, the manifest and the installs agree (ADR-0320)
+
+An image's package versions are written in three places: its recipe in cix-recipes, synced to the box; its live manifest; and what is installed. Each has its own writer, and all three are allowed. The image's **policy** says what happens when they disagree:
+
+```sh
+cixctl image policy jumpbox                                   # show it
+cixctl image policy jumpbox --recipe=follow --apply=converge  # set some of it
+```
+
+| setting | values (default first) | what it decides |
+|---|---|---|
+| `recipe` | `manual`, `follow` | Under `follow`, a changed recipe is applied as soon as it reaches the box, by the 6-hourly sync or a publish. Committing it to cix-recipes `main` is then a deploy. |
+| `apply` | `declare`, `converge` | Under `converge`, applying also queues the image to install, upgrade or downgrade every entry to match, one job at a time, like a rolling rebuild. `image materialize` is the one-shot, waited-for version of the same thing. |
+| `downgrade` | `refuse`, `allow` | Under `refuse`, an apply that would move a pin to an older version is refused and lists each one. `--allow-downgrade` applies it anyway, once. |
+
+Two rules hold whatever the policy:
+
+- **An explicit install moves the pin.** `pkg install --upgrade` of a pinned package re-pins it at the version installed, so the manifest never claims something the image does not hold.
+- **The box's state can go back into git.** `cixctl image recipe export NAME > recipes/image/NAME@VERSION.json` writes the live manifest as a recipe. Bump its `version` and write its notes before committing.
 
 ## Writing an image recipe
 

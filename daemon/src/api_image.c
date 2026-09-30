@@ -8,6 +8,7 @@
 #include "logstore.h"
 #include "containerdef.h"
 #include "image.h"
+#include "imagepolicy.h"
 #include "pkg.h"
 #include "persist.h"
 #include "registry.h"
@@ -837,21 +838,208 @@ void handle_image_recipe_delete(int fd, const char *name)
 }
 
 /*
- * POST /v1/images/{name}/apply-recipe -- always 204. ADR-0209 retired
- * the async artifact-fetch fast path this used to have a 202 branch
- * for, so applying a recipe is bulk-declare and nothing else: it has
- * finished by the time this returns.
+ * POST /v1/images/{name}/apply-recipe -- ADR-0320.
+ *
+ * Declares the stored recipe into the manifest (ADR-0209: synchronous,
+ * done by the time this returns) under the image's policy, and answers
+ * 200 with what it did. A pinned entry older than the image has is a 409
+ * listing every one, with nothing changed, unless the body says
+ * {"allow_downgrade": true} or the policy allows downgrades.
  */
-void handle_image_recipe_apply(int fd, const char *name)
+void handle_image_recipe_apply(int fd, const char *name, const char *body, size_t body_len)
 {
-	enum pkg_error perr = pkg_image_recipe_apply_start(name);
+	struct pkg_image_apply_result *res;
+	struct json_writer w;
+	enum pkg_error perr;
+	int allow_downgrade = 0;
+	int i;
 
-	if (perr != PKG_OK) {
+	if (body != NULL && body_len > 0) {
+		struct json_value *root = json_parse(body, body_len);
+		const struct json_value *ad;
+
+		if (root == NULL) {
+			respond_error(fd, 400, "Bad Request", "body is not valid JSON");
+			return;
+		}
+		ad = json_object_get(root, "allow_downgrade");
+		allow_downgrade = ad != NULL && ad->type == JSON_BOOL && ad->u.boolean;
+		json_free(root);
+	}
+
+	res = calloc(1, sizeof(*res));
+	if (res == NULL) {
+		respond_error(fd, 500, "Internal Server Error", "out of memory");
+		return;
+	}
+	perr = pkg_image_recipe_apply(name, allow_downgrade, res);
+	if (perr != PKG_OK && perr != PKG_ERR_DOWNGRADE_REFUSED) {
+		free(res);
 		respond_image_recipe_error(fd, perr);
 		return;
 	}
-	http_set_blocking(fd);
-	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (perr == PKG_ERR_DOWNGRADE_REFUSED) {
+		jw_key(&w, "error");
+		jw_str(&w, "the recipe pins packages older than this image has -- nothing was "
+		           "applied; pass allow_downgrade to apply it anyway, or set the image's "
+		           "policy to downgrade: allow (ADR-0320)");
+	}
+	jw_key(&w, "image");
+	jw_str(&w, name);
+	jw_key(&w, "declared");
+	jw_int(&w, res->declared);
+	jw_key(&w, "converging");
+	jw_bool(&w, res->converging);
+	jw_key(&w, "downgrades");
+	jw_arr_open(&w);
+	for (i = 0; i < res->downgrade_count; i++) {
+		jw_obj_open(&w);
+		jw_key(&w, "package");
+		jw_str(&w, res->downgrades[i].package);
+		jw_key(&w, "from");
+		jw_str(&w, res->downgrades[i].from);
+		jw_key(&w, "to");
+		jw_str(&w, res->downgrades[i].to);
+		jw_obj_close(&w);
+	}
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+	if (perr == PKG_ERR_DOWNGRADE_REFUSED)
+		respond_json(fd, 409, "Conflict", &w);
+	else
+		respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+	free(res);
+}
+
+/* GET /v1/images/{name}/policy -- ADR-0320. The defaults when none is saved. */
+void handle_image_policy_get(int fd, const char *name)
+{
+	struct image_policy p;
+	struct json_writer w;
+
+	if (!image_exists(name)) {
+		respond_error(fd, 404, "Not Found", "no such image");
+		return;
+	}
+	imagepolicy_get(name, &p);
+	jw_init(&w);
+	imagepolicy_write_json(&w, name, &p);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * PUT /v1/images/{name}/policy -- ADR-0320. Each field given replaces
+ * that setting; a field left out keeps its current value.
+ */
+void handle_image_policy_put(int fd, const char *name, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	struct image_policy p;
+	struct json_writer w;
+	const struct json_value *v;
+
+	if (!image_exists(name)) {
+		respond_error(fd, 404, "Not Found", "no such image");
+		return;
+	}
+	root = json_parse(body, body_len);
+	if (root == NULL || root->type != JSON_OBJECT) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "body must be a JSON object");
+		return;
+	}
+	imagepolicy_get(name, &p);
+	v = json_object_get(root, "recipe");
+	if (v != NULL && imagepolicy_recipe_parse(json_as_string(v), &p.recipe) != 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "recipe must be \"manual\" or \"follow\"");
+		return;
+	}
+	v = json_object_get(root, "apply");
+	if (v != NULL && imagepolicy_apply_parse(json_as_string(v), &p.apply) != 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "apply must be \"declare\" or \"converge\"");
+		return;
+	}
+	v = json_object_get(root, "downgrade");
+	if (v != NULL && imagepolicy_downgrade_parse(json_as_string(v), &p.downgrade) != 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "downgrade must be \"refuse\" or \"allow\"");
+		return;
+	}
+	json_free(root);
+	if (imagepolicy_set(name, &p) != 0) {
+		respond_error(fd, 500, "Internal Server Error", "could not save the image policy");
+		return;
+	}
+	logstore_write("cixd", "info", "image %s: policy recipe=%s apply=%s downgrade=%s (ADR-0320)",
+	               name, imagepolicy_recipe_name(p.recipe), imagepolicy_apply_name(p.apply),
+	               imagepolicy_downgrade_name(p.downgrade));
+	jw_init(&w);
+	imagepolicy_write_json(&w, name, &p);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * GET /v1/images/{name}/recipe/export -- ADR-0320: the live manifest as
+ * an image recipe, so an image edited on the box can be committed to
+ * cix-recipes as its recipe. "version" is the stored recipe's, to be
+ * bumped before committing; "" when the image has none.
+ */
+void handle_image_recipe_export(int fd, const char *name)
+{
+	struct image_manifest_entry entries[IMAGE_MANIFEST_MAX_PACKAGES];
+	int count = 0, i;
+	char version[64] = "";
+	char *stored = NULL;
+	size_t stored_len = 0;
+	struct json_writer w;
+
+	if (image_manifest_read(name, entries, &count, IMAGE_MANIFEST_MAX_PACKAGES) != IMAGE_OK) {
+		respond_error(fd, 404, "Not Found", "no such image");
+		return;
+	}
+	if (image_recipe_get(name, &stored, &stored_len) == PKG_OK && stored != NULL) {
+		struct json_value *root = json_parse(stored, stored_len);
+		const char *sv = root != NULL ? json_as_string(json_object_get(root, "version")) : NULL;
+
+		if (sv != NULL)
+			snprintf(version, sizeof(version), "%s", sv);
+		json_free(root);
+	}
+	free(stored);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "image");
+	jw_str(&w, name);
+	jw_key(&w, "version");
+	jw_str(&w, version);
+	jw_key(&w, "notes");
+	jw_str(&w, "Exported from the live manifest (ADR-0320). Bump \"version\" and write the "
+	           "notes before committing this to cix-recipes.");
+	jw_key(&w, "packages");
+	jw_arr_open(&w);
+	for (i = 0; i < count; i++) {
+		jw_obj_open(&w);
+		jw_key(&w, "package");
+		jw_str(&w, entries[i].package);
+		jw_key(&w, "mode");
+		jw_str(&w, entries[i].mode == IMAGE_PKG_PINNED ? "pinned" : "rolling");
+		jw_key(&w, "version");
+		jw_str(&w, entries[i].version);
+		jw_obj_close(&w);
+	}
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
 }
 
 

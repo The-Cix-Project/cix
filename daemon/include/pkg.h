@@ -367,7 +367,7 @@ enum pkg_error {
 	 * at the dependency rather than at the package.
 	 */
 	PKG_ERR_DEP_UNRESOLVABLE,
-	PKG_ERR_TARGET_IMAGE_NOT_FOUND /* pkg_image_recipe_apply_start(): the recipe itself parsed
+	PKG_ERR_TARGET_IMAGE_NOT_FOUND /* pkg_image_recipe_apply(): the recipe itself parsed
 	                                 * fine, but the image it names doesn't exist yet -- distinct
 	                                 * from PKG_ERR_INVALID_RECIPE (a genuine parse failure) and
 	                                 * from PKG_ERR_NOT_FOUND (the recipe itself missing), which
@@ -403,7 +403,13 @@ enum pkg_error {
 	 * happens after a build has already succeeded, when the version is
 	 * published and immutable and nothing can be done about it.
 	 */
-	PKG_ERR_ARTIFACT_NAME_TAKEN
+	PKG_ERR_ARTIFACT_NAME_TAKEN,
+	/*
+	 * ADR-0320: applying an image recipe would move a pinned package to
+	 * an older version than the image has, and neither the request nor
+	 * the image's policy allows a downgrade. Nothing was changed.
+	 */
+	PKG_ERR_DOWNGRADE_REFUSED
 };
 
 /*
@@ -1881,7 +1887,7 @@ int pkg_buildenv_reclaim(void);
  * keying of its own; the image's own existing content-addressed
  * versioning, ADR-0108, already tracks distinct resolved states).
  *
- * Applying a recipe (pkg_image_recipe_apply_start()) is synchronous
+ * Applying a recipe (pkg_image_recipe_apply()) is synchronous
  * bulk-declare: image_manifest_set() for every entry, exactly what N
  * manual PUT /v1/images/{name}/manifest calls would do. Packages still
  * need real pkg_install() calls afterward to actually build, same as
@@ -1919,17 +1925,42 @@ enum pkg_error image_recipe_rm(const char *name);
 /* {"recipes":[{"name":...}, ...]}. */
 void image_recipe_write_json_list(struct json_writer *w);
 
+/* One entry per manifest entry: IMAGE_MANIFEST_MAX_PACKAGES, which
+ * pkg.c asserts. Spelled here because image.h includes this header. */
+#define PKG_IMAGE_APPLY_MAX 128
+
+/* One pinned package an apply would move backwards (ADR-0320). */
+struct pkg_image_downgrade {
+	char package[PKG_NAME_MAX];
+	char from[PKG_VERSION_MAX]; /* installed in the image, else its current pin */
+	char to[PKG_VERSION_MAX];   /* what the recipe pins */
+};
+
+struct pkg_image_apply_result {
+	int declared;   /* manifest entries written */
+	int converging; /* 1 if the image was queued to install what it declares */
+	int downgrade_count;
+	struct pkg_image_downgrade downgrades[PKG_IMAGE_APPLY_MAX];
+};
+
 /*
- * Applies image's own stored recipe (PKG_ERR_NOT_FOUND if none).
- * Fully synchronous: it has completed (or failed) by the time it
- * returns, so there is no job to register and no status to poll.
+ * Applies image's own stored recipe (PKG_ERR_NOT_FOUND if none), under
+ * the image's policy (ADR-0320). Synchronous: the manifest is written by
+ * the time it returns.
  *
- * Never returns PKG_ERR_BUSY. It used to, and ADR-0270 removed that
- * check as vestigial -- see the note at the call site. Declaring a
- * manifest needs no job slot, and the manual POST .../manifest path has
- * never taken one.
+ * Refuses with PKG_ERR_DOWNGRADE_REFUSED, changing nothing, when a
+ * pinned entry is older than the version the image has (installed,
+ * else its current pin), unless allow_downgrade or the policy's
+ * `downgrade: allow` says otherwise; out lists every such entry. Under
+ * `apply: converge` the image then goes on the rolling rebuild queue,
+ * which installs, upgrades or downgrades each entry to match, one job
+ * at a time. out may be NULL.
+ *
+ * Never returns PKG_ERR_BUSY: declaring a manifest needs no job slot
+ * (ADR-0270).
  */
-enum pkg_error pkg_image_recipe_apply_start(const char *image);
+enum pkg_error pkg_image_recipe_apply(const char *image, int allow_downgrade,
+                                      struct pkg_image_apply_result *out);
 
 /*
  * Container recipes (ADR-0151): a git-syncable, reproducible template

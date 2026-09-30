@@ -192,8 +192,14 @@ static const char USAGE_TEXT[] =
 	        "  image recipe add --name=NAME --file=PATH  -- a declarative package-list\n"
 	        "               definition for an image (ADR-0123); recipe name == image name\n"
 	        "  image recipe show|rm NAME / image recipe ls\n"
-	        "  image apply-recipe NAME  -- bulk-declares the image's manifest from its\n"
-	        "               recipe; packages still need a real install afterward\n"
+	        "  image recipe export NAME  -- the live manifest as an image recipe, to\n"
+	        "               commit to cix-recipes (ADR-0320)\n"
+	        "  image apply-recipe NAME [--allow-downgrade]  -- declares the image's\n"
+	        "               manifest from its recipe; installs too under apply=converge.\n"
+	        "               A pin moving backwards is refused unless allowed\n"
+	        "  image policy NAME [--recipe=manual|follow] [--apply=declare|converge]\n"
+	        "               [--downgrade=refuse|allow]  -- shows, or sets, how the\n"
+	        "               image's recipe, manifest and installs agree (ADR-0320)\n"
 	        "  image gc [--dry-run] [--measure]  -- reclaims image versions nothing\n"
 	        "               references. Every install leaves an immutable version behind\n"
 	        "               (ADR-0107/0108) and nothing else ever removes one. --measure\n"
@@ -11252,6 +11258,25 @@ static int cmd_image_recipe_rm(const struct cix_client *c, int json_mode, int ar
 	return emit(&r, json_mode, fmt_removed);
 }
 
+/* ADR-0320: the live manifest as an image recipe, printed as JSON so it
+ * can be redirected into cix-recipes/recipes/image/NAME@VERSION.json. */
+static int cmd_image_recipe_export(const struct cix_client *c, int argc, char **argv)
+{
+	struct cix_response r;
+	char path[256];
+
+	if (argc != 1 || argv[0][0] == '-') {
+		fprintf(stderr, "usage: cixctl image recipe export NAME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), CIX_API_exportImageRecipe, argv[0]);
+	if (cix_client_request(c, CIX_API_exportImageRecipe_METHOD, path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, 1, NULL);
+}
+
 static int cmd_image_recipe(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -11260,7 +11285,8 @@ static int cmd_image_recipe(const struct cix_client *c, int json_mode, int argc,
 		fprintf(stderr, "usage: cixctl image recipe add --name=NAME --file=PATH\n"
 		                "       cixctl image recipe show NAME\n"
 		                "       cixctl image recipe rm NAME\n"
-		                "       cixctl image recipe ls\n");
+		                "       cixctl image recipe ls\n"
+		                "       cixctl image recipe export NAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -11272,19 +11298,13 @@ static int cmd_image_recipe(const struct cix_client *c, int json_mode, int argc,
 		return cmd_image_recipe_rm(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "ls") == 0)
 		return cmd_image_recipe_ls(c, json_mode);
+	if (strcmp(sub, "export") == 0)
+		return cmd_image_recipe_export(c, argc - 1, argv + 1);
 
 	fprintf(stderr, "cixctl: unknown image recipe subcommand '%s'\n", sub);
 	return 2;
 }
 
-/*
- * Applies NAME's own already-stored recipe (ADR-0123): the common case
- * bulk-declares the manifest and returns immediately; a fully-pinned
- * recipe with a matching configured artifact server instead starts an
- * async whole-rootfs fetch -- 202 means poll `image recipe-apply-
- * status`, 204 means it already fully finished (nothing more to wait
- * for).
- */
 static void fmt_image_gc(const struct json_value *v)
 {
 	const struct json_value *arr = json_object_get(v, "reclaimed");
@@ -11368,15 +11388,44 @@ static int cmd_image_gc(const struct cix_client *c, int json_mode, int argc, cha
 	return emit(&r, json_mode, fmt_image_gc);
 }
 
+/* ADR-0320: what an apply did, or every pin it would have moved back. */
+static void fmt_image_apply(const struct json_value *v)
+{
+	const struct json_value *downs = json_object_get(v, "downgrades");
+	const char *err = json_str_field(v, "error");
+	const char *image = json_str_field(v, "image");
+	long long declared = (long long)json_as_number(json_object_get(v, "declared"));
+	size_t i;
+
+	if (err != NULL)
+		printf("image %s: %s\n", image != NULL ? image : "?", err);
+	else
+		printf("recipe applied for '%s': %lld entr%s declared%s\n", image != NULL ? image : "?",
+		       declared, declared == 1 ? "y" : "ies",
+		       json_bool_field(v, "converging") ? ", converging -- installs follow one at a time"
+		                                         : "");
+	if (downs == NULL || downs->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < downs->u.array.count; i++) {
+		const struct json_value *d = downs->u.array.items[i];
+
+		printf("  %s %s -> %s%s\n", json_str_or(d, "package"), json_str_or(d, "from"),
+		       json_str_or(d, "to"), err != NULL ? "" : "  (downgrade, allowed)");
+	}
+}
+
 static int cmd_image_apply_recipe(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct cix_response r;
 	char path[256];
 	const char *name = NULL;
-	int i;
+	int allow_downgrade = 0;
+	int i, rc;
 
 	for (i = 0; i < argc; i++) {
-		if (name == NULL)
+		if (strcmp(argv[i], "--allow-downgrade") == 0)
+			allow_downgrade = 1;
+		else if (name == NULL && argv[i][0] != '-')
 			name = argv[i];
 		else {
 			fprintf(stderr, "cixctl: unknown image apply-recipe option '%s'\n", argv[i]);
@@ -11384,25 +11433,95 @@ static int cmd_image_apply_recipe(const struct cix_client *c, int json_mode, int
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: cixctl image apply-recipe NAME\n");
+		fprintf(stderr, "usage: cixctl image apply-recipe NAME [--allow-downgrade]\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), CIX_API_applyImageRecipe, name);
-	if (cix_client_request(c, "POST", path, NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_applyImageRecipe_METHOD, path,
+	                       allow_downgrade ? "{\"allow_downgrade\":true}" : "{}", &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
-	if (r.status < 200 || r.status >= 300) {
-		const char *msg = json_str_field(r.json, "error");
-
-		fprintf(stderr, "cixctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
-		        r.status);
+	if (r.status == 409 && r.json != NULL) {
+		/* A refused downgrade names every entry; print them, not only the
+		 * one-line error the generic path would. */
+		if (json_mode)
+			printf("%.*s\n", (int)r.body_len, r.body);
+		else
+			fmt_image_apply(r.json);
 		cix_response_free(&r);
 		return 1;
 	}
-	printf("recipe applied for '%s'\n", name);
-	cix_response_free(&r);
-	return 0;
+	rc = emit(&r, json_mode, fmt_image_apply);
+	return rc;
+}
+
+static void fmt_image_policy(const struct json_value *v)
+{
+	printf("image %s: recipe=%s apply=%s downgrade=%s\n",
+	       json_str_or(v, "image"), json_str_or(v, "recipe"),
+	       json_str_or(v, "apply"),
+	       json_str_or(v, "downgrade"));
+}
+
+/* ADR-0320: `image policy NAME` shows it; any flag sets those settings. */
+static int cmd_image_policy(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	char path[256];
+	char body[256];
+	const char *name = NULL;
+	const char *recipe = NULL, *apply = NULL, *downgrade = NULL;
+	size_t off = 0;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--recipe=", 9) == 0)
+			recipe = argv[i] + 9;
+		else if (strncmp(argv[i], "--apply=", 8) == 0)
+			apply = argv[i] + 8;
+		else if (strncmp(argv[i], "--downgrade=", 12) == 0)
+			downgrade = argv[i] + 12;
+		else if (name == NULL && argv[i][0] != '-')
+			name = argv[i];
+		else {
+			fprintf(stderr, "cixctl: unknown image policy option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL) {
+		fprintf(stderr, "usage: cixctl image policy NAME [--recipe=manual|follow] "
+		                "[--apply=declare|converge] [--downgrade=refuse|allow]\n");
+		return 2;
+	}
+	if (recipe == NULL && apply == NULL && downgrade == NULL) {
+		snprintf(path, sizeof(path), CIX_API_getImagePolicy, name);
+		if (cix_client_request(c, CIX_API_getImagePolicy_METHOD, path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_image_policy);
+	}
+	off += (size_t)snprintf(body + off, sizeof(body) - off, "{");
+	if (recipe != NULL)
+		off += (size_t)snprintf(body + off, sizeof(body) - off, "\"recipe\":\"%s\"", recipe);
+	if (apply != NULL)
+		off += (size_t)snprintf(body + off, sizeof(body) - off, "%s\"apply\":\"%s\"",
+		                        off > 1 ? "," : "", apply);
+	if (downgrade != NULL)
+		off += (size_t)snprintf(body + off, sizeof(body) - off, "%s\"downgrade\":\"%s\"",
+		                        off > 1 ? "," : "", downgrade);
+	if (off + 2 > sizeof(body)) {
+		fprintf(stderr, "cixctl: image policy values too long\n");
+		return 2;
+	}
+	snprintf(body + off, sizeof(body) - off, "}");
+	snprintf(path, sizeof(path), CIX_API_setImagePolicy, name);
+	if (cix_client_request(c, CIX_API_setImagePolicy_METHOD, path, body, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_image_policy);
 }
 
 /* ---- ADR-0151: deployments (#371 -- were "container recipes") ---- */
@@ -11952,7 +12071,10 @@ static int cmd_image(const struct cix_client *c, int json_mode, int argc, char *
 		                "       cixctl image recipe add --name=NAME --file=PATH\n"
 		                "       cixctl image recipe show|rm NAME\n"
 		                "       cixctl image recipe ls\n"
-		                "       cixctl image apply-recipe NAME\n"
+		                "       cixctl image recipe export NAME\n"
+		                "       cixctl image apply-recipe NAME [--allow-downgrade]\n"
+		                "       cixctl image policy NAME [--recipe=manual|follow] "
+		                "[--apply=declare|converge] [--downgrade=refuse|allow]\n"
 		                "       cixctl image materialize NAME\n"
 		                "       cixctl image gc [--dry-run] [--measure]\n");
 		return 2;
@@ -11972,6 +12094,8 @@ static int cmd_image(const struct cix_client *c, int json_mode, int argc, char *
 		return cmd_image_manifest(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "recipe") == 0)
 		return cmd_image_recipe(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "policy") == 0)
+		return cmd_image_policy(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "apply-recipe") == 0)
 		return cmd_image_apply_recipe(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "gc") == 0)

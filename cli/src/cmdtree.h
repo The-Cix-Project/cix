@@ -979,19 +979,33 @@ static const char *const n_image_recipe_add_flags[] = {
 
 static const struct cli_node n_image_recipe_subs[] = {
 	{ "add", n_image_recipe_add_flags, NULL },
+	{ "export", NULL, NULL },
 	{ "ls", NULL, NULL },
 	{ "rm", NULL, NULL },
 	{ "show", NULL, NULL },
 	{ NULL, NULL, NULL },
 };
 
+static const char *const n_image_apply_recipe_flags[] = {
+	"--allow-downgrade",
+	NULL
+};
+
+static const char *const n_image_policy_flags[] = {
+	"--apply=",
+	"--downgrade=",
+	"--recipe=",
+	NULL
+};
+
 static const struct cli_node n_image_subs[] = {
-	{ "apply-recipe", NULL, NULL },
+	{ "apply-recipe", n_image_apply_recipe_flags, NULL },
 	{ "create", n_image_create_flags, NULL },
 	{ "gc", n_image_gc_flags, NULL },
 	{ "ls", NULL, NULL },
 	{ "manifest", NULL, n_image_manifest_subs },
 	{ "materialize", NULL, NULL },
+	{ "policy", n_image_policy_flags, NULL },
 	{ "recipe", NULL, n_image_recipe_subs },
 	{ "rm", NULL, NULL },
 	{ "show", NULL, NULL },

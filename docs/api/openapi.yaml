@@ -7559,36 +7559,145 @@ paths:
   /images/{name}/apply-recipe:
     post:
       summary: >
-        Applies name's own already-stored image recipe (ADR-0123):
-        bulk-declares its manifest, exactly what N manual
-        POST /images/{name}/manifest calls would do. No rootfs is
-        touched -- packages still need real POST /pkg/install calls
-        afterward to actually be built. Always synchronous: it has
-        completed by the time this returns. ADR-0209 removed the
-        whole-rootfs artifact fast path this used to have (a 202 plus
-        a pollable status endpoint); package artifacts are the only
-        published binaries now.
+        Applies name's own stored image recipe under the image's policy
+        (ADR-0320): declares every entry into the manifest, synchronously
+        (ADR-0209). Under `apply: converge` the image is then queued to
+        install, upgrade or downgrade each entry to match, one job at a
+        time. A pinned entry older than the version the image has
+        (installed, else its current pin) is a 409 listing every one, and
+        nothing is applied, unless the body sets allow_downgrade or the
+        policy is `downgrade: allow`.
       operationId: applyImageRecipe
       x-cix-permission: images:write
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ImageName"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                allow_downgrade:
+                  type: boolean
+                  description: Apply even if a pin moves to an older version.
       responses:
-        "204":
+        "200":
           description: Recipe applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageRecipeApply"
         "404":
-          description: No recipe stored for this image name
+          description: No recipe stored for this image name, or no such image
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: A package install/hostbuild is already in progress
+          description: >
+            The recipe would move pins backwards; nothing was applied.
+            `downgrades` lists each one.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageRecipeApply"
+  /images/{name}/policy:
+    get:
+      summary: >
+        The image's policy (ADR-0320): whether a changed recipe is applied
+        by itself (`recipe`), whether applying also installs (`apply`),
+        and whether an apply may downgrade (`downgrade`). The defaults
+        when none is saved.
+      operationId: getImagePolicy
+      x-cix-permission: images:read
+      x-cix-expose: [cli, web]
+      parameters:
+        - $ref: "#/components/parameters/ImageName"
+      responses:
+        "200":
+          description: The policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImagePolicy"
+        "404":
+          description: No such image
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-
+    put:
+      summary: >
+        Sets the image's policy (ADR-0320). Each field given replaces that
+        setting and a field left out keeps its value; a policy equal to
+        the defaults is the same as none.
+      operationId: setImagePolicy
+      x-cix-permission: images:write
+      x-cix-expose: [cli, web]
+      parameters:
+        - $ref: "#/components/parameters/ImageName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                recipe:
+                  type: string
+                  enum: [manual, follow]
+                apply:
+                  type: string
+                  enum: [declare, converge]
+                downgrade:
+                  type: string
+                  enum: [refuse, allow]
+      responses:
+        "200":
+          description: The policy now in force
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImagePolicy"
+        "400":
+          description: An unknown value
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such image
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /images/{name}/recipe/export:
+    get:
+      summary: >
+        The live manifest rendered as an image recipe (ADR-0320), so an
+        image edited on the box can be committed to cix-recipes as its
+        recipe. `version` is the stored recipe's, to be bumped before
+        committing; "" when the image has none.
+      operationId: exportImageRecipe
+      x-cix-permission: images:read
+      x-cix-expose: [cli, web]
+      parameters:
+        - $ref: "#/components/parameters/ImageName"
+      responses:
+        "200":
+          description: The image recipe
+          content:
+            application/json:
+              schema:
+                type: object
+        "404":
+          description: No such image
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /deployments:
     get:
       summary: >
@@ -20043,6 +20152,59 @@ components:
             content:
               type: string
               description: The full text of the image recipe file (image_packages=/image_artifact_sha256=).
+
+    ImageRecipeApply:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Present only on a 409.
+        image:
+          type: string
+        declared:
+          type: integer
+          description: Manifest entries written; 0 on a 409.
+        converging:
+          type: boolean
+          description: The image was queued to install what it declares (`apply: converge`).
+        downgrades:
+          type: array
+          description: Pinned entries older than the image has.
+          items:
+            type: object
+            properties:
+              package:
+                type: string
+              from:
+                type: string
+                description: Installed in the image, else its current pin.
+              to:
+                type: string
+                description: What the recipe pins.
+    ImagePolicy:
+      type: object
+      properties:
+        image:
+          type: string
+        recipe:
+          type: string
+          enum: [manual, follow]
+          description: >
+            `follow` applies a changed recipe as soon as it reaches the
+            store (by sync or publish); `manual` (default) waits for an
+            operator.
+        apply:
+          type: string
+          enum: [declare, converge]
+          description: >
+            `converge` also installs what an apply declares; `declare`
+            (default) sets the manifest only.
+        downgrade:
+          type: string
+          enum: [refuse, allow]
+          description: >
+            `refuse` (default) makes an apply that moves a pin backwards a
+            409 unless the request sets allow_downgrade.
 
     ImageGcResult:
       type: object

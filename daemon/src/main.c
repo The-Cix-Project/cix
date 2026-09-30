@@ -42,6 +42,7 @@
 #include "volumebackup.h"
 #include "cpreserve.h"
 #include "pkgpolicy.h"
+#include "imagepolicy.h"
 #include "bootconsole.h"
 #include "esp.h"
 #include "btrfs.h"
@@ -271,6 +272,7 @@ char SUBID_STATE_PATH[PATH_MAX]; /* ADR-0179 */
 char SERVERHEALTH_STATE_PATH[PATH_MAX]; /* issue #81 -- drain flags only */
 char CPRESERVE_STATE_PATH[PATH_MAX]; /* issue #86 -- control-plane reservation */
 char PKGPOLICY_STATE_PATH[PATH_MAX];  /* issue #64 -- per-package rolling policy */
+char IMAGEPOLICY_STATE_PATH[PATH_MAX]; /* ADR-0320 -- per-image recipe/apply/downgrade policy */
 char BOOTCONSOLE_STATE_PATH[PATH_MAX]; /* issue #24 -- boot console parameters */
 char KERNELPOLICY_STATE_PATH[PATH_MAX]; /* issue #65 -- which kernel line this box tracks */
 char SRCPOLICY_STATE_PATH[PATH_MAX];    /* ADR-0255 -- which upstream release packages build */
@@ -443,6 +445,8 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(CPRESERVE_STATE_PATH, sizeof(CPRESERVE_STATE_PATH),
 	         "%s/control_plane_reservation.json", STATE_DIR);
 	snprintf(PKGPOLICY_STATE_PATH, sizeof(PKGPOLICY_STATE_PATH), "%s/pkg_policies.json",
+	         STATE_DIR);
+	snprintf(IMAGEPOLICY_STATE_PATH, sizeof(IMAGEPOLICY_STATE_PATH), "%s/image_policies.json",
 	         STATE_DIR);
 	snprintf(BOOTCONSOLE_STATE_PATH, sizeof(BOOTCONSOLE_STATE_PATH), "%s/boot_console.json",
 	         STATE_DIR);
@@ -19763,7 +19767,7 @@ static enum deploy_image_state deployment_image_prepare(const char *image, char 
 	 * recipe apply has done since ADR-0209.
 	 */
 	if (entry_count == 0) {
-		enum pkg_error perr = pkg_image_recipe_apply_start(image);
+		enum pkg_error perr = pkg_image_recipe_apply(image, 0, NULL);
 
 		if (perr != PKG_OK) {
 			snprintf(err, err_size,
@@ -26323,7 +26327,22 @@ static void op_deleteImageRecipe(const struct api_ctx *ctx)
 
 static void op_applyImageRecipe(const struct api_ctx *ctx)
 {
-	handle_image_recipe_apply(ctx->fd, ctx->p[0]);
+	handle_image_recipe_apply(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_getImagePolicy(const struct api_ctx *ctx)
+{
+	handle_image_policy_get(ctx->fd, ctx->p[0]);
+}
+
+static void op_setImagePolicy(const struct api_ctx *ctx)
+{
+	handle_image_policy_put(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_exportImageRecipe(const struct api_ctx *ctx)
+{
+	handle_image_recipe_export(ctx->fd, ctx->p[0]);
 }
 
 static void op_renameImage(const struct api_ctx *ctx)
@@ -31093,6 +31112,7 @@ static int cixd_main(int argc, char **argv)
 	 */
 	cpreserve_init(CPRESERVE_STATE_PATH);   /* issue #86 */
 	pkgpolicy_init(PKGPOLICY_STATE_PATH);   /* issue #64 */
+	imagepolicy_init(IMAGEPOLICY_STATE_PATH); /* ADR-0320 */
 	bootconsole_init(BOOTCONSOLE_STATE_PATH); /* issue #24 */
 	/*
 	 * Issue #128: the ESP's own location already has exactly one answer

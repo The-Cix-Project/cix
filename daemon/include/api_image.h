@@ -22,7 +22,10 @@ void handle_image_version_manifest(int fd, const char *name, const char *version
 void handle_image_manifest_set(int fd, const char *name, const char *body, size_t body_len);
 void handle_image_manifest_unset(int fd, const char *name, const char *package);
 void handle_image_recipe_add(int fd, const char *body, size_t body_len);
-void handle_image_recipe_apply(int fd, const char *name);
+void handle_image_recipe_apply(int fd, const char *name, const char *body, size_t body_len);
+void handle_image_policy_get(int fd, const char *name);
+void handle_image_policy_put(int fd, const char *name, const char *body, size_t body_len);
+void handle_image_recipe_export(int fd, const char *name);
 void handle_image_recipe_delete(int fd, const char *name);
 void handle_image_recipe_get(int fd, const char *name);
 void handle_image_recipe_list(int fd);

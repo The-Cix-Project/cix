@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An image's policy decides how its recipe, manifest and installs agree (#535, ADR-0320)
+
+An image's package versions lived in three places, each with its own writer and nothing reconciling them: the image recipe in cix-recipes, the live manifest, and the installed set. So every change to jumpbox took three hand-kept steps: edit the recipe, apply it, install each package. And re-applying a stale recipe silently walked pins backwards; #535 measured seven packages in `cix-builder` alone. The owner kept all three writers and made the behaviour a per-image policy (`GET`/`PUT /v1/images/{name}/policy`, `cixctl image policy`):
+
+- `recipe: follow` applies a changed recipe as it reaches the box, by sync or publish.
+- `apply: converge` queues the image to install, upgrade or downgrade every entry to match, through the rolling drain. The drain already converged pinned entries for a queued image, so this adds no new mechanism. Rederive, which rebuilds the queue after a sync and at startup, now also queues a converge image whose pins disagree with what is installed.
+- `downgrade: refuse`, the default, turns an apply that moves a pin backwards into a 409 listing each package, unless `allow_downgrade` is passed. `apply-recipe` now answers 200 with what it declared.
+
+Independently of the policy, an explicitly requested install moves that package's pin to the version it installed, and `GET /v1/images/{name}/recipe/export` (`cixctl image recipe export`) renders the live manifest as a recipe to commit back to cix-recipes. The defaults are manual / declare / refuse, so nothing changes on an existing image except that a backwards apply is now refused. `test_image_recipe` covers the defaults, a bad value, the refusal and its override, export, and `follow`.
+
 ### The control-plane root is checked for every program its code executes (#554)
 
 0.2.57-414 passed every selftest and still could not deploy. Its bootroot assembly forked `cp`, and the running 412 root had none, because 412 had removed it. Nothing stated which programs code on the control-plane root may execute: cixd declared them as `*_BIN` defines, and `mkbootroot` staged them from tables kept in step by eye. The fixture code linked into cixd, `mkbootroot` and `mkinstalleriso` forked `cp` and `sha256sum`, which were on no list at all.

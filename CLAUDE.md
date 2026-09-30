@@ -236,6 +236,16 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **A package's own previous version is not another package.** An ordinary upgrade is unaffected, and giving a path up is always allowed.
 - **Moving a path needs the declaration.** CPDL has none yet (cix-build-system#275, both spellings measured refused on cbs v0.1.98). Until it lands, a move takes two published revisions: the giver drops the path, then the receiver claims it.
 - **A collision is a recipe bug to fix, never a path to exempt.** Do not add an allow-list.
+
+## An image's policy decides how its three copies agree
+
+**An image's recipe (in cix-recipes), its live manifest and its installed set are three legitimate writers of one fact, and the single source of truth is the image's POLICY, not one of the copies** -- [ADR-0320](docs/adr/0320-an-image-policy-decides-how-its-three-copies-agree.md), #535. Stated by the owner on 2026-09-30: *"We should be able to upgrade, downgrade, and we should be able to put a recipe that's hand made in the repo, and edit one on the box ... we should have the flexibility, but it should be settable on the policy."*
+
+- **Do not propose collapsing them into one copy.** Making the recipe or the manifest authoritative was offered and rejected; One Source of Truth here means one rule for precedence.
+- **`cixctl image policy NAME`**: `recipe` manual|follow, `apply` declare|converge, `downgrade` refuse|allow. The defaults are manual / declare / refuse, and only the last differs from what came before.
+- **A downgrade is always possible and never a side effect**: an apply that walks a pin back is a 409 listing each one, unless `--allow-downgrade` or `downgrade: allow`.
+- **An explicit install moves the pin with it**, and `image recipe export NAME` writes the box's state back as a recipe. Under `recipe: follow`, committing an image recipe to cix-recipes `main` is a deploy.
+
 ## Default package sources
 
 **A host that has never saved a repo or artifact config starts on the public catalogue (`https://github.com/The-Cix-Project/cix-recipes`, `github`, `main`) and the public cache (`https://cache.cix.world`, pull-only).** Stated by the owner on 2026-09-29: *"yes, both are defaults moving forwards, and can be changed if the use wants to? right?"* — see [ADR-0315](docs/adr/0315-the-public-catalogue-and-cache-are-the-defaults.md).

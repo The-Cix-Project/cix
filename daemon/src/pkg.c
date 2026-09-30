@@ -7,6 +7,7 @@
 #include "version.h"
 #include "targz.h"
 #include "pkgpolicy.h"
+#include "imagepolicy.h"
 #include "hostproc.h"
 #include "image.h"
 #include "btrfs.h"
@@ -7380,7 +7381,9 @@ void pkg_image_forgotten(const char *image)
  * extracted it precisely so a third caller would not carry its own copy,
  * which is exactly what this would otherwise have become.
  *
- * A pinned manifest entry is never queued: pinning means "never move",
+ * A pinned manifest entry is queued only when the image's policy is
+ * `apply: converge` and the installed version differs from the pin
+ * (ADR-0320): otherwise pinning means "never move",
  * so being behind the latest recipe is the intended state, not drift to
  * repair. Same rule queue_rolling_rebuilds_for() applies on publish.
  */
@@ -7401,9 +7404,26 @@ void pkg_rebuild_queue_rederive(void)
 		for (j = 0; j < entry_count; j++) {
 			const struct pkg_entry *e;
 
+			e = pkg_find(entries[j].package, image_names[i]);
+			if (entries[j].mode == IMAGE_PKG_PINNED) {
+				/* ADR-0320: under `apply: converge` the manifest is what
+				 * the image should hold, so a pin the installed set does
+				 * not match is drift to repair -- including one a
+				 * `recipe: follow` apply wrote in the sync child, whose
+				 * own enqueue died with it. */
+				struct image_policy policy;
+
+				imagepolicy_get(image_names[i], &policy);
+				if (policy.apply != IMAGE_POLICY_APPLY_CONVERGE ||
+				    (e != NULL && e->state == PKG_STATE_INSTALLED &&
+				     strcmp(e->version, entries[j].version) == 0))
+					continue;
+				rebuild_queue_enqueue(image_names[i]);
+				queued_count++;
+				break;
+			}
 			if (entries[j].mode != IMAGE_PKG_ROLLING)
 				continue;
-			e = pkg_find(entries[j].package, image_names[i]);
 			if (e == NULL || !pkg_entry_drift(e, NULL, 0))
 				continue;
 			rebuild_queue_enqueue(image_names[i]);
@@ -7413,8 +7433,8 @@ void pkg_rebuild_queue_rederive(void)
 	}
 	if (queued_count > 0)
 		logstore_write("cixd", "info",
-		                "pkg: re-derived %d image(s) behind a rolling package into the rebuild "
-		                "queue at startup (#373)",
+		                "pkg: re-derived %d image(s) behind their manifest into the rebuild "
+		                "queue (#373, ADR-0320)",
 		                queued_count);
 }
 
@@ -13063,6 +13083,37 @@ enum pkg_error pkg_cancel(const char *name, const char *image,
 	return PKG_OK;
 }
 
+/*
+ * ADR-0320: an explicit install moves the image's pin for that package
+ * to the version it installed, so the manifest and the installed set do
+ * not disagree. They used to, and only ever by accident: #535 measured
+ * 29 pins left at an old revision while the new one was installed, and
+ * once the image was queued the rolling drain would put the pinned
+ * version back. A rolling entry is left alone -- its floor already
+ * allows the newer version -- and so is a package the manifest does not
+ * name, since installing is not declaring.
+ */
+static void pin_follows_install(const char *image, const char *package, const char *version)
+{
+	struct image_manifest_entry entries[IMAGE_MANIFEST_MAX_PACKAGES];
+	int count = 0, i;
+
+	if (image_manifest_read(image, entries, &count, IMAGE_MANIFEST_MAX_PACKAGES) != IMAGE_OK)
+		return;
+	for (i = 0; i < count; i++) {
+		if (strcmp(entries[i].package, package) != 0 || entries[i].mode != IMAGE_PKG_PINNED)
+			continue;
+		if (strcmp(entries[i].version, version) == 0)
+			return;
+		if (image_manifest_set(image, package, IMAGE_PKG_PINNED, version) == IMAGE_OK)
+			logstore_write("cixd", "info",
+			               "image %s: pin %s moved %s -> %s with an explicit install "
+			               "(ADR-0320)",
+			               image, package, entries[i].version, version);
+		return;
+	}
+}
+
 int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_pid,
                          int *out_pidfd, int *out_chain_idx, char *out_hostbuild_done_name,
                          int *out_kept)
@@ -13679,6 +13730,11 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 				return 0;
 			}
 		}
+
+		/* ADR-0320: an operator's own install moves the pin with it; a
+		 * rolling rebuild installs exactly the pin and needs nothing. */
+		if (strcmp(g_chains[chain_idx].run_trigger, PKG_RUN_TRIGGER_REQUEST) == 0)
+			pin_follows_install(g_chains[chain_idx].image, e->name, e->version);
 
 		/*
 		 * #289: the package installed headers -- do they resolve?
@@ -18359,6 +18415,9 @@ enum pkg_error image_recipe_add(const char *name, const char *content)
 	int fd;
 	size_t len;
 	ssize_t written;
+	char *previous = NULL;
+	size_t previous_len = 0;
+	int changed;
 
 	if (!pkg_image_is_valid(name))
 		return PKG_ERR_INVALID_NAME;
@@ -18373,6 +18432,11 @@ enum pkg_error image_recipe_add(const char *name, const char *content)
 		return PKG_ERR_INVALID_RECIPE;
 	}
 	free(buf_copy);
+
+	/* ADR-0320: whether this is a new declaration, for recipe: follow. */
+	changed = image_recipe_get(name, &previous, &previous_len) != PKG_OK || previous == NULL ||
+	          strcmp(previous, content) != 0;
+	free(previous);
 
 	/* Staged then renamed into place -- same crash-safety convention
 	 * pkg_recipe_add() already established (never a half-written file
@@ -18392,6 +18456,41 @@ enum pkg_error image_recipe_add(const char *name, const char *content)
 	if (rename(staging_path, path) != 0) {
 		unlink(staging_path);
 		return PKG_ERR_PERSIST_FAILED;
+	}
+	/*
+	 * ADR-0320: under `recipe: follow` the recipe drives the image, so
+	 * a changed one is applied as it arrives -- by the 6-hourly sync or
+	 * by a publish, which both come through here. The image's own
+	 * policy still decides whether that apply converges and whether it
+	 * may downgrade; a refusal is logged with every entry it names,
+	 * since nobody is waiting on a response.
+	 */
+	if (changed) {
+		struct image_policy policy;
+
+		imagepolicy_get(name, &policy);
+		if (policy.recipe == IMAGE_POLICY_RECIPE_FOLLOW) {
+			struct pkg_image_apply_result *res = calloc(1, sizeof(*res));
+			enum pkg_error aerr = pkg_image_recipe_apply(name, 0, res);
+
+			if (aerr == PKG_ERR_DOWNGRADE_REFUSED && res != NULL) {
+				int i;
+
+				for (i = 0; i < res->downgrade_count; i++)
+					logstore_write("cixd", "error",
+					               "image %s: follows its recipe, and the new one pins %s %s, "
+					               "older than %s -- not applied (downgrade: refuse, "
+					               "ADR-0320)",
+					               name, res->downgrades[i].package, res->downgrades[i].to,
+					               res->downgrades[i].from);
+			} else if (aerr != PKG_OK) {
+				logstore_write("cixd", "error",
+				               "image %s: follows its recipe, and applying the new one "
+				               "failed (%d) -- not applied (ADR-0320)",
+				               name, (int)aerr);
+			}
+			free(res);
+		}
 	}
 	return PKG_OK;
 }
@@ -18791,6 +18890,34 @@ static int image_recipe_ref_cmp(const void *a, const void *b)
 	              ((const struct image_recipe_ref *)b)->name);
 }
 
+_Static_assert(PKG_IMAGE_APPLY_MAX == IMAGE_MANIFEST_MAX_PACKAGES,
+               "pkg_image_apply_result holds one downgrade per manifest entry");
+
+/*
+ * ADR-0320: the version an image has for package -- installed, else its
+ * current pin -- which a recipe pin is compared against to decide
+ * whether an apply would move it backwards. "" when it has neither.
+ */
+static void image_current_package_version(const char *image, const char *package,
+                                          const struct image_manifest_entry *manifest,
+                                          int manifest_count, char *out, size_t out_size)
+{
+	const struct pkg_entry *e = pkg_find(package, image);
+	int i;
+
+	out[0] = '\0';
+	if (e != NULL && e->state == PKG_STATE_INSTALLED && e->version[0] != '\0') {
+		snprintf(out, out_size, "%s", e->version);
+		return;
+	}
+	for (i = 0; i < manifest_count; i++) {
+		if (strcmp(manifest[i].package, package) == 0 && manifest[i].mode == IMAGE_PKG_PINNED) {
+			snprintf(out, out_size, "%s", manifest[i].version);
+			return;
+		}
+	}
+}
+
 /*
  * ADR-0209: apply is bulk-declare, and only bulk-declare.
  *
@@ -18808,17 +18935,25 @@ static int image_recipe_ref_cmp(const void *a, const void *b)
  * What remains is what the common case always did -- declare every
  * entry into the image's manifest, exactly what N manual
  * PUT /v1/images/{name}/manifest calls would do. Realizing a declared
- * entry into a real rootfs still needs an explicit pkg install, the
- * same as any other manifest edit.
+ * entry into a real rootfs needs an explicit pkg install, the
+ * same as any other manifest edit -- unless the image's policy is
+ * `apply: converge` (ADR-0320), which queues exactly that install.
  */
-enum pkg_error pkg_image_recipe_apply_start(const char *image)
+enum pkg_error pkg_image_recipe_apply(const char *image, int allow_downgrade,
+                                      struct pkg_image_apply_result *out)
 {
 	char path[PATH_MAX];
 	char *buf;
 	size_t len;
 	struct image_recipe recipe;
+	struct image_manifest_entry current[IMAGE_MANIFEST_MAX_PACKAGES];
+	int current_count = 0;
+	struct image_policy policy;
+	int downgrades = 0;
 	int i;
 
+	if (out != NULL)
+		memset(out, 0, sizeof(*out));
 	if (!pkg_image_is_valid(image))
 		return PKG_ERR_INVALID_NAME;
 	/*
@@ -18833,7 +18968,6 @@ enum pkg_error pkg_image_recipe_apply_start(const char *image)
 	 * refusing whenever any unrelated package build happened to be
 	 * running.
 	 */
-
 	image_recipe_path(image, path, sizeof(path));
 	if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)
 		return PKG_ERR_NOT_FOUND;
@@ -18842,6 +18976,41 @@ enum pkg_error pkg_image_recipe_apply_start(const char *image)
 		return PKG_ERR_INVALID_RECIPE;
 	}
 	free(buf);
+	if (image_manifest_read(image, current, &current_count, IMAGE_MANIFEST_MAX_PACKAGES) !=
+	    IMAGE_OK)
+		return PKG_ERR_TARGET_IMAGE_NOT_FOUND;
+	imagepolicy_get(image, &policy);
+
+	/*
+	 * ADR-0320: a downgrade is possible, never a side effect. A stale
+	 * recipe applied to cix-builder would have walked seven packages
+	 * back one to five revisions each (#535), and nothing asked. So
+	 * every pinned entry older than what the image has is listed, and
+	 * none of the recipe is applied unless the request or the policy
+	 * allows it. Rolling entries are floors, and a lower floor moves
+	 * nothing installed.
+	 */
+	for (i = 0; i < recipe.entry_count; i++) {
+		char have[PKG_VERSION_MAX];
+
+		if (recipe.entries[i].mode != IMAGE_PKG_PINNED)
+			continue;
+		image_current_package_version(image, recipe.entries[i].package, current, current_count,
+		                              have, sizeof(have));
+		if (have[0] == '\0' || pkg_version_compare(recipe.entries[i].version, have) >= 0)
+			continue;
+		if (out != NULL) {
+			struct pkg_image_downgrade *d = &out->downgrades[downgrades];
+
+			snprintf(d->package, sizeof(d->package), "%s", recipe.entries[i].package);
+			snprintf(d->from, sizeof(d->from), "%s", have);
+			snprintf(d->to, sizeof(d->to), "%s", recipe.entries[i].version);
+			out->downgrade_count = downgrades + 1;
+		}
+		downgrades++;
+	}
+	if (downgrades > 0 && !allow_downgrade && policy.downgrade != IMAGE_POLICY_DOWNGRADE_ALLOW)
+		return PKG_ERR_DOWNGRADE_REFUSED;
 
 	for (i = 0; i < recipe.entry_count; i++) {
 		enum image_error ierr =
@@ -18852,7 +19021,22 @@ enum pkg_error pkg_image_recipe_apply_start(const char *image)
 			return PKG_ERR_TARGET_IMAGE_NOT_FOUND;
 		if (ierr != IMAGE_OK)
 			return PKG_ERR_INVALID_RECIPE;
+		if (out != NULL)
+			out->declared++;
 	}
+	/* ADR-0320: converge is the rolling drain's own job -- it installs,
+	 * upgrades or downgrades every entry that disagrees with the
+	 * manifest, one job at a time -- so it is queued, not re-built. */
+	if (policy.apply == IMAGE_POLICY_APPLY_CONVERGE) {
+		rebuild_queue_enqueue(image);
+		if (out != NULL)
+			out->converging = 1;
+	}
+	logstore_write("cixd", "info",
+	               "image %s: applied its recipe -- %d entr%s declared%s%s (ADR-0320)", image,
+	               recipe.entry_count, recipe.entry_count == 1 ? "y" : "ies",
+	               downgrades > 0 ? ", including downgrades that were allowed" : "",
+	               policy.apply == IMAGE_POLICY_APPLY_CONVERGE ? ", converging" : "");
 	return PKG_OK;
 }
 
