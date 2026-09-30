@@ -252,8 +252,10 @@ static const struct budget g_budgets[] = {
  * per-file entry -- the extraction it starts adds none of its own,
  * being pidfd-tracked. Then 56 -> 57 for the other half of the same
  * clause: handle_pkg_unpack_event() in main.c, a pidfd callback whose
- * child is already gone. */
-#define TOTAL_ALLOWED 57
+ * child is already gone. Then 57 -> 58 for #447's
+ * container_net_apply_sysctls_running() in src/container_net.c, the
+ * bounded setns() helper its per-file entry above argues for. */
+#define TOTAL_ALLOWED 58
 
 static int is_comment(const char *line)
 {
