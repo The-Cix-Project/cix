@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A path in an image belongs to one installed package (#553, ADR-0319)
+
+An install whose files include a path another installed package in the same image already owns is now refused before a byte is staged. The error names this package, the path and the owner. Until now the last install won the path silently. That is what broke every build in the coreutils 9.11-9 rollout (#510): coreutils 9.11-8 had put its own `libcap.so.2` link under libcap's recorded path, and a build environment composed from libcap copied that link without its target. A package's own previous version does not count, so ordinary upgrades are unaffected. Uninstall keeps shared paths that predate the rule, and now looks them up through the same sorted index as the refusal instead of scanning every package per file.
+
+The five pairs measured colliding on 192.168.15.95 were fixed in their recipes first, so the rule shipped into a box with none: mtr 0.96-11 (stops shipping glibc's `libresolv.so.2`), binutils-dev 2.42-8 (stops shipping libiberty's `fnmatch.h`, `getopt.h`, `obstack.h`), libuuid 2.42.2-7, libblkid 2.42.2-9 and login 2.42.2-6 (util-linux's catalogue moves to the new `util-linux-common`), and coreutils 9.11-9 (#510). `test_pkg`'s #175 case now asserts the refusal, the self-upgrade and the delete. A move between packages needs a replaces declaration CPDL cannot express yet (cix-build-system#275).
+
 ### A userns container's rootfs is copied in-process on a non-btrfs host (#464)
 
 On a host whose container storage is not btrfs, creating a userns container copied the image rootfs by forking `cp --reflink=auto -a`. That was a shell-out the #352, #410 and #411 audits all missed. The daemon then waited for it, blocking, inside the request that creates the container: `run_cmd()`'s `waitpid()` held the reactor for as long as a whole-image copy took.

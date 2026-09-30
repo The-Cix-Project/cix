@@ -1689,86 +1689,260 @@ static void pkg_entry_free_files(struct pkg_entry *e)
 	e->files_cap = 0;
 }
 
-/* Unlinks every one of e's manifested files from rootfs -- does NOT
- * touch e->files itself (caller decides when to forget the list, e.g.
- * only once a replacement build has actually succeeded for an
- * in-place upgrade). Shared by pkg_delete() and the upgrade path in
- * pkg_build_completed(), both via image_produce_new_version()'s own
- * mutate() callback -- rootfs is always a scratch copy-forward staging
- * directory (ADR-0107/0108), never a version's own immutable,
- * possibly-already-in-use-by-a-running-container rootfs directly. */
 /*
- * Does any OTHER installed package in the same image also claim `rel`?
+ * ---- #553: a path in an image belongs to exactly one installed package
  *
- * Issue #175. Two packages legitimately install the same path -- glibc
- * and linux-headers both own parts of usr/include, and any package
- * built from a shared upstream tree overlaps its siblings -- and the
- * LAST one installed is what is actually on disk. So removing a
- * package's manifest blindly deletes files that belong to a package
- * nobody touched.
+ * Until 2026-09-30 two packages could install the same path, and the
+ * LAST one installed was what was on disk, with nothing recording
+ * whose bytes those were. Two consumers then read the path as if it
+ * were the other package's:
  *
- * That is not hypothetical. Uninstalling libc-dev to make way for a
- * self-built glibc silently gutted linux-headers, which shares
- * usr/include with it, and the damage only surfaced later and
- * elsewhere:
+ *   - Build-environment composition copies each declared tool's
+ *     recorded paths out of its image. coreutils 9.11-8 shipped
+ *     usr/lib/libcap.so.2 as a link to its own libcap.so.2.66, the
+ *     libcap package ships the same path as a link to .2.78, and in
+ *     jumpbox the path held coreutils' link. An environment composed
+ *     from libcap got that link without its target, and every build
+ *     declaring coreutils failed on `libcap.so.2: cannot open shared
+ *     object file` (measured on 192.168.15.95, 2026-09-30; #510).
+ *   - Uninstall (#175, below) keeps a path another package still
+ *     claims, but not the files that path's CONTENT depends on.
  *
- *   build environment: copying usr/include/asm-generic/resource.h from
- *   declared tool linux-headers@6.18.40-4 (image cix-builder) failed:
- *   No such file or directory
- *
- * -- a package reported as installed, with a recorded manifest, whose
- * files were gone. Nothing failed at the time of the delete.
+ * So an install whose files include a path another installed package
+ * in the same image owns is refused, and the error names both packages
+ * and the path (path_owner_gate()). It is Debian's rule. A package's
+ * own previous version is not "another package", so an ordinary
+ * upgrade is unaffected. Moving a path between packages needs the
+ * installing package to declare that it replaces the other one, which
+ * CPDL cannot say yet (cix-build-system#275). Until then a move takes
+ * two published revisions: the giver drops the path, then the receiver
+ * claims it.
  *
  * Scoped to one image because that is the unit a manifest describes:
  * the same package installed into two images owns two independent sets
  * of files, and one image's contents say nothing about another's.
  */
-static int path_claimed_by_another_package(const struct pkg_entry *self, const char *rel)
+
+/* One path an installed package's manifest claims, and that package. */
+struct path_claim {
+	const char *rel;
+	const struct pkg_entry *owner;
+};
+
+struct path_claim_index {
+	struct path_claim *claims;
+	size_t count;
+};
+
+static int path_claim_cmp(const void *a, const void *b)
 {
-	const char *self_image = normalize_image(self->image);
+	return strcmp(((const struct path_claim *)a)->rel, ((const struct path_claim *)b)->rel);
+}
+
+/*
+ * Every path claimed by an INSTALLED package in `image` other than
+ * `self`, sorted for bsearch(). Sorted once rather than scanned per
+ * file, because a check is one lookup per staged file: gcc staged into
+ * cix-builder would otherwise be thousands of files against every
+ * file of every package there, on the daemon's one event loop.
+ *
+ * The strings are the entries' own; the index is only valid until the
+ * package table next changes, so it is built and freed within one
+ * call. Returns 0, or -1 with errno set on allocation failure.
+ */
+static int path_claim_index_build(const struct pkg_entry *self, const char *image,
+                                  struct path_claim_index *out)
+{
+	size_t total = 0, n = 0;
 	int i, f;
 
+	out->claims = NULL;
+	out->count = 0;
 	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
 		const struct pkg_entry *o = &g_packages[i];
 
 		if (o == self || !o->in_use || o->state != PKG_STATE_INSTALLED)
 			continue;
-		if (strcmp(normalize_image(o->image), self_image) != 0)
+		if (strcmp(normalize_image(o->image), image) != 0)
 			continue;
-		for (f = 0; f < o->file_count; f++) {
-			if (strcmp(o->files[f], rel) == 0)
-				return 1;
+		total += (size_t)o->file_count;
+	}
+	if (total == 0)
+		return 0;
+	out->claims = calloc(total, sizeof(*out->claims));
+	if (out->claims == NULL)
+		return -1;
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		const struct pkg_entry *o = &g_packages[i];
+
+		if (o == self || !o->in_use || o->state != PKG_STATE_INSTALLED)
+			continue;
+		if (strcmp(normalize_image(o->image), image) != 0)
+			continue;
+		for (f = 0; f < o->file_count && n < total; f++) {
+			out->claims[n].rel = o->files[f];
+			out->claims[n].owner = o;
+			n++;
 		}
 	}
+	out->count = n;
+	qsort(out->claims, out->count, sizeof(*out->claims), path_claim_cmp);
 	return 0;
 }
+
+static const struct pkg_entry *path_claim_owner(const struct path_claim_index *idx,
+                                                const char *rel)
+{
+	struct path_claim key;
+	const struct path_claim *hit;
+
+	if (idx->count == 0)
+		return NULL;
+	key.rel = rel;
+	key.owner = NULL;
+	hit = bsearch(&key, idx->claims, idx->count, sizeof(*idx->claims), path_claim_cmp);
+	return hit != NULL ? hit->owner : NULL;
+}
+
+static void path_claim_index_free(struct path_claim_index *idx)
+{
+	free(idx->claims);
+	idx->claims = NULL;
+	idx->count = 0;
+}
+
+/*
+ * Walks a staged install tree and stops at the first regular file or
+ * symlink another package owns -- the two kinds merge_tree() records in
+ * a manifest, so the two kinds that can be owned. Returns 1 with the
+ * refusal in err, 0 when nothing collides, -1 with err set when the
+ * tree could not be read.
+ */
+static int path_owner_walk(const struct pkg_entry *self, const char *image,
+                           const struct path_claim_index *idx, const char *root,
+                           const char *relpath, char *err, size_t err_size)
+{
+	char dir[PATH_MAX];
+	DIR *d;
+	struct dirent *de;
+	int r = 0;
+
+	snprintf(dir, sizeof(dir), "%s%s%s", root, relpath[0] ? "/" : "", relpath);
+	d = opendir(dir);
+	if (d == NULL) {
+		/* No tree at all is a package that installs nothing, which
+		 * merge_tree() accepts too. */
+		if (relpath[0] == '\0' && errno == ENOENT)
+			return 0;
+		snprintf(err, err_size, "could not read the staged tree at \"%s\" to check who owns "
+		         "its paths: %s", relpath[0] ? relpath : "/", strerror(errno));
+		return -1;
+	}
+	while (r == 0 && (de = readdir(d)) != NULL) {
+		char rel[PATH_MAX];
+		char path[PATH_MAX];
+		struct stat st;
+		const struct pkg_entry *owner;
+
+		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+			continue;
+		snprintf(rel, sizeof(rel), "%s%s%s", relpath, relpath[0] ? "/" : "", de->d_name);
+		snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
+		if (lstat(path, &st) != 0) {
+			snprintf(err, err_size, "could not read \"%s\" in the staged tree to check who "
+			         "owns it: %s", rel, strerror(errno));
+			r = -1;
+		} else if (S_ISDIR(st.st_mode)) {
+			r = path_owner_walk(self, image, idx, root, rel, err, err_size);
+		} else if (S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) {
+			owner = path_claim_owner(idx, rel);
+			if (owner != NULL) {
+				snprintf(err, err_size,
+				         "%s@%s installs \"%s\", which %s@%s already owns in image \"%s\" "
+				         "-- a path belongs to one package (#553), so drop it from one of "
+				         "the two recipes",
+				         self->name, self->version, rel, owner->name,
+				         owner->version, image);
+				r = 1;
+			}
+		}
+	}
+	closedir(d);
+	return r;
+}
+
+/*
+ * #553's refusal, run before a single byte is staged, beside the
+ * #389 undeclared-link gate and for the same reason: the message names
+ * this package, and a refused install leaves nothing behind. Returns 0
+ * to proceed, nonzero with the refusal in err.
+ */
+static int path_owner_gate(const struct pkg_entry *self, const char *image, const char *dest_dir,
+                           char *err, size_t err_size)
+{
+	struct path_claim_index idx;
+	int r;
+
+	if (path_claim_index_build(self, normalize_image(image), &idx) != 0) {
+		snprintf(err, err_size, "could not index the paths image \"%s\" already owns: %s",
+		         normalize_image(image), strerror(errno));
+		return -1;
+	}
+	r = path_owner_walk(self, normalize_image(image), &idx, dest_dir, "", err, err_size);
+	path_claim_index_free(&idx);
+	return r;
+}
+
 
 /*
  * Removes the files a package's manifest claims -- except any that
  * another installed package in the same image also claims, which are
  * left alone and reported (issue #175).
  *
- * Leaving a shared path behind is the conservative direction on
- * purpose. The file demonstrably belongs to something still installed,
- * so keeping it costs disk; deleting it breaks a package that was
- * never touched, in a way that surfaces far from the cause. Where two
- * packages disagree about a path's CONTENT the last install wins, as
- * it always has -- this changes only who may delete it.
+ * Since #553 no install creates such a path, but images installed
+ * before that rule still hold some, and deleting one breaks a package
+ * nobody touched. That really happened: uninstalling libc-dev silently
+ * gutted linux-headers' share of usr/include, and it surfaced later,
+ * elsewhere, as
+ *
+ *   build environment: copying usr/include/asm-generic/resource.h from
+ *   declared tool linux-headers@6.18.40-4 (image cix-builder) failed:
+ *   No such file or directory
+ *
+ * If the index cannot be built nothing is removed, for the same
+ * reason: keeping a file costs disk, deleting a shared one breaks a
+ * package somewhere else.
+ *
+ * It does not touch e->files: the caller decides when to forget the
+ * list, e.g. only once a replacement build has succeeded for an
+ * in-place upgrade. Shared by pkg_delete() and the upgrade path, both
+ * through image_produce_new_version()'s mutate() callback, so rootfs is
+ * always a scratch copy-forward staging directory (ADR-0107/0108),
+ * never a version's own immutable rootfs.
  */
 static void unlink_manifest_files(const struct pkg_entry *e, const char *rootfs)
 {
+	struct path_claim_index idx;
 	int i, kept = 0;
 
+	if (path_claim_index_build(e, normalize_image(e->image), &idx) != 0) {
+		logstore_write("cixd", "error",
+		               "pkg %s@%s: could not index the paths other packages in this image "
+		               "own (%s), so none of its %d file(s) were removed",
+		               e->name, normalize_image(e->image), strerror(errno), e->file_count);
+		return;
+	}
 	for (i = 0; i < e->file_count; i++) {
 		char path[PATH_MAX];
 
-		if (path_claimed_by_another_package(e, e->files[i])) {
+		if (path_claim_owner(&idx, e->files[i]) != NULL) {
 			kept++;
 			continue;
 		}
 		snprintf(path, sizeof(path), "%s/%s", rootfs, e->files[i]);
 		unlink(path);
 	}
+	path_claim_index_free(&idx);
 	if (kept > 0)
 		logstore_write("cixd", "info",
 		               "pkg %s@%s: kept %d of %d file(s) that another installed "
@@ -13393,7 +13567,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			pkg_artifact_push_enqueue(e->name, e->version);
 	} else {
 		struct install_mutate_ctx ctx;
-		char undeclared[512];
+		char refused[512];
 
 		/*
 		 * Issue #389, before a single byte is staged -- same
@@ -13408,9 +13582,20 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * are the image's fault and exactly the wrong one for this,
 		 * where the package is at fault and is the thing to fix.
 		 */
-		if (undeclared_link_gate(e, g_chains[chain_idx].image, dest_dir, undeclared,
-		                          sizeof(undeclared)) != 0) {
-			pkg_fail(e, 0, PIPELINE_INSTALL, undeclared);
+		if (undeclared_link_gate(e, g_chains[chain_idx].image, dest_dir, refused,
+		                          sizeof(refused)) != 0) {
+			pkg_fail(e, 0, PIPELINE_INSTALL, refused);
+			g_chains[chain_idx].name[0] = '\0';
+			g_chains[chain_idx].dep_queue_count = 0;
+			return 0;
+		}
+
+		/* #553, at the same point and for the same reasons: nothing is
+		 * staged, and the message names both packages and the path. */
+		if (path_owner_gate(e, g_chains[chain_idx].image, dest_dir, refused,
+		                    sizeof(refused)) != 0) {
+			logstore_write("cixd", "error", "pkg install: %s: %s", e->name, refused);
+			pkg_fail(e, 0, PIPELINE_INSTALL, refused);
 			g_chains[chain_idx].name[0] = '\0';
 			g_chains[chain_idx].dep_queue_count = 0;
 			return 0;

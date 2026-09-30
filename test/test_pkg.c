@@ -627,11 +627,10 @@ static void fixture_srcdir(const char *tarball_path, char *out, size_t out_size)
 }
 
 /*
- * A recipe that installs one file of its own AND one deliberately
- * shared with another package (issue #175). Two packages owning one
- * path is normal, not pathological: glibc and linux-headers both own
- * parts of usr/include, and any two packages built from a shared
- * upstream tree overlap.
+ * A recipe that installs one file of its own AND one path another
+ * fixture installs too -- the collision #553 refuses. It is not normal
+ * any more: glibc and linux-headers, the example this comment used to
+ * give, measure no shared path at all on 192.168.15.95 (2026-09-30).
  */
 static int write_shared_path_recipe(const struct cix_client *c, const char *name,
                                     const char *version, const char *tarball_path,
@@ -648,8 +647,8 @@ static int write_shared_path_recipe(const struct cix_client *c, const char *name
 	         "            }\n"
 	         "        }\n",
 	         name, srcdir);
-	/* One file of its own and one deliberately shared with another
-	 * package (#175). `mkdir` takes the shared file's parent because
+	/* One file of its own and one another fixture also installs (#553).
+	 * `mkdir` takes the shared file's parent because
 	 * the shell form did the same with dirname -- the path is a
 	 * caller's choice and need not be one level deep. */
 	snprintf(install_body, sizeof(install_body),
@@ -6010,99 +6009,138 @@ skip_resume:
 	}
 
 	/*
-	 * Issue #175: removing a package must not delete files another
-	 * installed package also owns.
+	 * #553: a path in an image belongs to exactly one installed package.
 	 *
-	 * Two packages sharing a path is ordinary -- glibc and
-	 * linux-headers both own parts of usr/include -- and whichever
-	 * installed last is what is on disk. Deleting one used to unlink
-	 * every path in its manifest regardless, so the survivor was left
-	 * reported as installed, with a recorded manifest, and its files
-	 * gone. Nothing failed at the time; the damage surfaced later and
-	 * somewhere else entirely, as a build environment that could not
-	 * be composed.
+	 * shareda and sharedb each install a file of their own plus the same
+	 * shared path. Until 2026-09-30 both installed and whichever went
+	 * last held the path, with nothing recording whose bytes those
+	 * were -- which is how libcap's recorded libcap.so.2 came to be
+	 * coreutils' link and broke every build composed from it (#510).
 	 *
-	 * The shared file must still be there after deleting the package
-	 * that happens to have written it, because the other one claims it
-	 * too.
+	 * So: shareda installs; sharedb is refused, and the error names
+	 * shareda and the path; an upgrade of shareda that still carries
+	 * the path installs, because its own previous version is not
+	 * another package; and deleting shareda removes its files, the
+	 * shared one included, since nothing else owns it.
+	 *
+	 * What #175 tested here -- delete keeping a path another package
+	 * also claims -- can no longer be staged through installs. It
+	 * remains in unlink_manifest_files() for images that predate the
+	 * rule.
 	 */
 	{
 		const char *shared_rel = "usr/share/shared175/common.txt";
-		char sha[65];
-		char tarball[PATH_MAX];
+		char sha[65], sha2[65];
+		char tarball[PATH_MAX], tarball2[PATH_MAX];
+		char st[64];
 		int stage_ok;
 
 		stage_ok = stage_fixture_tarball(scratch_dir, "shareda", "1.0", tarball,
-		                                 sizeof(tarball), sha, sizeof(sha)) == 0;
+		                                 sizeof(tarball), sha, sizeof(sha)) == 0 &&
+		           stage_fixture_tarball(scratch_dir, "shareda", "1.1", tarball2,
+		                                 sizeof(tarball2), sha2, sizeof(sha2)) == 0;
 		if (stage_ok &&
 		    (write_shared_path_recipe(&client, "shareda", "1.0", tarball, sha, shared_rel) != 0 ||
+		     write_shared_path_recipe(&client, "shareda", "1.1", tarball2, sha2, shared_rel) !=
+		             0 ||
 		     write_shared_path_recipe(&client, "sharedb", "1.0", tarball, sha, shared_rel) != 0)) {
 			fprintf(stderr, "FAIL: could not write the shared-path recipes\n");
 			ok = 0;
 			stage_ok = 0;
 		}
+
 		if (stage_ok) {
-			static const char *const both[] = { "shareda", "sharedb", NULL };
-			int i, installed = 1;
-
-			for (i = 0; both[i] != NULL && installed; i++) {
-				char body[128], st[64];
-
-				snprintf(body, sizeof(body), "{\"name\":\"%s\"}", both[i]);
-				memset(&r, 0, sizeof(r));
-				if (cix_client_request(&client, "POST", "/v1/pkg/install", body, &r) != 0 ||
-				    (r.status != 202 && r.status != 200)) {
-					fprintf(stderr, "FAIL: #175 install %s status=%d\n", both[i],
-					        r.status);
-					ok = 0;
-					installed = 0;
-				}
-				cix_response_free(&r);
-				if (installed &&
-				    (poll_pkg_state(&client, both[i], st, sizeof(st), 240) != 0 ||
-				     !str_eq(st, "installed"))) {
-					fprintf(stderr, "FAIL: #175 %s did not install (state=%s)\n",
-					        both[i], st);
-					ok = 0;
-					installed = 0;
-				}
-			}
-
-			if (installed && access(base_path("/usr/share/shared175/common.txt"), F_OK) != 0) {
-				fprintf(stderr, "FAIL: #175 shared file absent before the delete\n");
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install",
+			                       "{\"name\":\"shareda\",\"version\":\"1.0-1\"}", &r) != 0 ||
+			    (r.status != 202 && r.status != 200)) {
+				fprintf(stderr, "FAIL: #553 install shareda status=%d\n", r.status);
 				ok = 0;
-				installed = 0;
+				stage_ok = 0;
 			}
+			cix_response_free(&r);
+		}
+		if (stage_ok && (poll_pkg_state(&client, "shareda", st, sizeof(st), 240) != 0 ||
+		                 !str_eq(st, "installed"))) {
+			fprintf(stderr, "FAIL: #553 shareda did not install (state=%s)\n", st);
+			ok = 0;
+			stage_ok = 0;
+		}
 
-			if (installed) {
-				memset(&r, 0, sizeof(r));
-				cix_client_request(&client, "DELETE", "/v1/pkg/shareda", NULL, &r);
-				if (r.status != 204 && r.status != 200) {
-					fprintf(stderr, "FAIL: #175 deleting shareda status=%d\n",
-					        r.status);
-					ok = 0;
-				}
-				cix_response_free(&r);
+		/* The collision: refused, naming the owner and the path. */
+		if (stage_ok) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"sharedb\"}",
+			                       &r) != 0 ||
+			    (r.status != 202 && r.status != 200)) {
+				fprintf(stderr, "FAIL: #553 install sharedb status=%d\n", r.status);
+				ok = 0;
+				stage_ok = 0;
+			}
+			cix_response_free(&r);
+		}
+		if (stage_ok) {
+			const char *em;
 
-				/* The survivor's own file, and the shared one it
-				 * also claims, must both still be present. */
-				if (access(base_path("/usr/bin/sharedb"), F_OK) != 0) {
-					fprintf(stderr,
-					        "FAIL: #175 deleting shareda removed sharedb's own file\n");
-					ok = 0;
-				}
-				if (access(base_path("/usr/share/shared175/common.txt"), F_OK) != 0) {
-					fprintf(stderr,
-					        "FAIL: #175 deleting shareda deleted a path sharedb "
-					        "also owns -- silent cross-package deletion\n");
-					ok = 0;
-				}
-				/* And its own, unshared file must be gone -- the fix
-				 * must not turn delete into a no-op. */
-				if (access(base_path("/usr/bin/shareda"), F_OK) == 0) {
-					fprintf(stderr, "FAIL: #175 shareda's own file survived the delete\n");
-					ok = 0;
-				}
+			if (poll_pkg_state(&client, "sharedb", st, sizeof(st), 240) != 0 ||
+			    str_eq(st, "installed")) {
+				fprintf(stderr, "FAIL: #553 sharedb installed over a path shareda owns "
+				                "(state=%s)\n", st);
+				ok = 0;
+			}
+			memset(&r, 0, sizeof(r));
+			em = (cix_client_request(&client, "GET", "/v1/pkg/sharedb", NULL, &r) == 0 &&
+			      r.status == 200) ? json_str_field(r.json, "error") : NULL;
+			if (em == NULL || strstr(em, "shareda@1.0-1") == NULL ||
+			    strstr(em, shared_rel) == NULL) {
+				fprintf(stderr, "FAIL: #553 the refusal must name shareda@1.0-1 and %s, got: %s\n",
+				        shared_rel, em != NULL ? em : "(no error)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			if (access(base_path("/usr/bin/sharedb"), F_OK) == 0) {
+				fprintf(stderr, "FAIL: #553 a refused install left its own file behind\n");
+				ok = 0;
+			}
+		}
+
+		/* Its own next version carrying the same path is not a collision. */
+		if (stage_ok) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install",
+			                       "{\"name\":\"shareda\",\"version\":\"1.1-1\",\"upgrade\":true}",
+			                       &r) != 0 ||
+			    (r.status != 202 && r.status != 200)) {
+				fprintf(stderr, "FAIL: #553 upgrade shareda status=%d\n", r.status);
+				ok = 0;
+				stage_ok = 0;
+			}
+			cix_response_free(&r);
+		}
+		if (stage_ok) {
+			if (poll_pkg_state(&client, "shareda", st, sizeof(st), 240) != 0 ||
+			    !str_eq(st, "installed")) {
+				fprintf(stderr, "FAIL: #553 upgrading shareda over its own path was refused "
+				                "(state=%s)\n", st);
+				ok = 0;
+				stage_ok = 0;
+			}
+		}
+
+		/* Nothing else owns the shared path, so a delete takes it too --
+		 * and the fix must not turn delete into a no-op. */
+		if (stage_ok) {
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "DELETE", "/v1/pkg/shareda", NULL, &r);
+			if (r.status != 204 && r.status != 200) {
+				fprintf(stderr, "FAIL: #553 deleting shareda status=%d\n", r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			if (access(base_path("/usr/bin/shareda"), F_OK) == 0 ||
+			    access(base_path("/usr/share/shared175/common.txt"), F_OK) == 0) {
+				fprintf(stderr, "FAIL: #553 deleting shareda left its files behind\n");
+				ok = 0;
 			}
 		}
 	}
