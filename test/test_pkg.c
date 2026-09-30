@@ -966,12 +966,14 @@ static int write_multisrc_recipe(const struct cix_client *c, const char *name,
 	 * job succeeded. */
 	snprintf(install_body, sizeof(install_body),
 	         "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
-	         /* usr/share first: CPDL's mkdir creates the LEAF, not its
-	          * parents, which is what linux-headers@6.18.40-9 records
-	          * after 6.18.40-8 assumed otherwise. The shell form made
-	          * both in one mkdir -p. */
+	         /* usr/share first, each level named: parents are created by
+	          * default again since cbs v0.1.70 (cix-build-system#246), but
+	          * that default has changed twice, so nothing here leans on it.
+	          * The directory is the package's own name, because two
+	          * fixtures installing one path into base is the collision #553
+	          * refuses. */
 	         "        mkdir \"${dest}/usr/share\" chmod 0755\n"
-	         "        mkdir \"${dest}/usr/share/multisrc\" chmod 0755\n"
+	         "        mkdir \"${dest}/usr/share/%s\" chmod 0755\n"
 	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s\"\n"
 	         /* materialize, not copy: an `extra` source is NOT placed
 	          * under ${src} -- only `main` is. Measured by
@@ -979,8 +981,8 @@ static int write_multisrc_recipe(const struct cix_client *c, const char *name,
 	          * ${src} held the main source and nothing else. The copy
 	          * this replaces failed naming its DESTINATION, which had
 	          * just been created; the bogus path was the source. */
-	         "        materialize $source.extra1 to \"${dest}/usr/share/multisrc/extra1.txt\"\n",
-	         name, srcdir, name);
+	         "        materialize $source.extra1 to \"${dest}/usr/share/%s/extra1.txt\"\n",
+	         name, name, srcdir, name, name);
 
 	return publish_cpdl_recipe(c, name, version, tarball_path, tarball_sha256, extra_sources,
 	                            "            compiler \"tcc\"\n"
@@ -3758,7 +3760,7 @@ int main(void)
 					ok = 0;
 				} else {
 					char content[64] = { 0 };
-					FILE *cf = fopen(base_path("/usr/share/multisrc/extra1.txt"), "r");
+					FILE *cf = fopen(base_path("/usr/share/multisrcquery/extra1.txt"), "r");
 
 					if (cf == NULL || fgets(content, sizeof(content), cf) == NULL ||
 					    strcmp(content, "extra-content-one\n") != 0) {
