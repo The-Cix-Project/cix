@@ -30,6 +30,7 @@
  * real target disk as production code).
  */
 #include "bootmodules.h"
+#include "mkinstalleriso_args.h"
 #include "persist.h"
 #include "libdirs.h"
 #include "test_image_fixture.h"
@@ -598,12 +599,9 @@ int main(int argc, char **argv)
 	const char *modules_dir;
 	const char *kmod_bin_dir;
 
-	if (argc != 16) {
+	if (argc != MKISO_ARGC) {
 		fprintf(stderr,
-		        "usage: %s <staging-dir> <cix-install-bin> <cix-recover-bin> "
-		        "<cix-boot.efi> <bzImage> <control-plane-squashfs> <signing-key> "
-		        "<signing-cert.crt> <signing-cert.cer> <out.iso> <kernel-args> "
-		        "<isotools-root> <seed-dir> <kernel-modules-dir> <kmod-bin-dir>\n"
+		        "usage: %s" MKISO_USAGE_ARGS "\n"
 		        "  kernel-modules-dir: the kernel hostbuild artifact's own lib/modules, or\n"
 		        "  \"\" for none. The NIC drivers this platform supports are modules, so\n"
 		        "  without them cix-install can only list interfaces whose driver is built\n"
@@ -655,21 +653,21 @@ int main(int argc, char **argv)
 		        argv[0]);
 		return 2;
 	}
-	stage_dir = argv[1];
-	cix_install_bin = argv[2];
-	cix_recover_bin = argv[3];
-	cix_boot_bin = argv[4];
-	bzimage_path = argv[5];
-	control_plane_squashfs = argv[6];
-	signing_key = argv[7];
-	signing_cert_pem = argv[8];
-	signing_cert_der = argv[9];
-	out_iso = argv[10];
-	kernel_args = argv[11];
-	snprintf(g_isotools_root, sizeof(g_isotools_root), "%s", argv[12]);
-	seed_dir = argv[13];
-	modules_dir = argv[14];
-	kmod_bin_dir = argv[15];
+	stage_dir = argv[MKISO_ARG_STAGE_DIR];
+	cix_install_bin = argv[MKISO_ARG_INSTALL_BIN];
+	cix_recover_bin = argv[MKISO_ARG_RECOVER_BIN];
+	cix_boot_bin = argv[MKISO_ARG_BOOT_EFI];
+	bzimage_path = argv[MKISO_ARG_BZIMAGE];
+	control_plane_squashfs = argv[MKISO_ARG_SQUASHFS];
+	signing_key = argv[MKISO_ARG_SIGNING_KEY];
+	signing_cert_pem = argv[MKISO_ARG_SIGNING_CERT_PEM];
+	signing_cert_der = argv[MKISO_ARG_SIGNING_CERT_DER];
+	out_iso = argv[MKISO_ARG_OUT_ISO];
+	kernel_args = argv[MKISO_ARG_KERNEL_ARGS];
+	snprintf(g_isotools_root, sizeof(g_isotools_root), "%s", argv[MKISO_ARG_ISOTOOLS_ROOT]);
+	seed_dir = argv[MKISO_ARG_SEED_DIR];
+	modules_dir = argv[MKISO_ARG_MODULES_DIR];
+	kmod_bin_dir = argv[MKISO_ARG_KMOD_BIN_DIR];
 
 	snprintf(g_grub_mkrescue_bin, sizeof(g_grub_mkrescue_bin), "%s/bin/grub-mkrescue",
 	         g_isotools_root);

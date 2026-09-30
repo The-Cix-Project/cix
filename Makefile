@@ -49,6 +49,7 @@ SELFTESTS = \
 	$(BUILD)/test_lint $(BUILD)/test_naming $(BUILD)/test_versioning $(BUILD)/test_http_put \
 	$(BUILD)/test_osrelease \
 	$(BUILD)/test_json $(BUILD)/test_jsondiff $(BUILD)/test_nsswitch $(BUILD)/test_nicreport \
+	$(BUILD)/test_mkinstalleriso_args \
 	$(BUILD)/test_cbsrecipe \
 	$(BUILD)/test_blocking_waits $(BUILD)/test_listenbind $(BUILD)/test_bootorder \
 	$(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc \
@@ -308,6 +309,7 @@ SELFTEST_HELPERS = \
 	$(BUILD)/dev_child \
 	$(BUILD)/dual_console_child \
 	$(BUILD)/harness_child \
+	$(BUILD)/mkinstalleriso \
 	$(BUILD)/net_child \
 	$(BUILD)/net_connect \
 	$(BUILD)/output_child \
@@ -464,7 +466,7 @@ testreport: all
 
 .PHONY: all clean aggressive
 
-all: $(BUILD)/cix-init $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/test_container_pty $(BUILD)/pty_child $(BUILD)/cixd $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/cixctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_slow_client $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_network_interfaces $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_ntp $(BUILD)/test_ldap $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/cix-install $(BUILD)/cix-recover $(BUILD)/test_dual_console $(BUILD)/dual_console_child $(BUILD)/console_term_child $(BUILD)/console_input_child $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/mktoolchainimage $(BUILD)/test_console_pki_bootstrap $(BUILD)/test_console_exec $(BUILD)/test_container_lifecycle $(BUILD)/output_child $(BUILD)/stats_child $(BUILD)/test_container_stats $(BUILD)/test_disk_quota $(BUILD)/test_diskpart $(BUILD)/test_sysctl $(BUILD)/test_kmod $(BUILD)/test_kmod_build $(BUILD)/test_routes $(BUILD)/test_management_address $(BUILD)/test_pkg_build_log $(BUILD)/test_pkg_concurrent_stress $(BUILD)/test_pkg_sync $(BUILD)/test_pkg_cache $(BUILD)/test_image_recipe $(BUILD)/test_container_recipe $(BUILD)/test_rolling_restart $(BUILD)/syslog_recv_child $(BUILD)/test_syslogfwd $(BUILD)/test_hostproc $(BUILD)/test_tls_throttle $(BUILD)/test_https_chain $(BUILD)/test_layout_upgrade $(BUILD)/test_treecopy $(BUILD)/test_storage_placement $(BUILD)/test_backup_config $(BUILD)/test_container_storage_migrate $(BUILD)/test_container_dns_servers $(BUILD)/test_hostauth $(BUILD)/test_device_hotplug $(BUILD)/test_subid $(BUILD)/test_volume $(BUILD)/volume_child $(BUILD)/test_userns_run $(BUILD)/run_child $(BUILD)/test_factory_reset $(BUILD)/test_boot_console $(BUILD)/test_signing_keys $(BUILD)/test_pkg_recipe_approval $(BUILD)/test_stallwatch $(BUILD)/test_kernelpolicy $(BUILD)/test_dhcp $(BUILD)/test_artifact_export $(BUILD)/test_esp $(BUILD)/test_btrfs $(BUILD)/test_direct_rootfs $(BUILD)/test_targz $(BUILD)/targz_probe $(BUILD)/test_childdiag $(BUILD)/apigen $(BUILD)/test_apigen $(BUILD)/test_apiroute $(BUILD)/test_api_surfaces $(BUILD)/test_docindex $(BUILD)/test_web_vt $(BUILD)/test_web_syntax $(BUILD)/test_secrets $(BUILD)/test_curl_guards $(BUILD)/test_timebounds $(BUILD)/test_procfuse $(BUILD)/test_lint $(BUILD)/test_naming $(BUILD)/test_versioning $(BUILD)/test_http_put $(BUILD)/test_osrelease $(BUILD)/test_json $(BUILD)/test_jsondiff $(BUILD)/test_cbsrecipe $(BUILD)/test_nsswitch $(BUILD)/test_nicreport $(BUILD)/test_blocking_waits $(BUILD)/test_listenbind $(BUILD)/test_bootorder $(BUILD)/test_pkg_finalize $(BUILD)/test_fresh_output_dir $(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc $(BUILD)/test_releasekey $(BUILD)/test_aggressive $(BUILD)/cix-boot.efi $(BUILD)/cix-xorriso
+all: $(BUILD)/cix-init $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/test_container_pty $(BUILD)/pty_child $(BUILD)/cixd $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/cixctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_slow_client $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_network_interfaces $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_ntp $(BUILD)/test_ldap $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/cix-install $(BUILD)/cix-recover $(BUILD)/test_dual_console $(BUILD)/dual_console_child $(BUILD)/console_term_child $(BUILD)/console_input_child $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/mktoolchainimage $(BUILD)/test_console_pki_bootstrap $(BUILD)/test_console_exec $(BUILD)/test_container_lifecycle $(BUILD)/output_child $(BUILD)/stats_child $(BUILD)/test_container_stats $(BUILD)/test_disk_quota $(BUILD)/test_diskpart $(BUILD)/test_sysctl $(BUILD)/test_kmod $(BUILD)/test_kmod_build $(BUILD)/test_routes $(BUILD)/test_management_address $(BUILD)/test_pkg_build_log $(BUILD)/test_pkg_concurrent_stress $(BUILD)/test_pkg_sync $(BUILD)/test_pkg_cache $(BUILD)/test_image_recipe $(BUILD)/test_container_recipe $(BUILD)/test_rolling_restart $(BUILD)/syslog_recv_child $(BUILD)/test_syslogfwd $(BUILD)/test_hostproc $(BUILD)/test_tls_throttle $(BUILD)/test_https_chain $(BUILD)/test_layout_upgrade $(BUILD)/test_treecopy $(BUILD)/test_storage_placement $(BUILD)/test_backup_config $(BUILD)/test_container_storage_migrate $(BUILD)/test_container_dns_servers $(BUILD)/test_hostauth $(BUILD)/test_device_hotplug $(BUILD)/test_subid $(BUILD)/test_volume $(BUILD)/volume_child $(BUILD)/test_userns_run $(BUILD)/run_child $(BUILD)/test_factory_reset $(BUILD)/test_boot_console $(BUILD)/test_signing_keys $(BUILD)/test_pkg_recipe_approval $(BUILD)/test_stallwatch $(BUILD)/test_kernelpolicy $(BUILD)/test_dhcp $(BUILD)/test_artifact_export $(BUILD)/test_esp $(BUILD)/test_btrfs $(BUILD)/test_direct_rootfs $(BUILD)/test_targz $(BUILD)/targz_probe $(BUILD)/test_childdiag $(BUILD)/apigen $(BUILD)/test_apigen $(BUILD)/test_apiroute $(BUILD)/test_api_surfaces $(BUILD)/test_docindex $(BUILD)/test_web_vt $(BUILD)/test_web_syntax $(BUILD)/test_secrets $(BUILD)/test_curl_guards $(BUILD)/test_timebounds $(BUILD)/test_procfuse $(BUILD)/test_lint $(BUILD)/test_naming $(BUILD)/test_versioning $(BUILD)/test_http_put $(BUILD)/test_osrelease $(BUILD)/test_json $(BUILD)/test_jsondiff $(BUILD)/test_cbsrecipe $(BUILD)/test_nsswitch $(BUILD)/test_nicreport $(BUILD)/test_mkinstalleriso_args $(BUILD)/test_blocking_waits $(BUILD)/test_listenbind $(BUILD)/test_bootorder $(BUILD)/test_pkg_finalize $(BUILD)/test_fresh_output_dir $(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc $(BUILD)/test_releasekey $(BUILD)/test_aggressive $(BUILD)/cix-boot.efi $(BUILD)/cix-xorriso
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -1035,6 +1037,9 @@ $(BUILD)/test_console_pkg_bootstrap: test/test_console_pkg_bootstrap.c test/test
 $(BUILD)/test_nicreport: test/test_nicreport.c image/src/nicreport.c include/nicreport.h include/bootmodules.h | $(BUILD)
 	$(CC) $(CFLAGS) test/test_nicreport.c image/src/nicreport.c -o $@
 
+$(BUILD)/test_mkinstalleriso_args: test/test_mkinstalleriso_args.c include/mkinstalleriso_args.h | $(BUILD)
+	$(CC) $(CFLAGS) test/test_mkinstalleriso_args.c -o $@
+
 $(BUILD)/cix-install: image/src/cix-install.c image/src/dual_console.c image/src/nicreport.c daemon/src/treecopy.c daemon/src/partlabel.c daemon/src/netconf.c daemon/src/kmod.c daemon/src/json.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@
 
@@ -1128,8 +1133,8 @@ $(BUILD)/console_term_child: test/console_term_child.c | $(BUILD)
 $(BUILD)/dual_console_child: test/dual_console_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/mkinstalleriso: image/src/mkinstalleriso.c test/test_image_fixture.c daemon/src/persist.c | $(BUILD)
-	$(CC) $(CFLAGS) -Itest -Idaemon/include $^ -o $@
+$(BUILD)/mkinstalleriso: image/src/mkinstalleriso.c test/test_image_fixture.c daemon/src/persist.c include/mkinstalleriso_args.h | $(BUILD)
+	$(CC) $(CFLAGS) -Itest -Idaemon/include image/src/mkinstalleriso.c test/test_image_fixture.c daemon/src/persist.c -o $@
 
 $(BUILD)/mktoolchainimage: image/src/mktoolchainimage.c test/test_image_fixture.c | $(BUILD)
 	$(CC) $(CFLAGS) -Itest $^ -o $@

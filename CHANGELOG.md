@@ -6,6 +6,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The mkinstalleriso argument list is defined once, and a release runs it (#480)
+
+cixd and `mkinstalleriso` each wrote the ISO builder's argument list by hand: the daemon filled `argv[1]` to `argv[15]`, and `mkinstalleriso` read them behind an `argc != 16` and a usage line kept in step by eye. The count went wrong twice, and both times `POST /v1/system/iso` answered with a fragment of usage text. Nothing caught it, because the only test that ran `mkinstalleriso`, `test_installer`, boots QEMU and runs in no gate. Both ends now index by name from `include/mkinstalleriso_args.h`: the count is the list's length and the usage line is generated from it. The new `test_mkinstalleriso_args` in SELFTESTS runs the real binary, with no VM, and checks three things: one argument short and one too many exit 2 with that usage line, and the daemon's count gets past the check.
+
 ### A path in an image belongs to one installed package (#553, ADR-0319)
 
 An install whose files include a path another installed package in the same image already owns is now refused before a byte is staged. The error names this package, the path and the owner. Until now the last install won the path silently. That is what broke every build in the coreutils 9.11-9 rollout (#510): coreutils 9.11-8 had put its own `libcap.so.2` link under libcap's recorded path, and a build environment composed from libcap copied that link without its target. A package's own previous version does not count, so ordinary upgrades are unaffected. Uninstall keeps shared paths that predate the rule, and now looks them up through the same sorted index as the refusal instead of scanning every package per file.

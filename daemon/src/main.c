@@ -1,5 +1,6 @@
 #include "connthrottle.h"
 #include "recipe_format.h"
+#include "mkinstalleriso_args.h"
 #include "container.h"
 #include "containerdef.h"
 #include "nsswitch.h"
@@ -10086,7 +10087,7 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	 * That is not hypothetical: #415 was a real argv overflow on this
 	 * same pattern, found in a crash rather than in review.
 	 */
-	char *argv[17];
+	char *argv[MKISO_ARGC + 1];
 	pid_t pid;
 	int pidfd;
 	int output_pipe[2];
@@ -10195,19 +10196,19 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	snprintf(stage_dir, sizeof(stage_dir), "%s/.stage", ISO_DIR);
 	/* ISO_OUTPUT_PATH is set once at startup -- see its own note there. */
 
-	argv[0] = mkinstalleriso_bin;
-	argv[1] = stage_dir;
-	argv[2] = cix_install_bin;
-	argv[3] = cix_recover_bin;
-	argv[4] = cix_boot_bin;
-	argv[5] = bzimage_path;
-	argv[6] = squashfs_path;
-	argv[7] = signing_key;
-	argv[8] = signing_cert_pem;
-	argv[9] = signing_cert_der;
-	argv[10] = ISO_OUTPUT_PATH;
-	argv[11] = kernel_args;
-	argv[12] = isotools_root;
+	argv[MKISO_ARG_PROG] = mkinstalleriso_bin;
+	argv[MKISO_ARG_STAGE_DIR] = stage_dir;
+	argv[MKISO_ARG_INSTALL_BIN] = cix_install_bin;
+	argv[MKISO_ARG_RECOVER_BIN] = cix_recover_bin;
+	argv[MKISO_ARG_BOOT_EFI] = cix_boot_bin;
+	argv[MKISO_ARG_BZIMAGE] = bzimage_path;
+	argv[MKISO_ARG_SQUASHFS] = squashfs_path;
+	argv[MKISO_ARG_SIGNING_KEY] = signing_key;
+	argv[MKISO_ARG_SIGNING_CERT_PEM] = signing_cert_pem;
+	argv[MKISO_ARG_SIGNING_CERT_DER] = signing_cert_der;
+	argv[MKISO_ARG_OUT_ISO] = ISO_OUTPUT_PATH;
+	argv[MKISO_ARG_KERNEL_ARGS] = kernel_args;
+	argv[MKISO_ARG_ISOTOOLS_ROOT] = isotools_root;
 	/*
 	 * The kernel module tree and the module tools (#429 follow-on).
 	 *
@@ -10225,7 +10226,8 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	 * not a failure -- mkinstalleriso says so on its own output and
 	 * builds media that still installs on virtio.
 	 *
-	 * argc is checked exactly on the callee (`argc != 16`), and this
+	 * argc is checked exactly on the callee (MKISO_ARGC, one list in
+	 * include/mkinstalleriso_args.h since #480), and this
 	 * pair takes it from 14 to 16. See the seed_dir comment below for
 	 * why that is worth being careful about: this call site once passed
 	 * one argument fewer than mkinstalleriso required, and every
@@ -10292,10 +10294,10 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 			return -1;
 		}
 	}
-	argv[13] = seed_dir;
-	argv[14] = iso_modules_dir;
-	argv[15] = iso_kmod_bin_dir;
-	argv[16] = NULL;
+	argv[MKISO_ARG_SEED_DIR] = seed_dir;
+	argv[MKISO_ARG_MODULES_DIR] = iso_modules_dir;
+	argv[MKISO_ARG_KMOD_BIN_DIR] = iso_kmod_bin_dir;
+	argv[MKISO_ARGC] = NULL;
 
 	/*
 	 * Capture the child's stdout and stderr. Not fatal if it fails --
