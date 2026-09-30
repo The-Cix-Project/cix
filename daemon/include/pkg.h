@@ -1435,6 +1435,16 @@ struct pkg_build_log_entry {
 	char file[256];
 	long long size_bytes;
 	long long modified_at;
+	/*
+	 * #550: whose log this is, from what the daemon recorded when it
+	 * wrote it -- the live entry for a build still in flight, else the run
+	 * record naming this file. Empty when neither accounts for it; never
+	 * parsed out of the filename, where "cix-" also matches "cix-tests-".
+	 */
+	char name[PKG_NAME_MAX];
+	char version[PKG_VERSION_MAX];
+	char image[PKG_IMAGE_NAME_MAX];
+	int in_flight;
 };
 
 int pkg_build_log_list(struct pkg_build_log_entry *out, int max);

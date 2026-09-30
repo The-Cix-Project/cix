@@ -20568,6 +20568,25 @@ static void handle_pkg_build_logs_list(int fd)
 		jw_int(&w, entries[i].size_bytes);
 		jw_key(&w, "modified_at");
 		jw_int(&w, entries[i].modified_at);
+		/* #550: null rather than "" when nothing recorded whose log this
+		 * is, so a client cannot mistake "unknown" for a package. */
+		jw_key(&w, "name");
+		if (entries[i].name[0] != '\0')
+			jw_str(&w, entries[i].name);
+		else
+			jw_null(&w);
+		jw_key(&w, "version");
+		if (entries[i].name[0] != '\0')
+			jw_str(&w, entries[i].version);
+		else
+			jw_null(&w);
+		jw_key(&w, "image");
+		if (entries[i].name[0] != '\0')
+			jw_str(&w, entries[i].image);
+		else
+			jw_null(&w);
+		jw_key(&w, "in_flight");
+		jw_bool(&w, entries[i].in_flight);
 		jw_obj_close(&w);
 	}
 	jw_arr_close(&w);

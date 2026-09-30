@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Each build log says whose it is (#550)
+
+`GET /v1/pkg/build-logs` listed `{file, size_bytes, modified_at}` and named no package. So the dashboard found "the newest log for X" by matching the filename prefix `X-`, which is ambiguous wherever one package's name begins another's: `cix-` also matches `cix-tests-…`. Found while building #433's log window.
+
+- **The listing:** each entry now carries `name`, `version`, `image` and `in_flight`, taken from what the daemon recorded when it wrote the log. For a build in flight that is the live job, and the version comes from its chain's resolved version, not the entry's, which during an upgrade still holds the old one. Otherwise it is the newest run record whose stored log basename is this file, an exact join. A file neither accounts for reports `null`; nothing is parsed out of a filename.
+- **The dashboard:** `latestBuildLogFile()` matches `name` (and `image` where the caller knows it: the live window's fallback does, the pipeline drawer does not).
+- **The CLI:** `cixctl pkg build-logs` prints `name@image` after each file, with `(running)` for one in flight. The file stays the first column.
+- **Test:** `test_pkg` (FLOOR_SELFTESTS) checks that the log of a real `greeter` build is listed as `greeter@base` and finished.
+
 ### A build run says how long each stage took, and which stage it is in now (#424)
 
 The owner asked for *"for each stage a timer as it's handling it"*. A run record had only a start, an end and a total: 320 seconds, with nothing saying how much was fetch, build or install. The daemon now keeps each stage's start, and each surface reports it.

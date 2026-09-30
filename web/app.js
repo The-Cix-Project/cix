@@ -8782,30 +8782,27 @@ async function showBuildLog(file) {
 }
 
 /*
- * The newest saved log for a package, or null: the one lookup the build
- * window and the pipeline drawer share. A log is named
- * "<pkg>-<version>-<epoch>.log", and the listing carries no package
- * field, so the package is matched by filename prefix. That prefix is
- * ambiguous where one package's name begins another's ("cix-" also
- * matches "cix-tests-..."); the listing needs to name the package to
- * fix that, which is #550, and this is the one place to change when it
- * does.
+ * The newest saved log for a package (and, when given, an image), or
+ * null: the one lookup the build window and the pipeline drawer share.
+ * Matched on the `name` the daemon records for each log (#550), never
+ * on the filename -- "cix-" also prefixes "cix-tests-...". A log the
+ * daemon cannot attribute has a null name and matches nothing.
  */
-async function latestBuildLogFile(name) {
+async function latestBuildLogFile(name, image) {
 	const list = await apiRequest("GET", CIX_API.listBuildLogs());
 	const mine = (list.logs || [])
-		.filter((l) => l.file.startsWith(name + "-"))
+		.filter((l) => l.name === name && (!image || l.image === image))
 		.sort((x, y) => y.modified_at - x.modified_at);
 
 	return mine.length > 0 ? mine[0].file : null;
 }
 
 /* What a build that has already ended leaves behind. */
-async function showLatestBuildLog(name) {
+async function showLatestBuildLog(name, image) {
 	const view = document.getElementById("build-log-view");
 
 	try {
-		const file = await latestBuildLogFile(name);
+		const file = await latestBuildLogFile(name, image);
 
 		if (file !== null) {
 			await showBuildLog(file);
@@ -8868,7 +8865,7 @@ function followBuildLog(name, image) {
 			return;
 		buildLogSocket = null;
 		if (!received) {
-			showLatestBuildLog(name);
+			showLatestBuildLog(name, image);
 			return;
 		}
 		setBuildLogState("build finished", false);

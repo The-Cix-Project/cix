@@ -1869,6 +1869,50 @@ int main(void)
 							        (long)json_as_number(json_object_get(run, "duration_seconds")));
 							ok = 0;
 						}
+						/*
+						 * #550: the listing names this run's log as
+						 * greeter's, from the run record -- not from
+						 * the filename -- and as finished.
+						 */
+						{
+							const char *logf = json_str_field(run, "log");
+							struct cix_response lr;
+							int found = 0;
+
+							memset(&lr, 0, sizeof(lr));
+							if (logf != NULL && logf[0] != '\0' &&
+							    cix_client_request(&client, "GET", "/v1/pkg/build-logs", NULL,
+							                       &lr) == 0 &&
+							    lr.status == 200) {
+								const struct json_value *ll = json_object_get(lr.json, "logs");
+								size_t q;
+
+								for (q = 0; ll != NULL && ll->type == JSON_ARRAY &&
+								            q < ll->u.array.count;
+								     q++) {
+									const struct json_value *le = ll->u.array.items[q];
+									const char *lf = json_str_field(le, "file");
+									const char *ln = json_str_field(le, "name");
+									const char *li = json_str_field(le, "image");
+									const struct json_value *fl =
+									    json_object_get(le, "in_flight");
+
+									if (lf == NULL || strcmp(lf, logf) != 0)
+										continue;
+									found = ln != NULL && strcmp(ln, "greeter") == 0 &&
+									        li != NULL && strcmp(li, "base") == 0 &&
+									        fl != NULL && fl->type == JSON_BOOL &&
+									        !fl->u.boolean;
+								}
+							}
+							if (!found) {
+								fprintf(stderr, "FAIL: #550 build-logs does not list %s as "
+								                "greeter@base, finished\n",
+								        logf != NULL ? logf : "(no log)");
+								ok = 0;
+							}
+							cix_response_free(&lr);
+						}
 					}
 				}
 			}

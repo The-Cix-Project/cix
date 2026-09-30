@@ -15882,11 +15882,21 @@ static void fmt_build_log_list(const struct json_value *v)
 	}
 	for (i = 0; i < logs->u.array.count; i++) {
 		const struct json_value *l = logs->u.array.items[i];
+		const char *pn = json_str_field(l, "name");
+		const char *pi = json_str_field(l, "image");
+		const struct json_value *live = json_object_get(l, "in_flight");
 
-		printf("%-52s %10lld bytes  modified=%lld\n",
+		/* The file stays the first column: it is what --file= takes,
+		 * and what a script reading this listing picks out. #550 adds
+		 * whose log it is, recorded by the daemon rather than parsed
+		 * from the name. */
+		printf("%-52s %10lld bytes  modified=%lld  %s%s%s%s\n",
 		       json_str_field(l, "file") != NULL ? json_str_field(l, "file") : "-",
 		       (long long)json_as_number(json_object_get(l, "size_bytes")),
-		       (long long)json_as_number(json_object_get(l, "modified_at")));
+		       (long long)json_as_number(json_object_get(l, "modified_at")),
+		       pn != NULL ? pn : "(unattributed)", pn != NULL && pi != NULL ? "@" : "",
+		       pn != NULL && pi != NULL ? pi : "",
+		       live != NULL && live->type == JSON_BOOL && live->u.boolean ? "  (running)" : "");
 	}
 }
 

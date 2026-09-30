@@ -11279,6 +11279,31 @@ paths:
                           type: integer
                         modified_at:
                           type: integer
+                        name:
+                          type: string
+                          nullable: true
+                          description: >
+                            The package this log belongs to (#550), from what
+                            the daemon recorded when it wrote it: the live job
+                            for a build in flight, else the run record naming
+                            this file. Never parsed from the filename, where
+                            one package's name can begin another's ("cix-"
+                            also matches "cix-tests-..."). `null` when neither
+                            accounts for the file.
+                        version:
+                          type: string
+                          nullable: true
+                          description: >
+                            The version that run built -- for a build in
+                            flight, the one being built, not the one it
+                            replaces. `null` exactly when `name` is.
+                        image:
+                          type: string
+                          nullable: true
+                          description: The image that run was for. `null` exactly when `name` is.
+                        in_flight:
+                          type: boolean
+                          description: The build writing this log is still running.
 
   /pkg/build-logs/{file}:
     get:

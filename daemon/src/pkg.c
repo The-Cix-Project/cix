@@ -11193,6 +11193,56 @@ void pkg_build_spawn_failed(int chain_idx)
  * state, so nothing can drift out of step with them, and a log that
  * was copied off the box by hand still shows up.
  */
+/*
+ * #550: fills in whose log `le` is, from what was recorded when it was
+ * written, never from the filename.
+ *
+ * A build in flight is looked up first: its log is open and no run
+ * names it yet. Its version is the one its chain resolved at fetch, not
+ * the entry's own -- during an upgrade the entry still holds the version
+ * being replaced (#326's same distinction). Otherwise the newest run
+ * whose log is this file names it; a run stores the basename it wrote,
+ * so the join is exact. A file neither accounts for stays unnamed.
+ */
+static void build_log_attribute(struct pkg_build_log_entry *le)
+{
+	int i;
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		const struct pkg_entry *e = &g_packages[i];
+		const char *base;
+		int c;
+
+		if (!e->in_use || e->run_started_at == 0 || e->build_log_path[0] == '\0')
+			continue;
+		base = strrchr(e->build_log_path, '/');
+		if (strcmp(base != NULL ? base + 1 : e->build_log_path, le->file) != 0)
+			continue;
+		snprintf(le->name, sizeof(le->name), "%s", e->name);
+		snprintf(le->image, sizeof(le->image), "%s", e->image);
+		snprintf(le->version, sizeof(le->version), "%s", e->version);
+		for (c = 0; c < PKG_MAX_CONCURRENT_JOBS; c++) {
+			if (strcmp(g_chains[c].name, e->name) == 0 &&
+			    strcmp(g_chains[c].image, e->image) == 0 &&
+			    g_chains[c].fetch_resolved_version[0] != '\0') {
+				snprintf(le->version, sizeof(le->version), "%s",
+				         g_chains[c].fetch_resolved_version);
+				break;
+			}
+		}
+		le->in_flight = 1;
+		return;
+	}
+	for (i = g_run_count - 1; i >= 0; i--) {
+		if (strcmp(g_runs[i].log, le->file) != 0)
+			continue;
+		snprintf(le->name, sizeof(le->name), "%s", g_runs[i].name);
+		snprintf(le->image, sizeof(le->image), "%s", g_runs[i].image);
+		snprintf(le->version, sizeof(le->version), "%s", g_runs[i].version);
+		return;
+	}
+}
+
 int pkg_build_log_list(struct pkg_build_log_entry *out, int max)
 {
 	char dir[PATH_MAX];
@@ -11213,6 +11263,7 @@ int pkg_build_log_list(struct pkg_build_log_entry *out, int max)
 		snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
 		if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
 			continue;
+		memset(&out[count], 0, sizeof(out[count]));
 		snprintf(out[count].file, sizeof(out[count].file), "%s", ent->d_name);
 		out[count].size_bytes = (long long)st.st_size;
 		out[count].modified_at = (long long)st.st_mtime;
@@ -11231,6 +11282,8 @@ int pkg_build_log_list(struct pkg_build_log_entry *out, int max)
 		}
 		out[k] = tmp;
 	}
+	for (i = 0; i < count; i++)
+		build_log_attribute(&out[i]);
 	return count;
 }
 
