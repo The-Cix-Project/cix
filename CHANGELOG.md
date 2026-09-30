@@ -8,7 +8,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 ### `cixctl help` fits on a screen, and `cixctl help COMMAND` shows one command (#438)
 
-The owner's report: *"when I look at help, it scrolls off the screen."* `help` was not a command at all. `cixctl help` printed `unknown command 'help'` and then every line of the usage text, 529 lines on 0.2.57-408, and `cixctl help network` did exactly the same.
+The owner's report: *"when I look at help, it scrolls off the screen."* `help` was not a command at all. (0.2.57-409 failed its own selftest here: `test_clitree` found `help` routed but absent from `cmdtree.h`, and `--help` read but offered nowhere. `help` is now a tree node with its own help line, and `--help` joins `--json` as an exempt global flag. 0.2.57-410 carries it.) `cixctl help` printed `unknown command 'help'` and then every line of the usage text, 529 lines on 0.2.57-408, and `cixctl help network` did exactly the same.
 
 - **`cixctl help`** now prints the command groups (13 lines).
 - **`cixctl help WORDS`** prints every entry beginning with those words: `help network`, or `help container run`.

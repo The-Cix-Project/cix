@@ -1475,6 +1475,7 @@ static const struct cli_node n_ksm_subs[] = {
 /* The 64 top-level commands, in dispatcher order. */
 static const struct cli_node CLI_TREE[] = {
 	{ "health", NULL, NULL },
+	{ "help", NULL, NULL },
 	{ "login", n_login_flags, NULL },
 	{ "logout", n_logout_flags, NULL },
 	{ "boot", NULL, NULL },

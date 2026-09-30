@@ -52,6 +52,8 @@ static const char USAGE_TEXT[] =
 	        "usage: cixctl [--host=ADDR] [--port=N] [--json] <command> [args]\n"
 	        "\n"
 	        "commands:\n"
+	        "  help [COMMAND [SUB...]] | help all  -- the command groups; every entry\n"
+	        "               beginning with those words; or this whole text (#438)\n"
 	        "  health\n"
 	        "  boot      -- build version/time, A/B slot, kernel version (uname)\n"
 	        "  shutdown  -- stop cixd; powers off the host too when it's running as\n"

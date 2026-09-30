@@ -217,6 +217,8 @@ static const char *const g_flag_exempt[] = {
 	"--json",  /* global: parsed in main() before dispatch, valid with every command,
 	             * so hanging it off any single node would be a lie and hanging it off
 	             * all of them would drown every completion */
+	"--help",  /* global the same way (#438): cixctl --help prints the command groups
+	             * before any command is read */
 	NULL
 };
 
