@@ -6,6 +6,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cixctl no longer prints `null` for a success with no body
+
+A 204 answered by a command with no formatter, such as `cixctl pipeline approve` or `pipeline revoke`, printed `null`. That reads as an answer rather than as success. `emit()` now prints nothing in that case and exits 0. Commands whose formatter confirms a 204 (`fmt_removed`, `fmt_added`, `fmt_bootstrapped`) still print their confirmation. Verified against 192.168.15.95 with the rebuilt client: approve and revoke on the deploy gate each printed nothing and exited 0.
+
 ### An unused pipeline approval can be revoked (#381)
 
 `POST /v1/pipeline/revoke` (`cixctl pipeline revoke GATE TARGET`) drops an outstanding grant for one `(gate, target)` pair, so the change it allowed is held again. ADR-0273 shipped `POST /pipeline/approve` with no way back. For `roll` and `publish` that mostly corrected itself, because taking an image out of the rebuild queue forgets its grant. A `deploy` grant has no queue, though, and only a `POST /system/update` for that exact image path spent it. So a deploy approval against the wrong path, or one granted and then reconsidered, stayed in force, and the gate read as on while letting that path through.

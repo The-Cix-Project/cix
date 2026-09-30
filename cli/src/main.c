@@ -1501,6 +1501,14 @@ static int emit(struct cix_response *r, int json_mode, void (*fmt)(const struct 
 		fprintf(stderr, "cixctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r->status);
 		rc = 1;
+	} else if (r->body_len == 0 && (json_mode || fmt == NULL)) {
+		/* A 204 has no body, and with no formatter to say anything about
+		 * it, print_raw_json() used to render the NULL as "null" -- which
+		 * reads as an answer rather than as success (`pipeline approve`,
+		 * `pipeline revoke`). Nothing to say prints nothing. A formatter
+		 * still runs on an empty body: fmt_removed() and fmt_added()
+		 * exist to confirm exactly these. */
+		rc = 0;
 	} else if (json_mode || fmt == NULL) {
 		print_raw_json(r->json);
 		rc = 0;
