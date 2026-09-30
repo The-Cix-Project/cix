@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Creating a container answers once its first process has exec'd, not when it was cloned (#549)
+
+`container_create()` returned right after its handshakes with the child, while the child was still mounting, pivoting into its root and switching credentials -- so `POST /v1/containers` could answer `201` for a container whose program had not started. Two failures had that shape. `test_pki` read `/proc/<pid>/root/...` straight after the `201` and found the daemon's own tree (#545, worked around in the test). Then `test_console_exec` failed the first build of 0.2.57-396 when a console opened straight after the create got **EACCES** entering `/proc/<pid>/ns/...`. The EACCES is consistent with the child being undumpable between its `setuid`/`setgid` and its exec, which makes those files need `CAP_SYS_PTRACE` -- and that test daemon ran in a build container granted `CAP_SYS_ADMIN` only, with `CAP_SYS_PTRACE` on the default deny list. The mechanism is inferred, not caught in the act. On a host with full capabilities the same window would instead have let a console enter the mount namespace before `pivot_root`; that was never observed.
+
+The create now waits, bounded at 5 s, for the child's diagnostics pipe to become readable: its write end is close-on-exec, so that happens exactly when the child execs, or writes a diagnostic on its way to exiting. Nothing is read -- the diagnostic is still collected after the reap, as before. It is milliseconds of metadata syscalls, but it is on cixd's single event loop, for every create, build containers included. On timeout the create succeeds as it always did.
+
+`test_pki`'s #545 workaround, which polled up to 5 s for the exec, is now an immediate assertion at the same four places: one read of `/proc/<pid>/comm` right after the `201` must no longer say `cixd`. That makes the race a failure instead of a wait.
+
 ### Failed authentication is throttled per address, before any password is checked (#547)
 
 A failed login cost a bcrypt comparison -- 0.39 to 0.42 s each on 192.168.15.95, against 0.0007 s for `/v1/health` -- on cixd's single event loop, and nothing limited them. Anyone who could reach port 80 could stall the control plane and guess passwords at full speed, and #543's app passwords made every endpoint a place to try.

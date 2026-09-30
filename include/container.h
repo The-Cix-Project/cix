@@ -801,7 +801,11 @@ int overlay_upperdir_size(const char *upperdir_path, long long *out_bytes);
  * into the cgroup opened by cgroup_create, mounts spec->ov and
  * pivot_roots into it, and execve's argv[0] with argv/envp. On
  * success fills out with the child's pid, cgroup fd, pidfd and
- * diag_fd.
+ * diag_fd -- and only once the child has exec'd argv[0] (or died
+ * trying, with its reason waiting on diag_fd), bounded by
+ * CONTAINER_EXEC_WAIT_MS (#549). So a returned pid is already running
+ * in its own root, and /proc/<pid>/root and /proc/<pid>/ns/<name> are the
+ * container's; a caller no longer races the child's setup.
  *
  * A real, previously-silent gap this diag_fd closes: every one of the
  * child's own pre-exec setup steps (mountns_make_private,

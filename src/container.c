@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <poll.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdio.h>
@@ -16,6 +17,7 @@
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 /*
@@ -216,6 +218,70 @@ static int write_userns_maps(pid_t pid, long long base, long long len)
  * copies would have become one of two definitions of the same
  * syscalls, which is exactly what the shared header exists to prevent.
  */
+
+/*
+ * #549: container_create() returns only once the child has exec'd its
+ * program (or died trying), so "created" means the container's first
+ * process is running in its own root -- not merely cloned.
+ *
+ * Before this, the parent returned right after its handshakes while the
+ * child was still mounting, pivoting and switching credentials, and a
+ * caller acting on the new pid at once raced that setup. Two such races
+ * were seen, both reading /proc/<pid>/... right after POST
+ * /v1/containers answered: test_pki read /proc/<pid>/root and found the
+ * daemon's tree (#545), and test_console_exec's console entered
+ * /proc/<pid>/ns/<name> and got EACCES (#549; release build of 0.2.57-396 on
+ * 192.168.15.95, 2026-09-30). The EACCES is consistent with the child
+ * being undumpable after its setuid/setgid and before its exec, which
+ * makes /proc/<pid>/ns/<name> need CAP_SYS_PTRACE -- and that test daemon
+ * ran in a build container granted CAP_SYS_ADMIN only, with
+ * CAP_SYS_PTRACE on the default deny list. That mechanism is inferred,
+ * not caught in the act. On a host with full capabilities the same
+ * window would instead let a console enter the mount namespace before
+ * pivot_root; never observed, and now impossible either way.
+ *
+ * The signal is the diag pipe the child already has: its write end is
+ * close-on-exec, and the parent closed its own, so the read end becomes
+ * readable exactly when the child execs (EOF) or writes a diagnostic on
+ * its way to exiting. Nothing is read here -- container_read_diag()
+ * still consumes any diagnostic after the reap, as before.
+ *
+ * Bounded by CONTAINER_EXEC_WAIT_MS. Everything the child does between
+ * the parent's handshakes and its exec is metadata syscalls -- mounts,
+ * pivot_root, a few writes -- with nothing proportional to image size,
+ * so milliseconds is normal and seconds is pathological. On timeout the
+ * create still succeeds, as it always did: killing a slow child that is
+ * otherwise healthy would be worse than the old race. This does block
+ * the caller, and cixd's single event loop with it, for those
+ * milliseconds on every container create, build containers included.
+ */
+#define CONTAINER_EXEC_WAIT_MS 5000
+
+static void wait_for_child_exec(int diag_fd)
+{
+	struct pollfd pfd;
+	struct timespec start, now;
+	long elapsed_ms;
+	int rc;
+
+	clock_gettime(CLOCK_MONOTONIC, &start);
+	for (;;) {
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		elapsed_ms = (now.tv_sec - start.tv_sec) * 1000L +
+		             (now.tv_nsec - start.tv_nsec) / 1000000L;
+		if (elapsed_ms >= CONTAINER_EXEC_WAIT_MS)
+			return;
+		pfd.fd = diag_fd;
+		pfd.events = POLLIN;
+		pfd.revents = 0;
+		rc = poll(&pfd, 1, (int)(CONTAINER_EXEC_WAIT_MS - elapsed_ms));
+		if (rc > 0)
+			return; /* EOF (exec'd) or a diagnostic (dying): either way, done */
+		if (rc == 0 || errno != EINTR)
+			return; /* timed out, or a real poll error */
+		/* EINTR: SIGCHLD from another child, say -- wait out the rest */
+	}
+}
 
 /*
  * Is this descriptor one of the ones cix-init is told about on its argv
@@ -1259,6 +1325,8 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			return -1;
 		}
 	}
+
+	wait_for_child_exec(diag_pipe[0]);
 
 	out->pid = (pid_t)ret;
 	out->cgroup_fd = cgroup_fd;

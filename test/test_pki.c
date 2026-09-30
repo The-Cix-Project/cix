@@ -48,49 +48,36 @@ static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 }
 
 /*
- * #545: a 201 from POST /v1/containers does not mean the container's
- * first process has reached its own root. container_create() returns
- * once the child is cloned (and, for a networked or userns container,
- * once those handshakes are done); the diag pipe that would say it has
- * exec'd is read only later. A pkitest container has neither
- * handshake, so the reply can go out while the child is still setting
- * up its mounts, and /proc/<pid>/root then resolves in the DAEMON's
- * tree, where /etc/cix-tls/tls.key does not exist. The race is read
- * from the code (src/container.c returns before the exec; nothing in
- * the create path waits on diag_fd), not caught in the act, and it fits
- * how test_pki failed the first build of 0.2.57-390 and of 0.2.57-391
- * on 192.168.15.95, 2026-09-29, at a stat() taken immediately after
- * the 201; a second build of the same 390 source passed.
- *
- * The exact condition, rather than a sleep: a cloned child carries the
- * daemon's comm until it execve()s, and cix-init is exec'd only after
- * pivot_root. So once comm no longer starts "cixd" -- "cix-init",
- * then "init:<hostname>" once it names itself -- the root is the
- * container's. Gives up after 5 s and lets the read that follows
- * report what it finds; a process that is already gone returns at once
- * for the same reason.
+ * #549: the regression gate for container_create() returning only once
+ * the child has exec'd (src/container.c, wait_for_child_exec()). A
+ * cloned child carries the daemon's comm until it execve()s, and
+ * cix-init is exec'd only after pivot_root, so a single read of
+ * /proc/<pid>/comm straight after the 201 must already show something
+ * other than "cixd". No waiting: waiting is what this used to do (#545),
+ * and it hid the race rather than proving it gone -- the race failed
+ * the first build of 0.2.57-390 and of 0.2.57-391 here, and then
+ * test_console_exec in 0.2.57-396 (#549).
  */
-static void wait_for_container_exec(int pid)
+static int container_has_execd(int pid)
 {
 	char path[64], comm[32];
-	int i;
+	FILE *f;
+	size_t n;
 
 	snprintf(path, sizeof(path), "/proc/%d/comm", pid);
-	for (i = 0; i < 100; i++) {
-		FILE *f = fopen(path, "r");
-		size_t n;
-
-		if (f == NULL)
-			return;
-		n = fread(comm, 1, sizeof(comm) - 1, f);
-		fclose(f);
-		comm[n] = '\0';
-		if (n > 0 && comm[n - 1] == '\n')
-			comm[n - 1] = '\0';
-		if (strncmp(comm, "cixd", 4) != 0)
-			return;
-		usleep(50000);
+	f = fopen(path, "r");
+	if (f == NULL)
+		return 1; /* already gone: the reads that follow report it */
+	n = fread(comm, 1, sizeof(comm) - 1, f);
+	fclose(f);
+	comm[n] = '\0';
+	if (strncmp(comm, "cixd", 4) == 0) {
+		fprintf(stderr, "FAIL: container pid %d had not exec'd when its 201 arrived "
+		                "(comm %s) -- container_create() returned early (#549)\n",
+		        pid, comm);
+		return 0;
 	}
+	return 1;
 }
 
 static const char *json_str_field(const struct json_value *obj, const char *key)
@@ -611,7 +598,8 @@ int main(void)
 			char proc_path[160];
 			struct stat st;
 
-			wait_for_container_exec(webtls_pid);
+			if (!container_has_execd(webtls_pid))
+				ok = 0;
 			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/cix-tls/tls.key",
 			         webtls_pid);
 			if (stat(proc_path, &st) != 0 || (st.st_mode & 0777) != 0600) {
@@ -1207,7 +1195,8 @@ int main(void)
 			char proc_path[160];
 			FILE *f;
 
-			wait_for_container_exec(resetlive_pid);
+			if (!container_has_execd(resetlive_pid))
+				ok = 0;
 			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/cix-tls/tls.crt",
 			         resetlive_pid);
 			f = fopen(proc_path, "r");
@@ -1630,7 +1619,8 @@ int main(void)
 			struct stat st;
 			FILE *f;
 
-			wait_for_container_exec(pid);
+			if (!container_has_execd(pid))
+				ok = 0;
 			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/cix-tls/tls.key", pid);
 			if (stat(proc_path, &st) != 0 || (st.st_mode & 0777) != 0600) {
 				fprintf(stderr, "FAIL: pki_cert tls.key missing or not 0600 (%s)\n",
@@ -1696,7 +1686,8 @@ int main(void)
 			char proc_path[160];
 			FILE *f;
 
-			wait_for_container_exec(pid);
+			if (!container_has_execd(pid))
+				ok = 0;
 			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/cix-tls/tls.key", pid);
 			f = fopen(proc_path, "r");
 			if (f == NULL) {

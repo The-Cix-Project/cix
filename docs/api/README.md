@@ -1095,6 +1095,8 @@ Response (`201`):
 }
 ```
 
+**A `201` means the container's first process has exec'd ([#549](https://git.home.arpa/itdlabs/cix/issues/549)).** The create answers once the child has started its program in its own root, or has failed to (its reason is then in the container's diagnostics), rather than as soon as it was cloned. So `/proc/<pid>/root` and a console opened straight after the `201` see the container. That is a wait of milliseconds, bounded at 5 s; past that the create answers anyway, as it always did.
+
 `exit_status` is the raw `waitid()` status and is ambiguous on its own — **`term_signal`** disambiguates it (issue #78): `0` means the container exited normally and `exit_status` is a real exit code; a nonzero `term_signal` is the signal that killed it, and `exit_status` is then that same signal number, *not* an exit code. Because a deliberate `stop`/`delete` `SIGKILL`s the container, `term_signal` is `9` for any container stopped or deleted while running — the reliable way to tell that apart from a genuine `exit 9`. Both are `null` while running.
 
 **The platform's own containers are excluded by default (#426).** `GET /v1/containers` lists the operator's containers; names prefixed `__` — which today means exactly the build containers, `__pkgbuild-<chain index>` — are left out unless `?include_internal=1` (`true`/`yes` also work; anything else, a bare `?include_internal=` included, is false, because a malformed value meaning "show everything" would be the wrong way round for a flag whose purpose is to show less). Up to `max_concurrent_jobs` build containers exist at once, ten on a real host, so a busy box listed ten machine-owned entries among a dozen real ones with nothing to distinguish them but the name.
