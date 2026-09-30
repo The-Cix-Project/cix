@@ -40,9 +40,15 @@
  * addresses at best; past that the split is the problem, not the limit. */
 #define DHCP_CLI_MAX_SERVERS 8
 
-static void print_usage(FILE *out)
-{
-	fprintf(out,
+/*
+ * The whole help text, and the only one (#438). `cixctl help` lists its
+ * command groups and `cixctl help WORDS` prints the entries they begin;
+ * both read THIS, so a command documented here is documented everywhere
+ * and nothing can drift out of step with it. The layout is load-bearing:
+ * an entry starts on a line indented by exactly two spaces, and anything
+ * indented further continues the entry above it.
+ */
+static const char USAGE_TEXT[] =
 	        "usage: cixctl [--host=ADDR] [--port=N] [--json] <command> [args]\n"
 	        "\n"
 	        "commands:\n"
@@ -570,7 +576,133 @@ static void print_usage(FILE *out)
 	        "               sections you are changing: the document also carries running\n"
 	        "               state (a container's pid, a volume's creation time), so a\n"
 	        "               whole one sent back can differ for reasons that are not\n"
-	        "               configuration -- and one unappliable section refuses the lot\n");
+	        "               configuration -- and one unappliable section refuses the lot\n";
+
+static void print_usage(FILE *out)
+{
+	fputs(USAGE_TEXT, out);
+}
+
+/* An entry begins on a line indented by exactly two spaces (#438). */
+static int usage_is_entry_start(const char *line)
+{
+	return line[0] == ' ' && line[1] == ' ' && line[2] != ' ' && line[2] != '\n' &&
+	       line[2] != '\0';
+}
+
+/* The length of the line at p, its newline included. */
+static size_t usage_line_len(const char *p)
+{
+	const char *nl = strchr(p, '\n');
+
+	return nl != NULL ? (size_t)(nl - p) + 1 : strlen(p);
+}
+
+/* Does the entry starting at `line` begin with exactly these words? */
+static int usage_entry_matches(const char *line, char **words, int nwords)
+{
+	const char *p = line + 2;
+	int w;
+
+	for (w = 0; w < nwords; w++) {
+		size_t len = strlen(words[w]);
+
+		if (len == 0 || strncmp(p, words[w], len) != 0 || (p[len] != ' ' && p[len] != '\n'))
+			return 0;
+		p += len;
+		while (*p == ' ')
+			p++;
+	}
+	return 1;
+}
+
+/*
+ * `cixctl help` with no topic: the command groups, each named once in
+ * the order the full text introduces them. The full text is 500-odd
+ * lines and "it scrolls off the screen" was the report; a list of names
+ * with a way to ask about one is what fits on a screen.
+ */
+static void print_help_topics(FILE *out)
+{
+	char seen[128][40];
+	int nseen = 0, col = 0;
+	const char *p;
+
+	fputs("usage: cixctl [--host=ADDR] [--port=N] [--json] <command> [args]\n"
+	      "\n"
+	      "commands -- `cixctl help COMMAND` shows one, `cixctl help all` shows everything:\n",
+	      out);
+	for (p = USAGE_TEXT; *p != '\0'; p += usage_line_len(p)) {
+		char word[40];
+		size_t n = 0;
+		int k, dup = 0;
+
+		if (!usage_is_entry_start(p))
+			continue;
+		while (p[2 + n] != '\0' && p[2 + n] != ' ' && p[2 + n] != '\n' && n + 1 < sizeof(word)) {
+			word[n] = p[2 + n];
+			n++;
+		}
+		word[n] = '\0';
+		for (k = 0; k < nseen; k++) {
+			if (strcmp(seen[k], word) == 0) {
+				dup = 1;
+				break;
+			}
+		}
+		if (dup || nseen >= 128)
+			continue;
+		snprintf(seen[nseen++], sizeof(seen[0]), "%s", word);
+		if (col > 0 && col + 1 + (int)n > 78) {
+			fputc('\n', out);
+			col = 0;
+		}
+		col += fprintf(out, "%s%s", col == 0 ? "  " : " ", word);
+	}
+	if (col > 0)
+		fputc('\n', out);
+}
+
+/*
+ * `cixctl help [WORDS...]` (#438): no words lists the groups, "all" is
+ * the whole text, anything else prints every entry that begins with
+ * those words -- `help container` every container command, `help
+ * container run` just that one. Returns the exit status.
+ */
+static int print_help(FILE *out, int argc, char **argv)
+{
+	const char *p;
+	int printing = 0, found = 0, w;
+
+	if (argc == 0) {
+		print_help_topics(out);
+		return 0;
+	}
+	if (argc == 1 && strcmp(argv[0], "all") == 0) {
+		print_usage(out);
+		return 0;
+	}
+	for (p = USAGE_TEXT; *p != '\0';) {
+		size_t len = usage_line_len(p);
+
+		if (usage_is_entry_start(p))
+			printing = usage_entry_matches(p, argv, argc);
+		else if (p[0] != ' ')
+			printing = 0; /* the usage line and the "commands:" heading */
+		if (printing) {
+			fwrite(p, 1, len, out);
+			found = 1;
+		}
+		p += len;
+	}
+	if (found)
+		return 0;
+	fprintf(stderr, "cixctl: no help for '");
+	for (w = 0; w < argc; w++)
+		fprintf(stderr, "%s%s", w > 0 ? " " : "", argv[w]);
+	fprintf(stderr, "'\n\n");
+	print_help_topics(stderr);
+	return 2;
 }
 
 static const char *json_str_field(const struct json_value *obj, const char *key)
@@ -18171,7 +18303,7 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_config(client, json_mode, argc, argv);
 
 	fprintf(stderr, "cixctl: unknown command '%s'\n", cmd);
-	print_usage(stderr);
+	print_help_topics(stderr);
 	return 2;
 }
 
@@ -18747,7 +18879,7 @@ static int run_shell_fallback(const struct cix_client *client, int json_mode)
 			 * pager too, exactly as a one-shot command's does -- help
 			 * (435 lines) and long list/log output were the report. */
 			pager_begin(json_mode);
-			print_usage(stdout);
+			print_help(stdout, n - 1, tokens + 1);
 			pager_end();
 			continue;
 		}
@@ -18836,7 +18968,7 @@ static void print_shell_banner(const struct cix_client *client)
  * a library. A failed command prints its existing error and continues
  * the loop -- a broken command shouldn't end the session, the same
  * posture any real shell already has. "exit"/"quit" or EOF (Ctrl-D on
- * an empty line) end it; "help" reuses print_usage(), not a second
+ * an empty line) end it; "help" reuses print_help(), not a second
  * copy of it.
  */
 static int run_shell(const struct cix_client *client, int json_mode)
@@ -18884,7 +19016,7 @@ static int run_shell(const struct cix_client *client, int json_mode)
 			 * pager too, exactly as a one-shot command's does -- help
 			 * (435 lines) and long list/log output were the report. */
 			pager_begin(json_mode);
-			print_usage(stdout);
+			print_help(stdout, n - 1, tokens + 1);
 			pager_end();
 			continue;
 		}
@@ -18916,9 +19048,13 @@ int main(int argc, char **argv)
 			port = atoi(argv[i] + 7);
 		else if (strcmp(argv[i], "--json") == 0)
 			json_mode = 1;
-		else {
+		else if (strcmp(argv[i], "--help") == 0) {
+			/* #438: the spelling people type first. */
+			print_help_topics(stdout);
+			return 0;
+		} else {
 			fprintf(stderr, "cixctl: unknown option '%s'\n", argv[i]);
-			print_usage(stderr);
+			print_help_topics(stderr);
 			return 2;
 		}
 		i++;
@@ -18935,7 +19071,7 @@ int main(int argc, char **argv)
 	if (i >= argc) {
 		if (isatty(STDIN_FILENO))
 			return run_shell(&client, json_mode);
-		print_usage(stderr);
+		print_help_topics(stderr);
 		return 2;
 	}
 	cmd = argv[i++];
@@ -18969,6 +19105,19 @@ int main(int argc, char **argv)
 		for (k = 0; k < n; k++)
 			printf("%s\n", matches[k]);
 		return 0;
+	}
+
+	/*
+	 * #438: `help` answers from USAGE_TEXT and talks to no daemon, so it
+	 * is handled here like `pager`. It used to be no command at all --
+	 * `cixctl help` printed "unknown command 'help'" and then all 500-odd
+	 * lines, and `cixctl help network` did exactly the same.
+	 */
+	if (strcmp(cmd, "help") == 0) {
+		pager_begin(json_mode);
+		rc = print_help(stdout, argc - i, argv + i);
+		pager_end();
+		return rc;
 	}
 
 	if (strcmp(cmd, "pager") == 0) {

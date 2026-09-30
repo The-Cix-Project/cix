@@ -24,7 +24,7 @@
  *   6. Every subcommand the source routes (strcmp(sub, "...")) is
  *      somewhere in the table.
  *   7. Every top-level command in the table has a line in the help text
- *      (print_usage()). Measured 2026-09-23: 14 routed commands --
+ *      (USAGE_TEXT, since #438). Measured 2026-09-23: 14 routed commands --
  *      volume, deployment, dhcp, factory-reset and ten more -- could be
  *      run and completed but did not appear in `cixctl help` at all.
  *
@@ -411,15 +411,15 @@ int main(void)
 
 	/*
 	 * 7: every top-level command has a help line. A help line is a
-	 * string literal inside print_usage() that begins with two spaces
+	 * string literal inside USAGE_TEXT (#438) that begins with two spaces
 	 * and the command name, followed by a space or the end of the line.
 	 */
 	{
-		const char *begin = strstr(g_src, "static void print_usage(FILE *out)");
-		const char *finish = begin != NULL ? strstr(begin, "\n}\n") : NULL;
+		const char *begin = strstr(g_src, "static const char USAGE_TEXT[] =");
+		const char *finish = begin != NULL ? strstr(begin, "\";\n") : NULL;
 
 		if (begin == NULL || finish == NULL) {
-			fail("cannot find print_usage() in %s", src_path);
+			fail("cannot find USAGE_TEXT in %s", src_path);
 		} else {
 			for (i = 0; CLI_TREE[i].name != NULL; i++) {
 				char with_space[160], at_eol[160];
@@ -431,7 +431,7 @@ int main(void)
 				hit_eol = strstr(begin, at_eol);
 				if ((hit_space == NULL || hit_space > finish) &&
 				    (hit_eol == NULL || hit_eol > finish))
-					fail("top-level command '%s' has no line in print_usage() -- "
+					fail("top-level command '%s' has no line in USAGE_TEXT -- "
 					     "it can be run but `cixctl help` never mentions it",
 					     CLI_TREE[i].name);
 			}

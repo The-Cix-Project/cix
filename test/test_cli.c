@@ -214,6 +214,48 @@ int main(void)
 		}
 	}
 
+	/*
+	 * 1b. help (#438): `cixctl help` is the group list, short enough to
+	 * read, and `cixctl help WORDS` prints just those entries. Both read
+	 * the one USAGE_TEXT. It used to be no command at all: "unknown
+	 * command 'help'" and then every line.
+	 */
+	{
+		char *argv[] = { "cixctl", "help", NULL };
+		int lines = 0;
+		const char *c;
+
+		if (run_cli(argv, out, sizeof(out), &rc) != 0 || rc != 0) {
+			fprintf(stderr, "FAIL: #438 cixctl help, rc=%d\n", rc);
+			ok = 0;
+		}
+		for (c = out; *c != '\0'; c++)
+			lines += *c == '\n';
+		if (lines > 30 || strstr(out, " container ") == NULL || strstr(out, "--name=") != NULL) {
+			fprintf(stderr, "FAIL: #438 cixctl help is not the short group list (%d lines)\n",
+			        lines);
+			ok = 0;
+		}
+	}
+	{
+		char *argv[] = { "cixctl", "help", "network", NULL };
+
+		if (run_cli(argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
+		    strstr(out, "  network create ") == NULL || strstr(out, "  container ") != NULL) {
+			fprintf(stderr, "FAIL: #438 cixctl help network, rc=%d out=%.300s\n", rc, out);
+			ok = 0;
+		}
+	}
+	{
+		char *argv[] = { "cixctl", "help", "nosuch", NULL };
+
+		if (run_cli(argv, out, sizeof(out), &rc) != 0 || rc != 2 ||
+		    strstr(out, "no help for 'nosuch'") == NULL) {
+			fprintf(stderr, "FAIL: #438 cixctl help nosuch expected rc 2, got %d\n", rc);
+			ok = 0;
+		}
+	}
+
 	/* 2. run c1, exits quickly with code 5 */
 	{
 		char *argv[] = { "cixctl",  PORT_ARG,

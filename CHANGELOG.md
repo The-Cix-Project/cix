@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### `cixctl help` fits on a screen, and `cixctl help COMMAND` shows one command (#438)
+
+The owner's report: *"when I look at help, it scrolls off the screen."* `help` was not a command at all. `cixctl help` printed `unknown command 'help'` and then every line of the usage text, 529 lines on 0.2.57-408, and `cixctl help network` did exactly the same.
+
+- **`cixctl help`** now prints the command groups (13 lines).
+- **`cixctl help WORDS`** prints every entry beginning with those words: `help network`, or `help container run`.
+- **`cixctl help all`** prints the whole text, and `--help` gives the group list.
+- **The interactive shell's `help`** takes the same arguments and still goes through the pager (#439).
+- **Errors are short:** an unknown command or option prints the group list, not the whole text.
+
+There is still one help text. `print_usage()`'s literal became `USAGE_TEXT`, and the group list and topic help are read out of it by its layout: an entry starts on a line indented by exactly two spaces. So a command documented there is findable by topic with nothing else to update. `test_clitree` now finds its help lines in `USAGE_TEXT`. `test_cli` (DAEMON_SELFTESTS) checks the group list is short, `help network` prints only network entries, and an unknown topic exits 2.
+
 ### ADR-0318: an upstream release rolls only when upstream signs it, and the platform writes the next recipe (#508)
 
 The owner wants hibr to follow its releases without a hand-written recipe per release, and chose both open questions on 2026-09-30: signed release assets, and recipes committed to cix-recipes. ADR-0318 records the design.
