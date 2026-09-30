@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A checksum mismatch carries the full computed hash (#513, part 2)
+
+A source that hashed to the wrong value failed with `... bytes hash to 87b7d88d539b..., recipe declares 42fb146b90a6... -- full hashes, path and url in the log store`. The 12-character prefix is the one thing an operator needs in full to re-pin a recipe, and a prefix cannot be written into one. The message now carries the whole 64-character computed hash, which leads so that a run record's 192-byte copy keeps it. It keeps a prefix of the declared hash, which the recipe already holds in full, and names the log store's exact address for path and url: `GET /v1/system/logs?source=cixd`.
+
+#513 said the log store did not have the full hash either. On 0.2.57-407 it does: the fetch writes `computed=<64 hex> declared=<64 hex>` with path, size and redacted url at level `error`, and the release loop has read it all session. Whether that was fixed after 2026-09-22 or misread then is not established. `test_pkg` (FLOOR_SELFTESTS) now checks that `badsum`'s error carries a full 64-hex hash.
+
+Part 1 of #513, older Gitea tag archives no longer matching their pins, is not addressed here. `cix-aggressive-test@1.0.6` still pins `archive/v2.53.47.tar.gz`, the case measured there.
+
 ### Each build log says whose it is (#550)
 
 `GET /v1/pkg/build-logs` listed `{file, size_bytes, modified_at}` and named no package. So the dashboard found "the newest log for X" by matching the filename prefix `X-`, which is ambiguous wherever one package's name begins another's: `cix-` also matches `cix-tests-…`. Found while building #433's log window.

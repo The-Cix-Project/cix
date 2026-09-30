@@ -10712,9 +10712,19 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 				                (long long)sst.st_size,
 				                sha_out[0] != '\0' ? sha_out : "(none)", recipe.sha256[i],
 				                url_redacted);
+				/*
+				 * #513: the FULL computed hash, in the message. It is
+				 * the one value needed to re-pin a recipe, and a
+				 * 12-character prefix of it cannot be written into one.
+				 * It leads because a run record keeps 192 bytes of
+				 * this and the tail is what gets cut; the declared
+				 * hash is already in the recipe, so a prefix of it is
+				 * enough to recognise, and path and url are in the
+				 * log line above, whose address is named exactly.
+				 */
 				pkg_fail(e, is_final_upgrade, PIPELINE_FETCH,
-				         "checksum mismatch (source %d): %lld bytes hash to %.12s..., recipe "
-				         "declares %.12s... -- full hashes, path and url in the log store",
+				         "checksum mismatch (source %d): %lld bytes hash to %s, recipe declares "
+				         "%.12s... -- path and url: GET /v1/system/logs?source=cixd",
 				         i, (long long)sst.st_size,
 				         sha_out[0] != '\0' ? sha_out : "(unreadable)", recipe.sha256[i]);
 				g_chains[chain_idx].name[0] = '\0';

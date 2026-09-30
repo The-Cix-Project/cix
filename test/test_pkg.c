@@ -2922,6 +2922,35 @@ int main(void)
 		ok = 0;
 	}
 
+	/*
+	 * #513: the error carries the FULL computed hash -- the one value
+	 * needed to re-pin a recipe -- rather than a 12-character prefix
+	 * and a pointer elsewhere.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET", "/v1/pkg/badsum", NULL, &r) == 0 && r.status == 200) {
+		const char *err = json_str_field(r.json, "error");
+		const char *at = err != NULL ? strstr(err, "hash to ") : NULL;
+		int hex = 0;
+
+		if (at != NULL) {
+			at += 8;
+			while (hex < 64 && ((at[hex] >= '0' && at[hex] <= '9') ||
+			                    (at[hex] >= 'a' && at[hex] <= 'f')))
+				hex++;
+		}
+		if (hex != 64 || at[64] != ',') {
+			fprintf(stderr, "FAIL: #513 badsum's error does not carry the full computed hash: %s\n",
+			        err != NULL ? err : "(none)");
+			ok = 0;
+		}
+	} else {
+		fprintf(stderr, "FAIL: #513 GET /v1/pkg/badsum, status=%d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+
 	/* 7b. DELETE on a permanently-failed entry actually removes it
 	 * (this daemon used to only accept PKG_STATE_INSTALLED, leaving a
 	 * failed fetch/build stuck forever) -- and, since it was never
