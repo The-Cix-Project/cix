@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Existing .tar.gz artifacts turn over naturally; cixd can no longer write one (#499)
+
+#499 asked whether a version already built as `.tar.gz` should be rebuilt to get a `.cixpkg`. The shared cache at 192.168.15.31:8080 holds 452 `.tar.gz` and 265 `.cixpkg` artifacts (measured 2026-09-30). Every build since the conversion writes `.cixpkg`: the newest `.tar.gz` of `cix` is 0.2.57-364.
+
+The owner's answer, on 2026-09-30: **they turn over naturally.** There is no mass rebuild. Each package's `.tar.gz` is superseded by a `.cixpkg` at its next ordinary revision, which always lands on a new stem. That is the same rule as for installed packages built from shell recipes: they are bytes on disk, and they move on at their next upgrade.
+
+What changed in code is the route back. `pkg_build_completed()` still had a branch that tarred a finished build into the local cache as `.tar.gz`, through `pkg_cache_save()`. It cannot run:
+- a shell recipe is refused before any build starts (ADR-0309 clause 3);
+- a CPDL recipe declaring `tar.gz` is refused at publish and by `cbs build` itself.
+
+The branch now logs the impossible case and caches and publishes nothing, and `pkg_cache_save()` is removed. Reading an existing `.tar.gz` from the cache is unchanged, so a legacy artifact already cached still installs.
+
 ### `cixctl help` fits on a screen, and `cixctl help COMMAND` shows one command (#438)
 
 The owner's report: *"when I look at help, it scrolls off the screen."* `help` was not a command at all. (0.2.57-409 failed its own selftest here: `test_clitree` found `help` routed but absent from `cmdtree.h`, and `--help` read but offered nowhere. `help` is now a tree node with its own help line, and `--help` joins `--json` as an exempt global flag. 0.2.57-410 carries it.) `cixctl help` printed `unknown command 'help'` and then every line of the usage text, 529 lines on 0.2.57-408, and `cixctl help network` did exactly the same.

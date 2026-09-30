@@ -9418,8 +9418,8 @@ static char g_artifact_export_publish_name[PKG_NAME_MAX];
  * pusher to upload and every push was skipped. The artifact cache's
  * newest `cix` sat at v2.2.0-rc30 while the box that built it ran rc35;
  * `kernel` and `isotools` were affected identically. Ordinary
- * source-built packages were fine only because their branch calls
- * pkg_cache_save() before enqueuing; a hostbuild's never did.
+ * source-built packages were fine only because their branch put the
+ * artifact into the local cache before enqueuing; a hostbuild's never did.
  *
  * Build the tarball from the installed tree first -- the same export
  * the manual publish endpoint uses, so there is one way to produce

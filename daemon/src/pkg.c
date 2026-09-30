@@ -8554,7 +8554,6 @@ static int fetched_recipe_path(int chain_idx, const char *name, char *out, size_
  * pkg_build_completed() are the only call sites and all come first. */
 static int pkg_cache_has(const char *name, const char *version);
 static void pkg_cache_touch(const char *name, const char *version);
-static void pkg_cache_save(const char *name, const char *version, const char *dest_dir);
 static void pkg_build_log_dir(char *out, size_t out_size); /* issue #57 */
 static void pkg_build_log_open(struct pkg_entry *e, const char *version); /* issue #57 */
 static void pkg_build_log_close(struct pkg_entry *e);
@@ -8621,7 +8620,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	 * further down), so the local cache legitimately holds hostbuild
 	 * packages -- and reusing those bytes lets a re-hostbuild skip a
 	 * re-download. A hostbuild that BUILDS still never writes the local
-	 * cache (its harvest branch has no pkg_cache_save() -- only the
+	 * cache (its harvest branch writes nothing to it -- only the
 	 * ordinary-install branch does), so a hit here only ever comes from
 	 * a prior fetch, whose bytes are that same version and therefore
 	 * the same artifact. Held in a local here (rather than written
@@ -13517,10 +13516,9 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			 * A CBS build leaves a finished .cixpkg -- CBS wrote
 			 * it, inside the container, after the finalize policy
 			 * ran (src/package.c:374 then :389) -- so cixd takes
-			 * the file. Taking a file is strictly less host work
-			 * than tarring a tree: pkg_cache_save() forks tar and
-			 * gzip and waits on both, on the reactor, and this
-			 * branch is a rename.
+			 * the file. Taking the file is a rename; the tar-and-gzip
+			 * of a whole tree that the retired shell build path needed
+			 * is gone, and with it the route back to .tar.gz (#499).
 			 *
 			 * Read from the entry rather than re-derived, and the
 			 * format rather than is_cbs: the recipe declared it
@@ -13554,12 +13552,28 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 					pkg_cache_save_from_file(e->name, e->version, e->artifact_format,
 					                          produced);
 			} else {
-				pkg_cache_save(e->name, e->version, dest_dir);
+				/*
+				 * Unreachable, and said so rather than served. A
+				 * package artifact is a .cixpkg and never a tar.gz
+				 * (One Build System Mandate, ADR-0307): a shell
+				 * recipe cannot build (ADR-0309 clause 3 refuses it
+				 * before any container runs), and a CPDL recipe
+				 * declaring tar.gz is refused at publish and by
+				 * `cbs build` itself. This branch used to tar the
+				 * tree into the cache instead, a route back to the
+				 * legacy format; it now caches and publishes nothing
+				 * (#499).
+				 */
+				logstore_write("cixd", "error",
+				               "pkg %s@%s: built with artifact format \"%s\", which is not "
+				               ".cixpkg -- nothing cached or published",
+				               e->name, e->version, e->artifact_format);
 			}
 			/* Issue #129: a fresh build is the only thing worth
 			 * publishing -- a cache/artifact hit's bytes already came
 			 * from somewhere else. */
-			pkg_artifact_push_enqueue(e->name, e->version);
+			if (strcmp(e->artifact_format, PKG_ARTIFACT_FORMAT_CIXPKG) == 0)
+				pkg_artifact_push_enqueue(e->name, e->version);
 		}
 
 		/*
@@ -15349,8 +15363,8 @@ static long long cache_scan(void)
 
 /* Real LRU: evicts the least-recently-used (oldest mtime) entries
  * first until incoming_size will fit under g_cache_max_bytes -- called
- * before every new cache write (pkg_cache_save()/pkg_cache_save_from_
- * file()). A single artifact bigger than the whole configured cap is
+ * before every new cache write (pkg_cache_save_from_file()). A single
+ * artifact bigger than the whole configured cap is
  * simply never cached (the caller checks this itself before calling)
  * rather than evicting everything else to make room for one oversized
  * entry. */
@@ -15390,106 +15404,7 @@ static void pkg_cache_touch(const char *name, const char *version)
 }
 
 /*
- * Tars dest_dir's own content into the cache, keyed name-version,
- * evicting older entries first if needed to fit under the configured
- * cap. Best-effort, deliberately non-fatal: the real, authoritative
- * install (merging dest_dir into the target image) has already
- * succeeded by the time this runs -- the same "best effort, not the
- * primary install" posture pkg_build_completed()'s own g_pkgbuild_
- * rootfs merge already established for a comparable secondary write.
- */
-static void pkg_cache_save(const char *name, const char *version, const char *dest_dir)
-{
-	char final_path[PATH_MAX];
-	char tmp_path[PATH_MAX];
-	struct stat st;
-	long long size;
-
-	if (persist_mkdir_p(g_cache_dir) != 0) {
-		logstore_write("cixd", "error", "pkg cache: cannot create %s: %s -- %s@%s not cached",
-		                g_cache_dir, strerror(errno), name, version);
-		return;
-	}
-	/*
-	 * Always a tar.gz, and no format parameter, because tarring a
-	 * directory is the whole of what this does (ADR-0307). A cixpkg
-	 * is not made here at all -- CBS writes it inside the build
-	 * container and pkg_cache_save_from_file() takes the finished
-	 * file, which is why that one takes a format and this does not.
-	 */
-	cache_artifact_path(name, version, PKG_ARTIFACT_FORMAT_TARGZ, final_path,
-	                     sizeof(final_path));
-	snprintf(tmp_path, sizeof(tmp_path), "%s.tmp-%d", final_path, (int)getpid());
-	unlink(tmp_path);
-
-	{
-		/*
-		 * Issue #129: the normalizing flags make this archive
-		 * REPRODUCIBLE -- two independent builds of the same content
-		 * produce byte-identical output. Confirmed by direct
-		 * experiment, not assumed: without --sort/--mtime/--owner the
-		 * per-file mtimes ride in the tar headers, so two builds of
-		 * an identical tree differ; with them they hash the same.
-		 * (The gzip timestamp is already zero here for an unrelated
-		 * reason -- --use-compress-program pipes through gzip's
-		 * stdin, which has no filename or mtime to record. That came
-		 * from issue #125's PATH fix and is worth knowing before
-		 * anyone "simplifies" it back to -z.)
-		 *
-		 * This matters because these bytes get published to a shared
-		 * artifact server whose contract is that one name means one
-		 * byte sequence forever. Without reproducibility every host
-		 * would produce a different tarball for the same recipe
-		 * version, so the first push would win and every later one
-		 * would be refused as a conflict -- turning a real integrity
-		 * rule into permanent noise. With it, a rejected push means
-		 * what it should: two builds genuinely diverged.
-		 */
-		/*
-		 * Issue #164: built through targz_create(), which pipes tar
-		 * into gzip itself instead of asking tar to spawn the
-		 * compressor. tar's own --use-compress-program goes through
-		 * /bin/sh, which this platform's control-plane root does not
-		 * have -- so on every real installed host this call failed
-		 * and NOTHING was ever cached, silently, because a cache save
-		 * is best-effort. The normalizing flags moved into targz.c
-		 * with the tar invocation itself; the bytes are unchanged.
-		 */
-		if (targz_create(dest_dir, tmp_path, NULL) != 0) {
-			/* Best-effort stays best-effort, but never silent again:
-			 * a host whose cache save fails on EVERY build looked
-			 * exactly like a host with nothing to cache, for months
-			 * (issue #125) -- run_subprocess's own log line names
-			 * tar, not the caller, so this one names the caller. */
-			logstore_write("cixd", "error",
-			                "pkg cache: tar create failed for %s@%s (dest %s) -- not cached",
-			                name, version, dest_dir);
-			unlink(tmp_path);
-			return;
-		}
-	}
-	if (stat(tmp_path, &st) != 0) {
-		logstore_write("cixd", "error", "pkg cache: %s@%s tarball missing after create: %s",
-		                name, version, strerror(errno));
-		unlink(tmp_path);
-		return;
-	}
-	size = (long long)st.st_size;
-	if (size > g_cache_max_bytes) {
-		logstore_write("cixd", "info",
-		                "pkg cache: %s@%s is %lld bytes, over the whole %lld cache cap -- not cached",
-		                name, version, size, (long long)g_cache_max_bytes);
-		unlink(tmp_path); /* bigger than the whole cache cap -- not cacheable */
-		return;
-	}
-	cache_evict_lru_until_fits(size);
-	unlink(final_path);
-	if (rename(tmp_path, final_path) != 0)
-		unlink(tmp_path);
-}
-
-/*
- * Same cap/eviction discipline as pkg_cache_save(), but for an
+ * Caches, under the configured cap and with LRU eviction, an
  * artifact tarball that already exists on disk as a whole file
  * (pkg_sync_completed()'s own network-fetched pkg/artifacts/ entries)
  * rather than a directory to tar up. Takes ownership of src_path: it
@@ -15524,9 +15439,9 @@ static void pkg_cache_save_from_file(const char *name, const char *version, cons
 
 /* Extracts a cache hit's own content into out_dir (a fresh, empty
  * directory the caller already created) -- a plain tar extraction, no
- * common-top-dir stripping needed since pkg_cache_save() always tars
- * dest_dir's own contents directly (tar -C dest_dir -czf ... .), never
- * a single wrapping directory. */
+ * common-top-dir stripping needed: a tar.gz this platform cached was
+ * always dest_dir's own contents (tar -C dest_dir -czf ... .), never
+ * a single wrapping directory. Only old cache entries are tar.gz (#499). */
 /*
  * Issue #139: does this tree contain a binary that cannot be run?
  *
