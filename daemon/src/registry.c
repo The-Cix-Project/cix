@@ -1476,3 +1476,20 @@ void registry_set_consoles(const char *name, const struct registry_console *cons
 		e->consoles[i] = consoles[i];
 	e->console_count = count;
 }
+
+void registry_set_sysctls(struct registry_entry *e, const struct container_sysctl *sysctls,
+                          int count)
+{
+	int i;
+
+	if (e == NULL)
+		return;
+	if (count < 0)
+		count = 0;
+	if (count > CONTAINER_MAX_SYSCTLS)
+		count = CONTAINER_MAX_SYSCTLS;
+	memset(e->sysctls, 0, sizeof(e->sysctls));
+	for (i = 0; i < count; i++)
+		e->sysctls[i] = sysctls[i];
+	e->sysctl_count = count;
+}

@@ -228,6 +228,20 @@ int container_net_enable_ip_forward(void);
 int container_net_apply_sysctl(const char *key, const char *value);
 
 /*
+ * #447: the same writes, into a container that is ALREADY RUNNING.
+ * A throwaway helper forks, setns()es into child_pid's netns and calls
+ * container_net_apply_sysctl() for each entry in order -- a net sysctl
+ * under /proc/sys/net resolves against the opener's netns, so the open
+ * has to happen in there, and setns() is whole-process, so the daemon
+ * never does it itself. Stops at the first failure. Returns 0 when every
+ * entry was written; -1 otherwise, with *failed_index set to the entry
+ * that failed (-1 if the helper never got that far, e.g. the netns
+ * could not be joined) and *failed_errno to the errno it failed with.
+ */
+int container_net_apply_sysctls_running(pid_t child_pid, const struct container_sysctl *sysctls,
+                                        int count, int *failed_index, int *failed_errno);
+
+/*
  * Parent side, called right after cgroup_create() and before
  * ns_clone3(). device_count == 0 is a no-op (*out_prog_fd = -1,
  * returns 0 immediately) -- a container that hasn't been granted any

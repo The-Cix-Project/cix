@@ -2667,6 +2667,15 @@ POST /v1/containers
 - All three survive exactly like everything else in `restart: "always"`'s own replay mechanism — no separate persistence work needed. See ADR-0030.
 - `cmd` itself is echoed back on every `GET /containers`/`GET /containers/{name}` response (`ADR-0100`) — previously there was no way to ask a running or stopped container "what is your entrypoint," since the create request's own `argv` only ever pointed into that request's transient parsed body. `env` is echoed back the same way.
 
+**Changing sysctls on an existing container** is `PUT /v1/containers/{name}/sysctls` (#447), which saves deleting the container and POSTing its whole definition again. The body maps keys to values: a string sets a key, `null` removes it, and keys not mentioned stay as stored. The same `net.*` rule as create applies, checked by the same function.
+
+```
+PUT /v1/containers/jump/sysctls
+{"net.ipv4.ping_group_range": "0 10002"}
+```
+
+A running container gets the values first: the daemon enters its netns and writes each one, and stores them only if the kernel accepted every one. A value the kernel refuses is a 400 naming the key and the reason, and nothing is stored. Storing it would crash-loop every later start, since sysctls are written at each start. A stopped container has no namespace to write into, so the change is stored and takes effect at its next start. `applies` says `now` or `on next start`. A removed key stops being set from the next start; its live value stays until then, because no default was recorded to restore it to. From the CLI: `cixctl container sysctl jump net.ipv4.ping_group_range="0 10002"`, and `--unset=KEY` to remove one.
+
 ## Persistent volumes (issue #88, ADR-0183)
 
 Everything a container writes at runtime lives in its overlay upper layer, and `DELETE` removes that layer outright ([ADR-0106](../adr/0106-container-delete-disk-cleanup.md)). A **volume** is the one exception: a named directory whose lifetime is independent of any container using it.

@@ -3122,6 +3122,51 @@ async function pauseContainer(name) {
 	}
 }
 
+/* #447: net.* sysctls on an existing container. The daemon answers with
+ * `applies`: "now" when it wrote the value into the running container,
+ * "on next start" otherwise -- said in the status message rather than
+ * guessed here. */
+function sysctlAppliesText(result) {
+	return result && result.applies === "now" ? "applied now" : "applies at the next start";
+}
+
+async function unsetContainerSysctl(name, key) {
+	try {
+		const result = await apiRequest("PUT", CIX_API.setContainerSysctls(name), { [key]: null });
+
+		showStatus("Unset " + key + " on " + name + " -- no longer set from the next start" +
+			(result && result.applies === "now" ? "; the running value stays until then" : ""));
+		await refreshContainers();
+		renderCurrentView();
+	} catch (e) {
+		showStatus("Failed to unset " + key + " on " + name + ": " + e.message, true);
+	}
+}
+
+document.getElementById("cd-sysctl-set").addEventListener("click", () => {
+	document.getElementById("container-sysctl-form").reset();
+	openModal("container-sysctl-form", "Set a sysctl on " + currentContainerDetailName);
+});
+
+document.getElementById("container-sysctl-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const name = currentContainerDetailName;
+	const key = document.getElementById("csf-key").value.trim();
+	const value = document.getElementById("csf-value").value;
+
+	try {
+		const result = await apiRequest("PUT", CIX_API.setContainerSysctls(name), { [key]: value });
+
+		closeModal();
+		showStatus("Set " + key + "=" + value + " on " + name + " -- " + sysctlAppliesText(result));
+		await refreshContainers();
+		renderCurrentView();
+	} catch (e) {
+		showStatus("Failed to set " + key + " on " + name + ": " + e.message, true);
+	}
+});
+
 async function unpauseContainer(name) {
 	try {
 		await apiRequest("POST", CIX_API.unpauseContainer(name));
@@ -4944,12 +4989,27 @@ function renderContainerDetail(name) {
 	 * a jump box where `ssh somehost` failed for no stated reason. */
 	optionsFields.appendChild(fieldBlock("DNS servers",
 		(c.dns_servers || []).join(", ") || "none - cannot resolve names"));
-	simpleTableRows(
-		document.querySelector("#cd-sysctls tbody"),
-		Object.entries(c.sysctls || {}).map(([k, v]) => [k, v]),
-		2,
-		"No sysctls set"
-	);
+	{
+		/* #447: each stored sysctl can be unset in place. Unset only
+		 * drops the key from the definition -- nothing is lost, so it is
+		 * a neutral compact button with no confirm. */
+		const sysctlBody = document.querySelector("#cd-sysctls tbody");
+		const sysctlEntries = Object.entries(c.sysctls || {});
+
+		simpleTableRows(sysctlBody, sysctlEntries.map(([k, v]) => [k, v]), 3, "No sysctls set");
+		sysctlEntries.forEach(([key], i) => {
+			const cell = document.createElement("td");
+			const unset = document.createElement("button");
+
+			unset.type = "button";
+			unset.className = "button-small";
+			unset.textContent = "Unset";
+			unset.addEventListener("click", () => unsetContainerSysctl(c.name, key));
+			gateAction(unset, "setContainerSysctls");
+			cell.appendChild(unset);
+			sysctlBody.rows[i].appendChild(cell);
+		});
+	}
 	simpleTableRows(
 		document.querySelector("#cd-env tbody"),
 		Object.entries(c.env || {}).map(([k, v]) => [k, v]),

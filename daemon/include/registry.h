@@ -604,6 +604,16 @@ struct registry_entry *registry_find(const char *name);
  * successful create; a container with none simply never calls it.
  */
 void registry_set_consoles(const char *name, const struct registry_console *consoles, int count);
+
+/*
+ * #447: replace what a registered container reports as its sysctls,
+ * after PUT /v1/containers/{name}/sysctls has stored a new set (and, for
+ * a running container, written it). What GET reports is the stored set:
+ * a key removed from the definition keeps its live value until the next
+ * start, and the endpoint's contract says so.
+ */
+void registry_set_sysctls(struct registry_entry *e, const struct container_sysctl *sysctls,
+                          int count);
 /*
  * ADR-0260: records the declaration cix-init was sent and the fds the
  * daemon keeps for it. output_fds[i] is the read end of service i's

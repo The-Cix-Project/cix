@@ -221,7 +221,10 @@ static const struct budget g_budgets[] = {
 	{ "daemon/src/storagemigrate.c", 1, "double-fork intermediate" },
 	{ "daemon/src/containerstoragemigrate.c", 1, "double-fork intermediate" },
 	{ "src/container.c", 4, "clone3 intermediates and container_wait" },
-	{ "src/container_net.c", 3, "netns helper, bounded" },
+	/* 3 -> 4 (#447): container_net_apply_sysctls_running() waits for its
+	 * setns() helper, which writes at most CONTAINER_MAX_SYSCTLS files under
+	 * /proc/sys/net and exits -- the same bounded shape as the other three. */
+	{ "src/container_net.c", 4, "netns helpers, bounded" },
 	{ "src/mountns.c", 1, "mount helper, bounded" },
 };
 

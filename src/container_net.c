@@ -7,6 +7,7 @@
 #include <sched.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -584,5 +585,98 @@ int container_net_apply_sysctl(const char *key, const char *value)
 		return -1;
 	}
 	close(fd);
+	return 0;
+}
+
+int container_net_apply_sysctls_running(pid_t child_pid, const struct container_sysctl *sysctls,
+                                        int count, int *failed_index, int *failed_errno)
+{
+	char ns_path[64];
+	int netns_fd;
+	int report[2];
+	int result[2] = { -1, 0 }; /* failed index, errno */
+	pid_t helper;
+	int status;
+	ssize_t got;
+
+	*failed_index = -1;
+	*failed_errno = 0;
+	if (count <= 0)
+		return 0;
+	snprintf(ns_path, sizeof(ns_path), "/proc/%d/ns/net", (int)child_pid);
+	netns_fd = open(ns_path, O_RDONLY | O_CLOEXEC);
+	if (netns_fd < 0) {
+		*failed_errno = errno;
+		return -1;
+	}
+	/*
+	 * Refuse a netns that is the daemon's own. Every container is
+	 * created with CLONE_NEWNET today, so this should never fire -- and
+	 * that is why it is here: if a container ever shared the host's
+	 * netns, a "container" sysctl write would silently become a HOST
+	 * one, the exact escape ADR-0030's net.*-only rule exists to rule
+	 * out. EPERM names it as a refusal rather than a failure.
+	 */
+	{
+		struct stat ours, theirs;
+
+		if (stat("/proc/self/ns/net", &ours) != 0 || fstat(netns_fd, &theirs) != 0 ||
+		    (ours.st_dev == theirs.st_dev && ours.st_ino == theirs.st_ino)) {
+			*failed_errno = EPERM;
+			close(netns_fd);
+			return -1;
+		}
+	}
+	if (pipe2(report, O_CLOEXEC) != 0) {
+		*failed_errno = errno;
+		close(netns_fd);
+		return -1;
+	}
+	helper = fork();
+	if (helper < 0) {
+		*failed_errno = errno;
+		close(netns_fd);
+		close(report[0]);
+		close(report[1]);
+		return -1;
+	}
+	if (helper == 0) {
+		int i;
+
+		close(report[0]);
+		if (setns(netns_fd, CLONE_NEWNET) != 0) {
+			result[1] = errno;
+			(void)write(report[1], result, sizeof(result));
+			_exit(1);
+		}
+		for (i = 0; i < count; i++) {
+			if (container_net_apply_sysctl(sysctls[i].key, sysctls[i].value) != 0) {
+				result[0] = i;
+				result[1] = errno;
+				(void)write(report[1], result, sizeof(result));
+				_exit(1);
+			}
+		}
+		_exit(0);
+	}
+	close(netns_fd);
+	close(report[1]);
+	/*
+	 * Bounded: the helper opens and writes at most CONTAINER_MAX_SYSCTLS
+	 * files under /proc/sys/net and exits. It makes no network call and
+	 * waits on no other process -- the same shape as the other netns
+	 * helpers in this file, and in test_blocking_waits' budget on that
+	 * argument (#447).
+	 */
+	got = read(report[0], result, sizeof(result));
+	close(report[0]);
+	if (waitpid(helper, &status, 0) != helper || !WIFEXITED(status) ||
+	    WEXITSTATUS(status) != 0) {
+		if (got == (ssize_t)sizeof(result)) {
+			*failed_index = result[0];
+			*failed_errno = result[1];
+		}
+		return -1;
+	}
 	return 0;
 }

@@ -342,6 +342,10 @@
 					"no" (a persisted definition to restart from is required).</p>
 				<h3>Sysctls</h3>
 				<table id="cd-sysctls"><tbody></tbody></table>
+				<button type="button" id="cd-sysctl-set" data-op="setContainerSysctls">Set sysctl&hellip;</button>
+				<p class="hint">net.* only. A running container gets the value at once, and it is kept
+					only if the kernel accepts it; a stopped one gets it at its next start. Unset stops
+					setting a key from the next start on.</p>
 				<h3>Environment variables</h3>
 				<table id="cd-env"><tbody></tbody></table>
 				<h3>Files</h3>
@@ -3588,6 +3592,22 @@
 						<input type="number" id="lgf-gidnumber" min="1" placeholder="auto-allocated if blank">
 					</label>
 					<button type="submit" id="lgf-submit">Create</button>
+				</form>
+			</div>
+
+			<!-- #447: set one net.* sysctl on an existing container, live when
+			     it is running (PUT /v1/containers/{name}/sysctls). -->
+			<div id="modal-container-sysctl-form" hidden>
+				<form id="container-sysctl-form">
+					<label>
+						Key
+						<input type="text" id="csf-key" pattern="net\.[A-Za-z0-9_.]+" placeholder="net.ipv4.ip_forward" required>
+					</label>
+					<label>
+						Value
+						<input type="text" id="csf-value" placeholder="1" required>
+					</label>
+					<button type="submit" id="csf-submit" data-op="setContainerSysctls">Set</button>
 				</form>
 			</div>
 

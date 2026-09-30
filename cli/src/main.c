@@ -122,6 +122,9 @@ static void print_usage(FILE *out)
 	        "  container stop NAME   -- stop it but keep it (start it again later); rm deletes\n"
 	        "  container pause NAME / container unpause NAME  -- cgroup v2 freezer (real freeze)\n"
 	        "  container stats NAME  -- real, host-side CPU/memory/disk/network usage\n"
+	        "  container sysctl NAME KEY=VALUE... [--unset=KEY]...  -- set net.* sysctls; a\n"
+	        "               running container gets them at once, stored only if the kernel\n"
+	        "               accepts every value (#447)\n"
 	        "  container migrate-storage NAME [--disk=NAME]  -- move this container's storage to a\n"
 	        "               disk carrying the container-storage role (ADR-0142); omit --disk= for\n"
 	        "               the default OS-disk placement; briefly restarts for the cutover -- poll\n"
@@ -4772,6 +4775,84 @@ static int cmd_container_volume(const struct cix_client *c, int json_mode, int a
 	return 2;
 }
 
+/*
+ * #447: `cixctl container sysctl NAME KEY=VALUE... [--unset=KEY]...` --
+ * PUT /v1/containers/{name}/sysctls. Written into a running container
+ * at once and stored only if the kernel took every value; stored for the
+ * next start otherwise. --unset drops a key from the definition.
+ */
+static void fmt_container_sysctls(const struct json_value *v)
+{
+	const struct json_value *s = json_object_get(v, "sysctls");
+	const char *applies = json_as_string(json_object_get(v, "applies"));
+	size_t i;
+
+	if (s == NULL || s->type != JSON_OBJECT || s->u.object.count == 0)
+		printf("no sysctls\n");
+	else
+		for (i = 0; i < s->u.object.count; i++)
+			printf("%-40s %s\n", s->u.object.keys[i],
+			       json_as_string(s->u.object.values[i]) != NULL
+			               ? json_as_string(s->u.object.values[i])
+			               : "");
+	if (applies != NULL)
+		printf("(applies %s)\n", applies);
+}
+
+static int cmd_container_sysctl(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL;
+	struct json_writer w;
+	struct cix_response r;
+	char path[300];
+	int i, entries = 0;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	for (i = 0; i < argc; i++) {
+		const char *eq = strchr(argv[i], '=');
+
+		if (strncmp(argv[i], "--unset=", 8) == 0 && argv[i][8] != '\0') {
+			jw_key(&w, argv[i] + 8);
+			jw_null(&w);
+			entries++;
+		} else if (argv[i][0] != '-' && eq != NULL && eq != argv[i] && name != NULL) {
+			char key[128];
+
+			snprintf(key, sizeof(key), "%.*s", (int)(eq - argv[i]), argv[i]);
+			jw_key(&w, key);
+			jw_str(&w, eq + 1);
+			entries++;
+		} else if (argv[i][0] != '-' && eq == NULL && name == NULL) {
+			name = argv[i];
+		} else {
+			jw_free(&w);
+			fprintf(stderr, "cixctl: unexpected container sysctl argument '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	if (name == NULL || entries == 0) {
+		jw_free(&w);
+		fprintf(stderr,
+		        "usage: cixctl container sysctl NAME KEY=VALUE... [--unset=KEY]...\n"
+		        "  net.* keys only. A running container gets the values at once, and they\n"
+		        "  are stored only if the kernel accepts every one; a stopped container\n"
+		        "  gets them at its next start. --unset stops setting a key from the next\n"
+		        "  start on.\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), CIX_API_setContainerSysctls, name);
+	if (cix_client_request(c, CIX_API_setContainerSysctls_METHOD, path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_container_sysctls);
+}
+
 /* ADR-0161 Phase D: `cixctl container device attach|detach` -- the
  * manual REST primitive POST/DELETE /v1/containers/{name}/devices,
  * same shape as container network attach/detach above (a real,
@@ -4898,6 +4979,8 @@ static int cmd_container_edit(const struct cix_client *c, int json_mode, int arg
 
 static int cmd_container(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
+	if (argc >= 1 && strcmp(argv[0], "sysctl") == 0)
+		return cmd_container_sysctl(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "volume") == 0)
 		return cmd_container_volume(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "network") == 0)

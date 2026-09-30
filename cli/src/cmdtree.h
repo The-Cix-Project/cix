@@ -866,6 +866,11 @@ static const struct cli_node n_container_volume_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
+static const char *const n_container_sysctl_flags[] = {
+	"--unset=",
+	NULL
+};
+
 static const struct cli_node n_container_subs[] = {
 	{ "console", n_container_console_flags, NULL },
 	{ "device", NULL, n_container_device_subs },
@@ -883,6 +888,7 @@ static const struct cli_node n_container_subs[] = {
 	{ "start", NULL, NULL },
 	{ "stats", NULL, NULL },
 	{ "stop", NULL, NULL },
+	{ "sysctl", n_container_sysctl_flags, NULL },
 	{ "unpause", NULL, NULL },
 	{ "volume", NULL, n_container_volume_subs },
 	{ NULL, NULL, NULL },

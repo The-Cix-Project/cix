@@ -284,6 +284,7 @@ Every container operation is a subcommand of `container`. `console NAME` is also
 | `container device detach NAME ID` | Remove a live-attached device; a device from creation is refused (409) |
 | `container volume attach NAME --volume=VOLUME --path=/mount/point [--read-only]` | Add a volume to the definition; see [Volumes](#volumes) |
 | `container volume detach NAME VOLUME` | Remove it from the definition; the volume's data is untouched |
+| `container sysctl NAME KEY=VALUE... [--unset=KEY]...` | Set `net.*` sysctls on an existing container: a running one gets them at once and keeps them only if the kernel accepts every value, a stopped one gets them at its next start; `--unset` stops setting a key (#447) |
 
 `container run`'s full flag set:
 

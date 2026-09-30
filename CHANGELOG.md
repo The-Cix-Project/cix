@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container's sysctls can be changed without recreating it (#447)
+
+`PUT /v1/containers/{name}/sysctls` (`cixctl container sysctl NAME KEY=VALUE... [--unset=KEY]...`, and **Set sysctl…** / **Unset** on the dashboard's container Options tab) sets or removes `net.*` sysctls on an existing container. Before this, the only route was to delete the container and POST its whole definition again. For `jump` that meant rebuilding a 40 KB body from the backup and taking it down to add one line. The shape follows the owner's decision of 2026-09-14: a live-apply endpoint, `net.*` only.
+
+On a running container the daemon forks a helper that `setns()`es into the container's netns and writes each value (`container_net_apply_sysctls_running()`), the same pattern as the other netns helpers in `src/container_net.c`. The helper refuses a netns that is the daemon's own, so a container sysctl can never become a host one. Values are **stored only if the kernel accepted every write**. That is the reverse of `POST .../volumes`, on purpose: sysctls are written at every start, so a stored value the kernel refuses would fail every later start. A refusal is a 400 naming the key and the kernel's reason, and nothing is stored. A stopped container gets its change at the next start, and `applies` says `now` or `on next start`. A removed key stops being set from the next start; its live value stays until then.
+
+- **One check:** create and this endpoint share one validity rule, `container_sysctl_check()`, lifted out of the create path with its #446 `ping_group_range` userns check. They also share one userns rule, `definition_userns()`.
+- **PATCH:** `PATCH /containers/{name}` now refuses `sysctls` and names the endpoint. It used to store them unchecked.
+- **Display:** the registry's copy (what `GET` reports) is updated to the stored set.
+- **Blocking waits:** `test_blocking_waits`' budget for `src/container_net.c` goes from 3 to 4 for the new helper's wait, which is bounded by the files it writes.
+- **Tests:** `test_container_files` (DAEMON_SELFTESTS) runs a live PUT on its running `sysctltest` container and reads the value inside its netns. It also checks GET, a key the kernel lacks (400, not stored), a `vm.*` key (400), an unset, and the PATCH refusal.
+
 ### cixctl no longer prints `null` for a success with no body
 
 A 204 answered by a command with no formatter, such as `cixctl pipeline approve` or `pipeline revoke`, printed `null`. That reads as an answer rather than as success. `emit()` now prints nothing in that case and exits 0. Commands whose formatter confirms a 204 (`fmt_removed`, `fmt_added`, `fmt_bootstrapped`) still print their confirmation. Verified against 192.168.15.95 with the rebuilt client: approve and revoke on the deploy gate each printed nothing and exited 0.

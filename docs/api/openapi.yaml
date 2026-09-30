@@ -12026,7 +12026,9 @@ paths:
         deep merge would make "how do I clear one entry of files[]"
         unanswerable.
 
-        `name` is refused -- a container's name is its identity.
+        `name` is refused -- a container's name is its identity. `sysctls` is
+        refused too, naming `PUT /containers/{name}/sysctls`, which checks each
+        entry and applies it live (#447); through here it was stored unchecked.
         `restart`, `restart_delay_seconds`, `depends_on`,
         `follow_rolling` and `follow_rolling_jitter_seconds` are refused
         too, with a 400 naming the field: they feed the definition
@@ -13997,6 +13999,89 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /containers/{name}/sysctls:
+    put:
+      summary: Set a container's net.* sysctls, live when it is running (#447)
+      description: >
+        Before this, the only way to change a sysctl on an existing
+        container was to delete it and POST the whole definition again.
+        For `jump` that meant rebuilding a 40 KB body from the backup and
+        taking the container down to add one line.
+
+
+        The body maps sysctl keys to values. A key with a string value is
+        set, a key with `null` is removed, and keys not in the body are
+        left as stored. Keys are `net.*` only, checked by the same rule as
+        `POST /containers` (ADR-0030), including the userns range check
+        on `net.ipv4.ping_group_range` (#446). At most 32 keys may be
+        stored.
+
+
+        **A running container gets the values first, and only then are
+        they stored.** The daemon enters the container's network
+        namespace and writes each set entry. The order is the reverse of
+        `POST .../volumes`, and deliberately so: a value the kernel
+        refuses would make the container's next start crash-loop,
+        because sysctls are written again at every start. So a
+        refusal is a 400 naming the key, the kernel's reason and how many
+        earlier entries in the same request were already written, and
+        nothing is stored. Those earlier writes are live but not stored,
+        and last until the next start.
+
+
+        A stopped container has no namespace to write into, so the
+        change is stored and takes effect at its next start (`applies`
+        says which happened). The kernel only sees the value then.
+
+
+        A removed key stops being set at start. Its current live value
+        stays until the next start, which gets a fresh namespace with the
+        kernel's default. No default is recorded to restore it to.
+      operationId: setContainerSysctls
+      x-cix-permission: containers:write
+      x-cix-expose: [cli, web]
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties:
+                type: string
+                nullable: true
+      responses:
+        "200":
+          description: Stored; the container's sysctls as now stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContainerSysctlsResponse"
+        "400":
+          description: >
+            Not an object, an invalid key or value, more than 32 keys once
+            merged, or a value the kernel refused on a running container.
+            Nothing is stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No container definition with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: >
+            The container's network namespace could not be entered, or the
+            definition could not be stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /containers/{name}/networks:
     post:
       summary: >
@@ -15881,6 +15966,24 @@ components:
             The output hit the capture cap. Reported rather than left
             implicit: silently dropping the tail of a diagnostic is how
             someone concludes the wrong thing from it.
+
+    ContainerSysctlsResponse:
+      type: object
+      required: [name, sysctls, applies]
+      properties:
+        name:
+          type: string
+        sysctls:
+          type: object
+          description: The container's sysctls as now stored, applied at every start
+          additionalProperties:
+            type: string
+        applies:
+          type: string
+          enum: [now, on next start]
+          description: >
+            "now" when the set entries were written into the running
+            container, "on next start" when it is not running
 
     ContainerVolumesResponse:
       type: object

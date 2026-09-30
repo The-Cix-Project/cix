@@ -11967,6 +11967,63 @@ static int sysctl_key_is_safe(const char *key)
 }
 
 /*
+ * The one check for a container sysctl entry, shared by POST
+ * /v1/containers and PUT /v1/containers/{name}/sysctls (#447) so the
+ * two cannot come to accept different things. 0 when the entry may be
+ * applied; otherwise -1 with the reason in err, which is built from
+ * copies so the caller may free the JSON that key/value point into.
+ *
+ * #446: net.ipv4.ping_group_range's two gids must fall within a userns
+ * container's gid map (0 .. SUBID_RANGE_LEN-1). The kernel refuses a
+ * value beyond it with EINVAL, and at create time that write happens in
+ * the child after the 201 has been sent, so the container reports
+ * "running" and then crash-loops with the cause only in the log store.
+ * A non-userns container maps the host range and needs no check. This
+ * is the statically checkable member of the "sysctl value depends on
+ * the userns map" class; other kernel rejections surface at the write.
+ */
+static int container_sysctl_check(const char *key, const char *value, int userns, char *err,
+                                  size_t err_size)
+{
+	if (key == NULL || value == NULL || strlen(key) >= CONTAINER_SYSCTL_KEY_MAX ||
+	    strlen(value) >= CONTAINER_SYSCTL_VALUE_MAX || !sysctl_key_is_safe(key)) {
+		snprintf(err, err_size, "invalid sysctls entry -- keys are net.* only, values strings");
+		return -1;
+	}
+	if (userns && strcmp(key, "net.ipv4.ping_group_range") == 0) {
+		long lo = -1, hi = -1;
+
+		if (sscanf(value, "%ld %ld", &lo, &hi) != 2 || lo < 0 || hi < lo ||
+		    hi >= (long)SUBID_RANGE_LEN) {
+			char bad[CONTAINER_SYSCTL_VALUE_MAX];
+
+			snprintf(bad, sizeof(bad), "%s", value);
+			snprintf(err, err_size,
+			         "net.ipv4.ping_group_range \"%s\" is outside this container's "
+			         "user-namespace gid range (0..%ld); the kernel would refuse it and "
+			         "the container would crash-loop -- use gids within the mapped range",
+			         bad, (long)SUBID_RANGE_LEN - 1);
+			return -1;
+		}
+	}
+	return 0;
+}
+
+/*
+ * Whether a container definition runs in its own user namespace
+ * (ADR-0179): an explicit boolean wins in both directions, and an absent
+ * field takes the platform default. One rule for the create path and for
+ * anything that has to answer the same question later from the stored
+ * definition (#447), so the two cannot disagree about one container.
+ */
+static int definition_userns(const struct json_value *juserns)
+{
+	if (juserns != NULL)
+		return juserns->type == JSON_BOOL && juserns->u.boolean;
+	return daemon_config_userns_default();
+}
+
+/*
  * POST /v1/containers' own "env" field's key validation -- POSIX
  * portable environment variable name rules (IEEE Std 1003.1-2017
  * 8.1): letters, digits, underscore, not starting with a digit. Real
@@ -12910,10 +12967,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 * by operators for workloads that genuinely need init-userns and
 	 * by the platform for its own build containers.
 	 */
-	if (juserns != NULL)
-		userns = (juserns->type == JSON_BOOL && juserns->u.boolean);
-	else
-		userns = daemon_config_userns_default();
+	userns = definition_userns(juserns);
 	dns_register = (jdns_register != NULL && jdns_register->type == JSON_BOOL &&
 	                jdns_register->u.boolean);
 	pki_issue = (jpki_issue != NULL && jpki_issue->type == JSON_BOOL && jpki_issue->u.boolean);
@@ -13797,50 +13851,12 @@ static int create_container_from_body(const char *body, size_t body_len,
 			const char *key = jsysctls->u.object.keys[i];
 			const char *value = json_as_string(jsysctls->u.object.values[i]);
 
-			if (value == NULL || strlen(key) >= CONTAINER_SYSCTL_KEY_MAX ||
-			    strlen(value) >= CONTAINER_SYSCTL_VALUE_MAX || !sysctl_key_is_safe(key)) {
+			if (container_sysctl_check(key, value, userns, err_msg, err_msg_size) != 0) {
 				json_free(root);
-				snprintf(err_msg, err_msg_size, "invalid sysctls entry");
 				return 400;
 			}
 			snprintf(sysctl_specs[i].key, sizeof(sysctl_specs[i].key), "%s", key);
 			snprintf(sysctl_specs[i].value, sizeof(sysctl_specs[i].value), "%s", value);
-			/*
-			 * #446: net.ipv4.ping_group_range's two gids must fall
-			 * within the container's userns gid map (0 .. SUBID_RANGE_LEN-1).
-			 * A value beyond it (e.g. "0 2147483647") is refused by the
-			 * kernel with EINVAL -- but the write happens in the CHILD,
-			 * after the 201 has been sent, so the container is reported
-			 * "running" and then crash-loops with the cause only in the
-			 * log store. The child cannot turn that into a create-time
-			 * error, so for a userns container validate it here. A
-			 * non-userns container maps the host range and needs no
-			 * check. This is the statically-checkable member of the
-			 * "sysctl value depends on the userns map" class; other
-			 * in-child rejections still surface via exit_reason (the
-			 * already-fixed half of #446).
-			 */
-			if (userns && strcmp(key, "net.ipv4.ping_group_range") == 0) {
-				long lo = -1, hi = -1;
-
-				if (sscanf(value, "%ld %ld", &lo, &hi) != 2 || lo < 0 || hi < lo ||
-				    hi >= (long)SUBID_RANGE_LEN) {
-					/* Use the stable copy in sysctl_specs[i].value, NOT
-					 * `value`: it points into `root`, which is freed
-					 * before this message is built (every other error
-					 * path here frees first too, but they use literals). */
-					char bad[CONTAINER_SYSCTL_VALUE_MAX];
-
-					snprintf(bad, sizeof(bad), "%s", sysctl_specs[i].value);
-					json_free(root);
-					snprintf(err_msg, err_msg_size,
-					         "net.ipv4.ping_group_range \"%s\" is outside this container's "
-					         "user-namespace gid range (0..%ld); the kernel would refuse it and "
-					         "the container would crash-loop -- use gids within the mapped range",
-					         bad, (long)SUBID_RANGE_LEN - 1);
-					return 400;
-				}
-			}
 		}
 	}
 	if (jenv != NULL) {
@@ -16480,6 +16496,17 @@ static void handle_container_patch(int fd, const char *name, const char *body, s
 			              "a container's name is its identity -- create a new one instead");
 			return;
 		}
+		/* #447: sysctls have their own endpoint, which checks each entry
+		 * with the create path's rule and asks the kernel first on a
+		 * running container. Through here they would be stored unchecked,
+		 * so a bad one would first surface at the next start. */
+		if (strcmp(patch->u.object.keys[i], "sysctls") == 0) {
+			json_free(patch);
+			respond_error(fd, 400, "Bad Request",
+			              "sysctls are changed with PUT /v1/containers/{name}/sysctls "
+			              "(cixctl container sysctl), which checks them and applies them live");
+			return;
+		}
 		for (k = 0; k < sizeof(index_fields) / sizeof(index_fields[0]); k++) {
 			if (strcmp(patch->u.object.keys[i], index_fields[k]) != 0)
 				continue;
@@ -16604,6 +16631,216 @@ static int container_def_replace_volumes(struct container_def *def, const struct
 	rc = containerdef_set_body(def->name, w.buf, w.len);
 	jw_free(&w);
 	return rc;
+}
+
+/*
+ * PUT /v1/containers/{name}/sysctls (#447): set, and on a running
+ * container apply, net.* sysctls without recreating it.
+ *
+ * Live FIRST, stored second -- the reverse of POST .../volumes, and on
+ * purpose. Sysctls are re-written at every start, so a value the kernel
+ * refuses, once stored, turns every later start into a crash loop. On a
+ * running container the kernel is asked before anything is kept; a
+ * stopped one has no namespace to ask, so its change is stored and the
+ * kernel sees it at the next start, which `applies` says.
+ *
+ * A null removes a key from the definition only: the live value stays
+ * until the next start's fresh namespace, since no default was recorded
+ * to restore.
+ */
+static void handle_container_sysctls_put(int fd, const char *name, const char *body,
+                                         size_t body_len)
+{
+	struct container_def *def = containerdef_find(name);
+	struct registry_entry *e = registry_find(name);
+	struct json_value *req, *root;
+	const struct json_value *jcur;
+	const char *mkeys[CONTAINER_MAX_SYSCTLS];
+	const char *mvals[CONTAINER_MAX_SYSCTLS];
+	struct container_sysctl set[CONTAINER_MAX_SYSCTLS];
+	int mcount = 0, set_count = 0;
+	int userns, running;
+	char err[512];
+	struct json_writer w;
+	size_t i;
+	int rc;
+
+	if (def == NULL) {
+		respond_error(fd, 404, "Not Found", "no such container");
+		return;
+	}
+	req = json_parse(body, body_len);
+	if (req == NULL || req->type != JSON_OBJECT) {
+		json_free(req);
+		respond_error(fd, 400, "Bad Request",
+		              "body must be a JSON object of sysctl keys to string values, or null to "
+		              "remove one");
+		return;
+	}
+	root = json_parse(def->body, def->body_len);
+	if (root == NULL || root->type != JSON_OBJECT) {
+		json_free(root);
+		json_free(req);
+		respond_error(fd, 500, "Internal Server Error",
+		              "this container's stored definition could not be parsed");
+		return;
+	}
+	/* What the container actually runs with, when it has run; the
+	 * definition's own rule otherwise. */
+	userns = e != NULL ? e->userns_enabled : definition_userns(json_object_get(root, "userns"));
+	running = e != NULL && e->running;
+
+	/* Every set entry is checked before anything is written or kept. */
+	for (i = 0; i < req->u.object.count; i++) {
+		const struct json_value *v = req->u.object.values[i];
+
+		if (v->type == JSON_NULL)
+			continue;
+		if (container_sysctl_check(req->u.object.keys[i], json_as_string(v), userns, err,
+		                           sizeof(err)) != 0) {
+			json_free(root);
+			json_free(req);
+			respond_error(fd, 400, "Bad Request", err);
+			return;
+		}
+		if (set_count >= CONTAINER_MAX_SYSCTLS)
+			break; /* the merged count below refuses this */
+		snprintf(set[set_count].key, sizeof(set[0].key), "%s", req->u.object.keys[i]);
+		snprintf(set[set_count].value, sizeof(set[0].value), "%s", json_as_string(v));
+		set_count++;
+	}
+
+	/* The merge: stored keys the request does not mention, then the
+	 * request's set keys. A request key with null is simply not carried. */
+	jcur = json_object_get(root, "sysctls");
+	if (jcur != NULL && jcur->type == JSON_OBJECT) {
+		for (i = 0; i < jcur->u.object.count; i++) {
+			const char *v = json_as_string(jcur->u.object.values[i]);
+
+			if (json_object_get(req, jcur->u.object.keys[i]) != NULL || v == NULL)
+				continue;
+			if (mcount >= CONTAINER_MAX_SYSCTLS) {
+				mcount = CONTAINER_MAX_SYSCTLS + 1;
+				break;
+			}
+			mkeys[mcount] = jcur->u.object.keys[i];
+			mvals[mcount] = v;
+			mcount++;
+		}
+	}
+	for (i = 0; i < req->u.object.count && mcount <= CONTAINER_MAX_SYSCTLS; i++) {
+		if (req->u.object.values[i]->type == JSON_NULL)
+			continue;
+		if (mcount >= CONTAINER_MAX_SYSCTLS) {
+			mcount = CONTAINER_MAX_SYSCTLS + 1;
+			break;
+		}
+		mkeys[mcount] = req->u.object.keys[i];
+		mvals[mcount] = json_as_string(req->u.object.values[i]);
+		mcount++;
+	}
+	if (mcount > CONTAINER_MAX_SYSCTLS) {
+		json_free(root);
+		json_free(req);
+		respond_error(fd, 400, "Bad Request",
+		              "a container may store at most 32 sysctls -- remove some with null first");
+		return;
+	}
+
+	if (running) {
+		int failed_index, failed_errno;
+
+		if (container_net_apply_sysctls_running(e->handle.pid, set, set_count, &failed_index,
+		                                        &failed_errno) != 0) {
+			json_free(root);
+			json_free(req);
+			if (failed_index >= 0) {
+				snprintf(err, sizeof(err),
+				         "the kernel refused %s=%s: %s -- nothing was stored; %d earlier "
+				         "entr%s in this request %s written live and last until the next start",
+				         set[failed_index].key, set[failed_index].value,
+				         strerror(failed_errno), failed_index, failed_index == 1 ? "y" : "ies",
+				         failed_index == 1 ? "was" : "were");
+				respond_error(fd, 400, "Bad Request", err);
+			} else {
+				snprintf(err, sizeof(err),
+				         "could not enter this container's network namespace: %s -- nothing "
+				         "was written or stored",
+				         strerror(failed_errno));
+				respond_error(fd, 500, "Internal Server Error", err);
+			}
+			return;
+		}
+	}
+
+	/* Store: every other field verbatim, sysctls replaced (dropped when
+	 * the merge left none). */
+	jw_init(&w);
+	jw_obj_open(&w);
+	for (i = 0; i < root->u.object.count; i++) {
+		if (strcmp(root->u.object.keys[i], "sysctls") == 0)
+			continue;
+		jw_key(&w, root->u.object.keys[i]);
+		jw_value(&w, root->u.object.values[i]);
+	}
+	if (mcount > 0) {
+		int k;
+
+		jw_key(&w, "sysctls");
+		jw_obj_open(&w);
+		for (k = 0; k < mcount; k++) {
+			jw_key(&w, mkeys[k]);
+			jw_str(&w, mvals[k]);
+		}
+		jw_obj_close(&w);
+	}
+	jw_obj_close(&w);
+	rc = w.buf != NULL ? containerdef_set_body(name, w.buf, w.len) : -1;
+	jw_free(&w);
+	if (rc != 0) {
+		json_free(root);
+		json_free(req);
+		respond_error(fd, 500, "Internal Server Error",
+		              running ? "the values were written live but the definition could not be "
+		                        "stored -- they last until the next start"
+		                      : "could not store the definition");
+		return;
+	}
+
+	/* GET reports what the registry holds; keep it the stored set. */
+	if (e != NULL) {
+		struct container_sysctl stored[CONTAINER_MAX_SYSCTLS];
+		int k;
+
+		for (k = 0; k < mcount; k++) {
+			snprintf(stored[k].key, sizeof(stored[k].key), "%s", mkeys[k]);
+			snprintf(stored[k].value, sizeof(stored[k].value), "%s", mvals[k]);
+		}
+		registry_set_sysctls(e, stored, mcount);
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "sysctls");
+	jw_obj_open(&w);
+	{
+		int k;
+
+		for (k = 0; k < mcount; k++) {
+			jw_key(&w, mkeys[k]);
+			jw_str(&w, mvals[k]);
+		}
+	}
+	jw_obj_close(&w);
+	jw_key(&w, "applies");
+	jw_str(&w, running ? "now" : "on next start");
+	jw_obj_close(&w);
+	json_free(root);
+	json_free(req);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
 }
 
 static void handle_container_volume_attach(int fd, const char *container_name, const char *body,
@@ -25847,6 +26084,12 @@ static void op_attachContainerNetwork(const struct api_ctx *ctx)
 static void op_detachContainerNetwork(const struct api_ctx *ctx)
 {
 	handle_container_network_detach(ctx->fd, ctx->p[0], ctx->p[1]);
+}
+
+/* PUT /v1/containers/{name}/sysctls (#447) */
+static void op_setContainerSysctls(const struct api_ctx *ctx)
+{
+	handle_container_sysctls_put(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
 }
 
 static void op_attachContainerVolume(const struct api_ctx *ctx)

@@ -432,6 +432,93 @@ int main(void)
 		}
 	}
 
+	/*
+	 * 3b (#447). Changing a sysctl on a container that is already
+	 * running, without recreating it: the value lands in its netns at
+	 * once, GET reports it, a value the kernel refuses changes nothing
+	 * stored, and unset drops the key from what is stored.
+	 */
+	{
+		long pid = fetch_pid(&client, "sysctltest");
+		char value[64];
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/containers/sysctltest/sysctls",
+		                       "{\"net.ipv4.conf.all.rp_filter\":\"1\"}", &r) != 0 ||
+		    r.status != 200 || r.body == NULL || strstr(r.body, "\"applies\":\"now\"") == NULL) {
+			fprintf(stderr, "FAIL: #447 live PUT rp_filter=1, status=%d %.200s\n", r.status,
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		cix_response_free(&r);
+		if (pid < 0 || read_sysctl_in_netns(pid, "/proc/sys/net/ipv4/conf/all/rp_filter", value,
+		                                    sizeof(value)) != 0 ||
+		    strcmp(value, "1") != 0) {
+			fprintf(stderr, "FAIL: #447 rp_filter inside sysctltest is not 1 after a live PUT\n");
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/containers/sysctltest", NULL, &r) != 0 ||
+		    r.status != 200 || r.body == NULL ||
+		    strstr(r.body, "\"net.ipv4.conf.all.rp_filter\":\"1\"") == NULL) {
+			fprintf(stderr, "FAIL: #447 GET does not report rp_filter=1: %.300s\n",
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* A key the kernel does not have is refused, names itself, and
+		 * leaves the stored set as it was. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/containers/sysctltest/sysctls",
+		                       "{\"net.ipv4.no_such_knob\":\"1\"}", &r) != 0 ||
+		    r.status != 400 || r.body == NULL || strstr(r.body, "no_such_knob") == NULL) {
+			fprintf(stderr, "FAIL: #447 unknown key expected 400 naming it, got %d %.200s\n",
+			        r.status, r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/containers/sysctltest", NULL, &r) != 0 ||
+		    r.status != 200 || r.body == NULL || strstr(r.body, "no_such_knob") != NULL) {
+			fprintf(stderr, "FAIL: #447 a refused key was stored anyway\n");
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* Same rule as create: net.* only. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/containers/sysctltest/sysctls",
+		                       "{\"vm.swappiness\":\"10\"}", &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: #447 vm.* key expected 400, got %d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/containers/sysctltest/sysctls",
+		                       "{\"net.ipv4.conf.all.rp_filter\":null}", &r) != 0 ||
+		    r.status != 200 || r.body == NULL || strstr(r.body, "rp_filter") != NULL) {
+			fprintf(stderr, "FAIL: #447 unset expected 200 with rp_filter gone, got %d %.200s\n",
+			        r.status, r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* One way to change a sysctl: PATCH names the endpoint. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PATCH", "/v1/containers/sysctltest",
+		                       "{\"sysctls\":{\"net.ipv4.conf.all.rp_filter\":\"1\"}}", &r) != 0 ||
+		    r.status != 400 || r.body == NULL || strstr(r.body, "/sysctls") == NULL) {
+			fprintf(stderr, "FAIL: #447 PATCH sysctls expected 400 naming the endpoint, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+	}
+
 	memset(&r, 0, sizeof(r));
 	cix_client_request(&client, "DELETE", "/v1/containers/sysctltest", NULL, &r);
 	cix_response_free(&r);
