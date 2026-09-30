@@ -3132,10 +3132,10 @@ function sysctlAppliesText(result) {
 
 async function unsetContainerSysctl(name, key) {
 	try {
-		const result = await apiRequest("PUT", CIX_API.setContainerSysctls(name), { [key]: null });
+		await apiRequest("PUT", CIX_API.setContainerSysctls(name), { [key]: null });
 
-		showStatus("Unset " + key + " on " + name + " -- no longer set from the next start" +
-			(result && result.applies === "now" ? "; the running value stays until then" : ""));
+		showStatus("Unset " + key + " on " + name + " -- no longer set from the next start; " +
+			"a running container keeps its current value until then");
 		await refreshContainers();
 		renderCurrentView();
 	} catch (e) {

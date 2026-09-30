@@ -500,7 +500,8 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "PUT", "/v1/containers/sysctltest/sysctls",
 		                       "{\"net.ipv4.conf.all.rp_filter\":null}", &r) != 0 ||
-		    r.status != 200 || r.body == NULL || strstr(r.body, "rp_filter") != NULL) {
+		    r.status != 200 || r.body == NULL || strstr(r.body, "rp_filter") != NULL ||
+		    strstr(r.body, "\"applies\":\"on next start\"") == NULL) {
 			fprintf(stderr, "FAIL: #447 unset expected 200 with rp_filter gone, got %d %.200s\n",
 			        r.status, r.body != NULL ? r.body : "");
 			ok = 0;

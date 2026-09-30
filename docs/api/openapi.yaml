@@ -15983,7 +15983,8 @@ components:
           enum: [now, on next start]
           description: >
             "now" when the set entries were written into the running
-            container, "on next start" when it is not running
+            container, "on next start" when it is not running or the request
+            only removed keys
 
     ContainerVolumesResponse:
       type: object

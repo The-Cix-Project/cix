@@ -16835,7 +16835,9 @@ static void handle_container_sysctls_put(int fd, const char *name, const char *b
 	}
 	jw_obj_close(&w);
 	jw_key(&w, "applies");
-	jw_str(&w, running ? "now" : "on next start");
+	/* "now" only when something was written: a request that only removes
+	 * keys changes nothing live, whatever state the container is in. */
+	jw_str(&w, running && set_count > 0 ? "now" : "on next start");
 	jw_obj_close(&w);
 	json_free(root);
 	json_free(req);
