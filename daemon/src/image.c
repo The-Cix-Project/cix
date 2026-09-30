@@ -519,7 +519,7 @@ enum image_error image_delete_version(const char *name, const char *version)
  * listing and any other caller cannot come to disagree about what an
  * image is.
  */
-static int image_exists(const char *name)
+int image_exists(const char *name)
 {
 	char path[PATH_MAX];
 	struct stat st;

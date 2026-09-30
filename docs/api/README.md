@@ -3322,14 +3322,17 @@ POST /v1/pkg/install
 
 ### Per-image installs
 
-Install into something other than the default `base` image with `"image"`:
+Install into something other than the default `base` image with `"image"`. The image has to exist first — `POST /v1/images` is the one way to make one:
 
 ```
+POST /v1/images
+{"name": "router"}
+
 POST /v1/pkg/install
 {"name": "bird", "image": "router"}
 ```
 
-`bird` (and its dependencies, resolved the same way as always) builds into `/var/lib/cix/rebuildable/images/router/rootfs` — containers created with `"image": "base"` never see it. The same package name is tracked independently per image: `bash` installed into both `base` and `router` are two separate entries, each independently upgradable/removable. `router` above doesn't need to exist beforehand — the first install into a name never seen before creates it implicitly; `POST /v1/images {"name": "router"}` creates one explicitly instead, useful when you want an image to exist (and be immediately usable — its C runtime is seeded right away) before installing anything into it.
+`bird` (and its dependencies, resolved the same way as always) builds into `/var/lib/cix/rebuildable/images/router/rootfs` — containers created with `"image": "base"` never see it. The same package name is tracked independently per image: `bash` installed into both `base` and `router` are two separate entries, each independently upgradable/removable. An install naming an image that does not exist is a **400** that names the fix (`cixctl image create --name=router`) and creates nothing (#500); it used to create the image implicitly, which is how a typo (`--image=jump` for `jumpbox`) became a new image. A new image is empty — not even a C library — so an image that will run something gets `glibc` installed like any other package.
 
 **An image can also carry a real, persisted manifest** (ADR-0107) — declared package intent, distinct from whatever's actually installed right now:
 

@@ -71,6 +71,31 @@ static const char *router_path(const char *suffix)
 	return buf;
 }
 
+/*
+ * #500: POST /v1/pkg/install refuses an image that does not exist, so a
+ * case installing into its own image creates it first, the one way an
+ * image is made. Returns 0 on 201, and reports the status otherwise.
+ */
+static int create_image(const struct cix_client *c, const char *name)
+{
+	struct cix_response r;
+	char body[128];
+	int rc;
+
+	snprintf(body, sizeof(body), "{\"name\":\"%s\"}", name);
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "POST", "/v1/images", body, &r) != 0) {
+		fprintf(stderr, "FAIL: POST /v1/images %s: no response\n", name);
+		return -1;
+	}
+	rc = r.status == 201 ? 0 : -1;
+	if (rc != 0)
+		fprintf(stderr, "FAIL: POST /v1/images %s, status=%d %.200s\n", name, r.status,
+		        r.body != NULL ? r.body : "");
+	cix_response_free(&r);
+	return rc;
+}
+
 static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
@@ -3086,6 +3111,8 @@ int main(void)
 		 * still asserted, but it is earned by a package rather than
 		 * granted by a copy.
 		 */
+		if (create_image(&client, "router") != 0)
+			ok = 0;
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/pkg/install",
 		                       "{\"name\":\"glibc\",\"image\":\"router\"}", &r) != 0 ||
@@ -3373,6 +3400,8 @@ int main(void)
 			fprintf(stderr, "FAIL: could not write the stamped recipes\n");
 			ok = 0;
 		}
+		if (create_image(&client, "vnew") != 0 || create_image(&client, "vold") != 0)
+			ok = 0;
 		/* 1.10 into one image, 1.9 into another -- 1.10 is newer, and
 		 * is also the one a plain strcmp() would rank lower. */
 		memset(&r, 0, sizeof(r));
@@ -6034,6 +6063,10 @@ skip_resume:
 			}
 		}
 
+		if (ok186 && create_image(&client, "libcollide") != 0) {
+			ok = 0;
+			ok186 = 0;
+		}
 		if (ok186) {
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "POST", "/v1/pkg/install",

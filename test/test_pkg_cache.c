@@ -572,6 +572,24 @@ int main(void)
 		}
 	}
 
+	/* #500: an install into an image that does not exist is refused, so
+	 * every image this test installs into is created first. */
+	{
+		static const char *const imgs[] = { "imgA", "imgB", "imgC", "imgD" };
+		size_t k;
+
+		for (k = 0; k < sizeof(imgs) / sizeof(imgs[0]); k++) {
+			char body[64];
+
+			snprintf(body, sizeof(body), "{\"name\":\"%s\"}", imgs[k]);
+			memset(&r, 0, sizeof(r));
+			CHECK(cix_client_request(&client, "POST", "/v1/images", body, &r) == 0 &&
+			          r.status == 201,
+			      "POST /v1/images for a test image");
+			cix_response_free(&r);
+		}
+	}
+
 	{
 		char source_url[600];
 

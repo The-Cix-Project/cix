@@ -613,6 +613,31 @@ int main(void)
 		}
 	}
 
+	/* #500: an install into an image that does not exist is refused up
+	 * front -- 400, naming the one way to make an image -- and makes
+	 * nothing. It used to be accepted and to create the image as a side
+	 * effect, which is how a typo became a new image. The package need
+	 * not exist: the image is checked first. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/pkg/install",
+	                       "{\"name\":\"anything\",\"image\":\"imgtest_never_made\"}", &r) != 0 ||
+	    r.status != 400 || json_str_field(r.json, "error") == NULL ||
+	    strstr(json_str_field(r.json, "error"), "cixctl image create --name=imgtest_never_made") ==
+	            NULL) {
+		fprintf(stderr,
+		        "FAIL: install into a missing image expected 400 naming the fix, got %d %.200s\n",
+		        r.status, r.body != NULL ? r.body : "");
+		ok = 0;
+	}
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET", "/v1/images/imgtest_never_made", NULL, &r) != 0 ||
+	    r.status != 404) {
+		fprintf(stderr, "FAIL: a refused install must create no image, GET got %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
 	/* 7. delete refused while pkg.c still tracks a package against it --
 	 * a deliberately-wrong checksum ends the install FAILED fast (no
 	 * real build ever launches), but the entry stays tracked either

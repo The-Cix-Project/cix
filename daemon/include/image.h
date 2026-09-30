@@ -100,6 +100,13 @@ void image_init(const char *images_dir);
 enum image_error image_create(const char *name);
 
 /*
+ * 1 if name is a valid image name with a manifest.json, else 0 -- the
+ * one test of "this image exists" the listing, image_write_json_one()
+ * and POST /v1/pkg/install's refusal of an unknown image (#500) share.
+ */
+int image_exists(const char *name);
+
+/*
  * IMAGE_ERR_NOT_FOUND if name has no manifest.json. IMAGE_ERR_PROTECTED
  * for "base" specifically. IMAGE_ERR_IN_USE if registry_image_in_use()
  * reports a running container still referencing it. IMAGE_ERR_HAS_PACKAGES

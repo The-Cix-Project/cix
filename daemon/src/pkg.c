@@ -9128,32 +9128,30 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
 	if (image != NULL && image[0] != '\0' && !pkg_image_is_valid(image))
 		return PKG_ERR_INVALID_NAME;
 	/*
-	 * NO CHECK THAT THE IMAGE EXISTS, and that is deliberate (#500).
+	 * NO CHECK THAT THE IMAGE EXISTS HERE, and that is deliberate
+	 * (#500). The refusal of an unknown image lives in
+	 * handle_pkg_install(), the one place a person names an image:
+	 * every other caller of this function -- dependencies, hostbuild,
+	 * build environments, image-recipe apply, the rolling drain --
+	 * passes an image the daemon chose, not one a person could have
+	 * misspelled.
 	 *
-	 * One was written here and reverted before it shipped. #500
-	 * reports that `--image=jump` for `jumpbox` was accepted and
-	 * failed minutes later at "could not unpack (extract cached
-	 * artifact failed)", and states the absent image as the cause.
-	 * That cause is false, and two independent things say so.
-	 *
-	 * The code: dest_dir is built under the BUILD CONTAINER's own
-	 * upperdir, not under the image, so whether the image exists
-	 * cannot decide whether an extraction into it works.
-	 *
-	 * The box, which is what settles it. On 192.168.15.95,
-	 * 2026-09-27, `pkg install --name=ncurses
-	 * --image=nosuchimage-probe` against a daemon with no such image
-	 * reached state `installed`, and `image ls` then LISTED
-	 * `nosuchimage-probe`. Installing into an image that does not
-	 * exist yet is how one gets created and populated -- a working
-	 * capability, not an accident: test_pkg_cache installs into
-	 * imgA/imgB/imgC/imgD and test_pkg into zzlibc, none of which any
-	 * test ever creates, and the refusal failed all of them.
-	 *
-	 * So a typo really does cost a slow, misdirected failure, and the
-	 * reason is not this. What #500 leaves behind is the message,
-	 * which named one of its two operands -- see the prepare-step log
-	 * line further down.
+	 * The history, because the first attempt got it wrong. A check was
+	 * written HERE on 2026-09-27, on the strength of #500's stated
+	 * cause -- that `--image=jump` for `jumpbox` failed at "could not
+	 * unpack (extract cached artifact failed)" because the image was
+	 * absent. That cause is false: dest_dir is built under the BUILD
+	 * CONTAINER's own upperdir, not under the image, and on
+	 * 192.168.15.95 on 2026-09-27 `pkg install --name=ncurses
+	 * --image=nosuchimage-probe` reached `installed` and `image ls`
+	 * then listed the new image. So an absent image was never a
+	 * failure; it was an implicit create, and the check failed every
+	 * test that installed into an image it had not created (imgA-imgD
+	 * in test_pkg_cache; router, vnew, vold and libcollide in
+	 * test_pkg). It was reverted. On 2026-09-30 the owner decided the
+	 * implicit create should go -- one way to make an image,
+	 * POST /v1/images -- so those tests now create their images first
+	 * and the request is refused at the API.
 	 */
 	if (pkg_any_job_busy())
 		return PKG_ERR_BUSY;

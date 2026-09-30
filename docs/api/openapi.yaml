@@ -6996,9 +6996,9 @@ paths:
         Creates an empty image: an empty manifest and no packages, not even a C
         library. An image gets its C library as a package (glibc) like everything
         else, and POST /containers refuses an image with no loader, naming what to
-        install (daemon/src/pkg.c, pkg_seed_image_baseline()). POST /pkg/install's
-        own image field would otherwise only create one implicitly, on its first
-        successful install into a name never seen before.
+        install (daemon/src/pkg.c, pkg_seed_image_baseline()). This is the only way an
+        image is made: POST /pkg/install into a name with no image is a 400 naming this
+        endpoint (#500), where it used to create one implicitly.
       operationId: createImage
       x-cix-permission: images:write
       x-cix-expose: [cli, web]
@@ -11291,6 +11291,10 @@ paths:
             #318: the dependency case is now distinguished in the message rather than
             reported as though the package's own recipe were at fault, and the daemon log
             names the dependency and why it could not be resolved.
+
+
+            #500: the request names an image that does not exist. The message names the
+            fix (`cixctl image create --name=NAME`, POST /images); nothing is created.
           content:
             application/json:
               schema:
@@ -20262,6 +20266,9 @@ components:
             is tracked independently per image -- installing "bash" into both "base"
             and "router" are two separate, independently upgradable/removable entries.
             Every dependency name pulls in installs into this same target image.
+            The image must already exist (POST /images, or "base", which the daemon
+            creates at boot): naming one that does not is a 400 and creates nothing
+            (#500).
         version:
           type: string
           description: >

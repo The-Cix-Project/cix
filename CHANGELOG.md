@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An install into an image that does not exist is refused (#500)
+
+`POST /v1/pkg/install` with an `image` that has no manifest now answers **400** before any work starts: `no image called "jump" -- create it first with cixctl image create --name=jump (POST /v1/images), or check the name with cixctl image ls`. Nothing is created. It used to be accepted and to create the image as a side effect, which is how `--image=jump`, a typo for `jumpbox`, became a new image with a failed entry in it on 192.168.15.95 on 2026-09-21. The owner's decision of 2026-09-30: there is one way to make an image, `POST /v1/images`.
+
+The refusal is in `handle_pkg_install()`, not in `pkg_install_start()`. Dependencies, hostbuild, build environments, image-recipe apply and the rolling drain all reach the latter with images the daemon chose, so none of them changes. An omitted or empty `image` is still `base`, which `ensure_default_image()` creates at every boot. `cixctl image materialize` already created its image before installing into it, and the dashboard installs only into images it lists.
+
+`image_exists()` (`daemon/src/image.c`), the check the image listing already used, is now public and is the one test the refusal uses. Tests that installed into images they never created now create them first: `imgA`–`imgD` in `test_pkg_cache`; `router`, `vnew`, `vold` and `libcollide` in `test_pkg`. `test_images`, which is in SELFTESTS, asserts the 400, that the message names the fix, and that `GET /v1/images/<name>` is still 404 afterwards. The `pkg_install_start()` comment that recorded why the first attempt at this check (2026-09-27, written against #500's disproved cause) was reverted now records both that history and where the check lives now. `docs/api/README.md`'s per-image example also claimed a new image had its C runtime seeded; it gets `glibc` as a package, and the example now says so.
+
 ### Every dashboard action and list panel asks what the session may do (#548, ADR-0317)
 
 #544 gave the dashboard one source for what a session may do and applied it to the header and two panels. The rest still offered every action and, for a refused read, claimed the host had nothing. Under the standard groups the common case is the first: a member of `cix-readers` or `cix-operators` can read every panel, and every Remove, Edit, Start or Format was shown enabled and then refused on click. The second needs a group narrower than `cix-readers`.

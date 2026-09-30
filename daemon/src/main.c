@@ -23051,6 +23051,34 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 	keep_on_failure = (jkeep != NULL && jkeep->type == JSON_BOOL && jkeep->u.boolean);
 
 	/*
+	 * #500: an install names an image that exists, or it is refused
+	 * before any work starts. Creating an image is POST /v1/images and
+	 * nothing else -- the owner's decision of 2026-09-30, over the
+	 * alternative of documenting the implicit creation an install used
+	 * to perform. That creation is how `--image=jump`, a typo for `jumpbox`,
+	 * was accepted on 192.168.15.95 on 2026-09-21 and left a failed entry
+	 * against an image nobody meant to make.
+	 *
+	 * Here and not in pkg_install_start(), for the same reason as the
+	 * #384 check below: dependencies, hostbuild, build environments,
+	 * image-recipe apply and the rolling drain all reach that function
+	 * with images the daemon itself chose, and none of them is a request
+	 * that could have misspelled one. An omitted or empty image is the
+	 * default image, which ensure_default_image() creates at every boot.
+	 */
+	if (image != NULL && image[0] != '\0' && !image_exists(image)) {
+		char msg[256];
+
+		snprintf(msg, sizeof(msg),
+		         "no image called \"%.64s\" -- create it first with `cixctl image create --name="
+		         "%.64s` (POST /v1/images), or check the name with `cixctl image ls`",
+		         image, image);
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", msg);
+		return;
+	}
+
+	/*
 	 * #384: this exact target is already converging, so a second job for
 	 * it would take a second chain slot to do the same work -- the same
 	 * shape as #382, which really did put ten copies of one job into all

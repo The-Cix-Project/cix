@@ -212,6 +212,13 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 
 **Permissions are declared by the API contract, not by a policy file and not in handlers** -- the owner's direction on #304 (2026-09-14), with three decisions of 2026-09-29: the annotation is mandatory (the method rule only seeds it once); **every read needs a login** (public: login, the dashboard's static files, health -- plus logout and whoami, added while implementing #541 and #540, each explained in the ADR); and **machine credentials are glauth-style app passwords on the user** -- "Glauth handles app passwords, which I think should be the same" -- never a separate token store, recorded as [ADR-0317](docs/adr/0317-permissions-are-declared-by-the-api-contract.md), accepted 2026-09-29. Every operation carries one `x-cix-permission` and `apigen` refuses a spec without it (#539); groups hold permissions and `admin_groups` is derived from them (#540); `authorize_route()` in `dispatch()` is the one enforcement point (#541). **Never add a permission check in a handler** -- that is the parallel implementation the ADR exists to prevent. **The one trap:** anything answered before `dispatch()` (the console and build-log WebSocket upgrades today) must call `authorize_upgrade_route()` itself, or it is unauthenticated -- the console was, on every gated release before 0.2.57-392 (measured).
 
+## One way to make an image
+
+**An image is made by `POST /v1/images` (`cixctl image create --name=NAME`) and by nothing else.** `POST /v1/pkg/install` naming an image that does not exist is a 400 naming that fix, and creates nothing (#500) -- the owner's decision of 2026-09-30, chosen over documenting the implicit create an install used to perform, which is how `--image=jump`, a typo for `jumpbox`, became a new image.
+
+- **The refusal belongs to the request, not to `pkg_install_start()`.** Dependencies, hostbuild, build environments, image-recipe apply and the rolling drain pass images the daemon chose; do not move the check down into them.
+- **A test that installs into its own image creates it first** (`create_image()` in `test_pkg`; the loop in `test_pkg_cache`). An omitted image is `base`, which the daemon creates at boot.
+
 ## Default package sources
 
 **A host that has never saved a repo or artifact config starts on the public catalogue (`https://github.com/The-Cix-Project/cix-recipes`, `github`, `main`) and the public cache (`https://cache.cix.world`, pull-only).** Stated by the owner on 2026-09-29: *"yes, both are defaults moving forwards, and can be changed if the use wants to? right?"* — see [ADR-0315](docs/adr/0315-the-public-catalogue-and-cache-are-the-defaults.md).
