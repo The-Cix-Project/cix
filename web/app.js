@@ -8617,25 +8617,152 @@ async function refreshBuildLogs() {
 	}
 }
 
-/* #433: the one place that closes the viewer. Both the button and
- * Escape route here, so there is a single definition of "closed"
- * rather than two that can disagree. */
-function closeBuildLog() {
-	const panel = document.getElementById("build-log-panel");
+/* ---------- #433: the build-log window ----------
+ *
+ * One floating window for every build log the dashboard shows: a saved
+ * log from the Log tab, read once, and a build in flight from the Build
+ * overview, followed live over GET /v1/pkg/build/log (a WebSocket, the
+ * same one `cixctl pkg build-log` uses). These were two separate inline
+ * viewers, and both were a snapshot of the moment they were opened.
+ */
 
-	if (panel !== null)
-		panel.hidden = true;
+/* A live log keeps at most this many lines on screen. A long build
+ * writes megabytes, and a DOM that grows for the whole build makes the
+ * tab suffer. The cap is the window's, not the log's: the saved log on
+ * the Log tab keeps every line. It is trimmed back to the cap once it
+ * has run a fifth over, rather than on every chunk, so a busy build does
+ * not re-split the whole text for each line it prints. */
+const BUILD_LOG_MAX_LINES = 5000;
+
+let buildLogSocket = null;
+let buildLogText = "";
+let buildLogLines = 0;
+let buildLogFollowing = true;
+let buildLogRenderPending = false;
+let buildLogWindowPlaced = false;
+
+/* The title bar's state control: "following", "paused -- follow" (the
+ * one clickable state), "build finished", or hidden for a saved log,
+ * which has nothing to follow. */
+function setBuildLogState(text, clickable) {
+	const state = document.getElementById("build-log-state");
+
+	state.hidden = text === "";
+	state.textContent = text;
+	state.disabled = !clickable;
 }
 
+/*
+ * Moving and resizing are makeResizable(), the splitters' own helper,
+ * one instance per axis: the title bar carries two (left, top) and the
+ * corner two (width, height). Registered the first time the window is
+ * shown rather than at load, because the helper measures its starting
+ * size then, and a hidden element measures zero.
+ */
+function placeBuildLogWindow(win) {
+	const bar = document.getElementById("build-log-bar");
+	const corner = document.getElementById("build-log-resize");
+	const rect = win.getBoundingClientRect();
+
+	/* Position by left/top from here on; the stylesheet's right/bottom
+	 * corner default gives way. */
+	win.style.left = rect.left + "px";
+	win.style.top = rect.top + "px";
+	win.style.right = "auto";
+	win.style.bottom = "auto";
+	makeResizable(bar, {
+		axis: "x",
+		storageKey: "cix-build-log-left",
+		min: 0,
+		max: Math.max(0, window.innerWidth - 160),
+		getSize: () => win.getBoundingClientRect().left,
+		apply: (v) => { win.style.left = v + "px"; },
+	});
+	makeResizable(bar, {
+		axis: "y",
+		storageKey: "cix-build-log-top",
+		min: 0,
+		max: Math.max(0, window.innerHeight - 60),
+		getSize: () => win.getBoundingClientRect().top,
+		apply: (v) => { win.style.top = v + "px"; },
+	});
+	makeResizable(corner, {
+		axis: "x",
+		storageKey: "cix-build-log-width",
+		min: 320,
+		max: window.innerWidth,
+		getSize: () => win.getBoundingClientRect().width,
+		apply: (v) => { win.style.width = v + "px"; },
+	});
+	makeResizable(corner, {
+		axis: "y",
+		storageKey: "cix-build-log-height",
+		min: 160,
+		max: window.innerHeight,
+		getSize: () => win.getBoundingClientRect().height,
+		apply: (v) => { win.style.height = v + "px"; },
+	});
+}
+
+function closeBuildLogSocket() {
+	const socket = buildLogSocket;
+
+	buildLogSocket = null;
+	if (socket !== null)
+		socket.close();
+}
+
+function openBuildLogWindow(title) {
+	const win = document.getElementById("build-log-window");
+
+	closeBuildLogSocket();
+	document.getElementById("build-log-title").textContent = title;
+	win.hidden = false;
+	if (!buildLogWindowPlaced) {
+		buildLogWindowPlaced = true;
+		placeBuildLogWindow(win);
+	}
+}
+
+/* The one place that closes the window. The button and Escape both
+ * route here, so there is one definition of "closed", and it stops a
+ * live stream rather than leaving it running unseen. */
+function closeBuildLog() {
+	closeBuildLogSocket();
+	document.getElementById("build-log-window").hidden = true;
+}
+
+function renderBuildLog() {
+	const view = document.getElementById("build-log-view");
+
+	buildLogRenderPending = false;
+	view.textContent = buildLogText;
+	if (buildLogFollowing)
+		view.scrollTop = view.scrollHeight;
+}
+
+function appendBuildLog(chunk) {
+	buildLogText += chunk;
+	buildLogLines += chunk.split("\n").length - 1;
+	if (buildLogLines > BUILD_LOG_MAX_LINES * 1.2) {
+		const lines = buildLogText.split("\n");
+
+		buildLogText = lines.slice(lines.length - BUILD_LOG_MAX_LINES).join("\n");
+		buildLogLines = BUILD_LOG_MAX_LINES - 1;
+	}
+	/* One render per frame however many chunks arrive in it. */
+	if (!buildLogRenderPending) {
+		buildLogRenderPending = true;
+		requestAnimationFrame(renderBuildLog);
+	}
+}
+
+/* A saved log, read once: it is finished, so there is nothing to poll. */
 async function showBuildLog(file) {
 	const view = document.getElementById("build-log-view");
-	const panel = document.getElementById("build-log-panel");
-	const title = document.getElementById("build-log-title");
 
-	if (panel !== null)
-		panel.hidden = false;
-	if (title !== null)
-		title.textContent = file;
+	openBuildLogWindow(file);
+	setBuildLogState("", false);
 	view.textContent = "Loading…";
 	try {
 		/* Fetched directly rather than through apiRequest(): the
@@ -8652,6 +8779,121 @@ async function showBuildLog(file) {
 	} catch (e) {
 		view.textContent = "Could not read " + file + ": " + e.message;
 	}
+}
+
+/*
+ * The newest saved log for a package, or null: the one lookup the build
+ * window and the pipeline drawer share. A log is named
+ * "<pkg>-<version>-<epoch>.log", and the listing carries no package
+ * field, so the package is matched by filename prefix. That prefix is
+ * ambiguous where one package's name begins another's ("cix-" also
+ * matches "cix-tests-..."); the listing needs to name the package to
+ * fix that, which is #550, and this is the one place to change when it
+ * does.
+ */
+async function latestBuildLogFile(name) {
+	const list = await apiRequest("GET", CIX_API.listBuildLogs());
+	const mine = (list.logs || [])
+		.filter((l) => l.file.startsWith(name + "-"))
+		.sort((x, y) => y.modified_at - x.modified_at);
+
+	return mine.length > 0 ? mine[0].file : null;
+}
+
+/* What a build that has already ended leaves behind. */
+async function showLatestBuildLog(name) {
+	const view = document.getElementById("build-log-view");
+
+	try {
+		const file = await latestBuildLogFile(name);
+
+		if (file !== null) {
+			await showBuildLog(file);
+			return;
+		}
+		view.textContent = "No build of " + name + " is in progress, and it has no saved log yet.";
+	} catch (e) {
+		view.textContent = "Could not read the build logs: " + refusalText(e, "build logs");
+	}
+	setBuildLogState("", false);
+}
+
+/*
+ * A build in flight, followed live. The daemon sends the tail it has
+ * captured so far and then every chunk as it is produced, and closes the
+ * socket when the build ends. A socket that closes having sent nothing
+ * means there was no such build to attach to -- it finished between the
+ * overview's refresh and the click, or never produced output -- so the
+ * window falls back to the newest saved log rather than showing nothing.
+ */
+function followBuildLog(name, image) {
+	const view = document.getElementById("build-log-view");
+	const proto = location.protocol === "https:" ? "wss:" : "ws:";
+	const query = "?name=" + encodeURIComponent(name) +
+		(image ? "&image=" + encodeURIComponent(image) : "");
+	/* #541: a browser WebSocket cannot send an Authorization header,
+	 * so the session rides as a subprotocol, exactly as the console's. */
+	const protocols = authToken ? ["cix", "cix.bearer." + authToken] : [];
+	const decoder = new TextDecoder();
+	let received = false;
+
+	openBuildLogWindow(name + (image ? "@" + image : "") + " (live)");
+	buildLogText = "";
+	buildLogLines = 0;
+	buildLogFollowing = true;
+	view.textContent = "Connecting…";
+	setBuildLogState("connecting", false);
+
+	const ws = new WebSocket(proto + "//" + location.host + CIX_API.pkgBuildLog() + query,
+		protocols);
+
+	ws.binaryType = "arraybuffer";
+	buildLogSocket = ws;
+	ws.onopen = () => {
+		if (ws === buildLogSocket)
+			setBuildLogState("following", false);
+	};
+	ws.onmessage = (event) => {
+		if (ws !== buildLogSocket)
+			return; /* a stream this window has already left */
+		received = true;
+		/* stream: true -- a UTF-8 character can be split across two
+		 * frames, as the console's decoder already knows. */
+		appendBuildLog(typeof event.data === "string"
+			? event.data
+			: decoder.decode(new Uint8Array(event.data), { stream: true }));
+	};
+	ws.onclose = () => {
+		if (ws !== buildLogSocket)
+			return;
+		buildLogSocket = null;
+		if (!received) {
+			showLatestBuildLog(name);
+			return;
+		}
+		setBuildLogState("build finished", false);
+	};
+}
+
+/* Following is a property of where the reader is: scrolled to the end
+ * it follows, scrolled up it stops, so it never drags someone away
+ * from the line they are reading. */
+function onBuildLogScroll() {
+	const view = document.getElementById("build-log-view");
+	const atEnd = view.scrollTop + view.clientHeight >= view.scrollHeight - 4;
+
+	if (buildLogSocket === null || atEnd === buildLogFollowing)
+		return;
+	buildLogFollowing = atEnd;
+	setBuildLogState(atEnd ? "following" : "paused — follow", !atEnd);
+}
+
+function resumeBuildLogFollowing() {
+	const view = document.getElementById("build-log-view");
+
+	buildLogFollowing = true;
+	view.scrollTop = view.scrollHeight;
+	setBuildLogState("following", false);
 }
 
 
@@ -15044,19 +15286,16 @@ async function openPipelineDrawer(kind, row) {
 	body.appendChild(pre);
 
 	try {
-		const list = await apiRequest("GET", CIX_API.listBuildLogs());
-		const mine = (list.logs || [])
-			.filter((l) => l.file.startsWith(row.name + "-"))
-			.sort((x, y) => y.modified_at - x.modified_at);
+		const file = await latestBuildLogFile(row.name);
 
-		if (mine.length === 0) {
+		if (file === null) {
 			pre.textContent = "No build log for this package on this host.";
 			return;
 		}
 		/* apiRequestRaw(), not apiRequest(): a build log is plain text,
 		 * and apiRequest() parses every non-204 body as JSON. Its own
 		 * fourth argument is a timeout in ms, not options. */
-		const text = await apiRequestRaw("GET", CIX_API.getBuildLog(mine[0].file));
+		const text = await apiRequestRaw("GET", CIX_API.getBuildLog(file));
 		/* The tail, not the head: a build failure's cause is the last
 		 * thing printed, which is the same reason the log store keeps
 		 * the tail of captured output. */
@@ -15324,22 +15563,20 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 /*
- * #433: close the build-log viewer. Escape as well as the button,
+ * #433: the build-log window's controls -- close, resume following, and
+ * scroll-to-pause. Escape closes it as well as the button,
  * because a panel covering what you were reading should close the way
  * every other dismissable thing on the page does -- and because the
  * bug being fixed is that it could not be closed at all.
  */
 document.addEventListener("DOMContentLoaded", () => {
-	const btn = document.getElementById("build-log-close");
-
-	if (btn !== null)
-		btn.addEventListener("click", closeBuildLog);
+	document.getElementById("build-log-close").addEventListener("click", closeBuildLog);
+	document.getElementById("build-log-state").addEventListener("click", resumeBuildLogFollowing);
+	document.getElementById("build-log-view").addEventListener("scroll", onBuildLogScroll);
 });
 
 document.addEventListener("keydown", (event) => {
-	const panel = document.getElementById("build-log-panel");
-
-	if (event.key === "Escape" && panel !== null && !panel.hidden)
+	if (event.key === "Escape" && !document.getElementById("build-log-window").hidden)
 		closeBuildLog();
 });
 
@@ -15370,39 +15607,6 @@ function boBytes(n) {
 		i++;
 	}
 	return (v < 10 ? v.toFixed(1) : Math.round(v)) + " " + units[i];
-}
-
-async function boShowLog(name, image) {
-	const wrap = document.getElementById("bo-log-wrap");
-	const pre = document.getElementById("bo-log");
-	const title = document.getElementById("bo-log-title");
-
-	wrap.hidden = false;
-	title.textContent = "Build log \u2014 " + name + "@" + image;
-	pre.textContent = "Loading\u2026";
-	try {
-		const logs = await apiRequest("GET", CIX_API.listBuildLogs());
-		/* Newest first, and a log is named "<pkg>-<version>-<epoch>.log",
-		 * so prefix-match the package rather than guess its version. */
-		const mine = (logs.logs || []).filter((l) => l.file.indexOf(name + "-") === 0);
-
-		if (mine.length === 0) {
-			pre.textContent =
-			    "No build log for " + name + " yet. A log appears once the build writes its "
-			    + "first output; until then the build is still composing its environment.";
-			return;
-		}
-		const text = await apiRequestRaw("GET", CIX_API.getBuildLog(mine[0].file));
-		const str = typeof text === "string" ? text : JSON.stringify(text);
-		const lines = str.split("\n");
-
-		/* The tail: a build's interesting output is the last thing it
-		 * printed, and a full configure run is megabytes. */
-		pre.textContent = lines.slice(Math.max(0, lines.length - 400)).join("\n");
-		pre.scrollTop = pre.scrollHeight;
-	} catch (e) {
-		pre.textContent = "Could not read the build log: " + (e && e.message ? e.message : e);
-	}
 }
 
 async function refreshBuildOverview() {
@@ -15458,7 +15662,6 @@ async function refreshBuildOverview() {
 		list.appendChild(idle);
 		if (hint)
 			hint.hidden = true;
-		document.getElementById("bo-log-wrap").hidden = true;
 		return;
 	}
 	if (hint)
@@ -15537,11 +15740,11 @@ async function refreshBuildOverview() {
 			add("why", err && err.message ? err.message : String(err));
 		}
 		card.appendChild(dl);
-		card.addEventListener("click", () => boShowLog(name, image));
+		card.addEventListener("click", () => followBuildLog(name, image));
 		card.addEventListener("keydown", (ev) => {
 			if (ev.key === "Enter" || ev.key === " ") {
 				ev.preventDefault();
-				boShowLog(name, image);
+				followBuildLog(name, image);
 			}
 		});
 		list.appendChild(card);

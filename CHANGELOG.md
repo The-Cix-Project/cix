@@ -6,6 +6,23 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Build logs open in one floating window that follows a running build (#433)
+
+Every build log in the dashboard now opens in one floating window, `#build-log-window`. The Build overview and the Log tab each had their own inline viewer before this, and both were a snapshot of the moment they were opened. The close half of #433 shipped in v2.57.132; this is the rest. The window:
+
+- **Stays usable:** it is a fixed sibling of the page, not an overlay, so the rest of the dashboard stays usable while a build is watched. It sits at z-index 900, under the menus and the modal.
+- **Moves and resizes:** the title bar moves it and the corner resizes it, through `makeResizable()`, the splitters' own drag helper, one instance per axis. Both are remembered.
+- **Follows a running build:** a card on the Build overview opens the live `GET /v1/pkg/build/log` WebSocket for that `name@image`. It authenticates with the console's subprotocol bearer, and that operation is now exposed to the web.
+- **Scrolls sensibly:** it follows the tail only while the reader is at the end, and scrolling up pauses it. The title bar says **following** or **paused** (click to resume), then **build finished**.
+- **Falls back:** a socket that closes having sent nothing, because there is no such build in flight any more, shows the newest saved log instead.
+- **Reads saved logs once:** a saved log from the Log tab is fetched once, with no polling.
+- **Caps what it keeps:** the live view keeps the last 5000 lines. It trims once it runs a fifth over, rather than re-splitting the text on every chunk.
+- **Closes cleanly:** closing it closes the socket.
+
+`web-ux-guidelines.md` gains the **floating window** as a widget, with its rule: watch a stream while using the page, never a modal. "The newest saved log for a package" is now one lookup, `latestBuildLogFile()`, shared with the pipeline drawer. Its filename-prefix match is ambiguous where one package name begins another's (`cix-` also matches `cix-tests-…`), because the listing names no package; that is filed as #550.
+
+**Not rendered in a browser:** the window's behaviour is covered by the release's syntax and API-surface checks, not by a browser.
+
 ### A container's sysctls can be changed without recreating it (#447)
 
 `PUT /v1/containers/{name}/sysctls` (`cixctl container sysctl NAME KEY=VALUE... [--unset=KEY]...`, and **Set sysctl…** / **Unset** on the dashboard's container Options tab) sets or removes `net.*` sysctls on an existing container. Before this, the only route was to delete the container and POST its whole definition again. For `jump` that meant rebuilding a 40 KB body from the backup and taking it down to add one line. The shape follows the owner's decision of 2026-09-14: a live-apply endpoint, `net.*` only.

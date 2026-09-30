@@ -11715,7 +11715,7 @@ paths:
         than attaching to an arbitrary one.
       operationId: pkgBuildLog
       x-cix-permission: packages:read
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       parameters:
         - name: name
           in: query

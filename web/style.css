@@ -2344,10 +2344,6 @@ body.console-popout #content-scroll {
 	white-space: nowrap;
 }
 
-#build-log-panel .log-view {
-	border-radius: 0 0 6px 6px;
-}
-
 .log-view {
 	max-height: 60vh;
 	overflow: auto;
@@ -2361,6 +2357,60 @@ body.console-popout #content-scroll {
 	line-height: 1.45;
 	white-space: pre;
 	tab-size: 4;
+}
+
+/*
+ * #433: the build-log window. Fixed, so it stays put while the page
+ * scrolls under it, and at 900 -- above the page, below the menus
+ * (1000), which must still open over it, and below the modal overlay
+ * (2000), which is the one thing allowed to block the page. Position
+ * and size are inline styles set by makeResizable(); these are only the
+ * first-open defaults.
+ */
+.log-window {
+	position: fixed;
+	right: 1.5rem;
+	bottom: 1.5rem;
+	width: min(52rem, calc(100vw - 3rem));
+	height: min(28rem, calc(100vh - 3rem));
+	display: flex;
+	flex-direction: column;
+	z-index: 900;
+	box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3);
+	border-radius: 6px;
+}
+
+/* Same [hidden]-vs-explicit-display gotcha as .modal-overlay above. */
+.log-window[hidden] {
+	display: none;
+}
+
+.log-window-bar {
+	cursor: move;
+	user-select: none;
+}
+
+.log-window-state {
+	margin-left: auto;
+}
+
+.log-window .log-window-view {
+	flex: 1 1 auto;
+	max-height: none;
+	margin: 0;
+	border-radius: 0 0 6px 6px;
+}
+
+.log-window-resize {
+	position: absolute;
+	right: 0;
+	bottom: 0;
+	width: 14px;
+	height: 14px;
+	cursor: nwse-resize;
+	border-right: 2px solid var(--muted);
+	border-bottom: 2px solid var(--muted);
+	border-bottom-right-radius: 6px;
 }
 
 /*
@@ -3150,20 +3200,6 @@ pre {
 	margin: 0;
 	overflow-wrap: anywhere;
 	font-variant-numeric: tabular-nums;
-}
-
-/* The log tail. Scrolls in its own box: a build log is long, and the
- * page must not scroll sideways because one configure line was wide. */
-.bo-log {
-	max-height: 22rem;
-	overflow: auto;
-	background: var(--panel);
-	border: 1px solid var(--border);
-	border-radius: 8px;
-	padding: 0.6rem 0.8rem;
-	font-size: 0.78rem;
-	line-height: 1.45;
-	white-space: pre;
 }
 
 /*

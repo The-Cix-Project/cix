@@ -43,6 +43,7 @@ Each widget has exactly one job. The "reach for instead" column is the anti-swap
 | **Liveness dot / LED** | `.led`, `.led-*` | A live up/down/among-states indicator | it carries a labelled state value → a **badge** |
 | **Hint** | `.hint`, `.hint-inline` | One line of guidance next to a control or empty area | it is an action result → **status message** |
 | **Console** | the VT ([ADR-0243](../adr/0243-the-dashboard-terminal-is-a-real-vt.md)) | An interactive terminal into a container | anything that is not a real TTY stream |
+| **Floating window** | `.log-window` (`#build-log-window`), moved and sized by `makeResizable()` | Watch something that keeps changing -- a build log -- while using the rest of the page. Non-blocking, closable (button and Escape), position and size persisted | the reader must finish with it before doing anything else → a **modal form**; it is a fixed facet of one resource → a **tab** |
 
 Two widgets that look similar are still not interchangeable: a **badge** carries a *value* (a state the daemon reported), a **dot/LED** carries *liveness* (reachable / not). A **banner** is a standing condition, a **status message** is a moment. Pick by which of those the thing actually is, not by which looks nicer in the spot.
 
@@ -58,6 +59,7 @@ Two widgets that look similar are still not interchangeable: a **badge** carries
 - **…confirm a destructive action** → **`confirm`** with a question naming the specific thing → never proceed unconfirmed, never confirm a safe action.
 - **…show a resource's state** → a **`badge`** with the semantic colour → never a new per-page badge class, never a coloured word of free text.
 - **…indicate a service is up/down** → an **LED/dot** → never a badge (a badge is for a reported value, not liveness).
+- **…keep watching a stream while doing something else** → the **floating window** → never a modal (its overlay blocks the page the reader is trying to use), never an inline panel that grows the page under a refresh. A live stream follows its tail only while the reader is at the end, and says whether it is following.
 - **…decide whether an action applies** → the resource's **eligibility function**, mirroring the daemon → never a client-side guess, never "offer it and let it 409".
 
 ## Interaction patterns
