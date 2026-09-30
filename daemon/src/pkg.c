@@ -1105,6 +1105,31 @@ static int image_has_job_in_flight(const char *image)
 }
 
 /*
+ * True when a chain slot is already building or installing `package`,
+ * for any image.
+ *
+ * The rolling drain starts one queued image per pass while any slot is
+ * free (ADR-0157), and the only thing it held back was a second job for
+ * the same IMAGE (#382). So publishing glibc@2.44-20, which queued six
+ * images tracking it, started six identical glibc builds at once on
+ * 192.168.15.95 (2026-09-30), each over an hour in the shared one-CPU
+ * build cgroup. One build caches and publishes its artifact, after which
+ * every other image installs it in seconds (#555). So an image whose next
+ * package is already in flight elsewhere waits for it.
+ */
+static int package_job_in_flight(const char *package)
+{
+	int i;
+
+	chain_reap_stale();
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+		if (g_chains[i].name[0] != '\0' && strcmp(g_chains[i].name, package) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+/*
  * ADR-0157 Phase 1/2: which pkg_entry currently owns the open build-
  * output capture pipe (ADR-0087), one slot per concurrent chain --
  * deliberately a separate pointer, not derived from g_chains[idx].
@@ -7636,6 +7661,7 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 		struct image_manifest_entry entries[IMAGE_MANIFEST_MAX_PACKAGES];
 		int entry_count, i;
 		int started = 0;
+		int deferred = 0; /* an entry waits on the same package elsewhere */
 
 		if (gate_holds(PKG_GATE_ROLL, image)) {
 			qi++;
@@ -7712,6 +7738,14 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 			}
 
 			if (!satisfied) {
+				/* Built once, installed everywhere: while another
+				 * image is already building this package, leave this
+				 * entry for a later pass, when that build's artifact
+				 * is cached. */
+				if (package_job_in_flight(entries[i].package)) {
+					deferred = 1;
+					continue;
+				}
 				const char *want_version =
 				    (entries[i].mode == IMAGE_PKG_PINNED) ? entries[i].version : NULL;
 				char started_name[PKG_NAME_MAX];
@@ -7754,6 +7788,13 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 			 * observing it -- it would have shipped looking correct.)
 			 */
 			return 1;
+		}
+
+		if (deferred) {
+			/* Not caught up: waiting on a package another image is
+			 * building. Stays queued; a later pass installs it. */
+			qi++;
+			continue;
 		}
 
 		/* Every manifest entry already satisfied -- this image is

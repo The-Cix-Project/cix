@@ -4428,6 +4428,113 @@ skip_recipe_api:
 skip_rolling_rebuild:
 
 	/*
+	 * #555: a package a publish rebuilds in several images is built once.
+	 *
+	 * The rolling drain starts one queued image per pass while any slot
+	 * is free, and it held back only a second job for the same image.
+	 * So publishing glibc@2.44-20 on 192.168.15.95 started six identical
+	 * glibc builds at once, one per image tracking it. Now an image
+	 * whose next package is already building elsewhere waits, and then
+	 * installs that build's cached artifact. Two images track dupbuild
+	 * as rolling; publishing 2.0 must rebuild both, with exactly one
+	 * non-empty build log for dupbuild 2.0-1 -- a cached install writes
+	 * an empty one.
+	 */
+	{
+		static const char *const dimgs[] = { "dupimg1", "dupimg2" };
+		char dtar1[512], dsha1[128], dtar2[512], dsha2[128];
+		char dpath[128], dstate[64];
+		int dok = 1, d, w, built = 0;
+
+		dok = stage_fixture_tarball(scratch_dir, "dupbuild", "1.0", dtar1, sizeof(dtar1), dsha1,
+		                            sizeof(dsha1)) == 0 &&
+		      stage_fixture_tarball(scratch_dir, "dupbuild", "2.0", dtar2, sizeof(dtar2), dsha2,
+		                            sizeof(dsha2)) == 0 &&
+		      write_recipe(&client, "dupbuild", "1.0", dtar1, dsha1, NULL) == 0;
+		for (d = 0; dok && d < 2; d++) {
+			char body[128];
+
+			dok = create_image(&client, dimgs[d]) == 0;
+			snprintf(body, sizeof(body), "{\"name\":\"dupbuild\",\"image\":\"%s\"}", dimgs[d]);
+			memset(&r, 0, sizeof(r));
+			if (dok && (cix_client_request(&client, "POST", "/v1/pkg/install", body, &r) != 0 ||
+			            (r.status != 202 && r.status != 200)))
+				dok = 0;
+			cix_response_free(&r);
+			snprintf(dpath, sizeof(dpath), "dupbuild@%s", dimgs[d]);
+			if (dok && (poll_pkg_state(&client, dpath, dstate, sizeof(dstate), 240) != 0 ||
+			            !str_eq(dstate, "installed")))
+				dok = 0;
+			snprintf(dpath, sizeof(dpath), "/v1/images/%s/manifest", dimgs[d]);
+			memset(&r, 0, sizeof(r));
+			if (dok && (cix_client_request(&client, "POST", dpath,
+			                               "{\"package\":\"dupbuild\",\"mode\":\"rolling\","
+			                               "\"version\":\"1.0\"}",
+			                               &r) != 0 ||
+			            r.status != 204))
+				dok = 0;
+			cix_response_free(&r);
+		}
+		if (!dok) {
+			fprintf(stderr, "FAIL: could not set up dupbuild 1.0 in dupimg1 and dupimg2\n");
+			ok = 0;
+		}
+		if (dok && write_recipe(&client, "dupbuild", "2.0", dtar2, dsha2, NULL) != 0) {
+			fprintf(stderr, "FAIL: publish dupbuild 2.0\n");
+			ok = 0;
+			dok = 0;
+		}
+		/* Both images must reach 2.0-1 by the rolling drain alone. */
+		for (d = 0; dok && d < 2; d++) {
+			snprintf(dpath, sizeof(dpath), "/v1/pkg/dupbuild@%s", dimgs[d]);
+			for (w = 0; w < 400; w++) {
+				int done = 0;
+
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", dpath, NULL, &r) == 0 && r.status == 200 &&
+				    str_eq(json_str_field(r.json, "state"), "installed") &&
+				    str_eq(json_str_field(r.json, "version"), "2.0-1"))
+					done = 1;
+				cix_response_free(&r);
+				if (done)
+					break;
+				usleep(300000);
+			}
+			if (w == 400) {
+				fprintf(stderr, "FAIL: dupbuild@%s was not rebuilt to 2.0-1\n", dimgs[d]);
+				ok = 0;
+				dok = 0;
+			}
+		}
+		if (dok) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/build-logs", NULL, &r) == 0 &&
+			    r.status == 200 && r.json != NULL) {
+				const struct json_value *logs = json_object_get(r.json, "logs");
+				size_t k;
+
+				for (k = 0; logs != NULL && logs->type == JSON_ARRAY && k < logs->u.array.count;
+				     k++) {
+					const struct json_value *l = logs->u.array.items[k];
+
+					if (str_eq(json_str_field(l, "name"), "dupbuild") &&
+					    str_eq(json_str_field(l, "version"), "2.0-1") &&
+					    json_as_number(json_object_get(l, "size_bytes")) > 0)
+						built++;
+				}
+			}
+			cix_response_free(&r);
+			if (built != 1) {
+				fprintf(stderr,
+				        "FAIL: dupbuild 2.0-1 was built %d time(s) for two images, expected "
+				        "once -- the second must install the first's artifact\n",
+				        built);
+				ok = 0;
+			}
+		}
+	}
+
+	/*
 	 * 16.6. ADR-0107/0108 per-version rootfs isolation (task #722): the
 	 * core guarantee the whole versioning epic exists to provide -- a
 	 * container created against an image stays pinned to the exact
