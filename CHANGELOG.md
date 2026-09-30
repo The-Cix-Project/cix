@@ -6,9 +6,9 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
-### A setuid file a recipe declares is installed setuid (#552)
+### A setuid file a recipe declares is installed setuid (#552, 0.2.57-417)
 
-Installing a package masked every file's mode to `0777` (`merge_tree()`), so no setuid or setgid bit reached an image. cbs had already done its part: a CPDL recipe declares a setuid file with `privileged file PATH mode NNNN`, cbs refuses any setuid entry not declared, and the `.cixpkg` carries the declared mode "for installer policy decisions" (CPDL 1.0 spec). The installer's policy was to drop it. openssh declares `ssh-keysign` `04711`, and jumpbox held it as `0711` (`probe-setuid@1-1` on 192.168.15.95). The merge now keeps the full mode for a tree cbs produced, whether a CPDL build or an extracted `.cixpkg`. It still masks a tree unpacked from a legacy `.tar.gz`, which has no declarations. `test_pkg` installs a fixture declaring a `04711` file and checks the installed mode. linux-pam 1.6.1-12 declares `unix_chkpwd` `04755`, so a non-root process can verify a password through `pam_unix`.
+Installing a package masked every file's mode to `0777` (`merge_tree()`), so no setuid or setgid bit reached an image. cbs had already done its part: a CPDL recipe declares a setuid file with `privileged file PATH mode NNNN`, cbs refuses any setuid entry not declared, and the `.cixpkg` carries the declared mode "for installer policy decisions" (CPDL 1.0 spec). The installer's policy was to drop it. openssh declares `ssh-keysign` `04711`, and jumpbox held it as `0711` (`probe-setuid@1-1` on 192.168.15.95). The merge now keeps the full mode for a tree cbs produced, whether a CPDL build or an extracted `.cixpkg`. It still masks a tree unpacked from a legacy `.tar.gz`, which has no declarations. `test_pkg` installs a fixture declaring a `04711` file and checks the installed mode. linux-pam 1.6.1-13 declares `unix_chkpwd` `04755`, so a non-root process can verify a password through `pam_unix`.
 
 ### Bootroot assembly and ISO builds copy trees in-process, so they run on a root with no cp (#464)
 

@@ -471,7 +471,7 @@ install {
 }
 ```
 
-cbs refuses any setuid or setgid entry that is not declared, and refuses a declared one whose staged mode differs. The installer keeps a declared mode from cix 0.2.57-416 on (#552); before that it masked every file to `0777`, so no setuid bit reached any image. Leave a program unprivileged when it has an unprivileged route: `ping` and `mtr` use ICMP datagram sockets through `net.ipv4.ping_group_range`, not setuid. `linux-pam` and `openssh` are the worked examples.
+cbs refuses any setuid or setgid entry that is not declared, and refuses a declared one whose staged mode differs. The installer keeps a declared mode from cix 0.2.57-417 on (#552; 416 failed to compile); before that it masked every file to `0777`, so no setuid bit reached any image. Leave a program unprivileged when it has an unprivileged route: `ping` and `mtr` use ICMP datagram sockets through `net.ipv4.ping_group_range`, not setuid. `linux-pam` and `openssh` are the worked examples.
 
 ## What you do NOT have to clean up
 
