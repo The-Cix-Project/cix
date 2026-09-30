@@ -17,6 +17,7 @@
 #include "test_image_fixture.h"
 #include "test_floor.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdarg.h>
