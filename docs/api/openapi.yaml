@@ -7612,7 +7612,7 @@ paths:
         when none is saved.
       operationId: getImagePolicy
       x-cix-permission: images:read
-      x-cix-expose: [cli, web]
+      x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ImageName"
       responses:
@@ -7635,7 +7635,7 @@ paths:
         the defaults is the same as none.
       operationId: setImagePolicy
       x-cix-permission: images:write
-      x-cix-expose: [cli, web]
+      x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ImageName"
       requestBody:
@@ -7682,7 +7682,7 @@ paths:
         committing; "" when the image has none.
       operationId: exportImageRecipe
       x-cix-permission: images:read
-      x-cix-expose: [cli, web]
+      x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ImageName"
       responses:
@@ -20166,7 +20166,7 @@ components:
           description: Manifest entries written; 0 on a 409.
         converging:
           type: boolean
-          description: The image was queued to install what it declares (`apply: converge`).
+          description: "The image was queued to install what it declares (`apply: converge`)."
         downgrades:
           type: array
           description: Pinned entries older than the image has.
