@@ -673,8 +673,8 @@ int main(int argc, char **argv)
 	 * Part D (from-source host-tools bootstrap, ADR-0078): the rootfs of
 	 * a real pkg-installed image carrying coreutils.recipe + gzip.recipe
 	 * (an operator-built "host tools" image, not this dev sandbox's own
-	 * pre-existing /usr/bin) -- when given, cp/gzip below (#352 retired
-	 * rm/sha256sum, both now in-process, daemon/src/pkg.c) are copied
+	 * pre-existing /usr/bin) -- when given, gzip below (#352 retired
+	 * rm/sha256sum and #464 cp, all now in-process) is copied
 	 * from THIS tree instead of the dev build host, closing
 	 * the "control-plane squashfs ships a raw copy of this sandbox's own
 	 * pre-compiled binaries" gap for the tools that already have a real
@@ -821,8 +821,8 @@ int main(int argc, char **argv)
 			                                                 * the tar+gzip CREATION pipeline only;
 			                                                 * extraction moved to libarchive (#411)
 			                                                 * and never execve()s this binary. */
-			/* cp/gzip: NOT here -- staged from host_tools_dir
-			 * (coreutils.recipe/gzip.recipe) when given, see below. */
+			/* gzip: NOT here -- staged from host_tools_dir
+			 * (gzip.recipe) when given, see below. */
 			{ "/usr/bin/unsquashfs", "usr/bin/unsquashfs" }, /* PKG_UNSQUASHFS_BIN -- the
 			                                                   * pkg_bootstrap_from_toolchain()
 			                                                   * import path, no mount/loop-device
@@ -956,7 +956,7 @@ int main(int argc, char **argv)
 			"libkeyutils.so.1",
 			"libresolv.so.2",
 			"libffi.so.8",
-			/* tar + cp */
+			/* tar; cp linked these too until #464 removed it */
 			"libacl.so.1",
 			"libselinux.so.1",
 			"libpcre2-8.so.0",
@@ -1017,11 +1017,11 @@ int main(int argc, char **argv)
 		}
 		{
 			/*
-			 * cp/gzip -- the 2 remaining shelled-out tools this
-			 * project already has a real from-source recipe for
-			 * (coreutils.recipe, gzip.recipe) -- rm/sha256sum retired
-			 * by #352, both computed in-process now (daemon/src/pkg.c:
-			 * cix_btrfs_subvol_delete_or_rmtree(), EVP_sha256()).
+			 * gzip -- the one remaining shelled-out tool this
+			 * project stages from a real from-source recipe
+			 * (gzip.recipe) -- rm/sha256sum retired by #352 and cp
+			 * by #464, all in-process now (cix_btrfs_subvol_delete_or_rmtree(),
+			 * EVP_sha256(), cix_tree_copy()).
 			 * host_tools_dir, when
 			 * given, is that recipe's own installed image rootfs (a
 			 * real `pkg install --image=<name>` result); each binary
@@ -1037,7 +1037,6 @@ int main(int argc, char **argv)
 				const char *host_tools_rel; /* relative to host_tools_dir */
 				const char *rootfs_path;    /* relative to image_root, matching the _BIN macro */
 			} host_tool_bins[] = {
-				{ "/usr/bin/cp", "usr/bin/cp", "usr/bin/cp" },                       /* main.c's ADR-0179 phase-2b non-btrfs userns fallback */
 				{ "/usr/bin/gzip", "usr/bin/gzip", "usr/bin/gzip" },
 				/*
 				 * btrfs -- DISKPART_BTRFS_BIN, daemon/src/diskpart.c

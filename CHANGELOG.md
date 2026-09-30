@@ -6,6 +6,19 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A userns container's rootfs is copied in-process on a non-btrfs host (#464)
+
+On a host whose container storage is not btrfs, creating a userns container copied the image rootfs by forking `cp --reflink=auto -a`. That was a shell-out the #352, #410 and #411 audits all missed. The daemon then waited for it, blocking, inside the request that creates the container: `run_cmd()`'s `waitpid()` held the reactor for as long as a whole-image copy took.
+
+- **The replacement:** the copy is now `cix_tree_copy()`, in the runtime library (`src/btrfs.c`). It's the same copy `cix_btrfs_snapshot_or_copy()` already falls back to, now exported and made faithful to what `cp -a` kept.
+- **What it keeps:** each entry's owner, exact mode and timestamps. The owner is set first, because a chown clears setuid. The mode is set by `chmod()`, not by `mkdir()`/`open()`/`mknod()`, because those apply the umask: under `022`, an image's `1777` `/tmp` came out `1755` through that fallback. Directories are filled at `0700` and given their real mode last.
+- **What it drops:** the reflink, which ext4, the host this branch exists for, cannot do.
+- **Removed:** `run_cmd()`, and `cp` from the control-plane root (`mkbootroot.c`), where this was its only consumer. `gzip` is the one tool still staged from a from-source recipe.
+- **Blocking-wait gate:** `main.c`'s budget goes 24 → 23 and the total 58 → 57. The removed wait was the unbounded kind the gate exists to exclude.
+- **Test:** `test_btrfs` (SELFTESTS) copies a `1777` directory and a dated `4755` file with `cix_tree_copy()`, and checks mode, setuid and mtime survive.
+
+192.168.15.95 is btrfs throughout, so it never takes this branch (measured 2026-09-14 in the issue). The change matters for any host that isn't.
+
 ### Existing .tar.gz artifacts turn over naturally; cixd can no longer write one (#499)
 
 #499 asked whether a version already built as `.tar.gz` should be rebuilt to get a `.cixpkg`. The shared cache at 192.168.15.31:8080 holds 452 `.tar.gz` and 265 `.cixpkg` artifacts (measured 2026-09-30). Every build since the conversion writes `.cixpkg`: the newest `.tar.gz` of `cix` is 0.2.57-364.

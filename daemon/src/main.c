@@ -12232,31 +12232,6 @@ static const char *container_body_unknown_key(const struct json_value *root)
  * file_paths[] itself -- the caller owns that array's indexing.
  */
 /*
- * ADR-0179 phase 2c option (a): a userns container gets its OWN rootfs, a
- * copy of the image tree made here with `cp --reflink=auto -a` -- CoW (near
- * free) on a reflink-capable backing (btrfs/xfs), a real copy elsewhere. Its
- * own tree is what makes the container's rootfs directly writable+persistent
- * under an id-mapped mount, without the overlay-in-userns wall (ADR-0179).
- * Minimal fork/exec (no shell): argv is a fixed-arity vector, so no quoting/
- * injection surface. Returns 0 on a clean exit, -1 otherwise.
- */
-static int run_cmd(const char *const argv[])
-{
-	pid_t p = fork();
-	int status;
-
-	if (p < 0)
-		return -1;
-	if (p == 0) {
-		execv(argv[0], (char *const *)argv);
-		_exit(127);
-	}
-	if (waitpid(p, &status, 0) < 0)
-		return -1;
-	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
-}
-
-/*
  * ADR-0179 phase 2c option (a): recursively chown a userns container's own
  * rootfs copy to its subordinate base id, so its mapped root (host <base>)
  * genuinely OWNS every file -- id-mapped mounts proved too subtle to make the
@@ -14273,18 +14248,25 @@ static int create_container_from_body(const char *body, size_t body_len,
 			}
 		} else {
 			/*
-			 * Non-btrfs (including the dev sandbox and unmigrated ext4
-			 * hosts): the ADR-0179 phase-2b copy+chown presentation,
-			 * proven live on real hardware, unchanged.
+			 * Non-btrfs (unmigrated ext4 hosts): the ADR-0179
+			 * phase-2b copy+chown presentation, proven live on real
+			 * hardware. The copy is cix_tree_copy() in-process -- the
+			 * one the btrfs snapshot path already falls back to --
+			 * where it used to fork `cp --reflink=auto -a` (#464, the
+			 * shell-out the #352/#410/#411 audits missed). It keeps
+			 * what `cp -a` kept: owner, exact mode, timestamps,
+			 * symlinks and device nodes. What it drops is the reflink,
+			 * which ext4 -- the host this branch exists for -- cannot do.
 			 */
-			const char *cp_argv[] = { "/usr/bin/cp", "--reflink=auto", "-a",
-			                          lowerdir, userns_rootfs, NULL };
 			long long base = 0;
 
-			if (run_cmd(cp_argv) != 0) {
+			if (cix_tree_copy(lowerdir, userns_rootfs) != 0) {
+				int err = errno;
+
 				json_free(root);
 				snprintf(err_msg, err_msg_size,
-				         "failed to copy image rootfs for userns container");
+				         "failed to copy image rootfs for userns container: %s",
+				         strerror(err));
 				return 500;
 			}
 			rootfs_seed_version_write(container_base, resolved_image_version);

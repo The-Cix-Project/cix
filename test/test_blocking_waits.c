@@ -117,7 +117,13 @@ static const struct budget g_budgets[] = {
 	 * that made this callback exist is the whole reason clause 3 is
 	 * shaped the way it is: the alternative was waiting for the
 	 * extraction itself, on the reactor. */
-	{ "daemon/src/main.c", 24, "pidfd callbacks + double-fork intermediates" },
+	/* 24 -> 23 (#464): run_cmd() is gone. It waited on a forked
+	 * `cp --reflink=auto -a` of an entire image rootfs, from the request
+	 * that creates a userns container on a non-btrfs host -- an unbounded
+	 * wait on the reactor, the kind this table exists to exclude, counted
+	 * here under a justification it never met. The copy is in-process now
+	 * (cix_tree_copy()). */
+	{ "daemon/src/main.c", 23, "pidfd callbacks + double-fork intermediates" },
 	/* 10 -> 11 for ADR-0279's signature fetch: the artifact tier now
 	 * pulls <artifact>.minisig alongside the artifact and waits for
 	 * that curl. In budget for the same reason every other one in this
@@ -254,8 +260,10 @@ static const struct budget g_budgets[] = {
  * clause: handle_pkg_unpack_event() in main.c, a pidfd callback whose
  * child is already gone. Then 57 -> 58 for #447's
  * container_net_apply_sysctls_running() in src/container_net.c, the
- * bounded setns() helper its per-file entry above argues for. */
-#define TOTAL_ALLOWED 58
+ * bounded setns() helper its per-file entry above argues for. Then
+ * 58 -> 57 for #464: main.c's run_cmd(), an unbounded wait on a
+ * whole-rootfs `cp`, removed along with the fork. */
+#define TOTAL_ALLOWED 57
 
 static int is_comment(const char *line)
 {

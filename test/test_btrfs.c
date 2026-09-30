@@ -158,6 +158,43 @@ int main(void)
 		      n > 0 ? target : "");
 	}
 
+	/*
+	 * #464: cix_tree_copy() is what `cp -a` made. It replaced a forked
+	 * `cp --reflink=auto -a`, so it has to keep what that kept. The
+	 * sticky 1777 directory is the umask case -- mkdir() under a 022
+	 * umask makes it 1755 -- and the setuid file is the chown-clears-it
+	 * case. The mtime is set to a fixed past value, so a copy that
+	 * merely stamped "now" cannot pass.
+	 */
+	{
+		char src[512], dst[512], p[600];
+		struct timespec old[2] = { { 1700000000, 0 }, { 1700000000, 0 } };
+		struct stat st;
+
+		snprintf(src, sizeof(src), "%s/fidelity", base);
+		snprintf(dst, sizeof(dst), "%s/fidelity-copy", base);
+		CHECK(mkdir(src, 0755) == 0, "mkdir fidelity");
+		snprintf(p, sizeof(p), "%s/tmp", src);
+		CHECK(mkdir(p, 0755) == 0 && chmod(p, 01777) == 0, "make a 1777 tmp");
+		snprintf(p, sizeof(p), "%s/suid", src);
+		CHECK(write_file(p, "#!/bin/true\n") == 0 && chmod(p, 04755) == 0,
+		      "make a 4755 file");
+		CHECK(utimensat(AT_FDCWD, p, old, 0) == 0, "date the setuid file");
+
+		CHECK(cix_tree_copy(src, dst) == 0, "cix_tree_copy should copy the tree");
+		snprintf(p, sizeof(p), "%s/tmp", dst);
+		CHECK(stat(p, &st) == 0 && (st.st_mode & 07777) == 01777,
+		      "the sticky dir should stay 1777, got %o", (unsigned)(st.st_mode & 07777));
+		snprintf(p, sizeof(p), "%s/suid", dst);
+		CHECK(stat(p, &st) == 0 && (st.st_mode & 07777) == 04755,
+		      "the setuid file should stay 4755, got %o", (unsigned)(st.st_mode & 07777));
+		CHECK(st.st_mtim.tv_sec == 1700000000,
+		      "the mtime should be carried over, got %lld", (long long)st.st_mtim.tv_sec);
+		CHECK(cix_btrfs_subvol_delete_or_rmtree(dst) == 0 &&
+		          cix_btrfs_subvol_delete_or_rmtree(src) == 0,
+		      "remove the fidelity trees");
+	}
+
 	/* The clone is independent of the source (a real copy, not a link):
 	 * changing the clone must not touch the source. */
 	snprintf(path, sizeof(path), "%s/clone/etc/hostname", base);

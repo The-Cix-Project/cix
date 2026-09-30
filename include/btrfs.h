@@ -89,6 +89,20 @@ int cix_btrfs_snapshot_or_copy(const char *src, const char *dst);
  */
 int cix_btrfs_subvol_copy(const char *src, const char *dst);
 
+/*
+ * A plain recursive copy of the tree at src to dst, on any filesystem,
+ * as `cp -a` would make it: each entry's owner, exact mode (setuid and
+ * sticky bits included, whatever the umask) and timestamps, symlinks
+ * as symlinks, and device, fifo and socket nodes by type and rdev.
+ * Hard links become separate copies. dst may already exist as an empty
+ * directory. It is the copy cix_btrfs_snapshot_or_copy() falls back to,
+ * and what a userns container's rootfs is seeded with on a host whose
+ * container storage is not btrfs (#464).
+ *
+ * Returns 0 on success, -1 with errno set otherwise.
+ */
+int cix_tree_copy(const char *src, const char *dst);
+
 int cix_btrfs_subvol_delete_or_rmtree(const char *path);
 
 /*

@@ -85,9 +85,36 @@ int cix_btrfs_subvol_create_or_dir(const char *path)
 	return 0;
 }
 
+/*
+ * Carries src's owner, exact mode and timestamps onto dst (#464), so the
+ * copy is what `cp -a` made it and not an approximation of it.
+ *
+ * Owner first: a chown clears setuid and setgid, so the mode goes on
+ * after it. The mode is set with chmod() because mkdir(), open() and
+ * mknod() all apply the process umask -- under 022 a /tmp that is 1777
+ * in the image came out 1755. A symlink gets its owner and times but no
+ * mode: Linux has none to set on one.
+ */
+static int copy_meta(const char *dst, const struct stat *st)
+{
+	struct timespec times[2];
+
+	if (lchown(dst, st->st_uid, st->st_gid) != 0)
+		return -1;
+	if (!S_ISLNK(st->st_mode) && chmod(dst, st->st_mode & 07777) != 0)
+		return -1;
+	times[0] = st->st_atim;
+	times[1] = st->st_mtim;
+	return utimensat(AT_FDCWD, dst, times, AT_SYMLINK_NOFOLLOW);
+}
+
 /* Recursively copy a plain directory tree src -> dst (dst created
- * fresh). Self-contained so the runtime lib stays free of daemon
- * helpers; only the non-btrfs fallback path uses it. */
+ * fresh, or reused if it already exists), preserving each entry's
+ * owner, mode and timestamps (copy_meta()), symlinks as symlinks, and
+ * device, fifo and socket nodes by type and rdev. Self-contained so
+ * the runtime lib stays free of daemon helpers. A directory's own
+ * metadata is set after its children are copied into it, since adding
+ * them changes its mtime. Hard links become separate copies. */
 static int copy_tree(const char *src, const char *dst)
 {
 	DIR *d;
@@ -98,7 +125,9 @@ static int copy_tree(const char *src, const char *dst)
 		return -1;
 
 	if (S_ISDIR(st.st_mode)) {
-		if (mkdir(dst, st.st_mode & 07777) != 0 && errno != EEXIST)
+		/* 0700 while it is filled; copy_meta() sets the real mode after,
+		 * so a read-only directory can still receive its children. */
+		if (mkdir(dst, 0700) != 0 && errno != EEXIST)
 			return -1;
 		d = opendir(src);
 		if (d == NULL)
@@ -121,7 +150,7 @@ static int copy_tree(const char *src, const char *dst)
 			}
 		}
 		closedir(d);
-		return 0;
+		return copy_meta(dst, &st);
 	}
 
 	if (S_ISLNK(st.st_mode)) {
@@ -133,7 +162,7 @@ static int copy_tree(const char *src, const char *dst)
 		target[n] = '\0';
 		if (symlink(target, dst) != 0 && errno != EEXIST)
 			return -1;
-		return 0;
+		return copy_meta(dst, &st);
 	}
 
 	if (S_ISREG(st.st_mode)) {
@@ -165,14 +194,21 @@ static int copy_tree(const char *src, const char *dst)
 		}
 		close(in);
 		close(out);
-		return r < 0 ? -1 : 0;
+		if (r < 0)
+			return -1;
+		return copy_meta(dst, &st);
 	}
 
 	/* Device/fifo/socket nodes: recreate by type+rdev. A seeded image
 	 * rootfs legitimately carries device nodes (/dev/null etc.). */
 	if (mknod(dst, st.st_mode, st.st_rdev) != 0 && errno != EEXIST)
 		return -1;
-	return 0;
+	return copy_meta(dst, &st);
+}
+
+int cix_tree_copy(const char *src, const char *dst)
+{
+	return copy_tree(src, dst);
 }
 
 /*
