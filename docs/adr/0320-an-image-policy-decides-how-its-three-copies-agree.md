@@ -49,7 +49,7 @@ Every default except `downgrade: refuse` is exactly today's behaviour, so instal
 
 ## Consequences
 
-- **A downgrade can bring back a corrupted stored tree.** Applying a recipe whose package set existed before reuses that image version's stored tree (ADR-0155), including one written wrong before #531 was fixed ([#551](https://git.home.arpa/itdlabs/cix/issues/551)). This ADR does not fix that; `converge`'s post-install check (#281) is what would notice.
+- **A downgrade can bring back a corrupted stored tree.** Applying a recipe whose package set existed before reuses that image version's stored tree (ADR-0155), including one written wrong before #531 was fixed ([#551](https://git.home.arpa/itdlabs/cix/issues/551)). This ADR did not fix that; #551 did, in the release after it: a reused stored tree is now checked against the files its packages record, and replaced by the tree just built when it is wrong.
 - **Under `recipe: follow`, committing an image recipe to cix-recipes `main` is a deploy** within one sync window, the same property the package store already has.
 - **A pin moving with an install** means a manifest no longer shows what was *requested* last, only what is installed. That is the point, and `recipe/export` is how that state gets written down.
 

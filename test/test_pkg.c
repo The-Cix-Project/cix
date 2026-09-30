@@ -6253,6 +6253,90 @@ skip_resume:
 	}
 
 	/*
+	 * #551: a stored image version with the wrong content must not come
+	 * back when its package set recurs.
+	 *
+	 * An image version is named by its package set (ADR-0108), and a set
+	 * seen before reuses the tree first stored under that name
+	 * (ADR-0155). Chains before #531's fix stored trees missing files --
+	 * jumpbox's login without /bin/login -- and every later install of
+	 * the same set threw the correct fresh tree away in their favour, so
+	 * the post-install check failed the install. Reproduced here: install,
+	 * delete one of the package's files straight out of the stored tree,
+	 * uninstall, and reinstall the same version, whose set hashes back to
+	 * that stored tree. It must install, with the file back.
+	 */
+	{
+		char sha[65];
+		char tarball[PATH_MAX];
+		char img_dir[PATH_MAX], version[128], victim[PATH_MAX];
+		char st_s[64];
+		struct stat vst;
+		int round;
+		int stage_ok;
+
+		snprintf(img_dir, sizeof(img_dir), "%s/rebuildable/images/img551", g_data_dir);
+		stage_ok = stage_fixture_tarball(scratch_dir, "dedup551", "1.0", tarball,
+		                                 sizeof(tarball), sha, sizeof(sha)) == 0 &&
+		           write_shared_path_recipe(&client, "dedup551", "1.0", tarball, sha,
+		                                    "usr/share/shared175/d551.txt") == 0 &&
+		           create_image(&client, "img551") == 0;
+		if (!stage_ok) {
+			fprintf(stderr, "FAIL: #551 could not set up dedup551 in img551\n");
+			ok = 0;
+		}
+		for (round = 0; stage_ok && round < 2; round++) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install",
+			                       "{\"name\":\"dedup551\",\"image\":\"img551\"}", &r) != 0 ||
+			    (r.status != 202 && r.status != 200)) {
+				fprintf(stderr, "FAIL: #551 install round %d status=%d\n", round, r.status);
+				ok = 0;
+				stage_ok = 0;
+			}
+			cix_response_free(&r);
+			if (stage_ok &&
+			    (poll_pkg_state(&client, "dedup551@img551", st_s, sizeof(st_s), 240) != 0 ||
+			     !str_eq(st_s, "installed"))) {
+				fprintf(stderr, "FAIL: #551 install round %d ended %s -- %s\n", round, st_s,
+				        round == 1 ? "the wrong stored tree was reused" : "setup");
+				ok = 0;
+				stage_ok = 0;
+			}
+			if (!stage_ok)
+				break;
+			if (test_image_fixture_read_current_version(img_dir, version, sizeof(version)) != 0) {
+				fprintf(stderr, "FAIL: #551 img551 has no current version\n");
+				ok = 0;
+				break;
+			}
+			snprintf(victim, sizeof(victim), "%s/%s/rootfs/usr/bin/dedup551", img_dir, version);
+			if (round == 1) {
+				if (stat(victim, &vst) != 0) {
+					fprintf(stderr, "FAIL: #551 %s is missing after the reinstall\n", victim);
+					ok = 0;
+				}
+				break;
+			}
+			/* Round 0: damage the stored tree the way #531 did, then
+			 * uninstall so the reinstall's set hashes back to it. */
+			if (unlink(victim) != 0) {
+				fprintf(stderr, "FAIL: #551 could not remove %s: %s\n", victim, strerror(errno));
+				ok = 0;
+				break;
+			}
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "DELETE", "/v1/pkg/dedup551@img551", NULL, &r);
+			if (r.status != 204 && r.status != 200) {
+				fprintf(stderr, "FAIL: #551 uninstall status=%d\n", r.status);
+				ok = 0;
+				stage_ok = 0;
+			}
+			cix_response_free(&r);
+		}
+	}
+
+	/*
 	 * #186: a build environment must carry the C library this platform
 	 * built, and carry it INTACT.
 	 *

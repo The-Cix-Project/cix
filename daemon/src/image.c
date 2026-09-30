@@ -783,3 +783,67 @@ enum image_error image_record_version(const char *name, const char *version)
 	snprintf(st.current_version, sizeof(st.current_version), "%s", version);
 	return save_state(name, &st) == 0 ? IMAGE_OK : IMAGE_ERR_PERSIST_FAILED;
 }
+
+/*
+ * #551: deletes the stored trees image_produce_new_version() set aside
+ * when it found one wrong -- IMAGES_DIR/<image>/<version>/rootfs.replaced-*.
+ * They were kept only because a running container might still have one
+ * mounted as its lower layer. Called at startup, before any container
+ * starts, which is the first moment nothing can. Returns how many it
+ * removed.
+ */
+int image_sweep_replaced_trees(void)
+{
+	DIR *images;
+	struct dirent *ide;
+	int removed = 0;
+
+	images = opendir(g_images_dir);
+	if (images == NULL)
+		return 0;
+	while ((ide = readdir(images)) != NULL) {
+		char image_dir[PATH_MAX];
+		DIR *versions;
+		struct dirent *vde;
+
+		if (ide->d_name[0] == '.')
+			continue;
+		if (snprintf(image_dir, sizeof(image_dir), "%s/%s", g_images_dir, ide->d_name) >=
+		    (int)sizeof(image_dir))
+			continue;
+		versions = opendir(image_dir);
+		if (versions == NULL)
+			continue;
+		while ((vde = readdir(versions)) != NULL) {
+			char version_dir[PATH_MAX];
+			DIR *entries;
+			struct dirent *ede;
+
+			if (vde->d_name[0] == '.')
+				continue;
+			if (snprintf(version_dir, sizeof(version_dir), "%s/%s", image_dir, vde->d_name) >=
+			    (int)sizeof(version_dir))
+				continue;
+			entries = opendir(version_dir);
+			if (entries == NULL)
+				continue;
+			while ((ede = readdir(entries)) != NULL) {
+				char path[PATH_MAX];
+
+				if (strncmp(ede->d_name, "rootfs.replaced-", 16) != 0)
+					continue;
+				if (snprintf(path, sizeof(path), "%s/%s", version_dir, ede->d_name) >=
+				    (int)sizeof(path))
+					continue;
+				if (cix_btrfs_subvol_delete_or_rmtree(path) == 0)
+					removed++;
+				else
+					fprintf(stderr, "image: could not remove replaced tree %s\n", path);
+			}
+			closedir(entries);
+		}
+		closedir(versions);
+	}
+	closedir(images);
+	return removed;
+}

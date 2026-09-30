@@ -106,6 +106,11 @@ enum image_error image_create(const char *name);
  */
 int image_exists(const char *name);
 
+/* #551: deletes stored trees set aside as rootfs.replaced-* when a reused
+ * version was found wrong. Startup only, before any container starts.
+ * Returns how many it removed. */
+int image_sweep_replaced_trees(void);
+
 /*
  * IMAGE_ERR_NOT_FOUND if name has no manifest.json. IMAGE_ERR_PROTECTED
  * for "base" specifically. IMAGE_ERR_IN_USE if registry_image_in_use()

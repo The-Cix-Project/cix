@@ -4517,10 +4517,6 @@ static int installed_files_missing(const char *image, const struct pkg_entry *e,
 {
 	char version[IMAGE_VERSION_MAX];
 	char rootfs[PATH_MAX];
-	char path[PATH_MAX];
-	struct stat st;
-	int missing = 0;
-	int i;
 
 	if (first_missing != NULL && first_missing_size > 0)
 		first_missing[0] = '\0';
@@ -4531,17 +4527,35 @@ static int installed_files_missing(const char *image, const struct pkg_entry *e,
 		           * already treats a missing current version as its own
 		           * error, and guessing here would report the wrong one. */
 	image_version_rootfs_path(image, version, rootfs, sizeof(rootfs));
+	return files_missing_in(rootfs, e, first_missing, first_missing_size);
+}
 
+/*
+ * How many of e's recorded files are absent under rootfs, and the first
+ * one. lstat, not stat: a dangling symlink is a file the package really
+ * installed. A path too long to build cannot be checked, so it is not
+ * counted against the tree. Shared by the post-install check (#281) and
+ * the dedup check below (#551), which ask the same question of two trees.
+ */
+static int files_missing_in(const char *rootfs, const struct pkg_entry *e, char *first_missing,
+                            size_t first_missing_size)
+{
+	char path[PATH_MAX];
+	struct stat st;
+	int missing = 0;
+	int i;
+
+	if (first_missing != NULL && first_missing_size > 0)
+		first_missing[0] = '\0';
+	if (e == NULL)
+		return 0;
 	for (i = 0; i < e->file_count; i++) {
 		const char *rel = e->files[i];
 
 		while (*rel == '/')
 			rel++;
 		if (snprintf(path, sizeof(path), "%s/%s", rootfs, rel) >= (int)sizeof(path))
-			continue; /* Cannot be checked, so not counted against it. */
-		/* lstat, not stat: a dangling symlink is a file the package
-		 * installed and is present, and resolving it would call it
-		 * missing for pointing at something not built yet. */
+			continue;
 		if (lstat(path, &st) != 0) {
 			if (missing == 0 && first_missing != NULL && first_missing_size > 0)
 				snprintf(first_missing, first_missing_size, "%s", rel);
@@ -4549,6 +4563,45 @@ static int installed_files_missing(const char *image, const struct pkg_entry *e,
 		}
 	}
 	return missing;
+}
+
+/*
+ * #551: is the stored tree for a version this image is about to reuse
+ * missing files its installed packages record?
+ *
+ * An image version is named by its package set (ADR-0108), so a set that
+ * recurs reuses the tree first stored under that name (ADR-0155). A tree
+ * stored wrong -- chains before #531 was fixed merged one package's
+ * leftovers into another's install, measured on 192.168.15.95 as
+ * jumpbox's login@2.42.2-5 holding linux-pam's files and no /bin/login --
+ * came back every time its set recurred, and the correct tree just built
+ * was thrown away in its favour. ADR-0320 made recurring sets routine:
+ * downgrades and re-applies revisit them.
+ *
+ * Checks the same entries build_image_manifest_string() hashes, so the
+ * answer is about exactly the set the version name stands for. Returns 1
+ * with the first finding in why, else 0.
+ */
+static int stored_version_is_wrong(const char *image, const char *rootfs, char *why,
+                                   size_t why_size)
+{
+	int i;
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		const struct pkg_entry *e = &g_packages[i];
+		char first[PATH_MAX];
+		int missing;
+
+		if (!e->in_use || e->state != PKG_STATE_INSTALLED || strcmp(e->image, image) != 0)
+			continue;
+		missing = files_missing_in(rootfs, e, first, sizeof(first));
+		if (missing > 0) {
+			snprintf(why, why_size, "%s@%s: %d of %d file(s) missing, starting with %s",
+			         e->name, e->version, missing, e->file_count, first);
+			return 1;
+		}
+	}
+	return 0;
 }
 
 /*
@@ -4749,6 +4802,7 @@ static int image_produce_new_version(const char *image,
 	const char *manifest_str;
 	enum image_error ierr;
 	struct stat st;
+	char why[PATH_MAX + 160];
 
 	ierr = image_create(image);
 	if (ierr != IMAGE_OK && ierr != IMAGE_ERR_DUPLICATE)
@@ -4816,7 +4870,34 @@ static int image_produce_new_version(const char *image,
 	}
 
 	image_version_rootfs_path(image, new_version, new_rootfs, sizeof(new_rootfs));
-	if (stat(new_rootfs, &st) == 0) {
+	if (stat(new_rootfs, &st) == 0 &&
+	    stored_version_is_wrong(image, new_rootfs, why, sizeof(why))) {
+		/*
+		 * #551: the stored tree for this package set is wrong, so the
+		 * tree just built wins. The old one is renamed aside rather than
+		 * deleted: a running container mounted it as its lower layer, and
+		 * an overlay holds the directory it resolved at mount time, not
+		 * the path. image_sweep_replaced_trees() deletes it at the next
+		 * start, before any container can mount anything.
+		 */
+		char aside[PATH_MAX];
+
+		if (snprintf(aside, sizeof(aside), "%s.replaced-%ld", new_rootfs, (long)time(NULL)) >=
+		    (int)sizeof(aside))
+			return produce_fail(image, staging, "naming the wrong stored tree aside", 0);
+		if (rename(new_rootfs, aside) != 0)
+			return produce_fail(image, staging, "setting the wrong stored tree aside", 1);
+		if (rename(staging, new_rootfs) != 0) {
+			rename(aside, new_rootfs);
+			return produce_fail(image, staging, "renaming the rebuilt tree over the wrong one",
+			                     1);
+		}
+		logstore_write("cixd", "error",
+		               "image %s: the stored tree for version %s was wrong (%s) -- replaced by "
+		               "the tree just built, which has them. The old tree is at %s until the "
+		               "next start, for any container still using it (#551)",
+		               image, new_version, why, aside);
+	} else if (stat(new_rootfs, &st) == 0) {
 		/* Already produced before -- discard this build, trust the
 		 * existing immutable copy (see this function's own comment).
 		 * Subvolume-aware: on btrfs `staging` is a snapshot. */

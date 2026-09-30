@@ -31945,6 +31945,18 @@ static int cixd_main(int argc, char **argv)
 	 */
 	procfuse_start(STATE_DIR);
 
+	{
+		/* #551: trees set aside because a reused version was wrong. No
+		 * container has started yet, so none can still have one mounted. */
+		int swept = image_sweep_replaced_trees();
+
+		if (swept > 0)
+			logstore_write("cixd", "info",
+			               "image: removed %d stored tree(s) replaced because they were "
+			               "wrong (#551)",
+			               swept);
+	}
+
 	containerdef_autostart_all();
 
 	/*
