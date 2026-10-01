@@ -1656,7 +1656,7 @@ A real internal `.home.arpa`/`.internal` DNS record (`POST /dns/records`, above)
 
 This is deliberately generic -- a plain IP list, no notion of "which container is my DNS server." It covers pointing at one of this platform's own DNS containers (resolve its IP once via `GET /containers/{name}`, `PUT` it here) and pointing at a real external resolver, with the exact same mechanism. `GET /v1/system/resolv` reports the current list.
 
-Note this fixes host-level resolution generally, not just for `pkg`'s own fetches -- every current and future tool `cixd` shells out to (`git`, `openssl`, anything added later) resolves through the same, single, canonical `/etc/resolv.conf` path.
+Note this fixes host-level resolution generally, not just for `pkg`'s own fetches -- every current and future tool `cixd` shells out to (`git`, anything added later) resolves through the same, single, canonical `/etc/resolv.conf` path.
 
 ## Host-level sysctl (ADR-0160)
 
@@ -2230,7 +2230,7 @@ POST /v1/containers
 
 ## PKI: a CA chain and issued leaf certificates
 
-A single internal root CA, an optional second intermediate tier, and leaf certificate issuance. Actual cryptography (keypair generation, CSR signing) is done by the daemon shelling out to the system's real, unmodified `openssl` binary as a short-lived subprocess — the same "real software, not hand-rolled" reasoning BIRD and dnsmasq were chosen under (ADR-0007's "no external libraries" rule governs this project's own platform components, not real software it invokes or runs as a workload).
+A single internal root CA, an optional second intermediate tier, and leaf certificate issuance. The cryptography (key generation, certificate signing, reading certificates back, the export cipher) runs in the OpenSSL libcrypto `cixd` already links for its HTTPS listener — real, unmodified OpenSSL, never hand-rolled, and since #351 never a forked `openssl` program ([ADR-0321](../adr/0321-cryptography-is-done-in-the-linked-libcrypto.md)). Certificates are what the CLI used to produce, measured: v3, sha256WithRSA, the same extensions in the same order, a random serial each.
 
 Bootstrap the root CA once:
 

@@ -346,7 +346,14 @@ int pkicrypto_cert_fields(const char *cert_path, struct pkicrypto_cert_fields *o
 		return -1;
 
 	/* Each field in its own BIO: the text is whatever the CLI's
-	 * -subject/-serial/-startdate/-enddate printed after the "=". */
+	 * -subject/-serial/-startdate/-enddate printed after the "=".
+	 *
+	 * The subject's XN_FLAG_ONELINE is a choice, made because it prints
+	 * "CN = Cix Platform CA" exactly as the CLI did for the live root
+	 * (test_pkicrypto checks it). It also escapes RFC 2253 specials,
+	 * and how the CLI rendered a CN containing , + " < > ; or a leading
+	 * '#' was not measured -- leaf CNs are DNS names and cannot contain
+	 * them, so only a free-form CA name could, and none here does. */
 	b = BIO_new(BIO_s_mem());
 	ok = ok && b != NULL &&
 	     X509_NAME_print_ex(b, X509_get_subject_name(cert), 0, XN_FLAG_ONELINE) >= 0 &&

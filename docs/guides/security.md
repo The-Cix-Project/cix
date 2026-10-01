@@ -8,7 +8,7 @@ Bootstrapping and operating this platform's internal certificate authority, turn
 cixctl pki ca bootstrap --common-name="Cix Root CA" --days=3650
 ```
 
-One-shot — a second call is refused (`409`); see [Rotating the whole chain](#rotating-the-whole-chain) below for the real "start over" operation. **The CA private key is never returned in the clear** — the only endpoint that carries it off the box is `pki export`, as a passphrase-encrypted bundle (see [Carrying the CA across a reinstall](#carrying-the-ca-across-a-reinstall)). Real cryptography (keypair generation, CSR signing) runs through the system's own real, unmodified `openssl` binary as a short-lived subprocess, not a hand-rolled implementation.
+One-shot — a second call is refused (`409`); see [Rotating the whole chain](#rotating-the-whole-chain) below for the real "start over" operation. **The CA private key is never returned in the clear** — the only endpoint that carries it off the box is `pki export`, as a passphrase-encrypted bundle (see [Carrying the CA across a reinstall](#carrying-the-ca-across-a-reinstall)). Real cryptography (key generation, certificate signing) runs in the real, unmodified OpenSSL library `cixd` links, not a hand-rolled implementation and not a forked `openssl` program ([ADR-0321](../adr/0321-cryptography-is-done-in-the-linked-libcrypto.md)).
 
 Optionally add a second, intermediate tier — requires the root to already exist:
 

@@ -48,7 +48,7 @@ cixctl pkg install --name=squashfs-tools --image=cix-hosttools
 cixctl pkg install --name=btrfs-progs --image=cix-hosttools
 ```
 
-`cix-hosttools` is `HOST_TOOLS_IMAGE` in `daemon/src/main.c`; `spawn_cix_bootroot_assembly()` passes its rootfs to `mkbootroot` as the host-tools directory. From it `mkbootroot` stages `cp` and `gzip`, stages `btrfs` and `mkfs.btrfs` (which exist in the root only if this image carries them — without them `fs_type: "btrfs"` fails at exec), and runs `mksquashfs` to seal the root, with the image's own libraries on its search path ([ADR-0154](../adr/0154-host-tools-mksquashfs-ld-library-path.md)). The other tools `cixd` shells out to (`openssl`, `tar`, `bzip2`, `xz`, `unsquashfs`, `mkfs.ext4`) are still staged from the assembling host's own filesystem (`image/src/mkbootroot.c`).
+`cix-hosttools` is `HOST_TOOLS_IMAGE` in `daemon/src/main.c`; `spawn_cix_bootroot_assembly()` passes its rootfs to `mkbootroot` as the host-tools directory. From it `mkbootroot` stages `cp` and `gzip`, stages `btrfs` and `mkfs.btrfs` (which exist in the root only if this image carries them — without them `fs_type: "btrfs"` fails at exec), and runs `mksquashfs` to seal the root, with the image's own libraries on its search path ([ADR-0154](../adr/0154-host-tools-mksquashfs-ld-library-path.md)). The other tools `cixd` shells out to (`tar`, `bzip2`, `xz`, `unsquashfs`, `mkfs.ext4`; no longer `openssl`, since [ADR-0321](../adr/0321-cryptography-is-done-in-the-linked-libcrypto.md)) are still staged from the assembling host's own filesystem (`image/src/mkbootroot.c`).
 
 #### `cix-firmware` (optional, ADR-0263)
 
