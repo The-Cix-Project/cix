@@ -945,9 +945,18 @@ async function refreshSessionPermissions() {
 
 		sessionAuthenticated = !!(me && me.authenticated);
 		/* A session just began: sweep on the next tick rather than up
-		 * to SWEEP_INTERVAL_MS later, so the page fills in at once. */
-		if (sessionAuthenticated && !wasAuthenticated)
+		 * to SWEEP_INTERVAL_MS later, so the page fills in at once.
+		 *
+		 * The status bar too. Its version is fetched once per page load
+		 * and its uptimes once a minute, and since ADR-0317 both reads
+		 * need a login -- so a page that loaded before its login showed
+		 * no version until cixd next restarted, and no uptime for up to
+		 * a minute after logging in. */
+		if (sessionAuthenticated && !wasAuthenticated) {
 			lastSweepAt = 0;
+			refreshStatusVersion();
+			refreshStatusMeta();
+		}
 		sessionPermissions = new Set((me && me.permissions) || []);
 		sessionChecked = true;
 	} catch (e) {

@@ -6,6 +6,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The status bar fills in as soon as you log in
+
+Since ADR-0317 every read needs a login, and the status bar's two reads did not account for it. Its version ("Cix 0.2.57-… · slot b") came from `GET /v1/system/boot`, fetched once per page load and again only after cixd had been unreachable. Its uptimes and load came from `GET /v1/system/stats`, fetched once a minute. A page loaded before its login therefore showed no version until cixd next restarted, and no uptime for up to a minute. Both are now fetched the moment a session begins.
+
 ### cixd stops forking `openssl` for its cryptography (#351, ADR-0321)
 
 The PKI, the release-signing key and the Secure Boot signing keys did their cryptography by forking `/usr/bin/openssl` and parsing its output: 23 call sites in four files, behind one runner. cixd already links libcrypto for its HTTPS listener, so all of it now runs in-process through one module, `daemon/src/pkicrypto.c`. `opensslrun.c` is deleted, and `openssl` leaves the control-plane root's program list. Its libraries stay, because cixd links them.
