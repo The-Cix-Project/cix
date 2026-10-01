@@ -2201,8 +2201,10 @@ function renderCurrentView() {
 			renderBackupConfig();
 		if (onPageOf("hostauth-permissions"))
 			refreshHostauthPermissions();
-		if (onPageOf("hostauth-sessions"))
+		if (onPageOf("hostauth-sessions")) {
+			refreshHostauthConfig();
 			refreshHostauthSessions();
+		}
 
 		/*
 		 * A name in the address means a DETAIL page, which is a
@@ -11648,6 +11650,73 @@ let rollingConfigDirty = false;
  * why an unauthenticated tab must not ask. This one is called from a
  * view refresher rather than the global sweep, but the reasoning and
  * the cost are the same. */
+/*
+ * The session idle timeout, on the Sessions tab: the setting decides
+ * when every row below it expires.
+ *
+ * PUT /system/hostauth-config replaces the whole config, and an
+ * omitted ldap_* field reverts to its default -- disabled. So Save
+ * reads the config afresh and writes every field back with only the
+ * timeout changed, rather than sending the timeout alone, which would
+ * have switched off LDAP login as a side effect. The fields copied are
+ * the ones the PUT reads (api_hostauth.c); gating_active is computed
+ * and not one of them.
+ */
+let hostauthConfigDirty = false;
+
+async function refreshHostauthConfig() {
+	try {
+		const c = await apiRequest("GET", CIX_API.getHostauthConfig());
+
+		if (!hostauthConfigDirty)
+			document.getElementById("hatf-idle").value = c.idle_timeout_seconds;
+	} catch (e) {
+		/* A refused read leaves the field as it was; the Save button
+		 * already carries the session's reason when it cannot act. */
+	}
+}
+
+document.getElementById("hatf-idle").addEventListener("input", () => {
+	hostauthConfigDirty = true;
+});
+
+document.getElementById("hostauth-timeout-form").addEventListener("submit", async (event) => {
+	const seconds = Number(document.getElementById("hatf-idle").value);
+
+	event.preventDefault();
+	if (!Number.isInteger(seconds) || seconds < 0) {
+		showStatus("The idle timeout must be a whole number of seconds, 0 or more", true);
+		return;
+	}
+	/* 0 is legitimate but changes how this page itself works: every
+	 * token is spent by its first request, so each action needs a new
+	 * login. Worth one specific question before it takes effect. */
+	if (seconds === 0 &&
+	    !confirm("With an idle timeout of 0, every login is good for exactly one request, " +
+	             "including this dashboard's. Set it anyway?"))
+		return;
+	try {
+		const c = await apiRequest("GET", CIX_API.getHostauthConfig());
+
+		await apiRequest("PUT", CIX_API.putHostauthConfig(), {
+			admin_groups: c.admin_groups,
+			idle_timeout_seconds: seconds,
+			ldap_enabled: c.ldap_enabled,
+			ldap_servers: c.ldap_servers,
+			ldap_port: c.ldap_port,
+			ldap_tls: c.ldap_tls,
+			ldap_base_dn: c.ldap_base_dn,
+		});
+		hostauthConfigDirty = false;
+		clearStatus();
+		showStatus("Session idle timeout set to " + seconds + "s", false);
+		await refreshHostauthConfig();
+		await refreshHostauthSessions();
+	} catch (e) {
+		showStatus("Failed to set the session idle timeout: " + e.message, true);
+	}
+});
+
 async function refreshHostauthSessions() {
 	try {
 		const data = await apiRequest("GET", CIX_API.listHostauthSessions());

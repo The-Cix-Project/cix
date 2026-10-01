@@ -1099,6 +1099,17 @@
 					never shown here, before or after issuance; only the one-time login response ever
 					carries it. "Log out everywhere" revokes every active session for that user at once
 					(there is no per-session ID to target just one).</p>
+				<h3>Session timeout</h3>
+				<form id="hostauth-timeout-form">
+					<label>
+						Idle timeout (seconds)
+						<input type="number" id="hatf-idle" min="0" step="1" required>
+					</label>
+					<button type="submit" id="hatf-save" data-op="putHostauthConfig">Save</button>
+				</form>
+				<p class="hint">A session ends after this long without a request, and every request
+					starts the count again. 0 makes every login good for exactly one request.</p>
+				<h3>Active sessions</h3>
 				<table id="hostauth-sessions">
 					<thead>
 						<tr>

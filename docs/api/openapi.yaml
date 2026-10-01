@@ -480,7 +480,7 @@ paths:
       summary: Current host-authentication configuration (ADR-0144)
       operationId: getHostauthConfig
       x-cix-permission: identity:read
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current config
@@ -504,7 +504,7 @@ paths:
         credential exists or is needed.
       operationId: putHostauthConfig
       x-cix-permission: identity:write
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       security:
         - bearerAuth: []
       requestBody:

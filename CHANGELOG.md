@@ -6,6 +6,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The session idle timeout can be set from the dashboard
+
+`idle_timeout_seconds` (`PUT /v1/system/hostauth-config`) was settable only from `cixctl`. The host's **Sessions** tab now carries it above the session list, with the same `identity:write` gate the endpoint has. That `PUT` replaces the whole config, and an `ldap_*` field it leaves out reverts to disabled, so the dashboard reads the current config and writes every field back with only the timeout changed. Sending the timeout alone would also have switched off LDAP login. Setting 0, which makes every login good for one request, asks first.
+
 ### The status bar fills in as soon as you log in
 
 Since ADR-0317 every read needs a login, and the status bar's two reads did not account for it. Its version ("Cix 0.2.57-… · slot b") came from `GET /v1/system/boot`, fetched once per page load and again only after cixd had been unreachable. Its uptimes and load came from `GET /v1/system/stats`, fetched once a minute. A page loaded before its login therefore showed no version until cixd next restarted, and no uptime for up to a minute. Both are now fetched the moment a session begins.
