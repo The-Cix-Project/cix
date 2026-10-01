@@ -392,7 +392,7 @@ static const struct {
 	 * 2026-09-25). An explicit install is logged per package, so the
 	 * next run answers that instead of leaving it assumed.
 	 */
-	{ "cbs", "v0.1.98-1" }, { "libarchive", "3.8.1-5" }, { "zstd", "1.5.7-5" },
+	{ "cbs", "v0.1.99-1" }, { "libarchive", "3.8.1-5" }, { "zstd", "1.5.7-5" },
 	{ "xz", "5.8.3-11" },
 	/* m4: flex@2.6.4-6 declares it as a RUNTIME dependency where the
 	 * shell flex@2.6.4-2 did not, so binutils -- whose runtime deps are
