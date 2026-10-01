@@ -12415,7 +12415,6 @@ static void pkg_build_log_prune(void)
 		unlink(path);
 	}
 }
-
 /*
  * Opens this build's own log file. Best-effort: a build whose log
  * cannot be opened still builds, it just is not recorded -- diagnostics
@@ -12425,10 +12424,21 @@ static void pkg_build_log_prune(void)
  * attempts at the same version are separate files rather than one
  * overwriting the other. Losing the failed attempt at the moment you
  * retry it is precisely the wrong behaviour for a diagnostic.
+ *
+ * The timestamp is whole seconds, so it alone does not make a name
+ * unique: since #555 a second image installs the artifact the first
+ * one's build just published, typically within the same second, and
+ * the O_TRUNC open this used to do replaced the real build's log with
+ * the cache hit's empty one (test_pkg's dupbuild case, 0.2.57-423 on
+ * 192.168.15.95). So the open is O_EXCL, and a name already taken gets
+ * a -2, -3, ... suffix.
  */
 static void pkg_build_log_open(struct pkg_entry *e, const char *version)
 {
 	char dir[PATH_MAX];
+	const char *ver;
+	long long now;
+	int attempt;
 
 	e->build_log_fd = -1;
 	e->build_log_path[0] = '\0';
@@ -12443,12 +12453,22 @@ static void pkg_build_log_open(struct pkg_entry *e, const char *version)
 	 * "<name>-unknown-<time>.log" for exactly the builds most worth
 	 * finding again.
 	 */
-	snprintf(e->build_log_path, sizeof(e->build_log_path), "%s/%s-%s-%lld.log", dir, e->name,
-	         version != NULL && version[0] != '\0'
-	             ? version
-	             : (e->version[0] != '\0' ? e->version : "unknown"),
-	         (long long)time(NULL));
-	e->build_log_fd = open(e->build_log_path, O_CREAT | O_TRUNC | O_WRONLY | O_CLOEXEC, 0644);
+	ver = version != NULL && version[0] != '\0'
+	          ? version
+	          : (e->version[0] != '\0' ? e->version : "unknown");
+	now = (long long)time(NULL);
+	for (attempt = 1; attempt <= 64; attempt++) {
+		if (attempt == 1)
+			snprintf(e->build_log_path, sizeof(e->build_log_path), "%s/%s-%s-%lld.log", dir,
+			         e->name, ver, now);
+		else
+			snprintf(e->build_log_path, sizeof(e->build_log_path), "%s/%s-%s-%lld-%d.log",
+			         dir, e->name, ver, now, attempt);
+		e->build_log_fd = open(e->build_log_path,
+		                       O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0644);
+		if (e->build_log_fd >= 0 || errno != EEXIST)
+			break;
+	}
 	if (e->build_log_fd < 0)
 		e->build_log_path[0] = '\0';
 }
