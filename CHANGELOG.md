@@ -6,6 +6,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Switching containers reloads the Configuration and Packages tabs
+
+Both tabs load when they are clicked rather than on the two-second poll. So moving to another container while either was open left the previous container's recipe or package list under the new container's name. Switching containers now reloads whichever of the two is open. A reply that arrives after the operator has moved on is dropped instead of overwriting the page.
+
 ### A recipe can take over a path another package owns by declaring `replaces` (#553, cix-build-system#275)
 
 ADR-0319 refuses an install that ships a path another installed package in the image owns, and it left moves to a declaration CPDL did not yet have. cbs v0.1.99 adds a package-level `replaces { package "NAME" }`, and `cbs explain` reports it as a top-level `replaces` list. cixd reads that list from the recipe. The path-owner check lets the install through when the owner is on it. Once the install succeeds, every path it took is removed from the named package's file list, so `GET /v1/pkg/NAME` stops listing it, and deleting that package later leaves the file in place. Nothing else changed: an undeclared collision is still refused, and its error now names the declaration that would allow a move. `test_pkg`'s #553 case publishes a third package that replaces the first. It checks the install succeeds, the file lists change hands, and deleting the first package keeps the path while deleting the new owner removes it.

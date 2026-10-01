@@ -4639,6 +4639,10 @@ async function loadContainerRecipe(name) {
 	try {
 		const content = await loadContainerRecipeContent(name);
 
+		/* Moved on to another container while this was in flight. */
+		if (currentContainerDetailName !== name)
+			return;
+
 		if (!content) {
 			statusEl.textContent = "This container has a recipe, but it is empty.";
 			return;
@@ -4648,6 +4652,8 @@ async function loadContainerRecipe(name) {
 		textEl.textContent = content;
 		textEl.hidden = false;
 	} catch (err) {
+		if (currentContainerDetailName !== name)
+			return;
 		statusEl.textContent = err && err.status === 404
 			? "No recipe \u2014 this container was created directly through the API, not applied from one."
 			: "Could not load the recipe: " + (err && err.message ? err.message : "unknown error");
@@ -4700,6 +4706,11 @@ async function loadContainerPackages(name) {
 	try {
 		const d = await apiRequest("GET",
 		                           CIX_API.getImageVersionManifest(c.image, c.image_version));
+
+		/* The operator may have moved to another container while this
+		 * was in flight; its answer must not overwrite that one's. */
+		if (currentContainerDetailName !== name)
+			return;
 		const rows = Array.isArray(d.manifest) ? d.manifest : [];
 
 		statusEl.textContent = "Installed into image " + c.image + " at version "
@@ -4726,6 +4737,8 @@ async function loadContainerPackages(name) {
 			tbody.appendChild(tr);
 		});
 	} catch (err) {
+		if (currentContainerDetailName !== name)
+			return;
 		statusEl.textContent = err && err.status === 404
 			? "No manifest was recorded for version " + c.image_version + ". Versions produced "
 				+ "before per-version manifests have none, and the image's CURRENT manifest is "
@@ -4738,8 +4751,23 @@ async function loadContainerPackages(name) {
 function renderContainerDetail(name) {
 	const c = cache.containers.find((x) => x.name === name);
 	const fields = document.getElementById("cd-fields");
+	const switched = currentContainerDetailName !== name;
 
 	currentContainerDetailName = name;
+
+	/*
+	 * Configuration and Packages load when their tab is clicked, not on
+	 * the two-second poll (see the tab handler). So moving to another
+	 * container while one of them is open left the previous container's
+	 * recipe or package list on screen under the new container's name.
+	 * A change of container is the other moment they must load.
+	 */
+	if (switched && c) {
+		if (document.getElementById("cd-tab-config").classList.contains("active"))
+			loadContainerRecipe(name);
+		if (document.getElementById("cd-tab-packages").classList.contains("active"))
+			loadContainerPackages(name);
+	}
 
 	if (!c) {
 		fields.textContent = name + " \u2014 not found.";
