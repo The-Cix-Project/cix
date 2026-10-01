@@ -38,6 +38,10 @@
 
 #define HOSTAUTH_TOKEN_LEN 48 /* hex-encoded, real /dev/urandom bytes -- see hostauth.c */
 #define HOSTAUTH_SESSION_MAX 64
+/* A session's recorded source address: an IPv6 literal fits
+ * (INET6_ADDRSTRLEN, 46), though cixd's peer capture is IPv4 today
+ * (CONNTHROTTLE_IP_MAX). */
+#define HOSTAUTH_SOURCE_IP_MAX 46
 #define HOSTAUTH_ADMIN_GROUPS_MAX 8
 #define HOSTAUTH_GROUP_NAME_MAX 32 /* matches LDAP_GROUP_NAME_MAX, no header dependency */
 #define HOSTAUTH_USERNAME_MAX 32   /* matches LDAP_USER_NAME_MAX, no header dependency */
@@ -275,10 +279,14 @@ enum hostauth_login_result {
  * (HOSTAUTH_TOKEN_LEN + 1 bytes) and reports its idle-timeout-based
  * initial expiry in *out_expires_in_seconds (-1 means "never expires
  * on idle," i.e. idle_timeout_seconds == 0 is handled the other way:
- * see hostauth_check_token()'s own doc comment). */
+ * see hostauth_check_token()'s own doc comment).
+ *
+ * source_ip is the address of the client making the login request, as
+ * the connection saw it; the session keeps it, with the login time, for
+ * GET /system/hostauth/sessions. NULL or "" records it as unknown. */
 enum hostauth_login_result hostauth_login(const char *username, const char *password,
                                            char out_token[HOSTAUTH_TOKEN_LEN + 1],
-                                           int *out_expires_in_seconds);
+                                           int *out_expires_in_seconds, const char *source_ip);
 
 /* No-op if token doesn't name a live session (logout is always
  * idempotent from the caller's point of view). */

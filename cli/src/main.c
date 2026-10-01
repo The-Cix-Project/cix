@@ -372,8 +372,9 @@ static const char USAGE_TEXT[] =
 	        "               verified against this host's own CA -- a different switch from\n"
 	        "               `ldap config set --client-tls`, which configures the LDAP\n"
 	        "               clients inside containers\n"
-	        "  hostauth-sessions ls  -- every active session (username, expires-in) -- never\n"
-	        "               a raw token, before or after issuance\n"
+	        "  hostauth-sessions ls  -- every active session (username, source address,\n"
+	        "               login time, expires-in) -- never a raw token, before or\n"
+	        "               after issuance\n"
 	        "  hostauth-sessions revoke USERNAME  -- log that user out everywhere (ADR-0152)\n"
 	        "  hostauth-permissions ls  -- which permissions each group grants (ADR-0317)\n"
 	        "  hostauth-permissions vocabulary  -- every permission the API declares\n"
@@ -9260,9 +9261,20 @@ static int cmd_hostauth_config(const struct cix_client *c, int json_mode, int ar
 static void fmt_hostauth_session_line(const struct json_value *v)
 {
 	const char *username = json_str_field(v, "username");
+	const char *source = json_str_field(v, "source_ip");
 	const struct json_value *jexpires = json_object_get(v, "expires_in_seconds");
+	const struct json_value *jat = json_object_get(v, "logged_in_at");
+	char when[32] = "-";
 
-	printf("%-24s", username != NULL ? username : "");
+	if (jat != NULL && jat->type == JSON_NUMBER) {
+		time_t t = (time_t)json_as_number(jat);
+		struct tm tmv;
+
+		if (gmtime_r(&t, &tmv) != NULL)
+			strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%SZ", &tmv);
+	}
+	printf("%-24s %-16s since %-21s ", username != NULL ? username : "",
+	       source != NULL ? source : "-", when);
 	if (jexpires != NULL && jexpires->type == JSON_NUMBER)
 		printf("expires_in=%lds\n", (long)json_as_number(jexpires));
 	else

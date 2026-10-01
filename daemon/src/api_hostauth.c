@@ -75,7 +75,7 @@ void handle_login(int fd, const char *peer_ip, const char *body, size_t body_len
 	 */
 	snprintf(who, sizeof(who), "%s", username);
 
-	lerr = hostauth_login(username, password, token, &expires_in_seconds);
+	lerr = hostauth_login(username, password, token, &expires_in_seconds, peer_ip);
 	json_free(root);
 	if (lerr == HOSTAUTH_LOGIN_INVALID_CREDENTIALS) {
 		/*
@@ -100,7 +100,8 @@ void handle_login(int fd, const char *peer_ip, const char *body, size_t body_len
 
 	/* #547: a successful authentication is what clears the count. */
 	connthrottle_record_auth_success(peer_ip);
-	logstore_write("audit", "info", "%s logged in", who);
+	logstore_write("audit", "info", "%s logged in from %s", who,
+	               peer_ip[0] != '\0' ? peer_ip : "-");
 
 	{
 		struct json_writer w;

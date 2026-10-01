@@ -709,19 +709,18 @@ paths:
   /system/hostauth/sessions:
     get:
       summary: >
-        Every currently active host-auth session (ADR-0152) -- username
-        and expires_in_seconds only, never the raw token (it is shown
-        exactly once, in POST /login's own response, and never again).
+        Every currently active host-auth session (ADR-0152) -- username,
+        expires_in_seconds, logged_in_at and source_ip, never the raw token
+        (it is shown exactly once, in POST /login's own response, and never
+        again).
 
 
-        **Authenticated read** (#490). Almost every GET on this API is open;
-        this one is not, and the exception is deliberate rather than an
-        oversight elsewhere. It describes PEOPLE rather than the machine, so
-        the 401 applies to reading it as well as changing it -- the same
-        judged-by-intent exception the container console upgrade already has.
-        While gating is inactive (no admin-group account exists yet) it stays
-        open, so a fresh install cannot lock itself out of the API that would
-        explain why.
+        **Requires a login** (#490, ADR-0317). Since ADR-0317 every read on
+        this API does. This one was gated first, before ADR-0317, because
+        it describes PEOPLE rather than the machine. While gating is
+        inactive (no admin-group account exists yet) it stays open, so a
+        fresh install cannot lock itself out of the API that would explain
+        why.
 
 
         The specific exposure this closes: `expires_in_seconds` counts down
@@ -8543,14 +8542,12 @@ paths:
         `has_password`, `disabled`.
 
 
-        **Authenticated read** (#490). Almost every GET on this API is open;
-        this one is not, and the exception is deliberate rather than an
-        oversight elsewhere. It describes PEOPLE rather than the machine, so
-        the 401 applies to reading it as well as changing it -- the same
-        judged-by-intent exception the container console upgrade already has.
-        While gating is inactive (no admin-group account exists yet) it stays
-        open, so a fresh install cannot lock itself out of the API that would
-        explain why.
+        **Requires a login** (#490, ADR-0317). Since ADR-0317 every read on
+        this API does. This one was gated first, before ADR-0317, because
+        it describes PEOPLE rather than the machine. While gating is
+        inactive (no admin-group account exists yet) it stays open, so a
+        fresh install cannot lock itself out of the API that would explain
+        why.
 
 
         Gating this takes nothing away from name resolution, which was the
@@ -16774,7 +16771,7 @@ components:
             anyone (#370).
     HostauthSession:
       type: object
-      required: [username, expires_in_seconds]
+      required: [username, expires_in_seconds, logged_in_at, source_ip]
       properties:
         username:
           type: string
@@ -16782,6 +16779,19 @@ components:
           type: integer
           nullable: true
           description: Null when idle_timeout_seconds is 0 (every token single-use -- no meaningful "expires in" applies).
+        logged_in_at:
+          type: integer
+          format: int64
+          description: When this session was issued by POST /login, in Unix seconds. Fixed for the session's life; using the session renews expires_in_seconds, never this.
+        source_ip:
+          type: string
+          nullable: true
+          description: >
+            The address of the client that logged in, as cixd saw it on the
+            TCP connection (the direct peer -- nothing in front of cixd is
+            consulted). Recorded at login and not updated by later use, so
+            a token carried to another machine still shows where it was
+            issued. Null if the peer address was not known.
     ResolvConfig:
       type: object
       required: [nameservers]

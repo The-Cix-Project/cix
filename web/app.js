@@ -11659,7 +11659,7 @@ function renderHostauthSessions(sessions, emptyText = "No active sessions") {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
 
-		cell.colSpan = 3;
+		cell.colSpan = 5;
 		cell.className = "empty";
 		cell.textContent = emptyText;
 		row.appendChild(cell);
@@ -11673,6 +11673,17 @@ function renderHostauthSessions(sessions, emptyText = "No active sessions") {
 		const nameCell = document.createElement("td");
 		nameCell.textContent = s.username;
 		row.appendChild(nameCell);
+
+		/* Where and when it logged in, both recorded at login and never
+		 * moved by use -- so a token used from elsewhere still shows
+		 * where it was issued. */
+		const fromCell = document.createElement("td");
+		fromCell.textContent = s.source_ip || "-";
+		row.appendChild(fromCell);
+
+		const atCell = document.createElement("td");
+		atCell.textContent = s.logged_in_at ? new Date(s.logged_in_at * 1000).toLocaleString() : "-";
+		row.appendChild(atCell);
 
 		const expiresCell = document.createElement("td");
 		expiresCell.textContent =

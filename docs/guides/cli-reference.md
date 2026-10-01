@@ -107,7 +107,7 @@ Eleven sections can be applied, the ones a single setter owns: site, daemon, res
 | `site set [--instance-name=NAME] [--site-name=NAME] [--domain-suffix=NAME]` | Set them |
 | `hostauth-config show` | `admin_groups`, `idle_timeout_seconds` and the LDAP backend settings |
 | `hostauth-config set [--admin-group=NAME ...] [--idle-timeout-seconds=N] [--ldap-enable \| --ldap-disable] [--ldap-server=HOST ...] [--ldap-port=N] [--ldap-tls \| --no-ldap-tls] [--ldap-base-dn=NAME]` | Change only the flags given (the command fetches the current config first). Write-gating activates as soon as a real user is a member of one of `admin_groups`. `--ldap-tls` (#416) is the daemon's own bind over LDAPS; `ldap config set --client-tls` is the separate switch for LDAP clients in containers. `--ldap-enable` is refused (409) when no root CA is bootstrapped |
-| `hostauth-sessions ls` | Every active session (username, expires-in), never a token ([ADR-0152](../adr/0152-hostauth-session-introspection.md)) |
+| `hostauth-sessions ls` | Every active session (username, source address, login time, expires-in), never a token ([ADR-0152](../adr/0152-hostauth-session-introspection.md)) |
 | `hostauth-sessions revoke USERNAME` | Revoke every session that user holds |
 | `hostauth-permissions ls` | Which permissions each group grants ([ADR-0317](../adr/0317-permissions-are-declared-by-the-api-contract.md)); a user holds the union over their groups |
 | `hostauth-permissions vocabulary` | Every permission the API declares |

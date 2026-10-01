@@ -169,6 +169,8 @@ struct hostauth_session {
 	char token[HOSTAUTH_TOKEN_LEN + 1];
 	char username[HOSTAUTH_USERNAME_MAX];
 	time_t expires_at; /* meaningless (never consulted) when idle_timeout_seconds == 0 */
+	time_t logged_in_at;                     /* when hostauth_login() issued it */
+	char source_ip[HOSTAUTH_SOURCE_IP_MAX]; /* the client that logged in; "" if unknown */
 	int in_use;
 };
 
@@ -805,7 +807,7 @@ static int try_ldap_login(const char *username, const char *password, int *out_a
 
 enum hostauth_login_result hostauth_login(const char *username, const char *password,
                                            char out_token[HOSTAUTH_TOKEN_LEN + 1],
-                                           int *out_expires_in_seconds)
+                                           int *out_expires_in_seconds, const char *source_ip)
 {
 	int i, slot = -1;
 	time_t now = time(NULL);
@@ -841,6 +843,9 @@ enum hostauth_login_result hostauth_login(const char *username, const char *pass
 		                                    * ldap_generate_secret()'s own callers have */
 	snprintf(g_sessions[slot].username, sizeof(g_sessions[slot].username), "%s", username);
 	g_sessions[slot].expires_at = now + (time_t)g_config.idle_timeout_seconds;
+	g_sessions[slot].logged_in_at = now;
+	snprintf(g_sessions[slot].source_ip, sizeof(g_sessions[slot].source_ip), "%s",
+	         source_ip != NULL ? source_ip : "");
 	g_sessions[slot].in_use = 1;
 
 	snprintf(out_token, HOSTAUTH_TOKEN_LEN + 1, "%s", g_sessions[slot].token);
@@ -863,7 +868,8 @@ void hostauth_logout(const char *token)
 }
 
 /*
- * {"sessions":[{"username":...,"expires_in_seconds":<int or null>}, ...]}
+ * {"sessions":[{"username":...,"expires_in_seconds":<int or null>,
+ *   "logged_in_at":<unix seconds>,"source_ip":<string or null>}, ...]}
  * -- every currently active session, real admin visibility into a
  * table that previously had none at all (no endpoint, no CLI, no web
  * panel). The raw token is never included, before or after issuance --
@@ -895,6 +901,13 @@ void hostauth_write_sessions_json(struct json_writer *w)
 		jw_key(w, "expires_in_seconds");
 		if (g_config.idle_timeout_seconds > 0)
 			jw_int(w, (long long)(g_sessions[i].expires_at - now));
+		else
+			jw_null(w);
+		jw_key(w, "logged_in_at");
+		jw_int(w, (long long)g_sessions[i].logged_in_at);
+		jw_key(w, "source_ip");
+		if (g_sessions[i].source_ip[0] != '\0')
+			jw_str(w, g_sessions[i].source_ip);
 		else
 			jw_null(w);
 		jw_obj_close(w);

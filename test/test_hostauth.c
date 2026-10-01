@@ -30,6 +30,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -1337,6 +1338,27 @@ int main(void)
 						        "FAIL: root_admin session missing a real "
 						        "expires_in_seconds\n");
 						ok = 0;
+					}
+					/* When and where it logged in: this test's own
+					 * logins, so within the last hour and from loopback
+					 * (some steps bind another 127.x source). */
+					{
+						const struct json_value *jat = json_object_get(s, "logged_in_at");
+						const char *src = json_str_field(s, "source_ip");
+						double now = (double)time(NULL);
+
+						if (jat == NULL || jat->type != JSON_NUMBER ||
+						    json_as_number(jat) > now || json_as_number(jat) < now - 3600) {
+							fprintf(stderr, "FAIL: root_admin session has no plausible "
+							                "logged_in_at\n");
+							ok = 0;
+						}
+						if (src == NULL || strncmp(src, "127.", 4) != 0) {
+							fprintf(stderr, "FAIL: root_admin session source_ip is %s, "
+							                "expected a loopback address\n",
+							        src != NULL ? src : "(null)");
+							ok = 0;
+						}
 					}
 				}
 				if (json_object_get(s, "token") != NULL) {

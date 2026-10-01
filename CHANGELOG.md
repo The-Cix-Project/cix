@@ -6,6 +6,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The session list says when and where each session logged in
+
+`GET /v1/system/hostauth/sessions` gave only a username and seconds-to-expiry, so two sessions for one account, for example the dashboard and `cixctl`, could not be told apart, and nothing said where a session came from. Each session now records `logged_in_at` (Unix seconds) and `source_ip` (the client address cixd saw on the TCP connection) when `POST /login` issues it. Both are fixed for the session's life, so a token used from another machine still shows where it was issued. `cixctl hostauth-sessions ls` and the dashboard's Sessions table show both, and a successful login's audit line now names its source address, as a refused one already did. The endpoint's description also stops claiming that most reads need no login, which has not been true since ADR-0317. `test_hostauth` checks both fields on its own session.
+
 ### A container with no console says so instead of offering a terminal
 
 The Console tab of a container that declares no console kept an empty terminal on screen and said to "use Run with an absolute path". There is no such control on that tab, and the console endpoint takes only a declared console's name, answering 409 otherwise. The terminal is now hidden and the tab shows the daemon's own message: the container declares no console, so there is nothing to attach to.
