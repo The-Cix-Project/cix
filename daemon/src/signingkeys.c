@@ -1,7 +1,7 @@
 #include "signingkeys.h"
 
 #include "logstore.h"
-#include "pki.h"
+#include "pkicrypto.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -24,7 +24,6 @@
 #define CRT_BASENAME "cix-signing.crt"
 #define CER_BASENAME "cix-signing.cer"
 
-#define OPENSSL_BIN "/usr/bin/openssl"
 
 static char g_key_path[PATH_MAX];
 static char g_crt_path[PATH_MAX];
@@ -93,49 +92,14 @@ static int write_temp(const char *path, const char *buf, size_t len, mode_t mode
 	return 0;
 }
 
-/*
- * Both public keys, in PEM, from the two temporaries. Comparing these
- * is how a mismatched paste is caught: `openssl pkey -pubout` and
- * `openssl x509 -pubkey -noout` emit byte-identical PEM for the same
- * key, so an exact string compare is the whole test and needs no
- * parsing of either side.
- */
-static int pubkey_of_privkey(const char *key_path, char *out, size_t out_size)
-{
-	char *argv[6];
-
-	argv[0] = (char *)OPENSSL_BIN;
-	argv[1] = (char *)"pkey";
-	argv[2] = (char *)"-in";
-	argv[3] = (char *)key_path;
-	argv[4] = (char *)"-pubout";
-	argv[5] = NULL;
-	return pki_run_openssl(argv, out, out_size);
-}
-
-static int pubkey_of_cert(const char *crt_path, char *out, size_t out_size)
-{
-	char *argv[7];
-
-	argv[0] = (char *)OPENSSL_BIN;
-	argv[1] = (char *)"x509";
-	argv[2] = (char *)"-in";
-	argv[3] = (char *)crt_path;
-	argv[4] = (char *)"-pubkey";
-	argv[5] = (char *)"-noout";
-	argv[6] = NULL;
-	return pki_run_openssl(argv, out, out_size);
-}
-
 enum signingkeys_error signingkeys_set(const char *key_pem, const char *cert_pem)
 {
 	char key_tmp[PATH_MAX];
 	char crt_tmp[PATH_MAX];
 	char cer_tmp[PATH_MAX];
-	char key_pub[4096];
-	char crt_pub[4096];
+	struct pkicrypto_cert_fields fields;
 	enum signingkeys_error rc = SIGNINGKEYS_ERR_PERSIST_FAILED;
-	char *argv[9];
+	int match;
 
 	if (key_pem == NULL || cert_pem == NULL)
 		return SIGNINGKEYS_ERR_BAD_KEY;
@@ -159,15 +123,22 @@ enum signingkeys_error signingkeys_set(const char *key_pem, const char *cert_pem
 	 * a release host may be actively using -- is still intact if any
 	 * of this fails.
 	 */
-	if (pubkey_of_privkey(key_tmp, key_pub, sizeof(key_pub)) != 0) {
-		rc = SIGNINGKEYS_ERR_BAD_KEY;
-		goto out;
-	}
-	if (pubkey_of_cert(crt_tmp, crt_pub, sizeof(crt_pub)) != 0) {
+	/*
+	 * The certificate must parse, then the key must, then they must be
+	 * one pair -- a mismatched paste is caught by comparing the key
+	 * with the certificate's public key (#351: in-process, where it
+	 * compared the PEM output of two forked openssl calls).
+	 */
+	if (pkicrypto_cert_fields(crt_tmp, &fields, NULL, 0) != 0) {
 		rc = SIGNINGKEYS_ERR_BAD_CERT;
 		goto out;
 	}
-	if (key_pub[0] == '\0' || strcmp(key_pub, crt_pub) != 0) {
+	match = pkicrypto_key_matches_cert(key_tmp, crt_tmp, NULL, 0);
+	if (match < 0) {
+		rc = SIGNINGKEYS_ERR_BAD_KEY;
+		goto out;
+	}
+	if (match == 0) {
 		rc = SIGNINGKEYS_ERR_MISMATCH;
 		goto out;
 	}
@@ -184,16 +155,7 @@ enum signingkeys_error signingkeys_set(const char *key_pem, const char *cert_pem
 		cer_tmp[0] = '\0';
 		goto out;
 	}
-	argv[0] = (char *)OPENSSL_BIN;
-	argv[1] = (char *)"x509";
-	argv[2] = (char *)"-in";
-	argv[3] = crt_tmp;
-	argv[4] = (char *)"-outform";
-	argv[5] = (char *)"DER";
-	argv[6] = (char *)"-out";
-	argv[7] = cer_tmp;
-	argv[8] = NULL;
-	if (pki_run_openssl(argv, NULL, 0) != 0) {
+	if (pkicrypto_cert_pem_to_der(crt_tmp, cer_tmp, NULL, 0) != 0) {
 		rc = SIGNINGKEYS_ERR_BAD_CERT;
 		goto out;
 	}
@@ -242,27 +204,6 @@ enum signingkeys_error signingkeys_clear(void)
 	return SIGNINGKEYS_OK;
 }
 
-/* "prefix=value\n" out of openssl's own -noout output. */
-static int field_after(const char *output, const char *prefix, char *out, size_t out_size)
-{
-	const char *p = strstr(output, prefix);
-	const char *end;
-	size_t len;
-
-	if (p == NULL)
-		return -1;
-	p += strlen(prefix);
-	end = strchr(p, '\n');
-	len = end != NULL ? (size_t)(end - p) : strlen(p);
-	while (len > 0 && (p[len - 1] == '\r' || p[len - 1] == ' '))
-		len--;
-	if (len == 0 || len >= out_size)
-		return -1;
-	memcpy(out, p, len);
-	out[len] = '\0';
-	return 0;
-}
-
 static int file_exists(const char *path)
 {
 	struct stat st;
@@ -274,40 +215,18 @@ void signingkeys_write_json(struct json_writer *w)
 {
 	int key_set = file_exists(g_key_path);
 	int cert_set = file_exists(g_crt_path) && file_exists(g_cer_path);
-	char out[8192];
-	char subject[512];
-	char not_after[128];
-	char fingerprint[256];
-	int have_subject = 0;
-	int have_not_after = 0;
-	int have_fingerprint = 0;
+	struct pkicrypto_cert_fields fields;
+	int have = 0;
 
-	if (cert_set) {
-		char *argv[9];
-
-		argv[0] = (char *)OPENSSL_BIN;
-		argv[1] = (char *)"x509";
-		argv[2] = (char *)"-in";
-		argv[3] = g_crt_path;
-		argv[4] = (char *)"-noout";
-		argv[5] = (char *)"-subject";
-		argv[6] = (char *)"-enddate";
-		argv[7] = (char *)"-fingerprint";
-		argv[8] = NULL;
-		/*
-		 * -sha256 is not passed: openssl 3's default fingerprint digest
-		 * is already SHA-256, and older builds that default to SHA-1
-		 * would report a differently-labelled value rather than a
-		 * wrong one -- the label openssl prints is kept verbatim below
-		 * for exactly that reason.
-		 */
-		if (pki_run_openssl(argv, out, sizeof(out)) == 0) {
-			have_subject = field_after(out, "subject=", subject, sizeof(subject)) == 0;
-			have_not_after = field_after(out, "notAfter=", not_after, sizeof(not_after)) == 0;
-			have_fingerprint =
-			    field_after(out, "Fingerprint=", fingerprint, sizeof(fingerprint)) == 0;
-		}
-	}
+	/*
+	 * The certificate's own identity. #351 moved this in-process, and
+	 * the fingerprint became SHA-256 as the field always claimed: the
+	 * forked `openssl x509 -fingerprint` printed SHA-1 (its default,
+	 * measured on OpenSSL 3.0.20 by probe-pki-cli@1), whatever the
+	 * comment that stood here said about OpenSSL 3.
+	 */
+	if (cert_set)
+		have = pkicrypto_cert_fields(g_crt_path, &fields, NULL, 0) == 0;
 
 	jw_obj_open(w);
 	jw_key(w, "key_set");
@@ -315,18 +234,18 @@ void signingkeys_write_json(struct json_writer *w)
 	jw_key(w, "cert_set");
 	jw_bool(w, cert_set);
 	jw_key(w, "subject");
-	if (have_subject)
-		jw_str(w, subject);
+	if (have)
+		jw_str(w, fields.subject);
 	else
 		jw_null(w);
 	jw_key(w, "not_after");
-	if (have_not_after)
-		jw_str(w, not_after);
+	if (have)
+		jw_str(w, fields.not_after);
 	else
 		jw_null(w);
 	jw_key(w, "fingerprint_sha256");
-	if (have_fingerprint)
-		jw_str(w, fingerprint);
+	if (have)
+		jw_str(w, fields.sha256_fingerprint);
 	else
 		jw_null(w);
 	jw_obj_close(w);

@@ -4,6 +4,7 @@
 #include "dns.h"
 #include "persist.h"
 #include "logstore.h"
+#include "pkicrypto.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -13,12 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <unistd.h>
-
-extern char **environ;
-
-#define PKI_OPENSSL_BIN "/usr/bin/openssl"
 
 struct pki_cert_record {
 	char name[DNS_NAME_MAX];
@@ -41,39 +37,16 @@ static char g_certs_dir[PATH_MAX];
 static char g_certs_state_path[PATH_MAX];
 static struct pki_cert_record g_certs[PKI_MAX_CERTS];
 
-
-
-/* Finds "<prefix><value>\n" (or end-of-string) inside output and
- * copies value into out. Used to pull e.g. "serial=..."/"notAfter=..."
- * out of `openssl x509 -noout ...`'s stdout. */
-static int extract_field(const char *output, const char *prefix, char *out, size_t out_size)
-{
-	const char *p = strstr(output, prefix);
-	const char *end;
-	size_t len;
-
-	if (p == NULL)
-		return -1;
-	p += strlen(prefix);
-	end = strchr(p, '\n');
-	len = end != NULL ? (size_t)(end - p) : strlen(p);
-	if (len > 0 && p[len - 1] == '\r')
-		len--;
-	if (len >= out_size)
-		return -1;
-	memcpy(out, p, len);
-	out[len] = '\0';
-	return 0;
-}
-
 /*
  * A CA's common_name is a free-form display label ("Cix Root CA"),
- * not a hostname -- dns_name_is_valid() doesn't apply. It is however
+ * not a hostname -- dns_name_is_valid() doesn't apply. It used to be
  * embedded verbatim into an openssl `-subj "/CN=<common_name>"`
- * argument, so an unvalidated '/' would let a caller inject
- * additional, unintended DN fields (e.g. "Foo/O=EvilOrg" becomes
- * CN=Foo, O=EvilOrg). Reject '/' and control characters; otherwise
- * unrestricted.
+ * argument, where an unvalidated '/' would have injected further DN
+ * fields ("Foo/O=EvilOrg" became CN=Foo, O=EvilOrg). Since #351 it is
+ * one CN value set through libcrypto and cannot, but the rule stays:
+ * relaxing it would change which names the API accepts, and a CA name
+ * with a '/' or a control character has no legitimate use. Reject both;
+ * otherwise unrestricted.
  */
 static int common_name_is_valid(const char *cn)
 {
@@ -273,10 +246,7 @@ int pki_init(const char *pki_dir, const char *certs_state_path)
 
 enum pki_error pki_ca_create(const char *common_name, int days)
 {
-	char subj[PKI_SUBJECT_MAX + 8];
-	char days_str[16];
 	char errbuf[512];
-	char *argv[24];
 
 	if (!common_name_is_valid(common_name))
 		return PKI_ERR_INVALID_NAME;
@@ -286,99 +256,55 @@ enum pki_error pki_ca_create(const char *common_name, int days)
 	if (persist_mkdir_p(g_pki_dir) != 0 || persist_mkdir_p(g_certs_dir) != 0)
 		return PKI_ERR_PERSIST_FAILED;
 
-	snprintf(subj, sizeof(subj), "/CN=%s", common_name);
-	snprintf(days_str, sizeof(days_str), "%d", days);
-
-	argv[0] = (char *)PKI_OPENSSL_BIN;
-	argv[1] = "genpkey";
-	argv[2] = "-algorithm";
-	argv[3] = "RSA";
-	argv[4] = "-pkeyopt";
-	argv[5] = "rsa_keygen_bits:2048";
-	argv[6] = "-out";
-	argv[7] = g_ca_key_path;
-	argv[8] = NULL;
-	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
-		fprintf(stderr, "pki: CA genpkey failed: %s\n", errbuf);
+	/* #351: in-process; it was `openssl genpkey` then `req -x509 -new`. */
+	if (pkicrypto_rsa_key_create(g_ca_key_path, errbuf, sizeof(errbuf)) != 0) {
+		fprintf(stderr, "pki: CA key generation failed: %s\n", errbuf);
 		unlink(g_ca_key_path);
 		return PKI_ERR_OPENSSL_FAILED;
 	}
-	chmod(g_ca_key_path, 0600);
-
-	argv[0] = (char *)PKI_OPENSSL_BIN;
-	argv[1] = "req";
-	argv[2] = "-x509";
-	argv[3] = "-new";
-	argv[4] = "-key";
-	argv[5] = g_ca_key_path;
-	argv[6] = "-days";
-	argv[7] = days_str;
-	argv[8] = "-subj";
-	argv[9] = subj;
-	argv[10] = "-out";
-	argv[11] = g_ca_cert_path;
-	argv[12] = NULL;
-	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
-		fprintf(stderr, "pki: CA req -x509 failed: %s\n", errbuf);
+	if (pkicrypto_ca_create(g_ca_key_path, common_name, days, g_ca_cert_path, errbuf,
+	                        sizeof(errbuf)) != 0) {
+		fprintf(stderr, "pki: CA certificate failed: %s\n", errbuf);
 		unlink(g_ca_key_path);
 		unlink(g_ca_cert_path);
 		return PKI_ERR_OPENSSL_FAILED;
 	}
-	chmod(g_ca_cert_path, 0644);
-
 	return PKI_OK;
 }
 
-enum pki_error pki_ca_get(struct json_writer *w)
+/* The fields GET /pki/ca and /pki/intermediate report, then the PEM. */
+static enum pki_error write_ca_json(struct json_writer *w, const char *cert_path)
 {
-	char output[1024];
-	char subject[PKI_SUBJECT_MAX + 8];
-	char serial[PKI_SERIAL_MAX];
-	char not_before[PKI_DATE_MAX];
-	char not_after[PKI_DATE_MAX];
+	struct pkicrypto_cert_fields fields;
 	char *cert_pem;
 	size_t cert_pem_len;
-	char *argv[24];
 
-	if (!pki_ca_bootstrapped())
-		return PKI_ERR_NOT_BOOTSTRAPPED;
-
-	argv[0] = (char *)PKI_OPENSSL_BIN;
-	argv[1] = "x509";
-	argv[2] = "-in";
-	argv[3] = g_ca_cert_path;
-	argv[4] = "-noout";
-	argv[5] = "-subject";
-	argv[6] = "-serial";
-	argv[7] = "-startdate";
-	argv[8] = "-enddate";
-	argv[9] = NULL;
-	if (pki_run_openssl(argv, output, sizeof(output)) != 0)
+	if (pkicrypto_cert_fields(cert_path, &fields, NULL, 0) != 0)
 		return PKI_ERR_OPENSSL_FAILED;
-
-	if (extract_field(output, "subject=", subject, sizeof(subject)) != 0 ||
-	    extract_field(output, "serial=", serial, sizeof(serial)) != 0 ||
-	    extract_field(output, "notBefore=", not_before, sizeof(not_before)) != 0 ||
-	    extract_field(output, "notAfter=", not_after, sizeof(not_after)) != 0)
-		return PKI_ERR_OPENSSL_FAILED;
-
-	if (persist_read_file(g_ca_cert_path, &cert_pem, &cert_pem_len) != 0 || cert_pem == NULL)
+	if (persist_read_file(cert_path, &cert_pem, &cert_pem_len) != 0 || cert_pem == NULL)
 		return PKI_ERR_PERSIST_FAILED;
 
 	jw_obj_open(w);
 	jw_key(w, "subject");
-	jw_str(w, subject);
+	jw_str(w, fields.subject);
 	jw_key(w, "serial");
-	jw_str(w, serial);
+	jw_str(w, fields.serial);
 	jw_key(w, "not_before");
-	jw_str(w, not_before);
+	jw_str(w, fields.not_before);
 	jw_key(w, "not_after");
-	jw_str(w, not_after);
+	jw_str(w, fields.not_after);
 	jw_key(w, "cert_pem");
 	jw_str(w, cert_pem);
 	jw_obj_close(w);
 	free(cert_pem);
 	return PKI_OK;
+}
+
+enum pki_error pki_ca_get(struct json_writer *w)
+{
+	if (!pki_ca_bootstrapped())
+		return PKI_ERR_NOT_BOOTSTRAPPED;
+	return write_ca_json(w, g_ca_cert_path);
 }
 
 int pki_intermediate_bootstrapped(void)
@@ -399,11 +325,15 @@ int pki_intermediate_cert_pem(char **out_pem, size_t *out_len)
 
 enum pki_error pki_intermediate_create(const char *common_name, int days)
 {
-	char csr_path[PATH_MAX];
-	char subj[PKI_SUBJECT_MAX + 8];
-	char days_str[16];
+	/* CA:TRUE with pathlen 0, and keyCertSign/cRLSign -- what makes the
+	 * result a real intermediate CA rather than another leaf. These are
+	 * the -addext strings the forked `openssl req` carried before #351,
+	 * now parsed by the same libcrypto routine in-process. */
+	static const char *const ext[] = {
+		"basicConstraints=critical,CA:TRUE,pathlen:0",
+		"keyUsage=critical,keyCertSign,cRLSign",
+	};
 	char errbuf[512];
-	char *argv[24];
 
 	if (!common_name_is_valid(common_name))
 		return PKI_ERR_INVALID_NAME;
@@ -411,148 +341,37 @@ enum pki_error pki_intermediate_create(const char *common_name, int days)
 		return PKI_ERR_NOT_BOOTSTRAPPED;
 	if (pki_intermediate_bootstrapped())
 		return PKI_ERR_ALREADY_BOOTSTRAPPED;
-	if (snprintf(csr_path, sizeof(csr_path), "%s/intermediate.csr", g_pki_dir) >=
-	    (int)sizeof(csr_path))
-		return PKI_ERR_PERSIST_FAILED;
 
-	snprintf(subj, sizeof(subj), "/CN=%s", common_name);
-	snprintf(days_str, sizeof(days_str), "%d", days);
-
-	/* 1. intermediate keypair */
-	argv[0] = (char *)PKI_OPENSSL_BIN;
-	argv[1] = "genpkey";
-	argv[2] = "-algorithm";
-	argv[3] = "RSA";
-	argv[4] = "-pkeyopt";
-	argv[5] = "rsa_keygen_bits:2048";
-	argv[6] = "-out";
-	argv[7] = g_intermediate_key_path;
-	argv[8] = NULL;
-	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
-		fprintf(stderr, "pki: intermediate genpkey failed: %s\n", errbuf);
+	if (pkicrypto_rsa_key_create(g_intermediate_key_path, errbuf, sizeof(errbuf)) != 0) {
+		fprintf(stderr, "pki: intermediate key generation failed: %s\n", errbuf);
 		unlink(g_intermediate_key_path);
 		return PKI_ERR_OPENSSL_FAILED;
 	}
-	chmod(g_intermediate_key_path, 0600);
-
-	/* 2. CSR, with CA:TRUE + keyCertSign/cRLSign baked in via -addext
-	 * (the same pattern pki_cert_create()'s own leaf CSR already uses
-	 * for its SAN extension) -- this is what makes the signed result a
-	 * real intermediate CA, not just another leaf. */
-	argv[0] = (char *)PKI_OPENSSL_BIN;
-	argv[1] = "req";
-	argv[2] = "-new";
-	argv[3] = "-key";
-	argv[4] = g_intermediate_key_path;
-	argv[5] = "-subj";
-	argv[6] = subj;
-	argv[7] = "-addext";
-	argv[8] = "basicConstraints=critical,CA:TRUE,pathlen:0";
-	argv[9] = "-addext";
-	argv[10] = "keyUsage=critical,keyCertSign,cRLSign";
-	argv[11] = "-out";
-	argv[12] = csr_path;
-	argv[13] = NULL;
-	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
-		fprintf(stderr, "pki: intermediate req failed: %s\n", errbuf);
+	/* Signed by the ROOT, not self-signed: the intermediate's trust
+	 * derives from the root, which is the whole point. */
+	if (pkicrypto_cert_issue(g_ca_cert_path, g_ca_key_path, g_intermediate_key_path,
+	                         common_name, ext, (int)(sizeof(ext) / sizeof(ext[0])), days,
+	                         g_intermediate_cert_path, errbuf, sizeof(errbuf)) != 0) {
+		fprintf(stderr, "pki: intermediate certificate failed: %s\n", errbuf);
 		unlink(g_intermediate_key_path);
-		unlink(csr_path);
-		return PKI_ERR_OPENSSL_FAILED;
-	}
-
-	/* 3. sign with the ROOT (not self-signed -- this is the whole
-	 * point: the intermediate's trust derives from the root). */
-	argv[0] = (char *)PKI_OPENSSL_BIN;
-	argv[1] = "x509";
-	argv[2] = "-req";
-	argv[3] = "-in";
-	argv[4] = csr_path;
-	argv[5] = "-CA";
-	argv[6] = g_ca_cert_path;
-	argv[7] = "-CAkey";
-	argv[8] = g_ca_key_path;
-	argv[9] = "-CAcreateserial";
-	argv[10] = "-days";
-	argv[11] = days_str;
-	argv[12] = "-copy_extensions";
-	argv[13] = "copy";
-	argv[14] = "-out";
-	argv[15] = g_intermediate_cert_path;
-	argv[16] = NULL;
-	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
-		fprintf(stderr, "pki: intermediate x509 sign failed: %s\n", errbuf);
-		unlink(g_intermediate_key_path);
-		unlink(csr_path);
 		unlink(g_intermediate_cert_path);
 		return PKI_ERR_OPENSSL_FAILED;
 	}
-	chmod(g_intermediate_cert_path, 0644);
-	unlink(csr_path);
-
 	return PKI_OK;
 }
 
 enum pki_error pki_intermediate_get(struct json_writer *w)
 {
-	char output[1024];
-	char subject[PKI_SUBJECT_MAX + 8];
-	char serial[PKI_SERIAL_MAX];
-	char not_before[PKI_DATE_MAX];
-	char not_after[PKI_DATE_MAX];
-	char *cert_pem;
-	size_t cert_pem_len;
-	char *argv[24];
-
 	if (!pki_intermediate_bootstrapped())
 		return PKI_ERR_NOT_BOOTSTRAPPED;
-
-	argv[0] = (char *)PKI_OPENSSL_BIN;
-	argv[1] = "x509";
-	argv[2] = "-in";
-	argv[3] = g_intermediate_cert_path;
-	argv[4] = "-noout";
-	argv[5] = "-subject";
-	argv[6] = "-serial";
-	argv[7] = "-startdate";
-	argv[8] = "-enddate";
-	argv[9] = NULL;
-	if (pki_run_openssl(argv, output, sizeof(output)) != 0)
-		return PKI_ERR_OPENSSL_FAILED;
-
-	if (extract_field(output, "subject=", subject, sizeof(subject)) != 0 ||
-	    extract_field(output, "serial=", serial, sizeof(serial)) != 0 ||
-	    extract_field(output, "notBefore=", not_before, sizeof(not_before)) != 0 ||
-	    extract_field(output, "notAfter=", not_after, sizeof(not_after)) != 0)
-		return PKI_ERR_OPENSSL_FAILED;
-
-	if (persist_read_file(g_intermediate_cert_path, &cert_pem, &cert_pem_len) != 0 ||
-	    cert_pem == NULL)
-		return PKI_ERR_PERSIST_FAILED;
-
-	jw_obj_open(w);
-	jw_key(w, "subject");
-	jw_str(w, subject);
-	jw_key(w, "serial");
-	jw_str(w, serial);
-	jw_key(w, "not_before");
-	jw_str(w, not_before);
-	jw_key(w, "not_after");
-	jw_str(w, not_after);
-	jw_key(w, "cert_pem");
-	jw_str(w, cert_pem);
-	jw_obj_close(w);
-	free(cert_pem);
-	return PKI_OK;
+	return write_ca_json(w, g_intermediate_cert_path);
 }
 
 enum pki_error pki_cert_create(const char *name, const char *const *sans, int san_count, int days,
                                 const char *owner_container, struct json_writer *w)
 {
-	char key_path[PATH_MAX], csr_path[PATH_MAX], crt_path[PATH_MAX];
-	char subj[DNS_NAME_MAX + 8];
-	char days_str[16];
+	char key_path[PATH_MAX], crt_path[PATH_MAX];
 	char sanbuf[PKI_MAX_SANS * (DNS_NAME_MAX + 8) + 32];
-	char output[1024];
 	char errbuf[512];
 	char serial[PKI_SERIAL_MAX];
 	char not_after[PKI_DATE_MAX];
@@ -560,7 +379,7 @@ enum pki_error pki_cert_create(const char *name, const char *const *sans, int sa
 	size_t key_pem_len, cert_pem_len;
 	size_t off;
 	int i, slot = -1;
-	char *argv[24];
+	struct pkicrypto_cert_fields fields;
 	struct pki_cert_record *rec;
 
 	if (!dns_name_is_valid(name) || san_count < 1 || san_count > PKI_MAX_SANS)
@@ -586,13 +405,9 @@ enum pki_error pki_cert_create(const char *name, const char *const *sans, int sa
 
 	if (snprintf(key_path, sizeof(key_path), "%s/%s.key", g_certs_dir, name) >=
 	        (int)sizeof(key_path) ||
-	    snprintf(csr_path, sizeof(csr_path), "%s/%s.csr", g_certs_dir, name) >=
-	        (int)sizeof(csr_path) ||
 	    snprintf(crt_path, sizeof(crt_path), "%s/%s.crt", g_certs_dir, name) >=
 	        (int)sizeof(crt_path))
 		return PKI_ERR_INVALID_NAME;
-	snprintf(subj, sizeof(subj), "/CN=%s", name);
-	snprintf(days_str, sizeof(days_str), "%d", days);
 
 	/*
 	 * An IPv4 literal becomes an IP: SAN, everything else a DNS: SAN
@@ -650,95 +465,44 @@ enum pki_error pki_cert_create(const char *name, const char *const *sans, int sa
 	}
 
 	/* 1. leaf keypair */
-	argv[0] = (char *)PKI_OPENSSL_BIN;
-	argv[1] = "genpkey";
-	argv[2] = "-algorithm";
-	argv[3] = "RSA";
-	argv[4] = "-pkeyopt";
-	argv[5] = "rsa_keygen_bits:2048";
-	argv[6] = "-out";
-	argv[7] = key_path;
-	argv[8] = NULL;
-	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
-		fprintf(stderr, "pki: genpkey (leaf %s) failed: %s\n", name, errbuf);
+	if (pkicrypto_rsa_key_create(key_path, errbuf, sizeof(errbuf)) != 0) {
+		fprintf(stderr, "pki: key generation (leaf %s) failed: %s\n", name, errbuf);
 		unlink(key_path);
 		return PKI_ERR_OPENSSL_FAILED;
 	}
-	chmod(key_path, 0600);
 
-	/* 2. CSR with the SAN extension baked in (no shell means no
-	 * -extfile process substitution -- -addext at CSR-creation time
-	 * plus -copy_extensions copy at signing time is the clean
-	 * equivalent, verified live before this was written). */
-	argv[0] = (char *)PKI_OPENSSL_BIN;
-	argv[1] = "req";
-	argv[2] = "-new";
-	argv[3] = "-key";
-	argv[4] = key_path;
-	argv[5] = "-subj";
-	argv[6] = subj;
-	argv[7] = "-addext";
-	argv[8] = sanbuf;
-	argv[9] = "-out";
-	argv[10] = csr_path;
-	argv[11] = NULL;
-	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
-		fprintf(stderr, "pki: req (leaf %s) failed: %s\n", name, errbuf);
-		unlink(key_path);
-		unlink(csr_path);
-		return PKI_ERR_OPENSSL_FAILED;
-	}
-
-	/* 3. sign with the CA -- the intermediate if one has been
+	/* 2. sign with the CA -- the intermediate if one has been
 	 * bootstrapped (pki_intermediate_create()), the root directly
-	 * otherwise. Transparent to every existing caller: no signature
-	 * change here, just which key/cert pair actually signs. */
-	argv[0] = (char *)PKI_OPENSSL_BIN;
-	argv[1] = "x509";
-	argv[2] = "-req";
-	argv[3] = "-in";
-	argv[4] = csr_path;
-	argv[5] = "-CA";
-	argv[6] = pki_intermediate_bootstrapped() ? g_intermediate_cert_path : g_ca_cert_path;
-	argv[7] = "-CAkey";
-	argv[8] = pki_intermediate_bootstrapped() ? g_intermediate_key_path : g_ca_key_path;
-	argv[9] = "-CAcreateserial";
-	argv[10] = "-days";
-	argv[11] = days_str;
-	argv[12] = "-copy_extensions";
-	argv[13] = "copy";
-	argv[14] = "-out";
-	argv[15] = crt_path;
-	argv[16] = NULL;
-	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
-		fprintf(stderr, "pki: x509 sign (leaf %s) failed: %s\n", name, errbuf);
-		unlink(key_path);
-		unlink(csr_path);
-		unlink(crt_path);
-		return PKI_ERR_OPENSSL_FAILED;
-	}
-	chmod(crt_path, 0644);
-	unlink(csr_path);
+	 * otherwise -- carrying the SAN extension. In-process since #351;
+	 * the forked route was a CSR with -addext, then `x509 -req
+	 * -copy_extensions copy`, which produced the same certificate. */
+	{
+		const char *ext[1];
 
-	/* 4. read back serial + expiry for the metadata index */
-	argv[0] = (char *)PKI_OPENSSL_BIN;
-	argv[1] = "x509";
-	argv[2] = "-in";
-	argv[3] = crt_path;
-	argv[4] = "-noout";
-	argv[5] = "-serial";
-	argv[6] = "-enddate";
-	argv[7] = NULL;
-	if (pki_run_openssl(argv, output, sizeof(output)) != 0 ||
-	    extract_field(output, "serial=", serial, sizeof(serial)) != 0 ||
-	    extract_field(output, "notAfter=", not_after, sizeof(not_after)) != 0) {
+		ext[0] = sanbuf;
+		if (pkicrypto_cert_issue(
+		        pki_intermediate_bootstrapped() ? g_intermediate_cert_path : g_ca_cert_path,
+		        pki_intermediate_bootstrapped() ? g_intermediate_key_path : g_ca_key_path,
+		        key_path, name, ext, 1, days, crt_path, errbuf, sizeof(errbuf)) != 0) {
+			fprintf(stderr, "pki: signing (leaf %s) failed: %s\n", name, errbuf);
+			unlink(key_path);
+			unlink(crt_path);
+			return PKI_ERR_OPENSSL_FAILED;
+		}
+	}
+
+	/* 3. read back serial + expiry for the metadata index */
+	if (pkicrypto_cert_fields(crt_path, &fields, errbuf, sizeof(errbuf)) != 0 ||
+	    strlen(fields.serial) >= sizeof(serial) || strlen(fields.not_after) >= sizeof(not_after)) {
 		fprintf(stderr, "pki: could not read back metadata for leaf %s\n", name);
 		unlink(key_path);
 		unlink(crt_path);
 		return PKI_ERR_OPENSSL_FAILED;
 	}
+	snprintf(serial, sizeof(serial), "%s", fields.serial);
+	snprintf(not_after, sizeof(not_after), "%s", fields.not_after);
 
-	/* 5. persist the metadata index entry */
+	/* 4. persist the metadata index entry */
 	rec = &g_certs[slot];
 	memset(rec, 0, sizeof(*rec));
 	strncpy(rec->name, name, sizeof(rec->name) - 1);
@@ -757,7 +521,7 @@ enum pki_error pki_cert_create(const char *name, const char *const *sans, int sa
 		return PKI_ERR_PERSIST_FAILED;
 	}
 
-	/* 6. the one-time response: cert + key PEM */
+	/* 5. the one-time response: cert + key PEM */
 	if (persist_read_file(key_path, &key_pem, &key_pem_len) != 0 || key_pem == NULL ||
 	    persist_read_file(crt_path, &cert_pem, &cert_pem_len) != 0 || cert_pem == NULL) {
 		free(key_pem);
@@ -1022,6 +786,10 @@ enum pki_error pki_ca_reset(const char *root_common_name, const char *intermedia
 	unlink(g_ca_cert_path);
 	unlink(g_intermediate_key_path);
 	unlink(g_intermediate_cert_path);
+	/* Serial counters the forked `x509 -CAcreateserial` kept beside
+	 * each CA before #351. Nothing writes them now (every serial is
+	 * random), but a host that issued certificates before still has
+	 * them, and a reset clears this directory's state. */
 	snprintf(path, sizeof(path), "%s/ca.srl", g_pki_dir);
 	unlink(path);
 	snprintf(path, sizeof(path), "%s/intermediate.srl", g_pki_dir);
@@ -1092,94 +860,24 @@ enum pki_error pki_ca_reset(const char *root_common_name, const char *intermedia
  * under a passphrase the daemon never stores, so an exported bundle
  * sitting on an operator's laptop is not the trust root.
  *
- * The passphrase reaches openssl through a 0600 file, never argv:
- * -pass pass:<secret> puts it in /proc/<pid>/cmdline, readable for as
- * long as the child lives. The file is in PKI_DIR, which already holds
- * every private key on the box, so it adds no exposure that partition
- * does not already carry, and it is unlinked on every exit path.
+ * The passphrase and the plaintext never reach a file or an argv:
+ * since #351 the bundle is encrypted and decrypted in-process
+ * (pkicrypto_export_encrypt/decrypt). Before that both went through
+ * 0600 temp files in PKI_DIR to a forked `openssl enc`.
  *
- * -aes-256-cbc with pbkdf2 at 600000 iterations, sha256, salted. Every
- * one of those is stated explicitly because `openssl enc` defaults
- * have changed across versions and a bundle that cannot be decrypted
- * by the next release is not a backup. CBC rather than an AEAD mode
- * because `openssh enc` refuses AEAD outright -- so the bundle has no
- * integrity tag, and import compensates by validating what it decodes
- * (see pki_import()) rather than trusting that it decrypted.
+ * -aes-256-cbc with pbkdf2 at 600000 iterations, sha256, salted: the
+ * format `openssl enc` wrote, kept byte for byte so every bundle
+ * exported by an earlier release still imports, and fixed in code
+ * rather than left to any tool's defaults -- a bundle that cannot be
+ * decrypted by the next release is not a backup. CBC rather than an
+ * AEAD mode because that is the format `openssl enc` produced (it
+ * refuses AEAD outright) -- so the bundle has no integrity tag, and
+ * import compensates by validating what it decodes (see pki_import())
+ * rather than trusting that it decrypted.
  */
 
 #define PKI_EXPORT_CIPHER "-aes-256-cbc"
 #define PKI_EXPORT_ITER "600000"
-
-/* Capacity of an argv array, in slots, for argv_push() below. */
-#define ARGV_CAP(a) ((int)(sizeof(a) / sizeof((a)[0])))
-
-/*
- * Appends one argument to an incrementally-built openssl command line,
- * bounds-checked against the array's own capacity and always leaving
- * room for the NULL terminator. Returns 0, or -1 when the array is
- * full -- callers OR the results together and check once, then abandon
- * the invocation rather than writing past their own stack frame.
- *
- * This exists because of a measured bug, not a hypothetical one: the
- * first cut of pki_export() and pki_import() (#415) built a
- * 17-argument command line into `char *argv[16]`, so the 17th argument
- * and the NULL terminator landed two pointers past the end of the
- * frame. -Wall -Werror cannot see a runtime index, so it compiled
- * clean, shipped, and presented as an opaque 500 from
- * POST /v1/pki/export with nothing in the log store -- measured on
- * 192.168.15.95 running v2.57.109, 2026-09-12. The five older openssl
- * invocations in this file assign fixed indices into `argv[24]` and
- * were all verified in range (max index 16) while fixing this; they
- * are left as they are, and anything built incrementally goes through
- * here.
- */
-static int argv_push(char **argv, int *n, int cap, const char *val)
-{
-	if (*n >= cap - 1)
-		return -1;
-	argv[(*n)++] = (char *)val;
-	return 0;
-}
-
-/* One temp file under PKI_DIR, created O_EXCL at 0600. Returns 0 on
- * success. suffix distinguishes the three this module needs open at
- * once, so a concurrent export cannot collide with an import.
- *
- * O_EXCL is load-bearing rather than decorative: it refuses to write
- * through a symlink or into a file something else planted, and these
- * files hold a passphrase and the decrypted CA key. That means the
- * open must be allowed to FAIL, so the only stale file it can trip
- * over -- one left by a previous daemon whose pid this process reuses
- * -- is cleared and the create retried exactly once, rather than
- * unlinking unconditionally first (which would make O_EXCL dead code
- * and this comment false). */
-static int pki_tmp_create(const char *suffix, char *out_path, size_t out_size, const char *data,
-                           size_t data_len)
-{
-	int fd;
-
-	if ((size_t)snprintf(out_path, out_size, "%s/.export-%s.%d", g_pki_dir, suffix,
-	                     (int)getpid()) >= out_size)
-		return -1;
-	fd = open(out_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
-	if (fd < 0 && errno == EEXIST) {
-		unlink(out_path);
-		fd = open(out_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
-	}
-	if (fd < 0)
-		return -1;
-	if (data != NULL && data_len > 0) {
-		ssize_t n = write(fd, data, data_len);
-
-		if (n < 0 || (size_t)n != data_len) {
-			close(fd);
-			unlink(out_path);
-			return -1;
-		}
-	}
-	close(fd);
-	return 0;
-}
 
 /* Reads a PEM file straight into a json_writer string value, or writes
  * JSON null when it is absent. Absent is legitimate: an install may
@@ -1202,18 +900,10 @@ static int pki_export_file_field(struct json_writer *w, const char *key, const c
 
 enum pki_error pki_export(const char *passphrase, struct json_writer *w)
 {
-	char plain_path[PATH_MAX], enc_path[PATH_MAX], pass_path[PATH_MAX];
-	char pass_arg[PATH_MAX + 16];
-	/* 24, matching every other openssl invocation in this file. The
-	 * command line below is 17 arguments plus a NULL; argv_push()
-	 * enforces the bound rather than this number being trusted. */
-	char *argv[24];
-	char errbuf[4096];
+	char errbuf[512];
 	char *cipher = NULL;
-	size_t cipher_len;
 	struct json_writer plain;
-	enum pki_error result = PKI_OK;
-	int i, j, pushed;
+	int i, j;
 
 	if (passphrase == NULL || passphrase[0] == '\0')
 		return PKI_ERR_INVALID_NAME;
@@ -1267,71 +957,22 @@ enum pki_error pki_export(const char *passphrase, struct json_writer *w)
 	jw_arr_close(&plain);
 	jw_obj_close(&plain);
 
-	if (pki_tmp_create("pass", pass_path, sizeof(pass_path), passphrase, strlen(passphrase)) != 0 ||
-	    pki_tmp_create("plain", plain_path, sizeof(plain_path), plain.buf, plain.len) != 0 ||
-	    pki_tmp_create("enc", enc_path, sizeof(enc_path), NULL, 0) != 0) {
+	/*
+	 * #351: encrypted in-process, byte-compatible with the
+	 * `openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -salt
+	 * -a -A` it replaced, so every bundle exported before still imports.
+	 * The plaintext -- every private key -- no longer passes through a
+	 * file on disk, and is zeroed before its buffer is freed.
+	 */
+	if (pkicrypto_export_encrypt(passphrase, (const unsigned char *)plain.buf, plain.len,
+	                             &cipher, errbuf, sizeof(errbuf)) != 0) {
+		explicit_bzero(plain.buf, plain.len);
 		jw_free(&plain);
-		unlink(pass_path);
-		unlink(plain_path);
-		return PKI_ERR_PERSIST_FAILED;
+		logstore_write("pki", "error", "export encryption failed: %s", errbuf);
+		return PKI_ERR_OPENSSL_FAILED;
 	}
+	explicit_bzero(plain.buf, plain.len);
 	jw_free(&plain);
-
-	snprintf(pass_arg, sizeof(pass_arg), "file:%s", pass_path);
-	i = 0;
-	pushed = 0;
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), PKI_OPENSSL_BIN);
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "enc");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), PKI_EXPORT_CIPHER);
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-pbkdf2");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-iter");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), PKI_EXPORT_ITER);
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-md");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "sha256");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-salt");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-a");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-A");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-in");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), plain_path);
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-out");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), enc_path);
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-pass");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), pass_arg);
-	if (pushed != 0) {
-		logstore_write("pki", "error",
-		                "export: openssl command line does not fit argv[%d]",
-		                ARGV_CAP(argv));
-		result = PKI_ERR_PERSIST_FAILED;
-	} else {
-		argv[i] = NULL;
-		if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
-			/* logstore, not just stderr: cixd's stderr is never
-			 * mirrored into the log store, so an openssl failure
-			 * reported only there leaves POST /v1/pki/export as a
-			 * 500 with no recorded cause anywhere -- which is
-			 * exactly how the argv overflow above hid. */
-			logstore_write("pki", "error", "export encryption failed: %s", errbuf);
-			result = PKI_ERR_OPENSSL_FAILED;
-		} else if (persist_read_file(enc_path, &cipher, &cipher_len) != 0 ||
-		            cipher == NULL) {
-			logstore_write("pki", "error",
-			                "export: could not read back the encrypted bundle");
-			result = PKI_ERR_PERSIST_FAILED;
-		}
-	}
-
-	unlink(pass_path);
-	unlink(plain_path);
-	unlink(enc_path);
-	if (result != PKI_OK) {
-		free(cipher);
-		return result;
-	}
-
-	/* -A gives one base64 line, but openssl still terminates it. */
-	while (cipher_len > 0 &&
-	       (cipher[cipher_len - 1] == '\n' || cipher[cipher_len - 1] == '\r'))
-		cipher[--cipher_len] = '\0';
 
 	jw_obj_open(w);
 	jw_key(w, "bundle");
@@ -1366,54 +1007,24 @@ static int pki_import_file_field(const struct json_value *obj, const char *key, 
  * the decoded blob is validated before a single byte reaches the
  * store: it must parse as JSON, carry the version this code knows, and
  * its ca_key and ca_cert must be a matching pair. The pair check is
- * the one that actually pins it -- openssl derives a public key from
- * each and they must be byte-identical, which no corrupted input
- * produces by accident.
+ * the one that actually pins it -- the key must be the one the
+ * certificate certifies (compared in-process since #351), which no
+ * corrupted input produces by accident.
  */
 static int pki_import_pair_matches(const char *key_path, const char *cert_path)
 {
-	char from_key[8192] = { 0 }, from_cert[8192] = { 0 };
-	char *argv[8];
-	int i;
-
-	i = 0;
-	argv[i++] = (char *)PKI_OPENSSL_BIN;
-	argv[i++] = "pkey";
-	argv[i++] = "-in";
-	argv[i++] = (char *)key_path;
-	argv[i++] = "-pubout";
-	argv[i] = NULL;
-	if (pki_run_openssl(argv, from_key, sizeof(from_key)) != 0 || from_key[0] == '\0')
-		return 0;
-
-	i = 0;
-	argv[i++] = (char *)PKI_OPENSSL_BIN;
-	argv[i++] = "x509";
-	argv[i++] = "-in";
-	argv[i++] = (char *)cert_path;
-	argv[i++] = "-noout";
-	argv[i++] = "-pubkey";
-	argv[i] = NULL;
-	if (pki_run_openssl(argv, from_cert, sizeof(from_cert)) != 0 || from_cert[0] == '\0')
-		return 0;
-
-	return strcmp(from_key, from_cert) == 0;
+	return pkicrypto_key_matches_cert(key_path, cert_path, NULL, 0) == 1;
 }
 
 enum pki_error pki_import(const char *passphrase, const char *bundle)
 {
-	char enc_path[PATH_MAX], plain_path[PATH_MAX], pass_path[PATH_MAX];
-	char pass_arg[PATH_MAX + 16];
-	/* 24, see pki_export()'s own note on this number. */
-	char *argv[24];
-	char errbuf[4096];
-	char *plain = NULL;
+	char errbuf[512];
+	unsigned char *plain = NULL;
 	size_t plain_len;
 	struct json_value *root = NULL;
 	const struct json_value *jcerts;
 	enum pki_error result = PKI_OK;
 	size_t ci;
-	int i, pushed;
 
 	if (passphrase == NULL || passphrase[0] == '\0' || bundle == NULL || bundle[0] == '\0')
 		return PKI_ERR_INVALID_NAME;
@@ -1429,62 +1040,19 @@ enum pki_error pki_import(const char *passphrase, const char *bundle)
 	if (pki_ca_bootstrapped())
 		return PKI_ERR_ALREADY_BOOTSTRAPPED;
 
-	if (pki_tmp_create("pass", pass_path, sizeof(pass_path), passphrase, strlen(passphrase)) != 0 ||
-	    pki_tmp_create("enc", enc_path, sizeof(enc_path), bundle, strlen(bundle)) != 0 ||
-	    pki_tmp_create("plain", plain_path, sizeof(plain_path), NULL, 0) != 0) {
-		unlink(pass_path);
-		unlink(enc_path);
-		return PKI_ERR_PERSIST_FAILED;
-	}
-
-	snprintf(pass_arg, sizeof(pass_arg), "file:%s", pass_path);
-	i = 0;
-	pushed = 0;
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), PKI_OPENSSL_BIN);
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "enc");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-d");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), PKI_EXPORT_CIPHER);
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-pbkdf2");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-iter");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), PKI_EXPORT_ITER);
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-md");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "sha256");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-a");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-A");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-in");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), enc_path);
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-out");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), plain_path);
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-pass");
-	pushed |= argv_push(argv, &i, ARGV_CAP(argv), pass_arg);
-	if (pushed != 0) {
-		logstore_write("pki", "error",
-		                "import: openssl command line does not fit argv[%d]",
-		                ARGV_CAP(argv));
-		unlink(pass_path);
-		unlink(enc_path);
-		unlink(plain_path);
-		return PKI_ERR_PERSIST_FAILED;
-	}
-	argv[i] = NULL;
-	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
-		/* Overwhelmingly the wrong passphrase. Not logged with the
-		 * openssl text, which says "bad decrypt" and nothing an
-		 * operator can act on beyond what the status code says. */
-		unlink(pass_path);
-		unlink(enc_path);
-		unlink(plain_path);
+	/*
+	 * #351: decrypted in-process. The cipher is the one
+	 * `openssl enc -d` undid before, so a bundle exported by any
+	 * earlier release imports unchanged; the plaintext never touches
+	 * the disk, and is zeroed once parsed.
+	 */
+	if (pkicrypto_export_decrypt(passphrase, bundle, strlen(bundle), &plain, &plain_len, errbuf,
+	                             sizeof(errbuf)) != 0) {
+		logstore_write("pki", "error", "import: %s", errbuf);
 		return PKI_ERR_OPENSSL_FAILED;
 	}
-	if (persist_read_file(plain_path, &plain, &plain_len) != 0 || plain == NULL)
-		result = PKI_ERR_PERSIST_FAILED;
-	unlink(pass_path);
-	unlink(enc_path);
-	unlink(plain_path);
-	if (result != PKI_OK)
-		return result;
-
-	root = json_parse(plain, plain_len);
+	root = json_parse((const char *)plain, plain_len);
+	explicit_bzero(plain, plain_len);
 	free(plain);
 	if (root == NULL || root->type != JSON_OBJECT ||
 	    (int)json_as_number(json_object_get(root, "version")) != 1 ||

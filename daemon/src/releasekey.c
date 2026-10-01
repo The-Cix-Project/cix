@@ -1,7 +1,7 @@
 #include "releasekey.h"
 
 #include "base64.h"
-#include "opensslrun.h"
+#include "pkicrypto.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -16,7 +16,6 @@
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 
-#define OPENSSL_BIN "/usr/bin/openssl"
 #define ED25519_PUB_LEN 32
 #define ED25519_SIG_LEN 64
 #define RELEASEKEY_ID_LEN 8
@@ -51,53 +50,18 @@ const char *releasekey_strerror(enum releasekey_error e)
 }
 
 /*
- * The raw 32-byte public key.
+ * The raw 32-byte public key, and a refusal for any key that is not
+ * Ed25519 -- so a wrong key type fails here, before anything is stored,
+ * rather than at signing time on a real release.
  *
- * Taken as the tail of the DER SubjectPublicKeyInfo rather than parsed:
- * an Ed25519 SPKI is a fixed 44 bytes whose last 32 are the key itself,
- * and openssl refuses to emit one at all for any other algorithm -- so
- * a wrong key type fails here, before anything is stored, rather than
- * at signing time on a real release.
+ * In-process since #351. These are the same 32 bytes the last 32 of
+ * `openssl pkey -pubout -outform DER` were, so every key id derived from
+ * them (key_id() below) is unchanged.
  */
 static enum releasekey_error public_raw(const char *key_path, unsigned char out[ED25519_PUB_LEN])
 {
-	char der_path[PATH_MAX];
-	char *argv[10];
-	FILE *f;
-	unsigned char der[256];
-	size_t n;
-	enum releasekey_error rc = RELEASEKEY_ERR_BAD_KEY;
-
-	snprintf(der_path, sizeof(der_path), "%s.pub.der", key_path);
-	argv[0] = (char *)OPENSSL_BIN;
-	argv[1] = (char *)"pkey";
-	argv[2] = (char *)"-in";
-	argv[3] = (char *)key_path;
-	argv[4] = (char *)"-pubout";
-	argv[5] = (char *)"-outform";
-	argv[6] = (char *)"DER";
-	argv[7] = (char *)"-out";
-	argv[8] = der_path;
-	argv[9] = NULL;
-	if (pki_run_openssl(argv, NULL, 0) != 0) {
-		unlink(der_path);
-		return RELEASEKEY_ERR_BAD_KEY;
-	}
-	f = fopen(der_path, "rb");
-	if (f == NULL) {
-		unlink(der_path);
-		return RELEASEKEY_ERR_IO;
-	}
-	n = fread(der, 1, sizeof(der), f);
-	fclose(f);
-	unlink(der_path);
-	/* 44 bytes exactly: 12 of algorithm identifier, 32 of key. Anything
-	 * else is not Ed25519 and must not be treated as one. */
-	if (n == 44) {
-		memcpy(out, der + 12, ED25519_PUB_LEN);
-		rc = RELEASEKEY_OK;
-	}
-	return rc;
+	return pkicrypto_ed25519_public_raw(key_path, out, NULL, 0) == 0 ? RELEASEKEY_OK
+	                                                                 : RELEASEKEY_ERR_BAD_KEY;
 }
 
 static void key_id(const unsigned char pub[ED25519_PUB_LEN], unsigned char out[RELEASEKEY_ID_LEN])
@@ -194,40 +158,14 @@ enum releasekey_error releasekey_key_id_hex(char *out, size_t out_size)
 	return RELEASEKEY_OK;
 }
 
-/* openssl pkeyutl -sign -rawin: Ed25519 is PureEdDSA, so this is a
- * signature over the file's own bytes with no digest step. */
+/* Ed25519 is PureEdDSA, so this is a signature over the file's own
+ * bytes with no digest step -- what `openssl pkeyutl -sign -rawin`
+ * produced, done in-process since #351. */
 static enum releasekey_error sign_raw(const char *in_path, unsigned char out[ED25519_SIG_LEN])
 {
-	char sig_path[PATH_MAX];
-	char *argv[12];
-	FILE *f;
-	size_t n;
-
-	snprintf(sig_path, sizeof(sig_path), "%s.rawsig", in_path);
-	argv[0] = (char *)OPENSSL_BIN;
-	argv[1] = (char *)"pkeyutl";
-	argv[2] = (char *)"-sign";
-	argv[3] = (char *)"-rawin";
-	argv[4] = (char *)"-inkey";
-	argv[5] = g_key_path;
-	argv[6] = (char *)"-in";
-	argv[7] = (char *)in_path;
-	argv[8] = (char *)"-out";
-	argv[9] = sig_path;
-	argv[10] = NULL;
-	if (pki_run_openssl(argv, NULL, 0) != 0) {
-		unlink(sig_path);
-		return RELEASEKEY_ERR_SIGN;
-	}
-	f = fopen(sig_path, "rb");
-	if (f == NULL) {
-		unlink(sig_path);
-		return RELEASEKEY_ERR_IO;
-	}
-	n = fread(out, 1, ED25519_SIG_LEN, f);
-	fclose(f);
-	unlink(sig_path);
-	return n == ED25519_SIG_LEN ? RELEASEKEY_OK : RELEASEKEY_ERR_SIGN;
+	return pkicrypto_ed25519_sign_file(g_key_path, in_path, out, NULL, 0) == 0
+	           ? RELEASEKEY_OK
+	           : RELEASEKEY_ERR_SIGN;
 }
 
 enum releasekey_error releasekey_sign_file(const char *path, const char *sig_path,
@@ -299,77 +237,13 @@ enum releasekey_error releasekey_sign_file(const char *path, const char *sig_pat
  * build something now has to decide whether to trust it.
  */
 
-/*
- * The fixed 12-byte prefix of an Ed25519 SubjectPublicKeyInfo.
- *
- * public_raw() above takes a key as the last 32 bytes of a 44-byte DER
- * SPKI; this goes the other way, wrapping a raw key back into one so
- * openssl will read it. The same 44/12/32 split, written once in each
- * direction rather than as a magic offset in two places.
- */
-static const unsigned char g_ed25519_spki_prefix[12] = { 0x30, 0x2a, 0x30, 0x05, 0x06, 0x03,
-	                                                  0x2b, 0x65, 0x70, 0x03, 0x21, 0x00 };
-
-/* One Ed25519 signature check: `sig` over the whole of `in_path`. */
+/* One Ed25519 signature check: `sig` over the whole of `in_path`.
+ * In-process since #351, where it wrote the key and signature to
+ * scratch files and forked `openssl pkeyutl -verify -rawin`. */
 static int verify_raw(const unsigned char pub[ED25519_PUB_LEN], const char *in_path,
-                       const unsigned char sig[ED25519_SIG_LEN], const char *scratch_stem)
+                       const unsigned char sig[ED25519_SIG_LEN])
 {
-	char der_path[PATH_MAX], sig_path[PATH_MAX];
-	unsigned char der[44];
-	char *argv[16];
-	FILE *f;
-	int rc = -1;
-
-	snprintf(der_path, sizeof(der_path), "%s.%d.vpub.der", scratch_stem, (int)getpid());
-	snprintf(sig_path, sizeof(sig_path), "%s.%d.vsig", scratch_stem, (int)getpid());
-
-	memcpy(der, g_ed25519_spki_prefix, sizeof(g_ed25519_spki_prefix));
-	memcpy(der + sizeof(g_ed25519_spki_prefix), pub, ED25519_PUB_LEN);
-
-	f = fopen(der_path, "wb");
-	if (f == NULL)
-		return -1;
-	if (fwrite(der, 1, sizeof(der), f) != sizeof(der)) {
-		fclose(f);
-		unlink(der_path);
-		return -1;
-	}
-	fclose(f);
-
-	f = fopen(sig_path, "wb");
-	if (f == NULL) {
-		unlink(der_path);
-		return -1;
-	}
-	if (fwrite(sig, 1, ED25519_SIG_LEN, f) != ED25519_SIG_LEN) {
-		fclose(f);
-		unlink(der_path);
-		unlink(sig_path);
-		return -1;
-	}
-	fclose(f);
-
-	/* -rawin for the same reason signing uses it: Ed25519 is PureEdDSA
-	 * and signs the message itself, with no digest step of our own. */
-	argv[0] = (char *)OPENSSL_BIN;
-	argv[1] = (char *)"pkeyutl";
-	argv[2] = (char *)"-verify";
-	argv[3] = (char *)"-rawin";
-	argv[4] = (char *)"-pubin";
-	argv[5] = (char *)"-inkey";
-	argv[6] = der_path;
-	argv[7] = (char *)"-keyform";
-	argv[8] = (char *)"DER";
-	argv[9] = (char *)"-sigfile";
-	argv[10] = sig_path;
-	argv[11] = (char *)"-in";
-	argv[12] = (char *)in_path;
-	argv[13] = NULL;
-	rc = pki_run_openssl(argv, NULL, 0);
-
-	unlink(der_path);
-	unlink(sig_path);
-	return rc == 0 ? 0 : -1;
+	return pkicrypto_ed25519_verify_file(pub, in_path, sig) == 0 ? 0 : -1;
 }
 
 /*
@@ -517,7 +391,7 @@ enum releasekey_error releasekey_verify_file(const char *path, const char *sig_p
 	if (find_trusted_key(trusted_dir, key_id_want, pub) != 0)
 		return RELEASEKEY_ERR_UNKNOWN_KEY;
 
-	if (verify_raw(pub, path, sig, sig_path) != 0)
+	if (verify_raw(pub, path, sig) != 0)
 		return RELEASEKEY_ERR_VERIFY;
 
 	/*
@@ -538,7 +412,7 @@ enum releasekey_error releasekey_verify_file(const char *path, const char *sig_p
 		return RELEASEKEY_ERR_IO;
 	}
 	fclose(f);
-	i = verify_raw(pub, gsig_in, gsig, gsig_in);
+	i = verify_raw(pub, gsig_in, gsig);
 	unlink(gsig_in);
 	if (i != 0)
 		return RELEASEKEY_ERR_VERIFY;

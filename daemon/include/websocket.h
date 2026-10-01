@@ -16,15 +16,12 @@
 
 /*
  * Computes the Sec-WebSocket-Accept value (RFC 6455 4.2.2) for a
- * client's Sec-WebSocket-Key by shelling out to /usr/bin/openssl
- * (sha1 of key+GUID, then base64) -- this codebase's own established
- * convention (daemon/src/pki.c's run_openssl()) is "never link a
- * crypto library into this daemon, always shell to the real openssl
- * binary." Writes a NUL-terminated base64 string (no trailing
- * newline) into out. Returns 0, or -1 on any failure (fork/exec/pipe,
- * or openssl itself exiting nonzero) -- verified against the RFC's
- * own worked example ("dGhlIHNhbXBsZSBub25jZQ==" ->
- * "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=").
+ * client's Sec-WebSocket-Key: the SHA-1 of key+GUID, base64-encoded,
+ * through the libcrypto cixd links (it forked /usr/bin/openssl twice
+ * for this until #351). Writes a NUL-terminated base64 string (no
+ * trailing newline) into out. Returns 0, or -1 if the key is too long
+ * or out is too small -- verified against the RFC's own worked example
+ * ("dGhlIHNhbXBsZSBub25jZQ==" -> "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=").
  */
 int ws_compute_accept(const char *client_key, char *out, size_t out_size);
 

@@ -27,8 +27,6 @@
 #define CONTROLPLANE_PROGRAMS(X)                                                                   \
 	/* the console's shell (spawn_console_shell() in cixd) */                                   \
 	X(CIXCTL, "/bin/cixctl", CP_ALWAYS)                                                         \
-	/* PKI, release and artifact signing */                                                     \
-	X(OPENSSL, "/usr/bin/openssl", CP_ALWAYS)                                                   \
 	/* legacy .tar.gz artifacts; tar runs xz and bzip2 itself by name */                        \
 	X(TAR, "/usr/bin/tar", CP_ALWAYS)                                                           \
 	X(GZIP, "/usr/bin/gzip", CP_ALWAYS)                                                         \

@@ -876,7 +876,10 @@ int main(int argc, char **argv)
 			const char *host_path;   /* where this build host has it */
 			const char *rootfs_path; /* relative to image_root, matching the _BIN macro exactly */
 		} shelled_bins[] = {
-			{ "/usr/bin/openssl", "usr/bin/openssl" },     /* PKI_OPENSSL_BIN, daemon/src/pki.c */
+			/* openssl: NOT here any more (#351) -- the PKI, release-key
+			 * and signing-key code moved in-process to the libcrypto cixd
+			 * already links (daemon/src/pkicrypto.c), and nothing else in
+			 * the control plane execve()s it. */
 			/* curl: NOT here any more (#410) -- cixd's own fetches all
 			 * moved in-process to libcurl (daemon/src/curlfetch.c),
 			 * and nothing else in the control plane ever execve()s
@@ -988,7 +991,9 @@ int main(int argc, char **argv)
 		 * the layout says where it goes.
 		 */
 		static const char *const shelled_bin_libs[] = {
-			/* openssl */
+			/* cixd itself links both (the HTTPS listener, and since #351
+			 * the PKI and signing code in pkicrypto.c), and libcurl needs
+			 * libssl. Only the openssl PROGRAM left the root. */
 			"libssl.so.3",
 			"libcrypto.so.3",
 			/* curl */

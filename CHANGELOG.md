@@ -6,6 +6,23 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cixd stops forking `openssl` for its cryptography (#351, ADR-0321)
+
+The PKI, the release-signing key and the Secure Boot signing keys did their cryptography by forking `/usr/bin/openssl` and parsing its output: 23 call sites in four files, behind one runner. cixd already links libcrypto for its HTTPS listener, so all of it now runs in-process through one module, `daemon/src/pkicrypto.c`. `opensslrun.c` is deleted, and `openssl` leaves the control-plane root's program list. Its libraries stay, because cixd links them.
+
+The module reproduces what the CLI produced, measured on 192.168.15.95 with OpenSSL 3.0.20 by `probe-pki-cli@1`:
+- the certificate profile, with the same extensions in the same order and the same critical flags;
+- the field text `GET /v1/pki/ca` returns;
+- the export bundle's `enc -aes-256-cbc -pbkdf2 -iter 600000` format, byte for byte, so earlier bundles still import;
+- Ed25519 keys and signatures, so release key ids are unchanged.
+
+The new SELFTEST `test_pkicrypto` holds the CLI's own outputs as known answers and verifies a fresh root → intermediate → leaf chain.
+
+Three things change visibly:
+- Certificate serials are random each time, where the CLI counted up from a random start.
+- `GET /v1/system/signing-keys`' `fingerprint_sha256` now is a SHA-256 fingerprint. It was SHA-1, because the CLI's `-fingerprint` defaults to SHA-1, whatever the comment beside it said.
+- The export passphrase and the decrypted bundle no longer pass through temp files, and the plaintext is zeroed after use.
+
 ### The session list says when and where each session logged in
 
 `GET /v1/system/hostauth/sessions` gave only a username and seconds-to-expiry, so two sessions for one account, for example the dashboard and `cixctl`, could not be told apart, and nothing said where a session came from. Each session now records `logged_in_at` (Unix seconds) and `source_ip` (the client address cixd saw on the TCP connection) when `POST /login` issues it. Both are fixed for the session's life, so a token used from another machine still shows where it was issued. `cixctl hostauth-sessions ls` and the dashboard's Sessions table show both, and a successful login's audit line now names its source address, as a refused one already did. The endpoint's description also stops claiming that most reads need no login, which has not been true since ADR-0317. `test_hostauth` checks both fields on its own session.

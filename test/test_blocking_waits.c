@@ -222,7 +222,7 @@ static const struct budget g_budgets[] = {
 	{ "daemon/src/exec.c", 2, "namespace-join intermediates" },
 	{ "daemon/src/diskformat.c", 2, "mkfs intermediate" },
 	{ "daemon/src/websocket.c", 0, "#351: the SHA-1+base64 handshake digest moved in-process (EVP), no forked child left to wait on" },
-	{ "daemon/src/opensslrun.c", 1, "openssl, bounded" },
+	{ "daemon/src/pkicrypto.c", 0, "#351: the PKI, release-key and signing-key work moved in-process to libcrypto; opensslrun.c and its one bounded wait on a forked openssl are gone" },
 	{ "daemon/src/kmod.c", 1, "modprobe, bounded" },
 	{ "daemon/src/storagemigrate.c", 1, "double-fork intermediate" },
 	{ "daemon/src/containerstoragemigrate.c", 1, "double-fork intermediate" },
@@ -262,8 +262,9 @@ static const struct budget g_budgets[] = {
  * container_net_apply_sysctls_running() in src/container_net.c, the
  * bounded setns() helper its per-file entry above argues for. Then
  * 58 -> 57 for #464: main.c's run_cmd(), an unbounded wait on a
- * whole-rootfs `cp`, removed along with the fork. */
-#define TOTAL_ALLOWED 57
+ * whole-rootfs `cp`, removed along with the fork. Then 57 -> 56 for
+ * #351: opensslrun.c's wait on a forked openssl, gone with the file. */
+#define TOTAL_ALLOWED 56
 
 static int is_comment(const char *line)
 {

@@ -7,14 +7,12 @@
 
 /*
  * Phase 9 part 1: a single internal root CA plus REST-managed leaf
- * certificate issuance. Actual cryptography (keypair generation, CSR
- * signing) is done by the daemon shelling out to the system's real,
- * unmodified `openssl` binary as a short-lived subprocess -- never
- * linked into the daemon (ADR-0007's "no third-party dependency
- * footprint anywhere in the daemon" stays intact: exec'ing isn't
- * linking) and never hand-rolled (the same "real software, not
- * hand-rolled" reasoning BIRD and dnsmasq were chosen under in
- * Phases 7 and 8).
+ * certificate issuance. The cryptography (key generation, signing,
+ * reading certificates back, the export cipher) is done in the
+ * libcrypto cixd already links for its HTTPS listener (ADR-0059), by
+ * daemon/src/pkicrypto.c -- never hand-rolled, and since #351 never by
+ * forking the `openssl` binary, which is how it was first built
+ * (ADR-0321).
  *
  * The CA private key is never returned over the API, in any endpoint,
  * ever -- it is the root of trust and must never leave the host. Leaf
@@ -44,27 +42,12 @@ enum pki_error {
 };
 
 /*
- * pki_dir is the root of the on-disk layout (ca.key, ca.crt, ca.srl,
+ * pki_dir is the root of the on-disk layout (ca.key, ca.crt,
  * certs/<name>.{key,crt}); certs_state_path is the persisted leaf-cert
  * metadata index (name/serial/not_after/sans -- a fast-listing cache,
  * not the source of truth for correctness; the key/cert files on disk
  * are authoritative). Loads that index, if any, at startup.
  */
-/*
- * Forks and execve()s PKI_OPENSSL_BIN with argv (NULL-terminated,
- * argv[0] conventionally the binary path), capturing the child's
- * stdout AND stderr into out when non-NULL. Returns 0 only when the
- * child exited 0.
- *
- * Exported, rather than kept static here, so signingkeys.c can reuse
- * the one place this project talks to the openssl binary instead of
- * growing a second copy of the same fork/exec/capture logic. The
- * captured output is for server-side diagnostics and for parsing
- * `-noout` query results -- never echo it raw into an HTTP response,
- * since openssl's own errors can quote input material.
- */
-/* Defined in opensslrun.c -- see opensslrun.h for why it lives there. */
-#include "opensslrun.h"
 
 int pki_init(const char *pki_dir, const char *certs_state_path);
 
@@ -75,17 +58,14 @@ int pki_repoint(const char *new_pki_dir, const char *new_certs_state_path);
 
 int pki_ca_bootstrapped(void);
 
-/* common_name must not contain '/' or control characters -- it is
- * embedded verbatim into an openssl `-subj "/CN=<common_name>"`
- * argument, and an unvalidated '/' would let a caller inject
- * additional, unintended DN fields (e.g. "Foo/O=EvilOrg"). */
+/* common_name must not contain '/' or control characters -- see
+ * common_name_is_valid() in pki.c for why the rule outlived the
+ * `-subj` argument it was written for. */
 enum pki_error pki_ca_create(const char *common_name, int days);
 
 /* Writes CA info (subject, serial, not_before, not_after, cert_pem --
- * never the key) straight into w, read fresh from ca.crt on disk via
- * `openssl x509 -noout ...` every call -- no in-memory cache to keep
- * in sync, One Source of Truth, and this is a low-frequency
- * management call so the extra subprocess cost is a non-issue. */
+ * never the key) straight into w, read fresh from ca.crt on disk every
+ * call -- no in-memory cache to keep in sync, One Source of Truth. */
 enum pki_error pki_ca_get(struct json_writer *w);
 
 int pki_intermediate_bootstrapped(void);
