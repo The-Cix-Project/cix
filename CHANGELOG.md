@@ -6,6 +6,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container with no console says so instead of offering a terminal
+
+The Console tab of a container that declares no console kept an empty terminal on screen and said to "use Run with an absolute path". There is no such control on that tab, and the console endpoint takes only a declared console's name, answering 409 otherwise. The terminal is now hidden and the tab shows the daemon's own message: the container declares no console, so there is nothing to attach to.
+
 ### Switching containers reloads the Configuration and Packages tabs
 
 Both tabs load when they are clicked rather than on the two-second poll. So moving to another container while either was open left the previous container's recipe or package list under the new container's name. Switching containers now reloads whichever of the two is open. A reply that arrives after the operator has moved on is dropped instead of overwriting the page.

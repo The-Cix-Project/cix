@@ -3456,15 +3456,17 @@ function renderConsolePicker(c) {
 		label.hidden = true;
 		consoleSelected = null;
 		/*
-		 * No DECLARED console is not the same as no console. An
-		 * explicit command still works on such a container -- the
-		 * daemon says so -- so the terminal stays available and only
-		 * the picker goes away. Hiding the pane outright, as this did
-		 * before the Run box existed, would now be hiding a control
-		 * that works.
+		 * Nothing to attach to. The console endpoint takes only a
+		 * declared console's name, and answers 409 for a container that
+		 * declares none (try_console_upgrade() in main.c). This used to
+		 * keep the terminal on screen and point at a "Run" box for an
+		 * explicit command, but the console tab has no such control and
+		 * the daemon no such parameter (measured 2026-10-01, cix#557).
+		 * The words below are the daemon's own.
 		 */
-		output.hidden = false;
-		status.textContent = "This container declares no console -- use Run with an absolute path.";
+		output.hidden = true;
+		status.textContent =
+			"This container declares no console, so there is nothing to attach to \u2014 add one to its definition.";
 		return;
 	}
 	output.hidden = false;
