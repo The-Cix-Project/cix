@@ -7488,6 +7488,71 @@ skip_resume:
 				ok = 0;
 			}
 			cix_response_free(&r);
+
+			/*
+			 * A recipe that already has a changelog -- 1.2-1 now does. cbs
+			 * v0.1.102 writes the new changelog over the KEY on that path
+			 * (cix-build-system#279), and cixd checks what revise wrote
+			 * before committing it. So this must be one of two outcomes,
+			 * and holds whichever cbs runs: refused naming the changelog,
+			 * or committed with the new changelog under its own key. Never
+			 * a wrong revision in git.
+			 */
+			snprintf(rbody, sizeof(rbody),
+			         "{\"name\":\"commitpkg\",\"version\":\"1.3\",\"url\":\"%s\",\"sha256\":\"%s\","
+			         "\"verification\":\"the test fixture's own tarball\"}",
+			         test_http_src(tarball), sha);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/recipe-revise", rbody, &r) != 0) {
+				fprintf(stderr, "FAIL: ADR-0323 POST recipe-revise 1.3 got no answer\n");
+				ok = 0;
+			} else if (r.status == 400) {
+				if (r.body == NULL || strstr(r.body, "metadata changelog") == NULL) {
+					fprintf(stderr, "FAIL: ADR-0323 a refused revision must name the field "
+					                "cbs got wrong: %s\n",
+					        r.body != NULL ? r.body : "");
+					ok = 0;
+				}
+				cix_response_free(&r);
+			} else if (r.status == 202) {
+				cix_response_free(&r);
+				for (waited = 0; waited < 120; waited++) {
+					memset(&r, 0, sizeof(r));
+					if (cix_client_request(&client, "GET", "/v1/pkg/recipe-commit", NULL, &r) == 0 &&
+					    r.json != NULL && json_str_field(r.json, "state") != NULL &&
+					    strcmp(json_str_field(r.json, "state"), "running") != 0)
+						break;
+					cix_response_free(&r);
+					usleep(500000);
+				}
+				cix_response_free(&r);
+				snprintf(body_path, sizeof(body_path), "%s/commitpkg@1.3-1.cbs.request.json",
+				         forge_dir);
+				dn = -1;
+				sent = slurp_file(body_path, &posted, &posted_len) == 0
+				           ? json_parse(posted, posted_len)
+				           : NULL;
+				b64 = sent != NULL ? json_as_string(json_object_get(sent, "content")) : NULL;
+				if (b64 != NULL)
+					dn = base64_decode(b64, (unsigned char *)decoded_rev,
+					                   sizeof(decoded_rev) - 1);
+				if (dn >= 0)
+					decoded_rev[dn] = '\0';
+				if (dn < 0 || strstr(decoded_rev, "\"changelog\" \"1.3-1: commitpkg 1.3") == NULL) {
+					fprintf(stderr, "FAIL: ADR-0323 a revision was committed without its "
+					                "changelog under the changelog key: %s\n",
+					        dn >= 0 ? decoded_rev : "(nothing decoded)");
+					ok = 0;
+				}
+				json_free(sent);
+				free(posted);
+				posted = NULL;
+			} else {
+				fprintf(stderr, "FAIL: ADR-0323 revise 1.3 expected 400 or 202, got %d: %s\n",
+				        r.status, r.body != NULL ? r.body : "");
+				cix_response_free(&r);
+				ok = 0;
+			}
 		}
 
 		memset(&r, 0, sizeof(r));

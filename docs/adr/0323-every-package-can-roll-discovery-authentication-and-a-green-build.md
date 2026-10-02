@@ -121,7 +121,7 @@ Estimated at four to six cix release cycles. **.95 has a saved schedule file, so
   - `artifact_sha256` removed when present;
   - a `changelog` of the form "VERSION-1: NAME VERSION, sha256 HEX, verified by VERIFICATION. Written by cixd from PREVIOUS".
 
-  cbs validates the result before cixd sees it.
+  cbs validates the grammar of what it writes. cixd then checks the intent: it explains the revised text and compares every field it asked for, refusing the revision and naming the field if any differs. This check exists because the first live revision, hibr@0.99.4-1 on 2026-10-02, validated and published with its new changelog written over the metadata key (cix-build-system#279). It was corrected forward as hibr@0.99.4-2.
 - The revision then takes the recipe commit's path unchanged: every publish test, a writable source with a token (ADR-0324), git first, then publish.
 - Refusals:
   - a package with no recipe, because the author stage never writes a first one;

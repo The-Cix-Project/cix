@@ -15317,6 +15317,76 @@ enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, co
  */
 #define PKG_REVISE_MAX 262144
 
+/*
+ * The revision says what it was asked to: every field cbs revise was
+ * told to set, read back from `cbs explain` of the revised text. revise
+ * validates the grammar, not the intent, and the two have differed:
+ * measured on 192.168.15.95, 2026-10-02, v0.1.102 wrote a changelog over
+ * its own metadata KEY (cix-build-system#279), and the result validated
+ * and published as hibr@0.99.4-1. A revision that fails this is refused,
+ * naming the field, rather than committed. 0, or -1 with why in err.
+ */
+static int revision_says(const char *text, size_t len, const char *version, const char *url,
+                         const char *sha256, const char *changelog, char *err, size_t err_size)
+{
+	char path[PATH_MAX], why[PKG_ERROR_MAX];
+	char got_version[PKG_VERSION_MAX], got_url[PKG_URL_MAX], got_sha[PKG_SHA256_MAX];
+	char got_changelog[PKG_CHANGELOG_MAX], got_approval[PKG_SHA256_MAX];
+	char *json;
+	size_t json_len = 0;
+	long long release = 0;
+	struct cbs_explain *ex;
+	const char *wrong = NULL;
+
+	/* cbs requires the .cbs suffix on any path it reads. */
+	snprintf(path, sizeof(path), "%s/revise-check%s", g_pkg_dir, PKG_RECIPE_CBS_SUFFIX);
+	json = malloc(PKG_EXPLAIN_MAX);
+	if (json == NULL || persist_atomic_write(path, text, len) != 0) {
+		free(json);
+		snprintf(err, err_size, "could not stage the revision to check it");
+		return -1;
+	}
+	if (run_cbs_explain(path, json, PKG_EXPLAIN_MAX, &json_len, why, sizeof(why)) != 0) {
+		unlink(path);
+		free(json);
+		snprintf(err, err_size, "cbs explain refused the revision cbs revise wrote: %s", why);
+		return -1;
+	}
+	unlink(path);
+	ex = cbs_explain_parse(json, json_len, why, sizeof(why));
+	free(json);
+	if (ex == NULL) {
+		snprintf(err, err_size, "the revision's explain did not parse: %s", why);
+		return -1;
+	}
+	if (cbs_explain_version_parts(ex, got_version, sizeof(got_version), &release) != 0 ||
+	    strcmp(got_version, version) != 0)
+		wrong = "version";
+	else if (release != 1)
+		wrong = "release";
+	else if (cbs_explain_source(ex, 0, got_url, sizeof(got_url), got_sha, sizeof(got_sha)) != 0 ||
+	         strcmp(got_url, url) != 0)
+		wrong = "the main source's url";
+	else if (strcmp(got_sha, sha256) != 0)
+		wrong = "the main source's sha256";
+	else if (cbs_explain_metadata(ex, "changelog", got_changelog, sizeof(got_changelog)) != 0 ||
+	         strcmp(got_changelog, changelog) != 0)
+		wrong = "metadata changelog";
+	else if (cbs_explain_metadata(ex, "artifact_sha256", got_approval, sizeof(got_approval)) != 0 ||
+	         got_approval[0] != '\0')
+		wrong = "metadata artifact_sha256 (it must be gone)";
+	cbs_explain_free(ex);
+	if (wrong != NULL) {
+		snprintf(err, err_size,
+		         "cbs revise wrote a revision whose %s is not what was asked, so it is not "
+		         "committed (see cix-build-system#279)",
+		         wrong);
+		return -1;
+	}
+	return 0;
+}
+
+
 enum pkg_error pkg_recipe_revise_start(const char *name, const char *version, const char *url,
                                        const char *sha256, const char *verification,
                                        const char *source, char *err, size_t err_size)
@@ -15430,6 +15500,10 @@ enum pkg_error pkg_recipe_revise_start(const char *name, const char *version, co
 			return PKG_ERR_INVALID_RECIPE;
 		}
 
+	if (revision_says(revised, revised_len, version, url, sha256, changelog, err, err_size) != 0) {
+		free(revised);
+		return PKG_ERR_INVALID_RECIPE;
+	}
 	perr = pkg_recipe_commit_start(name, revised, source, err, err_size);
 	free(revised);
 	if (perr == PKG_OK)

@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The author stage checks what cbs revise wrote before committing it (ADR-0323, cix-build-system#279)
+
+- **First live use** on 192.168.15.95: `cixctl pkg recipe revise --name=hibr --version=0.99.4` wrote, committed (e056108), published, built and rolled hibr into `jump`.
+  - The digest was measured by probe-cix-tarball@300-1.
+  - The approval was written back (db797ca), and `jump` was re-seeded from the new jumpbox image.
+- **The revision was wrong in one field.** cbs v0.1.102's `--set metadata.changelog` on an existing key replaced the KEY with the new text and kept the old value. The result validated, because metadata keys are free-form. Filed as cix-build-system#279, and corrected forward by hand as hibr@0.99.4-2.
+- **`revision_says()`** now explains the revised text and compares version, release, the main source's url and sha256, the changelog, and the absence of `artifact_sha256`. A revision that differs is refused, naming the field, and is not committed.
+- **Until #279 is fixed**, revising a recipe that already has a changelog is refused. That is nearly every recipe, so the author stage waits on that fix.
+- `test_pkg` asserts the invariant either way: a second revision is refused naming the changelog, or committed with the changelog under its own key.
+
 ### The author stage: cixd writes a recipe's next revision (ADR-0323), and cbs moves to v0.1.102
 
 - **`POST /v1/pkg/recipe-revise`** (`cixctl pkg recipe revise --name --version --url --sha256 --verification`) writes the next revision of a package's newest recipe and commits it before publishing it. A person uses it to move a pinned package, and discovery (#508) will call the same function.
