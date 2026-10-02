@@ -1511,7 +1511,7 @@ The last two used to be one `unresolved` state, and they need opposite responses
   upstream "gitea-tags" {
       tag "v{version}"
       source "https://git.example/api/v1/repos/OWNER/REPO/archive/v{version}.tar.gz"
-      verify "origin"
+      verify origin
   }
   ```
 

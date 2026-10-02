@@ -7602,7 +7602,7 @@ skip_resume:
 				         "    upstream \"gitea-tags\" {\n"
 				         "        tag \"v{version}\"\n"
 				         "        source \"%s\"\n"
-				         "        verify \"origin\"\n"
+				         "        verify origin\n"
 				         "    }\n\n",
 				         gtmpl);
 				cpdl_recipe_text_decl(grecipe, sizeof(grecipe), "giteapkg", "1.0", gurl, gsha,
@@ -7617,6 +7617,8 @@ skip_resume:
 				jw_str(&w, grecipe);
 				jw_key(&w, "source");
 				jw_str(&w, "forge");
+				jw_key(&w, "format");
+				jw_str(&w, "cbs");
 				jw_obj_close(&w);
 				w.buf[w.len] = '\0';
 				memset(&r, 0, sizeof(r));
@@ -7634,7 +7636,7 @@ skip_resume:
 				                      "            tool \"bash\"\n", NULL,
 				                      "    upstream \"gitea-tags\" {\n"
 				                      "        tag \"v{version}\"\n"
-				                      "        verify \"origin\"\n"
+				                      "        verify origin\n"
 				                      "    }\n\n",
 				                      "        run \"true\" {\n        }\n",
 				                      "        mkdir \"${dest}/usr/share/giteapkg2\" parents\n");
@@ -7646,6 +7648,8 @@ skip_resume:
 				jw_str(&w, grecipe);
 				jw_key(&w, "source");
 				jw_str(&w, "forge");
+				jw_key(&w, "format");
+				jw_str(&w, "cbs");
 				jw_obj_close(&w);
 				w.buf[w.len] = '\0';
 				memset(&r, 0, sizeof(r));

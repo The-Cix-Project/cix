@@ -17,7 +17,7 @@
  *   upstream "gitea-tags" {
  *       tag "v{version}"
  *       source "https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/hibr/archive/v{version}.tar.gz"
- *       verify "origin"
+ *       verify origin
  *   }
  *
  * (That example is the shape an own-forge recipe needs, and cbs

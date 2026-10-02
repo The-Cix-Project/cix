@@ -8,7 +8,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 ### Discovery from a package's own Gitea tags: the gitea-tags kind (ADR-0323)
 
-- **A recipe can declare `upstream "gitea-tags" { tag "v{version}" source "<api archive url template>" verify "origin" }`.**
+- **A recipe can declare `upstream "gitea-tags" { tag "v{version}" source "<api archive url template>" verify origin }`.**
   - `pkg.refresh-upstreams` reads that package's repository tags from the source's Gitea API, with the owning source's token.
   - The catalogue resolves the newest matching tag against the recipes on disk.
 - **The kind interface now takes the package** (`srcupstream.h`), because a gitea-tags feed belongs to one package and kernel.org's serves every kernel. A kind can also say why a package's feed could not be read, and the catalogue row then reports it instead of "never fetched".
