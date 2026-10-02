@@ -18,7 +18,7 @@
  * The PUT body carries a private key. It is therefore never echoed
  * back, never logged, and never quoted in an error -- the responses
  * below are the same key_set/cert_set summary GET returns, exactly as
- * pkg_repo_write_json_config() reports auth_token_set and not the git
+ * pkgsource_write_json() reports token_set and not the git
  * token it was given.
  */
 void handle_signing_keys_get(int fd)

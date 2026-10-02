@@ -85,6 +85,7 @@
 				<li><button type="button" data-modal="image-form" data-op="createImage" data-title="Create image">New Image</button></li>
 				<li><button type="button" data-modal="pkg-install-form" data-op="pkgInstall" data-title="Install a package">Install Package</button></li>
 				<li><button type="button" data-modal="pkg-recipe-form" data-op="addPkgRecipe" data-title="Add or update a recipe">New/Update Recipe</button></li>
+				<li><button type="button" data-modal="pkg-source-form" data-op="addPkgSource" data-title="New recipe source">New Recipe Source</button></li>
 				<li><button type="button" data-modal="pkg-bootstrap-form" data-op="pkgBootstrap" data-title="Bootstrap build image">Bootstrap Build Image</button></li>
 			</ul>
 		</div>
@@ -2457,7 +2458,7 @@
 				<button type="button" class="tab-button active" data-tab="pkg-recipes">Package Recipes</button>
 				<button type="button" class="tab-button" data-tab="image-recipes">Image Recipes</button>
 				<button type="button" class="tab-button" data-tab="container-recipes">Container Recipes</button>
-				<button type="button" class="tab-button" data-tab="pkg-repo">Repo &amp; Sync</button>
+				<button type="button" class="tab-button" data-tab="pkg-repo">Sources &amp; Sync</button>
 			</div>
 <div class="tab-panel" id="recipes-panel-pkg" data-tab="pkg-recipes">
 					<div class="list-toolbar">
@@ -2520,49 +2521,45 @@
 					</table>
 				</div>
 <div class="tab-panel" data-tab="pkg-repo" hidden>
-			<h2>Package Repo &amp; Sync</h2>
+			<h2>Recipe Sources &amp; Sync</h2>
 			<p class="hint">
-				The configured git-forge source recipes sync from (ADR-0121) -- gitea/github/gitlab,
-				fetched as a plain archive download, never the git protocol itself. Distinct from the
-				artifact server (<a href="#pkg-cache">Cache &amp; Artifacts</a>), which serves
-				precompiled binaries, not recipe text -- the checksum for each is the trust anchor
-				tying the two together (ADR-0122).
+				Where this host's recipes come from (ADR-0324): any number of git forges, synced as plain
+				archive downloads. A package belongs to the one source that offers it; when two offer it,
+				it is held until you choose. Built packages come from the artifact servers on
+				<a href="#pkg-cache">Cache &amp; Artifacts</a>, and each is checked against the checksum
+				its recipe approves (ADR-0122). When syncs run is a schedule (ADR-0257): see
+				<a href="#schedules">Schedules</a>, action <code>pkg.sync</code>.
 			</p>
-			<form id="prc-form">
-				<label class="wide">
-					Repo URL
-					<input type="text" id="prc-url" placeholder="https://git.example.com/org/recipes">
-				</label>
-				<label>
-					Kind
-					<select id="prc-kind">
-						<option value="gitea">gitea</option>
-						<option value="github">github</option>
-						<option value="gitlab">gitlab</option>
-					</select>
-				</label>
-				<label>
-					Ref (branch/tag)
-					<input type="text" id="prc-ref" placeholder="main">
-				</label>
-				<label>
-					Auth token (blank = unchanged)
-					<input type="password" id="prc-token" placeholder="(unchanged)">
-				</label>
-				<label class="checkbox">
-					<input type="checkbox" id="prc-clear-token">
-					Clear token
-				</label>
-				<label class="checkbox">
-					<input type="checkbox" id="prc-commit">
-					Commit the recipes this host writes here, before publishing them (gitea only)
-				</label>
-				<p class="hint">
-					When syncs run is a schedule now (ADR-0257) &mdash; see
-					<a href="#schedules">Schedules</a>, action <code>pkg.sync</code>.
-				</p>
-				<button type="submit">Save</button>
-			</form>
+			<table id="pkg-sources">
+				<thead>
+					<tr>
+						<th>Name</th>
+						<th>Repository</th>
+						<th>Ref</th>
+						<th>Role</th>
+						<th>Keys</th>
+						<th>Token</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody id="pkg-sources-body">
+					<tr><td colspan="7" class="empty">Loading&hellip;</td></tr>
+				</tbody>
+			</table>
+			<h3>Held</h3>
+			<p class="hint">Offered by more than one source, so synced from none until a source is chosen.</p>
+			<table id="pkg-source-held">
+				<thead>
+					<tr>
+						<th>Item</th>
+						<th>Offered by</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody id="pkg-source-held-body">
+					<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+				</tbody>
+			</table>
 			<h3>Sync status</h3>
 			<div id="pkg-sync-status-box" class="pki-ca-status"></div>
 			<button type="button" id="pkg-sync-now">Sync now</button>
@@ -2699,7 +2696,7 @@
 				real rebuild on a repeat install. Tier 2: an optional plain-HTTP precompiled-artifact
 				server, checked before falling back to source, verified against the recipe's own
 				<code>pkg_artifact_sha256</code> before being trusted. Both distinct from the recipe
-				repo (<a href="#pkg-repo">Repo &amp; Sync</a>) -- recipes stay in git, compiled binaries
+				repo (<a href="#pkg-repo">Sources &amp; Sync</a>) -- recipes stay in git, compiled binaries
 				never do.
 			</p>
 			<h3>Cache</h3>
@@ -3779,6 +3776,65 @@
 				</form>
 				<p class="hint">Upserts by name -- adding the same name again replaces its content, no ISO
 					rebuild or reinstall needed (ADR-0040).</p>
+			</div>
+
+			<div id="modal-pkg-source-form" hidden>
+				<form id="pkg-source-form">
+					<label>
+						Name
+						<input type="text" id="psf-name" pattern="[a-z0-9][a-z0-9._-]*" required>
+					</label>
+					<label class="wide">
+						Repository URL
+						<input type="text" id="psf-url" placeholder="https://git.example.com/org/recipes" required>
+					</label>
+					<label>
+						Kind
+						<select id="psf-kind">
+							<option value="gitea">gitea</option>
+							<option value="github">github</option>
+							<option value="gitlab">gitlab</option>
+						</select>
+					</label>
+					<label>
+						Ref (branch/tag)
+						<input type="text" id="psf-ref" placeholder="main">
+					</label>
+					<label>
+						Token (blank = unchanged)
+						<input type="password" id="psf-token" placeholder="(none)">
+					</label>
+					<label class="checkbox">
+						<input type="checkbox" id="psf-clear-token">
+						Clear token
+					</label>
+					<label class="checkbox">
+						<input type="checkbox" id="psf-write">
+						This host may commit recipes it writes here (gitea only)
+					</label>
+					<label class="checkbox">
+						<input type="checkbox" id="psf-trust-keys">
+						Trust the signing keys this source carries
+					</label>
+					<button type="submit">Save</button>
+				</form>
+				<p class="hint">ADR-0324: a source is read unless this host may commit to it, and supplies
+					recipes but no signing keys unless it is trusted for keys. A package two sources offer
+					is held until one is chosen for it.</p>
+			</div>
+
+			<div id="modal-pkg-source-own-form" hidden>
+				<form id="pkg-source-own-form">
+					<label class="wide">
+						Item
+						<input type="text" id="psof-item" readonly>
+					</label>
+					<label>
+						Comes from
+						<select id="psof-source"></select>
+					</label>
+					<button type="submit">Choose</button>
+				</form>
 			</div>
 
 			<div id="modal-image-recipe-form" hidden>

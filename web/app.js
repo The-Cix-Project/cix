@@ -103,7 +103,7 @@ const cache = {
 	pkgList: [],
 	imageRecipes: [],
 	containerRecipes: [],
-	pkgRepoConfig: null,
+	pkgSources: null,
 	pkgSyncStatus: null,
 	pkgCacheConfig: null,
 	pkgCacheStatus: null,
@@ -1945,7 +1945,7 @@ const CATEGORY_VIEWS = {
 	stalls: "view-control-plane",
 	schedules: "view-control-plane",
 	volumes: "view-storage",
-	/* Repo & Sync and Cache & Artifacts became tabs on the Catalogue
+	/* Sources & Sync and Cache & Artifacts became tabs on the Catalogue
 	 * page. Their old addresses still resolve to it (with the right tab
 	 * showing) rather than 404-ing a bookmark someone already has. */
 	"volume-backup-config": "view-storage",
@@ -11466,74 +11466,232 @@ async function removePkg(name, image) {
 	}
 }
 
-/* ---- Package repo config + sync (ADR-0121) ---- */
+/* ---- Recipe sources (ADR-0324) + sync (ADR-0121) ---- */
 
-let pkgRepoConfigDirty = false;
+/*
+ * ADR-0324: recipe sources, and what is held because more than one
+ * source offers it. One list table per resource; add and edit are one
+ * modal form, which this variable says the mode of.
+ */
+let pkgSourceEditing = null;
 
-async function refreshPkgRepoConfig() {
-	try {
-		const config = await apiRequest("GET", CIX_API.getPkgRepoConfig());
+function setPkgSourceForm(source) {
+	pkgSourceEditing = source ? source.name : null;
+	document.getElementById("psf-name").value = source ? source.name : "";
+	document.getElementById("psf-name").disabled = source !== null;
+	document.getElementById("psf-url").value = source ? source.url : "";
+	document.getElementById("psf-kind").value = source ? source.kind : "gitea";
+	document.getElementById("psf-ref").value = source ? source.ref : "";
+	document.getElementById("psf-token").value = "";
+	document.getElementById("psf-token").placeholder =
+		source && source.token_set ? "(unchanged, a token is set)" : "(none)";
+	document.getElementById("psf-clear-token").checked = false;
+	document.getElementById("psf-clear-token").disabled = !(source && source.token_set);
+	document.getElementById("psf-write").checked = source ? source.write === true : false;
+	document.getElementById("psf-trust-keys").checked = source ? source.trust_keys === true : false;
+}
 
-		cache.pkgRepoConfig = config;
-		if (!pkgRepoConfigDirty) {
-			document.getElementById("prc-url").value = config.repo_url || "";
-			document.getElementById("prc-kind").value = config.repo_kind || "gitea";
-			document.getElementById("prc-ref").value = config.ref || "";
-			document.getElementById("prc-token").value = "";
-			document.getElementById("prc-token").placeholder =
-				config.auth_token_set ? "(unchanged, a token is set)" : "(unchanged, no token set)";
-			document.getElementById("prc-commit").checked = config.commit === true;
+function renderPkgSourcesTable(sources) {
+	const body = document.getElementById("pkg-sources-body");
+
+	if (unchangedAndRendered(body, "pkg-sources", sources))
+		return;
+	body.textContent = "";
+	if (sources.length === 0) {
+		simpleTableRows(body, [], 7, emptyStateText("listPkgSources", "recipe sources", "No recipe sources"));
+		return;
+	}
+	for (const s of sources) {
+		const row = document.createElement("tr");
+		const cells = [s.name, s.url, s.ref];
+
+		for (const text of cells) {
+			const cell = document.createElement("td");
+
+			cell.textContent = text;
+			row.appendChild(cell);
 		}
-	} catch (e) {
-		/* Best-effort -- the form just stays at whatever was last shown. */
+
+		const roleCell = document.createElement("td");
+		const role = document.createElement("span");
+
+		role.className = "badge " + (s.write ? "badge-paused" : "badge-unknown");
+		role.textContent = s.write ? "write" : "read";
+		roleCell.appendChild(role);
+		row.appendChild(roleCell);
+
+		const keysCell = document.createElement("td");
+
+		keysCell.textContent = s.trust_keys ? "trusted" : "no";
+		row.appendChild(keysCell);
+
+		const tokenCell = document.createElement("td");
+
+		tokenCell.textContent = s.token_set ? "set" : "unset";
+		row.appendChild(tokenCell);
+
+		const actions = document.createElement("td");
+		const edit = document.createElement("button");
+		const remove = document.createElement("button");
+
+		edit.type = "button";
+		edit.className = "button-small";
+		edit.textContent = "Edit";
+		edit.addEventListener("click", () => {
+			setPkgSourceForm(s);
+			openModal("pkg-source-form", "Edit source " + s.name);
+		});
+		gateAction(edit, "updatePkgSource");
+		actions.appendChild(edit);
+
+		remove.type = "button";
+		remove.className = "button-small button-danger";
+		remove.textContent = "Remove";
+		remove.addEventListener("click", async () => {
+			if (!confirm("Remove recipe source " + s.name + "? Its packages stop syncing, and recipes already published stay."))
+				return;
+			try {
+				await apiRequest("DELETE", CIX_API.deletePkgSource(s.name));
+				showStatus("Removed recipe source " + s.name, false);
+				await refreshPkgSources();
+			} catch (e) {
+				showStatus("Failed to remove " + s.name + ": " + e.message, true);
+			}
+		});
+		gateAction(remove, "deletePkgSource");
+		actions.appendChild(remove);
+		row.appendChild(actions);
+		body.appendChild(row);
 	}
 }
 
-for (const id of ["prc-url", "prc-kind", "prc-ref", "prc-token", "prc-clear-token", "prc-commit"]) {
-	document.getElementById(id).addEventListener("input", () => {
-		pkgRepoConfigDirty = true;
-	});
-	document.getElementById(id).addEventListener("change", () => {
-		pkgRepoConfigDirty = true;
-	});
+function renderPkgSourceHeld(ownership, sources) {
+	const body = document.getElementById("pkg-source-held-body");
+
+	if (unchangedAndRendered(body, "pkg-source-held", ownership))
+		return;
+	body.textContent = "";
+	if (ownership.conflicts.length === 0) {
+		simpleTableRows(body, [], 3, emptyStateText("getPkgSourceOwnership", "source ownership", "Nothing is held"));
+		return;
+	}
+	for (const c of ownership.conflicts) {
+		const row = document.createElement("tr");
+		const item = document.createElement("td");
+		const by = document.createElement("td");
+		const actions = document.createElement("td");
+		const choose = document.createElement("button");
+
+		item.textContent = c.item;
+		by.textContent = c.offered_by;
+		choose.type = "button";
+		choose.className = "button-small";
+		choose.textContent = "Choose source";
+		choose.addEventListener("click", () => {
+			const select = document.getElementById("psof-source");
+
+			select.textContent = "";
+			for (const name of c.offered_by.split(", ")) {
+				const opt = document.createElement("option");
+
+				opt.value = name;
+				opt.textContent = name;
+				select.appendChild(opt);
+			}
+			document.getElementById("psof-item").value = c.item;
+			openModal("pkg-source-own-form", "Choose the source of " + c.item);
+		});
+		gateAction(choose, "setPkgSourceOwnership");
+		actions.appendChild(choose);
+		row.appendChild(item);
+		row.appendChild(by);
+		row.appendChild(actions);
+		body.appendChild(row);
+	}
 }
 
-document.getElementById("prc-form").addEventListener("submit", async (event) => {
+async function refreshPkgSources() {
+	try {
+		const data = await apiRequest("GET", CIX_API.listPkgSources());
+
+		cache.pkgSources = data.sources;
+		renderPkgSourcesTable(data.sources);
+	} catch (e) {
+		simpleTableRows(document.getElementById("pkg-sources-body"), [], 7, refusalText(e, "recipe sources"));
+	}
+	try {
+		const ownership = await apiRequest("GET", CIX_API.getPkgSourceOwnership());
+
+		renderPkgSourceHeld(ownership, cache.pkgSources || []);
+	} catch (e) {
+		simpleTableRows(document.getElementById("pkg-source-held-body"), [], 3, refusalText(e, "source ownership"));
+	}
+}
+
+/* The header's "New Recipe Source" opens the same form, in add mode. */
+document.querySelector('.menu-bar button[data-modal="pkg-source-form"]')
+	.addEventListener("click", () => setPkgSourceForm(null));
+
+document.getElementById("pkg-source-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
+	const editing = pkgSourceEditing;
+	const before = editing ? (cache.pkgSources || []).find((s) => s.name === editing) : null;
 	const body = {
-		repo_url: document.getElementById("prc-url").value.trim(),
-		repo_kind: document.getElementById("prc-kind").value,
-		ref: document.getElementById("prc-ref").value.trim(),
-		commit: document.getElementById("prc-commit").checked,
+		url: document.getElementById("psf-url").value.trim(),
+		kind: document.getElementById("psf-kind").value,
+		write: document.getElementById("psf-write").checked,
+		trust_keys: document.getElementById("psf-trust-keys").checked,
 	};
-	const token = document.getElementById("prc-token").value;
+	const ref = document.getElementById("psf-ref").value.trim();
+	const token = document.getElementById("psf-token").value;
 
-	/* "" explicitly clears an already-configured token (pkg_repo_set_
-	 * config()'s own NULL-vs-empty-string contract) -- omitting the
-	 * field entirely (the common case, token left blank and not
-	 * clearing) leaves whatever's already configured untouched. */
-	if (document.getElementById("prc-clear-token").checked)
-		body.auth_token = "";
+	if (ref !== "")
+		body.ref = ref;
+	if (document.getElementById("psf-clear-token").checked)
+		body.token = "";
 	else if (token !== "")
-		body.auth_token = token;
+		body.token = token;
 
-	/* ADR-0323: a commit to the synced ref is a deploy to every host that
-	 * follows it, so turning it on is confirmed; turning it off is not. */
-	if (body.commit && !(cache.pkgRepoConfig && cache.pkgRepoConfig.commit) &&
-	    !confirm("Let this host commit the recipes it writes to " + body.repo_url + " on " +
-	             body.ref + "? Every host that syncs from it will pick them up."))
+	/* ADR-0323/0324: committing to a source is a deploy to every host
+	 * that follows it, and trusting its keys lets it vouch for packages;
+	 * turning either on is confirmed. */
+	if (body.write && !(before && before.write) &&
+	    !confirm("Let this host commit the recipes it writes to " + body.url + "? Every host that syncs from it will pick them up."))
+		return;
+	if (body.trust_keys && !(before && before.trust_keys) &&
+	    !confirm("Trust the signing keys " + body.url + " carries? Packages signed by them will be accepted as genuine."))
 		return;
 
 	try {
-		await apiRequest("PUT", CIX_API.putPkgRepoConfig(), body);
-		clearStatus();
-		showStatus("Package repo config saved", false);
-		pkgRepoConfigDirty = false;
-		document.getElementById("prc-clear-token").checked = false;
-		await refreshPkgRepoConfig();
+		if (editing) {
+			await apiRequest("PUT", CIX_API.updatePkgSource(editing), body);
+			showStatus("Updated recipe source " + editing, false);
+		} else {
+			body.name = document.getElementById("psf-name").value.trim();
+			await apiRequest("POST", CIX_API.addPkgSource(), body);
+			showStatus("Added recipe source " + body.name, false);
+		}
+		closeModal();
+		await refreshPkgSources();
 	} catch (e) {
-		showStatus("Failed to save package repo config: " + e.message, true);
+		showStatus("Failed to save the recipe source: " + e.message, true);
+	}
+});
+
+document.getElementById("pkg-source-own-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const item = document.getElementById("psof-item").value;
+	const source = document.getElementById("psof-source").value;
+
+	try {
+		await apiRequest("PUT", CIX_API.setPkgSourceOwnership(), { item: item, source: source });
+		showStatus(item + " now comes from " + source, false);
+		closeModal();
+		await refreshPkgSources();
+	} catch (e) {
+		showStatus("Failed to choose the source of " + item + ": " + e.message, true);
 	}
 });
 
@@ -12164,7 +12322,6 @@ async function refreshPkgArtifactConfig() {
 			document.getElementById("pac-token").value = "";
 			document.getElementById("pac-token").placeholder =
 				config.auth_token_set ? "(unchanged, a token is set)" : "(unchanged, no token set)";
-			document.getElementById("prc-commit").checked = config.commit === true;
 		}
 	} catch (e) {
 		/* Best-effort -- the form just stays at whatever was last shown. */
@@ -15920,7 +16077,7 @@ const VIEW_REFRESHERS = {
 	"image-recipes": [refreshImageRecipesList, refreshPkgRecipes, refreshContainerRecipesList],
 	"container-recipes": [refreshContainerRecipesList, refreshPkgRecipes, refreshImageRecipesList],
 	packages: [refreshPkgList, refreshImages],
-	"pkg-repo": [refreshPkgRepoConfig, refreshPkgSyncStatus],
+	"pkg-repo": [refreshPkgSources, refreshPkgSyncStatus],
 	"pkg-cache": [refreshPkgCacheConfig, refreshPkgCacheStatus, refreshPkgArtifactConfig],
 	"build-overview": [refreshBuildOverview],
 	"pkg-build-config": [refreshPkgBuildConfig],
@@ -15964,7 +16121,7 @@ const ALL_REFRESHERS = [
 	refreshLdapServers, refreshLdapGroups, refreshLdapUsers, refreshLdapConfig, refreshNtpConfig,
 	refreshNtpServers, refreshSyslogTargets, refreshNtpStatus, refreshNtpTime, refreshPkiCa,
 	refreshPkiIntermediate, refreshPkiCerts, refreshPkgRecipes, refreshImageRecipesList,
-	refreshContainerRecipesList, refreshPkgList, refreshPkgRepoConfig, refreshPkgSyncStatus,
+	refreshContainerRecipesList, refreshPkgList, refreshPkgSources, refreshPkgSyncStatus,
 	refreshPkgCacheConfig, refreshPkgCacheStatus, refreshPkgArtifactConfig,
 	refreshSiteConfig, refreshDaemonConfig, refreshRollingConfig,
 	refreshPkgBuildConfig, refreshRoutes, refreshSysctl, refreshKmod, refreshKmodConfig,

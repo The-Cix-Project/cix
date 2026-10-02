@@ -166,8 +166,8 @@ Runbooks: [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and
 | `control-plane-reservation set [--enabled \| --disabled] [--cpu-percent=N] [--memory-bytes=N]` | Change it; applied to the live cgroup immediately. `cpu_percent` is 1-50 |
 | `rolling-config show` | The rolling-restart jitter window (`jitter_window_seconds`) used by `container run --follow-rolling` (ADR-0124) |
 | `rolling-config set --jitter-window-seconds=N` | 0-3600; `0` restarts immediately on every rolling reconcile |
-| `pkg-build-config show` | How many package jobs may run at once (`max_concurrent_jobs`, default 10) and the memory/CPU ceiling of each build sandbox (ADR-0157) |
-| `pkg-build-config set [--max-concurrent-jobs=N] [--memory-max=BYTES] [--cpu-max="QUOTA PERIOD"]` | Change only the flags given. `max-concurrent-jobs` is 1-10; lowering it affects only future jobs. `--memory-max=0` or `--cpu-max=""` means unlimited; `cpu-max` is raw cgroup v2 `cpu.max` syntax, as for `container run --cpu-max=` |
+| `pkg-build-config show` | How many package jobs may run at once (`max_concurrent_jobs`, default 10), and the memory and CPU budget all builds share (#85): `memory_max`, the most a recipe's declared `resources { memory }` may raise it to (`memory_max_ceiling`, #558), and what the build parent has right now (`memory_max_effective`) |
+| `pkg-build-config set [--max-concurrent-jobs=N] [--memory-max=BYTES] [--memory-max-ceiling=BYTES] [--cpu-max="QUOTA PERIOD"]` | Change only the flags given. `max-concurrent-jobs` is 1-10; lowering it affects only future jobs. `--memory-max=0` or `--cpu-max=""` means unlimited. The ceiling is never below `memory-max` (0 is no ceiling), so raising `memory-max` past it needs both flags (ADR-0322). `cpu-max` is raw cgroup v2 `cpu.max` syntax, as for `container run --cpu-max=` |
 
 ## Backup and scheduling
 
@@ -485,11 +485,15 @@ See [`networking.md`](networking.md).
 | `pkg buildenv [ls]` / `pkg buildenv rm NAME` | Composed build environments held on this host, and reclaim one now ([ADR-0221](../adr/0221-build-environments-are-reclaimed-by-last-use.md)) |
 | `pkg recipes` | Every published recipe version |
 | `pkg recipe add --name=NAME --file=PATH [--format=shell\|cbs]` | Publish a recipe version on this host. A published `(name, version)` is never overwritten. The format follows the file extension (`.cbs` is CPDL, `.sh` is shell); `--format=` is for a file not named that way |
+| `pkg recipe commit --name=NAME --file=PATH [--source=NAME] [--wait]` | Commit a CPDL recipe as `recipes/package/NAME@VERSION.cbs` to the writable source that owns the package, then publish it here (ADR-0323): git first, so git holds every revision a host builds. `--source` names the source for a package no source offers yet |
 | `pkg recipe show NAME [--version=VERSION]` | Print a recipe version; an omitted version means the highest |
 | `pkg recipe rm NAME [--version=VERSION]` | Remove one version, or every version when omitted |
-| `pkg repo-config show` | The recipe repository this host syncs from (on a host that never set one, the public catalogue -- [ADR-0315](../adr/0315-the-public-catalogue-and-cache-are-the-defaults.md)) |
-| `pkg repo-config set [--url=URL] [--kind=gitea\|github\|gitlab] [--ref=REF] [--token=TOKEN \| --clear-token]` | Change only the flags given. How often it syncs is a schedule (`pkg.sync` action) |
-| `pkg sync [--wait] [--refetch=NAME@VERSION]` | Fetch the repository and merge its recipes (additive; an existing version is never overwritten). `--refetch=` lets this one sync replace exactly one already-seen version (#59) |
+| `pkg source ls` | The recipe sources this host syncs from, in order: role (read or write), whether its keys are trusted, whether a token is set (ADR-0324). A host that never saved a list has the public catalogue, `cix-public` ([ADR-0315](../adr/0315-the-public-catalogue-and-cache-are-the-defaults.md)) |
+| `pkg source add NAME --url=URL --kind=gitea\|github\|gitlab [--ref=REF] [--token=TOKEN] [--write=on\|off] [--trust-keys=on\|off]` | Add a source. `--write=on` lets this host commit the recipes it writes there (gitea only); `--trust-keys=on` lets the signing keys it carries vouch for packages |
+| `pkg source set NAME [...same flags] [--clear-token]` | Change only the flags given. How often sources sync is a schedule (`pkg.sync`, ADR-0257) |
+| `pkg source rm NAME` | Remove a source; recipes already published stay |
+| `pkg source own [ITEM SOURCE \| ITEM --clear]` | With no arguments, what is held because two sources offer it, and the choices made. With an item (`package:NAME`, `image:NAME`, `deployment:NAME`) and a source, choose where it comes from |
+| `pkg sync [--wait] [--refetch=NAME@VERSION]` | Fetch every source and merge each one's recipes (additive; an existing version is never overwritten, and one offered again with different content is refused as divergent). A name two sources offer is held until `pkg source own` chooses (ADR-0324). `--refetch=` lets this one sync replace exactly one already-seen version (#59) |
 | `pkg sync-status` | The latest sync's outcome |
 | `pkg policy ls` | Per-package version policy (#64); unlisted packages use `highest` |
 | `pkg policy set NAME --policy=highest\|newest\|pinned [--version=V]` | `newest` takes the most recently published recipe; `pinned` holds a version that `update-all` and `follow_rolling` cannot move |

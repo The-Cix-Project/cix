@@ -151,6 +151,40 @@ static int slurp_file(const char *path, char **out, size_t *out_len)
 	return 0;
 }
 
+/*
+ * ADR-0324: starts a recipe sync and waits for it to finish. The final
+ * GET /v1/pkg/sync is left in r for the caller to read and free; state
+ * is its "state", or why there is none.
+ */
+static int sync_and_wait(const struct cix_client *c, char *state, size_t state_size,
+                         struct cix_response *r)
+{
+	int i;
+
+	memset(r, 0, sizeof(*r));
+	if (cix_client_request(c, "POST", "/v1/pkg/sync", NULL, r) != 0 || r->status != 202) {
+		snprintf(state, state_size, "start answered %d", r->status);
+		cix_response_free(r);
+		memset(r, 0, sizeof(*r));
+		return -1;
+	}
+	cix_response_free(r);
+	for (i = 0; i < 240; i++) {
+		memset(r, 0, sizeof(*r));
+		if (cix_client_request(c, "GET", "/v1/pkg/sync", NULL, r) == 0 && r->json != NULL &&
+		    json_str_field(r->json, "state") != NULL &&
+		    strcmp(json_str_field(r->json, "state"), "running") != 0) {
+			snprintf(state, state_size, "%s", json_str_field(r->json, "state"));
+			return 0;
+		}
+		cix_response_free(r);
+		usleep(500000);
+	}
+	memset(r, 0, sizeof(*r));
+	snprintf(state, state_size, "%s", "timeout");
+	return -1;
+}
+
 static pid_t start_daemon(void)
 {
 	pid_t pid;
@@ -1266,16 +1300,38 @@ static int check_pkg_config(const struct cix_client *c, const char *want_repo_ur
 	int ok = 1;
 
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(c, "GET", "/v1/pkg/repo-config", NULL, &r) != 0 || r.status != 200 ||
-	    !str_eq(json_str_field(r.json, "repo_url"), want_repo_url) ||
-	    !str_eq(json_str_field(r.json, "repo_kind"), want_kind) ||
-	    !str_eq(json_str_field(r.json, "ref"), want_ref)) {
-		fprintf(stderr, "FAIL: repo-config %s: want %s %s %s, got status=%d url=%s kind=%s ref=%s\n",
-		        when, want_repo_url, want_kind, want_ref, r.status,
-		        r.json ? json_str_field(r.json, "repo_url") : "(none)",
-		        r.json ? json_str_field(r.json, "repo_kind") : "(none)",
-		        r.json ? json_str_field(r.json, "ref") : "(none)");
+	/* ADR-0324: the single repo config became a list of sources; the
+	 * ADR-0315 default is its one entry, and a cleared host has none. */
+	if (cix_client_request(c, "GET", "/v1/pkg/sources", NULL, &r) != 0 || r.status != 200 ||
+	    r.json == NULL) {
+		fprintf(stderr, "FAIL: sources %s: status=%d\n", when, r.status);
 		ok = 0;
+	} else {
+		const struct json_value *arr = json_object_get(r.json, "sources");
+		size_t want = want_repo_url[0] == '\0' ? 0 : 1;
+
+		if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count != want) {
+			fprintf(stderr, "FAIL: sources %s: want %zu source(s), got %s\n", when, want,
+			        r.body != NULL ? r.body : "(none)");
+			ok = 0;
+		} else if (want == 1) {
+			const struct json_value *s = arr->u.array.items[0];
+			const struct json_value *tk = json_object_get(s, "trust_keys");
+			const struct json_value *wr = json_object_get(s, "write");
+
+			if (!str_eq(json_str_field(s, "url"), want_repo_url) ||
+			    !str_eq(json_str_field(s, "kind"), want_kind) ||
+			    !str_eq(json_str_field(s, "ref"), want_ref) ||
+			    !str_eq(json_str_field(s, "name"), "cix-public") || tk == NULL ||
+			    tk->type != JSON_BOOL || !tk->u.boolean || wr == NULL ||
+			    wr->type != JSON_BOOL || wr->u.boolean) {
+				fprintf(stderr,
+				        "FAIL: sources %s: want cix-public %s %s %s, read, trusted for keys; "
+				        "got %s\n",
+				        when, want_repo_url, want_kind, want_ref, r.body);
+				ok = 0;
+			}
+		}
 	}
 	cix_response_free(&r);
 
@@ -1308,7 +1364,7 @@ static int test_pkg_config_defaults(void)
 		return 0;
 	}
 	/* Undo the harness's cleared seed: this daemon must see no file. */
-	snprintf(path, sizeof(path), "%s/rebuildable/pkg/repo_config.json", dir);
+	snprintf(path, sizeof(path), "%s/rebuildable/pkg/sources.json", dir);
 	unlink(path);
 	snprintf(path, sizeof(path), "%s/rebuildable/pkg/artifact_config.json", dir);
 	unlink(path);
@@ -1326,9 +1382,9 @@ static int test_pkg_config_defaults(void)
 
 	/* Clear both, as an operator would. */
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&c, "PUT", "/v1/pkg/repo-config", "{\"repo_url\":\"\"}", &r) != 0 ||
+	if (cix_client_request(&c, "DELETE", "/v1/pkg/sources/cix-public", NULL, &r) != 0 ||
 	    r.status != 200) {
-		fprintf(stderr, "FAIL: defaults: clearing repo_url returned %d\n", r.status);
+		fprintf(stderr, "FAIL: defaults: removing the default source returned %d\n", r.status);
 		ok = 0;
 	}
 	cix_response_free(&r);
@@ -1341,10 +1397,10 @@ static int test_pkg_config_defaults(void)
 	cix_response_free(&r);
 
 	/* The clear is on disk, as an explicit empty value ... */
-	snprintf(path, sizeof(path), "%s/rebuildable/pkg/repo_config.json", dir);
+	snprintf(path, sizeof(path), "%s/rebuildable/pkg/sources.json", dir);
 	if (read_small_file(path, content, sizeof(content)) != 0 ||
-	    strstr(content, "\"repo_url\":\"\"") == NULL) {
-		fprintf(stderr, "FAIL: defaults: cleared repo_url was not persisted\n");
+	    strstr(content, "\"sources\":[]") == NULL) {
+		fprintf(stderr, "FAIL: defaults: the emptied source list was not persisted\n");
 		ok = 0;
 	}
 	snprintf(path, sizeof(path), "%s/rebuildable/pkg/artifact_config.json", dir);
@@ -1382,8 +1438,8 @@ out:
  * six-hourly recipe-sync, and an operator who deletes it keeps it
  * deleted.
  *
- * The data dir keeps its cleared repo config, so the sync the new job
- * fires at startup fails with "no repo configured" and reaches no
+ * The data dir keeps its emptied source list, so the sync the new job
+ * fires at startup fails with "no recipe source is configured" and reaches no
  * network; only schedules.json is removed.
  */
 static int get_schedule(const struct cix_client *c, const char *name, struct cix_response *r)
@@ -4212,7 +4268,7 @@ int main(void)
 		 * ONLY the one the daemon happens to hold.
 		 *
 		 * redact_repo_token() substitutes exactly one string --
-		 * whatever pkg_repo_token() returns -- so a recipe carrying
+		 * the single repo token of the time -- so a recipe carrying
 		 * `user:password@` basic auth matched nothing and
 		 * `pkg recipe show` served it in full. It then reached git,
 		 * in a repository whose whole point is being readable.
@@ -6733,22 +6789,23 @@ skip_resume:
 	}
 
 	/*
-	 * ADR-0323: a recipe is committed to the recipe repository, then
-	 * published -- git first.
+	 * ADR-0323 and ADR-0324: a recipe is committed to the writable source
+	 * that owns its package, then published -- git first.
 	 *
 	 * The forge is this fixture's stand-in for Gitea's create-file call
 	 * (test_http_server_start() with accept_put), so what the daemon sent
 	 * is read back byte for byte: the path, the branch, the message, and
 	 * the base64 content, decoded and compared with the recipe. Then the
-	 * refusals that keep git and the store honest: committing is off
-	 * until an operator turns it on, a version already published is
-	 * refused before anything reaches git, a version git already has is
-	 * refused by the forge and published nowhere, and a recipe that would
-	 * not publish never reaches git at all.
+	 * refusals that keep git and the store honest: nothing is committed
+	 * until a source is writable, a version already published is refused
+	 * before anything reaches git, a version git already has is refused by
+	 * the forge and published nowhere, a recipe that would not publish
+	 * never reaches git, and a package one source owns is never committed
+	 * to another.
 	 */
 	{
 		char forge_dir[PATH_MAX], sha[65], tarball[PATH_MAX], body_path[PATH_MAX];
-		char put[512], recipe[4096], st_c[32];
+		char post[512], recipe[4096], st_c[32];
 		char *json_body = NULL, *posted = NULL;
 		size_t posted_len = 0;
 		struct json_writer w;
@@ -6758,23 +6815,9 @@ skip_resume:
 		snprintf(forge_dir, sizeof(forge_dir), "%s/forge", scratch_dir);
 		if (mkdir(forge_dir, 0755) != 0 ||
 		    test_http_server_start(forge_dir, 1, &forge_port, &forge_pid) != 0) {
-			fprintf(stderr, "FAIL: ADR-0323 could not start the fake forge\n");
+			fprintf(stderr, "FAIL: ADR-0324 could not start the fake forge\n");
 			ok = 0;
 			stage_ok = 0;
-		}
-
-		/* Off by default, and refused while off. */
-		if (stage_ok) {
-			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "GET", "/v1/pkg/repo-config", NULL, &r) != 0 ||
-			    r.json == NULL || json_object_get(r.json, "commit") == NULL ||
-			    json_object_get(r.json, "commit")->type != JSON_BOOL ||
-			    json_object_get(r.json, "commit")->u.boolean) {
-				fprintf(stderr, "FAIL: ADR-0323 repo-config must report commit=false by "
-				                "default\n");
-				ok = 0;
-			}
-			cix_response_free(&r);
 		}
 		if (stage_ok && (stage_fixture_tarball(scratch_dir, "commitpkg", "1.0", tarball,
 		                                       sizeof(tarball), sha, sizeof(sha)) != 0)) {
@@ -6806,49 +6849,68 @@ skip_resume:
 			if (json_body == NULL)
 				stage_ok = 0;
 		}
+
+		/* No source is writable: nothing is committed. */
 		if (stage_ok) {
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "POST", "/v1/pkg/recipe-commit", json_body, &r) != 0 ||
-			    r.status != 409) {
-				fprintf(stderr, "FAIL: ADR-0323 a commit while committing is off must be 409, "
-				                "got %d\n",
-				        r.status);
+			    r.status != 409 || r.body == NULL || strstr(r.body, "writable") == NULL) {
+				fprintf(stderr, "FAIL: ADR-0324 a commit with no writable source must be 409 "
+				                "naming it, got %d: %s\n",
+				        r.status, r.body != NULL ? r.body : "");
 				ok = 0;
 			}
 			cix_response_free(&r);
 		}
 
-		/* Turned on, against the fake forge; only for gitea. */
+		/* A writable gitea source, and what a source may not be. */
 		if (stage_ok) {
-			snprintf(put, sizeof(put),
-			         "{\"repo_url\":\"http://127.0.0.1:%d/testowner/cix-recipes\","
-			         "\"repo_kind\":\"gitea\",\"ref\":\"main\",\"auth_token\":\"forge-token\","
-			         "\"commit\":true}",
+			snprintf(post, sizeof(post),
+			         "{\"name\":\"forge\",\"url\":\"http://127.0.0.1:%d/testowner/cix-recipes\","
+			         "\"kind\":\"gitea\",\"ref\":\"main\",\"token\":\"forge-token\",\"write\":true}",
 			         forge_port);
 			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "PUT", "/v1/pkg/repo-config", put, &r) != 0 ||
-			    r.status != 200 || r.json == NULL ||
-			    json_object_get(r.json, "commit") == NULL ||
-			    !json_object_get(r.json, "commit")->u.boolean) {
-				fprintf(stderr, "FAIL: ADR-0323 PUT repo-config commit=true, status=%d\n",
-				        r.status);
+			if (cix_client_request(&client, "POST", "/v1/pkg/sources", post, &r) != 0 ||
+			    r.status != 201 || r.body == NULL || strstr(r.body, "\"write\":true") == NULL ||
+			    strstr(r.body, "\"token_set\":true") == NULL ||
+			    strstr(r.body, "\"trust_keys\":false") == NULL ||
+			    strstr(r.body, "forge-token") != NULL) {
+				fprintf(stderr, "FAIL: ADR-0324 POST a writable source, status=%d: %s\n",
+				        r.status, r.body != NULL ? r.body : "");
 				ok = 0;
 				stage_ok = 0;
 			}
 			cix_response_free(&r);
 		}
 		if (stage_ok) {
-			static const char *const refused[] = { "{\"commit\":\"yes\"}",
-				                               "{\"repo_kind\":\"github\"}" };
+			static const struct {
+				const char *method, *path, *body;
+				int status;
+			} refused[] = {
+				{ "POST", "/v1/pkg/sources",
+				  "{\"name\":\"forge\",\"url\":\"http://x/o/r\",\"kind\":\"gitea\"}", 409 },
+				{ "POST", "/v1/pkg/sources",
+				  "{\"name\":\"gh\",\"url\":\"https://github.com/o/r\",\"kind\":\"github\","
+				  "\"write\":true}",
+				  400 },
+				{ "POST", "/v1/pkg/sources",
+				  "{\"name\":\"Bad Name\",\"url\":\"http://x/o/r\",\"kind\":\"gitea\"}", 400 },
+				{ "PUT", "/v1/pkg/sources/forge", "{\"write\":\"yes\"}", 400 },
+				{ "PUT", "/v1/pkg/sources/forge", "{\"name\":\"other\"}", 400 },
+				{ "PUT", "/v1/pkg/sources/nosuch", "{\"ref\":\"main\"}", 404 },
+				{ "DELETE", "/v1/pkg/sources/nosuch", NULL, 404 },
+			};
 			size_t k;
 
 			for (k = 0; k < sizeof(refused) / sizeof(refused[0]); k++) {
 				memset(&r, 0, sizeof(r));
-				if (cix_client_request(&client, "PUT", "/v1/pkg/repo-config", refused[k],
-				                       &r) != 0 ||
-				    r.status != 400) {
-					fprintf(stderr, "FAIL: ADR-0323 PUT repo-config %s expected 400, got %d\n",
-					        refused[k], r.status);
+				if (cix_client_request(&client, refused[k].method, refused[k].path,
+				                       refused[k].body, &r) != 0 ||
+				    r.status != refused[k].status) {
+					fprintf(stderr, "FAIL: ADR-0324 %s %s %s expected %d, got %d\n",
+					        refused[k].method, refused[k].path,
+					        refused[k].body != NULL ? refused[k].body : "", refused[k].status,
+					        r.status);
 					ok = 0;
 				}
 				cix_response_free(&r);
@@ -6868,7 +6930,7 @@ skip_resume:
 			cix_response_free(&r);
 		}
 		if (stage_ok) {
-			const char *commit = NULL, *path = NULL;
+			const char *commit = NULL, *path = NULL, *src = NULL;
 			int published = 0;
 
 			st_c[0] = '\0';
@@ -6887,12 +6949,14 @@ skip_resume:
 				                                                 : "");
 				commit = json_str_field(r.json, "commit");
 				path = json_str_field(r.json, "path");
+				src = json_str_field(r.json, "source");
 				published = json_object_get(r.json, "published") != NULL &&
 				            json_object_get(r.json, "published")->u.boolean;
 			}
 			if (!str_eq(st_c, "done") || commit == NULL ||
 			    strcmp(commit, TEST_FORGE_COMMIT_SHA) != 0 || path == NULL ||
-			    strcmp(path, "recipes/package/commitpkg@1.0-1.cbs") != 0 || !published) {
+			    strcmp(path, "recipes/package/commitpkg@1.0-1.cbs") != 0 || !str_eq(src, "forge") ||
+			    !published) {
 				fprintf(stderr, "FAIL: ADR-0323 the commit ended %s: %s\n", st_c,
 				        r.body != NULL ? r.body : "(no body)");
 				ok = 0;
@@ -7002,7 +7066,6 @@ skip_resume:
 				ok = 0;
 			}
 			cix_response_free(&r);
-			free(two);
 			for (waited = 0; waited < 120; waited++) {
 				memset(&r, 0, sizeof(r));
 				if (cix_client_request(&client, "GET", "/v1/pkg/recipe-commit", NULL, &r) == 0 &&
@@ -7029,20 +7092,276 @@ skip_resume:
 				ok = 0;
 			}
 			cix_response_free(&r);
+
+			/* commitpkg belongs to forge now; another writable source
+			 * may not take it (ADR-0324). */
+			snprintf(post, sizeof(post),
+			         "{\"name\":\"forge2\",\"url\":\"http://127.0.0.1:%d/other/recipes\","
+			         "\"kind\":\"gitea\",\"token\":\"t2\",\"write\":true}",
+			         forge_port);
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "POST", "/v1/pkg/sources", post, &r);
+			cix_response_free(&r);
+			if (two != NULL) {
+				size_t blen = strlen(two);
+				char *withsrc = malloc(blen + 32);
+
+				if (withsrc != NULL) {
+					/* Same body, naming forge2: {"name":...,"content":...,"source":"forge2"} */
+					snprintf(withsrc, blen + 32, "%.*s,\"source\":\"forge2\"}", (int)(blen - 1),
+					         two);
+					memset(&r, 0, sizeof(r));
+					if (cix_client_request(&client, "POST", "/v1/pkg/recipe-commit", withsrc,
+					                       &r) != 0 ||
+					    r.status != 409 || r.body == NULL ||
+					    strstr(r.body, "belongs to source forge") == NULL) {
+						fprintf(stderr, "FAIL: ADR-0324 committing forge's package to forge2 "
+						                "must be 409 naming its owner, got %d: %s\n",
+						        r.status, r.body != NULL ? r.body : "");
+						ok = 0;
+					}
+					cix_response_free(&r);
+					free(withsrc);
+				}
+			}
+			free(two);
 		}
 
-		/* Back to a cleared repo config, as the test data dir began. */
+		/* A republish with different content is divergent, not a duplicate. */
+		if (stage_ok) {
+			size_t blen = strlen(json_body);
+			char *same = malloc(blen + 32);
+			char *diverge = malloc(blen + 32);
+			char *p;
+
+			if (same != NULL && diverge != NULL) {
+				/* {"name":...,"content":...} + "format":"cbs" */
+				snprintf(same, blen + 32, "%.*s,\"format\":\"cbs\"}", (int)(blen - 1), json_body);
+				snprintf(diverge, blen + 32, "%s", same);
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/pkg/recipes", same, &r) != 0 ||
+				    r.status != 409 || r.body == NULL ||
+				    strstr(r.body, "different content") != NULL) {
+					fprintf(stderr, "FAIL: ADR-0324 an identical republish must be the plain "
+					                "duplicate 409, got %d: %s\n",
+					        r.status, r.body != NULL ? r.body : "");
+					ok = 0;
+				}
+				cix_response_free(&r);
+				p = strstr(diverge, "usr/share/commitpkg");
+				if (p != NULL)
+					memcpy(p, "usr/share/commitpkh", 19);
+				memset(&r, 0, sizeof(r));
+				if (p == NULL ||
+				    cix_client_request(&client, "POST", "/v1/pkg/recipes", diverge, &r) != 0 ||
+				    r.status != 409 || r.body == NULL ||
+				    strstr(r.body, "different content") == NULL) {
+					fprintf(stderr, "FAIL: ADR-0324 a republish with different content must be "
+					                "the divergent 409, got %d: %s\n",
+					        r.status, r.body != NULL ? r.body : "");
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
+			free(same);
+			free(diverge);
+		}
+
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "PUT", "/v1/pkg/repo-config",
-		                       "{\"commit\":false,\"repo_url\":\"\",\"auth_token\":\"\"}",
-		                       &r) != 0 ||
-		    r.status != 200) {
-			fprintf(stderr, "FAIL: ADR-0323 could not clear the repo config, status=%d\n",
-			        r.status);
+		cix_client_request(&client, "DELETE", "/v1/pkg/sources/forge2", NULL, &r);
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "DELETE", "/v1/pkg/sources/forge", NULL, &r) != 0 ||
+		    r.status != 200 || r.body == NULL || strstr(r.body, "\"sources\":[]") == NULL) {
+			fprintf(stderr, "FAIL: ADR-0324 removing the sources left %s\n",
+			        r.body != NULL ? r.body : "(no body)");
 			ok = 0;
 		}
 		cix_response_free(&r);
 		free(json_body);
+		if (forge_pid > 0)
+			test_http_server_stop(forge_pid);
+	}
+
+	/*
+	 * ADR-0324: a sync over two sources. Each offers a package of its
+	 * own and both offer `shared`, with different content. Their own
+	 * packages arrive; `shared` is held -- merged from neither -- until
+	 * the operator chooses; once chosen it arrives from that source, and
+	 * when the choice moves to the other source its copy, a different
+	 * recipe under the same version, is refused as divergent and the
+	 * store keeps what it had.
+	 *
+	 * Each source is a plain tar served where Gitea's archive endpoint
+	 * puts it; extraction detects the format and strips the archive's
+	 * top directory, as it does for a real forge archive.
+	 */
+	{
+		char forge_dir[PATH_MAX], sha[65], tarball[PATH_MAX], path[PATH_MAX];
+		char post[512], recipe[4096];
+		pid_t forge_pid = -1;
+		int forge_port = 0, stage_ok = 1, i;
+		static const char *const repos[][3] = {
+			/* source, owner/repo dir, its own package */
+			{ "srca", "oa/ra", "synca" },
+			{ "srcb", "ob/rb", "syncb" },
+		};
+
+		snprintf(forge_dir, sizeof(forge_dir), "%s/syncforge", scratch_dir);
+		if (mkdir(forge_dir, 0755) != 0 ||
+		    test_http_server_start(forge_dir, 1, &forge_port, &forge_pid) != 0 ||
+		    stage_fixture_tarball(scratch_dir, "syncsrc", "1.0", tarball, sizeof(tarball), sha,
+		                          sizeof(sha)) != 0) {
+			fprintf(stderr, "FAIL: ADR-0324 could not stage the sync fixture\n");
+			ok = 0;
+			stage_ok = 0;
+		}
+		for (i = 0; stage_ok && i < 2; i++) {
+			const char *pkgs[2] = { repos[i][2], "shared" };
+			int j;
+
+			if (run_cmd("mkdir -p '%s/tree/%s/recipes/package' '%s/api/v1/repos/%s/archive'",
+			            forge_dir, repos[i][1], forge_dir, repos[i][1]) != 0)
+				stage_ok = 0;
+			for (j = 0; stage_ok && j < 2; j++) {
+				FILE *fp;
+				char install[160];
+
+				/* `shared` installs a directory named after its source,
+				 * so the two copies are different recipes. */
+				snprintf(install, sizeof(install),
+				         "        mkdir \"${dest}/usr/share/%s-from-%s\" parents\n", pkgs[j],
+				         repos[i][0]);
+				cpdl_recipe_text_decl(recipe, sizeof(recipe), pkgs[j], "1.0", test_http_src(tarball),
+				                      sha, NULL,
+				                      "            tool \"bash\"\n"
+				                      "            tool \"coreutils\"\n",
+				                      NULL, "", "        run \"true\" {\n        }\n", install);
+				snprintf(path, sizeof(path), "%s/tree/%s/recipes/package/%s@1.0-1.cbs", forge_dir,
+				         repos[i][1], pkgs[j]);
+				fp = fopen(path, "w");
+				if (fp == NULL || fputs(recipe, fp) < 0) {
+					stage_ok = 0;
+					if (fp != NULL)
+						fclose(fp);
+					break;
+				}
+				fclose(fp);
+			}
+			/* <repo>/recipes/..., so the archive has one top directory. */
+			if (stage_ok &&
+			    run_cmd("tar -cf '%s/api/v1/repos/%s/archive/main.tar.gz' -C '%s/tree/%.2s' '%s'",
+			            forge_dir, repos[i][1], forge_dir, repos[i][1], repos[i][1] + 3) != 0)
+				stage_ok = 0;
+			snprintf(post, sizeof(post),
+			         "{\"name\":\"%s\",\"url\":\"http://127.0.0.1:%d/%s\",\"kind\":\"gitea\"}",
+			         repos[i][0], forge_port, repos[i][1]);
+			memset(&r, 0, sizeof(r));
+			if (stage_ok &&
+			    (cix_client_request(&client, "POST", "/v1/pkg/sources", post, &r) != 0 ||
+			     r.status != 201))
+				stage_ok = 0;
+			cix_response_free(&r);
+		}
+		if (!stage_ok) {
+			fprintf(stderr, "FAIL: ADR-0324 could not set up the two sources\n");
+			ok = 0;
+		}
+
+		if (stage_ok) {
+			char st_s[32];
+
+			/* First sync: own packages arrive, `shared` is held. */
+			if (sync_and_wait(&client, st_s, sizeof(st_s), &r) != 0 || !str_eq(st_s, "success") ||
+			    r.body == NULL || strstr(r.body, "\"held\":2") == NULL) {
+				fprintf(stderr, "FAIL: ADR-0324 the first two-source sync must succeed holding "
+				                "shared once per source: %s\n",
+				        r.body != NULL ? r.body : "(no body)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			for (i = 0; i < 3; i++) {
+				static const char *const names[] = { "synca", "syncb", "shared" };
+				char rpath[128];
+
+				snprintf(rpath, sizeof(rpath), "/v1/pkg/recipes/%s", names[i]);
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", rpath, NULL, &r) != 0 ||
+				    r.status != (i < 2 ? 200 : 404)) {
+					fprintf(stderr, "FAIL: ADR-0324 after the first sync %s answered %d, "
+					                "expected %d\n",
+					        names[i], r.status, i < 2 ? 200 : 404);
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/source-ownership", NULL, &r) != 0 ||
+			    r.body == NULL || strstr(r.body, "\"item\":\"package:shared\"") == NULL ||
+			    strstr(r.body, "srca, srcb") == NULL) {
+				fprintf(stderr, "FAIL: ADR-0324 source-ownership must hold package:shared, "
+				                "offered by srca, srcb: %s\n",
+				        r.body != NULL ? r.body : "(no body)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			/* Chosen: it arrives from srcb. */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "PUT", "/v1/pkg/source-ownership",
+			                       "{\"item\":\"package:shared\",\"source\":\"srcb\"}", &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: ADR-0324 choosing srcb for shared, status=%d\n", r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			if (sync_and_wait(&client, st_s, sizeof(st_s), &r) != 0 || !str_eq(st_s, "success")) {
+				fprintf(stderr, "FAIL: ADR-0324 the second sync ended %s\n", st_s);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/recipes/shared", NULL, &r) != 0 ||
+			    r.status != 200 || r.body == NULL || strstr(r.body, "shared-from-srcb") == NULL) {
+				fprintf(stderr, "FAIL: ADR-0324 shared must arrive from srcb once chosen: %s\n",
+				        r.body != NULL ? r.body : "(no body)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			/* The choice moves to srca: its copy is a different recipe
+			 * under the same version, so it is refused, not merged. */
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "PUT", "/v1/pkg/source-ownership",
+			                   "{\"item\":\"package:shared\",\"source\":\"srca\"}", &r);
+			cix_response_free(&r);
+			if (sync_and_wait(&client, st_s, sizeof(st_s), &r) != 0 || !str_eq(st_s, "success") ||
+			    r.body == NULL || strstr(r.body, "\"divergent\":1") == NULL) {
+				fprintf(stderr, "FAIL: ADR-0324 srca's different copy of shared@1.0-1 must be "
+				                "counted divergent: %s\n",
+				        r.body != NULL ? r.body : "(no body)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/recipes/shared", NULL, &r) != 0 ||
+			    r.body == NULL || strstr(r.body, "shared-from-srcb") == NULL) {
+				fprintf(stderr, "FAIL: ADR-0324 a divergent copy must not replace the stored "
+				                "recipe: %s\n",
+				        r.body != NULL ? r.body : "(no body)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+
+		for (i = 0; i < 2; i++) {
+			char dpath[128];
+
+			snprintf(dpath, sizeof(dpath), "/v1/pkg/sources/%s", repos[i][0]);
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "DELETE", dpath, NULL, &r);
+			cix_response_free(&r);
+		}
 		if (forge_pid > 0)
 			test_http_server_stop(forge_pid);
 	}

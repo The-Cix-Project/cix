@@ -255,8 +255,9 @@ int test_pkg_config_seed_cleared(const char *pkg_state_dir)
 	 * persists, not through a test-only switch.
 	 */
 	static const char *const cleared[][2] = {
-		{"repo_config.json",
-		 "{\"repo_url\":\"\",\"repo_kind\":\"gitea\",\"ref\":\"master\",\"auth_token\":\"\"}\n"},
+		/* ADR-0324: a saved empty source list -- cleared, and so never
+		 * replaced by the public default. */
+		{"sources.json", "{\"sources\":[],\"choices\":[]}\n"},
 		{"artifact_config.json", "{\"base_url\":\"\",\"auth_token\":\"\",\"push_enabled\":false}\n"},
 	};
 	char cfg[PATH_MAX];

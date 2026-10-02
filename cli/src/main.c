@@ -319,10 +319,17 @@ static const char USAGE_TEXT[] =
 	        "  pkg rebuilds  -- image rebuilds this host has queued but not started.\n"
 	        "               Publishing a recipe queues one for every image tracking that\n"
 	        "               package `rolling`, which is real work nothing else reports.\n"
-	        "  pkg recipe commit --name=NAME --file=PATH [--wait]  -- commits a CPDL recipe\n"
-	        "               to the recipe repository as recipes/package/NAME@VERSION.cbs,\n"
-	        "               then publishes it here (ADR-0323): git first, so git holds every\n"
-	        "               revision a host builds. Needs `pkg repo-config set --commit=on`.\n"
+	        "  pkg recipe commit --name=NAME --file=PATH [--source=NAME] [--wait]  -- commits a\n"
+	        "               CPDL recipe as recipes/package/NAME@VERSION.cbs to the writable source\n"
+	        "               that owns the package, then publishes it here (ADR-0323): git first,\n"
+	        "               so git holds every revision a host builds. --source names it for a\n"
+	        "               package no source offers yet.\n"
+	        "  pkg source ls | add NAME --url=URL --kind=gitea|github|gitlab [--ref=REF]\n"
+	        "               [--token=TOKEN] [--write=on|off] [--trust-keys=on|off] | set NAME ... |\n"
+	        "               rm NAME | own [ITEM SOURCE | ITEM --clear]  -- where recipes come from\n"
+	        "               (ADR-0324). A package offered by two sources is held until `own`\n"
+	        "               chooses one; write lets this host commit there; trust-keys lets the\n"
+	        "               source vouch for packages.\n"
 	        "  pkg recipe add --name=NAME --file=PATH [--format=shell|cbs]  -- publishes a\n"
 	        "               new recipe version on this running system directly, no reinstall\n"
 	        "               needed (ADR-0040); an already-published (name,version) is\n"
@@ -14473,135 +14480,249 @@ static int cmd_pkg_bootstrap(const struct cix_client *c, int json_mode, int argc
 	return emit(&r, json_mode, fmt_bootstrapped);
 }
 
-/* ADR-0121: pkg/ redesign Part 2 -- configurable repo + pkg sync. */
-static void fmt_pkg_repo_config(const struct json_value *v)
+/* ADR-0324: the recipe sources, one line each. */
+static void fmt_pkg_sources(const struct json_value *v)
 {
-	const char *url = json_str_field(v, "repo_url");
-	const char *kind = json_str_field(v, "repo_kind");
-	const char *ref = json_str_field(v, "ref");
-	const struct json_value *token_set = json_object_get(v, "auth_token_set");
-	const struct json_value *commit = json_object_get(v, "commit");
+	const struct json_value *arr = json_object_get(v, "sources");
+	size_t i;
 
-	if (url == NULL || url[0] == '\0') {
-		printf("(no repo configured)\n");
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("(no recipe sources -- add one with `cixctl pkg source add`)\n");
 		return;
 	}
-	/* ADR-0257: when it syncs is `cixctl schedule ls`, not here. */
-	printf("repo_url=%s repo_kind=%s ref=%s auth_token=%s commit=%s  (schedule: cixctl schedule ls)\n",
-	       url, kind != NULL ? kind : "?", ref != NULL ? ref : "?",
-	       (token_set != NULL && token_set->type == JSON_BOOL && token_set->u.boolean)
-	           ? "set"
-	           : "unset",
-	       (commit != NULL && commit->type == JSON_BOOL && commit->u.boolean) ? "on" : "off");
-}
+	for (i = 0; i < arr->u.array.count; i++) {
+		const struct json_value *s = arr->u.array.items[i];
+		const struct json_value *tok = json_object_get(s, "token_set");
+		const struct json_value *wr = json_object_get(s, "write");
+		const struct json_value *tk = json_object_get(s, "trust_keys");
+		const char *name = json_str_field(s, "name");
+		const char *kind = json_str_field(s, "kind");
+		const char *ref = json_str_field(s, "ref");
+		const char *url = json_str_field(s, "url");
 
-static int cmd_pkg_repo_config_show(const struct cix_client *c, int json_mode)
-{
-	struct cix_response r;
-
-	if (cix_client_request(c, CIX_API_getPkgRepoConfig_METHOD, CIX_API_getPkgRepoConfig, NULL, &r) != 0) {
-		fprintf(stderr, "cixctl: could not reach daemon\n");
-		return 1;
+		printf("%-16s %-6s %-5s token=%-5s keys=%-7s %s@%s\n", name != NULL ? name : "?",
+		       kind != NULL ? kind : "?",
+		       wr != NULL && wr->type == JSON_BOOL && wr->u.boolean ? "write" : "read",
+		       tok != NULL && tok->type == JSON_BOOL && tok->u.boolean ? "set" : "unset",
+		       tk != NULL && tk->type == JSON_BOOL && tk->u.boolean ? "trusted" : "no",
+		       url != NULL ? url : "?", ref != NULL ? ref : "?");
 	}
-	return emit(&r, json_mode, fmt_pkg_repo_config);
 }
 
-static int cmd_pkg_repo_config_set(const struct cix_client *c, int json_mode, int argc, char **argv)
+static void fmt_pkg_source_ownership(const struct json_value *v)
 {
-	const char *url = NULL;
-	const char *kind = NULL;
-	const char *ref = NULL;
-	const char *token = NULL;
-	const char *commit = NULL;
-	long interval = -1;
+	const struct json_value *conflicts = json_object_get(v, "conflicts");
+	const struct json_value *choices = json_object_get(v, "choices");
+	size_t i;
+
+	if (conflicts != NULL && conflicts->type == JSON_ARRAY) {
+		for (i = 0; i < conflicts->u.array.count; i++) {
+			const struct json_value *c = conflicts->u.array.items[i];
+			const char *item = json_str_field(c, "item");
+			const char *by = json_str_field(c, "offered_by");
+
+			printf("HELD   %-40s offered by %s -- choose with `cixctl pkg source own %s SOURCE`\n",
+			       item != NULL ? item : "?", by != NULL ? by : "?", item != NULL ? item : "ITEM");
+		}
+	}
+	if (choices != NULL && choices->type == JSON_ARRAY) {
+		for (i = 0; i < choices->u.array.count; i++) {
+			const struct json_value *c = choices->u.array.items[i];
+			const char *item = json_str_field(c, "item");
+			const char *src = json_str_field(c, "source");
+
+			printf("CHOSEN %-40s from %s\n", item != NULL ? item : "?", src != NULL ? src : "?");
+		}
+	}
+	if ((conflicts == NULL || conflicts->type != JSON_ARRAY || conflicts->u.array.count == 0) &&
+	    (choices == NULL || choices->type != JSON_ARRAY || choices->u.array.count == 0))
+		printf("(no item is offered by more than one source)\n");
+}
+
+/*
+ * The flags add and set share. An on|off flag left NULL is unchanged;
+ * returns 2 (usage) for an unknown flag or a bad on|off value.
+ */
+static int parse_source_flags(int argc, char **argv, const char **url, const char **kind,
+                              const char **ref, const char **token, const char **write,
+                              const char **trust_keys, const char *verb)
+{
 	int i;
-	struct json_writer w;
-	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--url=", 6) == 0)
-			url = argv[i] + 6;
+			*url = argv[i] + 6;
 		else if (strncmp(argv[i], "--kind=", 7) == 0)
-			kind = argv[i] + 7;
+			*kind = argv[i] + 7;
 		else if (strncmp(argv[i], "--ref=", 6) == 0)
-			ref = argv[i] + 6;
+			*ref = argv[i] + 6;
 		else if (strncmp(argv[i], "--token=", 8) == 0)
-			token = argv[i] + 8;
-		else if (strncmp(argv[i], "--commit=", 9) == 0)
-			commit = argv[i] + 9;
+			*token = argv[i] + 8;
 		else if (strcmp(argv[i], "--clear-token") == 0)
-			token = "";
-		else if (strncmp(argv[i], "--sync-interval=", 16) == 0) {
-			fprintf(stderr, "cixctl: --sync-interval is gone (ADR-0257) -- use\n"
-			                "  cixctl schedule set recipe-sync --action=pkg.sync "
-			                "--every-minutes=N\n");
-			return 2;
-		}
+			*token = "";
+		else if (strncmp(argv[i], "--write=", 8) == 0)
+			*write = argv[i] + 8;
+		else if (strncmp(argv[i], "--trust-keys=", 13) == 0)
+			*trust_keys = argv[i] + 13;
 		else {
-			fprintf(stderr, "cixctl: unknown pkg repo-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown pkg source %s option '%s'\n", verb, argv[i]);
 			return 2;
 		}
 	}
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	if (url != NULL) {
-		jw_key(&w, "repo_url");
-		jw_str(&w, url);
+	if ((*write != NULL && strcmp(*write, "on") != 0 && strcmp(*write, "off") != 0) ||
+	    (*trust_keys != NULL && strcmp(*trust_keys, "on") != 0 &&
+	     strcmp(*trust_keys, "off") != 0)) {
+		fprintf(stderr, "cixctl: --write and --trust-keys are on or off\n");
+		return 2;
 	}
-	if (kind != NULL) {
-		jw_key(&w, "repo_kind");
-		jw_str(&w, kind);
-	}
-	if (ref != NULL) {
-		jw_key(&w, "ref");
-		jw_str(&w, ref);
-	}
-	if (token != NULL) {
-		jw_key(&w, "auth_token");
-		jw_str(&w, token);
-	}
-	if (commit != NULL) {
-		if (strcmp(commit, "on") != 0 && strcmp(commit, "off") != 0) {
-			jw_free(&w);
-			fprintf(stderr, "cixctl: --commit is on or off\n");
-			return 2;
-		}
-		jw_key(&w, "commit");
-		jw_bool(&w, strcmp(commit, "on") == 0);
-	}
-	if (interval >= 0) {
-		jw_key(&w, "sync_interval_seconds");
-		jw_int(&w, interval);
-	}
-	jw_obj_close(&w);
-	w.buf[w.len] = '\0';
-
-	if (cix_client_request(c, CIX_API_putPkgRepoConfig_METHOD, CIX_API_putPkgRepoConfig, w.buf, &r) != 0) {
-		jw_free(&w);
-		fprintf(stderr, "cixctl: could not reach daemon\n");
-		return 1;
-	}
-	jw_free(&w);
-	return emit(&r, json_mode, fmt_pkg_repo_config);
+	return 0;
 }
 
-static int cmd_pkg_repo_config(const struct cix_client *c, int json_mode, int argc, char **argv)
+static void write_source_body(struct json_writer *w, const char *name, const char *url,
+                              const char *kind, const char *ref, const char *token,
+                              const char *write, const char *trust_keys)
 {
+	jw_init(w);
+	jw_obj_open(w);
+	if (name != NULL) {
+		jw_key(w, "name");
+		jw_str(w, name);
+	}
+	if (url != NULL) {
+		jw_key(w, "url");
+		jw_str(w, url);
+	}
+	if (kind != NULL) {
+		jw_key(w, "kind");
+		jw_str(w, kind);
+	}
+	if (ref != NULL) {
+		jw_key(w, "ref");
+		jw_str(w, ref);
+	}
+	if (token != NULL) {
+		jw_key(w, "token");
+		jw_str(w, token);
+	}
+	if (write != NULL) {
+		jw_key(w, "write");
+		jw_bool(w, strcmp(write, "on") == 0);
+	}
+	if (trust_keys != NULL) {
+		jw_key(w, "trust_keys");
+		jw_bool(w, strcmp(trust_keys, "on") == 0);
+	}
+	jw_obj_close(w);
+	w->buf[w->len] = '\0';
+}
+
+/*
+ * cixctl pkg source ls | add NAME --url= --kind= [...] | set NAME [...] |
+ * rm NAME | own [ITEM SOURCE|ITEM --clear]   (ADR-0324)
+ */
+static int cmd_pkg_source(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	const char *url = NULL, *kind = NULL, *ref = NULL, *token = NULL;
+	const char *write = NULL, *trust_keys = NULL;
 	const char *sub;
+	char path[512];
+	struct json_writer w;
+	struct cix_response r;
+	int rc;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl pkg repo-config show\n"
-		                "       cixctl pkg repo-config set [--url=URL] [--kind=gitea|github|gitlab] "
-		                "[--ref=REF] [--token=TOKEN | --clear-token] [--commit=on|off]\n");
+		fprintf(stderr,
+		        "usage: cixctl pkg source ls\n"
+		        "       cixctl pkg source add NAME --url=URL --kind=gitea|github|gitlab "
+		        "[--ref=REF] [--token=TOKEN] [--write=on|off] [--trust-keys=on|off]\n"
+		        "       cixctl pkg source set NAME [--url=URL] [--kind=...] [--ref=REF] "
+		        "[--token=TOKEN | --clear-token] [--write=on|off] [--trust-keys=on|off]\n"
+		        "       cixctl pkg source rm NAME\n"
+		        "       cixctl pkg source own [ITEM SOURCE | ITEM --clear]\n");
 		return 2;
 	}
 	sub = argv[0];
-	if (strcmp(sub, "show") == 0)
-		return cmd_pkg_repo_config_show(c, json_mode);
-	if (strcmp(sub, "set") == 0)
-		return cmd_pkg_repo_config_set(c, json_mode, argc - 1, argv + 1);
-	fprintf(stderr, "cixctl: unknown pkg repo-config subcommand '%s'\n", sub);
+	if (strcmp(sub, "ls") == 0) {
+		if (cix_client_request(c, CIX_API_listPkgSources_METHOD, CIX_API_listPkgSources, NULL,
+		                       &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_pkg_sources);
+	}
+	if (strcmp(sub, "add") == 0 || strcmp(sub, "set") == 0) {
+		int is_add = strcmp(sub, "add") == 0;
+
+		if (argc < 2 || argv[1][0] == '-') {
+			fprintf(stderr, "usage: cixctl pkg source %s NAME [flags]\n", sub);
+			return 2;
+		}
+		rc = parse_source_flags(argc - 2, argv + 2, &url, &kind, &ref, &token, &write,
+		                        &trust_keys, sub);
+		if (rc != 0)
+			return rc;
+		if (is_add && (url == NULL || kind == NULL)) {
+			fprintf(stderr, "cixctl: pkg source add needs --url= and --kind=\n");
+			return 2;
+		}
+		write_source_body(&w, is_add ? argv[1] : NULL, url, kind, ref, token, write, trust_keys);
+		if (is_add)
+			rc = cix_client_request(c, CIX_API_addPkgSource_METHOD, CIX_API_addPkgSource, w.buf,
+			                        &r);
+		else {
+			snprintf(path, sizeof(path), CIX_API_updatePkgSource, argv[1]);
+			rc = cix_client_request(c, CIX_API_updatePkgSource_METHOD, path, w.buf, &r);
+		}
+		jw_free(&w);
+		if (rc != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_pkg_sources);
+	}
+	if (strcmp(sub, "rm") == 0) {
+		if (argc != 2) {
+			fprintf(stderr, "usage: cixctl pkg source rm NAME\n");
+			return 2;
+		}
+		snprintf(path, sizeof(path), CIX_API_deletePkgSource, argv[1]);
+		if (cix_client_request(c, CIX_API_deletePkgSource_METHOD, path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_pkg_sources);
+	}
+	if (strcmp(sub, "own") == 0) {
+		if (argc == 1) {
+			if (cix_client_request(c, CIX_API_getPkgSourceOwnership_METHOD,
+			                       CIX_API_getPkgSourceOwnership, NULL, &r) != 0) {
+				fprintf(stderr, "cixctl: could not reach daemon\n");
+				return 1;
+			}
+			return emit(&r, json_mode, fmt_pkg_source_ownership);
+		}
+		if (argc != 3) {
+			fprintf(stderr, "usage: cixctl pkg source own [ITEM SOURCE | ITEM --clear]\n");
+			return 2;
+		}
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "item");
+		jw_str(&w, argv[1]);
+		jw_key(&w, "source");
+		jw_str(&w, strcmp(argv[2], "--clear") == 0 ? "" : argv[2]);
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+		rc = cix_client_request(c, CIX_API_setPkgSourceOwnership_METHOD,
+		                        CIX_API_setPkgSourceOwnership, w.buf, &r);
+		jw_free(&w);
+		if (rc != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_pkg_source_ownership);
+	}
+	fprintf(stderr, "cixctl: unknown pkg source subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -14609,17 +14730,43 @@ static void fmt_pkg_sync_status(const struct json_value *v)
 {
 	const char *state = json_str_field(v, "state");
 	const struct json_value *last_attempt = json_object_get(v, "last_attempt");
+	const struct json_value *sources = json_object_get(v, "sources");
 	long added = (long)json_as_number(json_object_get(v, "added"));
 	long skipped = (long)json_as_number(json_object_get(v, "skipped"));
+	long divergent = (long)json_as_number(json_object_get(v, "divergent"));
+	long held = (long)json_as_number(json_object_get(v, "held"));
 	const char *error = json_str_field(v, "error");
+	size_t i;
 
 	printf("state=%s", state != NULL ? state : "?");
 	if (last_attempt != NULL && last_attempt->type != JSON_NULL)
 		printf(" last_attempt=%lld", (long long)json_as_number(last_attempt));
-	printf(" added=%ld skipped=%ld", added, skipped);
+	printf(" added=%ld skipped=%ld divergent=%ld held=%ld", added, skipped, divergent, held);
 	if (error != NULL)
 		printf(" error=%s", error);
 	printf("\n");
+	/* ADR-0324: what each source did. */
+	if (sources == NULL || sources->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < sources->u.array.count; i++) {
+		const struct json_value *s = sources->u.array.items[i];
+		const struct json_value *fetched = json_object_get(s, "fetched");
+		const char *name = json_str_field(s, "name");
+		const char *serr = json_str_field(s, "error");
+
+		printf("  %-16s %s added=%ld skipped=%ld divergent=%ld held=%ld failed=%ld",
+		       name != NULL ? name : "?",
+		       fetched != NULL && fetched->type == JSON_BOOL && fetched->u.boolean ? "synced"
+		                                                                           : "NOT synced",
+		       (long)json_as_number(json_object_get(s, "added")),
+		       (long)json_as_number(json_object_get(s, "skipped")),
+		       (long)json_as_number(json_object_get(s, "divergent")),
+		       (long)json_as_number(json_object_get(s, "held")),
+		       (long)json_as_number(json_object_get(s, "failed")));
+		if (serr != NULL)
+			printf(" error=%s", serr);
+		printf("\n");
+	}
 }
 
 /* Polls GET /v1/pkg/sync until state leaves "running" -- --wait's own
@@ -15287,6 +15434,7 @@ static void fmt_pkg_recipe_commit(const struct json_value *v)
 	const char *state = json_str_field(v, "state");
 	const char *name = json_str_field(v, "name");
 	const char *version = json_str_field(v, "version");
+	const char *source = json_str_field(v, "source");
 	const char *path = json_str_field(v, "path");
 	const char *commit = json_str_field(v, "commit");
 	const char *error = json_str_field(v, "error");
@@ -15296,8 +15444,10 @@ static void fmt_pkg_recipe_commit(const struct json_value *v)
 		printf("(no recipe committed since the daemon started)\n");
 		return;
 	}
-	printf("%s@%s  state=%s  path=%s  commit=%s  published=%s\n", name != NULL ? name : "?",
-	       version != NULL ? version : "?", state, path != NULL ? path : "?",
+	printf("%s@%s  state=%s  source=%s  path=%s  commit=%s  published=%s\n",
+	       name != NULL ? name : "?",
+	       version != NULL ? version : "?", state, source != NULL && source[0] != '\0' ? source : "-",
+	       path != NULL ? path : "?",
 	       commit != NULL && commit[0] != '\0' ? commit : "-",
 	       published != NULL && published->type == JSON_BOOL && published->u.boolean ? "yes"
 	                                                                                   : "no");
@@ -15332,6 +15482,7 @@ static int cmd_pkg_recipe_commit(const struct cix_client *c, int json_mode, int 
 {
 	const char *name = NULL;
 	const char *file = NULL;
+	const char *source = NULL;
 	const char *state;
 	int wait = 0;
 	char *content;
@@ -15346,6 +15497,8 @@ static int cmd_pkg_recipe_commit(const struct cix_client *c, int json_mode, int 
 			name = argv[i] + 7;
 		else if (strncmp(argv[i], "--file=", 7) == 0)
 			file = argv[i] + 7;
+		else if (strncmp(argv[i], "--source=", 9) == 0)
+			source = argv[i] + 9;
 		else if (strcmp(argv[i], "--wait") == 0)
 			wait = 1;
 		else {
@@ -15354,7 +15507,7 @@ static int cmd_pkg_recipe_commit(const struct cix_client *c, int json_mode, int 
 		}
 	}
 	if (name == NULL || file == NULL) {
-		fprintf(stderr, "usage: cixctl pkg recipe commit --name=NAME --file=PATH [--wait]\n");
+		fprintf(stderr, "usage: cixctl pkg recipe commit --name=NAME --file=PATH [--source=NAME] [--wait]\n");
 		return 2;
 	}
 	if (read_local_file(file, &content, &content_len) != 0) {
@@ -15368,6 +15521,10 @@ static int cmd_pkg_recipe_commit(const struct cix_client *c, int json_mode, int 
 	jw_str(&w, name);
 	jw_key(&w, "content");
 	jw_str(&w, content);
+	if (source != NULL) {
+		jw_key(&w, "source");
+		jw_str(&w, source);
+	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 	free(content);
@@ -15475,7 +15632,7 @@ static int cmd_pkg_recipe(const struct cix_client *c, int json_mode, int argc, c
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: cixctl pkg recipe add --name=NAME --file=PATH\n"
-		                "       cixctl pkg recipe commit --name=NAME --file=PATH [--wait]\n"
+		                "       cixctl pkg recipe commit --name=NAME --file=PATH [--source=NAME] [--wait]\n"
 		                "       cixctl pkg recipe show NAME [--version=VERSION]\n"
 		                "       cixctl pkg recipe rm NAME [--version=VERSION]\n");
 		return 2;
@@ -17307,7 +17464,7 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "       cixctl pkg bootstrap-status\n"
 		                "       cixctl pkg recipes\n"
 		                "       cixctl pkg recipe add --name=NAME --file=PATH\n"
-		                "       cixctl pkg recipe commit --name=NAME --file=PATH [--wait]\n"
+		                "       cixctl pkg recipe commit --name=NAME --file=PATH [--source=NAME] [--wait]\n"
 		                "       cixctl pkg recipe show NAME [--version=VERSION]\n"
 		                "       cixctl pkg recipe rm NAME [--version=VERSION]\n"
 		                "       cixctl pkg install --name=NAME [--image=IMAGE] [--version=VERSION] "
@@ -17327,9 +17484,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "       cixctl pkg update-all\n"
 		                "       cixctl pkg verify  -- which installed packages are not "
 		                "actually in their image (#281)\n"
-		                "       cixctl pkg repo-config show\n"
-		                "       cixctl pkg repo-config set [--url=URL] [--kind=gitea|github|gitlab] "
-		                "[--ref=REF] [--token=TOKEN | --clear-token] [--commit=on|off]  (schedule: cixctl schedule)\n"
+		                "       cixctl pkg source ls | add NAME --url=URL --kind=gitea|github|gitlab | "
+		                "set NAME | rm NAME | own [ITEM SOURCE]  (ADR-0324; schedule: cixctl schedule)\n"
 		                "       cixctl pkg sync [--wait]\n"
 		                "       cixctl pkg sync-status\n"
 		                "       cixctl pkg cache-config show\n"
@@ -17381,8 +17537,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_pkg_rm(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "update-all") == 0)
 		return cmd_pkg_update_all(c, json_mode);
-	if (strcmp(sub, "repo-config") == 0)
-		return cmd_pkg_repo_config(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "source") == 0)
+		return cmd_pkg_source(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "sync") == 0)
 		return cmd_pkg_sync(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "sync-status") == 0)

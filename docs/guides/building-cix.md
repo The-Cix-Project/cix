@@ -72,7 +72,7 @@ The `cix` recipe lives in the [cix-recipes](https://git.home.arpa/itdlabs/cix-re
 url "https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/<tag>.tar.gz"
 ```
 
-`{{REPO_TOKEN}}` is replaced at fetch time, host-side, with the token set by `cixctl pkg repo-config set --token=…` ([writing-recipes.md](writing-recipes.md#required-metadata-fields), issue #60), so no credential is ever written into a recipe or reaches the build container. The repository is private, so an unauthenticated fetch gets Gitea's `404`, not a `401`.
+`{{REPO_TOKEN}}` is replaced at fetch time, host-side, with the token of the source that owns the recipe, set by `cixctl pkg source set NAME --token=…` (ADR-0324) ([writing-recipes.md](writing-recipes.md#required-metadata-fields), issue #60), so no credential is ever written into a recipe or reaches the build container. The repository is private, so an unauthenticated fetch gets Gitea's `404`, not a `401`.
 
 To make a newer self-build available: tag this repository, then publish a new `cix` recipe for that tag with `cixctl pkg recipe add --name=cix --file=cix@<tag>.cbs` (the `.cbs` suffix selects the CBS format). A new tag's archive has a new `sha256`; learn it from the box rather than downloading it elsewhere, with a throwaway `probe-*` recipe that declares a deliberately wrong hash. The fetch then fails and the daemon logs the real one as `computed=<64 hex>` (`probe-cix-tarball@1.sh` in cix-recipes is the template).
 

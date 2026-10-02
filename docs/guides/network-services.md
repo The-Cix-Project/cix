@@ -12,7 +12,7 @@ This guide covers standing each service up, feeding it, and taking a server out 
 
 A deployment can declare its own registration, so recreating the container from its recipe restores the server and not only the process: `dns_server` (`{"hosts_path": ...}`), `ntp_server: true`, `syslog_target: true` and `ldap_server` in the recipe are each equivalent to the matching register call after creation (see the `ContainerCreateRequest` schema in [`openapi.yaml`](../api/openapi.yaml)). The shipped `dns-1`/`dns-2` recipes declare `dns_server`; the `ntp-*` and `syslog-*` recipes do not, so those are registered by hand as shown below. DHCP registration has no recipe field: after a DHCP server's container is deleted and recreated, register it again with `cixctl dhcp server add` and name it in its ranges again.
 
-The recipes, images and deployments reach a host through the recipe repository sync (`cixctl pkg sync`, configured with `cixctl pkg repo-config set`), which publishes package recipes, image recipes and deployments together.
+The recipes, images and deployments reach a host through the recipe repository sync (`cixctl pkg sync`, configured with `cixctl pkg source`, ADR-0324), which publishes package recipes, image recipes and deployments together.
 
 ## DNS
 

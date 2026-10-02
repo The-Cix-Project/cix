@@ -1,6 +1,6 @@
 /*
  * Proves Part 2 of the pkg/ redesign (task #767, ADR-0121) end to end:
- * GET/PUT /v1/pkg/repo-config (partial-update semantics, token never
+ * the recipe sources API (ADR-0324: partial updates, a token never
  * echoed back) and POST/GET /v1/pkg/sync (async fetch + merge/additive
  * recipe import). Kept hermetic like test_pkg.c's own fetch tests: the
  * shared loopback server (test_image_fixture.c) stands in for a gitea
@@ -288,93 +288,57 @@ int main(void)
 		return 1;
 	}
 
-	/* --- scenario 1: fresh daemon, no repo configured --- */
+	/* --- scenario 1: fresh daemon, no source configured (ADR-0324) --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "GET", "/v1/pkg/repo-config", NULL, &r) == 0 &&
-	              r.status == 200,
-	      "GET /v1/pkg/repo-config (fresh)");
-	if (r.json != NULL) {
-		const char *url = json_str_field(r.json, "repo_url");
-
-		CHECK(url != NULL && url[0] == '\0', "fresh repo-config has empty repo_url");
-	}
+	CHECK(cix_client_request(&client, "GET", "/v1/pkg/sources", NULL, &r) == 0 && r.status == 200,
+	      "GET /v1/pkg/sources (fresh)");
+	CHECK(r.body != NULL && strstr(r.body, "\"sources\":[]") != NULL,
+	      "a cleared test host has no sources");
 	cix_response_free(&r);
 
 	/* --- scenario 2: POST /v1/pkg/sync with nothing configured -> 400 --- */
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/pkg/sync", NULL, &r) == 0 && r.status == 400,
-	      "POST /v1/pkg/sync with no repo configured must 400");
+	      "POST /v1/pkg/sync with no source configured must 400");
 	cix_response_free(&r);
 
-	/* --- scenario 3: PUT /v1/pkg/repo-config, partial update semantics --- */
+	/* --- scenario 3: a source, and partial updates of it --- */
 	snprintf(repo_url, sizeof(repo_url), "http://127.0.0.1:%d/testowner/testrepo", g_http_port);
 	snprintf(put_body, sizeof(put_body),
-	         "{\"repo_url\":\"%s\",\"repo_kind\":\"gitea\",\"ref\":\"master\","
-	         "\"auth_token\":\"scratch-token\"}",
+	         "{\"name\":\"test\",\"url\":\"%s\",\"kind\":\"gitea\",\"ref\":\"master\","
+	         "\"token\":\"scratch-token\"}",
 	         repo_url);
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config", put_body, &r) == 0 &&
-	              r.status == 200,
-	      "PUT /v1/pkg/repo-config (initial)");
-	if (r.json != NULL) {
-		const char *got_url = json_str_field(r.json, "repo_url");
-		const char *got_kind = json_str_field(r.json, "repo_kind");
-		const struct json_value *token_set = json_object_get(r.json, "auth_token_set");
-
-		CHECK(got_url != NULL && strcmp(got_url, repo_url) == 0, "repo_url echoed back");
-		CHECK(got_kind != NULL && strcmp(got_kind, "gitea") == 0, "repo_kind echoed back");
-		CHECK(token_set != NULL && token_set->type == JSON_BOOL && token_set->u.boolean,
-		      "auth_token_set is true after setting a token");
-		CHECK(json_object_get(r.json, "auth_token") == NULL,
-		      "the raw auth_token value is never echoed back");
-	}
+	CHECK(cix_client_request(&client, "POST", "/v1/pkg/sources", put_body, &r) == 0 &&
+	              r.status == 201,
+	      "POST /v1/pkg/sources (initial)");
+	CHECK(r.body != NULL && strstr(r.body, repo_url) != NULL &&
+	              strstr(r.body, "\"kind\":\"gitea\"") != NULL &&
+	              strstr(r.body, "\"token_set\":true") != NULL,
+	      "the source is listed with its url, kind and token_set");
+	CHECK(r.body != NULL && strstr(r.body, "scratch-token") == NULL,
+	      "the raw token is never echoed back");
 	cix_response_free(&r);
 
-	/* Partial update: only set ref, url/kind/token must be left exactly
-	 * as they were. */
+	/* Partial update: only the ref; url and token are left as they were. */
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config", "{\"ref\":\"main\"}", &r) == 0 &&
+	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/sources/test", "{\"ref\":\"main\"}", &r) ==
+	                      0 &&
 	              r.status == 200,
-	      "PUT /v1/pkg/repo-config (partial: ref only)");
-	if (r.json != NULL) {
-		const char *got_url = json_str_field(r.json, "repo_url");
-		const char *got_ref = json_str_field(r.json, "ref");
-		const struct json_value *token_set = json_object_get(r.json, "auth_token_set");
-
-		CHECK(got_url != NULL && strcmp(got_url, repo_url) == 0,
-		      "repo_url unchanged by a partial update omitting it");
-		CHECK(got_ref != NULL && strcmp(got_ref, "main") == 0, "ref applied");
-		CHECK(token_set != NULL && token_set->type == JSON_BOOL && token_set->u.boolean,
-		      "auth_token_set still true (token untouched by partial update)");
-	}
+	      "PUT /v1/pkg/sources/test (partial: ref only)");
+	CHECK(r.body != NULL && strstr(r.body, repo_url) != NULL &&
+	              strstr(r.body, "\"ref\":\"main\"") != NULL &&
+	              strstr(r.body, "\"token_set\":true") != NULL,
+	      "url and token untouched by a partial update, ref applied");
 	cix_response_free(&r);
 
-	/*
-	 * ADR-0257: sync_interval_seconds is gone from this resource, and
-	 * sending it is REFUSED rather than ignored -- a caller who thought
-	 * it had set a sync schedule would otherwise never learn otherwise.
-	 */
+	/* An explicit empty token clears it. */
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config",
-	                         "{\"sync_interval_seconds\":3600}", &r) == 0 &&
-	              r.status == 400,
-	      "PUT /v1/pkg/repo-config with the removed sync_interval_seconds is refused");
-	CHECK(r.body != NULL && strstr(r.body, "schedules") != NULL,
-	      "the refusal names /v1/schedules as the replacement");
-	cix_response_free(&r);
-
-	/* --clear-token equivalent: an explicit empty string clears it. */
-	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config", "{\"auth_token\":\"\"}", &r) ==
-	              0 &&
+	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/sources/test", "{\"token\":\"\"}", &r) == 0 &&
 	              r.status == 200,
-	      "PUT /v1/pkg/repo-config (clear token)");
-	if (r.json != NULL) {
-		const struct json_value *token_set = json_object_get(r.json, "auth_token_set");
-
-		CHECK(token_set != NULL && token_set->type == JSON_BOOL && !token_set->u.boolean,
-		      "auth_token_set false after explicit clear");
-	}
+	      "PUT /v1/pkg/sources/test (clear token)");
+	CHECK(r.body != NULL && strstr(r.body, "\"token_set\":false") != NULL,
+	      "token_set false after an explicit clear");
 	cix_response_free(&r);
 
 	/*
@@ -390,10 +354,10 @@ int main(void)
 	 * (probe-cix-testreport@5-1, 192.168.15.95, 2026-09-23).
 	 */
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config", "{\"ref\":\"master\"}", &r) ==
+	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/sources/test", "{\"ref\":\"master\"}", &r) ==
 	                      0 &&
 	              r.status == 200,
-	      "PUT /v1/pkg/repo-config (ref of the staged fixture archive)");
+	      "PUT /v1/pkg/sources/test (ref of the staged fixture archive)");
 	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
@@ -474,12 +438,12 @@ int main(void)
 	 * correctly skip the same already-present fixture recipe. */
 	memset(&r, 0, sizeof(r));
 	snprintf(put_body, sizeof(put_body),
-	         "{\"repo_url\":\"http://127.0.0.1:%d/testowner/testrepo/src/branch/master/recipes/"
+	         "{\"url\":\"http://127.0.0.1:%d/testowner/testrepo/src/branch/master/recipes/"
 	         "package\"}",
 	         g_http_port);
-	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config", put_body, &r) == 0 &&
+	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/sources/test", put_body, &r) == 0 &&
 	              r.status == 200,
-	      "PUT /v1/pkg/repo-config (browse-URL-style suffix)");
+	      "PUT /v1/pkg/sources/test (browse-URL-style suffix)");
 	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
@@ -504,11 +468,11 @@ int main(void)
 	/* --- scenario 6: a real fetch failure (unknown repo path -> curl
 	 * exit) reports state=failed with a real error, not a silent hang. */
 	memset(&r, 0, sizeof(r));
-	snprintf(put_body, sizeof(put_body), "{\"repo_url\":\"http://127.0.0.1:%d/testowner/nosuch\"}",
+	snprintf(put_body, sizeof(put_body), "{\"url\":\"http://127.0.0.1:%d/testowner/nosuch\"}",
 	         g_http_port);
-	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config", put_body, &r) == 0 &&
+	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/sources/test", put_body, &r) == 0 &&
 	              r.status == 200,
-	      "PUT /v1/pkg/repo-config (repoint at a nonexistent repo)");
+	      "PUT /v1/pkg/sources/test (repoint at a nonexistent repo)");
 	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));

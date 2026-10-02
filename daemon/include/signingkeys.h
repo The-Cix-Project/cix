@@ -19,8 +19,8 @@
  * 192.168.15.95 being refused outright.
  *
  * So the transport becomes REST, which is what every other operator
- * secret here already uses: pkg_repo_set_config() takes the git token
- * this same way and reports "auth_token_set" rather than the token.
+ * secret here already uses: a recipe source takes its git token
+ * this same way and reports "token_set" rather than the token.
  * This module holds to that: the private key goes in, and nothing --
  * no GET, no error message, no log line -- ever brings it back out.
  *

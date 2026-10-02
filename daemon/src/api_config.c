@@ -61,6 +61,7 @@
 #include "ldap.h"
 #include "ntp.h"
 #include "pkg.h"
+#include "pkgsource.h"
 #include "resolv.h"
 #include "siteconfig.h"
 #include "swap.h"
@@ -651,41 +652,6 @@ static int cfg_apply_ldap(const struct json_value *live, const struct json_value
 	return 0;
 }
 
-static int cfg_apply_package_repo(const struct json_value *live, const struct json_value *sup,
-                                  const char *state_fields, int dry_run, char *err,
-                                  size_t errsz)
-{
-	const char *url, *kind, *ref;
-	int commit;
-
-	if (require_whole_section(live, sup, state_fields, err, errsz) != 0)
-		return -1;
-	if (require_unchanged(live, sup, "auth_token_set",
-	                      "is a redaction marker: this document never carried the token, so "
-	                      "it cannot set one -- use PUT /v1/pkg/repo-config", err, errsz) != 0)
-		return -1;
-	if (need_string(sup, "repo_url", &url, err, errsz) != 0 ||
-	    need_string(sup, "repo_kind", &kind, err, errsz) != 0 ||
-	    need_string(sup, "ref", &ref, err, errsz) != 0 ||
-	    need_bool(sup, "commit", &commit, err, errsz) != 0)
-		return -1;
-	if (dry_run)
-		return 0;
-	/* NULL for the token: the document never carried it, and passing
-	 * anything else here would clear a working one. */
-	switch (pkg_repo_set_config(url, kind, ref, NULL, commit)) {
-	case PKG_OK:
-		return 0;
-	case PKG_ERR_INVALID_NAME:
-		snprintf(err, errsz, "\"repo_kind\" must be gitea, github or gitlab, and \"commit\": "
-		                     "true needs a gitea repository (ADR-0323)");
-		return -1;
-	default:
-		snprintf(err, errsz, "the repository configuration could not be persisted");
-		return -1;
-	}
-}
-
 static int cfg_apply_package_artifacts(const struct json_value *live, const struct json_value *sup,
                                        const char *state_fields, int dry_run, char *err,
                                        size_t errsz)
@@ -1270,6 +1236,98 @@ static int cfg_package_policies_remove(const struct json_value *el, int dry_run,
 static const struct cfg_elem_ops cfg_ops_package_policies = { cfg_package_policies_create,
                                                               cfg_package_policies_update,
                                                               cfg_package_policies_remove };
+
+/*
+ * ADR-0324: one recipe source. The document carries no token -- token_set
+ * is a marker for one it never held -- so a source added from it has
+ * none, and a source's token is set with PUT /v1/pkg/sources/{name}.
+ * Claiming a token the document cannot carry is refused, not ignored.
+ */
+static int cfg_package_sources_fields(const struct json_value *el, struct pkg_source *s,
+                                      char *err, size_t errsz)
+{
+	const char *name, *url, *kind, *ref;
+	int write, trust;
+
+	if (need_string(el, "name", &name, err, errsz) != 0 ||
+	    need_string(el, "url", &url, err, errsz) != 0 ||
+	    need_string(el, "kind", &kind, err, errsz) != 0 ||
+	    need_string(el, "ref", &ref, err, errsz) != 0 ||
+	    need_bool(el, "write", &write, err, errsz) != 0 ||
+	    need_bool(el, "trust_keys", &trust, err, errsz) != 0)
+		return -1;
+	memset(s, 0, sizeof(*s));
+	snprintf(s->name, sizeof(s->name), "%s", name);
+	snprintf(s->url, sizeof(s->url), "%s", url);
+	snprintf(s->kind, sizeof(s->kind), "%s", kind);
+	snprintf(s->ref, sizeof(s->ref), "%s", ref);
+	s->write = write;
+	s->trust_keys = trust;
+	return 0;
+}
+
+static int cfg_package_sources_create(const struct json_value *el, int dry_run, char *err,
+                                      size_t errsz)
+{
+	struct pkg_source s;
+	int token_set = 0;
+
+	if (cfg_package_sources_fields(el, &s, err, errsz) != 0 ||
+	    need_bool(el, "token_set", &token_set, err, errsz) != 0)
+		return -1;
+	if (token_set) {
+		snprintf(err, errsz,
+		         "source %s: token_set is a marker, this document never carries a token -- "
+		         "add the source without one, then PUT /v1/pkg/sources/%s",
+		         s.name, s.name);
+		return -1;
+	}
+	if (dry_run)
+		return 0;
+	return pkgsource_add(&s, err, errsz) == PKGSOURCE_OK ? 0 : -1;
+}
+
+static int cfg_package_sources_update(const struct json_value *live_el,
+                                      const struct json_value *sup_el, int dry_run, char *err,
+                                      size_t errsz)
+{
+	struct pkg_source s;
+	int live_token = 0, sup_token = 0;
+
+	if (cfg_package_sources_fields(sup_el, &s, err, errsz) != 0 ||
+	    need_bool(sup_el, "token_set", &sup_token, err, errsz) != 0 ||
+	    need_bool(live_el, "token_set", &live_token, err, errsz) != 0)
+		return -1;
+	if (sup_token != live_token) {
+		snprintf(err, errsz,
+		         "source %s: token_set is a marker this document cannot change -- use "
+		         "PUT /v1/pkg/sources/%s",
+		         s.name, s.name);
+		return -1;
+	}
+	if (dry_run)
+		return 0;
+	return pkgsource_update(s.name, s.url, s.kind, s.ref, NULL, s.write, s.trust_keys, err,
+	                        errsz) == PKGSOURCE_OK
+	           ? 0
+	           : -1;
+}
+
+static int cfg_package_sources_remove(const struct json_value *el, int dry_run, char *err,
+                                      size_t errsz)
+{
+	const char *name;
+
+	if (need_string(el, "name", &name, err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	return pkgsource_remove(name, err, errsz) == PKGSOURCE_OK ? 0 : -1;
+}
+
+static const struct cfg_elem_ops cfg_ops_package_sources = { cfg_package_sources_create,
+                                                             cfg_package_sources_update,
+                                                             cfg_package_sources_remove };
 
 static int cfg_disk_roles_create(const struct json_value *el, int dry_run, char *err, size_t errsz)
 {

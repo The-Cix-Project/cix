@@ -6,6 +6,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Recipe sources are a list; who owns a package is computed (ADR-0324, step A)
+
+`/v1/pkg/repo-config` is gone. In its place:
+- **`/v1/pkg/sources`** (`cixctl pkg source ls|add|set|rm`) holds any number of recipe sources. Each has a name, url, kind, ref, optional token, `write` (gitea only) and `trust_keys`.
+- **`/v1/pkg/source-ownership`** (`cixctl pkg source own`) lists every name two sources offer and the operator's choices, and takes a choice.
+
+How it behaves:
+- **Sync fetches every source** and records, per source, what it offers. A name offered by one source belongs to it. A name offered by several is merged from none (counted as `held`) until the operator chooses. List order decides nothing.
+- **A version already held with different content is refused as divergent**, at publish and at sync alike. It is compared on `cbs explain` with the artifact checksum ignored, so adding an approval is still allowed. `pkg sync-status` reports `divergent`, `held` and a result per source.
+- **Signing keys are adopted only from a source with `trust_keys`.** It is off for a new source and on for the public default and for the migrated one.
+- **`pkg recipe commit --source=`** commits to the package's owning source, which must be writable with a token. A new package goes to the named source, or to the only writable one. The token used for a recipe's own fetch is its owning source's.
+- **Migration:** a host's `repo_config.json` becomes one source, named after its repository, with `trust_keys` on and `write` as its commit switch said; the file is then removed. A host with neither starts on `cix-public`. A saved empty list stays empty (ADR-0315). The config document's section is now `package_sources`, reconciled by name, and never carries a token.
+- **Tests:** `test_pkgsource` (selftest) covers defaults, migration, validation and ownership. `test_pkg` covers commit routing, divergence and a two-source conflict resolved both ways.
+
 ### ADR-0324: any number of recipe sources and package repositories, and the public catalogue is the owner's
 
 A host had one recipe repository and one artifact server. Both become lists of any length, like a Debian `sources.list`:

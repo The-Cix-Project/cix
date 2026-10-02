@@ -71,6 +71,7 @@
 #include "persist.h"
 #include "pki.h"
 #include "pkg.h"
+#include "pkgsource.h"
 #include "curlfetch.h"
 #include "quotamap.h"
 #include "registry.h"
@@ -292,6 +293,8 @@ char PKG_DIR[PATH_MAX];
 char PKG_INSTALLED_STATE_PATH[PATH_MAX];
 char PKG_RECIPES_DIR[PATH_MAX];
 char PKG_REPO_CONFIG_PATH[PATH_MAX]; /* ADR-0121 */
+char PKG_SOURCES_PATH[PATH_MAX];      /* ADR-0324 */
+char PKG_SOURCES_OFFERS_DIR[PATH_MAX]; /* ADR-0324 */
 char PKG_CACHE_DIR[PATH_MAX];              /* ADR-0122 */
 char PKG_CACHE_CONFIG_PATH[PATH_MAX];      /* ADR-0122 */
 char PKG_ARTIFACT_CONFIG_PATH[PATH_MAX];   /* ADR-0122 */
@@ -514,6 +517,8 @@ static void compute_rebuildable_dir_relative_paths(void)
 	snprintf(PKG_INSTALLED_STATE_PATH, sizeof(PKG_INSTALLED_STATE_PATH), "%s/pkg_installed.json", PKG_DIR);
 	snprintf(PKG_RECIPES_DIR, sizeof(PKG_RECIPES_DIR), "%s/recipes", PKG_DIR);
 	snprintf(PKG_REPO_CONFIG_PATH, sizeof(PKG_REPO_CONFIG_PATH), "%s/repo_config.json", PKG_DIR);
+	snprintf(PKG_SOURCES_PATH, sizeof(PKG_SOURCES_PATH), "%s/sources.json", PKG_DIR);
+	snprintf(PKG_SOURCES_OFFERS_DIR, sizeof(PKG_SOURCES_OFFERS_DIR), "%s/sources", PKG_DIR);
 	snprintf(PKG_CACHE_DIR, sizeof(PKG_CACHE_DIR), "%s/cache", PKG_DIR);
 	snprintf(PKG_CACHE_CONFIG_PATH, sizeof(PKG_CACHE_CONFIG_PATH), "%s/cache_config.json", PKG_DIR);
 	snprintf(PKG_ARTIFACT_CONFIG_PATH, sizeof(PKG_ARTIFACT_CONFIG_PATH), "%s/artifact_config.json",
@@ -6122,7 +6127,7 @@ static int action_pkg_sync(const char *params, char *reason, size_t reason_size)
 	}
 	if (perr == PKG_ERR_NOT_FOUND) {
 		snprintf(reason, reason_size,
-		         "no repo is configured -- PUT /v1/pkg/repo-config first");
+		         "no recipe source is configured -- add one with POST /v1/pkg/sources");
 		return -1;
 	}
 	if (perr != PKG_OK) {
@@ -6167,10 +6172,10 @@ static void migrate_legacy_intervals(void)
 		jobs[n].seconds = volumebackup_legacy_interval_hours() * 3600;
 		n++;
 	}
-	if (pkg_repo_legacy_sync_interval_seconds() > 0) {
+	if (pkgsource_legacy_sync_interval_seconds() > 0) {
 		jobs[n].name = "recipe-sync";
 		jobs[n].action = "pkg.sync";
-		jobs[n].seconds = pkg_repo_legacy_sync_interval_seconds();
+		jobs[n].seconds = pkgsource_legacy_sync_interval_seconds();
 		n++;
 	}
 	for (i = 0; i < n; i++) {
@@ -6200,8 +6205,8 @@ static void migrate_legacy_intervals(void)
 	 */
 	backupconfig_clear_legacy_interval();
 	volumebackup_clear_legacy_interval();
-	if (pkg_repo_legacy_sync_interval_seconds() > 0)
-		pkg_repo_clear_legacy_sync_interval();
+	if (pkgsource_legacy_sync_interval_seconds() > 0)
+		pkgsource_clear_legacy_sync_interval();
 }
 
 /*
@@ -11561,7 +11566,7 @@ static void finalize_rebuildable_storage_migration(void)
 
 	image_init(IMAGES_DIR);
 	pkg_repoint(PKG_DIR, PKG_INSTALLED_STATE_PATH, IMAGES_DIR, ARTIFACTS_DIR);
-	pkg_repo_repoint(PKG_REPO_CONFIG_PATH);
+	pkgsource_repoint(PKG_SOURCES_PATH, PKG_SOURCES_OFFERS_DIR);
 	pkg_cache_repoint(PKG_CACHE_DIR, PKG_CACHE_CONFIG_PATH);
 	pkg_artifact_repoint(PKG_ARTIFACT_CONFIG_PATH);
 	pkg_build_config_repoint(PKG_BUILD_CONFIG_PATH);
@@ -20044,6 +20049,11 @@ static void respond_pkg_recipe_error(int fd, enum pkg_error err)
 			respond_error(fd, 400, "Bad Request",
 			              "recipe content failed to parse, or its pkg_name= doesn't match name");
 		break;
+	case PKG_ERR_DIVERGENT:
+		respond_error(fd, 409, "Conflict",
+		              "this recipe version is already published with different content -- a "
+		              "version is one recipe forever, so publish a new release (ADR-0324)");
+		break;
 	case PKG_ERR_DUPLICATE:
 		/* ADR-0107: recipe versions are immutable once published --
 		 * an already-published (name,version) pair is a real client
@@ -20219,89 +20229,194 @@ static void handle_pkg_bootstrap(int fd, const char *body, size_t body_len)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
-/* ADR-0121: GET /v1/pkg/repo-config -- the configured sync source
- * (never echoes the auth token itself, see pkg_repo_write_json_
- * config()'s own doc comment). */
-static void handle_pkg_repo_config_get(int fd)
+/*
+ * ADR-0324: the recipe sources. Every refusal names its reason, which
+ * pkgsource.c writes; the status says what kind of refusal it was.
+ */
+static void respond_pkgsource_error(int fd, enum pkgsource_error e, const char *err)
+{
+	switch (e) {
+	case PKGSOURCE_ERR_INVALID:
+		respond_error(fd, 400, "Bad Request", err);
+		break;
+	case PKGSOURCE_ERR_EXISTS:
+	case PKGSOURCE_ERR_FULL:
+		respond_error(fd, 409, "Conflict", err);
+		break;
+	case PKGSOURCE_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", err);
+		break;
+	default:
+		respond_error(fd, 500, "Internal Server Error", err);
+		break;
+	}
+}
+
+static void respond_pkgsources(int fd, int status, const char *reason)
 {
 	struct json_writer w;
 
 	jw_init(&w);
-	pkg_repo_write_json_config(&w);
+	pkgsource_write_json(&w);
+	respond_json(fd, status, reason, &w);
+	jw_free(&w);
+}
+
+/* A boolean field: 1/0 when present and boolean, -1 when absent, -2 when
+ * present and not a boolean. */
+static int json_bool_or_absent(const struct json_value *root, const char *key)
+{
+	const struct json_value *v = json_object_get(root, key);
+
+	if (v == NULL)
+		return -1;
+	if (v->type != JSON_BOOL)
+		return -2;
+	return v->u.boolean ? 1 : 0;
+}
+
+/* GET /v1/pkg/sources */
+static void handle_pkg_sources_get(int fd)
+{
+	respond_pkgsources(fd, 200, "OK");
+}
+
+/* POST /v1/pkg/sources: add one. */
+static void handle_pkg_sources_post(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = body_len > 0 ? json_parse(body, body_len) : NULL;
+	struct pkg_source s;
+	char err[256];
+	const char *v;
+	int write, trust;
+	enum pkgsource_error e;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	write = json_bool_or_absent(root, "write");
+	trust = json_bool_or_absent(root, "trust_keys");
+	if (write == -2 || trust == -2) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "write and trust_keys are true or false");
+		return;
+	}
+	memset(&s, 0, sizeof(s));
+	v = json_as_string(json_object_get(root, "name"));
+	snprintf(s.name, sizeof(s.name), "%s", v != NULL ? v : "");
+	v = json_as_string(json_object_get(root, "url"));
+	snprintf(s.url, sizeof(s.url), "%s", v != NULL ? v : "");
+	v = json_as_string(json_object_get(root, "kind"));
+	snprintf(s.kind, sizeof(s.kind), "%s", v != NULL ? v : "");
+	v = json_as_string(json_object_get(root, "ref"));
+	snprintf(s.ref, sizeof(s.ref), "%s", v != NULL ? v : "");
+	v = json_as_string(json_object_get(root, "token"));
+	snprintf(s.token, sizeof(s.token), "%s", v != NULL ? v : "");
+	s.write = write == 1;
+	s.trust_keys = trust == 1;
+	json_free(root);
+	e = pkgsource_add(&s, err, sizeof(err));
+	if (e != PKGSOURCE_OK) {
+		respond_pkgsource_error(fd, e, err);
+		return;
+	}
+	logstore_write("cixd", "info", "pkg source %s added (%s, %s%s)", s.name, s.url,
+	               s.write ? "write" : "read", s.trust_keys ? ", trusted for keys" : "");
+	respond_pkgsources(fd, 201, "Created");
+}
+
+/* PUT /v1/pkg/sources/{name}: a partial update. */
+static void handle_pkg_source_put(int fd, const char *name, const char *body, size_t body_len)
+{
+	struct json_value *root = body_len > 0 ? json_parse(body, body_len) : NULL;
+	char err[256];
+	int write, trust;
+	enum pkgsource_error e;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	if (json_object_get(root, "name") != NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "a source's name never changes -- remove it and add another");
+		return;
+	}
+	write = json_bool_or_absent(root, "write");
+	trust = json_bool_or_absent(root, "trust_keys");
+	if (write == -2 || trust == -2) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "write and trust_keys are true or false");
+		return;
+	}
+	e = pkgsource_update(name, json_as_string(json_object_get(root, "url")),
+	                     json_as_string(json_object_get(root, "kind")),
+	                     json_as_string(json_object_get(root, "ref")),
+	                     json_as_string(json_object_get(root, "token")), write, trust, err,
+	                     sizeof(err));
+	json_free(root);
+	if (e != PKGSOURCE_OK) {
+		respond_pkgsource_error(fd, e, err);
+		return;
+	}
+	logstore_write("cixd", "info", "pkg source %s updated", name);
+	respond_pkgsources(fd, 200, "OK");
+}
+
+/* DELETE /v1/pkg/sources/{name} */
+static void handle_pkg_source_delete(int fd, const char *name)
+{
+	char err[256];
+	enum pkgsource_error e = pkgsource_remove(name, err, sizeof(err));
+
+	if (e != PKGSOURCE_OK) {
+		respond_pkgsource_error(fd, e, err);
+		return;
+	}
+	logstore_write("cixd", "info", "pkg source %s removed", name);
+	respond_pkgsources(fd, 200, "OK");
+}
+
+/* GET /v1/pkg/source-ownership */
+static void handle_pkg_source_ownership_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	pkgsource_write_ownership_json(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
 
-/*
- * PUT /v1/pkg/repo-config: a partial update -- any field omitted from
- * the body leaves that setting unchanged (pkg_repo_set_config()'s own
- * NULL-means-unchanged contract). "auth_token": "" explicitly clears
- * an already-configured token; omitting it entirely leaves whatever's
- * there. Changing sync_interval_seconds takes effect on the next
- * periodic-timer re-arm (immediately, via arm_pkg_sync_periodic_
- * timer() below) -- no daemon restart needed, same "live, no-restart"
- * posture every other *_config PUT in this codebase already has.
- */
-static void handle_pkg_repo_config_put(int fd, const char *body, size_t body_len)
+/* PUT /v1/pkg/source-ownership {"item": "package:glibc", "source": "site"} --
+ * "" or null for source clears the choice. */
+static void handle_pkg_source_ownership_put(int fd, const char *body, size_t body_len)
 {
-	struct json_value *root = NULL;
-	const char *repo_url = NULL;
-	const char *repo_kind = NULL;
-	const char *ref = NULL;
-	const char *auth_token = NULL;
-	int commit = -1;
+	struct json_value *root = body_len > 0 ? json_parse(body, body_len) : NULL;
+	char err[256];
+	enum pkgsource_error e;
 
-	enum pkg_error perr;
-
-	if (body_len > 0) {
-		root = json_parse(body, body_len);
-		if (root == NULL) {
-			respond_error(fd, 400, "Bad Request", "invalid JSON body");
-			return;
-		}
-		repo_url = json_as_string(json_object_get(root, "repo_url"));
-		repo_kind = json_as_string(json_object_get(root, "repo_kind"));
-		ref = json_as_string(json_object_get(root, "ref"));
-		auth_token = json_as_string(json_object_get(root, "auth_token"));
-		{
-			const struct json_value *jc = json_object_get(root, "commit");
-
-			if (jc != NULL && jc->type != JSON_BOOL) {
-				json_free(root);
-				respond_error(fd, 400, "Bad Request", "commit must be true or false");
-				return;
-			}
-			if (jc != NULL)
-				commit = jc->u.boolean ? 1 : 0;
-		}
-		/*
-		 * ADR-0257: sync_interval_seconds is gone from this resource.
-		 * Refused rather than ignored, so a client still sending it
-		 * learns that its schedule is not being set.
-		 */
-		if (json_object_get(root, "sync_interval_seconds") != NULL) {
-			json_free(root);
-			respond_error(fd, 400, "Bad Request",
-			               "sync_interval_seconds moved to /v1/schedules (ADR-0257) -- set a "
-			               "schedule with action \"pkg.sync\" instead");
-			return;
-		}
-	}
-
-	perr = pkg_repo_set_config(repo_url, repo_kind, ref, auth_token, commit);
-	if (root != NULL)
-		json_free(root);
-	if (perr == PKG_ERR_INVALID_NAME) {
-		respond_error(fd, 400, "Bad Request",
-		              "repo_kind must be gitea, github or gitlab, and commit: true needs a "
-		              "gitea repository (ADR-0323)");
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
 		return;
 	}
-	if (perr != PKG_OK) {
-		respond_pkg_error(fd, perr);
+	e = pkgsource_choose(json_as_string(json_object_get(root, "item")),
+	                     json_as_string(json_object_get(root, "source")), err, sizeof(err));
+	if (e == PKGSOURCE_OK)
+		logstore_write("cixd", "info", "pkg source ownership: %s -> %s",
+		               json_as_string(json_object_get(root, "item")),
+		               json_as_string(json_object_get(root, "source")) != NULL &&
+		                       json_as_string(json_object_get(root, "source"))[0] != '\0'
+		                   ? json_as_string(json_object_get(root, "source"))
+		                   : "(cleared)");
+	json_free(root);
+	if (e != PKGSOURCE_OK) {
+		respond_pkgsource_error(fd, e, err);
 		return;
 	}
-	handle_pkg_repo_config_get(fd);
+	handle_pkg_source_ownership_get(fd);
 }
 
 /*
@@ -20328,7 +20443,9 @@ static void handle_pkg_recipe_commit_post(int fd, const char *body, size_t body_
 		respond_error(fd, 400, "Bad Request", "name and content are required");
 		return;
 	}
-	perr = pkg_recipe_commit_start(name, content, err, sizeof(err));
+	perr = pkg_recipe_commit_start(name, content,
+	                               json_as_string(json_object_get(root, "source")), err,
+	                               sizeof(err));
 	json_free(root);
 	switch (perr) {
 	case PKG_OK:
@@ -20336,6 +20453,7 @@ static void handle_pkg_recipe_commit_post(int fd, const char *body, size_t body_
 	case PKG_ERR_BUSY:
 	case PKG_ERR_NOT_FOUND:
 	case PKG_ERR_DUPLICATE:
+	case PKG_ERR_DIVERGENT:
 	case PKG_ERR_ARTIFACT_NAME_TAKEN:
 		respond_error(fd, 409, "Conflict", err);
 		return;
@@ -20374,7 +20492,7 @@ static void handle_pkg_recipe_commit_get(int fd)
 
 /* POST /v1/pkg/sync: starts an async fetch+merge of the configured
  * repo's recipes (never binaries -- see pkg_sync_completed()'s own
- * doc comment). 409 if one is already running, 400 if no repo is
+ * doc comment). 409 if one is already running, 400 if no source is
  * configured yet. 202, poll GET /v1/pkg/sync for the outcome. */
 static void handle_pkg_sync_post(int fd, const char *body, size_t body_len)
 {
@@ -20421,7 +20539,7 @@ static void handle_pkg_sync_post(int fd, const char *body, size_t body_len)
 		return;
 	}
 	if (perr == PKG_ERR_NOT_FOUND) {
-		respond_error(fd, 400, "Bad Request", "no repo configured (PUT /v1/pkg/repo-config first)");
+		respond_error(fd, 400, "Bad Request", "no recipe source is configured (POST /v1/pkg/sources first)");
 		return;
 	}
 	if (perr != PKG_OK) {
@@ -23026,8 +23144,8 @@ static void handle_cpreserve_put(int fd, const char *body, size_t body_len)
 /*
  * GET/PUT /v1/system/tls-throttle, GET /v1/system/tls-throttle/status
  * (ADR-0134) -- per-source-IP throttling for repeated failed HTTPS
- * handshakes. PUT is a real partial update, same convention pkg_repo_
- * set_config()/handle_pkg_repo_config_put() already established:
+ * handshakes. PUT is a real partial update, the convention every
+ * daemon config resource uses (PUT /pkg/sources/{name} among them):
  * fields omitted from the body are left unchanged.
  */
 static void handle_tls_throttle_get(int fd)
@@ -25472,16 +25590,40 @@ static void op_addPkgRecipe(const struct api_ctx *ctx)
 	handle_pkg_recipe_add(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
-/* GET /v1/pkg/repo-config */
-static void op_getPkgRepoConfig(const struct api_ctx *ctx)
+/* GET /v1/pkg/sources */
+static void op_listPkgSources(const struct api_ctx *ctx)
 {
-	handle_pkg_repo_config_get(ctx->fd);
+	handle_pkg_sources_get(ctx->fd);
 }
 
-/* PUT /v1/pkg/repo-config */
-static void op_putPkgRepoConfig(const struct api_ctx *ctx)
+/* POST /v1/pkg/sources */
+static void op_addPkgSource(const struct api_ctx *ctx)
 {
-	handle_pkg_repo_config_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+	handle_pkg_sources_post(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* PUT /v1/pkg/sources/{name} */
+static void op_updatePkgSource(const struct api_ctx *ctx)
+{
+	handle_pkg_source_put(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+/* DELETE /v1/pkg/sources/{name} */
+static void op_deletePkgSource(const struct api_ctx *ctx)
+{
+	handle_pkg_source_delete(ctx->fd, ctx->p[0]);
+}
+
+/* GET /v1/pkg/source-ownership */
+static void op_getPkgSourceOwnership(const struct api_ctx *ctx)
+{
+	handle_pkg_source_ownership_get(ctx->fd);
+}
+
+/* PUT /v1/pkg/source-ownership */
+static void op_setPkgSourceOwnership(const struct api_ctx *ctx)
+{
+	handle_pkg_source_ownership_put(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
 /* POST /v1/pkg/recipe-commit */
@@ -31590,7 +31732,9 @@ static int cixd_main(int argc, char **argv)
 	 * which is correct but cannot recover a leak.
 	 */
 	pkg_set_build_container_live_fn(pkg_build_container_is_live);
-	if (boot_subsystem_init(init_mode, "pkg_repo", pkg_repo_init(PKG_REPO_CONFIG_PATH)) != 0)
+	if (boot_subsystem_init(init_mode, "pkg_sources",
+	                        pkgsource_init(PKG_SOURCES_PATH, PKG_REPO_CONFIG_PATH,
+	                                       PKG_SOURCES_OFFERS_DIR)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "pkg_cache", pkg_cache_init(PKG_CACHE_DIR, PKG_CACHE_CONFIG_PATH)) != 0)
 		return 1;

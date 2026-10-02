@@ -61,7 +61,7 @@ void connthrottle_config_repoint(const char *new_path);
 struct throttle_config connthrottle_config_get(void);
 
 /*
- * Partial update, same convention as pkg_repo_set_config(): -1 on any
+ * Partial update, same convention as pkgsource_update(): -1 on any
  * int field (or enabled_flag) means "leave this field unchanged".
  * Returns 0 on success, -1 if any given field is out of range or the
  * persist write fails.

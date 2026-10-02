@@ -149,7 +149,7 @@ paths:
 
         Derived values and redacted secrets may be sent back but not
         changed: `zswap.supported` is a property of the kernel,
-        `package_repo.auth_token_set` is a marker for a token this
+        a source's `token_set` in `package_sources` is a marker for a token this
         document never carried. Changing either is refused by name.
 
 
@@ -9767,78 +9767,208 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /pkg/repo-config:
+  /pkg/sources:
     get:
       summary: >
-        The currently configured recipe-sync source (ADR-0121, Part 2 of the pkg/
-        redesign). auth_token itself is never echoed back -- only a derived
-        auth_token_set boolean, the same "never round-trip a secret" posture as
-        every other credential this API handles.
-      operationId: getPkgRepoConfig
+        The recipe sources this host syncs from, in order (ADR-0324). A
+        token is reported as token_set and never returned.
+      operationId: listPkgSources
       x-cix-permission: packages:read
       x-cix-expose: [cli, web]
       responses:
         "200":
-          description: >
-            Current repo config. A host that has never saved one reports the
-            built-in default (ADR-0315): repo_url
-            https://github.com/The-Cix-Project/cix-recipes, repo_kind github,
-            ref main, no token. repo_url is empty only when an operator has
-            cleared it.
+          description: Every source
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PkgRepoConfig"
-    put:
+                $ref: "#/components/schemas/PkgSourceList"
+    post:
       summary: >
-        Partially updates the configured recipe repo: any field omitted from the
-        request body leaves that setting unchanged. An explicit "auth_token": ""
-        is the one way to clear an already-set token; omitting auth_token entirely
-        leaves whatever token (if any) is already stored.
-
-        ADR-0257: sync_interval_seconds is GONE. WHEN a sync runs is a
-        schedule (action "pkg.sync"); this resource says only where
-        recipes come from. Sending the old field is refused with a 400
-        naming its replacement.
-      operationId: putPkgRepoConfig
+        Adds a recipe source (ADR-0324). A source is read unless write is
+        true, and supplies no signing keys unless trust_keys is true.
+      operationId: addPkgSource
       x-cix-permission: packages:write
       x-cix-expose: [cli, web]
       requestBody:
-        required: false
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, url, kind]
+              properties:
+                name:
+                  type: string
+                  description: "[a-z0-9][a-z0-9._-]*, under 64 characters"
+                url:
+                  type: string
+                  description: <scheme>://<host>/<owner>/<repo>
+                kind:
+                  type: string
+                  enum: [gitea, github, gitlab]
+                ref:
+                  type: string
+                  description: Branch or tag to sync; main when omitted
+                token:
+                  type: string
+                  description: Write-only
+                write:
+                  type: boolean
+                  description: This host may commit recipes it writes to this source (ADR-0323). gitea only.
+                trust_keys:
+                  type: boolean
+                  description: Signing keys this source carries are trusted for artifacts. Off by default.
+      responses:
+        "201":
+          description: Added; the whole list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgSourceList"
+        "400":
+          description: A field is malformed; the message names it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A source with that name exists, or the list is full
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /pkg/sources/{name}:
+    put:
+      summary: >
+        Partial update of one source (ADR-0324): omitted fields are
+        unchanged, "" for token clears it, and the name never changes.
+      operationId: updatePkgSource
+      x-cix-permission: packages:write
+      x-cix-expose: [cli, web]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
         content:
           application/json:
             schema:
               type: object
               properties:
-                repo_url:
+                url:
                   type: string
-                repo_kind:
+                kind:
                   type: string
                   enum: [gitea, github, gitlab]
                 ref:
                   type: string
-                  description: Branch/tag to fetch; "main" (the ADR-0315 default) until set otherwise
-                auth_token:
+                token:
                   type: string
-                  description: Write-only; "" clears an existing token, omitted leaves it unchanged
-                commit:
+                write:
                   type: boolean
-                  description: true lets this host commit recipes it writes (ADR-0323); omitted leaves it unchanged. Needs repo_kind gitea
+                trust_keys:
+                  type: boolean
       responses:
         "200":
-          description: Updated repo config (same shape as GET)
+          description: Updated; the whole list
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PkgRepoConfig"
+                $ref: "#/components/schemas/PkgSourceList"
         "400":
-          description: repo_kind is not one of gitea/github/gitlab, commit is not a boolean, or commit is on for a repo_kind other than gitea
+          description: A field is malformed, or the body names the source
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "500":
-          description: Validated but persisting the config to disk failed
+        "404":
+          description: No such source
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: >
+        Removes a source, what it offered, and every ownership choice that
+        named it (ADR-0324). Recipes already published stay published.
+      operationId: deletePkgSource
+      x-cix-permission: packages:write
+      x-cix-expose: [cli, web]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Removed; the whole list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgSourceList"
+        "404":
+          description: No such source
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /pkg/source-ownership:
+    get:
+      summary: >
+        Which names more than one source offers with no choice made (each is
+        held: synced from no source), and the operator's choices (ADR-0324).
+      operationId: getPkgSourceOwnership
+      x-cix-permission: packages:read
+      x-cix-expose: [cli, web]
+      responses:
+        "200":
+          description: Conflicts and choices
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgSourceOwnership"
+    put:
+      summary: >
+        Chooses the source an item comes from when several offer it
+        (ADR-0324). source "" or null clears the choice.
+      operationId: setPkgSourceOwnership
+      x-cix-permission: packages:write
+      x-cix-expose: [cli, web]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [item]
+              properties:
+                item:
+                  type: string
+                  description: "<kind>:<name>, kind package, image or deployment"
+                source:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Conflicts and choices after the change
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgSourceOwnership"
+        "400":
+          description: The item is not <kind>:<name>
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such source
           content:
             application/json:
               schema:
@@ -9847,10 +9977,10 @@ paths:
   /pkg/recipe-commit:
     post:
       summary: >
-        Commits a recipe to the recipe repository, then publishes it here
-        (ADR-0323). Git first: the recipe is validated by every test a
+        Commits a recipe to the writable source that owns its package,
+        then publishes it here (ADR-0323). Git first: the recipe is validated by every test a
         publish applies, committed as recipes/package/<name>@<version>.cbs
-        on the configured ref, and only then published, so git holds
+        on that source's ref, and only then published, so git holds
         every revision a host builds. One commit at a time. 202; poll GET
         /pkg/recipe-commit for the outcome.
       operationId: commitPkgRecipe
@@ -9869,6 +9999,12 @@ paths:
                 content:
                   type: string
                   description: The CPDL recipe, exactly as it is to be committed and published.
+                source:
+                  type: string
+                  description: >
+                    The source to commit to, for a package no source offers yet.
+                    Omitted, it is the package's owning source, or the one writable
+                    source when there is exactly one (ADR-0324).
       responses:
         "202":
           description: Validated; the commit has started
@@ -9883,7 +10019,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: Committing is off for this host, the repository is not a gitea one with a token, a commit is already running, or that version is already published
+          description: No writable source with a token owns the package (the message says which and why), a commit is already running, or that version is already published
           content:
             application/json:
               schema:
@@ -14804,10 +14940,14 @@ components:
           x-cix-config-kind: array
           x-cix-config-key: "container"
           x-cix-config-apply: reconcile
-        package_repo:
-          description: Recipe source repository. The auth token renders as a set/not-set boolean.
-          x-cix-config-kind: object
-          x-cix-config-apply: replace
+        package_sources:
+          description: >
+            Recipe sources (ADR-0324), in order. A token renders as the
+            token_set boolean and is never carried: a source that needs one
+            is given it with PUT /v1/pkg/sources/{name}.
+          x-cix-config-kind: array
+          x-cix-config-key: "name"
+          x-cix-config-apply: reconcile
         package_artifacts:
           description: Prebuilt-artifact server (ADR-0122). The auth token renders as a set/not-set boolean.
           x-cix-config-kind: object
@@ -20384,40 +20524,79 @@ components:
                 anywhere inside a string value (typically staged file content);
                 shown here exactly as stored, never substituted.
 
-    PkgRepoConfig:
+    PkgSource:
       type: object
-      required: [repo_url, repo_kind, ref, auth_token_set, commit]
+      required: [name, url, kind, ref, token_set, write, trust_keys]
       properties:
-        repo_url:
+        name:
+          type: string
+        url:
           type: string
           description: >
-            https://github.com/The-Cix-Project/cix-recipes on a host that
-            has never saved a repo config (ADR-0315); empty when an operator
-            has cleared it. Only <scheme>://<host>/<owner>/<repo> is ever read from
-            this -- a real forge browse URL pasted verbatim (e.g.
-            ".../owner/repo/src/branch/<ref>/<path>") also works,
-            since anything past the repo segment is ignored (ADR-0133).
-        repo_kind:
+            <scheme>://<host>/<owner>/<repo>; anything past the repo segment
+            is ignored, so a forge browse URL pasted verbatim works (ADR-0133).
+        kind:
           type: string
           enum: [gitea, github, gitlab]
         ref:
           type: string
-          description: Branch/tag fetched on sync; "main" (the ADR-0315 default) until explicitly set otherwise.
-        auth_token_set:
+          description: Branch or tag synced.
+        token_set:
           type: boolean
-          description: Whether an auth token is currently stored -- the token itself is never returned.
-        commit:
+          description: Whether a token is stored. The token itself is never returned.
+        write:
           type: boolean
           description: >
-            Whether this host commits a recipe it wrote (ADR-0323) to this
-            repository, on `ref`, before publishing it. Off by default and
-            only an operator turns it on: a commit to the synced ref is a
-            deploy to every host following it. Needs a gitea repository and
-            a token with write access.
+            This host may commit recipes it writes to this source (ADR-0323).
+            A host authors only for packages owned by a source it may write.
+        trust_keys:
+          type: boolean
+          description: >
+            Signing keys this source carries in docs/keys are trusted for
+            artifacts. Off by default; on for the public catalogue and for the
+            source a host's old single repo config became.
+
+    PkgSourceList:
+      type: object
+      required: [sources]
+      properties:
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/PkgSource"
+
+    PkgSourceOwnership:
+      type: object
+      required: [conflicts, choices]
+      properties:
+        conflicts:
+          type: array
+          description: >
+            Items more than one source offers with no choice made. Each is
+            held: a sync merges it from no source until one is chosen.
+          items:
+            type: object
+            required: [item, offered_by]
+            properties:
+              item:
+                type: string
+              offered_by:
+                type: string
+                description: The offering sources, ", "-separated.
+        choices:
+          type: array
+          items:
+            type: object
+            required: [item, source]
+            properties:
+              item:
+                type: string
+              source:
+                type: string
 
     PkgRecipeCommit:
       type: object
-      required: [state, name, version, path, commit, published, error, started_at, finished_at]
+      required: [state, name, version, source, path, commit, published, error, started_at, finished_at]
       properties:
         state:
           type: string
@@ -20427,6 +20606,9 @@ components:
         version:
           type: string
           description: The version cbs derived for the recipe, release included.
+        source:
+          type: string
+          description: The writable source it is committed to (ADR-0324).
         path:
           type: string
           description: Where it is committed, recipes/package/<name>@<version>.cbs (ADR-0308).
@@ -20480,6 +20662,44 @@ components:
           type: string
           nullable: true
           description: Set when state is "failed"; also non-null if some recipes failed to parse even on an otherwise-successful sync.
+        divergent:
+          type: integer
+          description: >
+            Recipe versions a source offered that this host already holds with
+            DIFFERENT content (ADR-0324). Refused and kept as they were, never
+            counted as skipped.
+        held:
+          type: integer
+          description: >
+            Items skipped because more than one source offers them and no
+            choice has been made (GET /pkg/source-ownership).
+        sources:
+          type: array
+          description: What the most recent sync did, per source, in list order.
+          items:
+            type: object
+            required: [name, fetched, added, approved, skipped, divergent, held, failed, error]
+            properties:
+              name:
+                type: string
+              fetched:
+                type: boolean
+                description: False when the fetch or unpack failed; the source keeps what it offered before.
+              added:
+                type: integer
+              approved:
+                type: integer
+              skipped:
+                type: integer
+              divergent:
+                type: integer
+              held:
+                type: integer
+              failed:
+                type: integer
+              error:
+                type: string
+                nullable: true
 
     PkgCacheConfig:
       type: object

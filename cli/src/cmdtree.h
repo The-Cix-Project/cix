@@ -1377,6 +1377,7 @@ static const char *const n_pkg_recipe_add_flags[] = {
 static const char *const n_pkg_recipe_commit_flags[] = {
 	"--file=",
 	"--name=",
+	"--source=",
 	"--wait",
 	NULL
 };
@@ -1399,20 +1400,28 @@ static const struct cli_node n_pkg_recipe_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
-static const char *const n_pkg_repo_config_set_flags[] = {
+static const char *const n_pkg_source_set_flags[] = {
 	"--clear-token",
-	"--commit=",
 	"--kind=",
 	"--ref=",
-	"--sync-interval=",
 	"--token=",
+	"--trust-keys=",
 	"--url=",
+	"--write=",
 	NULL
 };
 
-static const struct cli_node n_pkg_repo_config_subs[] = {
-	{ "set", n_pkg_repo_config_set_flags, NULL },
-	{ "show", NULL, NULL },
+static const char *const n_pkg_source_own_flags[] = {
+	"--clear",
+	NULL
+};
+
+static const struct cli_node n_pkg_source_subs[] = {
+	{ "add", n_pkg_source_set_flags, NULL },
+	{ "ls", NULL, NULL },
+	{ "own", n_pkg_source_own_flags, NULL },
+	{ "rm", NULL, NULL },
+	{ "set", n_pkg_source_set_flags, NULL },
 	{ NULL, NULL, NULL },
 };
 
@@ -1455,7 +1464,7 @@ static const struct cli_node n_pkg_subs[] = {
 	{ "rebuilds", NULL, NULL },
 	{ "recipe", NULL, n_pkg_recipe_subs },
 	{ "recipes", NULL, NULL },
-	{ "repo-config", NULL, n_pkg_repo_config_subs },
+	{ "source", NULL, n_pkg_source_subs },
 	{ "resume", n_pkg_resume_flags, NULL },
 	{ "rm", NULL, NULL },
 	{ "sync", n_pkg_sync_flags, NULL },

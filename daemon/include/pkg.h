@@ -423,7 +423,14 @@ enum pkg_error {
 	 * `resources { memory }`) than memory_max_ceiling allows. Refused
 	 * before the build starts; the log names both numbers.
 	 */
-	PKG_ERR_BUILD_MEMORY_OVER_CEILING
+	PKG_ERR_BUILD_MEMORY_OVER_CEILING,
+	/*
+	 * ADR-0324: this version is already published with DIFFERENT
+	 * content -- not the identical republish PKG_ERR_DUPLICATE names,
+	 * but two places disagreeing about what one immutable version is.
+	 * Refused, kept as it was, and reported rather than skipped.
+	 */
+	PKG_ERR_DIVERGENT
 };
 
 /*
@@ -1574,66 +1581,7 @@ int pkg_image_has_packages(const char *image);
  * or -1 if the state could not be saved. Called by image_rename(). */
 int pkg_rename_image(const char *old_image, const char *new_image);
 
-/* ---- pkg/ redesign Part 2 (ADR-0121): configurable repo + pkg sync ---- */
-
-#define PKGREPO_URL_MAX 512
-#define PKGREPO_KIND_MAX 16 /* "gitea" / "github" / "gitlab" */
-#define PKGREPO_REF_MAX 128
-#define PKGREPO_TOKEN_MAX 256
-
-/*
- * ADR-0315: the public recipe catalogue is the built-in default, so a
- * freshly installed host can `pkg sync` with no configuration at all.
- * A default is only what a host starts with -- the first PUT that
- * changes or clears any field is persisted, and a persisted file is
- * read as-is from then on (an empty repo_url in it means "cleared",
- * not "use the default").
- */
-#define PKG_DEFAULT_REPO_URL "https://github.com/The-Cix-Project/cix-recipes"
-#define PKG_DEFAULT_REPO_KIND "github"
-#define PKG_DEFAULT_REPO_REF "main"
-
-/* Loads any persisted repo config. With no file -- a host that has
- * never had its repo config set -- the PKG_DEFAULT_REPO_* catalogue
- * stands, with no token; same "missing file is not an error, just
- * first-ever startup" tolerance every other *_init() in this codebase
- * already has. */
-int pkg_repo_init(const char *config_path);
-
-/* ADR-0141 Phase 4: path-only repoint -- see pkg_repoint()'s own doc comment. */
-void pkg_repo_repoint(const char *new_config_path);
-
-/* {"repo_url","repo_kind","ref","auth_token_set"} -- the token itself
- * is never echoed back (auth_token_set
- * is a bool), the one piece of secret-shaped state this daemon
- * persists that's genuinely sensitive over REST. */
-void pkg_repo_write_json_config(struct json_writer *w);
-
-/*
- * Any NULL pointer parameter leaves that field unchanged (a partial
- * PUT); passing "" for auth_token clears it explicitly (distinct from
- * NULL, which leaves whatever's already configured). repo_kind (if
- * given) must be exactly "gitea"/"github"/"gitlab" -- PKG_ERR_INVALID_
- * NAME otherwise, reusing the existing error for "not a valid
- * identifier of the expected shape" rather than adding a new one just
- * for this.
- *
- * ADR-0257: sync_interval_seconds is gone. WHEN a sync runs is a
- * schedule (`GET /v1/schedules`, action "pkg.sync"); this resource says
- * only WHERE recipes come from. Two places to look for "why did it not
- * sync" is the thing that ADR removed.
- */
-enum pkg_error pkg_repo_set_config(const char *repo_url, const char *repo_kind, const char *ref,
-                                    const char *auth_token, int commit);
-
-/*
- * ADR-0323: commit is 1 to let this host commit a recipe it wrote to
- * the repository before publishing it, 0 to stop, -1 to leave it as it
- * is. Refused (PKG_ERR_INVALID_NAME) for a repo_kind with no commit
- * client, which pkg_repo_commit_supported() answers: gitea today.
- */
-int pkg_repo_commit_supported(const char *repo_kind);
-int pkg_repo_commit_enabled(void);
+/* ---- recipe commit (ADR-0323), and pkg sync over every source (ADR-0324, pkgsource.h) ---- */
 
 /*
  * ADR-0323: commit a recipe to the recipe repository, then publish it
@@ -1646,18 +1594,12 @@ int pkg_repo_commit_enabled(void);
  * exists; abort records a helper that could not start. write_json is
  * the last commit's state for GET /v1/pkg/recipe-commit.
  */
-enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, char *err,
-                                       size_t err_size);
+enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, const char *source,
+                                       char *err, size_t err_size);
 int pkg_recipe_commit_work(void *unused);
 void pkg_recipe_commit_done(int exit_status, void *unused);
 void pkg_recipe_commit_abort(const char *why);
 void pkg_recipe_commit_write_json(struct json_writer *w);
-
-/* Read once at init from an older config file, for the one-time
- * migration that turns it into a schedule. 0 when there was none. */
-int pkg_repo_legacy_sync_interval_seconds(void);
-void pkg_repo_clear_legacy_sync_interval(void);
-int pkg_repo_is_configured(void);
 
 /*
  * Starts an async fetch of the configured repo's own archive (forge-
@@ -1849,12 +1791,12 @@ int pkg_artifact_init(const char *config_path);
 void pkg_artifact_repoint(const char *new_config_path);
 
 /* {"base_url","auth_token_set"} -- the token itself is never echoed
- * back, same posture pkg_repo_write_json_config() already has. */
+ * back, same posture pkgsource_write_json() has. */
 void pkg_artifact_write_json_config(struct json_writer *w);
 
 /*
  * NULL leaves that field unchanged (a partial PUT, same contract
- * pkg_repo_set_config() already has); "" for auth_token explicitly
+ * pkgsource_update() has); "" for auth_token explicitly
  * clears it. Deliberately no repo_kind/ref here -- this is a plain
  * HTTP location, not a git forge (see pkg.c's own module comment for
  * why binaries and git don't mix).

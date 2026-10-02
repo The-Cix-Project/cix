@@ -18,6 +18,7 @@
 #include "namecheck.h"
 #include "cbsrecipe.h"
 #include "forgecommit.h"
+#include "pkgsource.h"
 #include "json.h"
 #include "jsondiff.h"
 #include "recipe_format.h"
@@ -2130,11 +2131,6 @@ static int tokenize_into(char *raw, char *dest, size_t elem_size, int max_entrie
 	return n;
 }
 
-/* Issue #60: the daemon's stored repo auth token (or "" if none) --
- * defined further down alongside g_repo_auth_token; forward-declared
- * here because parse_recipe() above the definition uses it. */
-static const char *pkg_repo_token(void);
-
 /*
  * Issue #60: replace every occurrence of needle with repl inside buf
  * (a NUL-terminated string in a fixed cap-byte array), in place. A
@@ -2198,11 +2194,18 @@ static void str_replace_all(char *buf, size_t cap, const char *needle, const cha
  */
 static void redact_repo_token(char *buf, size_t cap)
 {
-	const char *tok = pkg_repo_token();
+	int i;
 
-	if (buf == NULL || tok == NULL || tok[0] == '\0')
+	if (buf == NULL)
 		return;
-	str_replace_all(buf, cap, tok, "{{REPO_TOKEN}}");
+	/* ADR-0324: every source's token, not one -- a recipe or an error
+	 * message may carry any of them. */
+	for (i = 0; i < pkgsource_count(); i++) {
+		const char *tok = pkgsource_at(i)->token;
+
+		if (tok[0] != '\0')
+			str_replace_all(buf, cap, tok, "{{REPO_TOKEN}}");
+	}
 }
 
 /*
@@ -2218,8 +2221,8 @@ static void redact_repo_token(char *buf, size_t cap)
  *
  * THE DIFFERENCE FROM redact_repo_token() IS THE WHOLE POINT, and
  * #502 is what happens without it. That function substitutes exactly
- * one string -- whatever pkg_repo_token() returns -- so it protects
- * recipes carrying THAT token and nothing else. A recipe carrying
+ * the tokens of this host's sources -- so it protects recipes carrying
+ * one of THOSE and nothing else. A recipe carrying
  * `https://osakka:<password>@git.home.arpa/...` uses basic auth, a
  * different secret from the configured API token, so there was
  * nothing to match and `pkg recipe show` served the credential in
@@ -2297,8 +2300,11 @@ static void redact_url_userinfo(char *buf, size_t cap)
 }
 
 /*
- * Issue #60/#405: substitutes the daemon's own stored repo token for
- * the {{REPO_TOKEN}} placeholder in every source URL.
+ * Issue #60/#405: substitutes the token of the source that owns this
+ * package (ADR-0324) for the {{REPO_TOKEN}} placeholder in every source
+ * URL. The owner's, never another source's: a recipe from one source
+ * must not be able to spend a token this host holds for a different
+ * forge.
  *
  * Shared by every recipe format deliberately, and that is the point
  * rather than tidiness. This is what lets a recipe that self-fetches
@@ -2310,14 +2316,22 @@ static void redact_url_userinfo(char *buf, size_t cap)
  * than a missing step. One function means a new format cannot skip it
  * by omission.
  *
- * A recipe with no placeholder, or an empty stored token, is left
- * byte-for-byte unchanged.
+ * A recipe with no placeholder, no owning source, or an owner with no
+ * token, is left byte-for-byte unchanged.
  */
 static void substitute_repo_token(struct pkg_recipe *out)
 {
-	const char *tok = pkg_repo_token();
+	char item[PKG_SOURCE_ITEM_MAX];
+	char owner[PKG_SOURCES_MAX * PKG_SOURCE_NAME_MAX];
+	const struct pkg_source *s;
+	const char *tok;
 	int i;
 
+	snprintf(item, sizeof(item), "package:%s", out->name);
+	if (pkgsource_owner_of(item, owner, sizeof(owner)) != PKGSOURCE_OWNER_ONE)
+		return;
+	s = pkgsource_find(owner);
+	tok = s != NULL ? s->token : NULL;
 	if (tok == NULL || tok[0] == '\0')
 		return;
 	for (i = 0; i < out->source_count; i++)
@@ -2378,7 +2392,7 @@ static int parse_shell_recipe(const char *path, struct pkg_recipe *out)
 	/*
 	 * Issue #60: substitute the {{REPO_TOKEN}} placeholder in each
 	 * source URL with the daemon's own stored repo auth token
-	 * (pkg repo-config --token=). This is what lets a recipe that
+	 * (the owning source's, `pkg source set NAME --token=`). This is what lets a recipe that
 	 * self-fetches from the private Gitea be committed in its final,
 	 * working form -- no more the temp-real-token-substitute-then-
 	 * revert dance the kernel/cix recipes needed on every re-pin
@@ -8202,6 +8216,38 @@ static enum pkg_error recipe_persist_failed(const char *what)
 }
 
 /*
+ * ADR-0324: is a CBS recipe arriving for a version already published
+ * the same recipe? Asked of the two explain documents, ignoring the one
+ * permitted difference -- the artifact approval #492 writes in after a
+ * build -- exactly as approve_cbs_artifact() asks it. A text comparison
+ * would call every approved recipe on a host different from git, because
+ * the daemon places that line where the human-written copy does not
+ * (measured: cbs@v0.1.100-1, store against corpus, 2026-10-02).
+ * 1 when they mean the same thing, 0 when they do not or cannot be read.
+ */
+static int recipe_explains_equal(const char *recipe_path, const char *explain_json)
+{
+	char stored_path[PATH_MAX];
+	char *stored = NULL;
+	size_t stored_len = 0;
+	struct json_value *a, *b;
+	int same = 0;
+
+	cbs_explain_path(recipe_path, stored_path, sizeof(stored_path));
+	if (explain_json == NULL || persist_read_file(stored_path, &stored, &stored_len) != 0 ||
+	    stored == NULL)
+		return 0;
+	a = json_parse(stored, stored_len);
+	b = json_parse(explain_json, strlen(explain_json));
+	if (a != NULL && b != NULL)
+		same = jsondiff_equal_ignoring(a, b, "artifact_sha256") == 1;
+	json_free(a);
+	json_free(b);
+	free(stored);
+	return same;
+}
+
+/*
  * What a dry run reports: the identity cbs derived for the recipe, and
  * its changelog, which is the reason a commit message can give.
  */
@@ -8506,6 +8552,7 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 		char *stored = NULL;
 		size_t stored_len = 0;
 		int only_approval = 0;
+		int same = 0;
 
 		/*
 		 * The one permitted edit: adding the artifact checksum for
@@ -8523,15 +8570,33 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 		 * DOES take a cache hit, and the old warning that it could
 		 * not is no longer true of anything.
 		 */
-		if (!is_cbs && persist_read_file(recipe_path, &stored, &stored_len) == 0 &&
-		    stored != NULL) {
+		/*
+		 * ADR-0324: the same version with a different meaning is not
+		 * a duplicate, it is a conflict -- two places disagree about
+		 * what one immutable version is. It is refused like a
+		 * duplicate, and named differently, so a sync can report it
+		 * rather than count it as a quiet skip.
+		 */
+		if (is_cbs) {
+			same = recipe_explains_equal(recipe_path, explain_json);
+		} else if (persist_read_file(recipe_path, &stored, &stored_len) == 0 &&
+		           stored != NULL) {
 			only_approval = recipe_adds_only_artifact_sha256(stored, content);
+			same = only_approval || strcmp(stored, content) == 0;
 			free(stored);
 		}
 		free(redacted);
 		free(explain_json);
 		if (!only_approval || check != NULL) {
 			unlink(staging_path);
+			if (!same) {
+				logstore_write("cixd", "warn",
+				               "pkg: recipe %s@%s refused -- that version is already "
+				               "published with different content, and a version is one "
+				               "recipe forever (ADR-0107, ADR-0324)",
+				               name, parsed.version);
+				return PKG_ERR_DIVERGENT;
+			}
 			return PKG_ERR_DUPLICATE;
 		}
 		if (rename(staging_path, recipe_path) != 0) {
@@ -9379,7 +9444,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 		 *
 		 * which reads like a malformed recipe and says nothing about
 		 * the token. The daemon knows exactly what is wrong and can
-		 * say so, which is one `pkg repo-config set --token=` away
+		 * say so, which is one `pkg source set NAME --token=` away
 		 * from fixed. Hit live on a real host, where the fetch had
 		 * been failing this way with nothing naming the cause.
 		 */
@@ -9394,8 +9459,8 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 
 			if (strstr(url_to_check, "{{REPO_TOKEN}}") != NULL) {
 				static const char msg[] =
-				    "pkg_source needs a repo token, but none is configured on this host -- "
-				    "set one with `cixctl pkg repo-config set --token=...`";
+				    "pkg_source needs a repo token, and the source that owns this package has "
+				    "none (or no source owns it) -- set one with `cixctl pkg source set NAME --token=...`";
 				int efd = open(fetch_err_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 
 				/*
@@ -14752,28 +14817,7 @@ enum pkg_error pkg_delete(const char *name, const char *image)
 	return PKG_OK;
 }
 
-/* ---- pkg/ redesign Part 2 (ADR-0121): configurable repo + pkg sync ---- */
-
-static char g_repo_config_path[PATH_MAX];
-static char g_repo_url[PKGREPO_URL_MAX] = PKG_DEFAULT_REPO_URL;
-static char g_repo_kind[PKGREPO_KIND_MAX] = PKG_DEFAULT_REPO_KIND;
-static char g_repo_ref[PKGREPO_REF_MAX] = PKG_DEFAULT_REPO_REF;
-static char g_repo_auth_token[PKGREPO_TOKEN_MAX];
-/*
- * ADR-0323: whether this host may commit a recipe it wrote to the
- * repository above, before publishing it. Off by default, and only an
- * operator turns it on: a commit to the synced ref is a deploy to every
- * host that follows it, so it is never something a host does because
- * it happens to hold a token.
- */
-static int g_repo_commit;
-
-
-static const char *pkg_repo_token(void)
-{
-	return g_repo_auth_token;
-}
-static int g_repo_legacy_sync_interval; /* ADR-0257 migration only */
+/* ---- pkg sync (ADR-0121), over every recipe source (ADR-0324, pkgsource.c) ---- */
 
 static pid_t g_sync_pid = -1;
 enum sync_state { SYNC_NEVER = 0, SYNC_RUNNING, SYNC_SUCCESS, SYNC_FAILED };
@@ -14801,170 +14845,8 @@ static char g_sync_refetch_name[PKG_NAME_MAX];
 static char g_sync_refetch_version[PKG_VERSION_MAX];
 static char g_sync_last_error[PKG_ERROR_MAX];
 
-static int repo_kind_is_valid(const char *kind)
-{
-	return strcmp(kind, "gitea") == 0 || strcmp(kind, "github") == 0 ||
-	       strcmp(kind, "gitlab") == 0;
-}
-
-static int save_repo_config(void)
-{
-	struct json_writer w;
-	int rc;
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "repo_url");
-	jw_str(&w, g_repo_url);
-	jw_key(&w, "repo_kind");
-	jw_str(&w, g_repo_kind);
-	jw_key(&w, "ref");
-	jw_str(&w, g_repo_ref);
-	jw_key(&w, "auth_token");
-	jw_str(&w, g_repo_auth_token);
-	jw_key(&w, "commit");
-	jw_bool(&w, g_repo_commit);
-	jw_obj_close(&w);
-	w.buf[w.len] = '\0';
-
-	rc = persist_atomic_write(g_repo_config_path, w.buf, w.len);
-	jw_free(&w);
-	return rc;
-}
-
-/* ADR-0141 Phase 4: path-only repoint -- see pkg_repoint()'s own doc
- * comment for the shared reasoning. */
-void pkg_repo_repoint(const char *new_config_path)
-{
-	snprintf(g_repo_config_path, sizeof(g_repo_config_path), "%s", new_config_path);
-}
-
-int pkg_repo_init(const char *config_path)
-{
-	char *buf;
-	size_t len;
-	struct json_value *root;
-	const struct json_value *interval;
-	const char *s;
-
-	if (snprintf(g_repo_config_path, sizeof(g_repo_config_path), "%s", config_path) >=
-	    (int)sizeof(g_repo_config_path))
-		return -1;
-
-	snprintf(g_repo_url, sizeof(g_repo_url), "%s", PKG_DEFAULT_REPO_URL);
-	snprintf(g_repo_kind, sizeof(g_repo_kind), "%s", PKG_DEFAULT_REPO_KIND);
-	snprintf(g_repo_ref, sizeof(g_repo_ref), "%s", PKG_DEFAULT_REPO_REF);
-	g_repo_auth_token[0] = '\0';
-	g_repo_legacy_sync_interval = 0;
-	g_repo_commit = 0;
-
-	if (persist_read_file(config_path, &buf, &len) != 0 || buf == NULL)
-		return 0; /* no persisted config yet -- defaults stand */
-
-	root = json_parse(buf, len);
-	free(buf);
-	if (root == NULL)
-		return 0;
-
-	s = json_as_string(json_object_get(root, "repo_url"));
-	if (s != NULL)
-		snprintf(g_repo_url, sizeof(g_repo_url), "%s", s);
-	s = json_as_string(json_object_get(root, "repo_kind"));
-	if (s != NULL && repo_kind_is_valid(s))
-		snprintf(g_repo_kind, sizeof(g_repo_kind), "%s", s);
-	s = json_as_string(json_object_get(root, "ref"));
-	if (s != NULL && s[0] != '\0')
-		snprintf(g_repo_ref, sizeof(g_repo_ref), "%s", s);
-	s = json_as_string(json_object_get(root, "auth_token"));
-	if (s != NULL)
-		snprintf(g_repo_auth_token, sizeof(g_repo_auth_token), "%s", s);
-	{
-		const struct json_value *jc = json_object_get(root, "commit");
-
-		g_repo_commit = jc != NULL && jc->type == JSON_BOOL && jc->u.boolean;
-	}
-	/* An older file still carries this; it is migrated into a schedule
-	 * once and then never written again (ADR-0257). */
-	interval = json_object_get(root, "sync_interval_seconds");
-	if (interval != NULL)
-		g_repo_legacy_sync_interval = (int)json_as_number(interval);
-
-	json_free(root);
-	return 0;
-}
-
-void pkg_repo_write_json_config(struct json_writer *w)
-{
-	jw_obj_open(w);
-	jw_key(w, "repo_url");
-	jw_str(w, g_repo_url);
-	jw_key(w, "repo_kind");
-	jw_str(w, g_repo_kind);
-	jw_key(w, "ref");
-	jw_str(w, g_repo_ref);
-	jw_key(w, "auth_token_set");
-	jw_bool(w, g_repo_auth_token[0] != '\0');
-	jw_key(w, "commit");
-	jw_bool(w, g_repo_commit);
-	jw_obj_close(w);
-}
-
-int pkg_repo_commit_supported(const char *repo_kind)
-{
-	return repo_kind != NULL && strcmp(repo_kind, "gitea") == 0;
-}
-
-int pkg_repo_commit_enabled(void)
-{
-	return g_repo_commit;
-}
-
-enum pkg_error pkg_repo_set_config(const char *repo_url, const char *repo_kind, const char *ref,
-                                    const char *auth_token, int commit)
-{
-	const char *kind = repo_kind != NULL ? repo_kind : g_repo_kind;
-
-	if (repo_kind != NULL && !repo_kind_is_valid(repo_kind))
-		return PKG_ERR_INVALID_NAME;
-	/* ADR-0323: a commit client exists for gitea only, so committing
-	 * against any other forge -- turned on now, or left on while the kind
-	 * changes -- is refused rather than accepted and failed later. */
-	if ((commit == 1 || (commit < 0 && g_repo_commit)) && !pkg_repo_commit_supported(kind))
-		return PKG_ERR_INVALID_NAME;
-
-	if (repo_url != NULL)
-		snprintf(g_repo_url, sizeof(g_repo_url), "%s", repo_url);
-	if (repo_kind != NULL)
-		snprintf(g_repo_kind, sizeof(g_repo_kind), "%s", repo_kind);
-	if (ref != NULL && ref[0] != '\0')
-		snprintf(g_repo_ref, sizeof(g_repo_ref), "%s", ref);
-	if (auth_token != NULL)
-		snprintf(g_repo_auth_token, sizeof(g_repo_auth_token), "%s", auth_token);
-	if (commit == 0 || commit == 1)
-		g_repo_commit = commit;
-	if (save_repo_config() != 0)
-		return PKG_ERR_PERSIST_FAILED;
-	return PKG_OK;
-}
-
-int pkg_repo_legacy_sync_interval_seconds(void)
-{
-	return g_repo_legacy_sync_interval;
-}
-
-void pkg_repo_clear_legacy_sync_interval(void)
-{
-	g_repo_legacy_sync_interval = 0;
-	save_repo_config();
-}
-
-int pkg_repo_is_configured(void)
-{
-	return g_repo_url[0] != '\0';
-}
-
 /*
- * Splits g_repo_url ("<scheme>://<host>/<owner>/<repo>[.git][/...]")
+ * Splits a source url ("<scheme>://<host>/<owner>/<repo>[.git][/...]")
  * into its parts. Only the FIRST TWO path segments are ever owner/repo
  * -- anything after is ignored, not folded into "owner". This is
  * deliberately lenient, not just simple: a real, confirmed bug (found
@@ -14986,18 +14868,19 @@ int pkg_repo_is_configured(void)
  * fails cleanly at fetch time rather than doing something wrong
  * quietly).
  */
-static int parse_repo_url(char *out_scheme, size_t scheme_sz, char *out_host, size_t host_sz,
-                           char *out_owner, size_t owner_sz, char *out_repo, size_t repo_sz)
+static int parse_repo_url(const char *url, char *out_scheme, size_t scheme_sz, char *out_host,
+                          size_t host_sz, char *out_owner, size_t owner_sz, char *out_repo,
+                          size_t repo_sz)
 {
-	const char *scheme_end = strstr(g_repo_url, "://");
+	const char *scheme_end = strstr(url, "://");
 	const char *host_start, *host_end, *path;
-	char path_buf[PKGREPO_URL_MAX];
+	char path_buf[PKG_SOURCE_URL_MAX];
 	char *owner_start, *slash1, *slash2, *repo_start;
 	size_t repo_len;
 
 	if (scheme_end == NULL)
 		return -1;
-	snprintf(out_scheme, scheme_sz, "%.*s", (int)(scheme_end - g_repo_url), g_repo_url);
+	snprintf(out_scheme, scheme_sz, "%.*s", (int)(scheme_end - url), url);
 
 	host_start = scheme_end + 3;
 	host_end = strchr(host_start, '/');
@@ -15052,6 +14935,7 @@ static struct {
 	enum recipe_commit_state state;
 	char name[PKG_NAME_MAX];
 	char version[PKG_VERSION_MAX];
+	char source[PKG_SOURCE_NAME_MAX]; /* ADR-0324: the writable source it goes to */
 	char repo_path[PATH_MAX];
 	char message[PKG_CHANGELOG_MAX + 256];
 	char *content; /* the redacted recipe: what is committed is what is published */
@@ -15067,10 +14951,88 @@ static void recipe_commit_result_path(char *out, size_t out_size)
 	snprintf(out, out_size, "%s/recipe-commit.result", g_pkg_dir);
 }
 
-enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, char *err,
-                                       size_t err_size)
+/*
+ * ADR-0324: the source a recipe for `name` is committed to. The source
+ * that owns the package, which must be writable on this host -- a host
+ * never writes to a source it only reads, because that source is
+ * authored somewhere else. A package no source offers yet is new: it
+ * goes to the source the caller named, or to the one writable source
+ * when there is exactly one. A name several sources offer, with no
+ * choice made, has no answer until the operator gives one.
+ */
+static int resolve_commit_target(const char *name, const char *requested, char *out,
+                                 size_t out_size, char *err, size_t err_size)
+{
+	char item[PKG_SOURCE_ITEM_MAX];
+	char owner[PKG_SOURCES_MAX * PKG_SOURCE_NAME_MAX];
+	const struct pkg_source *s = NULL;
+	int i, writable = 0;
+
+	snprintf(item, sizeof(item), "package:%s", name);
+	switch (pkgsource_owner_of(item, owner, sizeof(owner))) {
+	case PKGSOURCE_OWNER_ONE:
+		if (requested != NULL && requested[0] != '\0' && strcmp(requested, owner) != 0) {
+			snprintf(err, err_size, "package %s belongs to source %s, not %s", name, owner,
+			         requested);
+			return -1;
+		}
+		s = pkgsource_find(owner);
+		break;
+	case PKGSOURCE_OWNER_CONFLICT:
+		snprintf(err, err_size,
+		         "package %s is offered by %s and no source has been chosen for it -- choose "
+		         "one first (PUT /v1/pkg/source-ownership)",
+		         name, owner);
+		return -1;
+	default:
+		if (requested != NULL && requested[0] != '\0') {
+			s = pkgsource_find(requested);
+			if (s == NULL) {
+				snprintf(err, err_size, "no source named %s", requested);
+				return -1;
+			}
+			break;
+		}
+		for (i = 0; i < pkgsource_count(); i++)
+			if (pkgsource_at(i)->write) {
+				s = pkgsource_at(i);
+				writable++;
+			}
+		if (writable != 1) {
+			if (writable == 0)
+				snprintf(err, err_size,
+				         "no source is writable on this host -- mark one with "
+				         "`cixctl pkg source set NAME --write=on` (ADR-0324)");
+			else
+				snprintf(err, err_size,
+				         "package %s is new and %d sources are writable -- name the one "
+				         "it belongs to",
+				         name, writable);
+			return -1;
+		}
+		break;
+	}
+	if (s == NULL || !s->write) {
+		snprintf(err, err_size,
+		         "source %s is read-only on this host: a source is written where it is "
+		         "authored (ADR-0324)",
+		         s != NULL ? s->name : owner);
+		return -1;
+	}
+	if (s->token[0] == '\0') {
+		snprintf(err, err_size, "source %s has no token, so nothing can be committed to it",
+		         s->name);
+		return -1;
+	}
+	snprintf(out, out_size, "%s", s->name);
+	return 0;
+}
+
+enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, const char *source,
+                                       char *err, size_t err_size)
 {
 	struct recipe_check check;
+	char target[PKG_SOURCE_NAME_MAX];
 	char host[256];
 	char *redacted;
 	enum pkg_error perr;
@@ -15081,23 +15043,18 @@ enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, ch
 		         g_recipe_commit.version);
 		return PKG_ERR_BUSY;
 	}
-	if (!g_repo_commit) {
-		snprintf(err, err_size, "committing is off for this host -- turn it on with "
-		                        "`cixctl pkg repo-config set --commit=on` (ADR-0323)");
+	if (resolve_commit_target(name, source, target, sizeof(target), err, err_size) != 0)
 		return PKG_ERR_NOT_FOUND;
-	}
-	if (!pkg_repo_is_configured() || !pkg_repo_commit_supported(g_repo_kind) ||
-	    g_repo_auth_token[0] == '\0') {
-		snprintf(err, err_size, "committing needs a gitea recipe repository with a token "
-		                        "(GET /v1/pkg/repo-config)");
-		return PKG_ERR_NOT_FOUND;
-	}
 
 	/* Every test a publish applies, before anything reaches git. */
 	perr = recipe_publish(name, content, PKG_RECIPE_CBS, NULL, &check);
 	if (perr != PKG_OK) {
 		if (perr == PKG_ERR_DUPLICATE)
 			snprintf(err, err_size, "%s is already published at that version", name);
+		else if (perr == PKG_ERR_DIVERGENT)
+			snprintf(err, err_size, "%s is already published at that version with different "
+			                        "content -- publish a new release (ADR-0324)",
+			         name);
 		else if (pkg_recipe_add_last_error()[0] != '\0')
 			snprintf(err, err_size, "%s", pkg_recipe_add_last_error());
 		else
@@ -15119,6 +15076,7 @@ enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, ch
 	g_recipe_commit.content = redacted;
 	snprintf(g_recipe_commit.name, sizeof(g_recipe_commit.name), "%s", name);
 	snprintf(g_recipe_commit.version, sizeof(g_recipe_commit.version), "%s", check.version);
+	snprintf(g_recipe_commit.source, sizeof(g_recipe_commit.source), "%s", target);
 	/* ADR-0308: one flat file per revision. */
 	snprintf(g_recipe_commit.repo_path, sizeof(g_recipe_commit.repo_path),
 	         "recipes/package/%s@%s%s", name, check.version, PKG_RECIPE_CBS_SUFFIX);
@@ -15145,6 +15103,7 @@ void pkg_recipe_commit_abort(const char *why)
  * the parent reads (ADR-0278). */
 int pkg_recipe_commit_work(void *unused)
 {
+	const struct pkg_source *s;
 	char scheme[16], host[256], owner[256], repo[256];
 	char result_path[PATH_MAX];
 	char sha[FORGE_COMMIT_SHA_MAX];
@@ -15155,20 +15114,23 @@ int pkg_recipe_commit_work(void *unused)
 
 	(void)unused;
 	recipe_commit_result_path(result_path, sizeof(result_path));
-	if (parse_repo_url(scheme, sizeof(scheme), host, sizeof(host), owner, sizeof(owner), repo,
-	                   sizeof(repo)) != 0) {
-		snprintf(err, sizeof(err), "the recipe repository URL does not name an owner and repo");
+	s = pkgsource_find(g_recipe_commit.source);
+	if (s == NULL || parse_repo_url(s->url, scheme, sizeof(scheme), host, sizeof(host), owner,
+	                                sizeof(owner), repo, sizeof(repo)) != 0) {
+		snprintf(err, sizeof(err), "source %s is gone, or its URL does not name an owner and "
+		                           "repo",
+		         g_recipe_commit.source);
 		persist_atomic_write(result_path, err, strlen(err));
 		return 1;
 	}
 	memset(&t, 0, sizeof(t));
-	t.kind = g_repo_kind;
+	t.kind = s->kind;
 	t.scheme = scheme;
 	t.host = host;
 	t.owner = owner;
 	t.repo = repo;
-	t.token = g_repo_auth_token;
-	t.branch = g_repo_ref[0] != '\0' ? g_repo_ref : PKG_DEFAULT_REPO_REF;
+	t.token = s->token;
+	t.branch = s->ref[0] != '\0' ? s->ref : PKG_SOURCE_DEFAULT_REF;
 	rc = forge_create_file(&t, g_recipe_commit.repo_path, g_recipe_commit.content,
 	                       strlen(g_recipe_commit.content), g_recipe_commit.message, g_pkg_dir,
 	                       sha, sizeof(sha), &status, err, sizeof(err));
@@ -15216,6 +15178,16 @@ void pkg_recipe_commit_done(int exit_status, void *unused)
 	               g_recipe_commit.name, g_recipe_commit.version, g_recipe_commit.repo_path,
 	               g_recipe_commit.commit_sha);
 
+	/* The commit makes this source offer the package now; the next sync
+	 * would say so too, but the publish below may queue a build first,
+	 * and that build expands {{REPO_TOKEN}} with the owner's token. */
+	{
+		char item[PKG_SOURCE_ITEM_MAX];
+
+		snprintf(item, sizeof(item), "package:%s", g_recipe_commit.name);
+		pkgsource_offers_add(g_recipe_commit.source, item);
+	}
+
 	/* Git first, then here. A publish that fails now is not a lost
 	 * revision: the commit exists, and the next recipe sync adds it. */
 	perr = pkg_recipe_add(g_recipe_commit.name, g_recipe_commit.content, PKG_RECIPE_CBS, NULL);
@@ -15246,6 +15218,8 @@ void pkg_recipe_commit_write_json(struct json_writer *w)
 	jw_str(w, g_recipe_commit.name);
 	jw_key(w, "version");
 	jw_str(w, g_recipe_commit.version);
+	jw_key(w, "source");
+	jw_str(w, g_recipe_commit.source);
 	jw_key(w, "path");
 	jw_str(w, g_recipe_commit.repo_path);
 	jw_key(w, "commit");
@@ -15274,29 +15248,27 @@ void pkg_recipe_commit_write_json(struct json_writer *w)
  * proven. gitlab follows GitLab's documented API and has not been run
  * against a real instance.
  */
-static int build_sync_fetch_request(char *out_url, size_t out_url_size, char *out_header,
-                                     size_t out_header_size)
+static int build_sync_fetch_request(const struct pkg_source *s, char *out_url,
+                                     size_t out_url_size, char *out_header, size_t out_header_size)
 {
 	char scheme[16], host[256], owner[256], repo[256];
-	const char *ref = g_repo_ref[0] != '\0' ? g_repo_ref : PKG_DEFAULT_REPO_REF;
+	const char *ref = s->ref[0] != '\0' ? s->ref : PKG_SOURCE_DEFAULT_REF;
 
 	out_header[0] = '\0';
-	if (!pkg_repo_is_configured())
-		return -1;
-	if (parse_repo_url(scheme, sizeof(scheme), host, sizeof(host), owner, sizeof(owner), repo,
-	                    sizeof(repo)) != 0)
+	if (parse_repo_url(s->url, scheme, sizeof(scheme), host, sizeof(host), owner, sizeof(owner),
+	                   repo, sizeof(repo)) != 0)
 		return -1;
 
-	if (strcmp(g_repo_kind, "gitea") == 0) {
+	if (strcmp(s->kind, "gitea") == 0) {
 		/* Token-in-URL basic auth, same proven convention ADR-0057's
 		 * own cix.recipe pkg_source already relies on. */
-		if (g_repo_auth_token[0] != '\0')
+		if (s->token[0] != '\0')
 			snprintf(out_url, out_url_size, "%s://%s@%s/api/v1/repos/%s/%s/archive/%s.tar.gz",
-			         scheme, g_repo_auth_token, host, owner, repo, ref);
+			         scheme, s->token, host, owner, repo, ref);
 		else
 			snprintf(out_url, out_url_size, "%s://%s/api/v1/repos/%s/%s/archive/%s.tar.gz",
 			         scheme, host, owner, repo, ref);
-	} else if (strcmp(g_repo_kind, "github") == 0) {
+	} else if (strcmp(s->kind, "github") == 0) {
 		/* github.com's own REST API is always at the separate
 		 * api.github.com host regardless of what host the repo URL
 		 * itself names; GitHub Enterprise Server uses <host>/api/v3/
@@ -15307,26 +15279,32 @@ static int build_sync_fetch_request(char *out_url, size_t out_url_size, char *ou
 		else
 			snprintf(out_url, out_url_size, "%s://%s/api/v3/repos/%s/%s/tarball/%s", scheme,
 			         host, owner, repo, ref);
-		if (g_repo_auth_token[0] != '\0')
-			snprintf(out_header, out_header_size, "Authorization: Bearer %s", g_repo_auth_token);
-	} else if (strcmp(g_repo_kind, "gitlab") == 0) {
+		if (s->token[0] != '\0')
+			snprintf(out_header, out_header_size, "Authorization: Bearer %s", s->token);
+	} else if (strcmp(s->kind, "gitlab") == 0) {
 		/* Unlike github, gitlab.com and a self-hosted GitLab instance
 		 * both use the identical <host>/api/v4/ convention -- no
 		 * separate-domain special case needed here. */
 		snprintf(out_url, out_url_size,
 		         "%s://%s/api/v4/projects/%s%%2F%s/repository/archive.tar.gz?sha=%s", scheme,
 		         host, owner, repo, ref);
-		if (g_repo_auth_token[0] != '\0')
-			snprintf(out_header, out_header_size, "PRIVATE-TOKEN: %s", g_repo_auth_token);
+		if (s->token[0] != '\0')
+			snprintf(out_header, out_header_size, "PRIVATE-TOKEN: %s", s->token);
 	} else {
 		return -1;
 	}
 	return 0;
 }
 
-static void sync_state_path(char *out, size_t out_size)
+/*
+ * ADR-0324: one archive, one error sidecar and one extraction directory
+ * per source, by its position in the list for this sync. Positions, not
+ * names, because a name is the operator's text and a path is not the
+ * place to find out what characters it can hold.
+ */
+static void sync_state_path(int i, char *out, size_t out_size)
 {
-	snprintf(out, out_size, "%s/sync.tar.gz", g_pkg_dir);
+	snprintf(out, out_size, "%s/sync-%d.tar.gz", g_pkg_dir, i);
 }
 
 /*
@@ -15349,69 +15327,84 @@ int pkg_sync_set_refetch(const char *name, const char *version)
 	return 0;
 }
 
-/* Sidecar the child writes its curlfetch_perform() error to on failure
- * (#410) -- pkg_sync_fetch_done() otherwise has only an exit code. */
-static void sync_fetch_err_path(char *out, size_t out_size)
+/* Sidecar the child writes a source's curlfetch_perform() error to
+ * (#410) -- the parent otherwise has only an exit code. */
+static void sync_fetch_err_path(int i, char *out, size_t out_size)
 {
-	char tarball_path[PATH_MAX];
-
-	sync_state_path(tarball_path, sizeof(tarball_path));
-	snprintf(out, out_size, "%s.err", tarball_path);
+	snprintf(out, out_size, "%s/sync-%d.err", g_pkg_dir, i);
 }
 
+/*
+ * ADR-0324: every source is fetched, in list order, by one child. A
+ * source that fails is recorded in its sidecar and the next one is
+ * fetched anyway: one forge being down is no reason to skip the rest,
+ * and a failed source keeps what it offered last time, so a network
+ * failure never moves who owns a package.
+ */
 enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd)
 {
-	char url[PKGREPO_URL_MAX + PKGREPO_TOKEN_MAX + 64];
-	char header[320];
-	char tarball_path[PATH_MAX];
-	char err_path[PATH_MAX];
+	int count = pkgsource_count();
 	pid_t pid;
 	int pidfd;
+	int i;
 
 	if (g_sync_pid > 0)
 		return PKG_ERR_BUSY;
-	if (build_sync_fetch_request(url, sizeof(url), header, sizeof(header)) != 0)
+	if (count == 0)
 		return PKG_ERR_NOT_FOUND;
 
-	sync_state_path(tarball_path, sizeof(tarball_path));
-	unlink(tarball_path);
-	sync_fetch_err_path(err_path, sizeof(err_path));
-	unlink(err_path);
+	for (i = 0; i < PKG_SOURCES_MAX; i++) {
+		char path[PATH_MAX];
+
+		sync_state_path(i, path, sizeof(path));
+		unlink(path);
+		sync_fetch_err_path(i, path, sizeof(path));
+		unlink(path);
+	}
 
 	pid = fork();
 	if (pid < 0)
 		return PKG_ERR_SPAWN_FAILED;
 	if (pid == 0) {
-		struct curlfetch_opts opts;
-		char curl_err[256];
+		for (i = 0; i < count; i++) {
+			const struct pkg_source *s = pkgsource_at(i);
+			char url[PKG_SOURCE_URL_MAX + PKG_SOURCE_TOKEN_MAX + 64];
+			char header[320];
+			char tarball_path[PATH_MAX], err_path[PATH_MAX];
+			char curl_err[256];
+			struct curlfetch_opts opts;
+			int failed;
 
-		memset(&opts, 0, sizeof(opts));
-		opts.url = url;
-		opts.path = tarball_path;
-		opts.header1 = header[0] != '\0' ? header : NULL;
-		opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
-		opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
-		opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
-		if (curlfetch_perform(&opts, NULL, curl_err, sizeof(curl_err)) != 0) {
-			int efd;
-
-			/* url carries the real repo token in its own userinfo
-			 * (gitea's token-in-URL convention, above) -- a libcurl
-			 * error string can legitimately echo the URL back
-			 * (CURLE_URL_MALFORMAT and friends), so this must be
-			 * redacted before it reaches a file at all, the same
-			 * "both sides of persistence" discipline #405/#60 already
-			 * established for recipe content. */
-			redact_repo_token(curl_err, sizeof(curl_err));
-			redact_url_userinfo(curl_err, sizeof(curl_err));
-			efd = open(err_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-			if (efd >= 0) {
-				ssize_t ignored = write(efd, curl_err, strlen(curl_err));
-
-				(void)ignored;
-				close(efd);
+			sync_state_path(i, tarball_path, sizeof(tarball_path));
+			sync_fetch_err_path(i, err_path, sizeof(err_path));
+			if (build_sync_fetch_request(s, url, sizeof(url), header, sizeof(header)) != 0) {
+				snprintf(curl_err, sizeof(curl_err), "the source url does not name an owner "
+				                                     "and repository");
+				failed = 1;
+			} else {
+				memset(&opts, 0, sizeof(opts));
+				opts.url = url;
+				opts.path = tarball_path;
+				opts.header1 = header[0] != '\0' ? header : NULL;
+				opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
+				opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
+				opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
+				failed = curlfetch_perform(&opts, NULL, curl_err, sizeof(curl_err)) != 0;
 			}
-			_exit(1);
+			if (failed) {
+				int efd;
+
+				unlink(tarball_path);
+				redact_repo_token(curl_err, sizeof(curl_err));
+				redact_url_userinfo(curl_err, sizeof(curl_err));
+				efd = open(err_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+				if (efd >= 0) {
+					ssize_t ignored = write(efd, curl_err, strlen(curl_err));
+
+					(void)ignored;
+					close(efd);
+				}
+			}
 		}
 		_exit(0);
 	}
@@ -15430,6 +15423,29 @@ enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd)
 	*out_pid = pid;
 	*out_pidfd = pidfd;
 	return PKG_OK;
+}
+
+/*
+ * ADR-0324: whether `source` owns `kind:name` and may supply it. A name
+ * several sources offer, with no operator choice, is owned by none of
+ * them: it is merged from nowhere and counted as held, so the sync says
+ * so instead of letting list order pick.
+ */
+static int sync_source_owns(const char *kind, const char *name, const char *source, int *held)
+{
+	char item[PKG_SOURCE_ITEM_MAX];
+	char owner[PKG_SOURCES_MAX * PKG_SOURCE_NAME_MAX];
+
+	snprintf(item, sizeof(item), "%s:%s", kind, name);
+	switch (pkgsource_owner_of(item, owner, sizeof(owner))) {
+	case PKGSOURCE_OWNER_ONE:
+		return strcmp(owner, source) == 0;
+	case PKGSOURCE_OWNER_CONFLICT:
+		(*held)++;
+		return 0;
+	default:
+		return 0;
+	}
 }
 
 /*
@@ -15497,7 +15513,7 @@ static int recipe_file_split(const char *fname, char *name, size_t name_size,
 }
 
 static void sync_walk_image_recipes(const char *images_root, int *added, int *skipped,
-                                     int *failed)
+                                     int *failed, const char *source, int *held)
 {
 	DIR *names_d;
 	struct dirent *name_de;
@@ -15534,6 +15550,8 @@ static void sync_walk_image_recipes(const char *images_root, int *added, int *sk
 		                      sizeof(version), &ext) != 0)
 			continue;
 		if (strcmp(ext, "sh") != 0)
+			continue;
+		if (!sync_source_owns("image", name, source, held))
 			continue;
 
 		vd = opendir(images_root);
@@ -15588,7 +15606,7 @@ static void sync_walk_image_recipes(const char *images_root, int *added, int *sk
  * never a shell script.
  */
 static void sync_walk_container_recipes(const char *containers_root, int *added, int *skipped,
-                                         int *failed)
+                                         int *failed, const char *source, int *held)
 {
 	DIR *names_d;
 	struct dirent *name_de;
@@ -15614,6 +15632,8 @@ static void sync_walk_container_recipes(const char *containers_root, int *added,
 		                      sizeof(version), &ext) != 0)
 			continue;
 		if (strcmp(ext, "json") != 0)
+			continue;
+		if (!sync_source_owns("deployment", name, source, held))
 			continue;
 
 		vd = opendir(containers_root);
@@ -15651,299 +15671,344 @@ static void sync_walk_container_recipes(const char *containers_root, int *added,
 	closedir(names_d);
 }
 
-/*
- * ADR-0278 (#367): the forkable half of a sync -- clear the extraction
- * directory and unpack the archive into it.
- *
- * Split out because this is where the five seconds went. The archive is
- * the whole recipe repository and unpacking it ran synchronously on the
- * event loop, every six hours, on a daemon that is pid 1 and whose loop
- * is the only way into the host. Measured stalls of 5062-6116 ms at
- * 03:23, 09:23, 15:23 and 21:23 across four days, against a threshold
- * the daemon itself calls slow at 750 ms.
- *
- * Everything here is filesystem-effecting ONLY, which is what makes it
- * safe to run in a fork: it touches no global the parent will read
- * afterwards. The recipe merge below is the opposite -- it calls
- * pkg_recipe_add() and reads g_sync_refetch_* -- so it stays in the
- * parent, where it is also fast (a few hundred small files).
- *
- * Returns 0 on success. Callable from a helper child or, if the fork
- * fails, inline from the parent: it behaves identically either way.
- */
 void pkg_trusted_keys_init(const char *dir)
 {
 	snprintf(g_trusted_keys_dir, sizeof(g_trusted_keys_dir), "%s", dir);
 }
 
+/*
+ * ADR-0324: what a sync did, per source. Filled in the parent from what
+ * the fetch child left on disk (pkg_sync_fetch_done()) and what the
+ * merge helper left on disk (pkg_sync_completed()) -- never from the
+ * helper's memory, which is a copy that dies with it (ADR-0278).
+ */
+struct sync_source_result {
+	char name[PKG_SOURCE_NAME_MAX];
+	int fetched;
+	char error[256];
+	int added, approved, skipped, divergent, failed, held;
+};
+static struct sync_source_result g_sync_results[PKG_SOURCES_MAX];
+static int g_sync_result_count;
+static int g_sync_last_divergent;
+static int g_sync_last_held;
+
+static void sync_extract_dir(int i, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/sync-extract/%d", g_pkg_dir, i);
+}
+
+static void sync_results_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/sync-extract.results", g_pkg_dir);
+}
+
+/*
+ * ADR-0278 (#367) and ADR-0324: the forkable first half of a sync --
+ * unpack every source's archive into its own directory.
+ *
+ * Forked because this is where the five seconds went: unpacking the
+ * whole recipe repository synchronously on a pid-1 daemon's only loop
+ * stalled it 5062-6116 ms every six hours (measured, four days running).
+ *
+ * It runs in a HELPER CHILD, and so does the merge after it -- both in
+ * pkg_sync_extract_work() (main.c). That is safe because neither leaves
+ * an answer in memory: the store is files, rolling rebuilds are
+ * re-derived from them in the parent (pkg_rebuild_queue_rederive()),
+ * and what each source offered and did is written to disk for
+ * pkg_sync_completed() to read. Returns 0, or -1 if the extraction
+ * root cannot be made. A source whose archive will not unpack is
+ * recorded and skipped; the others still sync.
+ */
 int pkg_sync_extract(void)
 {
-	char tarball_path[PATH_MAX];
-	char extract_dir[PATH_MAX];
+	char root[PATH_MAX];
+	int i;
 
-	sync_state_path(tarball_path, sizeof(tarball_path));
-	snprintf(extract_dir, sizeof(extract_dir), "%s/sync-extract", g_pkg_dir);
-	cix_btrfs_subvol_delete_or_rmtree(extract_dir);
-	if (persist_mkdir_p(extract_dir) != 0)
+	snprintf(root, sizeof(root), "%s/sync-extract", g_pkg_dir);
+	cix_btrfs_subvol_delete_or_rmtree(root);
+	if (persist_mkdir_p(root) != 0)
 		return -1;
-	if (extract_tarball(tarball_path, extract_dir) != 0)
-		return -2;
+	for (i = 0; i < pkgsource_count(); i++) {
+		char tarball_path[PATH_MAX], dir[PATH_MAX];
+
+		sync_state_path(i, tarball_path, sizeof(tarball_path));
+		if (access(tarball_path, F_OK) != 0)
+			continue;
+		sync_extract_dir(i, dir, sizeof(dir));
+		if (persist_mkdir_p(dir) != 0 || extract_tarball(tarball_path, dir) != 0) {
+			char err_path[PATH_MAX];
+			static const char why[] = "the archive did not unpack";
+
+			cix_btrfs_subvol_delete_or_rmtree(dir);
+			sync_fetch_err_path(i, err_path, sizeof(err_path));
+			persist_atomic_write(err_path, why, sizeof(why) - 1);
+		}
+	}
+	return 0;
+}
+
+/* Every "<kind>:<name>" one directory of recipes offers, deduplicated. */
+static int sync_collect_offers(const char *dir, const char *kind, const char *ext_a,
+                               const char *ext_b, char ***items, int *count, int *cap)
+{
+	DIR *d = opendir(dir);
+	struct dirent *de;
+
+	if (d == NULL)
+		return 0;
+	while ((de = readdir(d)) != NULL) {
+		char name[PKG_NAME_MAX], version[PKG_VERSION_MAX];
+		char item[PKG_SOURCE_ITEM_MAX];
+		const char *ext;
+		int j, seen = 0;
+
+		if (recipe_file_split(de->d_name, name, sizeof(name), version, sizeof(version), &ext) !=
+		    0)
+			continue;
+		if (strcmp(ext, ext_a) != 0 && (ext_b == NULL || strcmp(ext, ext_b) != 0))
+			continue;
+		snprintf(item, sizeof(item), "%s:%s", kind, name);
+		for (j = 0; j < *count && !seen; j++)
+			seen = strcmp((*items)[j], item) == 0;
+		if (seen)
+			continue;
+		if (*count == *cap) {
+			int n = *cap == 0 ? 256 : *cap * 2;
+			char **grown = realloc(*items, (size_t)n * sizeof(**items));
+
+			if (grown == NULL) {
+				closedir(d);
+				return -1;
+			}
+			*items = grown;
+			*cap = n;
+		}
+		(*items)[*count] = strdup(item);
+		if ((*items)[*count] == NULL) {
+			closedir(d);
+			return -1;
+		}
+		(*count)++;
+	}
+	closedir(d);
+	return 0;
+}
+
+/* Merges one source's package recipes, only those it owns. */
+static void sync_merge_packages(const char *recipes_root, const char *source,
+                                struct sync_source_result *res)
+{
+	DIR *names_d = opendir(recipes_root);
+	struct dirent *name_de;
+
+	if (names_d == NULL)
+		return;
+	while ((name_de = readdir(names_d)) != NULL) {
+		char name[PKG_NAME_MAX], version[PKG_VERSION_MAX];
+		char script_path[PATH_MAX];
+		char *content;
+		size_t content_len;
+		const char *ext;
+		enum pkg_error rc;
+		int is_cbs;
+		int was_approval = 0;
+
+		if (recipe_file_split(name_de->d_name, name, sizeof(name), version, sizeof(version),
+		                      &ext) != 0)
+			continue;
+		if (strcmp(ext, "cbs") == 0)
+			is_cbs = 1;
+		else if (strcmp(ext, "sh") == 0)
+			is_cbs = 0;
+		else
+			continue;
+		if (!sync_source_owns("package", name, source, &res->held))
+			continue;
+
+		snprintf(script_path, sizeof(script_path), "%s/%s", recipes_root, name_de->d_name);
+		if (persist_read_file(script_path, &content, &content_len) != 0 || content == NULL)
+			continue;
+		if (g_sync_refetch_name[0] != '\0' && strcmp(g_sync_refetch_name, name) == 0 &&
+		    strcmp(g_sync_refetch_version, version) == 0)
+			pkg_recipe_delete(name, version);
+
+		rc = pkg_recipe_add(name, content, is_cbs ? PKG_RECIPE_CBS : PKG_RECIPE_SHELL,
+		                    &was_approval);
+		free(content);
+		if (rc == PKG_OK && was_approval)
+			res->approved++;
+		else if (rc == PKG_OK)
+			res->added++;
+		else if (rc == PKG_ERR_DUPLICATE)
+			res->skipped++;
+		else if (rc == PKG_ERR_DIVERGENT)
+			res->divergent++;
+		else
+			res->failed++;
+	}
+	closedir(names_d);
+}
+
+/*
+ * The second half, in the same helper: record what every source
+ * offers, resolve who owns what from that, then merge from each source
+ * only what it owns. Offers are written for every source that unpacked
+ * BEFORE any merge, because ownership is a property of all of them
+ * together: a name two sources offer is held, whichever comes first.
+ */
+int pkg_sync_merge(void)
+{
+	struct sync_source_result res[PKG_SOURCES_MAX];
+	int count = pkgsource_count();
+	char path[PATH_MAX];
+	struct json_writer w;
+	int i;
+
+	memset(res, 0, sizeof(res));
+	for (i = 0; i < count; i++) {
+		char dir[PATH_MAX], sub[PATH_MAX];
+		char **items = NULL;
+		int n = 0, cap = 0, j;
+
+		sync_extract_dir(i, dir, sizeof(dir));
+		if (access(dir, F_OK) != 0)
+			continue;
+		snprintf(sub, sizeof(sub), "%s/recipes/package", dir);
+		sync_collect_offers(sub, "package", "cbs", "sh", &items, &n, &cap);
+		snprintf(sub, sizeof(sub), "%s/recipes/image", dir);
+		sync_collect_offers(sub, "image", "sh", NULL, &items, &n, &cap);
+		snprintf(sub, sizeof(sub), "%s/recipes/deployment", dir);
+		sync_collect_offers(sub, "deployment", "json", NULL, &items, &n, &cap);
+		pkgsource_offers_write(pkgsource_at(i)->name, (const char *const *)items, n);
+		for (j = 0; j < n; j++)
+			free(items[j]);
+		free(items);
+	}
+	pkgsource_offers_load();
+
+	for (i = 0; i < count; i++) {
+		const struct pkg_source *s = pkgsource_at(i);
+		char dir[PATH_MAX], sub[PATH_MAX];
+
+		sync_extract_dir(i, dir, sizeof(dir));
+		if (access(dir, F_OK) != 0)
+			continue;
+		snprintf(sub, sizeof(sub), "%s/recipes/package", dir);
+		sync_merge_packages(sub, s->name, &res[i]);
+		snprintf(sub, sizeof(sub), "%s/recipes/image", dir);
+		sync_walk_image_recipes(sub, &res[i].added, &res[i].skipped, &res[i].failed, s->name,
+		                        &res[i].held);
+		snprintf(sub, sizeof(sub), "%s/recipes/deployment", dir);
+		sync_walk_container_recipes(sub, &res[i].added, &res[i].skipped, &res[i].failed,
+		                            s->name, &res[i].held);
+
+		/* ADR-0324: keys only from a source trusted to vouch for
+		 * packages. Any other source supplies recipes and nothing
+		 * more. */
+		if (s->trust_keys && g_trusted_keys_dir[0] != '\0') {
+			char keys_root[PATH_MAX];
+			int adopted;
+
+			snprintf(keys_root, sizeof(keys_root), "%s/docs/keys", dir);
+			adopted = releasekey_trust_adopt(keys_root, g_trusted_keys_dir);
+			if (adopted < 0)
+				logstore_write("cixd", "warn",
+				                "pkg sync: could not write the trusted-key store at %s -- "
+				                "artifact signatures cannot be verified until it is writable",
+				                g_trusted_keys_dir);
+			else if (adopted > 0)
+				logstore_write("cixd", "info",
+				                "pkg sync: %d release signing key%s trusted, from source %s",
+				                adopted, adopted == 1 ? "" : "s", s->name);
+		}
+	}
+
+	snprintf(path, sizeof(path), "%s/sync-extract", g_pkg_dir);
+	cix_btrfs_subvol_delete_or_rmtree(path);
+
+	jw_init(&w);
+	jw_arr_open(&w);
+	for (i = 0; i < count; i++) {
+		jw_arr_open(&w);
+		jw_int(&w, res[i].added);
+		jw_int(&w, res[i].approved);
+		jw_int(&w, res[i].skipped);
+		jw_int(&w, res[i].divergent);
+		jw_int(&w, res[i].failed);
+		jw_int(&w, res[i].held);
+		jw_arr_close(&w);
+	}
+	jw_arr_close(&w);
+	sync_results_path(path, sizeof(path));
+	persist_atomic_write(path, w.buf, w.len);
+	jw_free(&w);
 	return 0;
 }
 
 /*
- * Where the forked half leaves its tallies for the parent.
- *
- * A fork cannot hand back an int triple through memory, and the exit
- * status has room for one small number, not three. A file is the least
- * machinery that carries them, and the extraction directory is already
- * this sync's own scratch space.
- */
-static void sync_counts_path(char *out, size_t out_size)
-{
-	snprintf(out, out_size, "%s/sync-extract.counts", g_pkg_dir);
-}
-
-static void sync_counts_write(int added, int approved, int skipped, int failed)
-{
-	char path[PATH_MAX];
-	char buf[80];
-	int len = snprintf(buf, sizeof(buf), "%d %d %d %d\n", added, approved, skipped, failed);
-
-	if (len <= 0)
-		return;
-	sync_counts_path(path, sizeof(path));
-	persist_atomic_write(path, buf, (size_t)len);
-}
-
-static void sync_counts_read(int *added, int *approved, int *skipped, int *failed)
-{
-	char path[PATH_MAX];
-	char *buf = NULL;
-	size_t len = 0;
-
-	*added = *approved = *skipped = *failed = 0;
-	sync_counts_path(path, sizeof(path));
-	if (persist_read_file(path, &buf, &len) == 0 && buf != NULL) {
-		sscanf(buf, "%d %d %d %d", added, approved, skipped, failed);
-		free(buf);
-	}
-	unlink(path);
-}
-
-/*
- * The fetch finished. Records the outcome and says whether the caller
- * should now run pkg_sync_extract() (1) or whether this sync is already
- * over (0) -- ADR-0278 split the extraction out so it can go into a
- * helper process, and this is the part that must run on the loop
- * because it owns the sync's state.
+ * The fetch child has exited. Each source either left an archive or an
+ * error sidecar. 0 when there is nothing to merge (every source failed),
+ * 1 to go on to the extraction and merge.
  */
 int pkg_sync_fetch_done(int exit_status)
 {
-	char tarball_path[PATH_MAX];
+	int count = pkgsource_count();
+	int i, fetched = 0;
 
 	g_sync_pid = -1;
-	sync_state_path(tarball_path, sizeof(tarball_path));
-	if (exit_status != 0) {
-		char err_path[PATH_MAX];
-		char curl_err[256] = "";
-		int efd;
+	g_sync_result_count = count;
+	for (i = 0; i < count; i++) {
+		struct sync_source_result *r = &g_sync_results[i];
+		char tarball_path[PATH_MAX], err_path[PATH_MAX];
+		char *buf = NULL;
+		size_t len = 0;
 
-		sync_fetch_err_path(err_path, sizeof(err_path));
-		efd = open(err_path, O_RDONLY);
-		if (efd >= 0) {
-			ssize_t n = read(efd, curl_err, sizeof(curl_err) - 1);
-
-			curl_err[n > 0 ? n : 0] = '\0';
-			close(efd);
-			unlink(err_path);
+		memset(r, 0, sizeof(*r));
+		snprintf(r->name, sizeof(r->name), "%s", pkgsource_at(i)->name);
+		sync_state_path(i, tarball_path, sizeof(tarball_path));
+		sync_fetch_err_path(i, err_path, sizeof(err_path));
+		if (access(tarball_path, F_OK) == 0) {
+			r->fetched = 1;
+			fetched++;
+		} else if (persist_read_file(err_path, &buf, &len) == 0 && buf != NULL) {
+			snprintf(r->error, sizeof(r->error), "fetch failed: %.*s", (int)len, buf);
+			free(buf);
+		} else {
+			snprintf(r->error, sizeof(r->error), "fetch failed (exit %d)", exit_status);
 		}
+		unlink(err_path);
+	}
+	if (fetched == 0) {
 		g_sync_last_state = SYNC_FAILED;
-		if (curl_err[0] != '\0')
-			snprintf(g_sync_last_error, sizeof(g_sync_last_error), "fetch failed: %s", curl_err);
-		else
-			snprintf(g_sync_last_error, sizeof(g_sync_last_error), "fetch failed (exit %d)",
-			         exit_status);
-		unlink(tarball_path);
+		snprintf(g_sync_last_error, sizeof(g_sync_last_error), "%s",
+		         count > 0 ? g_sync_results[0].error : "no source is configured");
 		return 0;
 	}
 	return 1;
 }
 
-/*
- * The extraction finished (in a helper, or inline when the fork
- * failed). `rc` is pkg_sync_extract()'s own return. Everything from
- * here on touches in-memory state and therefore runs on the loop.
- */
-/*
- * ADR-0278 (#367), corrected: the forkable half is the WHOLE of this,
- * not just the extraction.
- *
- * The first attempt moved only `extract_tarball()` into a helper on the
- * assumption that unpacking the archive was where the five seconds
- * went. Measured after deploying it: a real sync still froze the loop
- * for 4991 ms. The merge is the heavy half -- roughly 1300 recipe files
- * read, parsed and written -- and the extraction was never the problem.
- *
- * The one thing that stopped this being forkable is
- * pkg_recipe_add()'s call to queue_rolling_rebuilds_for(), which
- * mutates the in-memory rebuild queue: a child would fill its copy and
- * exit. That is exactly what pkg_rebuild_queue_rederive() (#373)
- * reconstructs, from the images and their drift, so the parent rebuilds
- * the queue after the child finishes rather than the child trying to
- * hand it back. One source of truth, and the function already exists.
- *
- * The tallies come back through a file, because a fork cannot return an
- * int triple and the exit status has room for one small number.
- */
-int pkg_sync_merge(void)
-{
-	char extract_dir[PATH_MAX];
-	char recipes_root[PATH_MAX];
-	char images_root[PATH_MAX];
-	char containers_root[PATH_MAX];
-	DIR *names_d;
-	struct dirent *name_de;
-	int added = 0, approved = 0, skipped = 0, failed = 0;
-
-	snprintf(extract_dir, sizeof(extract_dir), "%s/sync-extract", g_pkg_dir);
-
-	snprintf(recipes_root, sizeof(recipes_root), "%s/recipes/package", extract_dir);
-	/*
-	 * #505: flat. Unlike the image and container walks above, EVERY
-	 * version is synced, not just the highest -- package recipe
-	 * versions are immutable and independently installable
-	 * (ADR-0107), so a box needs all of them.
-	 */
-	names_d = opendir(recipes_root);
-	if (names_d != NULL) {
-		while ((name_de = readdir(names_d)) != NULL) {
-			char name[PKG_NAME_MAX], version[PKG_VERSION_MAX];
-			char script_path[PATH_MAX];
-			char *content;
-			size_t content_len;
-			const char *ext;
-			enum pkg_error rc;
-			int is_cbs;
-
-			if (recipe_file_split(name_de->d_name, name, sizeof(name), version,
-			                      sizeof(version), &ext) != 0)
-				continue;
-			/*
-			 * ADR-0305: whichever language the repo holds this
-			 * version in, decided by the extension now that it is on
-			 * the recipe's own filename rather than on a leaf called
-			 * build.*. Anything else in the directory -- a README, a
-			 * stray file -- has no recognised extension and is
-			 * skipped here rather than being mistaken for a recipe.
-			 */
-			if (strcmp(ext, "cbs") == 0)
-				is_cbs = 1;
-			else if (strcmp(ext, "sh") == 0)
-				is_cbs = 0;
-			else
-				continue;
-
-			snprintf(script_path, sizeof(script_path), "%s/%s", recipes_root,
-			         name_de->d_name);
-			if (persist_read_file(script_path, &content, &content_len) != 0 ||
-			    content == NULL)
-				continue;
-			/* Issue #59: the one version this sync was explicitly
-			 * asked to re-fetch is deleted first, so the add below
-			 * takes the repo's current content instead of being
-			 * skipped as a duplicate. Everything else keeps the
-			 * immutability that ADR-0107 depends on. */
-			if (g_sync_refetch_name[0] != '\0' &&
-			    strcmp(g_sync_refetch_name, name) == 0 &&
-			    strcmp(g_sync_refetch_version, version) == 0)
-				pkg_recipe_delete(name, version);
-
-			{
-				int was_approval = 0;
-
-				rc = pkg_recipe_add(name, content,
-				                    is_cbs ? PKG_RECIPE_CBS : PKG_RECIPE_SHELL,
-				                    &was_approval);
-				free(content);
-				/* #404: an approval applied to an already-published
-				 * version is NOT a new recipe -- count it apart so
-				 * `pkg sync` does not report an approval as an add. */
-				if (rc == PKG_OK && was_approval)
-					approved++;
-				else if (rc == PKG_OK)
-					added++;
-				else if (rc == PKG_ERR_DUPLICATE)
-					skipped++;
-				else
-					failed++;
-			}
-		}
-		closedir(names_d);
-	}
-
-	snprintf(images_root, sizeof(images_root), "%s/recipes/image", extract_dir);
-	sync_walk_image_recipes(images_root, &added, &skipped, &failed);
-
-	/*
-	 * #371: deployments were "container recipes". A daemon still
-	 * running the old build looks for recipes/container in the synced
-	 * tarball, finds nothing, and adds nothing -- sync_walk_container_
-	 * recipes() returns silently on opendir() failure and this sync
-	 * never prunes, so the window between the git rename and the
-	 * deploy that understands it costs one no-op cycle and cannot lose
-	 * a published recipe. Measured before renaming rather than hoped.
-	 */
-	snprintf(containers_root, sizeof(containers_root), "%s/recipes/deployment", extract_dir);
-	sync_walk_container_recipes(containers_root, &added, &skipped, &failed);
-
-	/*
-	 * The signing keys travel in the same tarball and were thrown away
-	 * with it (ADR-0279). A repository with no docs/keys/ adopts
-	 * nothing and is not an error -- an operator running their own
-	 * recipe repo need not publish keys at all, and then this host
-	 * simply verifies no artifact signature and builds from source,
-	 * which is correct rather than degraded.
-	 */
-	if (g_trusted_keys_dir[0] != '\0') {
-		char keys_root[PATH_MAX];
-		int adopted;
-
-		snprintf(keys_root, sizeof(keys_root), "%s/docs/keys", extract_dir);
-		adopted = releasekey_trust_adopt(keys_root, g_trusted_keys_dir);
-		if (adopted < 0)
-			logstore_write("cixd", "warn",
-			                "pkg sync: could not write the trusted-key store at %s -- "
-			                "artifact signatures cannot be verified until it is writable",
-			                g_trusted_keys_dir);
-		else if (adopted > 0)
-			logstore_write("cixd", "info", "pkg sync: %d release signing key%s trusted",
-			                adopted, adopted == 1 ? "" : "s");
-	}
-
-	cix_btrfs_subvol_delete_or_rmtree(extract_dir);
-
-	/* One-shot: cleared here so the periodic background sync can never
-	 * inherit a refetch an operator asked for once. */
-	g_sync_refetch_name[0] = '\0';
-	g_sync_refetch_version[0] = '\0';
-
-	sync_counts_write(added, approved, skipped, failed);
-	return 0;
-}
-
-/*
- * The sync's last step, on the loop: adopt the tallies the merge left
- * behind, rebuild the rolling queue the child could not hand back, and
- * record the outcome.
- */
 void pkg_sync_completed(int rc)
 {
-	int added = 0, approved = 0, skipped = 0, failed = 0;
-	char tarball_path[PATH_MAX];
+	char path[PATH_MAX];
+	char *buf = NULL;
+	size_t len = 0;
+	int i, failed = 0, unfetched = 0;
 
-	sync_state_path(tarball_path, sizeof(tarball_path));
-	unlink(tarball_path);
+	for (i = 0; i < PKG_SOURCES_MAX; i++) {
+		sync_state_path(i, path, sizeof(path));
+		unlink(path);
+		sync_fetch_err_path(i, path, sizeof(path));
+		if (i < g_sync_result_count && g_sync_results[i].fetched && access(path, F_OK) == 0 &&
+		    persist_read_file(path, &buf, &len) == 0 && buf != NULL) {
+			g_sync_results[i].fetched = 0;
+			snprintf(g_sync_results[i].error, sizeof(g_sync_results[i].error), "%.*s",
+			         (int)len, buf);
+			free(buf);
+			buf = NULL;
+		}
+		unlink(path);
+	}
 
 	if (rc != 0) {
 		g_sync_last_state = SYNC_FAILED;
@@ -15953,27 +16018,64 @@ void pkg_sync_completed(int rc)
 		return;
 	}
 
-	sync_counts_read(&added, &approved, &skipped, &failed);
+	/* What the helper wrote: offers per source, and a row of counts per
+	 * source in list order. */
+	pkgsource_offers_load();
+	sync_results_path(path, sizeof(path));
+	if (persist_read_file(path, &buf, &len) == 0 && buf != NULL) {
+		struct json_value *root = json_parse(buf, len);
 
-	/* One-shot: cleared here so the periodic background sync can never
-	 * inherit a refetch an operator asked for once. The child cleared
-	 * its own copy; this is the one that lasts. */
+		if (root != NULL && root->type == JSON_ARRAY) {
+			for (i = 0; i < (int)root->u.array.count && i < g_sync_result_count; i++) {
+				const struct json_value *row = root->u.array.items[i];
+				struct sync_source_result *r = &g_sync_results[i];
+
+				if (row->type != JSON_ARRAY || row->u.array.count != 6)
+					continue;
+				r->added = (int)json_as_number(row->u.array.items[0]);
+				r->approved = (int)json_as_number(row->u.array.items[1]);
+				r->skipped = (int)json_as_number(row->u.array.items[2]);
+				r->divergent = (int)json_as_number(row->u.array.items[3]);
+				r->failed = (int)json_as_number(row->u.array.items[4]);
+				r->held = (int)json_as_number(row->u.array.items[5]);
+			}
+		}
+		json_free(root);
+		free(buf);
+	}
+	unlink(path);
+
 	g_sync_refetch_name[0] = '\0';
 	g_sync_refetch_version[0] = '\0';
 
-	/* #373's derivation, used for the reason it was built: the child
-	 * queued rebuilds into a copy of the queue that died with it. */
 	pkg_rebuild_queue_rederive();
 
+	g_sync_last_added = g_sync_last_approved = g_sync_last_skipped = 0;
+	g_sync_last_divergent = g_sync_last_held = 0;
+	for (i = 0; i < g_sync_result_count; i++) {
+		g_sync_last_added += g_sync_results[i].added;
+		g_sync_last_approved += g_sync_results[i].approved;
+		g_sync_last_skipped += g_sync_results[i].skipped;
+		g_sync_last_divergent += g_sync_results[i].divergent;
+		g_sync_last_held += g_sync_results[i].held;
+		failed += g_sync_results[i].failed;
+		if (!g_sync_results[i].fetched)
+			unfetched++;
+		if (g_sync_results[i].divergent > 0)
+			logstore_write("cixd", "warn",
+			               "pkg sync: source %s offered %d recipe version(s) this host already "
+			               "holds with different content -- refused, kept as they were "
+			               "(ADR-0324)",
+			               g_sync_results[i].name, g_sync_results[i].divergent);
+	}
 	g_sync_last_state = SYNC_SUCCESS;
-	g_sync_last_added = added;
-	g_sync_last_approved = approved;
-	g_sync_last_skipped = skipped;
-	if (failed > 0)
+	g_sync_last_error[0] = '\0';
+	if (unfetched > 0)
+		snprintf(g_sync_last_error, sizeof(g_sync_last_error),
+		         "%d source(s) could not be synced -- see sources[].error", unfetched);
+	else if (failed > 0)
 		snprintf(g_sync_last_error, sizeof(g_sync_last_error),
 		         "%d recipe(s) failed to add (invalid content)", failed);
-	else
-		g_sync_last_error[0] = '\0';
 }
 
 void pkg_sync_write_json_status(struct json_writer *w)
@@ -15982,6 +16084,7 @@ void pkg_sync_write_json_status(struct json_writer *w)
 	                         : g_sync_last_state == SYNC_RUNNING ? "running"
 	                         : g_sync_last_state == SYNC_SUCCESS ? "success"
 	                                                              : "failed";
+	int i;
 
 	jw_obj_open(w);
 	jw_key(w, "state");
@@ -15997,11 +16100,45 @@ void pkg_sync_write_json_status(struct json_writer *w)
 	jw_int(w, g_sync_last_approved);
 	jw_key(w, "skipped");
 	jw_int(w, g_sync_last_skipped);
+	jw_key(w, "divergent"); /* ADR-0324 */
+	jw_int(w, g_sync_last_divergent);
+	jw_key(w, "held");
+	jw_int(w, g_sync_last_held);
 	jw_key(w, "error");
 	if (g_sync_last_error[0] != '\0')
 		jw_str(w, g_sync_last_error);
 	else
 		jw_null(w);
+	jw_key(w, "sources");
+	jw_arr_open(w);
+	for (i = 0; i < g_sync_result_count; i++) {
+		const struct sync_source_result *r = &g_sync_results[i];
+
+		jw_obj_open(w);
+		jw_key(w, "name");
+		jw_str(w, r->name);
+		jw_key(w, "fetched");
+		jw_bool(w, r->fetched);
+		jw_key(w, "added");
+		jw_int(w, r->added);
+		jw_key(w, "approved");
+		jw_int(w, r->approved);
+		jw_key(w, "skipped");
+		jw_int(w, r->skipped);
+		jw_key(w, "divergent");
+		jw_int(w, r->divergent);
+		jw_key(w, "held");
+		jw_int(w, r->held);
+		jw_key(w, "failed");
+		jw_int(w, r->failed);
+		jw_key(w, "error");
+		if (r->error[0] != '\0')
+			jw_str(w, r->error);
+		else
+			jw_null(w);
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
 	jw_obj_close(w);
 }
 
@@ -16894,7 +17031,7 @@ int pkg_artifact_init(const char *config_path)
 }
 
 /* {"base_url","auth_token_set"} -- the token itself is never echoed
- * back, same posture pkg_repo_write_json_config() already has. */
+ * back, same posture pkgsource_write_json() has. */
 void pkg_artifact_write_json_config(struct json_writer *w)
 {
 	jw_obj_open(w);
@@ -16908,7 +17045,7 @@ void pkg_artifact_write_json_config(struct json_writer *w)
 }
 
 /* NULL leaves that field unchanged (partial PUT, same contract
- * pkg_repo_set_config() already has); "" for auth_token explicitly
+ * pkgsource_update() has); "" for auth_token explicitly
  * clears it. */
 enum pkg_error pkg_artifact_set_config(const char *base_url, const char *auth_token,
                                        const int *push_enabled)
