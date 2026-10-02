@@ -364,6 +364,10 @@ struct pkg_recipe {
 	/* cix#553: packages whose files this one may take over (CPDL
 	 * `replaces`, cbs v0.1.99). Space-separated; "" for none. */
 	char replaces[PKG_DEPENDS_MAX];
+	/* cix#558: the aggregate memory this recipe's build declares it needs
+	 * (CPDL `resources { memory }`, cbs v0.1.100), in bytes; 0 for none.
+	 * Never part of what is built -- only of what the build is given. */
+	long long build_memory;
 	/*
 	 * Issue #109: the tools that must be present to BUILD this package,
 	 * as opposed to `depends` above, which is what the built thing
@@ -641,12 +645,18 @@ static void pkg_build_ensure_parent_cgroup(void)
 	 * entirely, which is not what "no swap limit configured" means.
 	 * See struct cgroup_limits. */
 	lim.memory_swap_max = -1;
-	lim.memory_max = pkg_build_get_memory_max();
+	lim.memory_max = pkg_build_effective_memory_max(); /* cix#558: memory_max, or a raise */
 	lim.cpu_max = pkg_build_get_cpu_max();
 	/* Re-applied on every build so a runtime change to the configured
 	 * budget takes effect rather than leaving a stale ceiling behind. */
 	cgroup_create_parent(&lim);
 }
+
+/* cix#558: defined with the build config they read, further down. */
+static int memory_budget_at_least(long long a, long long b);
+static int build_memory_admit(long long need, char *msg, size_t msg_size);
+static void pkg_build_memory_note_start(int chain_idx, long long need);
+static void pkg_build_memory_note_end(int chain_idx);
 
 /* Where a hostbuild job's own harvested output lands (ADR-0056) --
  * <g_artifacts_dir>/<name>/..., a plain host directory, never
@@ -807,6 +817,14 @@ struct pkg_chain {
 	char fetch_resolved_version[PKG_VERSION_MAX];
 	char fetch_resolved_depends[PKG_DEPENDS_MAX];
 	char fetch_resolved_replaces[PKG_DEPENDS_MAX]; /* cix#553: the recipe's `replaces` */
+	/*
+	 * cix#558: the memory this job's build declares it needs (0 for
+	 * none), and whether its build container is running right now.
+	 * Together they are what pkg_build_effective_memory_max() raises
+	 * the shared budget for, and when it may lower it again.
+	 */
+	long long fetch_resolved_build_memory;
+	int build_running;
 	/*
 	 * #552: this job's tree was unpacked from a legacy .tar.gz artifact.
 	 * A .cixpkg or a CPDL build only carries a setuid or setgid file the
@@ -1064,6 +1082,7 @@ static int chain_alloc(void)
 			g_chains[i].fetch_resolved_version[0] = '\0';
 			g_chains[i].fetch_resolved_depends[0] = '\0';
 			g_chains[i].fetch_resolved_replaces[0] = '\0';
+			g_chains[i].fetch_resolved_build_memory = 0;
 			/* ADR-0272: requested unless a caller says otherwise, so
 			 * a hostbuild and every other direct entry point are
 			 * right without having to remember to say so. */
@@ -2746,6 +2765,13 @@ static int parse_cbs_recipe(const char *path, struct pkg_recipe *out)
 	}
 	if (cbs_explain_replaces(ex, out->replaces, sizeof(out->replaces)) != 0) {
 		logstore_write("cixd", "error", "pkg: %s: the replaces list does not fit",
+		               explain_path);
+		cbs_explain_free(ex);
+		return -1;
+	}
+	if (cbs_explain_resources_memory(ex, &out->build_memory) != 0) {
+		logstore_write("cixd", "error",
+		               "pkg: %s: resources.memory is not a positive whole number of bytes",
 		               explain_path);
 		cbs_explain_free(ex);
 		return -1;
@@ -9036,6 +9062,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	         sizeof(g_chains[chain_idx].fetch_resolved_depends), "%s", recipe.depends);
 	snprintf(g_chains[chain_idx].fetch_resolved_replaces,
 	         sizeof(g_chains[chain_idx].fetch_resolved_replaces), "%s", recipe.replaces);
+	g_chains[chain_idx].fetch_resolved_build_memory = recipe.build_memory;
 	g_chains[chain_idx].tree_from_targz = 0;
 	/*
 	 * ADR-0272: a run opens here, at the single place a job begins --
@@ -9837,6 +9864,10 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
 	 * number mean what it says at any concurrency; the kernel then shares
 	 * that budget between however many builds are actually running.
 	 */
+	/* cix#558: counted as running before the budget is applied, so a
+	 * declared need is in the budget this container starts under. */
+	pkg_build_memory_note_start(chain_idx,
+	                            e->cache_hit ? 0 : g_chains[chain_idx].fetch_resolved_build_memory);
 	pkg_build_ensure_parent_cgroup();
 	snprintf(e->build_cgroup_path, sizeof(e->build_cgroup_path), "%s/%s",
 	         PKG_BUILD_CGROUP_PARENT, e->build_container_name);
@@ -10210,6 +10241,25 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	 * is what ADR-0199 decided and what this had been quietly
 	 * exempt from.
 	 */
+
+	/*
+	 * cix#558: a build that declares more memory than the operator's
+	 * ceiling allows is refused before anything is composed for it,
+	 * naming both numbers and the command that changes the ceiling. A
+	 * cache hit builds nothing, so what it would have needed does not
+	 * matter.
+	 */
+	if (!e->cache_hit) {
+		char refused[PKG_ERROR_MAX];
+
+		if (build_memory_admit(recipe.build_memory, refused, sizeof(refused)) != 0) {
+			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD, "%s", refused);
+			logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
+			g_chains[chain_idx].name[0] = '\0';
+			g_chains[chain_idx].dep_queue_count = 0;
+			return 0;
+		}
+	}
 
 	if (e->cache_hit) {
 		/*
@@ -11435,6 +11485,22 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 		return PKG_ERR_INVALID_RECIPE;
 	}
 
+	/*
+	 * cix#558: the same admission an ordinary build gets in
+	 * pkg_prepare_build_and_start(), which a resume does not pass
+	 * through. The ceiling may have been lowered since the build that
+	 * left this container behind was admitted.
+	 */
+	{
+		char refused[PKG_ERROR_MAX];
+
+		if (build_memory_admit(recipe.build_memory, refused, sizeof(refused)) != 0) {
+			logstore_write("cixd", "error", "pkg resume %s@%s: %s", name, recipe.version,
+			               refused);
+			return PKG_ERR_BUILD_MEMORY_OVER_CEILING;
+		}
+	}
+
 	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe%s", e->build_upperdir,
 	         PKG_RECIPE_CBS_SUFFIX);
 	snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_upperdir, PKG_DEST_REL_CBS);
@@ -11472,6 +11538,7 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	         sizeof(g_chains[chain_idx].fetch_resolved_depends), "%s", recipe.depends);
 	snprintf(g_chains[chain_idx].fetch_resolved_replaces,
 	         sizeof(g_chains[chain_idx].fetch_resolved_replaces), "%s", recipe.replaces);
+	g_chains[chain_idx].fetch_resolved_build_memory = recipe.build_memory;
 
 	/*
 	 * The build command depends on the recipe's LANGUAGE, exactly as
@@ -11553,6 +11620,8 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 void pkg_build_spawn_failed(int chain_idx)
 {
 	struct pkg_entry *e = pkg_find(g_chains[chain_idx].name, g_chains[chain_idx].image);
+
+	pkg_build_memory_note_end(chain_idx); /* cix#558: it never ran */
 
 	if (e != NULL) {
 		int is_final_upgrade = g_chains[chain_idx].dep_queue_is_upgrade && (g_chains[chain_idx].dep_queue_pos + 1 >= g_chains[chain_idx].dep_queue_count);
@@ -13366,6 +13435,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	chain_idx = pkg_build_container_chain_index(container_name);
 	if (chain_idx < 0)
 		return 0;
+	pkg_build_memory_note_end(chain_idx); /* cix#558 */
 
 	/*
 	 * Issue #168: the environment composed for this build goes when the
@@ -16126,6 +16196,12 @@ static int g_build_max_jobs = PKG_BUILD_MAX_JOBS_DEFAULT;
 #define PKG_BUILD_CPU_MAX_DEFAULT "100000 100000"
 static long long g_build_memory_max = PKG_BUILD_MEMORY_MAX_DEFAULT;
 static char g_build_cpu_max[64] = PKG_BUILD_CPU_MAX_DEFAULT;
+/*
+ * cix#558: the most a recipe's declared resources { memory } may raise the
+ * shared build budget to. Never below memory_max; equal to it -- no
+ * raise at all -- until an operator sets it higher; 0 means no ceiling.
+ */
+static long long g_build_memory_max_ceiling = PKG_BUILD_MEMORY_MAX_DEFAULT;
 
 static int save_build_config(void)
 {
@@ -16138,6 +16214,8 @@ static int save_build_config(void)
 	jw_int(&w, g_build_max_jobs);
 	jw_key(&w, "memory_max");
 	jw_int(&w, g_build_memory_max);
+	jw_key(&w, "memory_max_ceiling");
+	jw_int(&w, g_build_memory_max_ceiling);
 	jw_key(&w, "cpu_max");
 	if (g_build_cpu_max[0] != '\0')
 		jw_str(&w, g_build_cpu_max);
@@ -16162,13 +16240,14 @@ int pkg_build_config_init(const char *config_path)
 	char *buf;
 	size_t len;
 	struct json_value *root;
-	const struct json_value *mj, *jmem, *jcpu;
+	const struct json_value *mj, *jmem, *jcpu, *jceil;
 
 	if (snprintf(g_build_config_path, sizeof(g_build_config_path), "%s", config_path) >=
 	    (int)sizeof(g_build_config_path))
 		return -1;
 	g_build_max_jobs = PKG_BUILD_MAX_JOBS_DEFAULT;
 	g_build_memory_max = PKG_BUILD_MEMORY_MAX_DEFAULT;
+	g_build_memory_max_ceiling = PKG_BUILD_MEMORY_MAX_DEFAULT;
 	snprintf(g_build_cpu_max, sizeof(g_build_cpu_max), "%s", PKG_BUILD_CPU_MAX_DEFAULT);
 
 	if (persist_read_file(config_path, &buf, &len) != 0 || buf == NULL)
@@ -16192,6 +16271,21 @@ int pkg_build_config_init(const char *config_path)
 
 		if (v >= 0)
 			g_build_memory_max = (long long)v;
+	}
+	/*
+	 * cix#558: absent from every config saved before the ceiling
+	 * existed, and then it equals memory_max -- so nothing a recipe
+	 * declares can raise the budget until an operator says it may.
+	 * A value that breaks the ceiling >= memory_max rule (only a
+	 * hand-edited file can hold one) is treated the same way.
+	 */
+	g_build_memory_max_ceiling = g_build_memory_max;
+	jceil = json_object_get(root, "memory_max_ceiling");
+	if (jceil != NULL && jceil->type != JSON_NULL) {
+		double v = json_as_number(jceil);
+
+		if (v >= 0 && memory_budget_at_least((long long)v, g_build_memory_max))
+			g_build_memory_max_ceiling = (long long)v;
 	}
 	/*
 	 * Unlike memory_max above (save_build_config() always writes it as
@@ -16243,19 +16337,135 @@ long long pkg_build_get_memory_max(void)
 	return g_build_memory_max;
 }
 
-/* 0 means unlimited (cgroup_create()'s own existing "memory_max > 0"
- * gate) -- a deliberate, explicit opt-out, not a validation failure,
- * matching a real operator choice ("I have plenty of RAM, don't
- * bother"). Negative is rejected -- there's no such thing as negative
- * memory. */
-enum pkg_error pkg_build_set_memory_max(long long memory_max)
+/*
+ * True when budget a is at least budget b, where 0 means unlimited and
+ * so is larger than any number of bytes.
+ */
+static int memory_budget_at_least(long long a, long long b)
 {
-	if (memory_max < 0)
+	if (a == 0)
+		return 1;
+	if (b == 0)
+		return 0;
+	return a >= b;
+}
+
+long long pkg_build_get_memory_max_ceiling(void)
+{
+	return g_build_memory_max_ceiling;
+}
+
+/*
+ * cix#558: memory_max and its ceiling are set together, because the one
+ * rule between them -- the ceiling is never below memory_max, 0 meaning
+ * unlimited for both -- is a property of the pair. Setting them one at
+ * a time would make the outcome of a request that raises both depend on
+ * the order the fields were applied in.
+ *
+ * Negative is rejected for either; there is no such thing as negative
+ * memory. 0 for memory_max is the deliberate "no limit" opt-out it has
+ * always been (cgroup_create()'s "memory_max > 0" gate), and it forces
+ * the ceiling to 0 too: nothing can be raised above unlimited.
+ */
+enum pkg_error pkg_build_set_memory(long long memory_max, long long ceiling, char *err,
+                                    size_t err_size)
+{
+	if (memory_max < 0 || ceiling < 0) {
+		snprintf(err, err_size, "memory_max and memory_max_ceiling must be >= 0");
 		return PKG_ERR_INVALID_NAME;
+	}
+	if (!memory_budget_at_least(ceiling, memory_max)) {
+		if (memory_max == 0)
+			snprintf(err, err_size,
+			         "memory_max is 0 (unlimited), so memory_max_ceiling must be 0 too");
+		else
+			snprintf(err, err_size,
+			         "memory_max_ceiling (%lld) is below memory_max (%lld); raise the "
+			         "ceiling in the same request",
+			         ceiling, memory_max);
+		return PKG_ERR_INVALID_NAME;
+	}
 	g_build_memory_max = memory_max;
-	if (save_build_config() != 0)
+	g_build_memory_max_ceiling = ceiling;
+	if (save_build_config() != 0) {
+		snprintf(err, err_size, "could not save the build config");
 		return PKG_ERR_PERSIST_FAILED;
+	}
 	return PKG_OK;
+}
+
+/*
+ * cix#558: the budget a recipe raised the shared parent to, or 0 when
+ * none is raised. It only ever grows while builds are in flight and
+ * returns to 0 when the last one ends -- see pkg_build_memory_note_end()
+ * for why it is not lowered sooner.
+ */
+static long long g_build_memory_raised;
+
+long long pkg_build_effective_memory_max(void)
+{
+	if (g_build_memory_max == 0)
+		return 0;
+	return g_build_memory_raised > g_build_memory_max ? g_build_memory_raised
+	                                                  : g_build_memory_max;
+}
+
+static int build_memory_admit(long long need, char *msg, size_t msg_size)
+{
+	if (need <= 0 || g_build_memory_max == 0 || g_build_memory_max_ceiling == 0 ||
+	    need <= g_build_memory_max_ceiling)
+		return 0;
+	snprintf(msg, msg_size,
+	         "this build declares resources { memory } of %lld bytes (%lld MiB), above "
+	         "memory_max_ceiling of %lld bytes (%lld MiB) -- raise it with "
+	         "`cixctl pkg-build-config set --memory-max-ceiling=%lld` and install again",
+	         need, need / (1024 * 1024), g_build_memory_max_ceiling,
+	         g_build_memory_max_ceiling / (1024 * 1024), need);
+	return -1;
+}
+
+static void pkg_build_memory_note_start(int chain_idx, long long need)
+{
+	g_chains[chain_idx].build_running = 1;
+	if (need > g_build_memory_raised) {
+		g_build_memory_raised = need;
+		if (need > g_build_memory_max && g_build_memory_max != 0)
+			logstore_write("cixd", "info",
+			               "pkg %s: build budget raised to %lld bytes for its declared "
+			               "resources { memory } (memory_max %lld, ceiling %lld)",
+			               g_chains[chain_idx].name, need, g_build_memory_max,
+			               g_build_memory_max_ceiling);
+	}
+}
+
+/*
+ * Lowered only when NO build is left running. Dropping memory.max under
+ * builds that are still going makes the kernel reclaim from them, and
+ * OOM-kill one if it cannot -- and a build that started while the
+ * budget was raised may well be using what the raise allowed. Holding
+ * the raise until the parent is idle costs nothing a running build
+ * needs; it only delays the return to memory_max.
+ */
+static void pkg_build_memory_note_end(int chain_idx)
+{
+	long long raised;
+	int i;
+
+	if (!g_chains[chain_idx].build_running)
+		return;
+	g_chains[chain_idx].build_running = 0;
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++)
+		if (g_chains[i].build_running)
+			return;
+	raised = g_build_memory_raised;
+	g_build_memory_raised = 0;
+	/* A need at or under memory_max raised nothing, so there is
+	 * nothing to put back. */
+	if (g_build_memory_max == 0 || raised <= g_build_memory_max)
+		return;
+	pkg_build_ensure_parent_cgroup();
+	logstore_write("cixd", "info", "pkg: no build running; build budget back to memory_max %lld",
+	               g_build_memory_max);
 }
 
 const char *pkg_build_get_cpu_max(void)

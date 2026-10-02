@@ -417,7 +417,13 @@ enum pkg_error {
 	 * an older version than the image has, and neither the request nor
 	 * the image's policy allows a downgrade. Nothing was changed.
 	 */
-	PKG_ERR_DOWNGRADE_REFUSED
+	PKG_ERR_DOWNGRADE_REFUSED,
+	/*
+	 * cix#558: the recipe declares more build memory (CPDL
+	 * `resources { memory }`) than memory_max_ceiling allows. Refused
+	 * before the build starts; the log names both numbers.
+	 */
+	PKG_ERR_BUILD_MEMORY_OVER_CEILING
 };
 
 /*
@@ -1755,12 +1761,34 @@ enum pkg_error pkg_build_set_max_jobs(int max_jobs);
 
 /* ---- ADR-0165: real cgroup resource ceilings on the pkgbuild sandbox ---- */
 
-/* Bytes; 0 means unlimited. Applied to every __pkgbuild-N container's
- * own cgroup (struct cgroup_limits.memory_max) -- the exact same
- * mechanism every regular container's own run --memory-max= already
- * uses, not a second one. */
+/* Bytes; 0 means unlimited. Applied to the ONE parent cgroup every build
+ * container lives under (#85), never to a container on its own -- a
+ * per-container limit multiplied by concurrency is not a budget. The
+ * mechanism is struct cgroup_limits.memory_max, the same one a regular
+ * container's run --memory-max= uses. */
 long long pkg_build_get_memory_max(void);
-enum pkg_error pkg_build_set_memory_max(long long memory_max);
+
+/*
+ * cix#558: the most a recipe's declared `resources { memory }` may raise
+ * the shared build budget to; never below memory_max, 0 meaning no ceiling.
+ * Equal to memory_max -- no raise -- until an operator sets it higher.
+ *
+ * The two are set together because the rule between them belongs to the
+ * pair: PKG_ERR_INVALID_NAME, with err saying why, for a negative value
+ * or a ceiling below memory_max (memory_max 0 requires ceiling 0). Like
+ * memory_max always has, the new values reach the build parent at the
+ * next build start.
+ */
+long long pkg_build_get_memory_max_ceiling(void);
+enum pkg_error pkg_build_set_memory(long long memory_max, long long ceiling, char *err,
+                                    size_t err_size);
+
+/*
+ * What the build parent's memory.max is set to right now: memory_max, or
+ * the highest need a running build declared when that is larger. 0 is
+ * unlimited. Returns to memory_max once no build is running.
+ */
+long long pkg_build_effective_memory_max(void);
 
 /* Raw cgroup v2 cpu.max syntax ("QUOTA PERIOD" in microseconds, e.g.
  * "100000 100000" for one full CPU's worth); NULL means unlimited.

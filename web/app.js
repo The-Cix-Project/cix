@@ -12100,14 +12100,23 @@ async function refreshPkgBuildConfig() {
 		if (!pkgBuildConfigDirty) {
 			document.getElementById("pbc-max-jobs").value = config.max_concurrent_jobs;
 			document.getElementById("pbc-memory-max").value = config.memory_max;
+			document.getElementById("pbc-memory-max-ceiling").value = config.memory_max_ceiling;
 			document.getElementById("pbc-cpu-max").value = config.cpu_max || "";
 		}
+		/* cix#558: what the build parent has now, which differs from
+		 * memory_max only while a build that declared more is running. */
+		const effective = Number(config.memory_max_effective) || 0;
+		document.getElementById("pbc-memory-effective").textContent =
+		    "Build memory budget right now: " + (effective === 0 ? "unlimited" : formatBytes(effective)) +
+		    (effective > (Number(config.memory_max) || 0)
+		         ? " -- raised for a running build's declared resources { memory }"
+		         : "");
 	} catch (e) {
 		/* Best-effort -- the form just stays at whatever was last shown. */
 	}
 }
 
-for (const id of ["pbc-max-jobs", "pbc-memory-max", "pbc-cpu-max"]) {
+for (const id of ["pbc-max-jobs", "pbc-memory-max", "pbc-memory-max-ceiling", "pbc-cpu-max"]) {
 	document.getElementById(id).addEventListener("input", () => {
 		pkgBuildConfigDirty = true;
 	});
@@ -12122,6 +12131,7 @@ document.getElementById("pbc-form").addEventListener("submit", async (event) => 
 		await apiRequest("PUT", CIX_API.putSystemPkgBuildConfig(), {
 			max_concurrent_jobs: parseInt(document.getElementById("pbc-max-jobs").value, 10),
 			memory_max: parseInt(document.getElementById("pbc-memory-max").value, 10),
+			memory_max_ceiling: parseInt(document.getElementById("pbc-memory-max-ceiling").value, 10),
 			cpu_max: cpuMax === "" ? null : cpuMax,
 		});
 		clearStatus();

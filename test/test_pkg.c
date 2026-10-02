@@ -681,6 +681,42 @@ static int write_suid_recipe(const struct cix_client *c, const char *name, const
 }
 
 /*
+ * An ordinary hello recipe that declares how much memory its whole
+ * build needs (CPDL `resources { memory }`, cbs v0.1.100, cix#558).
+ * memory is the declared value as written in the recipe, e.g. "3GiB".
+ */
+static int write_memory_recipe(const struct cix_client *c, const char *name, const char *version,
+                               const char *tarball_path, const char *sha256, const char *memory)
+{
+	char srcdir[160];
+	char build_body[512], install_body[512], decls[128];
+	char content[4096];
+
+	fixture_srcdir(tarball_path, srcdir, sizeof(srcdir));
+	snprintf(build_body, sizeof(build_body),
+	         "        cd \"${src}/%s/%s\" {\n"
+	         "            run \"tcc\" {\n"
+	         "                \"-o\" \"hello\" \"hello.c\"\n"
+	         "            }\n"
+	         "        }\n",
+	         name, srcdir);
+	snprintf(install_body, sizeof(install_body),
+	         "        mkdir \"${dest}/usr/bin\" parents chmod 0755\n"
+	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s\"\n",
+	         name, srcdir, name);
+	snprintf(decls, sizeof(decls), "    resources {\n        memory \"%s\"\n    }\n\n", memory);
+	cpdl_recipe_text_decl(content, sizeof(content), name, version, test_http_src(tarball_path),
+	                      sha256, NULL,
+	                      "            compiler \"tcc\"\n"
+	                      "            tool \"linux-headers\"\n"
+	                      "            tool \"bash\"\n"
+	                      "            tool \"coreutils\"\n"
+	                      "            tool \"binutils\"\n",
+	                      NULL, decls, build_body, install_body);
+	return publish_cpdl_content(c, name, version, content);
+}
+
+/*
  * A recipe that installs one file of its own AND one path another
  * fixture installs too -- the collision #553 refuses. It is not normal
  * any more: glibc and linux-headers, the example this comment used to
@@ -2366,7 +2402,11 @@ int main(void)
 		char path[PATH_MAX];
 		char restore[128];
 
-		snprintf(restore, sizeof(restore), "{\"cpu_max\":\"150000 100000\",\"memory_max\":4294967296}");
+		/* cix#558: memory_max and its ceiling travel together -- a ceiling below
+		 * memory_max is refused, and 4GiB is above the 2GiB default ceiling. */
+		snprintf(restore, sizeof(restore),
+		         "{\"cpu_max\":\"150000 100000\",\"memory_max\":4294967296,"
+		         "\"memory_max_ceiling\":4294967296}");
 
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "PUT", "/v1/system/pkg-build-config",
@@ -2457,7 +2497,12 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		cix_client_request(&client, "PUT", "/v1/system/pkg-build-config", restore, &r);
+		if (cix_client_request(&client, "PUT", "/v1/system/pkg-build-config", restore, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #85 could not set the post-test build budget, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
 		cix_response_free(&r);
 	}
 
@@ -6431,6 +6476,186 @@ skip_resume:
 				ok = 0;
 			}
 		}
+	}
+
+	/*
+	 * cix#558: a recipe declares the memory its whole build needs, and
+	 * may not exceed the ceiling the operator pre-allocated.
+	 *
+	 * node@24.21.0 thrashed under the 2GiB shared budget and finished at
+	 * 4GiB (192.168.15.95, 2026-10-01), and nothing anywhere could say
+	 * so except recipe prose. Asserted end to end: the pair rule on the
+	 * config, a declaration above the ceiling refused before the build
+	 * starts and naming both numbers, and a declaration within it
+	 * raising the budget for its build and returning it afterwards.
+	 */
+	{
+		char sha[65];
+		char tarball[PATH_MAX];
+		char st_m[64];
+		long long mem = -1, ceil_v = -1, eff = -1;
+		int stage_ok = 1;
+
+		/* Left at 4GiB/4GiB by the #85 case above: no raise possible. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/system/pkg-build-config", NULL, &r) == 0 &&
+		    r.status == 200 && r.json != NULL) {
+			mem = (long long)json_as_number(json_object_get(r.json, "memory_max"));
+			ceil_v = (long long)json_as_number(json_object_get(r.json, "memory_max_ceiling"));
+			eff = (long long)json_as_number(json_object_get(r.json, "memory_max_effective"));
+		}
+		cix_response_free(&r);
+		if (mem != 4294967296LL || ceil_v != 4294967296LL || eff != 4294967296LL) {
+			fprintf(stderr,
+			        "FAIL: #558 build config memory_max=%lld ceiling=%lld effective=%lld, "
+			        "expected 4294967296 for all three\n",
+			        mem, ceil_v, eff);
+			ok = 0;
+		}
+
+		/* The pair rule: never a ceiling below memory_max, and an
+		 * unlimited memory_max needs an unlimited ceiling. */
+		{
+			static const char *const refused[] = {
+				"{\"memory_max_ceiling\":1}",
+				"{\"memory_max\":0}",
+				"{\"memory_max\":8589934592}",
+				"{\"memory_max_ceiling\":-1}",
+			};
+			size_t k;
+
+			for (k = 0; k < sizeof(refused) / sizeof(refused[0]); k++) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "PUT", "/v1/system/pkg-build-config",
+				                       refused[k], &r) != 0 ||
+				    r.status != 400) {
+					fprintf(stderr, "FAIL: #558 PUT %s expected 400, got %d\n", refused[k],
+					        r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
+		}
+
+		/* Above the ceiling: refused, naming both numbers. */
+		if (stage_fixture_tarball(scratch_dir, "memover", "1.0", tarball, sizeof(tarball), sha,
+		                          sizeof(sha)) != 0 ||
+		    write_memory_recipe(&client, "memover", "1.0", tarball, sha, "5GiB") != 0) {
+			fprintf(stderr, "FAIL: #558 could not publish memover\n");
+			ok = 0;
+			stage_ok = 0;
+		}
+		if (stage_ok) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"memover\"}",
+			                       &r) != 0 ||
+			    (r.status != 202 && r.status != 200)) {
+				fprintf(stderr, "FAIL: #558 install memover status=%d\n", r.status);
+				ok = 0;
+				stage_ok = 0;
+			}
+			cix_response_free(&r);
+		}
+		if (stage_ok) {
+			const char *err = NULL;
+
+			if (poll_pkg_state(&client, "memover", st_m, sizeof(st_m), 240) != 0 ||
+			    !str_eq(st_m, "failed")) {
+				fprintf(stderr, "FAIL: #558 memover declares 5GiB over a 4GiB ceiling and "
+				                "ended '%s', expected failed\n",
+				        st_m);
+				ok = 0;
+			}
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/memover", NULL, &r) == 0 &&
+			    r.json != NULL)
+				err = json_str_field(r.json, "error");
+			if (err == NULL || strstr(err, "5368709120") == NULL ||
+			    strstr(err, "memory_max_ceiling of 4294967296") == NULL ||
+			    strstr(err, "--memory-max-ceiling=5368709120") == NULL) {
+				fprintf(stderr, "FAIL: #558 memover's refusal does not name the need, the "
+				                "ceiling and the fix: %s\n",
+				        err != NULL ? err : "(none)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+
+		/* Within the ceiling: the budget is raised for the build and
+		 * returns to memory_max once nothing is building. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/system/pkg-build-config",
+		                       "{\"memory_max\":2147483648,\"memory_max_ceiling\":6442450944}",
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #558 PUT memory_max 2GiB + ceiling 6GiB, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		stage_ok = stage_fixture_tarball(scratch_dir, "memraise", "1.0", tarball,
+		                                 sizeof(tarball), sha, sizeof(sha)) == 0 &&
+		           write_memory_recipe(&client, "memraise", "1.0", tarball, sha, "3GiB") == 0;
+		if (!stage_ok) {
+			fprintf(stderr, "FAIL: #558 could not publish memraise\n");
+			ok = 0;
+		}
+		if (stage_ok) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"memraise\"}",
+			                       &r) != 0 ||
+			    (r.status != 202 && r.status != 200)) {
+				fprintf(stderr, "FAIL: #558 install memraise status=%d\n", r.status);
+				ok = 0;
+				stage_ok = 0;
+			}
+			cix_response_free(&r);
+		}
+		if (stage_ok && (poll_pkg_state(&client, "memraise", st_m, sizeof(st_m), 240) != 0 ||
+		                 !str_eq(st_m, "installed"))) {
+			fprintf(stderr, "FAIL: #558 memraise declares 3GiB under a 6GiB ceiling and ended "
+			                "'%s', expected installed\n",
+			        st_m);
+			ok = 0;
+			stage_ok = 0;
+		}
+		if (stage_ok) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/system/logs?source=cixd&tail=400", NULL,
+			                       &r) != 0 ||
+			    r.status != 200 || r.body == NULL ||
+			    strstr(r.body, "pkg memraise: build budget raised to 3221225472 bytes") == NULL ||
+			    strstr(r.body, "build budget back to memory_max 2147483648") == NULL) {
+				fprintf(stderr, "FAIL: #558 the log does not show memraise raising the budget "
+				                "to 3221225472 and its return to 2147483648\n");
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			eff = -1;
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/system/pkg-build-config", NULL, &r) == 0 &&
+			    r.status == 200 && r.json != NULL)
+				eff = (long long)json_as_number(json_object_get(r.json, "memory_max_effective"));
+			cix_response_free(&r);
+			if (eff != 2147483648LL) {
+				fprintf(stderr, "FAIL: #558 with nothing building, memory_max_effective=%lld, "
+				                "expected memory_max 2147483648\n",
+				        eff);
+				ok = 0;
+			}
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/system/pkg-build-config",
+		                       "{\"memory_max\":4294967296,\"memory_max_ceiling\":4294967296}",
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #558 could not restore the 4GiB build budget, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
 	}
 
 	/*

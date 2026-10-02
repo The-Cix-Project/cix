@@ -2608,12 +2608,17 @@
 					Memory budget for all builds together (bytes, 0 = unlimited)
 					<input type="number" id="pbc-memory-max" min="0" value="2147483648">
 				</label>
+				<label>
+					Most a recipe's declared build memory may raise that to (bytes, 0 = no ceiling)
+					<input type="number" id="pbc-memory-max-ceiling" min="0" value="2147483648">
+				</label>
 				<label class="wide">
 					CPU budget for all builds together (raw cgroup v2 "quota period", empty = unlimited)
 					<input type="text" id="pbc-cpu-max" placeholder="100000 100000">
 				</label>
 				<button type="submit">Save</button>
 			</form>
+			<p class="hint" id="pbc-memory-effective"></p>
 			<h3>Build logs</h3>
 			<p class="hint">
 				Issue #57: the <strong>complete</strong> output of each recent build, teed to disk as it
@@ -2634,6 +2639,7 @@
 			</table>
 			<p class="hint">ADR-0157: how many <code>pkg install</code>/<code>pkg hostbuild</code> jobs may genuinely run at once, each in its own build container. Lowering this doesn't disrupt jobs already in flight -- only future ones once the new, lower ceiling is reached.</p>
 			<p class="hint">Issue #85: these are an <strong>aggregate</strong> budget, carried by one parent cgroup every build container is a leaf of -- not a per-build ceiling. A per-build number is not a budget: with max concurrent jobs at 10 it silently meant ten times what it said, and on a real 2-CPU box four concurrent builds at 1.5 CPU each demanded 6 CPUs, starved the daemon off the run queue and took the machine out of reach entirely. Whatever this says is now what all builds together can use.</p>
+			<p class="hint">cix#558: a recipe can declare the memory its whole build needs (CPDL <code>resources { memory "4GiB" }</code>, cbs v0.1.100). While such a build runs, the budget above is raised to that need, up to the ceiling; it returns to the budget once no build is running. A recipe that declares more than the ceiling is refused before it starts, with both numbers in the error. The ceiling is never below the budget, and equal to it means no recipe can raise anything.</p>
 			<p class="hint">ADR-0165 (superseded in shape by the above): the memory/CPU ceiling applied to build containers -- the same cgroup mechanism a regular container's own <code>--memory-max=</code>/<code>--cpu-max=</code> already uses. Found missing the hard way: a burst of concurrent installs with no ceiling hung a real box's daemon entirely. CPU quota is microseconds of CPU time per 100000-microsecond period -- "100000 100000" is one full CPU's worth, "50000 100000" is half a CPU.</p>
 		</div>
 <div class="tab-panel" data-tab="packages" hidden>

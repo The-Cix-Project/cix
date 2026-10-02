@@ -237,6 +237,15 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Moving a path needs the declaration**: `replaces { package "NAME" }` at package level in the receiving recipe (cbs v0.1.99, cix-build-system#275). The named package's shared paths then change owner; nothing else is allowed through.
 - **A collision is a recipe bug to fix, never a path to exempt.** Do not add an allow-list.
 
+
+## A recipe declares its build memory; the operator's ceiling bounds it
+
+**A recipe may declare the memory its whole build needs, and may never exceed a maximum the operator pre-allocated** -- the owner on #558: *"yes a recepie can declare how much it needs, but it cannot exceed a preallocated max"*. [ADR-0322](docs/adr/0322-a-recipe-declares-its-build-memory-within-an-operator-ceiling.md).
+
+- **The declaration is CPDL `resources { memory "4GiB" }`** (cbs v0.1.100), read from `cbs explain`'s typed `resources.memory`. Never an opaque `metadata` key, which would be a workaround (cix-build-system#276 records why).
+- **`memory_max_ceiling` is never below `memory_max`** and defaults to it, which means no raise. A need above it is refused before the build starts, never clamped or silently run under the smaller budget.
+- **One shared budget, raised, never per-build limits** (#85). The raise is held until no build is running; do not "optimise" it into lowering when one build ends, because lowering `memory.max` under running builds makes the kernel reclaim from them.
+
 ## An image's policy decides how its three copies agree
 
 **An image's recipe (in cix-recipes), its live manifest and its installed set are three legitimate writers of one fact, and the single source of truth is the image's POLICY, not one of the copies** -- [ADR-0320](docs/adr/0320-an-image-policy-decides-how-its-three-copies-agree.md), #535. Stated by the owner on 2026-09-30: *"We should be able to upgrade, downgrade, and we should be able to put a recipe that's hand made in the repo, and edit one on the box ... we should have the flexibility, but it should be settable on the policy."*

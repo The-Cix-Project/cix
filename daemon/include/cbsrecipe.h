@@ -165,6 +165,17 @@ const char *cbs_explain_upstream(const struct cbs_explain *ex);
  * space-separated, "" when it declares none. -1 if it does not fit.
  */
 int cbs_explain_replaces(const struct cbs_explain *ex, char *out, size_t out_size);
+
+/*
+ * The aggregate memory this recipe's whole build needs, in bytes (cbs#276,
+ * cix#558): `resources.memory` of `cbs explain --json`, which cbs reports
+ * already normalized from the recipe's `resources { memory "4GiB" }`.
+ * *out is 0 when the recipe declares none (`resources` is null or absent,
+ * as it is from any cbs before v0.1.100). -1 if the field is present but
+ * is not a positive whole number, which cbs itself never emits.
+ */
+int cbs_explain_resources_memory(const struct cbs_explain *ex, long long *out);
+
 const char *cbs_explain_toolchain(const struct cbs_explain *ex);
 const char *cbs_explain_toolchain_reason(const struct cbs_explain *ex);
 

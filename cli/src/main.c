@@ -391,15 +391,19 @@ static const char USAGE_TEXT[] =
 	        "               a single follow_rolling container can override this default via\n"
 	        "               run --follow-rolling-jitter-seconds=N at creation time\n"
 	        "  pkg-build-config show  -- how many pkg install/hostbuild jobs may genuinely\n"
-	        "               run at once, and the memory/CPU ceiling each one's own pkgbuild\n"
-	        "               sandbox is capped to (ADR-0157/ADR-0165)\n"
+	        "               run at once, and the memory/CPU budget all of them share\n"
+	        "               (ADR-0157/ADR-0165, #85): memory_max, the ceiling a recipe's\n"
+	        "               declared resources { memory } may raise it to, and what the\n"
+	        "               build parent has right now (cix#558)\n"
 	        "  pkg-build-config set [--max-concurrent-jobs=N] [--memory-max=BYTES]\n"
-	        "               [--cpu-max=\"QUOTA PERIOD\"]  -- partial update, only the flags given\n"
-	        "               are changed; max-concurrent-jobs is 1-10 and lowering it doesn't\n"
-	        "               disrupt jobs already in flight, only future ones; memory-max=0 or\n"
-	        "               cpu-max=\"\" means unlimited; cpu-max is raw cgroup v2 cpu.max syntax\n"
-	        "               (microseconds quota/period, e.g. \"100000 100000\" for one full CPU),\n"
-	        "               same format as run --cpu-max=\n"
+	        "               [--memory-max-ceiling=BYTES] [--cpu-max=\"QUOTA PERIOD\"]  -- partial\n"
+	        "               update, only the flags given are changed; max-concurrent-jobs is\n"
+	        "               1-10 and lowering it doesn't disrupt jobs already in flight, only\n"
+	        "               future ones; memory-max=0 or cpu-max=\"\" means unlimited; the\n"
+	        "               ceiling is never below memory-max (0 = no ceiling), so raising\n"
+	        "               memory-max past it needs both flags; cpu-max is raw cgroup v2\n"
+	        "               cpu.max syntax (microseconds quota/period, e.g. \"100000 100000\"\n"
+	        "               for one full CPU), same format as run --cpu-max=\n"
 	        "  iso build [--disk=DEV --ip=A.B.C.D --prefix=N --gateway=A.B.C.D\n"
 	        "               --interface=IFNAME] [--wait]  -- assembles a fresh installer ISO\n"
 	        "               server-side (ADR-0064), from the most recent \"cix\"/\"kernel\"/\n"
@@ -8147,7 +8151,7 @@ static int cmd_rolling_config(const struct cix_client *c, int json_mode, int arg
 
 /*
  * ADR-0157 Phase 3 / ADR-0165: cixctl pkg-build-config show|set --
- * mirrors cmd_rolling_config's own shape, now three independently
+ * mirrors cmd_rolling_config's own shape, now four independently
  * settable fields (partial update, only the flags given are changed)
  * instead of one.
  */
@@ -8159,6 +8163,9 @@ static void fmt_pkg_build_config(const struct json_value *v)
 	printf("max_concurrent_jobs=%ld\n",
 	       (long)json_as_number(json_object_get(v, "max_concurrent_jobs")));
 	printf("memory_max=%.0f\n", json_as_number(json_object_get(v, "memory_max")));
+	printf("memory_max_ceiling=%.0f\n", json_as_number(json_object_get(v, "memory_max_ceiling")));
+	printf("memory_max_effective=%.0f\n",
+	       json_as_number(json_object_get(v, "memory_max_effective")));
 	printf("cpu_max=%s\n", cpu_max != NULL ? cpu_max : "(none)");
 }
 
@@ -8177,6 +8184,7 @@ static int cmd_pkg_build_config_set(const struct cix_client *c, int json_mode, i
 {
 	const char *max_jobs = NULL;
 	const char *memory_max = NULL;
+	const char *memory_max_ceiling = NULL;
 	const char *cpu_max = NULL;
 	int i;
 	struct json_writer w;
@@ -8203,6 +8211,8 @@ static int cmd_pkg_build_config_set(const struct cix_client *c, int json_mode, i
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--max-concurrent-jobs=", 22) == 0)
 			max_jobs = argv[i] + 22;
+		else if (strncmp(argv[i], "--memory-max-ceiling=", 21) == 0)
+			memory_max_ceiling = argv[i] + 21;
 		else if (strncmp(argv[i], "--memory-max=", 13) == 0)
 			memory_max = argv[i] + 13;
 		else if (strncmp(argv[i], "--cpu-max=", 10) == 0)
@@ -8212,9 +8222,10 @@ static int cmd_pkg_build_config_set(const struct cix_client *c, int json_mode, i
 			return 2;
 		}
 	}
-	if (max_jobs == NULL && memory_max == NULL && cpu_max == NULL) {
+	if (max_jobs == NULL && memory_max == NULL && memory_max_ceiling == NULL && cpu_max == NULL) {
 		fprintf(stderr, "usage: cixctl pkg-build-config set [--max-concurrent-jobs=N] "
-		                "[--memory-max=BYTES] [--cpu-max=\"QUOTA PERIOD\"]\n");
+		                "[--memory-max=BYTES] [--memory-max-ceiling=BYTES] "
+		                "[--cpu-max=\"QUOTA PERIOD\"]\n");
 		return 2;
 	}
 
@@ -8227,6 +8238,10 @@ static int cmd_pkg_build_config_set(const struct cix_client *c, int json_mode, i
 	if (memory_max != NULL) {
 		jw_key(&w, "memory_max");
 		jw_int(&w, atoll(memory_max));
+	}
+	if (memory_max_ceiling != NULL) {
+		jw_key(&w, "memory_max_ceiling");
+		jw_int(&w, atoll(memory_max_ceiling));
 	}
 	if (cpu_max != NULL) {
 		jw_key(&w, "cpu_max");

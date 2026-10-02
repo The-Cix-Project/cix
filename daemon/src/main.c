@@ -19989,6 +19989,12 @@ static void respond_pkg_error(int fd, enum pkg_error err)
 	case PKG_ERR_INVALID_TOOLCHAIN:
 		respond_error(fd, 400, "Bad Request", "toolchain_path missing, unreadable, or not a regular file");
 		break;
+	case PKG_ERR_BUILD_MEMORY_OVER_CEILING:
+		respond_error(fd, 409, "Conflict",
+		              "the recipe declares more build memory (resources { memory }) than "
+		              "memory_max_ceiling allows -- the cixd log names both; raise it with "
+		              "PUT /v1/system/pkg-build-config");
+		break;
 	case PKG_ERR_SPAWN_FAILED:
 	case PKG_ERR_PERSIST_FAILED:
 	default:
@@ -20673,6 +20679,13 @@ static void handle_pkg_build_config_get(int fd)
 	jw_int(&w, pkg_build_get_max_jobs());
 	jw_key(&w, "memory_max");
 	jw_int(&w, pkg_build_get_memory_max());
+	/* cix#558: the most a recipe may raise it to, and what the build
+	 * parent actually has right now -- memory_max, or a raise while a
+	 * build that declared more is running. */
+	jw_key(&w, "memory_max_ceiling");
+	jw_int(&w, pkg_build_get_memory_max_ceiling());
+	jw_key(&w, "memory_max_effective");
+	jw_int(&w, pkg_build_effective_memory_max());
 	jw_key(&w, "cpu_max");
 	if (cpu_max != NULL)
 		jw_str(&w, cpu_max);
@@ -20690,13 +20703,14 @@ static void handle_pkg_build_config_get(int fd)
  * behavior but is no longer the only field a caller can set). */
 static void handle_pkg_build_config_put(int fd, const char *body, size_t body_len)
 {
+	static const char required[] =
+	    "at least one of max_concurrent_jobs/memory_max/memory_max_ceiling/cpu_max is required";
 	struct json_value *root;
-	const struct json_value *mj, *jmem, *jcpu;
+	const struct json_value *mj, *jmem, *jceil, *jcpu;
 	enum pkg_error perr;
 
 	if (body_len == 0) {
-		respond_error(fd, 400, "Bad Request",
-		              "at least one of max_concurrent_jobs/memory_max/cpu_max is required");
+		respond_error(fd, 400, "Bad Request", required);
 		return;
 	}
 	root = json_parse(body, body_len);
@@ -20706,12 +20720,40 @@ static void handle_pkg_build_config_put(int fd, const char *body, size_t body_le
 	}
 	mj = json_object_get(root, "max_concurrent_jobs");
 	jmem = json_object_get(root, "memory_max");
+	jceil = json_object_get(root, "memory_max_ceiling");
 	jcpu = json_object_get(root, "cpu_max");
-	if (mj == NULL && jmem == NULL && jcpu == NULL) {
+	if (mj == NULL && jmem == NULL && jceil == NULL && jcpu == NULL) {
 		json_free(root);
-		respond_error(fd, 400, "Bad Request",
-		              "at least one of max_concurrent_jobs/memory_max/cpu_max is required");
+		respond_error(fd, 400, "Bad Request", required);
 		return;
+	}
+	/*
+	 * cix#558: memory_max and its ceiling first, and as one pair. They
+	 * are the only fields here with a rule between them, so they are
+	 * the ones a request can be refused for after validating, and doing
+	 * them before anything else means a refused pair leaves nothing
+	 * half-applied. A field the request omits keeps its current value.
+	 */
+	if (jmem != NULL || jceil != NULL) {
+		long long mem = pkg_build_get_memory_max();
+		long long ceiling = pkg_build_get_memory_max_ceiling();
+		char err[160];
+
+		if (jmem != NULL)
+			mem = jmem->type == JSON_NULL ? 0 : (long long)json_as_number(jmem);
+		if (jceil != NULL)
+			ceiling = jceil->type == JSON_NULL ? 0 : (long long)json_as_number(jceil);
+		perr = pkg_build_set_memory(mem, ceiling, err, sizeof(err));
+		if (perr == PKG_ERR_INVALID_NAME) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", err);
+			return;
+		}
+		if (perr != PKG_OK) {
+			json_free(root);
+			respond_pkg_error(fd, perr);
+			return;
+		}
 	}
 	if (mj != NULL) {
 		perr = pkg_build_set_max_jobs((int)json_as_number(mj));
@@ -20722,19 +20764,6 @@ static void handle_pkg_build_config_put(int fd, const char *body, size_t body_le
 			         PKG_MAX_CONCURRENT_JOBS);
 			json_free(root);
 			respond_error(fd, 400, "Bad Request", msg);
-			return;
-		}
-		if (perr != PKG_OK) {
-			json_free(root);
-			respond_pkg_error(fd, perr);
-			return;
-		}
-	}
-	if (jmem != NULL) {
-		perr = pkg_build_set_memory_max(jmem->type == JSON_NULL ? 0 : (long long)json_as_number(jmem));
-		if (perr == PKG_ERR_INVALID_NAME) {
-			json_free(root);
-			respond_error(fd, 400, "Bad Request", "memory_max must be >= 0");
 			return;
 		}
 		if (perr != PKG_OK) {

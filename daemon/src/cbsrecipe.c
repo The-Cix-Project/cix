@@ -288,6 +288,38 @@ int cbs_explain_replaces(const struct cbs_explain *ex, char *out, size_t out_siz
 	return 0;
 }
 
+int cbs_explain_resources_memory(const struct cbs_explain *ex, long long *out)
+{
+	const struct json_value *resources;
+	const struct json_value *memory;
+	double v;
+
+	if (ex == NULL || out == NULL)
+		return -1;
+	*out = 0;
+
+	/* cbs v0.1.100 (cbs#276): null when the recipe declares none, and
+	 * absent altogether from any earlier engine. */
+	resources = json_object_get(ex->root, "resources");
+	if (resources == NULL || resources->type == JSON_NULL)
+		return 0;
+	if (resources->type != JSON_OBJECT)
+		return -1;
+	memory = json_object_get(resources, "memory");
+	if (memory == NULL || memory->type == JSON_NULL)
+		return 0;
+	if (memory->type != JSON_NUMBER)
+		return -1;
+	/* A double holds every whole number up to 2^53 exactly, which is
+	 * eight pebibytes; anything above that, or fractional, or not
+	 * positive is not a byte count cbs could have written. */
+	v = json_as_number(memory);
+	if (!(v >= 1.0) || v > 9007199254740992.0 || v != (double)(long long)v)
+		return -1;
+	*out = (long long)v;
+	return 0;
+}
+
 const char *cbs_explain_format(const struct cbs_explain *ex)
 {
 	if (ex == NULL)

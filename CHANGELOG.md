@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A recipe declares the memory its build needs, within an operator ceiling (#558, ADR-0322)
+
+All builds share one memory budget, `memory_max` (2 GiB by default, #85). `node@24.21.0` stalled in iowait under it and finished at 4 GiB, and the only remedy was an operator raising `memory_max` by hand for that one build. A recipe can now say what it needs, `resources { memory "4GiB" }` (CPDL, cbs v0.1.100, cix-build-system#276). cixd reads it from `cbs explain`'s typed `resources.memory`.
+
+- **`memory_max_ceiling`** in `/v1/system/pkg-build-config` (`cixctl pkg-build-config set --memory-max-ceiling=BYTES`, and the dashboard's Log tab) is the most any recipe may raise the budget to. It is never below `memory_max` and is validated with it as a pair, before anything in the request is applied, so raising `memory_max` past it needs both. It defaults to `memory_max`, so nothing is raised until an operator allows it.
+- **Above the ceiling**, a build is refused before its environment is composed, with the need, the ceiling and the `cixctl` command in the error. A resume gets the same check (409).
+- **Within it**, the shared parent's `memory.max` is raised to the need while that build runs, and held until no build is running, because lowering it under running builds makes the kernel reclaim from them. `memory_max_effective` reports the current value, and the daemon logs the raise and the return.
+- **The test floor's cbs is v0.1.100-1**, so `test_pkg` can assert all of it: the pair rule, a refusal naming both numbers, and a raise and its return.
+- **Corrected along the way:** the comments, contract and CLI help that still called the budget a per-build-container limit. It has been one shared parent since #85.
+
 ### No package recipe deletes its own documentation (#491)
 
 ADR-0306 stopped the finalize phase deleting `usr/share/{man,info,doc,locale,i18n}`. That gave nothing back to the 57 recipes that deleted those trees themselves. The last three now keep them: glibc 2.44-20, gcc 16.2.0-18 and node 24.21.0-3, each built and installed on 192.168.15.95. The new SELFTEST `test_recipe_docs` keeps it that way. It reads the latest revision of every package recipe in the corpus the release build pins and fails if one removes `usr/share` or one of those five trees, by `remove`, `remove tree` or an argument of `run "rm"`. Removing a single named file is still allowed, since a package giving up a path another owns is how ADR-0319 is met. Before judging the corpus it checks its own pattern against a fixture of known answers. Older revisions are history (ADR-0107) and are not judged.

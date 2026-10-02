@@ -3676,7 +3676,8 @@ paths:
     get:
       summary: >
         The configured pkg install/hostbuild concurrency ceiling (ADR-0157)
-        and per-build memory/CPU cgroup limits (ADR-0165).
+        and the shared build memory/CPU budget (ADR-0165, #85), with the
+        ceiling a recipe's declared build memory may raise it to (cix#558).
       operationId: getSystemPkgBuildConfig
       x-cix-permission: packages:read
       x-cix-expose: [cli, web]
@@ -3688,7 +3689,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/PkgBuildConfig"
     put:
-      summary: Set pkg-build concurrency and/or per-build resource limits (ADR-0157/ADR-0165)
+      summary: Set pkg-build concurrency and/or the shared build resource budget (ADR-0157/ADR-0165, cix#558)
       description: >
         Partial update -- only the fields given are changed, same convention
         daemon-config/hostauth-config already use. max_concurrent_jobs must
@@ -3696,10 +3697,13 @@ paths:
         own hard compile-time array bound (PKG_MAX_CONCURRENT_JOBS), not
         just a soft suggestion; lowering it doesn't disrupt chains already
         in flight, only the next chain a POST /pkg/install or /pkg/hostbuild
-        tries to start. memory_max/cpu_max apply to every future build's own
-        sandbox container from the next build onward (an already-running
-        build's cgroup is not retroactively adjusted) -- 0/null means
-        unlimited for either, a deliberate opt-out, not a validation error.
+        tries to start. memory_max and cpu_max reach the shared build
+        parent cgroup at the next build start (#85) -- 0/null means
+        unlimited for either, a deliberate opt-out, not a validation
+        error. memory_max and memory_max_ceiling are validated as a pair
+        before anything is changed: the ceiling may not be below
+        memory_max (0 is unlimited for both), so raising memory_max above
+        the current ceiling needs both in the same request (cix#558).
       operationId: putSystemPkgBuildConfig
       x-cix-permission: packages:write
       x-cix-expose: [cli, web]
@@ -3718,6 +3722,9 @@ paths:
                 memory_max:
                   type: integer
                   minimum: 0
+                memory_max_ceiling:
+                  type: integer
+                  minimum: 0
                 cpu_max:
                   type: string
                   nullable: true
@@ -3729,7 +3736,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/PkgBuildConfig"
         "400":
-          description: no fields given, or a given field is invalid (max_concurrent_jobs out of 1-10, memory_max negative, cpu_max too long)
+          description: no fields given, or a given field is invalid (max_concurrent_jobs out of 1-10, memory_max or memory_max_ceiling negative, a ceiling below memory_max, cpu_max too long)
           content:
             application/json:
               schema:
@@ -20530,7 +20537,7 @@ components:
 
     PkgBuildConfig:
       type: object
-      required: [max_concurrent_jobs, memory_max, cpu_max]
+      required: [max_concurrent_jobs, memory_max, memory_max_ceiling, memory_max_effective, cpu_max]
       properties:
         active_jobs:
           type: integer
@@ -20560,9 +20567,31 @@ components:
           minimum: 0
           description: >
             Default 2147483648 (2GiB, ADR-0165). Bytes; 0 means unlimited.
-            Applied to every individual build's own sandbox container via
-            the identical cgroup mechanism a regular container's own
-            POST /containers memory_max already uses -- not a second one.
+            The aggregate budget of the ONE parent cgroup every build
+            container lives under (#85), never a per-container limit: a
+            per-container ceiling multiplied by concurrency is not a budget.
+        memory_max_ceiling:
+          type: integer
+          minimum: 0
+          description: >
+            The most a recipe's declared build memory (CPDL
+            `resources { memory }`, cbs v0.1.100) may raise that budget to
+            (cix#558). Never below memory_max; 0 means no ceiling, and is
+            required when memory_max is 0. Defaults to memory_max, which
+            allows no raise at all until an operator sets it higher. A
+            build that declares more than this is refused before it starts,
+            naming both numbers.
+        memory_max_effective:
+          type: integer
+          minimum: 0
+          description: >
+            Read-only. What the build parent's memory.max is right now:
+            memory_max, or the largest need a running build declared when
+            that is larger. It returns to memory_max once no build is
+            running, not when the build that raised it ends, because
+            lowering memory.max under builds still running makes the kernel
+            reclaim from them; for the same reason a ceiling lowered during
+            a raise bounds the next build, not the running one.
         cpu_max:
           type: string
           nullable: true

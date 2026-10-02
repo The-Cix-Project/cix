@@ -489,6 +489,20 @@ replaces {
 
 The install is then allowed, and every path it shares with `util-linux` becomes its own: `util-linux` no longer lists them, and removing `util-linux` leaves them in place. It works only in that direction. The package giving the file up needs no declaration, and naming a package you do not take files from changes nothing. Needs cbs v0.1.99 (cix-build-system#275) and cix 0.2.57-423.
 
+### Declaring how much memory the build needs
+
+Every build shares one memory budget, `memory_max` in `cixctl pkg-build-config` (2 GiB by default, #85). A package whose build needs more says so at package level, after `requires` and any `replaces` and before `metadata` and the first phase, which is CPDL's canonical order ([ADR-0322](../adr/0322-a-recipe-declares-its-build-memory-within-an-operator-ceiling.md)):
+
+```
+resources {
+    memory "4GiB"
+}
+```
+
+The value is the whole build's peak, all phases and processes together, with a `KiB`, `MiB` or `GiB` suffix. It is not a per-process limit. While the build runs, the shared budget is raised to it, up to the operator's `memory_max_ceiling`. A recipe that declares more than the ceiling is refused before it builds, and the error names both numbers and the command that raises the ceiling. The ceiling equals `memory_max` until an operator raises it, so on a fresh host a declaration above 2 GiB is refused until someone decides the host can give it.
+
+Declare it only from a measured build. A build short of memory stalls rather than fails: `node` sat at about 1.5% CPU in iowait at 2 GiB, and peaked at 3.73 GB once given 4 GiB. Needs cbs v0.1.100 (cix-build-system#276) and the cix release that carries #558.
+
 ## What you do NOT have to clean up
 
 `pkg_install()` is finished when the package's files are in `$PKG_DESTDIR`. The daemon then runs a finalize phase over that tree, in your build container, before it becomes an artifact ([ADR-0251](../adr/0251-a-package-artifact-carries-what-the-platform-runs.md)). It:
