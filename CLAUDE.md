@@ -212,14 +212,17 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 
 **Permissions are declared by the API contract, not by a policy file and not in handlers** -- the owner's direction on #304 (2026-09-14), with three decisions of 2026-09-29: the annotation is mandatory (the method rule only seeds it once); **every read needs a login** (public: login, the dashboard's static files, health -- plus logout and whoami, added while implementing #541 and #540, each explained in the ADR); and **machine credentials are glauth-style app passwords on the user** -- "Glauth handles app passwords, which I think should be the same" -- never a separate token store, recorded as [ADR-0317](docs/adr/0317-permissions-are-declared-by-the-api-contract.md), accepted 2026-09-29. Every operation carries one `x-cix-permission` and `apigen` refuses a spec without it (#539); groups hold permissions and `admin_groups` is derived from them (#540); `authorize_route()` in `dispatch()` is the one enforcement point (#541). **Never add a permission check in a handler** -- that is the parallel implementation the ADR exists to prevent. **The one trap:** anything answered before `dispatch()` (the console and build-log WebSocket upgrades today) must call `authorize_upgrade_route()` itself, or it is unauthenticated -- the console was, on every gated release before 0.2.57-392 (measured).
 
-## Upstream releases roll only when they are signed
+## Every package can roll: a discovery kind, an authentication method, a green build
 
-**An upstream release reaches this platform automatically only when upstream signs it**, and the platform then writes and publishes the next recipe revision itself -- [ADR-0318](docs/adr/0318-an-upstream-release-is-authenticated-by-a-signed-asset.md), both choices the owner's own on 2026-09-30: *signed release assets*, and *commit to cix-recipes*.
+**A rolling package rolls by itself, from discovery to the running container; a pinned one moves only when a person moves it** -- [ADR-0323](docs/adr/0323-every-package-can-roll-discovery-authentication-and-a-green-build.md), accepted by the owner on 2026-10-02 (*"a rolling release is a rolling release, should never wait, unless it's not a rolling release"*). It supersedes ADR-0318's signed-assets-only rule, and keeps its git-first writer and separate key store.
 
-- **No trust-on-first-use, ever.** A release with no signature, an unregistered key, or a trusted comment that is not exactly `<name> v<ver> <name>-<ver>.tar.gz sha256=<hex>` halts that package and says why. Hashing whatever arrived is the option the owner rejected.
-- **Upstream keys never share a store with Cix's artifact keys**, in either direction.
-- **Git first.** A written revision is committed to cix-recipes and only then published; a host that cannot commit (no write token, or not enabled -- off by default) writes nothing, rather than a local-only recipe.
-- **One hourly `pkg.discover` schedule; a recipe opts in by declaring `upstream`.** No per-recipe interval.
+- **Authentication is a ladder, declared per recipe:** a signature over the tarball, a signed checksum list, a signed git tag, or origin trust (TLS from the source's host, hash recorded at discovery). A source with none of them stays pinned.
+- **Origin trust is for the owner's own forge** (`git.home.arpa`). An external, unsigned project is pinned unless its own recipe explicitly opts into origin trust for that one origin, and that is a per-package decision for the owner, never a default.
+- **Never weaker, never re-pinned.** A written revision never uses a weaker method than its predecessor. Once a version's sha256 is committed, different bytes later halt the package and say so. Keys and trusted origins change only by an operator's API call, and there is no key trust-on-first-use.
+- **No approval mode.** The kernel, gcc and glibc roll when their source policy is rolling; `pinned` is how to hold one. This does not relax my own rule to ask before rebuilding them by hand. Heavy builds are still queued, never run concurrently.
+- **Git first.** A written revision is committed to cix-recipes, and only then published.
+- **Build failure undoes nothing; runtime failure rolls back.** A failed build never moved the image. A container that crash-loops, never becomes ready, or fails its health check on a rolled image goes back to its previous image, and that package version is marked bad until a newer one arrives or an operator clears it.
+- **Every stage reports into `cixctl pkg source-catalogue`.** A roll that stops says where and why. One hourly `pkg.discover` schedule; .95 has a saved schedule file, so it is created there explicitly.
 
 ## One way to make an image
 

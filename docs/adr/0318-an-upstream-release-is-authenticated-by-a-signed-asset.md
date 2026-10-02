@@ -2,6 +2,8 @@
 
 ## Status
 
+**Superseded in part by [ADR-0323](0323-every-package-can-roll-discovery-authentication-and-a-green-build.md)** (2026-10-02): a signed release asset is no longer the only way a release is authenticated. The git-first writer and the separate upstream key store stand.
+
 Accepted by the owner on 2026-09-30, who chose both open questions in [#508](https://git.home.arpa/itdlabs/cix/issues/508): releases are authenticated by **signed release assets**, and a recipe the platform writes is **committed to cix-recipes**. Supersedes one consequence of [ADR-0255](0255-a-recipe-is-a-rule-not-a-version.md): "The daemon no longer generates recipes". Depends on cix-build-system#274 (CPDL must accept the provider name) and hibr#62 (hibr must publish signed assets). Nothing is implemented.
 
 ## Context

@@ -1,0 +1,113 @@
+# 0323 — Every package can roll: a discovery kind, an authentication method, and a green build
+
+## Status
+
+Accepted by the owner on 2026-10-02 ("clear now, start phase one"), with the answers recorded below. It supersedes [ADR-0318](0318-an-upstream-release-is-authenticated-by-a-signed-asset.md)'s rule that only a signed release asset authenticates a release. It extends [ADR-0255](0255-a-recipe-is-a-rule-not-a-version.md) (a recipe is a rule; discovery is a named kind; pinned is a first-class answer) and [ADR-0254](0254-upstream-checksums-are-verified-not-computed.md), and replaces neither.
+
+## Context
+
+The owner asked how to validate that rolling releases work, with hibr as the example: upstream is at v0.91, and `jump` runs 0.49.1. Measured on 192.168.15.95 on 2026-10-02, the chain breaks at its first step, not its last.
+
+- **The source catalogue (`cixctl pkg source-catalogue`) has 211 rows.**
+  - 210 are `discover / not-implemented`: the recipe declares no upstream, so it rolls only when a person writes a recipe.
+  - The 211th is the kernel, the one package with a working discovery kind: `author / blocked`, *"stable resolves to 7.2.8 and no recipe builds it (newest recipe is 7.2.3-18)"*. Discovery works. Nothing writes the recipe.
+- **hibr has tags up to v0.91 and no Gitea releases.** Its newest recipe, `hibr@0.49.1-2`, declares no upstream. Gitea 1.25.4 reports the v0.91 tag as `"verified":false, "reason":"gpg.error.not_signed_commit"`.
+- **ADR-0318's design was never implemented.** Its Status says so. The `pkg.discover` schedule it describes does not exist on the box, which has only `refresh-upstreams` (kernel.org) and `recipe-sync`.
+- **The half after the recipe works.** jumpbox follows its recipe and converges, tracks hibr `rolling`, and `jump` follows its image. This carried `hibr@0.49.1-2` through on 2026-09-30.
+
+ADR-0318 required a signed release asset. That is right for a source that offers one, and almost no source in the world does. GNU signs tarballs with OpenPGP. kernel.org signs a checksum manifest. Some projects sign git tags. Most offer tags or tarballs over HTTPS and nothing else. A rule that only one method authenticates leaves nearly every package pinned forever, which is the state the catalogue shows.
+
+## Decision
+
+### One pipeline, every stage reported
+
+A release moves through the stages ADR-0256 already names: **discover → authenticate → author → build → publish → roll.** Each stage writes its `(stage, status, reason)` into the package's catalogue row. A roll that stops says where and why in the place an operator already looks. Today's silence is the defect this most directly removes.
+
+### Discovery is a kind, with parameters
+
+The registry in `srcupstream.c` grows kinds beside `kernel.org`:
+
+- `gitea-tags` and `github-tags`: annotated or lightweight tags.
+- `gitea-releases` and `github-releases`: release objects and their assets.
+- Later, `http-index`: a directory listing such as GNU's mirrors, with a filename pattern.
+
+A recipe gives the kind its parameters: the tag pattern (`v{version}`), which versions count as releases (stable only by default), and the channel and depth that ADR-0193 and ADR-0255 already provide. The kind owns enumeration, as `srcupstream.h` already requires; nothing switches on kind names elsewhere.
+
+### Authentication is a ladder, declared per recipe
+
+| Rung | Method | Who holds the trust root |
+|---|---|---|
+| 1 | Detached signature over the tarball (minisign or OpenPGP) | A key in the package's upstream trust store (ADR-0318's store, kept apart from Cix's artifact keys) |
+| 2 | Signed checksum manifest (`SHA256SUMS` + signature) | Same; kernel.org already works this way (ADR-0254) |
+| 3 | Signed git tag (SSH or OpenPGP) | Same. **The platform verifies the signature itself**; a forge's `verified: true` is the forge's opinion, not evidence |
+| 4 | Origin trust: TLS to a declared origin, hash recorded at discovery | The origin (see question 1) |
+| none | — | The package stays pinned (ADR-0255, unchanged) |
+
+Three rules hold on every rung:
+
+- **No downgrade.** A written revision never uses a weaker rung than the revision it came from. Moving down is an operator act, in a commit, with a reason.
+- **Immutability.** Once a version's sha256 is in a committed revision, a later fetch that produces different bytes halts the package and says so. It never re-pins.
+- **Keys and trusted origins change only by an operator's API call**, never as a side effect of discovery. There is no trust-on-first-use of a key.
+
+### The platform writes the recipe, git first
+
+The author stage is ADR-0318's writer, unchanged. It produces the next revision from the newest one: new version, release 1, url, sha256, changelog, and `artifact_sha256` dropped. It **commits it to cix-recipes and only then publishes it**. A host without a write token writes nothing. The commit is the audit record of what was authenticated and how.
+
+### A discovered release is a candidate until it builds
+
+Publishing makes images that follow the package rebuild. A failed build leaves the image where it was: the image commit (`image_produce_new_version`, `pkg.c`) runs only on the success path, and a failed upgrade keeps the installed version. That was read from the code and is to be measured on the box in phase one. The catalogue row then reads `build / failed` with the build log's name.
+
+### CPDL carries the parameters
+
+`upstream "kind"` is a bare string today. This needs a parameterised block, requested from cbs in its general form, not for hibr:
+
+```
+upstream "gitea-tags" {
+    tag "v{version}"
+    verify "signed-tag" key "hibr-release-2026"
+}
+```
+
+### Validation is the real event, with a record at every step
+
+A release is pushed upstream. Within one discovery interval, each step has a record that can be checked:
+
+1. a `hibr@<ver>-1` commit lands in cix-recipes;
+2. the recipe store lists it;
+3. the build log exists and passed;
+4. jumpbox has a new image version hash;
+5. `jump` has a new start time.
+
+The catalogue shows the same chain while it happens.
+
+## Phasing and cost
+
+**Phase one** brings the owner's own forge and the kernel to a working roll:
+
+- In cixd: `gitea-tags`, rung 3 and rung 4 verification, the author stage, stage reporting in the catalogue, and an hourly `pkg.discover` schedule.
+- One cbs ticket for the `upstream` block.
+- A hibr recipe revision.
+
+Estimated at four to six cix release cycles. **.95 has a saved schedule file, so the new schedule must be created there explicitly**; a default is created only on a host that never saved one.
+
+**Phase two** brings the rest of the world: `github-tags`/`github-releases`, OpenPGP for GNU-style signatures, `http-index`, and then recipes opting in package by package.
+
+## The owner's answers (2026-10-02)
+
+1. **Origin trust (rung 4): the owner's own forge.** An external origin uses rungs 1–3 or stays pinned, unless that one package's recipe explicitly opts into origin trust for its origin -- a per-package choice the owner makes in phase two, never a default. Measured over the 117 package recipes: about 34 come from GNU, 17 from kernel.org, 5 from Debian and about 30 from project sites, most of which publish signatures; about 24 come from GitHub, some unsigned.
+2. **hibr rolls on own-forge origin trust.** No change in hibr's release process is needed.
+3. **A rolling package rolls; there is no approval mode.** *"A rolling release is a rolling release, should never wait, unless it's not a rolling release."* Pinned is how an operator keeps a package still, and `cixctl pkg source-policy` already sets it, so the kernel, gcc and glibc roll exactly when their policy says rolling. Heavy builds still never run concurrently: discovery queues them behind each other, because two at once wedged 192.168.15.95.
+4. **Roll back on runtime failure, never on build failure.**
+   - **A build failure needs nothing undone.** The image never moved, because the image commit is on the success path only. The package stays on its previous version, the catalogue says why, and the next upstream release tries again.
+   - **A runtime failure is when a container restarted on the new image crash-loops, never reports ready, or fails its health check.** The container is then:
+     1. returned to the image version it ran before;
+     2. the package version is marked bad, so it does not roll in again;
+     3. the mark clears when upstream publishes something newer, or by an operator.
+   - **A package no service runs** (hibr in `jump`) has no runtime signal, so its recipe's check phase, which runs the built binary before it ships, is its gate.
+
+## Consequences
+
+- hibr at v0.91 reaches `jump` with no human writing a recipe, and so does every release after it.
+- The kernel's 7.2.8 is written, committed, built and rolled, because its source policy is rolling (stable); a kernel an operator wants held is set to pinned.
+- A package that cannot be authenticated stays pinned, and the catalogue says why, as it does today.
+- Every automated recipe is a git commit, so what rolled, when, and on what evidence is answerable after the fact.

@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### ADR-0323: every package can roll, by a discovery kind, an authentication method and a green build (#508)
+
+Measured on 2026-10-02: the source catalogue showed 210 packages with no discovery at all. The kernel, the one package with discovery, was `author / blocked` on 7.2.8, because nothing writes a recipe. hibr had tags up to v0.91 and no releases, so ADR-0318's signed-asset rule could never roll it.
+
+ADR-0323 is the design phase one builds:
+- **Stages:** discover → authenticate → author → build → publish → roll, each reported in the catalogue.
+- **Authentication ladder:** origin trust is for the owner's own forge.
+- **Rolling vs pinned:** a rolling package never waits, and pinned is how to hold one.
+- **Rollback:** on runtime failure only.
+
+The CPDL half is cix-build-system#277: `upstream` with a tag pattern, a source template and a `verify` method. CLAUDE.md's upstream section now states this design in place of ADR-0318's.
+
 ### A recipe declares the memory its build needs, within an operator ceiling (#558, ADR-0322)
 
 All builds share one memory budget, `memory_max` (2 GiB by default, #85). `node@24.21.0` stalled in iowait under it and finished at 4 GiB, and the only remedy was an operator raising `memory_max` by hand for that one build. A recipe can now say what it needs, `resources { memory "4GiB" }` (CPDL, cbs v0.1.100, cix-build-system#276). cixd reads it from `cbs explain`'s typed `resources.memory`.
