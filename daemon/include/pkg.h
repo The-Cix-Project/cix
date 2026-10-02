@@ -58,7 +58,15 @@
  * docs/guides/writing-recipes.md -- not repeated here.
  */
 
-#define PKG_MAX_PACKAGES 256
+/*
+ * One entry per package per image, across every image on the host.
+ * 256 was reached on 192.168.15.95 on 2026-10-02 (jumpbox and
+ * cix-builder alone hold 48 each), and from then every new install
+ * failed: an explicit one with "package table full", a dependency step
+ * silently. Static storage, so an unused slot costs no memory; the
+ * stack arrays sized by this hold two pointers per slot.
+ */
+#define PKG_MAX_PACKAGES 1024
 #define PKG_NAME_MAX 64
 /* Same charset/length rules as a package name (simple_name_is_valid()),
  * for the same reason CONTAINER/NETWORK names share one bound -- an

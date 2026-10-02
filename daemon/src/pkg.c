@@ -14172,7 +14172,22 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			*out_chain_idx = chain_idx;
 			return 1;
 		}
-		/* couldn't start the next dependency -- abort the chain */
+		/*
+		 * Couldn't start the next dependency: the chain is abandoned,
+		 * and it is said here because nothing else will say it. The
+		 * step that failed never got an entry, so GET /pkg shows the
+		 * dependencies that did install and then simply stops -- the
+		 * requested package has no row and no error. Measured on
+		 * 192.168.15.95, 2026-10-02: node into a fresh image stopped
+		 * after its fifth dependency with nothing logged at all,
+		 * because the package table was full.
+		 */
+		logstore_write("cixd", "error",
+		               "pkg %s@%s: install abandoned -- dependency %s could not start: %s (%d)",
+		               g_chains[chain_idx].dep_queue[g_chains[chain_idx].dep_queue_count - 1],
+		               g_chains[chain_idx].image,
+		               g_chains[chain_idx].dep_queue[g_chains[chain_idx].dep_queue_pos],
+		               perr == PKG_ERR_FULL ? "the package table is full" : "pkg_error", (int)perr);
 	}
 
 	g_chains[chain_idx].name[0] = '\0';

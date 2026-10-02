@@ -6,6 +6,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The package table holds 1024 entries, and an install it cannot continue says so (#559)
+
+cixd keeps one entry per package per image across every image on the host, in a table of `PKG_MAX_PACKAGES` slots. On 192.168.15.95 it reached its 256 on 2026-10-02, and from then every new install failed. An explicit install answered `package table full`. A dependency step was worse: installing node into a fresh image put in five dependencies and then stopped, with no row for gcc or node, no failure and no log line, because the chain gave up without recording why. The table now holds 1024 entries; it is static storage, so unused slots cost nothing. A chain that cannot start its next dependency now logs an error naming the requested package, its image, the dependency and the reason.
+
 ### The session idle timeout can be set from the dashboard
 
 `idle_timeout_seconds` (`PUT /v1/system/hostauth-config`) was settable only from `cixctl`. The host's **Sessions** tab now carries it above the session list, with the same `identity:write` gate the endpoint has. That `PUT` replaces the whole config, and an `ldap_*` field it leaves out reverts to disabled, so the dashboard reads the current config and writes every field back with only the timeout changed. Sending the timeout alone would also have switched off LDAP login. Setting 0, which makes every login good for one request, asks first.
