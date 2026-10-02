@@ -57,6 +57,12 @@
 #define HOSTAUTH_LDAP_DEFAULT_PORT 3893 /* glauth's own real default listen port, see ADR-0109/0113 */
 
 int hostauth_init(const char *config_path);
+
+/* #562: says in the log store how many sessions hostauth_init() carried
+ * across the restart, or that the sessions file was malformed. Called
+ * once the log store is open, which is after hostauth_init(). */
+void hostauth_log_carried_sessions(void);
+
 void hostauth_repoint(const char *new_config_path);
 
 /* Current admin-group list (0 configured means gating can never

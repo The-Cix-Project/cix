@@ -32067,6 +32067,8 @@ static int cixd_main(int argc, char **argv)
 	 * did and says it here, where an operator can actually see it.
 	 */
 	pkg_log_explain_sweep();
+	/* #562: hostauth_init() runs before the log store opens, too. */
+	hostauth_log_carried_sessions();
 	/*
 	 * Issue #40: after image_init (it produces a real image version)
 	 * AND after logstore_init, so what it did is visible where an

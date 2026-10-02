@@ -203,6 +203,11 @@ static struct hostauth_session g_sessions[HOSTAUTH_SESSION_MAX];
 
 static char g_sessions_path[PATH_MAX];
 
+/* What load_sessions() found, for hostauth_log_carried_sessions(): the
+ * number carried, or -1 for a malformed file. init runs before the log
+ * store opens, so it cannot say this where it happens. */
+static int g_sessions_carried;
+
 static void sessions_path_from(const char *config_path)
 {
 	const char *slash = strrchr(config_path, '/');
@@ -295,14 +300,14 @@ static void load_sessions(void)
 	time_t now = time(NULL);
 	int n = 0;
 
+	g_sessions_carried = 0;
 	if (persist_read_file(g_sessions_path, &buf, &len) != 0 || buf == NULL)
 		return;
 	root = json_parse(buf, len);
 	free(buf);
 	arr = root != NULL ? json_object_get(root, "sessions") : NULL;
 	if (arr == NULL || arr->type != JSON_ARRAY) {
-		logstore_write("hostauth", "error", "%s is malformed -- starting with no sessions",
-		               g_sessions_path);
+		g_sessions_carried = -1;
 		json_free(root);
 		return;
 	}
@@ -332,9 +337,7 @@ static void load_sessions(void)
 		n++;
 	}
 	json_free(root);
-	if (n > 0)
-		logstore_write("hostauth", "info", "%d login session%s carried across the restart", n,
-		               n == 1 ? "" : "s");
+	g_sessions_carried = n;
 }
 
 static void write_config_fields(struct json_writer *w);
@@ -1514,4 +1517,14 @@ void hostauth_note_auth_failure(const char *peer_ip)
 		               "within %d seconds",
 		               peer_ip, cfg.block_seconds, cfg.threshold, cfg.window_seconds);
 	}
+}
+
+void hostauth_log_carried_sessions(void)
+{
+	if (g_sessions_carried < 0)
+		logstore_write("hostauth", "error", "%s is malformed -- started with no sessions",
+		               g_sessions_path);
+	else if (g_sessions_carried > 0)
+		logstore_write("hostauth", "info", "%d login session%s carried across the restart",
+		               g_sessions_carried, g_sessions_carried == 1 ? "" : "s");
 }
