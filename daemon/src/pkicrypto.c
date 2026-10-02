@@ -709,3 +709,19 @@ int pkicrypto_ed25519_verify_file(const unsigned char pub[PKICRYPTO_ED25519_PUB_
 	EVP_PKEY_free(key);
 	return ok ? 0 : -1;
 }
+
+int pkicrypto_sha256_hex(const void *data, size_t len, char *out, size_t out_size)
+{
+	unsigned char md[EVP_MAX_MD_SIZE];
+	unsigned int md_len = 0, i;
+
+	if (out_size < 65 || EVP_Digest(data, len, md, &md_len, EVP_sha256(), NULL) != 1 ||
+	    md_len != 32) {
+		ERR_clear_error();
+		return -1;
+	}
+	for (i = 0; i < md_len; i++)
+		snprintf(out + i * 2, 3, "%02x", md[i]);
+	out[64] = '\0';
+	return 0;
+}

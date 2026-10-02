@@ -586,7 +586,8 @@ static int test_permission_mapping(void)
 
 	/* 7. The state file carries the mapping, and admin_groups for a
 	 * rollback to a pre-#540 build; a restart keeps the mapping.
-	 * Sessions live in memory, so the read after it logs in again. */
+	 * The session survives it too (#562, ADR-0325): the token from
+	 * before the restart still works, and the file holds its hash only. */
 	f = fopen(path, "r");
 	n = f != NULL ? fread(file, 1, sizeof(file) - 1, f) : 0;
 	file[n] = '\0';
@@ -606,8 +607,24 @@ static int test_permission_mapping(void)
 		ok = 0;
 		goto out;
 	}
-	if (!login_as(&c, "keeper", "keeps the keys", ktok, sizeof(ktok))) {
-		fprintf(stderr, "FAIL: #540 login as keeper after the restart\n");
+	memset(&r, 0, sizeof(r));
+	if (request_with_token(&c, "GET", "/v1/whoami", ktok, NULL, &r) != 0 ||
+	    !body_has(&r, "\"authenticated\":true")) {
+		fprintf(stderr, "FAIL: #562 the session from before the restart was lost: %.300s\n",
+		        r.body != NULL ? r.body : "");
+		ok = 0;
+	}
+	cix_response_free(&r);
+	snprintf(path, sizeof(path), "%s/state/hostauth_sessions.json", dir);
+	f = fopen(path, "r");
+	n = f != NULL ? fread(file, 1, sizeof(file) - 1, f) : 0;
+	file[n] = '\0';
+	if (f != NULL)
+		fclose(f);
+	if (strstr(file, "\"token_sha256\"") == NULL || strstr(file, ktok) != NULL) {
+		fprintf(stderr, "FAIL: #562 the sessions file must hold a hash and never the token: "
+		                "%.300s\n",
+		        file);
 		ok = 0;
 	}
 	memset(&r, 0, sizeof(r));

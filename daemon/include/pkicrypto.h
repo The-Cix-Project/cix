@@ -101,4 +101,11 @@ int pkicrypto_ed25519_verify_file(const unsigned char pub[PKICRYPTO_ED25519_PUB_
                                   const char *path,
                                   const unsigned char sig[PKICRYPTO_ED25519_SIG_LEN]);
 
+
+/* The sha256 of len bytes at data, as 64 lowercase hex digits and a NUL
+ * in out (out_size >= 65). For a digest of something already in memory
+ * -- a session token (#562) -- where writing it to a file to reuse
+ * pkg_run_capture_sha256() would put the secret on disk. */
+int pkicrypto_sha256_hex(const void *data, size_t len, char *out, size_t out_size);
+
 #endif

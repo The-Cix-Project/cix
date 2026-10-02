@@ -1471,6 +1471,9 @@ async function apiRequest(method, path, body, timeoutMs) {
 	 */
 	if (timeoutMs !== undefined && typeof AbortSignal !== "undefined" && AbortSignal.timeout)
 		opts.signal = AbortSignal.timeout(timeoutMs);
+	/* #562: which session this request speaks for, for its 401 below. */
+	const sentToken = authToken;
+
 	if (authToken)
 		opts.headers["Authorization"] = "Bearer " + authToken;
 	if (body !== undefined) {
@@ -1525,6 +1528,17 @@ async function apiRequest(method, path, body, timeoutMs) {
 			logLine(method, path, "-> " + res.status + " " + message, "error");
 		if (res.status === 401 && path !== CIX_API.postLogin())
 			promptReauth();
+		/*
+		 * #562: the daemon refused the session this page holds, so drop
+		 * it now. The header, the Log in button and the login-required
+		 * banner then say what is true, instead of "logged in" over
+		 * panels that are being refused. Only the token this request
+		 * carried: a reply sent before a fresh login must not sign that
+		 * login out. No modal from here, because a background poll
+		 * never opens one (#490); the person's next action does.
+		 */
+		if (res.status === 401 && path !== CIX_API.postLogin() && sentToken && sentToken === authToken)
+			setAuth(null, null);
 		if (res.status === 401 && path !== CIX_API.postLogin() && sessionAuthenticated) {
 			/* #544: the session this page believed in is gone. */
 			sessionAuthenticated = false;
@@ -1545,6 +1559,7 @@ async function apiRequest(method, path, body, timeoutMs) {
  * restore commands already have (cli/src/main.c). */
 async function apiRequestRaw(method, path, rawBody) {
 	const opts = { method: method, headers: {} };
+	const sentToken = authToken; /* #562, as in apiRequest() */
 	if (authToken)
 		opts.headers["Authorization"] = "Bearer " + authToken;
 	if (rawBody !== undefined) {
@@ -1565,6 +1580,8 @@ async function apiRequestRaw(method, path, rawBody) {
 		logLine(method, path, "-> " + res.status + " " + message, "error");
 		if (res.status === 401)
 			promptReauth();
+		if (res.status === 401 && sentToken && sentToken === authToken)
+			setAuth(null, null);
 		throw new Error(message);
 	}
 	logLine(method, path, "-> " + res.status, "ok");

@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A login survives a restart, and the dashboard drops a session the host refused (ADR-0325, #562)
+
+The owner reported the dashboard as flaky since RBAC: *"Logged out, it's not consistent, and does not inspire confidence"*. Measured on 192.168.15.95: a token that answered `whoami` with `"authenticated":true` answered `false` after `cixctl reboot`. Sessions were memory only, so every release deployed signed everyone out.
+- **Sessions persist** in `state/hostauth_sessions.json` with mode 0600. Each holds `sha256(token)`, never the token (`pkicrypto_sha256_hex()`).
+- At startup, sessions whose idle window lapsed while cixd was down are dropped.
+- The file is written on login, logout and revoke, and as a window slides by 60 seconds or more. It is not in a system backup.
+- **The dashboard** drops its token on a 401 for that same token, so the header, the Log in button and the login-required banner match the host. It never opens the login form on a background poll (#490).
+- `test_hostauth` restarts its daemon and checks that the earlier token still works and the file holds only its hash. `test_pkicrypto` checks the digest against the FIPS 180-2 vectors.
+
 ### The recipe catalogue is signed, as Debian signs its archive (ADR-0324, step C)
 
 The owner's four decisions of 2026-10-02, built:

@@ -6,6 +6,7 @@
 #include "logstore.h"
 #include "namecheck.h"
 #include "connthrottle.h"
+#include "pkicrypto.h"
 
 /* ADR-0317: the contract's permission vocabulary (apigen --emit-permissions). */
 #include "generated/permissions.h"
@@ -15,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -166,15 +168,174 @@ static void write_mapping_groups(struct json_writer *w)
 }
 
 struct hostauth_session {
-	char token[HOSTAUTH_TOKEN_LEN + 1];
+	char token_hash[65]; /* sha256 of the token, hex -- the token itself is never kept (#562) */
 	char username[HOSTAUTH_USERNAME_MAX];
 	time_t expires_at; /* meaningless (never consulted) when idle_timeout_seconds == 0 */
 	time_t logged_in_at;                     /* when hostauth_login() issued it */
 	char source_ip[HOSTAUTH_SOURCE_IP_MAX]; /* the client that logged in; "" if unknown */
+	time_t saved_expires_at; /* expires_at as last written to the sessions file */
 	int in_use;
 };
 
 static struct hostauth_session g_sessions[HOSTAUTH_SESSION_MAX];
+
+/*
+ * #562: a login survives a cixd restart. The table used to live in
+ * memory only, so every restart -- every release deployed, every
+ * reboot -- signed out every browser and every cixctl at once, and the
+ * dashboard went on showing "logged in" over panels that were now
+ * refused. Measured on 192.168.15.95, 2026-10-02: a token answering
+ * whoami "authenticated":true before `cixctl reboot` answered false
+ * after it.
+ *
+ * The file sits beside hostauth_config.json and holds, per session,
+ * sha256(token) -- never the token, so reading the file does not give
+ * anyone a session -- with the user, the times and the source address.
+ * It is not part of a system backup: a restored host starts with no
+ * sessions, as a new one does.
+ *
+ * Written on login, logout and revoke, and as a session's idle window
+ * slides only once it has moved SESSION_SAVE_SLACK seconds past what
+ * the file says. A crash can therefore cut a live session's window
+ * short by at most that much; it never extends one.
+ */
+#define SESSION_SAVE_SLACK 60
+
+static char g_sessions_path[PATH_MAX];
+
+static void sessions_path_from(const char *config_path)
+{
+	const char *slash = strrchr(config_path, '/');
+
+	if (slash == NULL)
+		snprintf(g_sessions_path, sizeof(g_sessions_path), "hostauth_sessions.json");
+	else
+		snprintf(g_sessions_path, sizeof(g_sessions_path), "%.*s/hostauth_sessions.json",
+		         (int)(slash - config_path), config_path);
+}
+
+static int token_hash(const char *token, char out[65])
+{
+	if (token == NULL || token[0] == '\0')
+		return -1;
+	return pkicrypto_sha256_hex(token, strlen(token), out, 65);
+}
+
+/* The slot holding `token`, or -1. */
+static int find_session(const char *token)
+{
+	char h[65];
+	int i;
+
+	if (token_hash(token, h) != 0)
+		return -1;
+	for (i = 0; i < HOSTAUTH_SESSION_MAX; i++)
+		if (g_sessions[i].in_use && strcmp(g_sessions[i].token_hash, h) == 0)
+			return i;
+	return -1;
+}
+
+static void save_sessions(void)
+{
+	struct json_writer w;
+	time_t now = time(NULL);
+	int i;
+
+	if (g_sessions_path[0] == '\0')
+		return;
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "sessions");
+	jw_arr_open(&w);
+	for (i = 0; i < HOSTAUTH_SESSION_MAX; i++) {
+		if (!g_sessions[i].in_use ||
+		    (g_config.idle_timeout_seconds > 0 && g_sessions[i].expires_at <= now))
+			continue;
+		jw_obj_open(&w);
+		jw_key(&w, "token_sha256");
+		jw_str(&w, g_sessions[i].token_hash);
+		jw_key(&w, "username");
+		jw_str(&w, g_sessions[i].username);
+		jw_key(&w, "expires_at");
+		jw_int(&w, (long long)g_sessions[i].expires_at);
+		jw_key(&w, "logged_in_at");
+		jw_int(&w, (long long)g_sessions[i].logged_in_at);
+		jw_key(&w, "source_ip");
+		jw_str(&w, g_sessions[i].source_ip);
+		jw_obj_close(&w);
+	}
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+	if (persist_atomic_write(g_sessions_path, w.buf, w.len) == 0) {
+		chmod(g_sessions_path, 0600);
+		for (i = 0; i < HOSTAUTH_SESSION_MAX; i++)
+			g_sessions[i].saved_expires_at = g_sessions[i].expires_at;
+	} else {
+		logstore_write("hostauth", "error",
+		               "could not write %s -- sessions will not survive the next restart",
+		               g_sessions_path);
+	}
+	jw_free(&w);
+}
+
+/* Slides slot i's idle window, writing the file only when it has moved enough. */
+static void slide_session(int i, time_t now)
+{
+	g_sessions[i].expires_at = now + (time_t)g_config.idle_timeout_seconds;
+	if (g_sessions[i].expires_at - g_sessions[i].saved_expires_at >= SESSION_SAVE_SLACK)
+		save_sessions();
+}
+
+static void load_sessions(void)
+{
+	char *buf = NULL;
+	size_t len = 0, k;
+	struct json_value *root;
+	const struct json_value *arr;
+	time_t now = time(NULL);
+	int n = 0;
+
+	if (persist_read_file(g_sessions_path, &buf, &len) != 0 || buf == NULL)
+		return;
+	root = json_parse(buf, len);
+	free(buf);
+	arr = root != NULL ? json_object_get(root, "sessions") : NULL;
+	if (arr == NULL || arr->type != JSON_ARRAY) {
+		logstore_write("hostauth", "error", "%s is malformed -- starting with no sessions",
+		               g_sessions_path);
+		json_free(root);
+		return;
+	}
+	for (k = 0; k < arr->u.array.count && n < HOSTAUTH_SESSION_MAX; k++) {
+		const struct json_value *o = arr->u.array.items[k];
+		const char *h = json_as_string(json_object_get(o, "token_sha256"));
+		const char *user = json_as_string(json_object_get(o, "username"));
+		const char *ip = json_as_string(json_object_get(o, "source_ip"));
+		const struct json_value *jexp = json_object_get(o, "expires_at");
+		const struct json_value *jin = json_object_get(o, "logged_in_at");
+		struct hostauth_session *s = &g_sessions[n];
+
+		if (h == NULL || strlen(h) != 64 || strspn(h, "0123456789abcdef") != 64 ||
+		    user == NULL || user[0] == '\0' || strlen(user) >= sizeof(s->username) ||
+		    jexp == NULL || jin == NULL)
+			continue;
+		memset(s, 0, sizeof(*s));
+		snprintf(s->token_hash, sizeof(s->token_hash), "%s", h);
+		snprintf(s->username, sizeof(s->username), "%s", user);
+		snprintf(s->source_ip, sizeof(s->source_ip), "%s", ip != NULL ? ip : "");
+		s->expires_at = (time_t)json_as_number(jexp);
+		s->logged_in_at = (time_t)json_as_number(jin);
+		s->saved_expires_at = s->expires_at;
+		if (g_config.idle_timeout_seconds > 0 && s->expires_at <= now)
+			continue; /* lapsed while cixd was down */
+		s->in_use = 1;
+		n++;
+	}
+	json_free(root);
+	if (n > 0)
+		logstore_write("hostauth", "info", "%d login session%s carried across the restart", n,
+		               n == 1 ? "" : "s");
+}
 
 static void write_config_fields(struct json_writer *w);
 
@@ -361,13 +522,19 @@ static int load_config(void)
 int hostauth_init(const char *config_path)
 {
 	snprintf(g_config_path, sizeof(g_config_path), "%s", config_path);
+	sessions_path_from(config_path);
 	memset(g_sessions, 0, sizeof(g_sessions));
-	return load_config();
+	if (load_config() != 0)
+		return -1;
+	/* After the config: the idle timeout decides which sessions lapsed. */
+	load_sessions();
+	return 0;
 }
 
 void hostauth_repoint(const char *new_config_path)
 {
 	snprintf(g_config_path, sizeof(g_config_path), "%s", new_config_path);
+	sessions_path_from(new_config_path);
 }
 
 int hostauth_admin_group_count(void)
@@ -836,35 +1003,33 @@ enum hostauth_login_result hostauth_login(const char *username, const char *pass
 	if (slot < 0)
 		return HOSTAUTH_LOGIN_TABLE_FULL;
 
-	generate_token(g_sessions[slot].token);
-	if (g_sessions[slot].token[0] == '\0')
+	generate_token(out_token);
+	if (out_token[0] == '\0' || token_hash(out_token, g_sessions[slot].token_hash) != 0) {
+		out_token[0] = '\0';
 		return HOSTAUTH_LOGIN_TABLE_FULL; /* /dev/urandom failure -- vanishingly rare, no
 		                                    * dedicated error code for it, same posture
 		                                    * ldap_generate_secret()'s own callers have */
+	}
 	snprintf(g_sessions[slot].username, sizeof(g_sessions[slot].username), "%s", username);
 	g_sessions[slot].expires_at = now + (time_t)g_config.idle_timeout_seconds;
 	g_sessions[slot].logged_in_at = now;
 	snprintf(g_sessions[slot].source_ip, sizeof(g_sessions[slot].source_ip), "%s",
 	         source_ip != NULL ? source_ip : "");
 	g_sessions[slot].in_use = 1;
+	save_sessions();
 
-	snprintf(out_token, HOSTAUTH_TOKEN_LEN + 1, "%s", g_sessions[slot].token);
 	*out_expires_in_seconds = g_config.idle_timeout_seconds > 0 ? g_config.idle_timeout_seconds : 0;
 	return HOSTAUTH_LOGIN_OK;
 }
 
 void hostauth_logout(const char *token)
 {
-	int i;
+	int i = find_session(token);
 
-	if (token == NULL)
+	if (i < 0)
 		return;
-	for (i = 0; i < HOSTAUTH_SESSION_MAX; i++) {
-		if (g_sessions[i].in_use && strcmp(g_sessions[i].token, token) == 0) {
-			memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
-			return;
-		}
-	}
+	memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
+	save_sessions();
 }
 
 /*
@@ -936,36 +1101,34 @@ int hostauth_revoke_sessions_for_user(const char *username)
 			revoked++;
 		}
 	}
+	if (revoked > 0)
+		save_sessions();
 	return revoked;
 }
 
 int hostauth_check_token(const char *token, char *out_username, size_t out_username_size)
 {
-	int i;
 	time_t now = time(NULL);
+	int i = find_session(token);
 
-	if (token == NULL || token[0] == '\0')
+	if (i < 0)
 		return 0;
-	for (i = 0; i < HOSTAUTH_SESSION_MAX; i++) {
-		if (!g_sessions[i].in_use || strcmp(g_sessions[i].token, token) != 0)
-			continue;
-		if (g_config.idle_timeout_seconds == 0) {
-			/* Single-use: consumed here regardless of outcome, matching
-			 * the documented "0 means every write re-authenticates"
-			 * contract -- a token is never valid for a second request. */
-			snprintf(out_username, out_username_size, "%s", g_sessions[i].username);
-			memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
-			return 1;
-		}
-		if (g_sessions[i].expires_at <= now) {
-			memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
-			return 0;
-		}
-		g_sessions[i].expires_at = now + (time_t)g_config.idle_timeout_seconds; /* sliding window */
+	if (g_config.idle_timeout_seconds == 0) {
+		/* Single-use: consumed here regardless of outcome, matching
+		 * the documented "0 means every write re-authenticates"
+		 * contract -- a token is never valid for a second request. */
 		snprintf(out_username, out_username_size, "%s", g_sessions[i].username);
+		memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
+		save_sessions();
 		return 1;
 	}
-	return 0;
+	if (g_sessions[i].expires_at <= now) {
+		memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
+		return 0;
+	}
+	slide_session(i, now); /* sliding window */
+	snprintf(out_username, out_username_size, "%s", g_sessions[i].username);
+	return 1;
 }
 
 /*
@@ -998,32 +1161,23 @@ void hostauth_touch_token(const char *token)
 
 	if (token == NULL || token[0] == '\0' || g_config.idle_timeout_seconds == 0)
 		return;
-	for (i = 0; i < HOSTAUTH_SESSION_MAX; i++) {
-		if (!g_sessions[i].in_use || strcmp(g_sessions[i].token, token) != 0)
-			continue;
-		if (g_sessions[i].expires_at <= now)
-			return; /* already lapsed -- reaping stays with the real check */
-		g_sessions[i].expires_at = now + (time_t)g_config.idle_timeout_seconds;
-		return;
-	}
+	i = find_session(token);
+	if (i < 0 || g_sessions[i].expires_at <= now)
+		return; /* unknown, or already lapsed -- reaping stays with the real check */
+	slide_session(i, now);
 }
 
 int hostauth_peek_token(const char *token, char *out_username, size_t out_username_size)
 {
-	int i;
 	time_t now = time(NULL);
+	int i = find_session(token);
 
-	if (token == NULL || token[0] == '\0')
+	if (i < 0)
 		return 0;
-	for (i = 0; i < HOSTAUTH_SESSION_MAX; i++) {
-		if (!g_sessions[i].in_use || strcmp(g_sessions[i].token, token) != 0)
-			continue;
-		if (g_config.idle_timeout_seconds != 0 && g_sessions[i].expires_at <= now)
-			return 0; /* expired -- leave reaping it to the next real check */
-		snprintf(out_username, out_username_size, "%s", g_sessions[i].username);
-		return 1;
-	}
-	return 0;
+	if (g_config.idle_timeout_seconds != 0 && g_sessions[i].expires_at <= now)
+		return 0; /* expired -- leave reaping it to the next real check */
+	snprintf(out_username, out_username_size, "%s", g_sessions[i].username);
+	return 1;
 }
 
 enum hostauth_authz hostauth_authorize(const char *token, const char *permission)

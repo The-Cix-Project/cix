@@ -394,6 +394,21 @@ static void test_ed25519(void)
 	      "an RSA key was accepted as Ed25519");
 }
 
+/* #562: the in-memory digest, against the FIPS 180-2 vectors. */
+static void test_sha256(void)
+{
+	char out[65];
+
+	printf("sha256\n");
+	CHECK(pkicrypto_sha256_hex("abc", 3, out, sizeof(out)) == 0 &&
+	          strcmp(out, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") == 0,
+	      "sha256(\"abc\") is wrong: %s", out);
+	CHECK(pkicrypto_sha256_hex("", 0, out, sizeof(out)) == 0 &&
+	          strcmp(out, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") == 0,
+	      "sha256 of nothing is wrong: %s", out);
+	CHECK(pkicrypto_sha256_hex("abc", 3, out, 64) != 0, "a buffer one byte short was accepted");
+}
+
 int main(void)
 {
 	char cmd[96];
@@ -408,6 +423,7 @@ int main(void)
 	test_chain();
 	test_export();
 	test_ed25519();
+	test_sha256();
 	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_dir);
 	if (system(cmd) != 0)
 		printf("  (could not remove %s)\n", g_dir);

@@ -28,12 +28,13 @@
  * login() itself decides which one answered authoritatively, see its
  * own doc comment below.
  *
- * Sessions are in-memory only, wiped on every daemon restart --
- * matches this project's own established "ephemeral unless there's a
- * real reason to persist" precedent (the container registry itself is
- * the same way). A sliding idle timeout (config, 0 means no session
- * reuse at all -- every write re-authenticates) refreshes on every
- * successful hostauth_check_token() call.
+ * Sessions survive a daemon restart (#562, ADR-0325): the table is
+ * saved beside the config as sha256(token) per session, never the
+ * token, and reloaded at init with lapsed ones dropped. They used to
+ * be memory only, and every release deployed signed every browser and
+ * cixctl out at once. A sliding idle timeout (config; 0 means no
+ * session reuse at all -- every request re-authenticates) refreshes on
+ * every request that presents a still-valid token.
  */
 
 #define HOSTAUTH_TOKEN_LEN 48 /* hex-encoded, real /dev/urandom bytes -- see hostauth.c */
