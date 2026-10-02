@@ -197,6 +197,7 @@ static const struct cli_node n_rolling_config_subs[] = {
 static const char *const n_pkg_build_config_set_flags[] = {
 	"--cpu-max=",
 	"--max-concurrent-jobs=",
+	"--memory-max-ceiling=",
 	"--memory-max=",
 	NULL
 };
