@@ -6620,30 +6620,75 @@ skip_resume:
 			stage_ok = 0;
 		}
 		if (stage_ok) {
-			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "GET", "/v1/system/logs?source=cixd&tail=400", NULL,
-			                       &r) != 0 ||
-			    r.status != 200 || r.body == NULL ||
-			    strstr(r.body, "pkg memraise: build budget raised to 3221225472 bytes") == NULL ||
-			    strstr(r.body, "build budget back to memory_max 2147483648") == NULL) {
-				fprintf(stderr, "FAIL: #558 the log does not show memraise raising the budget "
-				                "to 3221225472 and its return to 2147483648\n");
-				ok = 0;
-			}
-			cix_response_free(&r);
+			char busy[512] = "";
+			long long jobs = -1;
+			int waited;
+			const char *log_raise = "pkg memraise: build budget raised to 3221225472 bytes";
+			const char *log_back = "build budget back to memory_max 2147483648";
 
-			eff = -1;
-			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "GET", "/v1/system/pkg-build-config", NULL, &r) == 0 &&
-			    r.status == 200 && r.json != NULL)
-				eff = (long long)json_as_number(json_object_get(r.json, "memory_max_effective"));
-			cix_response_free(&r);
-			if (eff != 2147483648LL) {
+			/*
+			 * The raise is held until NO build is running (ADR-0322), so
+			 * "memraise is installed" is not yet "the budget is back": any
+			 * other build still in flight keeps it. Wait for the slots to
+			 * empty first, and if they never do, say what holds them.
+			 */
+			for (waited = 0; waited < 180; waited++) {
+				jobs = -1;
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/system/pkg-build-config", NULL,
+				                       &r) == 0 &&
+				    r.status == 200 && r.json != NULL) {
+					const char *names = json_str_field(r.json, "active_job_names");
+
+					jobs = (long long)json_as_number(json_object_get(r.json, "active_jobs"));
+					eff = (long long)json_as_number(
+					    json_object_get(r.json, "memory_max_effective"));
+					snprintf(busy, sizeof(busy), "%s", names != NULL ? names : "");
+				}
+				cix_response_free(&r);
+				if (jobs == 0)
+					break;
+				sleep(1);
+			}
+			if (jobs != 0) {
+				fprintf(stderr, "FAIL: #558 builds still in flight 180s after memraise "
+				                "installed: %lld (%s)\n",
+				        jobs, busy);
+				ok = 0;
+			} else if (eff != 2147483648LL) {
 				fprintf(stderr, "FAIL: #558 with nothing building, memory_max_effective=%lld, "
 				                "expected memory_max 2147483648\n",
 				        eff);
 				ok = 0;
 			}
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/system/logs?source=cixd&tail=400", NULL,
+			                       &r) != 0 ||
+			    r.status != 200 || r.body == NULL || strstr(r.body, log_raise) == NULL ||
+			    strstr(r.body, log_back) == NULL) {
+				fprintf(stderr, "FAIL: #558 in the daemon log, the raise line is %s and the "
+				                "return line is %s\n",
+				        r.body != NULL && strstr(r.body, log_raise) != NULL ? "present" : "MISSING",
+				        r.body != NULL && strstr(r.body, log_back) != NULL ? "present" : "MISSING");
+				ok = 0;
+			}
+			if (eff != 2147483648LL && r.body != NULL) {
+				const char *p = r.body;
+
+				/* Every budget line, and every build start and end the
+				 * daemon logged, so the next reader sees what held it. */
+				while ((p = strstr(p, "budget")) != NULL) {
+					const char *b = p, *end = strchr(p, '\n');
+
+					while (b > r.body && b[-1] != '\n')
+						b--;
+					fprintf(stderr, "  log: %.*s\n",
+					        (int)((end != NULL ? end : p + strlen(p)) - b), b);
+					p = end != NULL ? end : p + strlen(p);
+				}
+			}
+			cix_response_free(&r);
 		}
 
 		memset(&r, 0, sizeof(r));
