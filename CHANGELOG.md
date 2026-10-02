@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Package repositories are a list; every copy is verified, every push repository gets its own (ADR-0324, step B)
+
+`/v1/pkg/artifact-config` is gone. `/v1/pkg/repositories` (`cixctl pkg repository ls|add|set|rm`, and a table on the dashboard's cache tab) holds any number of artifact servers, each with a name, url, optional token and `push` switch.
+- **Fetch.** An install, and the ISO's package seeding, try every repository in order. Each copy is verified against the recipe's checksum or signature, and one that fails is refused, logged naming the repository, and the next tried. Order is speed, never trust.
+- **Push.** Every repository marked push gets its own queued upload and retry. Its signature follows to the same repository. One publish approval covers them all, and the first copy that lands records the artifact approval. An installer ISO goes to every repository marked push.
+- **Migration.** A host's `artifact_config.json` becomes one repository named after its host (`192.168.15.31-8080` on 192.168.15.95), with its token and push switch, and the file is removed. A cleared one becomes an empty list. A host with neither starts on `cix-public` → `https://cache.cix.world`, pull-only. A saved empty list stays empty (ADR-0315).
+- **Config document.** The `package_artifacts` section becomes `package_repositories`, reconciled by name and never carrying a token.
+- **Tests.** `test_pkgrepo` (selftest) covers defaults, the .95-shaped migration with push carried, a cleared migration, edits and order. `test_pkg_cache` installs through an unreachable first repository from the second, and pushes to a third. The contract now has 331 operations.
+- **Also corrected:** the image export's description still promised the image-artifact fast path ADR-0209 retired.
+
 ### A sync counts an unchanged image or deployment recipe as skipped, not added
 
 Every sync on 192.168.15.95 reported `added=28` while the recipe store did not change (1,717 entries before and after, 2026-10-02). The image and deployment recipe walkers called adds that overwrite by name and never answer "already there", so each unchanged recipe counted as added on every sync. They now compare with the stored copy first: identical is `skipped` and is not rewritten. Behavior is otherwise unchanged; an image recipe that did not change already triggered nothing under ADR-0320's follow policy. `test_pkg_sync`'s re-sync cases now expect `added=0 skipped=2`.

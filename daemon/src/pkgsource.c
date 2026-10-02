@@ -58,6 +58,11 @@ static int name_is_valid(const char *s)
 	return 1;
 }
 
+int pkgsource_name_is_valid(const char *name)
+{
+	return name_is_valid(name);
+}
+
 static int kind_is_valid(const char *k)
 {
 	return k != NULL &&

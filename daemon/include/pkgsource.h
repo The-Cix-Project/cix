@@ -124,6 +124,11 @@ void pkgsource_write_json(struct json_writer *w);
 /* The bare list, as the config document's package_sources section (ADR-0292). */
 void pkgsource_write_json_list(struct json_writer *w);
 
+/* [a-z0-9][a-z0-9._-]*, under PKG_SOURCE_NAME_MAX: the rule for every
+ * name in a list ADR-0324 keeps -- recipe sources and package
+ * repositories alike. */
+int pkgsource_name_is_valid(const char *name);
+
 /* Whether `kind` has a commit client (ADR-0323). */
 int pkgsource_kind_can_write(const char *kind);
 

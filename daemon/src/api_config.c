@@ -61,6 +61,7 @@
 #include "ldap.h"
 #include "ntp.h"
 #include "pkg.h"
+#include "pkgrepo.h"
 #include "pkgsource.h"
 #include "resolv.h"
 #include "siteconfig.h"
@@ -648,31 +649,6 @@ static int cfg_apply_ldap(const struct json_value *live, const struct json_value
 		                                           sizeof(server_container)),
 		                 err, errsz) != 0)
 			return -1;
-	}
-	return 0;
-}
-
-static int cfg_apply_package_artifacts(const struct json_value *live, const struct json_value *sup,
-                                       const char *state_fields, int dry_run, char *err,
-                                       size_t errsz)
-{
-	const char *base_url;
-	int push_enabled;
-
-	if (require_whole_section(live, sup, state_fields, err, errsz) != 0)
-		return -1;
-	if (require_unchanged(live, sup, "auth_token_set",
-	                      "is a redaction marker: this document never carried the token, so it "
-	                      "cannot set one -- use PUT /v1/pkg/artifact-config", err, errsz) != 0)
-		return -1;
-	if (need_string(sup, "base_url", &base_url, err, errsz) != 0 ||
-	    need_bool(sup, "push_enabled", &push_enabled, err, errsz) != 0)
-		return -1;
-	if (dry_run)
-		return 0;
-	if (pkg_artifact_set_config(base_url, NULL, &push_enabled) != PKG_OK) {
-		snprintf(err, errsz, "the artifact-server configuration was refused");
-		return -1;
 	}
 	return 0;
 }
@@ -1328,6 +1304,89 @@ static int cfg_package_sources_remove(const struct json_value *el, int dry_run, 
 static const struct cfg_elem_ops cfg_ops_package_sources = { cfg_package_sources_create,
                                                              cfg_package_sources_update,
                                                              cfg_package_sources_remove };
+
+/*
+ * ADR-0324 step B: one package repository, the same reconcile shape as
+ * a recipe source. The document carries no token -- token_set marks one
+ * it never held -- so a token is given with PUT /v1/pkg/repositories/{name}.
+ */
+static int cfg_package_repositories_fields(const struct json_value *el, struct pkg_repository *r,
+                                           char *err, size_t errsz)
+{
+	const char *name, *url;
+	int push;
+
+	if (need_string(el, "name", &name, err, errsz) != 0 ||
+	    need_string(el, "url", &url, err, errsz) != 0 ||
+	    need_bool(el, "push", &push, err, errsz) != 0)
+		return -1;
+	memset(r, 0, sizeof(*r));
+	snprintf(r->name, sizeof(r->name), "%s", name);
+	snprintf(r->url, sizeof(r->url), "%s", url);
+	r->push = push;
+	return 0;
+}
+
+static int cfg_package_repositories_create(const struct json_value *el, int dry_run, char *err,
+                                           size_t errsz)
+{
+	struct pkg_repository r;
+	int token_set = 0;
+
+	if (cfg_package_repositories_fields(el, &r, err, errsz) != 0 ||
+	    need_bool(el, "token_set", &token_set, err, errsz) != 0)
+		return -1;
+	if (token_set) {
+		snprintf(err, errsz,
+		         "repository %s: token_set is a marker, this document never carries a token -- "
+		         "add the repository without one, then PUT /v1/pkg/repositories/%s",
+		         r.name, r.name);
+		return -1;
+	}
+	if (dry_run)
+		return 0;
+	return pkgrepo_add(&r, err, errsz) == PKGSOURCE_OK ? 0 : -1;
+}
+
+static int cfg_package_repositories_update(const struct json_value *live_el,
+                                           const struct json_value *sup_el, int dry_run,
+                                           char *err, size_t errsz)
+{
+	struct pkg_repository r;
+	int live_token = 0, sup_token = 0;
+
+	if (cfg_package_repositories_fields(sup_el, &r, err, errsz) != 0 ||
+	    need_bool(sup_el, "token_set", &sup_token, err, errsz) != 0 ||
+	    need_bool(live_el, "token_set", &live_token, err, errsz) != 0)
+		return -1;
+	if (sup_token != live_token) {
+		snprintf(err, errsz,
+		         "repository %s: token_set is a marker this document cannot change -- use "
+		         "PUT /v1/pkg/repositories/%s",
+		         r.name, r.name);
+		return -1;
+	}
+	if (dry_run)
+		return 0;
+	return pkgrepo_update(r.name, r.url, NULL, r.push, err, errsz) == PKGSOURCE_OK ? 0 : -1;
+}
+
+static int cfg_package_repositories_remove(const struct json_value *el, int dry_run, char *err,
+                                           size_t errsz)
+{
+	const char *name;
+
+	if (need_string(el, "name", &name, err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	return pkgrepo_remove(name, err, errsz) == PKGSOURCE_OK ? 0 : -1;
+}
+
+static const struct cfg_elem_ops cfg_ops_package_repositories = {
+	cfg_package_repositories_create, cfg_package_repositories_update,
+	cfg_package_repositories_remove
+};
 
 static int cfg_disk_roles_create(const struct json_value *el, int dry_run, char *err, size_t errsz)
 {

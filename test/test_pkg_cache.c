@@ -814,12 +814,28 @@ int main(void)
 				char artifact_url[256], put_body[512];
 
 				snprintf(artifact_url, sizeof(artifact_url), "http://127.0.0.1:%d", g_http_port);
-				snprintf(put_body, sizeof(put_body), "{\"base_url\":\"%s\"}", artifact_url);
+				/*
+				 * ADR-0324 step B: two repositories, the first one
+				 * unreachable (port 9, discard). The install below can
+				 * only succeed through the artifact tier, so reaching
+				 * `installed` proves the list is walked past a miss to
+				 * the next repository rather than giving up on the first.
+				 */
 				memset(&r, 0, sizeof(r));
-				CHECK(cix_client_request(&client, "PUT", "/v1/pkg/artifact-config", put_body, &r) ==
+				CHECK(cix_client_request(&client, "POST", "/v1/pkg/repositories",
+				                         "{\"name\":\"unreachable\","
+				                         "\"url\":\"http://127.0.0.1:9\"}",
+				                         &r) == 0 &&
+				              r.status == 201,
+				      "POST /v1/pkg/repositories (an unreachable first mirror)");
+				cix_response_free(&r);
+				snprintf(put_body, sizeof(put_body), "{\"name\":\"stage\",\"url\":\"%s\"}",
+				         artifact_url);
+				memset(&r, 0, sizeof(r));
+				CHECK(cix_client_request(&client, "POST", "/v1/pkg/repositories", put_body, &r) ==
 				              0 &&
-				              r.status == 200,
-				      "PUT /v1/pkg/artifact-config");
+				              r.status == 201,
+				      "POST /v1/pkg/repositories (the mirror that has it)");
 				cix_response_free(&r);
 			}
 
@@ -966,23 +982,20 @@ int main(void)
 				char put_body[640];
 
 				snprintf(put_body, sizeof(put_body),
-				         "{\"base_url\":\"http://127.0.0.1:%d\",\"auth_token\":\"tok-129\","
-				         "\"push_enabled\":true}",
+				         "{\"name\":\"pushcache\",\"url\":\"http://127.0.0.1:%d\","
+				         "\"token\":\"tok-129\",\"push\":true}",
 				         g_push_port);
 				memset(&r, 0, sizeof(r));
-				CHECK(cix_client_request(&client, "PUT", "/v1/pkg/artifact-config", put_body,
+				CHECK(cix_client_request(&client, "POST", "/v1/pkg/repositories", put_body,
 				                         &r) == 0 &&
-				              r.status == 200,
-				      "PUT /v1/pkg/artifact-config with push_enabled");
-				if (r.json != NULL) {
-					const struct json_value *pe =
-					    json_object_get(r.json, "push_enabled");
-
-					CHECK(pe != NULL && pe->type == JSON_BOOL && pe->u.boolean,
-					      "artifact-config reports push_enabled true");
-					CHECK(json_object_get(r.json, "auth_token") == NULL,
-					      "the token itself is never echoed back");
-				}
+				              r.status == 201,
+				      "POST /v1/pkg/repositories marked push");
+				CHECK(r.body != NULL &&
+				          strstr(r.body, "\"name\":\"pushcache\",\"url\":") != NULL &&
+				          strstr(r.body, "\"token_set\":true,\"push\":true") != NULL,
+				      "the repository reports push on and a token set");
+				CHECK(r.body != NULL && strstr(r.body, "tok-129") == NULL,
+				      "the token itself is never echoed back");
 				cix_response_free(&r);
 			}
 

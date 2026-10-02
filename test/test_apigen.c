@@ -206,12 +206,14 @@ int main(void)
 	 * 329 as of ADR-0324: GET and PUT /pkg/repo-config gone; GET and POST
 	 *     /pkg/sources, PUT and DELETE /pkg/sources/{name}, GET and PUT
 	 *     /pkg/source-ownership.
+	 * 331 as of ADR-0324 step B: GET and PUT /pkg/artifact-config gone; GET
+	 *     and POST /pkg/repositories, PUT and DELETE /pkg/repositories/{name}.
 	 */
 	status = run_apigen("docs/api/openapi.yaml", NULL, out, sizeof(out));
 	if (status != 0)
 		fail("apigen rejected the real spec: %.300s", out);
-	else if (atoi(out) != 329)
-		fail("apigen found %d operations in the real spec, expected 329 -- if the spec "
+	else if (atoi(out) != 331)
+		fail("apigen found %d operations in the real spec, expected 331 -- if the spec "
 		     "genuinely changed, update this number deliberately; a silently different "
 		     "count is how a lost route hides",
 		     atoi(out));

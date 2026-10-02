@@ -402,20 +402,20 @@ int main(void)
 	 * one, because the export above already left HB_VERSION in the
 	 * shared state machine and would report it either way.
 	 *
-	 * Publishing has to be configured for the endpoint to resolve at
-	 * all. The base URL is a closed port: the push this queues is
+	 * A repository marked push is needed for the endpoint to resolve at
+	 * all. Its url is a closed port: the push this queues is
 	 * expected to fail, and failing immediately is what keeps it from
 	 * outliving the test.
 	 */
-	if (cix_client_request(&c, "PUT", "/v1/pkg/artifact-config",
-	                       "{\"base_url\":\"http://127.0.0.1:1/\",\"auth_token\":\"t\","
-	                       "\"push_enabled\":true}",
+	if (cix_client_request(&c, "POST", "/v1/pkg/repositories",
+	                       "{\"name\":\"closed\",\"url\":\"http://127.0.0.1:1/\",\"token\":\"t\","
+	                       "\"push\":true}",
 	                       &r) == 0) {
-		if (r.status != 200)
+		if (r.status != 201)
 			fail("could not enable artifact push (status %d)", r.status);
 		cix_response_free(&r);
 	} else {
-		fail("artifact-config PUT failed");
+		fail("POST /v1/pkg/repositories failed");
 	}
 	if (cix_client_request(&c, "POST", "/v1/pkg/" HB_NAME "/artifact/publish", "", &r) == 0) {
 		if (r.status == 409)

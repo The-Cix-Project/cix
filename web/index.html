@@ -86,6 +86,7 @@
 				<li><button type="button" data-modal="pkg-install-form" data-op="pkgInstall" data-title="Install a package">Install Package</button></li>
 				<li><button type="button" data-modal="pkg-recipe-form" data-op="addPkgRecipe" data-title="Add or update a recipe">New/Update Recipe</button></li>
 				<li><button type="button" data-modal="pkg-source-form" data-op="addPkgSource" data-title="New recipe source">New Recipe Source</button></li>
+				<li><button type="button" data-modal="pkg-repository-form" data-op="addPkgRepository" data-title="New package repository">New Package Repository</button></li>
 				<li><button type="button" data-modal="pkg-bootstrap-form" data-op="pkgBootstrap" data-title="Bootstrap build image">Bootstrap Build Image</button></li>
 			</ul>
 		</div>
@@ -2710,23 +2711,24 @@
 			</form>
 			<button type="button" id="pkg-cache-clear" class="button-danger">Clear cache</button>
 
-			<h3>Artifact server</h3>
-			<div id="pkg-artifact-status-box" class="pki-ca-status"></div>
-			<form id="pac-form">
-				<label class="wide">
-					Base URL
-					<input type="text" id="pac-base-url" placeholder="http://artifacts.example.com/cix">
-				</label>
-				<label>
-					Auth token (blank = unchanged)
-					<input type="password" id="pac-token" placeholder="(unchanged)">
-				</label>
-				<label class="checkbox">
-					<input type="checkbox" id="pac-clear-token">
-					Clear token
-				</label>
-				<button type="submit">Save</button>
-			</form>
+			<h3>Package repositories</h3>
+			<p class="hint">Where built packages come from, in order (ADR-0324). They are mirrors: every
+				copy is verified against its recipe, so order decides speed and never trust. Push
+				publishes this host's fresh builds there. Add one from the Software menu.</p>
+			<table id="pkg-repositories">
+				<thead>
+					<tr>
+						<th>Name</th>
+						<th>URL</th>
+						<th>Push</th>
+						<th>Token</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody id="pkg-repositories-body">
+					<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+				</tbody>
+			</table>
 		</div>
 		</section>
 
@@ -3828,6 +3830,35 @@
 				<p class="hint">ADR-0324: a source is read unless this host may commit to it, and supplies
 					recipes but no signing keys unless it is trusted for keys. A package two sources offer
 					is held until one is chosen for it.</p>
+			</div>
+
+			<div id="modal-pkg-repository-form" hidden>
+				<form id="pkg-repository-form">
+					<label>
+						Name
+						<input type="text" id="prepo-name" pattern="[a-z0-9][a-z0-9._-]*" required>
+					</label>
+					<label class="wide">
+						URL
+						<input type="text" id="prepo-url" placeholder="https://cache.example.com" required>
+					</label>
+					<label>
+						Token (blank = unchanged)
+						<input type="password" id="prepo-token" placeholder="(none)">
+					</label>
+					<label class="checkbox">
+						<input type="checkbox" id="prepo-clear-token">
+						Clear token
+					</label>
+					<label class="checkbox">
+						<input type="checkbox" id="prepo-push">
+						Publish this host's fresh builds here (needs a token)
+					</label>
+					<button type="submit">Save</button>
+				</form>
+				<p class="hint">ADR-0324: a plain HTTP(S) artifact server, never a git forge. Artifacts
+					are fetched at &lt;url&gt;/&lt;name&gt;-&lt;version&gt;-&lt;arch&gt;.cixpkg and accepted
+					only when they verify.</p>
 			</div>
 
 			<div id="modal-pkg-source-own-form" hidden>

@@ -330,6 +330,10 @@ static const char USAGE_TEXT[] =
 	        "               (ADR-0324). A package offered by two sources is held until `own`\n"
 	        "               chooses one; write lets this host commit there; trust-keys lets the\n"
 	        "               source vouch for packages.\n"
+	        "  pkg repository ls | add NAME --url=URL [--token=TOKEN] [--push=on|off] |\n"
+	        "               set NAME ... | rm NAME  -- where built packages come from (ADR-0324):\n"
+	        "               mirrors tried in order, every copy verified, so order is speed and\n"
+	        "               never trust; push publishes this host's fresh builds there.\n"
 	        "  pkg recipe add --name=NAME --file=PATH [--format=shell|cbs]  -- publishes a\n"
 	        "               new recipe version on this running system directly, no reinstall\n"
 	        "               needed (ADR-0040); an already-published (name,version) is\n"
@@ -15065,107 +15069,137 @@ static int cmd_pkg_cache_clear(const struct cix_client *c, int json_mode)
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static void fmt_pkg_artifact_config(const struct json_value *v)
+/* ADR-0324 step B: the package repositories, in order. */
+static void fmt_pkg_repositories(const struct json_value *v)
 {
-	const char *base_url = json_str_field(v, "base_url");
-	const struct json_value *token_set = json_object_get(v, "auth_token_set");
+	const struct json_value *arr = json_object_get(v, "repositories");
+	size_t i;
 
-	if (base_url == NULL || base_url[0] == '\0') {
-		printf("(no artifact server configured)\n");
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("(no package repositories -- everything builds from source; add one with "
+		       "`cixctl pkg repository add`)\n");
 		return;
 	}
-	{
-		const struct json_value *push = json_object_get(v, "push_enabled");
+	for (i = 0; i < arr->u.array.count; i++) {
+		const struct json_value *r = arr->u.array.items[i];
+		const struct json_value *tok = json_object_get(r, "token_set");
+		const struct json_value *push = json_object_get(r, "push");
+		const char *name = json_str_field(r, "name");
+		const char *url = json_str_field(r, "url");
 
-		printf("base_url=%s auth_token=%s push=%s\n", base_url,
-		       (token_set != NULL && token_set->type == JSON_BOOL && token_set->u.boolean)
-		           ? "set"
-		           : "unset",
-		       (push != NULL && push->type == JSON_BOOL && push->u.boolean) ? "enabled"
-		                                                                    : "disabled");
+		printf("%-20s %-9s token=%-5s %s\n", name != NULL ? name : "?",
+		       push != NULL && push->type == JSON_BOOL && push->u.boolean ? "push" : "pull-only",
+		       tok != NULL && tok->type == JSON_BOOL && tok->u.boolean ? "set" : "unset",
+		       url != NULL ? url : "?");
 	}
 }
 
-static int cmd_pkg_artifact_config_show(const struct cix_client *c, int json_mode)
+/* cixctl pkg repository ls | add NAME --url= [...] | set NAME [...] | rm NAME */
+static int cmd_pkg_repository(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct cix_response r;
-
-	if (cix_client_request(c, CIX_API_getPkgArtifactConfig_METHOD, CIX_API_getPkgArtifactConfig, NULL, &r) != 0) {
-		fprintf(stderr, "cixctl: could not reach daemon\n");
-		return 1;
-	}
-	return emit(&r, json_mode, fmt_pkg_artifact_config);
-}
-
-static int cmd_pkg_artifact_config_set(const struct cix_client *c, int json_mode, int argc,
-                                        char **argv)
-{
-	const char *base_url = NULL;
-	const char *token = NULL;
-	int push = -1; /* -1 = not mentioned, so the daemon leaves it alone */
-	int i;
+	const char *url = NULL, *token = NULL, *push = NULL;
+	const char *sub;
+	char path[512];
 	struct json_writer w;
 	struct cix_response r;
-
-	for (i = 0; i < argc; i++) {
-		if (strncmp(argv[i], "--url=", 6) == 0)
-			base_url = argv[i] + 6;
-		else if (strncmp(argv[i], "--token=", 8) == 0)
-			token = argv[i] + 8;
-		else if (strcmp(argv[i], "--clear-token") == 0)
-			token = "";
-		else if (strcmp(argv[i], "--push") == 0)
-			push = 1;
-		else if (strcmp(argv[i], "--no-push") == 0)
-			push = 0;
-		else {
-			fprintf(stderr, "cixctl: unknown pkg artifact-config set option '%s'\n", argv[i]);
-			return 2;
-		}
-	}
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	if (base_url != NULL) {
-		jw_key(&w, "base_url");
-		jw_str(&w, base_url);
-	}
-	if (token != NULL) {
-		jw_key(&w, "auth_token");
-		jw_str(&w, token);
-	}
-	if (push >= 0) {
-		jw_key(&w, "push_enabled");
-		jw_bool(&w, push);
-	}
-	jw_obj_close(&w);
-	w.buf[w.len] = '\0';
-
-	if (cix_client_request(c, CIX_API_putPkgArtifactConfig_METHOD, CIX_API_putPkgArtifactConfig, w.buf, &r) != 0) {
-		jw_free(&w);
-		fprintf(stderr, "cixctl: could not reach daemon\n");
-		return 1;
-	}
-	jw_free(&w);
-	return emit(&r, json_mode, fmt_pkg_artifact_config);
-}
-
-static int cmd_pkg_artifact_config(const struct cix_client *c, int json_mode, int argc, char **argv)
-{
-	const char *sub;
+	int i, rc;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl pkg artifact-config show\n"
-		                "       cixctl pkg artifact-config set [--url=URL] "
-		                "[--token=TOKEN | --clear-token] [--push | --no-push]\n");
+		fprintf(stderr,
+		        "usage: cixctl pkg repository ls\n"
+		        "       cixctl pkg repository add NAME --url=URL [--token=TOKEN] "
+		        "[--push=on|off]\n"
+		        "       cixctl pkg repository set NAME [--url=URL] "
+		        "[--token=TOKEN | --clear-token] [--push=on|off]\n"
+		        "       cixctl pkg repository rm NAME\n");
 		return 2;
 	}
 	sub = argv[0];
-	if (strcmp(sub, "show") == 0)
-		return cmd_pkg_artifact_config_show(c, json_mode);
-	if (strcmp(sub, "set") == 0)
-		return cmd_pkg_artifact_config_set(c, json_mode, argc - 1, argv + 1);
-	fprintf(stderr, "cixctl: unknown pkg artifact-config subcommand '%s'\n", sub);
+	if (strcmp(sub, "ls") == 0) {
+		if (cix_client_request(c, CIX_API_listPkgRepositories_METHOD,
+		                       CIX_API_listPkgRepositories, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_pkg_repositories);
+	}
+	if (strcmp(sub, "add") == 0 || strcmp(sub, "set") == 0) {
+		int is_add = strcmp(sub, "add") == 0;
+
+		if (argc < 2 || argv[1][0] == '-') {
+			fprintf(stderr, "usage: cixctl pkg repository %s NAME [flags]\n", sub);
+			return 2;
+		}
+		for (i = 2; i < argc; i++) {
+			if (strncmp(argv[i], "--url=", 6) == 0)
+				url = argv[i] + 6;
+			else if (strncmp(argv[i], "--token=", 8) == 0)
+				token = argv[i] + 8;
+			else if (strcmp(argv[i], "--clear-token") == 0)
+				token = "";
+			else if (strncmp(argv[i], "--push=", 7) == 0)
+				push = argv[i] + 7;
+			else {
+				fprintf(stderr, "cixctl: unknown pkg repository %s option '%s'\n", sub,
+				        argv[i]);
+				return 2;
+			}
+		}
+		if (push != NULL && strcmp(push, "on") != 0 && strcmp(push, "off") != 0) {
+			fprintf(stderr, "cixctl: --push is on or off\n");
+			return 2;
+		}
+		if (is_add && url == NULL) {
+			fprintf(stderr, "cixctl: pkg repository add needs --url=\n");
+			return 2;
+		}
+		jw_init(&w);
+		jw_obj_open(&w);
+		if (is_add) {
+			jw_key(&w, "name");
+			jw_str(&w, argv[1]);
+		}
+		if (url != NULL) {
+			jw_key(&w, "url");
+			jw_str(&w, url);
+		}
+		if (token != NULL) {
+			jw_key(&w, "token");
+			jw_str(&w, token);
+		}
+		if (push != NULL) {
+			jw_key(&w, "push");
+			jw_bool(&w, strcmp(push, "on") == 0);
+		}
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+		if (is_add)
+			rc = cix_client_request(c, CIX_API_addPkgRepository_METHOD, CIX_API_addPkgRepository,
+			                        w.buf, &r);
+		else {
+			snprintf(path, sizeof(path), CIX_API_updatePkgRepository, argv[1]);
+			rc = cix_client_request(c, CIX_API_updatePkgRepository_METHOD, path, w.buf, &r);
+		}
+		jw_free(&w);
+		if (rc != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_pkg_repositories);
+	}
+	if (strcmp(sub, "rm") == 0) {
+		if (argc != 2) {
+			fprintf(stderr, "usage: cixctl pkg repository rm NAME\n");
+			return 2;
+		}
+		snprintf(path, sizeof(path), CIX_API_deletePkgRepository, argv[1]);
+		if (cix_client_request(c, CIX_API_deletePkgRepository_METHOD, path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_pkg_repositories);
+	}
+	fprintf(stderr, "cixctl: unknown pkg repository subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -17521,9 +17555,7 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "       cixctl pkg cache-config set --max-bytes=N\n"
 		                "       cixctl pkg cache-status\n"
 		                "       cixctl pkg cache-clear\n"
-		                "       cixctl pkg artifact-config show\n"
-		                "       cixctl pkg artifact-config set [--url=URL] "
-		                "[--token=TOKEN | --clear-token] [--push | --no-push]\n"
+		                "       cixctl pkg repository ls | add NAME --url=URL | set NAME | rm NAME\n"
 		                "       cixctl pkg artifact-export NAME [--out=FILE]\n"
 		                "       cixctl pkg artifact-publish NAME  -- publish an already-built\n"
 		                "               artifact without rebuilding it\n");
@@ -17588,8 +17620,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_pkg_artifact_export(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "artifact-publish") == 0)
 		return cmd_pkg_artifact_publish(c, json_mode, argc - 1, argv + 1);
-	if (strcmp(sub, "artifact-config") == 0)
-		return cmd_pkg_artifact_config(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "repository") == 0)
+		return cmd_pkg_repository(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "cixctl: unknown pkg subcommand '%s'\n", sub);
 	return 2;

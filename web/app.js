@@ -107,7 +107,7 @@ const cache = {
 	pkgSyncStatus: null,
 	pkgCacheConfig: null,
 	pkgCacheStatus: null,
-	pkgArtifactConfig: null,
+	pkgRepositories: null,
 	siteConfig: null,
 	daemonConfig: null,
 	swap: null,
@@ -12330,50 +12330,136 @@ document.getElementById("pbc-form").addEventListener("submit", async (event) => 
 	}
 });
 
-let pkgArtifactConfigDirty = false;
+/* ---------- Package repositories (ADR-0324 step B) ---------- */
 
-async function refreshPkgArtifactConfig() {
-	try {
-		const config = await apiRequest("GET", CIX_API.getPkgArtifactConfig());
+let pkgRepositoryEditing = null;
 
-		cache.pkgArtifactConfig = config;
-		if (!pkgArtifactConfigDirty) {
-			document.getElementById("pac-base-url").value = config.base_url || "";
-			document.getElementById("pac-token").value = "";
-			document.getElementById("pac-token").placeholder =
-				config.auth_token_set ? "(unchanged, a token is set)" : "(unchanged, no token set)";
-		}
-	} catch (e) {
-		/* Best-effort -- the form just stays at whatever was last shown. */
+function setPkgRepositoryForm(repo) {
+	pkgRepositoryEditing = repo ? repo.name : null;
+	document.getElementById("prepo-name").value = repo ? repo.name : "";
+	document.getElementById("prepo-name").disabled = repo !== null;
+	document.getElementById("prepo-url").value = repo ? repo.url : "";
+	document.getElementById("prepo-token").value = "";
+	document.getElementById("prepo-token").placeholder =
+		repo && repo.token_set ? "(unchanged, a token is set)" : "(none)";
+	document.getElementById("prepo-clear-token").checked = false;
+	document.getElementById("prepo-clear-token").disabled = !(repo && repo.token_set);
+	document.getElementById("prepo-push").checked = repo ? repo.push === true : false;
+}
+
+function renderPkgRepositoriesTable(repos) {
+	const body = document.getElementById("pkg-repositories-body");
+
+	if (unchangedAndRendered(body, "pkg-repositories", repos))
+		return;
+	body.textContent = "";
+	if (repos.length === 0) {
+		simpleTableRows(body, [], 5,
+			emptyStateText("listPkgRepositories", "package repositories",
+				"No package repositories -- every package builds from source"));
+		return;
+	}
+	for (const r of repos) {
+		const row = document.createElement("tr");
+		const name = document.createElement("td");
+		const url = document.createElement("td");
+		const pushCell = document.createElement("td");
+		const push = document.createElement("span");
+		const token = document.createElement("td");
+		const actions = document.createElement("td");
+		const edit = document.createElement("button");
+		const remove = document.createElement("button");
+
+		name.textContent = r.name;
+		url.textContent = r.url;
+		push.className = "badge " + (r.push ? "badge-paused" : "badge-unknown");
+		push.textContent = r.push ? "push" : "pull only";
+		pushCell.appendChild(push);
+		token.textContent = r.token_set ? "set" : "unset";
+
+		edit.type = "button";
+		edit.className = "button-small";
+		edit.textContent = "Edit";
+		edit.addEventListener("click", () => {
+			setPkgRepositoryForm(r);
+			openModal("pkg-repository-form", "Edit repository " + r.name);
+		});
+		gateAction(edit, "updatePkgRepository");
+		actions.appendChild(edit);
+
+		remove.type = "button";
+		remove.className = "button-small button-danger";
+		remove.textContent = "Remove";
+		remove.addEventListener("click", async () => {
+			if (!confirm("Remove package repository " + r.name + "? Artifacts already fetched stay in this host's cache."))
+				return;
+			try {
+				await apiRequest("DELETE", CIX_API.deletePkgRepository(r.name));
+				showStatus("Removed package repository " + r.name, false);
+				await refreshPkgRepositories();
+			} catch (e) {
+				showStatus("Failed to remove " + r.name + ": " + e.message, true);
+			}
+		});
+		gateAction(remove, "deletePkgRepository");
+		actions.appendChild(remove);
+
+		for (const cell of [name, url, pushCell, token, actions])
+			row.appendChild(cell);
+		body.appendChild(row);
 	}
 }
 
-for (const id of ["pac-base-url", "pac-token", "pac-clear-token"]) {
-	document.getElementById(id).addEventListener("input", () => {
-		pkgArtifactConfigDirty = true;
-	});
+async function refreshPkgRepositories() {
+	try {
+		const data = await apiRequest("GET", CIX_API.listPkgRepositories());
+
+		cache.pkgRepositories = data.repositories;
+		renderPkgRepositoriesTable(data.repositories);
+	} catch (e) {
+		simpleTableRows(document.getElementById("pkg-repositories-body"), [], 5,
+			refusalText(e, "package repositories"));
+	}
 }
 
-document.getElementById("pac-form").addEventListener("submit", async (event) => {
+/* The header's "New Package Repository" opens the same form, in add mode. */
+document.querySelector('.menu-bar button[data-modal="pkg-repository-form"]')
+	.addEventListener("click", () => setPkgRepositoryForm(null));
+
+document.getElementById("pkg-repository-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
-	const body = { base_url: document.getElementById("pac-base-url").value.trim() };
-	const token = document.getElementById("pac-token").value;
+	const editing = pkgRepositoryEditing;
+	const before = editing ? (cache.pkgRepositories || []).find((r) => r.name === editing) : null;
+	const body = {
+		url: document.getElementById("prepo-url").value.trim(),
+		push: document.getElementById("prepo-push").checked,
+	};
+	const token = document.getElementById("prepo-token").value;
 
-	if (document.getElementById("pac-clear-token").checked)
-		body.auth_token = "";
+	if (document.getElementById("prepo-clear-token").checked)
+		body.token = "";
 	else if (token !== "")
-		body.auth_token = token;
+		body.token = token;
+
+	/* #129: publishing is outward-facing, so turning it on is confirmed. */
+	if (body.push && !(before && before.push) &&
+	    !confirm("Publish every package this host builds to " + body.url + "?"))
+		return;
 
 	try {
-		await apiRequest("PUT", CIX_API.putPkgArtifactConfig(), body);
-		clearStatus();
-		showStatus("Artifact server config saved", false);
-		pkgArtifactConfigDirty = false;
-		document.getElementById("pac-clear-token").checked = false;
-		await refreshPkgArtifactConfig();
+		if (editing) {
+			await apiRequest("PUT", CIX_API.updatePkgRepository(editing), body);
+			showStatus("Updated package repository " + editing, false);
+		} else {
+			body.name = document.getElementById("prepo-name").value.trim();
+			await apiRequest("POST", CIX_API.addPkgRepository(), body);
+			showStatus("Added package repository " + body.name, false);
+		}
+		closeModal();
+		await refreshPkgRepositories();
 	} catch (e) {
-		showStatus("Failed to save artifact server config: " + e.message, true);
+		showStatus("Failed to save the package repository: " + e.message, true);
 	}
 });
 
@@ -16103,7 +16189,7 @@ const VIEW_REFRESHERS = {
 	"container-recipes": [refreshContainerRecipesList, refreshPkgRecipes, refreshImageRecipesList],
 	packages: [refreshPkgList, refreshImages],
 	"pkg-repo": [refreshPkgSources, refreshPkgSyncStatus],
-	"pkg-cache": [refreshPkgCacheConfig, refreshPkgCacheStatus, refreshPkgArtifactConfig],
+	"pkg-cache": [refreshPkgCacheConfig, refreshPkgCacheStatus, refreshPkgRepositories],
 	"build-overview": [refreshBuildOverview],
 	"pkg-build-config": [refreshPkgBuildConfig],
 	update: [refreshImages, refreshPkgList],
@@ -16147,7 +16233,7 @@ const ALL_REFRESHERS = [
 	refreshNtpServers, refreshSyslogTargets, refreshNtpStatus, refreshNtpTime, refreshPkiCa,
 	refreshPkiIntermediate, refreshPkiCerts, refreshPkgRecipes, refreshImageRecipesList,
 	refreshContainerRecipesList, refreshPkgList, refreshPkgSources, refreshPkgSyncStatus,
-	refreshPkgCacheConfig, refreshPkgCacheStatus, refreshPkgArtifactConfig,
+	refreshPkgCacheConfig, refreshPkgCacheStatus, refreshPkgRepositories,
 	refreshSiteConfig, refreshDaemonConfig, refreshRollingConfig,
 	refreshPkgBuildConfig, refreshRoutes, refreshSysctl, refreshKmod, refreshKmodConfig,
 	refreshSwap, refreshTlsThrottleConfig, refreshTlsThrottleStatus,

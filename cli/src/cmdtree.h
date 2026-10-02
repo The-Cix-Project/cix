@@ -1259,18 +1259,19 @@ static const struct cli_node n_pki_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
-static const char *const n_pkg_artifact_config_set_flags[] = {
+static const char *const n_pkg_repository_set_flags[] = {
 	"--clear-token",
-	"--no-push",
-	"--push",
+	"--push=",
 	"--token=",
 	"--url=",
 	NULL
 };
 
-static const struct cli_node n_pkg_artifact_config_subs[] = {
-	{ "set", n_pkg_artifact_config_set_flags, NULL },
-	{ "show", NULL, NULL },
+static const struct cli_node n_pkg_repository_subs[] = {
+	{ "add", n_pkg_repository_set_flags, NULL },
+	{ "ls", NULL, NULL },
+	{ "rm", NULL, NULL },
+	{ "set", n_pkg_repository_set_flags, NULL },
 	{ NULL, NULL, NULL },
 };
 
@@ -1441,7 +1442,6 @@ static const char *const n_pkg_sync_flags[] = {
 };
 
 static const struct cli_node n_pkg_subs[] = {
-	{ "artifact-config", NULL, n_pkg_artifact_config_subs },
 	{ "artifact-export", n_pkg_artifact_export_flags, NULL },
 	{ "artifact-publish", NULL, NULL },
 	{ "bootstrap", n_pkg_bootstrap_flags, NULL },
@@ -1465,6 +1465,7 @@ static const struct cli_node n_pkg_subs[] = {
 	{ "rebuilds", NULL, NULL },
 	{ "recipe", NULL, n_pkg_recipe_subs },
 	{ "recipes", NULL, NULL },
+	{ "repository", NULL, n_pkg_repository_subs },
 	{ "source", NULL, n_pkg_source_subs },
 	{ "resume", n_pkg_resume_flags, NULL },
 	{ "rm", NULL, NULL },

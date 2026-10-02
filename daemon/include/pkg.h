@@ -1790,44 +1790,10 @@ long long pkg_build_effective_memory_max(void);
 const char *pkg_build_get_cpu_max(void);
 enum pkg_error pkg_build_set_cpu_max(const char *cpu_max);
 
-/* ---- pkg/ redesign Part 3b (ADR-0122): plain-HTTP precompiled-artifact server config ---- */
-
-#define PKGARTIFACT_URL_MAX 512
-#define PKGARTIFACT_TOKEN_MAX 256
-
-/*
- * ADR-0315: the public artifact cache is the built-in default for
- * PULLING, with no token and with push off -- publishing stays an
- * operator's deliberate act (#129). Same persistence rule as the repo
- * default above: a saved empty base_url means "cleared".
- */
-#define PKG_DEFAULT_ARTIFACT_URL "https://cache.cix.world"
-
-/* Loads any persisted artifact-server config. With no file the
- * PKG_DEFAULT_ARTIFACT_URL cache stands, pull-only (no token, push
- * off). A miss or a failed fetch there falls back to building from
- * source, exactly as an unconfigured host always has. */
-int pkg_artifact_init(const char *config_path);
-
-/* ADR-0141 Phase 4: path-only repoint -- see pkg_repoint()'s own doc comment. */
-void pkg_artifact_repoint(const char *new_config_path);
-
-/* {"base_url","auth_token_set"} -- the token itself is never echoed
- * back, same posture pkgsource_write_json() has. */
-void pkg_artifact_write_json_config(struct json_writer *w);
-
-/*
- * NULL leaves that field unchanged (a partial PUT, same contract
- * pkgsource_update() has); "" for auth_token explicitly
- * clears it. Deliberately no repo_kind/ref here -- this is a plain
- * HTTP location, not a git forge (see pkg.c's own module comment for
- * why binaries and git don't mix).
- */
-/* NULL leaves a field unchanged (partial PUT); "" for auth_token
- * clears it. push_enabled is a pointer for the same reason -- NULL
- * means "not mentioned in this request", not "false". */
-enum pkg_error pkg_artifact_set_config(const char *base_url, const char *auth_token,
-                                       const int *push_enabled);
+/* ---- package repositories (ADR-0122, ADR-0324 step B) ----
+ * The artifact servers a host pulls from and pushes to are a list:
+ * pkgrepo.h. Nothing here holds a server of its own. */
+struct pkg_repository;
 
 /*
  * Issue #129: publishing a freshly built package to the configured
@@ -1854,13 +1820,14 @@ void pkg_artifact_push_completed(int exit_status);
  *
  * Exposed here rather than reimplemented in main.c so the base URL's
  * trailing-slash handling and the bearer header exist in one place.
- * Returns PKG_ERR_NOT_FOUND when no cache is configured. Whether
- * pushing is ENABLED is asked separately, because the two are
- * different operator situations deserving different answers -- an
- * unconfigured cache is a setup step not yet done, a disabled push is
- * a deliberate choice already made.
+ * The caller asks once per repository marked push (ADR-0324): an ISO
+ * goes wherever packages go. PKG_ERR_NOT_FOUND when the repository has
+ * no url; whether any repository pushes at all is
+ * pkg_artifact_push_is_enabled(), a separate answer because "none is
+ * marked push" is a deliberate choice, not a setup step not yet done.
  */
-enum pkg_error pkg_artifact_push_request(const char *remote_name, char *out_url, size_t url_size,
+enum pkg_error pkg_artifact_push_request(const struct pkg_repository *r, const char *remote_name,
+                                          char *out_url, size_t url_size,
                                           char *out_auth_header, size_t hdr_size);
 int pkg_artifact_push_is_enabled(void);
 

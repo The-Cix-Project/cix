@@ -258,7 +258,8 @@ int test_pkg_config_seed_cleared(const char *pkg_state_dir)
 		/* ADR-0324: a saved empty source list -- cleared, and so never
 		 * replaced by the public default. */
 		{"sources.json", "{\"sources\":[],\"choices\":[]}\n"},
-		{"artifact_config.json", "{\"base_url\":\"\",\"auth_token\":\"\",\"push_enabled\":false}\n"},
+		/* ADR-0324 step B: a saved empty repository list, cleared the same way. */
+		{"repositories.json", "{\"repositories\":[]}\n"},
 	};
 	char cfg[PATH_MAX];
 	size_t i;

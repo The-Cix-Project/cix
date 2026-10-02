@@ -25,7 +25,7 @@ For building the control plane on a host, see [`building-cix.md`](building-cix.m
 
 **When the cache is used.** A hostbuild fetches instead of building only when both hold:
 
-- the artifact server is configured (`cixctl pkg artifact-config show`);
+- a package repository is configured (`cixctl pkg repository ls`);
 - this host **trusts the key that signed the artifact**. These packages carry no per-recipe `pkg_artifact_sha256`; the signature is the approval ([ADR-0279](../adr/0279-an-artifact-carries-its-own-approval.md)).
 
 Otherwise, and for a version never published to the cache, it builds. A host adopts trusted keys during `cixctl pkg sync`: the daemon copies the `docs/keys/` directory of the synced repository into its trusted-key store (`daemon/src/pkg.c`), and a repository with no `docs/keys/` adopts nothing. Recipes are synced from the cix-recipes repository ([ADR-0308](../adr/0308-recipes-are-their-own-repository-flat.md)), which has no `docs/keys/` directory at present. How a host syncing only from it comes to trust the release key is an open question, not covered here.

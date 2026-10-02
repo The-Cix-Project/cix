@@ -63,6 +63,7 @@
 #include "network.h"
 #include "ntp.h"
 #include "pkg.h"
+#include "pkgrepo.h"
 #include "pkgsource.h"
 #include "pkgpolicy.h"
 #include "pki.h"
@@ -172,7 +173,7 @@ static void cfg_ldap_groups(struct json_writer *w) { ldap_group_write_json_list(
 static void cfg_ldap_users(struct json_writer *w) { ldap_user_write_json_list(w); }
 static void cfg_syslog_targets(struct json_writer *w) { syslogfwd_target_write_json_list(w); }
 static void cfg_package_sources(struct json_writer *w) { pkgsource_write_json_list(w); }
-static void cfg_package_artifacts(struct json_writer *w) { pkg_artifact_write_json_config(w); }
+static void cfg_package_repositories(struct json_writer *w) { pkgrepo_write_json_list(w); }
 static void cfg_package_policies(struct json_writer *w) { pkgpolicy_write_json(w); }
 static void cfg_packages(struct json_writer *w) { pkg_write_json_config(w); }
 static void cfg_images(struct json_writer *w) { image_write_json_list(w); }

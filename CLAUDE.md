@@ -231,6 +231,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Write is a property of a source, not of a host.** A host authors (ADR-0323) only for packages owned by a source it may write. Never build authoring that writes to a source the host only reads.
 - **One package, one source.** A name offered by two sources halts until the operator chooses. Never resolve it by list order. The same version with different bytes is refused and reported, not picked.
 - **Repositories are mirrors.** Their order is speed, never trust; what is accepted is decided by `artifact_sha256` and the signature.
+  Every repository marked push gets its own upload and its own retry; one publish approval covers all of them, and the first copy that lands records the artifact approval. Do not change that to "approve only when every repository took it": one repository being down would then hold every approval. An installer ISO goes to every repository marked push, the same as packages.
 - **The public catalogue (`The-Cix-Project/cix-recipes`) is the owner's alone.** Every commit to the owner's forge reaches it by push mirror (`sync_on_commit`, measured 2026-10-02), so a commit from 192.168.15.95 is a publish to every Cix user. Others contributing is a future decision; do not build it unasked.
 - **The catalogue gets signed, as Debian signs its archive**: a signed index of every recipe and its hash, checked on sync.
 - **Keys come only from a source with `trust_keys`** (off by default; on for the public catalogue and the migrated existing source). Any other source can supply recipes, never artifact trust.
@@ -272,9 +273,9 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 
 ## Default package sources
 
-**A host that has never saved a source list or artifact config starts on the public catalogue (`https://github.com/The-Cix-Project/cix-recipes`, `github`, `main`) and the public cache (`https://cache.cix.world`, pull-only).** Stated by the owner on 2026-09-29: *"yes, both are defaults moving forwards, and can be changed if the use wants to? right?"* — see [ADR-0315](docs/adr/0315-the-public-catalogue-and-cache-are-the-defaults.md).
+**A host that has never saved a source list or repository list starts on the public catalogue (`https://github.com/The-Cix-Project/cix-recipes`, `github`, `main`) and the public cache (`https://cache.cix.world`, pull-only).** Stated by the owner on 2026-09-29: *"yes, both are defaults moving forwards, and can be changed if the use wants to? right?"* — see [ADR-0315](docs/adr/0315-the-public-catalogue-and-cache-are-the-defaults.md).
 
-- **Changeable and clearable, for good.** The first change saves the list; a saved empty list (or empty artifact URL) means cleared and is never replaced by the default again. Do not add anything that re-applies a default over a saved value.
+- **Changeable and clearable, for good.** The first change saves the list; a saved empty list -- of sources or of repositories -- means cleared and is never replaced by the default again. Do not add anything that re-applies a default over a saved value.
 - **Never push by default, never a token by default.** Publishing is the operator's act (#129).
 - **And a default `recipe-sync` schedule** (`pkg.sync` every 6 hours, [ADR-0316](docs/adr/0316-a-fresh-host-syncs-recipes-on-a-schedule.md)), stated by the owner the same day: *"add a default recipe-sync schedule too"*. Same rule: created only on a host that never saved a schedule file, and a deleted one stays deleted. Test data dirs start with `state/schedules.json` saved empty.
 - **Tests never use the defaults' network.** Test data directories start cleared (`test_pkg_config_seed_cleared()`); a new test that wipes its pkg state dir must call it again.

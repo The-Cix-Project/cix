@@ -403,13 +403,15 @@ int main(void)
 		snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d", g_http_port);
 		jw_init(&w);
 		jw_obj_open(&w);
-		jw_key(&w, "base_url");
+		jw_key(&w, "name");
+		jw_str(&w, "stage");
+		jw_key(&w, "url");
 		jw_str(&w, base_url);
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
-		CHECK(cix_client_request(&client, "PUT", "/v1/pkg/artifact-config", w.buf, &r) == 0 &&
-		          r.status == 200,
-		      "PUT /v1/pkg/artifact-config");
+		CHECK(cix_client_request(&client, "POST", "/v1/pkg/repositories", w.buf, &r) == 0 &&
+		          r.status == 201,
+		      "POST /v1/pkg/repositories");
 		jw_free(&w);
 		cix_response_free(&r);
 	}

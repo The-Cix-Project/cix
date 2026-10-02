@@ -94,6 +94,15 @@ The first sync on 192.168.15.95 under this ADR reported 121 versions that git he
 
 The comparison is over the text because `cbs explain --json` does not carry a phase's operations; recipes installing different files explain identically (measured by `test_pkg` on 192.168.15.95, 0.2.57-434).
 
+### Package repositories, as built (step B, 2026-10-02)
+
+Implementing the repository list settled three things this ADR left implicit:
+- **Each copy is verified on its own, and a bad copy is reported.** An install tries every repository in order. A copy that fails the checksum or the signature is refused, logged naming the repository, and the next one is tried. The report survives even when the next repository succeeds, because a mirror serving wrong bytes is the thing an operator must hear about.
+- **Every repository marked push gets its own upload and its own retry.** One publish approval covers the artifact for all of them, and the first copy that lands records the artifact approval (#492). Requiring every repository to take it first would let one repository that is down hold every approval.
+- **An installer ISO goes to every repository marked push**, as packages do, signature first at each.
+
+A host's single artifact server became the first repository, named after its host (`192.168.15.31-8080` on 192.168.15.95), with its token and push switch carried. A cleared server became an empty list.
+
 ### Migration, and the defaults
 
 There is one clean cut-over (no compatibility shim):

@@ -160,7 +160,7 @@ A host that has never had its package sources set starts on the public ones ([AD
 | | Default | Changed with |
 |---|---|---|
 | Recipe catalogue | `https://github.com/The-Cix-Project/cix-recipes`, kind `github`, ref `main`, no token | `cixctl pkg source set cix-public` or `pkg source rm cix-public` (ADR-0324) |
-| Artifact cache | `https://cache.cix.world`, pull-only (no token, push off) | `cixctl pkg artifact-config set` |
+| Package repository | `cix-public` → `https://cache.cix.world`, pull-only (no token, push off) | `cixctl pkg repository set cix-public` or `pkg repository rm cix-public` (ADR-0324) |
 
 The host fetches the catalogue at first boot and every 6 hours after, through the `recipe-sync` schedule ([ADR-0316](../adr/0316-a-fresh-host-syncs-recipes-on-a-schedule.md)); `cixctl pkg sync-status` says how the last one went, and `cixctl pkg sync --wait` runs one now. A first-boot sync fails if DNS was not set yet, so after setting it, run one by hand rather than waiting 6 hours. Once the catalogue is in, `pkg install` fetches a package from the cache instead of building it when its recipe carries an artifact checksum (`artifact_sha256`), or when the artifact is signed by a key this host trusts. Both need the outbound DNS above. A package missing from the cache, or a cache that cannot be reached, is built from its recipe instead.
 

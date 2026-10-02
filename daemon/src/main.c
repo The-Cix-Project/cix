@@ -71,6 +71,7 @@
 #include "persist.h"
 #include "pki.h"
 #include "pkg.h"
+#include "pkgrepo.h"
 #include "pkgsource.h"
 #include "curlfetch.h"
 #include "quotamap.h"
@@ -297,7 +298,8 @@ char PKG_SOURCES_PATH[PATH_MAX];      /* ADR-0324 */
 char PKG_SOURCES_OFFERS_DIR[PATH_MAX]; /* ADR-0324 */
 char PKG_CACHE_DIR[PATH_MAX];              /* ADR-0122 */
 char PKG_CACHE_CONFIG_PATH[PATH_MAX];      /* ADR-0122 */
-char PKG_ARTIFACT_CONFIG_PATH[PATH_MAX];   /* ADR-0122 */
+char PKG_ARTIFACT_CONFIG_PATH[PATH_MAX];   /* ADR-0122; read once, to migrate */
+char PKG_REPOSITORIES_PATH[PATH_MAX];      /* ADR-0324 step B */
 char PKG_BUILD_CONFIG_PATH[PATH_MAX];      /* ADR-0157 Phase 3 */
 /* Where a hostbuild job's own harvested output lands (ADR-0056) --
  * ARTIFACTS_DIR/<name>/..., a plain host directory, never a container-
@@ -523,6 +525,7 @@ static void compute_rebuildable_dir_relative_paths(void)
 	snprintf(PKG_CACHE_CONFIG_PATH, sizeof(PKG_CACHE_CONFIG_PATH), "%s/cache_config.json", PKG_DIR);
 	snprintf(PKG_ARTIFACT_CONFIG_PATH, sizeof(PKG_ARTIFACT_CONFIG_PATH), "%s/artifact_config.json",
 	         PKG_DIR);
+	snprintf(PKG_REPOSITORIES_PATH, sizeof(PKG_REPOSITORIES_PATH), "%s/repositories.json", PKG_DIR);
 	snprintf(PKG_BUILD_CONFIG_PATH, sizeof(PKG_BUILD_CONFIG_PATH), "%s/build_config.json", PKG_DIR);
 	snprintf(ARTIFACTS_DIR, sizeof(ARTIFACTS_DIR), "%s/artifacts", REBUILDABLE_DIR);
 	snprintf(ISO_DIR, sizeof(ISO_DIR), "%s/iso", REBUILDABLE_DIR);
@@ -10624,6 +10627,19 @@ static enum iso_publish_step g_iso_publish_step;
 static char g_iso_publish_name[256];   /* canonical .iso name in the cache */
 static char g_iso_publish_error[256];
 static char g_iso_publish_status_path[PATH_MAX];
+/* ADR-0324: the repository being published to -- every one marked push, in turn. */
+static int g_iso_publish_repo;
+
+/* The next repository marked push at or after `from`, or -1. */
+static int iso_publish_next_repo(int from)
+{
+	int i;
+
+	for (i = from; i < pkgrepo_count(); i++)
+		if (pkgrepo_at(i)->push)
+			return i;
+	return -1;
+}
 
 static const char *iso_publish_state_str(void)
 {
@@ -10688,7 +10704,7 @@ static int start_iso_publish_upload(enum iso_publish_step step)
 {
 	char remote[256];
 	char local[PATH_MAX];
-	char url[PKGARTIFACT_URL_MAX + 320];
+	char url[PKG_REPOSITORY_URL_MAX + 320];
 	char auth[512];
 	pid_t pid;
 	int pidfd;
@@ -10700,9 +10716,11 @@ static int start_iso_publish_upload(enum iso_publish_step step)
 		iso_publish_canonical_name(remote, sizeof(remote), "");
 		snprintf(local, sizeof(local), "%s", ISO_OUTPUT_PATH);
 	}
-	if (pkg_artifact_push_request(remote, url, sizeof(url), auth, sizeof(auth)) != PKG_OK) {
+	if (pkgrepo_at(g_iso_publish_repo) == NULL ||
+	    pkg_artifact_push_request(pkgrepo_at(g_iso_publish_repo), remote, url, sizeof(url), auth,
+	                              sizeof(auth)) != PKG_OK) {
 		snprintf(g_iso_publish_error, sizeof(g_iso_publish_error),
-		         "no artifact cache is configured");
+		         "no package repository is marked push");
 		return -1;
 	}
 
@@ -10821,8 +10839,10 @@ static void handle_iso_publish_event(struct conn *cc)
 		 * made earlier publish failures unreadable.
 		 */
 		snprintf(g_iso_publish_error, sizeof(g_iso_publish_error),
-		         "%s upload failed (exit 0x%x, HTTP %d)",
-		         g_iso_publish_step == ISO_PUBLISH_SIG ? "signature" : "iso", (unsigned)status,
+		         "%s upload to %s failed (exit 0x%x, HTTP %d)",
+		         g_iso_publish_step == ISO_PUBLISH_SIG ? "signature" : "iso",
+		         pkgrepo_at(g_iso_publish_repo) != NULL ? pkgrepo_at(g_iso_publish_repo)->name : "?",
+		         (unsigned)status,
 		         http);
 		logstore_write("cixd", "error", "iso publish: %s", g_iso_publish_error);
 		free(cc);
@@ -10839,9 +10859,25 @@ static void handle_iso_publish_event(struct conn *cc)
 		return;
 	}
 
+	/* This repository has both; the next one marked push, if any (ADR-0324). */
+	{
+		int next = iso_publish_next_repo(g_iso_publish_repo + 1);
+
+		logstore_write("cixd", "info", "iso publish: published %s to %s", g_iso_publish_name,
+		               pkgrepo_at(g_iso_publish_repo) != NULL ? pkgrepo_at(g_iso_publish_repo)->name
+		                                                      : "?");
+		if (next >= 0) {
+			g_iso_publish_repo = next;
+			free(cc);
+			if (start_iso_publish_upload(ISO_PUBLISH_SIG) != 0) {
+				g_iso_publish_state = ISO_PUB_FAILED;
+				logstore_write("cixd", "error", "iso publish: %s", g_iso_publish_error);
+			}
+			return;
+		}
+	}
 	g_iso_publish_state = ISO_PUB_DONE;
 	g_iso_publish_error[0] = '\0';
-	logstore_write("cixd", "info", "iso publish: published %s", g_iso_publish_name);
 	free(cc);
 }
 
@@ -11597,7 +11633,7 @@ static void finalize_rebuildable_storage_migration(void)
 	pkg_repoint(PKG_DIR, PKG_INSTALLED_STATE_PATH, IMAGES_DIR, ARTIFACTS_DIR);
 	pkgsource_repoint(PKG_SOURCES_PATH, PKG_SOURCES_OFFERS_DIR);
 	pkg_cache_repoint(PKG_CACHE_DIR, PKG_CACHE_CONFIG_PATH);
-	pkg_artifact_repoint(PKG_ARTIFACT_CONFIG_PATH);
+	pkgrepo_repoint(PKG_REPOSITORIES_PATH);
 	pkg_build_config_repoint(PKG_BUILD_CONFIG_PATH);
 
 	storageplacement_set(STORAGE_KIND_REBUILDABLE, target_disk[0] != '\0' ? target_disk : NULL);
@@ -20408,6 +20444,112 @@ static void handle_pkg_source_delete(int fd, const char *name)
 	respond_pkgsources(fd, 200, "OK");
 }
 
+/* ---- package repositories (ADR-0324 step B) ---- */
+
+static void respond_pkgrepos(int fd, int status, const char *reason)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	pkgrepo_write_json(&w);
+	respond_json(fd, status, reason, &w);
+	jw_free(&w);
+}
+
+/* GET /v1/pkg/repositories */
+static void handle_pkg_repositories_get(int fd)
+{
+	respond_pkgrepos(fd, 200, "OK");
+}
+
+/* POST /v1/pkg/repositories: add one. */
+static void handle_pkg_repositories_post(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = body_len > 0 ? json_parse(body, body_len) : NULL;
+	struct pkg_repository r;
+	char err[256];
+	const char *v;
+	int push;
+	enum pkgsource_error e;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	push = json_bool_or_absent(root, "push");
+	if (push == -2) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "push is true or false");
+		return;
+	}
+	memset(&r, 0, sizeof(r));
+	v = json_as_string(json_object_get(root, "name"));
+	snprintf(r.name, sizeof(r.name), "%s", v != NULL ? v : "");
+	v = json_as_string(json_object_get(root, "url"));
+	snprintf(r.url, sizeof(r.url), "%s", v != NULL ? v : "");
+	v = json_as_string(json_object_get(root, "token"));
+	snprintf(r.token, sizeof(r.token), "%s", v != NULL ? v : "");
+	r.push = push == 1;
+	json_free(root);
+	e = pkgrepo_add(&r, err, sizeof(err));
+	if (e != PKGSOURCE_OK) {
+		respond_pkgsource_error(fd, e, err);
+		return;
+	}
+	logstore_write("cixd", "info", "pkg repository %s added (%s, %s)", r.name, r.url,
+	               r.push ? "push" : "pull only");
+	respond_pkgrepos(fd, 201, "Created");
+}
+
+/* PUT /v1/pkg/repositories/{name}: a partial update. */
+static void handle_pkg_repository_put(int fd, const char *name, const char *body, size_t body_len)
+{
+	struct json_value *root = body_len > 0 ? json_parse(body, body_len) : NULL;
+	char err[256];
+	int push;
+	enum pkgsource_error e;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	if (json_object_get(root, "name") != NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "a repository's name never changes -- remove it and add another");
+		return;
+	}
+	push = json_bool_or_absent(root, "push");
+	if (push == -2) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "push is true or false");
+		return;
+	}
+	e = pkgrepo_update(name, json_as_string(json_object_get(root, "url")),
+	                   json_as_string(json_object_get(root, "token")), push, err, sizeof(err));
+	json_free(root);
+	if (e != PKGSOURCE_OK) {
+		respond_pkgsource_error(fd, e, err);
+		return;
+	}
+	logstore_write("cixd", "info", "pkg repository %s updated", name);
+	respond_pkgrepos(fd, 200, "OK");
+}
+
+/* DELETE /v1/pkg/repositories/{name} */
+static void handle_pkg_repository_delete(int fd, const char *name)
+{
+	char err[256];
+	enum pkgsource_error e = pkgrepo_remove(name, err, sizeof(err));
+
+	if (e != PKGSOURCE_OK) {
+		respond_pkgsource_error(fd, e, err);
+		return;
+	}
+	logstore_write("cixd", "info", "pkg repository %s removed", name);
+	respond_pkgrepos(fd, 200, "OK");
+}
+
 /* GET /v1/pkg/source-ownership */
 static void handle_pkg_source_ownership_get(int fd)
 {
@@ -23325,56 +23467,6 @@ static void handle_pkg_cache_delete(int fd)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
-/* ADR-0122: GET/PUT /v1/pkg/artifact-config -- the configured plain-
- * HTTP precompiled-artifact server (deliberately NOT the git-forge
- * repo config above -- see pkg.c's own module comment for why). */
-static void handle_pkg_artifact_config_get(int fd)
-{
-	struct json_writer w;
-
-	jw_init(&w);
-	pkg_artifact_write_json_config(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-static void handle_pkg_artifact_config_put(int fd, const char *body, size_t body_len)
-{
-	struct json_value *root = NULL;
-	const char *base_url = NULL;
-	const char *auth_token = NULL;
-	const int *push_enabled = NULL;
-	int push_enabled_val = 0;
-	enum pkg_error perr;
-
-	if (body_len > 0) {
-		root = json_parse(body, body_len);
-		if (root == NULL) {
-			respond_error(fd, 400, "Bad Request", "invalid JSON body");
-			return;
-		}
-		base_url = json_as_string(json_object_get(root, "base_url"));
-		auth_token = json_as_string(json_object_get(root, "auth_token"));
-		{
-			const struct json_value *pe = json_object_get(root, "push_enabled");
-
-			if (pe != NULL && pe->type == JSON_BOOL) {
-				push_enabled_val = pe->u.boolean ? 1 : 0;
-				push_enabled = &push_enabled_val;
-			}
-		}
-	}
-
-	perr = pkg_artifact_set_config(base_url, auth_token, push_enabled);
-	if (root != NULL)
-		json_free(root);
-	if (perr != PKG_OK) {
-		respond_pkg_error(fd, perr);
-		return;
-	}
-	handle_pkg_artifact_config_get(fd);
-}
-
 static void handle_pkg_recipes_list(int fd)
 {
 	struct json_writer w;
@@ -24927,13 +25019,14 @@ static void handle_system_iso_publish(int fd)
 	}
 	if (!pkg_artifact_push_is_enabled()) {
 		respond_error(fd, 503, "Service Unavailable",
-		              "publishing to the artifact cache is disabled on this host");
+		              "no package repository is marked push on this host");
 		return;
 	}
 
 	g_iso_publish_state = ISO_PUB_RUNNING;
 	g_iso_publish_error[0] = '\0';
 	g_iso_publish_name[0] = '\0';
+	g_iso_publish_repo = iso_publish_next_repo(0); /* ADR-0324: the first marked push */
 	/* Signature first -- see start_iso_publish_upload()'s own comment. */
 	if (start_iso_publish_upload(ISO_PUBLISH_SIG) != 0) {
 		g_iso_publish_state = ISO_PUB_FAILED;
@@ -25747,16 +25840,28 @@ static void op_deletePkgCache(const struct api_ctx *ctx)
 	handle_pkg_cache_delete(ctx->fd);
 }
 
-/* GET /v1/pkg/artifact-config */
-static void op_getPkgArtifactConfig(const struct api_ctx *ctx)
+/* GET /v1/pkg/repositories */
+static void op_listPkgRepositories(const struct api_ctx *ctx)
 {
-	handle_pkg_artifact_config_get(ctx->fd);
+	handle_pkg_repositories_get(ctx->fd);
 }
 
-/* PUT /v1/pkg/artifact-config */
-static void op_putPkgArtifactConfig(const struct api_ctx *ctx)
+/* POST /v1/pkg/repositories */
+static void op_addPkgRepository(const struct api_ctx *ctx)
 {
-	handle_pkg_artifact_config_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+	handle_pkg_repositories_post(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* PUT /v1/pkg/repositories/{name} */
+static void op_updatePkgRepository(const struct api_ctx *ctx)
+{
+	handle_pkg_repository_put(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+/* DELETE /v1/pkg/repositories/{name} */
+static void op_deletePkgRepository(const struct api_ctx *ctx)
+{
+	handle_pkg_repository_delete(ctx->fd, ctx->p[0]);
 }
 
 /* GET /v1/pkg/policies */
@@ -26919,8 +27024,8 @@ static void op_publishPkgArtifact(const struct api_ctx *ctx)
 	}
 	if (perr != PKG_OK) {
 		respond_error(ctx->fd, 400, "Bad Request",
-		              "artifact publishing is not configured "
-		              "(see PUT /v1/pkg/artifact-config)");
+		              "no package repository is marked push "
+		              "(cixctl pkg repository set NAME --push=on)");
 		return;
 	}
 	{
@@ -31805,7 +31910,8 @@ static int cixd_main(int argc, char **argv)
 		               pkgsource_migrated());
 	if (boot_subsystem_init(init_mode, "pkg_cache", pkg_cache_init(PKG_CACHE_DIR, PKG_CACHE_CONFIG_PATH)) != 0)
 		return 1;
-	if (boot_subsystem_init(init_mode, "pkg_artifact", pkg_artifact_init(PKG_ARTIFACT_CONFIG_PATH)) != 0)
+	if (boot_subsystem_init(init_mode, "pkg_repositories",
+	                        pkgrepo_init(PKG_REPOSITORIES_PATH, PKG_ARTIFACT_CONFIG_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "pkg_build_config", pkg_build_config_init(PKG_BUILD_CONFIG_PATH)) != 0)
 		return 1;

@@ -18,6 +18,7 @@
 #include "namecheck.h"
 #include "cbsrecipe.h"
 #include "forgecommit.h"
+#include "pkgrepo.h"
 #include "pkgsource.h"
 #include "json.h"
 #include "jsondiff.h"
@@ -9290,9 +9291,10 @@ static int pkg_artifact_is_configured(void);
 /* Issue #129: defined with the rest of the push machinery further
  * down; called from pkg_build_completed()'s own fresh-build branch. */
 static void pkg_artifact_push_enqueue(const char *name, const char *version);
-static void pkg_artifact_build_request(const char *name, const char *version, const char *format,
-                                        char *out_url, size_t out_url_size, char *out_header,
-                                        size_t out_header_size);
+static void pkg_artifact_build_request(const struct pkg_repository *r, const char *name,
+                                       const char *version, const char *format,
+                                       char *out_url, size_t out_url_size, char *out_header,
+                                       size_t out_header_size);
 static void artifact_sentinel_path(int chain_idx, const char *name, const char *version,
                                    const char *format, char *out, size_t out_size);
 
@@ -9477,177 +9479,194 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 		if (pkg_artifact_is_configured() &&
 		    (recipe.artifact_sha256[0] != '\0' ||
 		     releasekey_trust_count(g_trusted_keys_dir) > 0)) {
-			char artifact_url[768];
-			char artifact_header[320];
-			char artifact_path[PATH_MAX];
-			/*
-			 * Both initialised because the mismatch-note check below
-			 * reuses them after a short-circuited && chain: if
-			 * waitpid() failed, `status` was never written; if curl
-			 * succeeded but pkg_run_capture_sha256() failed, `sha_out`
-			 * was never written. Reading either then is stack garbage
-			 * -- found by review (Fable's audit of #149), not by a
-			 * failure, which is exactly why it gets fixed now rather
-			 * than after it writes a garbage "cache served ..." note.
-			 */
-			char sha_out[128] = "";
-			int sha_ok = 0;
-			int sig_ok = 0;
-
-			pkg_artifact_build_request(recipe.name, recipe.version, recipe.artifact_format,
-			                            artifact_url, sizeof(artifact_url), artifact_header,
-			                            sizeof(artifact_header));
-			artifact_sentinel_path(chain_idx, recipe.name, recipe.version, recipe.artifact_format,
-			                        artifact_path, sizeof(artifact_path));
-			unlink(artifact_path);
-
-			/* No inner fork any more (#410): this whole function
-			 * already runs inside start_fetch_for()'s own forked
-			 * child, and curlfetch_perform() is a synchronous library
-			 * call, not a subprocess needing its own fork+waitpid. */
-			{
-				struct curlfetch_opts opts;
-
-				memset(&opts, 0, sizeof(opts));
-				opts.url = artifact_url;
-				opts.path = artifact_path;
-				opts.header1 = artifact_header[0] != '\0' ? artifact_header : NULL;
-				opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
-				opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
-				opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
-				if (curlfetch_perform(&opts, NULL, NULL, 0) == 0)
-					sha_ok = pkg_run_capture_sha256(artifact_path, sha_out, sizeof(sha_out)) == 0;
-			}
+			char note_path[PATH_MAX];
+			int ri;
 
 			/*
-			 * The signature gate (ADR-0279).
-			 *
-			 * Fetched only once the artifact is here and hashed:
-			 * there is nothing to verify otherwise, and the digest is
-			 * half of what the trusted comment has to agree with.
-			 *
-			 * The comment is compared against a string built here
-			 * rather than parsed, and compared in FULL. A signature
-			 * whose comment does not say exactly which package,
-			 * revision and bytes it approves is not an approval of
-			 * this artifact -- it is an approval of something, and
-			 * accepting it on the strength of the key alone is how a
-			 * genuine glibc@2.44-16 artifact gets installed as
-			 * 2.44-17. minisign's global signature covers the comment,
-			 * so agreeing with it means the signer said this.
+			 * ADR-0324: every package repository, in order, each copy
+			 * verified on its own. Order decides which copy arrives
+			 * first and nothing else -- a copy that fails the checksum
+			 * or the signature is refused and noted naming the
+			 * repository, and the next one is tried. The note file
+			 * collects one line per refusal, so a mirror serving wrong
+			 * bytes is reported even when the next mirror succeeds.
 			 */
-			if (sha_ok && releasekey_trust_count(g_trusted_keys_dir) > 0) {
-				char sig_path[PATH_MAX];
-				char sig_url[832];
-				char comment[PKG_NAME_MAX + PKG_VERSION_MAX + 96];
-				char want[PKG_NAME_MAX + PKG_VERSION_MAX + 96];
-				struct curlfetch_opts sig_opts;
+			fetch_note_sidecar_path(chain_idx, recipe.name, note_path, sizeof(note_path));
+			unlink(note_path);
+			for (ri = 0; ri < pkgrepo_count(); ri++) {
+				const struct pkg_repository *repo = pkgrepo_at(ri);
+				char artifact_url[768];
+				char artifact_header[320];
+				char artifact_path[PATH_MAX];
+				/*
+				 * Both initialised because the mismatch-note check below
+				 * reuses them after a short-circuited && chain: if
+				 * waitpid() failed, `status` was never written; if curl
+				 * succeeded but pkg_run_capture_sha256() failed, `sha_out`
+				 * was never written. Reading either then is stack garbage
+				 * -- found by review (Fable's audit of #149), not by a
+				 * failure, which is exactly why it gets fixed now rather
+				 * than after it writes a garbage "cache served ..." note.
+				 */
+				char sha_out[128] = "";
+				int sha_ok = 0;
+				int sig_ok = 0;
 
-				snprintf(sig_path, sizeof(sig_path), "%s.minisig", artifact_path);
-				snprintf(sig_url, sizeof(sig_url), "%s.minisig", artifact_url);
-				unlink(sig_path);
+				pkg_artifact_build_request(repo, recipe.name, recipe.version, recipe.artifact_format,
+				                            artifact_url, sizeof(artifact_url), artifact_header,
+				                            sizeof(artifact_header));
+				artifact_sentinel_path(chain_idx, recipe.name, recipe.version, recipe.artifact_format,
+				                        artifact_path, sizeof(artifact_path));
+				unlink(artifact_path);
 
-				memset(&sig_opts, 0, sizeof(sig_opts));
-				sig_opts.url = sig_url;
-				sig_opts.path = sig_path;
-				sig_opts.header1 = artifact_header[0] != '\0' ? artifact_header : NULL;
-				sig_opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
-				sig_opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
-				sig_opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
-				if (curlfetch_perform(&sig_opts, NULL, NULL, 0) == 0 &&
-				    releasekey_verify_file(artifact_path, sig_path, g_trusted_keys_dir, comment,
-				                            sizeof(comment)) == RELEASEKEY_OK) {
-					snprintf(want, sizeof(want), "cix pkg %s@%s sha256=%s", recipe.name,
-					          recipe.version, sha_out);
-					if (strcmp(comment, want) == 0)
-						sig_ok = 1;
+				/* No inner fork any more (#410): this whole function
+				 * already runs inside start_fetch_for()'s own forked
+				 * child, and curlfetch_perform() is a synchronous library
+				 * call, not a subprocess needing its own fork+waitpid. */
+				{
+					struct curlfetch_opts opts;
+
+					memset(&opts, 0, sizeof(opts));
+					opts.url = artifact_url;
+					opts.path = artifact_path;
+					opts.header1 = artifact_header[0] != '\0' ? artifact_header : NULL;
+					opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
+					opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
+					opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
+					if (curlfetch_perform(&opts, NULL, NULL, 0) == 0)
+						sha_ok = pkg_run_capture_sha256(artifact_path, sha_out, sizeof(sha_out)) == 0;
 				}
-				unlink(sig_path);
-			}
 
-			/*
-			 * Where both approvals exist, both must agree. A recipe
-			 * with a checksum keeps exactly the behaviour ADR-0122
-			 * gave it -- 624 artifacts are published unsigned and must
-			 * stay installable -- and a recipe without one now has a
-			 * way in at all, which is the cold-box case #306 and #403
-			 * are both about.
-			 */
-			if (recipe.artifact_sha256[0] != '\0') {
-				if (sha_ok && strcasecmp(sha_out, recipe.artifact_sha256) == 0)
-					_exit(0); /* verified -- pkg_fetch_completed() stages from this file */
-			} else if (sig_ok) {
-				_exit(0);
-			}
-			/*
-			 * Issue #149: an artifact that downloaded fine but failed
-			 * its checksum is a different situation from one that was
-			 * simply absent, and it is worth saying so.
-			 *
-			 * "Absent" is ordinary -- most packages have no published
-			 * artifact. A MISMATCH means the cache is serving
-			 * different bytes than the recipe approves, which in
-			 * practice means the recipe's pkg_artifact_sha256 was
-			 * edited in place on an already-published version and can
-			 * never take effect (#145). The install then silently
-			 * falls back to source and fails with whatever that path
-			 * fails with -- on a host without a working resolver, a
-			 * DNS error that says nothing about checksums. That
-			 * misdirection cost a real debugging cycle across 14
-			 * recipes.
-			 *
-			 * Written to the fetch note so it surfaces whether or not
-			 * the source fallback goes on to succeed: a mismatch is
-			 * worth knowing about even when the install works.
-			 */
-			if (sha_ok) {
-				char note_path[PATH_MAX];
-				int nfd;
+				/*
+				 * The signature gate (ADR-0279).
+				 *
+				 * Fetched only once the artifact is here and hashed:
+				 * there is nothing to verify otherwise, and the digest is
+				 * half of what the trusted comment has to agree with.
+				 *
+				 * The comment is compared against a string built here
+				 * rather than parsed, and compared in FULL. A signature
+				 * whose comment does not say exactly which package,
+				 * revision and bytes it approves is not an approval of
+				 * this artifact -- it is an approval of something, and
+				 * accepting it on the strength of the key alone is how a
+				 * genuine glibc@2.44-16 artifact gets installed as
+				 * 2.44-17. minisign's global signature covers the comment,
+				 * so agreeing with it means the signer said this.
+				 */
+				if (sha_ok && releasekey_trust_count(g_trusted_keys_dir) > 0) {
+					char sig_path[PATH_MAX];
+					char sig_url[832];
+					char comment[PKG_NAME_MAX + PKG_VERSION_MAX + 96];
+					char want[PKG_NAME_MAX + PKG_VERSION_MAX + 96];
+					struct curlfetch_opts sig_opts;
 
-				fetch_note_sidecar_path(chain_idx, recipe.name, note_path, sizeof(note_path));
-				nfd = open(note_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-				if (nfd >= 0) {
-					char note[640];
-					int n;
+					snprintf(sig_path, sizeof(sig_path), "%s.minisig", artifact_path);
+					snprintf(sig_url, sizeof(sig_url), "%s.minisig", artifact_url);
+					unlink(sig_path);
 
-					/*
-					 * Two different disappointments, and they need
-					 * different sentences. A checksum mismatch means
-					 * the cache is serving bytes this recipe does not
-					 * approve. A signature that did not verify means
-					 * this host cannot establish that Cix published
-					 * them at all -- and for a recipe with no checksum
-					 * that is the ONLY gate, so saying "failed
-					 * checksum" there would name a field the recipe
-					 * does not have (ADR-0279).
-					 */
-					if (recipe.artifact_sha256[0] != '\0')
-						n = snprintf(note, sizeof(note),
-						              "artifact for %s@%s downloaded but failed checksum "
-						              "(recipe approves %.16s..., cache served %.16s...) -- "
-						              "falling back to source; if this recipe version is "
-						              "already published, an edited pkg_artifact_sha256 "
-						              "cannot take effect, bump pkg_version instead",
-						              recipe.name, recipe.version, recipe.artifact_sha256,
-						              sha_out);
-					else
-						n = snprintf(note, sizeof(note),
-						              "artifact for %s@%s downloaded but its signature did "
-						              "not verify against this host's trusted keys -- "
-						              "falling back to source. Either it was published "
-						              "unsigned, or it was signed by a key this host does "
-						              "not trust: `cixctl pkg sync` adopts the keys "
-						              "published in docs/keys/",
-						              recipe.name, recipe.version);
-					if (n > 0) {
-						ssize_t written = write(nfd, note, (size_t)n);
-
-						(void)written;
+					memset(&sig_opts, 0, sizeof(sig_opts));
+					sig_opts.url = sig_url;
+					sig_opts.path = sig_path;
+					sig_opts.header1 = artifact_header[0] != '\0' ? artifact_header : NULL;
+					sig_opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
+					sig_opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
+					sig_opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
+					if (curlfetch_perform(&sig_opts, NULL, NULL, 0) == 0 &&
+					    releasekey_verify_file(artifact_path, sig_path, g_trusted_keys_dir, comment,
+					                            sizeof(comment)) == RELEASEKEY_OK) {
+						snprintf(want, sizeof(want), "cix pkg %s@%s sha256=%s", recipe.name,
+						          recipe.version, sha_out);
+						if (strcmp(comment, want) == 0)
+							sig_ok = 1;
 					}
-					close(nfd);
+					unlink(sig_path);
 				}
+
+				/*
+				 * Where both approvals exist, both must agree. A recipe
+				 * with a checksum keeps exactly the behaviour ADR-0122
+				 * gave it -- 624 artifacts are published unsigned and must
+				 * stay installable -- and a recipe without one now has a
+				 * way in at all, which is the cold-box case #306 and #403
+				 * are both about.
+				 */
+				if (recipe.artifact_sha256[0] != '\0') {
+					if (sha_ok && strcasecmp(sha_out, recipe.artifact_sha256) == 0)
+						_exit(0); /* verified -- pkg_fetch_completed() stages from this file */
+				} else if (sig_ok) {
+					_exit(0);
+				}
+				/*
+				 * Issue #149: an artifact that downloaded fine but failed
+				 * its checksum is a different situation from one that was
+				 * simply absent, and it is worth saying so.
+				 *
+				 * "Absent" is ordinary -- most packages have no published
+				 * artifact. A MISMATCH means the cache is serving
+				 * different bytes than the recipe approves, which in
+				 * practice means the recipe's pkg_artifact_sha256 was
+				 * edited in place on an already-published version and can
+				 * never take effect (#145). The install then silently
+				 * falls back to source and fails with whatever that path
+				 * fails with -- on a host without a working resolver, a
+				 * DNS error that says nothing about checksums. That
+				 * misdirection cost a real debugging cycle across 14
+				 * recipes.
+				 *
+				 * Written to the fetch note so it surfaces whether or not
+				 * the source fallback goes on to succeed: a mismatch is
+				 * worth knowing about even when the install works.
+				 */
+				if (sha_ok) {
+					int nfd;
+
+					nfd = open(note_path, O_WRONLY | O_CREAT | O_APPEND, 0600);
+					if (nfd >= 0) {
+						char note[640];
+						int n;
+
+						/*
+						 * Two different disappointments, and they need
+						 * different sentences. A checksum mismatch means
+						 * the cache is serving bytes this recipe does not
+						 * approve. A signature that did not verify means
+						 * this host cannot establish that Cix published
+						 * them at all -- and for a recipe with no checksum
+						 * that is the ONLY gate, so saying "failed
+						 * checksum" there would name a field the recipe
+						 * does not have (ADR-0279).
+						 */
+						if (recipe.artifact_sha256[0] != '\0')
+							n = snprintf(note, sizeof(note),
+							              "repository %s served %s@%s with the wrong checksum "
+							              "(recipe approves %.16s..., it served %.16s...) -- "
+							              "not used; the next repository, then the source, is "
+							              "tried. If this recipe version is already "
+							              "published, an edited pkg_artifact_sha256 cannot "
+							              "take effect: bump pkg_version instead\n",
+							              repo->name, recipe.name, recipe.version,
+							              recipe.artifact_sha256, sha_out);
+						else
+							n = snprintf(note, sizeof(note),
+							              "repository %s served %s@%s with a signature that "
+							              "did not verify against this host's trusted keys -- "
+							              "not used; the next repository, then the source, is "
+							              "tried. Either it was published unsigned, or by a "
+							              "key this host does not trust: `cixctl pkg sync` "
+							              "adopts the keys a trusted source publishes in "
+							              "docs/keys/\n",
+							              repo->name, recipe.name, recipe.version);
+						if (n > 0) {
+							ssize_t written = write(nfd, note, (size_t)n);
+
+							(void)written;
+						}
+						close(nfd);
+					}
+				}
+				unlink(artifact_path); /* not found / wrong checksum -- discard, fall through */
 			}
-			unlink(artifact_path); /* not found / wrong checksum -- discard, fall through */
 		}
 
 		/*
@@ -11243,7 +11262,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	 */
 	{
 		char note_path[PATH_MAX];
-		char note[512];
+		char note[4096]; /* ADR-0324: one line per repository that served a bad copy */
 		int nfd;
 
 		fetch_note_sidecar_path(chain_idx, e->name, note_path, sizeof(note_path));
@@ -11254,8 +11273,12 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			close(nfd);
 			unlink(note_path);
 			if (n > 0) {
+				char *line, *save = NULL;
+
 				note[n] = '\0';
-				logstore_write("cixd", "warn", "pkg %s@%s: %s", e->name, e->image, note);
+				for (line = strtok_r(note, "\n", &save); line != NULL;
+				     line = strtok_r(NULL, "\n", &save))
+					logstore_write("cixd", "warn", "pkg %s@%s: %s", e->name, e->image, line);
 			}
 		}
 	}
@@ -17594,138 +17617,20 @@ enum pkg_error pkg_build_set_cpu_max(const char *cpu_max)
 	return PKG_OK;
 }
 
-/* ---- pkg/ redesign Part 3b (ADR-0122): plain-HTTP precompiled-artifact server config ----
+/* ---- package repositories (ADR-0122, ADR-0324 step B) ----
  *
- * Deliberately NOT the same forge-aware repo config Part 2 built for
- * recipes (ADR-0121). Confirmed with the user directly: recipes are
- * small, versioned text that belongs in git; a compiled package
- * artifact does not, and stuffing binaries into a git-forge's own
- * archive/raw-content endpoints (the mechanism Part 2 already has)
- * would mean an operator has to check binaries into that same git
- * tree to make them fetchable -- exactly the "source contaminated
- * with compiled output" problem this design explicitly avoids. A
- * precompiled artifact is instead served from any plain HTTP
- * location (a generic file server, a forge's own release-assets/
- * package-registry feature reachable over plain HTTP, a peer
- * cixd) at a fixed, predictable path this daemon computes itself:
- * <base_url>/<name>-<version>.tar.gz -- the exact same naming
- * convention the local cache already uses. Trust never comes from
- * the server (see struct pkg_recipe's own artifact_sha256 comment):
- * the artifact is only ever accepted after verifying it against the
- * recipe's own git-tracked checksum.
+ * A precompiled artifact is served from any plain HTTP location at a
+ * path this daemon computes itself -- <url>/<published name> -- and is
+ * accepted only after verifying it against the recipe's own git-tracked
+ * checksum and, where keys are trusted, its signature: trust never
+ * comes from the server. ADR-0122 kept one such server; ADR-0324 keeps
+ * a list (pkgrepo.c), tried in order, each copy verified, the next
+ * tried when one fails, and pushes to every repository marked push.
  */
-
-static char g_artifact_base_url[PKGARTIFACT_URL_MAX] = PKG_DEFAULT_ARTIFACT_URL;
-static char g_artifact_token[PKGARTIFACT_TOKEN_MAX];
-static char g_artifact_config_path[PATH_MAX];
-/* Issue #129: whether a fresh local build publishes its own result to
- * the configured artifact server. Off by default -- publishing is an
- * outward-facing action, so it is opted into deliberately, never
- * inherited from merely having a base_url set for pulling. */
-static int g_artifact_push_enabled;
-
-static int save_artifact_config(void)
-{
-	struct json_writer w;
-	int rc;
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "base_url");
-	jw_str(&w, g_artifact_base_url);
-	jw_key(&w, "auth_token");
-	jw_str(&w, g_artifact_token);
-	jw_key(&w, "push_enabled");
-	jw_bool(&w, g_artifact_push_enabled);
-	jw_obj_close(&w);
-	w.buf[w.len] = '\0';
-
-	rc = persist_atomic_write(g_artifact_config_path, w.buf, w.len);
-	jw_free(&w);
-	return rc;
-}
-
-/* ADR-0141 Phase 4: path-only repoint -- see pkg_repoint()'s own doc
- * comment for the shared reasoning. */
-void pkg_artifact_repoint(const char *new_config_path)
-{
-	snprintf(g_artifact_config_path, sizeof(g_artifact_config_path), "%s", new_config_path);
-}
-
-int pkg_artifact_init(const char *config_path)
-{
-	char *buf;
-	size_t len;
-	struct json_value *root;
-	const char *s;
-
-	if (snprintf(g_artifact_config_path, sizeof(g_artifact_config_path), "%s", config_path) >=
-	    (int)sizeof(g_artifact_config_path))
-		return -1;
-	snprintf(g_artifact_base_url, sizeof(g_artifact_base_url), "%s", PKG_DEFAULT_ARTIFACT_URL);
-	g_artifact_token[0] = '\0';
-	g_artifact_push_enabled = 0;
-
-	if (persist_read_file(config_path, &buf, &len) != 0 || buf == NULL)
-		return 0; /* no persisted config yet -- defaults stand */
-
-	root = json_parse(buf, len);
-	free(buf);
-	if (root == NULL)
-		return 0;
-
-	s = json_as_string(json_object_get(root, "base_url"));
-	if (s != NULL)
-		snprintf(g_artifact_base_url, sizeof(g_artifact_base_url), "%s", s);
-	s = json_as_string(json_object_get(root, "auth_token"));
-	if (s != NULL)
-		snprintf(g_artifact_token, sizeof(g_artifact_token), "%s", s);
-	{
-		const struct json_value *pe = json_object_get(root, "push_enabled");
-
-		if (pe != NULL && pe->type == JSON_BOOL)
-			g_artifact_push_enabled = pe->u.boolean ? 1 : 0;
-	}
-
-	json_free(root);
-	return 0;
-}
-
-/* {"base_url","auth_token_set"} -- the token itself is never echoed
- * back, same posture pkgsource_write_json() has. */
-void pkg_artifact_write_json_config(struct json_writer *w)
-{
-	jw_obj_open(w);
-	jw_key(w, "base_url");
-	jw_str(w, g_artifact_base_url);
-	jw_key(w, "auth_token_set");
-	jw_bool(w, g_artifact_token[0] != '\0');
-	jw_key(w, "push_enabled");
-	jw_bool(w, g_artifact_push_enabled);
-	jw_obj_close(w);
-}
-
-/* NULL leaves that field unchanged (partial PUT, same contract
- * pkgsource_update() has); "" for auth_token explicitly
- * clears it. */
-enum pkg_error pkg_artifact_set_config(const char *base_url, const char *auth_token,
-                                       const int *push_enabled)
-{
-	if (base_url != NULL)
-		snprintf(g_artifact_base_url, sizeof(g_artifact_base_url), "%s", base_url);
-	if (auth_token != NULL)
-		snprintf(g_artifact_token, sizeof(g_artifact_token), "%s", auth_token);
-	if (push_enabled != NULL)
-		g_artifact_push_enabled = *push_enabled ? 1 : 0;
-
-	if (save_artifact_config() != 0)
-		return PKG_ERR_PERSIST_FAILED;
-	return PKG_OK;
-}
 
 static int pkg_artifact_is_configured(void)
 {
-	return g_artifact_base_url[0] != '\0';
+	return pkgrepo_count() > 0;
 }
 
 /*
@@ -17781,6 +17686,7 @@ struct pkg_push_job {
 	char name[PKG_NAME_MAX];
 	char version[PKG_VERSION_MAX];
 	enum pkg_push_kind kind;
+	char repo[PKG_SOURCE_NAME_MAX]; /* ADR-0324: the repository it is pushed to */
 };
 
 static struct pkg_push_job g_push_queue[PKG_PUSH_QUEUE_MAX];
@@ -17964,6 +17870,24 @@ static void push_status_path(char *out, size_t out_size)
 	snprintf(out, out_size, "%s/.artifact-push.status", g_sources_dir);
 }
 
+/* One push of one artifact (or its signature) to one repository. -1 when the queue is full. */
+static int push_enqueue_one(const char *name, const char *version, enum pkg_push_kind kind,
+                            const char *repo)
+{
+	if (g_push_queue_count >= PKG_PUSH_QUEUE_MAX) {
+		logstore_write("cixd", "error",
+		                "artifact push: queue full (%d) -- %s@%s will NOT be published to %s",
+		                PKG_PUSH_QUEUE_MAX, name, version, repo);
+		return -1;
+	}
+	snprintf(g_push_queue[g_push_queue_count].name, PKG_NAME_MAX, "%s", name);
+	snprintf(g_push_queue[g_push_queue_count].version, PKG_VERSION_MAX, "%s", version);
+	snprintf(g_push_queue[g_push_queue_count].repo, PKG_SOURCE_NAME_MAX, "%s", repo);
+	g_push_queue[g_push_queue_count].kind = kind;
+	g_push_queue_count++;
+	return 0;
+}
+
 /*
  * Queues a freshly built package for publication. Best-effort by
  * design -- a push that never happens must never fail the build that
@@ -17974,7 +17898,9 @@ static void push_status_path(char *out, size_t out_size)
 static void pkg_artifact_push_enqueue_kind(const char *name, const char *version,
                                             enum pkg_push_kind kind)
 {
-	if (!g_artifact_push_enabled) {
+	int i;
+
+	if (pkgrepo_push_count() == 0) {
 		/*
 		 * Issue #171: the one refusal path here that used to say
 		 * nothing at all, while every other one below logs.
@@ -17994,37 +17920,30 @@ static void pkg_artifact_push_enqueue_kind(const char *name, const char *version
 		 * published without rebuilding.
 		 */
 		logstore_write("cixd", "info",
-		                "artifact push: %s@%s was built here but not published -- push is "
-		                "disabled. The artifact is in this host's cache and can still be "
-		                "published with POST /v1/pkg/%s/artifact/publish; it will be lost "
-		                "if this host is reinstalled first.",
+		                "artifact push: %s@%s was built here but not published -- no package "
+		                "repository is marked push. The artifact is in this host's cache and "
+		                "can still be published with POST /v1/pkg/%s/artifact/publish; it will "
+		                "be lost if this host is reinstalled first.",
 		                name, version, name);
 		return;
 	}
-	if (!pkg_artifact_is_configured()) {
-		logstore_write("cixd", "info",
-		                "artifact push: %s@%s not published -- push is enabled but no "
-		                "base_url is configured",
-		                name, version);
-		return;
+	/* ADR-0324: every repository marked push gets its own copy, and
+	 * its own retry -- one repository being down never holds another. */
+	for (i = 0; i < pkgrepo_count(); i++) {
+		const struct pkg_repository *r = pkgrepo_at(i);
+
+		if (!r->push)
+			continue;
+		if (r->token[0] == '\0') {
+			logstore_write("cixd", "info",
+			                "artifact push: %s@%s not published to %s -- it is marked push "
+			                "but has no token",
+			                name, version, r->name);
+			continue;
+		}
+		if (push_enqueue_one(name, version, kind, r->name) != 0)
+			return;
 	}
-	if (g_artifact_token[0] == '\0') {
-		logstore_write("cixd", "info",
-		                "artifact push: %s@%s not published -- push is enabled but no "
-		                "auth_token is configured",
-		                name, version);
-		return;
-	}
-	if (g_push_queue_count >= PKG_PUSH_QUEUE_MAX) {
-		logstore_write("cixd", "error",
-		                "artifact push: queue full (%d) -- %s@%s will NOT be published",
-		                PKG_PUSH_QUEUE_MAX, name, version);
-		return;
-	}
-	snprintf(g_push_queue[g_push_queue_count].name, PKG_NAME_MAX, "%s", name);
-	snprintf(g_push_queue[g_push_queue_count].version, PKG_VERSION_MAX, "%s", version);
-	g_push_queue[g_push_queue_count].kind = kind;
-	g_push_queue_count++;
 }
 
 static void pkg_artifact_push_enqueue(const char *name, const char *version)
@@ -18453,6 +18372,7 @@ static enum pkg_error seed_place_artifact(const char *name, const struct seed_ch
 	char sha_out[128] = "";
 	struct curlfetch_opts opts;
 	char curl_err[256];
+	int ri;
 
 	if (c->cached) {
 		char src[PATH_MAX];
@@ -18466,37 +18386,48 @@ static enum pkg_error seed_place_artifact(const char *name, const struct seed_ch
 		return PKG_OK;
 	}
 
-	pkg_artifact_build_request(name, c->version, c->format, url, sizeof(url), header,
-	                            sizeof(header));
-	memset(&opts, 0, sizeof(opts));
-	opts.url = url;
-	opts.path = dst;
-	opts.header1 = header[0] != '\0' ? header : NULL;
-	opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
-	opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
-	opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
-	curl_err[0] = '\0';
+	/* ADR-0324: every repository in order; a copy that is not the
+	 * approved bytes is refused and the next one tried. */
+	err[0] = '\0';
+	for (ri = 0; ri < pkgrepo_count(); ri++) {
+		const struct pkg_repository *repo = pkgrepo_at(ri);
+
+		pkg_artifact_build_request(repo, name, c->version, c->format, url, sizeof(url), header,
+		                           sizeof(header));
+		memset(&opts, 0, sizeof(opts));
+		opts.url = url;
+		opts.path = dst;
+		opts.header1 = header[0] != '\0' ? header : NULL;
+		opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
+		opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
+		opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
+		curl_err[0] = '\0';
+		unlink(dst);
+		if (curlfetch_perform(&opts, NULL, curl_err, sizeof(curl_err)) != 0) {
+			snprintf(err, err_size, "could not fetch the %s@%s artifact from %s: %s", name,
+			         c->version, repo->name, curl_err[0] != '\0' ? curl_err : "fetch failed");
+			continue;
+		}
+		if (pkg_run_capture_sha256(dst, sha_out, sizeof(sha_out)) != 0) {
+			snprintf(err, err_size, "could not hash the %s@%s artifact from %s", name,
+			         c->version, repo->name);
+			continue;
+		}
+		if (strcmp(sha_out, c->sha256) != 0) {
+			snprintf(err, err_size,
+			         "repository %s served %s@%s that is not the approved artifact: the "
+			         "recipe approves %s, it served %s",
+			         repo->name, name, c->version, c->sha256, sha_out);
+			logstore_write("cixd", "warn", "pkg: %s", err);
+			continue;
+		}
+		return PKG_OK;
+	}
 	unlink(dst);
-	if (curlfetch_perform(&opts, NULL, curl_err, sizeof(curl_err)) != 0) {
-		unlink(dst);
-		snprintf(err, err_size, "could not fetch the %s@%s artifact from %s: %s", name,
-		         c->version, url, curl_err[0] != '\0' ? curl_err : "fetch failed");
-		return PKG_ERR_NOT_FOUND;
-	}
-	if (pkg_run_capture_sha256(dst, sha_out, sizeof(sha_out)) != 0) {
-		unlink(dst);
-		snprintf(err, err_size, "could not hash the fetched %s@%s artifact", name, c->version);
-		return PKG_ERR_PERSIST_FAILED;
-	}
-	if (strcmp(sha_out, c->sha256) != 0) {
-		unlink(dst);
-		snprintf(err, err_size,
-		         "the fetched %s@%s artifact is not the approved one: recipe approves %s, "
-		         "%s served %s",
-		         name, c->version, c->sha256, url, sha_out);
-		return PKG_ERR_NOT_FOUND;
-	}
-	return PKG_OK;
+	if (err[0] == '\0')
+		snprintf(err, err_size, "no package repository is configured to fetch %s@%s from",
+		         name, c->version);
+	return PKG_ERR_NOT_FOUND;
 }
 
 enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size)
@@ -18669,7 +18600,7 @@ enum pkg_error pkg_artifact_publish_resolve_in(const char *name, const char *ima
 {
 	int i;
 
-	if (!g_artifact_push_enabled || g_artifact_base_url[0] == '\0')
+	if (pkgrepo_push_count() == 0)
 		return PKG_ERR_INVALID_RECIPE;
 
 	i = artifact_publish_entry(name, image);
@@ -18836,7 +18767,7 @@ enum pkg_error pkg_artifact_publish_in(const char *name, const char *image)
 {
 	int i;
 
-	if (!g_artifact_push_enabled || g_artifact_base_url[0] == '\0')
+	if (pkgrepo_push_count() == 0)
 		return PKG_ERR_INVALID_RECIPE;
 
 	i = artifact_publish_entry(name, image);
@@ -18862,8 +18793,8 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 	char tarball[PATH_MAX];
 	char artifact[PATH_MAX];
 	char status_path[PATH_MAX];
-	char url[PKGARTIFACT_URL_MAX];
-	char auth_header[PKGARTIFACT_TOKEN_MAX + 32];
+	char url[PKG_REPOSITORY_URL_MAX + 256];
+	char auth_header[PKG_REPOSITORY_TOKEN_MAX + 32];
 	struct stat st;
 	pid_t pid;
 	int pidfd;
@@ -18921,9 +18852,25 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 		g_push_queue_count--;
 		if (g_push_current.kind != PKG_PUSH_SIGNATURE) {
 			char t[PKG_APPROVAL_TARGET_MAX];
+			int more = 0;
 
+			/* One approval publishes the artifact to every repository
+			 * marked push (ADR-0324): it is spent with the last copy. */
+			for (i = 0; i < g_push_queue_count; i++)
+				if (g_push_queue[i].kind != PKG_PUSH_SIGNATURE &&
+				    strcmp(g_push_queue[i].name, g_push_current.name) == 0 &&
+				    strcmp(g_push_queue[i].version, g_push_current.version) == 0)
+					more = 1;
 			snprintf(t, sizeof(t), "%s@%s", g_push_current.name, g_push_current.version);
-			approval_consume(PKG_GATE_PUBLISH, t);
+			if (!more)
+				approval_consume(PKG_GATE_PUBLISH, t);
+		}
+		if (pkgrepo_find(g_push_current.repo) == NULL) {
+			logstore_write("cixd", "info",
+			                "artifact push: %s@%s not pushed to %s -- that repository is no "
+			                "longer configured",
+			                g_push_current.name, g_push_current.version, g_push_current.repo);
+			continue;
 		}
 
 		/*
@@ -18963,9 +18910,9 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 	/* The format of the bytes actually being pushed, from the file
 	 * that was just found -- never from the recipe, which may have
 	 * been converted since these bytes were built (ADR-0307). */
-	pkg_artifact_build_request(g_push_current.name, g_push_current.version,
-	                            artifact_format_of_path(artifact), url, sizeof(url), auth_header,
-	                            sizeof(auth_header));
+	pkg_artifact_build_request(pkgrepo_find(g_push_current.repo), g_push_current.name,
+	                           g_push_current.version, artifact_format_of_path(artifact), url,
+	                           sizeof(url), auth_header, sizeof(auth_header));
 	if (g_push_current.kind == PKG_PUSH_SIGNATURE) {
 		size_t ulen = strlen(url);
 
@@ -19513,8 +19460,8 @@ void pkg_artifact_push_completed(int exit_status)
 			                g_push_current.name, g_push_current.version, code);
 			return;
 		}
-		logstore_write("cixd", "info", "artifact push: %s@%s published (HTTP %ld)",
-		                g_push_current.name, g_push_current.version, code);
+		logstore_write("cixd", "info", "artifact push: %s@%s published to %s (HTTP %ld)",
+		                g_push_current.name, g_push_current.version, g_push_current.repo, code);
 		/* The bytes are now both built here and accepted by the cache,
 		 * which is the only moment an approval is honestly earnable. */
 		approve_published_artifact(g_push_current.name, g_push_current.version);
@@ -19530,8 +19477,8 @@ void pkg_artifact_push_completed(int exit_status)
 		 * signature can only be made once the bytes are accepted.
 		 */
 		if (releasekey_is_set())
-			pkg_artifact_push_enqueue_kind(g_push_current.name, g_push_current.version,
-			                                PKG_PUSH_SIGNATURE);
+			push_enqueue_one(g_push_current.name, g_push_current.version, PKG_PUSH_SIGNATURE,
+			                 g_push_current.repo); /* the repository that took the artifact */
 		else
 			logstore_write("cixd", "info",
 			                "artifact push: %s@%s published unsigned -- this host holds no "
@@ -19632,13 +19579,14 @@ void pkg_artifact_published_name(const char *name, const char *version, const ch
 	         version != NULL ? version : "", pkg_host_arch(), suffix != NULL ? suffix : "");
 }
 
-static void pkg_artifact_build_request(const char *name, const char *version, const char *format,
-                                        char *out_url, size_t out_url_size, char *out_header,
-                                        size_t out_header_size)
+static void pkg_artifact_build_request(const struct pkg_repository *r, const char *name,
+                                       const char *version, const char *format,
+                                       char *out_url, size_t out_url_size, char *out_header,
+                                       size_t out_header_size)
 {
-	size_t len = strlen(g_artifact_base_url);
+	size_t len = strlen(r->url);
 
-	if (len > 0 && g_artifact_base_url[len - 1] == '/')
+	if (len > 0 && r->url[len - 1] == '/')
 		len--;
 	/*
 	 * Architecture is part of an artifact's identity (#183, #179).
@@ -19678,30 +19626,31 @@ static void pkg_artifact_build_request(const char *name, const char *version, co
 
 		pkg_artifact_published_name(name, version, artifact_suffix(format), basename,
 		                             sizeof(basename));
-		snprintf(out_url, out_url_size, "%.*s/%s", (int)len, g_artifact_base_url, basename);
+		snprintf(out_url, out_url_size, "%.*s/%s", (int)len, r->url, basename);
 	}
-	if (g_artifact_token[0] != '\0')
-		snprintf(out_header, out_header_size, "Authorization: Bearer %s", g_artifact_token);
+	if (r->token[0] != '\0')
+		snprintf(out_header, out_header_size, "Authorization: Bearer %s", r->token);
 	else
 		out_header[0] = '\0';
 }
 
-enum pkg_error pkg_artifact_push_request(const char *remote_name, char *out_url, size_t url_size,
+enum pkg_error pkg_artifact_push_request(const struct pkg_repository *r, const char *remote_name,
+                                          char *out_url, size_t url_size,
                                           char *out_auth_header, size_t hdr_size)
 {
 	size_t len;
 
 	if (remote_name == NULL || remote_name[0] == '\0')
 		return PKG_ERR_INVALID_NAME;
-	if (g_artifact_base_url[0] == '\0')
+	if (r->url[0] == '\0')
 		return PKG_ERR_NOT_FOUND;
 
-	len = strlen(g_artifact_base_url);
-	if (len > 0 && g_artifact_base_url[len - 1] == '/')
+	len = strlen(r->url);
+	if (len > 0 && r->url[len - 1] == '/')
 		len--;
-	snprintf(out_url, url_size, "%.*s/%s", (int)len, g_artifact_base_url, remote_name);
-	if (g_artifact_token[0] != '\0')
-		snprintf(out_auth_header, hdr_size, "Authorization: Bearer %s", g_artifact_token);
+	snprintf(out_url, url_size, "%.*s/%s", (int)len, r->url, remote_name);
+	if (r->token[0] != '\0')
+		snprintf(out_auth_header, hdr_size, "Authorization: Bearer %s", r->token);
 	else
 		out_auth_header[0] = '\0';
 	return PKG_OK;
@@ -19802,7 +19751,7 @@ int pkg_buildenv_reclaim(void)
 
 int pkg_artifact_push_is_enabled(void)
 {
-	return g_artifact_push_enabled;
+	return pkgrepo_push_count() > 0;
 }
 
 /* Where start_fetch_for()'s child stages a checksum-verified artifact

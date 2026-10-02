@@ -1359,14 +1359,32 @@ static int check_pkg_config(const struct cix_client *c, const char *want_repo_ur
 	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(c, "GET", "/v1/pkg/artifact-config", NULL, &r) != 0 || r.status != 200 ||
-	    !str_eq(json_str_field(r.json, "base_url"), want_artifact_url) ||
-	    json_object_get(r.json, "push_enabled") == NULL ||
-	    json_object_get(r.json, "push_enabled")->type != JSON_BOOL ||
-	    json_object_get(r.json, "push_enabled")->u.boolean) {
-		fprintf(stderr, "FAIL: artifact-config %s: want base_url=%s push off, got status=%d\n",
-		        when, want_artifact_url, r.status);
+	/* ADR-0324 step B: likewise the repositories -- the public cache,
+	 * pull only, or nothing once cleared. */
+	if (cix_client_request(c, "GET", "/v1/pkg/repositories", NULL, &r) != 0 || r.status != 200 ||
+	    r.json == NULL) {
+		fprintf(stderr, "FAIL: repositories %s: status=%d\n", when, r.status);
 		ok = 0;
+	} else {
+		const struct json_value *arr = json_object_get(r.json, "repositories");
+		size_t want = want_artifact_url[0] == '\0' ? 0 : 1;
+
+		if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count != want) {
+			fprintf(stderr, "FAIL: repositories %s: want %zu repository, got %s\n", when, want,
+			        r.body != NULL ? r.body : "(none)");
+			ok = 0;
+		} else if (want == 1) {
+			const struct json_value *rep = arr->u.array.items[0];
+			const struct json_value *push = json_object_get(rep, "push");
+
+			if (!str_eq(json_str_field(rep, "url"), want_artifact_url) ||
+			    !str_eq(json_str_field(rep, "name"), "cix-public") || push == NULL ||
+			    push->type != JSON_BOOL || push->u.boolean) {
+				fprintf(stderr, "FAIL: repositories %s: want cix-public at %s, pull only: %s\n",
+				        when, want_artifact_url, r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+		}
 	}
 	cix_response_free(&r);
 	return ok;
@@ -1389,7 +1407,7 @@ static int test_pkg_config_defaults(void)
 	/* Undo the harness's cleared seed: this daemon must see no file. */
 	snprintf(path, sizeof(path), "%s/rebuildable/pkg/sources.json", dir);
 	unlink(path);
-	snprintf(path, sizeof(path), "%s/rebuildable/pkg/artifact_config.json", dir);
+	snprintf(path, sizeof(path), "%s/rebuildable/pkg/repositories.json", dir);
 	unlink(path);
 	snprintf(g_data_dir, sizeof(g_data_dir), "%s", dir);
 
@@ -1412,9 +1430,9 @@ static int test_pkg_config_defaults(void)
 	}
 	cix_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&c, "PUT", "/v1/pkg/artifact-config", "{\"base_url\":\"\"}", &r) != 0 ||
+	if (cix_client_request(&c, "DELETE", "/v1/pkg/repositories/cix-public", NULL, &r) != 0 ||
 	    r.status != 200) {
-		fprintf(stderr, "FAIL: defaults: clearing base_url returned %d\n", r.status);
+		fprintf(stderr, "FAIL: defaults: removing the default repository returned %d\n", r.status);
 		ok = 0;
 	}
 	cix_response_free(&r);
@@ -1426,10 +1444,10 @@ static int test_pkg_config_defaults(void)
 		fprintf(stderr, "FAIL: defaults: the emptied source list was not persisted\n");
 		ok = 0;
 	}
-	snprintf(path, sizeof(path), "%s/rebuildable/pkg/artifact_config.json", dir);
+	snprintf(path, sizeof(path), "%s/rebuildable/pkg/repositories.json", dir);
 	if (read_small_file(path, content, sizeof(content)) != 0 ||
-	    strstr(content, "\"base_url\":\"\"") == NULL) {
-		fprintf(stderr, "FAIL: defaults: cleared base_url was not persisted\n");
+	    strstr(content, "\"repositories\":[]") == NULL) {
+		fprintf(stderr, "FAIL: defaults: the emptied repository list was not persisted\n");
 		ok = 0;
 	}
 
@@ -5166,7 +5184,7 @@ skip_pin_isolation:
 		 *
 		 * It is only built when publishing is configured --
 		 * pkg_artifact_publish_resolve() refuses outright with no
-		 * base_url, and tarring a whole installed tree with nowhere to
+		 * repository marked push, and tarring a whole installed tree with nowhere to
 		 * send it would be waste. So what is under test is "when
 		 * publishing is configured, a hostbuild produces something
 		 * publishable", and the configuration is part of the test
@@ -5177,11 +5195,11 @@ skip_pin_isolation:
 		 * it, harmlessly, after the tarball exists.
 		 */
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "PUT", "/v1/pkg/artifact-config",
-		                       "{\"base_url\":\"http://127.0.0.1:9/artifacts\","
-		                       "\"push_enabled\":true}",
+		if (cix_client_request(&client, "POST", "/v1/pkg/repositories",
+		                       "{\"name\":\"unreachable\",\"url\":\"http://127.0.0.1:9/artifacts\","
+		                       "\"push\":true}",
 		                       &r) != 0 ||
-		    (r.status != 200 && r.status != 204)) {
+		    r.status != 201) {
 			fprintf(stderr, "FAIL: #200 could not configure artifact push, status=%d\n",
 			        r.status);
 			ok = 0;

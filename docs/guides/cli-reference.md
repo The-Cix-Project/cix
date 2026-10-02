@@ -95,7 +95,7 @@ resolver             changed    appliable
 $ cixctl config apply --file=c.json --section=resolver
 ```
 
-Eleven sections can be applied, the ones a single setter owns: site, daemon, resolver, time, zswap, swap, backup, dns_forwarders, ldap, package_repo, package_artifacts. The rest show in a diff and refuse an apply; use their own commands (`container`, `network`, `dns`, `pkg`, …). A section is replaced whole, so send back every field it renders. Secrets cannot be set this way: the document never carries them, and applying a section leaves its secret untouched.
+Nine sections are replaced whole, the ones a single setter owns: site, daemon, resolver, time, zswap, swap, backup, dns_forwarders, ldap. Lists keyed by a name -- among them package_sources and package_repositories (ADR-0324) -- are reconciled element by element. The rest show in a diff and refuse an apply; use their own commands (`container`, `network`, `dns`, `pkg`, …). A section is replaced whole, so send back every field it renders. Secrets cannot be set this way: the document never carries them, and applying a section leaves its secret untouched.
 
 ## Session and identity
 
@@ -505,7 +505,7 @@ See [`networking.md`](networking.md).
 | `pkg cache-config show` / `pkg cache-config set --max-bytes=N` | The local build-artifact cache's size cap |
 | `pkg cache-status` | Cache occupancy |
 | `pkg cache-clear` | Remove every cached artifact |
-| `pkg artifact-config show` / `pkg artifact-config set [--url=URL] [--token=TOKEN \| --clear-token] [--push \| --no-push]` | The artifact server. `--push` makes a fresh build publish its result there ([ADR-0201](../adr/0201-artifacts-are-retrievable-and-self-publishing.md)); off by default, needs a token |
+| `pkg repository ls` / `pkg repository add NAME --url=URL [--token=TOKEN] [--push=on\|off]` / `pkg repository set NAME [--url=URL] [--token=TOKEN \| --clear-token] [--push=on\|off]` / `pkg repository rm NAME` | Where built packages come from, in order ([ADR-0324](../adr/0324-many-recipe-sources-and-many-package-repositories.md)): mirrors tried in turn, every copy verified, so order is speed and never trust. `--push=on` makes a fresh build publish its result there ([ADR-0201](../adr/0201-artifacts-are-retrievable-and-self-publishing.md)); off by default, needs a token. Every repository marked push gets its own copy |
 | `pkg artifact-publish NAME` | Publish an already-built artifact without rebuilding it |
 | `pkg artifact-export NAME [--out=FILE]` | Download a hostbuild package's artifact (`kernel`, `cix`, `isotools`) to a local file, named `{name}-{version}.tar.gz` by default |
 | `pkg bootstrap [--toolchain=PATH]` / `pkg bootstrap --toolchain-url=URL --toolchain-sha256=SHA256 [--wait]` | Stage a toolchain artifact into the shared build image (ADR-0065). With no flag it copies the daemon host's own toolchain, which is empty on an installed host; build images are normally made with `image materialize` ([Build images](writing-recipes.md#build-images)) |

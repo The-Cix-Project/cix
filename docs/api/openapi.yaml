@@ -5374,7 +5374,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "503":
-          description: No artifact cache is configured, or pushing to it is disabled
+          description: No package repository is marked push (ADR-0324)
           content:
             application/json:
               schema:
@@ -7357,15 +7357,11 @@ paths:
         (issue #126), so compiled output can be moved to another host
         instead of being rebuilt from source.
       description: >
-        The output filename is deliberately EXACTLY what the consuming
-        side already computes: ADR-0123's image-artifact fast path
-        fetches <base_url>/images/{name}-{hash}.tar.gz, where hash is
-        the image version. So an exported file placed behind any plain
-        HTTP server (including a peer cixd) is directly consumable by
-        another host's image recipe -- no new protocol and no
-        translation step, with that recipe's own image_artifact_sha256
-        still gating trust, since an artifact server is never a trust
-        boundary.
+        The output is a whole-rootfs tarball named {name}-{hash}.tar.gz, where
+        hash is the image version. Nothing consumes it automatically: ADR-0123's
+        image-artifact fast path, which once fetched exactly this name from an
+        artifact server, was retired by ADR-0209 -- package artifacts are the only
+        published binaries, each checksummed and traceable to its recipe.
 
 
         Asynchronous with a status poll, not a blocking call: tarring a
@@ -7436,9 +7432,7 @@ paths:
                   artifact_name:
                     type: string
                     description: >
-                      Basename only -- {name}-{hash}.tar.gz, the exact filename
-                      a consuming host's image-artifact fetch will ask for under
-                      its configured base_url's own images/ prefix.
+                      Basename only -- {name}-{hash}.tar.gz.
                   size_bytes:
                     type: integer
                     format: int64
@@ -10485,8 +10479,8 @@ paths:
                     type: string
                     description: >
                       Basename only -- {name}-{version}.tar.gz, the exact
-                      filename a consuming host asks for at the root of its
-                      configured base_url (ADR-0122).
+                      filename a consuming host asks for at the root of each
+                      package repository's url (ADR-0122, ADR-0324).
                   size_bytes:
                     type: integer
                     format: int64
@@ -10653,64 +10647,145 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /pkg/artifact-config:
+  /pkg/repositories:
     get:
       summary: >
-        The configured plain-HTTP precompiled-artifact server (ADR-0122) --
-        deliberately not the git-forge repo config above; see that schema's
-        own description for why a compiled binary is never served from the
-        same place recipes are.
-      operationId: getPkgArtifactConfig
+        The package repositories this host takes built packages from, in order
+        (ADR-0324 step B). They are mirrors: each is tried in turn, every copy
+        is verified against the recipe's artifact_sha256 and, where keys are
+        trusted, its signature, and a copy that fails is refused and the next
+        one tried -- order decides speed, never trust. A host that never saved
+        a list starts on ADR-0315's public cache, pull-only; a saved empty list
+        stays empty. Tokens are never returned, only token_set.
+      operationId: listPkgRepositories
       x-cix-permission: packages:read
       x-cix-expose: [cli, web]
       responses:
         "200":
-          description: >
-            Current artifact-server config. A host that has never saved one
-            reports the built-in default (ADR-0315): base_url
-            https://cache.cix.world, no token, push off. base_url is empty
-            only when an operator has cleared it.
+          description: The list
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PkgArtifactConfig"
-    put:
+                $ref: "#/components/schemas/PkgRepositoryList"
+    post:
       summary: >
-        Partially updates the configured artifact server: fields omitted from
-        the body are left unchanged. An explicit "auth_token": "" clears an
-        already-set token; omitting it leaves whatever's there.
-      operationId: putPkgArtifactConfig
+        Adds a package repository at the end of the list. `push` makes this
+        host publish what it builds there (#129): off by default, because
+        publishing is outward-facing, and it needs a token.
+      operationId: addPkgRepository
       x-cix-permission: packages:write
       x-cix-expose: [cli, web]
       requestBody:
-        required: false
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, url]
+              properties:
+                name:
+                  type: string
+                  description: "[a-z0-9][a-z0-9._-]*, as a recipe source's name."
+                url:
+                  type: string
+                  description: >
+                    A plain HTTP(S) location, never a git forge: artifacts are
+                    fetched at <url>/<name>-<version>-<arch>.cixpkg.
+                token:
+                  type: string
+                  description: Write-only. Sent as an Authorization Bearer header.
+                push:
+                  type: boolean
+      responses:
+        "201":
+          description: Added; the whole list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgRepositoryList"
+        "400":
+          description: A malformed name or url
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A repository by that name exists, or the list is full
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /pkg/repositories/{name}:
+    put:
+      summary: >
+        Partial update of one repository: omitted fields are unchanged, "" for
+        token clears it, and the name never changes.
+      operationId: updatePkgRepository
+      x-cix-permission: packages:write
+      x-cix-expose: [cli, web]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
         content:
           application/json:
             schema:
               type: object
               properties:
-                base_url:
+                url:
                   type: string
-                auth_token:
+                token:
                   type: string
-                  description: Write-only; "" clears an existing token, omitted leaves it unchanged. Sent as an Authorization Bearer header.
-                push_enabled:
+                push:
                   type: boolean
-                  description: >
-                    Whether a genuine fresh build publishes its own result to
-                    base_url (issue #129, ADR-0201). Off by default: publishing
-                    is outward-facing, so it is opted into deliberately and is
-                    never inherited from having a base_url set for pulling.
-                    Requires auth_token to be set; a cache or artifact HIT is
-                    never republished, since those bytes already came from
-                    there.
       responses:
         "200":
-          description: Updated artifact-server config (same shape as GET)
+          description: Updated; the whole list
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PkgArtifactConfig"
+                $ref: "#/components/schemas/PkgRepositoryList"
+        "400":
+          description: A field is malformed, or the body names the repository
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such repository
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Removes a repository. Artifacts already fetched stay in this host's cache.
+      operationId: deletePkgRepository
+      x-cix-permission: packages:write
+      x-cix-expose: [cli, web]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Removed; the whole list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgRepositoryList"
+        "404":
+          description: No such repository
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /pkg/policies:
     get:
@@ -14964,10 +15039,14 @@ components:
           x-cix-config-kind: array
           x-cix-config-key: "name"
           x-cix-config-apply: reconcile
-        package_artifacts:
-          description: Prebuilt-artifact server (ADR-0122). The auth token renders as a set/not-set boolean.
-          x-cix-config-kind: object
-          x-cix-config-apply: replace
+        package_repositories:
+          description: >
+            Package repositories (ADR-0324), in order: mirrors tried in turn, each copy
+            verified. A token renders as the token_set boolean and is never carried: a
+            repository that needs one is given it with PUT /v1/pkg/repositories/{name}.
+          x-cix-config-kind: array
+          x-cix-config-key: "name"
+          x-cix-config-apply: reconcile
         package_policies:
           description: Per-package install and update policy.
           x-cix-config-kind: array
@@ -20820,30 +20899,39 @@ components:
           type: integer
           description: Number of distinct (name,version) artifacts currently cached.
 
-    PkgArtifactConfig:
+    PkgRepository:
       type: object
-      required: [base_url, auth_token_set]
+      required: [name, url, token_set, push]
       properties:
-        base_url:
+        name:
+          type: string
+        url:
           type: string
           description: >
-            https://cache.cix.world on a host that has never saved an
-            artifact config (ADR-0315); empty when an operator has cleared
-            it. A plain HTTP(S) location -- never a git forge; artifacts are
-            fetched at <base_url>/<name>-<version>-<arch>.cixpkg, the same
-            arch-stamped name the local cache uses.
-        auth_token_set:
+            A plain HTTP(S) location -- never a git forge; artifacts are fetched at
+            <url>/<name>-<version>-<arch>.cixpkg, the same arch-stamped name the
+            local cache uses.
+        token_set:
           type: boolean
-          description: Whether a bearer auth token is currently stored -- the token itself is never returned.
-        push_enabled:
+          description: Whether a bearer token is stored -- the token itself is never returned.
+        push:
           type: boolean
           description: >
-            Whether a fresh local build publishes itself to base_url
-            (issue #129, ADR-0201). The upload is a PUT to exactly the URL a
-            puller will later fetch from, carrying the bearer token and an
-            X-Cix-Sha256 header. That header is a corruption check at the
-            door, not a trust claim: the consumer still verifies every byte
-            against the recipe's own git-tracked pkg_artifact_sha256.
+            Whether a fresh local build publishes itself here (issue #129, ADR-0201).
+            The upload is a PUT to exactly the URL a puller will later fetch from,
+            carrying the bearer token and an X-Cix-Sha256 header -- a corruption check
+            at the door, not a trust claim: the consumer verifies every byte against
+            the recipe's artifact_sha256. Every repository marked push gets its own copy
+            and its own retry, and the first that takes it records the approval.
+
+    PkgRepositoryList:
+      type: object
+      required: [repositories]
+      properties:
+        repositories:
+          type: array
+          items:
+            $ref: "#/components/schemas/PkgRepository"
 
     EspConfig:
       type: object
