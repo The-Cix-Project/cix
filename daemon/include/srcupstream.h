@@ -77,11 +77,17 @@ struct srcupstream_kind {
 	 * not matter -- srcdepth.h orders them, and it is the only thing
 	 * that should, since ordering upstream versions is exactly the
 	 * problem it exists to solve.
+	 *
+	 * `package` names the package asking. A kind whose feed is shared
+	 * (kernel.org: one releases.json for every kernel) ignores it; a
+	 * kind whose feed belongs to one package (gitea-tags: that
+	 * package's own repository, ADR-0323) reads that package's cache.
 	 */
-	size_t (*candidates)(const char *channel,
+	size_t (*candidates)(const char *package, const char *channel,
 	                      char out[][SRCUPSTREAM_VERSION_MAX], size_t max);
 	/*
-	 * When this kind's release data was last fetched; 0 means never.
+	 * When this kind's release data -- for `package`, where the feed is per
+	 * package -- was last fetched; 0 means never.
 	 *
 	 * Kept distinct from "the channel has no releases" on purpose. A
 	 * box that has simply never fetched, and a channel that genuinely
@@ -89,7 +95,16 @@ struct srcupstream_kind {
 	 * opposite responses from an operator, so the resolver must be able
 	 * to tell them apart rather than reporting one generic emptiness.
 	 */
-	long (*fetched_at)(void);
+	long (*fetched_at)(const char *package);
+	/*
+	 * Why `package`'s data could not be read on the last attempt -- ""
+	 * when nothing went wrong. Optional (NULL): a kind whose refresh has
+	 * its own report (kernel.org's, on the refresh endpoint) leaves it
+	 * out. Without it a recipe that cannot be discovered at all reads as
+	 * merely "never fetched", which sends an operator to refresh a feed
+	 * that a refresh will never fill.
+	 */
+	int (*problem)(const char *package, char *out, size_t out_size);
 };
 
 size_t srcupstream_count(void);
@@ -125,9 +140,14 @@ enum srcupstream_error srcupstream_check(const char *kind_name, const char *chan
  * caller who asked a question, which is what makes a catalogue read
  * cheap enough to serve on demand.
  */
-size_t srcupstream_candidates(const struct srcupstream_kind *kind, const char *channel,
+size_t srcupstream_candidates(const struct srcupstream_kind *kind, const char *package,
+                               const char *channel,
                                char out[][SRCUPSTREAM_VERSION_MAX], size_t max);
 
-long srcupstream_fetched_at(const struct srcupstream_kind *kind);
+long srcupstream_fetched_at(const struct srcupstream_kind *kind, const char *package);
+
+/* The kind's problem() for package, or "" when it has none. Never fails. */
+void srcupstream_problem(const struct srcupstream_kind *kind, const char *package, char *out,
+                         size_t out_size);
 
 #endif /* SRCUPSTREAM_H */

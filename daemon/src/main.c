@@ -6059,15 +6059,60 @@ static int kernel_releases_fetch_start(char *err_msg, size_t err_msg_size);
  */
 static int action_refresh_upstreams(const char *params, char *reason, size_t reason_size)
 {
-	char err[192];
+	char kerr[192], gerr[192], kind[32] = "";
+	int kernel_ok = 1, gitea_ok = 1;
 
-	(void)params;
-	if (kernel_releases_fetch_start(err, sizeof(err)) != 0) {
-		snprintf(reason, reason_size, "%s", err);
-		return -1;
+	/*
+	 * params {"kind":"..."} refreshes one kind only -- an operator
+	 * polling their own forge hourly need not ask kernel.org each time,
+	 * and a test refreshes the feed it serves without reaching the
+	 * internet. No params is every kind.
+	 */
+	if (params != NULL && params[0] != '\0') {
+		struct json_value *root = json_parse(params, strlen(params));
+		const char *k = root != NULL ? json_as_string(json_object_get(root, "kind")) : NULL;
+
+		if (k != NULL)
+			snprintf(kind, sizeof(kind), "%s", k);
+		json_free(root);
+		if (kind[0] != '\0' && strcmp(kind, "kernel.org") != 0 && strcmp(kind, "gitea-tags") != 0) {
+			snprintf(reason, reason_size,
+			         "params.kind \"%s\" is not a discovery kind this action refreshes "
+			         "(kernel.org, gitea-tags)",
+			         kind);
+			return -1;
+		}
 	}
-	snprintf(reason, reason_size, "started a kernel.org release-list refresh");
-	return 0;
+	kerr[0] = gerr[0] = '\0';
+	if (kind[0] == '\0' || strcmp(kind, "kernel.org") == 0)
+		kernel_ok = kernel_releases_fetch_start(kerr, sizeof(kerr)) == 0;
+	/*
+	 * ADR-0323: and every gitea-tags package, each from its own
+	 * repository. Independent of kernel.org's: one feed being down is
+	 * no reason to leave the other stale, so each is started and each
+	 * is reported.
+	 */
+	if (kind[0] == '\0' || strcmp(kind, "gitea-tags") == 0) {
+		gitea_ok = 0;
+		if (pkg_upstream_refresh_begin(gerr, sizeof(gerr)) == 0) {
+			if (helper_run(pkg_upstream_refresh_work, NULL, pkg_upstream_refresh_done, NULL,
+			               "pkg gitea-tags refresh") == 0) {
+				gitea_ok = 1;
+			} else {
+				snprintf(gerr, sizeof(gerr), "could not start the refresh helper: %s",
+				         strerror(errno));
+				pkg_upstream_refresh_abort();
+			}
+		}
+	}
+	if (kind[0] == '\0')
+		snprintf(reason, reason_size, "kernel.org: %s; gitea-tags: %s",
+		         kernel_ok ? "refresh started" : kerr, gitea_ok ? "refresh started" : gerr);
+	else if (strcmp(kind, "kernel.org") == 0)
+		snprintf(reason, reason_size, "kernel.org: %s", kernel_ok ? "refresh started" : kerr);
+	else
+		snprintf(reason, reason_size, "gitea-tags: %s", gitea_ok ? "refresh started" : gerr);
+	return kernel_ok && gitea_ok ? 0 : -1;
 }
 
 /* All defined further down, next to the subsystems they belong to;
@@ -31662,7 +31707,8 @@ static int cixd_main(int argc, char **argv)
 	srcpolicy_init(SRCPOLICY_STATE_PATH);       /* ADR-0255 */
 	scheduler_init(SCHEDULER_STATE_PATH);       /* ADR-0257 */
 	scheduler_register_action("pkg.refresh-upstreams",
-	                           "fetch what upstream has published, for every discovery kind",
+	                           "fetch what upstream has published, for every discovery kind "
+	                           "(params {\"kind\": \"kernel.org\"|\"gitea-tags\"} for one)",
 	                           action_refresh_upstreams);
 	scheduler_register_action("system.backup", "write a system backup to the configured disk",
 	                           action_system_backup);

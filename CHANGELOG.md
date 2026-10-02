@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Discovery from a package's own Gitea tags: the gitea-tags kind (ADR-0323)
+
+- **A recipe can declare `upstream "gitea-tags" { tag "v{version}" source "<api archive url template>" verify "origin" }`.**
+  - `pkg.refresh-upstreams` reads that package's repository tags from the source's Gitea API, with the owning source's token.
+  - The catalogue resolves the newest matching tag against the recipes on disk.
+- **The kind interface now takes the package** (`srcupstream.h`), because a gitea-tags feed belongs to one package and kernel.org's serves every kernel. A kind can also say why a package's feed could not be read, and the catalogue row then reports it instead of "never fetched".
+- **`pkg.refresh-upstreams` takes `params {"kind": ...}`** to refresh one kind only.
+- **New pure module:** `srcgitea.c`, the tags url from a source template, tag-to-version mapping and the per-package cache. Covered by `test_srcgitea` (SELFTESTS), `test_srcresolve`'s gitea-tags cases, and an end-to-end case in `test_pkg` against the stub forge.
+- `test_curl_guards` counts 11 call sites.
+- **Blocked for own-forge recipes** by cix-build-system#280: cbs v0.1.102 refuses a `source` template carrying `{{REPO_TOKEN}}`. Gitea answers 404 to every unauthenticated route, measured on 192.168.15.95, so the token is required. Filed upstream.
+
 ### The author stage checks what cbs revise wrote before committing it (ADR-0323, cix-build-system#279)
 
 - **First live use** on 192.168.15.95: `cixctl pkg recipe revise --name=hibr --version=0.99.4` wrote, committed (e056108), published, built and rolled hibr into `jump`.

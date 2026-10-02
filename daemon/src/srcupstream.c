@@ -5,6 +5,7 @@
 #include "srcupstream.h"
 
 #include "kernelpolicy.h"
+#include "srcgitea.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -41,41 +42,71 @@ static const char *const KORG_CHANNELS[] = { "mainline", "stable", "longterm", N
  * would answer differently the moment one was refreshed and the other
  * was not, and nothing would say which was right.
  */
-static size_t kernelorg_candidates(const char *channel,
+static size_t kernelorg_candidates(const char *package, const char *channel,
                                     char out[][SRCUPSTREAM_VERSION_MAX], size_t max)
 {
 	int n;
 
+	(void)package; /* one releases.json serves every kernel */
 	if (channel == NULL || channel[0] == '\0')
 		return 0;
 	n = kernelpolicy_channel_versions(channel, out[0], SRCUPSTREAM_VERSION_MAX, (int)max);
 	return n < 0 ? 0 : (size_t)n;
 }
 
-static long kernelorg_fetched_at(void)
+static long kernelorg_fetched_at(const char *package)
 {
+	(void)package;
 	return kernelpolicy_fetched_at();
+}
+
+/* ADR-0323: one package's own Gitea tags, cached by srcgitea.c. One
+ * linear sequence, so no channels: depth picks among the tags. */
+static size_t giteatags_candidates(const char *package, const char *channel,
+                                   char out[][SRCUPSTREAM_VERSION_MAX], size_t max)
+{
+	(void)channel;
+	return srcgitea_candidates(package, out, max);
+}
+
+static long giteatags_fetched_at(const char *package)
+{
+	return srcgitea_fetched_at(package);
 }
 
 static const struct srcupstream_kind KINDS[] = {
 	{ "kernel.org", KORG_CHANNELS,
 	  "kernel.org releases.json; checksums from its signed sha256sums.asc",
-	  kernelorg_candidates, kernelorg_fetched_at },
+	  kernelorg_candidates, kernelorg_fetched_at, NULL },
+	{ "gitea-tags", NULL,
+	  "the tags of the package's own Gitea repository, read from its upstream source template",
+	  giteatags_candidates, giteatags_fetched_at, srcgitea_error },
 };
 
-size_t srcupstream_candidates(const struct srcupstream_kind *kind, const char *channel,
+size_t srcupstream_candidates(const struct srcupstream_kind *kind, const char *package,
+                               const char *channel,
                                char out[][SRCUPSTREAM_VERSION_MAX], size_t max)
 {
 	if (kind == NULL || kind->candidates == NULL || out == NULL || max == 0)
 		return 0;
-	return kind->candidates(channel, out, max);
+	return kind->candidates(package, channel, out, max);
 }
 
-long srcupstream_fetched_at(const struct srcupstream_kind *kind)
+long srcupstream_fetched_at(const struct srcupstream_kind *kind, const char *package)
 {
 	if (kind == NULL || kind->fetched_at == NULL)
 		return 0;
-	return kind->fetched_at();
+	return kind->fetched_at(package);
+}
+
+void srcupstream_problem(const struct srcupstream_kind *kind, const char *package, char *out,
+                         size_t out_size)
+{
+	if (out == NULL || out_size == 0)
+		return;
+	out[0] = '\0';
+	if (kind != NULL && kind->problem != NULL && kind->problem(package, out, out_size) != 0)
+		out[0] = '\0';
 }
 
 size_t srcupstream_count(void)

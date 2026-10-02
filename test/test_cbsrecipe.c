@@ -141,6 +141,8 @@ static void test_happy_path(void)
 
 	/* null, not absent: str_or_empty() has to answer "" for both. */
 	expect_str("upstream when null", cbs_explain_upstream(ex), "");
+	expect_str("upstream tag when no upstream", cbs_explain_upstream_param(ex, "tag"), "");
+	expect_str("upstream verify when no upstream", cbs_explain_upstream_verify(ex), "");
 	expect_str("toolchain when null", cbs_explain_toolchain(ex), "");
 
 	if (cbs_explain_capabilities(ex, buf, sizeof(buf)) != 0)
@@ -175,7 +177,7 @@ static void test_release_and_runtime(void)
 	    "\"sha256\":\"a3fda92c6313292c48a4ad98728772aa156ea234bd048ae49811f6f5c171bc46\"}],"
 	    "\"requires\":{\"build\":{\"compiler\":[\"gcc\"],\"tool\":[\"bash\",\"bc\"]},"
 	    "\"runtime\":{\"package\":[\"openssl\",\"libarchive\",\"curl\"]}},"
-	    "\"build_image\":null,\"upstream\":{\"provider\":\"kernel.org\",\"tag\":null,\"source\":null,\"verify\":null},\"toolchain\":\"gcc\","
+	    "\"build_image\":null,\"upstream\":{\"provider\":\"kernel.org\",\"tag\":\"v{version}\",\"source\":null,\"verify\":{\"method\":\"origin\"}},\"toolchain\":\"gcc\","
 	    "\"toolchain_reason\":\"the kernel does not build with TCC\","
 	    "\"license\":\"GPL-2.0-only\","
 	    "\"metadata\":{\"artifact_sha256\":\"c09de99506f24a17786da6507775c2fb3e5e3882"
@@ -213,6 +215,9 @@ static void test_release_and_runtime(void)
 		expect_str("runtime packages", buf, "openssl libarchive curl");
 
 	expect_str("upstream", cbs_explain_upstream(ex), "kernel.org");
+	expect_str("upstream tag", cbs_explain_upstream_param(ex, "tag"), "v{version}");
+	expect_str("upstream source when null", cbs_explain_upstream_param(ex, "source"), "");
+	expect_str("upstream verify", cbs_explain_upstream_verify(ex), "origin");
 	expect_str("toolchain", cbs_explain_toolchain(ex), "gcc");
 	expect_str("toolchain reason", cbs_explain_toolchain_reason(ex),
 	           "the kernel does not build with TCC");

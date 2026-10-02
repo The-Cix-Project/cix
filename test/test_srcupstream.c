@@ -91,7 +91,7 @@ int main(void)
 	/* The registry is enumerable, so an API can show the choices. */
 	{
 		size_t i, n = srcupstream_count();
-		int saw_korg = 0;
+		int saw_korg = 0, saw_gitea = 0;
 
 		if (n == 0) {
 			fprintf(stderr, "  FAIL: registry is empty\n");
@@ -105,8 +105,14 @@ int main(void)
 				g_failures++;
 				continue;
 			}
+			if (strcmp(k->name, "gitea-tags") == 0 && k->channels == NULL)
+				saw_gitea = 1;
 			if (strcmp(k->name, "kernel.org") == 0)
 				saw_korg = 1;
+		}
+		if (!saw_gitea) {
+			fprintf(stderr, "  FAIL: gitea-tags not registered as a channel-less kind\n");
+			g_failures++;
 		}
 		if (!saw_korg) {
 			fprintf(stderr, "  FAIL: kernel.org not registered\n");

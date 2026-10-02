@@ -19,6 +19,7 @@
 #include "cbsrecipe.h"
 #include "forgecommit.h"
 #include "catalogue.h"
+#include "srcgitea.h"
 #include "pkgrepo.h"
 #include "pkgsource.h"
 #include "json.h"
@@ -404,6 +405,17 @@ struct pkg_recipe {
 	 * already established for artifact policy.
 	 */
 	char upstream[PKG_NAME_MAX];
+	/*
+	 * ADR-0323: the upstream block's parameters (cbs v0.1.102). tag is
+	 * the template a release's tag is spelled by ("v{version}"); source
+	 * the template of a release's main source url, which cbs checks
+	 * expands to this recipe's own url, and which substitute_repo_token()
+	 * treats like any other url; verify the authentication method.
+	 * "" when absent.
+	 */
+	char upstream_tag[PKG_NAME_MAX];
+	char upstream_source[PKG_URL_MAX];
+	char upstream_verify[32];
 	/*
 	 * Capabilities this recipe's BUILD container needs, space
 	 * separated, normally empty (issue #224).
@@ -2345,6 +2357,9 @@ static void substitute_repo_token(struct pkg_recipe *out)
 	for (i = 0; i < out->mirror_count; i++)
 		str_replace_all(out->mirror_url[i], sizeof(out->mirror_url[i]), "{{REPO_TOKEN}}",
 		                tok);
+	/* ADR-0323: the upstream source template reaches curl too, as the
+	 * tags listing beside it (srcgitea.h). */
+	str_replace_all(out->upstream_source, sizeof(out->upstream_source), "{{REPO_TOKEN}}", tok);
 }
 
 static int parse_shell_recipe(const char *path, struct pkg_recipe *out)
@@ -2823,6 +2838,12 @@ static int parse_cbs_recipe(const char *path, struct pkg_recipe *out)
 	}
 
 	snprintf(out->upstream, sizeof(out->upstream), "%s", cbs_explain_upstream(ex));
+	snprintf(out->upstream_tag, sizeof(out->upstream_tag), "%s",
+	         cbs_explain_upstream_param(ex, "tag"));
+	snprintf(out->upstream_source, sizeof(out->upstream_source), "%s",
+	         cbs_explain_upstream_param(ex, "source"));
+	snprintf(out->upstream_verify, sizeof(out->upstream_verify), "%s",
+	         cbs_explain_upstream_verify(ex));
 
 	/*
 	 * Capabilities by name. A return of 1 is the installed cbs still
@@ -3162,6 +3183,135 @@ int pkg_recipe_upstream(const char *name, char *out, size_t out_size)
 		return -1;
 	snprintf(out, out_size, "%s", recipe.upstream);
 	return 0;
+}
+
+/* ---- ADR-0323: refreshing the gitea-tags kind's listings ----
+ *
+ * One package at a time, each from its own repository: the newest
+ * recipe's upstream source template (srcgitea.h) names the repository,
+ * its owning source's token reaches the listing the same way it reaches
+ * every url (substitute_repo_token()), and what is found -- or why
+ * nothing could be -- is written to that package's cache file, which
+ * the catalogue reads. Runs in a helper process (ADR-0278): it is
+ * network I/O, one bounded request per package.
+ */
+static int g_upstream_refresh_running;
+
+int pkg_upstream_refresh_begin(char *err, size_t err_size)
+{
+	if (g_upstream_refresh_running) {
+		snprintf(err, err_size, "a gitea-tags refresh is already running");
+		return -1;
+	}
+	g_upstream_refresh_running = 1;
+	return 0;
+}
+
+/* Reads one package's listing; 0, or -1 with the cache's error written. */
+static int refresh_one_gitea(const char *name, const struct pkg_recipe *recipe, long now)
+{
+	char url[PKG_URL_MAX], tmp[PATH_MAX], err[PKG_ERROR_MAX];
+	struct curlfetch_opts opts;
+	char *buf = NULL;
+	size_t len = 0;
+	int rc;
+
+	if (recipe->upstream_source[0] == '\0') {
+		srcgitea_store_error(name,
+		                     "the recipe declares no upstream source template, so its "
+		                     "repository is not known -- an own-forge template needs "
+		                     "{{REPO_TOKEN}}, which cbs refuses until cix-build-system#280",
+		                     now);
+		return -1;
+	}
+	if (srcgitea_tags_url(recipe->upstream_source, url, sizeof(url)) != 0) {
+		srcgitea_store_error(name,
+		                     "its upstream source is not a Gitea API archive url "
+		                     "(<base>/api/v1/repos/<owner>/<repo>/archive/<tag>.tar.gz)",
+		                     now);
+		return -1;
+	}
+	if (strstr(url, "{{REPO_TOKEN}}") != NULL) {
+		srcgitea_store_error(name,
+		                     "its source asks for {{REPO_TOKEN}} and the source that owns "
+		                     "this package has no token",
+		                     now);
+		return -1;
+	}
+	snprintf(tmp, sizeof(tmp), "%s/upstream/.fetch-%s.json", g_pkg_dir, name);
+	memset(&opts, 0, sizeof(opts));
+	opts.url = url;
+	opts.path = tmp;
+	opts.connect_timeout = 10;
+	opts.max_time = 30;
+	if (curlfetch_perform(&opts, NULL, err, sizeof(err)) != 0) {
+		char why[PKG_ERROR_MAX + 64];
+
+		unlink(tmp);
+		redact_repo_token(err, sizeof(err));
+		snprintf(why, sizeof(why), "the tags listing could not be fetched: %s", err);
+		srcgitea_store_error(name, why, now);
+		return -1;
+	}
+	if (persist_read_file(tmp, &buf, &len) != 0 || buf == NULL) {
+		unlink(tmp);
+		srcgitea_store_error(name, "the tags listing was fetched but could not be read", now);
+		return -1;
+	}
+	unlink(tmp);
+	rc = srcgitea_store_listing(name, buf, len,
+	                            recipe->upstream_tag[0] != '\0' ? recipe->upstream_tag
+	                                                            : "{version}",
+	                            now);
+	free(buf);
+	if (rc != 0) {
+		srcgitea_store_error(name, "the tags listing was not a Gitea tags array", now);
+		return -1;
+	}
+	return 0;
+}
+
+/* The helper's work: every gitea-tags package. Exits with how many
+ * failed, capped, so done() can say so without a result file. */
+int pkg_upstream_refresh_work(void *unused)
+{
+	static char names[1024][PKG_IMAGE_NAME_MAX];
+	char recipe_path[PATH_MAX];
+	struct pkg_recipe recipe;
+	long now = (long)time(NULL);
+	int n, i, failed = 0;
+
+	(void)unused;
+	n = pkg_recipe_list_names(names, 1024);
+	for (i = 0; i < n; i++) {
+		if (find_recipe_path(names[i], NULL, recipe_path, sizeof(recipe_path)) != 0 ||
+		    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.upstream, "gitea-tags") != 0)
+			continue;
+		if (refresh_one_gitea(names[i], &recipe, now) != 0)
+			failed++;
+	}
+	return failed > 100 ? 100 : failed;
+}
+
+void pkg_upstream_refresh_done(int exit_status, void *unused)
+{
+	(void)unused;
+	g_upstream_refresh_running = 0;
+	if (exit_status == 0)
+		logstore_write("cixd", "info", "pkg: gitea-tags listings refreshed (ADR-0323)");
+	else if (exit_status > 0)
+		logstore_write("cixd", "warn",
+		               "pkg: %d gitea-tags listing(s) could not be refreshed -- each says why "
+		               "in GET /v1/pkg/source-catalogue (ADR-0323)",
+		               exit_status);
+	else
+		logstore_write("cixd", "error", "pkg: the gitea-tags refresh helper did not finish");
+}
+
+/* Called when the helper could not be started, so done() never runs. */
+void pkg_upstream_refresh_abort(void)
+{
+	g_upstream_refresh_running = 0;
 }
 
 
@@ -5650,6 +5800,12 @@ void pkg_repoint(const char *pkg_dir, const char *installed_state_path, const ch
 	snprintf(g_artifacts_dir, sizeof(g_artifacts_dir), "%s", artifacts_dir);
 	image_recipe_repoint(pkg_dir);
 	container_recipe_repoint(pkg_dir);
+	{
+		char upstream_dir[PATH_MAX];
+
+		snprintf(upstream_dir, sizeof(upstream_dir), "%s/upstream", pkg_dir);
+		srcgitea_init(upstream_dir);
+	}
 }
 
 /*
@@ -5966,6 +6122,14 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 	if (snprintf(g_artifacts_dir, sizeof(g_artifacts_dir), "%s", artifacts_dir) >=
 	    (int)sizeof(g_artifacts_dir))
 		return -1;
+	{
+		char upstream_dir[PATH_MAX];
+
+		/* ADR-0323: the gitea-tags kind's per-package listings. */
+		snprintf(upstream_dir, sizeof(upstream_dir), "%s/upstream", pkg_dir);
+		if (srcgitea_init(upstream_dir) != 0)
+			return -1;
+	}
 
 	memset(g_packages, 0, sizeof(g_packages));
 	memset(g_chains, 0, sizeof(g_chains));

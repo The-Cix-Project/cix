@@ -592,6 +592,19 @@ int pkg_version_compare(const char *a, const char *b);
  */
 int pkg_recipe_upstream(const char *name, char *out, size_t out_size);
 
+/*
+ * ADR-0323: refreshing the gitea-tags kind -- each package that declares
+ * it has its own repository's tags listed and cached (srcgitea.h). begin
+ * refuses when one is running; the caller then runs work in a helper
+ * process (network I/O) and done in the parent; abort clears a refresh
+ * whose helper never started. A package that cannot be read records why,
+ * and the source catalogue shows it.
+ */
+int pkg_upstream_refresh_begin(char *err, size_t err_size);
+int pkg_upstream_refresh_work(void *unused);
+void pkg_upstream_refresh_done(int exit_status, void *unused);
+void pkg_upstream_refresh_abort(void);
+
 /* Scans pkg_dir/recipes/<name>/<version>/build.sh (ADR-0107's
  * version-keyed layout) and writes one {name,version,depends} object
  * per (name,version) pair that parses -- metadata only, never

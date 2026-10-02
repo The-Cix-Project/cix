@@ -160,6 +160,14 @@ const char *cbs_explain_format(const struct cbs_explain *ex);
  * an object). "" when the document declares none. Never NULL. */
 const char *cbs_explain_upstream(const struct cbs_explain *ex);
 
+/* upstream.tag or upstream.source, the block's string parameters
+ * (ADR-0323): "" when absent, null, or no upstream. Never NULL. */
+const char *cbs_explain_upstream_param(const struct cbs_explain *ex, const char *key);
+
+/* upstream.verify.method ("origin", "signed-tag", ...): "" when
+ * absent. Never NULL. */
+const char *cbs_explain_upstream_verify(const struct cbs_explain *ex);
+
 /*
  * The packages this recipe may take over files from (cbs#275, cix#553):
  * the top-level `replaces` array of `cbs explain --json`, written into out

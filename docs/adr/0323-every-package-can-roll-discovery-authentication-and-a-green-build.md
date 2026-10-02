@@ -128,3 +128,15 @@ Estimated at four to six cix release cycles. **.95 has a saved schedule file, so
   - a version whose `-1` revision is not newer than the newest, because there is no downgrade;
   - a changelog that would not fit.
 - The verification is free text from the caller today. Discovery (#508) will supply the rung that authenticated the release, and the no-weaker-rung rule is enforced there, where the rung is known.
+
+## Discovery, as built: the gitea-tags kind (2026-10-02)
+
+- **The kind interface takes the package.** `candidates(package, channel, ...)` and `fetched_at(package)`, plus an optional `problem(package)`. kernel.org's single feed ignores the package. gitea-tags reads that package's own cache (`srcgitea.c`, under `pkg/upstream/<name>.json`).
+- **The repository comes from the recipe's `source` template**, which cbs requires to expand to the recipe's own main url. The kind's contract is Gitea's API archive route, `<base>/api/v1/repos/<owner>/<repo>/archive/<tag>.tar.gz`, and the tags are listed beside it at `.../tags?limit=50&page=1`.
+  - Measured on 192.168.15.95: the newest tag is listed first, and a page holds 50 (asking for 100 returned 50 of 86).
+  - An unauthenticated request answers 404 on the tags listing, on the API archive route and on the web archive route (probe-cix-tarball@302-1).
+  - So the owning source's token reaches the template through `substitute_repo_token()`, as for every url.
+- **`tag` spells a release** (`v{version}`). Absent, a tag is its version. The pattern decides the version spelling the author stage will write: cbs's own recipes are versioned `v0.1.102`, so their pattern would be `{version}`.
+- **Refresh:** `pkg.refresh-upstreams` refreshes every kind. `params {"kind": "..."}` limits it to one. Each package is one bounded GET in a helper process. A package that cannot be read records why, and its catalogue row says so (`discover / failed`) instead of "never fetched".
+- **Blocked upstream:** an own-forge recipe cannot declare `source` yet. cbs v0.1.102's template check reads `{{REPO_TOKEN}}` as an unknown placeholder (cix-build-system#280). Until that ships, hibr's discovery is blocked there.
+- **Next:** the trusted-origins list, rung-4 verification, the author step and the hourly `pkg.discover` schedule are the next part.

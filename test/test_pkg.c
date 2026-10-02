@@ -7555,6 +7555,176 @@ skip_resume:
 			}
 		}
 
+		/*
+		 * ADR-0323: gitea-tags discovery against this fixture's forge.
+		 * giteapkg declares the whole block -- its source template
+		 * expands to its own main url, which is how the kind knows the
+		 * repository -- and the forge lists v1.1 beside the v1.0 it
+		 * builds. giteapkg2 declares no source, so its repository is
+		 * unknown and the catalogue must say why rather than "never
+		 * fetched". The refresh runs through a schedule, the operator's
+		 * own route (POST /v1/schedules/{name}/run).
+		 */
+		if (stage_ok) {
+			char gsha[65], gtar[PATH_MAX], archive_dir[PATH_MAX], cmd[3 * PATH_MAX];
+			char gurl[256], gtmpl[256], decls[512], grecipe[4096], gpath[PATH_MAX];
+			FILE *fp;
+			int found = 0;
+
+			snprintf(archive_dir, sizeof(archive_dir), "%s/api/v1/repos/o/giteapkg/archive",
+			         forge_dir);
+			snprintf(gurl, sizeof(gurl),
+			         "http://127.0.0.1:%d/api/v1/repos/o/giteapkg/archive/v1.0.tar.gz", forge_port);
+			snprintf(gtmpl, sizeof(gtmpl),
+			         "http://127.0.0.1:%d/api/v1/repos/o/giteapkg/archive/v{version}.tar.gz",
+			         forge_port);
+			if (stage_fixture_tarball(scratch_dir, "giteapkg", "1.0", gtar, sizeof(gtar), gsha,
+			                          sizeof(gsha)) != 0) {
+				fprintf(stderr, "FAIL: ADR-0323 could not stage the giteapkg source\n");
+				ok = 0;
+			} else {
+				snprintf(cmd, sizeof(cmd), "mkdir -p '%s' && cp '%s' '%s/v1.0.tar.gz'",
+				         archive_dir, gtar, archive_dir);
+				if (system(cmd) != 0) {
+					fprintf(stderr, "FAIL: ADR-0323 could not place the giteapkg archive\n");
+					ok = 0;
+				}
+				snprintf(gpath, sizeof(gpath), "%s/api/v1/repos/o/giteapkg/tags", forge_dir);
+				fp = fopen(gpath, "w");
+				if (fp != NULL) {
+					fputs("[{\"name\":\"v1.1\",\"id\":\"x\"},{\"name\":\"latest\"},"
+					      "{\"name\":\"v1.0\"}]",
+					      fp);
+					fclose(fp);
+				}
+
+				snprintf(decls, sizeof(decls),
+				         "    upstream \"gitea-tags\" {\n"
+				         "        tag \"v{version}\"\n"
+				         "        source \"%s\"\n"
+				         "        verify \"origin\"\n"
+				         "    }\n\n",
+				         gtmpl);
+				cpdl_recipe_text_decl(grecipe, sizeof(grecipe), "giteapkg", "1.0", gurl, gsha,
+				                      NULL, "            tool \"bash\"\n", NULL, decls,
+				                      "        run \"true\" {\n        }\n",
+				                      "        mkdir \"${dest}/usr/share/giteapkg\" parents\n");
+				jw_init(&w);
+				jw_obj_open(&w);
+				jw_key(&w, "name");
+				jw_str(&w, "giteapkg");
+				jw_key(&w, "content");
+				jw_str(&w, grecipe);
+				jw_key(&w, "source");
+				jw_str(&w, "forge");
+				jw_obj_close(&w);
+				w.buf[w.len] = '\0';
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
+				    r.status != 204) {
+					fprintf(stderr, "FAIL: ADR-0323 publishing giteapkg got %d: %s\n", r.status,
+					        r.body != NULL ? r.body : "");
+					ok = 0;
+				}
+				cix_response_free(&r);
+				jw_free(&w);
+
+				cpdl_recipe_text_decl(grecipe, sizeof(grecipe), "giteapkg2", "1.0",
+				                      test_http_src(gtar), gsha, NULL,
+				                      "            tool \"bash\"\n", NULL,
+				                      "    upstream \"gitea-tags\" {\n"
+				                      "        tag \"v{version}\"\n"
+				                      "        verify \"origin\"\n"
+				                      "    }\n\n",
+				                      "        run \"true\" {\n        }\n",
+				                      "        mkdir \"${dest}/usr/share/giteapkg2\" parents\n");
+				jw_init(&w);
+				jw_obj_open(&w);
+				jw_key(&w, "name");
+				jw_str(&w, "giteapkg2");
+				jw_key(&w, "content");
+				jw_str(&w, grecipe);
+				jw_key(&w, "source");
+				jw_str(&w, "forge");
+				jw_obj_close(&w);
+				w.buf[w.len] = '\0';
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
+				    r.status != 204) {
+					fprintf(stderr, "FAIL: ADR-0323 publishing giteapkg2 got %d: %s\n",
+					        r.status, r.body != NULL ? r.body : "");
+					ok = 0;
+				}
+				cix_response_free(&r);
+				jw_free(&w);
+			}
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "PUT", "/v1/schedules/discover-test",
+			                       "{\"action\":\"pkg.refresh-upstreams\","
+			                       "\"params\":{\"kind\":\"gitea-tags\"},"
+			                       "\"schedule\":{\"every\":{\"hours\":24}}}",
+			                       &r) != 0 ||
+			    (r.status != 200 && r.status != 201)) {
+				fprintf(stderr, "FAIL: ADR-0323 creating the refresh schedule got %d: %s\n",
+				        r.status, r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/schedules/discover-test/run", NULL,
+			                       &r) != 0 ||
+			    r.status != 200 || r.body == NULL ||
+			    strstr(r.body, "gitea-tags: refresh started") == NULL) {
+				fprintf(stderr, "FAIL: ADR-0323 running the refresh must start the gitea-tags "
+				                "part, got %d: %s\n",
+				        r.status, r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			for (waited = 0; waited < 60 && found != 3; waited++) {
+				const struct json_value *pkgs;
+				size_t k;
+
+				found = 0;
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/source-catalogue", NULL, &r) == 0 &&
+				    r.json != NULL &&
+				    (pkgs = json_object_get(r.json, "packages")) != NULL &&
+				    pkgs->type == JSON_ARRAY) {
+					for (k = 0; k < pkgs->u.array.count; k++) {
+						const struct json_value *e = pkgs->u.array.items[k];
+						const char *n = json_str_field(e, "name");
+
+						if (str_eq(n, "giteapkg") &&
+						    str_eq(json_str_field(e, "resolved_version"), "1.1") &&
+						    str_eq(json_str_field(e, "status"), "blocked"))
+							found |= 1;
+						if (str_eq(n, "giteapkg2") && json_str_field(e, "reason") != NULL &&
+						    strstr(json_str_field(e, "reason"), "no upstream source template") !=
+						        NULL)
+							found |= 2;
+					}
+				}
+				if (found != 3) {
+					cix_response_free(&r);
+					usleep(500000);
+				}
+			}
+			if (found != 3) {
+				fprintf(stderr, "FAIL: ADR-0323 discovery: giteapkg %s resolved to 1.1, giteapkg2 "
+				                "%s say why it cannot be read: %s\n",
+				        (found & 1) ? "was" : "was NOT", (found & 2) ? "did" : "did NOT",
+				        r.body != NULL ? r.body : "(no catalogue)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "DELETE", "/v1/schedules/discover-test", NULL, &r);
+			cix_response_free(&r);
+		}
+
 		memset(&r, 0, sizeof(r));
 		cix_client_request(&client, "DELETE", "/v1/pkg/sources/forge2", NULL, &r);
 		cix_response_free(&r);

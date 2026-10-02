@@ -28,8 +28,10 @@
 
 #include "kernelpolicy.h"
 #include "pkg.h"
+#include "srcgitea.h"
 #include "srcpolicy.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,6 +69,7 @@ static int g_failures;
 static char g_pol_path[256];
 static char g_kern_path[256];
 static char g_rel_path[256];
+static char g_git_dir[256];
 
 static void fail(const char *fmt, const char *a, const char *b)
 {
@@ -232,9 +235,55 @@ int main(void)
 	expect("stable n-0.1 (feed limit)", "kernel", "kernel.org", KERNEL_RECIPES, 2,
 	        PIPELINE_RESOLVE, PIPELINE_FAILED, NULL, "newest release of each line");
 
+	/*
+	 * ADR-0323: gitea-tags, a feed that belongs to ONE package. Never
+	 * fetched is per package; once its listing is stored, the newest
+	 * tag the template matches resolves, and a recipe for it is "ok".
+	 */
+	{
+		static const char listing[] =
+		    "[{\"name\":\"v0.99.5\"},{\"name\":\"nightly\"},{\"name\":\"v0.99.4\"},"
+		    "{\"name\":\"v0.49.1\"}]";
+		static const char *const OLD[] = { "0.49.1-2" };
+		static const char *const CURRENT[] = { "0.49.1-2", "0.99.5-1" };
+
+		snprintf(g_git_dir, sizeof(g_git_dir), "/tmp/cix_srcresolve_git_%d", (int)getpid());
+		if (srcgitea_init(g_git_dir) != 0) {
+			fprintf(stderr, "  FAIL: srcgitea_init\n");
+			return 1;
+		}
+		expect("gitea-tags never fetched", "hibr", "gitea-tags", OLD, 1, PIPELINE_DISCOVER,
+		        PIPELINE_FAILED, NULL, "never been fetched");
+		if (srcgitea_store_listing("hibr", listing, strlen(listing), "v{version}",
+		                           1790000000L) != 0) {
+			fprintf(stderr, "  FAIL: could not store the hibr listing\n");
+			return 1;
+		}
+		expect("gitea-tags newer", "hibr", "gitea-tags", OLD, 1, PIPELINE_AUTHOR,
+		        PIPELINE_BLOCKED, "0.99.5", NULL);
+		expect("gitea-tags current", "hibr", "gitea-tags", CURRENT, 2, PIPELINE_AUTHOR,
+		        PIPELINE_OK, "0.99.5", NULL);
+		expect("gitea-tags other package", "cbs", "gitea-tags", OLD, 1, PIPELINE_DISCOVER,
+		        PIPELINE_FAILED, NULL, "never been fetched");
+		if (srcgitea_store_error("cbs", "the recipe declares no upstream source template",
+		                         1790000100L) != 0) {
+			fprintf(stderr, "  FAIL: could not record the cbs error\n");
+			return 1;
+		}
+		expect("gitea-tags unreadable", "cbs", "gitea-tags", OLD, 1, PIPELINE_DISCOVER,
+		        PIPELINE_FAILED, NULL, "no upstream source template");
+	}
+
 	unlink(g_pol_path);
 	unlink(g_kern_path);
 	unlink(g_rel_path);
+	{
+		char cmd[PATH_MAX + 16];
+
+		snprintf(cmd, sizeof(cmd), "rm -rf %s", g_git_dir);
+		if (system(cmd) != 0)
+			fprintf(stderr, "  (could not remove %s)\n", g_git_dir);
+	}
 	if (g_failures > 0) {
 		printf("test_srcresolve: %d failure(s)\n", g_failures);
 		return 1;

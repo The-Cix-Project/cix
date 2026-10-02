@@ -94,6 +94,7 @@ void srcresolve_one(const char *name, const char *kind,
 	const char *candp[SRCUPSTREAM_MAX_CANDIDATES];
 	char err[SRCRESOLVE_REASON_MAX];
 	char upstream[SRCRESOLVE_VERSION_MAX];
+	char problem[SRCRESOLVE_REASON_MAX - 64];
 	enum srcdepth_error de;
 	size_t count, i;
 	int lines, releases;
@@ -123,7 +124,7 @@ void srcresolve_one(const char *name, const char *kind,
 		     "implement -- nothing can enumerate that project's releases", kind);
 		return;
 	}
-	out->fetched_at = srcupstream_fetched_at(k);
+	out->fetched_at = srcupstream_fetched_at(k, name);
 
 	if (srcpolicy_effective_for_kind(name, kind, &pol, err, sizeof(err)) != 0) {
 		snprintf(out->channel, sizeof(out->channel), "%s", pol.channel);
@@ -139,13 +140,20 @@ void srcresolve_one(const char *name, const char *kind,
 		return;
 	}
 
-	count = srcupstream_candidates(k, pol.channel, candidates, SRCUPSTREAM_MAX_CANDIDATES);
+	count = srcupstream_candidates(k, name, pol.channel, candidates, SRCUPSTREAM_MAX_CANDIDATES);
 	if (count == 0) {
 		/*
 		 * "never fetched" and "the channel publishes nothing" both
 		 * arrive here as zero candidates and need opposite responses,
 		 * so they are never reported as the same thing.
 		 */
+		/* A feed that could not be read says why, which is what the
+		 * operator acts on (ADR-0323: every stage reports). */
+		srcupstream_problem(k, name, problem, sizeof(problem));
+		if (out->fetched_at == 0 && problem[0] != '\0') {
+			fail(out, PIPELINE_DISCOVER, "%s could not be read: %s", kind, problem);
+			return;
+		}
 		if (out->fetched_at == 0)
 			fail(out, PIPELINE_DISCOVER,
 			     "%s release data has never been fetched on this host -- "

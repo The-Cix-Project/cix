@@ -1297,7 +1297,7 @@ Four actions are registered:
 
 | Action | What it does |
 |---|---|
-| `pkg.refresh-upstreams` | Fetch what upstream has published, for every discovery kind |
+| `pkg.refresh-upstreams` | Fetch what upstream has published, for every discovery kind: kernel.org's releases.json, and each gitea-tags package's own tags listing (ADR-0323). `params: {"kind": "kernel.org"}` or `{"kind": "gitea-tags"}` refreshes one kind only |
 | `system.backup` | Write a system backup to the configured disk |
 | `volume.backup` | Snapshot every volume that opted in |
 | `pkg.sync` | Fetch recipes from the configured repo |
@@ -1497,10 +1497,27 @@ Each row reports a `stage` and a `status` — ADR-0256's one vocabulary, the sam
 | `discover` / `not-implemented` | The recipe declares no `pkg_upstream`. Finding a new release of that project is something a person does — a permanent, correct answer, not a gap |
 | `author` / `ok` | A recipe exists for the resolved release |
 | `author` / `blocked` | The policy resolved and no recipe builds that release yet. Blocked on a person, not failed |
-| `discover` / `failed` | The release list has never been fetched on this host |
+| `discover` / `failed` | The release list has never been fetched on this host, or it could not be read, and the reason says why (a gitea-tags recipe with no `source` template, a listing the forge refused) |
 | `resolve` / `failed` | The list is there and policy could not pick from it — a channel the project does not publish, a depth deeper than the feed goes |
 
 The last two used to be one `unresolved` state, and they need opposite responses.
+
+**Two discovery kinds exist ([ADR-0323](../adr/0323-every-package-can-roll-discovery-authentication-and-a-green-build.md)).**
+
+- `kernel.org` is one feed (releases.json) that serves every kernel.
+- `gitea-tags` belongs to one package. Its recipe declares the block below, and `source`, expanded with the recipe's own version, must be its main url:
+
+  ```
+  upstream "gitea-tags" {
+      tag "v{version}"
+      source "https://git.example/api/v1/repos/OWNER/REPO/archive/v{version}.tar.gz"
+      verify "origin"
+  }
+  ```
+
+  `source` is how the kind finds the repository: it lists tags from `<base>/api/v1/repos/OWNER/REPO/tags`, with the owning source's token. `tag` maps each tag to a version, and tags it does not match are skipped.
+
+`pkg.refresh-upstreams` refreshes both kinds. An own-forge template that needs `{{REPO_TOKEN}}` cannot be declared until cix-build-system#280 ships, and the row says so.
 
 **A failure is a row with a reason, never an absence.** A package that vanished from the list would read as up to date, which is the one wrong answer that looks reassuring. So an unresolvable package appears with the sentence that explains it, and the sentences distinguish causes that need opposite responses:
 
