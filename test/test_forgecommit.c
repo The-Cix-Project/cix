@@ -109,6 +109,28 @@ static void test_update_body(void)
 	check(forge_gitea_update_body(files, 2, "main", "m") == NULL,
 	      "an update with no blob to lock on is refused");
 	check(forge_gitea_update_body(files, 0, "main", "m") == NULL, "an empty batch is refused");
+
+	/* ADR-0324 step C: the catalogue index's first commit creates files. */
+	{
+		struct forge_file_update mixed[2] = {
+			{ "recipes/INDEX", "# idx\n", 6, NULL, "create" },
+			{ "recipes/package/a@1-1.cbs", a, sizeof(a) - 1, "1111", NULL },
+		};
+		char *mb = forge_gitea_update_body(mixed, 2, "main", "sign");
+		struct json_value *mr = mb != NULL ? json_parse(mb, strlen(mb)) : NULL;
+		const struct json_value *ma = mr != NULL ? json_object_get(mr, "files") : NULL;
+
+		check(ma != NULL && ma->type == JSON_ARRAY && ma->u.array.count == 2 &&
+		          json_as_string(json_object_get(ma->u.array.items[0], "operation")) != NULL &&
+		          strcmp(json_as_string(json_object_get(ma->u.array.items[0], "operation")),
+		                 "create") == 0 &&
+		          json_object_get(ma->u.array.items[0], "sha") == NULL &&
+		          strcmp(json_as_string(json_object_get(ma->u.array.items[1], "operation")),
+		                 "update") == 0,
+		      "a create carries no blob sha; an update beside it still does");
+		json_free(mr);
+		free(mb);
+	}
 }
 
 static void test_commit_sha(void)

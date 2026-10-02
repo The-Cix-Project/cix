@@ -123,43 +123,49 @@ void handle_signing_keys_delete(int fd)
  * minisign's own format so an operator can hand it to a verifier
  * unchanged.
  */
-static void write_release_key_json(struct json_writer *w)
+static const char *key_name(enum releasekey_key k)
+{
+	return k == RELEASEKEY_CATALOGUE ? "catalogue" : "release";
+}
+
+static void write_key_json(struct json_writer *w, enum releasekey_key k)
 {
 	char pub[256];
 	char id_hex[RELEASEKEY_ID_HEX_SIZE];
+	int set = releasekey_is_set_of(k);
 
 	jw_obj_open(w);
 	jw_key(w, "key_set");
-	jw_bool(w, releasekey_is_set());
+	jw_bool(w, set);
 	jw_key(w, "public_key");
-	if (releasekey_is_set() && releasekey_public(pub, sizeof(pub)) == RELEASEKEY_OK)
+	if (set && releasekey_public_of(k, pub, sizeof(pub)) == RELEASEKEY_OK)
 		jw_str(w, pub);
 	else
 		jw_null(w);
 	jw_key(w, "key_id");
-	if (releasekey_is_set() && releasekey_key_id_hex(id_hex, sizeof(id_hex)) == RELEASEKEY_OK)
+	if (set && releasekey_key_id_hex_of(k, id_hex, sizeof(id_hex)) == RELEASEKEY_OK)
 		jw_str(w, id_hex);
 	else
 		jw_null(w);
 	jw_obj_close(w);
 }
 
-void handle_release_key_get(int fd)
+static void handle_key_get(int fd, enum releasekey_key k)
 {
 	struct json_writer w;
 
 	jw_init(&w);
-	write_release_key_json(&w);
+	write_key_json(&w, k);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
 
-void handle_release_key_put(int fd, const char *body, size_t body_len)
+static void handle_key_put(int fd, enum releasekey_key k, const char *body, size_t body_len)
 {
 	struct json_value *root;
 	const char *key_pem;
 	enum releasekey_error rerr;
-	struct json_writer w;
+	char msg[128];
 
 	root = json_parse(body, body_len);
 	if (root == NULL) {
@@ -173,7 +179,7 @@ void handle_release_key_put(int fd, const char *body, size_t body_len)
 		return;
 	}
 
-	rerr = releasekey_set(key_pem, strlen(key_pem));
+	rerr = releasekey_set_of(k, key_pem, strlen(key_pem));
 	json_free(root);
 	if (rerr == RELEASEKEY_ERR_BAD_KEY) {
 		/*
@@ -188,26 +194,59 @@ void handle_release_key_put(int fd, const char *body, size_t body_len)
 		return;
 	}
 	if (rerr != RELEASEKEY_OK) {
-		respond_error(fd, 500, "Internal Server Error", "could not persist the release key");
+		snprintf(msg, sizeof(msg), "could not persist the %s key", key_name(k));
+		respond_error(fd, 500, "Internal Server Error", msg);
 		return;
 	}
+	handle_key_get(fd, k);
+}
 
-	jw_init(&w);
-	write_release_key_json(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
+static void handle_key_delete(int fd, enum releasekey_key k)
+{
+	char msg[128];
+
+	if (releasekey_clear_of(k) != RELEASEKEY_OK) {
+		snprintf(msg, sizeof(msg), "could not remove the %s key", key_name(k));
+		respond_error(fd, 500, "Internal Server Error", msg);
+		return;
+	}
+	handle_key_get(fd, k);
+}
+
+void handle_release_key_get(int fd)
+{
+	handle_key_get(fd, RELEASEKEY_RELEASE);
+}
+
+void handle_release_key_put(int fd, const char *body, size_t body_len)
+{
+	handle_key_put(fd, RELEASEKEY_RELEASE, body, body_len);
 }
 
 void handle_release_key_delete(int fd)
 {
-	struct json_writer w;
+	handle_key_delete(fd, RELEASEKEY_RELEASE);
+}
 
-	if (releasekey_clear() != RELEASEKEY_OK) {
-		respond_error(fd, 500, "Internal Server Error", "could not remove the release key");
-		return;
-	}
-	jw_init(&w);
-	write_release_key_json(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
+/*
+ * ADR-0324 step C: GET/PUT/DELETE /v1/system/catalogue-key -- the
+ * Ed25519 key that signs this host's recipe index for a source it may
+ * write. Its own key, not the release key: one able to approve a
+ * download must not be able to vouch for a catalogue. Installed the
+ * same deliberate way -- generated off the host, put here over REST, and
+ * never brought back out.
+ */
+void handle_catalogue_key_get(int fd)
+{
+	handle_key_get(fd, RELEASEKEY_CATALOGUE);
+}
+
+void handle_catalogue_key_put(int fd, const char *body, size_t body_len)
+{
+	handle_key_put(fd, RELEASEKEY_CATALOGUE, body, body_len);
+}
+
+void handle_catalogue_key_delete(int fd)
+{
+	handle_key_delete(fd, RELEASEKEY_CATALOGUE);
 }

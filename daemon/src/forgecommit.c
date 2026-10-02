@@ -220,9 +220,10 @@ char *forge_gitea_update_body(const struct forge_file_update *files, int count, 
 	for (i = 0; i < count; i++) {
 		size_t b64_size = ((files[i].content_len + 2) / 3) * 4 + 1;
 		char *b64;
+		int create = files[i].operation != NULL && strcmp(files[i].operation, "create") == 0;
 
 		if (files[i].path == NULL || files[i].content == NULL || files[i].content_len == 0 ||
-		    files[i].blob_sha == NULL || files[i].blob_sha[0] == '\0') {
+		    (!create && (files[i].blob_sha == NULL || files[i].blob_sha[0] == '\0'))) {
 			jw_free(&w);
 			return NULL;
 		}
@@ -235,11 +236,13 @@ char *forge_gitea_update_body(const struct forge_file_update *files, int count, 
 		}
 		jw_obj_open(&w);
 		jw_key(&w, "operation");
-		jw_str(&w, "update");
+		jw_str(&w, create ? "create" : "update");
 		jw_key(&w, "path");
 		jw_str(&w, files[i].path);
-		jw_key(&w, "sha");
-		jw_str(&w, files[i].blob_sha);
+		if (!create) {
+			jw_key(&w, "sha");
+			jw_str(&w, files[i].blob_sha);
+		}
 		jw_key(&w, "content");
 		jw_str(&w, b64);
 		jw_obj_close(&w);

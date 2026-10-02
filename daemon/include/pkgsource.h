@@ -35,6 +35,8 @@
 #define PKG_SOURCE_KIND_MAX 16 /* "gitea" / "github" / "gitlab" */
 #define PKG_SOURCE_REF_MAX 128
 #define PKG_SOURCE_TOKEN_MAX 256
+/* A minisign public key file: a comment line and one base64 line. */
+#define PKG_SOURCE_CATALOGUE_KEY_MAX 256
 /* "<kind>:<name>", kind being package, image or deployment. */
 #define PKG_SOURCE_ITEM_MAX 160
 
@@ -52,6 +54,9 @@ struct pkg_source {
 	char token[PKG_SOURCE_TOKEN_MAX]; /* never reported, never logged */
 	int write;
 	int trust_keys;
+	/* ADR-0324 step C: the minisign public key this source's recipe index
+	 * must verify against, or "" -- unsigned, as every source was before. */
+	char catalogue_key[PKG_SOURCE_CATALOGUE_KEY_MAX];
 };
 
 enum pkgsource_error {
@@ -131,6 +136,30 @@ int pkgsource_name_is_valid(const char *name);
 
 /* Whether `kind` has a commit client (ADR-0323). */
 int pkgsource_kind_can_write(const char *kind);
+
+/*
+ * ADR-0324 step C: sets the public key a source's signed index must
+ * verify against; "" clears it, and the source syncs unsigned. A key
+ * that is not a minisign public key file is refused. Changing the key
+ * forgets the last index time this host accepted from the source, so a
+ * rotated key starts fresh rather than stranding the host at the old
+ * key's newest timestamp.
+ */
+enum pkgsource_error pkgsource_set_catalogue_key(const char *name, const char *key, char *err,
+                                                 size_t err_size);
+
+/*
+ * The time of the newest signed index this host has accepted from
+ * `source` (0 for none), and recording a newer one. A sync refuses an
+ * index older than this: an attacker replaying an old, genuinely signed
+ * tree would otherwise withhold every newer recipe.
+ */
+long long pkgsource_catalogue_time(const char *source);
+int pkgsource_catalogue_time_set(const char *source, long long t);
+
+/* 1 when this boot created the default public source (a host that never
+ * saved a list), so the caller can give it its built-in catalogue key. */
+int pkgsource_created_default(void);
 
 /* ---- what each source offers, and who owns a name ---- */
 

@@ -1403,6 +1403,8 @@ static const struct cli_node n_pkg_recipe_subs[] = {
 };
 
 static const char *const n_pkg_source_set_flags[] = {
+	"--catalogue-key=",
+	"--clear-catalogue-key",
 	"--clear-token",
 	"--kind=",
 	"--ref=",
@@ -1558,6 +1560,7 @@ static const struct cli_node CLI_TREE[] = {
 	{ "resolv", NULL, n_resolv_subs },
 	{ "console", n_console_flags, NULL },
 	{ "release-key", NULL, n_release_key_subs },
+	{ "catalogue-key", NULL, n_release_key_subs },
 	{ "signing-keys", NULL, n_signing_keys_subs },
 	{ "sysctl", NULL, n_sysctl_subs },
 	{ "kmod", NULL, n_kmod_subs },

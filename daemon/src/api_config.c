@@ -1222,7 +1222,7 @@ static const struct cfg_elem_ops cfg_ops_package_policies = { cfg_package_polici
 static int cfg_package_sources_fields(const struct json_value *el, struct pkg_source *s,
                                       char *err, size_t errsz)
 {
-	const char *name, *url, *kind, *ref;
+	const char *name, *url, *kind, *ref, *catalogue_key;
 	int write, trust;
 
 	if (need_string(el, "name", &name, err, errsz) != 0 ||
@@ -1230,7 +1230,8 @@ static int cfg_package_sources_fields(const struct json_value *el, struct pkg_so
 	    need_string(el, "kind", &kind, err, errsz) != 0 ||
 	    need_string(el, "ref", &ref, err, errsz) != 0 ||
 	    need_bool(el, "write", &write, err, errsz) != 0 ||
-	    need_bool(el, "trust_keys", &trust, err, errsz) != 0)
+	    need_bool(el, "trust_keys", &trust, err, errsz) != 0 ||
+	    need_string(el, "catalogue_key", &catalogue_key, err, errsz) != 0)
 		return -1;
 	memset(s, 0, sizeof(*s));
 	snprintf(s->name, sizeof(s->name), "%s", name);
@@ -1239,6 +1240,7 @@ static int cfg_package_sources_fields(const struct json_value *el, struct pkg_so
 	snprintf(s->ref, sizeof(s->ref), "%s", ref);
 	s->write = write;
 	s->trust_keys = trust;
+	snprintf(s->catalogue_key, sizeof(s->catalogue_key), "%s", catalogue_key);
 	return 0;
 }
 
@@ -1283,10 +1285,10 @@ static int cfg_package_sources_update(const struct json_value *live_el,
 	}
 	if (dry_run)
 		return 0;
-	return pkgsource_update(s.name, s.url, s.kind, s.ref, NULL, s.write, s.trust_keys, err,
-	                        errsz) == PKGSOURCE_OK
-	           ? 0
-	           : -1;
+	if (pkgsource_update(s.name, s.url, s.kind, s.ref, NULL, s.write, s.trust_keys, err, errsz) !=
+	    PKGSOURCE_OK)
+		return -1;
+	return pkgsource_set_catalogue_key(s.name, s.catalogue_key, err, errsz) == PKGSOURCE_OK ? 0 : -1;
 }
 
 static int cfg_package_sources_remove(const struct json_value *el, int dry_run, char *err,

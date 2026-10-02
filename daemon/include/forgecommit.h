@@ -86,10 +86,12 @@ struct forge_file_update {
 	const char *path;
 	const char *content;
 	size_t content_len;
-	const char *blob_sha; /* the blob forge_get_file() read: the lock */
+	const char *blob_sha; /* the blob forge_get_file() read: the lock; NULL to create */
+	const char *operation; /* NULL or "update" -- or "create", for a file git does not have */
 };
 
-/* The ChangeFilesOptions body, every file an "update". Pure. */
+/* The ChangeFilesOptions body: each file an "update" naming its blob, or a
+ * "create" (ADR-0324 step C, the catalogue index's first commit). Pure. */
 char *forge_gitea_update_body(const struct forge_file_update *files, int count, const char *branch,
                               const char *message);
 

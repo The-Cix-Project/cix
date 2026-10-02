@@ -103,6 +103,18 @@ Implementing the repository list settled three things this ADR left implicit:
 
 A host's single artifact server became the first repository, named after its host (`192.168.15.31-8080` on 192.168.15.95), with its token and push switch carried. A cleared server became an empty list.
 
+### The signed catalogue, as built (step C, 2026-10-02)
+
+The owner settled the four open points on 2026-10-02, each as proposed:
+1. **The writing host signs.** 192.168.15.95, which may write `cix-recipes`, signs whatever is in git, as Debian's archive signs what is in the archive. This protects everything downstream of the owner's forge (the GitHub mirror, transport, any copy), not the forge itself.
+2. **Its own key.** `cix-catalogue.key` sits beside the release key, generated off the host, installed with `PUT /v1/system/catalogue-key`, and never returned. The public half goes in `docs/keys/`. One implementation signs with either key (`releasekey_*_of`), but a key that approves downloads never vouches for a catalogue.
+3. **The format.** `recipes/INDEX` lists the sha256 and path of every file a sync takes: `recipes/package`, `recipes/image`, `recipes/deployment` and `docs/keys` (keys, because adopting one grants artifact trust). It excludes itself and its signature, and says so, so committing it does not change it. `recipes/INDEX.minisig` is a minisign signature whose trusted comment is `cix catalogue sha256=<index hash> time=<UTC>`. The comment carries a time rather than the source name and commit first described: source names are local to each host, and the full listing already stops an old index vouching for newer files. A host refuses an index older than the newest it accepted from that source, so a replayed old tree cannot withhold newer recipes; changing a source's key resets that.
+4. **Fail closed, per source, opt-in elsewhere.** A source with a `catalogue_key` is refused whole when its index is missing, does not verify, or is stale. A refused source keeps what it offered before, so it moves no ownership. It yields only the recipe and key files its index lists with their bytes. A source without a key syncs unsigned. A host starting on the public catalogue is given the owner's key built in, from `docs/keys/cix-catalogue.pub`.
+
+Order matters on the signing host: it signs first and then verifies its own tree, so it never refuses itself. A change committed straight to git is unsigned until the signing host's next sync, at most six hours or at once with `pkg sync`. Meanwhile readers keep the previous signed state.
+
+**The public catalogue is unsigned until the owner's key exists.** Nothing signs or refuses until the owner installs a catalogue key on 192.168.15.95, gives `cix-recipes` its public half, and commits `docs/keys/cix-catalogue.pub`. The release after that builds the key in for new hosts. Rotating a catalogue key (old signatures still verifying under a retired key) is not built; retired catalogue keys are kept, as retired release keys are.
+
 ### Migration, and the defaults
 
 There is one clean cut-over (no compatibility shim):

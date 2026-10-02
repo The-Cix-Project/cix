@@ -18,6 +18,7 @@
 #include "namecheck.h"
 #include "cbsrecipe.h"
 #include "forgecommit.h"
+#include "catalogue.h"
 #include "pkgrepo.h"
 #include "pkgsource.h"
 #include "json.h"
@@ -16135,8 +16136,13 @@ static int recipe_file_split(const char *fname, char *name, size_t name_size,
 	return 0;
 }
 
+/* ADR-0324 step C: defined with the rest of the catalogue code, below. */
+static int sync_vouched(const struct catalogue *cat, const char *rel_dir, const char *name,
+                        const char *path, const char *source);
+
 static void sync_walk_image_recipes(const char *images_root, int *added, int *skipped,
-                                     int *failed, const char *source, int *held)
+                                     int *failed, const char *source, int *held,
+                                     const struct catalogue *cat)
 {
 	DIR *names_d;
 	struct dirent *name_de;
@@ -16198,6 +16204,10 @@ static void sync_walk_image_recipes(const char *images_root, int *added, int *sk
 			continue;
 
 		snprintf(script_path, sizeof(script_path), "%s/%s", images_root, name_de->d_name);
+		if (!sync_vouched(cat, "recipes/image", name_de->d_name, script_path, source)) {
+			(*failed)++;
+			continue;
+		}
 		if (persist_read_file(script_path, &content, &content_len) != 0 || content == NULL)
 			continue;
 		/* Held already, byte for byte: skipped, not rewritten. The add
@@ -16242,7 +16252,8 @@ static void sync_walk_image_recipes(const char *images_root, int *added, int *sk
  * never a shell script.
  */
 static void sync_walk_container_recipes(const char *containers_root, int *added, int *skipped,
-                                         int *failed, const char *source, int *held)
+                                         int *failed, const char *source, int *held,
+                                         const struct catalogue *cat)
 {
 	DIR *names_d;
 	struct dirent *name_de;
@@ -16293,6 +16304,10 @@ static void sync_walk_container_recipes(const char *containers_root, int *added,
 			continue;
 
 		snprintf(json_path, sizeof(json_path), "%s/%s", containers_root, name_de->d_name);
+		if (!sync_vouched(cat, "recipes/deployment", name_de->d_name, json_path, source)) {
+			(*failed)++;
+			continue;
+		}
 		if (persist_read_file(json_path, &content, &content_len) != 0 || content == NULL)
 			continue;
 		/* Held already, byte for byte: skipped, not rewritten. The add
@@ -16451,9 +16466,233 @@ static int sync_collect_offers(const char *dir, const char *kind, const char *ex
 	return 0;
 }
 
+/*
+ * ---- the signed catalogue (ADR-0324 step C) ----
+ *
+ * Runs in the sync helper, against the fetched tree -- the bytes a host
+ * is about to trust -- never against the local store.
+ */
+
+/* Whether the signed index vouches for one file a sync is about to take. */
+static int sync_vouched(const struct catalogue *cat, const char *rel_dir, const char *name,
+                        const char *path, const char *source)
+{
+	char rel[PATH_MAX], sha[CATALOGUE_SHA256_HEX];
+
+	if (cat == NULL)
+		return 1; /* the source is unsigned by the operator's choice */
+	snprintf(rel, sizeof(rel), "%s/%s", rel_dir, name);
+	if (pkg_run_capture_sha256(path, sha, sizeof(sha)) == 0 && catalogue_vouches(cat, rel, sha))
+		return 1;
+	logstore_write("cixd", "error",
+	               "pkg sync: %s from source %s is not what its signed index lists -- refused "
+	               "(ADR-0324)",
+	               rel, source);
+	return 0;
+}
+
+/* A one-key trust directory holding `pub`, for releasekey_verify_file(). */
+static int catalogue_trust_dir(const char *name, const char *pub, char *out, size_t out_size)
+{
+	char path[PATH_MAX];
+
+	snprintf(out, out_size, "%s/catalogue-trust/%s", g_pkg_dir, name);
+	cix_btrfs_subvol_delete_or_rmtree(out);
+	if (persist_mkdir_p(out) != 0)
+		return -1;
+	snprintf(path, sizeof(path), "%s/key.pub", out);
+	return persist_atomic_write(path, pub, strlen(pub));
+}
+
+/*
+ * The index in `dir` verified against `pub`: its signature, its trusted
+ * comment naming exactly these bytes, and its time. 0 with *out_t, or -1
+ * with why.
+ */
+static int catalogue_check(const char *name, const char *dir, const char *pub, long long *out_t,
+                           char *why, size_t why_size)
+{
+	char index[PATH_MAX], sig[PATH_MAX], trust[PATH_MAX];
+	char comment[256], sha[CATALOGUE_SHA256_HEX];
+	enum releasekey_error rc;
+
+	snprintf(index, sizeof(index), "%s/%s", dir, CATALOGUE_INDEX_PATH);
+	snprintf(sig, sizeof(sig), "%s/%s", dir, CATALOGUE_SIG_PATH);
+	if (access(index, F_OK) != 0 || access(sig, F_OK) != 0) {
+		snprintf(why, why_size, "the tree carries no signed index (%s)", CATALOGUE_INDEX_PATH);
+		return -1;
+	}
+	if (catalogue_trust_dir(name, pub, trust, sizeof(trust)) != 0) {
+		snprintf(why, why_size, "could not stage the catalogue key");
+		return -1;
+	}
+	rc = releasekey_verify_file(index, sig, trust, comment, sizeof(comment));
+	if (rc != RELEASEKEY_OK) {
+		snprintf(why, why_size, "its index signature does not verify: %s",
+		         releasekey_strerror(rc));
+		return -1;
+	}
+	if (pkg_run_capture_sha256(index, sha, sizeof(sha)) != 0 ||
+	    catalogue_comment_parse(comment, sha, out_t) != 0) {
+		snprintf(why, why_size, "its index signature names other bytes than the index");
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * The writing host's half (decision 1: .95 signs). When this host may
+ * write the source and holds the catalogue key, and the fetched tree's
+ * index is not a valid signature of exactly what the tree holds, it
+ * writes a new index and signature into the tree and commits both, so
+ * every reader takes the change. A tree already correctly signed is
+ * left alone -- the index excludes itself, so committing it does not
+ * change it, and this does not fire again on the next sync.
+ */
+static void catalogue_sign_if_writer(const struct pkg_source *s, const char *dir)
+{
+	char index[PATH_MAX], sig[PATH_MAX], pub[256], why[256], comment[256];
+	char sha[CATALOGUE_SHA256_HEX], commit[FORGE_COMMIT_SHA_MAX], err[PKG_ERROR_MAX];
+	char blobs[2][FORGE_COMMIT_SHA_MAX], host[256], message[512];
+	struct forge_file_update files[2];
+	struct source_forge f;
+	char *built, *have = NULL, *texts[2] = { NULL, NULL };
+	size_t built_len = 0, have_len = 0, text_len[2] = { 0, 0 };
+	long long t, last;
+	long status = 0;
+	int k;
+
+	if (!s->write || s->token[0] == '\0' || !releasekey_is_set_of(RELEASEKEY_CATALOGUE))
+		return;
+	built = catalogue_build(dir, pkg_run_capture_sha256, &built_len);
+	if (built == NULL) {
+		logstore_write("cixd", "error", "catalogue: could not index source %s", s->name);
+		return;
+	}
+	snprintf(index, sizeof(index), "%s/%s", dir, CATALOGUE_INDEX_PATH);
+	snprintf(sig, sizeof(sig), "%s/%s", dir, CATALOGUE_SIG_PATH);
+	if (persist_read_file(index, &have, &have_len) == 0 && have != NULL &&
+	    have_len == built_len && memcmp(have, built, built_len) == 0 &&
+	    releasekey_public_of(RELEASEKEY_CATALOGUE, pub, sizeof(pub)) == RELEASEKEY_OK &&
+	    catalogue_check(s->name, dir, pub, &t, why, sizeof(why)) == 0) {
+		free(have);
+		free(built);
+		return;
+	}
+	free(have);
+
+	/* Newer than anything this host has accepted, even under clock skew. */
+	t = (long long)time(NULL);
+	last = pkgsource_catalogue_time(s->name);
+	if (t <= last)
+		t = last + 1;
+	if (persist_atomic_write(index, built, built_len) != 0 ||
+	    pkg_run_capture_sha256(index, sha, sizeof(sha)) != 0 ||
+	    catalogue_comment(sha, t, comment, sizeof(comment)) != 0 ||
+	    releasekey_sign_file_of(RELEASEKEY_CATALOGUE, index, sig, comment) != RELEASEKEY_OK) {
+		free(built);
+		logstore_write("cixd", "error", "catalogue: could not sign the index of source %s",
+		               s->name);
+		return;
+	}
+	free(built);
+
+	/* Git first: the tree here is signed; readers see it once it is committed. */
+	if (source_forge_target(s->name, &f, err, sizeof(err)) != 0) {
+		logstore_write("cixd", "error", "catalogue: %s", err);
+		return;
+	}
+	memset(files, 0, sizeof(files));
+	for (k = 0; k < 2; k++) {
+		const char *rel = k == 0 ? CATALOGUE_INDEX_PATH : CATALOGUE_SIG_PATH;
+		char local[PATH_MAX];
+		char *old = NULL;
+		size_t old_len = 0;
+		int g;
+
+		snprintf(local, sizeof(local), "%s/%s", dir, rel);
+		if (persist_read_file(local, &texts[k], &text_len[k]) != 0 || texts[k] == NULL) {
+			snprintf(err, sizeof(err), "could not read back %s", rel);
+			goto fail;
+		}
+		g = forge_get_file(&f.t, rel, g_pkg_dir, blobs[k], sizeof(blobs[k]), &old, &old_len,
+		                   &status, err, sizeof(err));
+		free(old);
+		if (g < 0)
+			goto fail;
+		files[k].path = rel;
+		files[k].content = texts[k];
+		files[k].content_len = text_len[k];
+		files[k].blob_sha = g == 0 ? blobs[k] : NULL;
+		files[k].operation = g == 0 ? "update" : "create";
+	}
+	if (gethostname(host, sizeof(host)) != 0)
+		snprintf(host, sizeof(host), "%s", "unknown host");
+	host[sizeof(host) - 1] = '\0';
+	snprintf(message, sizeof(message),
+	         "catalogue index signed by cixd on %s (ADR-0324)\n\n%s", host, comment);
+	if (forge_update_files(&f.t, files, 2, message, g_pkg_dir, commit, sizeof(commit), &status,
+	                       err, sizeof(err)) != 0)
+		goto fail;
+	logstore_write("cixd", "info", "catalogue: signed the index of source %s, commit %s",
+	               s->name, commit);
+	free(texts[0]);
+	free(texts[1]);
+	return;
+fail:
+	redact_repo_token(err, sizeof(err));
+	logstore_write("cixd", "error",
+	               "catalogue: signed the index of source %s here but could not commit it: %s "
+	               "-- readers keep the previous index until the next sync",
+	               s->name, err);
+	free(texts[0]);
+	free(texts[1]);
+}
+
+/*
+ * The reading half. A source with a catalogue key yields its verified
+ * index, or NULL with `refused` set and why; one without yields NULL,
+ * unsigned, as every source was before (decision 4).
+ */
+static struct catalogue *catalogue_verify(const struct pkg_source *s, const char *dir,
+                                          int *refused, char *why, size_t why_size)
+{
+	char index[PATH_MAX];
+	char *text = NULL;
+	size_t len = 0;
+	long long t = 0, last;
+	struct catalogue *cat;
+
+	*refused = 0;
+	if (s->catalogue_key[0] == '\0')
+		return NULL;
+	*refused = 1;
+	if (catalogue_check(s->name, dir, s->catalogue_key, &t, why, why_size) != 0)
+		return NULL;
+	last = pkgsource_catalogue_time(s->name);
+	if (t < last) {
+		snprintf(why, why_size,
+		         "its index was signed at %lld, older than the newest this host accepted (%lld) "
+		         "-- an old tree replayed",
+		         t, last);
+		return NULL;
+	}
+	snprintf(index, sizeof(index), "%s/%s", dir, CATALOGUE_INDEX_PATH);
+	if (persist_read_file(index, &text, &len) != 0 || text == NULL ||
+	    (cat = catalogue_parse(text, len)) == NULL) {
+		free(text);
+		snprintf(why, why_size, "its index could not be read");
+		return NULL;
+	}
+	free(text);
+	pkgsource_catalogue_time_set(s->name, t);
+	*refused = 0;
+	return cat;
+}
+
 /* Merges one source's package recipes, only those it owns. */
 static void sync_merge_packages(const char *recipes_root, const char *source,
-                                struct sync_source_result *res)
+                                const struct catalogue *cat, struct sync_source_result *res)
 {
 	DIR *names_d = opendir(recipes_root);
 	struct dirent *name_de;
@@ -16484,6 +16723,10 @@ static void sync_merge_packages(const char *recipes_root, const char *source,
 			continue;
 
 		snprintf(script_path, sizeof(script_path), "%s/%s", recipes_root, name_de->d_name);
+		if (!sync_vouched(cat, "recipes/package", name_de->d_name, script_path, source)) {
+			res->failed++;
+			continue;
+		}
 		if (persist_read_file(script_path, &content, &content_len) != 0 || content == NULL)
 			continue;
 		if (g_sync_refetch_name[0] != '\0' && strcmp(g_sync_refetch_name, name) == 0 &&
@@ -16530,21 +16773,54 @@ static void sync_merge_packages(const char *recipes_root, const char *source,
 int pkg_sync_merge(void)
 {
 	struct sync_source_result res[PKG_SOURCES_MAX];
+	struct catalogue *cats[PKG_SOURCES_MAX];
+	int refused[PKG_SOURCES_MAX];
 	int count = pkgsource_count();
 	char path[PATH_MAX];
 	struct json_writer w;
 	int i;
 
 	memset(res, 0, sizeof(res));
+	memset(cats, 0, sizeof(cats));
+	memset(refused, 0, sizeof(refused));
 	writeback_list_path(path, sizeof(path));
 	unlink(path); /* this sync's findings only */
+
+	/*
+	 * ADR-0324 step C, before anything a tree says is believed: the
+	 * writing host signs, then every host verifies -- in that order, so
+	 * the host that signs never refuses its own tree. A refused source
+	 * is reported as not synced, through the same error file a failed
+	 * fetch uses, so it keeps what it offered before: an unverified
+	 * tree moves no ownership.
+	 */
+	for (i = 0; i < count; i++) {
+		const struct pkg_source *s = pkgsource_at(i);
+		char dir[PATH_MAX], why[256];
+
+		sync_extract_dir(i, dir, sizeof(dir));
+		if (access(dir, F_OK) != 0)
+			continue;
+		catalogue_sign_if_writer(s, dir);
+		cats[i] = catalogue_verify(s, dir, &refused[i], why, sizeof(why));
+		if (refused[i]) {
+			char err_path[PATH_MAX], msg[320];
+			int n = snprintf(msg, sizeof(msg), "catalogue: %s", why);
+
+			sync_fetch_err_path(i, err_path, sizeof(err_path));
+			persist_atomic_write(err_path, msg, (size_t)n);
+			logstore_write("cixd", "error", "pkg sync: source %s refused -- %s (ADR-0324)",
+			               s->name, why);
+		}
+	}
+
 	for (i = 0; i < count; i++) {
 		char dir[PATH_MAX], sub[PATH_MAX];
 		char **items = NULL;
 		int n = 0, cap = 0, j;
 
 		sync_extract_dir(i, dir, sizeof(dir));
-		if (access(dir, F_OK) != 0)
+		if (access(dir, F_OK) != 0 || refused[i])
 			continue;
 		snprintf(sub, sizeof(sub), "%s/recipes/package", dir);
 		sync_collect_offers(sub, "package", "cbs", "sh", &items, &n, &cap);
@@ -16564,25 +16840,49 @@ int pkg_sync_merge(void)
 		char dir[PATH_MAX], sub[PATH_MAX];
 
 		sync_extract_dir(i, dir, sizeof(dir));
-		if (access(dir, F_OK) != 0)
+		if (access(dir, F_OK) != 0 || refused[i])
 			continue;
 		snprintf(sub, sizeof(sub), "%s/recipes/package", dir);
-		sync_merge_packages(sub, s->name, &res[i]);
+		sync_merge_packages(sub, s->name, cats[i], &res[i]);
 		snprintf(sub, sizeof(sub), "%s/recipes/image", dir);
 		sync_walk_image_recipes(sub, &res[i].added, &res[i].skipped, &res[i].failed, s->name,
-		                        &res[i].held);
+		                        &res[i].held, cats[i]);
 		snprintf(sub, sizeof(sub), "%s/recipes/deployment", dir);
 		sync_walk_container_recipes(sub, &res[i].added, &res[i].skipped, &res[i].failed,
-		                            s->name, &res[i].held);
+		                            s->name, &res[i].held, cats[i]);
 
 		/* ADR-0324: keys only from a source trusted to vouch for
 		 * packages. Any other source supplies recipes and nothing
-		 * more. */
+		 * more. And from a signed source, only the keys its index
+		 * lists: a key grants artifact trust, so it is the last thing
+		 * to take on a tree's word. */
 		if (s->trust_keys && g_trusted_keys_dir[0] != '\0') {
 			char keys_root[PATH_MAX];
 			int adopted;
 
 			snprintf(keys_root, sizeof(keys_root), "%s/docs/keys", dir);
+			if (cats[i] != NULL) {
+				char vetted[PATH_MAX];
+				DIR *kd = opendir(keys_root);
+				struct dirent *kde;
+
+				snprintf(vetted, sizeof(vetted), "%s/catalogue-keys-%d", g_pkg_dir, i);
+				cix_btrfs_subvol_delete_or_rmtree(vetted);
+				persist_mkdir_p(vetted);
+				while (kd != NULL && (kde = readdir(kd)) != NULL) {
+					char from[PATH_MAX], to[PATH_MAX];
+
+					if (kde->d_name[0] == '.')
+						continue;
+					snprintf(from, sizeof(from), "%s/%s", keys_root, kde->d_name);
+					snprintf(to, sizeof(to), "%s/%s", vetted, kde->d_name);
+					if (sync_vouched(cats[i], "docs/keys", kde->d_name, from, s->name))
+						copy_file_simple(from, to);
+				}
+				if (kd != NULL)
+					closedir(kd);
+				snprintf(keys_root, sizeof(keys_root), "%s", vetted);
+			}
 			adopted = releasekey_trust_adopt(keys_root, g_trusted_keys_dir);
 			if (adopted < 0)
 				logstore_write("cixd", "warn",
@@ -16595,6 +16895,8 @@ int pkg_sync_merge(void)
 				                adopted, adopted == 1 ? "" : "s", s->name);
 		}
 	}
+	for (i = 0; i < count; i++)
+		catalogue_free(cats[i]);
 
 	snprintf(path, sizeof(path), "%s/sync-extract", g_pkg_dir);
 	cix_btrfs_subvol_delete_or_rmtree(path);

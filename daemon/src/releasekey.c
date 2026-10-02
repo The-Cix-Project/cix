@@ -20,18 +20,43 @@
 #define ED25519_SIG_LEN 64
 #define RELEASEKEY_ID_LEN 8
 
-static char g_key_path[PATH_MAX];
+/*
+ * Two keys, one implementation. The release key approves artifacts
+ * (ADR-0220/0279); the catalogue key signs a source's recipe index
+ * (ADR-0324 step C). They are separate files and separate trust
+ * questions -- one being able to sign a download must never let it sign
+ * a catalogue -- but signing is the same act, so it is written once.
+ */
+static const struct {
+	const char *file;
+	const char *public_comment;
+	const char *signature_comment;
+} g_keys[] = {
+	[RELEASEKEY_RELEASE] = { "cix-release.key", "cix release signing key",
+	                         "signature from the cix release key" },
+	[RELEASEKEY_CATALOGUE] = { "cix-catalogue.key", "cix catalogue signing key",
+	                           "signature from the cix catalogue key" },
+};
+static char g_key_path[2][PATH_MAX];
 
 void releasekey_init(const char *keys_dir)
 {
-	snprintf(g_key_path, sizeof(g_key_path), "%s/cix-release.key", keys_dir);
+	snprintf(g_key_path[RELEASEKEY_RELEASE], sizeof(g_key_path[0]), "%s/%s", keys_dir,
+	         g_keys[RELEASEKEY_RELEASE].file);
+	snprintf(g_key_path[RELEASEKEY_CATALOGUE], sizeof(g_key_path[0]), "%s/%s", keys_dir,
+	         g_keys[RELEASEKEY_CATALOGUE].file);
+}
+
+int releasekey_is_set_of(enum releasekey_key k)
+{
+	struct stat st;
+
+	return g_key_path[k][0] != '\0' && stat(g_key_path[k], &st) == 0 && S_ISREG(st.st_mode);
 }
 
 int releasekey_is_set(void)
 {
-	struct stat st;
-
-	return g_key_path[0] != '\0' && stat(g_key_path, &st) == 0 && S_ISREG(st.st_mode);
+	return releasekey_is_set_of(RELEASEKEY_RELEASE);
 }
 
 const char *releasekey_strerror(enum releasekey_error e)
@@ -39,7 +64,7 @@ const char *releasekey_strerror(enum releasekey_error e)
 	switch (e) {
 	case RELEASEKEY_OK: return "ok";
 	case RELEASEKEY_ERR_BAD_KEY: return "not a parseable Ed25519 private key";
-	case RELEASEKEY_ERR_NOT_SET: return "no release signing key is installed";
+	case RELEASEKEY_ERR_NOT_SET: return "that signing key is not installed";
 	case RELEASEKEY_ERR_IO: return "could not read or write a key file";
 	case RELEASEKEY_ERR_SIGN: return "signing failed";
 	case RELEASEKEY_ERR_BAD_SIG: return "not a parseable minisign signature";
@@ -72,16 +97,16 @@ static void key_id(const unsigned char pub[ED25519_PUB_LEN], unsigned char out[R
 	memcpy(out, digest, RELEASEKEY_ID_LEN);
 }
 
-enum releasekey_error releasekey_set(const char *pem, size_t pem_len)
+enum releasekey_error releasekey_set_of(enum releasekey_key k, const char *pem, size_t pem_len)
 {
 	char tmp[PATH_MAX];
 	unsigned char pub[ED25519_PUB_LEN];
 	enum releasekey_error rc;
 	int fd;
 
-	if (g_key_path[0] == '\0')
+	if (g_key_path[k][0] == '\0')
 		return RELEASEKEY_ERR_IO;
-	snprintf(tmp, sizeof(tmp), "%s.new", g_key_path);
+	snprintf(tmp, sizeof(tmp), "%s.new", g_key_path[k]);
 	fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 	if (fd < 0)
 		return RELEASEKEY_ERR_IO;
@@ -99,31 +124,31 @@ enum releasekey_error releasekey_set(const char *pem, size_t pem_len)
 		unlink(tmp);
 		return rc;
 	}
-	if (rename(tmp, g_key_path) != 0) {
+	if (rename(tmp, g_key_path[k]) != 0) {
 		unlink(tmp);
 		return RELEASEKEY_ERR_IO;
 	}
 	return RELEASEKEY_OK;
 }
 
-enum releasekey_error releasekey_clear(void)
+enum releasekey_error releasekey_clear_of(enum releasekey_key k)
 {
-	if (g_key_path[0] == '\0')
+	if (g_key_path[k][0] == '\0')
 		return RELEASEKEY_ERR_IO;
-	unlink(g_key_path);
+	unlink(g_key_path[k]);
 	return RELEASEKEY_OK;
 }
 
-enum releasekey_error releasekey_public(char *out, size_t out_size)
+enum releasekey_error releasekey_public_of(enum releasekey_key k, char *out, size_t out_size)
 {
 	unsigned char pub[ED25519_PUB_LEN];
 	unsigned char blob[2 + RELEASEKEY_ID_LEN + ED25519_PUB_LEN];
 	char encoded[128];
 	enum releasekey_error rc;
 
-	if (!releasekey_is_set())
+	if (!releasekey_is_set_of(k))
 		return RELEASEKEY_ERR_NOT_SET;
-	rc = public_raw(g_key_path, pub);
+	rc = public_raw(g_key_path[k], pub);
 	if (rc != RELEASEKEY_OK)
 		return rc;
 	blob[0] = 'E';
@@ -132,13 +157,13 @@ enum releasekey_error releasekey_public(char *out, size_t out_size)
 	memcpy(blob + 2 + RELEASEKEY_ID_LEN, pub, ED25519_PUB_LEN);
 	if (base64_encode(blob, sizeof(blob), encoded, sizeof(encoded)) != 0)
 		return RELEASEKEY_ERR_IO;
-	if ((size_t)snprintf(out, out_size, "untrusted comment: cix release signing key\n%s\n",
+	if ((size_t)snprintf(out, out_size, "untrusted comment: %s\n%s\n", g_keys[k].public_comment,
 	                      encoded) >= out_size)
 		return RELEASEKEY_ERR_IO;
 	return RELEASEKEY_OK;
 }
 
-enum releasekey_error releasekey_key_id_hex(char *out, size_t out_size)
+enum releasekey_error releasekey_key_id_hex_of(enum releasekey_key k, char *out, size_t out_size)
 {
 	unsigned char pub[ED25519_PUB_LEN];
 	unsigned char id[RELEASEKEY_ID_LEN];
@@ -147,9 +172,9 @@ enum releasekey_error releasekey_key_id_hex(char *out, size_t out_size)
 
 	if (out_size < RELEASEKEY_ID_HEX_SIZE)
 		return RELEASEKEY_ERR_IO;
-	if (!releasekey_is_set())
+	if (!releasekey_is_set_of(k))
 		return RELEASEKEY_ERR_NOT_SET;
-	rc = public_raw(g_key_path, pub);
+	rc = public_raw(g_key_path[k], pub);
 	if (rc != RELEASEKEY_OK)
 		return rc;
 	key_id(pub, id);
@@ -161,15 +186,17 @@ enum releasekey_error releasekey_key_id_hex(char *out, size_t out_size)
 /* Ed25519 is PureEdDSA, so this is a signature over the file's own
  * bytes with no digest step -- what `openssl pkeyutl -sign -rawin`
  * produced, done in-process since #351. */
-static enum releasekey_error sign_raw(const char *in_path, unsigned char out[ED25519_SIG_LEN])
+static enum releasekey_error sign_raw(enum releasekey_key k, const char *in_path,
+                                      unsigned char out[ED25519_SIG_LEN])
 {
-	return pkicrypto_ed25519_sign_file(g_key_path, in_path, out, NULL, 0) == 0
+	return pkicrypto_ed25519_sign_file(g_key_path[k], in_path, out, NULL, 0) == 0
 	           ? RELEASEKEY_OK
 	           : RELEASEKEY_ERR_SIGN;
 }
 
-enum releasekey_error releasekey_sign_file(const char *path, const char *sig_path,
-                                            const char *trusted_comment)
+enum releasekey_error releasekey_sign_file_of(enum releasekey_key k, const char *path,
+                                               const char *sig_path,
+                                               const char *trusted_comment)
 {
 	unsigned char pub[ED25519_PUB_LEN];
 	unsigned char sig[ED25519_SIG_LEN], gsig[ED25519_SIG_LEN];
@@ -179,12 +206,12 @@ enum releasekey_error releasekey_sign_file(const char *path, const char *sig_pat
 	enum releasekey_error rc;
 	FILE *f;
 
-	if (!releasekey_is_set())
+	if (!releasekey_is_set_of(k))
 		return RELEASEKEY_ERR_NOT_SET;
-	rc = public_raw(g_key_path, pub);
+	rc = public_raw(g_key_path[k], pub);
 	if (rc != RELEASEKEY_OK)
 		return rc;
-	rc = sign_raw(path, sig);
+	rc = sign_raw(k, path, sig);
 	if (rc != RELEASEKEY_OK)
 		return rc;
 
@@ -205,7 +232,7 @@ enum releasekey_error releasekey_sign_file(const char *path, const char *sig_pat
 		return RELEASEKEY_ERR_IO;
 	}
 	fclose(f);
-	rc = sign_raw(gsig_in, gsig);
+	rc = sign_raw(k, gsig_in, gsig);
 	unlink(gsig_in);
 	if (rc != RELEASEKEY_OK)
 		return rc;
@@ -222,10 +249,37 @@ enum releasekey_error releasekey_sign_file(const char *path, const char *sig_pat
 	f = fopen(sig_path, "w");
 	if (f == NULL)
 		return RELEASEKEY_ERR_IO;
-	fprintf(f, "untrusted comment: signature from the cix release key\n%s\n", sig_b64);
+	fprintf(f, "untrusted comment: %s\n%s\n", g_keys[k].signature_comment, sig_b64);
 	fprintf(f, "trusted comment: %s\n%s\n", trusted_comment, gsig_b64);
 	fclose(f);
 	return RELEASEKEY_OK;
+}
+
+/* The release key, as every caller before ADR-0324 step C knew it. */
+enum releasekey_error releasekey_set(const char *pem, size_t pem_len)
+{
+	return releasekey_set_of(RELEASEKEY_RELEASE, pem, pem_len);
+}
+
+enum releasekey_error releasekey_clear(void)
+{
+	return releasekey_clear_of(RELEASEKEY_RELEASE);
+}
+
+enum releasekey_error releasekey_public(char *out, size_t out_size)
+{
+	return releasekey_public_of(RELEASEKEY_RELEASE, out, out_size);
+}
+
+enum releasekey_error releasekey_key_id_hex(char *out, size_t out_size)
+{
+	return releasekey_key_id_hex_of(RELEASEKEY_RELEASE, out, out_size);
+}
+
+enum releasekey_error releasekey_sign_file(const char *path, const char *sig_path,
+                                            const char *trusted_comment)
+{
+	return releasekey_sign_file_of(RELEASEKEY_RELEASE, path, sig_path, trusted_comment);
 }
 
 /*

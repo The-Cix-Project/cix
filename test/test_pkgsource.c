@@ -285,6 +285,46 @@ static void test_resolve(void)
 	      "on its own");
 }
 
+/* ADR-0324 step C: the key a source's index must verify against. */
+static void test_catalogue_key(void)
+{
+	static const char key1[] = "untrusted comment: cix catalogue signing key\nRWQ1111\n";
+	static const char key2[] = "untrusted comment: cix catalogue signing key\nRWQ2222\n";
+	char err[256];
+
+	reset();
+	check(init() == 0 && pkgsource_created_default(),
+	      "a host that never saved a list says it created the default");
+	check(pkgsource_find(PKG_SOURCE_DEFAULT_NAME)->catalogue_key[0] == '\0',
+	      "with no key of its own: the caller gives it one");
+	check(pkgsource_set_catalogue_key(PKG_SOURCE_DEFAULT_NAME, "not a key", err, sizeof(err)) ==
+	          PKGSOURCE_ERR_INVALID,
+	      "a catalogue key that is not a minisign public key is refused");
+	check(pkgsource_set_catalogue_key(PKG_SOURCE_DEFAULT_NAME, key1, err, sizeof(err)) ==
+	          PKGSOURCE_OK,
+	      "a minisign public key is set");
+	check(pkgsource_catalogue_time(PKG_SOURCE_DEFAULT_NAME) == 0 &&
+	          pkgsource_catalogue_time_set(PKG_SOURCE_DEFAULT_NAME, 1790000000LL) == 0 &&
+	          pkgsource_catalogue_time(PKG_SOURCE_DEFAULT_NAME) == 1790000000LL,
+	      "the newest accepted index time is stored");
+	check(init() == 0 && !pkgsource_created_default() &&
+	          strcmp(pkgsource_find(PKG_SOURCE_DEFAULT_NAME)->catalogue_key, key1) == 0 &&
+	          pkgsource_catalogue_time(PKG_SOURCE_DEFAULT_NAME) == 1790000000LL,
+	      "key and time survive a restart, and a saved list is not a created default");
+	check(pkgsource_set_catalogue_key(PKG_SOURCE_DEFAULT_NAME, key1, err, sizeof(err)) ==
+	              PKGSOURCE_OK &&
+	          pkgsource_catalogue_time(PKG_SOURCE_DEFAULT_NAME) == 1790000000LL,
+	      "setting the same key keeps the time");
+	check(pkgsource_set_catalogue_key(PKG_SOURCE_DEFAULT_NAME, key2, err, sizeof(err)) ==
+	              PKGSOURCE_OK &&
+	          pkgsource_catalogue_time(PKG_SOURCE_DEFAULT_NAME) == 0,
+	      "a different key starts fresh, so rotation cannot strand a host");
+	check(pkgsource_set_catalogue_key(PKG_SOURCE_DEFAULT_NAME, "", err, sizeof(err)) ==
+	              PKGSOURCE_OK &&
+	          pkgsource_find(PKG_SOURCE_DEFAULT_NAME)->catalogue_key[0] == '\0',
+	      "an empty key clears it: the source syncs unsigned");
+}
+
 int main(void)
 {
 	char tmpl[] = "/tmp/cix_pkgsource_XXXXXX";
@@ -300,6 +340,7 @@ int main(void)
 	test_validation();
 	test_ownership();
 	test_resolve();
+	test_catalogue_key();
 	snprintf(cmd, sizeof(cmd), "rm -rf %s", g_dir);
 	if (system(cmd) != 0)
 		printf("  (could not remove %s)\n", g_dir);

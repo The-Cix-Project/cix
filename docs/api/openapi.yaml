@@ -2353,6 +2353,89 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /system/catalogue-key:
+    get:
+      summary: Whether this host holds a catalogue-signing key, and its public half (ADR-0324 step C)
+      description: >
+        The Ed25519 key that signs a source's recipe index (recipes/INDEX)
+        on the host that may write that source. Its own key, not the
+        release key: one able to approve a download must never be able to
+        vouch for a catalogue. Same shape and discipline as
+        GET /system/release-key -- the private key never comes back; the
+        public key does, in minisign's format, because hosts reading the
+        source are configured with it.
+      operationId: getSystemCatalogueKey
+      x-cix-permission: system:read
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: Current catalogue-key state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseKey"
+    put:
+      summary: Install the operator's Ed25519 catalogue-signing key (ADR-0324 step C)
+      description: >
+        Generated off the host ("openssl genpkey -algorithm ed25519") and
+        installed here deliberately, as the release key is; cixd never
+        generates or fetches it. With it installed, every sync of a source
+        this host may write re-signs that source's index when the tree has
+        changed.
+      operationId: putSystemCatalogueKey
+      x-cix-permission: system:write
+      x-cix-expose: [cli]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key]
+              properties:
+                key:
+                  type: string
+                  description: The Ed25519 private key, PEM ("-----BEGIN PRIVATE KEY-----").
+      responses:
+        "200":
+          description: Installed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseKey"
+        "400":
+          description: Invalid JSON body, or a key openssl cannot read as Ed25519
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not persist the key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Remove this host's catalogue-signing key
+      description: >
+        The host stops signing. Indexes already signed stay valid: they are
+        checked against the public key the reading hosts hold.
+      operationId: deleteSystemCatalogueKey
+      x-cix-permission: system:write
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: Removed, or already absent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseKey"
+        "500":
+          description: Could not remove the key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /system/sysctl:
     get:
       summary: Every sysctl this daemon currently manages (ADR-0160)
@@ -9827,6 +9910,9 @@ paths:
                   description: This host may commit recipes it writes to this source (ADR-0323). gitea only.
                 trust_keys:
                   type: boolean
+                catalogue_key:
+                  type: string
+                  description: A minisign public key the source's index must verify against; "" clears it (ADR-0324 step C).
                   description: Signing keys this source carries are trusted for artifacts. Off by default.
       responses:
         "201":
@@ -9882,6 +9968,9 @@ paths:
                   type: boolean
                 trust_keys:
                   type: boolean
+                catalogue_key:
+                  type: string
+                  description: A minisign public key the source's index must verify against; "" clears it (ADR-0324 step C).
       responses:
         "200":
           description: Updated; the whole list
@@ -20621,7 +20710,7 @@ components:
 
     PkgSource:
       type: object
-      required: [name, url, kind, ref, token_set, write, trust_keys]
+      required: [name, url, kind, ref, token_set, write, trust_keys, catalogue_key]
       properties:
         name:
           type: string
@@ -20650,6 +20739,17 @@ components:
             Signing keys this source carries in docs/keys are trusted for
             artifacts. Off by default; on for the public catalogue and for the
             source a host's old single repo config became.
+        catalogue_key:
+          type: string
+          description: >
+            ADR-0324 step C: the minisign public key this source's signed index
+            (recipes/INDEX, recipes/INDEX.minisig) must verify against, or "" for
+            an unsigned source. With a key, a sync refuses the whole tree when the
+            index is missing, does not verify, or is older than the newest this
+            host accepted, and takes from it only the recipe and key files the
+            index lists with their sha256. Changing the key forgets the stored
+            time. A host starting on the public catalogue gets the owner's key
+            built in once docs/keys/cix-catalogue.pub exists.
 
     PkgSourceList:
       type: object

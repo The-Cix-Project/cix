@@ -146,6 +146,9 @@ Nine sections are replaced whole, the ones a single setter owns: site, daemon, r
 | `release-key [show]` | Whether this host holds the Ed25519 release-signing key, and its public half |
 | `release-key set --key=PATH` | Install it ([ADR-0220](../adr/0220-a-separate-release-signing-key.md)) |
 | `release-key clear` | Remove it from this host |
+| `catalogue-key [show]` | Whether this host holds the Ed25519 catalogue-signing key, and its public half (ADR-0324 step C) |
+| `catalogue-key set --key=PATH` | Install it: this host then signs the recipe index of every source it may write, on every sync whose tree changed |
+| `catalogue-key clear` | Remove it from this host |
 | `factory-reset --confirm=<instance name>` | Return the box to its just-installed state and reboot. Destroys every container, image, network, registration, package state, the log store, and **every volume and all data in it**. Keeps the installed OS; forgets disk roles without reformatting the disks |
 
 Runbooks: [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and [`staying-updated.md`](staying-updated.md).
@@ -490,7 +493,7 @@ See [`networking.md`](networking.md).
 | `pkg recipe rm NAME [--version=VERSION]` | Remove one version, or every version when omitted |
 | `pkg source ls` | The recipe sources this host syncs from, in order: role (read or write), whether its keys are trusted, whether a token is set (ADR-0324). A host that never saved a list has the public catalogue, `cix-public` ([ADR-0315](../adr/0315-the-public-catalogue-and-cache-are-the-defaults.md)) |
 | `pkg source add NAME --url=URL --kind=gitea\|github\|gitlab [--ref=REF] [--token=TOKEN] [--write=on\|off] [--trust-keys=on\|off]` | Add a source. `--write=on` lets this host commit the recipes it writes there (gitea only); `--trust-keys=on` lets the signing keys it carries vouch for packages |
-| `pkg source set NAME [...same flags] [--clear-token]` | Change only the flags given. How often sources sync is a schedule (`pkg.sync`, ADR-0257) |
+| `pkg source set NAME [...same flags] [--clear-token] [--catalogue-key=PUBFILE \| --clear-catalogue-key]` | Change only the flags given. A catalogue key makes every sync of the source verify its signed index (`recipes/INDEX`) and refuse a tree it does not vouch for (ADR-0324 step C); `ls` shows the source as signed. How often sources sync is a schedule (`pkg.sync`, ADR-0257) |
 | `pkg source rm NAME` | Remove a source; recipes already published stay |
 | `pkg source own [ITEM SOURCE \| ITEM --clear]` | With no arguments, what is held because two sources offer it, and the choices made. With an item (`package:NAME`, `image:NAME`, `deployment:NAME`) and a source, choose where it comes from |
 | `pkg sync [--wait] [--refetch=NAME@VERSION]` | Fetch every source and merge each one's recipes (additive; an existing version is never overwritten, and one offered again with different content is refused as divergent -- unless it differs only in comments or carries an approval this host lacks, which refreshes it with no rebuild). A name two sources offer is held until `pkg source own` chooses (ADR-0324). `--refetch=` lets this one sync replace exactly one already-seen version (#59) |

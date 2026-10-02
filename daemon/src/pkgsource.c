@@ -19,6 +19,10 @@ static char g_offers_dir[PATH_MAX];
 static struct pkg_source g_sources[PKG_SOURCES_MAX];
 static int g_count;
 static int g_legacy_sync_interval; /* ADR-0257, from a migrated repo config */
+static int g_created_default; /* this boot made the ADR-0315 default */
+
+static void catalogue_time_path(const char *source, char *out, size_t out_size);
+static int looks_like_minisign_public(const char *key);
 static char g_migrated[PKG_SOURCE_NAME_MAX]; /* the source a legacy config became, this boot */
 
 /* One offered item and the sources offering it, as a bit per source
@@ -90,6 +94,11 @@ static enum pkgsource_error validate(const struct pkg_source *s, char *err, size
 		snprintf(err, err_size, "source %s: kind is gitea, github or gitlab", s->name);
 		return PKGSOURCE_ERR_INVALID;
 	}
+	if (s->catalogue_key[0] != '\0' && !looks_like_minisign_public(s->catalogue_key)) {
+		snprintf(err, err_size,
+		         "source %s: a catalogue key is a minisign public key file", s->name);
+		return PKGSOURCE_ERR_INVALID;
+	}
 	if (s->write && !pkgsource_kind_can_write(s->kind)) {
 		snprintf(err, err_size,
 		         "source %s: write needs a gitea repository, the only forge with a commit "
@@ -127,6 +136,8 @@ static int save(void)
 		jw_bool(&w, g_sources[i].write);
 		jw_key(&w, "trust_keys");
 		jw_bool(&w, g_sources[i].trust_keys);
+		jw_key(&w, "catalogue_key");
+		jw_str(&w, g_sources[i].catalogue_key);
 		jw_obj_close(&w);
 	}
 	jw_arr_close(&w);
@@ -186,6 +197,7 @@ static int load(const char *buf, size_t len)
 			copy_field(s->token, sizeof(s->token), o, "token", "");
 			s->write = bool_field(o, "write");
 			s->trust_keys = bool_field(o, "trust_keys");
+			copy_field(s->catalogue_key, sizeof(s->catalogue_key), o, "catalogue_key", "");
 			/* A hand-edited file cannot smuggle in what the API refuses. */
 			if (name_is_valid(s->name) && pkgsource_find(s->name) == NULL &&
 			    kind_is_valid(s->kind) && s->url[0] != '\0')
@@ -274,6 +286,7 @@ int pkgsource_init(const char *path, const char *legacy_path, const char *offers
 	g_choice_count = 0;
 	g_legacy_sync_interval = 0;
 	g_migrated[0] = '\0';
+	g_created_default = 0;
 
 	if (persist_read_file(path, &buf, &len) == 0 && buf != NULL) {
 		load(buf, len);
@@ -297,6 +310,7 @@ int pkgsource_init(const char *path, const char *legacy_path, const char *offers
 		snprintf(s->kind, sizeof(s->kind), "%s", PKG_SOURCE_DEFAULT_KIND);
 		snprintf(s->ref, sizeof(s->ref), "%s", PKG_SOURCE_DEFAULT_REF);
 		s->trust_keys = 1;
+		g_created_default = 1;
 		g_count = 1;
 	}
 	if (save() != 0)
@@ -463,6 +477,8 @@ enum pkgsource_error pkgsource_remove(const char *name, char *err, size_t err_si
 		return PKGSOURCE_ERR_PERSIST;
 	}
 	unlink(path);
+	catalogue_time_path(name, path, sizeof(path));
+	unlink(path);
 	pkgsource_offers_load();
 	return PKGSOURCE_OK;
 }
@@ -488,6 +504,8 @@ void pkgsource_write_json_list(struct json_writer *w)
 		jw_bool(w, g_sources[i].write);
 		jw_key(w, "trust_keys");
 		jw_bool(w, g_sources[i].trust_keys);
+		jw_key(w, "catalogue_key");
+		jw_str(w, g_sources[i].catalogue_key);
 		jw_obj_close(w);
 	}
 	jw_arr_close(w);
@@ -870,4 +888,91 @@ void pkgsource_write_ownership_json(struct json_writer *w)
 	}
 	jw_arr_close(w);
 	jw_obj_close(w);
+}
+
+/* ---- the signed catalogue (ADR-0324 step C) ---- */
+
+int pkgsource_created_default(void)
+{
+	return g_created_default;
+}
+
+static void catalogue_time_path(const char *source, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/%s.catalogue-time", g_offers_dir, source);
+}
+
+/* A minisign public key file: "untrusted comment: ..." then a base64 line starting "RW". */
+static int looks_like_minisign_public(const char *key)
+{
+	const char *nl;
+
+	if (strncmp(key, "untrusted comment:", 18) != 0)
+		return 0;
+	nl = strchr(key, '\n');
+	return nl != NULL && strncmp(nl + 1, "RW", 2) == 0;
+}
+
+enum pkgsource_error pkgsource_set_catalogue_key(const char *name, const char *key, char *err,
+                                                 size_t err_size)
+{
+	int i = index_of(name);
+	char before[PKG_SOURCE_CATALOGUE_KEY_MAX], path[PATH_MAX];
+
+	err[0] = '\0';
+	if (i < 0) {
+		snprintf(err, err_size, "no source named %s", name != NULL ? name : "");
+		return PKGSOURCE_ERR_NOT_FOUND;
+	}
+	if (key == NULL)
+		key = "";
+	if (strlen(key) >= sizeof(g_sources[i].catalogue_key) ||
+	    (key[0] != '\0' && !looks_like_minisign_public(key))) {
+		snprintf(err, err_size,
+		         "source %s: a catalogue key is a minisign public key file -- a comment line, "
+		         "then the key on a line starting RW",
+		         name);
+		return PKGSOURCE_ERR_INVALID;
+	}
+	if (strcmp(g_sources[i].catalogue_key, key) == 0)
+		return PKGSOURCE_OK;
+	snprintf(before, sizeof(before), "%s", g_sources[i].catalogue_key);
+	snprintf(g_sources[i].catalogue_key, sizeof(g_sources[i].catalogue_key), "%s", key);
+	if (save() != 0) {
+		snprintf(g_sources[i].catalogue_key, sizeof(g_sources[i].catalogue_key), "%s", before);
+		snprintf(err, err_size, "could not save the source list");
+		return PKGSOURCE_ERR_PERSIST;
+	}
+	/* A different key starts fresh: its first index is not compared
+	 * with the newest one the old key ever signed. */
+	catalogue_time_path(name, path, sizeof(path));
+	unlink(path);
+	return PKGSOURCE_OK;
+}
+
+long long pkgsource_catalogue_time(const char *source)
+{
+	char path[PATH_MAX];
+	char *buf = NULL;
+	size_t len = 0;
+	long long t = 0;
+
+	catalogue_time_path(source, path, sizeof(path));
+	if (persist_read_file(path, &buf, &len) == 0 && buf != NULL) {
+		t = strtoll(buf, NULL, 10);
+		free(buf);
+	}
+	return t;
+}
+
+int pkgsource_catalogue_time_set(const char *source, long long t)
+{
+	char path[PATH_MAX], buf[32];
+	int n;
+
+	if (persist_mkdir_p(g_offers_dir) != 0)
+		return -1;
+	catalogue_time_path(source, path, sizeof(path));
+	n = snprintf(buf, sizeof(buf), "%lld\n", t);
+	return persist_atomic_write(path, buf, (size_t)n);
 }

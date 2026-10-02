@@ -34,8 +34,25 @@ enum releasekey_error {
 	RELEASEKEY_ERR_VERIFY       /* parsed and attributed, but does not match these bytes */
 };
 
-/* <data-dir>/keys/cix-release.key, alongside the Secure Boot pair. */
+/* <data-dir>/keys/cix-release.key and cix-catalogue.key, alongside the Secure Boot pair. */
 void releasekey_init(const char *keys_dir);
+
+/*
+ * Which key. The release key approves artifacts; the catalogue key
+ * (ADR-0324 step C) signs a source's recipe index. Separate files under
+ * the same keys_dir, separate trust questions, one implementation: the
+ * plain functions below are the release key, the _of forms take either.
+ */
+enum releasekey_key { RELEASEKEY_RELEASE = 0, RELEASEKEY_CATALOGUE = 1 };
+
+int releasekey_is_set_of(enum releasekey_key k);
+enum releasekey_error releasekey_set_of(enum releasekey_key k, const char *pem, size_t pem_len);
+enum releasekey_error releasekey_clear_of(enum releasekey_key k);
+enum releasekey_error releasekey_public_of(enum releasekey_key k, char *out, size_t out_size);
+enum releasekey_error releasekey_key_id_hex_of(enum releasekey_key k, char *out, size_t out_size);
+enum releasekey_error releasekey_sign_file_of(enum releasekey_key k, const char *path,
+                                               const char *sig_path,
+                                               const char *trusted_comment);
 
 /* Stores a PEM Ed25519 private key, replacing any existing one. The key
  * is validated by deriving its public half: anything openssl cannot

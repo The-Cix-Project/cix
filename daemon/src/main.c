@@ -71,6 +71,7 @@
 #include "persist.h"
 #include "pki.h"
 #include "pkg.h"
+#include "generated/catalogue_key.h"
 #include "pkgrepo.h"
 #include "pkgsource.h"
 #include "curlfetch.h"
@@ -20380,6 +20381,8 @@ static void handle_pkg_sources_post(int fd, const char *body, size_t body_len)
 	snprintf(s.token, sizeof(s.token), "%s", v != NULL ? v : "");
 	s.write = write == 1;
 	s.trust_keys = trust == 1;
+	v = json_as_string(json_object_get(root, "catalogue_key"));
+	snprintf(s.catalogue_key, sizeof(s.catalogue_key), "%s", v != NULL ? v : "");
 	json_free(root);
 	e = pkgsource_add(&s, err, sizeof(err));
 	if (e != PKGSOURCE_OK) {
@@ -20415,6 +20418,19 @@ static void handle_pkg_source_put(int fd, const char *name, const char *body, si
 		json_free(root);
 		respond_error(fd, 400, "Bad Request", "write and trust_keys are true or false");
 		return;
+	}
+	/* ADR-0324 step C: its own setter, which also forgets the old key's newest index time. */
+	{
+		const char *ck = json_as_string(json_object_get(root, "catalogue_key"));
+
+		if (ck != NULL) {
+			e = pkgsource_set_catalogue_key(name, ck, err, sizeof(err));
+			if (e != PKGSOURCE_OK) {
+				json_free(root);
+				respond_pkgsource_error(fd, e, err);
+				return;
+			}
+		}
 	}
 	e = pkgsource_update(name, json_as_string(json_object_get(root, "url")),
 	                     json_as_string(json_object_get(root, "kind")),
@@ -25107,6 +25123,24 @@ static void op_putSystemReleaseKey(const struct api_ctx *ctx)
 static void op_deleteSystemReleaseKey(const struct api_ctx *ctx)
 {
 	handle_release_key_delete(ctx->fd);
+}
+
+/* GET /v1/system/catalogue-key (ADR-0324 step C) */
+static void op_getSystemCatalogueKey(const struct api_ctx *ctx)
+{
+	handle_catalogue_key_get(ctx->fd);
+}
+
+/* PUT /v1/system/catalogue-key */
+static void op_putSystemCatalogueKey(const struct api_ctx *ctx)
+{
+	handle_catalogue_key_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* DELETE /v1/system/catalogue-key */
+static void op_deleteSystemCatalogueKey(const struct api_ctx *ctx)
+{
+	handle_catalogue_key_delete(ctx->fd);
 }
 
 /* GET /v1/system/sysctl */
@@ -31902,6 +31936,20 @@ static int cixd_main(int argc, char **argv)
 	                        pkgsource_init(PKG_SOURCES_PATH, PKG_REPO_CONFIG_PATH,
 	                                       PKG_SOURCES_OFFERS_DIR)) != 0)
 		return 1;
+	/*
+	 * ADR-0324 step C: a host starting on the public catalogue verifies
+	 * it with the owner's key from its first sync -- when this build
+	 * carries one. CIX_CATALOGUE_PUBLIC_KEY is empty until
+	 * docs/keys/cix-catalogue.pub exists, and the public catalogue then
+	 * syncs unsigned, as it always has.
+	 */
+	if (pkgsource_created_default() && CIX_CATALOGUE_PUBLIC_KEY[0] != '\0') {
+		char cerr[256];
+
+		if (pkgsource_set_catalogue_key(PKG_SOURCE_DEFAULT_NAME, CIX_CATALOGUE_PUBLIC_KEY, cerr,
+		                                sizeof(cerr)) != PKGSOURCE_OK)
+			logstore_write("cixd", "error", "the built-in catalogue key was refused: %s", cerr);
+	}
 	if (pkgsource_migrated() != NULL &&
 	    pkg_recipe_seed_source_offers(pkgsource_migrated()) != 0)
 		logstore_write("cixd", "warn",

@@ -329,7 +329,8 @@ static const char USAGE_TEXT[] =
 	        "               rm NAME | own [ITEM SOURCE | ITEM --clear]  -- where recipes come from\n"
 	        "               (ADR-0324). A package offered by two sources is held until `own`\n"
 	        "               chooses one; write lets this host commit there; trust-keys lets the\n"
-	        "               source vouch for packages.\n"
+	        "               source vouch for packages; --catalogue-key=PUBFILE makes a sync\n"
+	        "               refuse any tree its signed index does not vouch for.\n"
 	        "  pkg repository ls | add NAME --url=URL [--token=TOKEN] [--push=on|off] |\n"
 	        "               set NAME ... | rm NAME  -- where built packages come from (ADR-0324):\n"
 	        "               mirrors tried in order, every copy verified, so order is speed and\n"
@@ -541,6 +542,8 @@ static const char USAGE_TEXT[] =
 	        "  release-key [show]  -- the Ed25519 key that signs published artifacts\n"
 	        "  release-key set --key=PATH  -- install it (ADR-0220)\n"
 	        "  release-key clear  -- remove it from this host\n"
+	        "  catalogue-key [show] | set --key=PATH | clear  -- the Ed25519 key that signs\n"
+	        "               a source's recipe index on the host that writes it (ADR-0324)\n"
 	        "  resolv set [--nameserver=A.B.C.D ...]  -- replace it; no flags clears it\n"
 	        "  sysctl [show]  -- every persisted (daemon-managed) host-level sysctl (ADR-0160)\n"
 	        "  sysctl get KEY  -- live current value (e.g. net.ipv4.ip_forward), persisted or not\n"
@@ -7189,7 +7192,34 @@ static int cmd_signing_keys(const struct cix_client *c, int json_mode, int argc,
  * point of holding it -- an operator publishes that exact text and
  * whoever downloads a Cix ISO verifies against it with stock minisign.
  */
-static void fmt_release_key(const struct json_value *v)
+/* The two Ed25519 keys this host can hold: one command, two rows. */
+struct key_cmd {
+	const char *cmd;
+	const char *label;
+	const char *unset;
+	const char *get_m, *get_p, *put_m, *put_p, *del_m, *del_p;
+};
+
+static const struct key_cmd g_release_key_cmd = {
+	"release-key", "release key", "no release key installed -- ISOs built here will be unsigned",
+	CIX_API_getSystemReleaseKey_METHOD, CIX_API_getSystemReleaseKey,
+	CIX_API_putSystemReleaseKey_METHOD, CIX_API_putSystemReleaseKey,
+	CIX_API_deleteSystemReleaseKey_METHOD, CIX_API_deleteSystemReleaseKey,
+};
+
+/* ADR-0324 step C. */
+static const struct key_cmd g_catalogue_key_cmd = {
+	"catalogue-key", "catalogue key",
+	"no catalogue key installed -- this host signs no recipe index",
+	CIX_API_getSystemCatalogueKey_METHOD, CIX_API_getSystemCatalogueKey,
+	CIX_API_putSystemCatalogueKey_METHOD, CIX_API_putSystemCatalogueKey,
+	CIX_API_deleteSystemCatalogueKey_METHOD, CIX_API_deleteSystemCatalogueKey,
+};
+
+/* emit() takes a formatter without context; this is the row it prints for. */
+static const struct key_cmd *g_key_cmd;
+
+static void fmt_signing_key(const struct json_value *v)
 {
 	const struct json_value *key_set = json_object_get(v, "key_set");
 	const char *pub = json_as_string(json_object_get(v, "public_key"));
@@ -7197,53 +7227,63 @@ static void fmt_release_key(const struct json_value *v)
 	int have = key_set != NULL && key_set->type == JSON_BOOL && key_set->u.boolean;
 
 	if (!have) {
-		printf("no release key installed -- ISOs built here will be unsigned\n");
+		printf("%s\n", g_key_cmd->unset);
 		return;
 	}
-	printf("release key   installed\n");
+	printf("%-13s installed\n", g_key_cmd->label);
 	if (key_id != NULL)
 		printf("key id        %s\n", key_id);
 	if (pub != NULL)
 		printf("\npublic key (publish this -- verifiers need it):\n%s", pub);
 }
 
-static int cmd_release_key_show(const struct cix_client *c, int json_mode)
-{
-	struct cix_response r;
-
-	if (cix_client_request(c, CIX_API_getSystemReleaseKey_METHOD, CIX_API_getSystemReleaseKey,
-	                       NULL, &r) != 0) {
-		fprintf(stderr, "cixctl: could not reach daemon\n");
-		return 1;
-	}
-	return emit(&r, json_mode, fmt_release_key);
-}
-
-static int cmd_release_key_set(const struct cix_client *c, int json_mode, int argc, char **argv)
+static int cmd_signing_key(const struct cix_client *c, int json_mode, int argc, char **argv,
+                           const struct key_cmd *k)
 {
 	const char *key_path = NULL;
 	char *key_buf = NULL;
 	size_t key_len = 0;
 	struct json_writer w;
 	struct cix_response r;
-	int i;
-	int rc;
+	int i, rc;
 
-	for (i = 0; i < argc; i++) {
+	g_key_cmd = k;
+	if (argc < 1 || strcmp(argv[0], "show") == 0) {
+		if (cix_client_request(c, k->get_m, k->get_p, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_signing_key);
+	}
+	if (strcmp(argv[0], "clear") == 0) {
+		if (cix_client_request(c, k->del_m, k->del_p, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_signing_key);
+	}
+	if (strcmp(argv[0], "set") != 0) {
+		fprintf(stderr,
+		        "usage: cixctl %s [show]\n"
+		        "       cixctl %s set --key=PATH\n"
+		        "       cixctl %s clear\n",
+		        k->cmd, k->cmd, k->cmd);
+		return 2;
+	}
+	for (i = 1; i < argc; i++) {
 		if (strncmp(argv[i], "--key=", 6) == 0)
 			key_path = argv[i] + 6;
 		else {
-			fprintf(stderr, "cixctl: unknown release-key set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown %s set option '%s'\n", k->cmd, argv[i]);
 			return 2;
 		}
 	}
 	if (key_path == NULL) {
-		fprintf(stderr, "cixctl: release-key set needs --key=PATH\n");
+		fprintf(stderr, "cixctl: %s set needs --key=PATH\n", k->cmd);
 		return 2;
 	}
 	if (read_local_file(key_path, &key_buf, &key_len) != 0)
 		return 1;
-
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "key");
@@ -7251,50 +7291,23 @@ static int cmd_release_key_set(const struct cix_client *c, int json_mode, int ar
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 	free(key_buf);
-
-	if (cix_client_request(c, CIX_API_putSystemReleaseKey_METHOD, CIX_API_putSystemReleaseKey,
-	                       w.buf, &r) != 0) {
-		jw_free(&w);
-		fprintf(stderr, "cixctl: could not reach daemon\n");
-		return 1;
-	}
+	rc = cix_client_request(c, k->put_m, k->put_p, w.buf, &r);
 	jw_free(&w);
-	rc = emit(&r, json_mode, fmt_release_key);
-	return rc;
-}
-
-static int cmd_release_key_clear(const struct cix_client *c, int json_mode)
-{
-	struct cix_response r;
-
-	if (cix_client_request(c, CIX_API_deleteSystemReleaseKey_METHOD,
-	                       CIX_API_deleteSystemReleaseKey, NULL, &r) != 0) {
+	if (rc != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
-	return emit(&r, json_mode, fmt_release_key);
+	return emit(&r, json_mode, fmt_signing_key);
 }
 
 static int cmd_release_key(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	const char *sub;
+	return cmd_signing_key(c, json_mode, argc, argv, &g_release_key_cmd);
+}
 
-	if (argc < 1)
-		return cmd_release_key_show(c, json_mode);
-
-	sub = argv[0];
-	if (strcmp(sub, "show") == 0)
-		return cmd_release_key_show(c, json_mode);
-	if (strcmp(sub, "set") == 0)
-		return cmd_release_key_set(c, json_mode, argc - 1, argv + 1);
-	if (strcmp(sub, "clear") == 0)
-		return cmd_release_key_clear(c, json_mode);
-
-	fprintf(stderr,
-	        "usage: cixctl release-key [show]\n"
-	        "       cixctl release-key set --key=PATH\n"
-	        "       cixctl release-key clear\n");
-	return 2;
+static int cmd_catalogue_key(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	return cmd_signing_key(c, json_mode, argc, argv, &g_catalogue_key_cmd);
 }
 
 /*
@@ -14500,16 +14513,18 @@ static void fmt_pkg_sources(const struct json_value *v)
 		const struct json_value *tok = json_object_get(s, "token_set");
 		const struct json_value *wr = json_object_get(s, "write");
 		const struct json_value *tk = json_object_get(s, "trust_keys");
+		const char *ck = json_str_field(s, "catalogue_key");
 		const char *name = json_str_field(s, "name");
 		const char *kind = json_str_field(s, "kind");
 		const char *ref = json_str_field(s, "ref");
 		const char *url = json_str_field(s, "url");
 
-		printf("%-16s %-6s %-5s token=%-5s keys=%-7s %s@%s\n", name != NULL ? name : "?",
+		printf("%-16s %-6s %-5s token=%-5s keys=%-7s %-8s %s@%s\n", name != NULL ? name : "?",
 		       kind != NULL ? kind : "?",
 		       wr != NULL && wr->type == JSON_BOOL && wr->u.boolean ? "write" : "read",
 		       tok != NULL && tok->type == JSON_BOOL && tok->u.boolean ? "set" : "unset",
 		       tk != NULL && tk->type == JSON_BOOL && tk->u.boolean ? "trusted" : "no",
+		       ck != NULL && ck[0] != '\0' ? "signed" : "unsigned",
 		       url != NULL ? url : "?", ref != NULL ? ref : "?");
 	}
 }
@@ -14550,7 +14565,8 @@ static void fmt_pkg_source_ownership(const struct json_value *v)
  */
 static int parse_source_flags(int argc, char **argv, const char **url, const char **kind,
                               const char **ref, const char **token, const char **write,
-                              const char **trust_keys, const char *verb)
+                              const char **trust_keys, const char **catalogue_key,
+                              const char *verb)
 {
 	int i;
 
@@ -14567,6 +14583,10 @@ static int parse_source_flags(int argc, char **argv, const char **url, const cha
 			*token = "";
 		else if (strncmp(argv[i], "--write=", 8) == 0)
 			*write = argv[i] + 8;
+		else if (strncmp(argv[i], "--catalogue-key=", 16) == 0)
+			*catalogue_key = argv[i] + 16;
+		else if (strcmp(argv[i], "--clear-catalogue-key") == 0)
+			*catalogue_key = "";
 		else if (strncmp(argv[i], "--trust-keys=", 13) == 0)
 			*trust_keys = argv[i] + 13;
 		else {
@@ -14585,7 +14605,8 @@ static int parse_source_flags(int argc, char **argv, const char **url, const cha
 
 static void write_source_body(struct json_writer *w, const char *name, const char *url,
                               const char *kind, const char *ref, const char *token,
-                              const char *write, const char *trust_keys)
+                              const char *write, const char *trust_keys,
+                              const char *catalogue_key)
 {
 	jw_init(w);
 	jw_obj_open(w);
@@ -14613,6 +14634,10 @@ static void write_source_body(struct json_writer *w, const char *name, const cha
 		jw_key(w, "write");
 		jw_bool(w, strcmp(write, "on") == 0);
 	}
+	if (catalogue_key != NULL) {
+		jw_key(w, "catalogue_key");
+		jw_str(w, catalogue_key);
+	}
 	if (trust_keys != NULL) {
 		jw_key(w, "trust_keys");
 		jw_bool(w, strcmp(trust_keys, "on") == 0);
@@ -14629,6 +14654,9 @@ static int cmd_pkg_source(const struct cix_client *c, int json_mode, int argc, c
 {
 	const char *url = NULL, *kind = NULL, *ref = NULL, *token = NULL;
 	const char *write = NULL, *trust_keys = NULL;
+	const char *ck_path = NULL; /* ADR-0324 step C: a .pub file, or "" to clear */
+	char *ck_buf = NULL;
+	size_t ck_len = 0;
 	const char *sub;
 	char path[512];
 	struct json_writer w;
@@ -14642,6 +14670,7 @@ static int cmd_pkg_source(const struct cix_client *c, int json_mode, int argc, c
 		        "[--ref=REF] [--token=TOKEN] [--write=on|off] [--trust-keys=on|off]\n"
 		        "       cixctl pkg source set NAME [--url=URL] [--kind=...] [--ref=REF] "
 		        "[--token=TOKEN | --clear-token] [--write=on|off] [--trust-keys=on|off]\n"
+		        "       [--catalogue-key=PUBFILE | --clear-catalogue-key]\n"
 		        "       cixctl pkg source rm NAME\n"
 		        "       cixctl pkg source own [ITEM SOURCE | ITEM --clear]\n");
 		return 2;
@@ -14663,14 +14692,20 @@ static int cmd_pkg_source(const struct cix_client *c, int json_mode, int argc, c
 			return 2;
 		}
 		rc = parse_source_flags(argc - 2, argv + 2, &url, &kind, &ref, &token, &write,
-		                        &trust_keys, sub);
+		                        &trust_keys, &ck_path, sub);
 		if (rc != 0)
 			return rc;
 		if (is_add && (url == NULL || kind == NULL)) {
 			fprintf(stderr, "cixctl: pkg source add needs --url= and --kind=\n");
 			return 2;
 		}
-		write_source_body(&w, is_add ? argv[1] : NULL, url, kind, ref, token, write, trust_keys);
+		if (ck_path != NULL && ck_path[0] != '\0' && read_local_file(ck_path, &ck_buf, &ck_len) != 0) {
+			fprintf(stderr, "cixctl: could not read %s\n", ck_path);
+			return 1;
+		}
+		write_source_body(&w, is_add ? argv[1] : NULL, url, kind, ref, token, write, trust_keys,
+		                  ck_path == NULL ? NULL : ck_buf != NULL ? ck_buf : "");
+		free(ck_buf);
 		if (is_add)
 			rc = cix_client_request(c, CIX_API_addPkgSource_METHOD, CIX_API_addPkgSource, w.buf,
 			                        &r);
@@ -18741,6 +18776,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_console(client, argc, argv);
 	if (strcmp(cmd, "release-key") == 0)
 		return cmd_release_key(client, json_mode, argc, argv);
+	if (strcmp(cmd, "catalogue-key") == 0)
+		return cmd_catalogue_key(client, json_mode, argc, argv);
 	if (strcmp(cmd, "signing-keys") == 0)
 		return cmd_signing_keys(client, json_mode, argc, argv);
 	if (strcmp(cmd, "sysctl") == 0)

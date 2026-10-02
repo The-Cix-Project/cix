@@ -11489,6 +11489,7 @@ function setPkgSourceForm(source) {
 	document.getElementById("psf-clear-token").disabled = !(source && source.token_set);
 	document.getElementById("psf-write").checked = source ? source.write === true : false;
 	document.getElementById("psf-trust-keys").checked = source ? source.trust_keys === true : false;
+	document.getElementById("psf-catalogue-key").value = source ? source.catalogue_key || "" : "";
 }
 
 function renderPkgSourcesTable(sources) {
@@ -11498,7 +11499,7 @@ function renderPkgSourcesTable(sources) {
 		return;
 	body.textContent = "";
 	if (sources.length === 0) {
-		simpleTableRows(body, [], 7, emptyStateText("listPkgSources", "recipe sources", "No recipe sources"));
+		simpleTableRows(body, [], 8, emptyStateText("listPkgSources", "recipe sources", "No recipe sources"));
 		return;
 	}
 	for (const s of sources) {
@@ -11524,6 +11525,11 @@ function renderPkgSourcesTable(sources) {
 
 		keysCell.textContent = s.trust_keys ? "trusted" : "no";
 		row.appendChild(keysCell);
+
+		const indexCell = document.createElement("td");
+
+		indexCell.textContent = s.catalogue_key ? "signed" : "unsigned";
+		row.appendChild(indexCell);
 
 		const tokenCell = document.createElement("td");
 
@@ -11637,7 +11643,7 @@ async function refreshPkgSources() {
 		fillRecipeSourceSelect(data.sources);
 		renderPkgSourcesTable(data.sources);
 	} catch (e) {
-		simpleTableRows(document.getElementById("pkg-sources-body"), [], 7, refusalText(e, "recipe sources"));
+		simpleTableRows(document.getElementById("pkg-sources-body"), [], 8, refusalText(e, "recipe sources"));
 	}
 	try {
 		const ownership = await apiRequest("GET", CIX_API.getPkgSourceOwnership());
@@ -11662,6 +11668,8 @@ document.getElementById("pkg-source-form").addEventListener("submit", async (eve
 		kind: document.getElementById("psf-kind").value,
 		write: document.getElementById("psf-write").checked,
 		trust_keys: document.getElementById("psf-trust-keys").checked,
+		catalogue_key: document.getElementById("psf-catalogue-key").value.trim() === "" ? "" :
+			document.getElementById("psf-catalogue-key").value.trim() + "\n",
 	};
 	const ref = document.getElementById("psf-ref").value.trim();
 	const token = document.getElementById("psf-token").value;

@@ -17,6 +17,9 @@
 void handle_release_key_delete(int fd);
 void handle_release_key_get(int fd);
 void handle_release_key_put(int fd, const char *body, size_t body_len);
+void handle_catalogue_key_delete(int fd);
+void handle_catalogue_key_get(int fd);
+void handle_catalogue_key_put(int fd, const char *body, size_t body_len);
 void handle_signing_keys_delete(int fd);
 void handle_signing_keys_get(int fd);
 void handle_signing_keys_put(int fd, const char *body, size_t body_len);

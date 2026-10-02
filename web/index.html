@@ -2539,12 +2539,13 @@
 						<th>Ref</th>
 						<th>Role</th>
 						<th>Keys</th>
+						<th>Index</th>
 						<th>Token</th>
 						<th></th>
 					</tr>
 				</thead>
 				<tbody id="pkg-sources-body">
-					<tr><td colspan="7" class="empty">Loading&hellip;</td></tr>
+					<tr><td colspan="8" class="empty">Loading&hellip;</td></tr>
 				</tbody>
 			</table>
 			<h3>Held</h3>
@@ -3824,6 +3825,10 @@
 					<label class="checkbox">
 						<input type="checkbox" id="psf-trust-keys">
 						Trust the signing keys this source carries
+					</label>
+					<label class="wide">
+						Catalogue key (the source's signed index must verify against it; empty = unsigned)
+						<textarea id="psf-catalogue-key" rows="3" spellcheck="false" placeholder="untrusted comment: ...&#10;RW..."></textarea>
 					</label>
 					<button type="submit">Save</button>
 				</form>

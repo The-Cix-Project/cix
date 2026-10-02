@@ -14,6 +14,10 @@
  */
 #include "httpclient.h"
 #include "base64.h"
+
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
 #include "json.h"
 #include "test_image_fixture.h"
 #include "test_floor.h"
@@ -116,6 +120,30 @@ static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 static const char *json_str_field(const struct json_value *obj, const char *key)
 {
 	return json_as_string(json_object_get(obj, key));
+}
+
+/* A fresh Ed25519 private key, PEM, for the catalogue-signing case (ADR-0324). */
+static char *gen_ed25519_pem(void)
+{
+	EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, NULL);
+	EVP_PKEY *key = NULL;
+	BIO *bio = NULL;
+	char *data = NULL, *out = NULL;
+	long n;
+
+	if (ctx == NULL || EVP_PKEY_keygen_init(ctx) <= 0 || EVP_PKEY_keygen(ctx, &key) <= 0)
+		goto done;
+	bio = BIO_new(BIO_s_mem());
+	if (bio == NULL || PEM_write_bio_PrivateKey(bio, key, NULL, NULL, 0, NULL, NULL) != 1)
+		goto done;
+	n = BIO_get_mem_data(bio, &data);
+	if (n > 0)
+		out = strndup(data, (size_t)n);
+done:
+	BIO_free(bio);
+	EVP_PKEY_free(key);
+	EVP_PKEY_CTX_free(ctx);
+	return out;
 }
 
 static int str_eq(const char *a, const char *b)
@@ -7718,6 +7746,188 @@ skip_resume:
 				}
 				json_free(sent);
 				free(posted_req);
+			}
+
+			/*
+			 * ADR-0324 step C, end to end against the fake forge. This
+			 * host gets a catalogue key and srcb gets its public half:
+			 * the next sync signs srcb's tree (this host may write it),
+			 * commits INDEX and INDEX.minisig as creates, and verifies
+			 * its own index. With write off, the forge's tree -- which
+			 * has no index -- is refused whole. With the committed index
+			 * put into it, it is accepted; and a recipe the index does
+			 * not list is refused and never stored.
+			 */
+			{
+				char *pem = gen_ed25519_pem(), *pub = NULL, *req = NULL;
+				size_t req_len = 0;
+				char req_path[PATH_MAX], tree_dir[PATH_MAX];
+				struct json_writer jw;
+				struct json_value *sentj = NULL;
+				const struct json_value *files = NULL;
+				int k;
+
+				snprintf(tree_dir, sizeof(tree_dir), "%s/tree/%s", forge_dir, repos[1][1]);
+				snprintf(req_path, sizeof(req_path), "%s/contents.request.json", forge_dir);
+				unlink(req_path); /* the write-back's batch; this one must be recorded too */
+				jw_init(&jw);
+				jw_obj_open(&jw);
+				jw_key(&jw, "key");
+				jw_str(&jw, pem != NULL ? pem : "");
+				jw_obj_close(&jw);
+				jw.buf[jw.len] = '\0';
+				memset(&r, 0, sizeof(r));
+				if (pem == NULL ||
+				    cix_client_request(&client, "PUT", "/v1/system/catalogue-key", jw.buf, &r) !=
+				        0 ||
+				    r.status != 200 || r.json == NULL ||
+				    json_str_field(r.json, "public_key") == NULL) {
+					fprintf(stderr, "FAIL: ADR-0324 installing a catalogue key, status=%d\n",
+					        r.status);
+					ok = 0;
+				} else {
+					pub = strdup(json_str_field(r.json, "public_key"));
+				}
+				cix_response_free(&r);
+				jw_free(&jw);
+				free(pem);
+
+				jw_init(&jw);
+				jw_obj_open(&jw);
+				jw_key(&jw, "catalogue_key");
+				jw_str(&jw, pub != NULL ? pub : "");
+				jw_obj_close(&jw);
+				jw.buf[jw.len] = '\0';
+				memset(&r, 0, sizeof(r));
+				if (pub == NULL ||
+				    cix_client_request(&client, "PUT", "/v1/pkg/sources/srcb", jw.buf, &r) != 0 ||
+				    r.status != 200 || r.body == NULL || strstr(r.body, "RW") == NULL) {
+					fprintf(stderr, "FAIL: ADR-0324 giving srcb the catalogue key, status=%d\n",
+					        r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+				jw_free(&jw);
+
+				/* 1. This host writes srcb: it signs, commits, and accepts its own index. */
+				if (sync_and_wait(&client, st_s, sizeof(st_s), &r) != 0 || r.body == NULL ||
+				    strstr(r.body, "\"name\":\"srcb\",\"fetched\":true") == NULL) {
+					fprintf(stderr, "FAIL: ADR-0324 the signing host must accept its own signed "
+					                "tree: %s\n",
+					        r.body != NULL ? r.body : "(no body)");
+					ok = 0;
+				}
+				cix_response_free(&r);
+				sentj = slurp_file(req_path, &req, &req_len) == 0 ? json_parse(req, req_len)
+				                                                  : NULL;
+				files = sentj != NULL ? json_object_get(sentj, "files") : NULL;
+				if (files == NULL || files->type != JSON_ARRAY || files->u.array.count != 2 ||
+				    !str_eq(json_as_string(json_object_get(files->u.array.items[0], "path")),
+				            "recipes/INDEX") ||
+				    !str_eq(json_as_string(json_object_get(files->u.array.items[0],
+				                                           "operation")),
+				            "create") ||
+				    !str_eq(json_as_string(json_object_get(files->u.array.items[1], "path")),
+				            "recipes/INDEX.minisig")) {
+					fprintf(stderr, "FAIL: ADR-0324 the index and its signature must be "
+					                "committed as creates: %s\n",
+					        req != NULL ? req : "(nothing posted)");
+					ok = 0;
+				}
+
+				/* 2. Not the writer any more: the forge's tree has no index. */
+				memset(&r, 0, sizeof(r));
+				cix_client_request(&client, "PUT", "/v1/pkg/sources/srcb", "{\"write\":false}",
+				                   &r);
+				cix_response_free(&r);
+				if (sync_and_wait(&client, st_s, sizeof(st_s), &r) != 0 || r.body == NULL ||
+				    strstr(r.body, "catalogue: the tree carries no signed index") == NULL) {
+					fprintf(stderr, "FAIL: ADR-0324 an unsigned tree from a source with a "
+					                "catalogue key must be refused, naming why: %s\n",
+					        r.body != NULL ? r.body : "(no body)");
+					ok = 0;
+				}
+				cix_response_free(&r);
+
+				/* 3. The committed index, put into the forge's tree: accepted. */
+				for (k = 0; files != NULL && files->type == JSON_ARRAY &&
+				            k < (int)files->u.array.count;
+				     k++) {
+					const char *b64 =
+					    json_as_string(json_object_get(files->u.array.items[k], "content"));
+					const char *rel =
+					    json_as_string(json_object_get(files->u.array.items[k], "path"));
+					unsigned char decoded[65536];
+					int dn = b64 != NULL ? base64_decode(b64, decoded, sizeof(decoded)) : -1;
+					char out_path[PATH_MAX];
+					FILE *fp;
+
+					if (dn < 0 || rel == NULL)
+						continue;
+					snprintf(out_path, sizeof(out_path), "%s/%s", tree_dir, rel);
+					fp = fopen(out_path, "wb");
+					if (fp != NULL) {
+						if (fwrite(decoded, 1, (size_t)dn, fp) != (size_t)dn)
+							ok = 0;
+						fclose(fp);
+					}
+				}
+				if (run_cmd("tar -cf '%s/api/v1/repos/%s/archive/main.tar.gz' -C '%s/tree/%.2s' "
+				            "'%s'",
+				            forge_dir, repos[1][1], forge_dir, repos[1][1], repos[1][1] + 3) != 0 ||
+				    sync_and_wait(&client, st_s, sizeof(st_s), &r) != 0 || r.body == NULL ||
+				    strstr(r.body, "\"name\":\"srcb\",\"fetched\":true") == NULL) {
+					fprintf(stderr, "FAIL: ADR-0324 a tree carrying its signed index must be "
+					                "accepted: %s\n",
+					        r.body != NULL ? r.body : "(no body)");
+					ok = 0;
+				}
+				cix_response_free(&r);
+
+				/* 4. A recipe the index does not list: refused, never stored. */
+				cpdl_recipe_text_decl(recipe, sizeof(recipe), "unlisted", "1.0",
+				                      test_http_src(tarball), sha, NULL,
+				                      "            tool \"bash\"\n"
+				                      "            tool \"coreutils\"\n",
+				                      NULL, "", "        run \"true\" {\n        }\n",
+				                      "        mkdir \"${dest}/usr/share/unlisted\" parents\n");
+				snprintf(path, sizeof(path), "%s/recipes/package/unlisted@1.0-1.cbs", tree_dir);
+				{
+					FILE *fp = fopen(path, "w");
+
+					if (fp != NULL) {
+						fputs(recipe, fp);
+						fclose(fp);
+					}
+				}
+				memset(&r, 0, sizeof(r));
+				cix_client_request(&client, "PUT", "/v1/pkg/source-ownership",
+				                   "{\"item\":\"package:unlisted\",\"source\":\"srcb\"}", &r);
+				cix_response_free(&r);
+				if (run_cmd("tar -cf '%s/api/v1/repos/%s/archive/main.tar.gz' -C '%s/tree/%.2s' "
+				            "'%s'",
+				            forge_dir, repos[1][1], forge_dir, repos[1][1], repos[1][1] + 3) != 0 ||
+				    sync_and_wait(&client, st_s, sizeof(st_s), &r) != 0) {
+					fprintf(stderr, "FAIL: ADR-0324 the tampered-tree sync did not run\n");
+					ok = 0;
+				}
+				cix_response_free(&r);
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/recipes/unlisted", NULL, &r) != 0 ||
+				    r.status != 404) {
+					fprintf(stderr, "FAIL: ADR-0324 a recipe the signed index does not list "
+					                "must not be stored, got %d\n",
+					        r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+
+				memset(&r, 0, sizeof(r));
+				cix_client_request(&client, "DELETE", "/v1/system/catalogue-key", NULL, &r);
+				cix_response_free(&r);
+				json_free(sentj);
+				free(req);
+				free(pub);
 			}
 		}
 

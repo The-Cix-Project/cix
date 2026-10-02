@@ -208,12 +208,13 @@ int main(void)
 	 *     /pkg/source-ownership.
 	 * 331 as of ADR-0324 step B: GET and PUT /pkg/artifact-config gone; GET
 	 *     and POST /pkg/repositories, PUT and DELETE /pkg/repositories/{name}.
+	 * 334 as of ADR-0324 step C: GET, PUT and DELETE /system/catalogue-key.
 	 */
 	status = run_apigen("docs/api/openapi.yaml", NULL, out, sizeof(out));
 	if (status != 0)
 		fail("apigen rejected the real spec: %.300s", out);
-	else if (atoi(out) != 331)
-		fail("apigen found %d operations in the real spec, expected 331 -- if the spec "
+	else if (atoi(out) != 334)
+		fail("apigen found %d operations in the real spec, expected 334 -- if the spec "
 		     "genuinely changed, update this number deliberately; a silently different "
 		     "count is how a lost route hides",
 		     atoi(out));
@@ -379,9 +380,9 @@ int main(void)
 			}
 			fclose(f);
 			unlink(routes_path);
-			if (rows != 331 || with_permission != rows)
+			if (rows != 334 || with_permission != rows)
 				fail("the generated route table has %d rows and %d carry a permission; "
-				     "expected 331 and 331 (ADR-0317)",
+				     "expected 334 and 334 (ADR-0317)",
 				     rows, with_permission);
 		}
 	}
@@ -479,10 +480,10 @@ int main(void)
 			fclose(f);
 			unlink(hdr_path);
 		}
-		if (defines != 331)
-			fail("CLI header has %d path defines, expected one per operation (331)", defines);
-		if (methods != 331)
-			fail("CLI header has %d method defines, expected one per operation (331)", methods);
+		if (defines != 334)
+			fail("CLI header has %d path defines, expected one per operation (334)", defines);
+		if (methods != 334)
+			fail("CLI header has %d method defines, expected one per operation (334)", methods);
 		if (braces != 0)
 			fail("%d CLI path define(s) still contain '{' -- a parameter was not converted "
 			     "to %%s and would put a literal brace in the URL",

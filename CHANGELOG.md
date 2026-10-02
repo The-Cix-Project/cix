@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The recipe catalogue is signed, as Debian signs its archive (ADR-0324, step C)
+
+The owner's four decisions of 2026-10-02, built:
+- **`recipes/INDEX`** lists the sha256 and path of every recipe and every `docs/keys` file. It excludes itself, so committing it does not change it. **`recipes/INDEX.minisig`** signs it, with trusted comment `cix catalogue sha256=<index> time=<t>` (`catalogue.c`, `test_catalogue`).
+- **The writing host signs.** A host that may write a source and holds the catalogue key (`PUT /v1/system/catalogue-key`, `cixctl catalogue-key set --key=PATH`) re-signs the fetched tree whenever its index no longer matches. It commits both files in one batch, creating them the first time. The signing code is the release key's own, generalised to two keys.
+- **Readers verify.** A source with a `catalogue_key` (`cixctl pkg source set NAME --catalogue-key=PUBFILE`, or the dashboard's source form) is refused whole when its index is missing, does not verify, or is older than the newest accepted. A refused source keeps its previous offers. Otherwise a sync takes only the recipe and key files the index lists with their bytes. A source without a key syncs unsigned. The signing host signs before it verifies, so it never refuses its own tree.
+- **The public default.** A new host's `cix-public` source gets the owner's key built in from `docs/keys/cix-catalogue.pub`, once that file exists. Until then the public catalogue syncs unsigned.
+- **Tests.** `test_catalogue` (selftest) covers the index, the fixed point and the comment. `test_pkgsource` covers the key, its stored time and the reset on change. `test_forgecommit` covers a mixed create and update batch. `test_pkg` signs a tree against the fake forge, refuses the unsigned tree, accepts the committed index, and refuses a recipe the index does not list. The contract has 334 operations.
+
 ### Package repositories are a list; every copy is verified, every push repository gets its own (ADR-0324, step B)
 
 `/v1/pkg/artifact-config` is gone. `/v1/pkg/repositories` (`cixctl pkg repository ls|add|set|rm`, and a table on the dashboard's cache tab) holds any number of artifact servers, each with a name, url, optional token and `push` switch.
