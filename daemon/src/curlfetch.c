@@ -66,6 +66,7 @@ static CURLcode perform_one(CURL *curl, const struct curlfetch_opts *opts, long 
                             long *out_http_status, char *curl_err)
 {
 	FILE *f;
+	FILE *rf = NULL; /* upload response body, when asked for */
 	CURLcode rc;
 	struct curl_slist *headers = NULL;
 
@@ -131,6 +132,21 @@ static CURLcode perform_one(CURL *curl, const struct curlfetch_opts *opts, long 
 		curl_easy_setopt(curl, CURLOPT_READFUNCTION, read_from_file);
 		curl_easy_setopt(curl, CURLOPT_READDATA, f);
 		curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE, (curl_off_t)st.st_size);
+		if (opts->method != NULL)
+			curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, opts->method);
+		if (opts->response_path != NULL) {
+			/* Truncated per attempt, so a retry never appends a second
+			 * response to the first. */
+			rf = fopen(opts->response_path, "wb");
+			if (rf == NULL) {
+				fclose(f);
+				snprintf(curl_err, CURL_ERROR_SIZE, "cannot open %s", opts->response_path);
+				curl_slist_free_all(headers);
+				return CURLE_WRITE_ERROR;
+			}
+			curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_file);
+			curl_easy_setopt(curl, CURLOPT_WRITEDATA, rf);
+		}
 	} else {
 		curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
 		f = fopen(opts->path, resume_from > 0 ? "ab" : "wb");
@@ -153,6 +169,8 @@ static CURLcode perform_one(CURL *curl, const struct curlfetch_opts *opts, long 
 		*out_http_status = status;
 	}
 	fclose(f);
+	if (rf != NULL)
+		fclose(rf);
 	curl_slist_free_all(headers);
 	return rc;
 }

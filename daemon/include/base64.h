@@ -7,8 +7,9 @@
  * Standard base64 (RFC 4648 section 4, with padding, no line wrapping),
  * on OpenSSL's EVP_EncodeBlock()/EVP_DecodeBlock() -- cixd links
  * -lcrypto already. One implementation for every caller: minisign
- * signatures and keys (releasekey.c) and HTTP Basic credentials
- * (hostauth.c, #543).
+ * signatures and keys (releasekey.c), HTTP Basic credentials
+ * (hostauth.c, #543) and a forge commit's file content (forgecommit.c,
+ * ADR-0323).
  */
 
 /* Encodes in_len bytes into out as a NUL-terminated string. out needs

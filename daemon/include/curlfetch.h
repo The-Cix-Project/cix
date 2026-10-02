@@ -28,6 +28,15 @@ struct curlfetch_opts {
 	const char *url;
 	const char *path; /* GET: written to. PUT: read from. Always required. */
 	int upload;        /* 0 = GET url into path; 1 = PUT path's contents to url */
+	/*
+	 * Upload only. method: NULL is PUT, the verb every upload used
+	 * before; "POST" is a forge's create-file call (Gitea's
+	 * repoCreateFile, ADR-0323). response_path: where the response body
+	 * is written, so the caller can read what the server created (the
+	 * commit); NULL leaves libcurl's default, as before.
+	 */
+	const char *method;
+	const char *response_path;
 
 	/* Up to two extra request headers (e.g. an Authorization: line and
 	 * an X-Cix-Sha256: line) -- NULL when not needed. Never logged or

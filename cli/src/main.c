@@ -319,6 +319,10 @@ static const char USAGE_TEXT[] =
 	        "  pkg rebuilds  -- image rebuilds this host has queued but not started.\n"
 	        "               Publishing a recipe queues one for every image tracking that\n"
 	        "               package `rolling`, which is real work nothing else reports.\n"
+	        "  pkg recipe commit --name=NAME --file=PATH [--wait]  -- commits a CPDL recipe\n"
+	        "               to the recipe repository as recipes/package/NAME@VERSION.cbs,\n"
+	        "               then publishes it here (ADR-0323): git first, so git holds every\n"
+	        "               revision a host builds. Needs `pkg repo-config set --commit=on`.\n"
 	        "  pkg recipe add --name=NAME --file=PATH [--format=shell|cbs]  -- publishes a\n"
 	        "               new recipe version on this running system directly, no reinstall\n"
 	        "               needed (ADR-0040); an already-published (name,version) is\n"
@@ -14476,17 +14480,19 @@ static void fmt_pkg_repo_config(const struct json_value *v)
 	const char *kind = json_str_field(v, "repo_kind");
 	const char *ref = json_str_field(v, "ref");
 	const struct json_value *token_set = json_object_get(v, "auth_token_set");
+	const struct json_value *commit = json_object_get(v, "commit");
 
 	if (url == NULL || url[0] == '\0') {
 		printf("(no repo configured)\n");
 		return;
 	}
 	/* ADR-0257: when it syncs is `cixctl schedule ls`, not here. */
-	printf("repo_url=%s repo_kind=%s ref=%s auth_token=%s  (schedule: cixctl schedule ls)\n",
+	printf("repo_url=%s repo_kind=%s ref=%s auth_token=%s commit=%s  (schedule: cixctl schedule ls)\n",
 	       url, kind != NULL ? kind : "?", ref != NULL ? ref : "?",
 	       (token_set != NULL && token_set->type == JSON_BOOL && token_set->u.boolean)
 	           ? "set"
-	           : "unset");
+	           : "unset",
+	       (commit != NULL && commit->type == JSON_BOOL && commit->u.boolean) ? "on" : "off");
 }
 
 static int cmd_pkg_repo_config_show(const struct cix_client *c, int json_mode)
@@ -14506,6 +14512,7 @@ static int cmd_pkg_repo_config_set(const struct cix_client *c, int json_mode, in
 	const char *kind = NULL;
 	const char *ref = NULL;
 	const char *token = NULL;
+	const char *commit = NULL;
 	long interval = -1;
 	int i;
 	struct json_writer w;
@@ -14520,6 +14527,8 @@ static int cmd_pkg_repo_config_set(const struct cix_client *c, int json_mode, in
 			ref = argv[i] + 6;
 		else if (strncmp(argv[i], "--token=", 8) == 0)
 			token = argv[i] + 8;
+		else if (strncmp(argv[i], "--commit=", 9) == 0)
+			commit = argv[i] + 9;
 		else if (strcmp(argv[i], "--clear-token") == 0)
 			token = "";
 		else if (strncmp(argv[i], "--sync-interval=", 16) == 0) {
@@ -14552,6 +14561,15 @@ static int cmd_pkg_repo_config_set(const struct cix_client *c, int json_mode, in
 		jw_key(&w, "auth_token");
 		jw_str(&w, token);
 	}
+	if (commit != NULL) {
+		if (strcmp(commit, "on") != 0 && strcmp(commit, "off") != 0) {
+			jw_free(&w);
+			fprintf(stderr, "cixctl: --commit is on or off\n");
+			return 2;
+		}
+		jw_key(&w, "commit");
+		jw_bool(&w, strcmp(commit, "on") == 0);
+	}
 	if (interval >= 0) {
 		jw_key(&w, "sync_interval_seconds");
 		jw_int(&w, interval);
@@ -14575,7 +14593,7 @@ static int cmd_pkg_repo_config(const struct cix_client *c, int json_mode, int ar
 	if (argc < 1) {
 		fprintf(stderr, "usage: cixctl pkg repo-config show\n"
 		                "       cixctl pkg repo-config set [--url=URL] [--kind=gitea|github|gitlab] "
-		                "[--ref=REF] [--token=TOKEN | --clear-token]\n");
+		                "[--ref=REF] [--token=TOKEN | --clear-token] [--commit=on|off]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -15263,6 +15281,116 @@ static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int arg
 	return 0;
 }
 
+/* ADR-0323: one line for the last recipe commit, whatever its state. */
+static void fmt_pkg_recipe_commit(const struct json_value *v)
+{
+	const char *state = json_str_field(v, "state");
+	const char *name = json_str_field(v, "name");
+	const char *version = json_str_field(v, "version");
+	const char *path = json_str_field(v, "path");
+	const char *commit = json_str_field(v, "commit");
+	const char *error = json_str_field(v, "error");
+	const struct json_value *published = json_object_get(v, "published");
+
+	if (state == NULL || strcmp(state, "never") == 0) {
+		printf("(no recipe committed since the daemon started)\n");
+		return;
+	}
+	printf("%s@%s  state=%s  path=%s  commit=%s  published=%s\n", name != NULL ? name : "?",
+	       version != NULL ? version : "?", state, path != NULL ? path : "?",
+	       commit != NULL && commit[0] != '\0' ? commit : "-",
+	       published != NULL && published->type == JSON_BOOL && published->u.boolean ? "yes"
+	                                                                                   : "no");
+	if (error != NULL && error[0] != '\0')
+		printf("error: %s\n", error);
+}
+
+static int poll_pkg_recipe_commit(const struct cix_client *c, struct cix_response *out)
+{
+	for (;;) {
+		const char *state;
+
+		if (cix_client_request(c, CIX_API_getPkgRecipeCommit_METHOD, CIX_API_getPkgRecipeCommit,
+		                       NULL, out) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return -1;
+		}
+		state = json_str_field(out->json, "state");
+		if (state == NULL || strcmp(state, "running") != 0)
+			return 0;
+		cix_response_free(out);
+		usleep(500000);
+	}
+}
+
+/*
+ * cixctl pkg recipe commit --name=NAME --file=PATH [--wait]
+ * Commits a CPDL recipe to the recipe repository, then publishes it on
+ * this host (ADR-0323). Without --wait it reports the commit as started.
+ */
+static int cmd_pkg_recipe_commit(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *file = NULL;
+	const char *state;
+	int wait = 0;
+	char *content;
+	size_t content_len;
+	int i;
+	int rc;
+	struct json_writer w;
+	struct cix_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			name = argv[i] + 7;
+		else if (strncmp(argv[i], "--file=", 7) == 0)
+			file = argv[i] + 7;
+		else if (strcmp(argv[i], "--wait") == 0)
+			wait = 1;
+		else {
+			fprintf(stderr, "cixctl: unknown pkg recipe commit option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL || file == NULL) {
+		fprintf(stderr, "usage: cixctl pkg recipe commit --name=NAME --file=PATH [--wait]\n");
+		return 2;
+	}
+	if (read_local_file(file, &content, &content_len) != 0) {
+		fprintf(stderr, "cixctl: could not read %s\n", file);
+		return 1;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "content");
+	jw_str(&w, content);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	free(content);
+
+	if (cix_client_request(c, CIX_API_commitPkgRecipe_METHOD, CIX_API_commitPkgRecipe, w.buf,
+	                       &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	if (r.status != 202 || !wait)
+		return emit(&r, json_mode, fmt_pkg_recipe_commit);
+	cix_response_free(&r);
+	if (poll_pkg_recipe_commit(c, &r) != 0)
+		return 1;
+	state = json_str_field(r.json, "state");
+	rc = state != NULL && strcmp(state, "done") == 0 ? 0 : 1;
+	if (emit(&r, json_mode, fmt_pkg_recipe_commit) != 0)
+		return 1;
+	return rc;
+}
+
 static void fmt_pkg_recipe_show(const struct json_value *v)
 {
 	const char *content = json_str_field(v, "content");
@@ -15347,6 +15475,7 @@ static int cmd_pkg_recipe(const struct cix_client *c, int json_mode, int argc, c
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: cixctl pkg recipe add --name=NAME --file=PATH\n"
+		                "       cixctl pkg recipe commit --name=NAME --file=PATH [--wait]\n"
 		                "       cixctl pkg recipe show NAME [--version=VERSION]\n"
 		                "       cixctl pkg recipe rm NAME [--version=VERSION]\n");
 		return 2;
@@ -15354,6 +15483,8 @@ static int cmd_pkg_recipe(const struct cix_client *c, int json_mode, int argc, c
 	sub = argv[0];
 	if (strcmp(sub, "add") == 0)
 		return cmd_pkg_recipe_add(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "commit") == 0)
+		return cmd_pkg_recipe_commit(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "show") == 0)
 		return cmd_pkg_recipe_show(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "rm") == 0)
@@ -17176,6 +17307,7 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "       cixctl pkg bootstrap-status\n"
 		                "       cixctl pkg recipes\n"
 		                "       cixctl pkg recipe add --name=NAME --file=PATH\n"
+		                "       cixctl pkg recipe commit --name=NAME --file=PATH [--wait]\n"
 		                "       cixctl pkg recipe show NAME [--version=VERSION]\n"
 		                "       cixctl pkg recipe rm NAME [--version=VERSION]\n"
 		                "       cixctl pkg install --name=NAME [--image=IMAGE] [--version=VERSION] "
@@ -17197,7 +17329,7 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "actually in their image (#281)\n"
 		                "       cixctl pkg repo-config show\n"
 		                "       cixctl pkg repo-config set [--url=URL] [--kind=gitea|github|gitlab] "
-		                "[--ref=REF] [--token=TOKEN | --clear-token]  (schedule: cixctl schedule)\n"
+		                "[--ref=REF] [--token=TOKEN | --clear-token] [--commit=on|off]  (schedule: cixctl schedule)\n"
 		                "       cixctl pkg sync [--wait]\n"
 		                "       cixctl pkg sync-status\n"
 		                "       cixctl pkg cache-config show\n"

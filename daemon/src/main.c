@@ -20249,6 +20249,7 @@ static void handle_pkg_repo_config_put(int fd, const char *body, size_t body_len
 	const char *repo_kind = NULL;
 	const char *ref = NULL;
 	const char *auth_token = NULL;
+	int commit = -1;
 
 	enum pkg_error perr;
 
@@ -20262,6 +20263,17 @@ static void handle_pkg_repo_config_put(int fd, const char *body, size_t body_len
 		repo_kind = json_as_string(json_object_get(root, "repo_kind"));
 		ref = json_as_string(json_object_get(root, "ref"));
 		auth_token = json_as_string(json_object_get(root, "auth_token"));
+		{
+			const struct json_value *jc = json_object_get(root, "commit");
+
+			if (jc != NULL && jc->type != JSON_BOOL) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "commit must be true or false");
+				return;
+			}
+			if (jc != NULL)
+				commit = jc->u.boolean ? 1 : 0;
+		}
 		/*
 		 * ADR-0257: sync_interval_seconds is gone from this resource.
 		 * Refused rather than ignored, so a client still sending it
@@ -20276,14 +20288,88 @@ static void handle_pkg_repo_config_put(int fd, const char *body, size_t body_len
 		}
 	}
 
-	perr = pkg_repo_set_config(repo_url, repo_kind, ref, auth_token);
+	perr = pkg_repo_set_config(repo_url, repo_kind, ref, auth_token, commit);
 	if (root != NULL)
 		json_free(root);
+	if (perr == PKG_ERR_INVALID_NAME) {
+		respond_error(fd, 400, "Bad Request",
+		              "repo_kind must be gitea, github or gitlab, and commit: true needs a "
+		              "gitea repository (ADR-0323)");
+		return;
+	}
 	if (perr != PKG_OK) {
 		respond_pkg_error(fd, perr);
 		return;
 	}
 	handle_pkg_repo_config_get(fd);
+}
+
+/*
+ * POST /v1/pkg/recipe-commit (ADR-0323): validate, then commit to the
+ * recipe repository in a helper, then publish when it is done.
+ */
+static void handle_pkg_recipe_commit_post(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *name, *content;
+	char err[PKG_ERROR_MAX];
+	enum pkg_error perr;
+	struct json_writer w;
+
+	root = body_len > 0 ? json_parse(body, body_len) : NULL;
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	name = json_as_string(json_object_get(root, "name"));
+	content = json_as_string(json_object_get(root, "content"));
+	if (name == NULL || content == NULL || content[0] == '\0') {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "name and content are required");
+		return;
+	}
+	perr = pkg_recipe_commit_start(name, content, err, sizeof(err));
+	json_free(root);
+	switch (perr) {
+	case PKG_OK:
+		break;
+	case PKG_ERR_BUSY:
+	case PKG_ERR_NOT_FOUND:
+	case PKG_ERR_DUPLICATE:
+	case PKG_ERR_ARTIFACT_NAME_TAKEN:
+		respond_error(fd, 409, "Conflict", err);
+		return;
+	case PKG_ERR_INVALID_NAME:
+	case PKG_ERR_INVALID_RECIPE:
+		respond_error(fd, 400, "Bad Request", err);
+		return;
+	default:
+		respond_error(fd, 500, "Internal Server Error",
+		              err[0] != '\0' ? err : "the commit could not be started");
+		return;
+	}
+	if (helper_run(pkg_recipe_commit_work, NULL, pkg_recipe_commit_done, NULL,
+	               "pkg recipe commit") != 0) {
+		snprintf(err, sizeof(err), "could not start the commit helper: %s", strerror(errno));
+		pkg_recipe_commit_abort(err);
+		respond_error(fd, 500, "Internal Server Error", err);
+		return;
+	}
+	jw_init(&w);
+	pkg_recipe_commit_write_json(&w);
+	respond_json(fd, 202, "Accepted", &w);
+	jw_free(&w);
+}
+
+/* GET /v1/pkg/recipe-commit */
+static void handle_pkg_recipe_commit_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	pkg_recipe_commit_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
 }
 
 /* POST /v1/pkg/sync: starts an async fetch+merge of the configured
@@ -25396,6 +25482,18 @@ static void op_getPkgRepoConfig(const struct api_ctx *ctx)
 static void op_putPkgRepoConfig(const struct api_ctx *ctx)
 {
 	handle_pkg_repo_config_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* POST /v1/pkg/recipe-commit */
+static void op_commitPkgRecipe(const struct api_ctx *ctx)
+{
+	handle_pkg_recipe_commit_post(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/pkg/recipe-commit */
+static void op_getPkgRecipeCommit(const struct api_ctx *ctx)
+{
+	handle_pkg_recipe_commit_get(ctx->fd);
 }
 
 /* POST /v1/pkg/sync */

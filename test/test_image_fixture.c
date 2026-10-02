@@ -761,6 +761,47 @@ static void http_header_value(const char *req, const char *name, char *out, size
 }
 
 /*
+ * Receives a request body of exactly Content-Length bytes into `part`,
+ * starting with what the header read already took past "\r\n\r\n".
+ * 0 when it all arrived, -1 when `part` cannot be written, -2 when the
+ * body came up short -- see http_serve_put() for why a short body is a
+ * refusal and never a truncated file.
+ */
+static int http_receive_body(int fd, const char *req, size_t used, const char *body,
+                             const char *part)
+{
+	char value[64];
+	long long want, have;
+	FILE *out;
+
+	http_header_value(req, "Content-Length", value, sizeof(value));
+	want = atoll(value);
+	out = fopen(part, "wb");
+	if (out == NULL)
+		return -1;
+	have = (long long)(used - (size_t)(body - req));
+	if (have > want)
+		have = want;
+	if (have > 0)
+		fwrite(body, 1, (size_t)have, out);
+	while (have < want) {
+		char buf[65536];
+		size_t chunk = (size_t)(want - have) < sizeof(buf) ? (size_t)(want - have) : sizeof(buf);
+		ssize_t got = read(fd, buf, chunk);
+
+		if (got < 0 && errno == EINTR)
+			continue;
+		if (got <= 0)
+			break;
+		fwrite(buf, 1, (size_t)got, out);
+		have += got;
+	}
+	if (fclose(out) != 0 || have != want)
+		return -2;
+	return 0;
+}
+
+/*
  * A PUT, for a server started with accept_put: the body is written to
  * root/<basename of the path>, and root/<basename>.headers records the
  * Authorization and X-Cix-Sha256 headers, one per line, so a test can
@@ -802,7 +843,6 @@ static void http_serve_put(int fd, const char *root, const char *upath, const ch
 	const char *base = strrchr(upath, '/');
 	const char *body = strstr(req, "\r\n\r\n");
 	char path[PATH_MAX], part[PATH_MAX + 8], hpath[PATH_MAX + 16], value[512];
-	long long want, have;
 	FILE *out;
 
 	base = base != NULL ? base + 1 : upath;
@@ -813,31 +853,13 @@ static void http_serve_put(int fd, const char *root, const char *upath, const ch
 		return;
 	}
 	body += 4;
-	http_header_value(req, "Content-Length", value, sizeof(value));
-	want = atoll(value);
-	out = fopen(part, "wb");
-	if (out == NULL) {
+	switch (http_receive_body(fd, req, used, body, part)) {
+	case 0:
+		break;
+	case -1:
 		http_serve_reply(fd, "500 Internal Server Error", 0);
 		return;
-	}
-	have = (long long)(used - (size_t)(body - req));
-	if (have > want)
-		have = want;
-	if (have > 0)
-		fwrite(body, 1, (size_t)have, out);
-	while (have < want) {
-		char buf[65536];
-		size_t chunk = (size_t)(want - have) < sizeof(buf) ? (size_t)(want - have) : sizeof(buf);
-		ssize_t got = read(fd, buf, chunk);
-
-		if (got < 0 && errno == EINTR)
-			continue;
-		if (got <= 0)
-			break;
-		fwrite(buf, 1, (size_t)got, out);
-		have += got;
-	}
-	if (fclose(out) != 0 || have != want) {
+	default:
 		/* Say so, and do not disturb what is already at `path`. A
 		 * test asserting on a previous good upload keeps passing;
 		 * one asserting on this upload fails with a status rather
@@ -863,8 +885,60 @@ static void http_serve_put(int fd, const char *root, const char *upath, const ch
 	http_serve_reply(fd, "201 Created", 0);
 }
 
+/*
+ * The commit SHA this fixture's fake forge answers every create with.
+ * Exported so a test can assert the daemon carried it through.
+ */
+const char *const TEST_FORGE_COMMIT_SHA = "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1";
+
+/*
+ * A minimal stand-in for Gitea's create-file call (ADR-0323), shaped by
+ * its own spec (Gitea 1.25.4, git.home.arpa /swagger.v1.json,
+ * 2026-10-02): POST .../contents/{filepath} creates the file and answers
+ * 201 with a FileResponse carrying `commit`. A path that already exists
+ * is refused, which is the forge-side half of a published version being
+ * immutable. The request body is kept beside root as
+ * <basename>.request.json, so a test reads exactly what was sent.
+ */
+static void http_serve_forge_create(int fd, const char *root, const char *upath, const char *req,
+                                    size_t used)
+{
+	const char *base = strrchr(upath, '/');
+	const char *body = strstr(req, "\r\n\r\n");
+	char path[PATH_MAX], part[PATH_MAX + 8], reply[160];
+	struct stat st;
+	int n;
+
+	base = base != NULL ? base + 1 : upath;
+	if (body == NULL || base[0] == '\0' ||
+	    snprintf(path, sizeof(path), "%s/%s.request.json", root, base) >= (int)sizeof(path) ||
+	    snprintf(part, sizeof(part), "%s.part", path) >= (int)sizeof(part)) {
+		http_serve_reply(fd, "400 Bad Request", 0);
+		return;
+	}
+	body += 4;
+	if (stat(path, &st) == 0) {
+		n = snprintf(reply, sizeof(reply), "{\"message\":\"repository file already exists\"}");
+		http_serve_reply(fd, "422 Unprocessable Entity", n);
+		if (write(fd, reply, (size_t)n) != n)
+			return;
+		return;
+	}
+	if (http_receive_body(fd, req, used, body, part) != 0 || rename(part, path) != 0) {
+		unlink(part);
+		http_serve_reply(fd, "400 Bad Request", 0);
+		return;
+	}
+	n = snprintf(reply, sizeof(reply), "{\"content\":{\"sha\":\"b10b\"},\"commit\":{\"sha\":\"%s\"}}",
+	             TEST_FORGE_COMMIT_SHA);
+	http_serve_reply(fd, "201 Created", n);
+	if (write(fd, reply, (size_t)n) != n)
+		return;
+}
+
 /* Serves one request on fd: GET or HEAD of root + the request path, and
- * PUT when accept_put is set. */
+ * PUT -- plus POST to a forge's .../contents/ path (ADR-0323) -- when
+ * accept_put is set. */
 static void http_serve_one(int fd, const char *root, int accept_put)
 {
 	char req[4096];
@@ -894,6 +968,10 @@ static void http_serve_one(int fd, const char *root, int accept_put)
 	if (sscanf(req, "%7s %4095s", method, upath) != 2 || upath[0] != '/' ||
 	    strstr(upath, "..") != NULL) {
 		http_serve_reply(fd, "400 Bad Request", 0);
+		return;
+	}
+	if (accept_put && strcmp(method, "POST") == 0 && strstr(upath, "/contents/") != NULL) {
+		http_serve_forge_create(fd, root, upath, req, used);
 		return;
 	}
 	if (accept_put && strcmp(method, "PUT") == 0) {

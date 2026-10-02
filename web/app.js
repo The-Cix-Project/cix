@@ -11482,13 +11482,14 @@ async function refreshPkgRepoConfig() {
 			document.getElementById("prc-token").value = "";
 			document.getElementById("prc-token").placeholder =
 				config.auth_token_set ? "(unchanged, a token is set)" : "(unchanged, no token set)";
+			document.getElementById("prc-commit").checked = config.commit === true;
 		}
 	} catch (e) {
 		/* Best-effort -- the form just stays at whatever was last shown. */
 	}
 }
 
-for (const id of ["prc-url", "prc-kind", "prc-ref", "prc-token", "prc-clear-token"]) {
+for (const id of ["prc-url", "prc-kind", "prc-ref", "prc-token", "prc-clear-token", "prc-commit"]) {
 	document.getElementById(id).addEventListener("input", () => {
 		pkgRepoConfigDirty = true;
 	});
@@ -11504,6 +11505,7 @@ document.getElementById("prc-form").addEventListener("submit", async (event) => 
 		repo_url: document.getElementById("prc-url").value.trim(),
 		repo_kind: document.getElementById("prc-kind").value,
 		ref: document.getElementById("prc-ref").value.trim(),
+		commit: document.getElementById("prc-commit").checked,
 	};
 	const token = document.getElementById("prc-token").value;
 
@@ -11515,6 +11517,13 @@ document.getElementById("prc-form").addEventListener("submit", async (event) => 
 		body.auth_token = "";
 	else if (token !== "")
 		body.auth_token = token;
+
+	/* ADR-0323: a commit to the synced ref is a deploy to every host that
+	 * follows it, so turning it on is confirmed; turning it off is not. */
+	if (body.commit && !(cache.pkgRepoConfig && cache.pkgRepoConfig.commit) &&
+	    !confirm("Let this host commit the recipes it writes to " + body.repo_url + " on " +
+	             body.ref + "? Every host that syncs from it will pick them up."))
+		return;
 
 	try {
 		await apiRequest("PUT", CIX_API.putPkgRepoConfig(), body);
@@ -12155,6 +12164,7 @@ async function refreshPkgArtifactConfig() {
 			document.getElementById("pac-token").value = "";
 			document.getElementById("pac-token").placeholder =
 				config.auth_token_set ? "(unchanged, a token is set)" : "(unchanged, no token set)";
+			document.getElementById("prc-commit").checked = config.commit === true;
 		}
 	} catch (e) {
 		/* Best-effort -- the form just stays at whatever was last shown. */

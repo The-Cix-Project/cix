@@ -1374,6 +1374,13 @@ static const char *const n_pkg_recipe_add_flags[] = {
 	NULL
 };
 
+static const char *const n_pkg_recipe_commit_flags[] = {
+	"--file=",
+	"--name=",
+	"--wait",
+	NULL
+};
+
 static const char *const n_pkg_recipe_rm_flags[] = {
 	"--version=",
 	NULL
@@ -1386,6 +1393,7 @@ static const char *const n_pkg_recipe_show_flags[] = {
 
 static const struct cli_node n_pkg_recipe_subs[] = {
 	{ "add", n_pkg_recipe_add_flags, NULL },
+	{ "commit", n_pkg_recipe_commit_flags, NULL },
 	{ "rm", n_pkg_recipe_rm_flags, NULL },
 	{ "show", n_pkg_recipe_show_flags, NULL },
 	{ NULL, NULL, NULL },
@@ -1393,6 +1401,7 @@ static const struct cli_node n_pkg_recipe_subs[] = {
 
 static const char *const n_pkg_repo_config_set_flags[] = {
 	"--clear-token",
+	"--commit=",
 	"--kind=",
 	"--ref=",
 	"--sync-interval=",

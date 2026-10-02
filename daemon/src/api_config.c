@@ -656,6 +656,7 @@ static int cfg_apply_package_repo(const struct json_value *live, const struct js
                                   size_t errsz)
 {
 	const char *url, *kind, *ref;
+	int commit;
 
 	if (require_whole_section(live, sup, state_fields, err, errsz) != 0)
 		return -1;
@@ -665,17 +666,19 @@ static int cfg_apply_package_repo(const struct json_value *live, const struct js
 		return -1;
 	if (need_string(sup, "repo_url", &url, err, errsz) != 0 ||
 	    need_string(sup, "repo_kind", &kind, err, errsz) != 0 ||
-	    need_string(sup, "ref", &ref, err, errsz) != 0)
+	    need_string(sup, "ref", &ref, err, errsz) != 0 ||
+	    need_bool(sup, "commit", &commit, err, errsz) != 0)
 		return -1;
 	if (dry_run)
 		return 0;
 	/* NULL for the token: the document never carried it, and passing
 	 * anything else here would clear a working one. */
-	switch (pkg_repo_set_config(url, kind, ref, NULL)) {
+	switch (pkg_repo_set_config(url, kind, ref, NULL, commit)) {
 	case PKG_OK:
 		return 0;
 	case PKG_ERR_INVALID_NAME:
-		snprintf(err, errsz, "\"repo_kind\" must be gitea, github or gitlab");
+		snprintf(err, errsz, "\"repo_kind\" must be gitea, github or gitlab, and \"commit\": "
+		                     "true needs a gitea repository (ADR-0323)");
 		return -1;
 	default:
 		snprintf(err, errsz, "the repository configuration could not be persisted");

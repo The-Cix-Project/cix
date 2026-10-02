@@ -13,6 +13,7 @@
  * per-package upgrades.
  */
 #include "httpclient.h"
+#include "base64.h"
 #include "json.h"
 #include "test_image_fixture.h"
 #include "test_floor.h"
@@ -120,6 +121,34 @@ static const char *json_str_field(const struct json_value *obj, const char *key)
 static int str_eq(const char *a, const char *b)
 {
 	return a != NULL && b != NULL && strcmp(a, b) == 0;
+}
+
+/* Reads a whole file into a malloc'd, NUL-terminated buffer. 0 or -1. */
+static int slurp_file(const char *path, char **out, size_t *out_len)
+{
+	FILE *fp = fopen(path, "rb");
+	long size;
+	char *buf;
+
+	*out = NULL;
+	*out_len = 0;
+	if (fp == NULL)
+		return -1;
+	if (fseek(fp, 0, SEEK_END) != 0 || (size = ftell(fp)) < 0 || fseek(fp, 0, SEEK_SET) != 0) {
+		fclose(fp);
+		return -1;
+	}
+	buf = malloc((size_t)size + 1);
+	if (buf == NULL || fread(buf, 1, (size_t)size, fp) != (size_t)size) {
+		free(buf);
+		fclose(fp);
+		return -1;
+	}
+	fclose(fp);
+	buf[size] = '\0';
+	*out = buf;
+	*out_len = (size_t)size;
+	return 0;
 }
 
 static pid_t start_daemon(void)
@@ -6701,6 +6730,321 @@ skip_resume:
 			ok = 0;
 		}
 		cix_response_free(&r);
+	}
+
+	/*
+	 * ADR-0323: a recipe is committed to the recipe repository, then
+	 * published -- git first.
+	 *
+	 * The forge is this fixture's stand-in for Gitea's create-file call
+	 * (test_http_server_start() with accept_put), so what the daemon sent
+	 * is read back byte for byte: the path, the branch, the message, and
+	 * the base64 content, decoded and compared with the recipe. Then the
+	 * refusals that keep git and the store honest: committing is off
+	 * until an operator turns it on, a version already published is
+	 * refused before anything reaches git, a version git already has is
+	 * refused by the forge and published nowhere, and a recipe that would
+	 * not publish never reaches git at all.
+	 */
+	{
+		char forge_dir[PATH_MAX], sha[65], tarball[PATH_MAX], body_path[PATH_MAX];
+		char put[512], recipe[4096], st_c[32];
+		char *json_body = NULL, *posted = NULL;
+		size_t posted_len = 0;
+		struct json_writer w;
+		pid_t forge_pid = -1;
+		int forge_port = 0, waited, stage_ok = 1;
+
+		snprintf(forge_dir, sizeof(forge_dir), "%s/forge", scratch_dir);
+		if (mkdir(forge_dir, 0755) != 0 ||
+		    test_http_server_start(forge_dir, 1, &forge_port, &forge_pid) != 0) {
+			fprintf(stderr, "FAIL: ADR-0323 could not start the fake forge\n");
+			ok = 0;
+			stage_ok = 0;
+		}
+
+		/* Off by default, and refused while off. */
+		if (stage_ok) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/repo-config", NULL, &r) != 0 ||
+			    r.json == NULL || json_object_get(r.json, "commit") == NULL ||
+			    json_object_get(r.json, "commit")->type != JSON_BOOL ||
+			    json_object_get(r.json, "commit")->u.boolean) {
+				fprintf(stderr, "FAIL: ADR-0323 repo-config must report commit=false by "
+				                "default\n");
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+		if (stage_ok && (stage_fixture_tarball(scratch_dir, "commitpkg", "1.0", tarball,
+		                                       sizeof(tarball), sha, sizeof(sha)) != 0)) {
+			fprintf(stderr, "FAIL: ADR-0323 could not stage the commitpkg source\n");
+			ok = 0;
+			stage_ok = 0;
+		}
+		if (stage_ok) {
+			cpdl_recipe_text_decl(recipe, sizeof(recipe), "commitpkg", "1.0",
+			                      test_http_src(tarball), sha, NULL,
+			                      "            tool \"bash\"\n"
+			                      "            tool \"coreutils\"\n",
+			                      NULL, "",
+			                      "        run \"true\" {\n        }\n",
+			                      "        mkdir \"${dest}/usr/share/commitpkg\" parents\n");
+			jw_init(&w);
+			jw_obj_open(&w);
+			jw_key(&w, "name");
+			jw_str(&w, "commitpkg");
+			jw_key(&w, "content");
+			jw_str(&w, recipe);
+			jw_obj_close(&w);
+			json_body = malloc(w.len + 1);
+			if (json_body != NULL) {
+				memcpy(json_body, w.buf, w.len);
+				json_body[w.len] = '\0';
+			}
+			jw_free(&w);
+			if (json_body == NULL)
+				stage_ok = 0;
+		}
+		if (stage_ok) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/recipe-commit", json_body, &r) != 0 ||
+			    r.status != 409) {
+				fprintf(stderr, "FAIL: ADR-0323 a commit while committing is off must be 409, "
+				                "got %d\n",
+				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+
+		/* Turned on, against the fake forge; only for gitea. */
+		if (stage_ok) {
+			snprintf(put, sizeof(put),
+			         "{\"repo_url\":\"http://127.0.0.1:%d/testowner/cix-recipes\","
+			         "\"repo_kind\":\"gitea\",\"ref\":\"main\",\"auth_token\":\"forge-token\","
+			         "\"commit\":true}",
+			         forge_port);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "PUT", "/v1/pkg/repo-config", put, &r) != 0 ||
+			    r.status != 200 || r.json == NULL ||
+			    json_object_get(r.json, "commit") == NULL ||
+			    !json_object_get(r.json, "commit")->u.boolean) {
+				fprintf(stderr, "FAIL: ADR-0323 PUT repo-config commit=true, status=%d\n",
+				        r.status);
+				ok = 0;
+				stage_ok = 0;
+			}
+			cix_response_free(&r);
+		}
+		if (stage_ok) {
+			static const char *const refused[] = { "{\"commit\":\"yes\"}",
+				                               "{\"repo_kind\":\"github\"}" };
+			size_t k;
+
+			for (k = 0; k < sizeof(refused) / sizeof(refused[0]); k++) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "PUT", "/v1/pkg/repo-config", refused[k],
+				                       &r) != 0 ||
+				    r.status != 400) {
+					fprintf(stderr, "FAIL: ADR-0323 PUT repo-config %s expected 400, got %d\n",
+					        refused[k], r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
+		}
+
+		/* The commit itself: forge first, then the store. */
+		if (stage_ok) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/recipe-commit", json_body, &r) != 0 ||
+			    r.status != 202) {
+				fprintf(stderr, "FAIL: ADR-0323 POST recipe-commit expected 202, got %d: %s\n",
+				        r.status, r.body != NULL ? r.body : "");
+				ok = 0;
+				stage_ok = 0;
+			}
+			cix_response_free(&r);
+		}
+		if (stage_ok) {
+			const char *commit = NULL, *path = NULL;
+			int published = 0;
+
+			st_c[0] = '\0';
+			for (waited = 0; waited < 120; waited++) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/recipe-commit", NULL, &r) == 0 &&
+				    r.json != NULL && json_str_field(r.json, "state") != NULL &&
+				    strcmp(json_str_field(r.json, "state"), "running") != 0)
+					break;
+				cix_response_free(&r);
+				usleep(500000);
+			}
+			if (r.json != NULL) {
+				snprintf(st_c, sizeof(st_c), "%s",
+				         json_str_field(r.json, "state") != NULL ? json_str_field(r.json, "state")
+				                                                 : "");
+				commit = json_str_field(r.json, "commit");
+				path = json_str_field(r.json, "path");
+				published = json_object_get(r.json, "published") != NULL &&
+				            json_object_get(r.json, "published")->u.boolean;
+			}
+			if (!str_eq(st_c, "done") || commit == NULL ||
+			    strcmp(commit, TEST_FORGE_COMMIT_SHA) != 0 || path == NULL ||
+			    strcmp(path, "recipes/package/commitpkg@1.0-1.cbs") != 0 || !published) {
+				fprintf(stderr, "FAIL: ADR-0323 the commit ended %s: %s\n", st_c,
+				        r.body != NULL ? r.body : "(no body)");
+				ok = 0;
+				stage_ok = 0;
+			}
+			cix_response_free(&r);
+		}
+		if (stage_ok) {
+			struct json_value *sent;
+			const char *b64, *branch, *message;
+			unsigned char decoded[4096];
+			int dn = -1;
+
+			snprintf(body_path, sizeof(body_path), "%s/commitpkg@1.0-1.cbs.request.json",
+			         forge_dir);
+			sent = slurp_file(body_path, &posted, &posted_len) == 0
+			           ? json_parse(posted, posted_len)
+			           : NULL;
+			branch = sent != NULL ? json_as_string(json_object_get(sent, "branch")) : NULL;
+			message = sent != NULL ? json_as_string(json_object_get(sent, "message")) : NULL;
+			b64 = sent != NULL ? json_as_string(json_object_get(sent, "content")) : NULL;
+			if (b64 != NULL)
+				dn = base64_decode(b64, decoded, sizeof(decoded));
+			if (branch == NULL || strcmp(branch, "main") != 0 || message == NULL ||
+			    strncmp(message, "commitpkg@1.0-1: committed by cixd", 34) != 0 ||
+			    dn != (int)strlen(recipe) || memcmp(decoded, recipe, strlen(recipe)) != 0) {
+				fprintf(stderr, "FAIL: ADR-0323 the forge did not receive the recipe on main "
+				                "with its message: %s\n",
+				        posted != NULL ? posted : "(nothing posted)");
+				ok = 0;
+			}
+			json_free(sent);
+			free(posted);
+			posted = NULL;
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/recipes/commitpkg", NULL, &r) != 0 ||
+			    r.status != 200 || !str_eq(json_str_field(r.json, "version"), "1.0-1")) {
+				fprintf(stderr, "FAIL: ADR-0323 commitpkg was committed but not published, "
+				                "status=%d\n",
+				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			/* The same version again: refused before git. */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/recipe-commit", json_body, &r) != 0 ||
+			    r.status != 409) {
+				fprintf(stderr, "FAIL: ADR-0323 committing a published version again must be "
+				                "409, got %d\n",
+				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			/* A recipe that would not publish never reaches git. */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/recipe-commit",
+			                       "{\"name\":\"commitpkg\",\"content\":\"package {\"}", &r) != 0 ||
+			    r.status != 400) {
+				fprintf(stderr, "FAIL: ADR-0323 an invalid recipe must be 400 before any "
+				                "commit, got %d\n",
+				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+
+		/* A version git already has: the forge refuses, nothing publishes. */
+		if (stage_ok) {
+			char existing[PATH_MAX];
+			FILE *fp;
+			char *two = NULL;
+
+			snprintf(existing, sizeof(existing), "%s/commitpkg@1.1-1.cbs.request.json",
+			         forge_dir);
+			fp = fopen(existing, "w");
+			if (fp != NULL)
+				fclose(fp);
+			cpdl_recipe_text_decl(recipe, sizeof(recipe), "commitpkg", "1.1",
+			                      test_http_src(tarball), sha, NULL,
+			                      "            tool \"bash\"\n"
+			                      "            tool \"coreutils\"\n",
+			                      NULL, "",
+			                      "        run \"true\" {\n        }\n",
+			                      "        mkdir \"${dest}/usr/share/commitpkg\" parents\n");
+			jw_init(&w);
+			jw_obj_open(&w);
+			jw_key(&w, "name");
+			jw_str(&w, "commitpkg");
+			jw_key(&w, "content");
+			jw_str(&w, recipe);
+			jw_obj_close(&w);
+			two = malloc(w.len + 1);
+			if (two != NULL) {
+				memcpy(two, w.buf, w.len);
+				two[w.len] = '\0';
+			}
+			jw_free(&w);
+			memset(&r, 0, sizeof(r));
+			if (two == NULL ||
+			    cix_client_request(&client, "POST", "/v1/pkg/recipe-commit", two, &r) != 0 ||
+			    r.status != 202) {
+				fprintf(stderr, "FAIL: ADR-0323 POST commitpkg 1.1 expected 202, got %d\n",
+				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			free(two);
+			for (waited = 0; waited < 120; waited++) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/recipe-commit", NULL, &r) == 0 &&
+				    r.json != NULL && json_str_field(r.json, "state") != NULL &&
+				    strcmp(json_str_field(r.json, "state"), "running") != 0)
+					break;
+				cix_response_free(&r);
+				usleep(500000);
+			}
+			if (r.json == NULL || !str_eq(json_str_field(r.json, "state"), "failed") ||
+			    json_str_field(r.json, "error") == NULL ||
+			    strstr(json_str_field(r.json, "error"), "422") == NULL ||
+			    strstr(json_str_field(r.json, "error"), "already exists") == NULL) {
+				fprintf(stderr, "FAIL: ADR-0323 a version git already has must fail naming "
+				                "the forge's refusal: %s\n",
+				        r.body != NULL ? r.body : "(no body)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/recipes/commitpkg", NULL, &r) != 0 ||
+			    !str_eq(json_str_field(r.json, "version"), "1.0-1")) {
+				fprintf(stderr, "FAIL: ADR-0323 a commit the forge refused was published\n");
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+
+		/* Back to a cleared repo config, as the test data dir began. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/pkg/repo-config",
+		                       "{\"commit\":false,\"repo_url\":\"\",\"auth_token\":\"\"}",
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: ADR-0323 could not clear the repo config, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		free(json_body);
+		if (forge_pid > 0)
+			test_http_server_stop(forge_pid);
 	}
 
 	/*

@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A host commits a recipe to git, then publishes it (ADR-0323, #508)
+
+The author stage's second half, and the path a person uses to move a pinned package on. `cixctl pkg recipe commit --name=NAME --file=PATH --wait` (`POST /v1/pkg/recipe-commit`) does four things in order:
+1. **Validates** the recipe with every test a publish applies, through a dry run of the same function, so there is no second copy of the checks.
+2. **Commits** it to the recipe repository as `recipes/package/<name>@<version>.cbs` on the configured ref.
+3. **Publishes** it here, only once the commit exists. Git therefore holds every revision a host builds, which it did not for 0.2.57-428 and -429.
+4. **Reports** the commit sha, or why not, in `GET /v1/pkg/recipe-commit`.
+
+The rest of the change:
+- **Committing is an operator's switch:** `cixctl pkg repo-config set --commit=on`, also on the dashboard, and off by default. It needs a gitea repository with a token. A commit to the synced ref is a deploy to every host that follows it.
+- **The forge is the immutability guard at the far end:** creating a path that exists is refused, and nothing is published.
+- **The commit client** (`forgecommit.c`) follows Gitea 1.25.4's own spec for `repoCreateFile`. Its pure halves are `test_forgecommit`, a selftest. `curlfetch` can now POST and keep the response body.
+- **`test_pkg`** commits through a fake forge and reads back the path, branch, message and base64 content it received. It also asserts the refusals: committing off, a published version, a version git already has, and a recipe that would not publish.
+
+Writing the recipe itself waits on cix-build-system#278 (`cbs revise`), and discovering what to write waits on #277.
+
 ### ADR-0323: every package can roll, by a discovery kind, an authentication method and a green build (#508)
 
 Measured on 2026-10-02: the source catalogue showed 210 packages with no discovery at all. The kernel, the one package with discovery, was `author / blocked` on 7.2.8, because nothing writes a recipe. hibr had tags up to v0.91 and no releases, so ADR-0318's signed-asset rule could never roll it.

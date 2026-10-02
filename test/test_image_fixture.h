@@ -385,8 +385,11 @@ int test_recipe_path(const char *kind, const char *name, const char *version,
  * the tests' python3 http.server helpers. With accept_put, a PUT writes
  * its body to <root>/<basename> and the Authorization and X-Cix-Sha256
  * headers to <root>/<basename>.headers, for a test that asserts on what
- * a daemon uploaded. Stop it with
- * test_http_server_stop().
+ * a daemon uploaded. With accept_put, a POST to a path containing
+ * /contents/ is a forge's create-file call (ADR-0323): its body is kept
+ * as <root>/<basename>.request.json and answered 201 with commit sha
+ * TEST_FORGE_COMMIT_SHA, or 422 when that file already exists. Stop it
+ * with test_http_server_stop().
  */
 int test_http_source_url(const char *abs_path, char *out, size_t out_size);
 /* The same, returned for use inside one printf (eight at a time); exits
@@ -394,6 +397,7 @@ int test_http_source_url(const char *abs_path, char *out, size_t out_size);
 const char *test_http_src(const char *abs_path);
 int test_http_server_start(const char *root, int accept_put, int *out_port, pid_t *out_pid);
 int test_http_server_stop(pid_t pid);
+extern const char *const TEST_FORGE_COMMIT_SHA;
 
 /* The floor packages a test installs explicitly, NULL-terminated (test_image_fixture.c). */
 extern const char *const test_floor_install[];

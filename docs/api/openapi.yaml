@@ -9821,6 +9821,9 @@ paths:
                 auth_token:
                   type: string
                   description: Write-only; "" clears an existing token, omitted leaves it unchanged
+                commit:
+                  type: boolean
+                  description: true lets this host commit recipes it writes (ADR-0323); omitted leaves it unchanged. Needs repo_kind gitea
       responses:
         "200":
           description: Updated repo config (same shape as GET)
@@ -9829,7 +9832,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/PkgRepoConfig"
         "400":
-          description: repo_kind is not one of gitea/github/gitlab
+          description: repo_kind is not one of gitea/github/gitlab, commit is not a boolean, or commit is on for a repo_kind other than gitea
           content:
             application/json:
               schema:
@@ -9840,6 +9843,69 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  /pkg/recipe-commit:
+    post:
+      summary: >
+        Commits a recipe to the recipe repository, then publishes it here
+        (ADR-0323). Git first: the recipe is validated by every test a
+        publish applies, committed as recipes/package/<name>@<version>.cbs
+        on the configured ref, and only then published, so git holds
+        every revision a host builds. One commit at a time. 202; poll GET
+        /pkg/recipe-commit for the outcome.
+      operationId: commitPkgRecipe
+      x-cix-permission: packages:write
+      x-cix-expose: [cli]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, content]
+              properties:
+                name:
+                  type: string
+                content:
+                  type: string
+                  description: The CPDL recipe, exactly as it is to be committed and published.
+      responses:
+        "202":
+          description: Validated; the commit has started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgRecipeCommit"
+        "400":
+          description: The recipe would not publish -- it fails to parse, names another package, or a publish test refuses it (the message says which)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Committing is off for this host, the repository is not a gitea one with a token, a commit is already running, or that version is already published
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The commit could not be started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      summary: The last recipe commit's state, path, commit and outcome (ADR-0323)
+      operationId: getPkgRecipeCommit
+      x-cix-permission: packages:read
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: The last recipe commit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgRecipeCommit"
 
   /pkg/sync:
     post:
@@ -20320,7 +20386,7 @@ components:
 
     PkgRepoConfig:
       type: object
-      required: [repo_url, repo_kind, ref, auth_token_set]
+      required: [repo_url, repo_kind, ref, auth_token_set, commit]
       properties:
         repo_url:
           type: string
@@ -20340,6 +20406,43 @@ components:
         auth_token_set:
           type: boolean
           description: Whether an auth token is currently stored -- the token itself is never returned.
+        commit:
+          type: boolean
+          description: >
+            Whether this host commits a recipe it wrote (ADR-0323) to this
+            repository, on `ref`, before publishing it. Off by default and
+            only an operator turns it on: a commit to the synced ref is a
+            deploy to every host following it. Needs a gitea repository and
+            a token with write access.
+
+    PkgRecipeCommit:
+      type: object
+      required: [state, name, version, path, commit, published, error, started_at, finished_at]
+      properties:
+        state:
+          type: string
+          enum: [never, running, done, failed]
+        name:
+          type: string
+        version:
+          type: string
+          description: The version cbs derived for the recipe, release included.
+        path:
+          type: string
+          description: Where it is committed, recipes/package/<name>@<version>.cbs (ADR-0308).
+        commit:
+          type: string
+          description: The commit sha the forge created; "" until there is one.
+        published:
+          type: boolean
+          description: Whether this host published it after the commit. A commit that published nothing is picked up by the next recipe sync.
+        error:
+          type: string
+          description: Why the commit, or the publish after it, did not happen; "" when it did.
+        started_at:
+          type: integer
+        finished_at:
+          type: integer
 
     PkgSyncStatus:
       type: object

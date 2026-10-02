@@ -17,6 +17,7 @@
 #include "elfcheck.h"
 #include "namecheck.h"
 #include "cbsrecipe.h"
+#include "forgecommit.h"
 #include "json.h"
 #include "jsondiff.h"
 #include "recipe_format.h"
@@ -8200,8 +8201,26 @@ static enum pkg_error recipe_persist_failed(const char *what)
 	return PKG_ERR_PERSIST_FAILED;
 }
 
-enum pkg_error pkg_recipe_add(const char *name, const char *content,
-                               enum pkg_recipe_format format, int *out_was_approval)
+/*
+ * What a dry run reports: the identity cbs derived for the recipe, and
+ * its changelog, which is the reason a commit message can give.
+ */
+struct recipe_check {
+	char version[PKG_VERSION_MAX];
+	char changelog[PKG_CHANGELOG_MAX];
+};
+
+/*
+ * Publishing, or -- with `check` -- every test publishing applies and
+ * nothing else (ADR-0323). A recipe is committed to git before it is
+ * published, so it has to be known publishable first, and the only
+ * honest answer to that is this function's own checks: a second copy
+ * of them would drift from the first. A dry run stores nothing, and
+ * treats an approval-only republish as the duplicate it is in git.
+ */
+static enum pkg_error recipe_publish(const char *name, const char *content,
+                                     enum pkg_recipe_format format, int *out_was_approval,
+                                     struct recipe_check *check)
 {
 	char *redacted;
 	char name_dir[PATH_MAX];
@@ -8511,7 +8530,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 		}
 		free(redacted);
 		free(explain_json);
-		if (!only_approval) {
+		if (!only_approval || check != NULL) {
 			unlink(staging_path);
 			return PKG_ERR_DUPLICATE;
 		}
@@ -8634,6 +8653,16 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 		}
 	}
 
+	/* A dry run ends here: every refusal above has been tested, and
+	 * nothing below is a test, only the store. */
+	if (check != NULL) {
+		snprintf(check->version, sizeof(check->version), "%s", parsed.version);
+		snprintf(check->changelog, sizeof(check->changelog), "%s", parsed.changelog);
+		unlink(staging_path);
+		free(explain_json);
+		return PKG_OK;
+	}
+
 	if (persist_mkdir_p(version_dir) != 0) {
 		unlink(staging_path);
 		free(explain_json);
@@ -8669,6 +8698,12 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
 	}
 	queue_rolling_rebuilds_for(parsed.name, parsed.version);
 	return PKG_OK;
+}
+
+enum pkg_error pkg_recipe_add(const char *name, const char *content,
+                               enum pkg_recipe_format format, int *out_was_approval)
+{
+	return recipe_publish(name, content, format, out_was_approval, NULL);
 }
 
 /*
@@ -14724,6 +14759,14 @@ static char g_repo_url[PKGREPO_URL_MAX] = PKG_DEFAULT_REPO_URL;
 static char g_repo_kind[PKGREPO_KIND_MAX] = PKG_DEFAULT_REPO_KIND;
 static char g_repo_ref[PKGREPO_REF_MAX] = PKG_DEFAULT_REPO_REF;
 static char g_repo_auth_token[PKGREPO_TOKEN_MAX];
+/*
+ * ADR-0323: whether this host may commit a recipe it wrote to the
+ * repository above, before publishing it. Off by default, and only an
+ * operator turns it on: a commit to the synced ref is a deploy to every
+ * host that follows it, so it is never something a host does because
+ * it happens to hold a token.
+ */
+static int g_repo_commit;
 
 
 static const char *pkg_repo_token(void)
@@ -14779,6 +14822,8 @@ static int save_repo_config(void)
 	jw_str(&w, g_repo_ref);
 	jw_key(&w, "auth_token");
 	jw_str(&w, g_repo_auth_token);
+	jw_key(&w, "commit");
+	jw_bool(&w, g_repo_commit);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -14811,6 +14856,7 @@ int pkg_repo_init(const char *config_path)
 	snprintf(g_repo_ref, sizeof(g_repo_ref), "%s", PKG_DEFAULT_REPO_REF);
 	g_repo_auth_token[0] = '\0';
 	g_repo_legacy_sync_interval = 0;
+	g_repo_commit = 0;
 
 	if (persist_read_file(config_path, &buf, &len) != 0 || buf == NULL)
 		return 0; /* no persisted config yet -- defaults stand */
@@ -14832,6 +14878,11 @@ int pkg_repo_init(const char *config_path)
 	s = json_as_string(json_object_get(root, "auth_token"));
 	if (s != NULL)
 		snprintf(g_repo_auth_token, sizeof(g_repo_auth_token), "%s", s);
+	{
+		const struct json_value *jc = json_object_get(root, "commit");
+
+		g_repo_commit = jc != NULL && jc->type == JSON_BOOL && jc->u.boolean;
+	}
 	/* An older file still carries this; it is migrated into a schedule
 	 * once and then never written again (ADR-0257). */
 	interval = json_object_get(root, "sync_interval_seconds");
@@ -14853,13 +14904,32 @@ void pkg_repo_write_json_config(struct json_writer *w)
 	jw_str(w, g_repo_ref);
 	jw_key(w, "auth_token_set");
 	jw_bool(w, g_repo_auth_token[0] != '\0');
+	jw_key(w, "commit");
+	jw_bool(w, g_repo_commit);
 	jw_obj_close(w);
 }
 
-enum pkg_error pkg_repo_set_config(const char *repo_url, const char *repo_kind, const char *ref,
-                                    const char *auth_token)
+int pkg_repo_commit_supported(const char *repo_kind)
 {
+	return repo_kind != NULL && strcmp(repo_kind, "gitea") == 0;
+}
+
+int pkg_repo_commit_enabled(void)
+{
+	return g_repo_commit;
+}
+
+enum pkg_error pkg_repo_set_config(const char *repo_url, const char *repo_kind, const char *ref,
+                                    const char *auth_token, int commit)
+{
+	const char *kind = repo_kind != NULL ? repo_kind : g_repo_kind;
+
 	if (repo_kind != NULL && !repo_kind_is_valid(repo_kind))
+		return PKG_ERR_INVALID_NAME;
+	/* ADR-0323: a commit client exists for gitea only, so committing
+	 * against any other forge -- turned on now, or left on while the kind
+	 * changes -- is refused rather than accepted and failed later. */
+	if ((commit == 1 || (commit < 0 && g_repo_commit)) && !pkg_repo_commit_supported(kind))
 		return PKG_ERR_INVALID_NAME;
 
 	if (repo_url != NULL)
@@ -14870,6 +14940,8 @@ enum pkg_error pkg_repo_set_config(const char *repo_url, const char *repo_kind, 
 		snprintf(g_repo_ref, sizeof(g_repo_ref), "%s", ref);
 	if (auth_token != NULL)
 		snprintf(g_repo_auth_token, sizeof(g_repo_auth_token), "%s", auth_token);
+	if (commit == 0 || commit == 1)
+		g_repo_commit = commit;
 	if (save_repo_config() != 0)
 		return PKG_ERR_PERSIST_FAILED;
 	return PKG_OK;
@@ -14957,6 +15029,236 @@ static int parse_repo_url(char *out_scheme, size_t scheme_sz, char *out_host, si
 		return -1;
 	snprintf(out_repo, repo_sz, "%s", repo_start);
 	return out_repo[0] != '\0' && out_owner[0] != '\0' ? 0 : -1;
+}
+
+/* ---- ADR-0323: commit a recipe to git, then publish it ----
+ *
+ * The author stage's second half, and the path a person uses to move a
+ * pinned package on through the same pipeline: a recipe goes into the
+ * recipe repository as one commit FIRST, and is published here only
+ * once that commit exists. Git therefore holds every revision a host
+ * builds -- which it did not for 0.2.57-428 and -429, published and
+ * never committed -- and the commit is the record of what was written.
+ *
+ * One job at a time, like a sync: the commit is network I/O and runs in
+ * a helper process (ADR-0278); its outcome reaches the parent through a
+ * result file, and the publish happens in the parent, which is the only
+ * place a recipe store change counts.
+ */
+enum recipe_commit_state { RECIPE_COMMIT_NEVER = 0, RECIPE_COMMIT_RUNNING, RECIPE_COMMIT_DONE,
+	                   RECIPE_COMMIT_FAILED };
+
+static struct {
+	enum recipe_commit_state state;
+	char name[PKG_NAME_MAX];
+	char version[PKG_VERSION_MAX];
+	char repo_path[PATH_MAX];
+	char message[PKG_CHANGELOG_MAX + 256];
+	char *content; /* the redacted recipe: what is committed is what is published */
+	char commit_sha[FORGE_COMMIT_SHA_MAX];
+	char error[PKG_ERROR_MAX];
+	int published;
+	time_t started_at;
+	time_t finished_at;
+} g_recipe_commit;
+
+static void recipe_commit_result_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/recipe-commit.result", g_pkg_dir);
+}
+
+enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, char *err,
+                                       size_t err_size)
+{
+	struct recipe_check check;
+	char host[256];
+	char *redacted;
+	enum pkg_error perr;
+
+	err[0] = '\0';
+	if (g_recipe_commit.state == RECIPE_COMMIT_RUNNING) {
+		snprintf(err, err_size, "%s@%s is still being committed", g_recipe_commit.name,
+		         g_recipe_commit.version);
+		return PKG_ERR_BUSY;
+	}
+	if (!g_repo_commit) {
+		snprintf(err, err_size, "committing is off for this host -- turn it on with "
+		                        "`cixctl pkg repo-config set --commit=on` (ADR-0323)");
+		return PKG_ERR_NOT_FOUND;
+	}
+	if (!pkg_repo_is_configured() || !pkg_repo_commit_supported(g_repo_kind) ||
+	    g_repo_auth_token[0] == '\0') {
+		snprintf(err, err_size, "committing needs a gitea recipe repository with a token "
+		                        "(GET /v1/pkg/repo-config)");
+		return PKG_ERR_NOT_FOUND;
+	}
+
+	/* Every test a publish applies, before anything reaches git. */
+	perr = recipe_publish(name, content, PKG_RECIPE_CBS, NULL, &check);
+	if (perr != PKG_OK) {
+		if (perr == PKG_ERR_DUPLICATE)
+			snprintf(err, err_size, "%s is already published at that version", name);
+		else if (pkg_recipe_add_last_error()[0] != '\0')
+			snprintf(err, err_size, "%s", pkg_recipe_add_last_error());
+		else
+			snprintf(err, err_size, "the recipe does not publish: it failed to parse, or "
+			                        "its package name is not %s",
+			         name);
+		return perr;
+	}
+
+	redacted = strdup(content);
+	if (redacted == NULL) {
+		snprintf(err, err_size, "out of memory");
+		return PKG_ERR_PERSIST_FAILED;
+	}
+	redact_repo_token(redacted, strlen(redacted) + 1);
+
+	free(g_recipe_commit.content);
+	memset(&g_recipe_commit, 0, sizeof(g_recipe_commit));
+	g_recipe_commit.content = redacted;
+	snprintf(g_recipe_commit.name, sizeof(g_recipe_commit.name), "%s", name);
+	snprintf(g_recipe_commit.version, sizeof(g_recipe_commit.version), "%s", check.version);
+	/* ADR-0308: one flat file per revision. */
+	snprintf(g_recipe_commit.repo_path, sizeof(g_recipe_commit.repo_path),
+	         "recipes/package/%s@%s%s", name, check.version, PKG_RECIPE_CBS_SUFFIX);
+	if (gethostname(host, sizeof(host)) != 0)
+		snprintf(host, sizeof(host), "%s", "unknown host");
+	host[sizeof(host) - 1] = '\0';
+	snprintf(g_recipe_commit.message, sizeof(g_recipe_commit.message),
+	         "%s@%s: committed by cixd on %s before publishing it (ADR-0323)%s%s", name,
+	         check.version, host, check.changelog[0] != '\0' ? "\n\n" : "", check.changelog);
+	g_recipe_commit.state = RECIPE_COMMIT_RUNNING;
+	g_recipe_commit.started_at = time(NULL);
+	return PKG_OK;
+}
+
+/* Called when the helper could not be started, so `done` never runs. */
+void pkg_recipe_commit_abort(const char *why)
+{
+	g_recipe_commit.state = RECIPE_COMMIT_FAILED;
+	g_recipe_commit.finished_at = time(NULL);
+	snprintf(g_recipe_commit.error, sizeof(g_recipe_commit.error), "%s", why);
+}
+
+/* The helper's work: the forge call, and nothing that changes memory
+ * the parent reads (ADR-0278). */
+int pkg_recipe_commit_work(void *unused)
+{
+	char scheme[16], host[256], owner[256], repo[256];
+	char result_path[PATH_MAX];
+	char sha[FORGE_COMMIT_SHA_MAX];
+	char err[PKG_ERROR_MAX];
+	struct forge_target t;
+	long status = 0;
+	int rc;
+
+	(void)unused;
+	recipe_commit_result_path(result_path, sizeof(result_path));
+	if (parse_repo_url(scheme, sizeof(scheme), host, sizeof(host), owner, sizeof(owner), repo,
+	                   sizeof(repo)) != 0) {
+		snprintf(err, sizeof(err), "the recipe repository URL does not name an owner and repo");
+		persist_atomic_write(result_path, err, strlen(err));
+		return 1;
+	}
+	memset(&t, 0, sizeof(t));
+	t.kind = g_repo_kind;
+	t.scheme = scheme;
+	t.host = host;
+	t.owner = owner;
+	t.repo = repo;
+	t.token = g_repo_auth_token;
+	t.branch = g_repo_ref[0] != '\0' ? g_repo_ref : PKG_DEFAULT_REPO_REF;
+	rc = forge_create_file(&t, g_recipe_commit.repo_path, g_recipe_commit.content,
+	                       strlen(g_recipe_commit.content), g_recipe_commit.message, g_pkg_dir,
+	                       sha, sizeof(sha), &status, err, sizeof(err));
+	if (rc != 0) {
+		redact_repo_token(err, sizeof(err));
+		persist_atomic_write(result_path, err, strlen(err));
+		return 1;
+	}
+	persist_atomic_write(result_path, sha, strlen(sha));
+	return 0;
+}
+
+/* The parent, once the helper has exited: record, then publish. */
+void pkg_recipe_commit_done(int exit_status, void *unused)
+{
+	char result_path[PATH_MAX];
+	char *buf = NULL;
+	size_t len = 0;
+	enum pkg_error perr;
+
+	(void)unused;
+	recipe_commit_result_path(result_path, sizeof(result_path));
+	if (persist_read_file(result_path, &buf, &len) != 0 || buf == NULL)
+		len = 0;
+	unlink(result_path);
+	g_recipe_commit.finished_at = time(NULL);
+
+	if (exit_status != 0) {
+		if (len > 0)
+			snprintf(g_recipe_commit.error, sizeof(g_recipe_commit.error), "%.*s", (int)len,
+			         buf);
+		else
+			snprintf(g_recipe_commit.error, sizeof(g_recipe_commit.error), "%s",
+			         "the commit helper failed and said nothing");
+		g_recipe_commit.state = RECIPE_COMMIT_FAILED;
+		logstore_write("cixd", "error", "pkg recipe commit %s@%s: %s -- nothing published",
+		               g_recipe_commit.name, g_recipe_commit.version, g_recipe_commit.error);
+		free(buf);
+		return;
+	}
+	snprintf(g_recipe_commit.commit_sha, sizeof(g_recipe_commit.commit_sha), "%.*s", (int)len,
+	         len > 0 ? buf : "");
+	free(buf);
+	logstore_write("cixd", "info", "pkg recipe commit %s@%s: committed %s as %s",
+	               g_recipe_commit.name, g_recipe_commit.version, g_recipe_commit.repo_path,
+	               g_recipe_commit.commit_sha);
+
+	/* Git first, then here. A publish that fails now is not a lost
+	 * revision: the commit exists, and the next recipe sync adds it. */
+	perr = pkg_recipe_add(g_recipe_commit.name, g_recipe_commit.content, PKG_RECIPE_CBS, NULL);
+	if (perr != PKG_OK) {
+		snprintf(g_recipe_commit.error, sizeof(g_recipe_commit.error),
+		         "committed as %s but not published here (%s) -- the next recipe sync "
+		         "adds it",
+		         g_recipe_commit.commit_sha,
+		         pkg_recipe_add_last_error()[0] != '\0' ? pkg_recipe_add_last_error()
+		                                                : "publish refused");
+		g_recipe_commit.state = RECIPE_COMMIT_FAILED;
+		logstore_write("cixd", "error", "pkg recipe commit %s@%s: %s", g_recipe_commit.name,
+		               g_recipe_commit.version, g_recipe_commit.error);
+		return;
+	}
+	g_recipe_commit.published = 1;
+	g_recipe_commit.state = RECIPE_COMMIT_DONE;
+}
+
+void pkg_recipe_commit_write_json(struct json_writer *w)
+{
+	static const char *const names[] = { "never", "running", "done", "failed" };
+
+	jw_obj_open(w);
+	jw_key(w, "state");
+	jw_str(w, names[g_recipe_commit.state]);
+	jw_key(w, "name");
+	jw_str(w, g_recipe_commit.name);
+	jw_key(w, "version");
+	jw_str(w, g_recipe_commit.version);
+	jw_key(w, "path");
+	jw_str(w, g_recipe_commit.repo_path);
+	jw_key(w, "commit");
+	jw_str(w, g_recipe_commit.commit_sha);
+	jw_key(w, "published");
+	jw_bool(w, g_recipe_commit.published);
+	jw_key(w, "error");
+	jw_str(w, g_recipe_commit.error);
+	jw_key(w, "started_at");
+	jw_int(w, (long long)g_recipe_commit.started_at);
+	jw_key(w, "finished_at");
+	jw_int(w, (long long)g_recipe_commit.finished_at);
+	jw_obj_close(w);
 }
 
 /*

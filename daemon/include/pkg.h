@@ -1624,7 +1624,34 @@ void pkg_repo_write_json_config(struct json_writer *w);
  * sync" is the thing that ADR removed.
  */
 enum pkg_error pkg_repo_set_config(const char *repo_url, const char *repo_kind, const char *ref,
-                                    const char *auth_token);
+                                    const char *auth_token, int commit);
+
+/*
+ * ADR-0323: commit is 1 to let this host commit a recipe it wrote to
+ * the repository before publishing it, 0 to stop, -1 to leave it as it
+ * is. Refused (PKG_ERR_INVALID_NAME) for a repo_kind with no commit
+ * client, which pkg_repo_commit_supported() answers: gitea today.
+ */
+int pkg_repo_commit_supported(const char *repo_kind);
+int pkg_repo_commit_enabled(void);
+
+/*
+ * ADR-0323: commit a recipe to the recipe repository, then publish it
+ * here. start validates it with every test a publish applies and stages
+ * the commit, refusing with a reason in err: PKG_ERR_BUSY (one is
+ * running), PKG_ERR_NOT_FOUND (committing is off, or the repository is
+ * not a gitea one with a token), PKG_ERR_DUPLICATE, or what a publish
+ * refuses with. The caller then runs work in a helper process (it is
+ * network I/O) and done in the parent, which publishes once the commit
+ * exists; abort records a helper that could not start. write_json is
+ * the last commit's state for GET /v1/pkg/recipe-commit.
+ */
+enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, char *err,
+                                       size_t err_size);
+int pkg_recipe_commit_work(void *unused);
+void pkg_recipe_commit_done(int exit_status, void *unused);
+void pkg_recipe_commit_abort(const char *why);
+void pkg_recipe_commit_write_json(struct json_writer *w);
 
 /* Read once at init from an older config file, for the one-time
  * migration that turns it into a schedule. 0 when there was none. */
