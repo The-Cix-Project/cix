@@ -233,6 +233,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Repositories are mirrors.** Their order is speed, never trust; what is accepted is decided by `artifact_sha256` and the signature.
 - **The public catalogue (`The-Cix-Project/cix-recipes`) is the owner's alone.** Every commit to the owner's forge reaches it by push mirror (`sync_on_commit`, measured 2026-10-02), so a commit from 192.168.15.95 is a publish to every Cix user. Others contributing is a future decision; do not build it unasked.
 - **The catalogue gets signed, as Debian signs its archive**: a signed index of every recipe and its hash, checked on sync.
+- **Keys come only from a source with `trust_keys`** (off by default; on for the public catalogue and the migrated existing source). Any other source can supply recipes, never artifact trust.
 
 ## One way to make an image
 

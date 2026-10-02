@@ -61,6 +61,16 @@ A package already carries a signature. A recipe does not: a host trusts the forg
 
 The key, its custody and the index format are settled when this is implemented, in its own change. The decision recorded here is that recipes get the same seal packages have.
 
+### Only a source trusted for keys can grant artifact trust (amended 2026-10-02)
+
+A sync does more than add package recipes. It also merges image and deployment recipes, and it adopts the signing keys a source carries in `docs/keys` into the trusted store that verifies every artifact (`releasekey_trust_adopt()`). With many sources, any source an operator added could thereby grant itself the power to vouch for packages. That was found reading the merge before implementing this ADR, and the owner decided it the same day (*"as proposed"*):
+
+- **Each source has `trust_keys`, off by default.** A source without it may supply recipes, never keys.
+- **It is on for the public catalogue** (ADR-0315's default) **and for the source a host's existing configuration migrates into.** Those are where a host is meant to get the owner's keys.
+- **Turning it on for any other source is an operator's deliberate act.**
+
+Image and deployment recipes follow the same one-name-one-source rule as package recipes. An image recipe arriving in an image whose policy follows its recipe is a deploy, so it must not arrive from a source the operator did not choose for it.
+
 ### Migration, and the defaults
 
 There is one clean cut-over (no compatibility shim):
