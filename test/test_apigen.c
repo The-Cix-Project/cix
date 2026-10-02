@@ -379,9 +379,9 @@ int main(void)
 			}
 			fclose(f);
 			unlink(routes_path);
-			if (rows != 329 || with_permission != rows)
+			if (rows != 331 || with_permission != rows)
 				fail("the generated route table has %d rows and %d carry a permission; "
-				     "expected 329 and 329 (ADR-0317)",
+				     "expected 331 and 331 (ADR-0317)",
 				     rows, with_permission);
 		}
 	}
@@ -479,10 +479,10 @@ int main(void)
 			fclose(f);
 			unlink(hdr_path);
 		}
-		if (defines != 329)
-			fail("CLI header has %d path defines, expected one per operation (329)", defines);
-		if (methods != 329)
-			fail("CLI header has %d method defines, expected one per operation (329)", methods);
+		if (defines != 331)
+			fail("CLI header has %d path defines, expected one per operation (331)", defines);
+		if (methods != 331)
+			fail("CLI header has %d method defines, expected one per operation (331)", methods);
 		if (braces != 0)
 			fail("%d CLI path define(s) still contain '{' -- a parameter was not converted "
 			     "to %%s and would put a literal brace in the URL",
