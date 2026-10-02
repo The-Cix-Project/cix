@@ -327,11 +327,16 @@ const char *cbs_explain_format(const struct cbs_explain *ex)
 	return str_or_empty(json_object_get(ex->root, "format"));
 }
 
+/*
+ * cbs v0.1.102 reports upstream as an object, {provider, tag, source,
+ * verify} (cbs ff700c7); v0.1.100 gave the bare provider string. The
+ * provider is the discovery kind srcupstream.c dispatches on.
+ */
 const char *cbs_explain_upstream(const struct cbs_explain *ex)
 {
 	if (ex == NULL)
 		return "";
-	return str_or_empty(json_object_get(ex->root, "upstream"));
+	return str_or_empty(json_object_get(json_object_get(ex->root, "upstream"), "provider"));
 }
 
 const char *cbs_explain_toolchain(const struct cbs_explain *ex)

@@ -7376,6 +7376,120 @@ skip_resume:
 			free(diverge);
 		}
 
+		/*
+		 * ADR-0323's author stage: POST /pkg/recipe-revise writes the next
+		 * revision with cbs revise and commits it exactly as a commit is.
+		 * Refusals first -- no recipe, a malformed digest, no
+		 * verification, a version that is not newer -- then a real one,
+		 * read back from the forge: the fields that change, the bytes that
+		 * must not (the install phase), and the changelog that records how
+		 * the digest was established.
+		 */
+		if (stage_ok) {
+			static const struct {
+				const char *body;
+				int status;
+				const char *says;
+			} refused[] = {
+				{ "{\"name\":\"nosuchpkg\",\"version\":\"2\",\"url\":\"http://x/a.tar.gz\","
+				  "\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\","
+				  "\"verification\":\"v\"}",
+				  404, "never a first one" },
+				{ "{\"name\":\"commitpkg\",\"version\":\"1.2\",\"url\":\"http://x/a.tar.gz\","
+				  "\"sha256\":\"ABC\",\"verification\":\"v\"}",
+				  400, "64 lowercase hex" },
+				{ "{\"name\":\"commitpkg\",\"version\":\"1.2\",\"url\":\"http://x/a.tar.gz\","
+				  "\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}",
+				  400, "verification is required" },
+				{ "{\"name\":\"commitpkg\",\"version\":\"1.0\",\"url\":\"http://x/a.tar.gz\","
+				  "\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\","
+				  "\"verification\":\"v\"}",
+				  409, "not newer" },
+			};
+			char rbody[1024], decoded_rev[8192];
+			const char *b64;
+			struct json_value *sent;
+			size_t k;
+			int dn = -1;
+
+			for (k = 0; k < sizeof(refused) / sizeof(refused[0]); k++) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/pkg/recipe-revise", refused[k].body,
+				                       &r) != 0 ||
+				    r.status != refused[k].status || r.body == NULL ||
+				    strstr(r.body, refused[k].says) == NULL) {
+					fprintf(stderr, "FAIL: ADR-0323 revise %s expected %d naming \"%s\", got "
+					                "%d: %s\n",
+					        refused[k].body, refused[k].status, refused[k].says, r.status,
+					        r.body != NULL ? r.body : "");
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
+
+			snprintf(rbody, sizeof(rbody),
+			         "{\"name\":\"commitpkg\",\"version\":\"1.2\",\"url\":\"%s\",\"sha256\":\"%s\","
+			         "\"verification\":\"the test fixture's own tarball\"}",
+			         test_http_src(tarball), sha);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/recipe-revise", rbody, &r) != 0 ||
+			    r.status != 202) {
+				fprintf(stderr, "FAIL: ADR-0323 POST recipe-revise expected 202, got %d: %s\n",
+				        r.status, r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			for (waited = 0; waited < 120; waited++) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/recipe-commit", NULL, &r) == 0 &&
+				    r.json != NULL && json_str_field(r.json, "state") != NULL &&
+				    strcmp(json_str_field(r.json, "state"), "running") != 0)
+					break;
+				cix_response_free(&r);
+				usleep(500000);
+			}
+			if (r.json == NULL || !str_eq(json_str_field(r.json, "state"), "done") ||
+			    !str_eq(json_str_field(r.json, "path"), "recipes/package/commitpkg@1.2-1.cbs")) {
+				fprintf(stderr, "FAIL: ADR-0323 the revision ended: %s\n",
+				        r.body != NULL ? r.body : "(no body)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			snprintf(body_path, sizeof(body_path), "%s/commitpkg@1.2-1.cbs.request.json",
+			         forge_dir);
+			sent = slurp_file(body_path, &posted, &posted_len) == 0
+			           ? json_parse(posted, posted_len)
+			           : NULL;
+			b64 = sent != NULL ? json_as_string(json_object_get(sent, "content")) : NULL;
+			if (b64 != NULL)
+				dn = base64_decode(b64, (unsigned char *)decoded_rev, sizeof(decoded_rev) - 1);
+			if (dn >= 0)
+				decoded_rev[dn] = '\0';
+			if (dn < 0 || strstr(decoded_rev, "version \"1.2\"") == NULL ||
+			    strstr(decoded_rev, "release 1") == NULL || strstr(decoded_rev, sha) == NULL ||
+			    strstr(decoded_rev, "mkdir \"${dest}/usr/share/commitpkg\" parents") == NULL ||
+			    strstr(decoded_rev, "1.2-1: commitpkg 1.2, sha256 ") == NULL ||
+			    strstr(decoded_rev, "verified by the test fixture's own tarball") == NULL ||
+			    strstr(decoded_rev, "Written by cixd from 1.0-1") == NULL) {
+				fprintf(stderr, "FAIL: ADR-0323 the forge did not receive the revision cbs "
+				                "should have written: %s\n",
+				        dn >= 0 ? decoded_rev : "(nothing decoded)");
+				ok = 0;
+			}
+			json_free(sent);
+			free(posted);
+			posted = NULL;
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/recipes/commitpkg", NULL, &r) != 0 ||
+			    !str_eq(json_str_field(r.json, "version"), "1.2-1")) {
+				fprintf(stderr, "FAIL: ADR-0323 the revision was committed but not published\n");
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+
 		memset(&r, 0, sizeof(r));
 		cix_client_request(&client, "DELETE", "/v1/pkg/sources/forge2", NULL, &r);
 		cix_response_free(&r);

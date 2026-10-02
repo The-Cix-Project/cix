@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The author stage: cixd writes a recipe's next revision (ADR-0323), and cbs moves to v0.1.102
+
+- **`POST /v1/pkg/recipe-revise`** (`cixctl pkg recipe revise --name --version --url --sha256 --verification`) writes the next revision of a package's newest recipe and commits it before publishing it. A person uses it to move a pinned package, and discovery (#508) will call the same function.
+- **The rewrite is `cbs revise`**, run host-side through the same single wait as `cbs explain`. `run_cbs_explain()` became a wrapper over `run_cbs()`, so `test_blocking_waits` keeps its count. Every other byte of the recipe is kept, comments included.
+- **What it changes:** version, release 1, the main source's url and sha256, and a changelog naming the digest and the verification. `artifact_sha256` is removed when present.
+- **The revision takes the recipe commit's path unchanged:** publish tests, a writable source with a token, git first. The two HTTP routes share one response function, and the two CLI commands share one post-and-poll helper.
+- **Refusals:** 404 for a package with no recipe, 409 for a version not newer than the newest, 400 for a malformed digest or a missing verification. `test_pkg` covers each against the stub forge, then reads a real revision back from it.
+- **cbs v0.1.102-1** (revise, and structured `upstream` metadata) is built on 192.168.15.95 and installed in `cix-builder` and `cix-hosttools`. Its artifact approval was written back to git automatically.
+- **`cbs explain --json` now reports `upstream` as an object**, so `cbs_explain_upstream()` reads `upstream.provider`; `test_cbsrecipe` covers the object shape. The ADR-0209 test floor moves to v0.1.102-1 with it (corpus pin 2edc4ae).
+- 335 operations.
+
 ### A login survives a restart, and the dashboard drops a session the host refused (ADR-0325, #562)
 
 The owner reported the dashboard as flaky since RBAC: *"Logged out, it's not consistent, and does not inspire confidence"*. Measured on 192.168.15.95: a token that answered `whoami` with `"authenticated":true` answered `false` after `cixctl reboot`. Sessions were memory only, so every release deployed signed everyone out.

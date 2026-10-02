@@ -2414,10 +2414,11 @@ static int parse_shell_recipe(const char *path, struct pkg_recipe *out)
 }
 
 /*
- * Runs `cbs explain --json` over one CPDL document and returns its
- * stdout (ADR-0305).
+ * Runs one host-side cbs verb -- `explain --json`, or `revise` (ADR-0323)
+ * -- and returns its stdout (ADR-0305). argv is the whole vector, argv[0]
+ * included; verb names it in errors.
  *
- * This is the ONLY place this daemon learns what a CBS recipe
+ * `explain` is the ONLY place this daemon learns what a CBS recipe
  * declares, and it runs exactly once per published version, at
  * publish. cixd does not parse CPDL: a second parser here would be a
  * parallel implementation of the language being adopted, and the two
@@ -2438,8 +2439,8 @@ static int parse_shell_recipe(const char *path, struct pkg_recipe *out)
  * store, so anything written there is simply lost (the mistake #132
  * was, and the one the project's own notes warn about).
  */
-static int run_cbs_explain(const char *recipe_path, char *out, size_t out_size, size_t *out_len,
-                            char *err, size_t err_size)
+static int run_cbs(char *const argv[], const char *verb, char *out, size_t out_size,
+                   size_t *out_len, char *err, size_t err_size)
 {
 	int outfd[2];
 	int errfd[2];
@@ -2482,13 +2483,6 @@ static int run_cbs_explain(const char *recipe_path, char *out, size_t out_size, 
 		return -1;
 	}
 	if (pid == 0) {
-		char *argv[5];
-
-		argv[0] = (char *)"cbs";
-		argv[1] = (char *)"explain";
-		argv[2] = (char *)recipe_path;
-		argv[3] = (char *)"--json";
-		argv[4] = NULL;
 		dup2(outfd[1], STDOUT_FILENO);
 		dup2(errfd[1], STDERR_FILENO);
 		execve(PKG_CBS_BIN, argv, environ);
@@ -2548,7 +2542,7 @@ static int run_cbs_explain(const char *recipe_path, char *out, size_t out_size, 
 			return -1;
 		}
 		if (truncated) {
-			snprintf(err, err_size, "cbs explain produced more than %zu bytes of output",
+			snprintf(err, err_size, "cbs %s produced more than %zu bytes of output", verb,
 			         out_size - 1);
 			out[0] = '\0';
 			return -1;
@@ -2563,14 +2557,14 @@ static int run_cbs_explain(const char *recipe_path, char *out, size_t out_size, 
 				if (diag[i] == '\n' || diag[i] == '\r')
 					diag[i] = ' ';
 			if (!WIFEXITED(status))
-				snprintf(err, err_size, "cbs explain was killed by a signal");
+				snprintf(err, err_size, "cbs %s was killed by a signal", verb);
 			else if (WEXITSTATUS(status) == 127)
-				snprintf(err, err_size, "cbs explain could not be executed (%s)",
+				snprintf(err, err_size, "cbs %s could not be executed (%s)", verb,
 				         PKG_CBS_BIN);
 			else if (dtotal > 0)
 				snprintf(err, err_size, "%s", diag);
 			else
-				snprintf(err, err_size, "cbs explain exited %d with no diagnostic",
+				snprintf(err, err_size, "cbs %s exited %d with no diagnostic", verb,
 				         WEXITSTATUS(status));
 			out[0] = '\0';
 			return -1;
@@ -2580,6 +2574,16 @@ static int run_cbs_explain(const char *recipe_path, char *out, size_t out_size, 
 	if (out_len != NULL)
 		*out_len = total;
 	return 0;
+}
+
+/* `cbs explain RECIPE --json`: what the recipe declares (ADR-0305). */
+static int run_cbs_explain(const char *recipe_path, char *out, size_t out_size, size_t *out_len,
+                           char *err, size_t err_size)
+{
+	char *argv[] = { (char *)"cbs", (char *)"explain", (char *)recipe_path, (char *)"--json",
+		         NULL };
+
+	return run_cbs(argv, "explain", out, out_size, out_len, err, err_size);
 }
 
 /*
@@ -15290,6 +15294,150 @@ enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, co
 	g_recipe_commit.state = RECIPE_COMMIT_RUNNING;
 	g_recipe_commit.started_at = time(NULL);
 	return PKG_OK;
+}
+
+/*
+ * ADR-0323's author stage: the next revision of a package's recipe,
+ * written by cixd and committed git first.
+ *
+ * From the newest published revision, `cbs revise` changes exactly what
+ * ADR-0318 section 3 lists -- version, release 1, the main source's url
+ * and sha256, the artifact approval removed (an approval of one byte
+ * sequence is never carried to another: the Build Provenance Mandate),
+ * and a changelog naming the release, its digest and how it was
+ * verified -- and preserves every other byte, comments included. cixd
+ * does not edit CPDL text itself: cbs owns the grammar, and revise
+ * validates what it writes (cix-build-system b1626a5, v0.1.101).
+ *
+ * The result goes through pkg_recipe_commit_start(), so the revision
+ * meets every publish test, goes only to a writable source with a
+ * token, and is committed before it is published. Callers check that
+ * the package has a recipe first: the author stage never writes a
+ * package's first recipe (ADR-0318).
+ */
+#define PKG_REVISE_MAX 262144
+
+enum pkg_error pkg_recipe_revise_start(const char *name, const char *version, const char *url,
+                                       const char *sha256, const char *verification,
+                                       const char *source, char *err, size_t err_size)
+{
+	char prev[PKG_VERSION_MAX], path[PATH_MAX], candidate[PKG_VERSION_MAX + 4];
+	char set_version[PKG_VERSION_MAX + 16], set_url[PKG_URL_MAX + 32];
+	char set_sha[PKG_SHA256_MAX + 32], set_changelog[PKG_CHANGELOG_MAX + 32];
+	char changelog[PKG_CHANGELOG_MAX];
+	char *argv[16];
+	struct pkg_recipe recipe;
+	char *revised;
+	size_t revised_len = 0, i;
+	int n = 0;
+	enum pkg_error perr;
+
+	err[0] = '\0';
+	if (name == NULL || !pkg_name_is_valid(name) ||
+	    recipe_latest_version(name, prev, sizeof(prev)) != 0 ||
+	    find_recipe_path(name, prev, path, sizeof(path)) != 0) {
+		snprintf(err, err_size, "%s has no recipe to revise: the author stage writes a next "
+		                        "revision, never a first one (ADR-0318)",
+		         name != NULL ? name : "");
+		return PKG_ERR_NOT_FOUND;
+	}
+	if (!recipe_path_is_cbs(path)) {
+		snprintf(err, err_size, "%s@%s is not a CPDL recipe, so cbs cannot revise it", name,
+		         prev);
+		return PKG_ERR_INVALID_RECIPE;
+	}
+	if (version == NULL || version[0] == '\0' || strlen(version) + 3 > PKG_VERSION_MAX ||
+	    strpbrk(version, " \t\r\n\"/") != NULL) {
+		snprintf(err, err_size, "version must be a non-empty upstream version with no "
+		                        "spaces, quotes or slashes");
+		return PKG_ERR_INVALID_RECIPE;
+	}
+	if (url == NULL || (strncmp(url, "https://", 8) != 0 && strncmp(url, "http://", 7) != 0) ||
+	    strlen(url) >= PKG_URL_MAX || strpbrk(url, " \t\r\n\"") != NULL) {
+		snprintf(err, err_size, "url must be an http(s) URL of at most %d bytes with no "
+		                        "spaces or quotes",
+		         PKG_URL_MAX - 1);
+		return PKG_ERR_INVALID_RECIPE;
+	}
+	if (sha256 == NULL || strlen(sha256) != 64 || strspn(sha256, "0123456789abcdef") != 64) {
+		snprintf(err, err_size, "sha256 must be 64 lowercase hex digits");
+		return PKG_ERR_INVALID_RECIPE;
+	}
+	if (verification == NULL || verification[0] == '\0' ||
+	    strpbrk(verification, "\r\n\"") != NULL) {
+		snprintf(err, err_size, "verification is required: how this digest was established, "
+		                        "on one line with no quotes -- the commit is the record of it "
+		                        "(ADR-0323)");
+		return PKG_ERR_INVALID_RECIPE;
+	}
+
+	/* Never a downgrade, never the same release twice. */
+	snprintf(candidate, sizeof(candidate), "%s-1", version);
+	if (pkg_version_compare(candidate, prev) <= 0) {
+		snprintf(err, err_size, "%s@%s is not newer than the newest revision, %s@%s", name,
+		         candidate, name, prev);
+		return PKG_ERR_DUPLICATE;
+	}
+
+	if ((size_t)snprintf(changelog, sizeof(changelog),
+	                     "%s: %s %s, sha256 %s, verified by %s. Written by cixd from %s "
+	                     "(ADR-0323).",
+	                     candidate, name, version, sha256, verification, prev) >=
+	    sizeof(changelog)) {
+		snprintf(err, err_size, "the changelog this revision needs is longer than %d bytes: "
+		                        "shorten the verification",
+		         PKG_CHANGELOG_MAX - 1);
+		return PKG_ERR_INVALID_RECIPE;
+	}
+
+	snprintf(set_version, sizeof(set_version), "version=%s", version);
+	snprintf(set_url, sizeof(set_url), "source.main.url=%s", url);
+	snprintf(set_sha, sizeof(set_sha), "source.main.sha256=%s", sha256);
+	snprintf(set_changelog, sizeof(set_changelog), "metadata.changelog=%s", changelog);
+	argv[n++] = (char *)"cbs";
+	argv[n++] = (char *)"revise";
+	argv[n++] = path;
+	argv[n++] = (char *)"--set";
+	argv[n++] = set_version;
+	argv[n++] = (char *)"--set";
+	argv[n++] = (char *)"release=1";
+	argv[n++] = (char *)"--set";
+	argv[n++] = set_url;
+	argv[n++] = (char *)"--set";
+	argv[n++] = set_sha;
+	argv[n++] = (char *)"--set";
+	argv[n++] = set_changelog;
+	/* revise refuses to unset what is absent, so only when there is one. */
+	if (parse_recipe(path, &recipe) == 0 && recipe.artifact_sha256[0] != '\0') {
+		argv[n++] = (char *)"--unset";
+		argv[n++] = (char *)"metadata.artifact_sha256";
+	}
+	argv[n] = NULL;
+
+	revised = malloc(PKG_REVISE_MAX);
+	if (revised == NULL) {
+		snprintf(err, err_size, "out of memory");
+		return PKG_ERR_PERSIST_FAILED;
+	}
+	if (run_cbs(argv, "revise", revised, PKG_REVISE_MAX, &revised_len, err, err_size) != 0) {
+		free(revised);
+		return PKG_ERR_INVALID_RECIPE;
+	}
+	for (i = 0; i < revised_len; i++)
+		if (revised[i] == '\0') {
+			free(revised);
+			snprintf(err, err_size, "cbs revise wrote a NUL byte into the recipe");
+			return PKG_ERR_INVALID_RECIPE;
+		}
+
+	perr = pkg_recipe_commit_start(name, revised, source, err, err_size);
+	free(revised);
+	if (perr == PKG_OK)
+		logstore_write("cixd", "info",
+		               "pkg: wrote %s@%s from %s@%s (sha256 %s, verified by %s) -- committing "
+		               "it before publishing (ADR-0323)",
+		               name, candidate, name, prev, sha256, verification);
+	return perr;
 }
 
 /* Called when the helper could not be started, so `done` never runs. */

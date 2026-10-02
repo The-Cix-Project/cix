@@ -175,7 +175,7 @@ static void test_release_and_runtime(void)
 	    "\"sha256\":\"a3fda92c6313292c48a4ad98728772aa156ea234bd048ae49811f6f5c171bc46\"}],"
 	    "\"requires\":{\"build\":{\"compiler\":[\"gcc\"],\"tool\":[\"bash\",\"bc\"]},"
 	    "\"runtime\":{\"package\":[\"openssl\",\"libarchive\",\"curl\"]}},"
-	    "\"build_image\":null,\"upstream\":\"kernel.org\",\"toolchain\":\"gcc\","
+	    "\"build_image\":null,\"upstream\":{\"provider\":\"kernel.org\",\"tag\":null,\"source\":null,\"verify\":null},\"toolchain\":\"gcc\","
 	    "\"toolchain_reason\":\"the kernel does not build with TCC\","
 	    "\"license\":\"GPL-2.0-only\","
 	    "\"metadata\":{\"artifact_sha256\":\"c09de99506f24a17786da6507775c2fb3e5e3882"

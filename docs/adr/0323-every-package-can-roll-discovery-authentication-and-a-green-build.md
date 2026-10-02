@@ -111,3 +111,20 @@ Estimated at four to six cix release cycles. **.95 has a saved schedule file, so
 - The kernel's 7.2.8 is written, committed, built and rolled, because its source policy is rolling (stable); a kernel an operator wants held is set to pinned.
 - A package that cannot be authenticated stays pinned, and the catalogue says why, as it does today.
 - Every automated recipe is a git commit, so what rolled, when, and on what evidence is answerable after the fact.
+
+## The author stage, as built (2026-10-02)
+
+- `POST /v1/pkg/recipe-revise` (`cixctl pkg recipe revise`) takes `name`, `version`, `url`, `sha256` and `verification`. It is the one mechanism. A person moving a pinned package uses it now, and discovery will call the same function.
+- cixd does not edit CPDL. `cbs revise` (cix-build-system v0.1.101, b1626a5) rewrites the newest recipe byte for byte, changing exactly what ADR-0318 section 3 lists:
+  - `version`, and `release` set to 1;
+  - the main source's `url` and `sha256`;
+  - `artifact_sha256` removed when present;
+  - a `changelog` of the form "VERSION-1: NAME VERSION, sha256 HEX, verified by VERIFICATION. Written by cixd from PREVIOUS".
+
+  cbs validates the result before cixd sees it.
+- The revision then takes the recipe commit's path unchanged: every publish test, a writable source with a token (ADR-0324), git first, then publish.
+- Refusals:
+  - a package with no recipe, because the author stage never writes a first one;
+  - a version whose `-1` revision is not newer than the newest, because there is no downgrade;
+  - a changelog that would not fit.
+- The verification is free text from the caller today. Discovery (#508) will supply the rung that authenticated the release, and the no-weaker-rung rule is enforced there, where the rung is known.

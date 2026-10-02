@@ -161,6 +161,13 @@ static const struct budget g_budgets[] = {
 	 * What it is NOT: a wait after a signal. This is the pattern the
 	 * comment above names as out of budget, and it cost 366 seconds and
 	 * a hand reset on 192.168.15.95. Nothing here signals the child.
+	 *
+	 * The same wait now serves `cbs revise` too (ADR-0323, the author
+	 * stage): the function is run_cbs(), and run_cbs_explain() is a
+	 * wrapper over it, so the count does not move. The bound is the
+	 * same one: revise reads one local recipe and writes the revised
+	 * bytes to stdout, and it fetches nothing (cix-build-system
+	 * src/main.c revise_file(), read at tag v0.1.102).
 	 */
 	/*
 	 * 7 -> 8 (ADR-0307 clause 7, #496): cbs_engine_version() waits for

@@ -1610,6 +1610,21 @@ void pkg_recipe_commit_abort(const char *why);
 void pkg_recipe_commit_write_json(struct json_writer *w);
 
 /*
+ * ADR-0323's author stage: writes the next revision of name's newest
+ * recipe with `cbs revise` -- version, release 1, the main source's
+ * url and sha256, the artifact approval removed, a changelog naming the
+ * digest and the verification -- and stages it through
+ * pkg_recipe_commit_start(), whose helper and outcome are then the
+ * caller's as for a commit. PKG_ERR_NOT_FOUND when name has no recipe
+ * or no writable source owns it (err says which), PKG_ERR_DUPLICATE
+ * when version-1 is not newer than the newest revision,
+ * PKG_ERR_INVALID_RECIPE for a bad argument or a revision cbs refuses.
+ */
+enum pkg_error pkg_recipe_revise_start(const char *name, const char *version, const char *url,
+                                       const char *sha256, const char *verification,
+                                       const char *source, char *err, size_t err_size);
+
+/*
  * ADR-0324: an approval this host writes into a recipe writes back to
  * git, through a helper of its own (one at a time, one commit per batch
  * of one source). ready() is 1 when a batch was taken and the caller

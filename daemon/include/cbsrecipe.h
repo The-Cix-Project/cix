@@ -156,7 +156,8 @@ int cbs_explain_requires(const struct cbs_explain *ex, const char *role, const c
  */
 const char *cbs_explain_format(const struct cbs_explain *ex);
 
-/* "" when the document declares none. Never NULL. */
+/* upstream.provider, the discovery kind (cbs v0.1.102 reports upstream as
+ * an object). "" when the document declares none. Never NULL. */
 const char *cbs_explain_upstream(const struct cbs_explain *ex);
 
 /*

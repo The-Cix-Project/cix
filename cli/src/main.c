@@ -324,6 +324,12 @@ static const char USAGE_TEXT[] =
 	        "               that owns the package, then publishes it here (ADR-0323): git first,\n"
 	        "               so git holds every revision a host builds. --source names it for a\n"
 	        "               package no source offers yet.\n"
+	        "  pkg recipe revise --name=NAME --version=VERSION --url=URL --sha256=HEX\n"
+	        "               --verification=TEXT [--source=NAME] [--wait]  -- the author stage\n"
+	        "               (ADR-0323): writes NAME's next revision from its newest recipe with\n"
+	        "               cbs revise -- VERSION-1, the main source's url and sha256, the artifact\n"
+	        "               approval removed, a changelog naming the digest and how it was\n"
+	        "               verified -- then commits and publishes it as recipe commit does.\n"
 	        "  pkg source ls | add NAME --url=URL --kind=gitea|github|gitlab [--ref=REF]\n"
 	        "               [--token=TOKEN] [--write=on|off] [--trust-keys=on|off] | set NAME ... |\n"
 	        "               rm NAME | own [ITEM SOURCE | ITEM --clear]  -- where recipes come from\n"
@@ -15572,6 +15578,37 @@ static int poll_pkg_recipe_commit(const struct cix_client *c, struct cix_respons
 }
 
 /*
+ * POSTs a staged recipe commit -- POST /pkg/recipe-commit or
+ * /pkg/recipe-revise, which start the same job (ADR-0323) -- and frees
+ * w. With wait, follows the job to its end and exits 0 only when the
+ * revision was committed and published.
+ */
+static int run_recipe_commit_job(const struct cix_client *c, int json_mode, const char *method,
+                                 const char *path, struct json_writer *w, int wait)
+{
+	const char *state;
+	int rc;
+	struct cix_response r;
+
+	if (cix_client_request(c, method, path, w->buf, &r) != 0) {
+		jw_free(w);
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(w);
+	if (r.status != 202 || !wait)
+		return emit(&r, json_mode, fmt_pkg_recipe_commit);
+	cix_response_free(&r);
+	if (poll_pkg_recipe_commit(c, &r) != 0)
+		return 1;
+	state = json_str_field(r.json, "state");
+	rc = state != NULL && strcmp(state, "done") == 0 ? 0 : 1;
+	if (emit(&r, json_mode, fmt_pkg_recipe_commit) != 0)
+		return 1;
+	return rc;
+}
+
+/*
  * cixctl pkg recipe commit --name=NAME --file=PATH [--wait]
  * Commits a CPDL recipe to the recipe repository, then publishes it on
  * this host (ADR-0323). Without --wait it reports the commit as started.
@@ -15581,14 +15618,11 @@ static int cmd_pkg_recipe_commit(const struct cix_client *c, int json_mode, int 
 	const char *name = NULL;
 	const char *file = NULL;
 	const char *source = NULL;
-	const char *state;
 	int wait = 0;
 	char *content;
 	size_t content_len;
 	int i;
-	int rc;
 	struct json_writer w;
-	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -15627,23 +15661,75 @@ static int cmd_pkg_recipe_commit(const struct cix_client *c, int json_mode, int 
 	w.buf[w.len] = '\0';
 	free(content);
 
-	if (cix_client_request(c, CIX_API_commitPkgRecipe_METHOD, CIX_API_commitPkgRecipe, w.buf,
-	                       &r) != 0) {
-		jw_free(&w);
-		fprintf(stderr, "cixctl: could not reach daemon\n");
-		return 1;
+	return run_recipe_commit_job(c, json_mode, CIX_API_commitPkgRecipe_METHOD,
+	                             CIX_API_commitPkgRecipe, &w, wait);
+}
+
+/*
+ * cixctl pkg recipe revise --name=NAME --version=V --url=URL
+ *     --sha256=HEX --verification=TEXT [--source=NAME] [--wait]
+ * ADR-0323's author stage, run by a person: the daemon writes the next
+ * revision of NAME's newest recipe with cbs revise, commits it, then
+ * publishes it -- the same path discovery takes.
+ */
+static int cmd_pkg_recipe_revise(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	static const char usage[] = "usage: cixctl pkg recipe revise --name=NAME --version=VERSION "
+	                            "--url=URL --sha256=HEX --verification=TEXT [--source=NAME] "
+	                            "[--wait]\n";
+	const char *name = NULL, *version = NULL, *url = NULL, *sha256 = NULL;
+	const char *verification = NULL, *source = NULL;
+	int wait = 0;
+	int i;
+	struct json_writer w;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			name = argv[i] + 7;
+		else if (strncmp(argv[i], "--version=", 10) == 0)
+			version = argv[i] + 10;
+		else if (strncmp(argv[i], "--url=", 6) == 0)
+			url = argv[i] + 6;
+		else if (strncmp(argv[i], "--sha256=", 9) == 0)
+			sha256 = argv[i] + 9;
+		else if (strncmp(argv[i], "--verification=", 15) == 0)
+			verification = argv[i] + 15;
+		else if (strncmp(argv[i], "--source=", 9) == 0)
+			source = argv[i] + 9;
+		else if (strcmp(argv[i], "--wait") == 0)
+			wait = 1;
+		else {
+			fprintf(stderr, "cixctl: unknown pkg recipe revise option '%s'\n", argv[i]);
+			return 2;
+		}
 	}
-	jw_free(&w);
-	if (r.status != 202 || !wait)
-		return emit(&r, json_mode, fmt_pkg_recipe_commit);
-	cix_response_free(&r);
-	if (poll_pkg_recipe_commit(c, &r) != 0)
-		return 1;
-	state = json_str_field(r.json, "state");
-	rc = state != NULL && strcmp(state, "done") == 0 ? 0 : 1;
-	if (emit(&r, json_mode, fmt_pkg_recipe_commit) != 0)
-		return 1;
-	return rc;
+	if (name == NULL || version == NULL || url == NULL || sha256 == NULL ||
+	    verification == NULL) {
+		fputs(usage, stderr);
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "version");
+	jw_str(&w, version);
+	jw_key(&w, "url");
+	jw_str(&w, url);
+	jw_key(&w, "sha256");
+	jw_str(&w, sha256);
+	jw_key(&w, "verification");
+	jw_str(&w, verification);
+	if (source != NULL) {
+		jw_key(&w, "source");
+		jw_str(&w, source);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	return run_recipe_commit_job(c, json_mode, CIX_API_revisePkgRecipe_METHOD,
+	                             CIX_API_revisePkgRecipe, &w, wait);
 }
 
 static void fmt_pkg_recipe_show(const struct json_value *v)
@@ -15731,6 +15817,8 @@ static int cmd_pkg_recipe(const struct cix_client *c, int json_mode, int argc, c
 	if (argc < 1) {
 		fprintf(stderr, "usage: cixctl pkg recipe add --name=NAME --file=PATH [--source=NAME]\n"
 		                "       cixctl pkg recipe commit --name=NAME --file=PATH [--source=NAME] [--wait]\n"
+		                "       cixctl pkg recipe revise --name=NAME --version=VERSION --url=URL --sha256=HEX\n"
+		                "               --verification=TEXT [--source=NAME] [--wait]\n"
 		                "       cixctl pkg recipe show NAME [--version=VERSION]\n"
 		                "       cixctl pkg recipe rm NAME [--version=VERSION]\n");
 		return 2;
@@ -15738,6 +15826,8 @@ static int cmd_pkg_recipe(const struct cix_client *c, int json_mode, int argc, c
 	sub = argv[0];
 	if (strcmp(sub, "add") == 0)
 		return cmd_pkg_recipe_add(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "revise") == 0)
+		return cmd_pkg_recipe_revise(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "commit") == 0)
 		return cmd_pkg_recipe_commit(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "show") == 0)
@@ -17563,6 +17653,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "       cixctl pkg recipes\n"
 		                "       cixctl pkg recipe add --name=NAME --file=PATH [--source=NAME]\n"
 		                "       cixctl pkg recipe commit --name=NAME --file=PATH [--source=NAME] [--wait]\n"
+		                "       cixctl pkg recipe revise --name=NAME --version=VERSION --url=URL --sha256=HEX\n"
+		                "               --verification=TEXT [--source=NAME] [--wait]\n"
 		                "       cixctl pkg recipe show NAME [--version=VERSION]\n"
 		                "       cixctl pkg recipe rm NAME [--version=VERSION]\n"
 		                "       cixctl pkg install --name=NAME [--image=IMAGE] [--version=VERSION] "

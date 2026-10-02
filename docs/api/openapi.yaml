@@ -10142,6 +10142,80 @@ paths:
               schema:
                 $ref: "#/components/schemas/PkgRecipeCommit"
 
+  /pkg/recipe-revise:
+    post:
+      summary: >
+        Writes the next revision of a package's recipe and commits it,
+        then publishes it (ADR-0323's author stage). From the newest
+        published revision, cbs revise sets version, release 1, the main
+        source's url and sha256, removes artifact_sha256, and adds a
+        changelog naming the digest and the verification; every other
+        byte is kept. The revision then goes exactly as POST
+        /pkg/recipe-commit does: every publish test, a writable source
+        with a token, git first. 202; poll GET /pkg/recipe-commit.
+      operationId: revisePkgRecipe
+      x-cix-permission: packages:write
+      x-cix-expose: [cli]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, version, url, sha256, verification]
+              properties:
+                name:
+                  type: string
+                version:
+                  type: string
+                  description: The upstream version. The revision is <version>-1, and must be newer than the newest one.
+                url:
+                  type: string
+                  description: The main source's new URL. Keep {{REPO_TOKEN}} where the forge needs a token; the real token is never committed.
+                sha256:
+                  type: string
+                  description: The verified digest of the bytes at url, 64 lowercase hex digits.
+                verification:
+                  type: string
+                  description: >
+                    How the digest was established, on one line -- a probe and
+                    its log, a signature and its key. It goes into the changelog,
+                    so the commit records what was authenticated and how.
+                source:
+                  type: string
+                  description: As for POST /pkg/recipe-commit.
+      responses:
+        "202":
+          description: Written and validated; the commit has started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgRecipeCommit"
+        "400":
+          description: An argument is malformed, the changelog would not fit, or cbs or a publish test refuses the revision (the message says which)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The package has no recipe; the author stage never writes a first one
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The version is not newer than the newest revision, no writable source with a token owns the package, or a commit is already running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The commit could not be started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /pkg/sync:
     post:
       summary: >

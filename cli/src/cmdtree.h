@@ -1389,6 +1389,17 @@ static const char *const n_pkg_recipe_rm_flags[] = {
 	NULL
 };
 
+static const char *const n_pkg_recipe_revise_flags[] = {
+	"--name=",
+	"--sha256=",
+	"--source=",
+	"--url=",
+	"--verification=",
+	"--version=",
+	"--wait",
+	NULL
+};
+
 static const char *const n_pkg_recipe_show_flags[] = {
 	"--version=",
 	NULL
@@ -1397,6 +1408,7 @@ static const char *const n_pkg_recipe_show_flags[] = {
 static const struct cli_node n_pkg_recipe_subs[] = {
 	{ "add", n_pkg_recipe_add_flags, NULL },
 	{ "commit", n_pkg_recipe_commit_flags, NULL },
+	{ "revise", n_pkg_recipe_revise_flags, NULL },
 	{ "rm", n_pkg_recipe_rm_flags, NULL },
 	{ "show", n_pkg_recipe_show_flags, NULL },
 	{ NULL, NULL, NULL },

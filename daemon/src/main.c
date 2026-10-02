@@ -20607,33 +20607,15 @@ static void handle_pkg_source_ownership_put(int fd, const char *body, size_t bod
 }
 
 /*
- * POST /v1/pkg/recipe-commit (ADR-0323): validate, then commit to the
- * recipe repository in a helper, then publish when it is done.
+ * The rest of a recipe commit request once it is staged (ADR-0323): the
+ * status for why it was refused, or the helper started and a 202 with
+ * the commit's state. Shared by POST /v1/pkg/recipe-commit and
+ * POST /v1/pkg/recipe-revise, which stages its revision the same way.
  */
-static void handle_pkg_recipe_commit_post(int fd, const char *body, size_t body_len)
+static void recipe_commit_respond(int fd, enum pkg_error perr, char *err, size_t err_size)
 {
-	struct json_value *root;
-	const char *name, *content;
-	char err[PKG_ERROR_MAX];
-	enum pkg_error perr;
 	struct json_writer w;
 
-	root = body_len > 0 ? json_parse(body, body_len) : NULL;
-	if (root == NULL) {
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
-		return;
-	}
-	name = json_as_string(json_object_get(root, "name"));
-	content = json_as_string(json_object_get(root, "content"));
-	if (name == NULL || content == NULL || content[0] == '\0') {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "name and content are required");
-		return;
-	}
-	perr = pkg_recipe_commit_start(name, content,
-	                               json_as_string(json_object_get(root, "source")), err,
-	                               sizeof(err));
-	json_free(root);
 	switch (perr) {
 	case PKG_OK:
 		break;
@@ -20655,7 +20637,7 @@ static void handle_pkg_recipe_commit_post(int fd, const char *body, size_t body_
 	}
 	if (helper_run(pkg_recipe_commit_work, NULL, pkg_recipe_commit_done, NULL,
 	               "pkg recipe commit") != 0) {
-		snprintf(err, sizeof(err), "could not start the commit helper: %s", strerror(errno));
+		snprintf(err, err_size, "could not start the commit helper: %s", strerror(errno));
 		pkg_recipe_commit_abort(err);
 		respond_error(fd, 500, "Internal Server Error", err);
 		return;
@@ -20664,6 +20646,72 @@ static void handle_pkg_recipe_commit_post(int fd, const char *body, size_t body_
 	pkg_recipe_commit_write_json(&w);
 	respond_json(fd, 202, "Accepted", &w);
 	jw_free(&w);
+}
+
+/*
+ * POST /v1/pkg/recipe-commit (ADR-0323): validate, then commit to the
+ * recipe repository in a helper, then publish when it is done.
+ */
+static void handle_pkg_recipe_commit_post(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *name, *content;
+	char err[PKG_ERROR_MAX];
+	enum pkg_error perr;
+
+	root = body_len > 0 ? json_parse(body, body_len) : NULL;
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	name = json_as_string(json_object_get(root, "name"));
+	content = json_as_string(json_object_get(root, "content"));
+	if (name == NULL || content == NULL || content[0] == '\0') {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "name and content are required");
+		return;
+	}
+	perr = pkg_recipe_commit_start(name, content,
+	                               json_as_string(json_object_get(root, "source")), err,
+	                               sizeof(err));
+	json_free(root);
+	recipe_commit_respond(fd, perr, err, sizeof(err));
+}
+
+/*
+ * POST /v1/pkg/recipe-revise (ADR-0323's author stage): the next
+ * revision of a package's recipe, written by cbs revise from the newest
+ * one, then committed and published exactly as a recipe commit is.
+ */
+static void handle_pkg_recipe_revise_post(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *name;
+	char latest[PKG_VERSION_MAX];
+	char err[PKG_ERROR_MAX];
+	enum pkg_error perr;
+
+	root = body_len > 0 ? json_parse(body, body_len) : NULL;
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	name = json_as_string(json_object_get(root, "name"));
+	if (name == NULL || pkg_recipe_latest_version(name, latest, sizeof(latest)) != 0) {
+		json_free(root);
+		respond_error(fd, 404, "Not Found",
+		              "no such package recipe: the author stage writes a next revision, "
+		              "never a first one (ADR-0318)");
+		return;
+	}
+	perr = pkg_recipe_revise_start(name, json_as_string(json_object_get(root, "version")),
+	                               json_as_string(json_object_get(root, "url")),
+	                               json_as_string(json_object_get(root, "sha256")),
+	                               json_as_string(json_object_get(root, "verification")),
+	                               json_as_string(json_object_get(root, "source")), err,
+	                               sizeof(err));
+	json_free(root);
+	recipe_commit_respond(fd, perr, err, sizeof(err));
 }
 
 /* GET /v1/pkg/recipe-commit */
@@ -25824,6 +25872,12 @@ static void op_commitPkgRecipe(const struct api_ctx *ctx)
 static void op_getPkgRecipeCommit(const struct api_ctx *ctx)
 {
 	handle_pkg_recipe_commit_get(ctx->fd);
+}
+
+/* POST /v1/pkg/recipe-revise */
+static void op_revisePkgRecipe(const struct api_ctx *ctx)
+{
+	handle_pkg_recipe_revise_post(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
 /* POST /v1/pkg/sync */
