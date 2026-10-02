@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted by the owner on 2026-10-02 ("clear now, start phase one"), with the answers recorded below. It supersedes [ADR-0318](0318-an-upstream-release-is-authenticated-by-a-signed-asset.md)'s rule that only a signed release asset authenticates a release. It extends [ADR-0255](0255-a-recipe-is-a-rule-not-a-version.md) (a recipe is a rule; discovery is a named kind; pinned is a first-class answer) and [ADR-0254](0254-upstream-checksums-are-verified-not-computed.md), and replaces neither.
+Accepted by the owner on 2026-10-02 ("clear now, start phase one"), with the answers recorded below. Amended by [ADR-0324](0324-many-recipe-sources-and-many-package-repositories.md) the same day: the platform authors into a source marked writable, so the list of sources comes before discovery in phase one. It supersedes [ADR-0318](0318-an-upstream-release-is-authenticated-by-a-signed-asset.md)'s rule that only a signed release asset authenticates a release. It extends [ADR-0255](0255-a-recipe-is-a-rule-not-a-version.md) (a recipe is a rule; discovery is a named kind; pinned is a first-class answer) and [ADR-0254](0254-upstream-checksums-are-verified-not-computed.md), and replaces neither.
 
 ## Context
 

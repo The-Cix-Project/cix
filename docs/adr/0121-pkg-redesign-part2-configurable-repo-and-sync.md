@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Its single repository is superseded by [ADR-0324](0324-many-recipe-sources-and-many-package-repositories.md) (2026-10-02): a host takes recipes from any number of sources.
 
 ## Context
 

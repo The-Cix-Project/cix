@@ -224,6 +224,16 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Build failure undoes nothing; runtime failure rolls back.** A failed build never moved the image. A container that crash-loops, never becomes ready, or fails its health check on a rolled image goes back to its previous image, and that package version is marked bad until a newer one arrives or an operator clears it.
 - **Every stage reports into `cixctl pkg source-catalogue`.** A roll that stops says where and why. One hourly `pkg.discover` schedule; .95 has a saved schedule file, so it is created there explicitly.
 
+## Many sources and repositories; the public catalogue is the owner's
+
+**A host takes recipes from any number of sources and packages from any number of repositories** -- [ADR-0324](docs/adr/0324-many-recipe-sources-and-many-package-repositories.md), the owner's decisions of 2026-10-02 (*"as many sources as they want and as many pkg repos as they want"*).
+
+- **Write is a property of a source, not of a host.** A host authors (ADR-0323) only for packages owned by a source it may write. Never build authoring that writes to a source the host only reads.
+- **One package, one source.** A name offered by two sources halts until the operator chooses. Never resolve it by list order. The same version with different bytes is refused and reported, not picked.
+- **Repositories are mirrors.** Their order is speed, never trust; what is accepted is decided by `artifact_sha256` and the signature.
+- **The public catalogue (`The-Cix-Project/cix-recipes`) is the owner's alone.** Every commit to the owner's forge reaches it by push mirror (`sync_on_commit`, measured 2026-10-02), so a commit from 192.168.15.95 is a publish to every Cix user. Others contributing is a future decision; do not build it unasked.
+- **The catalogue gets signed, as Debian signs its archive**: a signed index of every recipe and its hash, checked on sync.
+
 ## One way to make an image
 
 **An image is made by `POST /v1/images` (`cixctl image create --name=NAME`) and by nothing else.** `POST /v1/pkg/install` naming an image that does not exist is a 400 naming that fix, and creates nothing (#500) -- the owner's decision of 2026-09-30, chosen over documenting the implicit create an install used to perform, which is how `--image=jump`, a typo for `jumpbox`, became a new image.

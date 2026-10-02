@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Directed by the owner on 2026-09-29: *"yes, both are defaults moving forwards, and can be changed if the use wants to? right?"* — in answer to whether someone who downloads the ISO can fetch recipes and artifacts with nothing configured. Amends the "no URL configured" and "unconfigured" defaults of [ADR-0121](0121-pkg-redesign-part2-configurable-repo-and-sync.md) and [ADR-0122](0122-pkg-redesign-part3-artifact-cache-and-server.md). Neither mechanism changes; only the values a host starts with do.
+Accepted. Amended by [ADR-0324](0324-many-recipe-sources-and-many-package-repositories.md) (2026-10-02): the public catalogue and cache are the first entries of a list of sources and repositories, not the only ones. Directed by the owner on 2026-09-29: *"yes, both are defaults moving forwards, and can be changed if the use wants to? right?"* — in answer to whether someone who downloads the ISO can fetch recipes and artifacts with nothing configured. Amends the "no URL configured" and "unconfigured" defaults of [ADR-0121](0121-pkg-redesign-part2-configurable-repo-and-sync.md) and [ADR-0122](0122-pkg-redesign-part3-artifact-cache-and-server.md). Neither mechanism changes; only the values a host starts with do.
 
 ## Context
 

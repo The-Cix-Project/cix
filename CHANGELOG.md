@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### ADR-0324: any number of recipe sources and package repositories, and the public catalogue is the owner's
+
+A host had one recipe repository and one artifact server. Both become lists of any length, like a Debian `sources.list`:
+- **Sources:** a source is read or write, and a host authors (ADR-0323) only for packages owned by a source it may write.
+- **Ownership:** a package name belongs to one source. If two offer it, the package halts until the operator chooses.
+- **Conflicts:** the same version with different bytes is refused and reported.
+- **Repositories** are mirrors. They are tried in order, and a copy is accepted only on verification.
+- **The public catalogue** is authored by the owner alone. The owner's forge push-mirrors every commit to it (measured 2026-10-02), so a host commit is a publish to every Cix user.
+- **The catalogue is to be signed**, as Debian signs its archive.
+
+The commit switch 0.2.57-432 put on the single repo config moves onto a source before anything uses it. It is off on 192.168.15.95.
+
 ### A host commits a recipe to git, then publishes it (ADR-0323, #508)
 
 The author stage's second half, and the path a person uses to move a pinned package on. `cixctl pkg recipe commit --name=NAME --file=PATH --wait` (`POST /v1/pkg/recipe-commit`) does four things in order:
