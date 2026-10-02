@@ -16177,16 +16177,29 @@ static void sync_walk_image_recipes(const char *images_root, int *added, int *sk
 		snprintf(script_path, sizeof(script_path), "%s/%s", images_root, name_de->d_name);
 		if (persist_read_file(script_path, &content, &content_len) != 0 || content == NULL)
 			continue;
+		/* Held already, byte for byte: skipped, not rewritten. The add
+		 * overwrites by name and never answers DUPLICATE, so without
+		 * this every unchanged recipe was counted "added" on every sync
+		 * (28 a sync on 192.168.15.95, 2026-10-02, while the store did
+		 * not change). */
+		{
+			char *have = NULL;
+			size_t have_len = 0;
+			int same = image_recipe_get(name, &have, &have_len) == PKG_OK && have != NULL &&
+			           strcmp(have, content) == 0;
+
+			free(have);
+			if (same) {
+				free(content);
+				(*skipped)++;
+				continue;
+			}
+		}
 		rc = image_recipe_add(name, content);
 		free(content);
-		/* image_recipe_add() always overwrites (name-keyed, no
-		 * version-keying of its own, ADR-0123) -- it never returns
-		 * PKG_ERR_DUPLICATE the way pkg_recipe_add()'s immutable
-		 * package versions can. Every successful sync of an image
-		 * recipe therefore lands in "added", even on a re-sync of
-		 * identical content; the skipped branch is kept for the same
-		 * counting shape as the package walk below, not because it
-		 * can currently trigger. */
+		/* image_recipe_add() overwrites by name (ADR-0123) and never answers
+		 * PKG_ERR_DUPLICATE; identical content was skipped above, so what
+		 * reaches it is a real change. */
 		if (rc == PKG_OK)
 			(*added)++;
 		else if (rc == PKG_ERR_DUPLICATE)
@@ -16259,6 +16272,24 @@ static void sync_walk_container_recipes(const char *containers_root, int *added,
 		snprintf(json_path, sizeof(json_path), "%s/%s", containers_root, name_de->d_name);
 		if (persist_read_file(json_path, &content, &content_len) != 0 || content == NULL)
 			continue;
+		/* Held already, byte for byte: skipped, not rewritten. The add
+		 * overwrites by name and never answers DUPLICATE, so without
+		 * this every unchanged recipe was counted "added" on every sync
+		 * (28 a sync on 192.168.15.95, 2026-10-02, while the store did
+		 * not change). */
+		{
+			char *have = NULL;
+			size_t have_len = 0;
+			int same = container_recipe_get(name, &have, &have_len) == PKG_OK && have != NULL &&
+			           strcmp(have, content) == 0;
+
+			free(have);
+			if (same) {
+				free(content);
+				(*skipped)++;
+				continue;
+			}
+		}
 		rc = container_recipe_add(name, content);
 		free(content);
 		if (rc == PKG_OK)

@@ -419,10 +419,10 @@ int main(void)
 		long skipped = (long)json_as_number(json_object_get(r.json, "skipped"));
 
 		CHECK(state != NULL && strcmp(state, "success") == 0, "second sync succeeds");
-		CHECK(added == 1,
-		      "second sync adds only the image recipe (it always overwrites, ADR-0123)");
-		CHECK(skipped == 1,
-		      "second sync skips the already-present package recipe (merge semantics)");
+		CHECK(added == 0,
+		      "second sync adds nothing: the image recipe is unchanged, so it is skipped too");
+		CHECK(skipped == 2,
+		      "second sync skips the package recipe and the unchanged image recipe");
 	}
 	cix_response_free(&r);
 
@@ -460,7 +460,7 @@ int main(void)
 
 		CHECK(state != NULL && strcmp(state, "success") == 0,
 		      "sync with a browse-URL-style suffix still succeeds (owner/repo correctly parsed)");
-		CHECK(added == 1 && skipped == 1,
+		CHECK(added == 0 && skipped == 2,
 		      "browse-URL-suffix sync resolves to the SAME repo as the bare owner/repo URL did");
 	}
 	cix_response_free(&r);

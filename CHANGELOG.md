@@ -6,6 +6,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A sync counts an unchanged image or deployment recipe as skipped, not added
+
+Every sync on 192.168.15.95 reported `added=28` while the recipe store did not change (1,717 entries before and after, 2026-10-02). The image and deployment recipe walkers called adds that overwrite by name and never answer "already there", so each unchanged recipe counted as added on every sync. They now compare with the stored copy first: identical is `skipped` and is not rewritten. Behavior is otherwise unchanged; an image recipe that did not change already triggered nothing under ADR-0320's follow policy. `test_pkg_sync`'s re-sync cases now expect `added=0 skipped=2`.
+
 ### An approval this host writes into a recipe is written back to git (ADR-0324)
 
 The owner, 2026-10-02: approvals write back too. Before this, the approval #492 writes into a recipe after a build stayed on the host that built it. No other host took the cache hit, and that host's copy quietly differed from git on every built package: 129 versions on 192.168.15.95, measured the same day.
