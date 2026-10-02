@@ -602,6 +602,51 @@ static void cpdl_recipe_text_decl(char *out, size_t out_size, const char *name,
 	         install_body);
 }
 
+/*
+ * A minimal CPDL recipe declaring an upstream block (ADR-0323). Its own
+ * template rather than cpdl_recipe_text_decl()'s `decls` slot, because
+ * cbs ranks `upstream` with `sources` -- before `requires` -- and
+ * refuses it anywhere later with CPDL-E3003 "package declaration
+ * appears out of order" (validate.c package_item_rank(), v0.1.102;
+ * measured as 0.2.57-446's selftest failure).
+ */
+static void cpdl_upstream_recipe_text(char *out, size_t out_size, const char *name,
+                                      const char *source_url, const char *sha256,
+                                      const char *upstream)
+{
+	snprintf(out, out_size,
+	         "package \"%s\" {\n"
+	         "    version \"1.0\"\n"
+	         "    release 1\n"
+	         "    format \"cixpkg\"\n"
+	         "\n"
+	         "%s"
+	         "\n"
+	         "    sources {\n"
+	         "        main \"%s\" {\n"
+	         "            url \"%s\"\n"
+	         "            sha256 \"%s\"\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    requires {\n"
+	         "        build {\n"
+	         "            tool \"bash\"\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    build {\n"
+	         "        run \"true\" {\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    install {\n"
+	         "        mkdir \"${dest}/usr/share/%s\" parents\n"
+	         "    }\n"
+	         "}\n",
+	         name, upstream, name, source_url, sha256, name);
+}
+
 static void cpdl_recipe_text(char *out, size_t out_size, const char *name, const char *version,
                               const char *source_url, const char *sha256,
                               const char *extra_sources, const char *tools, const char *runtime,
@@ -7603,12 +7648,9 @@ skip_resume:
 				         "        tag \"v{version}\"\n"
 				         "        source \"%s\"\n"
 				         "        verify origin\n"
-				         "    }\n\n",
+				         "    }\n",
 				         gtmpl);
-				cpdl_recipe_text_decl(grecipe, sizeof(grecipe), "giteapkg", "1.0", gurl, gsha,
-				                      NULL, "            tool \"bash\"\n", NULL, decls,
-				                      "        run \"true\" {\n        }\n",
-				                      "        mkdir \"${dest}/usr/share/giteapkg\" parents\n");
+				cpdl_upstream_recipe_text(grecipe, sizeof(grecipe), "giteapkg", gurl, gsha, decls);
 				jw_init(&w);
 				jw_obj_open(&w);
 				jw_key(&w, "name");
@@ -7631,15 +7673,12 @@ skip_resume:
 				cix_response_free(&r);
 				jw_free(&w);
 
-				cpdl_recipe_text_decl(grecipe, sizeof(grecipe), "giteapkg2", "1.0",
-				                      test_http_src(gtar), gsha, NULL,
-				                      "            tool \"bash\"\n", NULL,
-				                      "    upstream \"gitea-tags\" {\n"
-				                      "        tag \"v{version}\"\n"
-				                      "        verify origin\n"
-				                      "    }\n\n",
-				                      "        run \"true\" {\n        }\n",
-				                      "        mkdir \"${dest}/usr/share/giteapkg2\" parents\n");
+				cpdl_upstream_recipe_text(grecipe, sizeof(grecipe), "giteapkg2",
+				                          test_http_src(gtar), gsha,
+				                          "    upstream \"gitea-tags\" {\n"
+				                          "        tag \"v{version}\"\n"
+				                          "        verify origin\n"
+				                          "    }\n");
 				jw_init(&w);
 				jw_obj_open(&w);
 				jw_key(&w, "name");

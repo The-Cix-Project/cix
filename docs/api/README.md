@@ -1505,7 +1505,7 @@ The last two used to be one `unresolved` state, and they need opposite responses
 **Two discovery kinds exist ([ADR-0323](../adr/0323-every-package-can-roll-discovery-authentication-and-a-green-build.md)).**
 
 - `kernel.org` is one feed (releases.json) that serves every kernel.
-- `gitea-tags` belongs to one package. Its recipe declares the block below, and `source`, expanded with the recipe's own version, must be its main url:
+- `gitea-tags` belongs to one package. Its recipe declares the block below, and `source`, expanded with the recipe's own version, must be its main url. CPDL ranks `upstream` with `sources`: it goes before `requires` or cbs refuses it (CPDL-E3003). `verify` takes a bare word:
 
   ```
   upstream "gitea-tags" {
