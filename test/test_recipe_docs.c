@@ -126,6 +126,16 @@ int main(void)
 	}
 
 	snprintf(dir, sizeof(dir), "%s/package", root);
+	/* Named but absent is a failure, not a skip. The release build
+	 * always sets CIX_RECIPES_DIR, and the selftest harness prints
+	 * nothing for a pass, so a skip there would read exactly like a
+	 * scan that found nothing wrong. Only a bare checkout, which sets
+	 * nothing, may skip. */
+	if (access(dir, R_OK) != 0 && env != NULL && env[0] != '\0') {
+		printf("RECIPE DOCS RESULT: FAIL (CIX_RECIPES_DIR is %s, but %s cannot be read)\n",
+		       env, dir);
+		return 1;
+	}
 	if (access(dir, R_OK) != 0) {
 		printf("recipe docs: corpus not present at %s -- NOT scanned (set "
 		       "CIX_RECIPES_DIR, or clone cix-recipes beside this repository, to "
