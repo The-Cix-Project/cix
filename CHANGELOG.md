@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Git refreshes a recipe that differs only in comments; a sync names what it could not add (ADR-0324, #561)
+
+Git is authoritative for recipes (the owner, 2026-10-02). The first sync on 192.168.15.95 found 121 versions git held with different text from the box, all edited in git after the box published them.
+- **A copy differing only in comment or blank lines, or carrying an approval the box lacks, now refreshes the stored text.** Nothing rebuilds, the box keeps its own approval, and `GET /v1/pkg/sync` counts it as `refreshed`, overall and per source. Only a sync refreshes; a publish made on the box is still refused as divergent. 112 of the 121 were this case.
+- **The other 9 were settled by hand**, by the rule now in ADR-0324: the version keeps the bytes that were built. cix-recipes `d2f1051` restored four in git; the box took five from git. The same commit added the four failed releases (0.2.57-428, -429, -431, -434) that the box held and git never received.
+- **#561:** a recipe a sync cannot add is logged with its name, its source and the reason, instead of only being counted.
+- `test_pkg` adds a comment line to one source's copy in git and checks the next sync counts it `refreshed`, not `divergent`, and stores git's text.
+
 ### Recipe sources are a list; who owns a package is computed (ADR-0324, step A)
 
 `/v1/pkg/repo-config` is gone. In its place:

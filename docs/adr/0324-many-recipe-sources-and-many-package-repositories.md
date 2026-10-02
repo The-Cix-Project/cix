@@ -82,6 +82,15 @@ An owner decides whose token a `{{REPO_TOKEN}}` fetch carries, so in both cases 
 - **An operator's choice decides ownership whatever the sources offer.** That includes a name no source offers yet, and a single other source that offers it later: ownership never moves on its own.
 - **A migration seeds the migrated source's offers from the recipe store.** Everything there came from, or was added for, the one source the host had. The first sync replaces the seed with what git carries.
 
+### Git is authoritative for recipes; comments refresh, approvals write back (amended 2026-10-02)
+
+The first sync on 192.168.15.95 under this ADR reported 121 versions that git held with different text from the box. All were edits made in git after the box had published those versions. 112 changed only comment lines, mostly the 2026-09-26 rename sweep, and 9 changed content. The owner decided, the same day:
+- **Git is 100% authoritative for recipes.** A sync whose copy differs from the stored one only in comment or blank lines, or carries an artifact approval the box lacks, replaces the stored text, and nothing rebuilds. Recorded as `refreshed`, not `divergent`. The box keeps its own approval. A publish made on the box itself is not git and is not refreshed this way.
+- **A real divergence is settled per version, by an operator, not by the daemon:** the version stays with the bytes that were built (approved or installed), and git is restored to them. A real change becomes the next release in git. Where neither copy was ever built, git wins. Applied to the 9: four restored in git, five taken from git.
+- **A change made on a box writes back to git** (*"if we're editing the recipes on our .95 box, then do a writeback, but if not then make changes on git only"*), and that includes the approval a box writes into a recipe after a build.
+
+The comparison is over the text because `cbs explain --json` does not carry a phase's operations; recipes installing different files explain identically (measured by `test_pkg` on 192.168.15.95, 0.2.57-434).
+
 ### Migration, and the defaults
 
 There is one clean cut-over (no compatibility shim):

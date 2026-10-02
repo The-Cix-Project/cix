@@ -20683,7 +20683,15 @@ components:
           description: >
             Recipe versions a source offered that this host already holds with
             DIFFERENT content (ADR-0324). Refused and kept as they were, never
-            counted as skipped.
+            counted as skipped. A copy differing only in comment lines, or carrying an
+            approval this host lacks, is not divergent: it is counted as refreshed.
+        refreshed:
+          type: integer
+          description: >
+            Recipe versions this host already held whose text git replaced without a
+            rebuild (ADR-0324): git is authoritative for recipes, and the difference was
+            only in comment or blank lines, or an artifact approval this host did not have.
+            The host's own approval is kept.
         held:
           type: integer
           description: >
@@ -20694,7 +20702,7 @@ components:
           description: What the most recent sync did, per source, in list order.
           items:
             type: object
-            required: [name, fetched, added, approved, skipped, divergent, held, failed, error]
+            required: [name, fetched, added, approved, skipped, divergent, refreshed, held, failed, error]
             properties:
               name:
                 type: string
@@ -20708,6 +20716,8 @@ components:
               skipped:
                 type: integer
               divergent:
+                type: integer
+              refreshed:
                 type: integer
               held:
                 type: integer

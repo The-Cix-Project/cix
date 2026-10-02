@@ -14735,6 +14735,7 @@ static void fmt_pkg_sync_status(const struct json_value *v)
 	long added = (long)json_as_number(json_object_get(v, "added"));
 	long skipped = (long)json_as_number(json_object_get(v, "skipped"));
 	long divergent = (long)json_as_number(json_object_get(v, "divergent"));
+	long refreshed = (long)json_as_number(json_object_get(v, "refreshed"));
 	long held = (long)json_as_number(json_object_get(v, "held"));
 	const char *error = json_str_field(v, "error");
 	size_t i;
@@ -14742,7 +14743,8 @@ static void fmt_pkg_sync_status(const struct json_value *v)
 	printf("state=%s", state != NULL ? state : "?");
 	if (last_attempt != NULL && last_attempt->type != JSON_NULL)
 		printf(" last_attempt=%lld", (long long)json_as_number(last_attempt));
-	printf(" added=%ld skipped=%ld divergent=%ld held=%ld", added, skipped, divergent, held);
+	printf(" added=%ld skipped=%ld divergent=%ld refreshed=%ld held=%ld", added, skipped, divergent,
+	       refreshed, held);
 	if (error != NULL)
 		printf(" error=%s", error);
 	printf("\n");
@@ -14755,13 +14757,14 @@ static void fmt_pkg_sync_status(const struct json_value *v)
 		const char *name = json_str_field(s, "name");
 		const char *serr = json_str_field(s, "error");
 
-		printf("  %-16s %s added=%ld skipped=%ld divergent=%ld held=%ld failed=%ld",
+		printf("  %-16s %s added=%ld skipped=%ld divergent=%ld refreshed=%ld held=%ld failed=%ld",
 		       name != NULL ? name : "?",
 		       fetched != NULL && fetched->type == JSON_BOOL && fetched->u.boolean ? "synced"
 		                                                                           : "NOT synced",
 		       (long)json_as_number(json_object_get(s, "added")),
 		       (long)json_as_number(json_object_get(s, "skipped")),
 		       (long)json_as_number(json_object_get(s, "divergent")),
+		       (long)json_as_number(json_object_get(s, "refreshed")),
 		       (long)json_as_number(json_object_get(s, "held")),
 		       (long)json_as_number(json_object_get(s, "failed")));
 		if (serr != NULL)

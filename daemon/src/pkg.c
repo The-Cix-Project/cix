@@ -8253,10 +8253,29 @@ static enum pkg_error recipe_persist_failed(const char *what)
 }
 
 /*
- * The approval line #492 writes into a CBS recipe's metadata block:
- * `"artifact_sha256" "<hex>"` alone on its line. Sets *hex to the
- * value's first byte when `line` is one.
+ * ADR-0324: how a CBS recipe arriving for a version already published
+ * relates to the stored one. Asked of the TEXT, because the text is the
+ * recipe: `cbs explain --json` does not carry a phase's operations, so
+ * two recipes that install different files explain identically
+ * (measured: test_pkg on 192.168.15.95, 0.2.57-434, a changed `mkdir`
+ * path was called the same recipe).
+ *
+ * The approval #492 writes in after a build is set aside on both sides,
+ * because the daemon places that line where a hand-written copy does
+ * not (measured: cbs@v0.1.100-1, store against corpus, 2026-10-02);
+ * its value is reported, and two approvals naming different bytes are
+ * a divergence. Lines whose first non-blank byte is `#`, and blank
+ * lines, change nothing that is built: a text differing only in those
+ * is COMMENTS, which git -- authoritative for recipes (the owner,
+ * 2026-10-02) -- may refresh without a rebuild. 112 versions on
+ * 192.168.15.95 differed from git exactly so, almost all from the
+ * 2026-09-26 rename sweep run over the corpus after they were
+ * published. Both sides are redacted alike first: a stored recipe older
+ * than {{REPO_TOKEN}} still carries the token (#405).
  */
+enum cbs_relation { CBS_SAME, CBS_COMMENTS, CBS_DIVERGENT };
+
+/* Sets *hex to the value of an approval line. */
 static int cbs_approval_line(const char *line, size_t len, const char **hex, size_t *hex_len)
 {
 	static const char key[] = "\"artifact_sha256\"";
@@ -8279,81 +8298,87 @@ static int cbs_approval_line(const char *line, size_t len, const char **hex, siz
 	return 1;
 }
 
-/*
- * ADR-0324: is a CBS recipe arriving for a version already published
- * the same recipe? Asked of the TEXT, because the text is the recipe:
- * `cbs explain --json` does not carry a phase's operations, so two
- * recipes that install different files explain identically (measured:
- * test_pkg on 192.168.15.95, 0.2.57-434, a changed `mkdir` path was
- * called the same recipe). One difference is permitted, the artifact
- * approval #492 writes in after a build, because the daemon places that
- * line where a hand-written copy does not (measured: cbs@v0.1.100-1,
- * store against corpus, 2026-10-02) -- so approval lines are skipped on
- * both sides, and two approvals naming different bytes are a
- * divergence, not a match. Both sides are redacted alike first: a
- * stored recipe older than {{REPO_TOKEN}} still carries the token
- * (#405) where the incoming copy carries the placeholder.
- * 1 when they are the same recipe, 0 when they are not or cannot be read.
- */
-static int recipe_cbs_texts_equal(const char *recipe_path, const char *incoming)
+static int cbs_line_is_cosmetic(const char *line, size_t len)
 {
-	char *stored = NULL;
-	size_t stored_len = 0;
-	const char *a, *b, *ahex = NULL, *bhex = NULL;
-	size_t ahex_len = 0, bhex_len = 0;
-	int same = 0;
+	size_t i = 0;
 
-	if (incoming == NULL || persist_read_file(recipe_path, &stored, &stored_len) != 0 ||
-	    stored == NULL)
-		return 0;
-	redact_repo_token(stored, stored_len + 1);
-	a = stored;
-	b = incoming;
+	while (i < len && (line[i] == ' ' || line[i] == '\t' || line[i] == '\r'))
+		i++;
+	return i == len || line[i] == '#';
+}
+
+/*
+ * One pass over both texts, approval lines (and, when `loose`, comment
+ * and blank lines) set aside; the first approval value on each side is
+ * copied out. 1 when what remains is identical.
+ */
+static int cbs_lines_equal(const char *a, const char *b, int loose, char *a_sha, char *b_sha)
+{
 	for (;;) {
-		const char *anl, *bnl, *hex;
-		size_t alen, blen, hex_len;
+		const char *nl, *hex;
+		size_t len, hex_len;
+		const char **side[2] = { &a, &b };
+		char *sha[2] = { a_sha, b_sha };
+		const char *anl, *bnl;
+		size_t alen, blen;
+		int k;
 
-		/* Skip approval lines on each side, remembering their values. */
-		while (*a != '\0') {
-			anl = strchr(a, '\n');
-			alen = anl != NULL ? (size_t)(anl - a) : strlen(a);
-			if (!cbs_approval_line(a, alen, &hex, &hex_len))
-				break;
-			if (ahex == NULL) {
-				ahex = hex;
-				ahex_len = hex_len;
+		for (k = 0; k < 2; k++)
+			while (**side[k] != '\0') {
+				nl = strchr(*side[k], '\n');
+				len = nl != NULL ? (size_t)(nl - *side[k]) : strlen(*side[k]);
+				if (cbs_approval_line(*side[k], len, &hex, &hex_len)) {
+					if (sha[k][0] == '\0' && hex_len < PKG_SHA256_MAX)
+						snprintf(sha[k], PKG_SHA256_MAX, "%.*s", (int)hex_len, hex);
+				} else if (!loose || !cbs_line_is_cosmetic(*side[k], len)) {
+					break;
+				}
+				*side[k] = nl != NULL ? nl + 1 : *side[k] + len;
 			}
-			a = anl != NULL ? anl + 1 : a + alen;
-		}
-		while (*b != '\0') {
-			bnl = strchr(b, '\n');
-			blen = bnl != NULL ? (size_t)(bnl - b) : strlen(b);
-			if (!cbs_approval_line(b, blen, &hex, &hex_len))
-				break;
-			if (bhex == NULL) {
-				bhex = hex;
-				bhex_len = hex_len;
-			}
-			b = bnl != NULL ? bnl + 1 : b + blen;
-		}
-		if (*a == '\0' || *b == '\0') {
-			same = *a == '\0' && *b == '\0';
-			break;
-		}
+		if (*a == '\0' || *b == '\0')
+			return *a == '\0' && *b == '\0';
 		anl = strchr(a, '\n');
 		bnl = strchr(b, '\n');
 		alen = anl != NULL ? (size_t)(anl - a) : strlen(a);
 		blen = bnl != NULL ? (size_t)(bnl - b) : strlen(b);
 		if (alen != blen || memcmp(a, b, alen) != 0)
-			break;
+			return 0;
 		a = anl != NULL ? anl + 1 : a + alen;
 		b = bnl != NULL ? bnl + 1 : b + blen;
 	}
-	if (same && ahex != NULL && bhex != NULL &&
-	    (ahex_len != bhex_len || memcmp(ahex, bhex, ahex_len) != 0))
-		same = 0;
+}
+
+/*
+ * The relation of `incoming` to the build.cbs at recipe_path, and each
+ * side's approval ("" when it has none). DIVERGENT when the stored copy
+ * cannot be read.
+ */
+static enum cbs_relation recipe_cbs_relation(const char *recipe_path, const char *incoming,
+                                             char *stored_sha, char *incoming_sha)
+{
+	char *stored = NULL;
+	size_t stored_len = 0;
+	enum cbs_relation rel = CBS_DIVERGENT;
+
+	stored_sha[0] = '\0';
+	incoming_sha[0] = '\0';
+	if (incoming == NULL || persist_read_file(recipe_path, &stored, &stored_len) != 0 ||
+	    stored == NULL)
+		return CBS_DIVERGENT;
+	redact_repo_token(stored, stored_len + 1);
+	if (cbs_lines_equal(stored, incoming, 0, stored_sha, incoming_sha)) {
+		rel = CBS_SAME;
+	} else {
+		stored_sha[0] = '\0';
+		incoming_sha[0] = '\0';
+		if (cbs_lines_equal(stored, incoming, 1, stored_sha, incoming_sha))
+			rel = CBS_COMMENTS;
+	}
+	if (rel != CBS_DIVERGENT && stored_sha[0] != '\0' && incoming_sha[0] != '\0' &&
+	    strcmp(stored_sha, incoming_sha) != 0)
+		rel = CBS_DIVERGENT;
 	free(stored);
-	return same;
+	return rel;
 }
 
 /*
@@ -8365,6 +8390,58 @@ struct recipe_check {
 	char changelog[PKG_CHANGELOG_MAX];
 };
 
+static int cbs_metadata_insert_point(const char *text, size_t *out_off);
+static void approve_cbs_artifact(const char *recipe_path, const char *name, const char *version,
+                                 const char *sha);
+
+/*
+ * ADR-0324: git is authoritative for recipes, so a sync whose copy of a
+ * version this host already holds differs only in comments, or carries
+ * an approval this host lacks, replaces the stored text with git's --
+ * the staged copy and its explain, written as a new version's are --
+ * and queues nothing: no operation changed, so nothing rebuilds. An
+ * approval this host holds and git's copy lacks is put back with
+ * approve_cbs_artifact(), the function that wrote it in the first
+ * place; git learns it by write-back, not by losing it here. A copy
+ * with no `metadata {` block to carry it is not refreshed at all.
+ */
+static enum pkg_error recipe_cbs_refresh(const char *name, const char *version,
+                                         const char *recipe_path, const char *staging_path,
+                                         const char *explain_json, const char *incoming,
+                                         const char *stored_sha, const char *incoming_sha)
+{
+	char explain_path[PATH_MAX];
+	size_t off;
+	int keep = stored_sha[0] != '\0' && incoming_sha[0] == '\0';
+
+	if (keep && cbs_metadata_insert_point(incoming, &off) != 0) {
+		unlink(staging_path);
+		logstore_write("cixd", "warn",
+		               "pkg: recipe %s@%s differs from git only in comments, but git's copy has "
+		               "no `metadata {` line to carry this host's approval %.12s, so it was not "
+		               "refreshed (ADR-0324)",
+		               name, version, stored_sha);
+		return PKG_ERR_DIVERGENT;
+	}
+	cbs_explain_path(recipe_path, explain_path, sizeof(explain_path));
+	if (persist_atomic_write(explain_path, explain_json, strlen(explain_json)) != 0) {
+		unlink(staging_path);
+		return recipe_persist_failed("write the refreshed recipe's explain");
+	}
+	if (rename(staging_path, recipe_path) != 0) {
+		unlink(staging_path);
+		return recipe_persist_failed("move the refreshed recipe into place");
+	}
+	if (keep)
+		approve_cbs_artifact(recipe_path, name, version, stored_sha);
+	logstore_write("cixd", "info", "pkg: recipe %s@%s refreshed from git (%s); nothing rebuilds",
+	               name, version,
+	               incoming_sha[0] != '\0' && stored_sha[0] == '\0'
+	                   ? "git carries an approval this host did not have"
+	                   : "only comments differed");
+	return PKG_OK;
+}
+
 /*
  * Publishing, or -- with `check` -- every test publishing applies and
  * nothing else (ADR-0323). A recipe is committed to git before it is
@@ -8375,7 +8452,7 @@ struct recipe_check {
  */
 static enum pkg_error recipe_publish(const char *name, const char *content,
                                      enum pkg_recipe_format format, int *out_was_approval,
-                                     struct recipe_check *check)
+                                     struct recipe_check *check, int *sync_refreshed)
 {
 	char *redacted;
 	char name_dir[PATH_MAX];
@@ -8687,7 +8764,26 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 		 * rather than count it as a quiet skip.
 		 */
 		if (is_cbs) {
-			same = recipe_cbs_texts_equal(recipe_path, redacted);
+			char stored_sha[PKG_SHA256_MAX];
+			char incoming_sha[PKG_SHA256_MAX];
+			enum cbs_relation rel =
+			    recipe_cbs_relation(recipe_path, redacted, stored_sha, incoming_sha);
+
+			same = rel == CBS_SAME;
+			/* Only a sync refreshes: git is the authority, and a publish
+			 * on this host is not git (ADR-0324). */
+			if (sync_refreshed != NULL && check == NULL && rel != CBS_DIVERGENT &&
+			    (rel == CBS_COMMENTS || (incoming_sha[0] != '\0' && stored_sha[0] == '\0'))) {
+				enum pkg_error rerr =
+				    recipe_cbs_refresh(name, parsed.version, recipe_path, staging_path,
+				                       explain_json, redacted, stored_sha, incoming_sha);
+
+				free(redacted);
+				free(explain_json);
+				if (rerr == PKG_OK)
+					*sync_refreshed = 1;
+				return rerr;
+			}
 		} else if (persist_read_file(recipe_path, &stored, &stored_len) == 0 &&
 		           stored != NULL) {
 			only_approval = recipe_adds_only_artifact_sha256(stored, content);
@@ -8877,7 +8973,7 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 enum pkg_error pkg_recipe_add(const char *name, const char *content,
                                enum pkg_recipe_format format, int *out_was_approval)
 {
-	return recipe_publish(name, content, format, out_was_approval, NULL);
+	return recipe_publish(name, content, format, out_was_approval, NULL, NULL);
 }
 
 /*
@@ -15112,7 +15208,7 @@ enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, co
 		return PKG_ERR_NOT_FOUND;
 
 	/* Every test a publish applies, before anything reaches git. */
-	perr = recipe_publish(name, content, PKG_RECIPE_CBS, NULL, &check);
+	perr = recipe_publish(name, content, PKG_RECIPE_CBS, NULL, &check, NULL);
 	if (perr != PKG_OK) {
 		if (perr == PKG_ERR_DUPLICATE)
 			snprintf(err, err_size, "%s is already published at that version", name);
@@ -15758,10 +15854,12 @@ struct sync_source_result {
 	int fetched;
 	char error[256];
 	int added, approved, skipped, divergent, failed, held;
+	int refreshed; /* git refreshed a comment-only or approval-only difference */
 };
 static struct sync_source_result g_sync_results[PKG_SOURCES_MAX];
 static int g_sync_result_count;
 static int g_sync_last_divergent;
+static int g_sync_last_refreshed;
 static int g_sync_last_held;
 
 static void sync_extract_dir(int i, char *out, size_t out_size)
@@ -15884,6 +15982,7 @@ static void sync_merge_packages(const char *recipes_root, const char *source,
 		enum pkg_error rc;
 		int is_cbs;
 		int was_approval = 0;
+		int refreshed = 0;
 
 		if (recipe_file_split(name_de->d_name, name, sizeof(name), version, sizeof(version),
 		                      &ext) != 0)
@@ -15904,10 +16003,12 @@ static void sync_merge_packages(const char *recipes_root, const char *source,
 		    strcmp(g_sync_refetch_version, version) == 0)
 			pkg_recipe_delete(name, version);
 
-		rc = pkg_recipe_add(name, content, is_cbs ? PKG_RECIPE_CBS : PKG_RECIPE_SHELL,
-		                    &was_approval);
+		rc = recipe_publish(name, content, is_cbs ? PKG_RECIPE_CBS : PKG_RECIPE_SHELL,
+		                    &was_approval, NULL, &refreshed);
 		free(content);
-		if (rc == PKG_OK && was_approval)
+		if (rc == PKG_OK && refreshed)
+			res->refreshed++;
+		else if (rc == PKG_OK && was_approval)
 			res->approved++;
 		else if (rc == PKG_OK)
 			res->added++;
@@ -15915,8 +16016,16 @@ static void sync_merge_packages(const char *recipes_root, const char *source,
 			res->skipped++;
 		else if (rc == PKG_ERR_DIVERGENT)
 			res->divergent++;
-		else
+		else {
 			res->failed++;
+			/* #561: a count names nothing an operator can act on. */
+			logstore_write("cixd", "error", "pkg sync: %s from source %s was not added: %s",
+			               name_de->d_name, source,
+			               pkg_recipe_add_last_error()[0] != '\0'
+			                   ? pkg_recipe_add_last_error()
+			                   : "it failed to parse, or its declared name or version does "
+			                     "not match its filename");
+		}
 	}
 	closedir(names_d);
 }
@@ -16008,6 +16117,7 @@ int pkg_sync_merge(void)
 		jw_int(&w, res[i].divergent);
 		jw_int(&w, res[i].failed);
 		jw_int(&w, res[i].held);
+		jw_int(&w, res[i].refreshed);
 		jw_arr_close(&w);
 	}
 	jw_arr_close(&w);
@@ -16101,7 +16211,7 @@ void pkg_sync_completed(int rc)
 				const struct json_value *row = root->u.array.items[i];
 				struct sync_source_result *r = &g_sync_results[i];
 
-				if (row->type != JSON_ARRAY || row->u.array.count != 6)
+				if (row->type != JSON_ARRAY || row->u.array.count != 7)
 					continue;
 				r->added = (int)json_as_number(row->u.array.items[0]);
 				r->approved = (int)json_as_number(row->u.array.items[1]);
@@ -16109,6 +16219,7 @@ void pkg_sync_completed(int rc)
 				r->divergent = (int)json_as_number(row->u.array.items[3]);
 				r->failed = (int)json_as_number(row->u.array.items[4]);
 				r->held = (int)json_as_number(row->u.array.items[5]);
+				r->refreshed = (int)json_as_number(row->u.array.items[6]);
 			}
 		}
 		json_free(root);
@@ -16122,13 +16233,14 @@ void pkg_sync_completed(int rc)
 	pkg_rebuild_queue_rederive();
 
 	g_sync_last_added = g_sync_last_approved = g_sync_last_skipped = 0;
-	g_sync_last_divergent = g_sync_last_held = 0;
+	g_sync_last_divergent = g_sync_last_held = g_sync_last_refreshed = 0;
 	for (i = 0; i < g_sync_result_count; i++) {
 		g_sync_last_added += g_sync_results[i].added;
 		g_sync_last_approved += g_sync_results[i].approved;
 		g_sync_last_skipped += g_sync_results[i].skipped;
 		g_sync_last_divergent += g_sync_results[i].divergent;
 		g_sync_last_held += g_sync_results[i].held;
+		g_sync_last_refreshed += g_sync_results[i].refreshed;
 		failed += g_sync_results[i].failed;
 		if (!g_sync_results[i].fetched)
 			unfetched++;
@@ -16175,6 +16287,8 @@ void pkg_sync_write_json_status(struct json_writer *w)
 	jw_int(w, g_sync_last_divergent);
 	jw_key(w, "held");
 	jw_int(w, g_sync_last_held);
+	jw_key(w, "refreshed");
+	jw_int(w, g_sync_last_refreshed);
 	jw_key(w, "error");
 	if (g_sync_last_error[0] != '\0')
 		jw_str(w, g_sync_last_error);
@@ -16200,6 +16314,8 @@ void pkg_sync_write_json_status(struct json_writer *w)
 		jw_int(w, r->divergent);
 		jw_key(w, "held");
 		jw_int(w, r->held);
+		jw_key(w, "refreshed");
+		jw_int(w, r->refreshed);
 		jw_key(w, "failed");
 		jw_int(w, r->failed);
 		jw_key(w, "error");

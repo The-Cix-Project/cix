@@ -7515,6 +7515,45 @@ skip_resume:
 				ok = 0;
 			}
 			cix_response_free(&r);
+
+			/*
+			 * Git is authoritative for recipes: srcb's copy gains one
+			 * comment line in git. That changes nothing built, so the
+			 * stored text becomes git's, nothing rebuilds, and it is
+			 * counted refreshed -- never divergent.
+			 */
+			if (run_cmd("sed -i '1i # a comment git added after publishing' "
+			            "'%s/tree/%s/recipes/package/shared@1.0-1.cbs'",
+			            forge_dir, repos[1][1]) != 0 ||
+			    run_cmd("tar -cf '%s/api/v1/repos/%s/archive/main.tar.gz' -C '%s/tree/%.2s' '%s'",
+			            forge_dir, repos[1][1], forge_dir, repos[1][1], repos[1][1] + 3) != 0) {
+				fprintf(stderr, "FAIL: ADR-0324 could not edit srcb's copy of shared\n");
+				ok = 0;
+			}
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "PUT", "/v1/pkg/source-ownership",
+			                   "{\"item\":\"package:shared\",\"source\":\"srcb\"}", &r);
+			cix_response_free(&r);
+			if (sync_and_wait(&client, st_s, sizeof(st_s), &r) != 0 || !str_eq(st_s, "success") ||
+			    r.body == NULL || strstr(r.body, "\"refreshed\":1") == NULL ||
+			    /* the top-level total comes first in the body */
+			    strstr(r.body, "\"divergent\":") == NULL ||
+			    strncmp(strstr(r.body, "\"divergent\":"), "\"divergent\":0,", 14) != 0) {
+				fprintf(stderr, "FAIL: ADR-0324 a comment-only change in git must be counted "
+				                "refreshed, not divergent: %s\n",
+				        r.body != NULL ? r.body : "(no body)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/recipes/shared", NULL, &r) != 0 ||
+			    r.body == NULL || strstr(r.body, "a comment git added after publishing") == NULL ||
+			    strstr(r.body, "shared-from-srcb") == NULL) {
+				fprintf(stderr, "FAIL: ADR-0324 the stored recipe must now be git's text: %s\n",
+				        r.body != NULL ? r.body : "(no body)");
+				ok = 0;
+			}
+			cix_response_free(&r);
 		}
 
 		for (i = 0; i < 2; i++) {
