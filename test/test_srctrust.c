@@ -54,7 +54,8 @@ int main(void)
 	check(!srctrust_trusts("https://git.home.arpa/x"), "so nothing is trusted");
 	check(srctrust_set(one, 1, err, sizeof(err)) == 0 && srctrust_count() == 1,
 	      "an origin is added");
-	check(srctrust_trusts("https://u:t@git.home.arpa/api/v1/repos/o/r/archive/v1.tar.gz"),
+	check(srctrust_trusts("https://u:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/o/r/archive/"
+	                      "v1.tar.gz"),
 	      "and a url from it is trusted, credentials or not");
 	check(!srctrust_trusts("https://git.home.arpa.evil.example/x"),
 	      "a host that merely begins with it is not");
