@@ -41,7 +41,7 @@ cixctl pkg update-all
 
 ## What runs on its own
 
-- **Schedules** ([ADR-0257](../adr/0257-one-scheduler-structured-schedules.md)). `cixctl schedule actions` lists what a schedule can run: fetching recipes (`pkg.sync`), refreshing upstream release data (`pkg.refresh-upstreams`), the platform backup (`system.backup`) and volume snapshots (`volume.backup`). `cixctl schedule ls` shows which are scheduled on this host.
+- **Schedules** ([ADR-0257](../adr/0257-one-scheduler-structured-schedules.md)). `cixctl schedule actions` lists what a schedule can run: fetching recipes (`pkg.sync`), finding, authenticating and authoring new upstream releases (`pkg.discover`, ADR-0323), the platform backup (`system.backup`) and volume snapshots (`volume.backup`). `cixctl schedule ls` shows which are scheduled on this host.
 - **Rolling images.** Publishing a recipe, by hand or through a sync, queues a rebuild of every image that tracks that package `rolling` (`cixctl pkg rebuilds` lists the queue). Containers created with `--follow-rolling` restart onto the rebuilt image, spread over the jitter window (`cixctl rolling-config show`).
 
 Nothing updates the control plane or runs `pkg update-all` on its own, and nothing reboots the host. Run those yourself, or from any REST client on whatever cadence you choose.

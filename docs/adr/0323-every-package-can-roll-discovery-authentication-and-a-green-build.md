@@ -96,7 +96,7 @@ Estimated at four to six cix release cycles. **.95 has a saved schedule file, so
 
 1. **Origin trust (rung 4): the owner's own forge.** An external origin uses rungs 1–3 or stays pinned, unless that one package's recipe explicitly opts into origin trust for its origin -- a per-package choice the owner makes in phase two, never a default. Measured over the 117 package recipes: about 34 come from GNU, 17 from kernel.org, 5 from Debian and about 30 from project sites, most of which publish signatures; about 24 come from GitHub, some unsigned.
 2. **hibr rolls on own-forge origin trust.** No change in hibr's release process is needed.
-3. **A rolling package rolls; there is no approval mode.** *"A rolling release is a rolling release, should never wait, unless it's not a rolling release."* Pinned is how an operator keeps a package still, and `cixctl pkg source-policy` already sets it, so the kernel, gcc and glibc roll exactly when their policy says rolling. Heavy builds still never run concurrently: discovery queues them behind each other, because two at once wedged 192.168.15.95.
+3. **A rolling package rolls; there is no approval mode.** *"A rolling release is a rolling release, should never wait, unless it's not a rolling release."* Pinned is how an operator keeps a package still, so the kernel, gcc and glibc roll exactly when their policy says rolling. Heavy builds still never run concurrently: discovery queues them behind each other, because two at once wedged 192.168.15.95. (Correction, 2026-10-02: this answer also said `cixctl pkg source-policy` already sets pinned. It does not. The source policy has only channel and depth, so a package with an upstream has no hold yet, tracked as #565.)
 4. **Roll back on runtime failure, never on build failure.**
    - **A build failure needs nothing undone.** The image never moved, because the image commit is on the success path only. The package stays on its previous version, the catalogue says why, and the next upstream release tries again.
    - **A runtime failure is when a container restarted on the new image crash-loops, never reports ready, or fails its health check.** The container is then:
@@ -133,10 +133,33 @@ Estimated at four to six cix release cycles. **.95 has a saved schedule file, so
 
 - **The kind interface takes the package.** `candidates(package, channel, ...)` and `fetched_at(package)`, plus an optional `problem(package)`. kernel.org's single feed ignores the package. gitea-tags reads that package's own cache (`srcgitea.c`, under `pkg/upstream/<name>.json`).
 - **The repository comes from the recipe's `source` template**, which cbs requires to expand to the recipe's own main url. The kind's contract is Gitea's API archive route, `<base>/api/v1/repos/<owner>/<repo>/archive/<tag>.tar.gz`, and the tags are listed beside it at `.../tags?limit=50&page=1`.
-  - Measured on 192.168.15.95: the newest tag is listed first, and a page holds 50 (asking for 100 returned 50 of 86).
-  - An unauthenticated request answers 404 on the tags listing, on the API archive route and on the web archive route (probe-cix-tarball@302-1).
+  - Measured against git.home.arpa's API (the Gitea server's answer, whatever asks): the newest tag is listed first, and a page holds 50 (asking for 100 returned 50 of 86).
+  - An unauthenticated request answers 404 on the tags listing (measured against git.home.arpa), on the API archive route (hibr@0.21-1, on 192.168.15.95) and on the web archive route (probe-cix-tarball@302-1, on 192.168.15.95).
   - So the owning source's token reaches the template through `substitute_repo_token()`, as for every url.
 - **`tag` spells a release** (`v{version}`). Absent, a tag is its version. The pattern decides the version spelling the author stage will write: cbs's own recipes are versioned `v0.1.102`, so their pattern would be `{version}`.
 - **Refresh:** `pkg.refresh-upstreams` refreshes every kind. `params {"kind": "..."}` limits it to one. Each package is one bounded GET in a helper process. A package that cannot be read records why, and its catalogue row says so (`discover / failed`) instead of "never fetched".
 - **Blocked upstream:** an own-forge recipe cannot declare `source` yet. cbs v0.1.102's template check reads `{{REPO_TOKEN}}` as an unknown placeholder (cix-build-system#280). Until that ships, hibr's discovery is blocked there.
-- **Next:** the trusted-origins list, rung-4 verification, the author step and the hourly `pkg.discover` schedule are the next part.
+- **Then (0.2.57-448):** trusted origins, rung 4, the author step and `pkg.discover`; see the next section.
+
+## Authentication and authoring, as built (0.2.57-448)
+
+- **Trusted origins.** `GET`/`PUT /v1/pkg/trusted-origins` and `cixctl pkg trusted-origins`.
+  - An origin is exactly `scheme://host[:port]`, and a fresh host trusts none.
+  - A recipe's `verify origin` counts only when its source template's origin is listed.
+  - An operator who lists an http origin trusts that path too. The list does not second-guess it, and the test's loopback forge is an origin like any other.
+- **Rung 4.** For a gitea-tags package whose policy resolves a release no recipe builds, the refresh helper does the following:
+  1. Expands the source template with that version (`{version}`, `{major}`, as cbs expands it).
+  2. Fetches the archive host-side with the owning source's token, and records its sha256 as a candidate.
+  3. Writes the verification string the changelog will carry: "origin trust: the release archive fetched from trusted origin O at T".
+
+  Anything that stops it is the row's `authenticate` note: a method not implemented, an untrusted origin, a failed fetch.
+- **The author step** runs in the parent when the helper finishes. The first candidate goes through `pkg_recipe_revise_start()`: the `revision_says()` gate, a writable source with a token, git first, then publish, which queues the rolling rebuilds.
+  - Only one revision is written per run, because a recipe commit is one at a time. The other candidates are authored on later runs.
+  - A refusal is the row's `author / failed` with the reason. For a recipe with a changelog that is cbs#279 today.
+- **The schedule action is `pkg.discover`.** It replaces `pkg.refresh-upstreams` and keeps `params {"kind"}`.
+  - A saved schedule still naming the old action reports "not registered in this build" until it is recreated. That happened on 192.168.15.95, where the hourly schedule is created by hand.
+- **The url** of the written revision is the source template expanded, with `{{REPO_TOKEN}}` kept. The parsed recipe holds the template raw, and the token is put into a copy only where it reaches curl (`owning_token()`).
+- **Still open:**
+  - a source-policy hold (#565);
+  - the kernel's rung 2 (its signed checksum list), which the kernel roll needs;
+  - own-forge templates (cix-build-system#280) and changelog revisions (cix-build-system#279), without which hibr cannot yet roll by itself.

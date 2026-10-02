@@ -132,12 +132,71 @@ static void test_listing_and_cache(void)
 		printf("  (could not remove %s)\n", tmpl);
 }
 
+/* ADR-0323: the stages after discovery record into the same document. */
+static void test_expand_note_candidate(void)
+{
+	char out[256], tmpl[] = "/tmp/cix_srcgitea_nc_XXXXXX", cmd[300];
+	struct srcgitea_note note, got;
+	struct srcgitea_candidate c, gc;
+	char versions[SRCUPSTREAM_MAX_CANDIDATES][SRCUPSTREAM_VERSION_MAX];
+	static const char listing[] = "[{\"name\":\"v1.1\"},{\"name\":\"v1.0\"}]";
+
+	check(srcgitea_expand("https://u:{{REPO_TOKEN}}@h/api/v1/repos/o/r/archive/v{version}.tar.gz",
+	                      "1.1", out, sizeof(out)) == 0 &&
+	          strcmp(out, "https://u:{{REPO_TOKEN}}@h/api/v1/repos/o/r/archive/v1.1.tar.gz") == 0,
+	      "expand puts the version in and leaves {{REPO_TOKEN}} alone");
+	check(srcgitea_expand("x/{major}/v{version}", "7.2.8", out, sizeof(out)) == 0 &&
+	          strcmp(out, "x/7/v7.2.8") == 0,
+	      "{major} is the version up to its first dot");
+	check(srcgitea_expand("{version}{version}", "123456", out, 8) != 0, "it refuses to truncate");
+
+	if (mkdtemp(tmpl) == NULL || srcgitea_init(tmpl) != 0) {
+		printf("  FAIL: could not set up the cache directory\n");
+		failures++;
+		return;
+	}
+	check(srcgitea_note("p", &got) != 0 && srcgitea_candidate("p", &gc) != 0,
+	      "no note and no candidate before anything ran");
+	check(srcgitea_store_listing("p", listing, strlen(listing), "v{version}", 5L) == 0,
+	      "a listing is stored");
+	memset(&note, 0, sizeof(note));
+	snprintf(note.version, sizeof(note.version), "1.1");
+	snprintf(note.stage, sizeof(note.stage), "authenticate");
+	snprintf(note.status, sizeof(note.status), "ok");
+	snprintf(note.reason, sizeof(note.reason), "origin trust: http://h");
+	memset(&c, 0, sizeof(c));
+	snprintf(c.version, sizeof(c.version), "1.1");
+	snprintf(c.url, sizeof(c.url), "http://h/api/v1/repos/o/r/archive/v1.1.tar.gz");
+	snprintf(c.sha256, sizeof(c.sha256), "%064d", 7);
+	snprintf(c.verification, sizeof(c.verification), "origin trust: http://h");
+	check(srcgitea_store_note("p", &note) == 0 && srcgitea_store_candidate("p", &c) == 0,
+	      "a note and a candidate are stored");
+	check(srcgitea_note("p", &got) == 0 && strcmp(got.stage, "authenticate") == 0 &&
+	          strcmp(got.reason, "origin trust: http://h") == 0,
+	      "the note reads back");
+	check(srcgitea_candidate("p", &gc) == 0 && strcmp(gc.url, c.url) == 0 &&
+	          strcmp(gc.sha256, c.sha256) == 0,
+	      "the candidate reads back");
+	check(srcgitea_candidates("p", versions, 32) == 2 && srcgitea_fetched_at("p") == 5L,
+	      "and the listing they sit beside is untouched");
+	check(srcgitea_store_candidate("p", NULL) == 0 && srcgitea_candidate("p", &gc) != 0 &&
+	          srcgitea_note("p", &got) == 0,
+	      "clearing the candidate leaves the note");
+	check(srcgitea_store_listing("p", listing, strlen(listing), "v{version}", 6L) == 0 &&
+	          srcgitea_note("p", &got) != 0,
+	      "a new listing starts the stages after it afresh");
+	snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpl);
+	if (system(cmd) != 0)
+		printf("  (could not remove %s)\n", tmpl);
+}
+
 int main(void)
 {
 	printf("test_srcgitea\n");
 	test_tags_url();
 	test_version_of_tag();
 	test_listing_and_cache();
+	test_expand_note_candidate();
 	printf("SRCGITEA RESULT: %s (%d failure(s))\n", failures == 0 ? "PASS" : "FAIL", failures);
 	return failures == 0 ? 0 : 1;
 }

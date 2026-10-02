@@ -74,13 +74,25 @@ static long giteatags_fetched_at(const char *package)
 	return srcgitea_fetched_at(package);
 }
 
+static int giteatags_note(const char *package, const char *version, struct srcupstream_note *out)
+{
+	struct srcgitea_note n;
+
+	if (srcgitea_note(package, &n) != 0 || version == NULL || strcmp(n.version, version) != 0)
+		return -1;
+	snprintf(out->stage, sizeof(out->stage), "%s", n.stage);
+	snprintf(out->status, sizeof(out->status), "%s", n.status);
+	snprintf(out->reason, sizeof(out->reason), "%s", n.reason);
+	return 0;
+}
+
 static const struct srcupstream_kind KINDS[] = {
 	{ "kernel.org", KORG_CHANNELS,
 	  "kernel.org releases.json; checksums from its signed sha256sums.asc",
-	  kernelorg_candidates, kernelorg_fetched_at, NULL },
+	  kernelorg_candidates, kernelorg_fetched_at, NULL, NULL },
 	{ "gitea-tags", NULL,
 	  "the tags of the package's own Gitea repository, read from its upstream source template",
-	  giteatags_candidates, giteatags_fetched_at, srcgitea_error },
+	  giteatags_candidates, giteatags_fetched_at, srcgitea_error, giteatags_note },
 };
 
 size_t srcupstream_candidates(const struct srcupstream_kind *kind, const char *package,
@@ -107,6 +119,15 @@ void srcupstream_problem(const struct srcupstream_kind *kind, const char *packag
 	out[0] = '\0';
 	if (kind != NULL && kind->problem != NULL && kind->problem(package, out, out_size) != 0)
 		out[0] = '\0';
+}
+
+int srcupstream_note(const struct srcupstream_kind *kind, const char *package, const char *version,
+                     struct srcupstream_note *out)
+{
+	if (kind == NULL || kind->note == NULL || out == NULL)
+		return -1;
+	memset(out, 0, sizeof(*out));
+	return kind->note(package, version, out);
 }
 
 size_t srcupstream_count(void)

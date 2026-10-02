@@ -239,3 +239,161 @@ int srcgitea_error(const char *package, char *out, size_t out_size)
 	json_free(root);
 	return 0;
 }
+
+/* Rewrites `package`'s document with `key` set to the JSON text `raw`
+ * (or removed when NULL), keeping every other field. */
+static int put_field(const char *package, const char *key, const char *raw)
+{
+	char path[PATH_MAX];
+	struct json_value *root;
+	struct json_writer w;
+	size_t i;
+	int rc;
+
+	if (cache_path(package, path, sizeof(path)) != 0)
+		return -1;
+	root = load(package);
+	jw_init(&w);
+	jw_obj_open(&w);
+	for (i = 0; root != NULL && i < root->u.object.count; i++) {
+		if (strcmp(root->u.object.keys[i], key) == 0)
+			continue;
+		jw_key(&w, root->u.object.keys[i]);
+		jw_value(&w, root->u.object.values[i]);
+	}
+	if (raw != NULL) {
+		jw_key(&w, key);
+		jw_raw_text(&w, raw, strlen(raw));
+	}
+	jw_obj_close(&w);
+	rc = persist_atomic_write(path, w.buf, w.len);
+	jw_free(&w);
+	json_free(root);
+	return rc;
+}
+
+/* The string field `key` of object `o`, copied into out. */
+static void copy_str(const struct json_value *o, const char *key, char *out, size_t out_size)
+{
+	const char *s = json_as_string(json_object_get(o, key));
+
+	snprintf(out, out_size, "%s", s != NULL ? s : "");
+}
+
+int srcgitea_store_note(const char *package, const struct srcgitea_note *note)
+{
+	struct json_writer w;
+	int rc;
+
+	if (note == NULL)
+		return put_field(package, "note", NULL);
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "version");
+	jw_str(&w, note->version);
+	jw_key(&w, "stage");
+	jw_str(&w, note->stage);
+	jw_key(&w, "status");
+	jw_str(&w, note->status);
+	jw_key(&w, "reason");
+	jw_str(&w, note->reason);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	rc = put_field(package, "note", w.buf);
+	jw_free(&w);
+	return rc;
+}
+
+int srcgitea_note(const char *package, struct srcgitea_note *out)
+{
+	struct json_value *root = load(package);
+	const struct json_value *n = root != NULL ? json_object_get(root, "note") : NULL;
+
+	memset(out, 0, sizeof(*out));
+	if (n == NULL || n->type != JSON_OBJECT) {
+		json_free(root);
+		return -1;
+	}
+	copy_str(n, "version", out->version, sizeof(out->version));
+	copy_str(n, "stage", out->stage, sizeof(out->stage));
+	copy_str(n, "status", out->status, sizeof(out->status));
+	copy_str(n, "reason", out->reason, sizeof(out->reason));
+	json_free(root);
+	return 0;
+}
+
+int srcgitea_store_candidate(const char *package, const struct srcgitea_candidate *c)
+{
+	struct json_writer w;
+	int rc;
+
+	if (c == NULL)
+		return put_field(package, "candidate", NULL);
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "version");
+	jw_str(&w, c->version);
+	jw_key(&w, "url");
+	jw_str(&w, c->url);
+	jw_key(&w, "sha256");
+	jw_str(&w, c->sha256);
+	jw_key(&w, "verification");
+	jw_str(&w, c->verification);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	rc = put_field(package, "candidate", w.buf);
+	jw_free(&w);
+	return rc;
+}
+
+int srcgitea_candidate(const char *package, struct srcgitea_candidate *out)
+{
+	struct json_value *root = load(package);
+	const struct json_value *c = root != NULL ? json_object_get(root, "candidate") : NULL;
+
+	memset(out, 0, sizeof(*out));
+	if (c == NULL || c->type != JSON_OBJECT) {
+		json_free(root);
+		return -1;
+	}
+	copy_str(c, "version", out->version, sizeof(out->version));
+	copy_str(c, "url", out->url, sizeof(out->url));
+	copy_str(c, "sha256", out->sha256, sizeof(out->sha256));
+	copy_str(c, "verification", out->verification, sizeof(out->verification));
+	json_free(root);
+	return out->version[0] != '\0' && out->url[0] != '\0' && strlen(out->sha256) == 64 ? 0 : -1;
+}
+
+int srcgitea_expand(const char *tmpl, const char *version, char *out, size_t out_size)
+{
+	const char *p;
+	size_t n = 0, major;
+
+	if (tmpl == NULL || version == NULL || out == NULL || out_size == 0)
+		return -1;
+	major = strcspn(version, ".");
+	for (p = tmpl; *p != '\0';) {
+		const char *piece = p;
+		size_t len = 1;
+
+		if (strncmp(p, "{version}", 9) == 0) {
+			piece = version;
+			len = strlen(version);
+			p += 9;
+		} else if (strncmp(p, "{major}", 7) == 0) {
+			piece = version;
+			len = major;
+			p += 7;
+		} else {
+			p++;
+		}
+		if (n + len >= out_size) {
+			out[0] = '\0';
+			return -1;
+		}
+		memcpy(out + n, piece, len);
+		n += len;
+	}
+	out[n] = '\0';
+	return 0;
+}

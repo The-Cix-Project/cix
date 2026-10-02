@@ -6,6 +6,21 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Discovery authenticates and authors: trusted origins, rung 4 and `pkg.discover` (ADR-0323)
+
+- **`GET`/`PUT /v1/pkg/trusted-origins`** (`cixctl pkg trusted-origins ls | add | rm | set`). An origin is `scheme://host[:port]`, a fresh host trusts none, and only an operator's call changes the list.
+- **Rung 4, per gitea-tags package**, when policy resolves a release no recipe builds:
+  - the release url is the upstream `source` template expanded;
+  - its archive is fetched host-side with the owning source's token, but only when the recipe says `verify origin` and the origin is trusted;
+  - its sha256 is recorded as a candidate.
+  - What stops it is shown in the catalogue row as an `authenticate` note.
+- **The author step:** the first candidate per run is written by `cbs revise`, checked, committed and published (ADR-0323's author stage), which queues the rolling rebuilds. A refusal is the row's `author / failed`.
+- **The kind interface gains an optional `note()`**, so a later stage's result shows in the catalogue for the version that resolves.
+- **`pkg.discover` replaces `pkg.refresh-upstreams`** and keeps `params {"kind"}`. A saved schedule naming the old action reports "not registered" until it is recreated.
+- **The parsed recipe keeps the upstream template raw**, so the next revision keeps `{{REPO_TOKEN}}`. `owning_token()` puts the token into a copy only where it reaches curl.
+- `test_srctrust` (SELFTESTS) and new cases in `test_srcgitea` and `test_srcresolve`. `test_pkg` covers it end to end: untrusted, then trusted, then giteapkg@1.1-1 committed to the stub forge with the archive's sha256 and a changelog naming origin trust. 337 operations; `test_curl_guards` counts 12.
+- **Correction:** ADR-0323 answer 3 said `cixctl pkg source-policy` already sets pinned, and it does not. The hold is #565, and CLAUDE.md says so.
+
 ### Discovery from a package's own Gitea tags: the gitea-tags kind (ADR-0323)
 
 - **A recipe can declare `upstream "gitea-tags" { tag "v{version}" source "<api archive url template>" verify origin }`.**

@@ -11610,6 +11610,54 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /pkg/trusted-origins:
+    get:
+      summary: The origins this host trusts to authenticate a release (ADR-0323, rung 4)
+      description: >
+        A recipe's `verify origin` is honoured only when the origin of its
+        upstream source template is on this list. An origin is exactly
+        scheme://host[:port]. A fresh host trusts nothing.
+      operationId: getPkgTrustedOrigins
+      x-cix-permission: packages:read
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: The list, in the order it was set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrustedOrigins"
+    put:
+      summary: Replaces the trusted origins (ADR-0323, rung 4)
+      description: >
+        The only way an origin becomes trusted: an operator's call,
+        never a side effect of discovery. The owner's answer is that
+        origin trust is for the owner's own forge. Each entry must
+        already be canonical (lowercase scheme and host, no credentials,
+        no path) and appear once; an empty list trusts nothing.
+      operationId: setPkgTrustedOrigins
+      x-cix-permission: packages:write
+      x-cix-expose: [cli]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrustedOrigins"
+      responses:
+        "200":
+          description: Saved; the new list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrustedOrigins"
+        "400":
+          description: An entry is not a canonical origin, is listed twice, or there are more than 16 (the message names which)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /pkg/source-catalogue:
     get:
       summary: What upstream has published, against what this platform has recipes for (ADR-0255)
@@ -20863,6 +20911,15 @@ components:
               source:
                 type: string
 
+    TrustedOrigins:
+      type: object
+      required: [origins]
+      properties:
+        origins:
+          type: array
+          items:
+            type: string
+          description: scheme://host[:port], e.g. https://git.home.arpa
     PkgRecipeCommit:
       type: object
       required: [state, name, version, source, path, commit, published, error, started_at, finished_at]

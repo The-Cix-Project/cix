@@ -294,6 +294,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/schedules/{name}/run` | Run one now, even if disabled |
 | GET | `/schedule-actions` | The actions a schedule may run — a registry, never free text |
 | GET | `/pkg/source-catalogue` | One row per package: what its policy resolves to, and whether a recipe builds it (ADR-0255) |
+| GET | `/pkg/trusted-origins` | The origins this host trusts to authenticate a release by where it comes from (ADR-0323, rung 4). A fresh host trusts none |
+| PUT | `/pkg/trusted-origins` | Replace the list, `{"origins": ["https://git.home.arpa"]}`. Each entry is a canonical `scheme://host[:port]`, listed once. The only way an origin becomes trusted: an operator's call, never discovery |
 | GET | `/pkg/upstreams` | The discovery kinds a recipe may declare, and the channels each publishes (ADR-0255) |
 | GET | `/pkg/source-policy` | Which upstream *release* packages build — the default plus per-package overrides |
 | PUT | `/pkg/source-policy` | Set the platform-wide default (channel preference + depth) |
@@ -1266,7 +1268,7 @@ It also serves the surfaces that are not a shell better. The **web form is the s
 ```
 $ cixctl schedule ls
 NAME                   ACTION                     WHEN                       LAST     REASON
-refresh-upstreams      pkg.refresh-upstreams      every 6h                   ok       started a kernel.org release-list refresh
+discover               pkg.discover               every 1h                   ok       kernel.org: refresh started; gitea-tags: refresh started
 nightly-backup         system.backup              daily at 02:00 for 3h      never    -
 ```
 
@@ -1278,7 +1280,7 @@ One direction only. Nothing parses `daily at 02:00 for 3h` back, so there is no 
 
 ```
 PUT /v1/schedules/x {"action":"rm -rf /", ...}
--> 400 no action "rm -rf /"; this platform runs: pkg.refresh-upstreams
+-> 400 no action "rm -rf /"; this platform runs: pkg.discover
 ```
 
 Actions **enqueue**; they never do heavy work inline. Each calls an entry point that already exists and already respects its own queue — which is what keeps a scheduler from becoming a way around "never two heavy builds at once".
@@ -1297,7 +1299,7 @@ Four actions are registered:
 
 | Action | What it does |
 |---|---|
-| `pkg.refresh-upstreams` | Fetch what upstream has published, for every discovery kind: kernel.org's releases.json, and each gitea-tags package's own tags listing (ADR-0323). `params: {"kind": "kernel.org"}` or `{"kind": "gitea-tags"}` refreshes one kind only |
+| `pkg.discover` | ADR-0323 discovery: fetch what upstream has published for every discovery kind (kernel.org's releases.json, each gitea-tags package's own tags listing), authenticate a newer release by origin trust when the recipe asks for it and its origin is trusted (`pkg trusted-origins`), and write, commit and publish the next recipe revision -- one per run. `params: {"kind": "kernel.org"}` or `{"kind": "gitea-tags"}` limits it to one kind. Replaced `pkg.refresh-upstreams` in 0.2.57-448 |
 | `system.backup` | Write a system backup to the configured disk |
 | `volume.backup` | Snapshot every volume that opted in |
 | `pkg.sync` | Fetch recipes from the configured repo |
@@ -1517,7 +1519,7 @@ The last two used to be one `unresolved` state, and they need opposite responses
 
   `source` is how the kind finds the repository: it lists tags from `<base>/api/v1/repos/OWNER/REPO/tags`, with the owning source's token. `tag` maps each tag to a version, and tags it does not match are skipped.
 
-`pkg.refresh-upstreams` refreshes both kinds. An own-forge template that needs `{{REPO_TOKEN}}` cannot be declared until cix-build-system#280 ships, and the row says so.
+`pkg.discover` refreshes both kinds, then authenticates and authors gitea-tags releases (below). An own-forge template that needs `{{REPO_TOKEN}}` cannot be declared until cix-build-system#280 ships, and the row says so.
 
 **A failure is a row with a reason, never an absence.** A package that vanished from the list would read as up to date, which is the one wrong answer that looks reassuring. So an unresolvable package appears with the sentence that explains it, and the sentences distinguish causes that need opposite responses:
 

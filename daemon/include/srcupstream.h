@@ -55,6 +55,17 @@ const char *srcupstream_strerror(enum srcupstream_error e);
  */
 #define SRCUPSTREAM_MAX_CANDIDATES 32
 
+/*
+ * What a stage after discovery found for one version (ADR-0323: every
+ * stage reports): ADR-0256's stage and status words and a reason, kept
+ * as words so this registry does not depend on the pipeline module.
+ */
+struct srcupstream_note {
+	char stage[16];
+	char status[16];
+	char reason[256];
+};
+
 struct srcupstream_kind {
 	const char *name;
 	/*
@@ -105,6 +116,13 @@ struct srcupstream_kind {
 	 * that a refresh will never fill.
 	 */
 	int (*problem)(const char *package, char *out, size_t out_size);
+	/*
+	 * What authenticate or author last found for `version` of `package`;
+	 * 0 with it, -1 when there is nothing for that version. Optional
+	 * (NULL): a kind whose releases are authored by a person has no
+	 * later stage to report.
+	 */
+	int (*note)(const char *package, const char *version, struct srcupstream_note *out);
 };
 
 size_t srcupstream_count(void);
@@ -149,5 +167,9 @@ long srcupstream_fetched_at(const struct srcupstream_kind *kind, const char *pac
 /* The kind's problem() for package, or "" when it has none. Never fails. */
 void srcupstream_problem(const struct srcupstream_kind *kind, const char *package, char *out,
                          size_t out_size);
+
+/* The kind's note() for that version, or -1 when it has none. */
+int srcupstream_note(const struct srcupstream_kind *kind, const char *package, const char *version,
+                     struct srcupstream_note *out);
 
 #endif /* SRCUPSTREAM_H */

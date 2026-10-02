@@ -605,6 +605,16 @@ int pkg_upstream_refresh_work(void *unused);
 void pkg_upstream_refresh_done(int exit_status, void *unused);
 void pkg_upstream_refresh_abort(void);
 
+/*
+ * ADR-0323: after a refresh, the author stage for the first
+ * authenticated candidate -- written, committed and published through
+ * pkg_recipe_revise_start(). One per run (a recipe commit is one at a
+ * time). 1 when a commit was staged and the caller must run its helper,
+ * 0 when nothing was. A refusal is recorded in that package's catalogue
+ * row and the candidate kept for the next run.
+ */
+int pkg_discover_author_next(void);
+
 /* Scans pkg_dir/recipes/<name>/<version>/build.sh (ADR-0107's
  * version-keyed layout) and writes one {name,version,depends} object
  * per (name,version) pair that parses -- metadata only, never

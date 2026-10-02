@@ -20,6 +20,8 @@
 #include "forgecommit.h"
 #include "catalogue.h"
 #include "srcgitea.h"
+#include "srcresolve.h"
+#include "srctrust.h"
 #include "pkgrepo.h"
 #include "pkgsource.h"
 #include "json.h"
@@ -409,8 +411,9 @@ struct pkg_recipe {
 	 * ADR-0323: the upstream block's parameters (cbs v0.1.102). tag is
 	 * the template a release's tag is spelled by ("v{version}"); source
 	 * the template of a release's main source url, which cbs checks
-	 * expands to this recipe's own url, and which substitute_repo_token()
-	 * treats like any other url; verify the authentication method.
+	 * expands to this recipe's own url, kept as written -- placeholders
+	 * and all, because the next revision's url is written from it -- and
+	 * substituted only where a copy reaches curl; verify the method.
 	 * "" when absent.
 	 */
 	char upstream_tag[PKG_NAME_MAX];
@@ -2313,6 +2316,20 @@ static void redact_url_userinfo(char *buf, size_t cap)
 	}
 }
 
+/* The token of the source that owns `name` (ADR-0324), or NULL. */
+static const char *owning_token(const char *name)
+{
+	char item[PKG_SOURCE_ITEM_MAX];
+	char owner[PKG_SOURCES_MAX * PKG_SOURCE_NAME_MAX];
+	const struct pkg_source *s;
+
+	snprintf(item, sizeof(item), "package:%s", name);
+	if (pkgsource_owner_of(item, owner, sizeof(owner)) != PKGSOURCE_OWNER_ONE)
+		return NULL;
+	s = pkgsource_find(owner);
+	return s != NULL && s->token[0] != '\0' ? s->token : NULL;
+}
+
 /*
  * Issue #60/#405: substitutes the token of the source that owns this
  * package (ADR-0324) for the {{REPO_TOKEN}} placeholder in every source
@@ -2335,18 +2352,10 @@ static void redact_url_userinfo(char *buf, size_t cap)
  */
 static void substitute_repo_token(struct pkg_recipe *out)
 {
-	char item[PKG_SOURCE_ITEM_MAX];
-	char owner[PKG_SOURCES_MAX * PKG_SOURCE_NAME_MAX];
-	const struct pkg_source *s;
-	const char *tok;
+	const char *tok = owning_token(out->name);
 	int i;
 
-	snprintf(item, sizeof(item), "package:%s", out->name);
-	if (pkgsource_owner_of(item, owner, sizeof(owner)) != PKGSOURCE_OWNER_ONE)
-		return;
-	s = pkgsource_find(owner);
-	tok = s != NULL ? s->token : NULL;
-	if (tok == NULL || tok[0] == '\0')
+	if (tok == NULL)
 		return;
 	for (i = 0; i < out->source_count; i++)
 		str_replace_all(out->source[i], sizeof(out->source[i]), "{{REPO_TOKEN}}", tok);
@@ -2357,9 +2366,10 @@ static void substitute_repo_token(struct pkg_recipe *out)
 	for (i = 0; i < out->mirror_count; i++)
 		str_replace_all(out->mirror_url[i], sizeof(out->mirror_url[i]), "{{REPO_TOKEN}}",
 		                tok);
-	/* ADR-0323: the upstream source template reaches curl too, as the
-	 * tags listing beside it (srcgitea.h). */
-	str_replace_all(out->upstream_source, sizeof(out->upstream_source), "{{REPO_TOKEN}}", tok);
+	/* The upstream source template is NOT substituted here: it is what
+	 * the author stage writes the next revision's url from, and that
+	 * url keeps the placeholder (ADR-0323). Where it reaches curl, the
+	 * caller substitutes a copy with owning_token(). */
 }
 
 static int parse_shell_recipe(const char *path, struct pkg_recipe *out)
@@ -3197,6 +3207,9 @@ int pkg_recipe_upstream(const char *name, char *out, size_t out_size)
  */
 static int g_upstream_refresh_running;
 
+/* Defined with the recipe-version cache, further down. */
+static int recipe_latest_version(const char *name, char *out_version, size_t out_size);
+
 int pkg_upstream_refresh_begin(char *err, size_t err_size)
 {
 	if (g_upstream_refresh_running) {
@@ -3207,10 +3220,35 @@ int pkg_upstream_refresh_begin(char *err, size_t err_size)
 	return 0;
 }
 
+/* `url` with the owning source's token in place of {{REPO_TOKEN}}: a copy
+ * for curl, never stored. 0, or -1 when a placeholder has no token. */
+static int url_with_token(const char *name, const char *url, char *out, size_t out_size)
+{
+	const char *tok = owning_token(name);
+
+	snprintf(out, out_size, "%s", url);
+	if (tok != NULL)
+		str_replace_all(out, out_size, "{{REPO_TOKEN}}", tok);
+	return strstr(out, "{{REPO_TOKEN}}") != NULL ? -1 : 0;
+}
+
+static void store_note(const char *name, const char *version, const char *stage,
+                       const char *status, const char *reason)
+{
+	struct srcgitea_note note;
+
+	memset(&note, 0, sizeof(note));
+	snprintf(note.version, sizeof(note.version), "%s", version);
+	snprintf(note.stage, sizeof(note.stage), "%s", stage);
+	snprintf(note.status, sizeof(note.status), "%s", status);
+	snprintf(note.reason, sizeof(note.reason), "%s", reason);
+	srcgitea_store_note(name, &note);
+}
+
 /* Reads one package's listing; 0, or -1 with the cache's error written. */
 static int refresh_one_gitea(const char *name, const struct pkg_recipe *recipe, long now)
 {
-	char url[PKG_URL_MAX], tmp[PATH_MAX], err[PKG_ERROR_MAX];
+	char tags[PKG_URL_MAX], url[PKG_URL_MAX], tmp[PATH_MAX], err[PKG_ERROR_MAX];
 	struct curlfetch_opts opts;
 	char *buf = NULL;
 	size_t len = 0;
@@ -3224,14 +3262,14 @@ static int refresh_one_gitea(const char *name, const struct pkg_recipe *recipe, 
 		                     now);
 		return -1;
 	}
-	if (srcgitea_tags_url(recipe->upstream_source, url, sizeof(url)) != 0) {
+	if (srcgitea_tags_url(recipe->upstream_source, tags, sizeof(tags)) != 0) {
 		srcgitea_store_error(name,
 		                     "its upstream source is not a Gitea API archive url "
 		                     "(<base>/api/v1/repos/<owner>/<repo>/archive/<tag>.tar.gz)",
 		                     now);
 		return -1;
 	}
-	if (strstr(url, "{{REPO_TOKEN}}") != NULL) {
+	if (url_with_token(name, tags, url, sizeof(url)) != 0) {
 		srcgitea_store_error(name,
 		                     "its source asks for {{REPO_TOKEN}} and the source that owns "
 		                     "this package has no token",
@@ -3271,6 +3309,89 @@ static int refresh_one_gitea(const char *name, const struct pkg_recipe *recipe, 
 	return 0;
 }
 
+/*
+ * ADR-0323 rung 4, for one package whose listing was just stored: when
+ * policy resolves a release no recipe builds, and the recipe asks for
+ * origin trust from an origin this host trusts, fetch that release's
+ * archive host-side and record its sha256 as a candidate for the author
+ * stage. Anything that stops it is recorded as the authenticate stage's
+ * note, which the catalogue row shows.
+ */
+static void authenticate_one_gitea(const char *name, const struct pkg_recipe *recipe, long now)
+{
+	static char versions[64][PKG_VERSION_MAX];
+	const char *vp[64];
+	char origin[SRCTRUST_ORIGIN_MAX], raw[PKG_URL_MAX], url[PKG_URL_MAX];
+	char tmp[PATH_MAX], err[PKG_ERROR_MAX], why[512], stamp[32];
+	struct srcresolve_entry e;
+	struct srcgitea_candidate c;
+	struct curlfetch_opts opts;
+	struct tm tm;
+	time_t t = (time_t)now;
+	int nv, i;
+
+	nv = pkg_recipe_list_versions(name, versions, 64);
+	for (i = 0; i < nv; i++)
+		vp[i] = versions[i];
+	srcresolve_one(name, "gitea-tags", vp, (size_t)nv, &e);
+	if (e.stage != PIPELINE_AUTHOR || e.status != PIPELINE_BLOCKED)
+		return; /* nothing new, or discovery itself stopped and said why */
+
+	if (strcmp(recipe->upstream_verify, "origin") != 0) {
+		snprintf(why, sizeof(why),
+		         "the recipe verifies by \"%s\", which this platform does not implement yet "
+		         "-- only origin trust (rung 4) is",
+		         recipe->upstream_verify);
+		store_note(name, e.resolved_version, "authenticate", "blocked", why);
+		return;
+	}
+	if (srctrust_origin_of(recipe->upstream_source, origin, sizeof(origin)) != 0 ||
+	    !srctrust_trusts(recipe->upstream_source)) {
+		snprintf(why, sizeof(why),
+		         "origin %s is not trusted on this host -- an operator adds it with `cixctl "
+		         "pkg trusted-origins add` (ADR-0323)",
+		         origin[0] != '\0' ? origin : "(none)");
+		store_note(name, e.resolved_version, "authenticate", "blocked", why);
+		return;
+	}
+	if (srcgitea_expand(recipe->upstream_source, e.resolved_version, raw, sizeof(raw)) != 0 ||
+	    url_with_token(name, raw, url, sizeof(url)) != 0) {
+		store_note(name, e.resolved_version, "authenticate", "failed",
+		           "the release url could not be formed from the source template");
+		return;
+	}
+	snprintf(tmp, sizeof(tmp), "%s/upstream/.archive-%s", g_pkg_dir, name);
+	memset(&opts, 0, sizeof(opts));
+	opts.url = url;
+	opts.path = tmp;
+	opts.connect_timeout = 10;
+	opts.max_time = 600;
+	opts.low_speed_limit = 1024;
+	opts.low_speed_time = 60;
+	memset(&c, 0, sizeof(c));
+	if (curlfetch_perform(&opts, NULL, err, sizeof(err)) != 0 ||
+	    pkg_run_capture_sha256(tmp, c.sha256, sizeof(c.sha256)) != 0) {
+		unlink(tmp);
+		redact_repo_token(err, sizeof(err));
+		snprintf(why, sizeof(why), "the release archive could not be fetched from %s: %s",
+		         origin, err);
+		store_note(name, e.resolved_version, "authenticate", "failed", why);
+		return;
+	}
+	unlink(tmp);
+	gmtime_r(&t, &tm);
+	strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%SZ", &tm);
+	snprintf(c.version, sizeof(c.version), "%s", e.resolved_version);
+	snprintf(c.url, sizeof(c.url), "%s", raw);
+	snprintf(c.verification, sizeof(c.verification),
+	         "origin trust: the release archive fetched from trusted origin %s at %s", origin,
+	         stamp);
+	srcgitea_store_candidate(name, &c);
+	snprintf(why, sizeof(why), "sha256 %s, by origin trust from %s; waiting for the author stage",
+	         c.sha256, origin);
+	store_note(name, e.resolved_version, "authenticate", "ok", why);
+}
+
 /* The helper's work: every gitea-tags package. Exits with how many
  * failed, capped, so done() can say so without a result file. */
 int pkg_upstream_refresh_work(void *unused)
@@ -3287,10 +3408,53 @@ int pkg_upstream_refresh_work(void *unused)
 		if (find_recipe_path(names[i], NULL, recipe_path, sizeof(recipe_path)) != 0 ||
 		    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.upstream, "gitea-tags") != 0)
 			continue;
-		if (refresh_one_gitea(names[i], &recipe, now) != 0)
+		if (refresh_one_gitea(names[i], &recipe, now) != 0) {
 			failed++;
+			continue;
+		}
+		authenticate_one_gitea(names[i], &recipe, now);
 	}
 	return failed > 100 ? 100 : failed;
+}
+
+/*
+ * ADR-0323's author stage, driven by discovery: the first authenticated
+ * candidate is written, committed and published through
+ * pkg_recipe_revise_start(). One per discovery run, because a recipe
+ * commit is one at a time; the rest keep their candidate and are
+ * authored on a later run. Returns 1 when a commit was staged (the
+ * caller then runs its helper), 0 when nothing was.
+ */
+int pkg_discover_author_next(void)
+{
+	static char names[1024][PKG_IMAGE_NAME_MAX];
+	char err[PKG_ERROR_MAX], newest[PKG_VERSION_MAX], candidate_version[PKG_VERSION_MAX + 4];
+	struct srcgitea_candidate c;
+	int n, i;
+
+	n = pkg_recipe_list_names(names, 1024);
+	for (i = 0; i < n; i++) {
+		if (srcgitea_candidate(names[i], &c) != 0)
+			continue;
+		/* A candidate a recipe already builds was authored already. */
+		snprintf(candidate_version, sizeof(candidate_version), "%s-1", c.version);
+		if (recipe_latest_version(names[i], newest, sizeof(newest)) == 0 &&
+		    pkg_version_compare(candidate_version, newest) <= 0) {
+			srcgitea_store_candidate(names[i], NULL);
+			continue;
+		}
+		if (pkg_recipe_revise_start(names[i], c.version, c.url, c.sha256, c.verification, NULL,
+		                            err, sizeof(err)) == PKG_OK) {
+			srcgitea_store_candidate(names[i], NULL);
+			store_note(names[i], c.version, "author", "ok",
+			           "the next revision was written and is being committed before it is "
+			           "published");
+			return 1;
+		}
+		/* Refused: it stays a candidate, and the row says why. */
+		store_note(names[i], c.version, "author", "failed", err);
+	}
+	return 0;
 }
 
 void pkg_upstream_refresh_done(int exit_status, void *unused)

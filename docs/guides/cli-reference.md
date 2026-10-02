@@ -504,6 +504,7 @@ See [`networking.md`](networking.md).
 | `pkg policy clear NAME` | Back to the default |
 | `pkg upstreams` | The upstream discovery kinds a recipe may declare, and their channels ([ADR-0255](../adr/0255-a-recipe-is-a-rule-not-a-version.md)) |
 | `pkg source-catalogue` | What upstream has published, against what this platform has recipes for |
+| `pkg trusted-origins ls \| add ORIGIN \| rm ORIGIN \| set [ORIGIN...]` | The origins trusted to authenticate a release by origin (ADR-0323, rung 4): a recipe's `verify origin` counts only when its source's origin is listed. A fresh host trusts none; add the owner's forge with `add https://git.home.arpa` |
 | `pkg source-policy ls` | Which upstream release each package builds |
 | `pkg source-policy set-default [--channel=C] [--depth=n-<lines>.<releases>]` / `pkg source-policy set NAME [--channel=C] [--depth=D]` / `pkg source-policy clear NAME` | Set the default, set one package's policy, or return it to the default |
 | `pkg cache-config show` / `pkg cache-config set --max-bytes=N` | The local build-artifact cache's size cap |

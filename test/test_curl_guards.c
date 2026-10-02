@@ -161,11 +161,13 @@ int main(void)
 	 * publish_upload, bootstrap_fetch_start, kernel_releases_fetch_
 	 * start). If that changes, change this number deliberately.
 	 * Then 11 for ADR-0323's gitea-tags refresh (refresh_one_gitea()
-	 * in pkg.c, one bounded GET of a tags listing per package).
+	 * in pkg.c, one bounded GET of a tags listing per package), then 12
+	 * for its rung-4 authentication (authenticate_one_gitea(), the
+	 * release archive fetched host-side and hashed).
 	 */
-	if (sites != 11) {
+	if (sites != 12) {
 		fprintf(stderr,
-		        "FAIL: found %d curlfetch_perform() call sites, expected 11 -- if a call site "
+		        "FAIL: found %d curlfetch_perform() call sites, expected 12 -- if a call site "
 		        "was genuinely added or removed, update this number deliberately; a silently "
 		        "different count is how an unguarded fetch hides\n",
 		        sites);

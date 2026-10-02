@@ -17628,6 +17628,104 @@ static int cmd_pkg_source_catalogue(const struct cix_client *c, int json_mode, i
 	return emit(&r, json_mode, fmt_source_catalogue);
 }
 
+/* ADR-0323 rung 4: one origin per line, or a note that none is trusted. */
+static void fmt_trusted_origins(const struct json_value *v)
+{
+	const struct json_value *arr = json_object_get(v, "origins");
+	size_t i;
+
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("(no origin is trusted -- a recipe's `verify origin` authenticates nothing)\n");
+		return;
+	}
+	for (i = 0; i < arr->u.array.count; i++) {
+		const char *o = json_as_string(arr->u.array.items[i]);
+
+		if (o != NULL)
+			printf("%s\n", o);
+	}
+}
+
+/*
+ * cixctl pkg trusted-origins ls | add ORIGIN | rm ORIGIN | set [ORIGIN...]
+ * The daemon holds one list and replaces it whole (PUT); add and rm read
+ * it, change it, and write it back.
+ */
+static int cmd_pkg_trusted_origins(const struct cix_client *c, int json_mode, int argc,
+                                   char **argv)
+{
+	static const char usage[] = "usage: cixctl pkg trusted-origins ls | add ORIGIN | rm ORIGIN | "
+	                            "set [ORIGIN...]\n";
+	const char *list[32];
+	struct json_writer w;
+	struct cix_response r;
+	const struct json_value *arr;
+	size_t i;
+	int n = 0, rc;
+
+	if (argc < 1 || strcmp(argv[0], "ls") == 0) {
+		if (cix_client_request(c, CIX_API_getPkgTrustedOrigins_METHOD,
+		                       CIX_API_getPkgTrustedOrigins, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_trusted_origins);
+	}
+	if (strcmp(argv[0], "set") == 0) {
+		if (argc - 1 > 32) {
+			fputs(usage, stderr);
+			return 2;
+		}
+		for (n = 0; n < argc - 1; n++)
+			list[n] = argv[n + 1];
+		memset(&r, 0, sizeof(r));
+	} else if ((strcmp(argv[0], "add") == 0 || strcmp(argv[0], "rm") == 0) && argc == 2) {
+		if (cix_client_request(c, CIX_API_getPkgTrustedOrigins_METHOD,
+		                       CIX_API_getPkgTrustedOrigins, NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "cixctl: could not read the trusted origins\n");
+			cix_response_free(&r);
+			return 1;
+		}
+		arr = json_object_get(r.json, "origins");
+		for (i = 0; arr != NULL && arr->type == JSON_ARRAY && i < arr->u.array.count && n < 31;
+		     i++) {
+			const char *o = json_as_string(arr->u.array.items[i]);
+
+			if (o != NULL && strcmp(o, argv[1]) != 0)
+				list[n++] = o;
+		}
+		if (strcmp(argv[0], "add") == 0)
+			list[n++] = argv[1];
+	} else {
+		fputs(usage, stderr);
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "origins");
+	jw_arr_open(&w);
+	for (i = 0; i < (size_t)n; i++)
+		jw_str(&w, list[i]);
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	{
+		struct cix_response put;
+
+		rc = cix_client_request(c, CIX_API_setPkgTrustedOrigins_METHOD,
+		                        CIX_API_setPkgTrustedOrigins, w.buf, &put);
+		jw_free(&w);
+		cix_response_free(&r); /* add/rm's list pointed into it until now */
+		if (rc != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&put, json_mode, fmt_trusted_origins);
+	}
+}
+
 static int cmd_pkg_upstreams(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct cix_response r;
@@ -17668,6 +17766,9 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "       cixctl pkg policy ls | set NAME --policy=... | clear NAME\n"
 		                "       cixctl pkg upstreams  -- discovery kinds and their channels\n"
 		                "       cixctl pkg source-catalogue  -- what upstream has that we have no recipe for\n"
+		                "       cixctl pkg trusted-origins ls | add ORIGIN | rm ORIGIN | set [ORIGIN...]\n"
+		                "               -- origins trusted to authenticate a release by where it comes\n"
+		                "               from (ADR-0323 rung 4); a fresh host trusts none\n"
 		                "       cixctl pkg source-policy ls | set-default | set NAME | clear NAME\n"
 		                "       cixctl pkg ls\n"
 		                "       cixctl pkg rm NAME[@IMAGE]\n"
@@ -17713,6 +17814,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_pkg_source_policy(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "upstreams") == 0)
 		return cmd_pkg_upstreams(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "trusted-origins") == 0)
+		return cmd_pkg_trusted_origins(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "source-catalogue") == 0)
 		return cmd_pkg_source_catalogue(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "build-logs") == 0)

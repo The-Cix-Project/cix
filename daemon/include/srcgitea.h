@@ -34,10 +34,11 @@
  * THE ARCHIVE URL SHAPE IS THIS KIND'S CONTRACT. A gitea-tags source is
  * Gitea's API archive route, <base>/api/v1/repos/<owner>/<repo>/archive/
  * <tag>.tar.gz -- the one route that serves a tag archive to a token
- * (measured on 192.168.15.95, 2026-10-02: the web route answers 404
- * without a token, and so does the API route). The tags listing lives
- * beside it at <base>/api/v1/repos/<owner>/<repo>/tags. A source of any
- * other shape is refused by name rather than guessed at.
+ * (measured on 192.168.15.95: the web route answers 404 without a token
+ * -- probe-cix-tarball@302-1, 2026-10-02 -- and so does the API route,
+ * hibr@0.21-1). The tags listing lives beside it at
+ * <base>/api/v1/repos/<owner>/<repo>/tags. A source of any other shape
+ * is refused by name rather than guessed at.
  *
  * Pure apart from the cache: no network. The fetch is the refresh
  * path's, in a helper process (main.c), which hands the listing to
@@ -47,9 +48,11 @@
 /*
  * The tags listing URL for a source template: everything up to and
  * including /api/v1/repos/<owner>/<repo>, then "/tags?limit=50&page=1".
- * Gitea caps a page at 50 and lists the newest tag first (measured on
- * 192.168.15.95, 2026-10-02: limit=100 returned 50 of 86, v0.99.5
- * first), so one page covers SRCUPSTREAM_MAX_CANDIDATES. 0, or -1 when
+ * Gitea caps a page at 50 and lists the newest tag first (measured
+ * against git.home.arpa's API, 2026-10-02 -- the Gitea server's answer,
+ * whatever asks: limit=100 returned 50 of 86, v0.99.5 first), so one
+ * page covers SRCUPSTREAM_MAX_CANDIDATES. 0, or -1 when the template is
+ * not a Gitea API archive url.
  * the template is not a Gitea API archive url.
  */
 int srcgitea_tags_url(const char *source, char *out, size_t out_size);
@@ -98,5 +101,51 @@ int srcgitea_store_error(const char *package, const char *why, long now);
 
 /* The last recorded error for `package`, "" when none. 0, or -1. */
 int srcgitea_error(const char *package, char *out, size_t out_size);
+
+
+/*
+ * A release's main source url: `tmpl` (the recipe's upstream source)
+ * with {version} and {major} -- the version up to its first '.' -- put
+ * in, as cbs expands it when it checks the template (validate.c,
+ * v0.1.102). 0, or -1 when it does not fit.
+ */
+int srcgitea_expand(const char *tmpl, const char *version, char *out, size_t out_size);
+
+/*
+ * What a later stage found for one version of `package` -- authenticate
+ * or author, with ADR-0256's status words and a reason -- so the
+ * catalogue row reports where a roll stopped (ADR-0323: every stage
+ * reports). The source catalogue applies it only while `version` is
+ * still the version that resolves. A new listing replaces the whole
+ * document, and the stages after it write their note again.
+ */
+struct srcgitea_note {
+	char version[SRCUPSTREAM_VERSION_MAX];
+	char stage[16];
+	char status[16];
+	char reason[256];
+};
+
+/* NULL clears it. 0, or -1. */
+int srcgitea_store_note(const char *package, const struct srcgitea_note *note);
+/* 0 with the note, or -1 when there is none. */
+int srcgitea_note(const char *package, struct srcgitea_note *out);
+
+/*
+ * An authenticated release waiting for the author stage: the version,
+ * the main source url as the recipe spells it (placeholders kept), the
+ * sha256 of the bytes fetched from it, and how that was established.
+ */
+struct srcgitea_candidate {
+	char version[SRCUPSTREAM_VERSION_MAX];
+	char url[512];
+	char sha256[65];
+	char verification[256];
+};
+
+/* NULL clears it. 0, or -1. */
+int srcgitea_store_candidate(const char *package, const struct srcgitea_candidate *c);
+/* 0 with a complete candidate, or -1 when there is none. */
+int srcgitea_candidate(const char *package, struct srcgitea_candidate *out);
 
 #endif /* SRCGITEA_H */

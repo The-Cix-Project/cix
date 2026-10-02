@@ -210,6 +210,27 @@ void srcresolve_one(const char *name, const char *kind,
 		         "%s resolves to %s and no recipe builds it (newest recipe is %s)",
 		         out->channel[0] != '\0' ? out->channel : kind, out->resolved_version,
 		         out->newest_recipe_version);
+
+	/*
+	 * ADR-0323: when a later stage has worked on this very release --
+	 * authenticated it, or tried to author it -- the row says where
+	 * that stands, not that it waits for a person. A note for another
+	 * version is history, and is not applied.
+	 */
+	{
+		struct srcupstream_note note;
+		enum pipeline_stage st;
+		enum pipeline_status ss;
+
+		if (srcupstream_note(k, name, out->resolved_version, &note) == 0 &&
+		    pipeline_stage_from_name(note.stage, &st) == 0 &&
+		    pipeline_status_from_name(note.status, &ss) == 0) {
+			out->stage = st;
+			out->status = ss;
+			snprintf(out->reason, sizeof(out->reason), "%s %s: %s", note.stage,
+			         out->resolved_version, note.reason);
+		}
+	}
 }
 
 static void write_entry(struct json_writer *w, const struct srcresolve_entry *e)

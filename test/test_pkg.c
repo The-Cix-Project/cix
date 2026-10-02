@@ -7704,7 +7704,7 @@ skip_resume:
 
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "PUT", "/v1/schedules/discover-test",
-			                       "{\"action\":\"pkg.refresh-upstreams\","
+			                       "{\"action\":\"pkg.discover\","
 			                       "\"params\":{\"kind\":\"gitea-tags\"},"
 			                       "\"schedule\":{\"every\":{\"hours\":24}}}",
 			                       &r) != 0 ||
@@ -7742,7 +7742,9 @@ skip_resume:
 
 						if (str_eq(n, "giteapkg") &&
 						    str_eq(json_str_field(e, "resolved_version"), "1.1") &&
-						    str_eq(json_str_field(e, "status"), "blocked"))
+						    str_eq(json_str_field(e, "status"), "blocked") &&
+						    json_str_field(e, "reason") != NULL &&
+						    strstr(json_str_field(e, "reason"), "not trusted") != NULL)
 							found |= 1;
 						if (str_eq(n, "giteapkg2") && json_str_field(e, "reason") != NULL &&
 						    strstr(json_str_field(e, "reason"), "no upstream source template") !=
@@ -7763,6 +7765,69 @@ skip_resume:
 				ok = 0;
 			}
 			cix_response_free(&r);
+
+			/*
+			 * ADR-0323 rung 4 and the author stage: trust the forge's
+			 * origin, serve v1.1's archive at the template's path, run
+			 * discovery again -- and giteapkg@1.1-1 must be written from
+			 * 1.0-1, committed to the forge with the archive's url and
+			 * sha256 and a changelog naming origin trust, and published.
+			 */
+			if (found == 3) {
+				char trust[256], vbody[PATH_MAX], decoded_g[8192];
+				struct json_value *sent;
+				const char *b64;
+				int dn = -1, published = 0;
+
+				snprintf(cmd, sizeof(cmd), "cp '%s' '%s/v1.1.tar.gz'", gtar, archive_dir);
+				snprintf(trust, sizeof(trust), "{\"origins\":[\"http://127.0.0.1:%d\"]}",
+				         forge_port);
+				memset(&r, 0, sizeof(r));
+				if (system(cmd) != 0 ||
+				    cix_client_request(&client, "PUT", "/v1/pkg/trusted-origins", trust, &r) != 0 ||
+				    r.status != 200) {
+					fprintf(stderr, "FAIL: ADR-0323 trusting the forge's origin got %d: %s\n",
+					        r.status, r.body != NULL ? r.body : "");
+					ok = 0;
+				}
+				cix_response_free(&r);
+				memset(&r, 0, sizeof(r));
+				cix_client_request(&client, "POST", "/v1/schedules/discover-test/run", NULL, &r);
+				cix_response_free(&r);
+				for (waited = 0; waited < 120 && !published; waited++) {
+					memset(&r, 0, sizeof(r));
+					if (cix_client_request(&client, "GET", "/v1/pkg/recipes/giteapkg", NULL, &r) ==
+					        0 &&
+					    str_eq(json_str_field(r.json, "version"), "1.1-1"))
+						published = 1;
+					cix_response_free(&r);
+					if (!published)
+						usleep(500000);
+				}
+				snprintf(vbody, sizeof(vbody), "%s/giteapkg@1.1-1.cbs.request.json", forge_dir);
+				sent = slurp_file(vbody, &posted, &posted_len) == 0
+				           ? json_parse(posted, posted_len)
+				           : NULL;
+				b64 = sent != NULL ? json_as_string(json_object_get(sent, "content")) : NULL;
+				if (b64 != NULL)
+					dn = base64_decode(b64, (unsigned char *)decoded_g, sizeof(decoded_g) - 1);
+				if (dn >= 0)
+					decoded_g[dn] = '\0';
+				if (!published || dn < 0 || strstr(decoded_g, "/archive/v1.1.tar.gz\"") == NULL ||
+				    strstr(decoded_g, gsha) == NULL || strstr(decoded_g, "version \"1.1\"") == NULL ||
+				    strstr(decoded_g, "verified by origin trust") == NULL) {
+					fprintf(stderr, "FAIL: ADR-0323 discovery did not author giteapkg@1.1-1 from "
+					                "the trusted origin (published=%d): %s\n",
+					        published, dn >= 0 ? decoded_g : "(nothing committed)");
+					ok = 0;
+				}
+				json_free(sent);
+				free(posted);
+				posted = NULL;
+				memset(&r, 0, sizeof(r));
+				cix_client_request(&client, "PUT", "/v1/pkg/trusted-origins", "{\"origins\":[]}", &r);
+				cix_response_free(&r);
+			}
 			memset(&r, 0, sizeof(r));
 			cix_client_request(&client, "DELETE", "/v1/schedules/discover-test", NULL, &r);
 			cix_response_free(&r);

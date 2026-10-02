@@ -263,6 +263,31 @@ int main(void)
 		        PIPELINE_BLOCKED, "0.99.5", NULL);
 		expect("gitea-tags current", "hibr", "gitea-tags", CURRENT, 2, PIPELINE_AUTHOR,
 		        PIPELINE_OK, "0.99.5", NULL);
+		{
+			struct srcgitea_note note;
+
+			memset(&note, 0, sizeof(note));
+			snprintf(note.version, sizeof(note.version), "0.99.5");
+			snprintf(note.stage, sizeof(note.stage), "authenticate");
+			snprintf(note.status, sizeof(note.status), "failed");
+			snprintf(note.reason, sizeof(note.reason),
+			         "origin https://git.example is not trusted on this host");
+			if (srcgitea_store_note("hibr", &note) != 0) {
+				fprintf(stderr, "  FAIL: could not store the hibr note\n");
+				return 1;
+			}
+			expect("gitea-tags stage note", "hibr", "gitea-tags", OLD, 1, PIPELINE_AUTHENTICATE,
+			        PIPELINE_FAILED, "0.99.5", "not trusted");
+			expect("note ignored once built", "hibr", "gitea-tags", CURRENT, 2, PIPELINE_AUTHOR,
+			        PIPELINE_OK, "0.99.5", NULL);
+			snprintf(note.version, sizeof(note.version), "0.99.4");
+			if (srcgitea_store_note("hibr", &note) != 0) {
+				fprintf(stderr, "  FAIL: could not store the old note\n");
+				return 1;
+			}
+			expect("note for another version", "hibr", "gitea-tags", OLD, 1, PIPELINE_AUTHOR,
+			        PIPELINE_BLOCKED, "0.99.5", NULL);
+		}
 		expect("gitea-tags other package", "cbs", "gitea-tags", OLD, 1, PIPELINE_DISCOVER,
 		        PIPELINE_FAILED, NULL, "never been fetched");
 		if (srcgitea_store_error("cbs", "the recipe declares no upstream source template",

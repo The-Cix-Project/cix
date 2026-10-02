@@ -1405,6 +1405,14 @@ static const char *const n_pkg_recipe_show_flags[] = {
 	NULL
 };
 
+static const struct cli_node n_pkg_trusted_origins_subs[] = {
+	{ "add", NULL, NULL },
+	{ "ls", NULL, NULL },
+	{ "rm", NULL, NULL },
+	{ "set", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
 static const struct cli_node n_pkg_recipe_subs[] = {
 	{ "add", n_pkg_recipe_add_flags, NULL },
 	{ "commit", n_pkg_recipe_commit_flags, NULL },
@@ -1476,6 +1484,7 @@ static const struct cli_node n_pkg_subs[] = {
 	{ "source-policy", n_pkg_source_policy_flags, n_pkg_source_policy_subs },
 	{ "upstreams", NULL, NULL },
 	{ "source-catalogue", NULL, NULL },
+	{ "trusted-origins", NULL, n_pkg_trusted_origins_subs },
 	{ "rebuilds", NULL, NULL },
 	{ "recipe", NULL, n_pkg_recipe_subs },
 	{ "recipes", NULL, NULL },

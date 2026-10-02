@@ -50,6 +50,7 @@
 #include "pipelineview.h"
 #include "scheduler.h"
 #include "srcpolicy.h"
+#include "srctrust.h"
 #include "srcupstream.h"
 #include "api_srcpolicy.h"
 #include "ksm.h"
@@ -279,6 +280,7 @@ char IMAGEPOLICY_STATE_PATH[PATH_MAX]; /* ADR-0320 -- per-image recipe/apply/dow
 char BOOTCONSOLE_STATE_PATH[PATH_MAX]; /* issue #24 -- boot console parameters */
 char KERNELPOLICY_STATE_PATH[PATH_MAX]; /* issue #65 -- which kernel line this box tracks */
 char SRCPOLICY_STATE_PATH[PATH_MAX];    /* ADR-0255 -- which upstream release packages build */
+char SRCTRUST_STATE_PATH[PATH_MAX];     /* ADR-0323 -- origins trusted to authenticate a release */
 char SCHEDULER_STATE_PATH[PATH_MAX];    /* ADR-0257 -- everything this host does on a clock */
 char KERNEL_RELEASES_PATH[PATH_MAX];    /* issue #65 -- cached kernel.org releases.json */
 char ZSWAP_STATE_PATH[PATH_MAX];        /* issue #51 -- compressed swap cache settings */
@@ -459,6 +461,8 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(KERNELPOLICY_STATE_PATH, sizeof(KERNELPOLICY_STATE_PATH), "%s/kernel_policy.json",
 	         STATE_DIR);
 	snprintf(SRCPOLICY_STATE_PATH, sizeof(SRCPOLICY_STATE_PATH), "%s/source_policy.json",
+	         STATE_DIR);
+	snprintf(SRCTRUST_STATE_PATH, sizeof(SRCTRUST_STATE_PATH), "%s/trusted_origins.json",
 	         STATE_DIR);
 	snprintf(SCHEDULER_STATE_PATH, sizeof(SCHEDULER_STATE_PATH), "%s/schedules.json",
 	         STATE_DIR);
@@ -6057,7 +6061,28 @@ static int kernel_releases_fetch_start(char *err_msg, size_t err_msg_size);
  * forks curl and watches it on this same reactor, which is what keeps
  * a scheduled refresh from blocking the control plane.
  */
-static int action_refresh_upstreams(const char *params, char *reason, size_t reason_size)
+/*
+ * ADR-0323: the gitea-tags helper has refreshed and authenticated what
+ * it could. The author stage runs here, in the parent, because a recipe
+ * commit is the parent's job: the first candidate is written and its
+ * commit helper started -- one per run.
+ */
+static void discover_gitea_done(int exit_status, void *ctx)
+{
+	pkg_upstream_refresh_done(exit_status, ctx);
+	if (pkg_discover_author_next() != 1)
+		return;
+	if (helper_run(pkg_recipe_commit_work, NULL, pkg_recipe_commit_done, NULL,
+	               "pkg recipe commit") != 0) {
+		char err[160];
+
+		snprintf(err, sizeof(err), "could not start the commit helper: %s", strerror(errno));
+		pkg_recipe_commit_abort(err);
+		logstore_write("cixd", "error", "pkg discover: %s", err);
+	}
+}
+
+static int action_discover(const char *params, char *reason, size_t reason_size)
 {
 	char kerr[192], gerr[192], kind[32] = "";
 	int kernel_ok = 1, gitea_ok = 1;
@@ -6095,7 +6120,7 @@ static int action_refresh_upstreams(const char *params, char *reason, size_t rea
 	if (kind[0] == '\0' || strcmp(kind, "gitea-tags") == 0) {
 		gitea_ok = 0;
 		if (pkg_upstream_refresh_begin(gerr, sizeof(gerr)) == 0) {
-			if (helper_run(pkg_upstream_refresh_work, NULL, pkg_upstream_refresh_done, NULL,
+			if (helper_run(pkg_upstream_refresh_work, NULL, discover_gitea_done, NULL,
 			               "pkg gitea-tags refresh") == 0) {
 				gitea_ok = 1;
 			} else {
@@ -20759,6 +20784,62 @@ static void handle_pkg_recipe_revise_post(int fd, const char *body, size_t body_
 	recipe_commit_respond(fd, perr, err, sizeof(err));
 }
 
+/* GET /v1/pkg/trusted-origins (ADR-0323, rung 4) */
+static void handle_pkg_trusted_origins_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	srctrust_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* PUT /v1/pkg/trusted-origins {"origins": [...]}: replaces the list. */
+static void handle_pkg_trusted_origins_put(int fd, const char *body, size_t body_len)
+{
+	const char *origins[SRCTRUST_MAX];
+	struct json_value *root;
+	const struct json_value *arr;
+	struct json_writer w;
+	char err[512];
+	size_t i;
+
+	root = body_len > 0 ? json_parse(body, body_len) : NULL;
+	arr = root != NULL ? json_object_get(root, "origins") : NULL;
+	if (arr == NULL || arr->type != JSON_ARRAY) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "origins (an array of origins) is required");
+		return;
+	}
+	if (arr->u.array.count > SRCTRUST_MAX) {
+		json_free(root);
+		snprintf(err, sizeof(err), "at most %d trusted origins", SRCTRUST_MAX);
+		respond_error(fd, 400, "Bad Request", err);
+		return;
+	}
+	for (i = 0; i < arr->u.array.count; i++) {
+		origins[i] = json_as_string(arr->u.array.items[i]);
+		if (origins[i] == NULL) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "every origin is a string");
+			return;
+		}
+	}
+	if (srctrust_set(origins, (int)arr->u.array.count, err, sizeof(err)) != 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", err);
+		return;
+	}
+	json_free(root);
+	logstore_write("cixd", "info", "pkg: trusted origins set to %d origin(s) (ADR-0323)",
+	               srctrust_count());
+	jw_init(&w);
+	srctrust_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 /* GET /v1/pkg/recipe-commit */
 static void handle_pkg_recipe_commit_get(int fd)
 {
@@ -25923,6 +26004,18 @@ static void op_getPkgRecipeCommit(const struct api_ctx *ctx)
 static void op_revisePkgRecipe(const struct api_ctx *ctx)
 {
 	handle_pkg_recipe_revise_post(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/pkg/trusted-origins */
+static void op_getPkgTrustedOrigins(const struct api_ctx *ctx)
+{
+	handle_pkg_trusted_origins_get(ctx->fd);
+}
+
+/* PUT /v1/pkg/trusted-origins */
+static void op_setPkgTrustedOrigins(const struct api_ctx *ctx)
+{
+	handle_pkg_trusted_origins_put(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
 /* POST /v1/pkg/sync */
@@ -31705,11 +31798,13 @@ static int cixd_main(int argc, char **argv)
 	}
 	kernelpolicy_init(KERNELPOLICY_STATE_PATH); /* issue #65 */
 	srcpolicy_init(SRCPOLICY_STATE_PATH);       /* ADR-0255 */
+	srctrust_init(SRCTRUST_STATE_PATH);         /* ADR-0323 */
 	scheduler_init(SCHEDULER_STATE_PATH);       /* ADR-0257 */
-	scheduler_register_action("pkg.refresh-upstreams",
-	                           "fetch what upstream has published, for every discovery kind "
+	scheduler_register_action("pkg.discover",
+	                           "find what upstream has published, authenticate it and write "
+	                           "the next recipe revision (ADR-0323) "
 	                           "(params {\"kind\": \"kernel.org\"|\"gitea-tags\"} for one)",
-	                           action_refresh_upstreams);
+	                           action_discover);
 	scheduler_register_action("system.backup", "write a system backup to the configured disk",
 	                           action_system_backup);
 	scheduler_register_action("volume.backup", "snapshot every volume that opted in",
