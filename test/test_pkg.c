@@ -625,15 +625,14 @@ static int write_cpdl_recipe_file(const char *name, const char *version,
 	return fclose(f) == 0 ? 0 : -1;
 }
 
-/* POST one already-rendered CPDL document. The two publish helpers
- * differ only in how they name the source, so the request itself is
- * written once. */
-static int publish_cpdl_content(const struct cix_client *c, const char *name, const char *version,
-                                 const char *content)
+/* POST one already-rendered CPDL document. The publish helpers differ
+ * only in how they name the fetch, so the request itself is written
+ * once. `source` names the recipe source it belongs to (ADR-0324), or
+ * NULL to let the host decide. */
+static char *cpdl_publish_body(const char *name, const char *content, const char *source)
 {
 	struct json_writer w;
-	struct cix_response r;
-	int ok;
+	char *body;
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -643,17 +642,41 @@ static int publish_cpdl_content(const struct cix_client *c, const char *name, co
 	jw_str(&w, content);
 	jw_key(&w, "format");
 	jw_str(&w, "cbs");
+	if (source != NULL) {
+		jw_key(&w, "source");
+		jw_str(&w, source);
+	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
+	body = strdup(w.buf);
+	jw_free(&w);
+	return body;
+}
 
+static int publish_cpdl_content_from(const struct cix_client *c, const char *name,
+                                      const char *version, const char *content,
+                                      const char *source)
+{
+	char *body = cpdl_publish_body(name, content, source);
+	struct cix_response r;
+	int ok;
+
+	if (body == NULL)
+		return -1;
 	memset(&r, 0, sizeof(r));
-	ok = (cix_client_request(c, "POST", "/v1/pkg/recipes", w.buf, &r) == 0 && r.status == 204);
+	ok = (cix_client_request(c, "POST", "/v1/pkg/recipes", body, &r) == 0 && r.status == 204);
 	if (!ok)
 		fprintf(stderr, "      POST /v1/pkg/recipes %s@%s: status=%d %.200s\n", name, version,
 		        r.status, r.body != NULL ? r.body : "");
 	cix_response_free(&r);
-	jw_free(&w);
+	free(body);
 	return ok ? 0 : -1;
+}
+
+static int publish_cpdl_content(const struct cix_client *c, const char *name, const char *version,
+                                 const char *content)
+{
+	return publish_cpdl_content_from(c, name, version, content, NULL);
 }
 
 static int publish_cpdl_recipe(const struct cix_client *c, const char *name, const char *version,
@@ -2225,6 +2248,146 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		cix_client_request(&client, "DELETE", "/v1/pkg/badbuild", NULL, &r);
 		cix_response_free(&r);
+	}
+
+	/*
+	 * ADR-0324: a {{REPO_TOKEN}} fetch carries the token of the source
+	 * that OWNS the package, and no other source's. Two sources hold two
+	 * tokens; the fixture server answers a /private/<credential>/ path
+	 * only to a request whose Authorization is exactly that credential,
+	 * as a private repository does. Both recipes fetch the same URL,
+	 * whose credential is the first source's, and both end in `false`
+	 * -- so the STAGE a failure reports (#101) says whether the fetch
+	 * got through: "build" when it did, "fetch" when it was refused.
+	 * Published before any sync could see them, so ownership comes from
+	 * the source named at publish time, which is exactly the case that
+	 * had no token at all before ownership was recorded there.
+	 */
+	{
+		static const char *const toks[][2] = { { "tka", "ownertoken" },
+		                                       { "tkb", "othertoken" } };
+		const char *plain = test_http_src(tarball_path);
+		const char *host = strstr(plain, "://") != NULL ? strstr(plain, "://") + 3 : plain;
+		const char *path = strchr(host, '/');
+		char cred[64], url[1024], content[4096], post[256];
+		char *body;
+		size_t i;
+
+		for (i = 0; i < 2; i++) {
+			snprintf(post, sizeof(post),
+			         "{\"name\":\"%s\",\"url\":\"http://127.0.0.1:1/o/%s\",\"kind\":\"gitea\","
+			         "\"token\":\"%s\"}",
+			         toks[i][0], toks[i][0], toks[i][1]);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/sources", post, &r) != 0 ||
+			    r.status < 200 || r.status >= 300) {
+				fprintf(stderr, "FAIL: ADR-0324 adding source %s, status=%d\n", toks[i][0],
+				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+
+		/* "u:ownertoken" encodes with no '/', so it is one path segment. */
+		if (base64_encode((const unsigned char *)"u:ownertoken", 12, cred, sizeof(cred)) < 0 ||
+		    path == NULL) {
+			fprintf(stderr, "FAIL: ADR-0324 could not build the private URL\n");
+			ok = 0;
+			cred[0] = '\0';
+		}
+		snprintf(url, sizeof(url), "http://u:{{REPO_TOKEN}}@%.*s/private/%s%s",
+		         path != NULL ? (int)(path - host) : 0, host, cred, path != NULL ? path : "");
+
+		/* Several sources, none named, nobody owns it: refused, naming both. */
+		cpdl_recipe_text(content, sizeof(content), "tokorphan", "1.0", url, sha256, NULL,
+		                 CPDL_STD_TOOLS, NULL, "        run \"false\" {\n        }\n",
+		                 "        mkdir \"${dest}/usr/share\" chmod 0755\n");
+		body = cpdl_publish_body("tokorphan", content, NULL);
+		memset(&r, 0, sizeof(r));
+		if (body == NULL ||
+		    cix_client_request(&client, "POST", "/v1/pkg/recipes", body, &r) != 0 ||
+		    r.status != 409 || r.body == NULL || strstr(r.body, "2 sources") == NULL) {
+			fprintf(stderr, "FAIL: ADR-0324 a new package with two sources and none named "
+			                "must be 409 saying so, got %d: %s\n",
+			        r.status, r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		cix_response_free(&r);
+		free(body);
+
+		for (i = 0; i < 2; i++) {
+			const char *pkg = i == 0 ? "tokown" : "tokother";
+			const char *want = i == 0 ? "build" : "fetch";
+			char gpath[64];
+			const char *stage;
+
+			cpdl_recipe_text(content, sizeof(content), pkg, "1.0", url, sha256, NULL,
+			                 CPDL_STD_TOOLS, NULL, "        run \"false\" {\n        }\n",
+			                 "        mkdir \"${dest}/usr/share\" chmod 0755\n");
+			if (publish_cpdl_content_from(&client, pkg, "1.0", content, toks[i][0]) != 0) {
+				fprintf(stderr, "FAIL: ADR-0324 publishing %s under %s\n", pkg, toks[i][0]);
+				ok = 0;
+				continue;
+			}
+			snprintf(post, sizeof(post), "{\"name\":\"%s\"}", pkg);
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "POST", "/v1/pkg/install", post, &r);
+			cix_response_free(&r);
+			poll_pkg_state(&client, pkg, state, sizeof(state), 90);
+			snprintf(gpath, sizeof(gpath), "/v1/pkg/%s", pkg);
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "GET", gpath, NULL, &r);
+			stage = r.json != NULL ? json_str_field(r.json, "stage") : NULL;
+			if (strcmp(state, "failed") != 0 || stage == NULL || strcmp(stage, want) != 0) {
+				fprintf(stderr, "FAIL: ADR-0324 %s (owned by %s) ended %s at stage %s, "
+				                "expected failed at %s -- %s\n",
+				        pkg, toks[i][0], state, stage != NULL ? stage : "(none)", want,
+				        i == 0 ? "the owner's token did not reach the fetch"
+				               : "another source's token was spent on it");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "DELETE", gpath, NULL, &r);
+			cix_response_free(&r);
+		}
+
+		/* The publish recorded the owner, and a named source wins. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/pkg/source-ownership", NULL, &r) != 0 ||
+		    r.body == NULL || strstr(r.body, "package:tokown") == NULL ||
+		    strstr(r.body, "package:tokother") == NULL) {
+			fprintf(stderr, "FAIL: ADR-0324 publishing with a source must record it as the "
+			                "owner: %s\n",
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		cix_response_free(&r);
+		cpdl_recipe_text(content, sizeof(content), "tokown", "1.1", url, sha256, NULL,
+		                 CPDL_STD_TOOLS, NULL, "        run \"false\" {\n        }\n",
+		                 "        mkdir \"${dest}/usr/share\" chmod 0755\n");
+		body = cpdl_publish_body("tokown", content, "tkb");
+		memset(&r, 0, sizeof(r));
+		if (body == NULL ||
+		    cix_client_request(&client, "POST", "/v1/pkg/recipes", body, &r) != 0 ||
+		    r.status != 409 || r.body == NULL ||
+		    strstr(r.body, "belongs to source tka") == NULL) {
+			fprintf(stderr, "FAIL: ADR-0324 publishing tka's package under tkb must be 409 "
+			                "naming tka, got %d: %s\n",
+			        r.status, r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		cix_response_free(&r);
+		free(body);
+
+		/* Removing the sources drops their choices; later scenarios
+		 * start from a host with none. */
+		for (i = 0; i < 2; i++) {
+			snprintf(post, sizeof(post), "/v1/pkg/sources/%s", toks[i][0]);
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "DELETE", post, NULL, &r);
+			cix_response_free(&r);
+		}
 	}
 
 	/*

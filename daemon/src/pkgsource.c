@@ -19,6 +19,7 @@ static char g_offers_dir[PATH_MAX];
 static struct pkg_source g_sources[PKG_SOURCES_MAX];
 static int g_count;
 static int g_legacy_sync_interval; /* ADR-0257, from a migrated repo config */
+static char g_migrated[PKG_SOURCE_NAME_MAX]; /* the source a legacy config became, this boot */
 
 /* One offered item and the sources offering it, as a bit per source
  * index -- PKG_SOURCES_MAX is 32, so one uint32_t holds them all. */
@@ -267,6 +268,7 @@ int pkgsource_init(const char *path, const char *legacy_path, const char *offers
 	g_count = 0;
 	g_choice_count = 0;
 	g_legacy_sync_interval = 0;
+	g_migrated[0] = '\0';
 
 	if (persist_read_file(path, &buf, &len) == 0 && buf != NULL) {
 		load(buf, len);
@@ -278,6 +280,8 @@ int pkgsource_init(const char *path, const char *legacy_path, const char *offers
 	if (legacy_path != NULL && persist_read_file(legacy_path, &buf, &len) == 0 &&
 	    buf != NULL) {
 		migrate_legacy(buf, len);
+		if (g_count == 1)
+			snprintf(g_migrated, sizeof(g_migrated), "%s", g_sources[0].name);
 		free(buf);
 	} else {
 		struct pkg_source *s = &g_sources[0];
@@ -308,6 +312,11 @@ int pkgsource_legacy_sync_interval_seconds(void)
 void pkgsource_clear_legacy_sync_interval(void)
 {
 	g_legacy_sync_interval = 0;
+}
+
+const char *pkgsource_migrated(void)
+{
+	return g_migrated[0] != '\0' ? g_migrated : NULL;
 }
 
 void pkgsource_repoint(const char *path, const char *offers_dir)
@@ -684,13 +693,25 @@ static int popcount32(uint32_t v)
 	return n;
 }
 
+/*
+ * The operator's choice decides whenever it names a source this host
+ * has: among several sources offering the name, for a name no source
+ * offers yet (a recipe published here before its source's next sync
+ * carries it), and over a single other source that later offers it --
+ * ownership never moves on its own. Without a choice, the one source
+ * that offers a name owns it, and several are a conflict.
+ */
 enum pkgsource_owner pkgsource_owner_of(const char *item, char *out, size_t out_size)
 {
 	const struct offer *o = offer_find(item);
-	int c;
+	int c = choice_index(item);
 
 	if (out_size > 0)
 		out[0] = '\0';
+	if (c >= 0 && index_of(g_choices[c].source) >= 0) {
+		snprintf(out, out_size, "%s", g_choices[c].source);
+		return PKGSOURCE_OWNER_ONE;
+	}
 	if (o == NULL || o->by == 0)
 		return PKGSOURCE_OWNER_NONE;
 	if (popcount32(o->by) == 1) {
@@ -701,19 +722,74 @@ enum pkgsource_owner pkgsource_owner_of(const char *item, char *out, size_t out_
 				snprintf(out, out_size, "%s", g_sources[i].name);
 		return PKGSOURCE_OWNER_ONE;
 	}
-	/* Several offer it: only the operator's choice decides, and only a
-	 * choice of a source that does offer it. */
-	c = choice_index(item);
-	if (c >= 0) {
-		int i = index_of(g_choices[c].source);
-
-		if (i >= 0 && (o->by & ((uint32_t)1 << i))) {
-			snprintf(out, out_size, "%s", g_choices[c].source);
-			return PKGSOURCE_OWNER_ONE;
-		}
-	}
 	names_of(o->by, out, out_size);
 	return PKGSOURCE_OWNER_CONFLICT;
+}
+
+int pkgsource_resolve(const char *item, const char *requested, int writable_only, char *out,
+                      size_t out_size, int *choose, char *err, size_t err_size)
+{
+	char owner[PKG_SOURCES_MAX * PKG_SOURCE_NAME_MAX];
+	const char *name = strchr(item, ':') != NULL ? strchr(item, ':') + 1 : item;
+	int kind_len = (int)(name - item) > 0 ? (int)(name - item) - 1 : 0;
+	int have = requested != NULL && requested[0] != '\0';
+	int i, found = -1, candidates = 0;
+
+	*choose = 0;
+	out[0] = '\0';
+	err[0] = '\0';
+	switch (pkgsource_owner_of(item, owner, sizeof(owner))) {
+	case PKGSOURCE_OWNER_ONE:
+		if (have && strcmp(requested, owner) != 0) {
+			snprintf(err, err_size, "%.*s %s belongs to source %s, not %s", kind_len, item,
+			         name, owner, requested);
+			return -1;
+		}
+		snprintf(out, out_size, "%s", owner);
+		return 0;
+	case PKGSOURCE_OWNER_CONFLICT:
+		if (!have) {
+			snprintf(err, err_size,
+			         "%.*s %s is offered by %s and no source has been chosen for it -- name "
+			         "one, or choose one first (PUT /v1/pkg/source-ownership)",
+			         kind_len, item, name, owner);
+			return -1;
+		}
+		break;
+	default:
+		break;
+	}
+	if (have) {
+		if (pkgsource_find(requested) == NULL) {
+			snprintf(err, err_size, "no source named %s", requested);
+			return -1;
+		}
+		snprintf(out, out_size, "%s", requested);
+		*choose = 1;
+		return 0;
+	}
+	/* Nobody owns it and the caller named no source. */
+	for (i = 0; i < g_count; i++)
+		if (!writable_only || g_sources[i].write) {
+			found = i;
+			candidates++;
+		}
+	if (candidates == 1) {
+		snprintf(out, out_size, "%s", g_sources[found].name);
+		*choose = 1;
+		return 0;
+	}
+	if (candidates == 0 && !writable_only)
+		return 0; /* a host with no source: the recipe is this host's alone */
+	if (candidates == 0)
+		snprintf(err, err_size,
+		         "no source is writable on this host -- mark one with "
+		         "`cixctl pkg source set NAME --write=on` (ADR-0324)");
+	else
+		snprintf(err, err_size, "%.*s %s is new and %d sources are %s -- name the one it "
+		         "belongs to",
+		         kind_len, item, name, candidates, writable_only ? "writable" : "configured");
+	return -1;
 }
 
 enum pkgsource_error pkgsource_choose(const char *item, const char *source, char *err,

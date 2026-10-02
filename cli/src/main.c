@@ -337,7 +337,8 @@ static const char USAGE_TEXT[] =
 	        "               publish a fix. The format comes from the filename: build.cbs is\n"
 	        "               a CBS recipe in CPDL, build.sh a shell one (ADR-0305), so\n"
 	        "               --format= is only needed for content held in a file not named\n"
-	        "               for what it is\n"
+	        "               for what it is. --source= names the recipe source a new\n"
+	        "               package belongs to; with one source it is implied (ADR-0324)\n"
 	        "  pkg recipe show NAME [--version=VERSION]  -- print a recipe's own raw content,\n"
 	        "               omitted version resolves to the highest available\n"
 	        "  pkg recipe rm NAME [--version=VERSION]  -- omitted removes every version\n"
@@ -15341,6 +15342,7 @@ static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int arg
 {
 	const char *name = NULL;
 	const char *file = NULL;
+	const char *source = NULL;
 	const char *format = NULL;
 	char *content;
 	size_t content_len;
@@ -15355,6 +15357,8 @@ static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int arg
 			file = argv[i] + 7;
 		else if (strncmp(argv[i], "--format=", 9) == 0)
 			format = argv[i] + 9;
+		else if (strncmp(argv[i], "--source=", 9) == 0)
+			source = argv[i] + 9;
 		else {
 			fprintf(stderr, "cixctl: unknown pkg recipe add option '%s'\n", argv[i]);
 			return 2;
@@ -15362,7 +15366,8 @@ static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int arg
 	}
 	if (name == NULL || file == NULL) {
 		fprintf(stderr,
-		        "usage: cixctl pkg recipe add --name=NAME --file=PATH [--format=shell|cbs]\n");
+		        "usage: cixctl pkg recipe add --name=NAME --file=PATH [--format=shell|cbs]\n"
+		        "       [--source=NAME]\n");
 		return 2;
 	}
 	/*
@@ -15404,6 +15409,10 @@ static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int arg
 	jw_str(&w, content);
 	jw_key(&w, "format");
 	jw_str(&w, format);
+	if (source != NULL) {
+		jw_key(&w, "source");
+		jw_str(&w, source);
+	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 	free(content);
@@ -15631,7 +15640,7 @@ static int cmd_pkg_recipe(const struct cix_client *c, int json_mode, int argc, c
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl pkg recipe add --name=NAME --file=PATH\n"
+		fprintf(stderr, "usage: cixctl pkg recipe add --name=NAME --file=PATH [--source=NAME]\n"
 		                "       cixctl pkg recipe commit --name=NAME --file=PATH [--source=NAME] [--wait]\n"
 		                "       cixctl pkg recipe show NAME [--version=VERSION]\n"
 		                "       cixctl pkg recipe rm NAME [--version=VERSION]\n");
@@ -17463,7 +17472,7 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "       cixctl pkg bootstrap --toolchain-url=URL --toolchain-sha256=SHA256 [--wait]\n"
 		                "       cixctl pkg bootstrap-status\n"
 		                "       cixctl pkg recipes\n"
-		                "       cixctl pkg recipe add --name=NAME --file=PATH\n"
+		                "       cixctl pkg recipe add --name=NAME --file=PATH [--source=NAME]\n"
 		                "       cixctl pkg recipe commit --name=NAME --file=PATH [--source=NAME] [--wait]\n"
 		                "       cixctl pkg recipe show NAME [--version=VERSION]\n"
 		                "       cixctl pkg recipe rm NAME [--version=VERSION]\n"

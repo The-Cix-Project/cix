@@ -1371,6 +1371,7 @@ static const char *const n_pkg_recipe_add_flags[] = {
 	"--file=",
 	"--format=",
 	"--name=",
+	"--source=",
 	NULL
 };
 

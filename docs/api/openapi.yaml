@@ -9624,6 +9624,17 @@ paths:
                     trusted: "cbs" content must satisfy `cbs explain --json` and "shell"
                     content must parse as a shell recipe, so a body whose format disagrees
                     with its content is refused with 400 and never becomes a stored file.
+                source:
+                  type: string
+                  description: >
+                    ADR-0324: the recipe source this package belongs to. A package a source
+                    already owns stays with it, and naming a different one is 409. A package no
+                    source owns yet (new, or published here before its source's next sync) takes
+                    the named source, or the only source when the host has exactly one, and
+                    that is recorded as the operator's ownership choice once the recipe lands
+                    -- which is whose token a {{REPO_TOKEN}} fetch then carries. With several
+                    sources and none named, an unowned package is 409. A host with no source
+                    publishes with no owner.
       responses:
         "204":
           description: Recipe version published
@@ -9679,6 +9690,11 @@ paths:
             number is free now and impossible once the version is published. The message
             differs from the immutability one, and the daemon log names the other version and
             the shared artifact name.
+
+
+            And (ADR-0324) when the package belongs to a source other than the one named, when
+            several sources offer it and none is named, or when it is new on a host with
+            several sources and none is named. The message names the sources involved.
           content:
             application/json:
               schema:

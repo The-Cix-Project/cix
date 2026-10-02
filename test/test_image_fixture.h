@@ -388,7 +388,10 @@ int test_recipe_path(const char *kind, const char *name, const char *version,
  * a daemon uploaded. With accept_put, a POST to a path containing
  * /contents/ is a forge's create-file call (ADR-0323): its body is kept
  * as <root>/<basename>.request.json and answered 201 with commit sha
- * TEST_FORGE_COMMIT_SHA, or 422 when that file already exists. Stop it
+ * TEST_FORGE_COMMIT_SHA, or 422 when that file already exists. A GET
+ * for /private/<credential>/<path> serves <path> only to a request whose
+ * Authorization header is exactly "Basic <credential>", and is 404
+ * otherwise, as a private repository answers. Stop it
  * with test_http_server_stop().
  */
 int test_http_source_url(const char *abs_path, char *out, size_t out_size);

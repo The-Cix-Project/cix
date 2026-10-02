@@ -896,6 +896,14 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content,
                                enum pkg_recipe_format format, int *out_was_approval);
 
 /*
+ * ADR-0324: records every package name in the recipe store as offered
+ * by `source` -- the source a legacy repo config was just migrated into
+ * (pkgsource_migrated()), which is where all of them came from or were
+ * added for. The first sync then replaces this with what git carries.
+ */
+int pkg_recipe_seed_source_offers(const char *source);
+
+/*
  * Why the last pkg_recipe_add() refused, when it knows something the
  * error code cannot carry. "" when it has nothing to add, in which
  * case the caller's generic message for that code is the right one.

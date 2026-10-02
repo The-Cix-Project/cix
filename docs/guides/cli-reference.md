@@ -484,7 +484,7 @@ See [`networking.md`](networking.md).
 | `pkg build-logs [--last \| --file=NAME]` | The complete retained output of recent builds (#57). No arguments lists them with sizes; `--last` prints the newest; `--file=` prints one |
 | `pkg buildenv [ls]` / `pkg buildenv rm NAME` | Composed build environments held on this host, and reclaim one now ([ADR-0221](../adr/0221-build-environments-are-reclaimed-by-last-use.md)) |
 | `pkg recipes` | Every published recipe version |
-| `pkg recipe add --name=NAME --file=PATH [--format=shell\|cbs]` | Publish a recipe version on this host. A published `(name, version)` is never overwritten. The format follows the file extension (`.cbs` is CPDL, `.sh` is shell); `--format=` is for a file not named that way |
+| `pkg recipe add --name=NAME --file=PATH [--format=shell\|cbs] [--source=NAME]` | Publish a recipe version on this host. A published `(name, version)` is never overwritten. The format follows the file extension (`.cbs` is CPDL, `.sh` is shell); `--format=` is for a file not named that way. `--source=` names the recipe source a new package belongs to; with one source it is implied, and an owned package stays with its owner (ADR-0324) |
 | `pkg recipe commit --name=NAME --file=PATH [--source=NAME] [--wait]` | Commit a CPDL recipe as `recipes/package/NAME@VERSION.cbs` to the writable source that owns the package, then publish it here (ADR-0323): git first, so git holds every revision a host builds. `--source` names the source for a package no source offers yet |
 | `pkg recipe show NAME [--version=VERSION]` | Print a recipe version; an omitted version means the highest |
 | `pkg recipe rm NAME [--version=VERSION]` | Remove one version, or every version when omitted |

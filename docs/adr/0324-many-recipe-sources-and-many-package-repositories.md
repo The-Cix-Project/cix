@@ -71,6 +71,17 @@ A sync does more than add package recipes. It also merges image and deployment r
 
 Image and deployment recipes follow the same one-name-one-source rule as package recipes. An image recipe arriving in an image whose policy follows its recipe is a deploy, so it must not arrive from a source the operator did not choose for it.
 
+### A recipe published here has an owner from the moment it lands (amended 2026-10-02)
+
+Ownership was first computed only from what each source's last sync offered. Implementing it showed two cases where that leaves a package with no owner, found before release by reading the code rather than on a box:
+- **A recipe published here before its source's next sync carries it.** This is how every release and probe has reached 192.168.15.95 so far.
+- **Every package on a migrated host until its first sync.** The migration writes the source list but no offers.
+
+An owner decides whose token a `{{REPO_TOKEN}}` fetch carries, so in both cases the fetch would have gone out with no token. So:
+- **A publish names its source, or has one implied.** A package a source already owns stays with it. A new or contested one takes the source named in the request, or the only source when the host has one, and that is recorded as the operator's choice. With several sources and none named, the publish is refused, naming them. A commit resolves its source by the same function.
+- **An operator's choice decides ownership whatever the sources offer.** That includes a name no source offers yet, and a single other source that offers it later: ownership never moves on its own.
+- **A migration seeds the migrated source's offers from the recipe store.** Everything there came from, or was added for, the one source the host had. The first sync replaces the seed with what git carries.
+
 ### Migration, and the defaults
 
 There is one clean cut-over (no compatibility shim):

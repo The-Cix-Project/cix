@@ -3772,9 +3772,16 @@
 						Content
 						<textarea id="rf-content" rows="16" spellcheck="false"></textarea>
 					</label>
+					<label>
+						Source
+						<select id="rf-source">
+							<option value="">Its owning source, or the only one</option>
+						</select>
+					</label>
 					<button type="submit">Add / update</button>
 				</form>
-				<p class="hint">Upserts by name -- adding the same name again replaces its content, no ISO
+				<p class="hint">Publishes a new version -- a published version is never replaced (ADR-0107). A
+					new package goes to the source named here (ADR-0324). No ISO
 					rebuild or reinstall needed (ADR-0040).</p>
 			</div>
 

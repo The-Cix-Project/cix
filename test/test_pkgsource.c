@@ -87,10 +87,13 @@ static void test_defaults_and_migration(void)
 	check(s != NULL && strcmp(s->name, "cix-recipes") == 0 && strcmp(s->kind, "gitea") == 0 &&
 	          strcmp(s->token, "tok") == 0 && s->write && s->trust_keys,
 	      "named after its repository, its token, write and trust_keys carried");
+	check(pkgsource_migrated() != NULL && strcmp(pkgsource_migrated(), "cix-recipes") == 0,
+	      "the boot that migrated says which source it made, so the store can seed it");
 	check(!exists("repo_config.json") && exists("sources.json"),
 	      "the legacy file is gone once the list holds it");
 	check(init() == 0 && pkgsource_count() == 1 && pkgsource_find("cix-recipes") != NULL,
 	      "a second boot reads the list, not a default");
+	check(pkgsource_migrated() == NULL, "and a boot that migrated nothing says so");
 
 	reset();
 	write_file("repo_config.json",
@@ -196,6 +199,92 @@ static void test_ownership(void)
 	      "removing a source drops its offers and choices, and ownership follows");
 }
 
+/*
+ * The one resolution a publish and a commit share, and the rule that a
+ * choice decides ownership even where no source offers the name -- a
+ * recipe published here before its source's next sync sees it.
+ */
+static void test_resolve(void)
+{
+	static const char *const a_items[] = { "package:shared" };
+	static const char *const b_items[] = { "package:shared", "package:bonly" };
+	struct pkg_source s;
+	char out[256], err[256];
+	int choose;
+
+	reset();
+	write_file("sources.json", "{\"sources\":[]}\n");
+	init();
+	check(pkgsource_resolve("package:x", NULL, 0, out, sizeof(out), &choose, err,
+	                        sizeof(err)) == 0 &&
+	          out[0] == '\0' && !choose,
+	      "a host with no source publishes with no owner");
+	check(pkgsource_resolve("package:x", NULL, 1, out, sizeof(out), &choose, err,
+	                        sizeof(err)) == -1 &&
+	          strstr(err, "writable") != NULL,
+	      "but has nowhere to commit, and says so");
+
+	memset(&s, 0, sizeof(s));
+	snprintf(s.kind, sizeof(s.kind), "%s", "gitea");
+	snprintf(s.url, sizeof(s.url), "%s", "https://a.example/o/r");
+	snprintf(s.name, sizeof(s.name), "%s", "a");
+	pkgsource_add(&s, err, sizeof(err));
+	check(pkgsource_resolve("package:new", NULL, 0, out, sizeof(out), &choose, err,
+	                        sizeof(err)) == 0 &&
+	          strcmp(out, "a") == 0 && choose,
+	      "with one source, a new package is that source's, to be recorded");
+	check(pkgsource_owner_of("package:new", out, sizeof(out)) == PKGSOURCE_OWNER_NONE,
+	      "resolving records nothing by itself");
+	check(pkgsource_choose("package:new", "a", err, sizeof(err)) == PKGSOURCE_OK &&
+	          pkgsource_owner_of("package:new", out, sizeof(out)) == PKGSOURCE_OWNER_ONE &&
+	          strcmp(out, "a") == 0,
+	      "a recorded choice owns a name no source offers");
+
+	snprintf(s.name, sizeof(s.name), "%s", "b");
+	s.write = 1;
+	pkgsource_add(&s, err, sizeof(err));
+	check(pkgsource_resolve("package:other", NULL, 0, out, sizeof(out), &choose, err,
+	                        sizeof(err)) == -1 &&
+	          strstr(err, "2 sources") != NULL,
+	      "with two sources, a new package needs one named");
+	check(pkgsource_resolve("package:other", NULL, 1, out, sizeof(out), &choose, err,
+	                        sizeof(err)) == 0 &&
+	          strcmp(out, "b") == 0 && choose,
+	      "but a commit goes to the one writable source");
+	check(pkgsource_resolve("package:other", "nosuch", 0, out, sizeof(out), &choose, err,
+	                        sizeof(err)) == -1 &&
+	          strstr(err, "no source named nosuch") != NULL,
+	      "naming a source that does not exist is refused");
+	check(pkgsource_resolve("package:new", "b", 0, out, sizeof(out), &choose, err,
+	                        sizeof(err)) == -1 &&
+	          strstr(err, "belongs to source a") != NULL,
+	      "an owned package cannot be published under another source");
+	check(pkgsource_resolve("package:new", "a", 0, out, sizeof(out), &choose, err,
+	                        sizeof(err)) == 0 &&
+	          !choose,
+	      "and naming its owner needs nothing recorded");
+
+	check(pkgsource_offers_write("a", a_items, 1) == 0 &&
+	          pkgsource_offers_write("b", b_items, 2) == 0 && pkgsource_offers_load() == 0,
+	      "offers are written and loaded");
+	check(pkgsource_resolve("package:shared", NULL, 0, out, sizeof(out), &choose, err,
+	                        sizeof(err)) == -1 &&
+	          strstr(err, "offered by") != NULL,
+	      "a contested package with no source named is refused, naming the offerers");
+	check(pkgsource_resolve("package:shared", "a", 0, out, sizeof(out), &choose, err,
+	                        sizeof(err)) == 0 &&
+	          strcmp(out, "a") == 0 && choose,
+	      "naming one settles it, to be recorded as the choice");
+	check(pkgsource_owner_of("package:new", out, sizeof(out)) == PKGSOURCE_OWNER_ONE &&
+	          strcmp(out, "a") == 0,
+	      "a choice survives an offers reload in which its source does not offer the name");
+	check(pkgsource_choose("package:bonly", "a", err, sizeof(err)) == PKGSOURCE_OK &&
+	          pkgsource_owner_of("package:bonly", out, sizeof(out)) == PKGSOURCE_OWNER_ONE &&
+	          strcmp(out, "a") == 0,
+	      "and holds against a single other source offering it: ownership never moves "
+	      "on its own");
+}
+
 int main(void)
 {
 	char tmpl[] = "/tmp/cix_pkgsource_XXXXXX";
@@ -210,6 +299,7 @@ int main(void)
 	test_defaults_and_migration();
 	test_validation();
 	test_ownership();
+	test_resolve();
 	snprintf(cmd, sizeof(cmd), "rm -rf %s", g_dir);
 	if (system(cmd) != 0)
 		printf("  (could not remove %s)\n", g_dir);

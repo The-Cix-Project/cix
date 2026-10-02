@@ -23374,6 +23374,8 @@ static void handle_pkg_recipe_add(int fd, const char *body, size_t body_len)
 	const char *content;
 	enum pkg_recipe_format format;
 	enum pkg_error perr;
+	char source[PKG_SOURCE_NAME_MAX];
+	int choose = 0;
 
 	root = json_parse(body, body_len);
 	if (root == NULL) {
@@ -23415,7 +23417,37 @@ static void handle_pkg_recipe_add(int fd, const char *body, size_t body_len)
 		}
 	}
 
+	/*
+	 * ADR-0324: the source this package belongs to, resolved exactly
+	 * as a commit resolves it. A recipe published here before its
+	 * source's next sync has seen it is still owned -- the choice is
+	 * recorded once the recipe has landed -- and that owner is whose
+	 * token a {{REPO_TOKEN}} fetch carries. A host with no source
+	 * publishes with no owner, as every host did before sources.
+	 */
+	{
+		char item[PKG_SOURCE_ITEM_MAX];
+		char err[512];
+
+		snprintf(item, sizeof(item), "package:%s", name);
+		if (pkgsource_resolve(item, json_as_string(json_object_get(root, "source")), 0,
+		                      source, sizeof(source), &choose, err, sizeof(err)) != 0) {
+			json_free(root);
+			respond_error(fd, 409, "Conflict", err);
+			return;
+		}
+	}
+
 	perr = pkg_recipe_add(name, content, format, NULL);
+	if (perr == PKG_OK && choose) {
+		char item[PKG_SOURCE_ITEM_MAX];
+		char err[256];
+
+		snprintf(item, sizeof(item), "package:%s", name);
+		if (pkgsource_choose(item, source, err, sizeof(err)) != PKGSOURCE_OK)
+			logstore_write("cixd", "warn", "recipe %s published, but recording source %s "
+			               "as its owner failed: %s", name, source, err);
+	}
 	json_free(root);
 	if (perr != PKG_OK) {
 		respond_pkg_recipe_error(fd, perr);
@@ -31736,6 +31768,12 @@ static int cixd_main(int argc, char **argv)
 	                        pkgsource_init(PKG_SOURCES_PATH, PKG_REPO_CONFIG_PATH,
 	                                       PKG_SOURCES_OFFERS_DIR)) != 0)
 		return 1;
+	if (pkgsource_migrated() != NULL &&
+	    pkg_recipe_seed_source_offers(pkgsource_migrated()) != 0)
+		logstore_write("cixd", "warn",
+		               "could not record the recipe store as offered by migrated source %s; "
+		               "ownership waits for its first sync",
+		               pkgsource_migrated());
 	if (boot_subsystem_init(init_mode, "pkg_cache", pkg_cache_init(PKG_CACHE_DIR, PKG_CACHE_CONFIG_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "pkg_artifact", pkg_artifact_init(PKG_ARTIFACT_CONFIG_PATH)) != 0)

@@ -7348,6 +7348,43 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 	return PKG_OK;
 }
 
+int pkg_recipe_seed_source_offers(const char *source)
+{
+	DIR *names = opendir(g_recipes_dir);
+	struct dirent *nde;
+	char **items = NULL;
+	int count = 0, cap = 0, rc, i;
+
+	if (names == NULL)
+		return pkgsource_offers_write(source, NULL, 0);
+	while ((nde = readdir(names)) != NULL) {
+		char item[PKG_SOURCE_ITEM_MAX];
+
+		if (nde->d_name[0] == '.' ||
+		    snprintf(item, sizeof(item), "package:%s", nde->d_name) >= (int)sizeof(item))
+			continue;
+		if (count == cap) {
+			int ncap = cap == 0 ? 256 : cap * 2;
+			char **n = realloc(items, (size_t)ncap * sizeof(*n));
+
+			if (n == NULL)
+				break;
+			items = n;
+			cap = ncap;
+		}
+		items[count] = strdup(item);
+		if (items[count] == NULL)
+			break;
+		count++;
+	}
+	closedir(names);
+	rc = pkgsource_offers_write(source, (const char *const *)items, count);
+	for (i = 0; i < count; i++)
+		free(items[i]);
+	free(items);
+	return rc == 0 ? pkgsource_offers_load() : rc;
+}
+
 void pkg_write_json_recipes(struct json_writer *w)
 {
 	DIR *names;
@@ -14935,6 +14972,7 @@ static struct {
 	enum recipe_commit_state state;
 	char name[PKG_NAME_MAX];
 	char version[PKG_VERSION_MAX];
+	int choose;                       /* record the source as the operator's choice when done */
 	char source[PKG_SOURCE_NAME_MAX]; /* ADR-0324: the writable source it goes to */
 	char repo_path[PATH_MAX];
 	char message[PKG_CHANGELOG_MAX + 256];
@@ -14952,71 +14990,26 @@ static void recipe_commit_result_path(char *out, size_t out_size)
 }
 
 /*
- * ADR-0324: the source a recipe for `name` is committed to. The source
- * that owns the package, which must be writable on this host -- a host
- * never writes to a source it only reads, because that source is
- * authored somewhere else. A package no source offers yet is new: it
- * goes to the source the caller named, or to the one writable source
- * when there is exactly one. A name several sources offer, with no
- * choice made, has no answer until the operator gives one.
+ * ADR-0324: the source a recipe for `name` is committed to, resolved by
+ * pkgsource_resolve() exactly as a plain publish is, then required to be
+ * writable here -- a host never writes to a source it only reads,
+ * because that source is authored somewhere else -- and to hold a token.
  */
 static int resolve_commit_target(const char *name, const char *requested, char *out,
-                                 size_t out_size, char *err, size_t err_size)
+                                 size_t out_size, int *choose, char *err, size_t err_size)
 {
 	char item[PKG_SOURCE_ITEM_MAX];
-	char owner[PKG_SOURCES_MAX * PKG_SOURCE_NAME_MAX];
-	const struct pkg_source *s = NULL;
-	int i, writable = 0;
+	const struct pkg_source *s;
 
 	snprintf(item, sizeof(item), "package:%s", name);
-	switch (pkgsource_owner_of(item, owner, sizeof(owner))) {
-	case PKGSOURCE_OWNER_ONE:
-		if (requested != NULL && requested[0] != '\0' && strcmp(requested, owner) != 0) {
-			snprintf(err, err_size, "package %s belongs to source %s, not %s", name, owner,
-			         requested);
-			return -1;
-		}
-		s = pkgsource_find(owner);
-		break;
-	case PKGSOURCE_OWNER_CONFLICT:
-		snprintf(err, err_size,
-		         "package %s is offered by %s and no source has been chosen for it -- choose "
-		         "one first (PUT /v1/pkg/source-ownership)",
-		         name, owner);
+	if (pkgsource_resolve(item, requested, 1, out, out_size, choose, err, err_size) != 0)
 		return -1;
-	default:
-		if (requested != NULL && requested[0] != '\0') {
-			s = pkgsource_find(requested);
-			if (s == NULL) {
-				snprintf(err, err_size, "no source named %s", requested);
-				return -1;
-			}
-			break;
-		}
-		for (i = 0; i < pkgsource_count(); i++)
-			if (pkgsource_at(i)->write) {
-				s = pkgsource_at(i);
-				writable++;
-			}
-		if (writable != 1) {
-			if (writable == 0)
-				snprintf(err, err_size,
-				         "no source is writable on this host -- mark one with "
-				         "`cixctl pkg source set NAME --write=on` (ADR-0324)");
-			else
-				snprintf(err, err_size,
-				         "package %s is new and %d sources are writable -- name the one "
-				         "it belongs to",
-				         name, writable);
-			return -1;
-		}
-		break;
-	}
+	s = pkgsource_find(out);
 	if (s == NULL || !s->write) {
 		snprintf(err, err_size,
 		         "source %s is read-only on this host: a source is written where it is "
 		         "authored (ADR-0324)",
-		         s != NULL ? s->name : owner);
+		         out);
 		return -1;
 	}
 	if (s->token[0] == '\0') {
@@ -15024,7 +15017,6 @@ static int resolve_commit_target(const char *name, const char *requested, char *
 		         s->name);
 		return -1;
 	}
-	snprintf(out, out_size, "%s", s->name);
 	return 0;
 }
 
@@ -15034,6 +15026,7 @@ enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, co
 	struct recipe_check check;
 	char target[PKG_SOURCE_NAME_MAX];
 	char host[256];
+	int choose = 0;
 	char *redacted;
 	enum pkg_error perr;
 
@@ -15043,7 +15036,7 @@ enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, co
 		         g_recipe_commit.version);
 		return PKG_ERR_BUSY;
 	}
-	if (resolve_commit_target(name, source, target, sizeof(target), err, err_size) != 0)
+	if (resolve_commit_target(name, source, target, sizeof(target), &choose, err, err_size) != 0)
 		return PKG_ERR_NOT_FOUND;
 
 	/* Every test a publish applies, before anything reaches git. */
@@ -15077,6 +15070,7 @@ enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, co
 	snprintf(g_recipe_commit.name, sizeof(g_recipe_commit.name), "%s", name);
 	snprintf(g_recipe_commit.version, sizeof(g_recipe_commit.version), "%s", check.version);
 	snprintf(g_recipe_commit.source, sizeof(g_recipe_commit.source), "%s", target);
+	g_recipe_commit.choose = choose;
 	/* ADR-0308: one flat file per revision. */
 	snprintf(g_recipe_commit.repo_path, sizeof(g_recipe_commit.repo_path),
 	         "recipes/package/%s@%s%s", name, check.version, PKG_RECIPE_CBS_SUFFIX);
@@ -15186,6 +15180,11 @@ void pkg_recipe_commit_done(int exit_status, void *unused)
 
 		snprintf(item, sizeof(item), "package:%s", g_recipe_commit.name);
 		pkgsource_offers_add(g_recipe_commit.source, item);
+		if (g_recipe_commit.choose) {
+			char cerr[256];
+
+			pkgsource_choose(item, g_recipe_commit.source, cerr, sizeof(cerr));
+		}
 	}
 
 	/* Git first, then here. A publish that fails now is not a lost

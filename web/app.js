@@ -11610,11 +11610,31 @@ function renderPkgSourceHeld(ownership, sources) {
 	}
 }
 
+/* ADR-0324: the recipe form's source choices, from the same list the
+ * Sources table renders -- never a second fetch. "" lets the host
+ * decide: the package's owner, or the only source. */
+function fillRecipeSourceSelect(sources) {
+	const select = document.getElementById("rf-source");
+	const keep = select.value;
+
+	while (select.options.length > 1)
+		select.remove(1);
+	for (const s of sources) {
+		const opt = document.createElement("option");
+
+		opt.value = s.name;
+		opt.textContent = s.name;
+		select.appendChild(opt);
+	}
+	select.value = sources.some((s) => s.name === keep) ? keep : "";
+}
+
 async function refreshPkgSources() {
 	try {
 		const data = await apiRequest("GET", CIX_API.listPkgSources());
 
 		cache.pkgSources = data.sources;
+		fillRecipeSourceSelect(data.sources);
 		renderPkgSourcesTable(data.sources);
 	} catch (e) {
 		simpleTableRows(document.getElementById("pkg-sources-body"), [], 7, refusalText(e, "recipe sources"));
@@ -13072,7 +13092,12 @@ document.getElementById("pkg-recipe-form").addEventListener("submit", async (eve
 	try {
 		const content = fileInput.files.length > 0 ? await readFileAsText(fileInput.files[0]) : contentField.value;
 
-		await apiRequest("POST", CIX_API.addPkgRecipe(), { name: name, content: content });
+		const source = document.getElementById("rf-source").value;
+		const body = { name: name, content: content };
+
+		if (source !== "")
+			body.source = source;
+		await apiRequest("POST", CIX_API.addPkgRecipe(), body);
 		clearStatus();
 		document.getElementById("pkg-recipe-form").reset();
 		closeModal();

@@ -987,6 +987,31 @@ static void http_serve_one(int fd, const char *root, int accept_put)
 	query = strchr(upath, '?');
 	if (query != NULL)
 		*query = '\0';
+	/*
+	 * A path under /private/<credential>/ is a private repository's
+	 * file: served only to a request carrying exactly
+	 * "Authorization: Basic <credential>", and 404 otherwise, as Gitea
+	 * answers a private repository. test_pkg uses it to prove a fetch
+	 * carries its owning source's token and no other (ADR-0324). The
+	 * rest of the path names the file.
+	 */
+	if (strncmp(upath, "/private/", 9) == 0) {
+		char want[sizeof(upath) + 40];
+		char *rest = strchr(upath + 9, '/');
+
+		if (rest == NULL) {
+			http_serve_reply(fd, "404 Not Found", 0);
+			return;
+		}
+		snprintf(want, sizeof(want), "\r\nAuthorization: Basic %.*s\r\n",
+		         (int)(rest - (upath + 9)), upath + 9);
+		if (strstr(req, want) == NULL) {
+			fprintf(stderr, "    fixture http: %s asked for without its credential\n", upath);
+			http_serve_reply(fd, "404 Not Found", 0);
+			return;
+		}
+		memmove(upath, rest, strlen(rest) + 1);
+	}
 	if (snprintf(path, sizeof(path), "%s%s", strcmp(root, "/") == 0 ? "" : root, upath) >=
 	        (int)sizeof(path) ||
 	    stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
