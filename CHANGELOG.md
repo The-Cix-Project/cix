@@ -6,6 +6,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### No package recipe deletes its own documentation (#491)
+
+ADR-0306 stopped the finalize phase deleting `usr/share/{man,info,doc,locale,i18n}`. That gave nothing back to the 57 recipes that deleted those trees themselves. The last three now keep them: glibc 2.44-20, gcc 16.2.0-18 and node 24.21.0-3, each built and installed on 192.168.15.95. The new SELFTEST `test_recipe_docs` keeps it that way. It reads the latest revision of every package recipe in the corpus the release build pins and fails if one removes `usr/share` or one of those five trees, by `remove`, `remove tree` or an argument of `run "rm"`. Removing a single named file is still allowed, since a package giving up a path another owns is how ADR-0319 is met. Before judging the corpus it checks its own pattern against a fixture of known answers. Older revisions are history (ADR-0107) and are not judged.
+
 ### The package table holds 1024 entries, and an install it cannot continue says so (#559)
 
 cixd keeps one entry per package per image across every image on the host, in a table of `PKG_MAX_PACKAGES` slots. On 192.168.15.95 it reached its 256 on 2026-10-02, and from then every new install failed. An explicit install answered `package table full`. A dependency step was worse: installing node into a fresh image put in five dependencies and then stopped, with no row for gcc or node, no failure and no log line, because the chain gave up without recording why. The table now holds 1024 entries; it is static storage, so unused slots cost nothing. A chain that cannot start its next dependency now logs an error naming the requested package, its image, the dependency and the reason.
