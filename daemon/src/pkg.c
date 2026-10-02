@@ -8253,33 +8253,105 @@ static enum pkg_error recipe_persist_failed(const char *what)
 }
 
 /*
- * ADR-0324: is a CBS recipe arriving for a version already published
- * the same recipe? Asked of the two explain documents, ignoring the one
- * permitted difference -- the artifact approval #492 writes in after a
- * build -- exactly as approve_cbs_artifact() asks it. A text comparison
- * would call every approved recipe on a host different from git, because
- * the daemon places that line where the human-written copy does not
- * (measured: cbs@v0.1.100-1, store against corpus, 2026-10-02).
- * 1 when they mean the same thing, 0 when they do not or cannot be read.
+ * The approval line #492 writes into a CBS recipe's metadata block:
+ * `"artifact_sha256" "<hex>"` alone on its line. Sets *hex to the
+ * value's first byte when `line` is one.
  */
-static int recipe_explains_equal(const char *recipe_path, const char *explain_json)
+static int cbs_approval_line(const char *line, size_t len, const char **hex, size_t *hex_len)
 {
-	char stored_path[PATH_MAX];
+	static const char key[] = "\"artifact_sha256\"";
+	const char *p = line, *end = line + len, *q;
+
+	while (p < end && (*p == ' ' || *p == '\t'))
+		p++;
+	if ((size_t)(end - p) < sizeof(key) - 1 || memcmp(p, key, sizeof(key) - 1) != 0)
+		return 0;
+	p += sizeof(key) - 1;
+	while (p < end && (*p == ' ' || *p == '\t'))
+		p++;
+	if (p == end || *p != '"')
+		return 0;
+	q = memchr(p + 1, '"', (size_t)(end - p - 1));
+	if (q == NULL)
+		return 0;
+	*hex = p + 1;
+	*hex_len = (size_t)(q - p - 1);
+	return 1;
+}
+
+/*
+ * ADR-0324: is a CBS recipe arriving for a version already published
+ * the same recipe? Asked of the TEXT, because the text is the recipe:
+ * `cbs explain --json` does not carry a phase's operations, so two
+ * recipes that install different files explain identically (measured:
+ * test_pkg on 192.168.15.95, 0.2.57-434, a changed `mkdir` path was
+ * called the same recipe). One difference is permitted, the artifact
+ * approval #492 writes in after a build, because the daemon places that
+ * line where a hand-written copy does not (measured: cbs@v0.1.100-1,
+ * store against corpus, 2026-10-02) -- so approval lines are skipped on
+ * both sides, and two approvals naming different bytes are a
+ * divergence, not a match. Both sides are redacted alike first: a
+ * stored recipe older than {{REPO_TOKEN}} still carries the token
+ * (#405) where the incoming copy carries the placeholder.
+ * 1 when they are the same recipe, 0 when they are not or cannot be read.
+ */
+static int recipe_cbs_texts_equal(const char *recipe_path, const char *incoming)
+{
 	char *stored = NULL;
 	size_t stored_len = 0;
-	struct json_value *a, *b;
+	const char *a, *b, *ahex = NULL, *bhex = NULL;
+	size_t ahex_len = 0, bhex_len = 0;
 	int same = 0;
 
-	cbs_explain_path(recipe_path, stored_path, sizeof(stored_path));
-	if (explain_json == NULL || persist_read_file(stored_path, &stored, &stored_len) != 0 ||
+	if (incoming == NULL || persist_read_file(recipe_path, &stored, &stored_len) != 0 ||
 	    stored == NULL)
 		return 0;
-	a = json_parse(stored, stored_len);
-	b = json_parse(explain_json, strlen(explain_json));
-	if (a != NULL && b != NULL)
-		same = jsondiff_equal_ignoring(a, b, "artifact_sha256") == 1;
-	json_free(a);
-	json_free(b);
+	redact_repo_token(stored, stored_len + 1);
+	a = stored;
+	b = incoming;
+	for (;;) {
+		const char *anl, *bnl, *hex;
+		size_t alen, blen, hex_len;
+
+		/* Skip approval lines on each side, remembering their values. */
+		while (*a != '\0') {
+			anl = strchr(a, '\n');
+			alen = anl != NULL ? (size_t)(anl - a) : strlen(a);
+			if (!cbs_approval_line(a, alen, &hex, &hex_len))
+				break;
+			if (ahex == NULL) {
+				ahex = hex;
+				ahex_len = hex_len;
+			}
+			a = anl != NULL ? anl + 1 : a + alen;
+		}
+		while (*b != '\0') {
+			bnl = strchr(b, '\n');
+			blen = bnl != NULL ? (size_t)(bnl - b) : strlen(b);
+			if (!cbs_approval_line(b, blen, &hex, &hex_len))
+				break;
+			if (bhex == NULL) {
+				bhex = hex;
+				bhex_len = hex_len;
+			}
+			b = bnl != NULL ? bnl + 1 : b + blen;
+		}
+		if (*a == '\0' || *b == '\0') {
+			same = *a == '\0' && *b == '\0';
+			break;
+		}
+		anl = strchr(a, '\n');
+		bnl = strchr(b, '\n');
+		alen = anl != NULL ? (size_t)(anl - a) : strlen(a);
+		blen = bnl != NULL ? (size_t)(bnl - b) : strlen(b);
+		if (alen != blen || memcmp(a, b, alen) != 0)
+			break;
+		a = anl != NULL ? anl + 1 : a + alen;
+		b = bnl != NULL ? bnl + 1 : b + blen;
+	}
+	if (same && ahex != NULL && bhex != NULL &&
+	    (ahex_len != bhex_len || memcmp(ahex, bhex, ahex_len) != 0))
+		same = 0;
 	free(stored);
 	return same;
 }
@@ -8615,7 +8687,7 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 		 * rather than count it as a quiet skip.
 		 */
 		if (is_cbs) {
-			same = recipe_explains_equal(recipe_path, explain_json);
+			same = recipe_cbs_texts_equal(recipe_path, redacted);
 		} else if (persist_read_file(recipe_path, &stored, &stored_len) == 0 &&
 		           stored != NULL) {
 			only_approval = recipe_adds_only_artifact_sha256(stored, content);
