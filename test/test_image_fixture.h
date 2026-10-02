@@ -388,7 +388,9 @@ int test_recipe_path(const char *kind, const char *name, const char *version,
  * a daemon uploaded. With accept_put, a POST to a path containing
  * /contents/ is a forge's create-file call (ADR-0323): its body is kept
  * as <root>/<basename>.request.json and answered 201 with commit sha
- * TEST_FORGE_COMMIT_SHA, or 422 when that file already exists. A GET
+ * TEST_FORGE_COMMIT_SHA, or 422 when that file already exists; a POST to a
+ * path ending in /contents is the batch change call, kept the same way as
+ * <root>/contents.request.json. A GET
  * for /private/<credential>/<path> serves <path> only to a request whose
  * Authorization header is exactly "Basic <credential>", and is 404
  * otherwise, as a private repository answers. Stop it

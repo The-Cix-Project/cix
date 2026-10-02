@@ -7399,7 +7399,10 @@ skip_resume:
 				                      sha, NULL,
 				                      "            tool \"bash\"\n"
 				                      "            tool \"coreutils\"\n",
-				                      NULL, "", "        run \"true\" {\n        }\n", install);
+				                      NULL,
+				                      /* a metadata block, so an approval has a place to go */
+				                      "    metadata {\n        \"changelog\" \"fixture\"\n    }\n\n",
+				                      "        run \"true\" {\n        }\n", install);
 				snprintf(path, sizeof(path), "%s/tree/%s/recipes/package/%s@1.0-1.cbs", forge_dir,
 				         repos[i][1], pkgs[j]);
 				fp = fopen(path, "w");
@@ -7554,6 +7557,150 @@ skip_resume:
 				ok = 0;
 			}
 			cix_response_free(&r);
+
+			/*
+			 * Approvals travel both ways (ADR-0324). Git gains one: the
+			 * next sync adopts it, nothing rebuilds. Then git loses it,
+			 * as a hand edit might: this host now holds an approval git
+			 * lacks, srcb is made writable, and the next sync writes the
+			 * stored text back -- one batch commit, the update naming
+			 * the blob it read, the only change the approval line.
+			 */
+			{
+				static const char approval[] =
+				    "abababababababababababababababababababababababababababababababab";
+				char gitfile[PATH_MAX], served[PATH_MAX], req_path[PATH_MAX];
+				char *text = NULL, *posted_req = NULL, *b64 = NULL;
+				size_t text_len = 0, posted_len = 0;
+				struct json_value *sent = NULL;
+				const struct json_value *file0 = NULL;
+				int waited, written = 0;
+
+				snprintf(gitfile, sizeof(gitfile), "%s/tree/%s/recipes/package/shared@1.0-1.cbs",
+				         forge_dir, repos[1][1]);
+				if (run_cmd("sed -i '/^    metadata {$/a\\        \"artifact_sha256\" \"%s\"' '%s'",
+				            approval, gitfile) != 0 ||
+				    run_cmd("tar -cf '%s/api/v1/repos/%s/archive/main.tar.gz' -C '%s/tree/%.2s' "
+				            "'%s'",
+				            forge_dir, repos[1][1], forge_dir, repos[1][1], repos[1][1] + 3) != 0) {
+					fprintf(stderr, "FAIL: ADR-0324 could not add an approval to srcb's copy\n");
+					ok = 0;
+				}
+				if (sync_and_wait(&client, st_s, sizeof(st_s), &r) != 0 ||
+				    r.body == NULL || strstr(r.body, "\"refreshed\":1") == NULL) {
+					fprintf(stderr, "FAIL: ADR-0324 an approval git carries must be adopted as a "
+					                "refresh: %s\n",
+					        r.body != NULL ? r.body : "(no body)");
+					ok = 0;
+				}
+				cix_response_free(&r);
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/recipes/shared", NULL, &r) != 0 ||
+				    r.body == NULL || strstr(r.body, approval) == NULL) {
+					fprintf(stderr, "FAIL: ADR-0324 the adopted approval must be in the stored "
+					                "recipe: %s\n",
+					        r.body != NULL ? r.body : "(no body)");
+					ok = 0;
+				}
+				cix_response_free(&r);
+
+				/* Git loses it; srcb becomes writable; the forge serves the file. */
+				if (run_cmd("sed -i '/artifact_sha256/d' '%s'", gitfile) != 0 ||
+				    run_cmd("tar -cf '%s/api/v1/repos/%s/archive/main.tar.gz' -C '%s/tree/%.2s' "
+				            "'%s'",
+				            forge_dir, repos[1][1], forge_dir, repos[1][1], repos[1][1] + 3) != 0 ||
+				    run_cmd("mkdir -p '%s/api/v1/repos/%s/contents/recipes/package'", forge_dir,
+				            repos[1][1]) != 0 ||
+				    slurp_file(gitfile, &text, &text_len) != 0 ||
+				    (b64 = malloc(((text_len + 2) / 3) * 4 + 1)) == NULL ||
+				    base64_encode((const unsigned char *)text, text_len, b64,
+				                  ((text_len + 2) / 3) * 4 + 1) != 0) {
+					fprintf(stderr, "FAIL: ADR-0324 could not stage git's copy for write-back\n");
+					ok = 0;
+				} else {
+					FILE *fp;
+
+					snprintf(served, sizeof(served),
+					         "%s/api/v1/repos/%s/contents/recipes/package/shared@1.0-1.cbs",
+					         forge_dir, repos[1][1]);
+					fp = fopen(served, "w");
+					if (fp == NULL ||
+					    fprintf(fp, "{\"sha\":\"b10bb10b\",\"encoding\":\"base64\","
+					                "\"content\":\"%s\"}",
+					            b64) < 0) {
+						fprintf(stderr, "FAIL: ADR-0324 could not serve git's copy\n");
+						ok = 0;
+					}
+					if (fp != NULL)
+						fclose(fp);
+				}
+				free(text);
+				free(b64);
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "PUT", "/v1/pkg/sources/srcb",
+				                       "{\"write\":true,\"token\":\"srcb-token\"}", &r) != 0 ||
+				    r.status != 200) {
+					fprintf(stderr, "FAIL: ADR-0324 making srcb writable, status=%d\n", r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+				if (sync_and_wait(&client, st_s, sizeof(st_s), &r) != 0 || !str_eq(st_s, "success")) {
+					fprintf(stderr, "FAIL: ADR-0324 the write-back sync ended %s\n", st_s);
+					ok = 0;
+				}
+				cix_response_free(&r);
+				for (waited = 0; waited < 60 && !written; waited++) {
+					memset(&r, 0, sizeof(r));
+					if (cix_client_request(&client, "GET", "/v1/pkg/sync", NULL, &r) == 0 &&
+					    r.body != NULL && strstr(r.body, "\"written\":1") != NULL)
+						written = 1;
+					else
+						usleep(500000);
+					if (!written && waited == 59)
+						fprintf(stderr, "FAIL: ADR-0324 the approval was never written back: "
+						                "%s\n",
+						        r.body != NULL ? r.body : "(no body)");
+					cix_response_free(&r);
+				}
+				if (!written)
+					ok = 0;
+				snprintf(req_path, sizeof(req_path), "%s/contents.request.json", forge_dir);
+				sent = slurp_file(req_path, &posted_req, &posted_len) == 0
+				           ? json_parse(posted_req, posted_len)
+				           : NULL;
+				if (sent != NULL) {
+					const struct json_value *files = json_object_get(sent, "files");
+
+					if (files != NULL && files->type == JSON_ARRAY && files->u.array.count == 1)
+						file0 = files->u.array.items[0];
+				}
+				if (file0 == NULL ||
+				    !str_eq(json_as_string(json_object_get(file0, "operation")), "update") ||
+				    !str_eq(json_as_string(json_object_get(file0, "path")),
+				            "recipes/package/shared@1.0-1.cbs") ||
+				    !str_eq(json_as_string(json_object_get(file0, "sha")), "b10bb10b") ||
+				    json_as_string(json_object_get(file0, "content")) == NULL) {
+					fprintf(stderr, "FAIL: ADR-0324 the write-back must be one update of "
+					                "shared's file naming the blob it read: %s\n",
+					        posted_req != NULL ? posted_req : "(nothing posted)");
+					ok = 0;
+				} else {
+					unsigned char decoded[8192];
+					int dn = base64_decode(json_as_string(json_object_get(file0, "content")),
+					                       decoded, sizeof(decoded) - 1);
+
+					if (dn >= 0)
+						decoded[dn] = '\0';
+					if (dn < 0 || strstr((char *)decoded, approval) == NULL ||
+					    strstr((char *)decoded, "shared-from-srcb") == NULL) {
+						fprintf(stderr, "FAIL: ADR-0324 the written-back text must be the stored "
+						                "recipe carrying its approval\n");
+						ok = 0;
+					}
+				}
+				json_free(sent);
+				free(posted_req);
+			}
 		}
 
 		for (i = 0; i < 2; i++) {

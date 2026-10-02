@@ -1610,6 +1610,20 @@ void pkg_recipe_commit_abort(const char *why);
 void pkg_recipe_commit_write_json(struct json_writer *w);
 
 /*
+ * ADR-0324: an approval this host writes into a recipe writes back to
+ * git, through a helper of its own (one at a time, one commit per batch
+ * of one source). ready() is 1 when a batch was taken and the caller
+ * must run work() in a helper and done() in the parent after it -- or
+ * abort() when the helper could not start. Held while a recipe commit
+ * runs. write_json() is GET /v1/pkg/sync's `writeback`.
+ */
+int pkg_approval_writeback_ready(void);
+void pkg_approval_writeback_abort(const char *why);
+int pkg_approval_writeback_work(void *unused);
+void pkg_approval_writeback_done(int exit_status, void *unused);
+void pkg_approval_writeback_write_json(struct json_writer *w);
+
+/*
  * Starts an async fetch of the configured repo's own archive (forge-
  * specific URL/auth, see pkg.c's build_sync_fetch_request()) --
  * PKG_ERR_BUSY if a sync is already running, PKG_ERR_NOT_FOUND if no

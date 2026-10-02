@@ -971,7 +971,9 @@ static void http_serve_one(int fd, const char *root, int accept_put)
 		http_serve_reply(fd, "400 Bad Request", 0);
 		return;
 	}
-	if (accept_put && strcmp(method, "POST") == 0 && strstr(upath, "/contents/") != NULL) {
+	if (accept_put && strcmp(method, "POST") == 0 &&
+	    (strstr(upath, "/contents/") != NULL ||
+	     (strlen(upath) >= 9 && strcmp(upath + strlen(upath) - 9, "/contents") == 0))) {
 		http_serve_forge_create(fd, root, upath, req, used);
 		return;
 	}

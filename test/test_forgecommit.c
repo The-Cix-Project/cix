@@ -69,6 +69,48 @@ static void test_body(void)
 	      "a missing branch is refused");
 }
 
+/* ADR-0324: the batch update body -- every file an "update" naming its blob. */
+static void test_update_body(void)
+{
+	static const char a[] = "package \"a\" {\n}\n";
+	static const char b[] = "package \"b\" {\n}\n";
+	struct forge_file_update files[2] = {
+		{ "recipes/package/a@1-1.cbs", a, sizeof(a) - 1, "1111" },
+		{ "recipes/package/b@1-1.cbs", b, sizeof(b) - 1, "2222" },
+	};
+	char *body = forge_gitea_update_body(files, 2, "main", "2 approvals");
+	struct json_value *root = body != NULL ? json_parse(body, strlen(body)) : NULL;
+	const struct json_value *arr = root != NULL ? json_object_get(root, "files") : NULL;
+
+	check(root != NULL, "the update body is valid JSON");
+	check(arr != NULL && arr->type == JSON_ARRAY && arr->u.array.count == 2,
+	      "it carries one entry per file");
+	if (arr != NULL && arr->type == JSON_ARRAY && arr->u.array.count == 2) {
+		const struct json_value *f1 = arr->u.array.items[1];
+		const char *b64 = json_as_string(json_object_get(f1, "content"));
+		unsigned char decoded[64];
+		int n = b64 != NULL ? base64_decode(b64, decoded, sizeof(decoded)) : -1;
+
+		check(json_as_string(json_object_get(f1, "operation")) != NULL &&
+		          strcmp(json_as_string(json_object_get(f1, "operation")), "update") == 0,
+		      "each file is an update");
+		check(json_as_string(json_object_get(f1, "sha")) != NULL &&
+		          strcmp(json_as_string(json_object_get(f1, "sha")), "2222") == 0,
+		      "each names the blob it replaces");
+		check(n == (int)(sizeof(b) - 1) && memcmp(decoded, b, sizeof(b) - 1) == 0,
+		      "and its content round-trips");
+	}
+	check(json_as_string(json_object_get(root, "branch")) != NULL &&
+	          strcmp(json_as_string(json_object_get(root, "branch")), "main") == 0,
+	      "the branch is the source's ref");
+	json_free(root);
+	free(body);
+	files[1].blob_sha = "";
+	check(forge_gitea_update_body(files, 2, "main", "m") == NULL,
+	      "an update with no blob to lock on is refused");
+	check(forge_gitea_update_body(files, 0, "main", "m") == NULL, "an empty batch is refused");
+}
+
 static void test_commit_sha(void)
 {
 	static const char ok[] =
@@ -111,6 +153,7 @@ int main(void)
 	printf("test_forgecommit\n");
 	test_body();
 	test_commit_sha();
+	test_update_body();
 	test_refusals();
 	printf("FORGECOMMIT RESULT: %s (%d failure(s))\n", failures == 0 ? "PASS" : "FAIL",
 	       failures);

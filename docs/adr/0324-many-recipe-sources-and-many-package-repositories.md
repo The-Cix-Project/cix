@@ -88,6 +88,9 @@ The first sync on 192.168.15.95 under this ADR reported 121 versions that git he
 - **Git is 100% authoritative for recipes.** A sync whose copy differs from the stored one only in comment or blank lines, or carries an artifact approval the box lacks, replaces the stored text, and nothing rebuilds. Recorded as `refreshed`, not `divergent`. The box keeps its own approval. A publish made on the box itself is not git and is not refreshed this way.
 - **A real divergence is settled per version, by an operator, not by the daemon:** the version stays with the bytes that were built (approved or installed), and git is restored to them. A real change becomes the next release in git. Where neither copy was ever built, git wins. Applied to the 9: four restored in git, five taken from git.
 - **A change made on a box writes back to git** (*"if we're editing the recipes on our .95 box, then do a writeback, but if not then make changes on git only"*), and that includes the approval a box writes into a recipe after a build.
+  - **Only to a source the host may write, with a token.** A host reading someone else's catalogue keeps its approvals to itself; that is the design, not a gap.
+  - **Never blind.** Git's copy is replaced only when it is the same recipe without the approval, and the replacement names the blob it read, so a file changed meanwhile is refused by the forge. One commit per batch, since every commit to the owner's forge reaches the public catalogue.
+  - **Retried by the sync, with no state of its own:** every sync queues each version whose stored copy carries an approval git lacks.
 
 The comparison is over the text because `cbs explain --json` does not carry a phase's operations; recipes installing different files explain identically (measured by `test_pkg` on 192.168.15.95, 0.2.57-434).
 

@@ -20697,6 +20697,41 @@ components:
           description: >
             Items skipped because more than one source offers them and no
             choice has been made (GET /pkg/source-ownership).
+        writeback:
+          type: object
+          description: >
+            ADR-0324: artifact approvals this host holds that git's copy lacks, written back
+            to the owning source when this host may write it (a write source with a token).
+            Queued after a build approves its artifact, and by every sync that finds one, so a
+            write-back that failed or missed is tried again at the next sync. One commit per
+            batch. Git's copy is written only when it is the same recipe without an approval,
+            and the update names the blob it read; anything else is left for an operator and
+            logged.
+          required: [pending, running, written, not_written, failed, last_commit, error]
+          properties:
+            pending:
+              type: integer
+              description: Versions queued to be written back.
+            running:
+              type: boolean
+            written:
+              type: integer
+              description: Approvals written back since the daemon started.
+            not_written:
+              type: integer
+              description: >
+                Versions examined and left alone since the daemon started: no file under that
+                path in git, or git's copy differs in more than the approval.
+            failed:
+              type: integer
+              description: Versions in batches the forge refused or could not be reached for.
+            last_commit:
+              type: string
+              nullable: true
+            error:
+              type: string
+              nullable: true
+              description: Why the most recent batch failed, or null.
         sources:
           type: array
           description: What the most recent sync did, per source, in list order.

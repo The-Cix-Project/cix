@@ -8127,6 +8127,32 @@ static void apply_rolling_container_restarts(void);
 static void apply_pending_deployments(void); /* ADR-0270 */
 
 /*
+ * ADR-0324: start the next approval write-back, if pkg.c has one ready.
+ * Called wherever queued package work is started, and again as each
+ * write-back finishes, so a backlog drains one commit at a time.
+ */
+static void start_queued_approval_writeback(void);
+
+static void approval_writeback_done(int exit_status, void *ctx)
+{
+	pkg_approval_writeback_done(exit_status, ctx);
+	start_queued_approval_writeback();
+}
+
+static void start_queued_approval_writeback(void)
+{
+	char err[256];
+
+	if (!pkg_approval_writeback_ready())
+		return;
+	if (helper_run(pkg_approval_writeback_work, NULL, approval_writeback_done, NULL,
+	               "pkg approval write-back") != 0) {
+		snprintf(err, sizeof(err), "could not start the write-back helper: %s", strerror(errno));
+		pkg_approval_writeback_abort(err);
+	}
+}
+
+/*
  * ADR-0107: called at every point a completed/failed pkg job might
  * have just freed pkg.c's own single-job-in-flight slot -- tries to
  * start whatever rolling-image rebuild is queued (pkg_recipe_add()'s
@@ -8155,6 +8181,7 @@ static void try_start_queued_pkg_rebuild(void)
 	report_default_image_seed_result(); /* #189 -- says once when the default image became runnable */
 	apply_rolling_container_restarts();
 	apply_pending_deployments(); /* ADR-0270 -- same moment, same reason */
+	start_queued_approval_writeback(); /* ADR-0324 -- same moment, same reason */
 }
 
 /*
@@ -10986,6 +11013,7 @@ static void pkg_sync_extract_done(int exit_status, void *ctx)
 {
 	(void)ctx;
 	pkg_sync_completed(exit_status == 0 ? 0 : -2);
+	start_queued_approval_writeback(); /* ADR-0324: what the sync found */
 }
 
 /*
@@ -11051,6 +11079,7 @@ static void handle_pkg_sync_fetch_event(struct conn *cc)
 		                "the event loop instead, which stalls it (#367)",
 		                strerror(errno));
 		pkg_sync_completed(pkg_sync_extract_work(NULL));
+		start_queued_approval_writeback();
 	}
 }
 

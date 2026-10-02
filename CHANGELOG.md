@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An approval this host writes into a recipe is written back to git (ADR-0324)
+
+The owner, 2026-10-02: approvals write back too. Before this, the approval #492 writes into a recipe after a build stayed on the host that built it. No other host took the cache hit, and that host's copy quietly differed from git on every built package: 129 versions on 192.168.15.95, measured the same day.
+- **Two ways in.** After a build approves its artifact, the version is queued under the path `pkg recipe commit` writes. And every sync queues each version whose stored copy carries an approval git's lacks, under the file the sync read. The sync is the reconciler: a missed path, a forge that was down, or a lost race is retried there.
+- **Never blind.** In a helper, the host reads git's copy (`repoGetContents`) and writes only when it is the same recipe without the approval. The batch update (`repoChangeFiles`, one commit, read from Gitea 1.25.4's own API spec) names each blob it read, so a file changed meanwhile is refused by the forge. The stored text is redacted first, so no token leaves the host.
+- **Only to a source the host may write, with a token.** A host reading someone else's catalogue keeps its approvals.
+- **Visible on `GET /v1/pkg/sync`** as `writeback` (pending, written, not written, failed, last commit, error), and in `cixctl pkg sync-status`.
+- **Also:** the reason a sync could not add a CBS recipe is now its CPDL diagnostic, which `POST /v1/pkg/recipes` also returns, not the generic sentence. That covers `probe-cbspackage@1.cbs`, which does not parse under the current cbs.
+- **Tests:** `test_forgecommit` checks the batch body. `test_pkg` has git gain an approval (the sync adopts it, nothing rebuilds), then lose it. It then checks the next sync writes the stored text back as one update naming the served blob.
+
 ### Git refreshes a recipe that differs only in comments; a sync names what it could not add (ADR-0324, #561)
 
 Git is authoritative for recipes (the owner, 2026-10-02). The first sync on 192.168.15.95 found 121 versions git held with different text from the box, all edited in git after the box published them.

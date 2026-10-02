@@ -8394,6 +8394,13 @@ static int cbs_metadata_insert_point(const char *text, size_t *out_off);
 static void approve_cbs_artifact(const char *recipe_path, const char *name, const char *version,
                                  const char *sha);
 
+/* What a sync learned from publishing one recipe it carries (ADR-0324). */
+struct sync_outcome {
+	int refreshed; /* the stored text became git's */
+	int writeback; /* this host holds an approval git's copy lacks */
+	char version[PKG_VERSION_MAX];
+};
+
 /*
  * ADR-0324: git is authoritative for recipes, so a sync whose copy of a
  * version this host already holds differs only in comments, or carries
@@ -8452,7 +8459,7 @@ static enum pkg_error recipe_cbs_refresh(const char *name, const char *version,
  */
 static enum pkg_error recipe_publish(const char *name, const char *content,
                                      enum pkg_recipe_format format, int *out_was_approval,
-                                     struct recipe_check *check, int *sync_refreshed)
+                                     struct recipe_check *check, struct sync_outcome *sync)
 {
 	char *redacted;
 	char name_dir[PATH_MAX];
@@ -8523,6 +8530,7 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 		if (run_cbs_explain(staging_path, explain_json, PKG_EXPLAIN_MAX, &json_len, err,
 		                     sizeof(err)) != 0) {
 			logstore_write("cixd", "error", "pkg: recipe %s rejected: %s", name, err);
+			snprintf(g_recipe_add_err, sizeof(g_recipe_add_err), "%s", err);
 			unlink(staging_path);
 			free(redacted);
 			free(explain_json);
@@ -8531,6 +8539,7 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 		ex = cbs_explain_parse(explain_json, json_len, err, sizeof(err));
 		if (ex == NULL) {
 			logstore_write("cixd", "error", "pkg: recipe %s rejected: %s", name, err);
+			snprintf(g_recipe_add_err, sizeof(g_recipe_add_err), "%s", err);
 			unlink(staging_path);
 			free(redacted);
 			free(explain_json);
@@ -8770,9 +8779,15 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 			    recipe_cbs_relation(recipe_path, redacted, stored_sha, incoming_sha);
 
 			same = rel == CBS_SAME;
+			if (sync != NULL) {
+				/* An approval this host holds and git lacks goes back (ADR-0324). */
+				snprintf(sync->version, sizeof(sync->version), "%s", parsed.version);
+				sync->writeback = rel != CBS_DIVERGENT && stored_sha[0] != '\0' &&
+				                  incoming_sha[0] == '\0';
+			}
 			/* Only a sync refreshes: git is the authority, and a publish
 			 * on this host is not git (ADR-0324). */
-			if (sync_refreshed != NULL && check == NULL && rel != CBS_DIVERGENT &&
+			if (sync != NULL && check == NULL && rel != CBS_DIVERGENT &&
 			    (rel == CBS_COMMENTS || (incoming_sha[0] != '\0' && stored_sha[0] == '\0'))) {
 				enum pkg_error rerr =
 				    recipe_cbs_refresh(name, parsed.version, recipe_path, staging_path,
@@ -8781,7 +8796,7 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 				free(redacted);
 				free(explain_json);
 				if (rerr == PKG_OK)
-					*sync_refreshed = 1;
+					sync->refreshed = 1;
 				return rerr;
 			}
 		} else if (persist_read_file(recipe_path, &stored, &stored_len) == 0 &&
@@ -15263,37 +15278,51 @@ void pkg_recipe_commit_abort(const char *why)
 
 /* The helper's work: the forge call, and nothing that changes memory
  * the parent reads (ADR-0278). */
+/* A source as a forge to write to, with the buffers its fields point into. */
+struct source_forge {
+	char scheme[16], host[256], owner[256], repo[256];
+	struct forge_target t;
+};
+
+static int source_forge_target(const char *source, struct source_forge *f, char *err,
+                               size_t err_size)
+{
+	const struct pkg_source *s = pkgsource_find(source);
+
+	if (s == NULL || parse_repo_url(s->url, f->scheme, sizeof(f->scheme), f->host,
+	                                sizeof(f->host), f->owner, sizeof(f->owner), f->repo,
+	                                sizeof(f->repo)) != 0) {
+		snprintf(err, err_size, "source %s is gone, or its URL does not name an owner and repo",
+		         source);
+		return -1;
+	}
+	memset(&f->t, 0, sizeof(f->t));
+	f->t.kind = s->kind;
+	f->t.scheme = f->scheme;
+	f->t.host = f->host;
+	f->t.owner = f->owner;
+	f->t.repo = f->repo;
+	f->t.token = s->token;
+	f->t.branch = s->ref[0] != '\0' ? s->ref : PKG_SOURCE_DEFAULT_REF;
+	return 0;
+}
+
 int pkg_recipe_commit_work(void *unused)
 {
-	const struct pkg_source *s;
-	char scheme[16], host[256], owner[256], repo[256];
 	char result_path[PATH_MAX];
 	char sha[FORGE_COMMIT_SHA_MAX];
 	char err[PKG_ERROR_MAX];
-	struct forge_target t;
+	struct source_forge f;
 	long status = 0;
 	int rc;
 
 	(void)unused;
 	recipe_commit_result_path(result_path, sizeof(result_path));
-	s = pkgsource_find(g_recipe_commit.source);
-	if (s == NULL || parse_repo_url(s->url, scheme, sizeof(scheme), host, sizeof(host), owner,
-	                                sizeof(owner), repo, sizeof(repo)) != 0) {
-		snprintf(err, sizeof(err), "source %s is gone, or its URL does not name an owner and "
-		                           "repo",
-		         g_recipe_commit.source);
+	if (source_forge_target(g_recipe_commit.source, &f, err, sizeof(err)) != 0) {
 		persist_atomic_write(result_path, err, strlen(err));
 		return 1;
 	}
-	memset(&t, 0, sizeof(t));
-	t.kind = s->kind;
-	t.scheme = scheme;
-	t.host = host;
-	t.owner = owner;
-	t.repo = repo;
-	t.token = s->token;
-	t.branch = s->ref[0] != '\0' ? s->ref : PKG_SOURCE_DEFAULT_REF;
-	rc = forge_create_file(&t, g_recipe_commit.repo_path, g_recipe_commit.content,
+	rc = forge_create_file(&f.t, g_recipe_commit.repo_path, g_recipe_commit.content,
 	                       strlen(g_recipe_commit.content), g_recipe_commit.message, g_pkg_dir,
 	                       sha, sizeof(sha), &status, err, sizeof(err));
 	if (rc != 0) {
@@ -15399,6 +15428,410 @@ void pkg_recipe_commit_write_json(struct json_writer *w)
 	jw_int(w, (long long)g_recipe_commit.started_at);
 	jw_key(w, "finished_at");
 	jw_int(w, (long long)g_recipe_commit.finished_at);
+	jw_obj_close(w);
+}
+
+/*
+ * ---- approval write-back (ADR-0324) ----
+ *
+ * Git is authoritative for recipes, and a change made on a host writes
+ * back -- including the artifact approval #492 writes into a recipe
+ * after a build (the owner, 2026-10-02). Without it the approval stays
+ * on this host: no other host takes the cache hit, and the stored text
+ * quietly differs from git on every built package.
+ *
+ * Two ways in. After a build, approve_published_artifact() queues the
+ * version under the path `recipe commit` itself writes. And every sync
+ * queues each version whose stored copy has an approval git's lacks,
+ * under the filename the sync actually read -- the sync is the
+ * reconciler, so a guess that missed, a forge that was down, or a
+ * write that lost a race is retried there, with no state of its own.
+ * Only for a source this host may write with a token: a host reading
+ * someone else's catalogue keeps its approvals to itself.
+ *
+ * One helper at a time, one commit per batch of one source: every
+ * commit to the owner's forge is mirrored to the public catalogue. The
+ * guard runs in the helper against git's bytes at write time: the store
+ * text (redacted -- 24 stored recipes predate {{REPO_TOKEN}}, #405) is
+ * written only when git's copy is the same recipe without an approval,
+ * and the update names the blob it read, so a file changed meanwhile is
+ * refused by the forge rather than overwritten.
+ */
+struct writeback_item {
+	char name[PKG_NAME_MAX];
+	char version[PKG_VERSION_MAX];
+	char source[PKG_SOURCE_NAME_MAX];
+	char path[PATH_MAX]; /* in the repository */
+};
+
+#define WRITEBACK_BATCH_MAX 256
+
+static struct writeback_item *g_wb_queue;
+static int g_wb_count;
+static int g_wb_cap;
+static struct {
+	int running;
+	int batch; /* queue items the running helper took */
+	int written;
+	int left;  /* not written: git already had it, or holds something else */
+	int failed;
+	char last_commit[FORGE_COMMIT_SHA_MAX];
+	char error[PKG_ERROR_MAX];
+	time_t last_at;
+} g_wb;
+
+static void writeback_result_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/approval-writeback.result", g_pkg_dir);
+}
+
+static void writeback_enqueue(const char *name, const char *version, const char *source,
+                              const char *path)
+{
+	int i;
+
+	for (i = 0; i < g_wb_count; i++)
+		if (strcmp(g_wb_queue[i].name, name) == 0 &&
+		    strcmp(g_wb_queue[i].version, version) == 0)
+			return;
+	if (g_wb_count == g_wb_cap) {
+		int cap = g_wb_cap == 0 ? 64 : g_wb_cap * 2;
+		struct writeback_item *n = realloc(g_wb_queue, (size_t)cap * sizeof(*n));
+
+		if (n == NULL)
+			return;
+		g_wb_queue = n;
+		g_wb_cap = cap;
+	}
+	snprintf(g_wb_queue[g_wb_count].name, sizeof(g_wb_queue[0].name), "%s", name);
+	snprintf(g_wb_queue[g_wb_count].version, sizeof(g_wb_queue[0].version), "%s", version);
+	snprintf(g_wb_queue[g_wb_count].source, sizeof(g_wb_queue[0].source), "%s", source);
+	snprintf(g_wb_queue[g_wb_count].path, sizeof(g_wb_queue[0].path), "%s", path);
+	g_wb_count++;
+}
+
+/* The source a host may write this package's approval back to, or NULL. */
+static const struct pkg_source *writeback_source_for(const char *name)
+{
+	char item[PKG_SOURCE_ITEM_MAX];
+	char owner[PKG_SOURCES_MAX * PKG_SOURCE_NAME_MAX];
+	const struct pkg_source *s;
+
+	snprintf(item, sizeof(item), "package:%s", name);
+	if (pkgsource_owner_of(item, owner, sizeof(owner)) != PKGSOURCE_OWNER_ONE)
+		return NULL;
+	s = pkgsource_find(owner);
+	return s != NULL && s->write && s->token[0] != '\0' ? s : NULL;
+}
+
+/* After a build approved its artifact: the path `recipe commit` writes. */
+static void writeback_after_approval(const char *name, const char *version)
+{
+	const struct pkg_source *s = writeback_source_for(name);
+	char path[PATH_MAX];
+
+	if (s == NULL)
+		return;
+	snprintf(path, sizeof(path), "recipes/package/%s@%s%s", name, version,
+	         PKG_RECIPE_CBS_SUFFIX);
+	writeback_enqueue(name, version, s->name, path);
+}
+
+/*
+ * The sync's half. The merge runs in a helper, so what it finds travels
+ * to the parent in a file, as its counts do: one line per version,
+ * "<name> <version> <source> <path in the repository>".
+ */
+static void writeback_list_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/sync-writeback.list", g_pkg_dir);
+}
+
+static void writeback_record(const char *name, const char *version, const char *source,
+                             const char *filename)
+{
+	const struct pkg_source *s = pkgsource_find(source);
+	char path[PATH_MAX];
+	FILE *fp;
+
+	if (s == NULL || !s->write || s->token[0] == '\0')
+		return;
+	writeback_list_path(path, sizeof(path));
+	fp = fopen(path, "a");
+	if (fp == NULL)
+		return;
+	fprintf(fp, "%s %s %s recipes/package/%s\n", name, version, source, filename);
+	fclose(fp);
+}
+
+/* In the parent, once the sync has finished: queue what it found. */
+static void writeback_take_sync_list(void)
+{
+	char path[PATH_MAX];
+	char *buf = NULL, *line, *save = NULL;
+	size_t len = 0;
+
+	writeback_list_path(path, sizeof(path));
+	if (persist_read_file(path, &buf, &len) == 0 && buf != NULL) {
+		for (line = strtok_r(buf, "\n", &save); line != NULL; line = strtok_r(NULL, "\n", &save)) {
+			char name[PKG_NAME_MAX], version[PKG_VERSION_MAX], source[PKG_SOURCE_NAME_MAX];
+			char rpath[PATH_MAX];
+
+			if (sscanf(line, "%63s %63s %63s %4095s", name, version, source, rpath) == 4)
+				writeback_enqueue(name, version, source, rpath);
+		}
+		free(buf);
+	}
+	unlink(path);
+}
+
+int pkg_approval_writeback_ready(void)
+{
+	int i;
+
+	if (g_wb.running || g_wb_count == 0 || g_recipe_commit.state == RECIPE_COMMIT_RUNNING)
+		return 0;
+	for (i = 1; i < g_wb_count && i < WRITEBACK_BATCH_MAX; i++)
+		if (strcmp(g_wb_queue[i].source, g_wb_queue[0].source) != 0)
+			break;
+	g_wb.batch = i;
+	g_wb.running = 1;
+	return 1;
+}
+
+void pkg_approval_writeback_abort(const char *why)
+{
+	g_wb.running = 0;
+	g_wb.batch = 0;
+	g_wb.last_at = time(NULL);
+	snprintf(g_wb.error, sizeof(g_wb.error), "%s", why);
+	logstore_write("cixd", "error", "pkg: approval write-back: %s", why);
+}
+
+/*
+ * The helper. Its result file: "commit <sha>" or "error <why>" on the
+ * first line, then one "<outcome> <name>@<version>" line per item,
+ * outcome one of written, unchanged, missing, differs.
+ */
+int pkg_approval_writeback_work(void *unused)
+{
+	typedef char item_line[PKG_NAME_MAX + PKG_VERSION_MAX + 16];
+	struct forge_file_update *updates;
+	char **texts;
+	item_line *lines;
+	char result_path[PATH_MAX];
+	char err[PKG_ERROR_MAX];
+	char sha[FORGE_COMMIT_SHA_MAX];
+	char host[256];
+	struct source_forge f;
+	char *buf;
+	size_t cap, off = 0;
+	int i, done = 0, n = 0, rc = 0;
+	long status = 0;
+
+	(void)unused;
+	writeback_result_path(result_path, sizeof(result_path));
+	err[0] = '\0';
+	updates = calloc((size_t)g_wb.batch, sizeof(*updates));
+	texts = calloc((size_t)g_wb.batch, sizeof(*texts));
+	lines = calloc((size_t)g_wb.batch, sizeof(*lines));
+	if (updates == NULL || texts == NULL || lines == NULL) {
+		snprintf(err, sizeof(err), "out of memory");
+		rc = 1;
+	} else if (source_forge_target(g_wb_queue[0].source, &f, err, sizeof(err)) != 0) {
+		rc = 1;
+	}
+	for (i = 0; rc == 0 && i < g_wb.batch; i++) {
+		const struct writeback_item *it = &g_wb_queue[i];
+		char recipe_path[PATH_MAX], blob[FORGE_COMMIT_SHA_MAX];
+		char git_sha[PKG_SHA256_MAX], store_sha[PKG_SHA256_MAX];
+		char *store = NULL, *git = NULL;
+		size_t store_len = 0, git_len = 0;
+		const char *outcome = "differs";
+		int g;
+
+		snprintf(recipe_path, sizeof(recipe_path), "%s/%s/%s/%s", g_recipes_dir, it->name,
+		         it->version, PKG_RECIPE_CBS_FILE);
+		if (persist_read_file(recipe_path, &store, &store_len) != 0 || store == NULL) {
+			outcome = "missing";
+		} else {
+			redact_repo_token(store, store_len + 1);
+			g = forge_get_file(&f.t, it->path, g_pkg_dir, blob, sizeof(blob), &git, &git_len,
+			                   &status, err, sizeof(err));
+			if (g < 0) {
+				free(store);
+				rc = 1;
+				break;
+			}
+			if (g == 1) {
+				outcome = "missing";
+			} else {
+				redact_repo_token(git, git_len + 1);
+				git_sha[0] = store_sha[0] = '\0';
+				if (cbs_lines_equal(git, store, 0, git_sha, store_sha)) {
+					if (git_sha[0] == '\0' && store_sha[0] != '\0') {
+						updates[n].path = it->path;
+						updates[n].content = store;
+						updates[n].content_len = strlen(store);
+						updates[n].blob_sha = strdup(blob);
+						texts[n++] = store;
+						store = NULL;
+						outcome = "written";
+					} else if (strcmp(git_sha, store_sha) == 0) {
+						outcome = "unchanged";
+					}
+				}
+			}
+		}
+		free(store);
+		free(git);
+		snprintf(lines[done++], sizeof(lines[0]), "%s %s@%s", outcome, it->name, it->version);
+	}
+	for (i = 0; rc == 0 && i < n; i++)
+		if (updates[i].blob_sha == NULL) {
+			snprintf(err, sizeof(err), "out of memory");
+			rc = 1;
+		}
+	if (rc == 0 && n > 0) {
+		char *message;
+		size_t mlen = 256 + (size_t)n * sizeof(lines[0]), moff;
+
+		if (gethostname(host, sizeof(host)) != 0)
+			snprintf(host, sizeof(host), "%s", "unknown host");
+		host[sizeof(host) - 1] = '\0';
+		message = malloc(mlen);
+		if (message == NULL) {
+			snprintf(err, sizeof(err), "out of memory");
+			rc = 1;
+		} else {
+			moff = (size_t)snprintf(message, mlen,
+			                        "%d artifact approval(s) written back by cixd on %s "
+			                        "(ADR-0324)\n",
+			                        n, host);
+			for (i = 0; i < done; i++)
+				if (strncmp(lines[i], "written ", 8) == 0)
+					moff += (size_t)snprintf(message + moff, mlen - moff, "\n%s",
+					                         lines[i] + 8);
+			if (forge_update_files(&f.t, updates, n, message, g_pkg_dir, sha, sizeof(sha),
+			                       &status, err, sizeof(err)) != 0)
+				rc = 1;
+			free(message);
+		}
+	}
+
+	/* The result: commit or error, then one line per item examined. */
+	cap = 64 + sizeof(err) + (size_t)done * (sizeof(lines[0]) + 1);
+	buf = malloc(cap);
+	if (buf != NULL) {
+		if (rc != 0) {
+			redact_repo_token(err, sizeof(err));
+			off = (size_t)snprintf(buf, cap, "error %s\n", err[0] != '\0' ? err : "unknown");
+		} else {
+			off = (size_t)snprintf(buf, cap, "commit %s\n", n > 0 ? sha : "-");
+		}
+		for (i = 0; rc == 0 && i < done; i++)
+			off += (size_t)snprintf(buf + off, cap - off, "%s\n", lines[i]);
+		persist_atomic_write(result_path, buf, off);
+		free(buf);
+	}
+	for (i = 0; i < n; i++) {
+		free(texts[i]);
+		free((char *)updates[i].blob_sha);
+	}
+	free(texts);
+	free(updates);
+	free(lines);
+	return rc;
+}
+
+void pkg_approval_writeback_done(int exit_status, void *unused)
+{
+	char result_path[PATH_MAX];
+	char *buf = NULL;
+	size_t len = 0;
+	char *line, *save = NULL;
+	int first = 1, k;
+
+	(void)unused;
+	(void)exit_status;
+	writeback_result_path(result_path, sizeof(result_path));
+	g_wb.last_at = time(NULL);
+	if (persist_read_file(result_path, &buf, &len) != 0 || buf == NULL) {
+		snprintf(g_wb.error, sizeof(g_wb.error), "the write-back helper left no result");
+		g_wb.failed += g_wb.batch;
+	} else {
+		for (line = strtok_r(buf, "\n", &save); line != NULL; line = strtok_r(NULL, "\n", &save)) {
+			if (first) {
+				first = 0;
+				if (strncmp(line, "commit ", 7) == 0) {
+					g_wb.error[0] = '\0';
+					if (strcmp(line + 7, "-") != 0) {
+						snprintf(g_wb.last_commit, sizeof(g_wb.last_commit), "%s", line + 7);
+						logstore_write("cixd", "info", "pkg: approval write-back to %s: commit %s",
+						               g_wb_queue[0].source, g_wb.last_commit);
+					}
+				} else {
+					snprintf(g_wb.error, sizeof(g_wb.error), "%s",
+					         strncmp(line, "error ", 6) == 0 ? line + 6 : line);
+					g_wb.failed += g_wb.batch;
+					logstore_write("cixd", "error",
+					               "pkg: approval write-back of %d version(s) to %s failed: %s",
+					               g_wb.batch, g_wb_queue[0].source, g_wb.error);
+					break;
+				}
+				continue;
+			}
+			if (strncmp(line, "written ", 8) == 0)
+				g_wb.written++;
+			else if (strncmp(line, "unchanged ", 10) == 0)
+				continue; /* git already holds the same approval */
+			else {
+				int missing = strncmp(line, "missing ", 8) == 0;
+
+				g_wb.left++;
+				logstore_write("cixd", "warn",
+				               "pkg: approval write-back of %s to %s: not written -- %s",
+				               strchr(line, ' ') + 1, g_wb_queue[0].source,
+				               missing ? "no file under that path; the next sync names the "
+				                         "real one"
+				                       : "git's copy is not this version's text without an "
+				                         "approval, a real divergence for an operator");
+			}
+		}
+		free(buf);
+	}
+	unlink(result_path);
+	/* Done either way: whatever was not written, the next sync finds again. */
+	for (k = g_wb.batch; k < g_wb_count; k++)
+		g_wb_queue[k - g_wb.batch] = g_wb_queue[k];
+	g_wb_count -= g_wb.batch;
+	g_wb.batch = 0;
+	g_wb.running = 0;
+}
+
+void pkg_approval_writeback_write_json(struct json_writer *w)
+{
+	jw_obj_open(w);
+	jw_key(w, "pending");
+	jw_int(w, g_wb_count);
+	jw_key(w, "running");
+	jw_bool(w, g_wb.running);
+	jw_key(w, "written");
+	jw_int(w, g_wb.written);
+	jw_key(w, "not_written");
+	jw_int(w, g_wb.left);
+	jw_key(w, "failed");
+	jw_int(w, g_wb.failed);
+	jw_key(w, "last_commit");
+	if (g_wb.last_commit[0] != '\0')
+		jw_str(w, g_wb.last_commit);
+	else
+		jw_null(w);
+	jw_key(w, "error");
+	if (g_wb.error[0] != '\0')
+		jw_str(w, g_wb.error);
+	else
+		jw_null(w);
 	jw_obj_close(w);
 }
 
@@ -15982,7 +16415,7 @@ static void sync_merge_packages(const char *recipes_root, const char *source,
 		enum pkg_error rc;
 		int is_cbs;
 		int was_approval = 0;
-		int refreshed = 0;
+		struct sync_outcome outcome;
 
 		if (recipe_file_split(name_de->d_name, name, sizeof(name), version, sizeof(version),
 		                      &ext) != 0)
@@ -16003,10 +16436,11 @@ static void sync_merge_packages(const char *recipes_root, const char *source,
 		    strcmp(g_sync_refetch_version, version) == 0)
 			pkg_recipe_delete(name, version);
 
+		memset(&outcome, 0, sizeof(outcome));
 		rc = recipe_publish(name, content, is_cbs ? PKG_RECIPE_CBS : PKG_RECIPE_SHELL,
-		                    &was_approval, NULL, &refreshed);
+		                    &was_approval, NULL, &outcome);
 		free(content);
-		if (rc == PKG_OK && refreshed)
+		if (rc == PKG_OK && outcome.refreshed)
 			res->refreshed++;
 		else if (rc == PKG_OK && was_approval)
 			res->approved++;
@@ -16026,6 +16460,8 @@ static void sync_merge_packages(const char *recipes_root, const char *source,
 			                   : "it failed to parse, or its declared name or version does "
 			                     "not match its filename");
 		}
+		if (outcome.writeback && (rc == PKG_ERR_DUPLICATE || (rc == PKG_OK && outcome.refreshed)))
+			writeback_record(name, outcome.version, source, name_de->d_name);
 	}
 	closedir(names_d);
 }
@@ -16046,6 +16482,8 @@ int pkg_sync_merge(void)
 	int i;
 
 	memset(res, 0, sizeof(res));
+	writeback_list_path(path, sizeof(path));
+	unlink(path); /* this sync's findings only */
 	for (i = 0; i < count; i++) {
 		char dir[PATH_MAX], sub[PATH_MAX];
 		char **items = NULL;
@@ -16191,6 +16629,9 @@ void pkg_sync_completed(int rc)
 		unlink(path);
 	}
 
+	/* What the merge found to write back (ADR-0324); kept even if it failed later. */
+	writeback_take_sync_list();
+
 	if (rc != 0) {
 		g_sync_last_state = SYNC_FAILED;
 		snprintf(g_sync_last_error, sizeof(g_sync_last_error), "%s",
@@ -16326,6 +16767,8 @@ void pkg_sync_write_json_status(struct json_writer *w)
 		jw_obj_close(w);
 	}
 	jw_arr_close(w);
+	jw_key(w, "writeback"); /* ADR-0324 */
+	pkg_approval_writeback_write_json(w);
 	jw_obj_close(w);
 }
 
@@ -18919,8 +19362,10 @@ static void approve_published_artifact(const char *name, const char *version)
 
 		if ((size_t)snprintf(cbs_path, sizeof(cbs_path), "%s/%s/%s/%s", g_recipes_dir, name,
 		                      version, PKG_RECIPE_CBS_FILE) < sizeof(cbs_path) &&
-		    stat(cbs_path, &st) == 0)
+		    stat(cbs_path, &st) == 0) {
 			approve_cbs_artifact(cbs_path, name, version, sha);
+			writeback_after_approval(name, version); /* ADR-0324: git learns it too */
+		}
 		return;
 	}
 

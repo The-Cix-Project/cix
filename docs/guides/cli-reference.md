@@ -493,8 +493,8 @@ See [`networking.md`](networking.md).
 | `pkg source set NAME [...same flags] [--clear-token]` | Change only the flags given. How often sources sync is a schedule (`pkg.sync`, ADR-0257) |
 | `pkg source rm NAME` | Remove a source; recipes already published stay |
 | `pkg source own [ITEM SOURCE \| ITEM --clear]` | With no arguments, what is held because two sources offer it, and the choices made. With an item (`package:NAME`, `image:NAME`, `deployment:NAME`) and a source, choose where it comes from |
-| `pkg sync [--wait] [--refetch=NAME@VERSION]` | Fetch every source and merge each one's recipes (additive; an existing version is never overwritten, and one offered again with different content is refused as divergent). A name two sources offer is held until `pkg source own` chooses (ADR-0324). `--refetch=` lets this one sync replace exactly one already-seen version (#59) |
-| `pkg sync-status` | The latest sync's outcome |
+| `pkg sync [--wait] [--refetch=NAME@VERSION]` | Fetch every source and merge each one's recipes (additive; an existing version is never overwritten, and one offered again with different content is refused as divergent -- unless it differs only in comments or carries an approval this host lacks, which refreshes it with no rebuild). A name two sources offer is held until `pkg source own` chooses (ADR-0324). `--refetch=` lets this one sync replace exactly one already-seen version (#59) |
+| `pkg sync-status` | The latest sync's outcome, per source, and the `writeback` line: artifact approvals going back to git (ADR-0324) |
 | `pkg policy ls` | Per-package version policy (#64); unlisted packages use `highest` |
 | `pkg policy set NAME --policy=highest\|newest\|pinned [--version=V]` | `newest` takes the most recently published recipe; `pinned` holds a version that `update-all` and `follow_rolling` cannot move |
 | `pkg policy clear NAME` | Back to the default |

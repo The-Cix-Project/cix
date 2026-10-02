@@ -63,4 +63,49 @@ int forge_create_file(const struct forge_target *t, const char *path, const char
                       size_t content_len, const char *message, const char *scratch_dir,
                       char *sha, size_t sha_size, long *http_status, char *err, size_t err_size);
 
+
+/*
+ * ADR-0324: an approval a host writes into a recipe after a build
+ * writes back to git. That is the one edit a published recipe version
+ * ever takes, so it is the one place this module replaces a file
+ * rather than creating one -- and it never does so blind: the caller
+ * reads the file first (forge_get_file), checks git's text is that
+ * version's text without the approval, and the replacement names the
+ * blob it read, which the forge enforces as an optimistic lock.
+ *
+ * Gitea's batch call, read from the server's own API spec (Gitea
+ * 1.25.4, /swagger.v1.json, 2026-10-02): POST
+ * /api/v1/repos/{owner}/{repo}/contents (repoChangeFiles) with a
+ * ChangeFilesOptions body -- `files`, each a ChangeFileOperation of
+ * `operation` "update", `path`, base64 `content` and the current blob
+ * `sha` -- answered 201 with a FilesResponse whose `commit.sha` sits
+ * where a FileResponse's does. One commit for the whole batch, because
+ * every commit to the owner's forge is mirrored to the public catalogue.
+ */
+struct forge_file_update {
+	const char *path;
+	const char *content;
+	size_t content_len;
+	const char *blob_sha; /* the blob forge_get_file() read: the lock */
+};
+
+/* The ChangeFilesOptions body, every file an "update". Pure. */
+char *forge_gitea_update_body(const struct forge_file_update *files, int count, const char *branch,
+                              const char *message);
+
+/*
+ * Reads `path` on the target's branch (repoGetContents): its blob sha
+ * and its decoded content, malloc'd and NUL-terminated. 0 on success,
+ * 1 when the forge has no such file (404), -1 otherwise with err set.
+ * Blocking network I/O, as forge_create_file().
+ */
+int forge_get_file(const struct forge_target *t, const char *path, const char *scratch_dir,
+                   char *blob_sha, size_t blob_sha_size, char **content, size_t *content_len,
+                   long *http_status, char *err, size_t err_size);
+
+/* Replaces every file in one commit. 0 on a 201 with its commit sha in `sha`. */
+int forge_update_files(const struct forge_target *t, const struct forge_file_update *files,
+                       int count, const char *message, const char *scratch_dir, char *sha,
+                       size_t sha_size, long *http_status, char *err, size_t err_size);
+
 #endif /* FORGECOMMIT_H */

@@ -14748,6 +14748,23 @@ static void fmt_pkg_sync_status(const struct json_value *v)
 	if (error != NULL)
 		printf(" error=%s", error);
 	printf("\n");
+	/* ADR-0324: approvals going back to git. */
+	{
+		const struct json_value *wb = json_object_get(v, "writeback");
+
+		if (wb != NULL && wb->type == JSON_OBJECT) {
+			const char *lc = json_str_field(wb, "last_commit");
+			const char *we = json_str_field(wb, "error");
+
+			printf("writeback pending=%ld written=%ld not_written=%ld failed=%ld%s%s%s%s\n",
+			       (long)json_as_number(json_object_get(wb, "pending")),
+			       (long)json_as_number(json_object_get(wb, "written")),
+			       (long)json_as_number(json_object_get(wb, "not_written")),
+			       (long)json_as_number(json_object_get(wb, "failed")),
+			       lc != NULL ? " last_commit=" : "", lc != NULL ? lc : "",
+			       we != NULL ? " error=" : "", we != NULL ? we : "");
+		}
+	}
 	/* ADR-0324: what each source did. */
 	if (sources == NULL || sources->type != JSON_ARRAY)
 		return;
