@@ -50,6 +50,7 @@ struct srcpolicy {
 	char channel[SRCPOLICY_CHANNEL_MAX]; /* "" = not chosen */
 	char depth[SRCPOLICY_DEPTH_MAX];     /* always set; "n" when unspecified */
 	int explicit_entry;                  /* 1 if this package has its own, 0 if inherited */
+	int pinned;                          /* #565: held by an operator; discovery leaves it be */
 };
 
 int srcpolicy_init(const char *path);
@@ -79,7 +80,17 @@ void srcpolicy_get(const char *name, struct srcpolicy *out);
 int srcpolicy_set(const char *name, const char *kind_name, const char *channel,
                    const char *depth, char *err, size_t err_size);
 
+/* Back to the default channel and depth; a hold is kept (see below). */
 int srcpolicy_clear(const char *name);
+
+/*
+ * #565: holds a package where it is, or lifts the hold. A held package
+ * is not authored by discovery, whatever its upstream publishes; the
+ * source catalogue says so. Independent of channel and depth: pinning
+ * records neither, so lifting the hold returns it to exactly what it
+ * ran under before. 0, or -1 with why in err.
+ */
+int srcpolicy_set_pinned(const char *name, int pinned, char *err, size_t err_size);
 
 /*
  * Resolves the effective policy against a package's declared kind, the

@@ -11801,6 +11801,11 @@ paths:
         A package whose recipe declares no `pkg_upstream` cannot roll
         and cannot take a channel: it is pinned, which ADR-0255 treats
         as a permanent first-class answer rather than a gap.
+
+        `pinned` is the hold (#565): true keeps discovery from authoring
+        this package, whatever its upstream publishes, and false lifts it.
+        A body naming only `pinned` changes only the hold; the channel
+        and depth stay as they were, inherited or not.
       operationId: setPkgSourcePolicy
       x-cix-permission: packages:write
       x-cix-expose: [cli]
@@ -11821,6 +11826,9 @@ paths:
                   type: [string, "null"]
                 depth:
                   type: string
+                pinned:
+                  type: boolean
+                  description: Hold the package (true) or lift the hold (false); omitted leaves it unchanged.
       responses:
         "200":
           description: The default and any per-package overrides after the change
@@ -11843,7 +11851,8 @@ paths:
         204 whether or not a policy was set, matching
         DELETE /pkg/policies/{name}: the caller's intent is satisfied
         either way, and a 404 would make scripts handle a distinction
-        that does not matter.
+        that does not matter. Only the channel and depth go back to the
+        default; a hold (`pinned`) is kept, and is lifted by the PUT.
       operationId: clearPkgSourcePolicy
       x-cix-permission: packages:write
       x-cix-expose: [cli]
@@ -17835,6 +17844,12 @@ components:
           description: >
             True when this package has no policy of its own and is
             following the platform default.
+        pinned:
+          type: boolean
+          description: >
+            True when an operator holds this package (#565): discovery
+            does not author it, and the source catalogue reports the
+            release it resolves to as held.
 
     UpstreamKind:
       type: object

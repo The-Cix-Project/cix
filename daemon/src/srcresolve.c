@@ -212,6 +212,21 @@ void srcresolve_one(const char *name, const char *kind,
 		         out->newest_recipe_version);
 
 	/*
+	 * #565: an operator holds this package. The release is reported, so
+	 * the hold is a visible choice rather than a silent gap, and no later
+	 * stage acts on it -- discovery authenticates only what is blocked.
+	 */
+	if (pol.pinned) {
+		out->status = PIPELINE_NOT_IMPLEMENTED;
+		snprintf(out->reason, sizeof(out->reason),
+		         "held by the operator: %s resolves to %s, and %s stays where it is until "
+		         "the hold is lifted (cixctl pkg source-policy set %s --pinned=off)",
+		         out->channel[0] != '\0' ? out->channel : kind, out->resolved_version, name,
+		         name);
+		return;
+	}
+
+	/*
 	 * ADR-0323: when a later stage has worked on this very release --
 	 * authenticated it, or tried to author it -- the row says where
 	 * that stands, not that it waits for a person. A note for another

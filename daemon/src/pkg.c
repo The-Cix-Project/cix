@@ -3436,6 +3436,16 @@ int pkg_discover_author_next(void)
 	for (i = 0; i < n; i++) {
 		if (srcgitea_candidate(names[i], &c) != 0)
 			continue;
+		/* #565: a hold placed after the candidate was found still holds. */
+		{
+			struct srcpolicy held;
+
+			srcpolicy_get(names[i], &held);
+			if (held.pinned) {
+				srcgitea_store_candidate(names[i], NULL);
+				continue;
+			}
+		}
 		/* A candidate a recipe already builds was authored already. */
 		snprintf(candidate_version, sizeof(candidate_version), "%s-1", c.version);
 		if (recipe_latest_version(names[i], newest, sizeof(newest)) == 0 &&

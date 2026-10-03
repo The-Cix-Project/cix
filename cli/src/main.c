@@ -16914,15 +16914,17 @@ static void fmt_source_policy(const struct json_value *root)
 		printf("every package follows the default\n");
 		return;
 	}
-	printf("\n%-24s %-12s %s\n", "PACKAGE", "CHANNEL", "DEPTH");
+	printf("\n%-24s %-12s %-10s %s\n", "PACKAGE", "CHANNEL", "DEPTH", "HOLD");
 	for (i = 0; i < arr->u.array.count; i++) {
 		const struct json_value *p = arr->u.array.items[i];
 		const char *ch = json_str_field(p, "channel");
+		const struct json_value *held = json_object_get(p, "pinned");
 
-		printf("%-24s %-12s %s\n",
+		printf("%-24s %-12s %-10s %s\n",
 		        json_str_field(p, "name") != NULL ? json_str_field(p, "name") : "-",
 		        ch != NULL ? ch : "-",
-		        json_str_field(p, "depth") != NULL ? json_str_field(p, "depth") : "n");
+		        json_str_field(p, "depth") != NULL ? json_str_field(p, "depth") : "n",
+		        held != NULL && held->type == JSON_BOOL && held->u.boolean ? "held" : "-");
 	}
 }
 
@@ -16956,14 +16958,15 @@ static int cmd_pkg_source_policy(const struct cix_client *c, int json_mode, int 
 		return 0;
 	}
 	if (strcmp(sub, "set") == 0 || strcmp(sub, "set-default") == 0) {
-		const char *channel = NULL, *depth = NULL;
+		const char *channel = NULL, *depth = NULL, *pinned = NULL;
 		int is_default = (strcmp(sub, "set-default") == 0);
 		int first = is_default ? 1 : 2;
 		char body[256];
 		int i;
 
 		if (!is_default && argc < 2) {
-			fprintf(stderr, "usage: cixctl pkg source-policy set NAME [--channel=C] [--depth=D]\n");
+			fprintf(stderr, "usage: cixctl pkg source-policy set NAME [--channel=C] [--depth=D] "
+			                "[--pinned=on|off]\n");
 			return 2;
 		}
 		for (i = first; i < argc; i++) {
@@ -16971,14 +16974,24 @@ static int cmd_pkg_source_policy(const struct cix_client *c, int json_mode, int 
 				channel = argv[i] + 10;
 			else if (strncmp(argv[i], "--depth=", 8) == 0)
 				depth = argv[i] + 8;
+			else if (!is_default && strncmp(argv[i], "--pinned=", 9) == 0 &&
+			         (strcmp(argv[i] + 9, "on") == 0 || strcmp(argv[i] + 9, "off") == 0))
+				pinned = argv[i] + 9;
 			else {
 				fprintf(stderr, "cixctl: unknown source-policy option '%s'\n", argv[i]);
 				return 2;
 			}
 		}
-		snprintf(body, sizeof(body), "{\"channel\":%s%s%s,\"depth\":\"%s\"}",
-		          channel != NULL ? "\"" : "", channel != NULL ? channel : "null",
-		          channel != NULL ? "\"" : "", depth != NULL ? depth : "n");
+		/* #565: --pinned alone changes only the hold, not the channel or depth. */
+		if (pinned != NULL && channel == NULL && depth == NULL)
+			snprintf(body, sizeof(body), "{\"pinned\":%s}",
+			         strcmp(pinned, "on") == 0 ? "true" : "false");
+		else
+			snprintf(body, sizeof(body), "{\"channel\":%s%s%s,\"depth\":\"%s\"%s%s}",
+			         channel != NULL ? "\"" : "", channel != NULL ? channel : "null",
+			         channel != NULL ? "\"" : "", depth != NULL ? depth : "n",
+			         pinned != NULL ? ",\"pinned\":" : "",
+			         pinned == NULL ? "" : strcmp(pinned, "on") == 0 ? "true" : "false");
 		if (is_default) {
 			if (cix_client_request(c, "PUT", CIX_API_setDefaultSourcePolicy, body, &r) != 0) {
 				fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -16997,7 +17010,9 @@ static int cmd_pkg_source_policy(const struct cix_client *c, int json_mode, int 
 	fprintf(stderr,
 	        "usage: cixctl pkg source-policy ls\n"
 	        "       cixctl pkg source-policy set-default [--channel=C] [--depth=n-<lines>.<releases>]\n"
-	        "       cixctl pkg source-policy set NAME [--channel=C] [--depth=D]\n"
+	        "       cixctl pkg source-policy set NAME [--channel=C] [--depth=D] [--pinned=on|off]\n"
+	        "               --pinned holds the package where it is (#565); alone, it changes\n"
+	        "               only the hold\n"
 	        "       cixctl pkg source-policy clear NAME\n"
 	        "  channels come from the package's own upstream -- see `cixctl pkg upstreams`\n");
 	return 2;

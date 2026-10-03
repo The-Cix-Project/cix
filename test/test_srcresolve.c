@@ -287,6 +287,19 @@ int main(void)
 			}
 			expect("note for another version", "hibr", "gitea-tags", OLD, 1, PIPELINE_AUTHOR,
 			        PIPELINE_BLOCKED, "0.99.5", NULL);
+			/* #565: a held package reports the release and leaves it alone. */
+			if (srcpolicy_set_pinned("hibr", 1, err, sizeof(err)) != 0) {
+				fprintf(stderr, "  FAIL: could not hold hibr: %s\n", err);
+				return 1;
+			}
+			expect("held by the operator", "hibr", "gitea-tags", OLD, 1, PIPELINE_AUTHOR,
+			        PIPELINE_NOT_IMPLEMENTED, "0.99.5", "held by the operator");
+			if (srcpolicy_set_pinned("hibr", 0, err, sizeof(err)) != 0) {
+				fprintf(stderr, "  FAIL: could not lift the hold: %s\n", err);
+				return 1;
+			}
+			expect("hold lifted", "hibr", "gitea-tags", OLD, 1, PIPELINE_AUTHOR,
+			        PIPELINE_BLOCKED, "0.99.5", NULL);
 		}
 		expect("gitea-tags other package", "cbs", "gitea-tags", OLD, 1, PIPELINE_DISCOVER,
 		        PIPELINE_FAILED, NULL, "never been fetched");

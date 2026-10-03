@@ -96,7 +96,7 @@ Estimated at four to six cix release cycles. **.95 has a saved schedule file, so
 
 1. **Origin trust (rung 4): the owner's own forge.** An external origin uses rungs 1–3 or stays pinned, unless that one package's recipe explicitly opts into origin trust for its origin -- a per-package choice the owner makes in phase two, never a default. Measured over the 117 package recipes: about 34 come from GNU, 17 from kernel.org, 5 from Debian and about 30 from project sites, most of which publish signatures; about 24 come from GitHub, some unsigned.
 2. **hibr rolls on own-forge origin trust.** No change in hibr's release process is needed.
-3. **A rolling package rolls; there is no approval mode.** *"A rolling release is a rolling release, should never wait, unless it's not a rolling release."* Pinned is how an operator keeps a package still, so the kernel, gcc and glibc roll exactly when their policy says rolling. Heavy builds still never run concurrently: discovery queues them behind each other, because two at once wedged 192.168.15.95. (Correction, 2026-10-02: this answer also said `cixctl pkg source-policy` already sets pinned. It does not. The source policy has only channel and depth, so a package with an upstream has no hold yet, tracked as #565.)
+3. **A rolling package rolls; there is no approval mode.** *"A rolling release is a rolling release, should never wait, unless it's not a rolling release."* Pinned is how an operator keeps a package still, so the kernel, gcc and glibc roll exactly when their policy says rolling. Heavy builds still never run concurrently: discovery queues them behind each other, because two at once wedged 192.168.15.95. (Correction, 2026-10-02: this answer also said `cixctl pkg source-policy` already sets pinned. It does not. The source policy has only channel and depth, so a package with an upstream had no hold; #565 added one in 0.2.57-451.)
 4. **Roll back on runtime failure, never on build failure.**
    - **A build failure needs nothing undone.** The image never moved, because the image commit is on the success path only. The package stays on its previous version, the catalogue says why, and the next upstream release tries again.
    - **A runtime failure is when a container restarted on the new image crash-loops, never reports ready, or fails its health check.** The container is then:
@@ -160,7 +160,7 @@ Estimated at four to six cix release cycles. **.95 has a saved schedule file, so
   - A saved schedule still naming the old action reports "not registered in this build" until it is recreated. That happened on 192.168.15.95, where the hourly schedule is created by hand.
 - **The url** of the written revision is the source template expanded, with `{{REPO_TOKEN}}` kept. The parsed recipe holds the template raw, and the token is put into a copy only where it reaches curl (`owning_token()`).
 - **Still open:**
-  - a source-policy hold (#565);
+  - a source-policy hold (#565), added in 0.2.57-451: `pkg source-policy set NAME --pinned=on`;
   - the kernel's rung 2 (its signed checksum list), which the kernel roll needs;
   - own-forge templates (cix-build-system#280) and changelog revisions (cix-build-system#279), both fixed in cbs v0.1.104 (0.2.57-450).
 

@@ -1350,6 +1350,7 @@ static const char *const n_pkg_policy_flags[] = {
 static const char *const n_pkg_source_policy_flags[] = {
 	"--channel=",
 	"--depth=",
+	"--pinned=",
 	NULL
 };
 

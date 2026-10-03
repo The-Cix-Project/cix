@@ -158,10 +158,31 @@ void handle_pkg_source_policy_put(int fd, const char *name, const char *body, si
 	if (pkg_recipe_upstream(name, kind, sizeof(kind)) != 0)
 		kind[0] = '\0';
 
-	if (srcpolicy_set(name, kind, channel, depth, err, sizeof(err)) != 0) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", err);
-		return;
+	/*
+	 * #565: "pinned" is the hold, a fact of its own. A body that names
+	 * only it changes only it, so holding a package never freezes the
+	 * default channel and depth into an entry of its own.
+	 */
+	{
+		const struct json_value *jp = json_object_get(root, "pinned");
+		int names_policy = json_object_get(root, "channel") != NULL ||
+		                   json_object_get(root, "depth") != NULL || jp == NULL;
+
+		if (jp != NULL && jp->type != JSON_BOOL) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "pinned is true or false");
+			return;
+		}
+		if (names_policy && srcpolicy_set(name, kind, channel, depth, err, sizeof(err)) != 0) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", err);
+			return;
+		}
+		if (jp != NULL && srcpolicy_set_pinned(name, jp->u.boolean, err, sizeof(err)) != 0) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", err);
+			return;
+		}
 	}
 	json_free(root);
 	respond_policy_set(fd);

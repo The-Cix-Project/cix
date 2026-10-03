@@ -507,6 +507,7 @@ See [`networking.md`](networking.md).
 | `pkg trusted-origins ls \| add ORIGIN \| rm ORIGIN \| set [ORIGIN...]` | The origins trusted to authenticate a release by origin (ADR-0323, rung 4): a recipe's `verify origin` counts only when its source's origin is listed. A fresh host trusts none; add the owner's forge with `add https://git.home.arpa` |
 | `pkg source-policy ls` | Which upstream release each package builds |
 | `pkg source-policy set-default [--channel=C] [--depth=n-<lines>.<releases>]` / `pkg source-policy set NAME [--channel=C] [--depth=D]` / `pkg source-policy clear NAME` | Set the default, set one package's policy, or return it to the default |
+| `pkg source-policy set NAME --pinned=on\|off` | Hold a package where it is (#565): discovery writes no new revision for it, and the catalogue reports the release as held. Alone, it changes only the hold; `clear` keeps a hold |
 | `pkg cache-config show` / `pkg cache-config set --max-bytes=N` | The local build-artifact cache's size cap |
 | `pkg cache-status` | Cache occupancy |
 | `pkg cache-clear` | Remove every cached artifact |

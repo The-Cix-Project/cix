@@ -299,8 +299,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/pkg/upstreams` | The discovery kinds a recipe may declare, and the channels each publishes (ADR-0255) |
 | GET | `/pkg/source-policy` | Which upstream *release* packages build — the default plus per-package overrides |
 | PUT | `/pkg/source-policy` | Set the platform-wide default (channel preference + depth) |
-| PUT | `/pkg/{name}/source-policy` | Override it for one package |
-| DELETE | `/pkg/{name}/source-policy` | Back to the platform default |
+| PUT | `/pkg/{name}/source-policy` | Override it for one package, or hold it: `{"pinned": true}` keeps discovery from authoring the package and `false` lifts the hold. A body naming only `pinned` changes only the hold (#565) |
+| DELETE | `/pkg/{name}/source-policy` | Back to the platform default channel and depth; a hold is kept |
 ### Why a package failed, as a field (issue #101)
 
 `GET /v1/pkg/{name}` and the package list report **`failure_kind`** alongside `error`:
@@ -1222,6 +1222,8 @@ glibc n-0.1 -> depth asks for release 1 back within line 2.44, which publishes o
 ### The default acts
 
 `PUT /pkg/source-policy` sets a platform-wide default, and a rollable recipe then rolls without being named package by package — a default that has to be set for every package is a feature that exists and is off. What makes that safe is that rolling stops short of the running host: it moves artifacts and images, which are cheap to rebuild and discard, never a booted machine. Deploying is still a deliberate act.
+
+**A package can be held** (#565): `cixctl pkg source-policy set NAME --pinned=on`. Its catalogue row still reports the release its policy resolves to, as `author / not-implemented` "held by the operator", and discovery writes nothing for it until `--pinned=off`. The hold is separate from the channel and depth. Pinning records neither, and lifting the hold returns the package to exactly what it ran under before.
 
 The default channel is a **preference, not a mandate**. It applies wherever the package's kind actually publishes it and is dropped where it does not, so one global setting cannot silently mean different things to different upstreams. When it is dropped and the kind does need a channel, the error names the package an operator can fix rather than complaining about a global setting that is correct elsewhere.
 

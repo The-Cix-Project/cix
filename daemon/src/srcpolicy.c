@@ -19,6 +19,14 @@ struct srcpolicy_entry {
 	char name[PKG_NAME_MAX];
 	char channel[SRCPOLICY_CHANNEL_MAX];
 	char depth[SRCPOLICY_DEPTH_MAX];
+	/*
+	 * #565: two independent facts. has_policy -- this package chose its
+	 * own channel and depth; pinned -- an operator holds it where it is,
+	 * whatever its upstream publishes. Pinning alone records no channel
+	 * or depth, so the default still applies the day the hold is lifted.
+	 */
+	int has_policy;
+	int pinned;
 	int in_use;
 };
 
@@ -65,12 +73,17 @@ static int save_state(void)
 		jw_key(&w, "name");
 		jw_str(&w, g_entries[i].name);
 		jw_key(&w, "channel");
-		if (g_entries[i].channel[0] != '\0')
+		if (g_entries[i].has_policy && g_entries[i].channel[0] != '\0')
 			jw_str(&w, g_entries[i].channel);
 		else
 			jw_null(&w);
 		jw_key(&w, "depth");
-		jw_str(&w, g_entries[i].depth);
+		if (g_entries[i].has_policy)
+			jw_str(&w, g_entries[i].depth);
+		else
+			jw_null(&w);
+		jw_key(&w, "pinned");
+		jw_bool(&w, g_entries[i].pinned);
 		jw_obj_close(&w);
 	}
 	jw_arr_close(&w);
@@ -129,10 +142,18 @@ int srcpolicy_init(const char *path)
 			const char *name = json_as_string(json_object_get(arr->u.array.items[i], "name"));
 			const char *c = json_as_string(json_object_get(arr->u.array.items[i], "channel"));
 			const char *d = json_as_string(json_object_get(arr->u.array.items[i], "depth"));
+			const struct json_value *jp = json_object_get(arr->u.array.items[i], "pinned");
 
 			if (name == NULL || name[0] == '\0')
 				continue;
+			memset(&g_entries[slot], 0, sizeof(g_entries[slot]));
 			snprintf(g_entries[slot].name, sizeof(g_entries[slot].name), "%s", name);
+			/* A file written before #565 has a depth on every entry, which is
+			 * what has_policy means; a pin-only entry has none. */
+			g_entries[slot].has_policy = d != NULL;
+			g_entries[slot].pinned = jp != NULL && jp->type == JSON_BOOL && jp->u.boolean;
+			if (!g_entries[slot].has_policy && !g_entries[slot].pinned)
+				continue;
 			if (c != NULL)
 				snprintf(g_entries[slot].channel, sizeof(g_entries[slot].channel), "%s", c);
 			snprintf(g_entries[slot].depth, sizeof(g_entries[slot].depth), "%s",
@@ -192,6 +213,9 @@ void srcpolicy_get(const char *name, struct srcpolicy *out)
 	srcpolicy_default_get(out);
 	e = find(name);
 	if (e == NULL)
+		return;
+	out->pinned = e->pinned;
+	if (!e->has_policy)
 		return;
 	snprintf(out->channel, sizeof(out->channel), "%s", e->channel);
 	snprintf(out->depth, sizeof(out->depth), "%s", e->depth);
@@ -254,6 +278,7 @@ int srcpolicy_set(const char *name, const char *kind_name, const char *channel,
 		snprintf(e->name, sizeof(e->name), "%s", name);
 		e->in_use = 1;
 	}
+	e->has_policy = 1;
 	snprintf(e->channel, sizeof(e->channel), "%s", c);
 	snprintf(e->depth, sizeof(e->depth), "%s", d);
 	return save_state();
@@ -265,7 +290,48 @@ int srcpolicy_clear(const char *name)
 
 	if (e == NULL)
 		return 0;
-	memset(e, 0, sizeof(*e));
+	/* Back to the default channel and depth. A hold is its own fact and
+	 * outlives this; srcpolicy_set_pinned() lifts it. */
+	e->has_policy = 0;
+	e->channel[0] = '\0';
+	e->depth[0] = '\0';
+	if (!e->pinned)
+		memset(e, 0, sizeof(*e));
+	return save_state();
+}
+
+int srcpolicy_set_pinned(const char *name, int pinned, char *err, size_t err_size)
+{
+	struct srcpolicy_entry *e;
+	int i;
+
+	if (err != NULL && err_size > 0)
+		err[0] = '\0';
+	if (name == NULL || name[0] == '\0') {
+		if (err != NULL)
+			snprintf(err, err_size, "package name is required");
+		return -1;
+	}
+	e = find(name);
+	if (e == NULL) {
+		if (!pinned)
+			return 0; /* not held, and nothing else recorded */
+		for (i = 0; i < SRCPOLICY_MAX && e == NULL; i++)
+			if (!g_entries[i].in_use)
+				e = &g_entries[i];
+		if (e == NULL) {
+			if (err != NULL)
+				snprintf(err, err_size, "too many package source policies (max %d)",
+				          SRCPOLICY_MAX);
+			return -1;
+		}
+		memset(e, 0, sizeof(*e));
+		snprintf(e->name, sizeof(e->name), "%s", name);
+		e->in_use = 1;
+	}
+	e->pinned = pinned ? 1 : 0;
+	if (!e->pinned && !e->has_policy)
+		memset(e, 0, sizeof(*e));
 	return save_state();
 }
 
@@ -340,6 +406,8 @@ static void write_one(const char *name, const struct srcpolicy *p, struct json_w
 	jw_str(w, p->depth);
 	jw_key(w, "inherited");
 	jw_bool(w, !p->explicit_entry);
+	jw_key(w, "pinned");
+	jw_bool(w, p->pinned);
 	jw_obj_close(w);
 }
 
@@ -375,10 +443,9 @@ void srcpolicy_write_json(struct json_writer *w)
 
 		if (!g_entries[i].in_use)
 			continue;
-		memset(&p, 0, sizeof(p));
-		snprintf(p.channel, sizeof(p.channel), "%s", g_entries[i].channel);
-		snprintf(p.depth, sizeof(p.depth), "%s", g_entries[i].depth);
-		p.explicit_entry = 1;
+		/* What the package runs under: its own channel and depth, or the
+		 * default's when it is only held (#565). */
+		srcpolicy_get(g_entries[i].name, &p);
 		write_one(g_entries[i].name, &p, w);
 	}
 	jw_arr_close(w);

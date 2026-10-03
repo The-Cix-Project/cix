@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A package can be held: the source-policy `pinned` (#565)
+
+- **`cixctl pkg source-policy set NAME --pinned=on|off`**, or `PUT /v1/pkg/{name}/source-policy {"pinned": true}`, holds a package where it is.
+  - Its catalogue row still names the release its policy resolves to, as `author / not-implemented` "held by the operator".
+  - Discovery neither authenticates nor authors it.
+  - The author step drops a candidate found before the hold was placed.
+- **The hold is a fact of its own:** a body naming only `pinned` changes only it, so pinning never freezes the default channel and depth into an entry, and `clear` (DELETE) keeps a hold. Older state files load unchanged, since an entry with a depth has a policy of its own.
+- `source-policy ls` shows a HOLD column.
+- **Correction:** ADR-0323 answer 3 and CLAUDE.md said the hold existed before it did; both now name this release.
+- Tests: `test_srcpolicy` (pin alone, reload, clear keeps it, unpin removes the entry, unpin keeps an own policy) and `test_srcresolve` (held, then lifted).
+
 ### hibr rolled to 0.99.11 with nobody writing the recipe (ADR-0323's validation event)
 
 On 192.168.15.95, after hibr@0.99.4-3 declared its upstream block:

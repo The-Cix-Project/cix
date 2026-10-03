@@ -165,6 +165,47 @@ int main(void)
 	else
 		printf("  clear                  -> inherits again\n");
 
+
+	/* #565: the hold is its own fact, beside channel and depth. */
+	if (srcpolicy_set_pinned("hibr", 1, err, sizeof(err)) != 0)
+		bad("pinning failed: %s%s", err, "");
+	srcpolicy_get("hibr", &p);
+	if (!p.pinned || p.explicit_entry || strcmp(p.depth, "n") != 0)
+		bad("a pin alone must hold and still inherit: %s, %s", p.pinned ? "held" : "not held",
+		    p.explicit_entry ? "explicit" : "inherited");
+	else
+		printf("  pin alone              -> held, still inheriting\n");
+	if (srcpolicy_init(g_path) != 0)
+		bad("reload failed%s%s", "", "");
+	srcpolicy_get("hibr", &p);
+	if (!p.pinned || p.explicit_entry)
+		bad("the hold did not survive a reload: %s, %s", p.pinned ? "held" : "not held",
+		    p.explicit_entry ? "explicit" : "inherited");
+	if (srcpolicy_clear("hibr") != 0)
+		bad("clear failed%s%s", "", "");
+	srcpolicy_get("hibr", &p);
+	if (!p.pinned)
+		bad("clear must keep a hold%s%s", "", "");
+	else
+		printf("  clear keeps a hold\n");
+	if (srcpolicy_set_pinned("hibr", 0, err, sizeof(err)) != 0)
+		bad("unpinning failed: %s%s", err, "");
+	srcpolicy_get("hibr", &p);
+	if (p.pinned || p.explicit_entry)
+		bad("lifting the hold left an entry: %s, %s", p.pinned ? "held" : "not held",
+		    p.explicit_entry ? "explicit" : "inherited");
+	else
+		printf("  unpin                  -> back to nothing recorded\n");
+	if (srcpolicy_set("kernel", "kernel.org", "longterm", "n-1", err, sizeof(err)) != 0 ||
+	    srcpolicy_set_pinned("kernel", 1, err, sizeof(err)) != 0 ||
+	    srcpolicy_set_pinned("kernel", 0, err, sizeof(err)) != 0)
+		bad("pin and unpin over a policy failed: %s%s", err, "");
+	srcpolicy_get("kernel", &p);
+	if (p.pinned || !p.explicit_entry || strcmp(p.channel, "longterm") != 0)
+		bad("unpinning must leave the package's own policy: channel=%s, %s", p.channel,
+		    p.explicit_entry ? "explicit" : "inherited");
+	else
+		printf("  unpin keeps a policy   -> longterm\n");
 	unlink(g_path);
 	if (g_failures != 0) {
 		fprintf(stderr, "test_srcpolicy: %d failure(s)\n", g_failures);
