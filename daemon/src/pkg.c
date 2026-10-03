@@ -15916,6 +15916,117 @@ static int revision_says(const char *text, size_t len, const char *version, cons
 	return 0;
 }
 
+/*
+ * The revision does not still name the release it was revised from
+ * (cix#567). cbs revise changes the fields it is told to and nothing
+ * else, so a recipe whose body spells its own release out stays on the
+ * old one. Measured on 192.168.15.95, 2026-10-03: kernel@7.2.9-1 was
+ * revised from 7.2.3-19, carried `linux-7.2.3` and `lib/modules/7.2.3`
+ * in 13 places, and was committed and published although it could not
+ * build. Such a recipe cannot roll until a person writes those places as
+ * ${version}, so it is refused here, where the catalogue row says which
+ * line to change, rather than failing a build at 03:00.
+ *
+ * Not counted: comments (a `#` outside a string starts one), and the
+ * values cixd itself just wrote -- the main url and the changelog, which
+ * names the revision it was written from on purpose. A match is the old
+ * version standing alone, not part of a longer number on either side
+ * ("7.2.3" is not in "17.2.3" or in "7.2.31"). An old version under
+ * three characters is not checked, because "1" or "12" cannot be told
+ * from an ordinary number in a build command. 0, or -1 with the first
+ * offending line in err.
+ */
+static int is_version_digit_edge(const char *s, size_t len, size_t at, int forward)
+{
+	if (forward) {
+		if (at >= len)
+			return 0;
+		if (s[at] >= '0' && s[at] <= '9')
+			return 1;
+		return s[at] == '.' && at + 1 < len && s[at + 1] >= '0' && s[at + 1] <= '9';
+	}
+	if (at == 0)
+		return 0;
+	if (s[at - 1] >= '0' && s[at - 1] <= '9')
+		return 1;
+	return s[at - 1] == '.' && at >= 2 && s[at - 2] >= '0' && s[at - 2] <= '9';
+}
+
+/* Overwrites every occurrence of `value` in buf with spaces. */
+static void blank_value(char *buf, const char *value)
+{
+	size_t vlen = strlen(value);
+	char *p = buf;
+
+	if (vlen == 0)
+		return;
+	while ((p = strstr(p, value)) != NULL) {
+		memset(p, ' ', vlen);
+		p += vlen;
+	}
+}
+
+static int revision_drops_old_version(const char *text, size_t len, const char *old_upstream,
+                                      const char *url, const char *changelog, char *err,
+                                      size_t err_size)
+{
+	size_t olen = strlen(old_upstream), start = 0, line_no = 0;
+	char *buf;
+
+	if (olen < 3)
+		return 0;
+	buf = malloc(len + 1);
+	if (buf == NULL) {
+		snprintf(err, err_size, "out of memory");
+		return -1;
+	}
+	memcpy(buf, text, len);
+	buf[len] = '\0';
+	blank_value(buf, url);
+	blank_value(buf, changelog);
+
+	while (start < len) {
+		size_t end = start, code_end, i;
+		int in_string = 0;
+
+		while (end < len && buf[end] != '\n')
+			end++;
+		line_no++;
+
+		/* Where the code ends: the first `#` outside a string. */
+		code_end = end;
+		for (i = start; i < end; i++) {
+			if (in_string && buf[i] == '\\') {
+				i++;
+				continue;
+			}
+			if (buf[i] == '"')
+				in_string = !in_string;
+			else if (!in_string && buf[i] == '#') {
+				code_end = i;
+				break;
+			}
+		}
+
+		for (i = start; i + olen <= code_end; i++) {
+			if (memcmp(buf + i, old_upstream, olen) != 0 ||
+			    is_version_digit_edge(buf, code_end, i, 0) ||
+			    is_version_digit_edge(buf, code_end, i + olen, 1))
+				continue;
+			free(buf);
+			snprintf(err, err_size,
+			         "line %zu still names the old release %s, so this revision would "
+			         "build the old one: write it as ${version} in the recipe, and the "
+			         "next discovery run authors this release (cix#567)",
+			         line_no, old_upstream);
+			return -1;
+		}
+		start = end + 1;
+	}
+	free(buf);
+	return 0;
+}
+
 
 enum pkg_error pkg_recipe_revise_start(const char *name, const char *version, const char *url,
                                        const char *sha256, const char *verification,
@@ -15924,7 +16035,7 @@ enum pkg_error pkg_recipe_revise_start(const char *name, const char *version, co
 	char prev[PKG_VERSION_MAX], path[PATH_MAX], candidate[PKG_VERSION_MAX + 4];
 	char set_version[PKG_VERSION_MAX + 16], set_url[PKG_URL_MAX + 32];
 	char set_sha[PKG_SHA256_MAX + 32], set_changelog[PKG_CHANGELOG_MAX + 32];
-	char changelog[PKG_CHANGELOG_MAX];
+	char changelog[PKG_CHANGELOG_MAX], old_upstream[PKG_VERSION_MAX];
 	char *argv[16];
 	struct pkg_recipe recipe;
 	char *revised;
@@ -16031,6 +16142,12 @@ enum pkg_error pkg_recipe_revise_start(const char *name, const char *version, co
 		}
 
 	if (revision_says(revised, revised_len, version, url, sha256, changelog, err, err_size) != 0) {
+		free(revised);
+		return PKG_ERR_INVALID_RECIPE;
+	}
+	srcresolve_upstream_of(prev, old_upstream, sizeof(old_upstream));
+	if (revision_drops_old_version(revised, revised_len, old_upstream, url, changelog, err,
+	                               err_size) != 0) {
 		free(revised);
 		return PKG_ERR_INVALID_RECIPE;
 	}

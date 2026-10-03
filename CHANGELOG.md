@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The author stage refuses a revision that still names the old release (#567)
+
+Discovery wrote `kernel@7.2.9-1` from `kernel@7.2.3-19` on 2026-10-03. `cbs revise` changed what it was asked to, but the recipe body spelled `7.2.3` into 13 paths, so the revision unpacked `linux-7.2.9` and then built paths that did not exist. It was committed and published anyway.
+
+- After `cbs revise`, `pkg_recipe_revise_start()` reads the revised text for the old upstream version standing alone (not inside a longer number). Comments, the main url and the changelog are not counted. A match refuses the revision before anything is committed. The 400 names the line and says to write it as `${version}`.
+- Discovery keeps the candidate, and the catalogue row carries that message, so a recipe that cannot roll shows in `cixctl pkg source-catalogue` instead of failing a build at 03:00.
+- An old version under three characters is not checked, since `1` cannot be told from an ordinary number.
+- Docs: `writing-recipes.md` says a rolling recipe names its release only as `${version}`; `cli-reference.md`, `openapi.yaml` and `docs/api/README.md` list the 400.
+- Tests: `test_pkg` commits `commitpkg` 1.4-1 with `usr/share/commitpkg-1.4` and expects revising it to 1.5 to be refused naming 1.4, with nothing reaching the forge. The 1.0-1 fixture names its release in a comment, and the 1.2 and 1.3 revisions still commit, which covers the exclusions.
+
 ### A recipe with no `format` is CPDL (#564, #560)
 
 `POST /v1/pkg/recipes` used to read an omitted `format` as `shell`, so a CPDL recipe sent without one was parsed as a shell script and refused with a shell-recipe error. That is the wrong default since ADR-0309 refuses every new shell revision.

@@ -7128,6 +7128,7 @@ skip_resume:
 			                      "            tool \"bash\"\n"
 			                      "            tool \"coreutils\"\n",
 			                      NULL, "",
+			                      "        # 1.0 in a comment is not a hard-coded release (cix#567)\n"
 			                      "        run \"true\" {\n        }\n",
 			                      "        mkdir \"${dest}/usr/share/commitpkg\" parents\n");
 			jw_init(&w);
@@ -7637,6 +7638,74 @@ skip_resume:
 				fprintf(stderr, "FAIL: ADR-0323 revise 1.3 expected 400 or 202, got %d: %s\n",
 				        r.status, r.body != NULL ? r.body : "");
 				cix_response_free(&r);
+				ok = 0;
+			}
+		}
+
+		/*
+		 * cix#567: a revision that would still name the release it was
+		 * revised from is refused, naming the line, and nothing is
+		 * committed. commitpkg 1.4-1 spells its own release into an
+		 * install path, as kernel 7.2.3-19 did in 13 places; revising it
+		 * to 1.5 must be the 400. The 1.0 and 1.2 revisions above already
+		 * prove the other half: 1.0-1 names its release in a comment and
+		 * 1.2-1 in its changelog, and both were committed.
+		 */
+		if (stage_ok) {
+			char rbody[1024];
+
+			cpdl_recipe_text_decl(recipe, sizeof(recipe), "commitpkg", "1.4",
+			                      test_http_src(tarball), sha, NULL,
+			                      "            tool \"bash\"\n"
+			                      "            tool \"coreutils\"\n",
+			                      NULL, "", "        run \"true\" {\n        }\n",
+			                      "        mkdir \"${dest}/usr/share/commitpkg-1.4\" parents\n");
+			jw_init(&w);
+			jw_obj_open(&w);
+			jw_key(&w, "name");
+			jw_str(&w, "commitpkg");
+			jw_key(&w, "content");
+			jw_str(&w, recipe);
+			jw_obj_close(&w);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/recipe-commit", w.buf, &r) != 0 ||
+			    r.status != 202) {
+				fprintf(stderr, "FAIL: cix#567 committing commitpkg 1.4 expected 202, got %d: %s\n",
+				        r.status, r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			jw_free(&w);
+			for (waited = 0; waited < 120; waited++) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/recipe-commit", NULL, &r) == 0 &&
+				    r.json != NULL && json_str_field(r.json, "state") != NULL &&
+				    strcmp(json_str_field(r.json, "state"), "running") != 0)
+					break;
+				cix_response_free(&r);
+				usleep(500000);
+			}
+			cix_response_free(&r);
+
+			snprintf(rbody, sizeof(rbody),
+			         "{\"name\":\"commitpkg\",\"version\":\"1.5\",\"url\":\"%s\",\"sha256\":\"%s\","
+			         "\"verification\":\"the test fixture's own tarball\"}",
+			         test_http_src(tarball), sha);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/recipe-revise", rbody, &r) != 0 ||
+			    r.status != 400 || r.body == NULL ||
+			    strstr(r.body, "still names the old release 1.4") == NULL ||
+			    strstr(r.body, "${version}") == NULL) {
+				fprintf(stderr, "FAIL: cix#567 revising a recipe that names its own release "
+				                "expected 400 naming it, got %d: %s\n",
+				        r.status, r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			snprintf(body_path, sizeof(body_path), "%s/commitpkg@1.5-1.cbs.request.json",
+			         forge_dir);
+			if (access(body_path, F_OK) == 0) {
+				fprintf(stderr, "FAIL: cix#567 the refused revision reached the forge\n");
 				ok = 0;
 			}
 		}
