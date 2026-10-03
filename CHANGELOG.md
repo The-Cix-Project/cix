@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### hibr rolled to 0.99.11 with nobody writing the recipe (ADR-0323's validation event)
+
+On 192.168.15.95, after hibr@0.99.4-3 declared its upstream block:
+- one `discover` run authenticated v0.99.11 by origin trust and wrote hibr@0.99.11-1;
+- cixd committed it to cix-recipes (`5d72537`) and published it;
+- it was built, published and signed, and its approval was written back (`50013b2`);
+- jumpbox was rebuilt, and `jump` rolled onto the new image.
+
+Each step is recorded in ADR-0323's "The validation event, measured".
+
 ### cbs v0.1.104: the two upstream blockers on hibr rolling by itself are fixed (ADR-0323)
 
 - **cix-build-system#279:** `revise --set metadata.KEY` on an existing key now replaces the value. The author stage can revise any recipe, changelog or not. `test_pkg` now requires a second revision of a recipe with a changelog to be committed with its changelog under its own key; a refusal there means the bug is back.

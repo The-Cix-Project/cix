@@ -163,3 +163,19 @@ Estimated at four to six cix release cycles. **.95 has a saved schedule file, so
   - a source-policy hold (#565);
   - the kernel's rung 2 (its signed checksum list), which the kernel roll needs;
   - own-forge templates (cix-build-system#280) and changelog revisions (cix-build-system#279), both fixed in cbs v0.1.104 (0.2.57-450).
+
+## The validation event, measured (192.168.15.95, 2026-10-03)
+
+hibr rolled from 0.99.4 to 0.99.11 with no person writing a recipe. The one recipe written by hand was hibr@0.99.4-3, which added the upstream block to the release already running. After that, one run of the hourly `discover` schedule (run on demand at 1790986600) produced each step this ADR asks to be checkable:
+
+1. **Commit** `5d72537` in cix-recipes: "hibr@0.99.11-1: committed by cixd on cix before publishing it". Against 0.99.4-3, the diff is exactly:
+   - version, and release set to 1;
+   - the main url and its sha256 (`64a855ea…`);
+   - the artifact approval removed;
+   - a changelog naming the digest and "origin trust: the release archive fetched from trusted origin https://git.home.arpa".
+2. **The store lists hibr@0.99.11-1**, and the source catalogue row reads resolved 0.99.11, newest recipe 0.99.11-1.
+3. **The build passed.** The artifact was published to the cache and signed, and its approval was written back to git (`50013b2`).
+4. **Publishing queued the jumpbox rebuild**, and jumpbox's current version became `f9cd32716a6a…`.
+5. **`jump` runs on image version `f9cd32716a6a…`**, with a new pid.
+
+It needed cbs v0.1.104 (cix-build-system#279 and #280), 0.2.57-450, and `https://git.home.arpa` on the trusted origins.
