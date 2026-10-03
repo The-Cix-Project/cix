@@ -625,8 +625,10 @@ static void respond_image_recipe_error(int fd, enum pkg_error err)
 		break;
 	case PKG_ERR_INVALID_RECIPE:
 		respond_error(fd, 400, "Bad Request",
-		              "recipe content failed to parse -- image_packages= is required, each "
-		              "entry \"name:pinned|rolling:version\"");
+		              "recipe content failed to parse -- an image recipe is a JSON object "
+		              "with a non-empty \"packages\" array of {\"package\", \"mode\": "
+		              "\"pinned\"|\"rolling\", \"version\"} (ADR-0311); the "
+		              "image_packages= form is gone (cix#569)");
 		break;
 	case PKG_ERR_TARGET_IMAGE_NOT_FOUND:
 		respond_error(fd, 404, "Not Found",

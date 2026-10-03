@@ -3889,13 +3889,13 @@
 					<label class="wide">
 						Content
 						<textarea id="irf-content" rows="10" spellcheck="false"
-							placeholder='image_packages="pkgA:pinned:1.0 pkgB:rolling:2.0"&#10;image_artifact_sha256=""'></textarea>
+							placeholder='{"image": "NAME", "version": "1.0.0", "packages": [{"package": "pkgA", "mode": "pinned", "version": "1.0-1"}, {"package": "pkgB", "mode": "rolling", "version": "2.0-1"}]}'></textarea>
 					</label>
 					<button type="submit">Add / update</button>
 				</form>
-				<p class="hint">Replaces the whole recipe -- image_packages= is required
-					(whitespace-separated "package:mode:version" entries); image_artifact_sha256= is
-					optional (ADR-0123).</p>
+				<p class="hint">Replaces the whole recipe: a JSON object with a non-empty "packages"
+					array, each entry {"package", "mode": "pinned" or "rolling", "version"}, plus
+					optional "image", "version" and "notes" (ADR-0311).</p>
 			</div>
 
 			<div id="modal-container-recipe-form" hidden>

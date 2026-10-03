@@ -4,6 +4,8 @@
 
 Accepted. Adjacent to [ADR-0309](0309-shell-recipes-are-history-the-shell-path-retires-with-its-last-dependent.md), which put image recipes explicitly out of scope of the shell **build path** retirement — correctly, since they are never built. This is the separate question that left behind: what format they should be in at all. Relates to [ADR-0252](0252-an-image-recipe-is-authoritative.md) and [ADR-0308](0308-recipes-are-their-own-repository-flat.md).
 
+**Clause 4 was completed by cix#569 on 2026-10-03, not when this was accepted.** The JSON parser shipped, but the recipe sync kept walking `.sh` image recipes, so no `.json` image recipe reached a host: 192.168.15.95 held `cix-builder` at 6.1.0, its last `.sh`, while git had 6.1.4. The sync now reads `.json` only, and the `image_packages=` reader is removed.
+
 ## Context
 
 The owner asked whether image recipes should be JSON. They are `.sh` today. The answer is yes, and the evidence is not a preference:

@@ -13,6 +13,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "persist.h"
+#include "recipe_format.h"
 #include "test_image_fixture.h"
 
 #include <limits.h>
@@ -139,8 +140,8 @@ static int stop_http_server(pid_t pid)
 /* Builds <scratch>/api/v1/repos/testowner/testrepo/archive/master.tar.gz,
  * a real git-archive-shaped tarball (single top-level "testrepo-master/"
  * prefix) containing one package recipe at
- * recipes/package/synctest@1.0.sh and one image recipe at
- * recipes/image/synctest-image@1.0.0.sh (#505's flat layout,
+ * recipes/package/synctest@1.0-1.cbs and one image recipe at
+ * recipes/image/synctest-image@1.0.0.json (#505's flat layout,
  * ADR-0149's unified
  * layout) -- also stages a stale, lower-versioned image recipe
  * directory (0.9.0) alongside the real one to prove sync picks the
@@ -163,15 +164,42 @@ static int stage_fixture_archive(const char *scratch_dir)
 	if (run_cmd("mkdir -p '%s'", recipe_dir) != 0)
 		return -1;
 
-	snprintf(recipe_path, sizeof(recipe_path), "%s/synctest@1.0.sh", recipe_dir);
+	/* CPDL: shell recipes do not exist (cix#569). Published by the sync
+	 * through `cbs explain` like any other recipe, so it has to be a
+	 * whole, valid one; the source is never fetched. */
+	snprintf(recipe_path, sizeof(recipe_path), "%s/synctest@1.0-1.cbs", recipe_dir);
 	f = fopen(recipe_path, "w");
 	if (f == NULL)
 		return -1;
-	fprintf(f, "pkg_name=synctest\n");
-	fprintf(f, "pkg_version=1.0\n");
-	fprintf(f, "pkg_source=%s\n", test_http_src("/nonexistent/synctest-1.0.tar"));
-	fprintf(f, "pkg_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n");
-	fprintf(f, "pkg_depends=\"\"\n");
+	fprintf(f,
+	        "package \"synctest\" {\n"
+	        "    version \"1.0\"\n"
+	        "    release 1\n"
+	        "    format \"cixpkg\"\n"
+	        "\n"
+	        "    sources {\n"
+	        "        main \"synctest\" {\n"
+	        "            url \"%s\"\n"
+	        "            sha256 \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n"
+	        "        }\n"
+	        "    }\n"
+	        "\n"
+	        "    requires {\n"
+	        "        build {\n"
+	        "            tool \"bash\"\n"
+	        "        }\n"
+	        "    }\n"
+	        "\n"
+	        "    build {\n"
+	        "        run \"true\" {\n"
+	        "        }\n"
+	        "    }\n"
+	        "\n"
+	        "    install {\n"
+	        "        mkdir \"${dest}/usr/share/synctest\" parents\n"
+	        "    }\n"
+	        "}\n",
+	        test_http_src("/nonexistent/synctest-1.0.tar"));
 	fclose(f);
 
 	/* #505: flat here too. Two versions of one image recipe, so the
@@ -180,22 +208,24 @@ static int stage_fixture_archive(const char *scratch_dir)
 	snprintf(stale_image_dir, sizeof(stale_image_dir), "%s/recipes/image", stage_dir);
 	if (run_cmd("mkdir -p '%s'", stale_image_dir) != 0)
 		return -1;
-	snprintf(stale_image_path, sizeof(stale_image_path), "%s/synctest-image@0.9.0.sh",
+	snprintf(stale_image_path, sizeof(stale_image_path), "%s/synctest-image@0.9.0.json",
 	         stale_image_dir);
 	f = fopen(stale_image_path, "w");
 	if (f == NULL)
 		return -1;
-	fprintf(f, "image_packages=\"synctest:pinned:0.9\"\n");
+	fprintf(f, "{\"image\": \"synctest-image\", \"version\": \"0.9.0\", \"packages\": "
+	           "[{\"package\": \"synctest\", \"mode\": \"pinned\", \"version\": \"0.9-1\"}]}\n");
 	fclose(f);
 
 	snprintf(image_dir, sizeof(image_dir), "%s/recipes/image", stage_dir);
 	if (run_cmd("mkdir -p '%s'", image_dir) != 0)
 		return -1;
-	snprintf(image_path, sizeof(image_path), "%s/synctest-image@1.0.0.sh", image_dir);
+	snprintf(image_path, sizeof(image_path), "%s/synctest-image@1.0.0.json", image_dir);
 	f = fopen(image_path, "w");
 	if (f == NULL)
 		return -1;
-	fprintf(f, "image_packages=\"synctest:pinned:1.0\"\n");
+	fprintf(f, "{\"image\": \"synctest-image\", \"version\": \"1.0.0\", \"packages\": "
+	           "[{\"package\": \"synctest\", \"mode\": \"pinned\", \"version\": \"1.0-1\"}]}\n");
 	fclose(f);
 
 	snprintf(archive_dir, sizeof(archive_dir), "%s/api/v1/repos/testowner/testrepo/archive",
@@ -378,12 +408,13 @@ int main(void)
 	}
 	cix_response_free(&r);
 
-	snprintf(recipe_check_path, sizeof(recipe_check_path), "%s/recipes/synctest/1.0/build.sh",
+	snprintf(recipe_check_path, sizeof(recipe_check_path),
+	         "%s/recipes/synctest/1.0-1/" PKG_RECIPE_CBS_FILE,
 	         g_pkg_state_dir);
 	CHECK(persist_read_file(recipe_check_path, &content, &content_len) == 0 && content != NULL,
 	      "synced recipe actually landed on disk");
 	if (content != NULL) {
-		CHECK(strstr(content, "pkg_name=synctest") != NULL,
+		CHECK(strstr(content, "package \"synctest\"") != NULL,
 		      "synced recipe content matches the fixture");
 		free(content);
 	}
@@ -398,8 +429,8 @@ int main(void)
 	if (r.json != NULL) {
 		const char *recipe_content = json_str_field(r.json, "content");
 
-		CHECK(recipe_content != NULL && strstr(recipe_content, "synctest:pinned:1.0") != NULL &&
-		              strstr(recipe_content, "synctest:pinned:0.9") == NULL,
+		CHECK(recipe_content != NULL && strstr(recipe_content, "\"1.0-1\"") != NULL &&
+		              strstr(recipe_content, "\"0.9-1\"") == NULL,
 		      "synced image recipe picked the higher of the two staged versions (1.0.0)");
 	}
 	cix_response_free(&r);

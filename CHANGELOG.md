@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Image recipes reach a host again, as JSON only (#569, ADR-0311)
+
+ADR-0311 made image recipes JSON on 2026-09-25, and the daemon gained a JSON parser. But the recipe sync went on matching only `.sh` image recipes. So no `.json` image recipe ever reached a host: 192.168.15.95 held `cix-builder` at 6.1.0, its last `.sh` revision, while cix-recipes had 6.1.4. Measured 2026-10-03.
+
+- **The sync reads `recipes/image/<name>@<version>.json`**, highest version per name, as it did for `.sh`. On .95 this installs nothing new: the four follow-and-converge images (jumpbox, cix-builder, cix-hosttools, kernel-builder) already have exactly their latest JSON pins installed (34, 24, 13 and 25 pins, all matching).
+- **An image recipe is JSON or it is refused.** The `image_packages=` reader is removed with every other shell recipe form (the owner's direction of 2026-10-03, in CLAUDE.md). A stored recipe still in the old form fails to apply until the sync replaces it.
+- `cixctl image materialize` reads the package names from the JSON `packages` array. The dashboard's image-recipe form shows a JSON example, and the `POST /v1/images/recipes` 400 describes the JSON shape.
+- Docs: `images.md`, `openapi.yaml`, `docs/api/README.md`, and ADR-0311, which now records that its clause 4 was finished here.
+- Tests:
+  - `test_image_recipe` uses JSON fixtures. Its image-artifact fast-path scenario is removed: ADR-0209 retired that path and ADR-0328 removed image tarballs, so a JSON recipe cannot ask for one, and keeping it meant fabricating the tarball it refused.
+  - `test_pkg_sync` syncs a JSON image recipe pair and a CPDL package recipe, in place of `.sh` ones.
+
 ### A root is staged with the kernel its modules are for (#568)
 
 The control-plane root carries the kernel's modules, staged by the assembly from the kernel hostbuild's artifact, and a kernel loads only modules built for its own release. `POST /v1/system/update` with no `kernel_path` staged the running kernel. So a hand deploy of cix made after a kernel hostbuild, but before rebooting onto it, paired the new modules with the old kernel. That host boots and confirms, since cixd loads no module, and then cannot load a driver. The nightly host roll stages both together and was not affected; found by reading the code, not observed on a box.

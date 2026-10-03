@@ -1703,8 +1703,8 @@ enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd);
  * already-published (name,version) comes back PKG_ERR_DUPLICATE and is
  * silently skipped (merge semantics: sync only ever adds, never
  * deletes or overwrites, so a locally-added-only recipe is always
- * safe). Also walks recipes/image/<name>/<version>/build.sh (ADR-0149)
- * and recipes/deployment/<name>/<version>/container.json (ADR-0151),
+ * safe). Also walks recipes/image/<name>@<version>.json (ADR-0311)
+ * and recipes/deployment/<name>@<version>.json (ADR-0151),
  * each picking the highest version per name and add()ing it via its
  * own image_recipe_add()/container_recipe_add() -- both always
  * overwrite (no version-keying at the daemon layer, ADR-0123/ADR-0151),
@@ -1927,11 +1927,12 @@ int pkg_buildenv_reclaim(void);
  * ---- pkg/ redesign Part 4 (ADR-0123): image recipes ----
  *
  * An image recipe is the image-layer analog of a package recipe: a
- * plain text file declaring an image's intended package set --
- *   image_packages="name:mode:version name2:mode2:version2 ..."
- * -- git-syncable text, stored one file per image name (no version-
- * keying of its own; the image's own existing content-addressed
- * versioning, ADR-0108, already tracks distinct resolved states).
+ * JSON document (ADR-0311) declaring an image's intended package set --
+ *   {"image": "NAME", "version": "V", "notes": "...",
+ *    "packages": [{"package": "P", "mode": "pinned", "version": "X"}, ...]}
+ * -- git-syncable, stored one file per image name (no version-keying of
+ * its own; the image's own content-addressed versioning, ADR-0108,
+ * already tracks distinct resolved states).
  *
  * Applying a recipe (pkg_image_recipe_apply()) is synchronous
  * bulk-declare: image_manifest_set() for every entry, exactly what N

@@ -17017,7 +17017,7 @@ static void sync_walk_image_recipes(const char *images_root, int *added, int *sk
 
 	/*
 	 * #505: one flat directory. The old shape opened a directory per
-	 * name and scanned its versions; now every "<name>@<version>.sh"
+	 * name and scanned its versions; now every "<name>@<version>.json"
 	 * sits side by side. An image recipe is name-keyed at the daemon
 	 * layer (ADR-0123), so exactly one version per name may win, and
 	 * the rule is the same as before: the highest.
@@ -17028,13 +17028,21 @@ static void sync_walk_image_recipes(const char *images_root, int *added, int *sk
 	 * entry, which is quadratic and deliberately so -- there are 58
 	 * image recipe versions in the whole corpus, and a clear rule
 	 * beats a clever one at that size.
+	 *
+	 * JSON since cix#569. ADR-0311 made image recipes JSON on 2026-09-25
+	 * and gave the daemon a JSON parser, but this walk kept matching .sh,
+	 * so no .json image recipe ever reached a host: 192.168.15.95 held
+	 * cix-builder at 6.1.0, its last .sh, while git had 6.1.4 (measured
+	 * 2026-10-03). Its four follow-and-converge images already had the
+	 * latest JSON pins installed by other routes, so the switch installs
+	 * nothing there.
 	 */
 	names_d = opendir(images_root);
 	if (names_d == NULL)
 		return;
 	while ((name_de = readdir(names_d)) != NULL) {
 		char name[PKG_NAME_MAX], version[PKG_VERSION_MAX];
-		char script_path[PATH_MAX];
+		char recipe_file[PATH_MAX];
 		char *content;
 		size_t content_len;
 		struct dirent *vde;
@@ -17046,7 +17054,7 @@ static void sync_walk_image_recipes(const char *images_root, int *added, int *sk
 		if (recipe_file_split(name_de->d_name, name, sizeof(name), version,
 		                      sizeof(version), &ext) != 0)
 			continue;
-		if (strcmp(ext, "sh") != 0)
+		if (strcmp(ext, "json") != 0)
 			continue;
 		if (!sync_source_owns("image", name, source, held))
 			continue;
@@ -17060,7 +17068,7 @@ static void sync_walk_image_recipes(const char *images_root, int *added, int *sk
 
 			if (recipe_file_split(vde->d_name, n2, sizeof(n2), v2, sizeof(v2), &e2) != 0)
 				continue;
-			if (strcmp(e2, "sh") != 0 || strcmp(n2, name) != 0)
+			if (strcmp(e2, "json") != 0 || strcmp(n2, name) != 0)
 				continue;
 			if (pkg_version_compare(v2, version) > 0) {
 				outranked = 1;
@@ -17071,12 +17079,12 @@ static void sync_walk_image_recipes(const char *images_root, int *added, int *sk
 		if (outranked)
 			continue;
 
-		snprintf(script_path, sizeof(script_path), "%s/%s", images_root, name_de->d_name);
-		if (!sync_vouched(cat, "recipes/image", name_de->d_name, script_path, source)) {
+		snprintf(recipe_file, sizeof(recipe_file), "%s/%s", images_root, name_de->d_name);
+		if (!sync_vouched(cat, "recipes/image", name_de->d_name, recipe_file, source)) {
 			(*failed)++;
 			continue;
 		}
-		if (persist_read_file(script_path, &content, &content_len) != 0 || content == NULL)
+		if (persist_read_file(recipe_file, &content, &content_len) != 0 || content == NULL)
 			continue;
 		/* Held already, byte for byte: skipped, not rewritten. The add
 		 * overwrites by name and never answers DUPLICATE, so without
@@ -21002,7 +21010,6 @@ static void artifact_sentinel_path(int chain_idx, const char *name, const char *
 
 /* ---- pkg/ redesign Part 4 (ADR-0123): image recipes + image-artifact fetch ---- */
 
-#define IMAGE_RECIPE_TOKEN_MAX (PKG_NAME_MAX + PKG_VERSION_MAX + 16)
 
 struct image_recipe {
 	struct image_manifest_entry entries[IMAGE_MANIFEST_MAX_PACKAGES];
@@ -21041,21 +21048,14 @@ static void image_recipe_path(const char *name, char *out, size_t out_size)
 /*
  * ADR-0311: an image recipe is a JSON document.
  *
- * Dispatched on the CONTENT, not on the filename, and that is forced
+ * Checked on the CONTENT, not on the filename, and that is forced
  * rather than chosen: the daemon's own store is
  * "<image-recipes-dir>/<name>.recipe" (image_recipe_path() above) --
  * one file per image, with no version and no extension in it. ADR-0305's
  * "the filename is the format" governs the corpus, where a recipe is
  * <name>@<version>.<ext>; by the time a recipe reaches this function it
  * has been copied into a store that never carried an extension to
- * dispatch on. A leading '{' is the discriminator because the legacy
- * form cannot begin with one: it is comments and a single
- * image_packages= assignment.
- *
- * The legacy reader stays. 43 published .sh revisions are immutable
- * history that `pkg sync` merges onto every host (ADR-0309's reasoning,
- * unchanged), and a host whose store still holds one must keep being
- * able to read it.
+ * dispatch on. So the content is checked: it must open with '{'.
  */
 static int parse_image_recipe_json(const char *buf, struct image_recipe *out)
 {
@@ -21109,52 +21109,21 @@ static int parse_image_recipe_json(const char *buf, struct image_recipe *out)
 	return 0;
 }
 
-/* buf is modified in place by extract_line_value()/tokenize_into(),
- * same convention parse_recipe() already has for its own raw_source/
- * raw_sha256 buffers. */
+/*
+ * An image recipe is a JSON object (ADR-0311), and nothing else: the
+ * legacy `image_packages=` assignment, a shell-shaped line in a .sh
+ * file, is gone with every other shell recipe (cix#569). A store that
+ * still holds one fails here and says so rather than being read.
+ */
 static int parse_image_recipe_buf(char *buf, struct image_recipe *out)
 {
-	char raw_packages[IMAGE_MANIFEST_MAX_PACKAGES * IMAGE_RECIPE_TOKEN_MAX];
-	char tokens[IMAGE_MANIFEST_MAX_PACKAGES][IMAGE_RECIPE_TOKEN_MAX];
-	int n, i;
 	const char *p = buf;
 
-	/* ADR-0311: JSON if it looks like JSON, the legacy assignment
-	 * otherwise. See parse_image_recipe_json() for why the content and
-	 * not the filename decides. */
 	while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
 		p++;
-	if (*p == '{')
-		return parse_image_recipe_json(buf, out);
-
-	memset(out, 0, sizeof(*out));
-	if (extract_line_value(buf, "image_packages=", raw_packages, sizeof(raw_packages)) != 0)
+	if (*p != '{')
 		return -1;
-	n = tokenize_into(raw_packages, (char *)tokens, IMAGE_RECIPE_TOKEN_MAX,
-	                   IMAGE_MANIFEST_MAX_PACKAGES);
-	if (n <= 0)
-		return -1;
-	for (i = 0; i < n; i++) {
-		char *pkg_tok, *mode_tok, *ver_tok, *save;
-
-		pkg_tok = strtok_r(tokens[i], ":", &save);
-		mode_tok = strtok_r(NULL, ":", &save);
-		ver_tok = strtok_r(NULL, ":", &save);
-		if (pkg_tok == NULL || mode_tok == NULL || ver_tok == NULL)
-			return -1;
-		if (!pkg_name_is_valid(pkg_tok) || strlen(ver_tok) >= PKG_VERSION_MAX)
-			return -1;
-		if (strcmp(mode_tok, "pinned") == 0)
-			out->entries[i].mode = IMAGE_PKG_PINNED;
-		else if (strcmp(mode_tok, "rolling") == 0)
-			out->entries[i].mode = IMAGE_PKG_ROLLING;
-		else
-			return -1;
-		snprintf(out->entries[i].package, sizeof(out->entries[i].package), "%s", pkg_tok);
-		snprintf(out->entries[i].version, sizeof(out->entries[i].version), "%s", ver_tok);
-	}
-	out->entry_count = n;
-	return 0;
+	return parse_image_recipe_json(buf, out);
 }
 
 enum pkg_error image_recipe_add(const char *name, const char *content)

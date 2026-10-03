@@ -12001,46 +12001,32 @@ static int materialize_one(const struct cix_client *c, const char *image, const 
 	return 0;
 }
 
-/* image_packages="name:mode:version name2:..." -- the only line this
- * needs from the recipe. Written into names[], one bare package name
- * per entry; mode and version are the daemon's business, not this
- * loop's. */
+/* The package names an image recipe declares: its "packages" array
+ * (ADR-0311), one bare name per entry into names[]; mode and version
+ * are the daemon's business, not this loop's. 0 for anything that is
+ * not a JSON recipe -- the image_packages= form is gone (cix#569). */
 static int parse_image_packages(const char *content, char names[][128], int max)
 {
-	const char *p = strstr(content, "image_packages=\"");
-	const char *end;
+	struct json_value *root = json_parse(content, strlen(content));
+	const struct json_value *packages;
+	size_t i;
 	int n = 0;
 
-	if (p == NULL)
+	if (root == NULL)
 		return 0;
-	p += strlen("image_packages=\"");
-	end = strchr(p, '"');
-	if (end == NULL)
-		return 0;
-	while (p < end && n < max) {
-		const char *tok;
-		size_t len;
+	packages = json_object_get(root, "packages");
+	if (packages != NULL && packages->type == JSON_ARRAY) {
+		for (i = 0; i < packages->u.array.count && n < max; i++) {
+			const char *name =
+			    json_as_string(json_object_get(packages->u.array.items[i], "package"));
 
-		while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\\'))
-			p++;
-		if (p >= end)
-			break;
-		tok = p;
-		while (p < end && *p != ' ' && *p != '\t' && *p != '\n')
-			p++;
-		len = (size_t)(p - tok);
-		{
-			const char *colon = memchr(tok, ':', len);
-
-			if (colon != NULL)
-				len = (size_t)(colon - tok);
+			if (name == NULL || name[0] == '\0' || strlen(name) >= 128)
+				continue;
+			snprintf(names[n], 128, "%s", name);
+			n++;
 		}
-		if (len == 0 || len >= 128)
-			continue;
-		memcpy(names[n], tok, len);
-		names[n][len] = '\0';
-		n++;
 	}
+	json_free(root);
 	return n;
 }
 

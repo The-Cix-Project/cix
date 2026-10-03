@@ -7389,9 +7389,9 @@ paths:
     post:
       summary: >
         Adds or replaces the image recipe for name. content is parsed and
-        validated before anything on disk changes -- image_packages= is
-        required (whitespace-separated "package:mode:version" entries,
-        mode one of pinned/rolling); image_artifact_sha256= is optional.
+        validated before anything on disk changes: a JSON object (ADR-0311)
+        with a non-empty "packages" array of {"package", "mode" (pinned or
+        rolling), "version"}. The image_packages= text form is gone (cix#569).
       operationId: addImageRecipe
       x-cix-permission: images:write
       x-cix-expose: [cli, web]
@@ -7408,7 +7408,7 @@ paths:
                   description: The target image's own name -- an image recipe's name is always its image's name.
                 content:
                   type: string
-                  description: The full text of an image recipe file (image_packages=/image_artifact_sha256=).
+                  description: The image recipe, a JSON document (ADR-0311).
       responses:
         "204":
           description: Recipe added/replaced
@@ -20748,7 +20748,7 @@ components:
           properties:
             content:
               type: string
-              description: The full text of the image recipe file (image_packages=/image_artifact_sha256=).
+              description: The image recipe, a JSON document (ADR-0311).
 
     ImageRecipeApply:
       type: object

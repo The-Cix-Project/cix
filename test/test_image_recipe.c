@@ -1,13 +1,11 @@
 /*
  * Proves Part 4 of the pkg/ redesign (task #769, ADR-0123): image
- * recipes -- a declarative package-list definition for an image,
- * git-syncable text -- and the image-artifact fast path: a fully-
- * pinned recipe with a matching configured plain-HTTP artifact server
- * fetches one whole-rootfs tarball, checksum-verified against the
- * recipe's own declared hash, instead of running any per-package
- * build. Kept hermetic like test_pkg_cache.c's own fixture: the shared
- * loopback server stands in for the artifact host, a real tar
- * builds the fixture payload.
+ * recipes -- a declarative package-list definition for an image, a JSON
+ * document since ADR-0311 -- are listed, applied (bulk-declare, ADR-0209),
+ * validated, reconciled against the images that exist, and removed. The
+ * image-artifact fast path this once also proved is gone: ADR-0209
+ * retired it and ADR-0328 removed image tarballs, so a JSON recipe has
+ * no field that could ask for one.
  */
 #include "httpclient.h"
 #include "json.h"
@@ -27,7 +25,6 @@ extern char **environ;
 
 #define TEST_PORT 7653
 #define PORT_ARG "--port=7653"
-static int g_http_port; /* assigned by test_http_server_start() */
 
 static char g_data_dir[PATH_MAX];
 
@@ -40,67 +37,6 @@ static int g_failures;
 			g_failures++; \
 		} \
 	} while (0)
-
-static int run_cmd(const char *fmt, ...)
-{
-	char cmd[2048];
-	va_list ap;
-	int rc;
-
-	va_start(ap, fmt);
-	vsnprintf(cmd, sizeof(cmd), fmt, ap);
-	va_end(ap);
-	rc = system(cmd);
-	return (rc == 0) ? 0 : -1;
-}
-
-static int compute_file_sha256(const char *path, char *out_sha256, size_t sha256_size)
-{
-	char shacmd[700];
-	FILE *sp;
-	char buf[128] = { 0 };
-
-	snprintf(shacmd, sizeof(shacmd), "sha256sum '%s'", path);
-	sp = popen(shacmd, "r");
-	if (sp == NULL)
-		return -1;
-	if (fgets(buf, sizeof(buf), sp) == NULL) {
-		pclose(sp);
-		return -1;
-	}
-	pclose(sp);
-	if (strlen(buf) < 64 || 64 >= sha256_size)
-		return -1;
-	memcpy(out_sha256, buf, 64);
-	out_sha256[64] = '\0';
-	return 0;
-}
-
-/* Matches image_hash_manifest_string()'s own algorithm exactly
- * (sha256sum of the canonical, no-trailing-newline "name@version,..."
- * string) -- computed independently here so the test can predict the
- * artifact URL the daemon will request, without any daemon-side
- * cooperation. */
-static int compute_manifest_hash(const char *canonical, char *out_hash, size_t out_hash_size)
-{
-	char tmp_path[] = "/tmp/cix_test_imgrecipe_hash_XXXXXX";
-	int fd;
-	ssize_t written;
-	int rc;
-
-	fd = mkstemp(tmp_path);
-	if (fd < 0)
-		return -1;
-	written = write(fd, canonical, strlen(canonical));
-	close(fd);
-	if (written < 0 || (size_t)written != strlen(canonical)) {
-		unlink(tmp_path);
-		return -1;
-	}
-	rc = compute_file_sha256(tmp_path, out_hash, out_hash_size);
-	unlink(tmp_path);
-	return rc;
-}
 
 static pid_t start_daemon(void)
 {
@@ -192,51 +128,14 @@ static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 	return -1;
 }
 
-/*
- * The shared loopback file server (test_image_fixture.c), rooted at dir.
- * This was `python3 -m http.server`, and a Cix build environment has no
- * Python, so the test failed before reaching what it tests
- * (cix-tests@v2.57.246-1, 192.168.15.95, 2026-09-23).
- */
-static pid_t start_http_server(const char *dir)
-{
-	pid_t pid;
-
-	if (test_http_server_start(dir, 0, &g_http_port, &pid) != 0) {
-		perror("test_http_server_start");
-		return -1;
-	}
-	return pid;
-}
-
-static int stop_http_server(pid_t pid)
-{
-	return test_http_server_stop(pid);
-}
-
 int main(void)
 {
-	pid_t daemon_pid, http_pid;
+	pid_t daemon_pid;
 	struct cix_client client;
 	struct cix_response r;
-	char scratch_dir[] = "/tmp/cix_test_imgrecipe_XXXXXX";
-	char artifact_path[512], artifact_sha256[128];
-	char target_hash[128];
-	char version_before[128];
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
-
-	if (mkdtemp(scratch_dir) == NULL) {
-		fprintf(stderr, "FAIL: mkdtemp\n");
-		test_data_dir_cleanup(g_data_dir);
-		return 1;
-	}
-	if (run_cmd("mkdir -p '%s/images'", scratch_dir) != 0) {
-		fprintf(stderr, "FAIL: could not create images subdir\n");
-		test_data_dir_cleanup(g_data_dir);
-		return 1;
-	}
 
 	daemon_pid = start_daemon();
 	if (daemon_pid < 0) {
@@ -278,7 +177,8 @@ int main(void)
 		jw_key(&w, "name");
 		jw_str(&w, "bulkimg");
 		jw_key(&w, "content");
-		jw_str(&w, "image_packages=\"foo:pinned:1.0 bar:rolling:2.0\"\n");
+		jw_str(&w, "{\"packages\":[{\"package\":\"foo\",\"mode\":\"pinned\",\"version\":\"1.0\"},"
+		            "{\"package\":\"bar\",\"mode\":\"rolling\",\"version\":\"2.0\"}]}");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		CHECK(cix_client_request(&client, "POST", "/v1/images/recipes", w.buf, &r) == 0 &&
@@ -360,157 +260,14 @@ int main(void)
 		jw_key(&w, "name");
 		jw_str(&w, "badimg");
 		jw_key(&w, "content");
-		jw_str(&w, "image_packages=\"not-a-valid-entry\"\n");
+		jw_str(&w, "{\"packages\":[{\"package\":\"not-a-valid-entry\"}]}");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		CHECK(cix_client_request(&client, "POST", "/v1/images/recipes", w.buf, &r) == 0 &&
 		          r.status == 400,
-		      "malformed image_packages entry is rejected (400)");
+		      "a packages entry with no mode or version is rejected (400)");
 		jw_free(&w);
 		cix_response_free(&r);
-	}
-
-	/* --- scenario 5: fully-pinned recipe + artifact fast path --- */
-	{
-		char payload_dir[600];
-
-		snprintf(payload_dir, sizeof(payload_dir), "%s/payload/usr/bin", scratch_dir);
-		CHECK(run_cmd("mkdir -p '%s'", payload_dir) == 0, "mkdir payload dir");
-		CHECK(run_cmd("printf '#!/usr/bin/env sh\\necho hi\\n' > '%s/imgtool' && chmod +x "
-		              "'%s/imgtool'",
-		              payload_dir, payload_dir) == 0,
-		      "write payload binary");
-
-		CHECK(compute_manifest_hash("artifactpkg@1.0", target_hash, sizeof(target_hash)) == 0,
-		      "compute expected manifest hash");
-
-		snprintf(artifact_path, sizeof(artifact_path), "%s/images/artifactimg-%s.tar.gz",
-		         scratch_dir, target_hash);
-		CHECK(run_cmd("tar -C '%s/payload' -czf '%s' .", scratch_dir, artifact_path) == 0,
-		      "tar the artifact payload");
-		CHECK(compute_file_sha256(artifact_path, artifact_sha256, sizeof(artifact_sha256)) == 0,
-		      "compute artifact sha256");
-	}
-
-	http_pid = start_http_server(scratch_dir);
-	CHECK(http_pid > 0, "start http server");
-	usleep(300000);
-
-	{
-		char base_url[64];
-		struct json_writer w;
-
-		snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d", g_http_port);
-		jw_init(&w);
-		jw_obj_open(&w);
-		jw_key(&w, "name");
-		jw_str(&w, "stage");
-		jw_key(&w, "url");
-		jw_str(&w, base_url);
-		jw_obj_close(&w);
-		w.buf[w.len] = '\0';
-		CHECK(cix_client_request(&client, "POST", "/v1/pkg/repositories", w.buf, &r) == 0 &&
-		          r.status == 201,
-		      "POST /v1/pkg/repositories");
-		jw_free(&w);
-		cix_response_free(&r);
-	}
-
-	CHECK(cix_client_request(&client, "POST", "/v1/images", "{\"name\":\"artifactimg\"}", &r) == 0 &&
-	          r.status == 201,
-	      "image create artifactimg");
-	cix_response_free(&r);
-
-	{
-		char recipe_content[300];
-		struct json_writer w;
-
-		snprintf(recipe_content, sizeof(recipe_content),
-		         "image_packages=\"artifactpkg:pinned:1.0\"\nimage_artifact_sha256=%s\n",
-		         artifact_sha256);
-		jw_init(&w);
-		jw_obj_open(&w);
-		jw_key(&w, "name");
-		jw_str(&w, "artifactimg");
-		jw_key(&w, "content");
-		jw_str(&w, recipe_content);
-		jw_obj_close(&w);
-		w.buf[w.len] = '\0';
-		CHECK(cix_client_request(&client, "POST", "/v1/images/recipes", w.buf, &r) == 0 &&
-		          r.status == 204,
-		      "POST /v1/images/recipes (artifactimg)");
-		jw_free(&w);
-		cix_response_free(&r);
-	}
-
-	/*
-	 * ADR-0209: everything the old fast path needed is deliberately in
-	 * place here -- every entry pinned, a real image_artifact_sha256
-	 * in the recipe, a configured artifact server, and a genuine,
-	 * correctly-named, correctly-checksummed tarball actually being
-	 * served. The point is that none of it matters any more. Apply is
-	 * bulk-declare and nothing else.
-	 *
-	 * Asserted as absence, not just as a different status code: an
-	 * available artifact that is quietly fetched anyway would still
-	 * return 204 here, so the checks below look at what is on disk.
-	 */
-	/* Captured before, compared after: "current_version did not change"
-	 * is the property, and asserting it positively beats asserting the
-	 * version merely differs from the artifact's hash -- which any
-	 * wrong value would satisfy. */
-	{
-		const char *cv;
-
-		memset(&r, 0, sizeof(r));
-		CHECK(cix_client_request(&client, "GET", "/v1/images/artifactimg", NULL, &r) == 0 &&
-		          r.status == 200,
-		      "GET /v1/images/artifactimg before apply");
-		cv = r.json != NULL ? json_str_field(r.json, "current_version") : NULL;
-		CHECK(cv != NULL, "image has a current_version before apply");
-		snprintf(version_before, sizeof(version_before), "%s", cv != NULL ? cv : "");
-		cix_response_free(&r);
-	}
-
-	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "POST", "/v1/images/artifactimg/apply-recipe", NULL, &r) == 0 &&
-	          r.status == 200,
-	      "apply-recipe is synchronous (200) even with a matching artifact available");
-	cix_response_free(&r);
-
-	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "GET", "/v1/images/artifactimg", NULL, &r) == 0 &&
-	          r.status == 200,
-	      "GET /v1/images/artifactimg after apply");
-	if (r.json != NULL) {
-		const char *cv = json_str_field(r.json, "current_version");
-		const struct json_value *manifest = json_object_get(r.json, "manifest");
-
-		CHECK(manifest != NULL && manifest->type == JSON_ARRAY && manifest->u.array.count == 1,
-		      "apply declared the manifest");
-		CHECK(cv != NULL && strcmp(cv, version_before) == 0,
-		      "no new version was produced -- current_version is unchanged");
-		CHECK(cv != NULL && strcmp(cv, target_hash) != 0,
-		      "current_version is not the artifact's own manifest hash");
-	}
-	cix_response_free(&r);
-
-	/* Declaring is not installing: bulk-declare writes a manifest, and
-	 * the package still needs a real install to exist anywhere. */
-	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "GET", "/v1/pkg/artifactpkg@artifactimg", NULL, &r) == 0 &&
-	          r.status == 404,
-	      "a declared package is not reported installed");
-	cix_response_free(&r);
-
-	/* The artifact's own payload must be nowhere on disk. */
-	{
-		char check_path[PATH_MAX];
-
-		snprintf(check_path, sizeof(check_path), "%s/rebuildable/images/artifactimg/%s/rootfs/usr/bin/imgtool",
-		         g_data_dir, target_hash);
-		CHECK(access(check_path, F_OK) != 0,
-		      "the artifact was never fetched or extracted");
 	}
 
 	/*
@@ -606,7 +363,8 @@ int main(void)
 			jw_key(&w, "name");
 			jw_str(&w, "bulkimg");
 			jw_key(&w, "content");
-			jw_str(&w, "image_packages=\"foo:pinned:1.5 bar:rolling:2.0\"\n");
+			jw_str(&w, "{\"packages\":[{\"package\":\"foo\",\"mode\":\"pinned\",\"version\":\"1.5\"},"
+			            "{\"package\":\"bar\",\"mode\":\"rolling\",\"version\":\"2.0\"}]}");
 			jw_obj_close(&w);
 			w.buf[w.len] = '\0';
 			memset(&r, 0, sizeof(r));
@@ -628,7 +386,7 @@ int main(void)
 		cix_response_free(&r);
 	}
 
-	/* --- scenario 6: recipe rm --- */
+	/* --- scenario 5: recipe rm --- */
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "DELETE", "/v1/images/recipes/bulkimg", NULL, &r) == 0 &&
 	          r.status == 204,
@@ -663,8 +421,9 @@ int main(void)
 		/* A recipe nobody has applied. */
 		memset(&r, 0, sizeof(r));
 		cix_client_request(&client, "POST", "/v1/images/recipes",
-		                   "{\"name\":\"recon-unapplied\",\"content\":\"image_name=\\\"recon-unapplied\\\""
-		                   "\\nimage_packages=\\\"tcc:rolling:0.9.27\\\"\\n\"}",
+		                   "{\"name\":\"recon-unapplied\",\"content\":\"{\\\"packages\\\":"
+		                   "[{\\\"package\\\":\\\"tcc\\\",\\\"mode\\\":\\\"rolling\\\","
+		                   "\\\"version\\\":\\\"0.9.27\\\"}]}\"}",
 		                   &r);
 		cix_response_free(&r);
 
@@ -698,10 +457,7 @@ int main(void)
 		CHECK(saw_unapplied, "a recipe nobody has applied is reported as declared-but-not-installed");
 	}
 
-
-	stop_http_server(http_pid);
 	CHECK(stop_daemon(daemon_pid) == 0, "daemon shut down cleanly");
-	run_cmd("rm -rf '%s'", scratch_dir);
 	test_data_dir_cleanup(g_data_dir);
 
 	if (g_failures > 0) {

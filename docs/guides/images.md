@@ -12,7 +12,7 @@ Every command below is `cixctl` against a real host (`--host=` implied). The req
 
 ## Building an image from its recipe
 
-The normal path. Image recipes live in the [cix-recipes](https://git.home.arpa/itdlabs/cix-recipes) repository as `recipes/image/<name>@<version>.sh` and reach a host with the recipe sync (`cixctl pkg sync`); for each image name, the highest recipe version is the one used. Then:
+The normal path. Image recipes live in the [cix-recipes](https://git.home.arpa/itdlabs/cix-recipes) repository as `recipes/image/<name>@<version>.json` and reach a host with the recipe sync (`cixctl pkg sync`); for each image name, the highest recipe version is the one used. Then:
 
 ```sh
 cixctl image recipe ls
@@ -54,25 +54,33 @@ Two rules hold whatever the policy:
 
 ## Writing an image recipe
 
-An image recipe is one line:
+An image recipe is a JSON document ([ADR-0311](../adr/0311-an-image-recipe-is-json.md)):
 
-```sh
-image_packages="glibc:rolling:2.44 dnsmasq:rolling:2.90"
+```json
+{
+  "image": "dns",
+  "version": "1.2.0",
+  "notes": "Why each pin is what it is.",
+  "packages": [
+    { "package": "glibc", "mode": "rolling", "version": "2.44-20" },
+    { "package": "dnsmasq", "mode": "rolling", "version": "2.90-3" }
+  ]
+}
 ```
 
-Each entry is `package:mode:version`. An image that runs containers needs a C library in it — a freshly created image has none, and creating a container from one is refused with `image "NAME" has no C library -- install a libc package (glibc) into it before running a container from it`. Declare `glibc` like any other package.
+Each entry is a package, a mode (`pinned` or `rolling`) and a version. The old `image_packages=` line in a `.sh` file is no longer read (cix#569). An image that runs containers needs a C library in it — a freshly created image has none, and creating a container from one is refused with `image "NAME" has no C library -- install a libc package (glibc) into it before running a container from it`. Declare `glibc` like any other package.
 
 Publish it to the host:
 
 ```sh
-cixctl image recipe add --name=dns --file=dns@1.2.0.sh
+cixctl image recipe add --name=dns --file=dns@1.2.0.json
 cixctl image recipe show dns
 cixctl image recipe rm dns
 ```
 
 The recipe's name is the image's name. `--file=` is read on the machine running `cixctl`. `image recipe add` replaces any existing recipe for that name, and removing a recipe does not touch the image or anything already installed in it. In the repository, commit the recipe as a new version file instead, so every host that syncs gets it.
 
-Under [ADR-0252](../adr/0252-an-image-recipe-is-authoritative.md), an image that has a recipe is changed by changing its recipe: adding a package to such an image is a recipe change. The daemon does not refuse a direct `pkg install --image=` into a recipe-backed image; ADR-0252 records that as not yet enforced.
+What an image's recipe decides is the image's policy's business ([ADR-0320](../adr/0320-an-image-policy-decides-how-its-three-copies-agree.md), above), which superseded ADR-0252's "the recipe is authoritative" rule.
 
 ## Reading an image
 
