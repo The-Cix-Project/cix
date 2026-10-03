@@ -20926,7 +20926,7 @@ static void handle_pkg_upstream_keys_get(int fd, const char *name)
 {
 	struct json_writer w;
 
-	if (!pkg_name_is_valid(name)) {
+	if (name == NULL || !simple_name_is_valid(name, PKG_NAME_MAX)) {
 		respond_error(fd, 400, "Bad Request", "invalid package name");
 		return;
 	}
@@ -20946,7 +20946,7 @@ static void handle_pkg_upstream_keys_post(int fd, const char *name, const char *
 	struct json_writer w;
 	char err[512];
 
-	if (!pkg_name_is_valid(name)) {
+	if (name == NULL || !simple_name_is_valid(name, PKG_NAME_MAX)) {
 		respond_error(fd, 400, "Bad Request", "invalid package name");
 		return;
 	}
