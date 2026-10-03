@@ -1519,7 +1519,7 @@ The last two used to be one `unresolved` state, and they need opposite responses
 
   `source` is how the kind finds the repository: it lists tags from `<base>/api/v1/repos/OWNER/REPO/tags`, with the owning source's token. `tag` maps each tag to a version, and tags it does not match are skipped.
 
-`pkg.discover` refreshes both kinds, then authenticates and authors gitea-tags releases (below). An own-forge template that needs `{{REPO_TOKEN}}` cannot be declared until cix-build-system#280 ships, and the row says so.
+`pkg.discover` refreshes both kinds, then authenticates and authors gitea-tags releases (below). An own-forge template carries `{{REPO_TOKEN}}` in its url (cbs v0.1.104 treats `{{...}}` as opaque, cix-build-system#280); a recipe declaring no `source` is told to declare one.
 
 **A failure is a row with a reason, never an absence.** A package that vanished from the list would read as up to date, which is the one wrong answer that looks reassuring. So an unresolvable package appears with the sentence that explains it, and the sentences distinguish causes that need opposite responses:
 

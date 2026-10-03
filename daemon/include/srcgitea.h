@@ -20,10 +20,9 @@
  *       verify origin
  *   }
  *
- * (That example is the shape an own-forge recipe needs, and cbs
- * v0.1.102 refuses it: its template check reads {{REPO_TOKEN}} as an
- * unknown placeholder -- cix-build-system#280. Until that ships, only a
- * source that needs no token can be declared.)
+ * (That example is the shape an own-forge recipe needs. cbs v0.1.102
+ * refused it, reading {{REPO_TOKEN}} as an unknown placeholder; v0.1.104
+ * treats {{...}} as opaque -- cix-build-system#280.)
  *
  * cbs checks that `source`, expanded with the recipe's own version, is
  * exactly its main source url (cix-build-system v0.1.102, validate.c).

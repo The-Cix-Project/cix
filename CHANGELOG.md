@@ -6,6 +6,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cbs v0.1.104: the two upstream blockers on hibr rolling by itself are fixed (ADR-0323)
+
+- **cix-build-system#279:** `revise --set metadata.KEY` on an existing key now replaces the value. The author stage can revise any recipe, changelog or not. `test_pkg` now requires a second revision of a recipe with a changelog to be committed with its changelog under its own key; a refusal there means the bug is back.
+- **cix-build-system#280:** upstream templates treat `{{...}}` as opaque, so an own-forge recipe can declare `source` with `{{REPO_TOKEN}}` in it.
+- **cbs v0.1.104-1** is built on 192.168.15.95 and installed in `cix-builder` and `cix-hosttools`. The host root takes it at this release's assembly. The ADR-0209 test floor moves to it (corpus pin 84ccc91).
+- The catalogue's message for a gitea-tags recipe with no `source` now says what to declare instead of naming the cbs bug.
+
 ### Discovery authenticates and authors: trusted origins, rung 4 and `pkg.discover` (ADR-0323)
 
 - **`GET`/`PUT /v1/pkg/trusted-origins`** (`cixctl pkg trusted-origins ls | add | rm | set`). An origin is `scheme://host[:port]`, a fresh host trusts none, and only an operator's call changes the list.

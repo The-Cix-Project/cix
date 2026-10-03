@@ -162,4 +162,4 @@ Estimated at four to six cix release cycles. **.95 has a saved schedule file, so
 - **Still open:**
   - a source-policy hold (#565);
   - the kernel's rung 2 (its signed checksum list), which the kernel roll needs;
-  - own-forge templates (cix-build-system#280) and changelog revisions (cix-build-system#279), without which hibr cannot yet roll by itself.
+  - own-forge templates (cix-build-system#280) and changelog revisions (cix-build-system#279), both fixed in cbs v0.1.104 (0.2.57-450).

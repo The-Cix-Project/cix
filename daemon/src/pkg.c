@@ -3257,8 +3257,8 @@ static int refresh_one_gitea(const char *name, const struct pkg_recipe *recipe, 
 	if (recipe->upstream_source[0] == '\0') {
 		srcgitea_store_error(name,
 		                     "the recipe declares no upstream source template, so its "
-		                     "repository is not known -- an own-forge template needs "
-		                     "{{REPO_TOKEN}}, which cbs refuses until cix-build-system#280",
+		                     "repository is not known -- declare `source` as the release "
+		                     "archive url with {version} in it",
 		                     now);
 		return -1;
 	}
@@ -15707,7 +15707,7 @@ static int revision_says(const char *text, size_t len, const char *version, cons
 	if (wrong != NULL) {
 		snprintf(err, err_size,
 		         "cbs revise wrote a revision whose %s is not what was asked, so it is not "
-		         "committed (see cix-build-system#279)",
+		         "committed",
 		         wrong);
 		return -1;
 	}

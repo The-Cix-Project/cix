@@ -7536,12 +7536,12 @@ skip_resume:
 
 			/*
 			 * A recipe that already has a changelog -- 1.2-1 now does. cbs
-			 * v0.1.102 writes the new changelog over the KEY on that path
-			 * (cix-build-system#279), and cixd checks what revise wrote
-			 * before committing it. So this must be one of two outcomes,
-			 * and holds whichever cbs runs: refused naming the changelog,
-			 * or committed with the new changelog under its own key. Never
-			 * a wrong revision in git.
+			 * v0.1.102 wrote the new changelog over the KEY on that path
+			 * (cix-build-system#279, fixed in v0.1.104, which every cbs
+			 * this test meets now is), and cixd's revision_says() would
+			 * refuse such a revision. So the revision must be committed,
+			 * with the new changelog under its own key; a refusal is that
+			 * bug returning.
 			 */
 			snprintf(rbody, sizeof(rbody),
 			         "{\"name\":\"commitpkg\",\"version\":\"1.3\",\"url\":\"%s\",\"sha256\":\"%s\","
@@ -7552,12 +7552,10 @@ skip_resume:
 				fprintf(stderr, "FAIL: ADR-0323 POST recipe-revise 1.3 got no answer\n");
 				ok = 0;
 			} else if (r.status == 400) {
-				if (r.body == NULL || strstr(r.body, "metadata changelog") == NULL) {
-					fprintf(stderr, "FAIL: ADR-0323 a refused revision must name the field "
-					                "cbs got wrong: %s\n",
-					        r.body != NULL ? r.body : "");
-					ok = 0;
-				}
+				fprintf(stderr, "FAIL: ADR-0323 revising a recipe that has a changelog was "
+				                "refused -- cix-build-system#279 is back: %s\n",
+				        r.body != NULL ? r.body : "");
+				ok = 0;
 				cix_response_free(&r);
 			} else if (r.status == 202) {
 				cix_response_free(&r);
