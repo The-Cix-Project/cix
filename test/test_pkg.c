@@ -6035,15 +6035,20 @@ skip_hostbuild:
 		 * of it -- proof the overlay genuinely survived, not just the
 		 * registry entry (the actual point of this whole mechanism:
 		 * pulling a failed build's own output/state back out for real
-		 * debugging). */
+		 * debugging). The file read is the recipe cixd copies into
+		 * every build container at /build/recipe.cbs: a path cixd
+		 * itself chooses, so the test asserts no layout of cbs's own.
+		 * It used to read the source cixd unpacked into /build/src,
+		 * which it no longer stages (cix#569). */
 		snprintf(kf_container_path, sizeof(kf_container_path),
-		         "/v1/containers/%s/files?path=%%2Fbuild%%2Fcbsws%%2Fsrc%%2Fkeepfail%%2Fkeepfail-1.0%%2Fhello.c",
-		         kept_name);
+		         "/v1/containers/%s/files?path=%%2Fbuild%%2Frecipe.cbs", kept_name);
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "GET", kf_container_path, NULL, &r) != 0 || r.status != 200 ||
-		    r.body == NULL || r.body_len == 0) {
-			fprintf(stderr, "FAIL: GET %s status=%d body_len=%zu\n", kf_container_path, r.status,
-			        r.body_len);
+		    r.body == NULL ||
+		    memmem(r.body, r.body_len, "package \"keepfail\"", strlen("package \"keepfail\"")) ==
+		        NULL) {
+			fprintf(stderr, "FAIL: GET %s status=%d body_len=%zu, expected keepfail's recipe\n",
+			        kf_container_path, r.status, r.body_len);
 			ok = 0;
 		}
 		cix_response_free(&r);
