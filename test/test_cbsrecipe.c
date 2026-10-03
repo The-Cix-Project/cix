@@ -142,7 +142,7 @@ static void test_happy_path(void)
 	/* null, not absent: str_or_empty() has to answer "" for both. */
 	expect_str("upstream when null", cbs_explain_upstream(ex), "");
 	expect_str("upstream tag when no upstream", cbs_explain_upstream_param(ex, "tag"), "");
-	expect_str("upstream verify when no upstream", cbs_explain_upstream_verify(ex), "");
+	expect_str("upstream verify when no upstream", cbs_explain_upstream_verify(ex, "method"), "");
 	expect_str("toolchain when null", cbs_explain_toolchain(ex), "");
 
 	if (cbs_explain_capabilities(ex, buf, sizeof(buf)) != 0)
@@ -217,7 +217,7 @@ static void test_release_and_runtime(void)
 	expect_str("upstream", cbs_explain_upstream(ex), "kernel.org");
 	expect_str("upstream tag", cbs_explain_upstream_param(ex, "tag"), "v{version}");
 	expect_str("upstream source when null", cbs_explain_upstream_param(ex, "source"), "");
-	expect_str("upstream verify", cbs_explain_upstream_verify(ex), "origin");
+	expect_str("upstream verify", cbs_explain_upstream_verify(ex, "method"), "origin");
 	expect_str("toolchain", cbs_explain_toolchain(ex), "gcc");
 	expect_str("toolchain reason", cbs_explain_toolchain_reason(ex),
 	           "the kernel does not build with TCC");

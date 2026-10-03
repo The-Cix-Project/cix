@@ -206,7 +206,7 @@ What `test_rolling_restart` proves, gated in the release from this version:
 
 The not-ready-at-the-deadline path is not exercised there. With a 2 s doubling restart backoff, a crash-looping service reaches three exits before any window of 10 s or more closes.
 
-## Rung 2, as built (0.2.57-456)
+## Rung 2, as built (0.2.57-457)
 
 The signed checksum list, for the kernel first.
 
