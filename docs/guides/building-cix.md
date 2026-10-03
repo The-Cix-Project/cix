@@ -95,6 +95,8 @@ cixctl update --image=<image_path>
 cixctl reboot
 ```
 
+`update --image=` stages the kernel the root's modules were built for. When that is not the running kernel, it takes the kernel hostbuild's `bzImage`, and refuses when neither matches, so a deploy made after a kernel build and before rebooting onto it cannot pair new modules with the old kernel (cix#568).
+
 Read the `image_*` fields rather than the generation counters. The counters live in the daemon's memory and a deploy ends in a reboot, so a host that has just booted the root it assembled reports `started_generation: 0, completed_generation: 0` — the same as one that has never assembled anything. `image_mtime` is `stat()`ed from the file and survives the reboot, and `image_complete` tells you whether `/system/update` will accept those bytes before you call it (#481). Then follow the same write → reboot → confirm sequence as any other update — see [`staying-updated.md`](staying-updated.md) and [Confirming a deploy](remote-development.md#confirming-a-deploy-actually-took-effect).
 
 ### 4. Build a fresh installer ISO, server-side

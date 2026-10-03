@@ -32,6 +32,7 @@
 #include "releasekey.h"
 #include "base64.h"
 #include "childdiag.h"
+#include "bzimage.h"
 #include "swap.h"
 #include "syslogfwd.h"
 #include "dns.h"
@@ -1692,6 +1693,87 @@ static long g_bootroot_assembly_started;
 static long g_bootroot_assembly_completed;
 static int g_bootroot_assembly_running;
 
+/*
+ * cix#568: which kernel releases an assembled root's modules are for,
+ * kept beside the root as <image>.kernel-releases, one release per
+ * line -- the directory names under the kernel artifact's lib/modules
+ * at the time of the assembly. Beside the file rather than in memory
+ * for the reason #481 gives above: the counters reset at the restart
+ * that a deploy ends in, and the record has to describe the file.
+ *
+ * Collected when the assembly starts and written only when it succeeds,
+ * the moment its root is renamed into place; an assembly that staged
+ * no modules removes it, since that root pairs with any kernel.
+ */
+#define ROOT_KERNEL_RELEASES_SUFFIX ".kernel-releases"
+static char g_bootroot_assembly_kernel_releases[512];
+
+/*
+ * The kernel releases a module tree holds: the names of the
+ * directories under dir (a lib/modules), one per line, into out. ""
+ * when dir is "" or holds none. The assembly records this for the root
+ * it builds; do_system_update() asks it of the running root's own
+ * /lib/modules, which is where modprobe looks (kmod.c runs plain
+ * modprobe, and mkbootroot stages the tree at the root's lib/modules).
+ */
+static void module_releases_in(const char *dir, char *out, size_t out_size)
+{
+	DIR *md;
+	struct dirent *me;
+	size_t used = 0;
+
+	out[0] = '\0';
+	if (dir == NULL || dir[0] == '\0' || (md = opendir(dir)) == NULL)
+		return;
+	while ((me = readdir(md)) != NULL) {
+		char sub[PATH_MAX];
+		struct stat mst;
+		int w;
+
+		if (me->d_name[0] == '.')
+			continue;
+		if (snprintf(sub, sizeof(sub), "%s/%s", dir, me->d_name) >= (int)sizeof(sub) ||
+		    stat(sub, &mst) != 0 || !S_ISDIR(mst.st_mode))
+			continue;
+		w = snprintf(out + used, out_size - used, "%s\n", me->d_name);
+		if (w < 0 || (size_t)w >= out_size - used) {
+			out[used] = '\0';
+			break;
+		}
+		used += (size_t)w;
+	}
+	closedir(md);
+}
+
+/*
+ * The record for the root at image_path. 1 with out filled when the
+ * root's modules are for named releases, 0 when there is no record (a
+ * root built elsewhere, by an older assembly, or carrying no modules),
+ * which pairs with any kernel.
+ */
+static int root_kernel_releases(const char *image_path, char *out, size_t out_size)
+{
+	char path[PATH_MAX];
+	ssize_t n;
+	int fd;
+
+	out[0] = '\0';
+	if (snprintf(path, sizeof(path), "%s%s", image_path, ROOT_KERNEL_RELEASES_SUFFIX) >=
+	    (int)sizeof(path))
+		return 0;
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+	n = read(fd, out, out_size - 1);
+	close(fd);
+	if (n <= 0) {
+		out[0] = '\0';
+		return 0;
+	}
+	out[n] = '\0';
+	return 1;
+}
+
 static void on_signal(int sig)
 {
 	(void)sig;
@@ -3054,9 +3136,7 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 	char root_partuuid[64];
 	const char *active_device;
 	char active_kernel_path[PATH_MAX];
-	int src;
-	unsigned char magic4[4];
-	unsigned char magic2[2];
+	char paired_kernel[PATH_MAX];
 	char kernel_dest[PATH_MAX];
 	char entry_path[PATH_MAX];
 	char entry_conf[512];
@@ -3170,22 +3250,104 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		}
 	}
 	if (kernel_path != NULL && kernel_path[0] != '\0') {
-		src = open(kernel_path, O_RDONLY);
-		if (src < 0) {
+		int bz = bzimage_check(kernel_path);
+
+		if (bz != 1) {
 			json_free(root);
 			snprintf(out_errmsg, out_errmsg_size,
-			         "kernel_path does not exist or is not readable");
+			         bz < 0 ? "kernel_path does not exist or is not readable"
+			                : "kernel_path is not a valid bzImage");
 			return 400;
 		}
-		if (lseek(src, 0x1FE, SEEK_SET) != 0x1FE || read(src, magic2, 2) != 2 ||
-		    magic2[0] != 0x55 || magic2[1] != 0xAA || lseek(src, 0x202, SEEK_SET) != 0x202 ||
-		    read(src, magic4, 4) != 4 || memcmp(magic4, "HdrS", 4) != 0) {
-			close(src);
+	}
+
+	/*
+	 * cix#568: the root and the kernel it boots must be one build. The
+	 * root carries the kernel's modules -- the assembly stages them
+	 * from the kernel hostbuild's artifact -- and a kernel loads only
+	 * modules built for its own release. A root staged with no
+	 * kernel_path used to take the RUNNING kernel, so a hand deploy of
+	 * cix made after a kernel hostbuild and before rebooting onto it
+	 * paired the new modules with the old kernel. That host boots,
+	 * confirms (cixd loads no module) and cannot load a driver.
+	 *
+	 * The root says which releases its modules are for, in the record
+	 * the assembly writes beside it (root_kernel_releases()). When the
+	 * kernel this update would stage reports another release, the
+	 * kernel hostbuild's own bzImage is staged instead if it is the
+	 * one the modules were built for; otherwise nothing is written and
+	 * the answer names both releases. A root with no record -- one
+	 * built elsewhere, or by an assembly before this -- pairs as it
+	 * always did.
+	 */
+	if (image_path != NULL) {
+		char releases[512], staged_release[BZIMAGE_RELEASE_MAX], want[BZIMAGE_RELEASE_MAX];
+		const char *staged = kernel_path != NULL ? kernel_path : active_kernel_path;
+		char bootroot_image[PATH_MAX];
+
+		snprintf(bootroot_image, sizeof(bootroot_image), "%s/cixd-root.squashfs", BOOTROOT_DIR);
+		if (g_bootroot_assembly_running && strcmp(image_path, bootroot_image) == 0) {
 			json_free(root);
-			snprintf(out_errmsg, out_errmsg_size, "kernel_path is not a valid bzImage");
-			return 400;
+			snprintf(out_errmsg, out_errmsg_size,
+			         "a bootroot assembly is in progress (generation %ld) -- it is replacing "
+			         "this image; poll GET /v1/system/assembly until running:false and retry",
+			         g_bootroot_assembly_started);
+			return 409;
 		}
-		close(src);
+		if (root_kernel_releases(image_path, releases, sizeof(releases)) &&
+		    (bzimage_release(staged, staged_release, sizeof(staged_release)) != 0 ||
+		     !bzimage_release_listed(staged_release, releases))) {
+			char artifact_release[BZIMAGE_RELEASE_MAX];
+
+			snprintf(want, sizeof(want), "%.*s", (int)strcspn(releases, "\n"), releases);
+			snprintf(paired_kernel, sizeof(paired_kernel), "%s/kernel/bzImage", ARTIFACTS_DIR);
+			if (kernel_path == NULL &&
+			    bzimage_release(paired_kernel, artifact_release, sizeof(artifact_release)) == 0 &&
+			    bzimage_release_listed(artifact_release, releases)) {
+				logstore_write("cixd", "info",
+				               "system update: the root's modules are for kernel %s and the "
+				               "running kernel is %s, so the kernel hostbuild's %s is staged "
+				               "with it (cix#568)",
+				               artifact_release, staged_release[0] != '\0' ? staged_release : "unknown",
+				               paired_kernel);
+				kernel_path = paired_kernel;
+			} else {
+				json_free(root);
+				snprintf(out_errmsg, out_errmsg_size,
+				         "the root's modules are for kernel %s, and the kernel this update "
+				         "would stage is %s -- pass kernel_path of a %s bzImage (cix#568)",
+				         want, staged_release[0] != '\0' ? staged_release : "unreadable", want);
+				return 409;
+			}
+		}
+	}
+
+	/*
+	 * cix#568, the other half: a kernel staged ALONE takes the running
+	 * root forward (ADR-0095 above), and that root's modules are for
+	 * the running kernel. A new kernel under it boots, confirms and
+	 * loads no driver -- the same host as the half above, reached the
+	 * other way. So a kernel-only update is refused when the running
+	 * root carries modules and none of them are for this kernel's
+	 * release; the root to stage with it is assembled from the kernel
+	 * hostbuild. A root with no module tree loses nothing either way.
+	 */
+	if (image_path == NULL && kernel_path != NULL) {
+		char running_releases[512], new_release[BZIMAGE_RELEASE_MAX];
+
+		module_releases_in("/lib/modules", running_releases, sizeof(running_releases));
+		if (running_releases[0] != '\0' &&
+		    (bzimage_release(kernel_path, new_release, sizeof(new_release)) != 0 ||
+		     !bzimage_release_listed(new_release, running_releases))) {
+			json_free(root);
+			snprintf(out_errmsg, out_errmsg_size,
+			         "the running root's modules are for kernel %.*s, and kernel_path is %s -- "
+			         "staged alone it would boot with none of its own modules; POST "
+			         "/v1/system/assembly, then update with the assembled image_path (cix#568)",
+			         (int)strcspn(running_releases, "\n"), running_releases,
+			         new_release[0] != '\0' ? new_release : "unreadable");
+			return 409;
+		}
 	}
 
 	/*
@@ -3270,7 +3432,7 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 	{
 		/* Issue #24: the console portion comes from the operator's own
 		 * configuration rather than being fixed here. Everything else
-		 * on this line -- root=, rw, init= and the daemon's own
+		 * on this line -- root=, ro, init= and the daemon's own
 		 * arguments -- stays this function's business: those decide
 		 * whether the machine boots at all, not what it displays.
 		 *
@@ -9350,14 +9512,14 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 	 * repair itself with, is simply unreachable.
 	 *
 	 * The tree and the booting bzImage have to come from the same
-	 * build, and nothing here enforces that because nothing needs to:
-	 * modules are namespaced by kernel release (lib/modules/<release>)
-	 * and modprobe selects by uname -r, so a mismatched release
-	 * degrades to "module not found" -- exactly today's behaviour --
-	 * while a matching release built from a different config is
-	 * refused outright with "invalid module format". Neither failure
-	 * is silent. It is still why a deploy should pass the kernel_path
-	 * out of the same artifact this staged from.
+	 * build: modules are namespaced by kernel release
+	 * (lib/modules/<release>) and modprobe selects by uname -r, so a
+	 * mismatched release degrades to "module not found", while a
+	 * matching release built from a different config is refused with
+	 * "invalid module format". Neither fails the boot -- cixd loads no
+	 * module, so the slot confirms -- which is why the releases staged
+	 * here are recorded beside the root and do_system_update() pairs
+	 * the root with a kernel of that release (cix#568).
 	 */
 	resolve_kernel_modules_dir(modules_dir, sizeof(modules_dir));
 	{
@@ -9371,6 +9533,10 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 			               "host",
 			               ARTIFACTS_DIR);
 	}
+	/* cix#568: the releases this root's modules are for, recorded
+	 * beside it when the assembly succeeds. */
+	module_releases_in(modules_dir, g_bootroot_assembly_kernel_releases,
+	                   sizeof(g_bootroot_assembly_kernel_releases));
 
 	/*
 	 * #347: the module tools, resolved exactly the way firmware_dir
@@ -10487,6 +10653,24 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 			               "/v1/system/assembly until running:false and retry"
 			             : "an assembly was interrupted while writing it; POST "
 			               "/v1/system/assembly to build it again");
+			return -1;
+		}
+	}
+
+	/* cix#568: the installer boots this bzImage with this root, so the
+	 * root's modules must be the kernel's own -- the same pairing
+	 * POST /system/update checks. */
+	{
+		char releases[512], release[BZIMAGE_RELEASE_MAX];
+
+		if (root_kernel_releases(squashfs_path, releases, sizeof(releases)) &&
+		    (bzimage_release(bzimage_path, release, sizeof(release)) != 0 ||
+		     !bzimage_release_listed(release, releases))) {
+			snprintf(err_msg, err_msg_size,
+			         "the root's modules are for kernel %.*s and the kernel artifact is %s -- "
+			         "POST /v1/system/assembly to assemble a root from this kernel (cix#568)",
+			         (int)strcspn(releases, "\n"), releases,
+			         release[0] != '\0' ? release : "unreadable");
 			return -1;
 		}
 	}
@@ -31812,6 +31996,27 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 	g_bootroot_assembly_running = 0;
 	if (reaped == cc->pkg_fetch_pid && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
 		g_bootroot_assembly_completed = g_bootroot_assembly_started;
+		/* cix#568: the root just renamed into place says which kernel
+		 * its modules are for; a root carrying none leaves no record. */
+		{
+			char record[PATH_MAX];
+
+			snprintf(record, sizeof(record), "%s/cixd-root.squashfs%s", BOOTROOT_DIR,
+			         ROOT_KERNEL_RELEASES_SUFFIX);
+			if (g_bootroot_assembly_kernel_releases[0] == '\0')
+				unlink(record);
+			else if (persist_atomic_write(record, g_bootroot_assembly_kernel_releases,
+			                              strlen(g_bootroot_assembly_kernel_releases)) != 0) {
+				/* A previous root's record beside this root would pair it
+				 * wrongly; no record at all only pairs it as before. */
+				unlink(record);
+				logstore_write("cixd", "error",
+				               "cix bootroot assembly: could not record which kernel the "
+				               "root's modules are for (%s): %s -- an update will not "
+				               "check its kernel against them",
+				               record, strerror(errno));
+			}
+		}
 		fprintf(stderr, "cix bootroot assembly: succeeded\n");
 		logstore_write("cixd", "info", "cix bootroot assembly: succeeded");
 		/*

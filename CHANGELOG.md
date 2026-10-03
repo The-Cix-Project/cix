@@ -6,6 +6,19 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A root is staged with the kernel its modules are for (#568)
+
+The control-plane root carries the kernel's modules, staged by the assembly from the kernel hostbuild's artifact, and a kernel loads only modules built for its own release. `POST /v1/system/update` with no `kernel_path` staged the running kernel. So a hand deploy of cix made after a kernel hostbuild, but before rebooting onto it, paired the new modules with the old kernel. That host boots and confirms, since cixd loads no module, and then cannot load a driver. The nightly host roll stages both together and was not affected; found by reading the code, not observed on a box.
+
+- **The assembly records which releases its root's modules are for**, beside the root as `cixd-root.squashfs.kernel-releases`, written only when the assembly succeeds. A root with no modules leaves no record, and a failed write removes any old one, since a previous root's record would pair the new root wrongly.
+- **`do_system_update()` pairs on it.** It reads the release the kernel it would stage reports as `uname -r`, from that bzImage's own setup header. If the release is not one the root records, it stages the kernel hostbuild's `bzImage` when that one matches, and logs it. Otherwise it answers `409` naming both releases, and writes nothing. A root with no record pairs as before.
+- **Staging the assembly's own image while an assembly is replacing it is a `409`**, the same answer #435 gives a half-written image. The record is written as the root lands, and the two must not be read apart.
+- **A kernel staged alone is refused when it cannot use the running root's modules.** With no image, the update copies the running root forward (ADR-0095), and that root's modules are for the running kernel, so this is the same failure reached the other way. It answers `409` when `/lib/modules` (where `modprobe` looks) holds releases and none is the new kernel's. A root with no module tree is unaffected. `kernel-build-and-ab-updates.md` now does a kernel roll as assemble, then `update --image=`, which pairs the kernel itself.
+- **`POST /v1/system/iso` checks the same pairing** between the root and the kernel artifact it puts on the installer.
+- New `daemon/src/bzimage.c`: `bzimage_check()` (the boot-flag and `HdrS` check `do_system_update()` did inline) and `bzimage_release()`, which reads `kernel_version` at 0x20E and the string at that value plus 0x200 (x86 boot protocol 2.00 and later).
+- Docs: `openapi.yaml` and `docs/api/README.md` (update and ISO), `kernel-build-and-ab-updates.md` and `building-cix.md`. Two comments in `main.c` made false by this, and the `rw` left in one by #250, are corrected.
+- Tests: `test_bzimage`, in SELFTESTS, builds setup headers byte by byte. It checks the release read, an old protocol, no version string, a non-bzImage, a control character, a short buffer, and the release-list match (`7.2.9` is not `7.2.91`).
+
 ### Cix produces no tarball (#411, ADR-0328)
 
 The owner's decision of 2026-10-03: *"An image export should not produce a tarball. Go with 2."*

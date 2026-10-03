@@ -1146,7 +1146,16 @@ paths:
                     written to a boot slot.
                 kernel_path:
                   type: string
-                  description: Local filesystem path to a bzImage kernel (checked via its own on-disk boot-sector/setup_header magic)
+                  description: >
+                    Local filesystem path to a bzImage kernel (checked via its own
+                    on-disk boot-sector/setup_header magic). Omitted, the running
+                    kernel is staged -- unless the root carries modules for another
+                    release (its <image>.kernel-releases record, written by the
+                    assembly), in which case the kernel hostbuild's bzImage is staged
+                    when it is that release (cix#568). Given alone, with no image,
+                    it is refused (409) when the running root carries modules and
+                    none are for this kernel's release: the copied-forward root would
+                    boot it with no module it can load.
       responses:
         "200":
           description: Whatever was given was written to the inactive slot and a fresh loader entry staged
@@ -1197,7 +1206,16 @@ paths:
             (#435). The request is valid and the file is the right one;
             it is simply not finished. The message names the assembly
             generation; poll GET /v1/system/assembly until running:false
-            and retry. The inactive slot is left untouched.
+            and retry. The same 409 answers a request to stage the
+            assembly's own image while an assembly is still replacing it.
+            Also returned (cix#568) when the root's modules are for a kernel release other
+            than the one this update would stage, and no kernel of that
+            release was given or found in the kernel hostbuild: a root and a
+            kernel that do not match boot a host whose drivers cannot load.
+            Also returned for a kernel_path given alone when the running
+            root carries modules and none are for its release. The message
+            names both releases. The inactive slot is left
+            untouched in every case.
           content:
             application/json:
               schema:
@@ -5401,7 +5419,10 @@ paths:
             artifact or an approved checksum to fetch one with).
             A seed failure that only shows up while staging -- a fetch
             that fails, or bytes that do not match the approval -- fails
-            the build instead and is reported by GET /system/iso (#495)
+            the build instead and is reported by GET /system/iso (#495).
+            Also a root whose modules are for a kernel release other than
+            the kernel artifact's (cix#568): the installer would boot that
+            kernel with modules it cannot load. Assemble the root again.
           content:
             application/json:
               schema:

@@ -40,11 +40,16 @@ When `--wait` returns with `state: "installed"`, the finished `bzImage` is at th
 
 ## Step 2: write it to the inactive slot
 
+The root carries the kernel's modules, so a new kernel goes with a root assembled from it:
+
 ```
-cixctl update --kernel=<artifact_path>/bzImage
+cixctl assembly start                  # assembles a root with this kernel's modules; poll assembly status
+cixctl update --image=<image_path>     # image_path from `cixctl assembly status`
 ```
 
-(or `--image=<path>` too, to update the control-plane squashfs in the same call — see [`staying-updated.md`](staying-updated.md) for that half). This does **not** reboot. `--kernel=` alone pairs the new kernel with a fresh copy of the root the active slot is running ([ADR-0095](../adr/0095-update-one-sided-footgun.md)), so neither half is left stale.
+`update` sees from the root's record that its modules are for the new kernel, and stages the kernel hostbuild's `bzImage` with it (cix#568). `--kernel=<artifact_path>/bzImage` may be given as well. This does **not** reboot.
+
+`--kernel=` **alone** is refused with `409` when the running root carries modules for another release. Staged alone, a kernel takes a copy of the running root forward ([ADR-0095](../adr/0095-update-one-sided-footgun.md)), whose modules are for the running kernel. That host boots, confirms and loads no driver. A root with no module tree, such as a test image, has nothing to lose, and `--kernel=` alone still works there.
 
 ## Step 3: reboot into it
 
@@ -79,3 +84,5 @@ If the box comes back on the *old* kernel with no intervention from you, the new
 ## Doing both kernel and root together
 
 A single `cixctl update --image=<squashfs> --kernel=<bzImage>` writes both to the same inactive slot in one request — useful when a [self-hosted rebuild](building-cix.md#rebuilding-cix-on-a-running-host) has produced a fresh control-plane squashfs at the same time as a fresh kernel, so the two roll out and are confirmed together rather than as two reboot cycles.
+
+**The root and the kernel must be one build, and `update` keeps them so (cix#568).** The root carries the kernel's modules, staged at assembly from the kernel hostbuild's artifact, and a kernel loads only modules built for its own release. So `cixctl update --image=<the assembled root>` without `--kernel=` no longer pairs that root with the running kernel when its modules are for another one. It stages the kernel hostbuild's `bzImage` when that is the matching release, and says so in `cixctl logs`. When neither matches, it refuses with `409` and names both releases. The nightly host roll ([ADR-0327](../adr/0327-the-host-follows-its-rolling-packages-in-a-nightly-window.md)) stages the two together anyway.
