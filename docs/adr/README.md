@@ -256,7 +256,7 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0249](0249-main-c-is-divided-by-what-a-handler-touches.md) | main.c is divided by what a handler touches, not by what it is named | Accepted |
 | [0250](0250-a-build-that-cannot-find-a-tool-is-a-failed-build.md) | A build that cannot find a tool is a failed build, whatever it exits with | Accepted |
 | [0251](0251-a-package-artifact-carries-what-the-platform-runs.md) | A package artifact carries what the platform runs, and nothing else | Accepted |
-| [0252](0252-an-image-recipe-is-authoritative.md) | An image recipe is authoritative; the image is derived from it | Accepted |
+| [0252](0252-an-image-recipe-is-authoritative.md) | An image recipe is authoritative; the image is derived from it | Superseded by [0320](0320-an-image-policy-decides-how-its-three-copies-agree.md) |
 | [0253](0253-a-build-output-tree-is-created-fresh.md) | A build output tree is created fresh, never inherited | Accepted |
 | [0254](0254-upstream-checksums-are-verified-not-computed.md) | An upstream checksum is verified, never computed here | Accepted |
 | [0255](0255-a-recipe-is-a-rule-not-a-version.md) | A recipe is a rule, not a version | Accepted |

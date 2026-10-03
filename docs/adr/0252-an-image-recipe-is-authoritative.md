@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-0320](0320-an-image-policy-decides-how-its-three-copies-agree.md). The recipe is no longer authoritative by rule; an image's policy (`recipe: manual|follow`) decides whether it wins (#311, #535).
 
 ## Context
 
