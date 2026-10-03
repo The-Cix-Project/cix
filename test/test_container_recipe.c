@@ -208,7 +208,7 @@ int main(void)
 
 	/* --- scenario 2: name mismatch between the upload name and the
 	 * content's own "name" field is rejected (mirrors pkg_recipe_add()'s
-	 * pkg_name= contract). --- */
+	 * package-name contract). --- */
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/deployments",
 	                         "{\"name\":\"crtest\",\"content\":\"{\\\"name\\\":\\\"different\\\"}\"}",

@@ -869,8 +869,6 @@ int main(void)
 		jw_str(&w, "forgetpkg");
 		jw_key(&w, "content");
 		jw_str(&w, recipe);
-		jw_key(&w, "format");
-		jw_str(&w, "cbs");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		memset(&r, 0, sizeof(r));

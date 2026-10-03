@@ -324,27 +324,13 @@ struct pkg_recipe {
 	char bare_version[PKG_VERSION_MAX];
 	long long release;
 	/*
-	 * Which language this recipe is written in (ADR-0305). Set by
-	 * parse_recipe() from the file's own name, because the filename
-	 * IS the format -- so it travels with the parsed recipe rather
-	 * than being re-derived from a path at each of the places that
-	 * need it, which is how the two could disagree.
-	 */
-	int is_cbs;
-	/*
-	 * Which artifact format this version publishes (ADR-0307):
-	 * PKG_ARTIFACT_FORMAT_CIXPKG or PKG_ARTIFACT_FORMAT_TARGZ, never
-	 * empty on a recipe that parsed.
-	 *
-	 * Separate from is_cbs above, and reaching for that instead would
-	 * be the bug. is_cbs says which LANGUAGE the recipe is written in;
-	 * this says what the recipe DECLARED, read from the explain
-	 * document. They are not the same question -- CPDL accepts
-	 * `format "tar.gz"`, which `cbs build` then refuses to execute
-	 * ("standalone builds require cixpkg"), so the daemon must be able
-	 * to see that declaration and refuse it at publish rather than
-	 * assume cixpkg and fail at build time. A shell recipe has no
-	 * field to read and is tar.gz by construction.
+	 * Which artifact format this version publishes, as the recipe
+	 * DECLARED it in the explain document (ADR-0307). Read rather
+	 * than assumed: CPDL accepts `format "tar.gz"`, which `cbs build`
+	 * then refuses to execute ("standalone builds require cixpkg"), so
+	 * the daemon sees that declaration and refuses it at publish
+	 * rather than failing at build time. Always cixpkg on a recipe
+	 * that was published.
 	 */
 	char artifact_format[PKG_ARTIFACT_FORMAT_MAX];
 	/* source[0]/sha256[0] is "the" source, extracted into /build/src;
@@ -852,15 +838,6 @@ struct pkg_chain {
 	 */
 	long long fetch_resolved_build_memory;
 	int build_running;
-	/*
-	 * #552: this job's tree was unpacked from a legacy .tar.gz artifact.
-	 * A .cixpkg or a CPDL build only carries a setuid or setgid file the
-	 * recipe declared (`privileged file`; cbs refuses any other), so the
-	 * install keeps those bits. A .tar.gz has no such declaration, so its
-	 * bits are masked as they always were. Reset for each job where the
-	 * fetch resolves its recipe; set only by the .tar.gz cache-hit branch.
-	 */
-	int tree_from_targz;
 	/* #380: the recipe FILE start_fetch_for() resolved, read again by
 	 * every stage after it -- see fetched_recipe_path(). The file, not
 	 * a version to look up: a store directory is not always named by
@@ -2090,73 +2067,6 @@ static int pkg_entry_add_file(struct pkg_entry *e, const char *relpath)
 }
 
 /*
- * Finds "<key>" at the start of a line in buf and returns a pointer
- * just past it, or NULL. Never executed/sourced -- pure text scan.
- */
-static const char *find_key_line(const char *buf, const char *key)
-{
-	const char *p = buf;
-	size_t keylen = strlen(key);
-	int at_line_start = 1;
-
-	while (*p != '\0') {
-		if (at_line_start && strncmp(p, key, keylen) == 0)
-			return p + keylen;
-		at_line_start = (*p == '\n');
-		p++;
-	}
-	return NULL;
-}
-
-static int extract_line_value(const char *buf, const char *key, char *out, size_t out_size)
-{
-	const char *val = find_key_line(buf, key);
-	const char *end;
-	size_t len;
-	char quote = '\0';
-
-	out[0] = '\0';
-	if (val == NULL)
-		return -1;
-	if (*val == '"' || *val == '\'') {
-		quote = *val;
-		val++;
-	}
-	end = val;
-	while (*end != '\0' && *end != '\n' && (quote == '\0' || *end != quote))
-		end++;
-	len = (size_t)(end - val);
-	if (len >= out_size)
-		return -1;
-	memcpy(out, val, len);
-	out[len] = '\0';
-	return 0;
-}
-
-/* Splits raw (modified in place, same strtok_r(..., " \t", &save)
- * convention resolve_chain() already uses for pkg_depends) into up to
- * max_entries fixed-size strings at dest, elem_size apart -- shared by
- * both pkg_source=/pkg_sha256= tokenizing below (ADR-0036). Returns
- * the entry count, or -1 on overflow (too many entries, or one too
- * long for its own fixed-size slot) -- never silently truncates. */
-static int tokenize_into(char *raw, char *dest, size_t elem_size, int max_entries)
-{
-	char *save;
-	char *tok;
-	int n = 0;
-
-	tok = strtok_r(raw, " \t", &save);
-	while (tok != NULL) {
-		if (n >= max_entries || strlen(tok) >= elem_size)
-			return -1;
-		strcpy(dest + (size_t)n * elem_size, tok);
-		n++;
-		tok = strtok_r(NULL, " \t", &save);
-	}
-	return n;
-}
-
-/*
  * Issue #60: replace every occurrence of needle with repl inside buf
  * (a NUL-terminated string in a fixed cap-byte array), in place. A
  * replacement that would overflow cap is skipped (buf left as far as
@@ -2378,72 +2288,6 @@ static void substitute_repo_token(struct pkg_recipe *out)
 	 * the author stage writes the next revision's url from, and that
 	 * url keeps the placeholder (ADR-0323). Where it reaches curl, the
 	 * caller substitutes a copy with owning_token(). */
-}
-
-static int parse_shell_recipe(const char *path, struct pkg_recipe *out)
-{
-	char *buf;
-	size_t len;
-	int rc = 0;
-	char raw_source[PKG_MAX_SOURCES * PKG_URL_MAX];
-	char raw_sha256[PKG_MAX_SOURCES * PKG_SHA256_MAX];
-	int sha256_count;
-
-	if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)
-		return -1;
-
-	memset(out, 0, sizeof(*out));
-	if (extract_line_value(buf, "pkg_name=", out->name, sizeof(out->name)) != 0)
-		rc = -1;
-	if (extract_line_value(buf, "pkg_version=", out->version, sizeof(out->version)) != 0)
-		rc = -1;
-	if (extract_line_value(buf, "pkg_source=", raw_source, sizeof(raw_source)) != 0)
-		rc = -1;
-	if (extract_line_value(buf, "pkg_sha256=", raw_sha256, sizeof(raw_sha256)) != 0)
-		rc = -1;
-	/* depends, artifact_sha256, and changelog are all optional -- fine
-	 * if absent */
-	extract_line_value(buf, "pkg_depends=", out->depends, sizeof(out->depends));
-	extract_line_value(buf, "pkg_build_depends=", out->build_depends, sizeof(out->build_depends));
-	extract_line_value(buf, "pkg_build_caps=", out->build_caps, sizeof(out->build_caps));
-	extract_line_value(buf, "pkg_artifact_sha256=", out->artifact_sha256,
-	                    sizeof(out->artifact_sha256));
-	extract_line_value(buf, "pkg_upstream=", out->upstream, sizeof(out->upstream));
-	extract_line_value(buf, "pkg_changelog=", out->changelog, sizeof(out->changelog));
-	free(buf);
-
-	if (rc == 0) {
-		out->source_count = tokenize_into(raw_source, (char *)out->source, PKG_URL_MAX,
-		                                   PKG_MAX_SOURCES);
-		sha256_count =
-		    tokenize_into(raw_sha256, (char *)out->sha256, PKG_SHA256_MAX, PKG_MAX_SOURCES);
-		/* Positionally paired (ADR-0036) -- a mismatched count is a
-		 * real, non-negotiable recipe error, not silently zipped
-		 * short against whichever list is shorter. */
-		if (out->source_count <= 0 || sha256_count <= 0 || out->source_count != sha256_count)
-			rc = -1;
-	}
-
-	/*
-	 * Issue #60: substitute the {{REPO_TOKEN}} placeholder in each
-	 * source URL with the daemon's own stored repo auth token
-	 * (the owning source's, `pkg source set NAME --token=`). This is what lets a recipe that
-	 * self-fetches from the private Gitea be committed in its final,
-	 * working form -- no more the temp-real-token-substitute-then-
-	 * revert dance the kernel/cix recipes needed on every re-pin
-	 * (documented at length in remote-development.md). The token is
-	 * never persisted into any recipe or the catalog, and the
-	 * substituted URL only ever exists in this transient parsed struct,
-	 * handed straight to the fetch child -- redacted from logs the same
-	 * way the whole source string already is not echoed on success.
-	 * A recipe with no {{REPO_TOKEN}} token, or an empty stored token,
-	 * is left byte-for-byte unchanged.
-	 */
-	substitute_repo_token(out);
-
-	if (rc != 0 || !pkg_name_is_valid(out->name))
-		return -1;
-	return 0;
 }
 
 /*
@@ -2916,13 +2760,17 @@ static int parse_cbs_recipe(const char *path, struct pkg_recipe *out)
 			cbs_explain_free(ex);
 			return -1;
 		}
-		if (snprintf(out->artifact_format, sizeof(out->artifact_format), "%s", fmt) >=
-		    (int)sizeof(out->artifact_format)) {
-			logstore_write("cixd", "error", "pkg: %s: artifact format \"%s\" does not fit",
+		/* cixpkg and nothing else: a recipe declaring another format is
+		 * refused at publish, and no other is installed (cix#569). */
+		if (strcmp(fmt, PKG_ARTIFACT_FORMAT_CIXPKG) != 0) {
+			logstore_write("cixd", "error",
+			               "pkg: %s declares artifact format \"%s\"; only cixpkg is built "
+			               "or installed (cix#569)",
 			               explain_path, fmt);
 			cbs_explain_free(ex);
 			return -1;
 		}
+		snprintf(out->artifact_format, sizeof(out->artifact_format), "%s", fmt);
 	}
 
 	if (cbs_explain_metadata(ex, "artifact_sha256", out->artifact_sha256,
@@ -2946,46 +2794,23 @@ static int parse_cbs_recipe(const char *path, struct pkg_recipe *out)
 }
 
 /*
- * One recipe, whichever language it is written in (ADR-0305).
+ * One recipe: a CPDL file, read through `cbs explain` (ADR-0305).
  *
- * Every caller in this file goes through here and none of them knows
- * which format it got, which is the whole design: a CBS recipe reaches
- * dependency resolution, the build container, the artifact name and
- * the pipeline as the same struct a shell recipe does. The formats
- * differ in how a declaration is WRITTEN, never in how it is resolved
- * -- resolution stays resolve_chain() and buildenv_add_tool().
+ * A path that is not a .cbs file is not a recipe. Shell recipes must
+ * not exist (the owner, 2026-10-03, cix#569): there is no second
+ * reader, so nothing in this file can resolve, build, install or
+ * publish one, and every caller that resolves a path gets -1 for it.
  */
 static int parse_recipe(const char *path, struct pkg_recipe *out)
 {
-	if (recipe_path_is_cbs(path)) {
-		memset(out, 0, sizeof(*out));
-		out->is_cbs = 1;
-		if (parse_cbs_recipe(path, out) != 0)
-			return -1;
-		substitute_repo_token(out);
-		if (!pkg_name_is_valid(out->name))
-			return -1;
-		return 0;
-	}
-	if (parse_shell_recipe(path, out) != 0)
+	if (!recipe_path_is_cbs(path))
 		return -1;
-	/*
-	 * A shell recipe has no format field to read, and gains one here
-	 * rather than at every place that asks (ADR-0307 clause 1). It is
-	 * tar.gz permanently and by construction -- not by a rule written
-	 * down somewhere that could drift from what the code does.
-	 */
-	snprintf(out->artifact_format, sizeof(out->artifact_format), "%s", PKG_ARTIFACT_FORMAT_TARGZ);
-	/*
-	 * And no release field either, so its whole version string is the
-	 * version and the release is 1 -- which is not a default invented
-	 * here, it is the value the artifact cache already infers for a
-	 * name with no trailing -N (see PKG_ERR_ARTIFACT_NAME_TAKEN's own
-	 * note in pkg.h). Set explicitly so the field is never left at
-	 * zero for a caller that reads it.
-	 */
-	snprintf(out->bare_version, sizeof(out->bare_version), "%s", out->version);
-	out->release = 1;
+	memset(out, 0, sizeof(*out));
+	if (parse_cbs_recipe(path, out) != 0)
+		return -1;
+	substitute_repo_token(out);
+	if (!pkg_name_is_valid(out->name))
+		return -1;
 	return 0;
 }
 
@@ -3028,68 +2853,39 @@ int pkg_version_compare(const char *a, const char *b)
 }
 
 /*
- * The recipe file inside one version directory, whichever language it
- * is written in (ADR-0305): build.sh for a shell recipe, build.cbs
- * for a CBS one. Fills out_path and, when out_created is non-NULL,
- * the file's mtime -- which ADR-0107 immutability makes a real
- * "first published" timestamp (see recipe_created_at()).
+ * The recipe file inside one version directory: its build.cbs
+ * (ADR-0305). Fills out_path and, when out_created is non-NULL, the
+ * file's mtime -- which ADR-0107 immutability makes a real "first
+ * published" timestamp (see recipe_created_at()).
  *
- * Returns -1 when the directory holds neither, and ALSO when it holds
- * both. A version carrying two recipes has no single answer to "what
- * will this build do", and this function deliberately refuses to be
- * the place that picks one: choosing by if-order, invisibly, is
- * precisely the defect ADR-0304 was written about. Publish refuses
- * the second format, so reaching this state means something wrote the
- * recipes directory behind the daemon's back -- which is worth a log
- * line rather than a silent preference.
+ * Returns -1 when the directory holds no build.cbs. A build.sh is not a
+ * recipe: shell recipes do not exist (cix#569), and a version
+ * directory that holds only one is left over from before that and is
+ * removed at startup (retire_shell_recipes()).
  */
 int pkg_recipe_file_in(const char *version_dir, char *out_path, size_t out_path_size,
                         long *out_created, const char **out_filename)
 {
-	char shell_path[PATH_MAX];
 	char cbs_path[PATH_MAX];
-	struct stat shell_st;
 	struct stat cbs_st;
-	int have_shell;
-	int have_cbs;
 
-	snprintf(shell_path, sizeof(shell_path), "%s/%s", version_dir, PKG_RECIPE_SHELL_FILE);
-	have_shell = stat(shell_path, &shell_st) == 0 && S_ISREG(shell_st.st_mode);
 	snprintf(cbs_path, sizeof(cbs_path), "%s/%s", version_dir, PKG_RECIPE_CBS_FILE);
-	have_cbs = stat(cbs_path, &cbs_st) == 0 && S_ISREG(cbs_st.st_mode);
-
-	if (have_shell && have_cbs) {
-		logstore_write("cixd", "error",
-		               "pkg: %s holds both a build.sh and a build.cbs -- refusing to choose "
-		               "a recipe language (ADR-0305)",
-		               version_dir);
+	if (stat(cbs_path, &cbs_st) != 0 || !S_ISREG(cbs_st.st_mode))
 		return -1;
-	}
-	if (have_shell) {
-		snprintf(out_path, out_path_size, "%s", shell_path);
-		if (out_created != NULL)
-			*out_created = (long)shell_st.st_mtime;
-		if (out_filename != NULL)
-			*out_filename = PKG_RECIPE_SHELL_FILE;
-		return 0;
-	}
-	if (have_cbs) {
-		snprintf(out_path, out_path_size, "%s", cbs_path);
-		if (out_created != NULL)
-			*out_created = (long)cbs_st.st_mtime;
-		if (out_filename != NULL)
-			*out_filename = PKG_RECIPE_CBS_FILE;
-		return 0;
-	}
-	return -1;
+	snprintf(out_path, out_path_size, "%s", cbs_path);
+	if (out_created != NULL)
+		*out_created = (long)cbs_st.st_mtime;
+	if (out_filename != NULL)
+		*out_filename = PKG_RECIPE_CBS_FILE;
+	return 0;
 }
 
 /*
  * Resolves name (and optional specific version) to the path of its
  * recipe under ADR-0107's version-keyed layout:
- * <g_recipes_dir>/<name>/<version>/build.sh, or build.cbs for a CBS
- * recipe (ADR-0305 -- pkg_recipe_file_in() above decides which, and it is
- * the only place that does). version NULL or ""
+ * <g_recipes_dir>/<name>/<version>/build.cbs (ADR-0305 --
+ * pkg_recipe_file_in() above is the one place that reads it).
+ * version NULL or ""
  * resolves to the highest available version for name
  * (pkg_version_compare()-ordered) -- the "rolling implicit" default
  * every pre-existing, non-manifest-aware caller (plain `pkg install
@@ -3877,8 +3673,8 @@ static const char *pkg_host_arch(void);
  * dropped in there would be a file CBS did not put there, inside a
  * tree it manages.
  *
- * One definition with both roots, the same shape as PKG_DEST_REL_*
- * above and for the same reason: the path the container is told to
+ * One definition with both roots, the same shape as PKG_DEST_REL_CBS
+ * below and for the same reason: the path the container is told to
  * write and the path cixd harvests are one string, so they cannot
  * disagree. They already did once -- the first CBS build harvested
  * the shell destination while the build staged into the workspace,
@@ -3905,26 +3701,18 @@ static const char *pkg_host_arch(void);
  * and the build container's upperdir -- which are the same path with a
  * different prefix.
  *
- * ONE definition, because two disagreed and the failure was silent.
- * A shell recipe stages into build/pkg-dest; a CBS recipe stages
- * wherever cbs's workspace puts it, which is <workspace>/dest. The
- * first CBS build set the container's PKG_DESTDIR to the workspace's
- * dest and left cixd harvesting the shell path, so the install phase
- * ran, wrote its file, and the package was published with ZERO files
- * and a state of "installed". Nothing failed; the answer was just
- * wrong -- which is the shape of bug this project exists to refuse.
+ * ONE definition, because two once disagreed and the failure was
+ * silent: the first CBS build set the container's PKG_DESTDIR to the
+ * workspace's dest and left cixd harvesting the shell recipes'
+ * build/pkg-dest, so the package was published with ZERO files and a
+ * state of "installed". Shell recipes are gone (cix#569); the rule that
+ * there is one definition stays.
  *
  * So the destination is computed here and nowhere else, and the
  * environment variable the recipe reads and the directory cixd
  * harvests are the same string with different roots.
  */
-#define PKG_DEST_REL_SHELL "build/pkg-dest"
 #define PKG_DEST_REL_CBS PKG_CBS_WORKSPACE_REL "/dest"
-
-static const char *pkg_dest_rel(int is_cbs)
-{
-	return is_cbs ? PKG_DEST_REL_CBS : PKG_DEST_REL_SHELL;
-}
 
 /*
  * One file of a package's own recorded manifest, copied into a rootfs
@@ -5589,7 +5377,7 @@ static int image_produce_new_version(const char *image,
  *
  * Correctness rests on a property this platform already enforces
  * elsewhere: recipe versions are IMMUTABLE (ADR-0107, and the daemon
- * answers 409 to a republish). So a build.sh cannot change under a
+ * answers 409 to a republish). So a recipe cannot change under a
  * directory whose mtime is unchanged -- only publishing or deleting a
  * version alters the set, and both change the directory's mtime. If
  * immutability ever stopped being enforced, this cache would be wrong,
@@ -6312,6 +6100,98 @@ void pkg_log_explain_sweep(void)
 		               g_explain_sweep.failed_unnamed > 0 ? " (and more not listed)" : "");
 }
 
+/*
+ * cix#569: shell recipes do not exist (the owner, 2026-10-03), and
+ * neither does the .tar.gz artifact they published. Nothing in this
+ * daemon reads either, so what a store still holds of them is removed
+ * at startup, once, and idempotently: a host with none left does
+ * nothing.
+ *
+ * - A version directory's build.sh is deleted, and the directory with
+ *   it when that leaves it empty. A directory that also holds a
+ *   build.cbs keeps it. Nothing is deleted that is not exactly a
+ *   regular file named build.sh, and rmdir() refuses a directory that
+ *   still holds anything, so no recipe this daemon reads is touched.
+ * - The local artifact cache's .tar.gz files, and their .minisig, are
+ *   deleted by retire_targz_artifacts() once pkg_cache_init() has set
+ *   the cache directory.
+ *
+ * Counted here, logged by pkg_log_shell_retirement() once the log store
+ * is up -- the same split the explain sweep uses.
+ */
+#define SHELL_RECIPE_FILE "build.sh"
+
+static struct {
+	int recipes;   /* build.sh files removed */
+	int versions;  /* version directories left empty and removed */
+	int artifacts; /* .tar.gz cache files, and signatures, removed */
+	int failed;    /* removals that did not happen */
+} g_shell_retire;
+
+static void retire_shell_recipes(void)
+{
+	DIR *names = opendir(g_recipes_dir);
+	struct dirent *nde;
+
+	if (names == NULL)
+		return;
+	while ((nde = readdir(names)) != NULL) {
+		char name_dir[PATH_MAX];
+		DIR *versions;
+		struct dirent *vde;
+
+		if (nde->d_name[0] == '.')
+			continue;
+		if (snprintf(name_dir, sizeof(name_dir), "%s/%s", g_recipes_dir, nde->d_name) >=
+		    (int)sizeof(name_dir))
+			continue;
+		versions = opendir(name_dir);
+		if (versions == NULL)
+			continue;
+		while ((vde = readdir(versions)) != NULL) {
+			char version_dir[PATH_MAX];
+			char shell_file[PATH_MAX];
+			struct stat st;
+
+			if (vde->d_name[0] == '.')
+				continue;
+			if (snprintf(version_dir, sizeof(version_dir), "%s/%s", name_dir,
+			             vde->d_name) >= (int)sizeof(version_dir) ||
+			    snprintf(shell_file, sizeof(shell_file), "%s/" SHELL_RECIPE_FILE,
+			             version_dir) >= (int)sizeof(shell_file))
+				continue;
+			if (lstat(shell_file, &st) != 0 || !S_ISREG(st.st_mode))
+				continue;
+			if (unlink(shell_file) != 0) {
+				g_shell_retire.failed++;
+				continue;
+			}
+			g_shell_retire.recipes++;
+			if (rmdir(version_dir) == 0)
+				g_shell_retire.versions++;
+		}
+		closedir(versions);
+		/* Empty now only if every version was a shell one. */
+		(void)rmdir(name_dir);
+	}
+	closedir(names);
+}
+
+void pkg_log_shell_retirement(void)
+{
+	if (g_shell_retire.recipes == 0 && g_shell_retire.artifacts == 0 &&
+	    g_shell_retire.failed == 0)
+		return;
+	logstore_write("cixd", g_shell_retire.failed > 0 ? "warn" : "info",
+	               "pkg: removed %d stored shell recipe%s (%d version director%s left empty) "
+	               "and %d .tar.gz cache file%s; %d removal%s failed -- shell recipes and "
+	               ".tar.gz artifacts no longer exist (cix#569)",
+	               g_shell_retire.recipes, g_shell_retire.recipes == 1 ? "" : "s",
+	               g_shell_retire.versions, g_shell_retire.versions == 1 ? "y" : "ies",
+	               g_shell_retire.artifacts, g_shell_retire.artifacts == 1 ? "" : "s",
+	               g_shell_retire.failed, g_shell_retire.failed == 1 ? "" : "s");
+}
+
 static void explain_sweep_if_engine_changed(void)
 {
 	char version[128];
@@ -6411,8 +6291,6 @@ static void explain_sweep_if_engine_changed(void)
 			if (pkg_recipe_file_in(version_dir, recipe_path, sizeof(recipe_path), NULL,
 			                        NULL) != 0)
 				continue;
-			if (!recipe_path_is_cbs(recipe_path))
-				continue; /* a shell recipe has no derived identity */
 			/*
 			 * The same primitive a backup restore uses, not a
 			 * second one: re-deriving a document is one operation
@@ -6509,6 +6387,9 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 	 * first runs are most worth keeping.
 	 */
 	pkg_runs_load();
+	/* cix#569: before anything resolves a recipe, so nothing meets a
+	 * build.sh in the store. */
+	retire_shell_recipes();
 	/*
 	 * Before load_state(), because a derived identity that is about to
 	 * be rebuilt should be rebuilt before anything reads it -- and
@@ -7115,7 +6996,7 @@ static int buildenv_resolve_tools(const char *declared, struct buildenv_tool *ou
 			return -1;
 	}
 	if (n == 0) {
-		snprintf(err, err_size, "pkg_build_depends is set but names no packages");
+		snprintf(err, err_size, "the recipe's build requirements name no packages");
 		return -1;
 	}
 	/*
@@ -7956,17 +7837,6 @@ void pkg_write_json_recipes(struct json_writer *w)
 				jw_str(w, r.name);
 				jw_key(w, "version");
 				jw_str(w, r.version);
-				/* ADR-0305: which language this version is written in. Not
-				 * something a recipe declares -- it IS the filename, so it
-				 * cannot disagree with what will actually run.
-				 *
-				 * Called "format" until ADR-0307, which introduced a
-				 * second, genuinely different notion of format in this
-				 * same subsystem -- the artifact one below. Two meanings
-				 * for one key reads as a bug, so this took the word its
-				 * own comment already used. A clean rename, no alias. */
-				jw_key(w, "language");
-				jw_str(w, recipe_path_is_cbs(path) ? "cbs" : "shell");
 				/* ADR-0307: what this version PUBLISHES, which the recipe
 				 * declares and the language does not imply. */
 				jw_key(w, "artifact_format");
@@ -8453,161 +8323,6 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 }
 
 /*
- * True when `updated` is `stored` plus a pkg_artifact_sha256= line, and
- * differs in nothing else.
- *
- * This is the one edit a published recipe version may take, and the
- * asymmetry is the point. A recipe's build instructions must be
- * immutable: they are what a source build follows, and letting them
- * change under a version already installed somewhere is the drift
- * ADR-0107's immutability rule exists to prevent. But the artifact
- * checksum is not an instruction -- it is an APPROVAL of the bytes
- * those instructions produced, and it cannot be known until after the
- * version is built and published, which is strictly later than the
- * recipe has to exist.
- *
- * That circularity had a real cost. `pkg.c`'s artifact tier is entered
- * only when a recipe declares a checksum, so a package built here and
- * pushed to the cache was still rebuilt from source on every other
- * host: the artifact existed, was verified, and was never consulted.
- * Of 37 packages installed on the first real box, 12 sat in the cache
- * unapproved -- including grub, python, openssl and tcc, the expensive
- * ones. "Rebuild the box from the cache" could not work.
- *
- * Only absent -> present is accepted. Replacing an existing checksum
- * would let one version name two different byte sequences, which is
- * exactly what immutability protects against, and is the failure #145
- * documents: an edited checksum that silently stops matching, sending
- * every install down the source path with an error that never mentions
- * checksums.
- */
-static int recipe_adds_only_artifact_sha256(const char *stored, const char *updated)
-{
-	const char *key = "pkg_artifact_sha256=";
-	const char *sp = stored;
-	const char *up = updated;
-	int saw_new_approval = 0;
-
-	for (;;) {
-		size_t slen, ulen;
-		const char *snl = strchr(sp, '\n');
-		const char *unl;
-
-		/* A pkg_artifact_sha256= line in the STORED copy means this
-		 * version is already approved -- nothing further may change
-		 * it. */
-		if (strncmp(sp, key, strlen(key)) == 0)
-			return 0;
-
-		unl = strchr(up, '\n');
-		if (strncmp(up, key, strlen(key)) == 0) {
-			/* The added approval: skip it and keep comparing. */
-			if (saw_new_approval)
-				return 0; /* more than one -- not a simple addition */
-			saw_new_approval = 1;
-			up = (unl != NULL) ? unl + 1 : up + strlen(up);
-			continue;
-		}
-
-		if (*sp == '\0' && *up == '\0')
-			return saw_new_approval;
-		if (*sp == '\0' || *up == '\0')
-			return 0;
-
-		slen = (snl != NULL) ? (size_t)(snl - sp) : strlen(sp);
-		ulen = (unl != NULL) ? (size_t)(unl - up) : strlen(up);
-		if (slen != ulen || memcmp(sp, up, slen) != 0)
-			return 0;
-
-		sp = (snl != NULL) ? snl + 1 : sp + slen;
-		up = (unl != NULL) ? unl + 1 : up + ulen;
-	}
-}
-
-/*
- * The artifact name a recipe version publishes under, in the form the
- * artifact server stores it: <version>-<release>.
- *
- * The server treats a MISSING release as release 1, so `1.25.0` and
- * `1.25.0-1` are one object there -- measured on 192.168.15.31,
- * 2026-09-18: both wget-1.25.0-x86_64.tar.gz and
- * wget-1.25.0-1-x86_64.tar.gz returned 200 with an identical
- * 211753-byte body. This is what makes two distinct, separately
- * published recipe versions able to collide (#494).
- *
- * A version already ends in a release when its last `-`-separated
- * component is all digits, which is how every revision in this corpus
- * is spelled (`9.11-7`, `s20180629-3`, `v0.1.25-6`). Anything else --
- * `1.25.0`, `20250605` -- gains `-1`, exactly as the server does.
- *
- * Returns 0, or -1 if the result would not fit.
- */
-static int artifact_stem_version(const char *version, char *out, size_t out_size)
-{
-	const char *dash;
-	const char *p;
-	int has_release = 0;
-
-	if (version == NULL || out == NULL || out_size == 0)
-		return -1;
-	dash = strrchr(version, '-');
-	if (dash != NULL && dash[1] != '\0') {
-		has_release = 1;
-		for (p = dash + 1; *p != '\0'; p++) {
-			if (*p < '0' || *p > '9') {
-				has_release = 0;
-				break;
-			}
-		}
-	}
-	if (snprintf(out, out_size, "%s%s", version, has_release ? "" : "-1") >= (int)out_size)
-		return -1;
-	return 0;
-}
-
-/*
- * Is some OTHER published version of this package going to publish its
- * artifact under the same name as `version`? (#494)
- *
- * Refused at publish because that is the only moment it is fixable: the
- * loser builds perfectly and then cannot push, and by then its version
- * is published and immutable.
- *
- * A missing or unreadable recipe directory is "no collision" rather
- * than an error -- the first version of a package has no directory yet,
- * and that is the overwhelmingly common case here.
- */
-static int artifact_name_is_taken(const char *name_dir, const char *version, char *out_other,
-                                  size_t out_other_size)
-{
-	char want[PKG_VERSION_MAX + 8];
-	DIR *d;
-	struct dirent *e;
-	int taken = 0;
-
-	if (artifact_stem_version(version, want, sizeof(want)) != 0)
-		return 0;
-	d = opendir(name_dir);
-	if (d == NULL)
-		return 0;
-	while ((e = readdir(d)) != NULL) {
-		char have[PKG_VERSION_MAX + 8];
-
-		if (e->d_name[0] == '.' || strcmp(e->d_name, version) == 0)
-			continue;
-		if (artifact_stem_version(e->d_name, have, sizeof(have)) != 0)
-			continue;
-		if (strcmp(have, want) == 0) {
-			snprintf(out_other, out_other_size, "%s", e->d_name);
-			taken = 1;
-			break;
-		}
-	}
-	closedir(d);
-	return taken;
-}
-
-/*
  * The artifact approval a PUBLISHED version declares, read out of the
  * store (#525). Returns 0 and fills out on success.
  *
@@ -8618,17 +8333,14 @@ static int artifact_name_is_taken(const char *name_dir, const char *version, cha
  * Two small file reads per sibling is the difference between a gate
  * that can exist and one that cannot.
  *
- * Each format is read from the file that IS its authority, the seam
- * ADR-0305 already draws: explain.json for a CPDL revision (which is
- * what parse_cbs_recipe() reads -- never the .cbs), and the recipe
- * text for a shell one.
+ * Read from the file that IS its authority (ADR-0305): explain.json,
+ * which is what parse_cbs_recipe() reads -- never the .cbs.
  *
- * KEYED ON THE EXACT KEY, never on "a 64-hex run". Both formats carry
- * source checksums in the same file -- `pkg_sha256=` and the sources'
- * own `"sha256"` -- and those are the same shape as an approval. A
- * looser scan would report a SOURCE checksum collision, which is not
- * only legitimate but expected the moment two revisions build the
- * same tarball.
+ * KEYED ON THE EXACT KEY, never on "a 64-hex run". explain.json also
+ * carries the sources' own "sha256", which is the same shape as an
+ * approval. A looser scan would report a SOURCE checksum collision,
+ * which is not only legitimate but expected the moment two revisions
+ * build the same source.
  */
 static int stored_approval(const char *version_dir, char *out, size_t out_size)
 {
@@ -8639,7 +8351,6 @@ static int stored_approval(const char *version_dir, char *out, size_t out_size)
 		const char *key;
 	} WHERE[] = {
 		{ "explain.json", "\"artifact_sha256\"" },
-		{ PKG_RECIPE_SHELL_FILE, "pkg_artifact_sha256=" },
 	};
 	size_t w;
 
@@ -8989,11 +8700,9 @@ static enum pkg_error recipe_cbs_refresh(const char *name, const char *version,
  * nothing else (ADR-0323). A recipe is committed to git before it is
  * published, so it has to be known publishable first, and the only
  * honest answer to that is this function's own checks: a second copy
- * of them would drift from the first. A dry run stores nothing, and
- * treats an approval-only republish as the duplicate it is in git.
+ * of them would drift from the first. A dry run stores nothing.
  */
 static enum pkg_error recipe_publish(const char *name, const char *content,
-                                     enum pkg_recipe_format format, int *out_was_approval,
                                      struct recipe_check *check, struct sync_outcome *sync)
 {
 	char *redacted;
@@ -9001,14 +8710,10 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 	char version_dir[PATH_MAX];
 	char staging_path[PATH_MAX];
 	char recipe_path[PATH_MAX];
-	char other_path[PATH_MAX];
 	char *explain_json = NULL;
 	struct pkg_recipe parsed;
 	struct stat st;
-	const int is_cbs = format == PKG_RECIPE_CBS;
 
-	if (out_was_approval != NULL)
-		*out_was_approval = 0;
 	g_recipe_add_err[0] = '\0';
 
 	if (!pkg_name_is_valid(name))
@@ -9027,7 +8732,7 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 	 * path outright, in `explain` as well as `build`, so a staging
 	 * file without it cannot be read at all (ADR-0305). */
 	if (snprintf(staging_path, sizeof(staging_path), "%s/.%s.recipe.new%s", g_recipes_dir, name,
-	             is_cbs ? PKG_RECIPE_CBS_SUFFIX : "") >= (int)sizeof(staging_path))
+	             PKG_RECIPE_CBS_SUFFIX) >= (int)sizeof(staging_path))
 		return PKG_ERR_INVALID_NAME;
 	/* #405: never store a live repo token. Everything below -- the
 	 * write, the immutability check and the approval comparison --
@@ -9045,13 +8750,12 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 	}
 
 	/*
-	 * Identity. This is the one place the two formats genuinely
-	 * differ, and the CBS side cannot go through parse_recipe():
-	 * that reads the derived explain.json beside a build.cbs, and at
-	 * this moment there is no such file -- producing it is what this
-	 * branch does.
+	 * Identity, from `cbs explain` of the staged file. It cannot go
+	 * through parse_recipe(), which reads the derived explain.json
+	 * beside a build.cbs: at this moment there is no such file, and
+	 * producing it is what this block does.
 	 */
-	if (is_cbs) {
+	{
 		struct cbs_explain *ex;
 		char err[512];
 		size_t json_len = 0;
@@ -9166,20 +8870,15 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 		}
 		/*
 		 * The two embedder-owned facts, out of the opaque metadata
-		 * block (cix-build-system#161, closed). Optional, exactly as
-		 * `pkg_artifact_sha256=` and `pkg_changelog=` are optional in
-		 * a shell recipe -- and read here rather than at build time so
-		 * a CBS recipe and a shell recipe reach the same fields of the
-		 * same struct, and the rest of the pipeline cannot tell which
-		 * format it came from.
+		 * block (cix-build-system#161, closed). Both optional, and read
+		 * here, at publish, so a refusal reaches the author before
+		 * anything is stored.
 		 *
-		 * artifact_sha256 is what makes a conversion free: without a
-		 * home for it a converted recipe rebuilds from source on every
-		 * install on every host, forever, and 88 of 148 current
-		 * recipes carry one. Not format-validated here, deliberately
-		 * -- parse_recipe() does not validate the shell field either,
-		 * and one rule checked in one of two places is how the two
-		 * formats start to differ.
+		 * artifact_sha256 is what lets a host install a package from
+		 * the cache instead of building it. Its shape is not validated
+		 * here; parse_cbs_recipe() reads the same field from the same
+		 * explain document at build time, and one rule in one place is
+		 * what keeps the two from differing.
 		 */
 		if (cbs_explain_metadata(ex, "artifact_sha256", parsed.artifact_sha256,
 		                          sizeof(parsed.artifact_sha256)) != 0 ||
@@ -9218,216 +8917,70 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 			free(explain_json);
 			return PKG_ERR_INVALID_RECIPE;
 		}
-	} else if (parse_recipe(staging_path, &parsed) != 0 || strcmp(parsed.name, name) != 0) {
-		unlink(staging_path);
-		free(redacted);
-		return PKG_ERR_INVALID_RECIPE;
 	}
 
 	/* Immutability (ADR-0107): an already-published (name,version) is a
-	 * real error, never a silent overwrite.
-	 *
-	 * ADR-0305 adds the other half: a version holds one recipe
-	 * language, never two. Publishing a build.cbs over a version that
-	 * already has a build.sh (or the reverse) is refused here, with
-	 * the same 409 a republish gets, because a version that could be
-	 * read two ways has no single answer to what its build will do.
-	 * pkg_recipe_file_in() would then refuse to resolve it at all, so the
-	 * package would become unbuildable rather than ambiguous -- worth
-	 * preventing at the one moment it can be. */
+	 * real error, never a silent overwrite. */
 	snprintf(name_dir, sizeof(name_dir), "%s/%s", g_recipes_dir, name);
 	snprintf(version_dir, sizeof(version_dir), "%s/%s", name_dir, parsed.version);
-	snprintf(recipe_path, sizeof(recipe_path), "%s/%s", version_dir,
-	         is_cbs ? PKG_RECIPE_CBS_FILE : PKG_RECIPE_SHELL_FILE);
-	snprintf(other_path, sizeof(other_path), "%s/%s", version_dir,
-	         is_cbs ? PKG_RECIPE_SHELL_FILE : PKG_RECIPE_CBS_FILE);
-	/*
-	 * #494: refuse a version whose ARTIFACT name another version
-	 * already owns. Checked before the immutability tests below
-	 * because it is a different situation with a different fix, and
-	 * reporting it as "already published" would send the reader
-	 * looking for a recipe that is not there.
-	 */
-	{
-		char other_version[PKG_VERSION_MAX];
-		char stem[PKG_VERSION_MAX + 8];
-
-		other_version[0] = '\0';
-		if (artifact_name_is_taken(name_dir, parsed.version, other_version,
-		                            sizeof(other_version))) {
-			artifact_stem_version(parsed.version, stem, sizeof(stem));
-			logstore_write("cixd", "error",
-			               "pkg: recipe %s@%s refused -- %s@%s already publishes under the "
-			               "artifact name %s-%s, because the artifact server reads a missing "
-			               "release as release 1. Both would build and only the first could "
-			               "publish; pick another release number (#494)",
-			               name, parsed.version, name, other_version, name, stem);
-			unlink(staging_path);
-			free(redacted);
-			free(explain_json);
-			return PKG_ERR_ARTIFACT_NAME_TAKEN;
-		}
-	}
-	if (stat(other_path, &st) == 0) {
-		logstore_write("cixd", "error",
-		               "pkg: recipe %s@%s is already published as %s -- a version holds one "
-		               "recipe language, never both (ADR-0305)",
-		               name, parsed.version, is_cbs ? "a shell recipe" : "a CBS recipe");
-		unlink(staging_path);
-		free(redacted);
-		free(explain_json);
-		return PKG_ERR_DUPLICATE;
-	}
+	snprintf(recipe_path, sizeof(recipe_path), "%s/%s", version_dir, PKG_RECIPE_CBS_FILE);
 	if (stat(recipe_path, &st) == 0) {
-		char *stored = NULL;
-		size_t stored_len = 0;
-		int only_approval = 0;
-		int same = 0;
+		char stored_sha[PKG_SHA256_MAX];
+		char incoming_sha[PKG_SHA256_MAX];
+		enum cbs_relation rel =
+		    recipe_cbs_relation(recipe_path, redacted, stored_sha, incoming_sha);
 
-		/*
-		 * The one permitted edit: adding the artifact checksum for
-		 * bytes this very version produced. See
-		 * recipe_adds_only_artifact_sha256() for why this is not a
-		 * hole in immutability but the completion of it.
-		 *
-		 * It does not apply to a CBS recipe, and the reason has
-		 * CHANGED since this was written. It used to be that CPDL
-		 * rejected unknown package keys, so a build.cbs had no line
-		 * to add (cix-build-system#161). That closed: a CBS recipe
-		 * carries its approval in `metadata { "artifact_sha256" }`,
-		 * and #492 writes it there directly after a successful build
-		 * rather than through this republish path. So a CBS recipe
-		 * DOES take a cache hit, and the old warning that it could
-		 * not is no longer true of anything.
-		 */
 		/*
 		 * ADR-0324: the same version with a different meaning is not
 		 * a duplicate, it is a conflict -- two places disagree about
 		 * what one immutable version is. It is refused like a
 		 * duplicate, and named differently, so a sync can report it
 		 * rather than count it as a quiet skip.
+		 *
+		 * An approval reaches a published CPDL recipe through
+		 * approve_cbs_artifact() after a build (#492), or through a
+		 * sync refresh below -- never as a republish.
 		 */
-		if (is_cbs) {
-			char stored_sha[PKG_SHA256_MAX];
-			char incoming_sha[PKG_SHA256_MAX];
-			enum cbs_relation rel =
-			    recipe_cbs_relation(recipe_path, redacted, stored_sha, incoming_sha);
+		if (sync != NULL) {
+			/* An approval this host holds and git lacks goes back (ADR-0324). */
+			snprintf(sync->version, sizeof(sync->version), "%s", parsed.version);
+			sync->writeback = rel != CBS_DIVERGENT && stored_sha[0] != '\0' &&
+			                  incoming_sha[0] == '\0';
+		}
+		/* Only a sync refreshes: git is the authority, and a publish
+		 * on this host is not git (ADR-0324). */
+		if (sync != NULL && check == NULL && rel != CBS_DIVERGENT &&
+		    (rel == CBS_COMMENTS || (incoming_sha[0] != '\0' && stored_sha[0] == '\0'))) {
+			enum pkg_error rerr =
+			    recipe_cbs_refresh(name, parsed.version, recipe_path, staging_path,
+			                       explain_json, redacted, stored_sha, incoming_sha);
 
-			same = rel == CBS_SAME;
-			if (sync != NULL) {
-				/* An approval this host holds and git lacks goes back (ADR-0324). */
-				snprintf(sync->version, sizeof(sync->version), "%s", parsed.version);
-				sync->writeback = rel != CBS_DIVERGENT && stored_sha[0] != '\0' &&
-				                  incoming_sha[0] == '\0';
-			}
-			/* Only a sync refreshes: git is the authority, and a publish
-			 * on this host is not git (ADR-0324). */
-			if (sync != NULL && check == NULL && rel != CBS_DIVERGENT &&
-			    (rel == CBS_COMMENTS || (incoming_sha[0] != '\0' && stored_sha[0] == '\0'))) {
-				enum pkg_error rerr =
-				    recipe_cbs_refresh(name, parsed.version, recipe_path, staging_path,
-				                       explain_json, redacted, stored_sha, incoming_sha);
-
-				free(redacted);
-				free(explain_json);
-				if (rerr == PKG_OK)
-					sync->refreshed = 1;
-				return rerr;
-			}
-		} else if (persist_read_file(recipe_path, &stored, &stored_len) == 0 &&
-		           stored != NULL) {
-			only_approval = recipe_adds_only_artifact_sha256(stored, content);
-			same = only_approval || strcmp(stored, content) == 0;
-			free(stored);
+			free(redacted);
+			free(explain_json);
+			if (rerr == PKG_OK)
+				sync->refreshed = 1;
+			return rerr;
 		}
 		free(redacted);
 		free(explain_json);
-		if (!only_approval || check != NULL) {
-			unlink(staging_path);
-			if (!same) {
-				logstore_write("cixd", "warn",
-				               "pkg: recipe %s@%s refused -- that version is already "
-				               "published with different content, and a version is one "
-				               "recipe forever (ADR-0107, ADR-0324)",
-				               name, parsed.version);
-				return PKG_ERR_DIVERGENT;
-			}
-			return PKG_ERR_DUPLICATE;
+		unlink(staging_path);
+		if (rel != CBS_SAME) {
+			logstore_write("cixd", "warn",
+			               "pkg: recipe %s@%s refused -- that version is already "
+			               "published with different content, and a version is one "
+			               "recipe forever (ADR-0107, ADR-0324)",
+			               name, parsed.version);
+			return PKG_ERR_DIVERGENT;
 		}
-		if (rename(staging_path, recipe_path) != 0) {
-			unlink(staging_path);
-			return recipe_persist_failed("move the recipe into place");
-		}
-		logstore_write("cixd", "info",
-		                "pkg: recipe %s@%s approved its published artifact", name,
-		                parsed.version);
-		if (out_was_approval != NULL)
-			*out_was_approval = 1; /* #404 */
-		return PKG_OK;
+		return PKG_ERR_DUPLICATE;
 	}
 	free(redacted);
-
-	/*
-	 * ADR-0309 clause 4: a NEW shell revision is refused, so the
-	 * parallel stops growing while it retires.
-	 *
-	 * Position is the whole of this check's correctness, and it is
-	 * the last thing in this function that could have been put
-	 * earlier and been wrong:
-	 *
-	 * - AFTER the immutability block above, so re-offering a recipe
-	 *   already in the store still returns PKG_ERR_DUPLICATE. That
-	 *   is what `recipe-sync` relies on: it calls this function for
-	 *   every file in the corpus every six hours and counted
-	 *   `added=28 skipped=379` on its last run. Refusing earlier
-	 *   would turn each of those skips into an error, every window.
-	 * - AFTER the `only_approval` return, so a PUBLISHED shell
-	 *   recipe can still be given the checksum of the bytes it
-	 *   produced (recipe_adds_only_artifact_sha256()). ADR-0309
-	 *   keeps published shell recipes as immutable history, and a
-	 *   history that cannot approve its own artifact is not intact.
-	 * - BEFORE the version directory is created, so a refusal leaves
-	 *   nothing behind.
-	 *
-	 * Nothing legitimate is blocked as of 2026-09-26, which is why
-	 * this costs nothing now (measured, in this order):
-	 * `cix-recipes` holds 9 shell recipes and every one is already
-	 * published, so sync adds none; the `probe-*` convention has its
-	 * CPDL template and it is proven on this host, not argued --
-	 * `probe-cix-tarball@103-1` through `@113-1` are all `cbs`, and
-	 * each made the daemon log `computed=<64 hex>` from a
-	 * deliberately wrong hash, which is exactly the proof ADR-0309
-	 * asks that dependent for; and all 8 publishes in this project's
-	 * own test suite send `"format": "cbs"` (the shell fixtures
-	 * fopen() into the recipe store and never reach this function at
-	 * all, which is why FLOOR_SELFTESTS are unaffected).
-	 *
-	 * This does NOT retire the shell BUILD path. 65 of 181 installed
-	 * versions still resolve to a shell revision here -- glibc, gcc,
-	 * kernel and binutils among them -- and parse_recipe() keeps
-	 * reading and building every one. That is ADR-0309 clause 3 and
-	 * it is a separate change (#516).
-	 */
-	if (!is_cbs) {
-		snprintf(g_recipe_add_err, sizeof(g_recipe_add_err),
-		         "shell recipes are history: a new revision is written in CPDL "
-		         "(ADR-0309 clause 4). Published shell revisions keep working and "
-		         "still build -- only a new one is refused");
-		logstore_write("cixd", "error",
-		               "pkg: recipe %s@%s refused: a new shell revision (ADR-0309 clause 4)",
-		               name, parsed.version);
-		unlink(staging_path);
-		free(explain_json);
-		return PKG_ERR_INVALID_RECIPE;
-	}
 
 	/*
 	 * #525: refuse an approval another revision of this package
 	 * already declares.
 	 *
-	 * POSITION IS THE WHOLE OF THIS CHECK'S CORRECTNESS, for exactly
-	 * the reason the ADR-0309 block above spells out, and the
-	 * measurement is the same one:
+	 * POSITION IS THE WHOLE OF THIS CHECK'S CORRECTNESS, measured:
 	 *
 	 * - AFTER the immutability block, so re-offering a recipe already
 	 *   in the store still returns PKG_ERR_DUPLICATE. `recipe-sync`
@@ -9439,9 +8992,6 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 	 *   skips into 86 errors, every window, forever. This is not a
 	 *   hypothetical ordering risk; it is the state of the corpus
 	 *   right now.
-	 * - AFTER the shell refusal, because a new shell revision has a
-	 *   more actionable thing wrong with it and should be told that
-	 *   one.
 	 * - BEFORE the version directory is created, so a refusal leaves
 	 *   nothing behind.
 	 *
@@ -9501,7 +9051,7 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 	 * opposite failure instead: an explain.json with no recipe, which
 	 * nothing looks for and the next publish overwrites.
 	 */
-	if (is_cbs) {
+	{
 		char explain_path[PATH_MAX];
 
 		cbs_explain_path(recipe_path, explain_path, sizeof(explain_path));
@@ -9520,10 +9070,9 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 	return PKG_OK;
 }
 
-enum pkg_error pkg_recipe_add(const char *name, const char *content,
-                               enum pkg_recipe_format format, int *out_was_approval)
+enum pkg_error pkg_recipe_add(const char *name, const char *content)
 {
-	return recipe_publish(name, content, format, out_was_approval, NULL, NULL);
+	return recipe_publish(name, content, NULL, NULL);
 }
 
 /*
@@ -9809,16 +9358,13 @@ static void pkg_build_log_open(struct pkg_entry *e, const char *version); /* iss
 static void pkg_build_log_close(struct pkg_entry *e);
 static void pkg_cache_save_from_file(const char *name, const char *version, const char *format,
                                       const char *src_path);
-static int pkg_cache_extract(const char *name, const char *version, const char *out_dir);
 /* ADR-0307: defined with the rest of the cache-naming helpers further
  * down; called from pkg_prepare_build_and_start()'s cache-hit branch,
- * some five thousand lines above them, to decide which extractor a
- * cached artifact needs. */
-static const char *artifact_format_of_path(const char *path);
+ * some five thousand lines above them, to find a cached artifact. */
 static int cache_artifact_path_existing(const char *name, const char *version, char *out,
                                          size_t out_size);
-/* Issue #139: defined with pkg_cache_extract() further down; called from
- * the install path's own cache/artifact-hit branch above it. */
+/* Issue #139: defined further down; called from the install path's
+ * unpack completion above it. */
 static void warn_unexecutable_binaries(const char *root, const char *pkg_name, int depth,
                                         int *reported);
 static int pkg_artifact_is_configured(void);
@@ -9919,7 +9465,6 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	snprintf(g_chains[chain_idx].fetch_resolved_replaces,
 	         sizeof(g_chains[chain_idx].fetch_resolved_replaces), "%s", recipe.replaces);
 	g_chains[chain_idx].fetch_resolved_build_memory = recipe.build_memory;
-	g_chains[chain_idx].tree_from_targz = 0;
 	/*
 	 * ADR-0272: a run opens here, at the single place a job begins --
 	 * so every atom of a chain gets one, not just the package that was
@@ -11208,7 +10753,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		 * seen first and this append is then a no-op.
 		 */
 		snprintf(declared, sizeof(declared), "%s", recipe.build_depends);
-		if (recipe.is_cbs && append_words(declared, sizeof(declared), "cbs") != 0) {
+		if (append_words(declared, sizeof(declared), "cbs") != 0) {
 			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 			         "the declared build tool list has no room for the cbs engine");
 			logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
@@ -11273,7 +10818,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		 * a declaration becomes decorative.
 		 */
 		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
-		         "recipe declares no pkg_build_depends -- every build environment is composed "
+		         "recipe declares no build requirements (requires { build { ... } }) -- every build environment is composed "
 		         "from a recipe's declared tools and nothing else (issue #168); add them to "
 		         "%s's recipe",
 		         e->name);
@@ -11287,14 +10832,13 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	snprintf(e->build_merged, sizeof(e->build_merged), "%s/merged", container_base);
 
 	snprintf(src_dir, sizeof(src_dir), "%s/build/src", e->build_upperdir);
-	snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_upperdir,
-	         pkg_dest_rel(recipe.is_cbs));
+	snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_upperdir, PKG_DEST_REL_CBS);
 	/* ADR-0305: cbs refuses any recipe path not ending in .cbs
 	 * (has_cbs_extension(), in `build` as well as `explain`), so the
 	 * name this is staged under is load-bearing rather than cosmetic --
-	 * a build.cbs copied in as recipe.sh could not be built at all. */
-	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe%s", e->build_upperdir,
-	         recipe.is_cbs ? PKG_RECIPE_CBS_SUFFIX : ".sh");
+	 * a build.cbs staged under any other name could not be built. */
+	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe" PKG_RECIPE_CBS_SUFFIX,
+	         e->build_upperdir);
 	snprintf(extra_dir, sizeof(extra_dir), "%s/build/extra", e->build_upperdir);
 
 	{
@@ -11388,14 +10932,11 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				(void)cache_artifact_path_existing(e->name, recipe.version, cached,
 				                                    sizeof(cached));
 				/*
-				 * ADR-0307 clause 3: the one branch, on the
-				 * artifact's own extension, at the one point where
-				 * bytes become a tree. Everything either side of it
-				 * -- locating, checksumming, the #139 usability
-				 * check, the image merge -- stays format-blind.
+				 * ADR-0307 clause 3: the point where bytes become a
+				 * tree. The cached artifact is a .cixpkg, the only
+				 * format looked for (cix#569), and cbs reads it.
 				 */
-				if (strcmp(artifact_format_of_path(cached), PKG_ARTIFACT_FORMAT_CIXPKG) == 0 &&
-				    access(PKG_CBS_BIN, X_OK) != 0) {
+				if (access(PKG_CBS_BIN, X_OK) != 0) {
 					/*
 					 * ADR-0307 clause 6's other half: refused by
 					 * name, never by falling through to an
@@ -11426,8 +10967,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 					g_chains[chain_idx].name[0] = '\0';
 					g_chains[chain_idx].dep_queue_count = 0;
 					return 0;
-				} else if (strcmp(artifact_format_of_path(cached),
-				                   PKG_ARTIFACT_FORMAT_CIXPKG) == 0) {
+				} else {
 					if (cixpkg_unpack_start(cached, dest_dir, out_compose_pid,
 					                         out_compose_pidfd) != 0) {
 						prep_step = "start the cixpkg unpack";
@@ -11443,23 +10983,12 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 						 */
 						return 3;
 					}
-				} else if (pkg_cache_extract(e->name, recipe.version, dest_dir) != 0) {
-					prep_step = "extract cached artifact";
-					prep_stage = PIPELINE_UNPACK;
-				} else {
-					/* Issue #139: a checksum proves an artifact is
-					 * intact, never that it is usable. */
-					int reported = 0;
-
-					warn_unexecutable_binaries(dest_dir, e->name, 0, &reported);
-					/* #552: no privileged-file declarations in a .tar.gz. */
-					g_chains[chain_idx].tree_from_targz = 1;
 				}
 			} else if (persist_mkdir_p(src_dir) != 0) {
 				prep_step = "create src dir";
 				prep_errno = errno;
 			} else if (copy_file_simple(recipe_path, recipe_dst) != 0) {
-				prep_step = "copy recipe.sh";
+				prep_step = "copy recipe";
 				prep_errno = errno;
 			} else if (write_finalize_script(e->build_upperdir) != 0) {
 				/* ADR-0251: the policy is not optional, so a build
@@ -11513,7 +11042,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 					 *
 					 * So this names no mechanism. Every step that
 					 * lands here now logs its own reason before
-					 * returning (see pkg_cache_extract(),
+					 * returning (see
 					 * stage_main_source()); the ones whose failure is
 					 * a plain syscall set prep_errno instead and take
 					 * the branch above.
@@ -11589,7 +11118,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	 * {{REPO_TOKEN}} substitution (#405) happens host-side precisely so
 	 * a credential never reaches a build.
 	 */
-	if (!e->cache_hit && recipe.is_cbs) {
+	if (!e->cache_hit) {
 		char cbs_cache_dir[PATH_MAX];
 
 		char cbs_ws_dir[PATH_MAX];
@@ -11651,12 +11180,12 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	}
 
 	/* ADR-0122: a cache hit runs a pure no-op -- dest_dir (this
-	 * container's own /build/pkg-dest) was already populated straight
+	 * container's own PKG_DEST_REL_CBS) was already populated straight
 	 * from the cache above, nothing left for the container itself to
 	 * do. */
 	if (e->cache_hit)
 		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), ":");
-	else if (recipe.is_cbs)
+	else
 		/* See PKG_CBS_WORKSPACE for why the cache is pre-filled and
 		 * why the finalize policy is CBS's own --finalize-command,
 		 * and PKG_CBS_ARTIFACT for where --output writes. */
@@ -11667,41 +11196,6 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		         g_chains[chain_idx].hostbuild_extra_config_symbols[0] != '\0'
 		                 ? " --input " PKG_CBS_KMOD_EXTRA_INPUT
 		                 : "");
-	else {
-		/*
-		 * ADR-0309 clause 3: the shell BUILD path is gone. There is no
-		 * command to run a `build.sh` with any more, so a shell recipe
-		 * is refused here rather than executed.
-		 *
-		 * Shell recipe PARSING deliberately stays -- these two are not
-		 * the same retirement. `parse_recipe()` still reads every
-		 * `build.sh` in the store, because nine of them are live in the
-		 * corpus purely as artifact approvals the ADR-0209 test floor
-		 * reads (`recipe_artifact_sha()`), and because every shell
-		 * revision ever published is immutable history that must still
-		 * resolve. What cannot happen is building one.
-		 *
-		 * Reached only by an explicit install of a version whose recipe
-		 * is shell; every image manifest pins or tracks a CPDL revision,
-		 * so nothing arrives here by itself.
-		 *
-		 * THE POSITION IS LOAD-BEARING, exactly as ADR-0309 clause 4's
-		 * is. It sits in the `else` of the cache-hit arm, so a shell
-		 * package whose artifact is already in the cache still
-		 * INSTALLS -- that path never needed a build command (it gets
-		 * `:`), and breaking it would strand every host that has a
-		 * cached shell artifact and no reason to rebuild. Only an
-		 * actual BUILD is refused.
-		 */
-		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
-		         "%s@%s is a shell recipe, and the shell build path was removed with "
-		         "ADR-0309 clause 3 -- install a CPDL revision instead",
-		         e->name, recipe.version);
-		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
-		return 0;
-	}
 	/*
 	 * /usr/bin/bash, not /bin/sh -- caught empirically (ADR-0056) the
 	 * first time a hostbuild job's own build_image was one of this
@@ -11722,7 +11216,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	e->build_argv[1] = "-c";
 	e->build_argv[2] = e->build_argv_cmd;
 	e->build_argv[3] = NULL;
-	snprintf(e->build_dest_rel, sizeof(e->build_dest_rel), "%s", pkg_dest_rel(recipe.is_cbs));
+	snprintf(e->build_dest_rel, sizeof(e->build_dest_rel), "%s", PKG_DEST_REL_CBS);
 	snprintf(e->artifact_format, sizeof(e->artifact_format), "%s", recipe.artifact_format);
 	snprintf(e->build_destdir_env, sizeof(e->build_destdir_env), "PKG_DESTDIR=/%s",
 	         e->build_dest_rel);
@@ -12244,7 +11738,7 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
 		int reported = 0;
 
 		snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_upperdir,
-		         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_SHELL);
+		         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_CBS);
 		warn_unexecutable_binaries(dest_dir, e->name, 0, &reported);
 	}
 
@@ -12337,32 +11831,6 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 		return PKG_ERR_INVALID_RECIPE;
 
 	/*
-	 * The fourth build path, and the one that does NOT go through
-	 * pkg_prepare_build_and_start() -- it reuses a kept container by
-	 * index rather than composing a new one, so the refusal there
-	 * does not cover it (ADR-0309 clause 3, #516).
-	 *
-	 * A resume can only reach a shell recipe by resuming a container
-	 * kept from a build that started before this path retired, which
-	 * is a window of one daemon restart. Refused anyway: "unreachable"
-	 * is a claim about today's state, and this is a claim about what
-	 * the daemon does.
-	 */
-	if (!recipe.is_cbs) {
-		/* Logged rather than routed through pkg_recipe_add_last_error():
-		 * that channel belongs to publishing and is cleared at the top
-		 * of every publish, so borrowing it here would let this text
-		 * surface under an unrelated recipe error, and be erased by an
-		 * unrelated publish. The caller gets PKG_ERR_INVALID_RECIPE;
-		 * the log carries the reason. */
-		logstore_write("cixd", "error",
-		                "pkg resume %s@%s: shell recipe, and the shell build path retired with "
-		                "ADR-0309 clause 3 -- a kept container cannot be resumed against it",
-		                name, recipe.version);
-		return PKG_ERR_INVALID_RECIPE;
-	}
-
-	/*
 	 * cix#558: the same admission an ordinary build gets in
 	 * pkg_prepare_build_and_start(), which a resume does not pass
 	 * through. The ceiling may have been lowered since the build that
@@ -12427,16 +11895,14 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	 *
 	 * It was invisible for as long as it existed because every
 	 * fixture that exercises resume was written in shell; converting
-	 * them (cix#516) is what surfaced it. Note the line below already
-	 * asked `recipe.is_cbs` for the destination directory, so the
-	 * format was known here all along and only the command ignored
-	 * it.
+	 * them (cix#516) is what surfaced it.
 	 *
 	 * No cache-hit arm, unlike the install path: a resume exists
 	 * precisely because a build failed, so there is nothing cached to
 	 * short-circuit to.
 	 */
-	/* Unconditional: the shell case returned above, before any of the
+	/* Unconditional: a recipe is CPDL, and a path that is not one
+	 * failed parse_recipe() above, before any of the
 	 * staging this function does. It used to be refused HERE instead,
 	 * which is after copy_file_simple(), write_finalize_script() and a
 	 * delete-and-recreate of dest_dir -- so a refused resume had
@@ -14002,7 +13468,7 @@ static int undeclared_link_gate(const struct pkg_entry *e, const char *image,
 
 	snprintf(err, err_size,
 	         "%s links \"%s\", which nothing it declares provides -- add the package "
-	         "supplying it to pkg_depends= (having it in pkg_build_depends= only puts it in "
+	         "supplying it to requires { runtime } (having it in requires { build } only puts it in "
 	         "the build sandbox, so the link is recorded and the dependency is not)",
 	         bad_file, bad_soname);
 	logstore_write("cixd", "error", "pkg install: %s: %s (#389)", e->name, err);
@@ -14658,13 +14124,13 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		logstore_write("cixd", "error",
 		                "pkg %s@%s: build environment is missing '%s'%s -- the shell reported "
 		                "%d missing command(s) during a build that exited 0; declare it in "
-		                "pkg_build_depends (#302)",
+		                "the recipe's requires { build } (#302)",
 		                e->name, g_chains[chain_idx].image, e->missing_tool,
 		                e->missing_tool_count > 1 ? " and others" : "",
 		                e->missing_tool_count);
 		pkg_fail(e, is_upgrade, PIPELINE_BUILD,
 		         "build environment is missing '%s' (%d missing command(s) reported) -- "
-		         "declare it in pkg_build_depends",
+		         "declare it in the recipe's requires { build }",
 		         e->missing_tool, e->missing_tool_count);
 		g_chains[chain_idx].name[0] = '\0';
 		g_chains[chain_idx].dep_queue_count = 0;
@@ -14678,10 +14144,10 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	         e->build_container_name);
 	/* What the build was told, not a second guess at it -- see
 	 * build_dest_rel's own comment. A cache hit never entered a
-	 * container and so never set it, and its tree is the shell
-	 * path the no-op arm populated directly. */
+	 * container and may not have set it; its tree is at the same
+	 * PKG_DEST_REL_CBS, which the unpack populated directly. */
 	snprintf(dest_dir, sizeof(dest_dir), "%s/upper/%s", container_base,
-	         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_SHELL);
+	         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_CBS);
 
 	/*
 	 * Move the entry to the version this job installed -- for a fresh
@@ -14745,7 +14211,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		         "the build staged no files -- %s holds nothing but directories, so this "
 		         "would publish an empty package. Check the install phase, and check "
 		         "whether the finalize phase removed everything it staged (#486)",
-		         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_SHELL);
+		         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_CBS);
 		logstore_write("cixd", "error", "pkg install: %s@%s: %s", e->name, e->version, msg);
 		pkg_fail(e, 0, PIPELINE_INSTALL, msg);
 		g_chains[chain_idx].name[0] = '\0';
@@ -14797,7 +14263,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * output tree.
 		 */
 		if (persist_fresh_output_dir(artifact_dir) != 0 ||
-		    merge_tree(dest_dir, artifact_dir, "", e, !g_chains[chain_idx].tree_from_targz) != 0) {
+		    merge_tree(dest_dir, artifact_dir, "", e, 1) != 0) {
 			pkg_fail(e, 0, PIPELINE_INSTALL, "failed to harvest the built artifact");
 			g_chains[chain_idx].name[0] = '\0';
 			g_chains[chain_idx].dep_queue_count = 0;
@@ -14863,7 +14329,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		ctx.dest_dir = dest_dir;
 		ctx.e = e;
 		ctx.is_upgrade = is_upgrade;
-		ctx.keep_privileged = !g_chains[chain_idx].tree_from_targz;
+		ctx.keep_privileged = 1;
 		if (image_produce_new_version(g_chains[chain_idx].image, install_mutate, &ctx, NULL) !=
 		    0) {
 			const char *why = pkg_last_image_produce_failure();
@@ -14960,25 +14426,15 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			pkg_cache_touch(e->name, e->version);
 		} else {
 			/*
-			 * ADR-0307 clause 2: who packages a build depends on
-			 * which language wrote its recipe, and the two are
-			 * genuinely different operations rather than one with
-			 * a flag.
+			 * A CBS build leaves a finished .cixpkg -- CBS wrote it,
+			 * inside the container, after the finalize policy ran
+			 * (src/package.c:374 then :389) -- so cixd takes the file,
+			 * by rename. Nothing here tars a tree any more (#499,
+			 * cix#569).
 			 *
-			 * A shell build leaves a directory, so cixd tars it.
-			 * A CBS build leaves a finished .cixpkg -- CBS wrote
-			 * it, inside the container, after the finalize policy
-			 * ran (src/package.c:374 then :389) -- so cixd takes
-			 * the file. Taking the file is a rename; the tar-and-gzip
-			 * of a whole tree that the retired shell build path needed
-			 * is gone, and with it the route back to .tar.gz (#499).
-			 *
-			 * Read from the entry rather than re-derived, and the
-			 * format rather than is_cbs: the recipe declared it
-			 * (a CBS recipe declaring tar.gz is refused at
-			 * publish, so in practice these agree -- but is_cbs
-			 * says which LANGUAGE was used, which is not the
-			 * question being asked here).
+			 * Read from the entry: the recipe declared the format, and
+			 * a CPDL recipe declaring anything but cixpkg is refused at
+			 * publish and by `cbs build` itself.
 			 */
 			if (strcmp(e->artifact_format, PKG_ARTIFACT_FORMAT_CIXPKG) == 0) {
 				char produced[PATH_MAX];
@@ -15008,9 +14464,9 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 				/*
 				 * Unreachable, and said so rather than served. A
 				 * package artifact is a .cixpkg and never a tar.gz
-				 * (One Build System Mandate, ADR-0307): a shell
-				 * recipe cannot build (ADR-0309 clause 3 refuses it
-				 * before any container runs), and a CPDL recipe
+				 * (One Build System Mandate, ADR-0307): shell
+				 * recipes do not exist (cix#569), and nothing
+				 * here reads one; a CPDL recipe
 				 * declaring tar.gz is refused at publish and by
 				 * `cbs build` itself. This branch used to tar the
 				 * tree into the cache instead, a route back to the
@@ -15601,7 +15057,6 @@ enum sync_state { SYNC_NEVER = 0, SYNC_RUNNING, SYNC_SUCCESS, SYNC_FAILED };
 static enum sync_state g_sync_last_state = SYNC_NEVER;
 static time_t g_sync_last_attempt;
 static int g_sync_last_added;
-static int g_sync_last_approved; /* #404 */
 static int g_sync_last_skipped;
 /*
  * Issue #59: one recipe version this sync is allowed to REPLACE rather
@@ -15780,7 +15235,7 @@ enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, co
 		return PKG_ERR_NOT_FOUND;
 
 	/* Every test a publish applies, before anything reaches git. */
-	perr = recipe_publish(name, content, PKG_RECIPE_CBS, NULL, &check, NULL);
+	perr = recipe_publish(name, content, &check, NULL);
 	if (perr != PKG_OK) {
 		if (perr == PKG_ERR_DUPLICATE)
 			snprintf(err, err_size, "%s is already published at that version", name);
@@ -16278,7 +15733,7 @@ void pkg_recipe_commit_done(int exit_status, void *unused)
 
 	/* Git first, then here. A publish that fails now is not a lost
 	 * revision: the commit exists, and the next recipe sync adds it. */
-	perr = pkg_recipe_add(g_recipe_commit.name, g_recipe_commit.content, PKG_RECIPE_CBS, NULL);
+	perr = pkg_recipe_add(g_recipe_commit.name, g_recipe_commit.content);
 	if (perr != PKG_OK) {
 		snprintf(g_recipe_commit.error, sizeof(g_recipe_commit.error),
 		         "committed as %s but not published here (%s) -- the next recipe sync "
@@ -17231,7 +16686,7 @@ struct sync_source_result {
 	char name[PKG_SOURCE_NAME_MAX];
 	int fetched;
 	char error[256];
-	int added, approved, skipped, divergent, failed, held;
+	int added, skipped, divergent, failed, held;
 	int refreshed; /* git refreshed a comment-only or approval-only difference */
 };
 static struct sync_source_result g_sync_results[PKG_SOURCES_MAX];
@@ -17577,46 +17032,38 @@ static void sync_merge_packages(const char *recipes_root, const char *source,
 		return;
 	while ((name_de = readdir(names_d)) != NULL) {
 		char name[PKG_NAME_MAX], version[PKG_VERSION_MAX];
-		char script_path[PATH_MAX];
+		char recipe_file[PATH_MAX];
 		char *content;
 		size_t content_len;
 		const char *ext;
 		enum pkg_error rc;
-		int is_cbs;
-		int was_approval = 0;
 		struct sync_outcome outcome;
 
 		if (recipe_file_split(name_de->d_name, name, sizeof(name), version, sizeof(version),
 		                      &ext) != 0)
 			continue;
-		if (strcmp(ext, "cbs") == 0)
-			is_cbs = 1;
-		else if (strcmp(ext, "sh") == 0)
-			is_cbs = 0;
-		else
+		/* CPDL only: a .sh file in a source is not a recipe (cix#569). */
+		if (strcmp(ext, "cbs") != 0)
 			continue;
 		if (!sync_source_owns("package", name, source, &res->held))
 			continue;
 
-		snprintf(script_path, sizeof(script_path), "%s/%s", recipes_root, name_de->d_name);
-		if (!sync_vouched(cat, "recipes/package", name_de->d_name, script_path, source)) {
+		snprintf(recipe_file, sizeof(recipe_file), "%s/%s", recipes_root, name_de->d_name);
+		if (!sync_vouched(cat, "recipes/package", name_de->d_name, recipe_file, source)) {
 			res->failed++;
 			continue;
 		}
-		if (persist_read_file(script_path, &content, &content_len) != 0 || content == NULL)
+		if (persist_read_file(recipe_file, &content, &content_len) != 0 || content == NULL)
 			continue;
 		if (g_sync_refetch_name[0] != '\0' && strcmp(g_sync_refetch_name, name) == 0 &&
 		    strcmp(g_sync_refetch_version, version) == 0)
 			pkg_recipe_delete(name, version);
 
 		memset(&outcome, 0, sizeof(outcome));
-		rc = recipe_publish(name, content, is_cbs ? PKG_RECIPE_CBS : PKG_RECIPE_SHELL,
-		                    &was_approval, NULL, &outcome);
+		rc = recipe_publish(name, content, NULL, &outcome);
 		free(content);
 		if (rc == PKG_OK && outcome.refreshed)
 			res->refreshed++;
-		else if (rc == PKG_OK && was_approval)
-			res->approved++;
 		else if (rc == PKG_OK)
 			res->added++;
 		else if (rc == PKG_ERR_DUPLICATE)
@@ -17869,7 +17316,6 @@ int pkg_sync_merge(void)
 	for (i = 0; i < count; i++) {
 		jw_arr_open(&w);
 		jw_int(&w, res[i].added);
-		jw_int(&w, res[i].approved);
 		jw_int(&w, res[i].skipped);
 		jw_int(&w, res[i].divergent);
 		jw_int(&w, res[i].failed);
@@ -17971,15 +17417,14 @@ void pkg_sync_completed(int rc)
 				const struct json_value *row = root->u.array.items[i];
 				struct sync_source_result *r = &g_sync_results[i];
 
-				if (row->type != JSON_ARRAY || row->u.array.count != 7)
+				if (row->type != JSON_ARRAY || row->u.array.count != 6)
 					continue;
 				r->added = (int)json_as_number(row->u.array.items[0]);
-				r->approved = (int)json_as_number(row->u.array.items[1]);
-				r->skipped = (int)json_as_number(row->u.array.items[2]);
-				r->divergent = (int)json_as_number(row->u.array.items[3]);
-				r->failed = (int)json_as_number(row->u.array.items[4]);
-				r->held = (int)json_as_number(row->u.array.items[5]);
-				r->refreshed = (int)json_as_number(row->u.array.items[6]);
+				r->skipped = (int)json_as_number(row->u.array.items[1]);
+				r->divergent = (int)json_as_number(row->u.array.items[2]);
+				r->failed = (int)json_as_number(row->u.array.items[3]);
+				r->held = (int)json_as_number(row->u.array.items[4]);
+				r->refreshed = (int)json_as_number(row->u.array.items[5]);
 			}
 		}
 		json_free(root);
@@ -17992,11 +17437,10 @@ void pkg_sync_completed(int rc)
 
 	pkg_rebuild_queue_rederive();
 
-	g_sync_last_added = g_sync_last_approved = g_sync_last_skipped = 0;
+	g_sync_last_added = g_sync_last_skipped = 0;
 	g_sync_last_divergent = g_sync_last_held = g_sync_last_refreshed = 0;
 	for (i = 0; i < g_sync_result_count; i++) {
 		g_sync_last_added += g_sync_results[i].added;
-		g_sync_last_approved += g_sync_results[i].approved;
 		g_sync_last_skipped += g_sync_results[i].skipped;
 		g_sync_last_divergent += g_sync_results[i].divergent;
 		g_sync_last_held += g_sync_results[i].held;
@@ -18039,8 +17483,6 @@ void pkg_sync_write_json_status(struct json_writer *w)
 		jw_null(w);
 	jw_key(w, "added");
 	jw_int(w, g_sync_last_added);
-	jw_key(w, "approved"); /* #404 */
-	jw_int(w, g_sync_last_approved);
 	jw_key(w, "skipped");
 	jw_int(w, g_sync_last_skipped);
 	jw_key(w, "divergent"); /* ADR-0324 */
@@ -18066,8 +17508,6 @@ void pkg_sync_write_json_status(struct json_writer *w)
 		jw_bool(w, r->fetched);
 		jw_key(w, "added");
 		jw_int(w, r->added);
-		jw_key(w, "approved");
-		jw_int(w, r->approved);
 		jw_key(w, "skipped");
 		jw_int(w, r->skipped);
 		jw_key(w, "divergent");
@@ -18104,100 +17544,59 @@ static long long g_cache_max_bytes = PKG_CACHE_DEFAULT_MAX_BYTES;
 
 /*
  * The one place a package artifact's file extension is spelled
- * (ADR-0307).
+ * (ADR-0307): ".cixpkg", for the one format there is.
  *
- * Two formats, and which one a version uses is a property of the
- * recipe that built it -- a CBS recipe declares `format "cixpkg"`, a
- * shell recipe has no field to declare and is tar.gz by construction.
- * One version is one byte sequence in one format; the same version is
- * never published twice in two.
- *
- * Every caller that NAMES an artifact goes through this, so the two
- * formats cannot drift apart into two spellings in twelve places.
+ * NULL for any other format, never a default. A recipe declaring
+ * another format is refused at publish and by parse_cbs_recipe(), and
+ * shell recipes, which published ".tar.gz", no longer exist (cix#569)
+ * -- so a NULL here is a caller handing in a format nothing produced,
+ * and each caller refuses rather than naming a file in it.
  */
 static const char *artifact_suffix(const char *format)
 {
 	if (format != NULL && strcmp(format, PKG_ARTIFACT_FORMAT_CIXPKG) == 0)
 		return ".cixpkg";
-	return ".tar.gz";
+	return NULL;
 }
 
 /*
- * The format of an artifact that EXISTS, read from its own name.
- *
- * ADR-0307 clause 3: consumption dispatches once, on the artifact's
- * extension. A file on disk is its own answer -- more truthful than
- * the recipe, which may have been converted since these bytes were
- * built, and available where no recipe is in scope at all (the push
- * worker holds a name, a version and a path).
+ * Where this version's artifact goes in the local cache. 0, or -1 with
+ * out empty when format is not one this platform names (see
+ * artifact_suffix()).
  */
-static const char *artifact_format_of_path(const char *path)
+static int cache_artifact_path(const char *name, const char *version, const char *format,
+                                char *out, size_t out_size)
 {
-	size_t len = path != NULL ? strlen(path) : 0;
-	const char *suffix = artifact_suffix(PKG_ARTIFACT_FORMAT_CIXPKG);
-	size_t slen = strlen(suffix);
+	const char *suffix = artifact_suffix(format);
 
-	if (len >= slen && strcmp(path + len - slen, suffix) == 0)
-		return PKG_ARTIFACT_FORMAT_CIXPKG;
-	return PKG_ARTIFACT_FORMAT_TARGZ;
-}
-
-/*
- * Where an artifact of a KNOWN format goes. For writers: a save, a
- * fetch destination, anything producing bytes that do not exist yet
- * and whose format the caller already knows from the recipe.
- */
-static void cache_artifact_path(const char *name, const char *version, const char *format,
-                                 char *out, size_t out_size)
-{
-	snprintf(out, out_size, "%s/%s-%s%s", g_cache_dir, name, version, artifact_suffix(format));
-}
-
-/*
- * Where this version's artifact ALREADY is, whichever format it is in.
- * Returns 1 and fills out when one exists, 0 otherwise (and out still
- * holds the tar.gz spelling, so a caller reporting "not found" names a
- * plausible path rather than an empty string).
- *
- * Resolved from the filesystem rather than from the recipe, and that
- * is the point: the cache holds at most one file per (name, version),
- * and what is on disk is the only truthful answer to "what do we
- * have". A recipe-derived answer would be a second source of truth
- * able to disagree -- and it would be wrong in exactly the case that
- * matters, a version whose recipe has since been converted while the
- * artifact it was built from is still the one in the cache.
- *
- * .cixpkg first, so a host that somehow holds both prefers the format
- * the platform is moving to.
- */
-static int cache_artifact_path_existing(const char *name, const char *version, char *out,
-                                         size_t out_size)
-{
-	static const char *const formats[] = { PKG_ARTIFACT_FORMAT_CIXPKG,
-	                                       PKG_ARTIFACT_FORMAT_TARGZ };
-	size_t i;
-	struct stat st;
-
-	for (i = 0; i < sizeof(formats) / sizeof(formats[0]); i++) {
-		cache_artifact_path(name, version, formats[i], out, out_size);
-		if (stat(out, &st) == 0 && S_ISREG(st.st_mode))
-			return 1;
-	}
-	cache_artifact_path(name, version, PKG_ARTIFACT_FORMAT_TARGZ, out, out_size);
+	out[0] = '\0';
+	if (suffix == NULL)
+		return -1;
+	snprintf(out, out_size, "%s/%s-%s%s", g_cache_dir, name, version, suffix);
 	return 0;
 }
 
 /*
- * The signature beside whichever artifact this version actually has --
- * `.cixpkg.minisig` or `.tar.gz.minisig`, both of which cix-cache
- * already recognises in its own suffix table and files in the same
- * package tier (ADR-0307, read from that server's src/store.c).
+ * Where this version's artifact ALREADY is. Returns 1 and fills out
+ * when it exists, 0 otherwise -- and out still holds the .cixpkg path,
+ * so a caller reporting "not found" names the file it looked for.
  *
- * Only the "whichever exists" form, deliberately. A signature is made
- * from bytes that are already here, so there is no case where a
- * caller knows the format but not the file -- and a second,
- * format-taking variant would be a way for the two to disagree about
- * what is being signed.
+ * Only .cixpkg is looked for. A .tar.gz left in the cache from before
+ * cix#569 is not an artifact of anything this host installs, and
+ * retire_targz_artifacts() removes it at startup.
+ */
+static int cache_artifact_path_existing(const char *name, const char *version, char *out,
+                                         size_t out_size)
+{
+	struct stat st;
+
+	(void)cache_artifact_path(name, version, PKG_ARTIFACT_FORMAT_CIXPKG, out, out_size);
+	return stat(out, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+/*
+ * The signature beside this version's artifact, `<artifact>.minisig`
+ * (ADR-0279).
  */
 static void cache_signature_path_existing(const char *name, const char *version, char *out,
                                            size_t out_size)
@@ -18233,6 +17632,47 @@ void pkg_cache_repoint(const char *new_cache_dir, const char *new_config_path)
 	snprintf(g_cache_config_path, sizeof(g_cache_config_path), "%s", new_config_path);
 }
 
+/*
+ * cix#569: the cache's .tar.gz files, and their .minisig, which shell
+ * recipes published and nothing installs any more. Only names ending
+ * exactly in ".tar.gz" or ".tar.gz.minisig" -- every .cixpkg, its
+ * signature, and anything else in the directory is left alone. Counted
+ * into g_shell_retire with the stored recipes retire_shell_recipes()
+ * removes.
+ */
+static void retire_targz_artifacts(void)
+{
+	static const char *const SUFFIXES[] = { ".tar.gz", ".tar.gz.minisig" };
+	DIR *d = opendir(g_cache_dir);
+	struct dirent *de;
+
+	if (d == NULL)
+		return;
+	while ((de = readdir(d)) != NULL) {
+		size_t len = strlen(de->d_name);
+		size_t i;
+
+		for (i = 0; i < sizeof(SUFFIXES) / sizeof(SUFFIXES[0]); i++) {
+			size_t slen = strlen(SUFFIXES[i]);
+			char path[PATH_MAX];
+			struct stat st;
+
+			if (len <= slen || strcmp(de->d_name + len - slen, SUFFIXES[i]) != 0)
+				continue;
+			if (snprintf(path, sizeof(path), "%s/%s", g_cache_dir, de->d_name) >=
+			        (int)sizeof(path) ||
+			    lstat(path, &st) != 0 || !S_ISREG(st.st_mode))
+				break;
+			if (unlink(path) == 0)
+				g_shell_retire.artifacts++;
+			else
+				g_shell_retire.failed++;
+			break;
+		}
+	}
+	closedir(d);
+}
+
 int pkg_cache_init(const char *cache_dir, const char *config_path)
 {
 	char *buf;
@@ -18246,6 +17686,7 @@ int pkg_cache_init(const char *cache_dir, const char *config_path)
 	    (int)sizeof(g_cache_config_path))
 		return -1;
 	g_cache_max_bytes = PKG_CACHE_DEFAULT_MAX_BYTES;
+	retire_targz_artifacts(); /* cix#569 */
 
 	if (persist_read_file(config_path, &buf, &len) != 0 || buf == NULL)
 		return 0; /* no persisted config yet -- the default cap stands */
@@ -18405,7 +17846,14 @@ static void pkg_cache_save_from_file(const char *name, const char *version, cons
 		unlink(src_path);
 		return;
 	}
-	cache_artifact_path(name, version, format, final_path, sizeof(final_path));
+	if (cache_artifact_path(name, version, format, final_path, sizeof(final_path)) != 0) {
+		logstore_write("cixd", "error",
+		               "pkg %s@%s: not caching an artifact of format \"%s\"; only cixpkg is "
+		               "cached (cix#569)",
+		               name, version, format != NULL ? format : "");
+		unlink(src_path);
+		return;
+	}
 	cache_evict_lru_until_fits(size);
 	unlink(final_path);
 	if (rename(src_path, final_path) != 0) {
@@ -18416,11 +17864,6 @@ static void pkg_cache_save_from_file(const char *name, const char *version, cons
 	}
 }
 
-/* Extracts a cache hit's own content into out_dir (a fresh, empty
- * directory the caller already created) -- a plain tar extraction, no
- * common-top-dir stripping needed: a tar.gz this platform cached was
- * always dest_dir's own contents (tar -C dest_dir -czf ... .), never
- * a single wrapping directory. Only old cache entries are tar.gz (#499). */
 /*
  * Issue #139: does this tree contain a binary that cannot be run?
  *
@@ -18481,46 +17924,6 @@ static void warn_unexecutable_binaries(const char *root, const char *pkg_name, i
 		(*reported)++;
 	}
 	closedir(d);
-}
-
-/*
- * Unpacks a CACHED TARBALL into out_dir, in process.
- *
- * Tarball only, and it says so rather than trying: libarchive cannot
- * read a CIXPKG -- that is an 8-byte magic, a 352-byte header and two
- * zstd streams, and only `cbs extract` reads it (ADR-0305 keeps that
- * format out of cixd entirely). A .cixpkg reaching here is a caller
- * that did not dispatch, and it must fail loudly rather than hand
- * bytes to an extractor that will reject them with a message about
- * archive formats.
- */
-static int pkg_cache_extract(const char *name, const char *version, const char *out_dir)
-{
-	char path[PATH_MAX];
-
-	if (!cache_artifact_path_existing(name, version, path, sizeof(path))) {
-		/* The one failure here that logged nothing at all, so its
-		 * caller's "error logged immediately above" would have been
-		 * false (#504). */
-		/* Stated as what is known and no further: the job was marked a
-		 * cache hit (e->cache_hit, set when it started) and the
-		 * artifact is not there now. WHY is not known here -- the
-		 * caller's own lookup discards its result -- so this does not
-		 * guess at removal or renaming. */
-		logstore_write("cixd", "error",
-		               "pkg %s@%s: no cached artifact to extract -- the job was marked a "
-		               "cache hit when it started, and none is in the cache now",
-		               name, version);
-		return -1;
-	}
-	if (strcmp(artifact_format_of_path(path), PKG_ARTIFACT_FORMAT_CIXPKG) == 0) {
-		logstore_write("cixd", "error",
-		               "pkg %s@%s: %s is a CIXPKG and this is the tarball extractor -- the "
-		               "caller did not dispatch on the artifact's format (ADR-0307)",
-		               name, version, path);
-		return -1;
-	}
-	return extract_archive_to(path, out_dir, 0);
 }
 
 void pkg_cache_write_json_status(struct json_writer *w)
@@ -19243,17 +18646,19 @@ void pkg_artifact_cache_path(const char *name, const char *version, char *out, s
  * exists yet -- it returns early when pkg_artifact_cache_has() is
  * true -- so the fallback was the only branch it ever took, and every
  * hostbuild published a tarball no matter what its recipe declared
- * (cix#528). A writer must say which format it is writing.
+ * (cix#528). A writer must say which format it is writing, and out is
+ * left empty for one that is not cixpkg (cix#569).
  */
 void pkg_artifact_cache_path_for(const char *name, const char *version, const char *format,
                                   char *out, size_t out_size)
 {
-	cache_artifact_path(name, version, format, out, out_size);
+	(void)cache_artifact_path(name, version, format, out, out_size);
 }
 
 /* The filename suffix a format is written with, exported so the
  * hostbuild exporter in main.c names its output the same way this
- * file does rather than mapping format to suffix a second time. */
+ * file does rather than mapping format to suffix a second time. NULL
+ * for a format that is not cixpkg (cix#569). */
 const char *pkg_artifact_suffix(const char *format)
 {
 	return artifact_suffix(format);
@@ -19267,8 +18672,8 @@ const char *pkg_artifact_arch(void)
 /*
  * The version/release split THE CACHE performs on an artifact name:
  * a trailing `-<digits>` is the release, and a name without one is
- * release 1 (pkg.h's PKG_ERR_ARTIFACT_NAME_TAKEN note records this,
- * measured -- `wget@1.25.0` and `wget@1.25.0-1` resolve to the same
+ * release 1 (measured on 192.168.15.31, 2026-09-18, #494 --
+ * `wget@1.25.0` and `wget@1.25.0-1` resolved to the same
  * stored artifact).
  *
  * Used only when no recipe is readable. It is deliberately the same
@@ -19740,8 +19145,12 @@ enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size)
 		 * these names back, so an artifact whose extension does not
 		 * match its bytes would be a cache entry nothing can open.
 		 */
-		if (!cache_artifact_path_existing(name, c.version, src, sizeof(src)))
-			cache_artifact_path(name, c.version, c.format, src, sizeof(src));
+		if (!cache_artifact_path_existing(name, c.version, src, sizeof(src)) &&
+		    cache_artifact_path(name, c.version, c.format, src, sizeof(src)) != 0) {
+			snprintf(err, err_size, "%s@%s declares artifact format \"%s\"; only cixpkg is "
+			         "seeded (cix#569)", name, c.version, c.format);
+			return PKG_ERR_INVALID_RECIPE;
+		}
 		base = strrchr(src, '/');
 		base = (base != NULL) ? base + 1 : src;
 		if (snprintf(dst, sizeof(dst), "%s/%s", artifacts_dst, base) >= (int)sizeof(dst)) {
@@ -20149,11 +19558,10 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 		                "artifact push: %s@%s has no tarball in the local cache -- not published",
 		                g_push_current.name, g_push_current.version);
 	}
-	/* The format of the bytes actually being pushed, from the file
-	 * that was just found -- never from the recipe, which may have
-	 * been converted since these bytes were built (ADR-0307). */
+	/* The bytes being pushed were found by cache_artifact_path_existing(),
+	 * which looks only for a .cixpkg (cix#569). */
 	pkg_artifact_build_request(pkgrepo_find(g_push_current.repo), g_push_current.name,
-	                           g_push_current.version, artifact_format_of_path(artifact), url,
+	                           g_push_current.version, PKG_ARTIFACT_FORMAT_CIXPKG, url,
 	                           sizeof(url), auth_header, sizeof(auth_header));
 	if (g_push_current.kind == PKG_PUSH_SIGNATURE) {
 		size_t ulen = strlen(url);
@@ -20288,7 +19696,7 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
  * ADR-0251, and the gap #306 turned out to be: a published artifact
  * approves itself in its own recipe.
  *
- * A recipe with no pkg_artifact_sha256 has its artifact tier skipped
+ * A recipe with no artifact_sha256 approval has its artifact tier skipped
  * entirely (ADR-0122), so that package can only ever be BUILT. On a host
  * that already has a toolchain this costs nothing visible, which is why
  * it survived indefinitely. On a cold host it is fatal and circular:
@@ -20307,18 +19715,13 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
  * A gate would only report what a human then had to fix. This does the
  * step instead, at the one moment the bytes are known to be both built
  * here and accepted by the cache.
- *
- * Deliberately routed through recipe_adds_only_artifact_sha256(), the
- * same predicate that guards an operator's own POST /pkg/recipes: there
- * is one definition of "this edit is permitted to an immutable recipe",
- * and this path cannot drift from it.
  */
 /*
  * Writing an artifact approval into a CBS recipe (#492).
  *
- * The shell writer above splices `pkg_artifact_sha256="..."` into
- * build.sh. This is its CPDL counterpart, and it differs in three ways
- * that are each the point rather than an implementation detail.
+ * The approval goes into the recipe in git and the store, and three
+ * things about how are each the point rather than an implementation
+ * detail.
  *
  * FIRST: it writes TWO files. parse_cbs_recipe() reads the derived
  * explain.json beside the recipe, never the recipe itself (ADR-0305),
@@ -20329,17 +19732,12 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
  * not at all.
  *
  * SECOND: the guard is semantic, not textual.
- * recipe_adds_only_artifact_sha256() walks lines, which is the right
- * rule for a format whose declarations ARE lines. CPDL's are not: the
- * approval is a key inside a block. So "only the approval changed" is
- * asked of the two EXPLAIN documents instead --
+ * "Only the approval changed" is asked of the two EXPLAIN documents --
  * jsondiff_equal_ignoring(..., "artifact_sha256") -- which is one
- * existing implementation (ADR-0292's diff), is format-independent by
- * construction, and is strictly stronger than a text diff: it catches
- * a byte that changes what the recipe MEANS and ignores one that does
- * not. One rule, "the artifact approval is the only declaration that
- * may change", asked of each format's own authority: text for shell,
- * cbs for CPDL. That is the seam ADR-0305 already draws.
+ * existing implementation (ADR-0292's diff) and is strictly stronger
+ * than a text diff: it catches a byte that changes what the recipe
+ * MEANS and ignores one that does not. The approval is a key inside a
+ * block, not a line, so a line diff would be the wrong rule.
  *
  * THIRD: it refuses rather than guesses. A `metadata { }` block must
  * already exist, on its own line, and the approval is inserted into
@@ -20551,115 +19949,20 @@ done:
 
 static void approve_published_artifact(const char *name, const char *version)
 {
-	char tarball[PATH_MAX], recipe_path[PATH_MAX], tmp_path[PATH_MAX];
+	char artifact[PATH_MAX], cbs_path[PATH_MAX];
 	char sha[65];
-	char *stored = NULL, *updated = NULL;
-	size_t stored_len = 0, head = 0, need;
-	const char *anchor, *nl;
-	int fd;
-	ssize_t w;
+	struct stat st;
 
-	(void)cache_artifact_path_existing(name, version, tarball, sizeof(tarball));
-	if (pkg_run_capture_sha256(tarball, sha, sizeof(sha)) != 0)
+	(void)cache_artifact_path_existing(name, version, artifact, sizeof(artifact));
+	if (pkg_run_capture_sha256(artifact, sha, sizeof(sha)) != 0)
 		return; /* the artifact is gone from the cache -- nothing to approve */
-
-	if ((size_t)snprintf(recipe_path, sizeof(recipe_path), "%s/%s/%s/build.sh", g_recipes_dir,
-	                      name, version) >= sizeof(recipe_path))
+	/* The recipe is CPDL; there is no other kind (cix#569). */
+	if ((size_t)snprintf(cbs_path, sizeof(cbs_path), "%s/%s/%s/%s", g_recipes_dir, name, version,
+	                     PKG_RECIPE_CBS_FILE) >= sizeof(cbs_path) ||
+	    stat(cbs_path, &st) != 0)
 		return;
-	if (persist_read_file(recipe_path, &stored, &stored_len) != 0 || stored == NULL) {
-		/*
-		 * A CBS recipe (ADR-0305) reaches here because this function
-		 * only ever opens build.sh, so persist_read_file() fails for
-		 * one. Its approval is written by approve_cbs_artifact()
-		 * above, which is a different operation rather than the same
-		 * one with a different anchor: the approval goes into a
-		 * `metadata { }` block, the guard is an explain diff rather
-		 * than a line diff, and explain.json has to move with the
-		 * recipe or the approval is invisible to every build (#492).
-		 */
-		char cbs_path[PATH_MAX];
-		struct stat st;
-
-		if ((size_t)snprintf(cbs_path, sizeof(cbs_path), "%s/%s/%s/%s", g_recipes_dir, name,
-		                      version, PKG_RECIPE_CBS_FILE) < sizeof(cbs_path) &&
-		    stat(cbs_path, &st) == 0) {
-			approve_cbs_artifact(cbs_path, name, version, sha);
-			writeback_after_approval(name, version); /* ADR-0324: git learns it too */
-		}
-		return;
-	}
-
-	/* Already approved, by an operator or by a previous publish. */
-	if (strncmp(stored, "pkg_artifact_sha256=", 20) == 0 ||
-	    strstr(stored, "\npkg_artifact_sha256=") != NULL) {
-		free(stored);
-		return;
-	}
-
-	/*
-	 * Placed immediately after pkg_sha256=, which is where every recipe
-	 * in this set already carries it, so a human reading the file finds
-	 * it where they expect. Without that anchor there is nowhere
-	 * unambiguous to put it and the recipe is left alone.
-	 */
-	anchor = strstr(stored, "\npkg_sha256=\"");
-	if (anchor == NULL) {
-		logstore_write("cixd", "warn",
-		                "artifact push: %s@%s published but its recipe has no pkg_sha256= line to "
-		                "anchor an approval after -- add pkg_artifact_sha256 by hand or the "
-		                "artifact tier stays skipped",
-		                name, version);
-		free(stored);
-		return;
-	}
-	nl = strchr(anchor + 1, '\n');
-	if (nl == NULL) {
-		free(stored);
-		return;
-	}
-	head = (size_t)(nl - stored) + 1;
-
-	need = stored_len + strlen("pkg_artifact_sha256=\"\"\n") + strlen(sha) + 1;
-	updated = malloc(need);
-	if (updated == NULL) {
-		free(stored);
-		return;
-	}
-	memcpy(updated, stored, head);
-	w = snprintf(updated + head, need - head, "pkg_artifact_sha256=\"%s\"\n", sha);
-	memcpy(updated + head + (size_t)w, stored + head, stored_len - head);
-	updated[head + (size_t)w + (stored_len - head)] = '\0';
-
-	/* The self-check: exactly the rule an operator's POST is held to. */
-	if (!recipe_adds_only_artifact_sha256(stored, updated)) {
-		logstore_write("cixd", "warn",
-		                "artifact push: %s@%s published but writing its approval would have "
-		                "changed more than one line -- recipe left untouched",
-		                name, version);
-		free(stored);
-		free(updated);
-		return;
-	}
-
-	if ((size_t)snprintf(tmp_path, sizeof(tmp_path), "%s.approve", recipe_path) >= sizeof(tmp_path)) {
-		free(stored);
-		free(updated);
-		return;
-	}
-	fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-	if (fd >= 0) {
-		size_t total = strlen(updated);
-
-		w = write(fd, updated, total);
-		if (close(fd) == 0 && w >= 0 && (size_t)w == total && rename(tmp_path, recipe_path) == 0)
-			logstore_write("cixd", "info",
-			                "artifact push: %s@%s approved its own published artifact (%.16s...)",
-			                name, version, sha);
-		else
-			unlink(tmp_path);
-	}
-	free(stored);
-	free(updated);
+	approve_cbs_artifact(cbs_path, name, version, sha);
+	writeback_after_approval(name, version); /* ADR-0324: git learns it too */
 }
 
 void pkg_artifact_push_completed(int exit_status)
@@ -20812,7 +20115,7 @@ static const char *pkg_host_arch(void)
  * `suffix` is passed rather than derived from a package format,
  * because an ISO and its detached signature are published through
  * this same convention and are not package formats -- see
- * artifact_suffix() for the package side, which now calls here.
+ * artifact_suffix() for the package side.
  */
 void pkg_artifact_published_name(const char *name, const char *version, const char *suffix,
                                   char *out, size_t out_size)
@@ -20855,7 +20158,7 @@ static void pkg_artifact_build_request(const struct pkg_repository *r, const cha
 	 * ADR-0307: the extension comes from the format the recipe
 	 * declared, not from a constant. cix-cache already recognises
 	 * `.cixpkg` and `.cixpkg.minisig` in its own suffix table and
-	 * files them in the same package tier as a tarball, so this is a
+	 * files them in the package tier, so this is a
 	 * name change and not a protocol one -- read from that server's
 	 * src/store.c rather than assumed, because four bogus bug
 	 * reports have been filed against it from assumptions.
@@ -20865,9 +20168,16 @@ static void pkg_artifact_build_request(const struct pkg_repository *r, const cha
 		 * that function is the one definition of what a published
 		 * artifact is called, and the ISO publisher calls it too. */
 		char basename[PKG_NAME_MAX + PKG_VERSION_MAX + 64];
+		const char *suffix = artifact_suffix(format);
 
-		pkg_artifact_published_name(name, version, artifact_suffix(format), basename,
-		                             sizeof(basename));
+		/* A format nothing produces names no file (cix#569): the URL
+		 * is left empty, so the fetch or push that uses it fails. */
+		if (suffix == NULL) {
+			out_url[0] = '\0';
+			out_header[0] = '\0';
+			return;
+		}
+		pkg_artifact_published_name(name, version, suffix, basename, sizeof(basename));
 		snprintf(out_url, out_url_size, "%.*s/%s", (int)len, r->url, basename);
 	}
 	if (r->token[0] != '\0')
@@ -21004,8 +20314,14 @@ int pkg_artifact_push_is_enabled(void)
 static void artifact_sentinel_path(int chain_idx, const char *name, const char *version,
                                    const char *format, char *out, size_t out_size)
 {
-	snprintf(out, out_size, "%s/.artifact-c%d-%s-%s%s", g_sources_dir, chain_idx, name, version,
-	         artifact_suffix(format));
+	const char *suffix = artifact_suffix(format);
+
+	/* Empty for a format nothing produces (cix#569): nothing is fetched
+	 * to it, because pkg_artifact_build_request() names no URL either. */
+	out[0] = '\0';
+	if (suffix != NULL)
+		snprintf(out, out_size, "%s/.artifact-c%d-%s-%s%s", g_sources_dir, chain_idx, name,
+		         version, suffix);
 }
 
 /* ---- pkg/ redesign Part 4 (ADR-0123): image recipes + image-artifact fetch ---- */

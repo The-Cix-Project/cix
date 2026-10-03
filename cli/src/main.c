@@ -7,7 +7,6 @@
  * verify the daemon.
  */
 #include "console.h"
-#include "recipe_format.h"
 #include "httpclient.h"
 #include "version.h" /* CIX_BUILD_VERSION -- cixctl's own build, for the shell banner (#440) */
 /*
@@ -341,15 +340,14 @@ static const char USAGE_TEXT[] =
 	        "               set NAME ... | rm NAME  -- where built packages come from (ADR-0324):\n"
 	        "               mirrors tried in order, every copy verified, so order is speed and\n"
 	        "               never trust; push publishes this host's fresh builds there.\n"
-	        "  pkg recipe add --name=NAME --file=PATH [--format=shell|cbs]  -- publishes a\n"
+	        "  pkg recipe add --name=NAME --file=PATH [--source=NAME]  -- publishes a\n"
 	        "               new recipe version on this running system directly, no reinstall\n"
 	        "               needed (ADR-0040); an already-published (name,version) is\n"
-	        "               rejected, not overwritten (ADR-0107) -- bump the version to\n"
-	        "               publish a fix. The format comes from the filename: a .sh file is\n"
-	        "               a shell recipe, anything else CPDL (ADR-0305, cix#564), so\n"
-	        "               --format= is only needed for content held in a file not named\n"
-	        "               for what it is. --source= names the recipe source a new\n"
-	        "               package belongs to; with one source it is implied (ADR-0324)\n"
+	        "               rejected, not overwritten (ADR-0107) -- publish a new release\n"
+	        "               to fix one. The file is a CPDL build.cbs (ADR-0305); shell\n"
+	        "               recipes do not exist (cix#569). --source= names the recipe\n"
+	        "               source a new package belongs to; with one source it is\n"
+	        "               implied (ADR-0324)\n"
 	        "  pkg recipe show NAME [--version=VERSION]  -- print a recipe's own raw content,\n"
 	        "               omitted version resolves to the highest available\n"
 	        "  pkg recipe rm NAME [--version=VERSION]  -- omitted removes every version\n"
@@ -11636,7 +11634,7 @@ static int cmd_container_recipe_ls(const struct cix_client *c, int json_mode)
 
 /* --name= is the recipe's own name AND must match the "name" field
  * already inside --file='s own content (ADR-0151, mirroring
- * pkg_recipe_add()'s pkg_name= contract) -- unlike an image recipe,
+ * pkg_recipe_add()'s package-name contract) -- unlike an image recipe,
  * a deployment's content is a real POST /v1/containers body, so
  * it necessarily already carries its own name. */
 static int cmd_container_recipe_add(const struct cix_client *c, int json_mode, int argc,
@@ -15430,18 +15428,17 @@ static int cmd_pkg_recipes(const struct cix_client *c, int json_mode)
 	return emit(&r, json_mode, fmt_pkg_recipe_list);
 }
 
-/* ADR-0040: add or update a recipe on an already-running system, no
- * ISO rebuild/reinstall needed -- the real, ongoing way recipes get
- * onto a system. --name= is the lookup key (must match the .recipe
- * content's own pkg_name= field, validated server-side); --file= is a
- * local path to the .recipe file's content, read and embedded the
- * same way `run --file=` already stages container config files. */
+/* `cixctl pkg recipe add --name=NAME --file=PATH` -- publishes a new
+ * recipe version onto a running system. --name= is the lookup key (it
+ * must match the CPDL package name, validated server-side); --file= is
+ * a local path to the build.cbs content, read and embedded the same way
+ * `run --file=` stages container config files. There is no format to
+ * choose: a recipe is CPDL, and shell recipes do not exist (cix#569). */
 static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *file = NULL;
 	const char *source = NULL;
-	const char *format = NULL;
 	char *content;
 	size_t content_len;
 	int i;
@@ -15453,8 +15450,6 @@ static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int arg
 			name = argv[i] + 7;
 		else if (strncmp(argv[i], "--file=", 7) == 0)
 			file = argv[i] + 7;
-		else if (strncmp(argv[i], "--format=", 9) == 0)
-			format = argv[i] + 9;
 		else if (strncmp(argv[i], "--source=", 9) == 0)
 			source = argv[i] + 9;
 		else {
@@ -15463,35 +15458,7 @@ static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int arg
 		}
 	}
 	if (name == NULL || file == NULL) {
-		fprintf(stderr,
-		        "usage: cixctl pkg recipe add --name=NAME --file=PATH [--format=shell|cbs]\n"
-		        "       [--source=NAME]\n");
-		return 2;
-	}
-	/*
-	 * ADR-0305: a recipe's format is its filename, so the ordinary case
-	 * needs no flag -- publishing a build.cbs makes it a CBS recipe and
-	 * a build.sh makes it a shell one, exactly as the file is named on
-	 * disk and exactly as it will be stored on the host. The flag exists
-	 * for the one case the extension cannot answer: content held in a
-	 * file not named for what it is (a scratch path, a pipe staged to a
-	 * temporary). A wrong answer either way is refused by the daemon
-	 * rather than stored, because it validates with the parser the
-	 * format names.
-	 */
-	if (format == NULL) {
-		size_t flen = strlen(file);
-		const size_t slen = sizeof(PKG_RECIPE_SHELL_SUFFIX) - 1;
-
-		/* Only a file named .sh is shell; anything else is CPDL, the one
-		 * recipe language (ADR-0309), as the daemon reads an omitted
-		 * format since cix#564. PKG_RECIPE_SHELL_SUFFIX, not a literal:
-		 * the daemon names the shell file with the same constant. */
-		format = (flen >= slen && strcmp(file + flen - slen, PKG_RECIPE_SHELL_SUFFIX) == 0)
-		             ? "shell"
-		             : "cbs";
-	} else if (strcmp(format, "shell") != 0 && strcmp(format, "cbs") != 0) {
-		fprintf(stderr, "cixctl: --format= must be shell or cbs\n");
+		fprintf(stderr, "usage: cixctl pkg recipe add --name=NAME --file=PATH [--source=NAME]\n");
 		return 2;
 	}
 	if (read_local_file(file, &content, &content_len) != 0) {
@@ -15505,8 +15472,6 @@ static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int arg
 	jw_str(&w, name);
 	jw_key(&w, "content");
 	jw_str(&w, content);
-	jw_key(&w, "format");
-	jw_str(&w, format);
 	if (source != NULL) {
 		jw_key(&w, "source");
 		jw_str(&w, source);
@@ -15530,7 +15495,7 @@ static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int arg
 		cix_response_free(&r);
 		return 1;
 	}
-	printf("recipe '%s' added (%s)\n", name, format);
+	printf("recipe '%s' added\n", name);
 	cix_response_free(&r);
 	return 0;
 }

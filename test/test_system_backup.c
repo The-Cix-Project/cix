@@ -256,7 +256,7 @@ int main(void)
 	 * used to assume the pre-ADR-0107 flat <name>.recipe layout
 	 * (opendir(PKG_RECIPES_DIR) filtering a ".recipe" suffix directly),
 	 * which silently matched nothing at all once recipes moved to the
-	 * nested <name>/<version>/build.sh layout -- every entry in
+	 * nested <name>/<version>/build.cbs layout -- every entry in
 	 * PKG_RECIPES_DIR became a per-name subdirectory instead. A real
 	 * recipe added here, with its exact "<name>/<version>" backup key
 	 * and content asserted below, is what would have caught that. */
@@ -293,8 +293,6 @@ int main(void)
 		jw_str(&rw, "backuptestpkg");
 		jw_key(&rw, "content");
 		jw_str(&rw, recipe_body);
-		jw_key(&rw, "format");
-		jw_str(&rw, "cbs");
 		jw_obj_close(&rw);
 		rw.buf[rw.len] = '\0';
 
@@ -532,7 +530,7 @@ int main(void)
 	/* ADR-0120 regression coverage, restore side: a distinct (name,
 	 * version) key than the one added via POST /v1/pkg/recipes above,
 	 * to prove do_system_restore() itself (not just pkg_recipe_add())
-	 * writes to the real nested <name>/<version>/build.sh path -- the
+	 * writes to the real nested <name>/<version>/build.cbs path -- the
 	 * old restore code wrote a flat "<key>.recipe" file that nothing
 	 * in the version-keyed lookup path (find_recipe_path()) would ever
 	 * find again. */
@@ -546,8 +544,29 @@ int main(void)
 		jw_obj_open(&recipe_restore);
 		jw_key(&recipe_restore, "pkg_recipes");
 		jw_obj_open(&recipe_restore);
-		jw_key(&recipe_restore, "restoredpkg/2.0");
-		jw_str(&recipe_restore, "pkg_name=restoredpkg\npkg_version=2.0\n");
+		jw_key(&recipe_restore, "restoredpkg/2.0-1/build.cbs");
+		jw_str(&recipe_restore, "package \"restoredpkg\" {\n"
+		                        "    version \"2.0\"\n"
+		                        "    release 1\n"
+		                        "    format \"cixpkg\"\n"
+		                        "\n"
+		                        "    sources {\n"
+		                        "        main \"restoredpkg\" {\n"
+		                        "            url \"http://127.0.0.1:1/unreachable.tar.gz\"\n"
+		                        "            sha256 \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		                        "aaaaaaaaaaaa\"\n"
+		                        "        }\n"
+		                        "    }\n"
+		                        "\n"
+		                        "    build {\n"
+		                        "        run \"true\" {\n"
+		                        "        }\n"
+		                        "    }\n"
+		                        "\n"
+		                        "    install {\n"
+		                        "        mkdir \"${dest}/usr/share/restoredpkg\" parents\n"
+		                        "    }\n"
+		                        "}\n");
 		jw_obj_close(&recipe_restore);
 		jw_obj_close(&recipe_restore);
 		recipe_restore.buf[recipe_restore.len] = '\0';
@@ -562,10 +581,10 @@ int main(void)
 		cix_response_free(&r);
 		jw_free(&recipe_restore);
 
-		snprintf(expected_path, sizeof(expected_path), "%s/rebuildable/pkg/recipes/restoredpkg/2.0/build.sh",
+		snprintf(expected_path, sizeof(expected_path), "%s/rebuildable/pkg/recipes/restoredpkg/2.0-1/build.cbs",
 		         g_data_dir);
 		if (persist_read_file(expected_path, &on_disk, &on_disk_len) != 0 || on_disk == NULL ||
-		    strstr(on_disk, "pkg_name=restoredpkg") == NULL) {
+		    strstr(on_disk, "package \"restoredpkg\"") == NULL) {
 			fprintf(stderr,
 			        "FAIL: restored recipe not found at real nested path %s (ADR-0120 "
 			        "regression: restore wrote the old flat layout)\n",

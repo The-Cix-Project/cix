@@ -1,0 +1,47 @@
+# 0329 — Shell recipes and `.tar.gz` artifacts do not exist
+
+## Status
+
+Accepted, 2026-10-03, the owner's direction on cix#569: *"What are shell recepies, those should not exist, please deprecate them."* It supersedes [ADR-0309](0309-shell-recipes-are-history-the-shell-path-retires-with-its-last-dependent.md) clause 1 (published shell recipes stay, in the repository and on hosts) and the shell half of [ADR-0307](0307-a-packages-artifact-format-is-the-one-its-recipe-declares.md) clause 1 (a shell recipe publishes `.tar.gz` by construction). It finishes what [ADR-0328](0328-cix-produces-no-tarball.md) left open under "Not decided here". The One Build System Mandate in CLAUDE.md already said a recipe is CPDL and an artifact is `.cixpkg`; this is the change that makes the daemon agree.
+
+## Context
+
+ADR-0309 kept published shell recipes as history and retired only the shell *build* path, which went in `v2.57.344`. What remained in cixd was everything needed to *hold* a shell recipe and *consume* what one produced:
+
+- a line-scanning parser for `pkg_name=`/`pkg_version=`/… headers, used at publish, at sync and whenever a stored version was read;
+- a `format` field on `POST /v1/pkg/recipes`, choosing between `shell` and `cbs`;
+- an approval-only republish, the one in-place edit a shell recipe allowed, adding `pkg_artifact_sha256=`;
+- the `tar.gz` artifact format: its fetch suffix, its cache entries, and the extraction that installed one;
+- two-segment backup keys (`<name>/<version>`) that meant "a shell recipe".
+
+The reasons ADR-0309 gave for keeping shell recipes no longer apply. Measured on 192.168.15.95 and the LAN cache, 2026-10-03:
+
+- **Installed versions.** ADR-0309 counted 67 installed versions built from a shell recipe. Today there is one, `gcc@16.2.0-13`, in `cix-builder` and `kernel-builder`. `gcc-16.2.0-18`, built from CPDL, is in the LAN cache as a `.cixpkg`.
+- **Image pins.** The latest image recipes in cix-recipes pinned 55 versions that resolved to shell recipes. 53 moved to same-upstream CPDL revisions in cix-recipes `20139f2`. The other two are the `gcc` pins in `cix-builder` and `kernel-builder`.
+- **Release record.** The `cix` release recipes already retired with their artifacts (ADR-0313). Every shell recipe that ever existed stays in cix-recipes' git history, which is the record. A stored copy on a host is not a second one.
+- **Approval trust.** A shell recipe's approval vouched for a `.tar.gz`, which nothing will fetch any more (below).
+
+The store on .95 held 991 shell recipe versions against 805 CPDL ones. Nothing installed or pinned needs those 991 once the `gcc` pins move.
+
+## Decision
+
+**A recipe is CPDL and an artifact is `.cixpkg`. cixd holds and consumes nothing else.**
+
+1. **Publishing is CPDL only.** `POST /v1/pkg/recipes` has no `format` field. Content must satisfy `cbs explain --json`, and is stored as `<name>/<version>/build.cbs`. `parse_recipe()` reads only a `build.cbs`; the shell header parser is deleted. A sync reads only `recipes/package/*.cbs`.
+2. **An approval is never a republish.** The shell approval-only republish is removed. A CPDL approval arrives through `approve_cbs_artifact()` after this host builds and pushes (#492), or through a git sync refresh (ADR-0324). The sync status's `approved` counter only ever counted the removed path, so it is removed too. A git-carried approval was already counted as `refreshed`.
+3. **The only artifact format is `cixpkg`.** A recipe declaring anything else is refused at publish, as a CPDL `format "tar.gz"` already was. The fetch, the local cache, the cache hit, the push and the ISO seed all name `.cixpkg`, and each refuses an unknown format rather than defaulting to one. The `.tar.gz` extraction path is deleted.
+4. **What a host still holds is removed at startup.** `retire_shell_recipes()`, in `pkg_init()`, deletes every stored `build.sh`, and each version and name directory that leaves empty. `retire_targz_artifacts()`, in `pkg_cache_init()`, deletes every `*.tar.gz` and `*.tar.gz.minisig` in the local artifact cache. Only regular files with exactly those names are removed, and `rmdir()` refuses a directory that still holds anything, so no CPDL recipe is touched. One log line reports how many of each were removed, and how many removals failed.
+5. **A backup keys every recipe `<name>/<version>/build.cbs`.** A restore skips a two-segment key, a shell recipe from an older backup, and logs that it did.
+6. **The #494 artifact-name collision check is removed.** It refused a version whose artifact name another version already owned, which needed a version with no release (`1.25.0` beside `1.25.0-1`). CPDL always joins `version` and `release`, so with no shell recipe in the store that collision cannot occur.
+
+## Ordering
+
+Clause 4 deletes `gcc@16.2.0-13`'s recipe. `cix-builder` and `kernel-builder` follow their git recipe and converge (ADR-0320), so their `gcc` pins move to `16.2.0-18` in cix-recipes **before** a release carrying this change reaches a host. The image then installs the cached `.cixpkg` instead of a version with no recipe left to rebuild it from. On 2026-10-03 that waits for the 03:00 host roll that boots kernel 7.2.9 (#566), so that one nightly window does not change the kernel and the build images together.
+
+## Consequences
+
+- **The LAN cache's 452 `.tar.gz` artifacts become unreferenced.** No host will request one. Deleting them is an operation on the cache service, not on cixd, and is left to its operator.
+- **An older backup restores without its shell recipes.** They are skipped by name with a log line, not failed on. A backup is restored onto a host whose daemon would delete them at its next start anyway.
+- **A client still sending `format` sends a field the daemon does not read.** `cixctl` and the dashboard no longer send it.
+- **`mkbootroot` still stages `/usr/bin/tar` and `gzip`.** ADR-0328 found no exec of either left in `daemon/src`. Whether anything else in the control-plane root runs them, cbs included, is still not established, so they stay until that is measured.
+- **Image recipes were already JSON-only** (ADR-0311 clause 4, completed in cix#569 before this change). With this, no `.sh` recipe of any kind is read anywhere in cixd.

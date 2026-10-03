@@ -466,34 +466,15 @@ static int recipe_artifact_sha(const char *name, const char *version, char *out,
 	FILE *f;
 	int found = 0;
 
-	/*
-	 * ADR-0305: a recipe is a shell one or a CBS one, and which is
-	 * decided by the extension. Both are tried because the corpus
-	 * holds a mix and a package converts on its own schedule -- a
-	 * fixture that only knew build.sh would start failing the day the
-	 * package it reads converts, which is a failure with no
-	 * connection to what the test is checking.
-	 */
-	if (test_recipe_path("package", name, version, "sh", path, sizeof(path)) != 0)
+	/* The recipe is CPDL, the only kind there is (cix#569). */
+	if (test_recipe_path("package", name, version, "cbs", path, sizeof(path)) != 0)
 		return -1;
 	f = fopen(path, "r");
-	if (f == NULL) {
-		if (test_recipe_path("package", name, version, "cbs", path, sizeof(path)) != 0)
-			return -1;
-		f = fopen(path, "r");
-	}
 	if (f == NULL)
 		return -1;
 	while (fgets(line, sizeof(line), f) != NULL) {
 		const char *p;
 
-		/* Shell: pkg_artifact_sha256="<64 hex>" at the line start. */
-		if (line == strstr(line, "pkg_artifact_sha256=\"")) {
-			p = line + strlen("pkg_artifact_sha256=\"");
-			snprintf(out, out_size, "%.64s", p);
-			found = 1;
-			break;
-		}
 		/* CBS: "artifact_sha256" "<64 hex>" inside the metadata
 		 * block, so indented rather than at the line start. */
 		p = strstr(line, "\"artifact_sha256\"");
@@ -554,33 +535,15 @@ static int copy_tree_via_cp(const char *src, const char *dst)
 }
 
 /*
- * Which extension this floor artifact actually has, and its full path.
- * Returns the extension, or NULL with out holding the .tar.gz path the
- * caller should name in its error.
- *
- * Both exist and both are current: everything published before ADR-0307
- * is a .tar.gz and everything since is a .cixpkg, which is why the
- * daemon's own cache_artifact_path_existing() tries the two in this
- * order rather than assuming. This used to hardcode .tar.gz, so the
- * floor could hold nothing published recently -- including `cbs`,
- * without which a composed build environment cannot build a CPDL recipe
- * at all, and test_kmod_build's fixture became one in v2.57.263
- * ("declared build tool \"cbs\" is not installed anywhere",
- * probe-cix-testreport@16 on 192.168.15.95, 2026-09-24).
+ * This floor artifact's path: <name>-<version>.cixpkg, the only format
+ * there is (cix#569). Returns its extension, or NULL with out holding
+ * the path the caller should name in its error.
  */
 static const char *floor_artifact_find(const char *artifacts_dir, const char *name,
                                         const char *version, char *out, size_t out_size)
 {
-	static const char *const exts[] = { "cixpkg", "tar.gz" };
-	size_t i;
-
-	for (i = 0; i < sizeof(exts) / sizeof(exts[0]); i++) {
-		snprintf(out, out_size, "%s/%s-%s.%s", artifacts_dir, name, version, exts[i]);
-		if (access(out, R_OK) == 0)
-			return exts[i];
-	}
-	snprintf(out, out_size, "%s/%s-%s.tar.gz", artifacts_dir, name, version);
-	return NULL;
+	snprintf(out, out_size, "%s/%s-%s.cixpkg", artifacts_dir, name, version);
+	return access(out, R_OK) == 0 ? "cixpkg" : NULL;
 }
 
 int test_image_fixture_seed_floor_packages(const char *data_dir, const char *artifacts_dir)
@@ -605,14 +568,14 @@ int test_image_fixture_seed_floor_packages(const char *data_dir, const char *art
 		ext = floor_artifact_find(artifacts_dir, name, version, src, sizeof(src));
 		if (ext == NULL) {
 			fprintf(stderr,
-			        "floor package %s@%s is not present at %s (nor .cixpkg) -- fetch the "
+			        "floor package %s@%s is not present at %s -- fetch the "
 			        "real artifacts before running this test; they are not fabricated "
 			        "here\n",
 			        name, version, src);
 			return -1;
 		}
 		if (recipe_artifact_sha(name, version, want, sizeof(want)) != 0) {
-			fprintf(stderr, "recipe for %s@%s has no pkg_artifact_sha256 to verify against\n",
+			fprintf(stderr, "recipe for %s@%s has no artifact_sha256 to verify against\n",
 			        name, version);
 			return -1;
 		}
@@ -625,7 +588,7 @@ int test_image_fixture_seed_floor_packages(const char *data_dir, const char *art
 		}
 
 		/* Into the cache: pkg_cache_has() is a stat(), so a present
-		 * tarball makes this install a cache hit -- no build
+		 * .cixpkg makes this install a cache hit -- no build
 		 * environment, no network, exactly as on a fresh host. */
 		snprintf(dst, sizeof(dst), "%s/%s-%s.%s", cache_dir, name, version, ext);
 		if (copy_tree_via_cp(src, dst) != 0)
@@ -644,16 +607,10 @@ int test_image_fixture_seed_floor_packages(const char *data_dir, const char *art
 		         version);
 		if (test_mkdir_p(recipe_dst_dir) != 0)
 			return -1;
-		if (test_recipe_path("package", name, version, "sh", recipe_src,
+		if (test_recipe_path("package", name, version, "cbs", recipe_src,
 		                     sizeof(recipe_src)) != 0)
 			return -1;
-		snprintf(dst, sizeof(dst), "%s/build.sh", recipe_dst_dir);
-		if (access(recipe_src, R_OK) != 0) {
-			if (test_recipe_path("package", name, version, "cbs", recipe_src,
-			                     sizeof(recipe_src)) != 0)
-				return -1;
-			snprintf(dst, sizeof(dst), "%s/build.cbs", recipe_dst_dir);
-		}
+		snprintf(dst, sizeof(dst), "%s/build.cbs", recipe_dst_dir);
 		if (copy_tree_via_cp(recipe_src, dst) != 0)
 			return -1;
 	}
@@ -667,21 +624,12 @@ int test_image_fixture_clear_floor_cache(const char *data_dir)
 
 	snprintf(cache_dir, sizeof(cache_dir), "%s/rebuildable/pkg/cache", data_dir);
 	for (i = 0; i < sizeof(floor_packages) / sizeof(floor_packages[0]); i++) {
-		static const char *const exts[] = { "cixpkg", "tar.gz" };
 		char path[PATH_MAX];
-		size_t j;
 
-		/* Both, because the seed writes whichever the artifact has
-		 * and this has to leave no cache hit behind either way -- a
-		 * missed one makes the very next install silently succeed
-		 * from cache, which is the opposite of what a caller clearing
-		 * the floor wants. */
-		for (j = 0; j < sizeof(exts) / sizeof(exts[0]); j++) {
-			snprintf(path, sizeof(path), "%s/%s-%s.%s", cache_dir,
-			         floor_packages[i].name, floor_packages[i].version, exts[j]);
-			if (unlink(path) != 0 && errno != ENOENT)
-				return -1;
-		}
+		snprintf(path, sizeof(path), "%s/%s-%s.cixpkg", cache_dir, floor_packages[i].name,
+		         floor_packages[i].version);
+		if (unlink(path) != 0 && errno != ENOENT)
+			return -1;
 	}
 	return 0;
 }

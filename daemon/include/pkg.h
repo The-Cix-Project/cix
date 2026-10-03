@@ -125,16 +125,14 @@
 #define PKG_URL_MAX 512
 #define PKG_SHA256_MAX 65
 /*
- * The artifact format a package's recipe declares (ADR-0307). CPDL has
- * exactly two legal values and a shell recipe has no field at all, so
- * this holds "cixpkg" or "tar.gz" and nothing else -- sized for the
- * longer of the two plus its terminator, with room to spare rather
- * than to the byte, since a third value would come from CBS's grammar
- * and not from us.
+ * The artifact format a package's recipe declares (ADR-0307). CPDL
+ * has two legal values and only "cixpkg" is built or installed
+ * (cix#569); a recipe declaring the other is refused. Sized with room
+ * to spare, since a further value would come from CBS's grammar and
+ * not from us.
  */
 #define PKG_ARTIFACT_FORMAT_MAX 16
 #define PKG_ARTIFACT_FORMAT_CIXPKG "cixpkg"
-#define PKG_ARTIFACT_FORMAT_TARGZ "tar.gz"
 /*
  * Stall guards every fetch this daemon performs carries (#285, #410).
  *
@@ -175,15 +173,11 @@
 #define PKG_BUILD_CAPS_MAX 128
 
 #define PKG_DEPENDS_MAX 256
-/* ADR-0176: optional pkg_changelog= -- one short, single-line, free-text
- * summary of what changed in this specific published version (a commit
- * subject line, not a multi-paragraph release note -- extract_line_value()
- * only reads up to the closing quote or a newline, whichever comes
- * first, so a real multi-line changelog isn't representable here by
- * construction, matching the "short" scope this was explicitly asked
- * for). Empty for every recipe published before this field existed --
- * never backfilled, no retroactive edit of ~80 existing recipes for a
- * field that's optional by design. */
+/* ADR-0176: an optional one-line summary of what changed in this
+ * published version, read from a CPDL recipe's metadata { "changelog" }
+ * (cix-build-system#161). A value longer than this is refused at publish
+ * with both limits named (#493), never truncated. Empty when a recipe
+ * declares none. */
 #define PKG_CHANGELOG_MAX 512
 #define PKG_ERROR_MAX 256
 /* ADR-0159 Phase B: a space-joined string of bare CONFIG_* symbol
@@ -387,31 +381,6 @@ enum pkg_error {
 	                        * package at all) for the same reason
 	                        * PKG_ERR_TARGET_IMAGE_NOT_FOUND is: collapsing the two reports
 	                        * "no such thing" for something the operator can plainly see. */
-	/*
-	 * #494: a DIFFERENT version of this package already owns the
-	 * artifact name this one would publish under.
-	 *
-	 * The artifact server treats a missing release as release 1, so
-	 * `wget@1.25.0` and `wget@1.25.0-1` both resolve to
-	 * wget-1.25.0-1-x86_64.tar.gz -- measured, both names return 200
-	 * with an identical body. The second version builds correctly and
-	 * then cannot publish: the push is refused 409 because the name is
-	 * immutable and taken, so no approval can ever be written for it
-	 * and the package rebuilds from source on every install, on every
-	 * host, forever.
-	 *
-	 * Its own code, and not PKG_ERR_DUPLICATE: this version is NOT
-	 * already published, and saying so sends the reader to look for a
-	 * recipe that is not there. What is taken is the artifact name,
-	 * which is a different object with a different fix -- pick another
-	 * release number, which is free at publish time and impossible
-	 * afterwards.
-	 *
-	 * Refused here rather than at the artifact push because that push
-	 * happens after a build has already succeeded, when the version is
-	 * published and immutable and nothing can be done about it.
-	 */
-	PKG_ERR_ARTIFACT_NAME_TAKEN,
 	/*
 	 * ADR-0320: applying an image recipe would move a pinned package to
 	 * an older version than the image has, and neither the request nor
@@ -628,7 +597,7 @@ int pkg_upstream_refresh_running(void);
  */
 int pkg_discover_author_next(void);
 
-/* Scans pkg_dir/recipes/<name>/<version>/build.sh (ADR-0107's
+/* Scans pkg_dir/recipes/<name>/<version>/build.cbs (ADR-0107's
  * version-keyed layout) and writes one {name,version,depends} object
  * per (name,version) pair that parses -- metadata only, never
  * sourced/executed. Multiple entries may share the same name at
@@ -763,6 +732,9 @@ enum pkg_error pkg_seed_preflight(char *err, size_t err_size);
  * A no-op when no sweep ran.
  */
 void pkg_log_explain_sweep(void);
+/* cix#569: what retire_shell_recipes() and the cache sweep removed at
+ * startup, logged once the log store is up. Silent when nothing was. */
+void pkg_log_shell_retirement(void);
 
 /*
  * The image rebuilds this host has queued but not started (#236).
@@ -867,7 +839,7 @@ enum pkg_error pkg_artifact_publish_resolve_in(const char *name, const char *ima
 enum pkg_error pkg_recipe_get(const char *name, const char *version, struct json_writer *w);
 
 /*
- * Adds a new recipe version at pkg_dir/recipes/<name>/<version>/build.sh,
+ * Adds a new recipe version at pkg_dir/recipes/<name>/<version>/build.cbs,
  * where <name>/<version> both come from content's own pkg_name=/
  * pkg_version= fields (the same "filename and pkg_name= agree"
  * invariant this always enforced, now extended to the version
@@ -883,34 +855,17 @@ enum pkg_error pkg_recipe_get(const char *name, const char *version, struct json
  * PKG_ERR_INVALID_NAME / PKG_ERR_INVALID_RECIPE / PKG_ERR_DUPLICATE /
  * PKG_ERR_PERSIST_FAILED on failure.
  *
- * format says which language content is written in, and therefore
- * which filename it is stored under (ADR-0305): PKG_RECIPE_SHELL is a
- * build.sh, PKG_RECIPE_CBS a build.cbs in CPDL 0.1. A version holds
- * one or the other and never both -- publishing the second format for
- * a version that already has one is PKG_ERR_DUPLICATE, for the same
- * One Source of Truth reason a republish is.
- *
- * For PKG_RECIPE_CBS the validation is `cbs explain --json` rather
- * than parse_recipe(), and its output is persisted as explain.json
- * beside the recipe. Two extra refusals apply, each because CPDL 0.1
- * cannot express what this daemon would need: a recipe declaring any
- * build capability is refused (explain reports a count, not the
- * names -- cix-build-system#162), and there is no artifact-approval
- * edit, since a build.cbs has nowhere to carry a checksum
- * (cix-build-system#161).
+ * content is CPDL: validated with `cbs explain --json`, whose output
+ * is persisted as explain.json beside the build.cbs (ADR-0305). Shell
+ * recipes do not exist (cix#569).
  */
 /*
- * The recipe file inside one published version directory, whichever
- * language it is written in (ADR-0305): build.sh for a shell recipe,
- * build.cbs for a CBS one. Fills out_path; out_created (the file's
+ * The recipe file inside one published version directory: its
+ * build.cbs (ADR-0305). Fills out_path; out_created (the file's
  * mtime, which ADR-0107 immutability makes a real "first published"
- * timestamp) and out_filename (the bare "build.sh"/"build.cbs", which
- * is what tells a caller the format) are both optional.
- *
- * Returns -1 when the directory holds neither, and ALSO when it holds
- * both -- a version that could be read two ways has no single answer
- * to what its build will do, and this function refuses to be the place
- * that picks one.
+ * timestamp) and out_filename (the bare "build.cbs") are both
+ * optional. Returns -1 when the directory holds no build.cbs: shell
+ * recipes do not exist (cix#569).
  *
  * Exported rather than kept private to pkg.c because the system backup
  * walks the same directories, and a second copy of this rule in main.c
@@ -920,17 +875,7 @@ enum pkg_error pkg_recipe_get(const char *name, const char *version, struct json
 int pkg_recipe_file_in(const char *version_dir, char *out_path, size_t out_path_size,
                         long *out_created, const char **out_filename);
 
-enum pkg_recipe_format {
-	/*
-	 * Zero deliberately, so a caller that forgets the argument gets
-	 * the format that has always existed rather than the new one.
-	 */
-	PKG_RECIPE_SHELL = 0,
-	PKG_RECIPE_CBS = 1
-};
-
-enum pkg_error pkg_recipe_add(const char *name, const char *content,
-                               enum pkg_recipe_format format, int *out_was_approval);
+enum pkg_error pkg_recipe_add(const char *name, const char *content);
 
 /*
  * ADR-0324: records every package name in the recipe store as offered
@@ -1698,8 +1643,8 @@ enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd);
 /*
  * Called once the curl child from pkg_sync_start() exits. A non-zero
  * exit_status is a fetch failure, recorded and nothing else happens.
- * On success: extracts the archive, walks recipes/package/<name>/
- * <version>/build.sh within it, and pkg_recipe_add()s every one -- an
+ * On success: extracts the archive, walks recipes/package/
+ * <name>@<version>.cbs within it, and publishes every one -- an
  * already-published (name,version) comes back PKG_ERR_DUPLICATE and is
  * silently skipped (merge semantics: sync only ever adds, never
  * deletes or overwrites, so a locally-added-only recipe is always

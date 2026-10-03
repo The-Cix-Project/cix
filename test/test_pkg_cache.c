@@ -225,11 +225,11 @@ static int stage_source_tarball(const char *scratch_dir, const char *name, const
  * CBS recipe always produces `.cixpkg` (ADR-0307), so a cached or
  * pushed artifact is `<name>-1.0-1[-<arch>].cixpkg`, never `.tar.gz`.
  *
- * write_recipe() below stays, shell and all. The two fixtures that
- * still use it -- `artifacttest` and `cix` -- SERVE a prebuilt
- * `tar.gz` artifact and are installed from it without ever building,
- * so they never reach the refused path (cix#527, whose description had
- * this split backwards until the v2.57.340 selftest measured it).
+ * The two fixtures served from the artifact tier -- `artifacttest`
+ * and `cix` -- are CPDL too, published by publish_approved_recipe()
+ * with their .cixpkg approved in metadata. They used to be shell
+ * recipes written straight into the store, serving a .tar.gz; shell
+ * recipes and tar.gz artifacts no longer exist (cix#569).
  */
 static int publish_cpdl_recipe(const struct cix_client *c, const char *name, const char *version,
                                const char *source_url, const char *sha256,
@@ -279,8 +279,6 @@ static int publish_cpdl_recipe(const struct cix_client *c, const char *name, con
 	jw_str(&w, name);
 	jw_key(&w, "content");
 	jw_str(&w, content);
-	jw_key(&w, "format");
-	jw_str(&w, "cbs");
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -289,6 +287,75 @@ static int publish_cpdl_recipe(const struct cix_client *c, const char *name, con
 	if (!ok)
 		fprintf(stderr, "      POST /v1/pkg/recipes %s@%s: status=%d %.200s\n", name, version,
 		        r.status, r.body != NULL ? r.body : "");
+	cix_response_free(&r);
+	jw_free(&w);
+	return ok ? 0 : -1;
+}
+
+/*
+ * A CPDL recipe whose only route to `installed` is its approved
+ * artifact: version 1.0 release 1, a source that can never be fetched,
+ * and `metadata { "artifact_sha256" }` naming the .cixpkg the fixture
+ * serves. Published through the API, so the daemon derives its
+ * identity with `cbs explain` exactly as for any other recipe.
+ */
+static int publish_approved_recipe(const struct cix_client *c, const char *name,
+                                   const char *artifact_sha256)
+{
+	char content[2048];
+	struct json_writer w;
+	struct cix_response r;
+	int ok;
+
+	snprintf(content, sizeof(content),
+	         "package \"%s\" {\n"
+	         "    version \"1.0\"\n"
+	         "    release 1\n"
+	         "    format \"cixpkg\"\n"
+	         "\n"
+	         "    sources {\n"
+	         "        main \"%s\" {\n"
+	         "            url \"%s\"\n"
+	         "            sha256 \"%s\"\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    requires {\n"
+	         "        build {\n"
+	         "            tool \"bash\"\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    metadata {\n"
+	         "        \"artifact_sha256\" \"%s\"\n"
+	         "    }\n"
+	         "\n"
+	         "    build {\n"
+	         "        run \"true\" {\n"
+	         "        }\n"
+	         "    }\n"
+	         "\n"
+	         "    install {\n"
+	         "        mkdir \"${dest}/usr/share/%s\" parents\n"
+	         "    }\n"
+	         "}\n",
+	         name, name, test_http_src("/nonexistent/source.tar"), artifact_sha256,
+	         artifact_sha256, name);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "content");
+	jw_str(&w, content);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	memset(&r, 0, sizeof(r));
+	ok = (cix_client_request(c, "POST", "/v1/pkg/recipes", w.buf, &r) == 0 && r.status == 204);
+	if (!ok)
+		fprintf(stderr, "      POST /v1/pkg/recipes %s: status=%d %.200s\n", name, r.status,
+		        r.body != NULL ? r.body : "");
 	cix_response_free(&r);
 	jw_free(&w);
 	return ok ? 0 : -1;
@@ -409,37 +476,6 @@ static void print_last_build_log(const struct cix_client *c)
 		fprintf(stderr, "%.*s\n", (int)r.body_len, r.body);
 	fprintf(stderr, "    --- end build log ---\n");
 	cix_response_free(&r);
-}
-
-static int write_recipe(const char *pkg_state_dir, const char *name, const char *version,
-                         const char *source_url, const char *source_sha256,
-                         const char *artifact_sha256)
-{
-	char name_dir[256], path[300];
-	FILE *f;
-
-	snprintf(name_dir, sizeof(name_dir), "%s/recipes/%s", pkg_state_dir, name);
-	run_cmd("mkdir -p '%s'", name_dir);
-	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
-	run_cmd("mkdir -p '%s'", path);
-	snprintf(path, sizeof(path), "%s/recipes/%s/%s/build.sh", pkg_state_dir, name, version);
-	f = fopen(path, "w");
-	if (f == NULL)
-		return -1;
-	fprintf(f, "pkg_name=%s\n", name);
-	fprintf(f, "pkg_version=%s\n", version);
-	fprintf(f, "pkg_source=%s\n", source_url);
-	fprintf(f, "pkg_sha256=%s\n", source_sha256);
-	fprintf(f, "pkg_depends=\"\"\n");
-	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils binutils\"\n");
-	if (artifact_sha256 != NULL && artifact_sha256[0] != '\0')
-		fprintf(f, "pkg_artifact_sha256=%s\n", artifact_sha256);
-	fprintf(f, "\npkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
-	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
-	           "\"$PKG_DESTDIR/usr/bin/%s\"\n}\n",
-	        name);
-	fclose(f);
-	return 0;
 }
 
 /*
@@ -759,16 +795,16 @@ int main(void)
 		CHECK(cache_json_long(r.json, "entry_count") == 0, "cache is empty after clear");
 	cix_response_free(&r);
 
-	/* --- scenario 7: network artifact-fetch tier -- a recipe with a
-	 * declared pkg_artifact_sha256, an intentionally-broken pkg_source,
+	/* --- scenario 7: network artifact-fetch tier -- a recipe with an
+	 * approved artifact_sha256, an intentionally-broken source,
 	 * and a real artifact server: install must succeed via the
 	 * artifact, never touching the broken source at all. --- */
 	{
 		char artifact_stage_dir[PATH_MAX];
 		char artifact_bin_dir[PATH_MAX];
 		char artifact_c[PATH_MAX], artifact_bin[PATH_MAX];
-		char artifact_tarball[PATH_MAX];
-		char artifact_sha[128];
+		char artifact_pkg[PATH_MAX], cix_pkg[PATH_MAX];
+		char artifact_sha[128], cix_sha[128];
 		int ok = 1;
 
 		snprintf(artifact_stage_dir, sizeof(artifact_stage_dir), "%s/artifact-serve", scratch_dir);
@@ -793,17 +829,19 @@ int main(void)
 			ok = 0;
 
 		if (ok) {
-			snprintf(artifact_tarball, sizeof(artifact_tarball),
-			         "%s/artifacttest-1.0-%s.tar.gz", artifact_stage_dir,
-			         host_arch());
-			if (run_cmd("tar -C '%s/stage' -czf '%s' .", artifact_stage_dir, artifact_tarball) !=
-			    0)
+			/* A .cixpkg written by cbs, the only artifact format there
+			 * is (cix#569), named <name>-<version>-<release>-<arch>. */
+			snprintf(artifact_pkg, sizeof(artifact_pkg), "%s/artifacttest-1.0-1-%s.cixpkg",
+			         artifact_stage_dir, host_arch());
+			if (run_cmd("cbs package '%s/stage' --name artifacttest --version 1.0 --release 1 "
+			            "--arch %s --output '%s' >/dev/null",
+			            artifact_stage_dir, host_arch(), artifact_pkg) != 0)
 				ok = 0;
 		}
-		if (ok && compute_file_sha256(artifact_tarball, artifact_sha, sizeof(artifact_sha)) != 0)
+		if (ok && compute_file_sha256(artifact_pkg, artifact_sha, sizeof(artifact_sha)) != 0)
 			ok = 0;
 
-		CHECK(ok, "stage artifact-server fixture (compiled binary + tarball)");
+		CHECK(ok, "stage artifact-server fixture (compiled binary + cixpkg)");
 
 		if (ok) {
 			http_pid = start_http_server(artifact_stage_dir);
@@ -839,14 +877,8 @@ int main(void)
 				cix_response_free(&r);
 			}
 
-			CHECK(write_recipe(g_pkg_state_dir, "artifacttest", "1.0",
-			                    test_http_src("/nonexistent/artifacttest-1.0.tar"), artifact_sha,
-			                    artifact_sha) == 0,
-			      "write artifacttest recipe (broken source, real artifact checksum)");
-			/* Note: pkg_source's own sha256 is deliberately set to the
-			 * ARTIFACT's checksum too, harmlessly unused -- the source
-			 * URL itself points at a file that can never be fetched, so
-			 * only the artifact tier can possibly succeed here. */
+			CHECK(publish_approved_recipe(&client, "artifacttest", artifact_sha) == 0,
+			      "publish artifacttest (unfetchable source, approved artifact)");
 
 			memset(&r, 0, sizeof(r));
 			CHECK(cix_client_request(&client, "POST", "/v1/pkg/install",
@@ -902,16 +934,18 @@ int main(void)
 					    cache_json_long(r.json, "started_generation");
 				cix_response_free(&r);
 
-				/* The same bytes, published under the name the daemon
-				 * will ask for: <base>/<name>-<version>-<arch>.tar.gz. */
-				CHECK(run_cmd("cp '%s' '%s/cix-1.0-%s.tar.gz'", artifact_tarball,
-				               artifact_stage_dir, host_arch()) == 0,
-				      "publish the cix artifact under its own name");
+				/* The same tree, packaged as `cix` under the name the
+				 * daemon will ask for: <base>/<name>-<version>-<arch>.cixpkg. */
+				snprintf(cix_pkg, sizeof(cix_pkg), "%s/cix-1.0-1-%s.cixpkg",
+				         artifact_stage_dir, host_arch());
+				CHECK(run_cmd("cbs package '%s/stage' --name cix --version 1.0 --release 1 "
+				              "--arch %s --output '%s' >/dev/null",
+				              artifact_stage_dir, host_arch(), cix_pkg) == 0 &&
+				          compute_file_sha256(cix_pkg, cix_sha, sizeof(cix_sha)) == 0,
+				      "package the cix artifact under its own name");
 
-				CHECK(write_recipe(g_pkg_state_dir, "cix", "1.0",
-				                    test_http_src("/nonexistent/cix-1.0.tar"), artifact_sha,
-				                    artifact_sha) == 0,
-				      "write a cix recipe served only by the artifact tier");
+				CHECK(publish_approved_recipe(&client, "cix", cix_sha) == 0,
+				      "publish a cix recipe served only by the artifact tier");
 
 				memset(&r, 0, sizeof(r));
 				CHECK(cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
@@ -1164,7 +1198,7 @@ int main(void)
 					 * pkg_artifact_cache_path() ->
 					 * cache_artifact_path_existing(), a reader whose
 					 * fallback when nothing exists is
-					 * PKG_ARTIFACT_FORMAT_TARGZ -- and it only ever
+					 * .tar.gz -- and it only ever
 					 * runs when nothing exists. The recipe's declared
 					 * format never reached the call, so converting
 					 * hbpush's recipe moved the VERSION here (1.0 ->

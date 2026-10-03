@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, and implemented on 192.168.15.95 at `v2.57.232`. Stage 3 of the four-stage flip
+Accepted, and implemented on 192.168.15.95 at `v2.57.232`. The shell half of clause 1 is superseded by [ADR-0329](0329-shell-recipes-and-tar-gz-artifacts-do-not-exist.md), 2026-10-03: shell recipes and `.tar.gz` artifacts do not exist, so the only format is `cixpkg`. Stage 3 of the four-stage flip
 [ADR-0305](0305-a-recipes-format-is-its-filename.md) set out, and the
 first stage to change what is written into the shared artifact cache
 rather than only how a build is driven.

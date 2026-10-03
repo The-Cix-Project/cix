@@ -273,14 +273,14 @@ static int build_seed_fixture(const char *workdir, char *out_root, size_t out_ro
 		return -1;
 
 	/* #505: the corpus is its own repository and flat. */
-	if (test_recipe_path("package", "glibc", SEED_LIBC_VERSION, "sh", src, sizeof(src)) != 0)
+	if (test_recipe_path("package", "glibc", SEED_LIBC_VERSION, "cbs", src, sizeof(src)) != 0)
 		return -1;
-	snprintf(dst, sizeof(dst), "%s/build.sh", recipe_dir);
+	snprintf(dst, sizeof(dst), "%s/build.cbs", recipe_dir);
 	if (test_image_fixture_copy_file(src, dst) != 0)
 		return -1;
 
-	snprintf(src, sizeof(src), "build-inputs/floor-artifacts/glibc-%s.tar.gz", SEED_LIBC_VERSION);
-	snprintf(dst, sizeof(dst), "%s/glibc-%s.tar.gz", artifact_dir, SEED_LIBC_VERSION);
+	snprintf(src, sizeof(src), "build-inputs/floor-artifacts/glibc-%s.cixpkg", SEED_LIBC_VERSION);
+	snprintf(dst, sizeof(dst), "%s/glibc-%s.cixpkg", artifact_dir, SEED_LIBC_VERSION);
 	if (access(src, R_OK) != 0) {
 		fprintf(stderr,
 		        "the seed needs the real glibc artifact at %s -- fetch the floor artifacts "
@@ -305,12 +305,15 @@ static int extract_seed_loader(const char *workdir, char *out_path, size_t out_p
 	snprintf(dir, sizeof(dir), "%s/seed_loader", workdir);
 	if (fixture_mkdir_p(dir) != 0)
 		return -1;
+	/* `cbs extract` reads a .cixpkg (ADR-0307) and refuses a
+	 * destination that exists, so the tree goes one level down. */
 	snprintf(cmd, sizeof(cmd),
-	         "tar xzf 'build-inputs/floor-artifacts/glibc-%s.tar.gz' -C '%s' './%s' 2>/dev/null",
-	         SEED_LIBC_VERSION, dir, PKG_IMAGE_LOADER_REL);
+	         "cbs extract 'build-inputs/floor-artifacts/glibc-%s.cixpkg' --into '%s/tree' "
+	         ">/dev/null 2>&1",
+	         SEED_LIBC_VERSION, dir);
 	if (system(cmd) != 0)
 		return -1;
-	snprintf(out_path, out_path_len, "%s/%s", dir, PKG_IMAGE_LOADER_REL);
+	snprintf(out_path, out_path_len, "%s/tree/%s", dir, PKG_IMAGE_LOADER_REL);
 	return access(out_path, R_OK) == 0 ? 0 : -1;
 }
 

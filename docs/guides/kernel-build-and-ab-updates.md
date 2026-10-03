@@ -34,7 +34,7 @@ The build runs the ordinary kernel sequence against that config — `allnoconfig
 
 When `--wait` returns with `state: "installed"`, the finished `bzImage` is at that job's `artifact_path` (`GET /pkg/hostbuild/kernel`), alongside a `lib/modules/<kernelrelease>/` tree in the same artifact directory. `mkbootroot`'s `<modules-dir>`/`<kmod-bin-dir>` arguments (see [`installing.md`](installing.md#building-the-iso)) stage both into a control-plane root, so `cixd`'s boot-time `modprobe` has something to load.
 
-`build-inputs/bzImage`, which the installer ISO and the boot tests take as an input, is the same kernel: take it out of the `kernel` package artifact a Cix host already published to the cache (`tar xzf kernel-<ver>.tar.gz ./bzImage`) rather than building one anywhere else.
+`build-inputs/bzImage`, which the installer ISO and the boot tests take as an input, is the same kernel: take it out of the `kernel` package artifact a Cix host already published to the cache (`cbs extract kernel-<ver>-x86_64.cixpkg --into DIR`, then take the `bzImage` from DIR) rather than building one anywhere else.
 
 **Need a driver that isn't in the curated `=m` set?** ([ADR-0159](../adr/0159-api-driven-kernel-module-management.md) Phase B) `cixctl kmod-build --symbol=CONFIG_DUMMY --wait` is the same `pkg hostbuild kernel` call, with a repeatable `--symbol=` that merges extra `CONFIG_*` symbols into the curated config, each forced to `=m`. See [`docs/api/README.md`](../api/README.md#building-an-extra-kernel-module-adr-0159-phase-b) for the design. Applying the result is an ordinary kernel update (Step 2); there is no same-boot way to add a module the curated set did not build.
 

@@ -9539,10 +9539,9 @@ paths:
         anything on disk changes. Recipe versions are immutable once published: an
         already-published (name, version) pair is 409 Conflict, never a silent
         overwrite -- fixing a mistake means bumping the version and publishing again.
-        Two formats are accepted, and format says which: a shell recipe (build.sh) or
-        a CBS recipe in CPDL (build.cbs, ADR-0305). A version may hold one or the
-        other, never both -- publishing the second format for a version that already
-        has one is 409, for the same One Source of Truth reason a republish is.
+        A recipe is CPDL (build.cbs, ADR-0305) and nothing else: shell recipes do not
+        exist (cix#569), and a daemon carrying that change deletes any it still holds
+        at startup, with a log line naming how many.
       operationId: addPkgRecipe
       x-cix-permission: packages:write
       x-cix-expose: [cli, web]
@@ -9559,26 +9558,11 @@ paths:
                 content:
                   type: string
                   description: >
-                    The full text of the recipe. For format "cbs" (the default) that is a
-                    CPDL 1.0 document -- a single package block declaring version, release,
-                    format, sources and requires, with up to five phases. For format "shell"
-                    it is a build.sh file; a new shell revision is refused (ADR-0309 clause 4),
-                    and "shell" survives only so a stored shell recipe can be re-offered (409
-                    duplicate) or given its artifact approval.
-                format:
-                  type: string
-                  enum: [cbs, shell]
-                  default: cbs
-                  description: >
-                    Which recipe language content is written in, and therefore which filename
-                    it is stored under: "cbs" -> build.cbs, "shell" -> build.sh (ADR-0305 --
-                    a recipe's format is its filename, because a filename cannot disagree with
-                    itself). Omitted means "cbs", the one recipe language (ADR-0309); until
-                    cix#564 it meant "shell", which made every format-less publish fail.
-                    This field is a routing hint that is verified immediately rather than
-                    trusted: "cbs" content must satisfy `cbs explain --json` and "shell"
-                    content must parse as a shell recipe, so a body whose format disagrees
-                    with its content is refused with 400 and never becomes a stored file.
+                    The full text of the recipe: a CPDL document (ADR-0305) -- a single
+                    package block declaring version, release, format, sources and requires,
+                    with up to five phases. Validated with `cbs explain --json` before
+                    anything is stored. Shell recipes do not exist (cix#569); the `format`
+                    request field that once chose between them is gone.
                 source:
                   type: string
                   description: >
@@ -9595,9 +9579,9 @@ paths:
           description: Recipe version published
         "400":
           description: >
-            name/content missing, name invalid, format not one of shell/cbs, or content
-            failed to parse in the declared format / its own declared name doesn't match name.
-            For format "cbs" this includes any CPDL validation error -- the diagnostic names
+            name/content missing, name invalid, or content
+            failed `cbs explain` / its own declared name doesn't match name. This
+            includes any CPDL validation error -- the diagnostic names
             the CPDL error code (e.g. CPDL-E3001) and the line it was raised on.
 
 
@@ -9622,8 +9606,8 @@ paths:
             package already declares. An approval names one byte sequence produced by one
             build and is never carried forward (Build Provenance Mandate); a duplicate means
             it describes bytes this version did not produce. The message names the version
-            that already holds it. This is a 400 and not the 409 #494 gives a duplicate
-            artifact NAME, because the recipe's own content is what is wrong -- the remedy
+            that already holds it. This is a 400 and not a 409, because the recipe's own
+            content is what is wrong -- the remedy
             is to delete the line and let the build earn its own approval (ADR-0307
             clause 5), not to pick a different version number.
           content:
@@ -9632,19 +9616,7 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: >
-            This exact (name, version) is already published -- versions are immutable. Also
-            returned when the version exists in the OTHER format: a version holds a build.sh
-            or a build.cbs, never both (ADR-0305).
-
-
-            And (#494) when a DIFFERENT version of this package already publishes under the
-            same artifact name. The artifact server reads a missing release as release 1, so
-            `1.25.0` and `1.25.0-1` are one object there: both versions would build and only
-            the first could ever publish, leaving the second to rebuild from source on every
-            install with no approval possible. Refused here because choosing another release
-            number is free now and impossible once the version is published. The message
-            differs from the immutability one, and the daemon log names the other version and
-            the shared artifact name.
+            This exact (name, version) is already published -- versions are immutable.
 
 
             And (ADR-0324) when the package belongs to a source other than the one named, when
@@ -9656,7 +9628,7 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500":
           description: >
-            Validated but writing the recipe file to disk failed. For format "cbs" this also
+            Validated but writing the recipe file to disk failed. This also
             covers a failure to persist the derived explain.json beside it, which is written
             in the same operation because every later read uses it instead of re-running the
             parser (ADR-0305).
@@ -9668,10 +9640,9 @@ paths:
   /pkg/recipes/{name}:
     get:
       summary: >
-        One recipe version's own {name,version,format,depends,content,created_at} -- the
+        One recipe version's own {name,version,depends,content,created_at} -- the
         raw recipe text too, unlike GET /pkg/recipes' list-view metadata-only shape.
-        content is whichever file holds that version, and format says which language it
-        is in: a shell build.sh or a CBS build.cbs in CPDL (ADR-0305).
+        content is that version's build.cbs, in CPDL (ADR-0305).
         Powers the web dashboard's per-package Recipe tab (view, and edit-then-publish
         as a new version through POST /pkg/recipes). An optional ?version= query
         parameter selects a specific published version; omitted resolves to the
@@ -12200,7 +12171,7 @@ paths:
         rooted on a named build image instead, and that field is retired
         (ADR-0304, issue #482), because testing it first meant a hostbuild
         never read its own declared build tools at all. The named recipe MAY
-        declare pkg_depends=, which is carried onto the entry and never
+        declare runtime requires, which are carried onto the entry and never
         resolved here (ADR-0303, issue #465): resolution installs a closure
         into an image and a hostbuild has none. Subject to the same v1
         single-job-in-flight constraint as /pkg/install (they share one job
@@ -15126,7 +15097,7 @@ components:
       in: path
       required: true
       description: >
-        A recipe's name (its pkg_name= field, and the {name}/ directory
+        A recipe's name (its CPDL package name, and the {name}/ directory
         under pkg/recipes/, ADR-0107). Unlike PkgName, this has no
         "{name}@{image}" compound form -- a recipe is not tracked
         per-image, so an "@" is simply rejected as an invalid name.
@@ -16392,17 +16363,11 @@ components:
 
             Keyed `<name>/<version>` under ADR-0107's version-keyed
             layout; this said "keyed by package name" from before that
-            layout existed. A CBS recipe (ADR-0305) takes a third
-            segment naming its file, `<name>/<version>/build.cbs`,
-            because the filename is what tells a restore which language
-            it is holding. A shell recipe deliberately keeps the bare
-            two-segment key rather than gaining a `/build.sh`: an older
-            daemon rejects any key it cannot read as `<name>/<version>`
-            and rejects the whole document when it does, so making
-            every key three segments would have cost every recipe in a
-            backup restored onto the other boot slot. The
-            incompatibility therefore arrives only for a host that
-            actually has a CBS recipe to lose.
+            layout existed. Every key is three segments,
+            `<name>/<version>/build.cbs` (ADR-0305): the filename is
+            what a restore checks. A two-segment key is a shell recipe
+            from a backup taken before cix#569; a restore skips it and
+            logs that it did, since shell recipes no longer exist.
         site_config:
           type: string
           description: >
@@ -20647,7 +20612,7 @@ components:
         depends:
           type: string
           description: >
-            Raw pkg_depends= value from the recipe: a whitespace-separated
+            The recipe's runtime requires, as a whitespace-separated
             list of other recipe names. Real and acted on -- POST
             /pkg/install and /pkg/update-all both recursively resolve and
             install any of these not already satisfied in the target
@@ -20663,39 +20628,15 @@ components:
             refusal that used to reject such a recipe outright.
             For a CBS recipe (build.cbs) this value is derived from
             `requires { runtime { package "..." } }` (ADR-0305).
-        language:
-          type: string
-          enum: [shell, cbs]
-          description: >
-            Which language this published version is written in, and therefore which
-            file holds it: "shell" -> build.sh, "cbs" -> build.cbs in CPDL 1.0
-            (ADR-0305). Not a property a recipe declares -- it IS the filename, so it
-            cannot disagree with what the daemon will actually run.
-
-
-            Called `format` until ADR-0307, which gave this subsystem a second and
-            genuinely different notion of format -- `artifact_format` below, what the
-            recipe declares it PUBLISHES. Two meanings for one key reads as a bug, so
-            this took the word its own description already used. A clean rename with
-            no alias; the request field on POST /pkg/recipes still spells it `format`,
-            because there it selects the language and nothing else is in scope to
-            collide with.
         artifact_format:
           type: string
-          enum: [cixpkg, "tar.gz"]
+          enum: [cixpkg]
           description: >
-            What this version publishes (ADR-0307). A CBS recipe DECLARES it -- CPDL
-            requires exactly one `format` declaration per package -- and the daemon
-            reads it from the derived explain document rather than assuming, so that
-            a recipe declaring "tar.gz" can be refused at publish: `cbs build` cannot
-            execute one ("standalone builds require cixpkg"). A shell recipe has no
-            such field and is "tar.gz" permanently and by construction.
-
-
-            One version of one package is one byte sequence in one format. The same
-            version is never published twice in two formats, which is what keeps the
-            two from being two ways to ship a package rather than a property of which
-            recipe built it.
+            What this version publishes (ADR-0307): always "cixpkg". A CPDL recipe
+            declares it -- CPDL requires exactly one `format` declaration per package
+            -- and the daemon reads it from the derived explain document, so a recipe
+            declaring anything else is refused at publish rather than failing at build
+            time. Shell recipes, which published "tar.gz", no longer exist (cix#569).
         changelog:
           type: string
           nullable: true
@@ -20730,7 +20671,7 @@ components:
           properties:
             content:
               type: string
-              description: The full text of the build.sh file, never sourced/executed by the daemon.
+              description: The full text of the build.cbs file (CPDL), never executed by the daemon itself.
 
     ImageRecipe:
       type: object
@@ -21092,17 +21033,10 @@ components:
           type: integer
           description: >
             Recipe versions NEWLY ADDED by the most recent completed sync -- a
-            (name, version) that did not exist here before. Does NOT include an
-            approval applied to an already-published version; that is counted in
-            "approved" (#404), so a sync that only propagates approvals reports
+            (name, version) that did not exist here before. An approval git carries
+            for an already-published version is counted in "refreshed", so a sync
+            that only propagates approvals reports
             added: 0.
-        approved:
-          type: integer
-          description: >
-            Already-published recipe versions to which the sync applied a
-            pkg_artifact_sha256 approval -- the one in-place edit ADR-0107
-            permits. Split from "added" so an approval is never miscounted as a
-            new recipe (#404).
         skipped:
           type: integer
           description: >
@@ -21172,7 +21106,7 @@ components:
           description: What the most recent sync did, per source, in list order.
           items:
             type: object
-            required: [name, fetched, added, approved, skipped, divergent, refreshed, held, failed, error]
+            required: [name, fetched, added, skipped, divergent, refreshed, held, failed, error]
             properties:
               name:
                 type: string
@@ -21180,8 +21114,6 @@ components:
                 type: boolean
                 description: False when the fetch or unpack failed; the source keeps what it offered before.
               added:
-                type: integer
-              approved:
                 type: integer
               skipped:
                 type: integer
@@ -21502,8 +21434,8 @@ components:
         name:
           type: string
           description: >
-            Must match a published <name>/<version>/build.sh's own pkg_name=. Its
-            pkg_depends are resolved and installed first automatically
+            Must match a published <name>/<version>/build.cbs's own package name. Its
+            requires are resolved and installed first automatically
             (already-installed dependencies are skipped; a circular or unresolvable
             dependency is a 400).
         image:
@@ -21606,7 +21538,7 @@ components:
         depends:
           type: string
           description: >
-            What this entry declared in its recipe's pkg_depends= -- what the
+            What this entry declared in its recipe's runtime requires -- what the
             installed thing needs in order to RUN, recorded as it was when this
             entry was built (ADR-0302 captures it once, at fetch time).
 

@@ -6,6 +6,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Shell recipes and `.tar.gz` artifacts do not exist (#569, ADR-0329)
+
+The owner's direction of 2026-10-03: *"What are shell recepies, those should not exist, please deprecate them."* ADR-0309 had kept published shell recipes as history once the shell build path went. On 192.168.15.95 that history was 991 stored versions against 805 CPDL ones, and one installed version still came from one (`gcc@16.2.0-13`).
+
+- **Publishing is CPDL only.** `POST /v1/pkg/recipes` has no `format` field. Content must satisfy `cbs explain --json` and is stored as `build.cbs`. The shell header parser is deleted, and a sync reads only `.cbs` package recipes. `GET /v1/pkg/recipes` no longer reports `language`. `cixctl pkg recipe add` loses `--format=`.
+- **The only artifact format is `cixpkg`.** The `.tar.gz` fetch, cache and extraction paths are deleted. Every place that names an artifact refuses an unknown format rather than defaulting to one.
+- **A host removes what it still holds, once, at startup.** Stored `build.sh` recipes, and `*.tar.gz` / `*.tar.gz.minisig` in the local artifact cache, are deleted, with one log line giving the counts.
+- **An approval is never a republish.** The shell approval-only republish is removed. A CPDL approval comes from `approve_cbs_artifact()` after a push (#492), or from a git sync refresh (ADR-0324). The sync status's `approved` counter counted only the removed path, so it is gone; a git-carried approval was already reported as `refreshed`.
+- **Backups key every recipe `<name>/<version>/build.cbs`.** A restore skips a two-segment (shell) key and logs it.
+- **The #494 artifact-name collision check is removed.** It needed a version with no release, which CPDL cannot express.
+- **Deploy order:** the `gcc` pins in `cix-builder` and `kernel-builder` move from `16.2.0-13` to the cached `16.2.0-18` in cix-recipes before a release carrying this reaches a host, since the startup sweep deletes `-13`'s recipe.
+- Docs: ADR-0329 (supersedes ADR-0309 clause 1 and the shell half of ADR-0307 clause 1), `openapi.yaml` and `docs/api/README.md` (recipe publish, recipe detail, sync status, backup, and the package-manager and approval sections, which still described shell fields), `writing-recipes.md` (rewritten CPDL-only), `cli-reference.md`, `kernel-build-and-ab-updates.md` and CLAUDE.md (a kernel artifact is extracted with `cbs extract`).
+- Tests: `test_pkg_recipe_approval` is deleted (it tested the shell approval republish). `test_pkg`, `test_pkg_cache`, `test_installer`, `test_system_backup`, `test_catalogue` and the image fixture use CPDL recipes and `.cixpkg` artifacts only, and no test sends `format`.
+
 ### Image recipes reach a host again, as JSON only (#569, ADR-0311)
 
 ADR-0311 made image recipes JSON on 2026-09-25, and the daemon gained a JSON parser. But the recipe sync went on matching only `.sh` image recipes. So no `.json` image recipe ever reached a host: 192.168.15.95 held `cix-builder` at 6.1.0, its last `.sh` revision, while cix-recipes had 6.1.4. Measured 2026-10-03.

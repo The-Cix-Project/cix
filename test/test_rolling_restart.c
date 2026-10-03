@@ -268,8 +268,6 @@ static int publish_rollsvc_recipe(const struct cix_client *c, const char *versio
 	jw_str(&w, "rollsvc");
 	jw_key(&w, "content");
 	jw_str(&w, rollsvc_recipe_text(version, tarball_path, sha256));
-	jw_key(&w, "format");
-	jw_str(&w, "cbs");
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -610,8 +608,6 @@ int main(void)
 			jw_str(&w, "rollsvc");
 			jw_key(&w, "content");
 			jw_str(&w, content);
-			jw_key(&w, "format");
-			jw_str(&w, "cbs");
 			jw_obj_close(&w);
 			w.buf[w.len] = '\0';
 			snprintf(body, sizeof(body), "%s", w.buf);
@@ -745,8 +741,6 @@ int main(void)
 		jw_str(&w, "rollsvc");
 		jw_key(&w, "content");
 		jw_str(&w, content);
-		jw_key(&w, "format");
-		jw_str(&w, "cbs");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		snprintf(body, sizeof(body), "%s", w.buf);

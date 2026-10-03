@@ -81,7 +81,7 @@ static void test_build_and_fixed_point(void)
 
 	put("recipes/package/zlib@1.3.2-12.cbs", "package \"zlib\" {}\n");
 	put("recipes/package/acl@2.3.2-1.cbs", "package \"acl\" {}\n");
-	put("recipes/image/jumpbox@1.0.0.sh", "image\n");
+	put("recipes/image/jumpbox@1.0.0.json", "{}\n");
 	put("recipes/deployment/dns-1@1.2.0.json", "{}\n");
 	put("docs/keys/cix-release.pub", "untrusted comment: k\nRWQ\n");
 	put("recipes/README.md", "not something a sync takes\n");

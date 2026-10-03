@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Builds on [ADR-0305](0305-a-recipes-format-is-its-filename.md) (two recipe languages), [ADR-0307](0307-a-packages-artifact-format-is-the-one-its-recipe-declares.md) (whose retirement query, "no image manifest resolving any package to a shell revision", this ADR applies to the build path) and [ADR-0308](0308-recipes-are-their-own-repository-flat.md) (the corpus is its own repository).
+Accepted. Clause 1 (published shell recipes stay) is superseded by [ADR-0329](0329-shell-recipes-and-tar-gz-artifacts-do-not-exist.md), 2026-10-03: shell recipes do not exist. Builds on [ADR-0305](0305-a-recipes-format-is-its-filename.md) (two recipe languages), [ADR-0307](0307-a-packages-artifact-format-is-the-one-its-recipe-declares.md) (whose retirement query, "no image manifest resolving any package to a shell revision", this ADR applies to the build path) and [ADR-0308](0308-recipes-are-their-own-repository-flat.md) (the corpus is its own repository).
 
 ## Context
 

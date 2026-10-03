@@ -3876,7 +3876,7 @@ static void do_system_backup(struct json_writer *w)
 	/* Every recipe version on disk, not just currently-installed
 	 * packages -- they're cheap, and the operator may want them all
 	 * preserved. ADR-0107's version-keyed layout (<name>/<version>/
-	 * build.sh, ADR-0120's filename) needs a two-level directory walk,
+	 * build.cbs) needs a two-level directory walk,
 	 * not the flat single-level opendir() this used before that
 	 * migration landed -- that old code silently stopped matching
 	 * anything the moment recipes moved to per-name subdirectories
@@ -3929,28 +3929,9 @@ static void do_system_backup(struct json_writer *w)
 					continue;
 				if (persist_read_file(script_path, &buf, &len) != 0 || buf == NULL)
 					continue;
-				/*
-				 * The filename segment appears ONLY for a CBS recipe, and
-				 * that asymmetry is deliberate rather than tidy.
-				 *
-				 * A shell recipe keeps the exact two-segment key ADR-0120
-				 * emitted, byte for byte, because a backup has to stay
-				 * restorable by an OLDER daemon -- this platform keeps two
-				 * boot slots precisely so it can go back. An older
-				 * do_system_restore() rejects any key it cannot read as
-				 * <name>/<version>, and it rejects the whole document when
-				 * it does, so one three-segment key would cost every recipe
-				 * in the backup rather than the one it described.
-				 *
-				 * So the incompatibility arrives only once a host actually
-				 * has a CBS recipe to lose, instead of immediately, for
-				 * every box, in exchange for nothing.
-				 */
-				if (strcmp(filename, PKG_RECIPE_SHELL_FILE) == 0)
-					snprintf(key, sizeof(key), "%s/%s", de->d_name, vde->d_name);
-				else
-					snprintf(key, sizeof(key), "%s/%s/%s", de->d_name, vde->d_name,
-					         filename);
+				/* <name>/<version>/build.cbs (ADR-0305): the recipe is
+				 * CPDL, the only kind there is (cix#569). */
+				snprintf(key, sizeof(key), "%s/%s/%s", de->d_name, vde->d_name, filename);
 				jw_key(w, key);
 				jw_str(w, buf);
 				free(buf);
@@ -4111,17 +4092,15 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 			 * '/', so counting separators is both necessary and
 			 * sufficient.
 			 *
-			 * The third segment is the recipe's own filename, which
-			 * is what tells this restore which language it is
-			 * holding: ADR-0305 makes the filename the format, so
-			 * naming the file names the format rather than adding a
-			 * second thing to keep in step. Only the two names the
-			 * daemon writes are accepted, because this string is
+			 * The third segment is the recipe's own filename, and
+			 * only build.cbs is accepted, because this string is
 			 * about to become a path component.
 			 *
-			 * A two-segment key is an older backup and restores as a
-			 * shell recipe, which is what it was -- the only recipe
-			 * language that existed when it was taken.
+			 * A two-segment key holds a shell recipe: backups wrote
+			 * them that way until cix#569. Shell recipes do not exist
+			 * now, so such a key passes validation and is skipped at
+			 * restore, logged, rather than failing every other recipe
+			 * and setting in the backup with it.
 			 */
 			if (slash == NULL || slash == key || slash[1] == '\0') {
 				json_free(root);
@@ -4132,13 +4111,11 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 			{
 				const char *second = strchr(slash + 1, '/');
 
-				if (second != NULL &&
-				    (strcmp(second + 1, PKG_RECIPE_SHELL_FILE) != 0 &&
-				     strcmp(second + 1, PKG_RECIPE_CBS_FILE) != 0)) {
+				if (second != NULL && strcmp(second + 1, PKG_RECIPE_CBS_FILE) != 0) {
 					json_free(root);
 					snprintf(out_errmsg, out_errmsg_size,
-					         "pkg_recipes key %s names a recipe file that is neither "
-					         PKG_RECIPE_SHELL_FILE " nor " PKG_RECIPE_CBS_FILE,
+					         "pkg_recipes key %s names a recipe file other than "
+					         PKG_RECIPE_CBS_FILE,
 					         key);
 					return 400;
 				}
@@ -4227,12 +4204,17 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 			 */
 			{
 				const char *second = strchr(slash + 1, '/');
-				int version_len = second != NULL ? (int)(second - (slash + 1))
-				                                 : (int)strlen(slash + 1);
 
-				filename = second != NULL ? second + 1 : PKG_RECIPE_SHELL_FILE;
+				if (second == NULL) {
+					logstore_write("cixd", "warn",
+					               "system restore: skipped recipe %s -- a shell recipe, "
+					               "and shell recipes do not exist (cix#569)",
+					               key);
+					continue;
+				}
+				filename = second + 1;
 				snprintf(version_dir, sizeof(version_dir), "%s/%.*s/%.*s", PKG_RECIPES_DIR,
-				         (int)(slash - key), key, version_len, slash + 1);
+				         (int)(slash - key), key, (int)(second - (slash + 1)), slash + 1);
 			}
 			if (persist_mkdir_p(version_dir) != 0) {
 				json_free(root);
@@ -4256,8 +4238,7 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 			 * which also proves the restored recipe is still readable
 			 * by the engine this host actually has (ADR-0305).
 			 */
-			if (strcmp(filename, PKG_RECIPE_CBS_FILE) == 0 &&
-			    pkg_recipe_rederive_identity(path) != PKG_OK) {
+			if (pkg_recipe_rederive_identity(path) != PKG_OK) {
 				json_free(root);
 				snprintf(out_errmsg, out_errmsg_size,
 				         "restored recipe %s could not be read by this host's cbs", key);
@@ -20630,20 +20611,7 @@ static void respond_pkg_recipe_error(int fd, enum pkg_error err)
 		 * an already-published (name,version) pair is a real client
 		 * error, not the old flat-file upsert-by-name behavior. */
 		respond_error(fd, 409, "Conflict",
-		              "this recipe version is already published -- versions are immutable, bump pkg_version= to publish a fix");
-		break;
-	case PKG_ERR_ARTIFACT_NAME_TAKEN:
-		/*
-		 * #494. Deliberately NOT the message above: this version is
-		 * not published, and telling the author it is sends them
-		 * looking for a recipe that does not exist. What is taken is
-		 * the artifact name, and the fix -- a different release
-		 * number -- is free right now and impossible once this
-		 * version is published. The daemon log names the other
-		 * version and the shared artifact name.
-		 */
-		respond_error(fd, 409, "Conflict",
-		              "another version of this package already publishes under the same artifact name (a missing release reads as release 1) -- choose a different release number; see the daemon log for which version and which name");
+		              "this recipe version is already published -- versions are immutable, publish a new release to fix it");
 		break;
 	case PKG_ERR_PERSIST_FAILED:
 		/*
@@ -21128,7 +21096,6 @@ static void recipe_commit_respond(int fd, enum pkg_error perr, char *err, size_t
 	case PKG_ERR_NOT_FOUND:
 	case PKG_ERR_DUPLICATE:
 	case PKG_ERR_DIVERGENT:
-	case PKG_ERR_ARTIFACT_NAME_TAKEN:
 		respond_error(fd, 409, "Conflict", err);
 		return;
 	case PKG_ERR_INVALID_NAME:
@@ -24271,7 +24238,6 @@ static void handle_pkg_recipe_add(int fd, const char *body, size_t body_len)
 	struct json_value *root;
 	const char *name;
 	const char *content;
-	enum pkg_recipe_format format;
 	enum pkg_error perr;
 	char source[PKG_SOURCE_NAME_MAX];
 	int choose = 0;
@@ -24287,37 +24253,6 @@ static void handle_pkg_recipe_add(int fd, const char *body, size_t body_len)
 		json_free(root);
 		respond_error(fd, 400, "Bad Request", "name and content both required");
 		return;
-	}
-
-	/*
-	 * ADR-0305: which recipe language `content` is written in.
-	 * Omitted means "cbs", the one recipe language (ADR-0309; cix#564): it
-	 * used to mean "shell", for clients that predated CBS, and since a new
-	 * shell revision is refused that made every format-less publish -- the
-	 * dashboard's recipe form among them (cix#560) -- fail. "shell" is still
-	 * accepted when named, because pkg_recipe_add() answers a stored shell
-	 * recipe re-offered or approved (ADR-0309 clause 4) and refuses a new one.
-	 *
-	 * A JSON object has no filename, which is why this field exists at
-	 * all -- and it is a routing hint that is VERIFIED rather than
-	 * trusted: pkg_recipe_add() validates the content with the parser
-	 * the format names (`cbs explain --json` for cbs, parse_recipe()
-	 * for shell), so a body whose format disagrees with its content is
-	 * refused and never becomes a stored file. From then on the
-	 * filename is the format and nothing asks again.
-	 */
-	{
-		const char *fmt = json_as_string(json_object_get(root, "format"));
-
-		if (fmt != NULL && strcmp(fmt, "shell") == 0) {
-			format = PKG_RECIPE_SHELL;
-		} else if (fmt == NULL || strcmp(fmt, "cbs") == 0) {
-			format = PKG_RECIPE_CBS;
-		} else {
-			json_free(root);
-			respond_error(fd, 400, "Bad Request", "format must be \"shell\" or \"cbs\"");
-			return;
-		}
 	}
 
 	/*
@@ -24341,7 +24276,7 @@ static void handle_pkg_recipe_add(int fd, const char *body, size_t body_len)
 		}
 	}
 
-	perr = pkg_recipe_add(name, content, format, NULL);
+	perr = pkg_recipe_add(name, content);
 	if (perr == PKG_OK && choose) {
 		char item[PKG_SOURCE_ITEM_MAX];
 		char err[256];
@@ -33275,6 +33210,7 @@ static int cixd_main(int argc, char **argv)
 	 * did and says it here, where an operator can actually see it.
 	 */
 	pkg_log_explain_sweep();
+	pkg_log_shell_retirement();
 	/* #562: hostauth_init() runs before the log store opens, too. */
 	hostauth_log_carried_sessions();
 	/*

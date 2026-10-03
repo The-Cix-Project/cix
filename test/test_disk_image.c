@@ -572,9 +572,9 @@ int test_disk_image_require_kernel(void)
 	        "`make clean` used to delete it (#191). The quickest correct way to\n"
 	        "put it back is to take the one a Cix host already built, out of the\n"
 	        "kernel package artifact:\n"
-	        "    curl -H 'Authorization: Bearer <token>' -o /tmp/k.tar.gz \\\n"
-	        "         <artifact-cache>/kernel-<version>.tar.gz\n"
-	        "    tar xzf /tmp/k.tar.gz -C /tmp ./bzImage && cp /tmp/bzImage %s\n"
+	        "    curl -o /tmp/k.cixpkg <artifact-cache>/kernel-<version>-x86_64.cixpkg\n"
+	        "    cbs extract /tmp/k.cixpkg --into /tmp/k\n"
+	        "and copy the bzImage it holds to %s.\n"
 	        "Building one locally also works, but the cached artifact is the\n"
 	        "kernel this platform actually shipped.\n",
 	        BZIMAGE_PATH, BZIMAGE_PATH);

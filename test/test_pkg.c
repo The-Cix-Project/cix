@@ -490,8 +490,6 @@ static int write_recipe(const struct cix_client *c, const char *name, const char
 	jw_str(&w, name);
 	jw_key(&w, "content");
 	jw_str(&w, content);
-	jw_key(&w, "format");
-	jw_str(&w, "cbs");
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -714,8 +712,6 @@ static char *cpdl_publish_body(const char *name, const char *content, const char
 	jw_str(&w, name);
 	jw_key(&w, "content");
 	jw_str(&w, content);
-	jw_key(&w, "format");
-	jw_str(&w, "cbs");
 	if (source != NULL) {
 		jw_key(&w, "source");
 		jw_str(&w, source);
@@ -1926,115 +1922,6 @@ int main(void)
 		ok = 0;
 	}
 	cix_response_free(&r);
-
-	/*
-	 * 2b. ADR-0309 clause 4: publishing a NEW shell revision is
-	 * refused, and an ALREADY-PUBLISHED one still answers duplicate.
-	 *
-	 * Both halves matter and the second is the one that can silently
-	 * break. `recipe-sync` re-offers every file in the corpus every
-	 * six hours and relies on duplicates being cheap -- its last run
-	 * on 192.168.15.95 counted `added=28 skipped=379`. If the refusal
-	 * were placed before the immutability check rather than after it,
-	 * each of those 379 skips would become an error, every window,
-	 * and the only symptom would be a number in `pkg sync-status`
-	 * that nobody reads. So this asserts 400 for the new one and 409
-	 * for the stored one, which pins the check's position rather than
-	 * merely its existence.
-	 *
-	 * Both calls name "format": "shell". An omitted format means cbs
-	 * since cix#564, which would refuse this content as unparseable CPDL
-	 * before it reached the clause 4 check whose position this pins.
-	 */
-	{
-		static const char shell_body[] = "pkg_name=oldshell\n"
-		                                 "pkg_version=1.0\n"
-		                                 "pkg_source=https://192.0.2.1/x.tar.gz\n"
-		                                 "pkg_sha256="
-		                                 "0000000000000000000000000000000000000000000000000000"
-		                                 "000000000000\n"
-		                                 "pkg_build() {\n\ttrue\n}\n"
-		                                 "pkg_install() {\n\ttrue\n}\n";
-		static const char stored_body[] = "pkg_name=storedshell\n"
-		                                  "pkg_version=1.0\n"
-		                                  "pkg_source=https://192.0.2.1/x.tar.gz\n"
-		                                  "pkg_sha256="
-		                                  "0000000000000000000000000000000000000000000000000000"
-		                                  "000000000000\n"
-		                                  "pkg_build() {\n\ttrue\n}\n"
-		                                  "pkg_install() {\n\ttrue\n}\n";
-		char body[2048];
-		char path[PATH_MAX];
-		struct json_writer sw;
-
-		jw_init(&sw);
-		jw_obj_open(&sw);
-		jw_key(&sw, "name");
-		jw_str(&sw, "oldshell");
-		jw_key(&sw, "content");
-		jw_str(&sw, shell_body);
-		jw_key(&sw, "format");
-		jw_str(&sw, "shell");
-		jw_obj_close(&sw);
-		sw.buf[sw.len] = '\0';
-		snprintf(body, sizeof(body), "%s", sw.buf);
-		jw_free(&sw);
-
-		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/pkg/recipes", body, &r) != 0 ||
-		    r.status != 400) {
-			fprintf(stderr,
-			        "FAIL: publishing a new shell recipe expected 400 (ADR-0309 clause 4), "
-			        "got %d %.200s\n",
-			        r.status, r.body != NULL ? r.body : "");
-			ok = 0;
-		}
-		cix_response_free(&r);
-
-		/* It must not have landed: a refused publish leaves nothing. */
-		snprintf(path, sizeof(path), "%s/recipes/oldshell/1.0/build.sh", g_pkg_state_dir);
-		if (access(path, F_OK) == 0) {
-			fprintf(stderr, "FAIL: refused shell recipe was stored anyway at %s\n", path);
-			ok = 0;
-		}
-
-		/*
-		 * Now the same content for a version that IS in the store,
-		 * put there the way every shell fixture in this file does it
-		 * -- straight into the recipe directory, never through the
-		 * publish endpoint. Re-offering it must be a duplicate, not
-		 * the clause 4 refusal.
-		 */
-		if (test_seed_shell_recipe(g_pkg_state_dir, "storedshell", "1.0", stored_body) != 0) {
-			fprintf(stderr, "FAIL: could not seed the storedshell recipe\n");
-			ok = 0;
-		} else {
-			jw_init(&sw);
-			jw_obj_open(&sw);
-			jw_key(&sw, "name");
-			jw_str(&sw, "storedshell");
-			jw_key(&sw, "content");
-			jw_str(&sw, stored_body);
-			jw_key(&sw, "format");
-			jw_str(&sw, "shell");
-			jw_obj_close(&sw);
-			sw.buf[sw.len] = '\0';
-			snprintf(body, sizeof(body), "%s", sw.buf);
-			jw_free(&sw);
-
-			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "POST", "/v1/pkg/recipes", body, &r) != 0 ||
-			    r.status != 409) {
-				fprintf(stderr,
-				        "FAIL: re-publishing a STORED shell recipe expected 409 duplicate "
-				        "(the clause 4 refusal must sit after the immutability check, or "
-				        "recipe-sync turns 379 skips into 379 errors), got %d %.200s\n",
-				        r.status, r.body != NULL ? r.body : "");
-				ok = 0;
-			}
-			cix_response_free(&r);
-		}
-	}
 
 	/* 3. real install: greeter -> 202, fetching */
 	memset(&r, 0, sizeof(r));
@@ -4270,7 +4157,7 @@ int main(void)
 	 * hand-written files on disk like every fixture above -- the actual
 	 * fix for "a fresh install has no recipes and no way to add one
 	 * short of a full OS reinstall". POST validates before touching
-	 * disk (name/pkg_name= mismatch, and outright malformed content,
+	 * disk (name mismatch, and outright malformed content,
 	 * must both fail with nothing written); a valid recipe added this
 	 * way must be genuinely installable, not just accepted; upsert
 	 * (adding the same name again) must actually replace the content;
@@ -4311,109 +4198,17 @@ int main(void)
 		jw_str(&w, "wrongname");
 		jw_key(&w, "content");
 		jw_str(&w, body);
-		jw_key(&w, "format");
-		jw_str(&w, "cbs");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
 		    r.status != 400) {
-			fprintf(stderr, "FAIL: POST recipe with name/pkg_name= mismatch, status=%d\n",
+			fprintf(stderr, "FAIL: POST recipe with name mismatch, status=%d\n",
 			        r.status);
 			ok = 0;
 		}
 		cix_response_free(&r);
 		jw_free(&w);
-
-		/*
-		 * #494: two recipe versions that collide on one ARTIFACT
-		 * name. The artifact server reads a missing release as
-		 * release 1, so `X` and `X-1` are one object there and only
-		 * the first to build can ever publish -- the second rebuilds
-		 * from source forever and can never be approved.
-		 *
-		 * A 409 that is NOT the immutability 409: this version is not
-		 * published, and saying it is sends the author looking for a
-		 * recipe that does not exist.
-		 *
-		 * THE COLLIDING PAIR IS NECESSARILY MIXED-LANGUAGE NOW, and
-		 * that is not a weaker test than the two shell recipes this
-		 * used to publish -- it is the only form of the collision
-		 * that is still reachable. A CPDL version always carries a
-		 * release, so the release-less `9.9.9` half simply cannot be
-		 * written in CPDL; and under ADR-0309 clause 4 a new shell
-		 * revision cannot be published at all. What remains, and what
-		 * a real host will actually hit, is a NEW CPDL revision
-		 * landing on the artifact name an OLD shell revision already
-		 * owns -- 65 of 181 installed versions here are still shell,
-		 * so there is a large supply of old halves.
-		 *
-		 * Hence: seed the shell side into the store the way it got
-		 * there historically, then publish the CPDL side and require
-		 * the refusal. Both spellings of the seeded version are
-		 * covered, because `collide0-9.9.9-1` is the artifact name
-		 * whether the recipe said `9.9.9` or `9.9.9-1`, and that
-		 * equivalence is the whole bug.
-		 */
-		{
-			char coll[2048];
-			char coll_name[32];
-			int i;
-			/* what the stored shell recipe says its version is; the
-			 * CPDL recipe published against it is always the bare
-			 * form, which release 1 makes equal to the `-1` form. */
-			static const char *const seeded[] = { "9.9.9-1", "8.8.8" };
-			static const char *const publish_as[] = { "9.9.9", "8.8.8" };
-
-			for (i = 0; i < 2; i++) {
-				snprintf(coll_name, sizeof(coll_name), "collide%d", i);
-				snprintf(coll, sizeof(coll),
-				         "pkg_name=%s\npkg_version=%s\n"
-				         "pkg_source=%s\npkg_sha256=%s\n"
-				         "pkg_depends=\"\"\npkg_build_depends=\"\"\n"
-				         "pkg_build() { :; }\n"
-				         "pkg_install() { mkdir -p \"$PKG_DESTDIR/usr/bin\"; "
-				         ": > \"$PKG_DESTDIR/usr/bin/collide\"; }\n",
-				         coll_name, seeded[i], test_http_src(api_tarball), api_sha);
-				if (test_seed_shell_recipe(g_pkg_state_dir, coll_name, seeded[i], coll) != 0) {
-					fprintf(stderr, "FAIL: #494 could not seed %s@%s\n", coll_name, seeded[i]);
-					ok = 0;
-					continue;
-				}
-
-				cpdl_recipe_text(coll, sizeof(coll), coll_name, publish_as[i], test_http_src(api_tarball), api_sha,
-				                 NULL, CPDL_STD_TOOLS, NULL, "        run \"true\" {\n        }\n",
-				                 "        mkdir \"${dest}/usr/bin\" chmod 0755\n"
-				                 "        write \"${dest}/usr/bin/collide\" \"x\\n\"\n");
-				jw_init(&w);
-				jw_obj_open(&w);
-				jw_key(&w, "name");
-				jw_str(&w, coll_name);
-				jw_key(&w, "content");
-				jw_str(&w, coll);
-				jw_key(&w, "format");
-				jw_str(&w, "cbs");
-				jw_obj_close(&w);
-				w.buf[w.len] = '\0';
-				memset(&r, 0, sizeof(r));
-				if (cix_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0) {
-					fprintf(stderr, "FAIL: #494 publish request failed\n");
-					ok = 0;
-				} else if (r.status != 409) {
-					fprintf(stderr,
-					        "FAIL: #494 publishing %s@%s over a stored shell %s status=%d, want "
-					        "409 -- both resolve to the artifact %s-%s-1. A 400 here is the "
-					        "publish refusing the CPDL document itself, which is a different "
-					        "bug from the collision going undetected: read the daemon log for "
-					        "the cbs explain diagnostic before touching the collision check\n",
-					        coll_name, publish_as[i], seeded[i], r.status, coll_name,
-					        publish_as[i]);
-					ok = 0;
-				}
-				cix_response_free(&r);
-				jw_free(&w);
-			}
-		}
 
 		/*
 		 * Outright malformed content -> 400. A CPDL document with a
@@ -4429,8 +4224,6 @@ int main(void)
 		jw_str(&w, "malformed");
 		jw_key(&w, "content");
 		jw_str(&w, "package \"malformed\" {\n    version \"1.0\"\n");
-		jw_key(&w, "format");
-		jw_str(&w, "cbs");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		memset(&r, 0, sizeof(r));
@@ -4449,8 +4242,6 @@ int main(void)
 		jw_str(&w, "apirecipe");
 		jw_key(&w, "content");
 		jw_str(&w, body);
-		jw_key(&w, "format");
-		jw_str(&w, "cbs");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		memset(&r, 0, sizeof(r));
@@ -4497,8 +4288,6 @@ int main(void)
 			jw_str(&w, "apirecipe");
 			jw_key(&w, "content");
 			jw_str(&w, body2);
-			jw_key(&w, "format");
-			jw_str(&w, "cbs");
 			jw_obj_close(&w);
 			w.buf[w.len] = '\0';
 			memset(&r, 0, sizeof(r));
@@ -4603,8 +4392,6 @@ int main(void)
 			jw_str(&w, "credrecipe");
 			jw_key(&w, "content");
 			jw_str(&w, cred_body);
-			jw_key(&w, "format");
-			jw_str(&w, "cbs");
 			jw_obj_close(&w);
 			w.buf[w.len] = '\0';
 			memset(&r, 0, sizeof(r));
@@ -5527,7 +5314,7 @@ skip_pin_isolation:
 			 * publish_hostbuild_artifact() named the destination
 			 * through pkg_artifact_cache_path() ->
 			 * cache_artifact_path_existing(), a reader whose fallback
-			 * when nothing exists is PKG_ARTIFACT_FORMAT_TARGZ -- and
+			 * when nothing exists was .tar.gz -- and
 			 * it only ever runs when nothing exists, so the recipe's
 			 * declared format never reached the call. Converting this
 			 * fixture moved the version and left the suffix, which is
@@ -7433,8 +7220,8 @@ skip_resume:
 			char *p;
 
 			if (same != NULL && diverge != NULL) {
-				/* {"name":...,"content":...} + "format":"cbs" */
-				snprintf(same, blen + 32, "%.*s,\"format\":\"cbs\"}", (int)(blen - 1), json_body);
+				/* The identical body, republished. */
+				snprintf(same, blen + 32, "%s", json_body);
 				snprintf(diverge, blen + 32, "%s", same);
 				memset(&r, 0, sizeof(r));
 				if (cix_client_request(&client, "POST", "/v1/pkg/recipes", same, &r) != 0 ||
@@ -7769,8 +7556,6 @@ skip_resume:
 				jw_str(&w, grecipe);
 				jw_key(&w, "source");
 				jw_str(&w, "forge");
-				jw_key(&w, "format");
-				jw_str(&w, "cbs");
 				jw_obj_close(&w);
 				w.buf[w.len] = '\0';
 				memset(&r, 0, sizeof(r));
@@ -7797,8 +7582,6 @@ skip_resume:
 				jw_str(&w, grecipe);
 				jw_key(&w, "source");
 				jw_str(&w, "forge");
-				jw_key(&w, "format");
-				jw_str(&w, "cbs");
 				jw_obj_close(&w);
 				w.buf[w.len] = '\0';
 				memset(&r, 0, sizeof(r));
@@ -7991,8 +7774,6 @@ skip_resume:
 			jw_str(&w, krecipe);
 			jw_key(&w, "source");
 			jw_str(&w, "forge");
-			jw_key(&w, "format");
-			jw_str(&w, "cbs");
 			jw_obj_close(&w);
 			w.buf[w.len] = '\0';
 			memset(&r, 0, sizeof(r));
