@@ -206,7 +206,7 @@ What `test_rolling_restart` proves, gated in the release from this version:
 
 The not-ready-at-the-deadline path is not exercised there. With a 2 s doubling restart backoff, a crash-looping service reaches three exits before any window of 10 s or more closes.
 
-## Rung 2, as built (0.2.57-457)
+## Rung 2, as built (0.2.57-458)
 
 The signed checksum list, for the kernel first.
 
@@ -219,7 +219,7 @@ The signed checksum list, for the kernel first.
   - `verify checksums "openpgp-clearsigned" { url key }` is rung 2. The list is fetched host-side and verified with the existing `pgp_clearsign_verify()`, against the installed key with the recipe's fingerprint.
   - The archive's sha256 is read from the verified text by the last path element of the expanded `source`. The archive is not fetched at discovery; the build fetches it and refuses other bytes.
   - The candidate's verification line, which becomes the changelog, names the file, the list and the key.
-- **What authenticate and author found is a per-package record** (`srcrecord.c`, `pkg/discovery/`). It used to live in the gitea-tags listing document, which a second rung made a second writer. The catalogue reads it for every kind, so the `note` hook on a kind is gone.
+- **What authenticate and author found is a per-package record** (`srcrecord.c`, `pkg/discovery/`). It used to live in the gitea-tags listing document, which a second rung made a second writer. The catalogue reads it for every kind, so the `note` hook on a kind is gone. Because the record persists across runs, the authenticate stage retries any release it last recorded as blocked or failed. The cause, an untrusted origin or a missing key, is fixed by an operator between runs.
 - **A run that includes kernel.org authenticates after the release-list fetch ends**, so the kernel is checked against the list that run fetched. `{"refresh": false}` authenticates against what is held without fetching, which is useful right after installing a key and is how `test_pkg` stays off the network.
 - **Measured on 192.168.15.95, 2026-10-03** (`probe-kernel-checksums@1-1`, `@2-1`):
   - `https://cdn.kernel.org/pub/linux/kernel/v7.x/sha256sums.asc` is one clearsigned list (`Hash: SHA256`), 13548 bytes at the time, with a `<sha256>  <filename>` line for every file in the directory.

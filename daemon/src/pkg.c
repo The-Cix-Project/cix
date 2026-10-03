@@ -3513,9 +3513,21 @@ static void authenticate_one(const char *name, const struct pkg_recipe *recipe, 
 	struct srcresolve_entry e;
 	char why[512];
 
+	/*
+	 * A release with no recipe reads author/blocked -- or, once this
+	 * stage has tried it, whatever this stage last recorded
+	 * (authenticate/blocked, failed or ok), because the catalogue
+	 * applies the record. Both are this stage's to (re)try: the cause
+	 * of a block -- an untrusted origin, a missing key -- is fixed by
+	 * an operator between runs. Measured on 0.2.57-457's selftest:
+	 * acting on author/blocked alone left both the origin and the
+	 * checksum case stuck on their first run's note. Anything else is
+	 * current, held, marked bad, being authored, or stopped earlier.
+	 */
 	srcresolve_package(name, recipe->upstream, &e);
-	if (e.stage != PIPELINE_AUTHOR || e.status != PIPELINE_BLOCKED)
-		return; /* nothing new, held, or discovery itself stopped and said why */
+	if (!(e.stage == PIPELINE_AUTHOR && e.status == PIPELINE_BLOCKED) &&
+	    e.stage != PIPELINE_AUTHENTICATE)
+		return;
 
 	if (strcmp(recipe->upstream_verify, "origin") == 0) {
 		authenticate_by_origin(name, recipe, e.resolved_version, now);
