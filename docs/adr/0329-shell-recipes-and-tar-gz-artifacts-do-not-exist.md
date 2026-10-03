@@ -43,7 +43,7 @@ Clause 4 deletes `gcc@16.2.0-13`'s recipe. `cix-builder` and `kernel-builder` fo
 
 ## Consequences
 
-- **The caches' `.tar.gz` artifacts are deleted:** 452 in the LAN cache and 10 in the public one, since no host will request any of them. `gcc-16.2.0-13` goes last, once the `gcc` pins have moved.
+- **The LAN cache's 452 `.tar.gz` artifacts are deleted**, since no host will request any of them; `gcc-16.2.0-13` goes last, once the `gcc` pins have moved. The public cache is synced from it by the owner, not by this project.
 - **An older backup restores without its shell recipes.** They are skipped by name with a log line, not failed on. A backup is restored onto a host whose daemon would delete them at its next start anyway.
 - **A client still sending `format` sends a field the daemon does not read.** `cixctl` and the dashboard no longer send it.
 - **A root that needs something it lacks fails its assembly**, naming the file and the soname, where it would once have sealed and failed at boot. The first assembly with clause 9 is also its first measurement of the real root.
