@@ -184,7 +184,7 @@ It needed cbs v0.1.104 (cix-build-system#279 and #280), 0.2.57-450, and `https:/
 
 Answer 4's runtime half, in `cixd` (main.c, `pkgbad.c`):
 
-- **A roll is recorded when it happens.** When a rolling pass re-pins a live `follow_rolling` container, its definition records `roll_from` (the image version it ran) and `roll_to`. A roll that arrives while an earlier one is still on probation keeps the earlier `roll_from`, because the version in between never proved itself. Both fields persist, so a daemon restart mid-window re-arms the watch.
+- **A roll is recorded when it happens.** When a rolling pass re-pins a live `follow_rolling` container, its definition records `roll_from` (the image version it ran) and `roll_to`. A roll that arrives while an earlier one is still on probation keeps the earlier `roll_from`, unless the container is up and ready on the version in between, which then counts as proven. Both fields persist, so a daemon restart mid-window re-arms the watch.
 - **The window starts when the rolled incarnation starts.** It lasts `rollback_window_seconds`, set in `PUT /v1/system/rolling-config` (default 300, range 10–3600). The container goes back to `roll_from` on any of:
   - it is not ready when the window closes, where "ready" is the registry's derived readiness, which every container on 192.168.15.95 reported on 2026-10-03, `jump` included;
   - three exits, each within 30 s of starting, before the window closes;

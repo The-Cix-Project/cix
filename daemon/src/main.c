@@ -30857,10 +30857,26 @@ static void apply_rolling_container_restarts(void)
 				json_free(root);
 				continue;
 			}
-			/* A roll still on probation has not proven its version, so
-			 * the version to go back to stays the one before it. */
-			snprintf(known_good, sizeof(known_good), "%s",
-			         def->roll_to[0] != '\0' ? def->roll_from : pinned_version);
+			/*
+			 * The version to go back to is the one the container has
+			 * shown it can run. A roll still on probation whose
+			 * container is up and ready on roll_to right now has shown
+			 * that, window or not; one not yet ready there -- or whose
+			 * rolled incarnation has not even started, as with a long
+			 * jitter -- has not, and the version before it stays the
+			 * one to go back to. Without the readiness case, 0.2.57-452's
+			 * selftest failed: a 4.0 arriving inside 3.0's window recorded
+			 * a mark whose roll_from was not the version the container was
+			 * ready on (inferred from the mark and the failed checks).
+			 */
+			{
+				struct registry_entry *live = registry_find(order[i]);
+				int proven = live != NULL && live->running && live->ready &&
+				             strcmp(live->image_version, def->roll_to) == 0;
+
+				snprintf(known_good, sizeof(known_good), "%s",
+				         def->roll_to[0] != '\0' && !proven ? def->roll_from : pinned_version);
+			}
 
 			if (containerdef_patch_image_version(order[i], current_version) == 0) {
 				if (registry_find(order[i]) != NULL) {
