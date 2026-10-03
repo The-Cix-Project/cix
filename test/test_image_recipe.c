@@ -206,7 +206,9 @@ int main(void)
 	if (r.json != NULL) {
 		const char *c = json_str_field(r.json, "content");
 
-		CHECK(c != NULL && strstr(c, "foo:pinned:1.0") != NULL, "recipe content round-trips");
+		CHECK(c != NULL &&
+		          strstr(c, "{\"package\":\"foo\",\"mode\":\"pinned\",\"version\":\"1.0\"}") != NULL,
+		      "recipe content round-trips");
 	}
 	cix_response_free(&r);
 

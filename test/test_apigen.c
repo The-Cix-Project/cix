@@ -215,12 +215,14 @@ int main(void)
 	 *     /pkg/bad-versions/{name}/{version}.
 	 * 342 as of ADR-0318's upstream key store: GET and POST
 	 *     /pkg/{name}/upstream-keys, DELETE /pkg/{name}/upstream-keys/{fingerprint}.
+	 * 339 as of ADR-0328: POST and GET /images/{name}/export and GET
+	 *     /images/{name}/export/download gone.
 	 */
 	status = run_apigen("docs/api/openapi.yaml", NULL, out, sizeof(out));
 	if (status != 0)
 		fail("apigen rejected the real spec: %.300s", out);
-	else if (atoi(out) != 342)
-		fail("apigen found %d operations in the real spec, expected 342 -- if the spec "
+	else if (atoi(out) != 339)
+		fail("apigen found %d operations in the real spec, expected 339 -- if the spec "
 		     "genuinely changed, update this number deliberately; a silently different "
 		     "count is how a lost route hides",
 		     atoi(out));
@@ -386,9 +388,9 @@ int main(void)
 			}
 			fclose(f);
 			unlink(routes_path);
-			if (rows != 342 || with_permission != rows)
+			if (rows != 339 || with_permission != rows)
 				fail("the generated route table has %d rows and %d carry a permission; "
-				     "expected 342 and 342 (ADR-0317)",
+				     "expected 339 and 339 (ADR-0317)",
 				     rows, with_permission);
 		}
 	}
@@ -486,10 +488,10 @@ int main(void)
 			fclose(f);
 			unlink(hdr_path);
 		}
-		if (defines != 342)
-			fail("CLI header has %d path defines, expected one per operation (342)", defines);
-		if (methods != 342)
-			fail("CLI header has %d method defines, expected one per operation (342)", methods);
+		if (defines != 339)
+			fail("CLI header has %d path defines, expected one per operation (339)", defines);
+		if (methods != 339)
+			fail("CLI header has %d method defines, expected one per operation (339)", methods);
 		if (braces != 0)
 			fail("%d CLI path define(s) still contain '{' -- a parameter was not converted "
 			     "to %%s and would put a literal brace in the URL",

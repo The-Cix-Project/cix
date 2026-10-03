@@ -6037,7 +6037,8 @@ skip_hostbuild:
 		 * pulling a failed build's own output/state back out for real
 		 * debugging). */
 		snprintf(kf_container_path, sizeof(kf_container_path),
-		         "/v1/containers/%s/files?path=%%2Fbuild%%2Fsrc%%2Fhello.c", kept_name);
+		         "/v1/containers/%s/files?path=%%2Fbuild%%2Fcbsws%%2Fsrc%%2Fkeepfail%%2Fkeepfail-1.0%%2Fhello.c",
+		         kept_name);
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "GET", kf_container_path, NULL, &r) != 0 || r.status != 200 ||
 		    r.body == NULL || r.body_len == 0) {
