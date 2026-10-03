@@ -5,7 +5,6 @@
 #include "curlfetch.h"
 #include "osrelease.h"
 #include "version.h"
-#include "targz.h"
 #include "pkgpolicy.h"
 #include "imagepolicy.h"
 #include "hostproc.h"
@@ -6837,7 +6836,7 @@ static void pkg_migrate_flat_sandbox(const char *images_dir)
  * 64 since 2026-09-25, from 32, because 32 had become a real ceiling
  * rather than a generous one: the full cix-tests suite needs a set of
  * exactly 32 and so cannot declare one more, which is why
- * `test_installer` and `test_targz` fail for want of `bzip2` -- a
+ * `test_installer` and `test_targz` (since removed) failed for want of `bzip2` -- a
  * package that exists, is built, and simply cannot be added (#485).
  * The recipe carrying that set has a comment apologising for dropping
  * `minisign` to make room, which is the shape of a limit that has
@@ -19258,21 +19257,6 @@ const char *pkg_artifact_arch(void)
 }
 
 /*
- * What `cbs package` needs to turn a staged hostbuild tree into a
- * CIXPKG: the declared artifact format, and the version/release split
- * that cannot be recovered from the fused version string.
- *
- * Its own function rather than more out-parameters on
- * pkg_hostbuild_artifact_info(), which answers a different question
- * (where are the bytes) for two other callers.
- *
- * Returns PKG_ERR_NOT_FOUND when the version has no readable recipe.
- * That is a real possibility -- a recipe can be removed from the
- * store while its package stays installed -- and the caller must
- * report it rather than guess a format, because guessing is the bug
- * this exists to fix.
- */
-/*
  * The version/release split THE CACHE performs on an artifact name:
  * a trailing `-<digits>` is the release, and a name without one is
  * release 1 (pkg.h's PKG_ERR_ARTIFACT_NAME_TAKEN note records this,
@@ -19309,15 +19293,14 @@ static void split_version_by_cache_convention(const char *fused, char *out_versi
 		out_version[dash - fused] = '\0';
 }
 
-enum pkg_error pkg_hostbuild_package_info(const char *name, const char *version, char *out_format,
-                                           size_t out_format_size, char *out_bare_version,
-                                           size_t out_bare_version_size, long long *out_release)
+enum pkg_error pkg_hostbuild_package_info(const char *name, const char *version,
+                                           char *out_bare_version, size_t out_bare_version_size,
+                                           long long *out_release)
 {
 	struct pkg_recipe recipe;
 	char recipe_path[PATH_MAX];
 	char bare[PKG_VERSION_MAX];
 	long long release = 1;
-	const char *format = PKG_ARTIFACT_FORMAT_CIXPKG;
 
 	if (name == NULL || version == NULL)
 		return PKG_ERR_NOT_FOUND;
@@ -19325,7 +19308,6 @@ enum pkg_error pkg_hostbuild_package_info(const char *name, const char *version,
 	memset(&recipe, 0, sizeof(recipe));
 	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) == 0 &&
 	    parse_recipe(recipe_path, &recipe) == 0) {
-		format = recipe.artifact_format;
 		snprintf(bare, sizeof(bare), "%s", recipe.bare_version);
 		release = recipe.release;
 	} else {
@@ -19336,19 +19318,13 @@ enum pkg_error pkg_hostbuild_package_info(const char *name, const char *version,
 		 * installed, and a test fixture can seed an installed entry
 		 * with no recipe at all.
 		 *
-		 * The format defaults to CIXPKG and never to tar.gz. An
-		 * unknown format is not a reason to emit the one format the
-		 * One Build System Mandate says must not exist -- that is
-		 * precisely the silent default this issue is about
-		 * (cix#528). The split then follows the cache's own
-		 * convention so the artifact's metadata matches the name it
-		 * will be stored under.
+		 * The split then follows the cache's own convention so the
+		 * artifact's metadata matches the name it will be stored
+		 * under.
 		 */
 		split_version_by_cache_convention(version, bare, sizeof(bare), &release);
 	}
 
-	if (out_format != NULL)
-		snprintf(out_format, out_format_size, "%s", format);
 	if (out_bare_version != NULL)
 		snprintf(out_bare_version, out_bare_version_size, "%s", bare);
 	if (out_release != NULL)

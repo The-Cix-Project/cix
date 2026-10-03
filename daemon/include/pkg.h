@@ -707,16 +707,17 @@ const char *pkg_artifact_arch(void);
  */
 #define PKG_CBS_BIN "/usr/bin/cbs"
 /*
- * For an installed hostbuild: its recipe's declared artifact format,
- * and CPDL's `version`/`release` unjoined, which is what
- * `cbs package --version X --release N` requires and what the fused
- * version string cannot be split back into (`v2.2.0-rc1` versus
- * `0.2.57-361`). PKG_ERR_NOT_FOUND if the version has no readable
- * recipe -- report it, do not guess a format.
+ * For an installed hostbuild: CPDL's `version`/`release` unjoined,
+ * which is what `cbs package --version X --release N` requires and what
+ * the fused version string cannot be split back into (`v2.2.0-rc1`
+ * versus `0.2.57-361`). Read from the version's recipe when the store
+ * still has it, and split by the artifact cache's own convention when it
+ * does not. No format: a hostbuild exports as a CIXPKG whatever built it
+ * (ADR-0328).
  */
-enum pkg_error pkg_hostbuild_package_info(const char *name, const char *version, char *out_format,
-                                           size_t out_format_size, char *out_bare_version,
-                                           size_t out_bare_version_size, long long *out_release);
+enum pkg_error pkg_hostbuild_package_info(const char *name, const char *version,
+                                           char *out_bare_version, size_t out_bare_version_size,
+                                           long long *out_release);
 int pkg_artifact_cache_has(const char *name, const char *version);
 
 /*

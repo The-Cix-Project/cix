@@ -7442,160 +7442,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /images/{name}/export:
-    post:
-      summary: >
-        Export this image's current version as a whole-rootfs tarball
-        (issue #126), so compiled output can be moved to another host
-        instead of being rebuilt from source.
-      description: >
-        The output is a whole-rootfs tarball named {name}-{hash}.tar.gz, where
-        hash is the image version. Nothing consumes it automatically: ADR-0123's
-        image-artifact fast path, which once fetched exactly this name from an
-        artifact server, was retired by ADR-0209 -- package artifacts are the only
-        published binaries, each checksummed and traceable to its recipe.
-
-
-        Asynchronous with a status poll, not a blocking call: tarring a
-        multi-gigabyte rootfs would hold this daemon's single event loop
-        for minutes, exactly the wedge ADR-0180 exists to prevent. One
-        export runs at a time.
-      operationId: exportImage
-      x-cix-permission: images:write
-      x-cix-expose: []
-      parameters:
-        - $ref: "#/components/parameters/ImageName"
-      responses:
-        "202":
-          description: Export started -- poll GET on this same path
-        "404":
-          description: No such image, or it has no current version
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "409":
-          description: An export is already running
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "500":
-          description: Could not start the export (artifact directory or fork failed)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-    get:
-      summary: The most recent export's state for this image.
-      description: >
-        state is none/building/ready/failed. "none" is also what an
-        image that is simply not the one most recently exported reports
-        -- one export is tracked at a time, so this never reports
-        another image's progress under this image's name.
-      operationId: getImageExport
-      x-cix-permission: images:read
-      x-cix-expose: []
-      parameters:
-        - $ref: "#/components/parameters/ImageName"
-      responses:
-        "200":
-          description: Export state
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  image:
-                    type: string
-                  state:
-                    type: string
-                    enum: [none, building, ready, failed]
-                  version:
-                    type: string
-                    description: >
-                      The version that was exported -- an image's manifest hash,
-                      or a hostbuild package's version. Renamed from
-                      image_version in ADR-0201, when this state machine became
-                      shared between both export kinds.
-                  artifact_path:
-                    type: string
-                    description: Absolute path of the tarball on this host.
-                  artifact_name:
-                    type: string
-                    description: >
-                      Basename only -- {name}-{hash}.tar.gz.
-                  size_bytes:
-                    type: integer
-                    format: int64
-                    description: -1 until the export is ready.
-                  error:
-                    type: string
-
-  /images/{name}/export/download:
-    get:
-      summary: >
-        The bytes of a ready export, in bounded chunks the caller loops
-        over (issue #126).
-      description: >
-        Deliberately chunked rather than one streamed response. This
-        daemon is a single event loop, so writing a multi-gigabyte body
-        inline would freeze the control plane for the whole transfer
-        (ADR-0180's own wedge) -- and the two obvious escapes are worse
-        here: a forked child cannot write to the parent's TLS session,
-        and a full EPOLLOUT streaming state machine is a large change to
-        a load-bearing HTTP layer for one endpoint. A bounded chunk costs
-        one small allocation; the caller reassembles. Total size comes
-        from GET .../export's own size_bytes, which the caller polls for
-        "ready" anyway.
-
-
-        length is clamped to 8 MiB. A short read means end of artifact.
-      operationId: downloadImageExport
-      x-cix-permission: images:read
-      x-cix-expose: []
-      parameters:
-        - $ref: "#/components/parameters/ImageName"
-        - name: offset
-          in: query
-          required: false
-          schema:
-            type: integer
-            format: int64
-            default: 0
-        - name: length
-          in: query
-          required: false
-          schema:
-            type: integer
-            format: int64
-      responses:
-        "200":
-          description: The requested byte range
-          content:
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
-        "400":
-          description: offset < 0 or length <= 0
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "404":
-          description: No ready export for this image
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "416":
-          description: offset is at or past the end of the artifact
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-
   /images/{name}/rename:
     post:
       summary: Rename an image, carrying its package rows with it (issue #124).
@@ -10572,8 +10418,8 @@ paths:
   /pkg/{name}/artifact/export:
     post:
       summary: >
-        Starts a tarball of a hostbuild package's harvested artifact
-        (issue #129, ADR-0201).
+        Starts packaging a hostbuild package's harvested tree as a CIXPKG
+        (issue #129, ADR-0328).
       description: >
         A hostbuild's output lands in a plain host directory that is
         deliberately never container-visible (ADR-0056), so
@@ -10583,10 +10429,11 @@ paths:
         factory reset.
 
 
-        Shares one state machine with the image export above: one export
-        runs at a time, of either kind. The resulting file is named
-        {name}-{version}.tar.gz, which is exactly the name the artifact
-        cache serves a package at, so an export can be pushed verbatim.
+        One export runs at a time. It runs `cbs package` over the installed
+        tree, whatever language the recipe that built it was written in, and
+        the resulting file is named {name}-{version}.cixpkg -- exactly the
+        name the artifact cache serves a package at, so an export can be
+        pushed verbatim. There is no tarball and no image export (ADR-0328).
 
 
         Returns 202 immediately; poll the GET below.
@@ -10621,10 +10468,9 @@ paths:
     get:
       summary: The most recent export's state for this package (issue #129).
       description: >
-        One export is tracked at a time and it is matched on BOTH kind and
-        name, so a package that is simply not the one most recently exported
-        reports state "none" -- and an image sharing a name with a package
-        never reports the other's export.
+        One export is tracked at a time, matched on the package name, so a
+        package that is simply not the one most recently exported reports
+        state "none".
       operationId: getPkgArtifactExport
       x-cix-permission: packages:read
       x-cix-expose: []
@@ -10648,11 +10494,11 @@ paths:
                     description: The package version that was exported.
                   artifact_path:
                     type: string
-                    description: Absolute path of the tarball on this host.
+                    description: Absolute path of the artifact on this host.
                   artifact_name:
                     type: string
                     description: >
-                      Basename only -- {name}-{version}.tar.gz, the exact
+                      Basename only -- {name}-{version}.cixpkg, the exact
                       filename a consuming host asks for at the root of each
                       package repository's url (ADR-0122, ADR-0324).
                   size_bytes:
@@ -10675,20 +10521,20 @@ paths:
         expensive thing this platform does.
 
 
-        For an ordinary source-built package this queues the tarball
-        already sitting in the local cache. For a hostbuild package
-        whose tarball does not exist yet (its artifact is a directory
-        this host assembled, never a tarball it fetched), the tarball is
-        first built from the installed tree via the same export
-        machinery as POST .../artifact/export, and its completion queues
-        the push -- the same repair #200 gave the automatic post-build
+        For an ordinary source-built package this queues the artifact
+        already sitting in the local cache. For a hostbuild package whose
+        artifact does not exist yet (its output is a directory this host
+        assembled, never a file it fetched), a CIXPKG is first packaged
+        from the installed tree via the same export as
+        POST .../artifact/export, and its completion queues the push --
+        the same repair #200 gave the automatic post-build path.
         path.
 
 
         A package name is not unique: it names one installed entry per
         image. Given only a name, this publishes the HOSTBUILD entry
         when there is one, because that is the artifact this host
-        produced and the only kind whose tarball can be rebuilt from the
+        produced and the only kind whose artifact can be rebuilt from the
         installed tree -- any other entry's artifact came from the cache
         and is published there already. It used to publish whichever
         entry came first internally, so for "kernel", installed both in
@@ -10699,7 +10545,7 @@ paths:
 
         A successful push queues a second one: the artifact's detached
         minisign signature, uploaded beside it as
-        <name>-<version>-<arch>.tar.gz.minisig (ADR-0279). Its trusted
+        the artifact's own file name plus .minisig (ADR-0279). Its trusted
         comment is "cix pkg <name>@<version> sha256=<hex>", which binds
         the signature to that exact revision and those exact bytes --
         minisign's global signature covers the comment, so none of the
@@ -10744,8 +10590,8 @@ paths:
       responses:
         "202":
           description: >
-            Queued (status "queued"), or the tarball build has started
-            first (status "building artifact tarball")
+            Queued (status "queued"), or packaging the artifact has started
+            first (status "building artifact")
         "400":
           description: Artifact publishing is not configured
           content:
@@ -10760,8 +10606,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: >
-            Not in the local cache and not a hostbuild (nothing to build
-            a tarball from), or an export is already running
+            Not in the local cache and not a hostbuild (nothing to package
+            an artifact from), or an export is already running
           content:
             application/json:
               schema:
@@ -10773,9 +10619,19 @@ paths:
         The bytes of a ready hostbuild-artifact export, in bounded chunks
         (issue #129).
       description: >
-        Same chunking contract as the image export download -- see that
-        endpoint for why this is chunked rather than streamed. length is
-        clamped to 8 MiB; a short read means end of artifact.
+        Deliberately chunked rather than one streamed response. This
+        daemon is a single event loop, so writing a multi-gigabyte body
+        inline would freeze the control plane for the whole transfer
+        (ADR-0180's own wedge) -- and the two obvious escapes are worse
+        here: a forked child cannot write to the parent's TLS session,
+        and a full EPOLLOUT streaming state machine is a large change to
+        a load-bearing HTTP layer for one endpoint. A bounded chunk costs
+        one small allocation; the caller reassembles. Total size comes
+        from GET .../export's own size_bytes, which the caller polls for
+        "ready" anyway.
+
+
+        length is clamped to 8 MiB. A short read means end of artifact.
       operationId: downloadPkgArtifactExport
       x-cix-permission: packages:read
       x-cix-expose: [cli]

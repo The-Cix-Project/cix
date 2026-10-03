@@ -884,10 +884,12 @@ int main(int argc, char **argv)
 			 * moved in-process to libcurl (daemon/src/curlfetch.c),
 			 * and nothing else in the control plane ever execve()s
 			 * curl. Staging the binary itself had no consumer left. */
-			{ "/usr/bin/tar", "usr/bin/tar" },             /* TARGZ_TAR_BIN, daemon/src/targz.c --
-			                                                 * the tar+gzip CREATION pipeline only;
-			                                                 * extraction moved to libarchive (#411)
-			                                                 * and never execve()s this binary. */
+			{ "/usr/bin/tar", "usr/bin/tar" },             /* Staged for daemon/src/targz.c's
+			                                                 * creation pipeline, deleted by ADR-0328;
+			                                                 * extraction is libarchive (#411). Nothing
+			                                                 * in cixd execs it now. Whether anything
+			                                                 * else in this root does (cbs) is not yet
+			                                                 * established, so its removal is cix#569. */
 			/* gzip: NOT here -- staged from host_tools_dir
 			 * (gzip.recipe) when given, see below. */
 			{ "/usr/bin/unsquashfs", "usr/bin/unsquashfs" }, /* PKG_UNSQUASHFS_BIN -- the

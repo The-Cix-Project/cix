@@ -1,8 +1,7 @@
 /*
- * Issue #129: proves the artifact export resource over real HTTP, for
- * BOTH subjects it serves -- a hostbuild package's harvested output
- * (ADR-0056) and an image's rootfs (issue #126, which shipped with no
- * test of its own; generalizing that code is what closed the gap).
+ * Issue #129: proves the artifact export resource over real HTTP for a
+ * hostbuild package's harvested output (ADR-0056), written as a CIXPKG
+ * by `cbs package`.
  *
  * The hostbuild case is the one that forced the endpoint to exist: a
  * hostbuild artifact lives in a plain host directory that is
@@ -12,10 +11,10 @@
  * disk, unbackupable and unpushable.
  *
  * Covered here: export of a seeded hostbuild artifact, its bytes
- * arriving intact through the chunked download, an image export over
- * the same state machine, that the two kinds do NOT cross-match on a
- * shared name, 404 for an unknown package, and 404 for a download with
- * no ready export behind it.
+ * arriving intact through the chunked download, 404 for an unknown
+ * package, 404 for a download with no ready export behind it, and that
+ * the image export routes are gone (ADR-0328: images are not exported,
+ * since ADR-0209 retired the only thing that consumed one).
  *
  * And #520: the same package name is seeded in an ordinary image as
  * well as as a hostbuild, ordinary one first, because publishing by
@@ -42,8 +41,8 @@ extern char **environ;
 #define TEST_PORT 7686
 #define PORT_ARG "--port=7686"
 
-/* The seeded hostbuild's own name and version -- deliberately also
- * used as an IMAGE name below, to prove the two kinds stay separate. */
+/* The seeded hostbuild's own name and version -- also the name the
+ * removed image export routes are asked for, to prove they are gone. */
 #define HB_NAME "faux"
 #define HB_VERSION "1.0-1"
 /*
@@ -333,19 +332,17 @@ int main(void)
 			 * A real CIXPKG holding both seeded files, which is the
 			 * shape a consuming host extracts straight into place.
 			 *
-			 * This was `gzip -t` until #528: a hostbuild exported a
+			 * This was `gzip -t` until #528, when a hostbuild exported a
 			 * tarball whatever its recipe declared. It is `cbs
 			 * extract` now, because the engine that writes the
 			 * artifact is the one that reads it back.
 			 *
 			 * Note this fixture is seeded straight into
-			 * pkg_installed.json with NO recipe in the store, so it
-			 * exercises pkg_hostbuild_package_info()'s no-recipe
-			 * path -- which defaults to CIXPKG rather than tar.gz,
-			 * an unknown format being no reason to emit the one
-			 * format the One Build System Mandate forbids. That path
-			 * is real and not synthetic: ADR-0313 removed 610 cix
-			 * recipes while their packages stayed installed.
+			 * pkg_installed.json with NO recipe in the store, so the
+			 * version/release split is the cache's own convention
+			 * (pkg_hostbuild_package_info()). That path is real and
+			 * not synthetic: ADR-0313 removed 610 cix recipes while
+			 * their packages stayed installed.
 			 */
 			if (run_cmd("cbs extract '%s' --into '%s/unpacked' >/dev/null 2>&1", out_artifact,
 			            g_data_dir) != 0)
@@ -363,31 +360,30 @@ int main(void)
 	}
 
 	/*
-	 * --- the two kinds do not cross-match on a shared name ---
-	 * An image named exactly like the hostbuild package must report
-	 * its own export state ("none"), not inherit the ready hostbuild
-	 * export sitting in the shared state machine.
+	 * --- an image is not exported (ADR-0328) ---
+	 * The image export once tarred a whole rootfs for ADR-0123's
+	 * image-artifact fetch, which ADR-0209 retired, so nothing consumed
+	 * it. Both routes are gone from the contract, and a request for
+	 * either is the router's ordinary 404 rather than a tarball.
 	 */
-	if (cix_client_request(&c, "GET", "/v1/images/" HB_NAME "/export", NULL, &r) == 0) {
-		struct json_value *root = json_parse(r.body, r.body_len);
-		const char *st = json_as_string(json_object_get(root, "state"));
+	{
+		static const char *const gone[][2] = {
+			{ "POST", "/v1/images/" HB_NAME "/export" },
+			{ "GET", "/v1/images/" HB_NAME "/export/download?offset=0&length=16" },
+		};
+		size_t i;
 
-		if (st == NULL || strcmp(st, "none") != 0)
-			fail("image export state leaked from the hostbuild export: state=%s",
-			     st != NULL ? st : "(null)");
-		json_free(root);
-		cix_response_free(&r);
-	} else {
-		fail("image export GET failed");
-	}
-	if (cix_client_request(&c, "GET",
-	                       "/v1/images/" HB_NAME "/export/download?offset=0&length=16", NULL,
-	                       &r) == 0) {
-		if (r.status != 404)
-			fail("image download must not serve the hostbuild export (got %d)", r.status);
-		cix_response_free(&r);
-	} else {
-		fail("image export download request failed");
+		for (i = 0; i < sizeof(gone) / sizeof(gone[0]); i++) {
+			if (cix_client_request(&c, gone[i][0], gone[i][1],
+			                       strcmp(gone[i][0], "POST") == 0 ? "" : NULL, &r) != 0) {
+				fail("%s %s: no answer", gone[i][0], gone[i][1]);
+				continue;
+			}
+			if (r.status != 404)
+				fail("%s %s: expected 404, the route is gone; got %d", gone[i][0],
+				     gone[i][1], r.status);
+			cix_response_free(&r);
+		}
 	}
 
 	/*
@@ -427,61 +423,6 @@ int main(void)
 	} else {
 		fail("artifact publish POST failed");
 	}
-
-	/* --- the image kind still works over the shared machine (#126) --- */
-	if (cix_client_request(&c, "POST", "/v1/images",
-	                       "{\"name\":\"expimg\",\"description\":\"export test\"}", &r) == 0) {
-		if (r.status != 201 && r.status != 409)
-			fail("could not create test image (status %d)", r.status);
-		cix_response_free(&r);
-	}
-	/*
-	 * Retried while the daemon answers 409, because the publish just
-	 * above starts an export of its own and only ONE runs at a time
-	 * -- `artifact_export_start()` refuses a second with "an export
-	 * of X is already running".
-	 *
-	 * This loop is new with #528 and the race it covers is not. The
-	 * publish export used to be targz_run() over a two-file tree,
-	 * which finished inside the round trip, so the next request
-	 * always found the slot free by luck. `cbs package` writes a
-	 * manifest and digests and takes longer, and the test failed
-	 * with `expected 202, got 409` the first time it ran. A caller
-	 * that must not collide has to wait for the slot rather than
-	 * assume the previous export was quick.
-	 */
-	{
-		int posted = 0;
-		int attempt;
-
-		for (attempt = 0; attempt < 200; attempt++) {
-			if (cix_client_request(&c, "POST", "/v1/images/expimg/export", "", &r) != 0) {
-				fail("image export POST failed");
-				break;
-			}
-			if (r.status == 202) {
-				posted = 1;
-				cix_response_free(&r);
-				break;
-			}
-			if (r.status != 409) {
-				fail("image export POST: expected 202, got %d", r.status);
-				cix_response_free(&r);
-				break;
-			}
-			cix_response_free(&r);
-			usleep(100000);
-		}
-		if (attempt >= 200 && !posted)
-			fail("image export POST still 409 after 20s -- the export slot never freed");
-	}
-	size = -1;
-	if (poll_export(&c, "/v1/images/expimg/export", state, sizeof(state), &size) != 0)
-		fail("image export never left building");
-	else if (strcmp(state, "ready") != 0)
-		fail("image export state=%s, expected ready", state);
-	else if (size <= 0)
-		fail("image export ready but size_bytes=%lld", size);
 
 	if (stop_daemon(daemon_pid) != 0)
 		fail("daemon did not exit cleanly on SIGTERM");

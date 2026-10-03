@@ -11874,7 +11874,7 @@ static int cmd_container_apply_recipe(const struct cix_client *c, int json_mode,
  * inside cix-builder (#168, ADR-0225).
  *
  * None of that is necessary any more, and the reason is in pkg.c: an
- * artifact-tier install verifies the tarball against the recipe's own
+ * artifact-tier install verifies the artifact against the recipe's own
  * checksum and stages it directly, WITHOUT composing a build sandbox.
  * A host with no compiler can therefore install any approved package.
  * Measured on a fresh image: 26 of the toolchain's 27 packages
@@ -15297,10 +15297,10 @@ static int cmd_pkg_artifact_publish(const struct cix_client *c, int json_mode, i
 		fprintf(stderr,
 		        "usage: cixctl pkg artifact-publish NAME\n"
 		        "  Publishes an already-built artifact to the configured artifact server\n"
-		        "  without rebuilding it. For a hostbuild whose tarball does not exist yet\n"
-		        "  the tarball is built from the installed tree first, and the push follows\n"
+		        "  without rebuilding it. For a hostbuild whose artifact does not exist yet\n"
+		        "  the installed tree is packaged as a .cixpkg first, and the push follows\n"
 		        "  when that completes -- so a 202 here can mean either \"queued\" or\n"
-		        "  \"building artifact tarball\"; the response says which.\n");
+		        "  \"building artifact\"; the response says which.\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), CIX_API_publishPkgArtifact, argv[0]);

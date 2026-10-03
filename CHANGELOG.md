@@ -6,6 +6,19 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Cix produces no tarball (#411, ADR-0328)
+
+The owner's decision of 2026-10-03: *"An image export should not produce a tarball. Go with 2."*
+
+- **A hostbuild exports as a `.cixpkg`, always.** `POST /v1/pkg/{name}/artifact/export`, `pkg artifact-publish` and the automatic publish after a hostbuild all run `cbs package` over the installed tree. Before, they tarred whenever the recipe was a stored shell recipe. `pkg_hostbuild_package_info()` no longer returns a format.
+- **The manual publish names the `.cixpkg` path.** It took its destination from the existing-file lookup, whose not-found answer is spelled `.tar.gz`, the same mistake cix#528 fixed on the automatic path.
+- **The image export is removed:** `POST`/`GET /v1/images/{name}/export` and `GET /v1/images/{name}/export/download`. Nothing had consumed it since ADR-0209, and no CLI command or dashboard view used it. `GET /images/{name}/recipe/export` is how an image leaves a host.
+- **`daemon/src/targz.c` is deleted**, with `test_targz` and `targz_probe`. The export's single state machine loses its image/hostbuild kind.
+- `GET .../artifact/export` reports `artifact_name` as `{name}-{version}.cixpkg`. `pkg artifact-publish` answers `building artifact` instead of `building artifact tarball`.
+- Not changed: installing an existing `.tar.gz` from a cache, and the `tar.gz` format a stored shell recipe carries (ADR-0307 clause 1). 55 version pins in the latest image recipes still resolve to shell recipes, so that cut needs the pins moved first (ADR-0328, #569).
+- Docs: ADR-0328; `openapi.yaml` and `docs/api/README.md` lose the image routes and describe the CIXPKG export. The API README no longer claims cache tarballs are reproducible, since the tar flags that made them so went with the tarball. Also updated: `cli-reference.md`, and the `pkg artifact-publish` help text.
+- Tests: `test_artifact_export` asserts both image export routes answer 404, and keeps the CIXPKG round trip through the chunked download. Its image cases and the kind cross-match case are gone with the routes.
+
 ### `tools/cpdl-coverage-audit.py` is removed (#488)
 
 It measured how much of the shell-recipe corpus CPDL could express. That corpus has been 100% CPDL since v2.57.356 (ADR-0309), so it has nothing left to measure; and the development sandbox runs no interpreter. The root README no longer lists it.

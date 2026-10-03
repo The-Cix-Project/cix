@@ -83,7 +83,6 @@
 #include "registry.h"
 #include "containerpath.h"
 #include "osrelease.h"
-#include "targz.h"
 #include "rtnetlink.h"
 #include "siteconfig.h"
 #include "daemon_config.h"
@@ -8963,30 +8962,12 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
  */
 static void artifact_push_pump(void);
 /*
- * The kind is defined HERE, not next to the export machinery it belongs
- * to, because the declaration below names it and C has no forward
- * declaration for an enum the way it has for a struct: an undefined
- * enum tag in a parameter list is an incomplete type, and a call
- * through it is not valid C.
- *
- * GCC accepts it, and so did tcc 0.9.27, which is why this sat here
- * for five releases. tcc 0.9.28rc does not, and it is right --
- * `daemon/src/main.c:9648: error: cast to incomplete type` on the
- * first hostbuild after the compiler upgrade (#216). The compiler got
- * stricter and found a real latent bug in this file.
- */
-enum artifact_export_kind {
-	ARTIFACT_EXPORT_KIND_IMAGE = 0,
-	ARTIFACT_EXPORT_KIND_HOSTBUILD
-};
-
-/*
  * Issue #200 -- both defined lower down, next to the export machinery
  * they drive; declared here because pkg_completion_followup() runs
  * before either in this file.
  */
-static int artifact_export_start(enum artifact_export_kind kind, const char *name,
-                                 const char *dest_override, char *err_msg, size_t err_msg_size);
+static int artifact_export_start(const char *name, const char *dest_override, char *err_msg,
+                                 size_t err_msg_size);
 static void publish_hostbuild_artifact(const char *name);
 static void spawn_cix_bootroot_assembly(const char *artifact_dir);
 /* ADR-0327: the host roll, defined after spawn_cix_bootroot_assembly(). */
@@ -9778,24 +9759,23 @@ static char g_iso_built_version[64];
 
 
 /*
- * Issue #126: export an image's current version as a whole-rootfs
- * tarball, so compiled output can be pulled off one host and installed
- * on another instead of being rebuilt from source.
+ * Export a hostbuild's installed tree as a CIXPKG (issue #129), so the
+ * output of a hostbuild -- the self-hosted kernel and cix, the most
+ * expensive things this project builds -- can leave the box that built
+ * it. A hostbuild artifact (ADR-0056) lives in a plain host directory
+ * that is deliberately never container-visible, so before this it had
+ * no retrieval route at all.
  *
- * The output filename is deliberately EXACTLY what the consuming side
- * already computes: ADR-0123's image-artifact fetch asks for
- * <base_url>/images/<name>-<hash>.tar.gz, where hash is the image
- * version (image_hash_manifest_string() over the sorted manifest). So
- * an exported file dropped behind any plain HTTP server is directly
- * consumable by a peer cixd's own image recipe -- no new protocol, no
- * translation step, and the existing checksum verification still gates
- * trust (the artifact server is never a trust boundary).
+ * Images are not exported. Issue #126 once exported an image's rootfs
+ * as a tarball for ADR-0123's image-artifact fetch; ADR-0209 retired
+ * that consumer, and ADR-0328 removed the export with it -- an image is
+ * its package set plus its manifest, and package artifacts are the only
+ * published binaries.
  *
- * Asynchronous with a status poll, like the ISO build above: tarring a
- * multi-gigabyte rootfs would freeze this daemon's single event loop
- * for minutes, which is exactly the wedge ADR-0180 exists to prevent.
- * One export at a time -- an operator exports a handful of images
- * deliberately, and a per-job identifier would be machinery with no
+ * Asynchronous with a status poll, like the ISO build above: packaging
+ * a large tree would freeze this daemon's single event loop for
+ * minutes, which is exactly the wedge ADR-0180 exists to prevent. One
+ * export at a time -- a per-job identifier would be machinery with no
  * caller.
  */
 enum artifact_export_state {
@@ -9805,29 +9785,13 @@ enum artifact_export_state {
 	ARTIFACT_EXPORT_FAILED
 };
 
-/*
- * Issue #129: what the running export is OF. The two subjects differ
- * only in where the bytes come from and what the resulting file is
- * called -- tarring, reaping, status and chunked download are
- * identical, so they share one state machine rather than growing a
- * second parallel one.
- *
- * A hostbuild artifact (ADR-0056) is the case that forced this: it
- * lives in a plain host directory that is deliberately never
- * container-visible, so GET /v1/containers/{n}/files cannot reach it
- * and it had no retrieval route at all -- the self-hosted kernel, the
- * single most expensive thing this project builds, existed only as
- * bytes on one box's disk.
- */
-
 static enum artifact_export_state g_artifact_export_state;
-static enum artifact_export_kind g_artifact_export_kind;
 static char g_artifact_export_name[PKG_IMAGE_NAME_MAX];
 static char g_artifact_export_version[IMAGE_VERSION_MAX];
 static char g_artifact_export_path[PATH_MAX];
 static char g_artifact_export_error[256];
 /*
- * A publish that had to build its own tarball first: the export runs to
+ * A publish that had to build its own artifact first: the export runs to
  * the cache path a push reads from, and the push is enqueued only once
  * the bytes are actually there. Empty when the export is an ordinary
  * operator-requested one.
@@ -9838,17 +9802,17 @@ static char g_artifact_export_publish_name[PKG_NAME_MAX];
  * Issue #200: make a hostbuild's output publishable.
  *
  * A hostbuild's artifact is a DIRECTORY this host assembled, never a
- * tarball it fetched, so pkg.c's post-build enqueue had nothing for the
+ * file it fetched, so pkg.c's post-build enqueue had nothing for the
  * pusher to upload and every push was skipped. The artifact cache's
  * newest `cix` sat at v2.2.0-rc30 while the box that built it ran rc35;
  * `kernel` and `isotools` were affected identically. Ordinary
  * source-built packages were fine only because their branch put the
  * artifact into the local cache before enqueuing; a hostbuild's never did.
  *
- * Build the tarball from the installed tree first -- the same export
- * the manual publish endpoint uses, so there is one way to produce
- * these bytes rather than two -- and let its completion queue the push
- * through g_artifact_export_publish_name, exactly as that path does.
+ * Package the installed tree first -- the same export the manual
+ * publish endpoint uses, so there is one way to produce these bytes
+ * rather than two -- and let its completion queue the push through
+ * g_artifact_export_publish_name, exactly as that path does.
  *
  * Silent when there is nothing to do: not a hostbuild, or already
  * cached (a cache hit, which pkg.c does not enqueue anyway).
@@ -9866,7 +9830,7 @@ static void publish_hostbuild_artifact(const char *name)
 	 * The HOSTBUILD entry specifically. A name-only resolve answers
 	 * with whichever entry g_packages holds first, and for `kernel`
 	 * that is the `base` install from a cached artifact, not the
-	 * hostbuild -- so this returned at !is_hostbuild, no tarball was
+	 * hostbuild -- so this returned at !is_hostbuild, no artifact was
 	 * ever built, and no host-built kernel reached the artifact cache
 	 * (#520). `cix` was unaffected only because its one entry is the
 	 * hostbuild.
@@ -9878,21 +9842,14 @@ static void publish_hostbuild_artifact(const char *name)
 		return;
 
 	/*
-	 * The path this will be WRITTEN to, in the format the recipe
-	 * declares (ADR-0307) -- not pkg_artifact_cache_path(), whose
-	 * job is to find a file that exists and which therefore always
-	 * fell through to its `.tar.gz` default here, because this
-	 * function returns above when the artifact already exists. Every
-	 * hostbuild published a tarball for that one reason (cix#528).
+	 * The path this will be WRITTEN to: the .cixpkg spelling, not
+	 * pkg_artifact_cache_path(), whose job is to find a file that exists
+	 * and whose not-found answer is spelled .tar.gz. Every hostbuild once
+	 * published a tarball for that one reason (cix#528).
 	 */
-	{
-		char format[PKG_ARTIFACT_FORMAT_MAX];
-
-		(void)pkg_hostbuild_package_info(name, version, format, sizeof(format), NULL, 0, NULL);
-		pkg_artifact_cache_path_for(name, version, format, dest, sizeof(dest));
-	}
+	pkg_artifact_cache_path_for(name, version, PKG_ARTIFACT_FORMAT_CIXPKG, dest, sizeof(dest));
 	snprintf(g_artifact_export_publish_name, sizeof(g_artifact_export_publish_name), "%s", name);
-	if (artifact_export_start(ARTIFACT_EXPORT_KIND_HOSTBUILD, name, dest, err, sizeof(err)) != 0) {
+	if (artifact_export_start(name, dest, err, sizeof(err)) != 0) {
 		g_artifact_export_publish_name[0] = '\0';
 		/* Name the package and the reason: this whole class went
 		 * unnoticed for five releases behind a message that asserted
@@ -9903,9 +9860,9 @@ static void publish_hostbuild_artifact(const char *name)
 		                name, version, err);
 	}
 }
-/* Read end of the tar child's stderr pipe -- -1 when no export is
+/* Read end of the export child's stderr pipe -- -1 when no export is
  * running. Drained (bounded) at completion so a failure names its
- * actual cause instead of only an exit status; "tar failed (status
+ * actual cause instead of only an exit status; "failed (status
  * 0x200)" with the real complaint invisible is precisely the
  * diagnostic gap issue #125/#132 already document for other paths. */
 static int g_artifact_export_errfd = -1;
@@ -9917,7 +9874,7 @@ static void register_artifact_export_pidfd(pid_t pid, int pidfd)
 
 	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
-		perror("malloc (image export reactor conn)");
+		perror("malloc (artifact export reactor conn)");
 		abort();
 	}
 	cc->kind = CONN_ARTIFACT_EXPORT;
@@ -9928,7 +9885,7 @@ static void register_artifact_export_pidfd(pid_t pid, int pidfd)
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
 	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
-		perror("epoll_ctl ADD image export pidfd");
+		perror("epoll_ctl ADD artifact export pidfd");
 		abort();
 	}
 }
@@ -9982,7 +9939,7 @@ static void handle_artifact_push_event(struct conn *cc)
 	artifact_push_pump();
 }
 
-/* Reaps the tar child; the POST returned 202 long ago, so the result
+/* Reaps the cbs package child; the POST returned 202 long ago, so the result
  * only ever reaches the operator through GET .../export. */
 static void handle_artifact_export_event(struct conn *cc)
 {
@@ -9995,9 +9952,9 @@ static void handle_artifact_export_event(struct conn *cc)
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status) &&
 	    WEXITSTATUS(status) == 0) {
 		g_artifact_export_state = ARTIFACT_EXPORT_READY;
-		logstore_write("cixd", "info", "image export: %s@%s ready at %s", g_artifact_export_name,
+		logstore_write("cixd", "info", "artifact export: %s@%s ready at %s", g_artifact_export_name,
 		               g_artifact_export_version, g_artifact_export_path);
-		/* The tarball exists now, which is the whole reason this
+		/* The artifact exists now, which is the whole reason this
 		 * export ran -- enqueue the push it was built for. */
 		if (g_artifact_export_publish_name[0] != '\0') {
 			/* The hostbuild entry, not whichever entry of that
@@ -10029,15 +9986,15 @@ static void handle_artifact_export_event(struct conn *cc)
 			errbuf[--errn] = '\0';
 		g_artifact_export_state = ARTIFACT_EXPORT_FAILED;
 		snprintf(g_artifact_export_error, sizeof(g_artifact_export_error),
-		         "tar failed (status 0x%x)%s%s", (unsigned)status, errn > 0 ? ": " : "",
+		         "cbs package failed (status 0x%x)%s%s", (unsigned)status, errn > 0 ? ": " : "",
 		         errbuf);
 		unlink(g_artifact_export_path);
-		logstore_write("cixd", "error", "image export: %s failed -- %s", g_artifact_export_name,
+		logstore_write("cixd", "error", "artifact export: %s failed -- %s", g_artifact_export_name,
 		               g_artifact_export_error);
 		if (g_artifact_export_publish_name[0] != '\0') {
 			logstore_write("cixd", "error",
-			                "artifact publish: %s not published -- could not build its "
-			                "tarball from the installed tree",
+			                "artifact publish: %s not published -- could not package its "
+			                "installed tree",
 			                g_artifact_export_publish_name);
 			g_artifact_export_publish_name[0] = '\0';
 		}
@@ -10051,29 +10008,31 @@ static void handle_artifact_export_event(struct conn *cc)
 }
 
 /*
- * Starts the export. Returns 0 with the job running, -1 with err_msg
- * filled. The source tree is tarred from its own directory
- * (tar -C <src> . ) so the archive holds the tree's CONTENTS at top
- * level -- for an image that is exactly the shape ADR-0123's consumer
- * extracts straight into a new version's rootfs, and for a hostbuild
- * artifact it is the shape ADR-0122's package-artifact consumer
- * expects.
+ * Starts the export of a hostbuild's installed tree. Returns 0 with the
+ * job running, -1 with err_msg filled.
  *
- * The output filename is <name>-<version>.tar.gz for both kinds,
- * which is deliberately the exact name the artifact cache serves at
- * (ADR-0122 for packages, ADR-0123's images/ prefix for images) --
- * an export can be pushed to the cache verbatim, with no renaming
- * step that could drift from what a puller later asks for.
+ * The artifact is a CIXPKG and nothing else, written by `cbs package`
+ * (cbs#247) from the tree the hostbuild harvested -- whatever language
+ * the recipe that built it was written in, since what is packaged is
+ * the installed bytes, not the recipe. There is no tarball path: the
+ * One Build System Mandate says a package artifact is a .cixpkg, and
+ * an image export, the other thing this machinery once produced, had
+ * no consumer after ADR-0209 and is gone (cix#411, ADR-0328).
+ *
+ * The output filename is <name>-<version>.cixpkg, deliberately the name
+ * the artifact cache serves it at (ADR-0122), so an export can be
+ * pushed verbatim with no renaming step that could drift from what a
+ * puller later asks for.
  */
-static int artifact_export_start(enum artifact_export_kind kind, const char *name,
-                                 const char *dest_override, char *err_msg, size_t err_msg_size)
+static int artifact_export_start(const char *name, const char *dest_override, char *err_msg,
+                                 size_t err_msg_size)
 {
 	char version[IMAGE_VERSION_MAX];
 	char src[PATH_MAX];
 	char out_dir[PATH_MAX];
-	char pkg_format[PKG_ARTIFACT_FORMAT_MAX];
-	char pkg_bare_version[PKG_VERSION_MAX];
-	long long pkg_release = 1;
+	char bare_version[PKG_VERSION_MAX];
+	long long release = 1;
+	enum pkg_error perr;
 	pid_t pid;
 	int pidfd;
 
@@ -10083,28 +10042,17 @@ static int artifact_export_start(enum artifact_export_kind kind, const char *nam
 		return -1;
 	}
 
-	if (kind == ARTIFACT_EXPORT_KIND_IMAGE) {
-		if (image_current_version(name, version, sizeof(version)) != IMAGE_OK) {
-			snprintf(err_msg, err_msg_size, "no such image, or it has no current version");
-			return -1;
-		}
-		image_version_rootfs_path(name, version, src, sizeof(src));
-		snprintf(out_dir, sizeof(out_dir), "%s/images", ARTIFACTS_DIR);
-	} else {
-		enum pkg_error perr =
-		    pkg_hostbuild_artifact_info(name, version, sizeof(version), src, sizeof(src));
-
-		if (perr == PKG_ERR_NOT_FOUND) {
-			snprintf(err_msg, err_msg_size, "no such hostbuild package");
-			return -1;
-		}
-		if (perr != PKG_OK) {
-			snprintf(err_msg, err_msg_size,
-			         "hostbuild \"%s\" is not installed -- nothing to export", name);
-			return -1;
-		}
-		snprintf(out_dir, sizeof(out_dir), "%s/exports", ARTIFACTS_DIR);
+	perr = pkg_hostbuild_artifact_info(name, version, sizeof(version), src, sizeof(src));
+	if (perr == PKG_ERR_NOT_FOUND) {
+		snprintf(err_msg, err_msg_size, "no such hostbuild package");
+		return -1;
 	}
+	if (perr != PKG_OK) {
+		snprintf(err_msg, err_msg_size, "hostbuild \"%s\" is not installed -- nothing to export",
+		         name);
+		return -1;
+	}
+	snprintf(out_dir, sizeof(out_dir), "%s/exports", ARTIFACTS_DIR);
 
 	if (access(src, R_OK) != 0) {
 		snprintf(err_msg, err_msg_size, "source tree is not readable: %s", src);
@@ -10114,45 +10062,15 @@ static int artifact_export_start(enum artifact_export_kind kind, const char *nam
 		snprintf(err_msg, err_msg_size, "could not create %s: %s", out_dir, strerror(errno));
 		return -1;
 	}
-	/*
-	 * cix#528: a HOSTBUILD's format is the one its recipe declares
-	 * (ADR-0307), and since cbs#247 there is something that can
-	 * write it -- `cbs package`, which turns a tree the caller
-	 * assembled into a CIXPKG. Before that, nothing could, which is
-	 * why this path tarred unconditionally.
-	 *
-	 * An IMAGE export is deliberately untouched and stays a tarball:
-	 * it is image_artifact_sha256 territory (ADR-0123) with its own
-	 * consumer, and converting it here would be widening a fix into
-	 * a subsystem nobody has looked at.
-	 */
-	pkg_format[0] = '\0';
-	if (kind == ARTIFACT_EXPORT_KIND_HOSTBUILD)
-		(void)pkg_hostbuild_package_info(name, version, pkg_format, sizeof(pkg_format),
-		                                  pkg_bare_version, sizeof(pkg_bare_version),
-		                                  &pkg_release);
+	(void)pkg_hostbuild_package_info(name, version, bare_version, sizeof(bare_version),
+	                                  &release);
 
 	if (dest_override != NULL)
 		snprintf(g_artifact_export_path, sizeof(g_artifact_export_path), "%s", dest_override);
 	else
 		snprintf(g_artifact_export_path, sizeof(g_artifact_export_path), "%s/%s-%s%s", out_dir,
-		         name, version,
-		         pkg_format[0] != '\0' ? pkg_artifact_suffix(pkg_format) : ".tar.gz");
+		         name, version, pkg_artifact_suffix(PKG_ARTIFACT_FORMAT_CIXPKG));
 	unlink(g_artifact_export_path);
-
-	/*
-	 * Issue #164: the archive is built by targz_run() below, which
-	 * pipes tar into gzip directly. Asking tar to spawn the compressor
-	 * itself (--use-compress-program, issue #125's own fix for the
-	 * bare-"gzip"-on-no-PATH problem) routes the spawn through
-	 * /bin/sh, which the control-plane root deliberately does not have
-	 * -- so every export on a real installed host died reporting
-	 * "/usr/bin/gzip: Cannot exec" against a gzip that was present and
-	 * working. The normalizing flags (ADR-0201/issue #129) travel with
-	 * the tar invocation into targz.c; an export is named exactly what
-	 * the artifact server serves it at, so two hosts exporting the same
-	 * tree must still produce identical bytes -- and they do.
-	 */
 
 	{
 		int errpipe[2];
@@ -10175,6 +10093,8 @@ static int artifact_export_start(enum artifact_export_kind kind, const char *nam
 			return -1;
 		}
 		if (pid == 0) {
+			char release_str[32];
+
 			if (errpipe[1] >= 0)
 				dup2(errpipe[1], 2);
 			/*
@@ -10193,17 +10113,12 @@ static int artifact_export_start(enum artifact_export_kind kind, const char *nam
 			 * a claim about cbs taken from prose has already
 			 * diverged from its source once.
 			 */
-			if (strcmp(pkg_format, PKG_ARTIFACT_FORMAT_CIXPKG) == 0) {
-				char release_str[32];
-
-				snprintf(release_str, sizeof(release_str), "%lld", pkg_release);
-				execl(PKG_CBS_BIN, "cbs", "package", src, "--name", name, "--version",
-				      pkg_bare_version, "--release", release_str, "--arch", pkg_artifact_arch(),
-				      "--output", g_artifact_export_path, (char *)NULL);
-				fprintf(stderr, "execve %s: %s\n", PKG_CBS_BIN, strerror(errno));
-				_exit(127);
-			}
-			_exit(targz_run(src, g_artifact_export_path));
+			snprintf(release_str, sizeof(release_str), "%lld", release);
+			execl(PKG_CBS_BIN, "cbs", "package", src, "--name", name, "--version",
+			      bare_version, "--release", release_str, "--arch", pkg_artifact_arch(),
+			      "--output", g_artifact_export_path, (char *)NULL);
+			fprintf(stderr, "execve %s: %s\n", PKG_CBS_BIN, strerror(errno));
+			_exit(127);
 		}
 		if (errpipe[1] >= 0)
 			close(errpipe[1]);
@@ -10223,7 +10138,6 @@ static int artifact_export_start(enum artifact_export_kind kind, const char *nam
 		return -1;
 	}
 	register_artifact_export_pidfd(pid, pidfd);
-	g_artifact_export_kind = kind;
 	snprintf(g_artifact_export_name, sizeof(g_artifact_export_name), "%s", name);
 	snprintf(g_artifact_export_version, sizeof(g_artifact_export_version), "%s", version);
 	g_artifact_export_error[0] = '\0';
@@ -10232,7 +10146,7 @@ static int artifact_export_start(enum artifact_export_kind kind, const char *nam
 }
 
 /*
- * GET /v1/images/{name}/export/download?offset=N&length=M -- the bytes
+ * GET /v1/pkg/{name}/artifact/export/download?offset=N&length=M -- the bytes
  * of a ready export, in bounded chunks the caller loops over.
  *
  * Deliberately chunked rather than one streamed response. This daemon
@@ -10252,8 +10166,7 @@ static int artifact_export_start(enum artifact_export_kind kind, const char *nam
  */
 #define ARTIFACT_EXPORT_CHUNK_MAX (8 * 1024 * 1024)
 
-static void handle_artifact_export_download(int fd, enum artifact_export_kind kind,
-                                            const char *name, const char *full_path)
+static void handle_artifact_export_download(int fd, const char *name, const char *full_path)
 {
 	long long offset = 0;
 	long long length = ARTIFACT_EXPORT_CHUNK_MAX;
@@ -10263,7 +10176,7 @@ static void handle_artifact_export_download(int fd, enum artifact_export_kind ki
 	ssize_t got;
 
 	if (g_artifact_export_state != ARTIFACT_EXPORT_READY || g_artifact_export_name[0] == '\0' ||
-	    g_artifact_export_kind != kind || strcmp(g_artifact_export_name, name) != 0) {
+	    strcmp(g_artifact_export_name, name) != 0) {
 		respond_error(fd, 404, "Not Found",
 		              "no ready export for this subject -- POST .../export first");
 		return;
@@ -10379,11 +10292,11 @@ static void handle_image_rename(int fd, const char *name, const char *body, size
 	}
 }
 
-static void handle_artifact_export_post(int fd, enum artifact_export_kind kind, const char *name)
+static void handle_artifact_export_post(int fd, const char *name)
 {
 	char err_msg[256];
 
-	if (artifact_export_start(kind, name, NULL, err_msg, sizeof(err_msg)) != 0) {
+	if (artifact_export_start(name, NULL, err_msg, sizeof(err_msg)) != 0) {
 		int code = (strstr(err_msg, "already running") != NULL)  ? 409
 		           : (strstr(err_msg, "no such") != NULL)        ? 404
 		           : (strstr(err_msg, "is not installed") != NULL) ? 409
@@ -10400,15 +10313,14 @@ static void handle_artifact_export_post(int fd, enum artifact_export_kind kind, 
 	http_write_response(fd, 202, "Accepted", "application/json", "", 0);
 }
 
-static void handle_artifact_export_get(int fd, enum artifact_export_kind kind, const char *name)
+static void handle_artifact_export_get(int fd, const char *name)
 {
 	struct json_writer w;
 	const char *state = "none";
 	struct stat st;
 	long long size = -1;
 
-	if (g_artifact_export_name[0] != '\0' && g_artifact_export_kind == kind &&
-	    strcmp(g_artifact_export_name, name) == 0) {
+	if (g_artifact_export_name[0] != '\0' && strcmp(g_artifact_export_name, name) == 0) {
 		switch (g_artifact_export_state) {
 		case ARTIFACT_EXPORT_BUILDING: state = "building"; break;
 		case ARTIFACT_EXPORT_READY: state = "ready"; break;
@@ -10418,7 +10330,7 @@ static void handle_artifact_export_get(int fd, enum artifact_export_kind kind, c
 	}
 	jw_init(&w);
 	jw_obj_open(&w);
-	jw_key(&w, kind == ARTIFACT_EXPORT_KIND_IMAGE ? "image" : "package");
+	jw_key(&w, "package");
 	jw_str(&w, name);
 	jw_key(&w, "state");
 	jw_str(&w, state);
@@ -27537,23 +27449,6 @@ static void op_renameImage(const struct api_ctx *ctx)
 	handle_image_rename(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
 }
 
-static void op_exportImage(const struct api_ctx *ctx)
-{
-	handle_artifact_export_post(ctx->fd, ARTIFACT_EXPORT_KIND_IMAGE, ctx->p[0]);
-}
-
-static void op_getImageExport(const struct api_ctx *ctx)
-{
-	handle_artifact_export_get(ctx->fd, ARTIFACT_EXPORT_KIND_IMAGE, ctx->p[0]);
-}
-
-static void op_downloadImageExport(const struct api_ctx *ctx)
-{
-	/* The full original path goes along: ?offset=&length= live there. */
-	handle_artifact_export_download(ctx->fd, ARTIFACT_EXPORT_KIND_IMAGE, ctx->p[0],
-	                                 ctx->req->path);
-}
-
 /* -- dns / ldap / pki ------------------------------------------- */
 
 static void op_getDnsRecord(const struct api_ctx *ctx)
@@ -27687,18 +27582,17 @@ static void op_deletePkg(const struct api_ctx *ctx)
 
 static void op_exportPkgArtifact(const struct api_ctx *ctx)
 {
-	handle_artifact_export_post(ctx->fd, ARTIFACT_EXPORT_KIND_HOSTBUILD, ctx->p[0]);
+	handle_artifact_export_post(ctx->fd, ctx->p[0]);
 }
 
 static void op_getPkgArtifactExport(const struct api_ctx *ctx)
 {
-	handle_artifact_export_get(ctx->fd, ARTIFACT_EXPORT_KIND_HOSTBUILD, ctx->p[0]);
+	handle_artifact_export_get(ctx->fd, ctx->p[0]);
 }
 
 static void op_downloadPkgArtifactExport(const struct api_ctx *ctx)
 {
-	handle_artifact_export_download(ctx->fd, ARTIFACT_EXPORT_KIND_HOSTBUILD, ctx->p[0],
-	                                 ctx->req->path);
+	handle_artifact_export_download(ctx->fd, ctx->p[0], ctx->req->path);
 }
 
 /*
@@ -27721,12 +27615,10 @@ static void op_publishPkgArtifact(const struct api_ctx *ctx)
 		perr = pkg_artifact_publish_resolve(pkg_name, pv, sizeof(pv), &is_hostbuild);
 		/*
 		 * A hostbuild's artifact is a directory this host assembled,
-		 * never a tarball it fetched, so nothing had ever put one in
-		 * the cache the pusher reads from. Build the tarball from the
-		 * installed tree first, with the same export that already
-		 * guarantees byte-identical output across hosts, and let its
-		 * completion queue the push (#200 fixed the automatic path the
-		 * same way).
+		 * never a file it fetched, so nothing had ever put one in the
+		 * cache the pusher reads from. Package the installed tree with
+		 * `cbs package` first -- the same export the automatic path
+		 * uses (#200) -- and let its completion queue the push.
 		 */
 		if (perr == PKG_OK && !pkg_artifact_cache_has(pkg_name, pv)) {
 			char dest[PATH_MAX];
@@ -27738,11 +27630,13 @@ static void op_publishPkgArtifact(const struct api_ctx *ctx)
 				              "cannot be rebuilt from the installed tree");
 				return;
 			}
-			pkg_artifact_cache_path(pkg_name, pv, dest, sizeof(dest));
+			/* Written, not found: the .cixpkg path, never the existing-file
+			 * lookup whose not-found answer is spelled .tar.gz (cix#528). */
+			pkg_artifact_cache_path_for(pkg_name, pv, PKG_ARTIFACT_FORMAT_CIXPKG, dest,
+			                            sizeof(dest));
 			snprintf(g_artifact_export_publish_name,
 			         sizeof(g_artifact_export_publish_name), "%s", pkg_name);
-			if (artifact_export_start(ARTIFACT_EXPORT_KIND_HOSTBUILD, pkg_name, dest,
-			                           eerr, sizeof(eerr)) != 0) {
+			if (artifact_export_start(pkg_name, dest, eerr, sizeof(eerr)) != 0) {
 				g_artifact_export_publish_name[0] = '\0';
 				respond_error(ctx->fd, 409, "Conflict", eerr);
 				return;
@@ -27753,7 +27647,7 @@ static void op_publishPkgArtifact(const struct api_ctx *ctx)
 				jw_init(&w);
 				jw_obj_open(&w);
 				jw_key(&w, "status");
-				jw_str(&w, "building artifact tarball");
+				jw_str(&w, "building artifact");
 				jw_obj_close(&w);
 				respond_json(ctx->fd, 202, "Accepted", &w);
 			}

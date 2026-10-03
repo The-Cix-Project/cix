@@ -515,7 +515,7 @@ See [`networking.md`](networking.md).
 | `pkg cache-clear` | Remove every cached artifact |
 | `pkg repository ls` / `pkg repository add NAME --url=URL [--token=TOKEN] [--push=on\|off]` / `pkg repository set NAME [--url=URL] [--token=TOKEN \| --clear-token] [--push=on\|off]` / `pkg repository rm NAME` | Where built packages come from, in order ([ADR-0324](../adr/0324-many-recipe-sources-and-many-package-repositories.md)): mirrors tried in turn, every copy verified, so order is speed and never trust. `--push=on` makes a fresh build publish its result there ([ADR-0201](../adr/0201-artifacts-are-retrievable-and-self-publishing.md)); off by default, needs a token. Every repository marked push gets its own copy |
 | `pkg artifact-publish NAME` | Publish an already-built artifact without rebuilding it |
-| `pkg artifact-export NAME [--out=FILE]` | Download a hostbuild package's artifact (`kernel`, `cix`, `isotools`) to a local file, named `{name}-{version}.tar.gz` by default |
+| `pkg artifact-export NAME [--out=FILE]` | Download a hostbuild package's artifact (`kernel`, `cix`, `isotools`) to a local file, a `.cixpkg` written by `cbs package` and named `{name}-{version}.cixpkg` by default (ADR-0328) |
 | `pkg bootstrap [--toolchain=PATH]` / `pkg bootstrap --toolchain-url=URL --toolchain-sha256=SHA256 [--wait]` | Stage a toolchain artifact into the shared build image (ADR-0065). With no flag it copies the daemon host's own toolchain, which is empty on an installed host; build images are normally made with `image materialize` ([Build images](writing-recipes.md#build-images)) |
 | `pkg bootstrap-status` | State and error of the most recent `--toolchain-url=` fetch |
 

@@ -224,7 +224,6 @@ static const struct budget g_budgets[] = {
 	 * already gone.
 	 */
 	{ "daemon/src/pkg.c", 9, "build helpers and fetch intermediates, plus ADR-0305's `cbs explain` (a bounded parse of a local file, its pipe closed before the wait); #352 dropped one (pkg_run_capture_sha256(), no more forked sha256sum), #411 dropped another (tarball_has_common_top_dir(), no more forked tar -tf), #410 dropped three more (start_fetch_for()'s curl children, replaced by in-process curlfetch_perform())" },
-	{ "daemon/src/targz.c", 4, "tar/gzip pipeline, bounded by the archive" },
 	{ "daemon/src/diskpart.c", 4, "sfdisk/blkid, bounded external tools" },
 	{ "daemon/src/exec.c", 2, "namespace-join intermediates" },
 	{ "daemon/src/diskformat.c", 2, "mkfs intermediate" },
@@ -270,8 +269,10 @@ static const struct budget g_budgets[] = {
  * bounded setns() helper its per-file entry above argues for. Then
  * 58 -> 57 for #464: main.c's run_cmd(), an unbounded wait on a
  * whole-rootfs `cp`, removed along with the fork. Then 57 -> 56 for
- * #351: opensslrun.c's wait on a forked openssl, gone with the file. */
-#define TOTAL_ALLOWED 56
+ * #351: opensslrun.c's wait on a forked openssl, gone with the file.
+ * Then 56 -> 52 for ADR-0328: targz.c's four waits on its tar and gzip
+ * children, gone with the file and the tarball it wrote. */
+#define TOTAL_ALLOWED 52
 
 static int is_comment(const char *line)
 {
