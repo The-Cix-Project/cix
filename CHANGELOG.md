@@ -6,6 +6,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The root is mounted `ro` (#250)
+
+Both loader entries asked for `rw`: the installer's (`image/src/cix-install.c`) and the one `do_system_update()` writes for every update. A root slot only ever holds a squashfs, which cannot be written, and the #250 audit found no write to the host root. Every writable path is its own mount: `/boot`, `/config`, `/var/lib/cix`, `/mnt/cix` and `/dev`. Both entries now say `ro`, so the boot line states the model the platform already runs. An update writes the new entry for the slot it stages, so a box picks this up from its next update.
+
 ### The author stage refuses a revision that still names the old release (#567)
 
 Discovery wrote `kernel@7.2.9-1` from `kernel@7.2.3-19` on 2026-10-03. `cbs revise` changed what it was asked to, but the recipe body spelled `7.2.3` into 13 paths, so the revision unpacked `linux-7.2.9` and then built paths that did not exist. It was committed and published anyway.

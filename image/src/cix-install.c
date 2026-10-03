@@ -795,7 +795,7 @@ static int populate_esp(const char *esp_mount, const char *ip, const char *root_
 	         /* ADR-0246: cixd is init again until a restarted worker is
 	          * proven to come up -- see the daemon's own entry writer
 	          * for the measurement that reverted this. */
-	         "options console=tty0 console=ttyS0 root=PARTUUID=%s rw panic=10 init=/bin/cixd "
+	         "options console=tty0 console=ttyS0 root=PARTUUID=%s ro panic=10 init=/bin/cixd "
 	         "-- --init-mode --slot=a\n",
 	         root_partuuid);
 	if (write_text_file(path, loader_conf) != 0)

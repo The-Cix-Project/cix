@@ -3350,7 +3350,15 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		          * The --bind= FLAG stays, for test and dev invocations
 		          * that have no net.conf at all.
 		          */
-		         "options %s%sroot=PARTUUID=%s rw panic=10 init=/bin/cixd -- --init-mode "
+		         /*
+		          * ro (#250): the root is a raw squashfs and nothing
+		          * writes it -- every writable path is its own mount
+		          * (/boot, /config, /var/lib/cix, /mnt/cix, /dev; audited
+		          * in #250). do_system_update() writes a slot only with
+		          * a squashfs. rw asked the kernel for something squashfs
+		          * cannot give, and said the model was otherwise.
+		          */
+		         "options %s%sroot=PARTUUID=%s ro panic=10 init=/bin/cixd -- --init-mode "
 		         "--slot=%s\n",
 		         inactive_slot[0] == 'a' ? "A" : "B", (long)time(NULL), inactive_slot,
 		         console_opts, console_opts[0] != '\0' ? " " : "", root_partuuid,
