@@ -185,6 +185,7 @@ static const struct cli_node n_backup_config_subs[] = {
 
 static const char *const n_rolling_config_set_flags[] = {
 	"--jitter-window-seconds=",
+	"--rollback-window-seconds=",
 	NULL
 };
 
@@ -1406,6 +1407,12 @@ static const char *const n_pkg_recipe_show_flags[] = {
 	NULL
 };
 
+static const struct cli_node n_pkg_bad_versions_subs[] = {
+	{ "clear", NULL, NULL },
+	{ "ls", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
 static const struct cli_node n_pkg_trusted_origins_subs[] = {
 	{ "add", NULL, NULL },
 	{ "ls", NULL, NULL },
@@ -1485,6 +1492,7 @@ static const struct cli_node n_pkg_subs[] = {
 	{ "source-policy", n_pkg_source_policy_flags, n_pkg_source_policy_subs },
 	{ "upstreams", NULL, NULL },
 	{ "source-catalogue", NULL, NULL },
+	{ "bad-versions", NULL, n_pkg_bad_versions_subs },
 	{ "trusted-origins", NULL, n_pkg_trusted_origins_subs },
 	{ "rebuilds", NULL, NULL },
 	{ "recipe", NULL, n_pkg_recipe_subs },

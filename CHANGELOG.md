@@ -6,6 +6,23 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A rolled container that fails goes back, and the version is marked bad (ADR-0323 answer 4)
+
+- **After a roll, a `follow_rolling` container has `rollback_window_seconds` to be ready** (`PUT /v1/system/rolling-config`, default 300, 10-3600; `cixctl rolling-config set --rollback-window-seconds=N`). It returns to the image version it ran before when any of these happens:
+  - it is not ready when the window closes;
+  - it exits three times, each within 30 s of starting, before the window closes;
+  - the new version cannot be created.
+
+  Ready at the deadline confirms the roll. An operator stop ends the watch.
+- **Every package that differed between the two image versions is marked bad.** If none differed, the image version itself is marked, as `@<image>`.
+  - Rolling skips an image version that carries a mark, and logs the refusal once.
+  - A mark ends when the package has a newer recipe, or by `DELETE /v1/pkg/bad-versions/{name}/{version}` (`cixctl pkg bad-versions clear NAME VERSION`).
+  - Marks persist across restarts, as does a roll on probation.
+- **The source catalogue reports a marked version** as `verify / failed`, naming the container and the reason.
+- **Image GC keeps the version a roll on probation would go back to.**
+- `PUT /v1/system/rolling-config` takes either field alone, and checks both before saving either, so a 400 changes nothing.
+- Tests: `test_pkgbad` (new, in SELFTESTS) and `test_srcresolve` (marked, then cleared). `test_rolling_restart` gains the end-to-end case (crash-loop, back, marked, skipped on the next pass, cleared, then a healthy release confirmed) and is now in FLOOR_SELFTESTS. `test_apigen` counts 339 operations.
+
 ### A package can be held: the source-policy `pinned` (#565)
 
 - **`cixctl pkg source-policy set NAME --pinned=on|off`**, or `PUT /v1/pkg/{name}/source-policy {"pinned": true}`, holds a package where it is.

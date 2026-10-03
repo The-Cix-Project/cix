@@ -167,8 +167,8 @@ Runbooks: [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and
 | `tls-throttle status` | Every source currently tracked (in memory, not persisted) |
 | `control-plane-reservation show` | CPU and memory held back for the daemon, the host totals, and the ceiling applied to the `cix-workload` cgroup that every container and build runs under (#86) |
 | `control-plane-reservation set [--enabled \| --disabled] [--cpu-percent=N] [--memory-bytes=N]` | Change it; applied to the live cgroup immediately. `cpu_percent` is 1-50 |
-| `rolling-config show` | The rolling-restart jitter window (`jitter_window_seconds`) used by `container run --follow-rolling` (ADR-0124) |
-| `rolling-config set --jitter-window-seconds=N` | 0-3600; `0` restarts immediately on every rolling reconcile |
+| `rolling-config show` | The rolling-restart jitter window (`jitter_window_seconds`) used by `container run --follow-rolling` (ADR-0124), and the rollback window (`rollback_window_seconds`, ADR-0323) |
+| `rolling-config set [--jitter-window-seconds=N] [--rollback-window-seconds=N]` | Jitter 0-3600 (`0` restarts immediately on every rolling reconcile); rollback window 10-3600, how long a rolled container has to be ready before it goes back to the version it ran. Either alone is fine |
 | `pkg-build-config show` | How many package jobs may run at once (`max_concurrent_jobs`, default 10), and the memory and CPU budget all builds share (#85): `memory_max`, the most a recipe's declared `resources { memory }` may raise it to (`memory_max_ceiling`, #558), and what the build parent has right now (`memory_max_effective`) |
 | `pkg-build-config set [--max-concurrent-jobs=N] [--memory-max=BYTES] [--memory-max-ceiling=BYTES] [--cpu-max="QUOTA PERIOD"]` | Change only the flags given. `max-concurrent-jobs` is 1-10; lowering it affects only future jobs. `--memory-max=0` or `--cpu-max=""` means unlimited. The ceiling is never below `memory-max` (0 is no ceiling), so raising `memory-max` past it needs both flags (ADR-0322). `cpu-max` is raw cgroup v2 `cpu.max` syntax, as for `container run --cpu-max=` |
 
@@ -505,6 +505,7 @@ See [`networking.md`](networking.md).
 | `pkg upstreams` | The upstream discovery kinds a recipe may declare, and their channels ([ADR-0255](../adr/0255-a-recipe-is-a-rule-not-a-version.md)) |
 | `pkg source-catalogue` | What upstream has published, against what this platform has recipes for |
 | `pkg trusted-origins ls \| add ORIGIN \| rm ORIGIN \| set [ORIGIN...]` | The origins trusted to authenticate a release by origin (ADR-0323, rung 4): a recipe's `verify origin` counts only when its source's origin is listed. A fresh host trusts none; add the owner's forge with `add https://git.home.arpa` |
+| `pkg bad-versions ls \| clear NAME VERSION` | Package versions that failed at runtime after a roll (ADR-0323): the container went back, and rolling skips any image version carrying one until the package has a newer recipe or it is cleared here. `@IMAGE` names an image version marked when no package differed |
 | `pkg source-policy ls` | Which upstream release each package builds |
 | `pkg source-policy set-default [--channel=C] [--depth=n-<lines>.<releases>]` / `pkg source-policy set NAME [--channel=C] [--depth=D]` / `pkg source-policy clear NAME` | Set the default, set one package's policy, or return it to the default |
 | `pkg source-policy set NAME --pinned=on\|off` | Hold a package where it is (#565): discovery writes no new revision for it, and the catalogue reports the release as held. Alone, it changes only the hold; `clear` keeps a hold |

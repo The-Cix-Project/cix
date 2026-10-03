@@ -60,6 +60,13 @@ static int save_state(void)
 		 * state file from an older daemon needs no migration. */
 		jw_key(&w, "awaiting_image");
 		jw_str(&w, d->awaiting_image);
+		/* ADR-0323 answer 4: the roll on probation, if any. */
+		jw_key(&w, "roll_from");
+		jw_str(&w, d->roll_from);
+		jw_key(&w, "roll_to");
+		jw_str(&w, d->roll_to);
+		jw_key(&w, "roll_deadline");
+		jw_int(&w, d->roll_deadline);
 		jw_key(&w, "body");
 		jw_str(&w, d->body);
 		jw_obj_close(&w);
@@ -149,6 +156,46 @@ int containerdef_set_awaiting_image(const char *name, const char *image)
 	snprintf(d->awaiting_image, sizeof(d->awaiting_image), "%s", image != NULL ? image : "");
 	if (d->awaiting_image[0] == '\0')
 		d->last_replay_error[0] = '\0';
+	return save_state();
+}
+
+int containerdef_set_roll(const char *name, const char *from, const char *to)
+{
+	struct container_def *d = containerdef_find(name);
+
+	if (d == NULL || from == NULL || to == NULL || strlen(from) >= sizeof(d->roll_from) ||
+	    strlen(to) >= sizeof(d->roll_to))
+		return -1;
+	snprintf(d->roll_from, sizeof(d->roll_from), "%s", from);
+	snprintf(d->roll_to, sizeof(d->roll_to), "%s", to);
+	d->roll_deadline = 0;
+	d->roll_failures = 0;
+	return save_state();
+}
+
+int containerdef_set_roll_deadline(const char *name, long long deadline)
+{
+	struct container_def *d = containerdef_find(name);
+
+	if (d == NULL || d->roll_to[0] == '\0')
+		return -1;
+	d->roll_deadline = deadline;
+	d->roll_failures = 0;
+	return save_state();
+}
+
+int containerdef_clear_roll(const char *name)
+{
+	struct container_def *d = containerdef_find(name);
+
+	if (d == NULL)
+		return -1;
+	if (d->roll_to[0] == '\0' && d->roll_deadline == 0)
+		return 0;
+	d->roll_from[0] = '\0';
+	d->roll_to[0] = '\0';
+	d->roll_deadline = 0;
+	d->roll_failures = 0;
 	return save_state();
 }
 
@@ -531,6 +578,9 @@ static int parse_persisted_entry(const struct json_value *item, struct container
 	const struct json_value *jfollow_rolling_jitter =
 	    json_object_get(item, "follow_rolling_jitter_seconds");
 	const char *awaiting = json_as_string(json_object_get(item, "awaiting_image"));
+	const char *roll_from = json_as_string(json_object_get(item, "roll_from"));
+	const char *roll_to = json_as_string(json_object_get(item, "roll_to"));
+	const struct json_value *jroll_deadline = json_object_get(item, "roll_deadline");
 	size_t i;
 
 	if (name == NULL || name[0] == '\0' || strlen(name) >= REGISTRY_NAME_MAX || body == NULL)
@@ -538,6 +588,13 @@ static int parse_persisted_entry(const struct json_value *item, struct container
 
 	memset(slot, 0, sizeof(*slot));
 	strncpy(slot->name, name, sizeof(slot->name) - 1);
+	/* ADR-0323 answer 4: absent (an older daemon's file) is no roll. */
+	if (roll_from != NULL && roll_to != NULL && strlen(roll_from) < sizeof(slot->roll_from) &&
+	    strlen(roll_to) < sizeof(slot->roll_to)) {
+		snprintf(slot->roll_from, sizeof(slot->roll_from), "%s", roll_from);
+		snprintf(slot->roll_to, sizeof(slot->roll_to), "%s", roll_to);
+		slot->roll_deadline = (long long)json_as_number(jroll_deadline);
+	}
 	/* ADR-0270. Absent (an older daemon's state file) or empty both
 	 * mean "not waiting", which is what the memset above already left
 	 * behind -- so only a real name needs copying, and an oversized one
@@ -972,6 +1029,7 @@ int containerdef_patch_disk(const char *name, const char *new_disk)
 
 static char g_rolling_config_path[PATH_MAX];
 static int g_jitter_window_seconds = CONTAINERDEF_JITTER_DEFAULT_SECONDS;
+static int g_rollback_window_seconds = CONTAINERDEF_ROLLBACK_WINDOW_DEFAULT_SECONDS;
 
 static int save_rolling_config(void)
 {
@@ -982,6 +1040,8 @@ static int save_rolling_config(void)
 	jw_obj_open(&w);
 	jw_key(&w, "jitter_window_seconds");
 	jw_int(&w, g_jitter_window_seconds);
+	jw_key(&w, "rollback_window_seconds");
+	jw_int(&w, g_rollback_window_seconds);
 	jw_obj_close(&w);
 	rc = persist_atomic_write(g_rolling_config_path, w.buf, w.len);
 	jw_free(&w);
@@ -1004,6 +1064,7 @@ int containerdef_rolling_config_init(const char *config_path)
 	    (int)sizeof(g_rolling_config_path))
 		return -1;
 	g_jitter_window_seconds = CONTAINERDEF_JITTER_DEFAULT_SECONDS;
+	g_rollback_window_seconds = CONTAINERDEF_ROLLBACK_WINDOW_DEFAULT_SECONDS;
 
 	if (persist_read_file(config_path, &buf, &len) != 0 || buf == NULL)
 		return 0; /* no persisted config yet -- the default stands */
@@ -1013,6 +1074,14 @@ int containerdef_rolling_config_init(const char *config_path)
 	if (root == NULL)
 		return 0;
 
+	{
+		const struct json_value *jrb = json_object_get(root, "rollback_window_seconds");
+		double v = jrb != NULL ? json_as_number(jrb) : -1;
+
+		if (v >= CONTAINERDEF_ROLLBACK_WINDOW_MIN_SECONDS &&
+		    v <= CONTAINERDEF_ROLLBACK_WINDOW_MAX_SECONDS)
+			g_rollback_window_seconds = (int)v;
+	}
 	jwindow = json_object_get(root, "jitter_window_seconds");
 	if (jwindow != NULL) {
 		double v = json_as_number(jwindow);
@@ -1034,5 +1103,19 @@ int containerdef_jitter_window_set(int seconds)
 	if (seconds < 0 || seconds > CONTAINERDEF_JITTER_MAX_SECONDS)
 		return -1;
 	g_jitter_window_seconds = seconds;
+	return save_rolling_config();
+}
+
+int containerdef_rollback_window_get(void)
+{
+	return g_rollback_window_seconds;
+}
+
+int containerdef_rollback_window_set(int seconds)
+{
+	if (seconds < CONTAINERDEF_ROLLBACK_WINDOW_MIN_SECONDS ||
+	    seconds > CONTAINERDEF_ROLLBACK_WINDOW_MAX_SECONDS)
+		return -1;
+	g_rollback_window_seconds = seconds;
 	return save_rolling_config();
 }

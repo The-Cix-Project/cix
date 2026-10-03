@@ -28,6 +28,7 @@
 
 #include "kernelpolicy.h"
 #include "pkg.h"
+#include "pkgbad.h"
 #include "srcgitea.h"
 #include "srcpolicy.h"
 
@@ -69,6 +70,7 @@ static int g_failures;
 static char g_pol_path[256];
 static char g_kern_path[256];
 static char g_rel_path[256];
+static char g_bad_path[256];
 static char g_git_dir[256];
 
 static void fail(const char *fmt, const char *a, const char *b)
@@ -297,6 +299,33 @@ int main(void)
 			if (srcpolicy_set_pinned("hibr", 0, err, sizeof(err)) != 0) {
 				fprintf(stderr, "  FAIL: could not lift the hold: %s\n", err);
 				return 1;
+			}
+			/*
+			 * ADR-0323 answer 4: the version built, and a container
+			 * rolled onto it failed. The row says verify/failed with the
+			 * container and the reason, until the mark is cleared.
+			 */
+			{
+				struct pkgbad_entry bad;
+
+				snprintf(g_bad_path, sizeof(g_bad_path), "/tmp/cix_srcresolve_bad_%d.json",
+				         (int)getpid());
+				unlink(g_bad_path);
+				memset(&bad, 0, sizeof(bad));
+				snprintf(bad.package, sizeof(bad.package), "hibr");
+				snprintf(bad.version, sizeof(bad.version), "0.99.5-1");
+				snprintf(bad.container, sizeof(bad.container), "jump");
+				snprintf(bad.reason, sizeof(bad.reason), "not ready 300 s after rolling");
+				if (pkgbad_init(g_bad_path) != 0 || pkgbad_add(&bad) != 0) {
+					fprintf(stderr, "  FAIL: could not mark hibr bad\n");
+					return 1;
+				}
+				expect("failed after a roll", "hibr", "gitea-tags", CURRENT, 2, PIPELINE_VERIFY,
+				        PIPELINE_FAILED, "0.99.5", "failed in jump and was rolled back");
+				pkgbad_remove("hibr", "0.99.5-1");
+				expect("mark cleared", "hibr", "gitea-tags", CURRENT, 2, PIPELINE_AUTHOR,
+				        PIPELINE_OK, "0.99.5", NULL);
+				unlink(g_bad_path);
 			}
 			expect("hold lifted", "hibr", "gitea-tags", OLD, 1, PIPELINE_AUTHOR,
 			        PIPELINE_BLOCKED, "0.99.5", NULL);

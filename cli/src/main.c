@@ -406,13 +406,16 @@ static const char USAGE_TEXT[] =
 	        "               leave nobody holding identity:write)\n"
 	        "  app-password ls|add NAME|rm NAME  -- your own app passwords, the machine\n"
 	        "               credential scripts send as HTTP Basic (needs a login session)\n"
-	        "  rolling-config show  -- current daemon-wide rolling-restart jitter window default\n"
-	        "               (Part 5, ADR-0124)\n"
+	        "  rolling-config show  -- the rolling-restart jitter window and the rollback window\n"
+	        "               (Part 5, ADR-0124; ADR-0323)\n"
 	        "  rolling-config set --jitter-window-seconds=N  -- 0-3600, 0 = no jitter (restart\n"
 	        "               immediately); spreads out simultaneous restarts of every\n"
 	        "               follow_rolling container sharing an image that just rebuilt --\n"
 	        "               a single follow_rolling container can override this default via\n"
 	        "               run --follow-rolling-jitter-seconds=N at creation time\n"
+	        "  rolling-config set --rollback-window-seconds=N  -- 10-3600 (default 300): how long a\n"
+	        "               container rolled to a new image version has to be ready before it\n"
+	        "               goes back to the version before (ADR-0323; see pkg bad-versions)\n"
 	        "  pkg-build-config show  -- how many pkg install/hostbuild jobs may genuinely\n"
 	        "               run at once, and the memory/CPU budget all of them share\n"
 	        "               (ADR-0157/ADR-0165, #85): memory_max, the ceiling a recipe's\n"
@@ -8109,12 +8112,15 @@ static int cmd_backup_config(const struct cix_client *c, int json_mode, int argc
 
 /*
  * Part 5 (ADR-0124): cixctl rolling-config show|set -- mirrors
- * cmd_daemon_config's own shape exactly, one field instead of several.
+ * cmd_daemon_config's own shape. ADR-0323 answer 4 adds the rollback
+ * window; set sends only the fields given, and the daemon keeps the rest.
  */
 static void fmt_rolling_config(const struct json_value *v)
 {
 	printf("jitter_window_seconds=%ld\n",
 	       (long)json_as_number(json_object_get(v, "jitter_window_seconds")));
+	printf("rollback_window_seconds=%ld\n",
+	       (long)json_as_number(json_object_get(v, "rollback_window_seconds")));
 }
 
 static int cmd_rolling_config_show(const struct cix_client *c, int json_mode)
@@ -8130,7 +8136,9 @@ static int cmd_rolling_config_show(const struct cix_client *c, int json_mode)
 
 static int cmd_rolling_config_set(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	const char *window = NULL;
+	static const char usage[] = "usage: cixctl rolling-config set [--jitter-window-seconds=N] "
+	                            "[--rollback-window-seconds=N]\n";
+	const char *window = NULL, *rollback = NULL;
 	int i;
 	struct json_writer w;
 	struct cix_response r;
@@ -8138,20 +8146,28 @@ static int cmd_rolling_config_set(const struct cix_client *c, int json_mode, int
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--jitter-window-seconds=", 24) == 0)
 			window = argv[i] + 24;
+		else if (strncmp(argv[i], "--rollback-window-seconds=", 26) == 0)
+			rollback = argv[i] + 26;
 		else {
 			fprintf(stderr, "cixctl: unknown rolling-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
-	if (window == NULL) {
-		fprintf(stderr, "usage: cixctl rolling-config set --jitter-window-seconds=N\n");
+	if (window == NULL && rollback == NULL) {
+		fputs(usage, stderr);
 		return 2;
 	}
 
 	jw_init(&w);
 	jw_obj_open(&w);
-	jw_key(&w, "jitter_window_seconds");
-	jw_int(&w, atol(window));
+	if (window != NULL) {
+		jw_key(&w, "jitter_window_seconds");
+		jw_int(&w, atol(window));
+	}
+	if (rollback != NULL) {
+		jw_key(&w, "rollback_window_seconds");
+		jw_int(&w, atol(rollback));
+	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -8171,7 +8187,8 @@ static int cmd_rolling_config(const struct cix_client *c, int json_mode, int arg
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: cixctl rolling-config show\n"
-		                "       cixctl rolling-config set --jitter-window-seconds=N\n");
+		                "       cixctl rolling-config set [--jitter-window-seconds=N] "
+		                "[--rollback-window-seconds=N]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -17741,6 +17758,71 @@ static int cmd_pkg_trusted_origins(const struct cix_client *c, int json_mode, in
 	}
 }
 
+/* ADR-0323 answer 4: one mark per line, what failed and what it went back to. */
+static void fmt_bad_versions(const struct json_value *v)
+{
+	const struct json_value *arr = json_object_get(v, "bad_versions");
+	size_t i;
+
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("(no package version is marked bad)\n");
+		return;
+	}
+	printf("%-20s %-16s %-14s %-14s %-12s %-12s %s\n", "PACKAGE", "VERSION", "IMAGE", "CONTAINER",
+	       "FAILED-ON", "BACK-TO", "REASON");
+	for (i = 0; i < arr->u.array.count; i++) {
+		const struct json_value *e = arr->u.array.items[i];
+		const char *f[7] = { "package", "version", "image", "container", "to", "from", "reason" };
+		const char *s[7];
+		int k;
+
+		for (k = 0; k < 7; k++) {
+			s[k] = json_as_string(json_object_get(e, f[k]));
+			if (s[k] == NULL)
+				s[k] = "";
+		}
+		printf("%-20s %-16s %-14s %-14s %-12.12s %-12.12s %s\n", s[0], s[1], s[2], s[3], s[4], s[5],
+		       s[6]);
+	}
+}
+
+/*
+ * cixctl pkg bad-versions ls | clear NAME VERSION
+ * A version that failed at runtime after a roll; rolling does not move a
+ * container onto it again until it is superseded or cleared.
+ */
+static int cmd_pkg_bad_versions(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	char path[512];
+	struct cix_response r;
+
+	if (argc < 1 || strcmp(argv[0], "ls") == 0) {
+		if (cix_client_request(c, CIX_API_listPkgBadVersions_METHOD, CIX_API_listPkgBadVersions,
+		                       NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_bad_versions);
+	}
+	if (strcmp(argv[0], "clear") == 0 && argc == 3) {
+		snprintf(path, sizeof(path), CIX_API_clearPkgBadVersion, argv[1], argv[2]);
+		if (cix_client_request(c, CIX_API_clearPkgBadVersion_METHOD, path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		if (r.status != 204) {
+			int rc = emit(&r, json_mode, NULL);
+
+			return rc != 0 ? rc : 1;
+		}
+		cix_response_free(&r);
+		printf("%s@%s: cleared; rolling may try it again\n", argv[1], argv[2]);
+		return 0;
+	}
+	fputs("usage: cixctl pkg bad-versions ls | clear NAME VERSION\n", stderr);
+	return 2;
+}
+
 static int cmd_pkg_upstreams(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct cix_response r;
@@ -17784,6 +17866,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "       cixctl pkg trusted-origins ls | add ORIGIN | rm ORIGIN | set [ORIGIN...]\n"
 		                "               -- origins trusted to authenticate a release by where it comes\n"
 		                "               from (ADR-0323 rung 4); a fresh host trusts none\n"
+		                "       cixctl pkg bad-versions ls | clear NAME VERSION  -- versions that failed\n"
+		                "               at runtime after a roll; rolling skips them (ADR-0323)\n"
 		                "       cixctl pkg source-policy ls | set-default | set NAME | clear NAME\n"
 		                "       cixctl pkg ls\n"
 		                "       cixctl pkg rm NAME[@IMAGE]\n"
@@ -17829,6 +17913,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_pkg_source_policy(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "upstreams") == 0)
 		return cmd_pkg_upstreams(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "bad-versions") == 0)
+		return cmd_pkg_bad_versions(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "trusted-origins") == 0)
 		return cmd_pkg_trusted_origins(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "source-catalogue") == 0)

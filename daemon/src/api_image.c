@@ -100,13 +100,18 @@ static void write_image_version_fields(const char *name, struct json_writer *w)
 /*
  * ADR-0209: is this image version still referenced by anything?
  *
- * Three sources, and all three are needed. A running container pins the
+ * Four sources, and all four are needed. A running container pins the
  * version it was created with (ADR-0108), so the registry is the live
  * answer. A container that is merely stopped has no registry entry but
  * will be revived from its persisted definition, which names the same
  * version -- collecting that version would turn a stopped container
  * into one that can never start again. And current_version is what a
  * fresh container is created from.
+ *
+ * And ADR-0323 answer 4: a container on probation after a
+ * roll goes back to roll_from if the new version fails, so that version
+ * is referenced until the roll is confirmed -- collecting it inside the
+ * window would leave the rollback nothing to go back to.
  */
 static int image_version_is_referenced(const char *image, const char *version)
 {
@@ -141,8 +146,9 @@ static int image_version_is_referenced(const char *image, const char *version)
 			continue;
 		dimg = json_as_string(json_object_get(root, "image"));
 		dver = json_as_string(json_object_get(root, "image_version"));
-		hit = dimg != NULL && dver != NULL && strcmp(dimg, image) == 0 &&
-		      strcmp(dver, version) == 0;
+		hit = dimg != NULL && strcmp(dimg, image) == 0 &&
+		      ((dver != NULL && strcmp(dver, version) == 0) ||
+		       strcmp(def->roll_from, version) == 0);
 		json_free(root);
 		if (hit)
 			return 1;

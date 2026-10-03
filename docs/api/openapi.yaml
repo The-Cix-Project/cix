@@ -3718,7 +3718,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/RollingConfig"
     put:
-      summary: Set the rolling-restart jitter window (ADR-0124)
+      summary: Set the rolling-restart jitter window (ADR-0124) and the rollback window (ADR-0323)
       description: >
         Each follow_rolling container that needs restarting on a given
         reconciliation pass gets an independent, uniformly-random delay in
@@ -3726,6 +3726,11 @@ paths:
         no jitter, restart immediately. Spreads out the restarts of many
         containers following the same rolling image instead of firing them
         all in the same instant.
+
+        rollback_window_seconds is how long a container rolled to a new
+        image version has to be ready before it goes back to the version
+        it ran before (ADR-0323 answer 4). Either field may be sent alone;
+        a field that is not sent keeps its value.
       operationId: putSystemRollingConfig
       x-cix-permission: packages:write
       x-cix-expose: [cli, web]
@@ -3735,11 +3740,15 @@ paths:
           application/json:
             schema:
               type: object
-              required: [jitter_window_seconds]
+              minProperties: 1
               properties:
                 jitter_window_seconds:
                   type: integer
                   minimum: 0
+                  maximum: 3600
+                rollback_window_seconds:
+                  type: integer
+                  minimum: 10
                   maximum: 3600
       responses:
         "200":
@@ -3749,7 +3758,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/RollingConfig"
         "400":
-          description: jitter_window_seconds missing, not a number, or out of the 0-3600 range
+          description: Neither field sent, a field not a number, or out of its range (the message names which) -- nothing is changed
           content:
             application/json:
               schema:
@@ -11653,6 +11662,63 @@ paths:
                 $ref: "#/components/schemas/TrustedOrigins"
         "400":
           description: An entry is not a canonical origin, is listed twice, or there are more than 16 (the message names which)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /pkg/bad-versions:
+    get:
+      summary: Package versions that failed at runtime after a roll (ADR-0323 answer 4)
+      description: >
+        A container rolled to a new image version that crash-loops, never
+        becomes ready within the rollback window, or cannot be created
+        goes back to the version it ran before, and every package whose
+        version differs between the two image versions is marked here:
+        one of them is why, and the platform cannot tell which. When no
+        package differs, the image version itself is marked, as package
+        "@<image>". Rolling does not move a container onto an image
+        version that carries a mark. A mark ends when its package has a
+        newer recipe (or, for an image mark, when the image has moved
+        on), or when an operator clears it. Kept across restarts; at
+        most 64, the oldest giving way.
+      operationId: listPkgBadVersions
+      x-cix-permission: packages:read
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: The marks, oldest first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgBadVersions"
+
+  /pkg/bad-versions/{name}/{version}:
+    delete:
+      summary: Clear a bad-version mark, so rolling may try that version again (ADR-0323 answer 4)
+      description: >
+        The next rolling pass may move containers onto an image version
+        carrying it again. An image mark is cleared with name "@<image>"
+        and the image version.
+      operationId: clearPkgBadVersion
+      x-cix-permission: packages:write
+      x-cix-expose: [cli]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Cleared
+        "404":
+          description: No such mark -- a mistyped version would otherwise report success while the container stays held
           content:
             application/json:
               schema:
@@ -20926,6 +20992,38 @@ components:
               source:
                 type: string
 
+    PkgBadVersions:
+      type: object
+      required: [bad_versions]
+      properties:
+        bad_versions:
+          type: array
+          items:
+            type: object
+            required: [package, version, image, container, from, to, reason, at]
+            properties:
+              package:
+                type: string
+                description: A package name, or "@<image>" when the image version itself is marked
+              version:
+                type: string
+                description: The package version as the image's manifest records it, or the image version
+              image:
+                type: string
+              container:
+                type: string
+                description: The container whose failure marked it
+              from:
+                type: string
+                description: The image version it went back to
+              to:
+                type: string
+                description: The image version it failed on
+              reason:
+                type: string
+              at:
+                type: integer
+                description: Unix seconds
     TrustedOrigins:
       type: object
       required: [origins]
@@ -21245,13 +21343,22 @@ components:
 
     RollingConfig:
       type: object
-      required: [jitter_window_seconds]
+      required: [jitter_window_seconds, rollback_window_seconds]
       properties:
         jitter_window_seconds:
           type: integer
           description: >
             Default 60. 0 disables jitter -- a follow_rolling container
             restarts immediately when its image's rolling version advances.
+        rollback_window_seconds:
+          type: integer
+          description: >
+            Default 300, 10-3600 (ADR-0323 answer 4). How long a container
+            rolled to a new image version has to be ready. Not ready by
+            then, three exits each within 30 s of starting before then,
+            or a rolled version that cannot be created at all, and it goes
+            back to the image version it ran before; what the failed
+            version brought is listed in GET /pkg/bad-versions.
 
     PkgBuildConfig:
       type: object

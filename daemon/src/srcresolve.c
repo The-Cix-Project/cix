@@ -7,6 +7,7 @@
 
 #include "pipeline.h"
 #include "pkg.h"
+#include "pkgbad.h"
 #include "srcdepth.h"
 #include "srcpolicy.h"
 #include "srcupstream.h"
@@ -96,7 +97,7 @@ void srcresolve_one(const char *name, const char *kind,
 	char upstream[SRCRESOLVE_VERSION_MAX];
 	char problem[SRCRESOLVE_REASON_MAX - 64];
 	enum srcdepth_error de;
-	size_t count, i;
+	size_t count, i, j;
 	int lines, releases;
 
 	memset(out, 0, sizeof(*out));
@@ -195,6 +196,27 @@ void srcresolve_one(const char *name, const char *kind,
 			snprintf(out->reason, sizeof(out->reason),
 			         "recipe %s already builds %s", recipe_versions[i],
 			         out->resolved_version);
+			/*
+			 * ADR-0323 answer 4: the recipe exists and built, and a
+			 * container rolled onto it failed at runtime. The row says
+			 * so until the package moves on or the mark is cleared.
+			 * Any revision of this release may carry the mark.
+			 */
+			for (j = 0; j < recipe_count; j++) {
+				const struct pkgbad_entry *bad = pkgbad_find(name, recipe_versions[j]);
+
+				srcresolve_upstream_of(recipe_versions[j], upstream, sizeof(upstream));
+				if (bad == NULL || strcmp(upstream, out->resolved_version) != 0)
+					continue;
+				out->stage = PIPELINE_VERIFY;
+				out->status = PIPELINE_FAILED;
+				snprintf(out->reason, sizeof(out->reason),
+				         "%s failed in %s and was rolled back: %s (cixctl pkg bad-versions "
+				         "clear %s %s to retry)",
+				         recipe_versions[j], bad->container, bad->reason, name,
+				         recipe_versions[j]);
+				break;
+			}
 			return;
 		}
 	}

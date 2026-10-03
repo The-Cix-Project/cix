@@ -283,6 +283,41 @@ static int publish_rollsvc_recipe(const struct cix_client *c, const char *versio
 	return ok ? 0 : -1;
 }
 
+
+/*
+ * ADR-0323 answer 4: how many bad-version marks there are, and the
+ * from/to of the one for package@version (empty when it has none).
+ */
+static int fetch_bad_mark(const struct cix_client *c, const char *package, const char *version,
+                          char *from, size_t from_size, char *to, size_t to_size)
+{
+	struct cix_response r;
+	const struct json_value *arr;
+	int n = -1;
+	size_t i;
+
+	from[0] = '\0';
+	to[0] = '\0';
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "GET", "/v1/pkg/bad-versions", NULL, &r) == 0 && r.status == 200 &&
+	    (arr = json_object_get(r.json, "bad_versions")) != NULL && arr->type == JSON_ARRAY) {
+		n = (int)arr->u.array.count;
+		for (i = 0; i < arr->u.array.count; i++) {
+			const struct json_value *e = arr->u.array.items[i];
+			const char *p = json_str_field(e, "package"), *v = json_str_field(e, "version");
+
+			if (p != NULL && v != NULL && strcmp(p, package) == 0 && strcmp(v, version) == 0) {
+				const char *fr = json_str_field(e, "from"), *t = json_str_field(e, "to");
+
+				snprintf(from, from_size, "%s", fr != NULL ? fr : "");
+				snprintf(to, to_size, "%s", t != NULL ? t : "");
+			}
+		}
+	}
+	cix_response_free(&r);
+	return n;
+}
+
 static int poll_pkg_installed_version(const struct cix_client *c, const char *pkg_at_image,
                                        const char *want_version, int max_attempts)
 {
@@ -749,6 +784,181 @@ int main(void)
 		      "jitter_seconds=0 override took effect");
 		CHECK(strcmp(jitter_ver_after, newer_version) == 0,
 		      "rollctr-jitter's pinned image_version advanced to the second rebuild's version");
+	}
+
+	/*
+	 * --- ADR-0323 answer 4: a roll that fails at runtime goes back ---
+	 *
+	 * rollsvc 4.0 is /usr/bin/false: a real, executable ELF that exits 1
+	 * whatever it is given, so both following containers crash-loop on
+	 * it. Each must go back to the version before, rollsvc@4.0-1 must be
+	 * marked bad, and the next rolling pass must leave them where they
+	 * are. A healthy 5.0 must then roll and STAY -- the confirm path.
+	 */
+	{
+		char good_version[128], bad_version[128], healthy_version[128];
+		char tarball_v4[512], sha_v4[128], tarball_v5[512], sha_v5[128];
+		char from[128], to[128], ver[128];
+		const char *const followers[] = { "rollctr-follow", "rollctr-jitter" };
+		long pid, pid_settled;
+		int k, back;
+
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "GET", "/v1/system/rolling-config", NULL, &r) == 0 &&
+		          r.status == 200 && r.json != NULL &&
+		          (long)json_as_number(json_object_get(r.json, "rollback_window_seconds")) == 300,
+		      "default rollback_window_seconds is 300");
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "PUT", "/v1/system/rolling-config",
+		                         "{\"jitter_window_seconds\":0,\"rollback_window_seconds\":5}",
+		                         &r) == 0 &&
+		          r.status == 400,
+		      "a rollback window below 10 s is 400");
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "GET", "/v1/system/rolling-config", NULL, &r) == 0 &&
+		          r.json != NULL &&
+		          (long)json_as_number(json_object_get(r.json, "jitter_window_seconds")) == 3600,
+		      "and that 400 changed nothing, not even the valid field beside it");
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "PUT", "/v1/system/rolling-config",
+		                         "{\"jitter_window_seconds\":0,\"rollback_window_seconds\":60}",
+		                         &r) == 0 &&
+		          r.status == 200 && r.json != NULL &&
+		          (long)json_as_number(json_object_get(r.json, "rollback_window_seconds")) == 60,
+		      "PUT rolling-config rollback_window_seconds=60, jitter 0");
+		cix_response_free(&r);
+
+		CHECK(test_image_fixture_read_current_version(image_dir, good_version,
+		                                               sizeof(good_version)) == 0,
+		      "read rollctrimg's last good version");
+
+		CHECK(stage_binary_fixture(scratch_dir, "4.0", "/usr/bin/false", tarball_v4,
+		                            sizeof(tarball_v4), sha_v4, sizeof(sha_v4)) == 0,
+		      "stage rollsvc 4.0 (/usr/bin/false)");
+		CHECK(publish_rollsvc_recipe(&client, "4.0", tarball_v4, sha_v4) == 0,
+		      "publish rollsvc 4.0 recipe (triggers a rolling rebuild onto a broken binary)");
+
+		bad_version[0] = '\0';
+		for (i = 0; i < ROLL_POLL_ATTEMPTS; i++) {
+			if (test_image_fixture_read_current_version(image_dir, bad_version,
+			                                             sizeof(bad_version)) == 0 &&
+			    strcmp(bad_version, good_version) != 0)
+				break;
+			usleep(200000);
+		}
+		CHECK(strcmp(bad_version, good_version) != 0, "rollctrimg advanced to the 4.0 version");
+
+		/* Three unstable exits under backoff, or a create that fails
+		 * outright: either way back within two minutes. */
+		back = 0;
+		for (i = 0; i < 2 * ROLL_POLL_ATTEMPTS && !back; i++) {
+			back = fetch_bad_mark(&client, "rollsvc", "4.0-1", from, sizeof(from), to,
+			                      sizeof(to)) > 0 &&
+			       from[0] != '\0';
+			for (k = 0; back && k < 2; k++)
+				back = fetch_container_pid_version(&client, followers[k], &pid, ver,
+				                                   sizeof(ver)) == 0 &&
+				       pid > 0 && strcmp(ver, good_version) == 0;
+			if (!back)
+				usleep(200000);
+		}
+		CHECK(back, "both followers went back to the last good version, and rollsvc@4.0-1 is "
+		            "marked bad");
+		CHECK(strcmp(from, good_version) == 0 && strcmp(to, bad_version) == 0,
+		      "the mark records the version it failed on and the version it went back to");
+		CHECK(fetch_bad_mark(&client, "rollsvc", "4.0-1", from, sizeof(from), to, sizeof(to)) ==
+		          1,
+		      "one mark: glibc did not change between the two versions, so only rollsvc is "
+		      "suspect");
+		/* Which path ran: with a 60 s window and a 2 s doubling restart
+		 * backoff, the third unstable exit (~12 s in) comes first. The
+		 * not-ready-at-the-deadline path is not exercised here. */
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "GET", "/v1/pkg/bad-versions", NULL, &r) == 0 &&
+		          r.body != NULL && strstr(r.body, "crash-looped") != NULL,
+		      "the mark says it crash-looped -- the unstable-exit path, not the window");
+		if (r.body != NULL)
+			printf("      bad-versions: %.400s\n", r.body);
+		cix_response_free(&r);
+
+		/* Any finished pkg job runs a rolling pass. The pass must leave
+		 * the followers on the good version, not walk them back in. */
+		CHECK(fetch_container_pid_version(&client, "rollctr-jitter", &pid, ver, sizeof(ver)) == 0,
+		      "rollctr-jitter's pid before the next pass");
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "POST", "/v1/images", "{\"name\":\"rolltrig\"}", &r) ==
+		              0 &&
+		          r.status == 201,
+		      "POST rolltrig image");
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "POST", "/v1/pkg/install",
+		                         "{\"name\":\"glibc\",\"image\":\"rolltrig\"}", &r) == 0 &&
+		          r.status == 202,
+		      "a pkg job, to run a rolling pass");
+		cix_response_free(&r);
+		CHECK(poll_pkg_installed_version(&client, "glibc@rolltrig", TEST_FLOOR_GLIBC_VERSION,
+		                                 ROLL_POLL_ATTEMPTS) == 0,
+		      "glibc@rolltrig reaches installed");
+		sleep(3);
+		CHECK(fetch_container_pid_version(&client, "rollctr-jitter", &pid_settled, ver,
+		                                   sizeof(ver)) == 0 &&
+		          pid_settled == pid && strcmp(ver, good_version) == 0,
+		      "the next rolling pass did not move rollctr-jitter onto the marked version");
+
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "DELETE", "/v1/pkg/bad-versions/rollsvc/4.0-1", NULL,
+		                         &r) == 0 &&
+		          r.status == 204,
+		      "an operator clears the mark (204)");
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "DELETE", "/v1/pkg/bad-versions/rollsvc/4.0-1", NULL,
+		                         &r) == 0 &&
+		          r.status == 404,
+		      "clearing it again is 404, so a mistyped version cannot report success");
+		cix_response_free(&r);
+
+		/* A healthy release rolls, and stays past the window. */
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "PUT", "/v1/system/rolling-config",
+		                         "{\"rollback_window_seconds\":10}", &r) == 0 &&
+		          r.status == 200,
+		      "PUT rolling-config rollback_window_seconds=10 alone");
+		cix_response_free(&r);
+		CHECK(stage_binary_fixture(scratch_dir, "5.0", "build/daemon_child", tarball_v5,
+		                            sizeof(tarball_v5), sha_v5, sizeof(sha_v5)) == 0,
+		      "stage rollsvc 5.0");
+		CHECK(publish_rollsvc_recipe(&client, "5.0", tarball_v5, sha_v5) == 0,
+		      "publish rollsvc 5.0 recipe");
+		healthy_version[0] = '\0';
+		for (i = 0; i < ROLL_POLL_ATTEMPTS; i++) {
+			if (test_image_fixture_read_current_version(image_dir, healthy_version,
+			                                             sizeof(healthy_version)) == 0 &&
+			    strcmp(healthy_version, good_version) != 0 &&
+			    strcmp(healthy_version, bad_version) != 0)
+				break;
+			usleep(200000);
+		}
+		pid = 0;
+		for (i = 0; i < ROLL_POLL_ATTEMPTS; i++) {
+			if (fetch_container_pid_version(&client, "rollctr-jitter", &pid, ver, sizeof(ver)) ==
+			        0 &&
+			    pid > 0 && strcmp(ver, healthy_version) == 0)
+				break;
+			usleep(200000);
+		}
+		CHECK(strcmp(ver, healthy_version) == 0, "rollctr-jitter rolled to the 5.0 version");
+		sleep(15);
+		CHECK(fetch_container_pid_version(&client, "rollctr-jitter", &pid_settled, ver,
+		                                   sizeof(ver)) == 0 &&
+		          pid_settled == pid && strcmp(ver, healthy_version) == 0,
+		      "and is still on it, same process, after the 10 s window -- the roll is confirmed");
 	}
 
 	CHECK(stop_daemon(daemon_pid) == 0, "daemon shut down cleanly");

@@ -179,3 +179,29 @@ hibr rolled from 0.99.4 to 0.99.11 with no person writing a recipe. The one reci
 5. **`jump` runs on image version `f9cd32716a6a…`**, with a new pid.
 
 It needed cbs v0.1.104 (cix-build-system#279 and #280), 0.2.57-450, and `https://git.home.arpa` on the trusted origins.
+
+## Runtime rollback, as built (0.2.57-452)
+
+Answer 4's runtime half, in `cixd` (main.c, `pkgbad.c`):
+
+- **A roll is recorded when it happens.** When a rolling pass re-pins a live `follow_rolling` container, its definition records `roll_from` (the image version it ran) and `roll_to`. A roll that arrives while an earlier one is still on probation keeps the earlier `roll_from`, because the version in between never proved itself. Both fields persist, so a daemon restart mid-window re-arms the watch.
+- **The window starts when the rolled incarnation starts.** It lasts `rollback_window_seconds`, set in `PUT /v1/system/rolling-config` (default 300, range 10–3600). The container goes back to `roll_from` on any of:
+  - it is not ready when the window closes, where "ready" is the registry's derived readiness, which every container on 192.168.15.95 reported on 2026-10-03, `jump` included;
+  - three exits, each within 30 s of starting, before the window closes;
+  - the rolled version cannot be created at all, on the roll or on a crash restart.
+
+  Ready at the deadline confirms the roll. An operator stop ends the watch with no verdict.
+- **What is marked.** Every package whose version differs between the two image versions' manifest snapshots is marked bad, because one of them is why and the platform cannot tell which. If none differs (a baseline change), the image version itself is marked, as package `@<image>`. Marks are listed in `GET /v1/pkg/bad-versions` and persisted in `bad_versions.json`.
+- **A rolling pass skips an image version that carries a mark.** It logs the refusal once per version. A mark ends when:
+  - the package has a newer recipe (or, for an image mark, the image moved on);
+  - or an operator calls `DELETE /v1/pkg/bad-versions/{name}/{version}` (`cixctl pkg bad-versions clear`).
+- **It shows in the source catalogue** as `verify / failed`, naming the container and the reason. That is the readiness stage ADR-0256 already defines, so no new stage was added.
+- **Image GC keeps `roll_from`** while a roll is on probation, or a rollback would have nothing to go back to.
+
+What `test_rolling_restart` proves, gated in the release from this version:
+- a rolled release that crash-loops goes back, and its mark names the versions it failed on and went back to;
+- the next rolling pass leaves the container alone;
+- clearing the mark works and is a 404 the second time;
+- a healthy release rolls and stays past the window.
+
+The not-ready-at-the-deadline path is not exercised there. With a 2 s doubling restart backoff, a crash-looping service reaches three exits before any window of 10 s or more closes.

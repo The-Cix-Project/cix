@@ -51,6 +51,7 @@
 #include "scheduler.h"
 #include "srcpolicy.h"
 #include "srctrust.h"
+#include "pkgbad.h"
 #include "srcupstream.h"
 #include "api_srcpolicy.h"
 #include "ksm.h"
@@ -281,6 +282,7 @@ char BOOTCONSOLE_STATE_PATH[PATH_MAX]; /* issue #24 -- boot console parameters *
 char KERNELPOLICY_STATE_PATH[PATH_MAX]; /* issue #65 -- which kernel line this box tracks */
 char SRCPOLICY_STATE_PATH[PATH_MAX];    /* ADR-0255 -- which upstream release packages build */
 char SRCTRUST_STATE_PATH[PATH_MAX];     /* ADR-0323 -- origins trusted to authenticate a release */
+char PKGBAD_STATE_PATH[PATH_MAX];       /* ADR-0323 answer 4 -- package versions that failed at runtime */
 char SCHEDULER_STATE_PATH[PATH_MAX];    /* ADR-0257 -- everything this host does on a clock */
 char KERNEL_RELEASES_PATH[PATH_MAX];    /* issue #65 -- cached kernel.org releases.json */
 char ZSWAP_STATE_PATH[PATH_MAX];        /* issue #51 -- compressed swap cache settings */
@@ -464,6 +466,7 @@ static void compute_state_dir_relative_paths(void)
 	         STATE_DIR);
 	snprintf(SRCTRUST_STATE_PATH, sizeof(SRCTRUST_STATE_PATH), "%s/trusted_origins.json",
 	         STATE_DIR);
+	snprintf(PKGBAD_STATE_PATH, sizeof(PKGBAD_STATE_PATH), "%s/bad_versions.json", STATE_DIR);
 	snprintf(SCHEDULER_STATE_PATH, sizeof(SCHEDULER_STATE_PATH), "%s/schedules.json",
 	         STATE_DIR);
 	/*
@@ -1059,6 +1062,9 @@ static void migrate_diskroles_out_of_state_dir(void)
  */
 #define CONTAINER_RESTART_BACKOFF_CAP_SECONDS 30
 #define CONTAINER_RESTART_STABILITY_SECONDS 30
+/* ADR-0323 answer 4: unstable exits (each under the stability threshold)
+ * during a roll's watch that send it back to the version before. */
+#define CONTAINER_ROLLBACK_UNSTABLE_EXITS 3
 /*
  * Fixed QEMU virtio-blk layout (Phase 11's stated fixed/known-hardware
  * scope, same posture as root=/dev/vda2 in the loader entry itself) --
@@ -1212,6 +1218,8 @@ enum conn_kind {
 	CONN_SERVERHEALTH_TIMER, /* permanent, re-arms itself -- fires one probe sweep per interval */
 	CONN_SERVERHEALTH_PROBE, /* one in-flight TCP probe's own socket */
 	CONN_RESTART_TIMER,
+	CONN_ROLL_WATCH_TIMER,      /* ADR-0323 answer 4: a rolled container's probation
+	                              * window has closed -- confirm the roll, or roll back */
 	CONN_ROLLING_RESTART_TIMER, /* jittered live-restart onto a newer rolling image
 	                              * version (ADR-0124/Part 5) -- distinct from
 	                              * CONN_RESTART_TIMER: that one only ever fires
@@ -19116,6 +19124,7 @@ static void handle_stop(int fd, const char *name)
 	 */
 	if (e != NULL && e->running) {
 		containerdef_set_stopped(name, 1);
+		containerdef_clear_roll(name); /* ADR-0323: no verdict on a stopped roll */
 		if (!stop_survives_reboot(name))
 			logstore_write("cixd", "warn",
 			                "%s: stopped, but restart policy is \"%s\" -- this stop lasts "
@@ -19176,6 +19185,7 @@ static void handle_stop(int fd, const char *name)
 		}
 	}
 	containerdef_set_stopped(name, 1);
+	containerdef_clear_roll(name); /* an operator stop ends a roll's watch with no verdict */
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -20840,6 +20850,39 @@ static void handle_pkg_trusted_origins_put(int fd, const char *body, size_t body
 	jw_free(&w);
 }
 
+static int bad_mark_superseded(const char *package, const char *version);
+
+/* GET /v1/pkg/bad-versions (ADR-0323 answer 4) */
+static void handle_pkg_bad_versions_get(int fd)
+{
+	struct json_writer w;
+
+	pkgbad_prune(bad_mark_superseded);
+	jw_init(&w);
+	pkgbad_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* DELETE /v1/pkg/bad-versions/{name}/{version}: an operator lets rolling
+ * try that version again. */
+static void handle_pkg_bad_version_delete(int fd, const char *name, const char *version)
+{
+	int rc = pkgbad_remove(name, version);
+
+	if (rc == 1) {
+		respond_error(fd, 404, "Not Found", "no such bad-version mark");
+		return;
+	}
+	if (rc != 0) {
+		respond_error(fd, 500, "Internal Server Error", "the bad-versions list could not be saved");
+		return;
+	}
+	logstore_write("cixd", "info", "pkg: bad-version mark %s@%s cleared; rolling may try it again",
+	               name, version);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
 /* GET /v1/pkg/recipe-commit */
 static void handle_pkg_recipe_commit_get(int fd)
 {
@@ -20982,34 +21025,56 @@ static void handle_rolling_config_get(int fd)
 	jw_obj_open(&w);
 	jw_key(&w, "jitter_window_seconds");
 	jw_int(&w, containerdef_jitter_window_get());
+	/* ADR-0323 answer 4: how long a rolled container has to prove itself. */
+	jw_key(&w, "rollback_window_seconds");
+	jw_int(&w, containerdef_rollback_window_get());
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
 
+/* Either field, or both; at least one. */
 static void handle_rolling_config_put(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const struct json_value *jwindow;
+	const struct json_value *jwindow, *jrollback;
+	char err[128];
 
-	if (body_len == 0) {
-		respond_error(fd, 400, "Bad Request", "jitter_window_seconds is required");
-		return;
-	}
-	root = json_parse(body, body_len);
+	root = body_len > 0 ? json_parse(body, body_len) : NULL;
 	if (root == NULL) {
 		respond_error(fd, 400, "Bad Request", "invalid JSON body");
 		return;
 	}
 	jwindow = json_object_get(root, "jitter_window_seconds");
-	if (jwindow == NULL) {
+	jrollback = json_object_get(root, "rollback_window_seconds");
+	if (jwindow == NULL && jrollback == NULL) {
 		json_free(root);
-		respond_error(fd, 400, "Bad Request", "jitter_window_seconds is required");
+		respond_error(fd, 400, "Bad Request",
+		              "jitter_window_seconds or rollback_window_seconds is required");
 		return;
 	}
-	if (containerdef_jitter_window_set((int)json_as_number(jwindow)) != 0) {
+	/* Both are checked before either is saved, so a 400 changes nothing. */
+	if (jwindow != NULL &&
+	    (jwindow->type != JSON_NUMBER || json_as_number(jwindow) < 0 ||
+	     json_as_number(jwindow) > CONTAINERDEF_JITTER_MAX_SECONDS)) {
 		json_free(root);
 		respond_error(fd, 400, "Bad Request", "jitter_window_seconds must be 0-3600");
+		return;
+	}
+	if (jrollback != NULL && (jrollback->type != JSON_NUMBER ||
+	                          json_as_number(jrollback) < CONTAINERDEF_ROLLBACK_WINDOW_MIN_SECONDS ||
+	                          json_as_number(jrollback) > CONTAINERDEF_ROLLBACK_WINDOW_MAX_SECONDS)) {
+		json_free(root);
+		snprintf(err, sizeof(err), "rollback_window_seconds must be %d-%d",
+		         CONTAINERDEF_ROLLBACK_WINDOW_MIN_SECONDS, CONTAINERDEF_ROLLBACK_WINDOW_MAX_SECONDS);
+		respond_error(fd, 400, "Bad Request", err);
+		return;
+	}
+	if ((jwindow != NULL && containerdef_jitter_window_set((int)json_as_number(jwindow)) != 0) ||
+	    (jrollback != NULL &&
+	     containerdef_rollback_window_set((int)json_as_number(jrollback)) != 0)) {
+		json_free(root);
+		respond_error(fd, 500, "Internal Server Error", "the rolling config could not be saved");
 		return;
 	}
 	json_free(root);
@@ -21835,6 +21900,12 @@ static int dhcp_ip_in_range(uint32_t ip_be, uint32_t start_be, uint32_t end_be)
 }
 
 static void arm_rolling_restart_timer(const char *name, int delay_seconds);
+/* ADR-0323 answer 4: the rolled-container watch, defined beside the
+ * rolling restart it follows. */
+static void arm_roll_watch_timer(const char *name, int delay_seconds);
+static void handle_roll_watch_timer_event(struct conn *cc);
+static void roll_back(struct container_def *def, const char *reason);
+static void start_roll_watch(const char *name);
 static int rolling_jitter_seconds(int window);
 
 /*
@@ -26018,6 +26089,18 @@ static void op_setPkgTrustedOrigins(const struct api_ctx *ctx)
 	handle_pkg_trusted_origins_put(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
+/* GET /v1/pkg/bad-versions */
+static void op_listPkgBadVersions(const struct api_ctx *ctx)
+{
+	handle_pkg_bad_versions_get(ctx->fd);
+}
+
+/* DELETE /v1/pkg/bad-versions/{name}/{version} */
+static void op_clearPkgBadVersion(const struct api_ctx *ctx)
+{
+	handle_pkg_bad_version_delete(ctx->fd, ctx->p[0], ctx->p[1]);
+}
+
 /* POST /v1/pkg/sync */
 static void op_pkgSync(const struct api_ctx *ctx)
 {
@@ -30031,10 +30114,20 @@ static void handle_restart_timer_event(struct conn *cc)
 		    &depends_on_count, &follow_rolling, &has_follow_rolling_jitter, &follow_rolling_jitter_seconds, err_msg,
 		    sizeof(err_msg));
 
-		if (status != 0)
+		if (status != 0) {
 			fprintf(stderr, "%s: restart failed: %s\n", cc->restart_name, err_msg);
-		else
+			/* ADR-0323 answer 4: a rolled version that can no longer
+			 * be created goes back now; nothing else would restart it. */
+			if (def->roll_to[0] != '\0') {
+				char reason[300];
+
+				snprintf(reason, sizeof(reason), "could not be restarted: %s", err_msg);
+				roll_back(def, reason);
+				arm_restart_timer(cc->restart_name, 1);
+			}
+		} else {
 			resync_managed_services();
+		}
 		/* else: create_container_from_body() already registered its
 		 * own pidfd -- no separate call needed here either. */
 	}
@@ -30155,9 +30248,19 @@ static void rolling_restart_replay(const char *name, struct container_def *def)
 		 */
 		logstore_write("cixd", "error", "%s: rolling restart failed: %s", name, err_msg);
 		fprintf(stderr, "%s: rolling restart failed: %s\n", name, err_msg);
+		/* A rolled version that cannot even be created has failed its
+		 * probation before it started. */
+		if (def->roll_to[0] != '\0') {
+			char reason[300];
+
+			snprintf(reason, sizeof(reason), "could not be created: %s", err_msg);
+			roll_back(def, reason);
+			arm_rolling_restart_timer(name, 0);
+		}
 		return;
 	}
 	resync_managed_services();
+	start_roll_watch(name);
 }
 
 static void handle_rolling_restart_timer_event(struct conn *cc)
@@ -30387,6 +30490,307 @@ static void apply_pending_deployments(void)
 	}
 }
 
+/* ---------- ADR-0323 answer 4: runtime rollback of a rolled container ---------- */
+
+/* Image-version marks carry this prefix in place of a package name: a
+ * package name never starts with '@' (pkg_name_is_valid). */
+#define ROLL_IMAGE_MARK "@"
+
+/*
+ * The {package, version} pairs an image version was built from, from its
+ * manifest snapshot (image_manifest_version_write_json()). Returns how
+ * many, or -1 when the version has no snapshot.
+ */
+static int image_version_pairs(const char *image, const char *version,
+                               char pkgs[][PKGBAD_NAME_MAX], char vers[][PKGBAD_VERSION_MAX],
+                               int max)
+{
+	struct json_writer w;
+	struct json_value *root;
+	size_t i;
+	int n = 0;
+
+	jw_init(&w);
+	if (image_manifest_version_write_json(image, version, &w) != IMAGE_OK) {
+		jw_free(&w);
+		return -1;
+	}
+	root = json_parse(w.buf, w.len);
+	jw_free(&w);
+	for (i = 0; root != NULL && root->type == JSON_ARRAY && i < root->u.array.count && n < max;
+	     i++) {
+		const char *p = json_as_string(json_object_get(root->u.array.items[i], "package"));
+		const char *v = json_as_string(json_object_get(root->u.array.items[i], "version"));
+
+		if (p == NULL || v == NULL)
+			continue;
+		snprintf(pkgs[n], PKGBAD_NAME_MAX, "%s", p);
+		snprintf(vers[n], PKGBAD_VERSION_MAX, "%s", v);
+		n++;
+	}
+	json_free(root);
+	return n;
+}
+
+/*
+ * pkgbad_prune()'s test: a mark ends when the package has a newer recipe
+ * than the marked version -- upstream published something newer -- and an
+ * image-version mark ends when the image has moved past that version.
+ */
+static int bad_mark_superseded(const char *package, const char *version)
+{
+	/* Two buffers, each sized for what fills it: an image version is a
+	 * 64-hex manifest hash (IMAGE_VERSION_MAX 65), one byte more than a
+	 * PKG_VERSION_MAX buffer holds, and a truncated one never compares
+	 * equal -- every image mark would be pruned on sight. */
+	char current[IMAGE_VERSION_MAX];
+	char latest[PKG_VERSION_MAX];
+
+	if (strncmp(package, ROLL_IMAGE_MARK, 1) == 0)
+		return image_current_version(package + 1, current, sizeof(current)) == 0 &&
+		       strcmp(current, version) != 0;
+	return pkg_recipe_latest_version(package, latest, sizeof(latest)) == 0 &&
+	       pkg_version_compare(latest, version) > 0;
+}
+
+/* 1, with the offending mark in why, when version of image carries a
+ * package version marked bad (or is itself marked). */
+static int image_version_blocked(const char *image, const char *version, char *why,
+                                 size_t why_size)
+{
+	static char pkgs[256][PKGBAD_NAME_MAX];
+	static char vers[256][PKGBAD_VERSION_MAX];
+	char mark[PKGBAD_NAME_MAX];
+	int n, i;
+
+	if (pkgbad_count() == 0)
+		return 0;
+	pkgbad_prune(bad_mark_superseded);
+	snprintf(mark, sizeof(mark), "%s%s", ROLL_IMAGE_MARK, image);
+	if (pkgbad_is_bad(mark, version)) {
+		snprintf(why, why_size, "image %s version %.12s itself", image, version);
+		return 1;
+	}
+	n = image_version_pairs(image, version, pkgs, vers, 256);
+	for (i = 0; i < n; i++)
+		if (pkgbad_is_bad(pkgs[i], vers[i])) {
+			snprintf(why, why_size, "%s@%s", pkgs[i], vers[i]);
+			return 1;
+		}
+	return 0;
+}
+
+/*
+ * Marks what the failed version brought: every package whose version in
+ * `to` is not in `from`. When nothing differs (a baseline change), the
+ * image version itself is marked so the skip still holds.
+ */
+static void mark_failed_roll(const char *container, const char *image, const char *from,
+                             const char *to, const char *reason)
+{
+	static char tp[256][PKGBAD_NAME_MAX], fp[256][PKGBAD_NAME_MAX];
+	static char tv[256][PKGBAD_VERSION_MAX], fv[256][PKGBAD_VERSION_MAX];
+	struct pkgbad_entry e;
+	int nt, nf, i, j, marked = 0;
+
+	memset(&e, 0, sizeof(e));
+	snprintf(e.image, sizeof(e.image), "%s", image);
+	snprintf(e.container, sizeof(e.container), "%s", container);
+	snprintf(e.from, sizeof(e.from), "%s", from);
+	snprintf(e.to, sizeof(e.to), "%s", to);
+	snprintf(e.reason, sizeof(e.reason), "%s", reason);
+	e.at = (long long)time(NULL);
+	nt = image_version_pairs(image, to, tp, tv, 256);
+	nf = image_version_pairs(image, from, fp, fv, 256);
+	for (i = 0; i < nt; i++) {
+		int same = 0;
+
+		for (j = 0; j < nf && !same; j++)
+			same = strcmp(tp[i], fp[j]) == 0 && strcmp(tv[i], fv[j]) == 0;
+		if (same)
+			continue;
+		snprintf(e.package, sizeof(e.package), "%s", tp[i]);
+		snprintf(e.version, sizeof(e.version), "%s", tv[i]);
+		if (pkgbad_add(&e) == 0)
+			marked++;
+		logstore_write("cixd", "error", "%s: %s@%s marked bad -- %s (ADR-0323)", container,
+		               tp[i], tv[i], reason);
+	}
+	if (marked == 0) {
+		snprintf(e.package, sizeof(e.package), "%s%s", ROLL_IMAGE_MARK, image);
+		snprintf(e.version, sizeof(e.version), "%s", to);
+		pkgbad_add(&e);
+		logstore_write("cixd", "error",
+		               "%s: no package differs between image %s versions %.12s and %.12s, so the "
+		               "image version itself is marked bad -- %s (ADR-0323)",
+		               container, image, from, to, reason);
+	}
+}
+
+/*
+ * Rolls a container back to the image version it ran before the roll:
+ * marks what the failed version brought, re-pins the definition to
+ * roll_from and clears the watch. The caller restarts it (the crash path
+ * already has a restart pending; the watch timer arms one), and that
+ * replay arms no new watch, because roll_to is gone by then.
+ */
+static void roll_back(struct container_def *def, const char *reason)
+{
+	char name[REGISTRY_NAME_MAX], from[72], to[72], image[PKGBAD_NAME_MAX];
+	struct json_value *root;
+	const char *img;
+
+	snprintf(name, sizeof(name), "%s", def->name);
+	snprintf(from, sizeof(from), "%s", def->roll_from);
+	snprintf(to, sizeof(to), "%s", def->roll_to);
+	root = def->body != NULL ? json_parse(def->body, def->body_len) : NULL;
+	img = root != NULL ? json_as_string(json_object_get(root, "image")) : NULL;
+	snprintf(image, sizeof(image), "%s", img != NULL ? img : "");
+	json_free(root);
+
+	if (image[0] != '\0')
+		mark_failed_roll(name, image, from, to, reason);
+	containerdef_clear_roll(name);
+	if (containerdef_patch_image_version(name, from) != 0) {
+		logstore_write("cixd", "error",
+		               "%s: rolling back to image version %.12s failed: the definition could not "
+		               "be re-pinned",
+		               name, from);
+		return;
+	}
+	logstore_write("cixd", "error",
+	               "%s: rolled back from image version %.12s to %.12s -- %s (ADR-0323)", name, to,
+	               from, reason);
+}
+
+static void arm_roll_watch_timer(const char *name, int delay_seconds)
+{
+	struct itimerspec its;
+	struct conn *cc;
+	struct cix_epoll_event ev;
+	int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+
+	if (tfd < 0) {
+		logstore_write("cixd", "error", "%s: could not arm the roll watch: %s", name,
+		               strerror(errno));
+		return;
+	}
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = delay_seconds > 0 ? delay_seconds : 0;
+	if (delay_seconds <= 0)
+		its.it_value.tv_nsec = 1;
+	cc = calloc(1, sizeof(*cc));
+	if (cc == NULL || timerfd_settime(tfd, 0, &its, NULL) != 0) {
+		logstore_write("cixd", "error", "%s: could not arm the roll watch", name);
+		free(cc);
+		close(tfd);
+		return;
+	}
+	cc->kind = CONN_ROLL_WATCH_TIMER;
+	cc->fd = tfd;
+	snprintf(cc->restart_name, sizeof(cc->restart_name), "%s", name);
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+		logstore_write("cixd", "error", "%s: could not watch the roll timer", name);
+		close(tfd);
+		free(cc);
+	}
+}
+
+/* Starts the probation window for a container that has just come up on
+ * the version it was rolled to. */
+static void start_roll_watch(const char *name)
+{
+	struct container_def *def = containerdef_find(name);
+	int window = containerdef_rollback_window_get();
+
+	if (def == NULL || def->roll_to[0] == '\0')
+		return;
+	if (containerdef_set_roll_deadline(name, (long long)time(NULL) + window) != 0)
+		return;
+	arm_roll_watch_timer(name, window);
+	logstore_write("cixd", "info",
+	               "%s: rolled to image version %.12s; it has %d s to be ready (ADR-0323)", name,
+	               def->roll_to, window);
+}
+
+/*
+ * The window has closed. Ready: the roll is confirmed. Not ready: back to
+ * the version before. A container an operator stopped meanwhile is their
+ * call, and ends the watch with no verdict.
+ */
+static void handle_roll_watch_timer_event(struct conn *cc)
+{
+	struct container_def *def;
+	struct registry_entry *live;
+	uint64_t expirations;
+	char reason[160];
+	long long now = (long long)time(NULL);
+
+	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
+		expirations = 0;
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	close(cc->fd);
+	def = containerdef_find(cc->restart_name);
+	if (def == NULL || def->roll_to[0] == '\0' || def->roll_deadline == 0) {
+		free(cc);
+		return; /* confirmed or rolled back already */
+	}
+	if (now < def->roll_deadline) {
+		/* A timer from an earlier incarnation; the current window runs on. */
+		arm_roll_watch_timer(def->name, (int)(def->roll_deadline - now));
+		free(cc);
+		return;
+	}
+	if (def->stopped) {
+		containerdef_clear_roll(def->name);
+		free(cc);
+		return;
+	}
+	live = registry_find(def->name);
+	if (live != NULL && live->running && live->ready) {
+		logstore_write("cixd", "info", "%s: roll to image version %.12s confirmed (ADR-0323)",
+		               def->name, def->roll_to);
+		containerdef_clear_roll(def->name);
+		free(cc);
+		return;
+	}
+	snprintf(reason, sizeof(reason), "not ready %d s after rolling",
+	         containerdef_rollback_window_get());
+	roll_back(def, reason);
+	if (registry_find(def->name) != NULL)
+		arm_rolling_restart_timer(def->name, 0);
+	free(cc);
+}
+
+/*
+ * After the boot replay: a roll that was on probation when the daemon
+ * stopped is watched again -- for what is left of its window, or from
+ * now when its rolled incarnation had not started yet.
+ */
+static void rearm_roll_watches(void)
+{
+	char order[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
+	int count = containerdef_resolve_order(order);
+	long long now = (long long)time(NULL);
+	int i;
+
+	for (i = 0; i < count; i++) {
+		struct container_def *def = containerdef_find(order[i]);
+
+		if (def == NULL || def->roll_to[0] == '\0')
+			continue;
+		if (def->roll_deadline == 0)
+			start_roll_watch(def->name);
+		else
+			arm_roll_watch_timer(def->name, def->roll_deadline > now
+			                                    ? (int)(def->roll_deadline - now)
+			                                    : 0);
+	}
+}
+
 static void apply_rolling_container_restarts(void)
 {
 	char order[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
@@ -30433,10 +30837,36 @@ static void apply_rolling_container_restarts(void)
 			int jitter_window = def->has_follow_rolling_jitter ? def->follow_rolling_jitter_seconds
 			                                                    : containerdef_jitter_window_get();
 			int delay = jitter_window > 0 ? rolling_jitter_seconds(jitter_window) : 0;
+			char why[PKGBAD_NAME_MAX + PKGBAD_VERSION_MAX + 32];
+			char known_good[sizeof(def->roll_from)];
+
+			/*
+			 * ADR-0323 answer 4: a version that carries a package
+			 * marked bad is not rolled into again. The container stays
+			 * where it is until the package moves on or an operator
+			 * clears the mark (pkgbad_prune() runs inside the check).
+			 */
+			if (image_version_blocked(image, current_version, why, sizeof(why))) {
+				if (strcmp(def->roll_skipped, current_version) != 0) {
+					logstore_write("cixd", "warn",
+					               "%s: not rolling to image %s version %.12s: it carries %s, "
+					               "marked bad (ADR-0323; DELETE /v1/pkg/bad-versions/... to retry)",
+					               order[i], image, current_version, why);
+					snprintf(def->roll_skipped, sizeof(def->roll_skipped), "%s", current_version);
+				}
+				json_free(root);
+				continue;
+			}
+			/* A roll still on probation has not proven its version, so
+			 * the version to go back to stays the one before it. */
+			snprintf(known_good, sizeof(known_good), "%s",
+			         def->roll_to[0] != '\0' ? def->roll_from : pinned_version);
 
 			if (containerdef_patch_image_version(order[i], current_version) == 0) {
-				if (registry_find(order[i]) != NULL)
+				if (registry_find(order[i]) != NULL) {
+					containerdef_set_roll(order[i], known_good, current_version);
 					arm_rolling_restart_timer(order[i], delay);
+				}
 				/* else: stopped-but-defined -- the patched pin alone is
 				 * enough; nothing live to disrupt, and its next start
 				 * already replays the patched body. */
@@ -30699,6 +31129,22 @@ static void container_exit_finalize(struct registry_entry *entry)
 				def->consecutive_failures = 0;
 			else
 				def->consecutive_failures++;
+
+			/*
+			 * ADR-0323 answer 4: a container on probation after a roll
+			 * that keeps dying goes back to the version before it, now,
+			 * rather than after the window and a full backoff.
+			 */
+			if (def->roll_deadline > 0 && uptime < CONTAINER_RESTART_STABILITY_SECONDS &&
+			    ++def->roll_failures >= CONTAINER_ROLLBACK_UNSTABLE_EXITS) {
+				char reason[128];
+
+				snprintf(reason, sizeof(reason), "crash-looped: %d exits within %d s of starting",
+				         def->roll_failures, CONTAINER_RESTART_STABILITY_SECONDS);
+				roll_back(def, reason);
+				def->roll_failures = 0;
+				def->consecutive_failures = 0;
+			}
 
 			/* Self-terminating: stops doubling the moment delay would
 			 * meet or exceed the cap, so this is safe regardless of how
@@ -31799,6 +32245,7 @@ static int cixd_main(int argc, char **argv)
 	kernelpolicy_init(KERNELPOLICY_STATE_PATH); /* issue #65 */
 	srcpolicy_init(SRCPOLICY_STATE_PATH);       /* ADR-0255 */
 	srctrust_init(SRCTRUST_STATE_PATH);         /* ADR-0323 */
+	pkgbad_init(PKGBAD_STATE_PATH);             /* ADR-0323 answer 4 */
 	scheduler_init(SCHEDULER_STATE_PATH);       /* ADR-0257 */
 	scheduler_register_action("pkg.discover",
 	                           "find what upstream has published, authenticate it and write "
@@ -32647,6 +33094,7 @@ static int cixd_main(int argc, char **argv)
 	}
 
 	containerdef_autostart_all();
+	rearm_roll_watches(); /* ADR-0323 answer 4 */
 
 	/*
 	 * #373: rebuild the rolling-rebuild queue from what is actually
@@ -32849,6 +33297,8 @@ static int cixd_main(int argc, char **argv)
 				handle_scheduler_timer_event(cc);
 			else if (cc->kind == CONN_RESTART_TIMER)
 				handle_restart_timer_event(cc);
+			else if (cc->kind == CONN_ROLL_WATCH_TIMER)
+				handle_roll_watch_timer_event(cc);
 			else if (cc->kind == CONN_ROLLING_RESTART_TIMER)
 				handle_rolling_restart_timer_event(cc);
 			else if (cc->kind == CONN_BIND_IP_CLEANUP)

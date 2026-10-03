@@ -125,6 +125,27 @@ struct container_def {
 	 */
 	char awaiting_image[REGISTRY_NAME_MAX];
 	/*
+	 * ADR-0323 answer 4: a roll this container is still on probation for.
+	 * apply_rolling_container_restarts() records where it came from
+	 * (roll_from, the image version it ran) and where it went (roll_to)
+	 * as it re-pins; roll_deadline is set when the rolled incarnation
+	 * actually starts, and the roll is confirmed if the container is
+	 * ready then. Three unstable exits before it, or not ready at it,
+	 * and it goes back to roll_from. Persisted, so a restart mid-window
+	 * re-arms the watch rather than forgetting it. "" and 0 when no
+	 * roll is being watched.
+	 */
+	char roll_from[72];
+	char roll_to[72];
+	long long roll_deadline;
+	/* Unstable exits counted during the watch; in memory only, like
+	 * consecutive_failures -- a restart starts the count afresh. */
+	int roll_failures;
+	/* The image version a rolling pass last declined because it carries
+	 * a package marked bad; in memory only, so the refusal is logged
+	 * once per version rather than on every pass. */
+	char roll_skipped[72];
+	/*
 	 * Why the LAST replay of a waiting definition failed for a reason
 	 * that was not the image (a name taken since, a network deleted, a
 	 * rendered field validation rejects). NOT persisted -- deliberately,
@@ -200,6 +221,23 @@ int containerdef_add(const char *name, const char *body, size_t body_len,
  * -1 if no such definition, or if image does not fit.
  */
 int containerdef_set_awaiting_image(const char *name, const char *image);
+
+/*
+ * ADR-0323 answer 4: the roll watch. set_roll records a re-pin (from,
+ * to) with no deadline yet; set_roll_deadline starts the window when
+ * the rolled incarnation comes up; clear_roll ends it, confirmed or
+ * rolled back. Each persists. -1 for an unknown name.
+ */
+int containerdef_set_roll(const char *name, const char *from, const char *to);
+int containerdef_set_roll_deadline(const char *name, long long deadline);
+int containerdef_clear_roll(const char *name);
+
+/* Seconds a rolled container has to prove itself (ADR-0323 answer 4). */
+#define CONTAINERDEF_ROLLBACK_WINDOW_DEFAULT_SECONDS 300
+#define CONTAINERDEF_ROLLBACK_WINDOW_MIN_SECONDS 10
+#define CONTAINERDEF_ROLLBACK_WINDOW_MAX_SECONDS 3600
+int containerdef_rollback_window_get(void);
+int containerdef_rollback_window_set(int seconds);
 
 /*
  * ADR-0270: record why the last replay of a waiting definition failed
