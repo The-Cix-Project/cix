@@ -50,6 +50,7 @@
 #include "pipelineview.h"
 #include "scheduler.h"
 #include "srcpolicy.h"
+#include "srcresolve.h"
 #include "srctrust.h"
 #include "pkgbad.h"
 #include "upstreamkeys.h"
@@ -6330,37 +6331,60 @@ static void migrate_legacy_intervals(void)
 }
 
 /*
- * ADR-0316: a host that has never saved a schedule file starts with a
- * six-hourly recipe sync, so it follows the catalogue ADR-0315 points
- * it at without anyone arranging it. An every-N job that has never
- * run is due at once, so the first sync happens at first boot.
+ * A host that has never saved a schedule file starts with the jobs that
+ * keep it current without anyone arranging it, and only then: creating
+ * a job saves the file, so from then on an operator who deletes or
+ * changes one keeps what they chose. The same rule ADR-0315 applies to
+ * the sources.
  *
- * Only when no file was ever saved: creating the job saves one, so
- * from then on an operator who deletes or changes recipe-sync keeps
- * what they chose. The same rule ADR-0315 applies to the sources.
+ * - recipe-sync, pkg.sync every six hours (ADR-0316): follow the
+ *   catalogue ADR-0315 points the host at. An every-N job that has
+ *   never run is due at once, so the first sync happens at first boot.
+ * - host-roll, system.roll nightly at 03:00 for 3h (ADR-0327, the
+ *   owner's window of 2026-10-03): build what is newer of the kernel
+ *   and cix, and reboot into it inside the window.
  */
 #define DEFAULT_RECIPE_SYNC_NAME "recipe-sync"
 #define DEFAULT_RECIPE_SYNC_SECONDS (6 * 3600)
+#define DEFAULT_HOST_ROLL_NAME "host-roll"
+#define DEFAULT_HOST_ROLL_BODY                                                                     \
+	"{\"action\":\"system.roll\",\"schedule\":{\"daily\":{\"at\":\"03:00\"}},"                \
+	"\"window_minutes\":180}"
 
 static void seed_default_schedules(void)
 {
-	char body[128];
+	char body[160];
 	char err[256];
+	struct {
+		const char *name;
+		const char *body;
+		const char *what;
+	} jobs[2];
+	int i;
 
-	if (scheduler_state_was_saved() || scheduler_find(DEFAULT_RECIPE_SYNC_NAME) != NULL)
+	if (scheduler_state_was_saved())
 		return;
 	snprintf(body, sizeof(body), "{\"action\":\"pkg.sync\",\"schedule\":{\"every\":{\"seconds\":%d}}}",
 	         DEFAULT_RECIPE_SYNC_SECONDS);
-	if (scheduler_set_from_json(DEFAULT_RECIPE_SYNC_NAME, body, strlen(body), err, sizeof(err)) !=
-	    SCHEDULE_OK) {
-		logstore_write("cixd", "error", "could not create the default %s schedule: %s",
-		               DEFAULT_RECIPE_SYNC_NAME, err);
-		return;
+	jobs[0].name = DEFAULT_RECIPE_SYNC_NAME;
+	jobs[0].body = body;
+	jobs[0].what = "pkg.sync every 6 hours, ADR-0316";
+	jobs[1].name = DEFAULT_HOST_ROLL_NAME;
+	jobs[1].body = DEFAULT_HOST_ROLL_BODY;
+	jobs[1].what = "system.roll nightly at 03:00 for 3h, ADR-0327";
+	for (i = 0; i < 2; i++) {
+		if (scheduler_find(jobs[i].name) != NULL)
+			continue;
+		if (scheduler_set_from_json(jobs[i].name, jobs[i].body, strlen(jobs[i].body), err,
+		                            sizeof(err)) != SCHEDULE_OK) {
+			logstore_write("cixd", "error", "could not create the default %s schedule: %s",
+			               jobs[i].name, err);
+			continue;
+		}
+		logstore_write("cixd", "info",
+		               "no schedules were saved on this host -- created the default \"%s\" (%s)",
+		               jobs[i].name, jobs[i].what);
 	}
-	logstore_write("cixd", "info",
-	               "no schedules were saved on this host -- created the default \"%s\" "
-	               "(pkg.sync every %d hours, ADR-0316)",
-	               DEFAULT_RECIPE_SYNC_NAME, DEFAULT_RECIPE_SYNC_SECONDS / 3600);
 }
 
 static void arm_scheduler_timer(void)
@@ -8957,6 +8981,11 @@ static int artifact_export_start(enum artifact_export_kind kind, const char *nam
                                  const char *dest_override, char *err_msg, size_t err_msg_size);
 static void publish_hostbuild_artifact(const char *name);
 static void spawn_cix_bootroot_assembly(const char *artifact_dir);
+/* ADR-0327: the host roll, defined after spawn_cix_bootroot_assembly(). */
+static void hostroll_tick(void);
+static void hostroll_assembly_done(int ok);
+static void kernel_running_version(char *out, size_t out_size);
+static int pkg_error_describe(enum pkg_error err, const char **phrase, char *msg, size_t msg_size);
 
 /* ADR-0207 phase 2: force the direct-rootfs container path with a COPY
  * instead of a snapshot, so the btrfs-incapable dev sandbox (ext4, no
@@ -9140,6 +9169,10 @@ static void pkg_completion_followup(int chained, pid_t pkg_pid, int pkg_pidfd, i
 		         hostbuild_done_name);
 		spawn_cix_bootroot_assembly(artifact_dir);
 	}
+
+	/* ADR-0327: a host roll waiting for this hostbuild moves on, after
+	 * the automatic assembly above so it can see that one started. */
+	hostroll_tick();
 }
 
 /*
@@ -9464,6 +9497,232 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 	g_bootroot_output.rd = output_pipe[0];
 	register_bootroot_output();
 	register_bootroot_assemble_pidfd(pid, pidfd);
+}
+
+/* ---------- ADR-0327: the host follows its own rolling packages ----------
+ *
+ * The host's two packages are the kernel and cix (the control-plane
+ * root), both hostbuilt into PKG_HOSTBUILD_IMAGE. A container follows
+ * its image; until this, nothing moved the host: a newer kernel recipe
+ * waited for someone to run a hostbuild and reboot.
+ *
+ * One roll, in the scheduled window (system.roll, nightly at 03:00 for
+ * 3h by default): hostbuild what is behind -- the kernel first, because
+ * the root carries its modules and the assembly reads them from the
+ * kernel's artifact -- then assemble the root, stage root and kernel
+ * together on the inactive slot (do_system_update(), the one way a slot
+ * is staged), and reboot. The A/B boot counter is the rollback: a slot
+ * that does not confirm its boot falls back to the one that ran.
+ *
+ * A host that is current but not running what it built (a roll that
+ * missed its window, or a hostbuild nobody deployed) is staged and
+ * rebooted too. Outside the window nothing reboots; the next night
+ * finds the host behind what it runs and finishes the job.
+ */
+enum hostroll_step {
+	HOSTROLL_IDLE = 0,
+	HOSTROLL_BUILD,   /* waiting for g_hostroll.building's hostbuild */
+	HOSTROLL_ASSEMBLE /* waiting for the root assembly */
+};
+
+static struct {
+	enum hostroll_step step;
+	long reboot_by;     /* the window's end; 0 = none, reboot when staged */
+	int stage_kernel;   /* the kernel artifact differs from what runs */
+	int then_cix;       /* cix is still to build after the kernel */
+	char building[PKG_NAME_MAX];
+} g_hostroll;
+
+static void hostroll_stop(const char *level, const char *fmt, const char *a, const char *b)
+{
+	char msg[512];
+
+	snprintf(msg, sizeof(msg), fmt, a, b);
+	logstore_write("system", level, "host roll: %s (ADR-0327)", msg);
+	memset(&g_hostroll, 0, sizeof(g_hostroll));
+}
+
+static int hostroll_build(const char *name)
+{
+	pid_t pid;
+	int pidfd, chain_idx;
+	enum pkg_error perr;
+
+	perr = pkg_hostbuild_start(name, NULL, 1, NULL, 0, &pid, &pidfd, &chain_idx);
+	if (perr != PKG_OK) {
+		const char *phrase;
+		char msg[640];
+
+		pkg_error_describe(perr, &phrase, msg, sizeof(msg));
+		hostroll_stop("error", "the %s hostbuild could not start: %s", name, msg);
+		return -1;
+	}
+	register_pkg_fetch_pidfd(pid, pidfd, chain_idx);
+	g_hostroll.step = HOSTROLL_BUILD;
+	snprintf(g_hostroll.building, sizeof(g_hostroll.building), "%s", name);
+	logstore_write("system", "info", "host roll: building %s (ADR-0327)", name);
+	return 0;
+}
+
+static void hostroll_assemble(void)
+{
+	char artifact_dir[PATH_MAX];
+
+	/* A cix hostbuild starts its own assembly (pkg_completion_followup()). */
+	if (!g_bootroot_assembly_running) {
+		snprintf(artifact_dir, sizeof(artifact_dir), "%s/cix", ARTIFACTS_DIR);
+		spawn_cix_bootroot_assembly(artifact_dir);
+	}
+	if (!g_bootroot_assembly_running) {
+		hostroll_stop("error", "the root assembly could not start%s%s", "", "");
+		return;
+	}
+	g_hostroll.step = HOSTROLL_ASSEMBLE;
+}
+
+/*
+ * After every package job (pkg_completion_followup()): has the hostbuild
+ * this roll waits for finished, and how?
+ */
+static void hostroll_tick(void)
+{
+	struct pkg_host_state st;
+
+	if (g_hostroll.step != HOSTROLL_BUILD)
+		return;
+	if (pkg_host_state(g_hostroll.building, &st) != 0) {
+		hostroll_stop("error", "%s is no longer a host package%s", g_hostroll.building, "");
+		return;
+	}
+	if (st.building)
+		return;
+	if (st.failed) {
+		hostroll_stop("error", "the %s hostbuild failed: %s -- nothing was staged",
+		              g_hostroll.building, st.error);
+		return;
+	}
+	logstore_write("system", "info", "host roll: %s %s built (ADR-0327)", g_hostroll.building,
+	               st.installed);
+	if (strcmp(g_hostroll.building, "kernel") == 0 && g_hostroll.then_cix) {
+		g_hostroll.then_cix = 0;
+		hostroll_build("cix");
+		return;
+	}
+	hostroll_assemble();
+}
+
+/* handle_bootroot_assemble_event(): the root this roll waits for. */
+static void hostroll_assembly_done(int ok)
+{
+	char body[2 * PATH_MAX + 64], slot[8], errmsg[256];
+	int status, updated_root = 0, updated_kernel = 0;
+	long now = (long)time(NULL);
+
+	if (g_hostroll.step != HOSTROLL_ASSEMBLE)
+		return;
+	if (!ok) {
+		hostroll_stop("error", "the root assembly failed -- nothing was staged%s%s", "", "");
+		return;
+	}
+	if (g_hostroll.stage_kernel)
+		snprintf(body, sizeof(body),
+		         "{\"image_path\":\"%s/cixd-root.squashfs\",\"kernel_path\":\"%s/kernel/bzImage\"}",
+		         BOOTROOT_DIR, ARTIFACTS_DIR);
+	else
+		snprintf(body, sizeof(body), "{\"image_path\":\"%s/cixd-root.squashfs\"}", BOOTROOT_DIR);
+	status = do_system_update(body, strlen(body), slot, sizeof(slot), &updated_root,
+	                          &updated_kernel, errmsg, sizeof(errmsg));
+	if (status != 200) {
+		hostroll_stop("error", "staging failed: %s%s", errmsg, "");
+		return;
+	}
+	if (g_hostroll.reboot_by != 0 && now > g_hostroll.reboot_by) {
+		hostroll_stop("warn",
+		              "staged on slot %s, but the window has closed -- the host reboots into it "
+		              "in the next window%s",
+		              slot, "");
+		return;
+	}
+	logstore_write("system", "warn",
+	               "host roll: staged root%s on slot %s -- rebooting into it (ADR-0327)",
+	               updated_kernel ? " and kernel" : "", slot);
+	memset(&g_hostroll, 0, sizeof(g_hostroll));
+	g_shutdown_action = SHUTDOWN_ACTION_REBOOT;
+	g_stop = 1;
+}
+
+/* The schedule's reason when the first hostbuild would not start: the
+ * cause is logged (hostroll_stop()), and the reason must not read as a
+ * roll under way. */
+static int roll_start_failed(const char *name, char *reason, size_t reason_size)
+{
+	snprintf(reason, reason_size, "the %s hostbuild could not start -- cixctl logs names why",
+	         name);
+	return -1;
+}
+
+/*
+ * system.roll: what is behind, and start the first step. Returns at
+ * once; the steps run on completions.
+ */
+static int action_system_roll(const char *params, char *reason, size_t reason_size)
+{
+	struct pkg_host_state kernel, cix;
+	char running_kernel[128], kernel_upstream[PKG_VERSION_MAX];
+	int kernel_behind, cix_behind, kernel_not_running, cix_not_running;
+
+	(void)params;
+	/* A roll whose hostbuild ended with no completion seen (cancelled, say)
+	 * resolves now rather than claiming to be in progress forever. */
+	if (g_hostroll.step == HOSTROLL_BUILD &&
+	    !pkg_job_in_flight_for(g_hostroll.building, PKG_HOSTBUILD_IMAGE, 1))
+		hostroll_tick();
+	if (g_hostroll.step != HOSTROLL_IDLE) {
+		snprintf(reason, reason_size, "a host roll is already in progress (%s)",
+		         g_hostroll.step == HOSTROLL_BUILD ? g_hostroll.building : "assembling");
+		return 0;
+	}
+	if (pkg_host_state("kernel", &kernel) != 0 || pkg_host_state("cix", &cix) != 0) {
+		snprintf(reason, reason_size,
+		         "the kernel or cix was never hostbuilt on this host, so there is nothing to "
+		         "roll from");
+		return -1;
+	}
+	if (kernel.building || cix.building || pkg_job_in_flight_for(NULL, NULL, 1)) {
+		snprintf(reason, reason_size, "a hostbuild is already running; the next window rolls");
+		return -1;
+	}
+	kernel_running_version(running_kernel, sizeof(running_kernel));
+	srcresolve_upstream_of(kernel.installed, kernel_upstream, sizeof(kernel_upstream));
+	/* A failed hostbuild left nothing installed: it is behind, and is
+	 * retried, never staged from whatever the artifact directory holds. */
+	kernel_behind = kernel.available[0] != '\0' || kernel.failed;
+	cix_behind = cix.available[0] != '\0' || cix.failed;
+	kernel_not_running = kernel.installed[0] != '\0' && strcmp(kernel_upstream, running_kernel) != 0;
+	cix_not_running = cix.installed[0] != '\0' && strcmp(cix.installed, CIX_BUILD_VERSION) != 0;
+	if (!kernel_behind && !cix_behind && !kernel_not_running && !cix_not_running) {
+		snprintf(reason, reason_size, "current: kernel %s and cix %s are the newest and running",
+		         kernel.installed, cix.installed);
+		return 0;
+	}
+
+	memset(&g_hostroll, 0, sizeof(g_hostroll));
+	g_hostroll.reboot_by = scheduler_running_window_end();
+	g_hostroll.stage_kernel = kernel_behind || kernel_not_running;
+	g_hostroll.then_cix = kernel_behind && cix_behind;
+	snprintf(reason, reason_size, "rolling: kernel %s%s%s, cix %s%s%s",
+	         kernel.installed, kernel_behind ? " -> " : "", kernel.available, cix.installed,
+	         cix_behind ? " -> " : "", cix.available);
+	logstore_write("system", "info", "host roll: %s (ADR-0327)", reason);
+	if (kernel_behind)
+		return hostroll_build("kernel") == 0 ? 0 : roll_start_failed("kernel", reason, reason_size);
+	if (cix_behind)
+		return hostroll_build("cix") == 0 ? 0 : roll_start_failed("cix", reason, reason_size);
+	hostroll_assemble();
+	if (g_hostroll.step == HOSTROLL_ASSEMBLE)
+		return 0;
+	snprintf(reason, reason_size, "the root assembly could not start -- cixctl logs names why");
+	return -1;
 }
 
 /*
@@ -11167,6 +11426,9 @@ static void pkg_sync_extract_done(int exit_status, void *ctx)
 	(void)ctx;
 	pkg_sync_completed(exit_status == 0 ? 0 : -2);
 	start_queued_approval_writeback(); /* ADR-0324: what the sync found */
+	/* ADR-0326: the merge ran in the helper and wrote the key store there;
+	 * this process's copy is the one discovery's helper inherits. */
+	upstreamkeys_init(UPSTREAMKEYS_STATE_PATH);
 }
 
 /*
@@ -11202,9 +11464,10 @@ static int pkg_sync_extract_work(void *arg)
  * served: no API, no dashboard, no console, no container lifecycle
  * event, on a pid-1 daemon whose loop is the only way in.
  *
- * The merge itself stays here. It calls pkg_recipe_add() and reads
- * g_sync_refetch_*, so a fork would update a copy and throw it away --
- * and it is the cheap half regardless.
+ * The merge runs in that helper too (pkg_sync_extract_work(), "ADR-0278,
+ * corrected" above), so whatever it changes in memory changes the
+ * helper's copy only; pkg_sync_extract_done() re-reads the upstream key
+ * store the merge wrote (ADR-0326).
  *
  * A failed fork is not a lost sync: the extraction runs inline, exactly
  * as it always did. That is worse for latency and correct for the
@@ -20118,78 +20381,98 @@ static void handle_container_recipe_apply(int fd, const char *name, const char *
 	free(rendered);
 }
 
-static void respond_pkg_error(int fd, enum pkg_error err)
+/*
+ * What a pkg_error means, once: its HTTP status and phrase, and the
+ * sentence an operator reads. respond_pkg_error() answers a request with
+ * it; the host roll (ADR-0327), which has no request, logs the sentence.
+ */
+static int pkg_error_describe(enum pkg_error err, const char **phrase, char *msg, size_t msg_size)
 {
 	switch (err) {
 	case PKG_ERR_DEP_UNRESOLVABLE:
-		respond_error(fd, 400, "Bad Request",
-		              "a dependency of this package could not be resolved -- the package and "
-		              "its own recipe are fine; the daemon log names the dependency and why");
-		break;
+		*phrase = "Bad Request";
+		snprintf(msg, msg_size,
+		         "a dependency of this package could not be resolved -- the package and its own "
+		         "recipe are fine; the daemon log names the dependency and why");
+		return 400;
 	case PKG_ERR_INVALID_NAME:
-		respond_error(fd, 400, "Bad Request", "invalid package name");
-		break;
+		*phrase = "Bad Request";
+		snprintf(msg, msg_size, "invalid package name");
+		return 400;
 	case PKG_ERR_NOT_FOUND:
-		respond_error(fd, 404, "Not Found", "no such package");
-		break;
+		*phrase = "Not Found";
+		snprintf(msg, msg_size, "no such package");
+		return 404;
 	case PKG_ERR_INVALID_RECIPE:
-		respond_error(fd, 400, "Bad Request", "no such recipe, or it failed to parse");
-		break;
+		*phrase = "Bad Request";
+		snprintf(msg, msg_size, "no such recipe, or it failed to parse");
+		return 400;
 	case PKG_ERR_DUPLICATE:
-		respond_error(fd, 409, "Conflict", "package is already installed");
-		break;
-	case PKG_ERR_BUSY:
-		{
-			/*
-			 * Name what is holding the slots (#246). "Another install
-			 * is in progress" is true and useless: it is the same
-			 * message whether a real build is running or a leaked
-			 * chain slot is holding the budget with nothing behind
-			 * it, and telling those apart used to require reading an
-			 * unrelated endpoint's error text.
-			 */
-			char busy[512];
-			char msg[640];
-			int n = pkg_active_chain_names(busy, sizeof(busy));
+		*phrase = "Conflict";
+		snprintf(msg, msg_size, "package is already installed");
+		return 409;
+	case PKG_ERR_BUSY: {
+		/*
+		 * Name what is holding the slots (#246). "Another install is in
+		 * progress" is true and useless: it is the same message whether
+		 * a real build is running or a leaked chain slot is holding the
+		 * budget with nothing behind it, and telling those apart used to
+		 * require reading an unrelated endpoint's error text.
+		 */
+		char busy[512];
+		int n = pkg_active_chain_names(busy, sizeof(busy));
 
-			if (n > 0)
-				snprintf(msg, sizeof(msg),
-				         "all %d package job slots are in use (%s) -- wait for one to finish, "
-				         "or cancel it with POST /v1/pkg/cancel",
-				         n, busy);
-			else
-				snprintf(msg, sizeof(msg), "another package install is already in progress");
-			respond_error(fd, 409, "Conflict", msg);
-		}
-		break;
+		*phrase = "Conflict";
+		if (n > 0)
+			snprintf(msg, msg_size,
+			         "all %d package job slots are in use (%s) -- wait for one to finish, or "
+			         "cancel it with POST /v1/pkg/cancel",
+			         n, busy);
+		else
+			snprintf(msg, msg_size, "another package install is already in progress");
+		return 409;
+	}
 	case PKG_ERR_FULL:
-		respond_error(fd, 500, "Internal Server Error", "package table full");
-		break;
+		*phrase = "Internal Server Error";
+		snprintf(msg, msg_size, "package table full");
+		return 500;
 	case PKG_ERR_NOT_BUILDING:
 		/*
-		 * Issue #213: the entry exists and has no build in flight.
-		 * 409 rather than 404 -- the package is plainly there, and
-		 * saying "no such package" would send the caller looking for
-		 * the wrong problem.
+		 * Issue #213: the entry exists and has no build in flight. 409
+		 * rather than 404 -- the package is plainly there, and saying
+		 * "no such package" would send the caller looking for the wrong
+		 * problem.
 		 */
-		respond_error(fd, 409, "Conflict",
-		              "no build is in flight for that package and image");
-		break;
+		*phrase = "Conflict";
+		snprintf(msg, msg_size, "no build is in flight for that package and image");
+		return 409;
 	case PKG_ERR_INVALID_TOOLCHAIN:
-		respond_error(fd, 400, "Bad Request", "toolchain_path missing, unreadable, or not a regular file");
-		break;
+		*phrase = "Bad Request";
+		snprintf(msg, msg_size, "toolchain_path missing, unreadable, or not a regular file");
+		return 400;
 	case PKG_ERR_BUILD_MEMORY_OVER_CEILING:
-		respond_error(fd, 409, "Conflict",
-		              "the recipe declares more build memory (resources { memory }) than "
-		              "memory_max_ceiling allows -- the cixd log names both; raise it with "
-		              "PUT /v1/system/pkg-build-config");
-		break;
+		*phrase = "Conflict";
+		snprintf(msg, msg_size,
+		         "the recipe declares more build memory (resources { memory }) than "
+		         "memory_max_ceiling allows -- the cixd log names both; raise it with PUT "
+		         "/v1/system/pkg-build-config");
+		return 409;
 	case PKG_ERR_SPAWN_FAILED:
 	case PKG_ERR_PERSIST_FAILED:
 	default:
-		respond_error(fd, 500, "Internal Server Error", "package operation failed");
-		break;
+		*phrase = "Internal Server Error";
+		snprintf(msg, msg_size, "package operation failed");
+		return 500;
 	}
+}
+
+static void respond_pkg_error(int fd, enum pkg_error err)
+{
+	const char *phrase;
+	char msg[640];
+	int status = pkg_error_describe(err, &phrase, msg, sizeof(msg));
+
+	respond_error(fd, status, phrase, msg);
 }
 
 /*
@@ -20979,6 +21262,13 @@ static void handle_pkg_upstream_key_delete(int fd, const char *name, const char 
 
 	if (rc == 1) {
 		respond_error(fd, 404, "Not Found", "the package has no key with that fingerprint");
+		return;
+	}
+	if (rc == 2) {
+		respond_error(fd, 409, "Conflict",
+		              "this key comes from the package's source catalogue -- remove "
+		              "recipes/keys/<package>@<fingerprint>.asc there, or the next sync restores "
+		              "it (ADR-0326)");
 		return;
 	}
 	if (rc != 0) {
@@ -31654,6 +31944,8 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 		fprintf(stderr, "cix bootroot assembly: failed\n");
 		logstore_write("cixd", "error", "cix bootroot assembly: failed");
 	}
+	/* ADR-0327: a host roll waiting for this root stages it, or stops. */
+	hostroll_assembly_done(g_bootroot_assembly_completed == g_bootroot_assembly_started);
 	close(cc->fd);
 	free(cc);
 }
@@ -32408,12 +32700,17 @@ static int cixd_main(int argc, char **argv)
 	scheduler_register_action("pkg.discover",
 	                           "find what upstream has published, authenticate it and write "
 	                           "the next recipe revision (ADR-0323) "
-	                           "(params {\"kind\": \"kernel.org\"|\"gitea-tags\"} for one)",
+	                           "(params {\"kind\": \"kernel.org\"|\"gitea-tags\"} for one, "
+	                           "{\"refresh\": false} to use the lists held)",
 	                           action_discover);
 	scheduler_register_action("system.backup", "write a system backup to the configured disk",
 	                           action_system_backup);
 	scheduler_register_action("volume.backup", "snapshot every volume that opted in",
 	                           action_volume_backup);
+	scheduler_register_action("system.roll",
+	                           "build what is newer of the kernel and cix, stage it and reboot "
+	                           "into it within the window (ADR-0327)",
+	                           action_system_roll);
 	scheduler_register_action("pkg.sync", "fetch recipes from the configured repo",
 	                           action_pkg_sync);
 	migrate_legacy_intervals();

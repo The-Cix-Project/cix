@@ -5710,6 +5710,23 @@ static int pkg_entry_drift(const struct pkg_entry *e, char *out_available, size_
 	return 1;
 }
 
+int pkg_host_state(const char *name, struct pkg_host_state *out)
+{
+	const struct pkg_entry *e = pkg_find(name, PKG_HOSTBUILD_IMAGE);
+
+	memset(out, 0, sizeof(*out));
+	if (e == NULL)
+		return -1;
+	out->building = e->state == PKG_STATE_FETCHING || e->state == PKG_STATE_BUILDING;
+	out->failed = e->state == PKG_STATE_FAILED;
+	if (e->state == PKG_STATE_INSTALLED)
+		snprintf(out->installed, sizeof(out->installed), "%s", e->version);
+	if (out->failed)
+		snprintf(out->error, sizeof(out->error), "%s", e->error);
+	pkg_entry_drift(e, out->available, sizeof(out->available));
+	return 0;
+}
+
 /*
  * One mapping from state to its wire name. Extracted when a second
  * caller arrived (pkg_write_json_config, ADR-0206) rather than copied,
@@ -17499,6 +17516,84 @@ static void sync_merge_packages(const char *recipes_root, const char *source,
 }
 
 /*
+ * ADR-0326: the upstream keys a source carries, as
+ * recipes/keys/<package>@<FINGERPRINT>.asc. Taken only from a source
+ * the host trusts for keys, only for packages that source owns (a
+ * source cannot vouch for another source's package), and from a signed
+ * source only what its index lists. The source's previous keys are
+ * replaced, so a key removed from git leaves; a source not trusted for
+ * keys supplies none, which removes what it supplied before.
+ */
+static void sync_upstream_keys(const struct pkg_source *s, const char *dir,
+                               const struct catalogue *cat)
+{
+	struct upstreamkeys_offer offers[UPSTREAMKEYS_MAX];
+	char *bufs[UPSTREAMKEYS_MAX];
+	char names[UPSTREAMKEYS_MAX][PKG_NAME_MAX], fprs[UPSTREAMKEYS_MAX][48];
+	char keys_root[PATH_MAX], why[512];
+	DIR *kd = NULL;
+	struct dirent *kde;
+	int n = 0, adopted, refused = 0, i;
+
+	snprintf(keys_root, sizeof(keys_root), "%s/recipes/keys", dir);
+	if (s->trust_keys)
+		kd = opendir(keys_root);
+	while (kd != NULL && (kde = readdir(kd)) != NULL && n < UPSTREAMKEYS_MAX) {
+		char from[PATH_MAX], item[PKG_SOURCE_ITEM_MAX];
+		char owner[PKG_SOURCES_MAX * PKG_SOURCE_NAME_MAX];
+		const char *at = strchr(kde->d_name, '@');
+		size_t len = strlen(kde->d_name), name_len;
+
+		if (kde->d_name[0] == '.' || at == NULL || len < 5 ||
+		    strcmp(kde->d_name + len - 4, ".asc") != 0)
+			continue;
+		name_len = (size_t)(at - kde->d_name);
+		if (name_len == 0 || name_len >= sizeof(names[n]) ||
+		    (size_t)(len - 4 - name_len - 1) >= sizeof(fprs[n]))
+			continue;
+		memcpy(names[n], kde->d_name, name_len);
+		names[n][name_len] = '\0';
+		memcpy(fprs[n], at + 1, len - 4 - name_len - 1);
+		fprs[n][len - 4 - name_len - 1] = '\0';
+		snprintf(item, sizeof(item), "package:%s", names[n]);
+		if (pkgsource_owner_of(item, owner, sizeof(owner)) != PKGSOURCE_OWNER_ONE ||
+		    strcmp(owner, s->name) != 0) {
+			logstore_write("cixd", "warn",
+			               "pkg sync: source %s carries an upstream key for %s, which it does "
+			               "not own -- not adopted (ADR-0326)",
+			               s->name, names[n]);
+			continue;
+		}
+		snprintf(from, sizeof(from), "%s/%s", keys_root, kde->d_name);
+		if (cat != NULL && !sync_vouched(cat, "recipes/keys", kde->d_name, from, s->name))
+			continue;
+		bufs[n] = NULL;
+		if (persist_read_file(from, &bufs[n], &offers[n].len) != 0 || bufs[n] == NULL)
+			continue;
+		offers[n].package = names[n];
+		offers[n].fingerprint = fprs[n];
+		offers[n].armored = bufs[n];
+		n++;
+	}
+	if (kd != NULL)
+		closedir(kd);
+
+	adopted = upstreamkeys_sync_source(s->name, offers, n, (long long)time(NULL), &refused, why,
+	                                   sizeof(why));
+	for (i = 0; i < n; i++)
+		free(bufs[i]);
+	if (adopted < 0)
+		logstore_write("cixd", "warn", "pkg sync: the upstream key store could not be saved");
+	else if (adopted > 0)
+		logstore_write("cixd", "info", "pkg sync: %d upstream key%s from source %s (ADR-0326)",
+		               adopted, adopted == 1 ? "" : "s", s->name);
+	if (refused > 0)
+		logstore_write("cixd", "warn",
+		               "pkg sync: %d upstream key%s from source %s refused -- %s (ADR-0326)",
+		               refused, refused == 1 ? "" : "s", s->name, why);
+}
+
+/*
  * The second half, in the same helper: record what every source
  * offers, resolve who owns what from that, then merge from each source
  * only what it owns. Offers are written for every source that unpacked
@@ -17629,6 +17724,15 @@ int pkg_sync_merge(void)
 				                "pkg sync: %d release signing key%s trusted, from source %s",
 				                adopted, adopted == 1 ? "" : "s", s->name);
 		}
+		sync_upstream_keys(s, dir, cats[i]);
+	}
+	/* ADR-0326: a source an operator removed takes its keys with it. */
+	{
+		const char *source_names[PKG_SOURCES_MAX];
+
+		for (i = 0; i < count && i < PKG_SOURCES_MAX; i++)
+			source_names[i] = pkgsource_at(i)->name;
+		upstreamkeys_retain_sources(source_names, i);
 	}
 	for (i = 0; i < count; i++)
 		catalogue_free(cats[i]);

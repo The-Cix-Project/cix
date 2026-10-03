@@ -17836,14 +17836,16 @@ static void fmt_upstream_keys(const struct json_value *v)
 		       pkg != NULL ? pkg : "the package");
 		return;
 	}
-	printf("%-42s %8s  %s\n", "FINGERPRINT", "BYTES", "ADDED");
+	printf("%-42s %8s  %-11s %s\n", "FINGERPRINT", "BYTES", "ADDED", "SOURCE");
 	for (i = 0; i < arr->u.array.count; i++) {
 		const struct json_value *e = arr->u.array.items[i];
 		const char *fpr = json_as_string(json_object_get(e, "fingerprint"));
+		const char *src = json_as_string(json_object_get(e, "source"));
 
-		printf("%-42s %8ld  %ld\n", fpr != NULL ? fpr : "",
+		printf("%-42s %8ld  %-11ld %s\n", fpr != NULL ? fpr : "",
 		       (long)json_as_number(json_object_get(e, "bytes")),
-		       (long)json_as_number(json_object_get(e, "added_at")));
+		       (long)json_as_number(json_object_get(e, "added_at")),
+		       src != NULL ? src : "(operator)");
 	}
 }
 

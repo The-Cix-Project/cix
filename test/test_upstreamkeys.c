@@ -79,6 +79,45 @@ int main(void)
 	check(upstreamkeys_init(path) == 0 && upstreamkeys_find("kernel", TEST_FPR, NULL) == NULL,
 	      "and the removal is saved");
 
+	/* ADR-0326: the catalogue supplies keys, per source. */
+	{
+		struct upstreamkeys_offer offers[2];
+		const char *keep[1] = { "other" };
+		int refused = -1;
+
+		offers[0].package = "kernel";
+		offers[0].fingerprint = TEST_FPR;
+		offers[0].armored = TEST_KEY;
+		offers[0].len = sizeof(TEST_KEY) - 1;
+		offers[1].package = "kernel";
+		offers[1].fingerprint = "0000000000000000000000000000000000000000";
+		offers[1].armored = TEST_KEY;
+		offers[1].len = sizeof(TEST_KEY) - 1;
+		check(upstreamkeys_sync_source("cix-recipes", offers, 2, 1790000100LL, &refused, err,
+		                               sizeof(err)) == 1 &&
+		          refused == 1 && strstr(err, TEST_FPR) != NULL,
+		      "a source's key is adopted, and one filed under another fingerprint refused");
+		check(upstreamkeys_find("kernel", TEST_FPR, NULL) != NULL,
+		      "the adopted key authenticates the package");
+		check(upstreamkeys_remove("kernel", TEST_FPR) == 2,
+		      "an operator cannot remove a key the catalogue supplies");
+		check(upstreamkeys_add("kernel", TEST_FPR, TEST_KEY, sizeof(TEST_KEY) - 1, 1, err,
+		                       sizeof(err)) != 0 &&
+		          strstr(err, "cix-recipes") != NULL,
+		      "nor replace it, and is told which source to change");
+		check(upstreamkeys_init(path) == 0 && upstreamkeys_find("kernel", TEST_FPR, NULL) != NULL,
+		      "the catalogue's key survives a restart");
+		check(upstreamkeys_sync_source("cix-recipes", NULL, 0, 1790000200LL, &refused, err,
+		                               sizeof(err)) == 0 &&
+		          upstreamkeys_find("kernel", TEST_FPR, NULL) == NULL,
+		      "a key removed from the source leaves at the next sync");
+		check(upstreamkeys_sync_source("cix-recipes", offers, 1, 1790000300LL, &refused, err,
+		                               sizeof(err)) == 1 &&
+		          upstreamkeys_retain_sources(keep, 1) == 0 &&
+		          upstreamkeys_find("kernel", TEST_FPR, NULL) == NULL,
+		      "and a source an operator removed takes its keys with it");
+	}
+
 	unlink(path);
 	printf("UPSTREAMKEYS RESULT: %s (%d failure(s))\n", failures == 0 ? "PASS" : "FAIL",
 	       failures);

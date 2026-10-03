@@ -6,6 +6,29 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Upstream keys travel in the catalogue, and the host rolls nightly at 03:00 (ADR-0326, ADR-0327)
+
+The owner's two answers of 2026-10-03, to "isn't this friction? how will this be a rolling release?"
+
+- **Upstream keys come from the catalogue** (ADR-0326):
+  - A source the host trusts for keys carries `recipes/keys/<package>@<FINGERPRINT>.asc` for packages it owns, and the signed index covers `recipes/keys`.
+  - A sync adopts a key only when its own fingerprint is the one in its name, and only from the package's own source.
+  - Each sync replaces that source's keys, so removing the file revokes the key. A source that was refused or couldn't be fetched keeps its keys; a removed source loses them.
+  - `pkg upstream-keys ls` shows each key's SOURCE. An operator's own key is still possible, but `add` and `rm` cannot replace or remove a catalogue key (409).
+- **The host follows its own packages** (ADR-0327), via a new scheduled action, `system.roll`:
+  - It hostbuilds the kernel and then cix when newer recipes exist, assembles the root, stages root and kernel together on the inactive slot, and reboots, all within the job's window.
+  - Finished after the window, it stays staged and the next window reboots.
+  - A failure stops the roll and stages nothing. The A/B boot counter is the rollback.
+  - A host that never saved a schedule file starts with `host-roll`, daily at 03:00 for 3h.
+  - The scheduler tells a running action when its window ends (`scheduler_running_window_end()`).
+- **Also:**
+  - A sync reloads the key store in the daemon after its helper wrote it.
+  - main.c's comment that the sync merge "stays here" was false (the merge runs in the helper since ADR-0278) and is corrected.
+  - What a package error means is now said once (`pkg_error_describe()`), shared by the REST answer and the host roll.
+- Tests:
+  - `test_upstreamkeys`: adopt, refuse a misnamed key, a catalogue key can't be removed or replaced, removal at the next sync, a removed source.
+  - `test_pkg`: a trusted source's key adopted only under its own name and only for its own package, 409 on delete, gone once removed from git; and a fresh host's `host-roll` default.
+
 ### Rung 2: a release can be authenticated by a signed checksum list (ADR-0323, ADR-0318)
 
 - **The upstream key store exists:** `cixctl pkg upstream-keys ls NAME | add NAME --fingerprint=FPR --file=KEY.asc | rm NAME FPR` (`GET/POST /v1/pkg/{name}/upstream-keys`, `DELETE .../{fingerprint}`).

@@ -683,10 +683,19 @@ static void record_outcome(struct schedule *s, long now, int ok, const char *rea
 	persist_all();
 }
 
+/* While an action runs: when its window ends (0 = no window). */
+static long g_running_window_end;
+
+long scheduler_running_window_end(void)
+{
+	return g_running_window_end;
+}
+
 static void run_one(struct schedule *s, long now)
 {
 	const struct schedule_action *a = scheduler_action_find(s->action);
 	char reason[SCHEDULE_REASON_MAX];
+	int ok;
 
 	reason[0] = '\0';
 	if (a == NULL) {
@@ -701,7 +710,10 @@ static void run_one(struct schedule *s, long now)
 		record_outcome(s, now, 0, reason);
 		return;
 	}
-	if (a->fn(s->params[0] != '\0' ? s->params : NULL, reason, sizeof(reason)) == 0)
+	g_running_window_end = s->window_minutes > 0 ? now + (long)s->window_minutes * 60 : 0;
+	ok = a->fn(s->params[0] != '\0' ? s->params : NULL, reason, sizeof(reason)) == 0;
+	g_running_window_end = 0;
+	if (ok)
 		record_outcome(s, now, 1, reason[0] != '\0' ? reason : "ok");
 	else
 		record_outcome(s, now, 0, reason[0] != '\0' ? reason : "failed");

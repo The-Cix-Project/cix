@@ -2080,6 +2080,23 @@ int pkg_recipe_latest_version(const char *name, char *out, size_t out_size);
  */
 int pkg_job_in_flight_for(const char *name, const char *image, int hostbuild);
 
+/*
+ * ADR-0327: one host package (installed into PKG_HOSTBUILD_IMAGE -- cix,
+ * the kernel) as the nightly host roll reads it. installed is "" unless
+ * the package is installed; available is the newer recipe version
+ * pkg_entry_drift() reports (the same answer as available_version and
+ * update-all), "" when current. -1 when the package was never hostbuilt.
+ */
+struct pkg_host_state {
+	int building; /* fetching or building now */
+	int failed;   /* the last attempt failed; error says why */
+	char installed[PKG_VERSION_MAX];
+	char available[PKG_VERSION_MAX];
+	char error[PKG_ERROR_MAX];
+};
+
+int pkg_host_state(const char *name, struct pkg_host_state *out);
+
 int pkg_installed_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
 
 /*

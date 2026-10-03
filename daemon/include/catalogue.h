@@ -12,8 +12,9 @@
  * signed index vouches for; a host without one syncs as it always has.
  *
  * Covered: every regular file in recipes/package, recipes/image,
- * recipes/deployment and docs/keys -- docs/keys because a key a sync
- * adopts grants artifact trust, the most sensitive thing a tree holds.
+ * recipes/deployment, recipes/keys and docs/keys -- the key directories
+ * because a key a sync adopts grants trust (an upstream release's, or an
+ * artifact's), the most sensitive thing a tree holds.
  * The index and its signature are not covered, and the header says so:
  * an index that listed itself could never be written, and one that
  * changed when re-written would be re-signed on every sync.

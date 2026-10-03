@@ -1611,6 +1611,19 @@ static int test_schedule_defaults(void)
 	}
 	cix_response_free(&r);
 
+	/* ADR-0327: and the nightly host roll, at the owner's 03:00, for 3h. */
+	if (get_schedule(&c, "host-roll", &r) != 0 || r.status != 200 ||
+	    !str_eq(json_str_field(r.json, "action"), "system.roll") ||
+	    !str_eq(json_str_field(json_object_get(json_object_get(r.json, "schedule"), "daily"), "at"),
+	            "03:00") ||
+	    json_as_number(json_object_get(r.json, "window_minutes")) != 180) {
+		fprintf(stderr, "FAIL: schedule defaults: no nightly 03:00 system.roll host-roll with a "
+		                "3h window on a fresh host: %s\n",
+		        r.body != NULL ? r.body : "(no body)");
+		ok = 0;
+	}
+	cix_response_free(&r);
+
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&c, "DELETE", "/v1/schedules/recipe-sync", NULL, &r) != 0 ||
 	    r.status != 204) {
@@ -8638,6 +8651,123 @@ skip_resume:
 				free(req);
 				free(pub);
 			}
+		}
+
+		/*
+		 * ADR-0326: upstream keys travel in the catalogue. srca carries
+		 * three: synca's key under its own fingerprint, the same key
+		 * filed under a fingerprint that is not its own, and a key for
+		 * syncb, which srcb owns. Untrusted for keys, srca supplies
+		 * none; trusted, only the first is adopted. A catalogue key
+		 * cannot be deleted by an operator, and leaves when its file
+		 * leaves git.
+		 */
+		if (stage_ok) {
+			static const char ZERO_FPR[] = "0000000000000000000000000000000000000000";
+			char st_k[32], ktree[PATH_MAX], kfile[PATH_MAX + 128], kdel[160];
+			const char *files[3][2] = { { "synca", TEST_FPR },
+				                     { "synca", ZERO_FPR },
+				                     { "syncb", TEST_FPR } };
+			FILE *fp;
+
+			snprintf(ktree, sizeof(ktree), "%s/tree/%s/recipes/keys", forge_dir, repos[0][1]);
+			if (run_cmd("mkdir -p '%s'", ktree) != 0) {
+				fprintf(stderr, "FAIL: ADR-0326 could not make recipes/keys\n");
+				ok = 0;
+			}
+			for (i = 0; i < 3; i++) {
+				snprintf(kfile, sizeof(kfile), "%s/%s@%s.asc", ktree, files[i][0], files[i][1]);
+				fp = fopen(kfile, "w");
+				if (fp == NULL || fputs(TEST_KEY, fp) < 0) {
+					fprintf(stderr, "FAIL: ADR-0326 could not write %s\n", kfile);
+					ok = 0;
+				}
+				if (fp != NULL)
+					fclose(fp);
+			}
+			if (run_cmd("tar -cf '%s/api/v1/repos/%s/archive/main.tar.gz' -C '%s/tree/%.2s' '%s'",
+			            forge_dir, repos[0][1], forge_dir, repos[0][1], repos[0][1] + 3) != 0 ||
+			    sync_and_wait(&client, st_k, sizeof(st_k), &r) != 0 ||
+			    !str_eq(st_k, "success")) {
+				fprintf(stderr, "FAIL: ADR-0326 the sync with keys ended %s\n", st_k);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/synca/upstream-keys", NULL, &r) != 0 ||
+			    r.status != 200 || r.body == NULL || strstr(r.body, TEST_FPR) != NULL) {
+				fprintf(stderr, "FAIL: ADR-0326 a source not trusted for keys must supply "
+				                "none: %s\n",
+				        r.body != NULL ? r.body : "(no body)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "PUT", "/v1/pkg/sources/srca",
+			                       "{\"trust_keys\":true}", &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: ADR-0326 trusting srca for keys, status=%d\n", r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			if (sync_and_wait(&client, st_k, sizeof(st_k), &r) != 0 || !str_eq(st_k, "success")) {
+				fprintf(stderr, "FAIL: ADR-0326 the trusted sync ended %s\n", st_k);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/synca/upstream-keys", NULL, &r) != 0 ||
+			    r.body == NULL || strstr(r.body, TEST_FPR) == NULL ||
+			    strstr(r.body, "\"source\":\"srca\"") == NULL || strstr(r.body, ZERO_FPR) != NULL) {
+				fprintf(stderr, "FAIL: ADR-0326 a trusted source's key must be adopted under "
+				                "its own fingerprint only: %s\n",
+				        r.body != NULL ? r.body : "(no body)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/syncb/upstream-keys", NULL, &r) != 0 ||
+			    r.body == NULL || strstr(r.body, TEST_FPR) != NULL) {
+				fprintf(stderr, "FAIL: ADR-0326 srca must not vouch for syncb, which srcb "
+				                "owns: %s\n",
+				        r.body != NULL ? r.body : "(no body)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			snprintf(kdel, sizeof(kdel), "/v1/pkg/synca/upstream-keys/%s", TEST_FPR);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "DELETE", kdel, NULL, &r) != 0 || r.status != 409) {
+				fprintf(stderr, "FAIL: ADR-0326 deleting a catalogue key must be 409, got %d\n",
+				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			/* Removed from git: gone at the next sync. */
+			snprintf(kfile, sizeof(kfile), "%s/synca@%s.asc", ktree, TEST_FPR);
+			unlink(kfile);
+			if (run_cmd("tar -cf '%s/api/v1/repos/%s/archive/main.tar.gz' -C '%s/tree/%.2s' '%s'",
+			            forge_dir, repos[0][1], forge_dir, repos[0][1], repos[0][1] + 3) != 0 ||
+			    sync_and_wait(&client, st_k, sizeof(st_k), &r) != 0 ||
+			    !str_eq(st_k, "success")) {
+				fprintf(stderr, "FAIL: ADR-0326 the sync after removing the key ended %s\n", st_k);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/synca/upstream-keys", NULL, &r) != 0 ||
+			    r.body == NULL || strstr(r.body, TEST_FPR) != NULL) {
+				fprintf(stderr, "FAIL: ADR-0326 a key removed from git must leave at the next "
+				                "sync: %s\n",
+				        r.body != NULL ? r.body : "(no body)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "PUT", "/v1/pkg/sources/srca", "{\"trust_keys\":false}",
+			                   &r);
+			cix_response_free(&r);
 		}
 
 		for (i = 0; i < 2; i++) {

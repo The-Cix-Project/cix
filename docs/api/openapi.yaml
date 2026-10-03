@@ -12033,6 +12033,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "409":
+          description: The key comes from the package's source catalogue (ADR-0326) -- it is removed there, from recipes/keys, or the next sync restores it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /pkg/build-logs:
     get:
@@ -21104,7 +21110,7 @@ components:
           type: array
           items:
             type: object
-            required: [fingerprint, bytes, added_at]
+            required: [fingerprint, bytes, added_at, source]
             properties:
               fingerprint:
                 type: string
@@ -21115,6 +21121,10 @@ components:
               added_at:
                 type: integer
                 description: Unix seconds
+              source:
+                type: string
+                nullable: true
+                description: The source whose catalogue supplied it (ADR-0326), or null for a key an operator installed
     PkgBadVersions:
       type: object
       required: [bad_versions]

@@ -177,6 +177,15 @@ long schedule_next_run(const struct schedule *s, long now);
  */
 int scheduler_in_window(const struct schedule *s, long now);
 
+/*
+ * While an action runs, when its job's window ends (the run's start plus
+ * window_minutes, as scheduler_in_window() counts it); 0 for a job with no
+ * window, and 0 outside an action. An action that keeps working after it
+ * returns -- the host roll (ADR-0327), whose last step is a reboot --
+ * records this to know whether it may still act when it finishes.
+ */
+long scheduler_running_window_end(void);
+
 /* "daily at 02:00 for 3h". Display only -- see the header comment. */
 void schedule_describe(const struct schedule *s, char *out, size_t out_size);
 

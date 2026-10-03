@@ -15,6 +15,7 @@ struct upstream_key {
 	char *armored; /* owned */
 	size_t len;
 	long long added_at;
+	char source[64]; /* the source whose catalogue supplied it; "" for an operator's */
 };
 
 static char g_path[PATH_MAX];
@@ -70,6 +71,10 @@ static int save(void)
 		jw_str(&w, g_keys[i].armored);
 		jw_key(&w, "added_at");
 		jw_int(&w, g_keys[i].added_at);
+		if (g_keys[i].source[0] != '\0') {
+			jw_key(&w, "source");
+			jw_str(&w, g_keys[i].source);
+		}
 		jw_obj_close(&w);
 	}
 	jw_arr_close(&w);
@@ -121,26 +126,31 @@ int upstreamkeys_init(const char *path)
 		snprintf(e->package, sizeof(e->package), "%s", p);
 		e->len = strlen(k);
 		e->added_at = (long long)json_as_number(json_object_get(o, "added_at"));
+		{
+			const char *src = json_as_string(json_object_get(o, "source"));
+
+			snprintf(e->source, sizeof(e->source), "%s", src != NULL ? src : "");
+		}
 		g_count++;
 	}
 	json_free(root);
 	return 0;
 }
 
-int upstreamkeys_add(const char *package, const char *fingerprint, const char *armored,
-                     size_t armored_len, long long now, char *err, size_t err_size)
+/*
+ * Validates `armored` against the pinned fingerprint and stores it, for
+ * `source` ("" for an operator). Does not save. 0, or -1 with err.
+ */
+static int put_key(const char *package, const char *pinned, const char *armored,
+                   size_t armored_len, long long now, const char *source, char *err,
+                   size_t err_size)
 {
-	char pinned[41], actual[PGP_FINGERPRINT_HEX_MAX], why[256];
-	struct upstream_key *e;
+	char actual[PGP_FINGERPRINT_HEX_MAX], why[256];
 	char *copy;
 	int i;
 
-	if (package == NULL || package[0] == '\0' || strlen(package) >= sizeof(e->package)) {
+	if (package == NULL || package[0] == '\0' || strlen(package) >= sizeof(g_keys[0].package)) {
 		snprintf(err, err_size, "invalid package name");
-		return -1;
-	}
-	if (upstreamkeys_normalise(fingerprint, pinned) != 0) {
-		snprintf(err, err_size, "fingerprint must be 40 hexadecimal digits (a v4 key)");
 		return -1;
 	}
 	if (armored == NULL || armored_len == 0 || armored_len > UPSTREAMKEYS_KEY_MAX) {
@@ -182,6 +192,36 @@ int upstreamkeys_add(const char *package, const char *fingerprint, const char *a
 	g_keys[i].armored = copy;
 	g_keys[i].len = armored_len;
 	g_keys[i].added_at = now;
+	snprintf(g_keys[i].source, sizeof(g_keys[i].source), "%s", source);
+	return 0;
+}
+
+static void remove_at(int i)
+{
+	free(g_keys[i].armored);
+	memmove(&g_keys[i], &g_keys[i + 1], sizeof(g_keys[0]) * (size_t)(g_count - i - 1));
+	g_count--;
+}
+
+int upstreamkeys_add(const char *package, const char *fingerprint, const char *armored,
+                     size_t armored_len, long long now, char *err, size_t err_size)
+{
+	char pinned[41];
+	int i;
+
+	if (upstreamkeys_normalise(fingerprint, pinned) != 0) {
+		snprintf(err, err_size, "fingerprint must be 40 hexadecimal digits (a v4 key)");
+		return -1;
+	}
+	i = find(package, pinned);
+	if (i >= 0 && g_keys[i].source[0] != '\0') {
+		snprintf(err, err_size,
+		         "source %s's catalogue supplies this key -- change it there (ADR-0326)",
+		         g_keys[i].source);
+		return -1;
+	}
+	if (put_key(package, pinned, armored, armored_len, now, "", err, err_size) != 0)
+		return -1;
 	if (save() != 0) {
 		snprintf(err, err_size, "the key store could not be saved");
 		return -1;
@@ -195,10 +235,73 @@ int upstreamkeys_remove(const char *package, const char *fingerprint)
 
 	if (i < 0)
 		return 1;
-	free(g_keys[i].armored);
-	memmove(&g_keys[i], &g_keys[i + 1], sizeof(g_keys[0]) * (size_t)(g_count - i - 1));
-	g_count--;
+	if (g_keys[i].source[0] != '\0')
+		return 2;
+	remove_at(i);
 	return save() == 0 ? 0 : -1;
+}
+
+int upstreamkeys_sync_source(const char *source, const struct upstreamkeys_offer *offers, int n,
+                             long long now, int *refused, char *why, size_t why_size)
+{
+	char err[512];
+	int i, adopted = 0;
+
+	*refused = 0;
+	if (why_size > 0)
+		why[0] = '\0';
+	if (source == NULL || source[0] == '\0')
+		return -1;
+	/* The helper's copy may predate an operator's change; the file is
+	 * the store. */
+	{
+		char path[PATH_MAX];
+
+		snprintf(path, sizeof(path), "%s", g_path);
+		if (path[0] != '\0')
+			upstreamkeys_init(path);
+	}
+	for (i = 0; i < g_count;) {
+		if (strcmp(g_keys[i].source, source) == 0)
+			remove_at(i);
+		else
+			i++;
+	}
+	for (i = 0; i < n; i++) {
+		char pinned[41];
+
+		if (upstreamkeys_normalise(offers[i].fingerprint, pinned) != 0) {
+			snprintf(err, sizeof(err), "%s: \"%s\" is not a 40-digit fingerprint",
+			         offers[i].package, offers[i].fingerprint);
+		} else if (put_key(offers[i].package, pinned, offers[i].armored, offers[i].len, now,
+		                   source, err, sizeof(err)) == 0) {
+			adopted++;
+			continue;
+		}
+		if (*refused == 0 && why_size > 0)
+			snprintf(why, why_size, "%s", err);
+		(*refused)++;
+	}
+	return save() == 0 ? adopted : -1;
+}
+
+int upstreamkeys_retain_sources(const char *const *names, int n)
+{
+	int i, j, changed = 0;
+
+	for (i = 0; i < g_count;) {
+		int kept = g_keys[i].source[0] == '\0';
+
+		for (j = 0; !kept && j < n; j++)
+			kept = strcmp(g_keys[i].source, names[j]) == 0;
+		if (kept) {
+			i++;
+			continue;
+		}
+		remove_at(i);
+		changed = 1;
+	}
+	return changed && save() != 0 ? -1 : 0;
 }
 
 const char *upstreamkeys_find(const char *package, const char *fingerprint, size_t *len)
@@ -231,6 +334,11 @@ void upstreamkeys_write_json(const char *package, struct json_writer *w)
 		jw_int(w, (long long)g_keys[i].len);
 		jw_key(w, "added_at");
 		jw_int(w, g_keys[i].added_at);
+		jw_key(w, "source");
+		if (g_keys[i].source[0] != '\0')
+			jw_str(w, g_keys[i].source);
+		else
+			jw_null(w);
 		jw_obj_close(w);
 	}
 	jw_arr_close(w);

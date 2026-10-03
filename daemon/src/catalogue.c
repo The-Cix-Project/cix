@@ -13,7 +13,7 @@
 
 /* The directories a sync takes files from -- and so the ones vouched for. */
 static const char *const covered[] = { "recipes/package", "recipes/image", "recipes/deployment",
-	                                "docs/keys" };
+	                                "recipes/keys", "docs/keys" };
 
 struct entry {
 	char path[PATH_MAX];
