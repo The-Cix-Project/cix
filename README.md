@@ -61,7 +61,7 @@ image/         bare-metal boot tooling: kernel config, mkbootroot, cix-install, 
 init/          cix-init: PID 1 in every container, freestanding (no libc) — the one exception to the TCC-and-glibc rule
 tools/         developer tooling: apigen (generates the API surface from openapi.yaml), verify-symbols.sh (link-level symbol checks),
                carry-artifact-approvals.sh (copies artifact approvals from a daemon back into recipes),
-               cpdl-coverage-audit.py (recipe-corpus CPDL audit), dashboard-screenshot.py (authenticated dashboard screenshots)
+               dashboard-screenshot.py (authenticated dashboard screenshots)
 test/          the test suite: per-feature tests, contract gates, and the subset the release selftest runs
 docs/          all documentation — see docs/README.md, which indexes every subdirectory
 build/         compiled output (gitignored)

@@ -6,6 +6,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### `tools/cpdl-coverage-audit.py` is removed (#488)
+
+It measured how much of the shell-recipe corpus CPDL could express. That corpus has been 100% CPDL since v2.57.356 (ADR-0309), so it has nothing left to measure; and the development sandbox runs no interpreter. The root README no longer lists it.
+
 ### The root is mounted `ro` (#250)
 
 Both loader entries asked for `rw`: the installer's (`image/src/cix-install.c`) and the one `do_system_update()` writes for every update. A root slot only ever holds a squashfs, which cannot be written, and the #250 audit found no write to the host root. Every writable path is its own mount: `/boot`, `/config`, `/var/lib/cix`, `/mnt/cix` and `/dev`. Both entries now say `ro`, so the boot line states the model the platform already runs. An update writes the new entry for the slot it stages, so a box picks this up from its next update.
