@@ -9692,20 +9692,22 @@ paths:
                 content:
                   type: string
                   description: >
-                    The full text of the recipe. For format "shell" (the default) that is a
-                    build.sh file (pkg_name=/pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=/
-                    pkg_changelog=). For format "cbs" it is a CPDL 1.0 document -- a single
-                    package block declaring version, release, format, sources and requires,
-                    with up to five phases.
+                    The full text of the recipe. For format "cbs" (the default) that is a
+                    CPDL 1.0 document -- a single package block declaring version, release,
+                    format, sources and requires, with up to five phases. For format "shell"
+                    it is a build.sh file; a new shell revision is refused (ADR-0309 clause 4),
+                    and "shell" survives only so a stored shell recipe can be re-offered (409
+                    duplicate) or given its artifact approval.
                 format:
                   type: string
-                  enum: [shell, cbs]
-                  default: shell
+                  enum: [cbs, shell]
+                  default: cbs
                   description: >
                     Which recipe language content is written in, and therefore which filename
-                    it is stored under: "shell" -> build.sh, "cbs" -> build.cbs (ADR-0305 --
+                    it is stored under: "cbs" -> build.cbs, "shell" -> build.sh (ADR-0305 --
                     a recipe's format is its filename, because a filename cannot disagree with
-                    itself). Omitted means "shell", so every pre-existing client is unchanged.
+                    itself). Omitted means "cbs", the one recipe language (ADR-0309); until
+                    cix#564 it meant "shell", which made every format-less publish fail.
                     This field is a routing hint that is verified immediately rather than
                     trusted: "cbs" content must satisfy `cbs explain --json` and "shell"
                     content must parse as a shell recipe, so a body whose format disagrees

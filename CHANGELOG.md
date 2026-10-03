@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A recipe with no `format` is CPDL (#564, #560)
+
+`POST /v1/pkg/recipes` used to read an omitted `format` as `shell`, so a CPDL recipe sent without one was parsed as a shell script and refused with a shell-recipe error. That is the wrong default since ADR-0309 refuses every new shell revision.
+
+- An omitted `format` now means `cbs`. `shell` is still accepted when named, because the shell path answers a stored shell recipe that is re-offered or approved, and refuses a new one.
+- The dashboard's recipe form (#560), which sends only `name` and `content`, publishes CPDL through this default with no change of its own.
+- `cixctl pkg recipe add` takes the format from the file name the same way: a `.sh` file is shell and anything else is CPDL. Before, only a file ending in `.cbs` was read as CPDL, so a flat `<name>@<version>.cbs` worked and a file called anything else did not.
+- `openapi.yaml` declares `format` as `enum: [cbs, shell]` with `default: cbs`, and `docs/api/README.md` says the same.
+- Tests: `test_pkg` and `test_pkg_recipe_approval` name `"format":"shell"` wherever they publish a shell recipe on purpose.
+
 ### Upstream keys travel in the catalogue, and the host rolls nightly at 03:00 (ADR-0326, ADR-0327)
 
 The owner's two answers of 2026-10-03, to "isn't this friction? how will this be a rolling release?"

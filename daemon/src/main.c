@@ -24187,8 +24187,12 @@ static void handle_pkg_recipe_add(int fd, const char *body, size_t body_len)
 
 	/*
 	 * ADR-0305: which recipe language `content` is written in.
-	 * Omitted means "shell", so every client that predates CBS is
-	 * unchanged and nothing has to be migrated.
+	 * Omitted means "cbs", the one recipe language (ADR-0309; cix#564): it
+	 * used to mean "shell", for clients that predated CBS, and since a new
+	 * shell revision is refused that made every format-less publish -- the
+	 * dashboard's recipe form among them (cix#560) -- fail. "shell" is still
+	 * accepted when named, because pkg_recipe_add() answers a stored shell
+	 * recipe re-offered or approved (ADR-0309 clause 4) and refuses a new one.
 	 *
 	 * A JSON object has no filename, which is why this field exists at
 	 * all -- and it is a routing hint that is VERIFIED rather than
@@ -24201,9 +24205,9 @@ static void handle_pkg_recipe_add(int fd, const char *body, size_t body_len)
 	{
 		const char *fmt = json_as_string(json_object_get(root, "format"));
 
-		if (fmt == NULL || strcmp(fmt, "shell") == 0) {
+		if (fmt != NULL && strcmp(fmt, "shell") == 0) {
 			format = PKG_RECIPE_SHELL;
-		} else if (strcmp(fmt, "cbs") == 0) {
+		} else if (fmt == NULL || strcmp(fmt, "cbs") == 0) {
 			format = PKG_RECIPE_CBS;
 		} else {
 			json_free(root);

@@ -111,6 +111,8 @@ static int post_recipe(const struct cix_client *c, const char *content, int *out
 	jw_str(&w, "approvaltest");
 	jw_key(&w, "content");
 	jw_str(&w, content);
+	jw_key(&w, "format");
+	jw_str(&w, "shell");
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -124,8 +126,8 @@ static int post_recipe(const struct cix_client *c, const char *content, int *out
 }
 
 /*
- * A CPDL publish, for #525's case below. post_recipe() above sends no
- * format, which means shell -- refused outright for a NEW revision
+ * A CPDL publish, for #525's case below. post_recipe() above names the
+ * shell format -- refused outright for a NEW revision
  * since ADR-0309 clause 4, so it cannot reach a check that sits after
  * that refusal.
  */

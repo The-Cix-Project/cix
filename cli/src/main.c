@@ -345,8 +345,8 @@ static const char USAGE_TEXT[] =
 	        "               new recipe version on this running system directly, no reinstall\n"
 	        "               needed (ADR-0040); an already-published (name,version) is\n"
 	        "               rejected, not overwritten (ADR-0107) -- bump the version to\n"
-	        "               publish a fix. The format comes from the filename: build.cbs is\n"
-	        "               a CBS recipe in CPDL, build.sh a shell one (ADR-0305), so\n"
+	        "               publish a fix. The format comes from the filename: a .sh file is\n"
+	        "               a shell recipe, anything else CPDL (ADR-0305, cix#564), so\n"
 	        "               --format= is only needed for content held in a file not named\n"
 	        "               for what it is. --source= names the recipe source a new\n"
 	        "               package belongs to; with one source it is implied (ADR-0324)\n"
@@ -15495,15 +15495,15 @@ static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int arg
 	 */
 	if (format == NULL) {
 		size_t flen = strlen(file);
-		const size_t slen = sizeof(PKG_RECIPE_CBS_SUFFIX) - 1;
+		const size_t slen = sizeof(PKG_RECIPE_SHELL_SUFFIX) - 1;
 
-		/* PKG_RECIPE_CBS_SUFFIX, not a literal: the daemon resolves a
-		 * version to its recipe with the same constant, and two copies
-		 * of this string are two places that could disagree about what
-		 * a CBS recipe is. */
-		format = (flen >= slen && strcmp(file + flen - slen, PKG_RECIPE_CBS_SUFFIX) == 0)
-		             ? "cbs"
-		             : "shell";
+		/* Only a file named .sh is shell; anything else is CPDL, the one
+		 * recipe language (ADR-0309), as the daemon reads an omitted
+		 * format since cix#564. PKG_RECIPE_SHELL_SUFFIX, not a literal:
+		 * the daemon names the shell file with the same constant. */
+		format = (flen >= slen && strcmp(file + flen - slen, PKG_RECIPE_SHELL_SUFFIX) == 0)
+		             ? "shell"
+		             : "cbs";
 	} else if (strcmp(format, "shell") != 0 && strcmp(format, "cbs") != 0) {
 		fprintf(stderr, "cixctl: --format= must be shell or cbs\n");
 		return 2;

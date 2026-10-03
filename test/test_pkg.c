@@ -1942,10 +1942,9 @@ int main(void)
 	 * for the stored one, which pins the check's position rather than
 	 * merely its existence.
 	 *
-	 * Note the format field is omitted deliberately on the first
-	 * call: an absent format means shell (main.c's own comment says
-	 * so, for clients predating CBS), so this is the exact shape a
-	 * legacy publisher sends.
+	 * Both calls name "format": "shell". An omitted format means cbs
+	 * since cix#564, which would refuse this content as unparseable CPDL
+	 * before it reached the clause 4 check whose position this pins.
 	 */
 	{
 		static const char shell_body[] = "pkg_name=oldshell\n"
@@ -1974,6 +1973,8 @@ int main(void)
 		jw_str(&sw, "oldshell");
 		jw_key(&sw, "content");
 		jw_str(&sw, shell_body);
+		jw_key(&sw, "format");
+		jw_str(&sw, "shell");
 		jw_obj_close(&sw);
 		sw.buf[sw.len] = '\0';
 		snprintf(body, sizeof(body), "%s", sw.buf);
@@ -2014,6 +2015,8 @@ int main(void)
 			jw_str(&sw, "storedshell");
 			jw_key(&sw, "content");
 			jw_str(&sw, stored_body);
+			jw_key(&sw, "format");
+			jw_str(&sw, "shell");
 			jw_obj_close(&sw);
 			sw.buf[sw.len] = '\0';
 			snprintf(body, sizeof(body), "%s", sw.buf);
