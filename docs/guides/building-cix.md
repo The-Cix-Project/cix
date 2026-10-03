@@ -43,12 +43,11 @@ Two optional images change what the assembled root contains. Both are ordinary i
 ```
 cixctl image create --name=cix-hosttools
 cixctl pkg install --name=coreutils --image=cix-hosttools
-cixctl pkg install --name=gzip --image=cix-hosttools
 cixctl pkg install --name=squashfs-tools --image=cix-hosttools
 cixctl pkg install --name=btrfs-progs --image=cix-hosttools
 ```
 
-`cix-hosttools` is `HOST_TOOLS_IMAGE` in `daemon/src/main.c`; `spawn_cix_bootroot_assembly()` passes its rootfs to `mkbootroot` as the host-tools directory. From it `mkbootroot` stages `cp` and `gzip`, stages `btrfs` and `mkfs.btrfs` (which exist in the root only if this image carries them — without them `fs_type: "btrfs"` fails at exec), and runs `mksquashfs` to seal the root, with the image's own libraries on its search path ([ADR-0154](../adr/0154-host-tools-mksquashfs-ld-library-path.md)). The other tools `cixd` shells out to (`tar`, `bzip2`, `xz`, `unsquashfs`, `mkfs.ext4`; no longer `openssl`, since [ADR-0321](../adr/0321-cryptography-is-done-in-the-linked-libcrypto.md)) are still staged from the assembling host's own filesystem (`image/src/mkbootroot.c`).
+`cix-hosttools` is `HOST_TOOLS_IMAGE` in `daemon/src/main.c`; `spawn_cix_bootroot_assembly()` passes its rootfs to `mkbootroot` as the host-tools directory. From it `mkbootroot` stages `btrfs` and `mkfs.btrfs` (which exist in the root only if this image carries them — without them `fs_type: "btrfs"` fails at exec), and runs `mksquashfs` to seal the root, with the image's own libraries on its search path ([ADR-0154](../adr/0154-host-tools-mksquashfs-ld-library-path.md)). The other tools `cixd` executes (`unsquashfs`, `mkfs.ext4`, `sfdisk` and the rest of `include/controlplane_programs.h`) are staged from the assembling host's own filesystem (`image/src/mkbootroot.c`). The root carries no `tar`, `gzip`, `xz` or `bzip2` ([ADR-0329](../adr/0329-shell-recipes-and-tar-gz-artifacts-do-not-exist.md)), and the assembly refuses to seal a root whose binaries need a library it does not contain.
 
 #### `cix-firmware` (optional, ADR-0263)
 

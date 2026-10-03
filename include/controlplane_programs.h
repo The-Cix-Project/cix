@@ -27,11 +27,6 @@
 #define CONTROLPLANE_PROGRAMS(X)                                                                   \
 	/* the console's shell (spawn_console_shell() in cixd) */                                   \
 	X(CIXCTL, "/bin/cixctl", CP_ALWAYS)                                                         \
-	/* legacy .tar.gz artifacts; tar runs xz and bzip2 itself by name */                        \
-	X(TAR, "/usr/bin/tar", CP_ALWAYS)                                                           \
-	X(GZIP, "/usr/bin/gzip", CP_ALWAYS)                                                         \
-	X(XZ, "/usr/bin/xz", CP_ALWAYS)                                                             \
-	X(BZIP2, "/usr/bin/bzip2", CP_ALWAYS)                                                       \
 	/* image content, and mkbootroot's own seal when it runs on this root */                   \
 	X(UNSQUASHFS, "/usr/bin/unsquashfs", CP_ALWAYS)                                             \
 	X(MKSQUASHFS, "/usr/bin/mksquashfs", CP_ALWAYS)                                             \

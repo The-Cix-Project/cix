@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Its staging -- `source[0]` unpacked into `/build/src`, the rest copied to `/build/extra/<basename>` -- is superseded by [ADR-0329](0329-shell-recipes-and-tar-gz-artifacts-do-not-exist.md) (cix#569). Multiple sources remain; each reaches cbs by its sha256.
 
 ## Context
 

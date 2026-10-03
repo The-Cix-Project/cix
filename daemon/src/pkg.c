@@ -333,10 +333,10 @@ struct pkg_recipe {
 	 * that was published.
 	 */
 	char artifact_format[PKG_ARTIFACT_FORMAT_MAX];
-	/* source[0]/sha256[0] is "the" source, extracted into /build/src;
-	 * source[1..source_count-1] are plain files copied into
-	 * /build/extra/<basename> (ADR-0036). Every recipe before this one
-	 * has source_count == 1. */
+	/* source[0]/sha256[0] is the main source and the rest are extras;
+	 * cixd fetches and verifies every one host-side and hands each to
+	 * cbs as a source-cache entry named by its sha256 (ADR-0305), which
+	 * is the only place a build reads it from (cix#569). */
 	char source[PKG_MAX_SOURCES][PKG_URL_MAX];
 	char sha256[PKG_MAX_SOURCES][PKG_SHA256_MAX];
 	int source_count;
@@ -4202,120 +4202,6 @@ out:
 static int extract_tarball(const char *tarball_path, const char *dest_dir)
 {
 	return extract_archive_to(tarball_path, dest_dir, tarball_has_common_top_dir(tarball_path));
-}
-
-/* Last '/'-separated segment of a source URL -- where an extra
- * (non-index-0) source lands under /build/extra/ (ADR-0036). Pointer
- * into url itself, never allocates. */
-/*
- * The basename of a URL's path component, with any trailing query
- * string (a literal '?' onward) stripped -- a git-raw-file pkg_source
- * entry needs a `?ref=<commit>` query parameter (Gitea's own raw-file
- * API convention, used by kernel.recipe/cix.recipe's own multi-
- * source config-file fetches) for reproducibility, and this function's
- * own prior naive strrchr('/')-only basename left that query string
- * attached to the staged /build/extra/<basename> filename, silently
- * breaking every recipe's own pkg_build() reference to the plain
- * filename it expected -- confirmed live: kernel.recipe's own
- * qemu-part1.config staged as
- * "qemu-part1.config?ref=<40 hex chars>" instead of plain
- * "qemu-part1.config", so its own `cp /build/extra/qemu-part1.config
- * .config` line failed with a bare "No such file or directory" the
- * first time this exact mechanism was ever actually exercised
- * (kernel.recipe 6.18.40-2's own predecessor, committed but never
- * actually built until now, per that recipe's own re-pin history).
- */
-static void url_basename(const char *url, char *out, size_t out_size)
-{
-	const char *slash = strrchr(url, '/');
-	const char *name = slash != NULL ? slash + 1 : url;
-	const char *query = strchr(name, '?');
-	size_t len = query != NULL ? (size_t)(query - name) : strlen(name);
-
-	if (len >= out_size)
-		len = out_size - 1;
-	memcpy(out, name, len);
-	out[len] = '\0';
-}
-
-/*
- * Not every package's source is an archive. A CA certificate bundle,
- * a single-file script, a firmware blob: upstream publishes one plain
- * file and there is nothing to unpack. Before this, source[0] was
- * unconditionally handed to tar, so such a package failed at
- * "extract source tarball" -- an error naming a tarball that never
- * existed, which reads as a corrupt download rather than a source
- * that was never an archive in the first place.
- *
- * The decision is made from the file's own leading bytes, not from
- * the URL's extension: a URL is a claim and the bytes are the fact,
- * and this project has already been bitten once by pinning the
- * checksum of a 99-byte error page that a URL promised was a tarball.
- * tar itself autodetects the compression, so this only has to answer
- * "is it an archive at all".
- */
-static int file_is_archive(const char *path)
-{
-	unsigned char h[262];
-	size_t n;
-	FILE *f = fopen(path, "rb");
-
-	if (f == NULL)
-		return 0;
-	n = fread(h, 1, sizeof(h), f);
-	fclose(f);
-
-	if (n >= 2 && h[0] == 0x1f && h[1] == 0x8b)
-		return 1; /* gzip */
-	if (n >= 6 && memcmp(h, "\xfd" "7zXZ\x00", 6) == 0)
-		return 1; /* xz */
-	if (n >= 3 && memcmp(h, "BZh", 3) == 0)
-		return 1; /* bzip2 */
-	if (n >= 4 && h[0] == 0x28 && h[1] == 0xb5 && h[2] == 0x2f && h[3] == 0xfd)
-		return 1; /* zstd */
-	if (n >= 262 && memcmp(h + 257, "ustar", 5) == 0)
-		return 1; /* uncompressed tar */
-	return 0;
-}
-
-/*
- * Put source[0] where pkg_build() expects to find it: unpacked into
- * /build/src for an archive, or laid down as /build/src/<basename>
- * for a single plain file.
- */
-static int stage_main_source(const char *src_path, const char *dest_dir, const char *url)
-{
-	char base[PKG_URL_MAX];
-	char dst[PATH_MAX];
-
-	if (file_is_archive(src_path))
-		return extract_tarball(src_path, dest_dir);
-
-	/*
-	 * Every -1 below logs first (#504). Its caller's failure message
-	 * says the step's own error is "logged immediately above", and
-	 * these three returns used to log nothing -- so that sentence would
-	 * have sent the reader to a line that did not exist, which is the
-	 * exact failure #504 was.
-	 */
-	url_basename(url, base, sizeof(base));
-	if (base[0] == '\0') {
-		logstore_write("cixd", "error",
-		               "stage source %s: its url \"%s\" has no basename to stage it under",
-		               src_path, url);
-		return -1;
-	}
-	if ((size_t)snprintf(dst, sizeof(dst), "%s/%s", dest_dir, base) >= sizeof(dst)) {
-		logstore_write("cixd", "error", "stage source %s: destination path under %s is too long",
-		               src_path, dest_dir);
-		return -1;
-	}
-	if (copy_file_simple(src_path, dst) != 0) {
-		logstore_write("cixd", "error", "stage source %s -> %s: %s", src_path, dst,
-		               strerror(errno));
-		return -1;
-	}
-	return 0;
 }
 
 /*
@@ -10428,8 +10314,8 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
 
 /*
  * #412: cixd already chooses these symbols (kmod-build --symbol=) and
- * already owns /build/extra (ADR-0036, the directory both call sites
- * below stage every other extra source into) -- writes the file
+ * already owns /build/extra in the build container -- this file is
+ * the only thing put there (cix#569) -- writes the file
  * kernel.recipe's own merge_config.sh call reads directly, rather than
  * handing the recipe a space-separated CIX_KMOD_EXTRA_SYMBOLS env var
  * to loop over and re-derive the identical "<symbol>=m" lines from.
@@ -10613,7 +10499,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	 * exactly as it did when it was inline. */
 	struct pkg_recipe recipe = *recipe_in;
 	char container_base[PATH_MAX];
-	char src_dir[PATH_MAX], dest_dir[PATH_MAX], recipe_dst[PATH_MAX], extra_dir[PATH_MAX];
+	char dest_dir[PATH_MAX], recipe_dst[PATH_MAX], extra_dir[PATH_MAX];
 	int i;
 
 	*out_compose_pid = -1;
@@ -10831,7 +10717,6 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	snprintf(e->build_workdir, sizeof(e->build_workdir), "%s/work", container_base);
 	snprintf(e->build_merged, sizeof(e->build_merged), "%s/merged", container_base);
 
-	snprintf(src_dir, sizeof(src_dir), "%s/build/src", e->build_upperdir);
 	snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_upperdir, PKG_DEST_REL_CBS);
 	/* ADR-0305: cbs refuses any recipe path not ending in .cbs
 	 * (has_cbs_extension(), in `build` as well as `explain`), so the
@@ -10842,11 +10727,8 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	snprintf(extra_dir, sizeof(extra_dir), "%s/build/extra", e->build_upperdir);
 
 	{
-		char main_src_path[PATH_MAX];
 		char tmp_dir[PATH_MAX];
 
-		source_download_path(chain_idx, e->name, recipe.version, 0, main_src_path,
-		                     sizeof(main_src_path));
 		/*
 		 * /tmp -- caught empirically (ADR-0056), same session as the
 		 * /bin/sh discovery above: this project's own from-recipe
@@ -10857,8 +10739,8 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		 * directly -- not derived from any env var this project
 		 * could instead set). A plain, always-present, empty
 		 * directory in the build container's own upperdir, exactly
-		 * the same "just make sure it exists" posture build/pkg-dest
-		 * and build/src already have -- benefits every future
+		 * the same "just make sure it exists" posture the destination
+		 * directory already has -- benefits every future
 		 * recipe run against a minimal image, not just this one.
 		 */
 		snprintf(tmp_dir, sizeof(tmp_dir), "%s/tmp", e->build_upperdir);
@@ -10867,13 +10749,9 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		 * A sequential if/else-if chain rather than the equivalent
 		 * single ||-chain condition -- functionally identical, but
 		 * this way pkg_fetch_completed() itself knows (and can log)
-		 * exactly which of the six sub-steps failed instead of
-		 * bucketing all of them into one opaque message. run_subprocess()
-		 * already logs its own subprocess-level detail (exit status/
-		 * signal/exec failure) for the two steps that shell out
-		 * (reset_build_container_dir(), extract_tarball()); the
-		 * errno here covers the two direct-syscall steps
-		 * (persist_mkdir_p(), copy_file_simple()), captured
+		 * exactly which sub-step failed instead of
+		 * bucketing all of them into one opaque message. Every step
+		 * is in-process, and the errno each sets is captured
 		 * immediately after each one's own failing call so nothing
 		 * else can clobber it first.
 		 */
@@ -10881,8 +10759,8 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			const char *prep_step = NULL;
 			int prep_errno = 0;
 			/*
-			 * ADR-0256: unpacking the source is its OWN stage, not
-			 * part of the build. An archive that downloaded intact
+			 * ADR-0256: unpacking is its OWN stage, not
+			 * part of the build. A cached .cixpkg that downloaded intact
 			 * and cannot be opened used to report as a build failure,
 			 * which sends a reader to a compile log for something
 			 * that happened before any compiler ran. Every other step
@@ -10984,9 +10862,6 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 						return 3;
 					}
 				}
-			} else if (persist_mkdir_p(src_dir) != 0) {
-				prep_step = "create src dir";
-				prep_errno = errno;
 			} else if (copy_file_simple(recipe_path, recipe_dst) != 0) {
 				prep_step = "copy recipe";
 				prep_errno = errno;
@@ -10995,9 +10870,6 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				 * that could not be given it does not run. */
 				prep_step = "write finalize.sh";
 				prep_errno = errno;
-			} else if (stage_main_source(main_src_path, src_dir, recipe.source[0]) != 0) {
-				prep_step = "stage source";
-				prep_stage = PIPELINE_UNPACK;
 			}
 
 			if (prep_step != NULL) {
@@ -11042,8 +10914,8 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 					 *
 					 * So this names no mechanism. Every step that
 					 * lands here now logs its own reason before
-					 * returning (see
-					 * stage_main_source()); the ones whose failure is
+					 * returning (cixpkg_unpack_start());
+					 * the ones whose failure is
 					 * a plain syscall set prep_errno instead and take
 					 * the branch above.
 					 */
@@ -11057,42 +10929,6 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				else
 					pkg_fail(e, is_final_upgrade, prep_stage,
 					         "could not prepare the build container (%s failed)", prep_step);
-				g_chains[chain_idx].name[0] = '\0';
-				g_chains[chain_idx].dep_queue_count = 0;
-				return 0;
-			}
-		}
-	}
-
-	/* Sources beyond index 0 are plain files, never extracted -- copied
-	 * verbatim into /build/extra/<basename-of-their-own-URL> for
-	 * pkg_build()/pkg_install() to reference directly (ADR-0036).
-	 * Basename collisions across multiple extra URLs are a stated
-	 * recipe-author responsibility, not auto-resolved here. Skipped for
-	 * a cache hit -- nothing was fetched at all in that case. */
-	if (!e->cache_hit && recipe.source_count > 1) {
-		if (persist_mkdir_p(extra_dir) != 0) {
-			logstore_write("cixd", "error",
-			                "pkg %s@%s: could not prepare build container (create extra dir): %s",
-			                e->name, g_chains[chain_idx].image, strerror(errno));
-			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
-			         "could not prepare the build container (create extra dir failed)");
-			g_chains[chain_idx].name[0] = '\0';
-			g_chains[chain_idx].dep_queue_count = 0;
-			return 0;
-		}
-		for (i = 1; i < recipe.source_count; i++) {
-			char src_path[PATH_MAX], extra_dst[PATH_MAX], extra_basename[PATH_MAX];
-
-			source_download_path(chain_idx, e->name, recipe.version, i, src_path, sizeof(src_path));
-			url_basename(recipe.source[i], extra_basename, sizeof(extra_basename));
-			snprintf(extra_dst, sizeof(extra_dst), "%s/%s", extra_dir, extra_basename);
-			if (copy_file_simple(src_path, extra_dst) != 0) {
-				logstore_write("cixd", "error",
-				                "pkg %s@%s: could not prepare build container (copy extra source %d): %s",
-				                e->name, g_chains[chain_idx].image, i, strerror(errno));
-				pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
-				         "could not prepare the build container (copy extra source %d failed)", i);
 				g_chains[chain_idx].name[0] = '\0';
 				g_chains[chain_idx].dep_queue_count = 0;
 				return 0;

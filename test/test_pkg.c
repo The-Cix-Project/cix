@@ -4091,22 +4091,15 @@ int main(void)
 			}
 		}
 
-		/* 15b. an extra source URL carrying a query string (a real,
-		 * live-found bug, not a hypothetical -- a git-raw-file
-		 * pkg_source needs a `?ref=<commit>` suffix, e.g.
-		 * kernel.recipe's own qemu-part1.config fetch, and
-		 * url_basename()'s original plain strrchr('/') left that
-		 * query string attached to the staged /build/extra/<name>
-		 * filename, so any recipe's own pkg_build()/pkg_install()
-		 * reference to the plain filename it expected failed with a
-		 * bare "No such file or directory" -- confirmed live on
-		 * 192.168.15.95 the first time this exact mechanism was ever
-		 * actually exercised). Reuses extra1's own already-staged
-		 * fixture file and real sha256 from test 15 above, just
-		 * addressed via a URL with "?ref=deadbeef" appended; the loopback
-		 * server (test_image_fixture.c) ignores the query string exactly
-		 * as a real HTTP host would, so this
-		 * exercises the real bug. */
+		/* 15b. an extra source URL carrying a query string. A
+		 * git-raw-file source needs a `?ref=<commit>` suffix (the
+		 * kernel recipe's config fetch), and the query once stayed
+		 * attached to the staged filename, so the recipe's reference
+		 * to the plain name failed -- measured on 192.168.15.95. cixd
+		 * no longer stages extras itself (cix#569); the source reaches
+		 * cbs by its sha256, and this proves the query still does not
+		 * leak into what the build sees. The loopback server ignores
+		 * the query exactly as a real HTTP host would. */
 		{
 			char extra1_url_with_query[600];
 
@@ -6154,7 +6147,7 @@ skip_keep_on_failure:
 	 * version, WITHOUT re-extracting its source tree -- proven by
 	 * having the first (deliberately failing) build leave a marker
 	 * file in /build/src that only a genuine reuse (never touched by
-	 * reset_build_container_dir()/extract_tarball(), which a fresh
+	 * reset_build_container_dir(), which a fresh
 	 * restart would run) would still have; the resumed recipe's own
 	 * pkg_build() fails loudly if that marker is missing. */
 	{

@@ -40,7 +40,7 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0033](0033-platform-state-backup-restore.md) | Platform state backup/restore -- configuration only, not workload data, never PKI | Accepted |
 | [0034](0034-console-login-via-supervised-cixctl.md) | Console login via a cixd-supervised cixctl, not a general shell | Accepted |
 | [0035](0035-portable-toolchain-artifact-for-pkg-bootstrap.md) | Portable toolchain artifact for pkg bootstrap, not just a live-host copy | Accepted |
-| [0036](0036-multi-source-package-recipes.md) | Multi-source package recipes | Accepted |
+| [0036](0036-multi-source-package-recipes.md) | Multi-source package recipes | Accepted; staging superseded by ADR-0329 |
 | [0037](0037-network-gateway-optional.md) | A network's host-owned gateway becomes optional, default flips to gateway-less | Accepted |
 | [0038](0038-vlan-and-physical-nic-bridge-attachment.md) | VLAN via 802.1q sub-interfaces, physical NIC attachment via the existing rtnl_link_set_master | Accepted |
 | [0039](0039-package-recipes-seeded-at-install-time.md) | Package recipes seeded at install time, same mechanism as ADR-0019 | Superseded by [0040](0040-package-recipes-managed-via-rest-api.md) |

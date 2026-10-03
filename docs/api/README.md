@@ -3478,7 +3478,7 @@ GET /v1/pkg/gcc
 
 From there, the preserved container is a completely ordinary, addressable exited container — no new mechanism, reusing two endpoints that already exist:
 
-- `GET /v1/containers/__pkgbuild-0/files?path=/build/src/...` (ADR-0055) reads a crashing binary, a core dump, or any partially-built object tree straight out of the failed build's own overlay upperdir (or lowerdir, for anything untouched from the base toolchain sandbox) for real, offline debugging — the same endpoint already used for reading any exited container's files.
+- `GET /v1/containers/__pkgbuild-0/files?path=/build/cbsws/build/...` (ADR-0055) reads a crashing binary, a core dump, or any partially-built object tree straight out of the failed build's own overlay upperdir (or lowerdir, for anything untouched from the base toolchain sandbox) for real, offline debugging — the same endpoint already used for reading any exited container's files.
 - `DELETE /v1/containers/__pkgbuild-0` tears it down once you're done — an ordinary container delete, nothing preservation-specific about cleanup.
 
 Only ever applies to the single package actually being installed/hostbuilt — an incidental dependency that fails mid-chain is never preserved, matching the existing (and much more common) "just a normal failure" case. `cixctl pkg install --name=NAME --keep-on-failure`, `cixctl pkg hostbuild NAME --keep-on-failure`, and `cixctl kmod-build --keep-on-failure` are the CLI surface.

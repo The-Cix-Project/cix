@@ -54,7 +54,7 @@ sudo build/mkinstalleriso build/iso_stage build/cix-install build/cix-recover \
 
 - **firmware root**: the GPU firmware above; `""` skips it.
 - **modules dir** and **kmod bin dir**: see **Kernel modules** below; `""` skips them.
-- **host-tools rootfs**: the rootfs of an image carrying the `coreutils` and `gzip` packages (such as `cix-hosttools`, ADR-0078). When given, the tools `mkbootroot` copies into the root come from it rather than from the build machine; `""` uses the build machine's.
+- **host-tools rootfs**: the rootfs of the `cix-hosttools` image (ADR-0078). When given, the tools `mkbootroot` copies into the root come from it rather than from the build machine; `""` uses the build machine's.
 
 `mkinstalleriso` takes fifteen. The last four are worth a word. **isotools-root** is the harvested `isotools` hostbuild artifact (ADR-0064) holding `grub-mkrescue`, `xorriso`, `sbsign`, `mokutil`, shim and their libraries. It is an argument so this tool can run on a Cix host, which has none of those at Debian's paths.
 

@@ -30,6 +30,7 @@
 #include "libdirs.h"
 #include "btrfs.h"
 #include "controlplane_programs.h"
+#include "elfcheck.h"
 #include "test_image_fixture.h"
 
 #include <dirent.h>
@@ -648,6 +649,44 @@ static int verify_platform_libs_intact(const char *image_root, const char *host_
 }
 
 /*
+ * cix#569: every ELF object in the assembled root has its DT_NEEDED
+ * closure inside the root, checked at the seal.
+ *
+ * shelled_bin_libs[] is a list kept beside the binaries by hand, and
+ * nothing compared the two: a library could stay staged long after its
+ * last consumer left (tar's libacl/libselinux/libpcre2/libattr, and
+ * bzip2's libbz2, which no Cix package even builds), and a program
+ * could be added whose library was never listed, which only shows as
+ * a boot that cannot exec it. The binaries state their own needs, so
+ * the root is read rather than the list trusted --
+ * elfcheck_undeclared_links() with nothing provided from outside,
+ * which reports the first soname no file in the tree is named.
+ *
+ * -1 refuses too: that is "could not tell", and a root is sealed on
+ * evidence, never on ignorance (elfcheck.h).
+ */
+static int verify_root_closure(const char *image_root)
+{
+	char file[PATH_MAX];
+	char soname[ELFCHECK_SONAME_MAX];
+	int rc = elfcheck_undeclared_links(image_root, NULL, 0, file, sizeof(file), soname,
+	                                    sizeof(soname));
+
+	if (rc == 0)
+		return 0;
+	if (rc < 0)
+		fprintf(stderr, "could not read the assembled root %s to check its library closure\n",
+		        image_root);
+	else
+		fprintf(stderr,
+		        "the assembled root's /%s needs %s, which nothing in the root provides -- "
+		        "stage it in shelled_bin_libs[] (image/src/mkbootroot.c) or stop staging "
+		        "/%s (cix#569)\n",
+		        file, soname, file);
+	return 1;
+}
+
+/*
  * #554: refuses a root missing any program in
  * include/controlplane_programs.h, naming it. Each must be a regular
  * file, following symlinks, with an execute bit. A CP_KMOD program is
@@ -735,21 +774,12 @@ int main(int argc, char **argv)
 	kmod_bin_dir = argv[8];
 	/*
 	 * Part D (from-source host-tools bootstrap, ADR-0078): the rootfs of
-	 * a real pkg-installed image carrying coreutils.recipe + gzip.recipe
-	 * (an operator-built "host tools" image, not this dev sandbox's own
-	 * pre-existing /usr/bin) -- when given, gzip below (#352 retired
-	 * rm/sha256sum and #464 cp, all now in-process) is copied
-	 * from THIS tree instead of the dev build host, closing
-	 * the "control-plane squashfs ships a raw copy of this sandbox's own
-	 * pre-compiled binaries" gap for the tools that already have a real
-	 * from-source recipe. "" (the default, every existing call site
-	 * before this argument was added) keeps today's dev-host-sourced
-	 * behavior -- the same tolerant-default shape firmware_dir/
-	 * modules_dir/kmod_bin_dir above already established. The remaining
-	 * shelled-out tools (openssl/tar/bzip2/xz/unsquashfs/mkfs.ext4) have
-	 * no such recipe yet and still come from the dev host either
-	 * way -- a real, tracked gap (tasks #688-693), not silently masked
-	 * by this argument's presence.
+	 * the cix-hosttools image -- when given, the host_tool_bins[] below
+	 * (btrfs and mksquashfs) are copied from THIS tree instead
+	 * of the build host. "" keeps the build-host source, the same
+	 * tolerant default firmware_dir/modules_dir/kmod_bin_dir above
+	 * already established. tar, gzip, xz and bzip2 are not staged at
+	 * all (cix#569).
 	 */
 	host_tools_dir = argv[9];
 
@@ -884,14 +914,11 @@ int main(int argc, char **argv)
 			 * moved in-process to libcurl (daemon/src/curlfetch.c),
 			 * and nothing else in the control plane ever execve()s
 			 * curl. Staging the binary itself had no consumer left. */
-			{ "/usr/bin/tar", "usr/bin/tar" },             /* Staged for daemon/src/targz.c's
-			                                                 * creation pipeline, deleted by ADR-0328;
-			                                                 * extraction is libarchive (#411). Nothing
-			                                                 * in cixd execs it now. Whether anything
-			                                                 * else in this root does (cbs) is not yet
-			                                                 * established, so its removal is cix#569. */
-			/* gzip: NOT here -- staged from host_tools_dir
-			 * (gzip.recipe) when given, see below. */
+			/* tar, gzip, xz, bzip2: NOT here any more (cix#569) --
+			 * cixd unpacks only gitea/github recipe archives, with
+			 * the libarchive it links (zlib and liblzma in-process),
+			 * and cbs reads .cixpkg itself. Nothing in this root
+			 * executes any of the four. */
 			{ "/usr/bin/unsquashfs", "usr/bin/unsquashfs" }, /* PKG_UNSQUASHFS_BIN -- the
 			                                                   * pkg_bootstrap_from_toolchain()
 			                                                   * import path, no mount/loop-device
@@ -899,33 +926,6 @@ int main(int argc, char **argv)
 			                                                   * documented "no /dev/loop* at all"
 			                                                   * constraint; real hardware
 			                                                   * shouldn't need one for this either). */
-			/*
-			 * bzip2/xz -- not a _BIN macro of their own anywhere in
-			 * daemon/src/pkg.c; needed because GNU tar (PKG_TAR_BIN)
-			 * itself has no compression libraries linked in at all
-			 * (confirmed via `ldd /usr/bin/tar`: libacl/libselinux/
-			 * libc/libpcre2 only) -- it shells out to a bare "gzip"/
-			 * "bzip2"/"xz" resolved via $PATH for every compressed
-			 * tarball, confirmed via strace on a real extraction
-			 * (execve("bzip2", ["bzip2","-d"], ...)). Previously
-			 * entirely absent from this image: every recipe using a
-			 * .tar.gz/.tar.bz2/.tar.xz source (nearly all of them)
-			 * failed extract_tarball() on a genuinely fresh/minimal
-			 * install with the opaque "could not prepare the build
-			 * container" bucket error -- confirmed live on
-			 * 192.168.15.95's tcc.recipe (.tar.bz2) install, invisible
-			 * until pkg.c's own build-container-prep diagnostics were
-			 * wired into the log store. Never caught by this sandbox's
-			 * own dev-loop testing because a locally-run cixd here
-			 * always had this rich dev host's own real /usr/bin/{gzip,
-			 * bzip2,xz} reachable via $PATH -- the same "this dev
-			 * sandbox's own rich /usr made the gap easy to miss"
-			 * pattern ADR-0023 already names for libtinfo above.
-			 * (gzip itself moved to host_tools_dir staging below,
-			 * gzip.recipe -- bzip2/xz have no recipe yet.)
-			 */
-			{ "/usr/bin/bzip2", "usr/bin/bzip2" },
-			{ "/usr/bin/xz", "usr/bin/xz" },
 			/*
 			 * mkfs.ext4 -- DISKFORMAT_MKFS_EXT4_BIN, daemon/src/diskformat.c
 			 * (multi-disk management Phase C). "/usr/sbin/mkfs.ext4" is
@@ -1027,11 +1027,6 @@ int main(int argc, char **argv)
 			"libkeyutils.so.1",
 			"libresolv.so.2",
 			"libffi.so.8",
-			/* tar; cp linked these too until #464 removed it */
-			"libacl.so.1",
-			"libselinux.so.1",
-			"libpcre2-8.so.0",
-			"libattr.so.1",
 			/* unsquashfs -- libz.so.1/libzstd.so.1 already listed above (curl) */
 			"libpthread.so.0",
 			"libm.so.6",
@@ -1055,9 +1050,6 @@ int main(int argc, char **argv)
 			 * a thread normally, not just unsquashfs/mksquashfs.
 			 */
 			"libgcc_s.so.1",
-			/* bzip2 -- gzip needs only libc (already staged); xz needs
-			 * only liblzma.so.5 (already staged above, for unsquashfs) */
-			"libbz2.so.1.0",
 			/* mkfs.ext4 (mke2fs) -- libcom_err.so.2 already listed above
 			 * (curl/krb5) */
 			"libext2fs.so.2",
@@ -1088,13 +1080,11 @@ int main(int argc, char **argv)
 		}
 		{
 			/*
-			 * gzip -- the one remaining shelled-out tool this
-			 * project stages from a real from-source recipe
-			 * (gzip.recipe) -- rm/sha256sum retired by #352 and cp
-			 * by #464, all in-process now (cix_btrfs_subvol_delete_or_rmtree(),
-			 * EVP_sha256(), cix_tree_copy()).
+			 * Programs staged from the cix-hosttools image
+			 * (rm/sha256sum retired by #352, cp by #464, and tar,
+			 * gzip, xz and bzip2 by cix#569 -- all in-process now).
 			 * host_tools_dir, when
-			 * given, is that recipe's own installed image rootfs (a
+			 * given, is that image's installed rootfs (a
 			 * real `pkg install --image=<name>` result); each binary
 			 * is sourced from THERE instead of this dev build host.
 			 * "" (host_tools_dir unset) falls back to the dev-host
@@ -1108,7 +1098,6 @@ int main(int argc, char **argv)
 				const char *host_tools_rel; /* relative to host_tools_dir */
 				const char *rootfs_path;    /* relative to image_root, matching the _BIN macro */
 			} host_tool_bins[] = {
-				{ "/usr/bin/gzip", "usr/bin/gzip", "usr/bin/gzip" },
 				/*
 				 * btrfs -- DISKPART_BTRFS_BIN, daemon/src/diskpart.c
 				 * (issue #163). The other half of mkfs.btrfs's story:
@@ -1820,6 +1809,8 @@ int main(int argc, char **argv)
 		 * which is one entry of the list.
 		 */
 		if (verify_controlplane_programs(image_root, kmod_bin_dir[0] != '\0') != 0)
+			return 1;
+		if (verify_root_closure(image_root) != 0)
 			return 1;
 		if (run_mksquashfs(use_mksquashfs, image_root, out_path, host_tools_dir) != 0)
 			return 1;

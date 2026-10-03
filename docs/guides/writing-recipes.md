@@ -300,7 +300,7 @@ Five ordered phases — `prepare`, `configure`, `build`, `check`, `install` — 
 | `${build}` | `/build/cbsws/build` | scratch for the build |
 | `${dest}` | `/build/cbsws/dest` | the staged package — exactly what becomes the artifact |
 
-Measured by `probe-cpdlpaths@1-1` on 192.168.15.95. A separate `/build/src` tree also exists in the container and is **not** the recipe's; anything reading a build container from outside (`GET /v1/containers/<name>/files`) needs the literal `/build/cbsws/...` path for what the recipe wrote. `$jobs` is the parallelism to pass to `make`.
+Measured by `probe-cpdlpaths@1-1` on 192.168.15.95. Anything reading a build container from outside (`GET /v1/containers/<name>/files`) needs the literal `/build/cbsws/...` path for what the recipe wrote. `$jobs` is the parallelism to pass to `make`.
 
 The install phase is finished when the package's files are under `${dest}`. Everything there is merged into the target image once the build exits successfully (an ordinary install) or kept as a host artifact (a [hostbuild](#the-hostbuild-variant)). A failure at any point lands the package in `PKG_STATE_FAILED` with a diagnosable `error` field; nothing partial is merged.
 

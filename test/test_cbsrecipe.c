@@ -201,7 +201,7 @@ static void test_release_and_runtime(void)
 		expect_str("fused version carries the release", buf, "7.2.3-15");
 
 	/* Two positional sources (ADR-0036): the second is a plain file
-	 * copied into /build/extra, not a second mirror of the first. */
+	 * handed to cbs as its own source, not a second mirror of the first. */
 	expect_int("two sources", cbs_explain_source_count(ex), 2);
 	if (cbs_explain_source(ex, 1, url, sizeof(url), sha, sizeof(sha)) != 0)
 		fail("source 1 could not be read");
