@@ -58,12 +58,21 @@ int pkg_recipe_upstream(const char *name, char *out, size_t out_size)
 	return -1;
 }
 
+/*
+ * The store srcresolve_package() lists, as the real one answers:
+ * writes at most max and returns how many there are.
+ */
+static const char *const *g_store_versions;
+static int g_store_count;
+
 int pkg_recipe_list_versions(const char *name, char versions[][PKG_VERSION_MAX], int max)
 {
+	int i;
+
 	(void)name;
-	(void)versions;
-	(void)max;
-	return 0;
+	for (i = 0; i < g_store_count && i < max; i++)
+		snprintf(versions[i], PKG_VERSION_MAX, "%s", g_store_versions[i]);
+	return g_store_count;
 }
 
 static int g_failures;
@@ -326,6 +335,35 @@ int main(void)
 				expect("mark cleared", "hibr", "gitea-tags", CURRENT, 2, PIPELINE_AUTHOR,
 				        PIPELINE_OK, "0.99.5", NULL);
 				unlink(g_bad_path);
+			}
+			/*
+			 * More recipe versions than any first guess: the one that
+			 * builds the resolved release is the 100th the store
+			 * lists. A capped list missed it, and called the release
+			 * unwritten (192.168.15.95, 2026-10-03: cix had 94).
+			 */
+			{
+				static char many[100][16];
+				static const char *manyp[100];
+				struct srcresolve_entry pe;
+				int m;
+
+				for (m = 0; m < 99; m++) {
+					snprintf(many[m], sizeof(many[m]), "0.49.%d-1", m);
+					manyp[m] = many[m];
+				}
+				snprintf(many[99], sizeof(many[99]), "0.99.5-1");
+				manyp[99] = many[99];
+				g_store_versions = manyp;
+				g_store_count = 100;
+				srcresolve_package("hibr", "gitea-tags", &pe);
+				if (pe.stage != PIPELINE_AUTHOR || pe.status != PIPELINE_OK)
+					fail("100 recipe versions: reported %s -- %s", pipeline_stage_name(pe.stage),
+					     pe.reason);
+				else
+					printf("  %-26s %-8s/%-15s the 100th version found\n", "100 recipe versions",
+					       pipeline_stage_name(pe.stage), pipeline_status_name(pe.status));
+				g_store_count = 0;
 			}
 			expect("hold lifted", "hibr", "gitea-tags", OLD, 1, PIPELINE_AUTHOR,
 			        PIPELINE_BLOCKED, "0.99.5", NULL);

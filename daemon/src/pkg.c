@@ -3319,8 +3319,6 @@ static int refresh_one_gitea(const char *name, const struct pkg_recipe *recipe, 
  */
 static void authenticate_one_gitea(const char *name, const struct pkg_recipe *recipe, long now)
 {
-	static char versions[64][PKG_VERSION_MAX];
-	const char *vp[64];
 	char origin[SRCTRUST_ORIGIN_MAX], raw[PKG_URL_MAX], url[PKG_URL_MAX];
 	char tmp[PATH_MAX], err[PKG_ERROR_MAX], why[512], stamp[32];
 	struct srcresolve_entry e;
@@ -3328,12 +3326,8 @@ static void authenticate_one_gitea(const char *name, const struct pkg_recipe *re
 	struct curlfetch_opts opts;
 	struct tm tm;
 	time_t t = (time_t)now;
-	int nv, i;
 
-	nv = pkg_recipe_list_versions(name, versions, 64);
-	for (i = 0; i < nv; i++)
-		vp[i] = versions[i];
-	srcresolve_one(name, "gitea-tags", vp, (size_t)nv, &e);
+	srcresolve_package(name, "gitea-tags", &e);
 	if (e.stage != PIPELINE_AUTHOR || e.status != PIPELINE_BLOCKED)
 		return; /* nothing new, or discovery itself stopped and said why */
 
@@ -21538,10 +21532,11 @@ int pkg_recipe_list_versions(const char *name, char versions[][PKG_VERSION_MAX],
 	d = opendir(name_dir);
 	if (d == NULL)
 		return 0;
-	while ((de = readdir(d)) != NULL && count < max) {
+	while ((de = readdir(d)) != NULL) {
 		if (de->d_name[0] == '.')
 			continue;
-		snprintf(versions[count], PKG_VERSION_MAX, "%s", de->d_name);
+		if (count < max)
+			snprintf(versions[count], PKG_VERSION_MAX, "%s", de->d_name);
 		count++;
 	}
 	closedir(d);

@@ -15,7 +15,6 @@
 #include <string.h>
 
 #define PIPELINEVIEW_MAX_PACKAGES 512
-#define PIPELINEVIEW_MAX_RECIPE_VERSIONS 64
 #define PIPELINEVIEW_MAX_IMAGES 32
 #define PIPELINEVIEW_MAX_ESP_ENTRIES 32
 #define PIPELINEVIEW_MAX_IMAGE_NAMES 64
@@ -515,13 +514,11 @@ static void write_drift(struct json_writer *w, char names[][PKG_IMAGE_NAME_MAX],
 void pipelineview_write_json(struct json_writer *w)
 {
 	static char names[PIPELINEVIEW_MAX_PACKAGES][PKG_IMAGE_NAME_MAX];
-	static char versions[PIPELINEVIEW_MAX_RECIPE_VERSIONS][PKG_VERSION_MAX];
 	static struct pkg_position positions[PIPELINEVIEW_MAX_IMAGES];
-	const char *vp[PIPELINEVIEW_MAX_RECIPE_VERSIONS];
 	struct srcresolve_entry cat;
 	int stage_counts[PIPELINE_STAGE_COUNT];
 	int status_counts[5];
-	int n, i, v, nv, np, p;
+	int n, i, np, p;
 
 	memset(stage_counts, 0, sizeof(stage_counts));
 	memset(status_counts, 0, sizeof(status_counts));
@@ -538,10 +535,7 @@ void pipelineview_write_json(struct json_writer *w)
 
 		if (pkg_recipe_upstream(names[i], kind, sizeof(kind)) != 0)
 			kind[0] = '\0';
-		nv = pkg_recipe_list_versions(names[i], versions, PIPELINEVIEW_MAX_RECIPE_VERSIONS);
-		for (v = 0; v < nv; v++)
-			vp[v] = versions[v];
-		srcresolve_one(names[i], kind, vp, (size_t)nv, &cat);
+		srcresolve_package(names[i], kind, &cat);
 		stage = cat.stage;
 		status = cat.status;
 		reason = cat.reason;

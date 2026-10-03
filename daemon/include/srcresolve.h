@@ -100,7 +100,7 @@ void srcresolve_upstream_of(const char *recipe_version, char *out, size_t out_si
  * Resolves one package. The recipe versions are passed in rather than
  * read here, which keeps this a pure function: a test can drive every
  * state without a recipe tree on disk, and the I/O lives in exactly one
- * place (srcresolve_write_json).
+ * place (srcresolve_package).
  *
  * `kind` NULL or "" means the recipe declares no upstream, which is
  * SRCRESOLVE_PINNED and not an error. Always fills *out.
@@ -108,6 +108,15 @@ void srcresolve_upstream_of(const char *recipe_version, char *out, size_t out_si
 void srcresolve_one(const char *name, const char *kind,
                      const char *const *recipe_versions, size_t recipe_count,
                      struct srcresolve_entry *out);
+
+/*
+ * srcresolve_one() for a package in the recipe store: lists every one of
+ * its recipe versions -- all of them, sized from the count, never a
+ * fixed cap -- and resolves. The one place the catalogue, the pipeline
+ * view and discovery read recipe versions, so none of them can act on
+ * part of the list. Always fills *out.
+ */
+void srcresolve_package(const char *name, const char *kind, struct srcresolve_entry *out);
 
 /* The whole catalogue, recomputed from the recipes on disk. */
 void srcresolve_write_json(struct json_writer *w);

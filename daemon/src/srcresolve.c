@@ -15,11 +15,12 @@
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Enough for every package this platform has recipes for, with room. */
 #define SRCRESOLVE_MAX_PACKAGES 512
-#define SRCRESOLVE_MAX_RECIPE_VERSIONS 64
+#define SRCRESOLVE_RECIPE_VERSIONS_INITIAL 64 /* a first guess; srcresolve_package() grows it */
 
 
 void srcresolve_upstream_of(const char *recipe_version, char *out, size_t out_size)
@@ -318,14 +319,47 @@ static void write_entry(struct json_writer *w, const struct srcresolve_entry *e)
 	jw_obj_close(w);
 }
 
+void srcresolve_package(const char *name, const char *kind, struct srcresolve_entry *out)
+{
+	char(*versions)[PKG_VERSION_MAX] = NULL;
+	const char **vp = NULL;
+	int cap = SRCRESOLVE_RECIPE_VERSIONS_INITIAL, n, i;
+
+	/* Sized from the count, and asked again if a version was published
+	 * between the two reads: the answer is never about part of the list. */
+	for (;;) {
+		versions = calloc((size_t)cap, sizeof(*versions));
+		if (versions == NULL)
+			break;
+		n = pkg_recipe_list_versions(name, versions, cap);
+		if (n <= cap)
+			break;
+		free(versions);
+		versions = NULL;
+		cap = n + SRCRESOLVE_RECIPE_VERSIONS_INITIAL;
+	}
+	vp = versions != NULL ? calloc((size_t)cap, sizeof(*vp)) : NULL;
+	if (vp == NULL) {
+		srcresolve_one(name, kind, NULL, 0, out);
+		out->status = PIPELINE_FAILED;
+		snprintf(out->reason, sizeof(out->reason),
+		         "out of memory listing the recipe versions of %s", name);
+		free(versions);
+		return;
+	}
+	for (i = 0; i < n; i++)
+		vp[i] = versions[i];
+	srcresolve_one(name, kind, vp, (size_t)n, out);
+	free(vp);
+	free(versions);
+}
+
 void srcresolve_write_json(struct json_writer *w)
 {
 	static char names[SRCRESOLVE_MAX_PACKAGES][PKG_IMAGE_NAME_MAX];
-	static char versions[SRCRESOLVE_MAX_RECIPE_VERSIONS][PKG_VERSION_MAX];
-	const char *vp[SRCRESOLVE_MAX_RECIPE_VERSIONS];
 	struct srcresolve_entry e;
 	int counts[5];
-	int n, i, v, nv;
+	int n, i;
 
 	memset(counts, 0, sizeof(counts));
 	n = pkg_recipe_list_names(names, SRCRESOLVE_MAX_PACKAGES);
@@ -338,10 +372,7 @@ void srcresolve_write_json(struct json_writer *w)
 
 		if (pkg_recipe_upstream(names[i], kind, sizeof(kind)) != 0)
 			kind[0] = '\0';
-		nv = pkg_recipe_list_versions(names[i], versions, SRCRESOLVE_MAX_RECIPE_VERSIONS);
-		for (v = 0; v < nv; v++)
-			vp[v] = versions[v];
-		srcresolve_one(names[i], kind, vp, (size_t)nv, &e);
+		srcresolve_package(names[i], kind, &e);
 		counts[e.status]++;
 		write_entry(w, &e);
 	}

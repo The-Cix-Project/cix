@@ -2029,7 +2029,12 @@ int pkg_recipe_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
 /*
  * Every recipe version that exists for one package (ADR-0107's
  * version-keyed layout: the directory names under recipes/<name>/ ARE
- * the versions). Returns how many were written, unordered.
+ * the versions), unordered. Writes at most max, and returns how many
+ * there ARE -- more than max when the list did not fit, so a caller can
+ * size a buffer and ask again rather than act on part of the list.
+ * The cap used to be silent: on 192.168.15.95 (2026-10-03) cix had 94
+ * recipe versions and the source catalogue saw 64 of them, in readdir
+ * order, reporting 0.2.57-422 as the newest while 453 was booted.
  *
  * ADR-0255's source catalogue needs all of them, not just the highest:
  * the question it asks is "does a recipe exist for the release the

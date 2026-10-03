@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The source catalogue reads every recipe version, not the first 64
+
+- **The catalogue, the pipeline view and discovery each listed a package's recipe versions into a 64-entry buffer**, and `pkg_recipe_list_versions()` stopped reading at the cap with no sign that it had.
+  - On 192.168.15.95 (2026-10-03), cix had 94 recipe versions, and `cixctl pkg source-catalogue` reported 0.2.57-422 as its newest while 0.2.57-453 was booted.
+  - For a discovered package, a recipe beyond the cap that already builds the resolved release would have read as missing, so discovery would have authored it a second time. hibr gains a version with every release it rolls to.
+- `pkg_recipe_list_versions()` now returns how many versions there are, writing at most `max`. A single `srcresolve_package()` sizes its buffer from that count and does the listing for all three callers.
+- Test: `test_srcresolve` resolves a package whose matching recipe is the 100th of 100.
+
 ### A rolled container that fails goes back, and the version is marked bad (ADR-0323 answer 4)
 
 - **After a roll, a `follow_rolling` container has `rollback_window_seconds` to be ready** (`PUT /v1/system/rolling-config`, default 300, 10-3600; `cixctl rolling-config set --rollback-window-seconds=N`). It returns to the image version it ran before when any of these happens:
