@@ -125,6 +125,34 @@ int main(void)
 		printf("  registry enumerable (%zu kind(s))    ok\n", n);
 	}
 
+	/* ADR-0323: a template becomes a url the way cbs expands it. */
+	{
+		char out[256];
+		struct {
+			const char *tmpl, *version, *want;
+		} cases[] = {
+			{ "https://u:{{REPO_TOKEN}}@h/api/v1/repos/o/r/archive/v{version}.tar.gz", "1.1",
+			  "https://u:{{REPO_TOKEN}}@h/api/v1/repos/o/r/archive/v1.1.tar.gz" },
+			{ "x/{major}/v{version}", "7.2.8", "x/7/v7.2.8" },
+			/* rung 2: one signed list per release directory */
+			{ "https://cdn.kernel.org/pub/linux/kernel/v{major}.x/sha256sums.asc", "7.2.8",
+			  "https://cdn.kernel.org/pub/linux/kernel/v7.x/sha256sums.asc" },
+		};
+		size_t i;
+
+		for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+			if (srcupstream_expand(cases[i].tmpl, cases[i].version, out, sizeof(out)) != 0 ||
+			    strcmp(out, cases[i].want) != 0) {
+				fprintf(stderr, "  FAIL: expand %s -> %s\n", cases[i].tmpl, out);
+				g_failures++;
+			}
+		if (srcupstream_expand("{version}{version}", "123456", out, 8) == 0) {
+			fprintf(stderr, "  FAIL: expand truncated instead of refusing\n");
+			g_failures++;
+		}
+		printf("  templates expand as cbs does        ok\n");
+	}
+
 	if (g_failures != 0) {
 		fprintf(stderr, "test_srcupstream: %d failure(s)\n", g_failures);
 		return 1;

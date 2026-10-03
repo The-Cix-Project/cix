@@ -205,3 +205,24 @@ What `test_rolling_restart` proves, gated in the release from this version:
 - a healthy release rolls and stays past the window.
 
 The not-ready-at-the-deadline path is not exercised there. With a 2 s doubling restart backoff, a crash-looping service reaches three exits before any window of 10 s or more closes.
+
+## Rung 2, as built (0.2.57-455)
+
+The signed checksum list, for the kernel first.
+
+- **The upstream key store ADR-0318 described now exists** (`upstreamkeys.c`, `POST/GET /v1/pkg/{name}/upstream-keys`, `DELETE .../{fingerprint}`, `cixctl pkg upstream-keys`):
+  - A key enters only by an operator's call, pinned by a fingerprint the operator checked out of band. It is refused unless that fingerprint is the key's own (`pgp_key_fingerprint()`).
+  - A lookup is always by package and fingerprint, so the kernel's key answers for nothing else.
+  - The store is apart from artifact trust and `docs/keys`.
+- **Discovery authenticates by the recipe's verify method, not by its kind.**
+  - `verify origin` is rung 4, as before.
+  - `verify checksums "openpgp-clearsigned" { url key }` is rung 2. The list is fetched host-side and verified with the existing `pgp_clearsign_verify()`, against the installed key with the recipe's fingerprint.
+  - The archive's sha256 is read from the verified text by the last path element of the expanded `source`. The archive is not fetched at discovery; the build fetches it and refuses other bytes.
+  - The candidate's verification line, which becomes the changelog, names the file, the list and the key.
+- **What authenticate and author found is a per-package record** (`srcrecord.c`, `pkg/discovery/`). It used to live in the gitea-tags listing document, which a second rung made a second writer. The catalogue reads it for every kind, so the `note` hook on a kind is gone.
+- **A run that includes kernel.org authenticates after the release-list fetch ends**, so the kernel is checked against the list that run fetched. `{"refresh": false}` authenticates against what is held without fetching, which is useful right after installing a key and is how `test_pkg` stays off the network.
+- **Measured on 192.168.15.95, 2026-10-03** (`probe-kernel-checksums@1-1`, `@2-1`):
+  - `https://cdn.kernel.org/pub/linux/kernel/v7.x/sha256sums.asc` is one clearsigned list (`Hash: SHA256`), 13548 bytes at the time, with a `<sha256>  <filename>` line for every file in the directory.
+  - Its signature is v4, RSA and SHA-256, with issuer fingerprint `B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1`. That is what `pgpverify.c` supports.
+- **The kernel cannot declare rung 2 yet.** CPDL requires `{version}` in a verify url, and kernel.org's list is per directory (`{major}` only). That is cix-build-system#281. Until it ships the kernel stays where it is, and its row says so.
+- **The key itself is the owner's act.** Installing the autosigner key on a host is pinning that fingerprint, and that is the operator's out-of-band decision. Discovery does not fetch it.

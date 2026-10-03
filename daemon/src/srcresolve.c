@@ -10,6 +10,7 @@
 #include "pkgbad.h"
 #include "srcdepth.h"
 #include "srcpolicy.h"
+#include "srcrecord.h"
 #include "srcupstream.h"
 
 #include <ctype.h>
@@ -256,11 +257,11 @@ void srcresolve_one(const char *name, const char *kind,
 	 * version is history, and is not applied.
 	 */
 	{
-		struct srcupstream_note note;
+		struct srcrecord_note note;
 		enum pipeline_stage st;
 		enum pipeline_status ss;
 
-		if (srcupstream_note(k, name, out->resolved_version, &note) == 0 &&
+		if (srcrecord_note(name, &note) == 0 && strcmp(note.version, out->resolved_version) == 0 &&
 		    pipeline_stage_from_name(note.stage, &st) == 0 &&
 		    pipeline_status_from_name(note.status, &ss) == 0) {
 			out->stage = st;

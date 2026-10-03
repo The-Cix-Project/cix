@@ -298,6 +298,9 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | PUT | `/pkg/trusted-origins` | Replace the list, `{"origins": ["https://git.home.arpa"]}`. Each entry is a canonical `scheme://host[:port]`, listed once. The only way an origin becomes trusted: an operator's call, never discovery |
 | GET | `/pkg/bad-versions` | Package versions that failed at runtime after a roll (ADR-0323 answer 4): the container went back to the image version it ran before, and every package that differed is marked; when none did, the image version itself is marked as `@<image>`. Rolling skips an image version carrying a mark. A mark ends when the package has a newer recipe |
 | DELETE | `/pkg/bad-versions/{name}/{version}` | Clear a mark so rolling may try that version again; 404 when there is no such mark |
+| GET | `/pkg/{name}/upstream-keys` | The OpenPGP keys that may authenticate this package's upstream releases (ADR-0318), by fingerprint. A key installed for one package answers for no other, and none can approve a Cix artifact |
+| POST | `/pkg/{name}/upstream-keys` | Install one, `{"fingerprint": "...", "key": "<armored public key>"}`. The fingerprint is the operator's out-of-band pin, and the key is refused unless it is the key's own; never discovery, never trust on first use. 201 with the package's keys |
+| DELETE | `/pkg/{name}/upstream-keys/{fingerprint}` | Remove one; a release naming it is no longer authenticated. 404 when the package has no such key |
 | GET | `/pkg/upstreams` | The discovery kinds a recipe may declare, and the channels each publishes (ADR-0255) |
 | GET | `/pkg/source-policy` | Which upstream *release* packages build — the default plus per-package overrides |
 | PUT | `/pkg/source-policy` | Set the platform-wide default (channel preference + depth) |
@@ -1272,7 +1275,7 @@ It also serves the surfaces that are not a shell better. The **web form is the s
 ```
 $ cixctl schedule ls
 NAME                   ACTION                     WHEN                       LAST     REASON
-discover               pkg.discover               every 1h                   ok       kernel.org: refresh started; gitea-tags: refresh started
+discover               pkg.discover               every 1h                   ok       kernel.org release list fetching; discovery follows
 nightly-backup         system.backup              daily at 02:00 for 3h      never    -
 ```
 
@@ -1303,7 +1306,7 @@ Four actions are registered:
 
 | Action | What it does |
 |---|---|
-| `pkg.discover` | ADR-0323 discovery: fetch what upstream has published for every discovery kind (kernel.org's releases.json, each gitea-tags package's own tags listing), authenticate a newer release by origin trust when the recipe asks for it and its origin is trusted (`pkg trusted-origins`), and write, commit and publish the next recipe revision -- one per run. `params: {"kind": "kernel.org"}` or `{"kind": "gitea-tags"}` limits it to one kind. Replaced `pkg.refresh-upstreams` in 0.2.57-448 |
+| `pkg.discover` | ADR-0323 discovery: fetch what upstream has published for every discovery kind (kernel.org's releases.json, each gitea-tags package's own tags listing), authenticate a newer release the way its recipe says -- origin trust when its origin is trusted (`pkg trusted-origins`, rung 4), or a signed checksum list verified under a key installed for that package (`pkg upstream-keys`, rung 2) -- and write, commit and publish the next recipe revision, one per run. `params: {"kind": "kernel.org"}` or `{"kind": "gitea-tags"}` limits it to one kind; `{"refresh": false}` authenticates against the lists already held without fetching any feed. A run that includes kernel.org authenticates after its fetch ends. Replaced `pkg.refresh-upstreams` in 0.2.57-448 |
 | `system.backup` | Write a system backup to the configured disk |
 | `volume.backup` | Snapshot every volume that opted in |
 | `pkg.sync` | Fetch recipes from the configured repo |
@@ -1523,7 +1526,21 @@ The last two used to be one `unresolved` state, and they need opposite responses
 
   `source` is how the kind finds the repository: it lists tags from `<base>/api/v1/repos/OWNER/REPO/tags`, with the owning source's token. `tag` maps each tag to a version, and tags it does not match are skipped.
 
-`pkg.discover` refreshes both kinds, then authenticates and authors gitea-tags releases (below). An own-forge template carries `{{REPO_TOKEN}}` in its url (cbs v0.1.104 treats `{{...}}` as opaque, cix-build-system#280); a recipe declaring no `source` is told to declare one.
+`pkg.discover` refreshes both kinds, then authenticates and authors releases of either kind (below). An own-forge template carries `{{REPO_TOKEN}}` in its url (cbs v0.1.104 treats `{{...}}` as opaque, cix-build-system#280); a recipe declaring no `source` is told to declare one.
+
+**Rung 2, a signed checksum list.** A project that signs a list of its release checksums, as kernel.org signs `sha256sums.asc` in each release directory, is authenticated from that list:
+
+  ```
+  upstream "kernel.org" {
+      source "https://cdn.kernel.org/pub/linux/kernel/v{major}.x/linux-{version}.tar.xz"
+      verify checksums "openpgp-clearsigned" {
+          url "https://cdn.kernel.org/pub/linux/kernel/v{major}.x/sha256sums.asc"
+          key "B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1"
+      }
+  }
+  ```
+
+Discovery fetches the list and verifies it under the key with that fingerprint. The key must be installed for this same package (`POST /v1/pkg/{name}/upstream-keys`, ADR-0318); no key is ever fetched or trusted on first use. Discovery then reads the archive's sha256 from the verified text, by the last path element of `source`. The archive itself is fetched by the build, which refuses bytes that do not match. When the key is not installed, the row names the fingerprint and the command that installs it. A url with only `{major}`, as in this example, needs cix-build-system#281: until then CPDL requires `{version}` in a verify url.
 
 **A failure is a row with a reason, never an absence.** A package that vanished from the list would read as up to date, which is the one wrong answer that looks reassuring. So an unresolvable package appears with the sentence that explains it, and the sentences distinguish causes that need opposite responses:
 

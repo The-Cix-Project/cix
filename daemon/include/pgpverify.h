@@ -84,6 +84,21 @@ enum pgp_verify_result pgp_clearsign_verify(const char *doc, size_t doc_len,
                                              const char *expect_fingerprint, char **out_text,
                                              size_t *out_len, char *err, size_t err_size);
 
+/* 40 hex digits and the NUL, for a v4 key. */
+#define PGP_FINGERPRINT_HEX_MAX 41
+
+/*
+ * The v4 fingerprint of an armored public key's primary key, uppercase
+ * hex. ADR-0318's upstream key store refuses a key unless this equals
+ * the fingerprint the operator pinned, so a mistyped pin or the wrong
+ * key fails when it is added, not at the first release it should
+ * authenticate. Accepts exactly the keys pgp_clearsign_verify() can
+ * verify with (v4 RSA); anything else is refused by name.
+ */
+enum pgp_verify_result pgp_key_fingerprint(const char *pubkey_armored, size_t pubkey_len,
+                                           char out[PGP_FINGERPRINT_HEX_MAX], char *err,
+                                           size_t err_size);
+
 /*
  * Pulls "<sha256>  <name>" out of an already-VERIFIED checksum listing.
  * Takes the verified text rather than the document precisely so it

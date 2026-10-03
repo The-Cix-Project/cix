@@ -805,6 +805,29 @@ out:
 	return rc;
 }
 
+enum pgp_verify_result pgp_key_fingerprint(const char *pubkey_armored, size_t pubkey_len,
+                                           char out[PGP_FINGERPRINT_HEX_MAX], char *err,
+                                           size_t err_size)
+{
+	unsigned char *keybuf = NULL;
+	size_t keylen = 0, i;
+	struct pgp_key key;
+	enum pgp_verify_result rc;
+
+	out[0] = '\0';
+	if (armor_decode(pubkey_armored, pubkey_len, "-----BEGIN PGP PUBLIC KEY BLOCK-----", &keybuf,
+	                 &keylen) != 0) {
+		seterr(err, err_size, "could not decode the public key armor");
+		return PGP_VERIFY_MALFORMED;
+	}
+	rc = key_parse(keybuf, keylen, &key, err, err_size);
+	if (rc == PGP_VERIFY_OK)
+		for (i = 0; i < PGP_FPR_LEN; i++)
+			snprintf(out + i * 2, 3, "%02X", key.fpr[i]);
+	free(keybuf);
+	return rc;
+}
+
 int pgp_checksum_lookup(const char *verified_text, const char *filename, char *out_sha256,
                         size_t out_size)
 {

@@ -20,7 +20,11 @@
 #include "forgecommit.h"
 #include "catalogue.h"
 #include "srcgitea.h"
+#include "srcrecord.h"
+#include "pgpverify.h"
+#include "upstreamkeys.h"
 #include "srcresolve.h"
+#include "srcupstream.h"
 #include "srctrust.h"
 #include "pkgrepo.h"
 #include "pkgsource.h"
@@ -419,6 +423,11 @@ struct pkg_recipe {
 	char upstream_tag[PKG_NAME_MAX];
 	char upstream_source[PKG_URL_MAX];
 	char upstream_verify[32];
+	/* the signed rungs (ADR-0323): verify.format, its url template, and the
+	 * pinned fingerprint of the key that signs it (ADR-0318) */
+	char upstream_verify_format[32];
+	char upstream_verify_url[PKG_URL_MAX];
+	char upstream_verify_key[64];
 	/*
 	 * Capabilities this recipe's BUILD container needs, space
 	 * separated, normally empty (issue #224).
@@ -2853,7 +2862,13 @@ static int parse_cbs_recipe(const char *path, struct pkg_recipe *out)
 	snprintf(out->upstream_source, sizeof(out->upstream_source), "%s",
 	         cbs_explain_upstream_param(ex, "source"));
 	snprintf(out->upstream_verify, sizeof(out->upstream_verify), "%s",
-	         cbs_explain_upstream_verify(ex));
+	         cbs_explain_upstream_verify(ex, "method"));
+	snprintf(out->upstream_verify_format, sizeof(out->upstream_verify_format), "%s",
+	         cbs_explain_upstream_verify(ex, "format"));
+	snprintf(out->upstream_verify_url, sizeof(out->upstream_verify_url), "%s",
+	         cbs_explain_upstream_verify(ex, "url"));
+	snprintf(out->upstream_verify_key, sizeof(out->upstream_verify_key), "%s",
+	         cbs_explain_upstream_verify(ex, "key"));
 
 	/*
 	 * Capabilities by name. A return of 1 is the installed cbs still
@@ -3213,7 +3228,7 @@ static int recipe_latest_version(const char *name, char *out_version, size_t out
 int pkg_upstream_refresh_begin(char *err, size_t err_size)
 {
 	if (g_upstream_refresh_running) {
-		snprintf(err, err_size, "a gitea-tags refresh is already running");
+		snprintf(err, err_size, "a discovery run is already in progress");
 		return -1;
 	}
 	g_upstream_refresh_running = 1;
@@ -3235,14 +3250,14 @@ static int url_with_token(const char *name, const char *url, char *out, size_t o
 static void store_note(const char *name, const char *version, const char *stage,
                        const char *status, const char *reason)
 {
-	struct srcgitea_note note;
+	struct srcrecord_note note;
 
 	memset(&note, 0, sizeof(note));
 	snprintf(note.version, sizeof(note.version), "%s", version);
 	snprintf(note.stage, sizeof(note.stage), "%s", stage);
 	snprintf(note.status, sizeof(note.status), "%s", status);
 	snprintf(note.reason, sizeof(note.reason), "%s", reason);
-	srcgitea_store_note(name, &note);
+	srcrecord_store_note(name, &note);
 }
 
 /* Reads one package's listing; 0, or -1 with the cache's error written. */
@@ -3309,104 +3324,246 @@ static int refresh_one_gitea(const char *name, const struct pkg_recipe *recipe, 
 	return 0;
 }
 
+/* Fetches `url` to `path` with the bounds every discovery fetch uses.
+ * 0, or -1 with curl's reason in err (any token redacted). */
+static int discover_fetch(const char *url, const char *path, char *err, size_t err_size)
+{
+	struct curlfetch_opts opts;
+
+	memset(&opts, 0, sizeof(opts));
+	opts.url = url;
+	opts.path = path;
+	opts.connect_timeout = 10;
+	opts.max_time = 600;
+	opts.low_speed_limit = 1024;
+	opts.low_speed_time = 60;
+	if (curlfetch_perform(&opts, NULL, err, err_size) == 0)
+		return 0;
+	unlink(path);
+	redact_repo_token(err, err_size);
+	return -1;
+}
+
+static void utc_stamp(long now, char *out, size_t out_size)
+{
+	time_t t = (time_t)now;
+	struct tm tm;
+
+	gmtime_r(&t, &tm);
+	strftime(out, out_size, "%Y-%m-%dT%H:%M:%SZ", &tm);
+}
+
 /*
- * ADR-0323 rung 4, for one package whose listing was just stored: when
- * policy resolves a release no recipe builds, and the recipe asks for
- * origin trust from an origin this host trusts, fetch that release's
- * archive host-side and record its sha256 as a candidate for the author
- * stage. Anything that stops it is recorded as the authenticate stage's
- * note, which the catalogue row shows.
+ * Rung 4, origin trust: the release archive fetched over TLS from an
+ * origin the operator trusts, its sha256 recorded at discovery.
  */
-static void authenticate_one_gitea(const char *name, const struct pkg_recipe *recipe, long now)
+static void authenticate_by_origin(const char *name, const struct pkg_recipe *recipe,
+                                   const char *version, long now)
 {
 	char origin[SRCTRUST_ORIGIN_MAX], raw[PKG_URL_MAX], url[PKG_URL_MAX];
 	char tmp[PATH_MAX], err[PKG_ERROR_MAX], why[512], stamp[32];
-	struct srcresolve_entry e;
-	struct srcgitea_candidate c;
-	struct curlfetch_opts opts;
-	struct tm tm;
-	time_t t = (time_t)now;
+	struct srcrecord_candidate c;
 
-	srcresolve_package(name, "gitea-tags", &e);
-	if (e.stage != PIPELINE_AUTHOR || e.status != PIPELINE_BLOCKED)
-		return; /* nothing new, or discovery itself stopped and said why */
-
-	if (strcmp(recipe->upstream_verify, "origin") != 0) {
-		snprintf(why, sizeof(why),
-		         "the recipe verifies by \"%s\", which this platform does not implement yet "
-		         "-- only origin trust (rung 4) is",
-		         recipe->upstream_verify);
-		store_note(name, e.resolved_version, "authenticate", "blocked", why);
-		return;
-	}
 	if (srctrust_origin_of(recipe->upstream_source, origin, sizeof(origin)) != 0 ||
 	    !srctrust_trusts(recipe->upstream_source)) {
 		snprintf(why, sizeof(why),
 		         "origin %s is not trusted on this host -- an operator adds it with `cixctl "
 		         "pkg trusted-origins add` (ADR-0323)",
 		         origin[0] != '\0' ? origin : "(none)");
-		store_note(name, e.resolved_version, "authenticate", "blocked", why);
+		store_note(name, version, "authenticate", "blocked", why);
 		return;
 	}
-	if (srcgitea_expand(recipe->upstream_source, e.resolved_version, raw, sizeof(raw)) != 0 ||
+	if (srcupstream_expand(recipe->upstream_source, version, raw, sizeof(raw)) != 0 ||
 	    url_with_token(name, raw, url, sizeof(url)) != 0) {
-		store_note(name, e.resolved_version, "authenticate", "failed",
+		store_note(name, version, "authenticate", "failed",
 		           "the release url could not be formed from the source template");
 		return;
 	}
 	snprintf(tmp, sizeof(tmp), "%s/upstream/.archive-%s", g_pkg_dir, name);
-	memset(&opts, 0, sizeof(opts));
-	opts.url = url;
-	opts.path = tmp;
-	opts.connect_timeout = 10;
-	opts.max_time = 600;
-	opts.low_speed_limit = 1024;
-	opts.low_speed_time = 60;
 	memset(&c, 0, sizeof(c));
-	if (curlfetch_perform(&opts, NULL, err, sizeof(err)) != 0 ||
+	if (discover_fetch(url, tmp, err, sizeof(err)) != 0 ||
 	    pkg_run_capture_sha256(tmp, c.sha256, sizeof(c.sha256)) != 0) {
 		unlink(tmp);
-		redact_repo_token(err, sizeof(err));
 		snprintf(why, sizeof(why), "the release archive could not be fetched from %s: %s",
 		         origin, err);
-		store_note(name, e.resolved_version, "authenticate", "failed", why);
+		store_note(name, version, "authenticate", "failed", why);
 		return;
 	}
 	unlink(tmp);
-	gmtime_r(&t, &tm);
-	strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%SZ", &tm);
-	snprintf(c.version, sizeof(c.version), "%s", e.resolved_version);
+	utc_stamp(now, stamp, sizeof(stamp));
+	snprintf(c.version, sizeof(c.version), "%s", version);
 	snprintf(c.url, sizeof(c.url), "%s", raw);
 	snprintf(c.verification, sizeof(c.verification),
 	         "origin trust: the release archive fetched from trusted origin %s at %s", origin,
 	         stamp);
-	srcgitea_store_candidate(name, &c);
+	srcrecord_store_candidate(name, &c);
 	snprintf(why, sizeof(why), "sha256 %s, by origin trust from %s; waiting for the author stage",
 	         c.sha256, origin);
-	store_note(name, e.resolved_version, "authenticate", "ok", why);
+	store_note(name, version, "authenticate", "ok", why);
 }
 
-/* The helper's work: every gitea-tags package. Exits with how many
- * failed, capped, so done() can say so without a result file. */
-int pkg_upstream_refresh_work(void *unused)
+/*
+ * Rung 2, a signed checksum list (kernel.org's sha256sums.asc): the
+ * list is fetched, verified against the key the recipe names -- which
+ * must be installed for THIS package (ADR-0318) -- and the sha256 of
+ * the release archive is read out of the verified text. The archive
+ * itself is not fetched here: the build fetches it and refuses bytes
+ * that do not hash to what the signed list says.
+ */
+static void authenticate_by_checksums(const char *name, const struct pkg_recipe *recipe,
+                                      const char *version, long now)
+{
+	char fpr[41], raw[PKG_URL_MAX], url[PKG_URL_MAX], src[PKG_URL_MAX], file[256];
+	char tmp[PATH_MAX], err[PKG_ERROR_MAX], why[768], stamp[32];
+	const char *key, *leaf;
+	char *doc = NULL, *text = NULL;
+	size_t key_len = 0, doc_len = 0, file_len;
+	enum pgp_verify_result vr;
+	struct srcrecord_candidate c;
+
+	if (strcmp(recipe->upstream_verify_format, "openpgp-clearsigned") != 0) {
+		snprintf(why, sizeof(why),
+		         "the checksum list is declared as \"%s\"; this platform verifies "
+		         "\"openpgp-clearsigned\" lists",
+		         recipe->upstream_verify_format);
+		store_note(name, version, "authenticate", "blocked", why);
+		return;
+	}
+	if (upstreamkeys_normalise(recipe->upstream_verify_key, fpr) != 0) {
+		snprintf(why, sizeof(why),
+		         "the recipe's verify key \"%s\" is not a 40-digit fingerprint",
+		         recipe->upstream_verify_key);
+		store_note(name, version, "authenticate", "blocked", why);
+		return;
+	}
+	key = upstreamkeys_find(name, fpr, &key_len);
+	if (key == NULL) {
+		snprintf(why, sizeof(why),
+		         "no upstream key %s is installed for %s -- an operator installs it with "
+		         "`cixctl pkg upstream-keys add %s --fingerprint=%s --file=KEY.asc` (ADR-0318)",
+		         fpr, name, name, fpr);
+		store_note(name, version, "authenticate", "blocked", why);
+		return;
+	}
+	if (srcupstream_expand(recipe->upstream_verify_url, version, raw, sizeof(raw)) != 0 ||
+	    url_with_token(name, raw, url, sizeof(url)) != 0 ||
+	    srcupstream_expand(recipe->upstream_source, version, src, sizeof(src)) != 0) {
+		store_note(name, version, "authenticate", "failed",
+		           "the checksum list or release url could not be formed from its template");
+		return;
+	}
+	/* The archive's name in the list is the last path element of its url. */
+	leaf = strrchr(src, '/');
+	leaf = leaf != NULL ? leaf + 1 : src;
+	file_len = strcspn(leaf, "?#");
+	if (file_len == 0 || file_len >= sizeof(file)) {
+		store_note(name, version, "authenticate", "failed",
+		           "the release url names no file to look up in the checksum list");
+		return;
+	}
+	memcpy(file, leaf, file_len);
+	file[file_len] = '\0';
+
+	snprintf(tmp, sizeof(tmp), "%s/upstream/.checksums-%s", g_pkg_dir, name);
+	if (discover_fetch(url, tmp, err, sizeof(err)) != 0 ||
+	    persist_read_file(tmp, &doc, &doc_len) != 0 || doc == NULL) {
+		unlink(tmp);
+		snprintf(why, sizeof(why), "the checksum list could not be fetched from %s: %s", raw,
+		         err);
+		store_note(name, version, "authenticate", "failed", why);
+		return;
+	}
+	unlink(tmp);
+	vr = pgp_clearsign_verify(doc, doc_len, key, key_len, fpr, &text, NULL, err, sizeof(err));
+	free(doc);
+	if (vr != PGP_VERIFY_OK) {
+		snprintf(why, sizeof(why), "the checksum list from %s did not verify under key %s: %s (%s)",
+		         raw, fpr, pgp_verify_result_name(vr), err);
+		store_note(name, version, "authenticate", "failed", why);
+		return;
+	}
+	memset(&c, 0, sizeof(c));
+	if (pgp_checksum_lookup(text, file, c.sha256, sizeof(c.sha256)) != 0) {
+		free(text);
+		snprintf(why, sizeof(why), "the signed checksum list from %s does not name %s", raw,
+		         file);
+		store_note(name, version, "authenticate", "failed", why);
+		return;
+	}
+	free(text);
+	utc_stamp(now, stamp, sizeof(stamp));
+	snprintf(c.version, sizeof(c.version), "%s", version);
+	snprintf(c.url, sizeof(c.url), "%s", src);
+	snprintf(c.verification, sizeof(c.verification),
+	         "signed checksums: %s in %s, verified under key %s at %s", file, raw, fpr, stamp);
+	srcrecord_store_candidate(name, &c);
+	snprintf(why, sizeof(why),
+	         "sha256 %s, from a checksum list signed by %s; waiting for the author stage",
+	         c.sha256, fpr);
+	store_note(name, version, "authenticate", "ok", why);
+}
+
+/*
+ * The authenticate stage for one package: a release newer than any
+ * recipe is authenticated the way the recipe says, or the row says why
+ * not. A package that is current, or whose discovery stopped, is left.
+ */
+static void authenticate_one(const char *name, const struct pkg_recipe *recipe, long now)
+{
+	struct srcresolve_entry e;
+	char why[512];
+
+	srcresolve_package(name, recipe->upstream, &e);
+	if (e.stage != PIPELINE_AUTHOR || e.status != PIPELINE_BLOCKED)
+		return; /* nothing new, held, or discovery itself stopped and said why */
+
+	if (strcmp(recipe->upstream_verify, "origin") == 0) {
+		authenticate_by_origin(name, recipe, e.resolved_version, now);
+		return;
+	}
+	if (strcmp(recipe->upstream_verify, "checksums") == 0) {
+		authenticate_by_checksums(name, recipe, e.resolved_version, now);
+		return;
+	}
+	if (recipe->upstream_verify[0] == '\0')
+		snprintf(why, sizeof(why),
+		         "the recipe's upstream block declares no verification, so no release of it "
+		         "can be authenticated (ADR-0323)");
+	else
+		snprintf(why, sizeof(why),
+		         "the recipe verifies by \"%s\", which this platform does not implement yet "
+		         "-- origin trust (rung 4) and a signed checksum list (rung 2) are",
+		         recipe->upstream_verify);
+	store_note(name, e.resolved_version, "authenticate", "blocked", why);
+}
+
+/* The helper's work: refresh every gitea-tags package of the run's
+ * kind, then authenticate every package with an upstream of that kind.
+ * Exits with how many listings failed, capped, so done() can say so
+ * without a result file. */
+int pkg_upstream_refresh_work(void *params_arg)
 {
 	static char names[1024][PKG_IMAGE_NAME_MAX];
+	const struct pkg_discover_params *params = params_arg;
+	const char *kind = params != NULL ? params->kind : "";
+	int refresh = params == NULL || params->refresh;
 	char recipe_path[PATH_MAX];
 	struct pkg_recipe recipe;
 	long now = (long)time(NULL);
 	int n, i, failed = 0;
 
-	(void)unused;
 	n = pkg_recipe_list_names(names, 1024);
 	for (i = 0; i < n; i++) {
 		if (find_recipe_path(names[i], NULL, recipe_path, sizeof(recipe_path)) != 0 ||
-		    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.upstream, "gitea-tags") != 0)
+		    parse_recipe(recipe_path, &recipe) != 0 || recipe.upstream[0] == '\0' ||
+		    (kind[0] != '\0' && strcmp(recipe.upstream, kind) != 0))
 			continue;
-		if (refresh_one_gitea(names[i], &recipe, now) != 0) {
+		if (refresh && strcmp(recipe.upstream, "gitea-tags") == 0 &&
+		    refresh_one_gitea(names[i], &recipe, now) != 0) {
 			failed++;
 			continue;
 		}
-		authenticate_one_gitea(names[i], &recipe, now);
+		authenticate_one(names[i], &recipe, now);
 	}
 	return failed > 100 ? 100 : failed;
 }
@@ -3423,12 +3580,12 @@ int pkg_discover_author_next(void)
 {
 	static char names[1024][PKG_IMAGE_NAME_MAX];
 	char err[PKG_ERROR_MAX], newest[PKG_VERSION_MAX], candidate_version[PKG_VERSION_MAX + 4];
-	struct srcgitea_candidate c;
+	struct srcrecord_candidate c;
 	int n, i;
 
 	n = pkg_recipe_list_names(names, 1024);
 	for (i = 0; i < n; i++) {
-		if (srcgitea_candidate(names[i], &c) != 0)
+		if (srcrecord_candidate(names[i], &c) != 0)
 			continue;
 		/* #565: a hold placed after the candidate was found still holds. */
 		{
@@ -3436,7 +3593,7 @@ int pkg_discover_author_next(void)
 
 			srcpolicy_get(names[i], &held);
 			if (held.pinned) {
-				srcgitea_store_candidate(names[i], NULL);
+				srcrecord_store_candidate(names[i], NULL);
 				continue;
 			}
 		}
@@ -3444,12 +3601,12 @@ int pkg_discover_author_next(void)
 		snprintf(candidate_version, sizeof(candidate_version), "%s-1", c.version);
 		if (recipe_latest_version(names[i], newest, sizeof(newest)) == 0 &&
 		    pkg_version_compare(candidate_version, newest) <= 0) {
-			srcgitea_store_candidate(names[i], NULL);
+			srcrecord_store_candidate(names[i], NULL);
 			continue;
 		}
 		if (pkg_recipe_revise_start(names[i], c.version, c.url, c.sha256, c.verification, NULL,
 		                            err, sizeof(err)) == PKG_OK) {
-			srcgitea_store_candidate(names[i], NULL);
+			srcrecord_store_candidate(names[i], NULL);
 			store_note(names[i], c.version, "author", "ok",
 			           "the next revision was written and is being committed before it is "
 			           "published");
@@ -3466,20 +3623,26 @@ void pkg_upstream_refresh_done(int exit_status, void *unused)
 	(void)unused;
 	g_upstream_refresh_running = 0;
 	if (exit_status == 0)
-		logstore_write("cixd", "info", "pkg: gitea-tags listings refreshed (ADR-0323)");
+		logstore_write("cixd", "info", "pkg: discovery run finished (ADR-0323)");
 	else if (exit_status > 0)
 		logstore_write("cixd", "warn",
-		               "pkg: %d gitea-tags listing(s) could not be refreshed -- each says why "
+		               "pkg: discovery finished; %d gitea-tags listing(s) could not be "
+		               "refreshed -- each says why "
 		               "in GET /v1/pkg/source-catalogue (ADR-0323)",
 		               exit_status);
 	else
-		logstore_write("cixd", "error", "pkg: the gitea-tags refresh helper did not finish");
+		logstore_write("cixd", "error", "pkg: the discovery helper did not finish");
 }
 
 /* Called when the helper could not be started, so done() never runs. */
 void pkg_upstream_refresh_abort(void)
 {
 	g_upstream_refresh_running = 0;
+}
+
+int pkg_upstream_refresh_running(void)
+{
+	return g_upstream_refresh_running;
 }
 
 
@@ -5973,6 +6136,8 @@ void pkg_repoint(const char *pkg_dir, const char *installed_state_path, const ch
 
 		snprintf(upstream_dir, sizeof(upstream_dir), "%s/upstream", pkg_dir);
 		srcgitea_init(upstream_dir);
+		snprintf(upstream_dir, sizeof(upstream_dir), "%s/discovery", pkg_dir);
+		srcrecord_init(upstream_dir);
 	}
 }
 
@@ -6296,6 +6461,10 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 		/* ADR-0323: the gitea-tags kind's per-package listings. */
 		snprintf(upstream_dir, sizeof(upstream_dir), "%s/upstream", pkg_dir);
 		if (srcgitea_init(upstream_dir) != 0)
+			return -1;
+		/* ADR-0323: what authenticate and author found, for every kind. */
+		snprintf(upstream_dir, sizeof(upstream_dir), "%s/discovery", pkg_dir);
+		if (srcrecord_init(upstream_dir) != 0)
 			return -1;
 	}
 

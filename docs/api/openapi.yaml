@@ -11932,6 +11932,108 @@ paths:
         "204":
           description: Back on the platform default
 
+  /pkg/{name}/upstream-keys:
+    get:
+      summary: The OpenPGP keys that may authenticate this package's upstream releases (ADR-0318, ADR-0323 rungs 1-3)
+      description: >
+        A recipe names the key a release is authenticated by -- `verify
+        checksums "openpgp-clearsigned" { url "..." key "<fingerprint>" }`
+        -- and discovery verifies only against a key installed here for
+        that same package. A key installed for one package answers for no
+        other, and none of these can approve a Cix artifact. Lists
+        fingerprints, not the armor.
+      operationId: listPkgUpstreamKeys
+      x-cix-permission: packages:read
+      x-cix-expose: [cli]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The package's keys
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgUpstreamKeys"
+    post:
+      summary: Install an upstream key for this package, pinned by fingerprint (ADR-0318)
+      description: >
+        The only way a key becomes trusted: an operator's call, never
+        discovery, and never trust on first use. The fingerprint is the
+        pin, checked out of band by the operator; the key is refused
+        unless its own v4 fingerprint is that one, and unless it is a key
+        the verifier can use (RSA). Installing the same fingerprint again
+        replaces the key.
+      operationId: addPkgUpstreamKey
+      x-cix-permission: packages:write
+      x-cix-expose: [cli]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fingerprint, key]
+              properties:
+                fingerprint:
+                  type: string
+                  description: 40 hex digits; spaces and either case are accepted
+                key:
+                  type: string
+                  description: The ASCII-armored public key, at most 64 KiB
+      responses:
+        "201":
+          description: Installed; the package's keys
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgUpstreamKeys"
+        "400":
+          description: The fingerprint is malformed, the key is unusable, its fingerprint is not the pinned one, or the store is full (the message says which) -- nothing is changed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /pkg/{name}/upstream-keys/{fingerprint}:
+    delete:
+      summary: Remove an upstream key from this package (ADR-0318)
+      description: >
+        A release that names this key is no longer authenticated, and the
+        package stays where it is until a key is installed again.
+      operationId: removePkgUpstreamKey
+      x-cix-permission: packages:write
+      x-cix-expose: [cli]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: fingerprint
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Removed
+        "404":
+          description: The package has no key with that fingerprint
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /pkg/build-logs:
     get:
       summary: Every persisted build log, newest first (issue #57)
@@ -20992,6 +21094,27 @@ components:
               source:
                 type: string
 
+    PkgUpstreamKeys:
+      type: object
+      required: [package, keys]
+      properties:
+        package:
+          type: string
+        keys:
+          type: array
+          items:
+            type: object
+            required: [fingerprint, bytes, added_at]
+            properties:
+              fingerprint:
+                type: string
+                description: 40 hex digits, upper case
+              bytes:
+                type: integer
+                description: Size of the armored key
+              added_at:
+                type: integer
+                description: Unix seconds
     PkgBadVersions:
       type: object
       required: [bad_versions]

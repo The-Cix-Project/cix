@@ -52,6 +52,7 @@
 #include "srcpolicy.h"
 #include "srctrust.h"
 #include "pkgbad.h"
+#include "upstreamkeys.h"
 #include "srcupstream.h"
 #include "api_srcpolicy.h"
 #include "ksm.h"
@@ -283,6 +284,7 @@ char KERNELPOLICY_STATE_PATH[PATH_MAX]; /* issue #65 -- which kernel line this b
 char SRCPOLICY_STATE_PATH[PATH_MAX];    /* ADR-0255 -- which upstream release packages build */
 char SRCTRUST_STATE_PATH[PATH_MAX];     /* ADR-0323 -- origins trusted to authenticate a release */
 char PKGBAD_STATE_PATH[PATH_MAX];       /* ADR-0323 answer 4 -- package versions that failed at runtime */
+char UPSTREAMKEYS_STATE_PATH[PATH_MAX]; /* ADR-0318 -- keys that may authenticate an upstream release */
 char SCHEDULER_STATE_PATH[PATH_MAX];    /* ADR-0257 -- everything this host does on a clock */
 char KERNEL_RELEASES_PATH[PATH_MAX];    /* issue #65 -- cached kernel.org releases.json */
 char ZSWAP_STATE_PATH[PATH_MAX];        /* issue #51 -- compressed swap cache settings */
@@ -467,6 +469,8 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(SRCTRUST_STATE_PATH, sizeof(SRCTRUST_STATE_PATH), "%s/trusted_origins.json",
 	         STATE_DIR);
 	snprintf(PKGBAD_STATE_PATH, sizeof(PKGBAD_STATE_PATH), "%s/bad_versions.json", STATE_DIR);
+	snprintf(UPSTREAMKEYS_STATE_PATH, sizeof(UPSTREAMKEYS_STATE_PATH), "%s/upstream_keys.json",
+	         STATE_DIR);
 	snprintf(SCHEDULER_STATE_PATH, sizeof(SCHEDULER_STATE_PATH), "%s/schedules.json",
 	         STATE_DIR);
 	/*
@@ -6070,12 +6074,13 @@ static int kernel_releases_fetch_start(char *err_msg, size_t err_msg_size);
  * a scheduled refresh from blocking the control plane.
  */
 /*
- * ADR-0323: the gitea-tags helper has refreshed and authenticated what
- * it could. The author stage runs here, in the parent, because a recipe
- * commit is the parent's job: the first candidate is written and its
- * commit helper started -- one per run.
+ * ADR-0323: the discovery helper has refreshed the gitea-tags listings
+ * and authenticated what it could, for every kind. The author stage
+ * runs here, in the parent, because a recipe commit is the parent's
+ * job: the first candidate is written and its commit helper started --
+ * one per run.
  */
-static void discover_gitea_done(int exit_status, void *ctx)
+static void discover_done(int exit_status, void *ctx)
 {
 	pkg_upstream_refresh_done(exit_status, ctx);
 	if (pkg_discover_author_next() != 1)
@@ -6090,15 +6095,42 @@ static void discover_gitea_done(int exit_status, void *ctx)
 	}
 }
 
+/*
+ * What this run covers -- which kinds ("" every one), and whether feeds
+ * are fetched first -- for the helper. One run at a time, so one copy.
+ */
+static struct pkg_discover_params g_discover;
+/* Set while a run waits for kernel.org's release list (see
+ * handle_kernel_releases_fetch_event()). */
+static int g_discover_after_kernel;
+
+static void discover_helper_start(void)
+{
+	char err[192];
+
+	if (pkg_upstream_refresh_begin(err, sizeof(err)) != 0) {
+		logstore_write("cixd", "warn", "pkg discover: %s", err);
+		return;
+	}
+	if (helper_run(pkg_upstream_refresh_work, &g_discover, discover_done, NULL,
+	               "pkg discover") != 0) {
+		logstore_write("cixd", "error", "pkg discover: could not start the helper: %s",
+		               strerror(errno));
+		pkg_upstream_refresh_abort();
+	}
+}
+
 static int action_discover(const char *params, char *reason, size_t reason_size)
 {
-	char kerr[192], gerr[192], kind[32] = "";
-	int kernel_ok = 1, gitea_ok = 1;
+	char kerr[192], kind[32] = "";
+	int refresh = 1;
 
 	/*
-	 * params {"kind":"..."} refreshes one kind only -- an operator
+	 * params {"kind":"..."} discovers one kind only, and {"refresh":false}
+	 * authenticates against the release lists already held without fetching
+	 * them -- right after an upstream key is installed, say. An operator
 	 * polling their own forge hourly need not ask kernel.org each time,
-	 * and a test refreshes the feed it serves without reaching the
+	 * and a test serves the feed it refreshes without reaching the
 	 * internet. No params is every kind.
 	 */
 	if (params != NULL && params[0] != '\0') {
@@ -6107,6 +6139,12 @@ static int action_discover(const char *params, char *reason, size_t reason_size)
 
 		if (k != NULL)
 			snprintf(kind, sizeof(kind), "%s", k);
+		{
+			const struct json_value *rf = root != NULL ? json_object_get(root, "refresh") : NULL;
+
+			if (rf != NULL && rf->type == JSON_BOOL)
+				refresh = rf->u.boolean;
+		}
 		json_free(root);
 		if (kind[0] != '\0' && strcmp(kind, "kernel.org") != 0 && strcmp(kind, "gitea-tags") != 0) {
 			snprintf(reason, reason_size,
@@ -6116,36 +6154,36 @@ static int action_discover(const char *params, char *reason, size_t reason_size)
 			return -1;
 		}
 	}
-	kerr[0] = gerr[0] = '\0';
-	if (kind[0] == '\0' || strcmp(kind, "kernel.org") == 0)
-		kernel_ok = kernel_releases_fetch_start(kerr, sizeof(kerr)) == 0;
+	if (pkg_upstream_refresh_running() || g_discover_after_kernel) {
+		snprintf(reason, reason_size, "a discovery run is already in progress");
+		return -1;
+	}
+	snprintf(g_discover.kind, sizeof(g_discover.kind), "%s", kind);
+	g_discover.refresh = refresh;
 	/*
-	 * ADR-0323: and every gitea-tags package, each from its own
-	 * repository. Independent of kernel.org's: one feed being down is
-	 * no reason to leave the other stale, so each is started and each
-	 * is reported.
+	 * kernel.org first, when it is included: the kernel is authenticated
+	 * against the list this run fetches, so the helper starts when the
+	 * fetch ends. When the fetch cannot even start, the helper starts
+	 * now with the list already held -- one feed down is no reason to
+	 * leave every other package undiscovered, and the catalogue reports
+	 * the fetch's failure.
 	 */
-	if (kind[0] == '\0' || strcmp(kind, "gitea-tags") == 0) {
-		gitea_ok = 0;
-		if (pkg_upstream_refresh_begin(gerr, sizeof(gerr)) == 0) {
-			if (helper_run(pkg_upstream_refresh_work, NULL, discover_gitea_done, NULL,
-			               "pkg gitea-tags refresh") == 0) {
-				gitea_ok = 1;
-			} else {
-				snprintf(gerr, sizeof(gerr), "could not start the refresh helper: %s",
-				         strerror(errno));
-				pkg_upstream_refresh_abort();
-			}
+	kerr[0] = '\0';
+	if (refresh && (kind[0] == '\0' || strcmp(kind, "kernel.org") == 0)) {
+		if (kernel_releases_fetch_start(kerr, sizeof(kerr)) == 0) {
+			g_discover_after_kernel = 1;
+			snprintf(reason, reason_size, "kernel.org release list fetching; discovery follows");
+			return 0;
 		}
 	}
-	if (kind[0] == '\0')
-		snprintf(reason, reason_size, "kernel.org: %s; gitea-tags: %s",
-		         kernel_ok ? "refresh started" : kerr, gitea_ok ? "refresh started" : gerr);
-	else if (strcmp(kind, "kernel.org") == 0)
-		snprintf(reason, reason_size, "kernel.org: %s", kernel_ok ? "refresh started" : kerr);
-	else
-		snprintf(reason, reason_size, "gitea-tags: %s", gitea_ok ? "refresh started" : gerr);
-	return kernel_ok && gitea_ok ? 0 : -1;
+	discover_helper_start();
+	if (kerr[0] != '\0') {
+		snprintf(reason, reason_size, "kernel.org: %s; discovery started with the list held",
+		         kerr);
+		return -1;
+	}
+	snprintf(reason, reason_size, "discovery started");
+	return 0;
 }
 
 /* All defined further down, next to the subsystems they belong to;
@@ -20883,6 +20921,74 @@ static void handle_pkg_bad_version_delete(int fd, const char *name, const char *
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+/* GET /v1/pkg/{name}/upstream-keys (ADR-0318) */
+static void handle_pkg_upstream_keys_get(int fd, const char *name)
+{
+	struct json_writer w;
+
+	if (!pkg_name_is_valid(name)) {
+		respond_error(fd, 400, "Bad Request", "invalid package name");
+		return;
+	}
+	jw_init(&w);
+	upstreamkeys_write_json(name, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* POST /v1/pkg/{name}/upstream-keys {"fingerprint", "key"}: an operator
+ * pins a key for this package's releases. Never discovery. */
+static void handle_pkg_upstream_keys_post(int fd, const char *name, const char *body,
+                                          size_t body_len)
+{
+	struct json_value *root;
+	const char *fpr, *key;
+	struct json_writer w;
+	char err[512];
+
+	if (!pkg_name_is_valid(name)) {
+		respond_error(fd, 400, "Bad Request", "invalid package name");
+		return;
+	}
+	root = body_len > 0 ? json_parse(body, body_len) : NULL;
+	fpr = root != NULL ? json_as_string(json_object_get(root, "fingerprint")) : NULL;
+	key = root != NULL ? json_as_string(json_object_get(root, "key")) : NULL;
+	if (fpr == NULL || key == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "fingerprint and key (strings) are required");
+		return;
+	}
+	if (upstreamkeys_add(name, fpr, key, strlen(key), (long long)time(NULL), err, sizeof(err)) !=
+	    0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", err);
+		return;
+	}
+	logstore_write("cixd", "info", "pkg: upstream key %s installed for %s (ADR-0318)", fpr, name);
+	json_free(root);
+	jw_init(&w);
+	upstreamkeys_write_json(name, &w);
+	respond_json(fd, 201, "Created", &w);
+	jw_free(&w);
+}
+
+/* DELETE /v1/pkg/{name}/upstream-keys/{fingerprint} */
+static void handle_pkg_upstream_key_delete(int fd, const char *name, const char *fingerprint)
+{
+	int rc = upstreamkeys_remove(name, fingerprint);
+
+	if (rc == 1) {
+		respond_error(fd, 404, "Not Found", "the package has no key with that fingerprint");
+		return;
+	}
+	if (rc != 0) {
+		respond_error(fd, 500, "Internal Server Error", "the key store could not be saved");
+		return;
+	}
+	logstore_write("cixd", "info", "pkg: upstream key %s removed from %s", fingerprint, name);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
 /* GET /v1/pkg/recipe-commit */
 static void handle_pkg_recipe_commit_get(int fd)
 {
@@ -21731,7 +21837,7 @@ static int kernel_releases_fetch_start(char *err_msg, size_t err_msg_size)
 	return 0;
 }
 
-static void handle_kernel_releases_fetch_event(struct conn *cc)
+static void kernel_releases_fetch_finish(struct conn *cc)
 {
 	int status;
 
@@ -21785,6 +21891,23 @@ static void handle_kernel_releases_fetch_event(struct conn *cc)
 		return;
 	}
 	fprintf(stderr, "kernel releases: refreshed from %s\n", KERNEL_RELEASES_URL);
+}
+
+/*
+ * ADR-0323: a discovery run that includes kernel.org authenticates the
+ * kernel against the release list it just fetched, not the previous
+ * one -- so its helper starts here, after the ingest, whether the fetch
+ * worked or not (a failed fetch leaves the last good list, which is
+ * still worth authenticating against, and the catalogue says why).
+ */
+
+static void handle_kernel_releases_fetch_event(struct conn *cc)
+{
+	kernel_releases_fetch_finish(cc);
+	if (g_discover_after_kernel) {
+		g_discover_after_kernel = 0;
+		discover_helper_start();
+	}
 }
 
 /*
@@ -26099,6 +26222,24 @@ static void op_listPkgBadVersions(const struct api_ctx *ctx)
 static void op_clearPkgBadVersion(const struct api_ctx *ctx)
 {
 	handle_pkg_bad_version_delete(ctx->fd, ctx->p[0], ctx->p[1]);
+}
+
+/* GET /v1/pkg/{name}/upstream-keys */
+static void op_listPkgUpstreamKeys(const struct api_ctx *ctx)
+{
+	handle_pkg_upstream_keys_get(ctx->fd, ctx->p[0]);
+}
+
+/* POST /v1/pkg/{name}/upstream-keys */
+static void op_addPkgUpstreamKey(const struct api_ctx *ctx)
+{
+	handle_pkg_upstream_keys_post(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+/* DELETE /v1/pkg/{name}/upstream-keys/{fingerprint} */
+static void op_removePkgUpstreamKey(const struct api_ctx *ctx)
+{
+	handle_pkg_upstream_key_delete(ctx->fd, ctx->p[0], ctx->p[1]);
 }
 
 /* POST /v1/pkg/sync */
@@ -32262,6 +32403,7 @@ static int cixd_main(int argc, char **argv)
 	srcpolicy_init(SRCPOLICY_STATE_PATH);       /* ADR-0255 */
 	srctrust_init(SRCTRUST_STATE_PATH);         /* ADR-0323 */
 	pkgbad_init(PKGBAD_STATE_PATH);             /* ADR-0323 answer 4 */
+	upstreamkeys_init(UPSTREAMKEYS_STATE_PATH); /* ADR-0318 */
 	scheduler_init(SCHEDULER_STATE_PATH);       /* ADR-0257 */
 	scheduler_register_action("pkg.discover",
 	                           "find what upstream has published, authenticate it and write "

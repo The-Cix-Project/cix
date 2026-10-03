@@ -1413,6 +1413,19 @@ static const struct cli_node n_pkg_bad_versions_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
+static const char *const n_pkg_upstream_keys_add_flags[] = {
+	"--file=",
+	"--fingerprint=",
+	NULL
+};
+
+static const struct cli_node n_pkg_upstream_keys_subs[] = {
+	{ "add", n_pkg_upstream_keys_add_flags, NULL },
+	{ "ls", NULL, NULL },
+	{ "rm", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
 static const struct cli_node n_pkg_trusted_origins_subs[] = {
 	{ "add", NULL, NULL },
 	{ "ls", NULL, NULL },
@@ -1494,6 +1507,7 @@ static const struct cli_node n_pkg_subs[] = {
 	{ "source-catalogue", NULL, NULL },
 	{ "bad-versions", NULL, n_pkg_bad_versions_subs },
 	{ "trusted-origins", NULL, n_pkg_trusted_origins_subs },
+	{ "upstream-keys", NULL, n_pkg_upstream_keys_subs },
 	{ "rebuilds", NULL, NULL },
 	{ "recipe", NULL, n_pkg_recipe_subs },
 	{ "recipes", NULL, NULL },

@@ -21,6 +21,7 @@
 #include "json.h"
 #include "test_image_fixture.h"
 #include "test_floor.h"
+#include "test_pgp_fixture.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -1740,6 +1741,32 @@ int main(void)
 		                            build_body, install_body) != 0) {
 			fprintf(stderr, "FAIL: could not write the chatty recipe\n");
 			ok = 0;
+		}
+	}
+
+	/*
+	 * ADR-0323 rung 2: a kernel.org release list, seeded where the
+	 * daemon reads its cached copy at boot, so the kernel.org kind
+	 * resolves stable to 7.2.8 here without the network (tests never
+	 * reach the defaults' network). The discovery run below asks for
+	 * no refresh, so nothing replaces it.
+	 */
+	{
+		char rel_path[PATH_MAX];
+		FILE *rf;
+
+		snprintf(rel_path, sizeof(rel_path), "%s/state/kernel_releases.json", g_data_dir);
+		rf = fopen(rel_path, "w");
+		if (rf == NULL) {
+			fprintf(stderr, "FAIL: could not seed %s\n", rel_path);
+			ok = 0;
+		} else {
+			fputs("{\"releases\":["
+			      "{\"moniker\":\"mainline\",\"version\":\"7.3\",\"source\":\"https://k/a\"},"
+			      "{\"moniker\":\"stable\",\"version\":\"7.2.8\",\"source\":\"https://k/b\"}"
+			      "]}\n",
+			      rf);
+			fclose(rf);
 		}
 	}
 
@@ -7716,8 +7743,8 @@ skip_resume:
 			if (cix_client_request(&client, "POST", "/v1/schedules/discover-test/run", NULL,
 			                       &r) != 0 ||
 			    r.status != 200 || r.body == NULL ||
-			    strstr(r.body, "gitea-tags: refresh started") == NULL) {
-				fprintf(stderr, "FAIL: ADR-0323 running the refresh must start the gitea-tags "
+			    strstr(r.body, "discovery started") == NULL) {
+				fprintf(stderr, "FAIL: ADR-0323 running the refresh must start discovery "
 				                "part, got %d: %s\n",
 				        r.status, r.body != NULL ? r.body : "");
 				ok = 0;
@@ -7828,6 +7855,233 @@ skip_resume:
 			}
 			memset(&r, 0, sizeof(r));
 			cix_client_request(&client, "DELETE", "/v1/schedules/discover-test", NULL, &r);
+			cix_response_free(&r);
+		}
+
+		/*
+		 * ADR-0323 rung 2, a signed checksum list. kfake declares the
+		 * kernel.org kind with `verify checksums`; the seeded release
+		 * list resolves stable to 7.2.8, the forge serves a list signed
+		 * by the fixture key, and the archive's name in it is
+		 * linux-fixture-7.tar.xz ({major} of 7.2.8). Without the key
+		 * installed the row says which key and how; with a key pinned
+		 * under the wrong fingerprint nothing is installed; with the
+		 * key, kfake@7.2.8-1 is written with the sha256 the signed list
+		 * gives. {"refresh":false} keeps the run off kernel.org.
+		 */
+		if (stage_ok) {
+			static const char KSHA1[] =
+			    "dde23ff805667659ae248f40740a4b9e95d8c8a920d97220ee7e74cd08b37493";
+			static const char KSHA7[] =
+			    "d0b5a8b22c671da9b231dc90e8143e6714e414b25668cfd4a949f9678b943810";
+			char ktmpl[256], kurl[256], klist[256], kdecls[1024], krecipe[4096];
+			char kdir[PATH_MAX], kfile[PATH_MAX + 32], kcmd[PATH_MAX + 32], kkeys[128];
+			char kreq[PATH_MAX], kdecoded[8192];
+			struct json_value *sent;
+			const char *b64;
+			FILE *fp;
+			int kfound = 0, kpublished = 0, dn = -1;
+
+			snprintf(ktmpl, sizeof(ktmpl),
+			         "http://127.0.0.1:%d/k/{version}/linux-fixture-{major}.tar.xz", forge_port);
+			snprintf(kurl, sizeof(kurl), "http://127.0.0.1:%d/k/1.0/linux-fixture-1.tar.xz",
+			         forge_port);
+			snprintf(klist, sizeof(klist),
+			         "http://127.0.0.1:%d/k/v{major}.x/{version}/sha256sums.asc", forge_port);
+			snprintf(kdecls, sizeof(kdecls),
+			         "    upstream \"kernel.org\" {\n"
+			         "        source \"%s\"\n"
+			         "        verify checksums \"openpgp-clearsigned\" {\n"
+			         "            url \"%s\"\n"
+			         "            key \"%s\"\n"
+			         "        }\n"
+			         "    }\n",
+			         ktmpl, klist, TEST_FPR);
+			cpdl_upstream_recipe_text(krecipe, sizeof(krecipe), "kfake", kurl, KSHA1, kdecls);
+			jw_init(&w);
+			jw_obj_open(&w);
+			jw_key(&w, "name");
+			jw_str(&w, "kfake");
+			jw_key(&w, "content");
+			jw_str(&w, krecipe);
+			jw_key(&w, "source");
+			jw_str(&w, "forge");
+			jw_key(&w, "format");
+			jw_str(&w, "cbs");
+			jw_obj_close(&w);
+			w.buf[w.len] = '\0';
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
+			    r.status != 204) {
+				fprintf(stderr, "FAIL: rung 2 publishing kfake got %d: %s\n", r.status,
+				        r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			jw_free(&w);
+
+			/* No platform default channel exists until an operator sets
+			 * one, and kernel.org has channels: kfake gets its own. */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "PUT", "/v1/pkg/kfake/source-policy",
+			                       "{\"channel\":\"stable\",\"depth\":\"n\"}", &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: rung 2 setting kfake's source policy got %d: %s\n",
+				        r.status, r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+
+			snprintf(kdir, sizeof(kdir), "%s/k/v7.x/7.2.8", forge_dir);
+			snprintf(kcmd, sizeof(kcmd), "mkdir -p '%s'", kdir);
+			snprintf(kfile, sizeof(kfile), "%s/sha256sums.asc", kdir);
+			if (system(kcmd) != 0 || (fp = fopen(kfile, "w")) == NULL) {
+				fprintf(stderr, "FAIL: rung 2 could not place the signed list\n");
+				ok = 0;
+			} else {
+				fputs(SIGNED_DOC, fp);
+				fclose(fp);
+			}
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "PUT", "/v1/schedules/discover-kernel",
+			                       "{\"action\":\"pkg.discover\","
+			                       "\"params\":{\"kind\":\"kernel.org\",\"refresh\":false},"
+			                       "\"schedule\":{\"every\":{\"hours\":24}}}",
+			                       &r) != 0 ||
+			    (r.status != 200 && r.status != 201)) {
+				fprintf(stderr, "FAIL: rung 2 creating the schedule got %d: %s\n", r.status,
+				        r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/schedules/discover-kernel/run", NULL,
+			                       &r) != 0 ||
+			    r.status != 200 || r.body == NULL || strstr(r.body, "discovery started") == NULL) {
+				fprintf(stderr, "FAIL: rung 2 a run with refresh false must start discovery "
+				                "without fetching, got %d: %s\n",
+				        r.status, r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			for (waited = 0; waited < 60 && !kfound; waited++) {
+				const struct json_value *pkgs;
+				size_t k;
+
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/source-catalogue", NULL, &r) == 0 &&
+				    r.json != NULL &&
+				    (pkgs = json_object_get(r.json, "packages")) != NULL &&
+				    pkgs->type == JSON_ARRAY) {
+					for (k = 0; k < pkgs->u.array.count; k++) {
+						const struct json_value *e = pkgs->u.array.items[k];
+
+						if (str_eq(json_str_field(e, "name"), "kfake") &&
+						    str_eq(json_str_field(e, "resolved_version"), "7.2.8") &&
+						    str_eq(json_str_field(e, "status"), "blocked") &&
+						    json_str_field(e, "reason") != NULL &&
+						    strstr(json_str_field(e, "reason"), "no upstream key") != NULL)
+							kfound = 1;
+					}
+				}
+				if (!kfound) {
+					cix_response_free(&r);
+					usleep(500000);
+				}
+			}
+			if (!kfound) {
+				fprintf(stderr, "FAIL: rung 2 with no key installed, kfake's row must say "
+				                "which key is missing: %s\n",
+				        r.body != NULL ? r.body : "(no catalogue)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			/* Pinned under a fingerprint that is not the key's own: refused. */
+			jw_init(&w);
+			jw_obj_open(&w);
+			jw_key(&w, "fingerprint");
+			jw_str(&w, "0000000000000000000000000000000000000000");
+			jw_key(&w, "key");
+			jw_str(&w, TEST_KEY);
+			jw_obj_close(&w);
+			w.buf[w.len] = '\0';
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/kfake/upstream-keys", w.buf, &r) !=
+			        0 ||
+			    r.status != 400) {
+				fprintf(stderr, "FAIL: rung 2 a key pinned under another fingerprint must be "
+				                "refused, got %d: %s\n",
+				        r.status, r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			jw_free(&w);
+
+			jw_init(&w);
+			jw_obj_open(&w);
+			jw_key(&w, "fingerprint");
+			jw_str(&w, TEST_FPR);
+			jw_key(&w, "key");
+			jw_str(&w, TEST_KEY);
+			jw_obj_close(&w);
+			w.buf[w.len] = '\0';
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/kfake/upstream-keys", w.buf, &r) !=
+			        0 ||
+			    r.status != 201 || r.body == NULL || strstr(r.body, TEST_FPR) == NULL) {
+				fprintf(stderr, "FAIL: rung 2 installing the key got %d: %s\n", r.status,
+				        r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			jw_free(&w);
+
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "POST", "/v1/schedules/discover-kernel/run", NULL, &r);
+			cix_response_free(&r);
+			for (waited = 0; waited < 120 && !kpublished; waited++) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/recipes/kfake", NULL, &r) == 0 &&
+				    str_eq(json_str_field(r.json, "version"), "7.2.8-1"))
+					kpublished = 1;
+				cix_response_free(&r);
+				if (!kpublished)
+					usleep(500000);
+			}
+			snprintf(kreq, sizeof(kreq), "%s/kfake@7.2.8-1.cbs.request.json", forge_dir);
+			sent = slurp_file(kreq, &posted, &posted_len) == 0 ? json_parse(posted, posted_len)
+			                                                    : NULL;
+			b64 = sent != NULL ? json_as_string(json_object_get(sent, "content")) : NULL;
+			if (b64 != NULL)
+				dn = base64_decode(b64, (unsigned char *)kdecoded, sizeof(kdecoded) - 1);
+			if (dn >= 0)
+				kdecoded[dn] = '\0';
+			if (!kpublished || dn < 0 ||
+			    strstr(kdecoded, "/k/7.2.8/linux-fixture-7.tar.xz\"") == NULL ||
+			    strstr(kdecoded, KSHA7) == NULL || strstr(kdecoded, "version \"7.2.8\"") == NULL ||
+			    strstr(kdecoded, "verified by signed checksums") == NULL) {
+				fprintf(stderr, "FAIL: rung 2 discovery did not author kfake@7.2.8-1 from the "
+				                "signed list (published=%d): %s\n",
+				        kpublished, dn >= 0 ? kdecoded : "(nothing committed)");
+				ok = 0;
+			}
+			json_free(sent);
+			free(posted);
+			posted = NULL;
+
+			snprintf(kkeys, sizeof(kkeys), "/v1/pkg/kfake/upstream-keys/%s", TEST_FPR);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "DELETE", kkeys, NULL, &r) != 0 || r.status != 204) {
+				fprintf(stderr, "FAIL: rung 2 removing the key got %d\n", r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "DELETE", "/v1/schedules/discover-kernel", NULL, &r);
 			cix_response_free(&r);
 		}
 

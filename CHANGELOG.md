@@ -6,6 +6,28 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Rung 2: a release can be authenticated by a signed checksum list (ADR-0323, ADR-0318)
+
+- **The upstream key store exists:** `cixctl pkg upstream-keys ls NAME | add NAME --fingerprint=FPR --file=KEY.asc | rm NAME FPR` (`GET/POST /v1/pkg/{name}/upstream-keys`, `DELETE .../{fingerprint}`).
+  - A key is accepted only under its own fingerprint, the pin the operator checked.
+  - It answers only for the package it was installed for.
+- **Discovery authenticates by the recipe's verify method:**
+  - `verify origin` (rung 4), as before;
+  - `verify checksums "openpgp-clearsigned" { url "..." key "<fingerprint>" }` (rung 2). The list is verified with the existing OpenPGP verifier, which cixd now links, and the archive's sha256 is read from it.
+
+  A missing key is a row that names the fingerprint and the command.
+- **The discovery record (note, candidate) is per package, for every kind** (`pkg/discovery/`), moved out of the gitea-tags listing.
+- **`pkg.discover` covers kernel.org packages too.**
+  - A run that includes kernel.org authenticates after its release-list fetch ends.
+  - `params {"refresh": false}` authenticates against what is held without fetching.
+  - The run's reason now reads `discovery started`, or `kernel.org release list fetching; discovery follows`.
+- **Measured on 192.168.15.95:** kernel.org's `v7.x/sha256sums.asc` is a clearsigned SHA-256 list. It is signed by `B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1` with RSA, which the verifier supports.
+- **Still open for the kernel:** its recipe cannot declare a per-directory list until cix-build-system#281, and its key is the owner's pin to install.
+- **Visible on a running host:**
+  - The `kernel` row moves from `author / blocked` to `authenticate / blocked`, saying its recipe declares no verification. That is true until the recipe gains the block.
+  - A note or candidate held in a `pkg/upstream/<name>.json` before this release is not carried over. The next discovery run finds it again.
+- Tests: `test_upstreamkeys` (new); `test_srcrecord` (new); `test_pgpverify` (a key's own fingerprint); `test_srcupstream` (template expansion, moved); `test_pkg` (`kfake` from a seeded release list, refused with no key and with a wrong pin, then authored as 7.2.8-1 with the sha256 from the signed list). `test_apigen` counts 342 operations.
+
 ### The source catalogue reads every recipe version, not the first 64
 
 - **The catalogue, the pipeline view and discovery each listed a package's recipe versions into a 64-entry buffer**, and `pkg_recipe_list_versions()` stopped reading at the cap with no sign that it had.

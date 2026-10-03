@@ -346,12 +346,12 @@ const char *cbs_explain_upstream_param(const struct cbs_explain *ex, const char 
 	return str_or_empty(json_object_get(json_object_get(ex->root, "upstream"), key));
 }
 
-const char *cbs_explain_upstream_verify(const struct cbs_explain *ex)
+const char *cbs_explain_upstream_verify(const struct cbs_explain *ex, const char *key)
 {
-	if (ex == NULL)
+	if (ex == NULL || key == NULL)
 		return "";
 	return str_or_empty(json_object_get(
-	    json_object_get(json_object_get(ex->root, "upstream"), "verify"), "method"));
+	    json_object_get(json_object_get(ex->root, "upstream"), "verify"), key));
 }
 
 const char *cbs_explain_toolchain(const struct cbs_explain *ex)

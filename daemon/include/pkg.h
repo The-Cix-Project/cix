@@ -593,17 +593,30 @@ int pkg_version_compare(const char *a, const char *b);
 int pkg_recipe_upstream(const char *name, char *out, size_t out_size);
 
 /*
- * ADR-0323: refreshing the gitea-tags kind -- each package that declares
- * it has its own repository's tags listed and cached (srcgitea.h). begin
+ * ADR-0323: one discovery run. Each gitea-tags package has its own
+ * repository's tags listed and cached (srcgitea.h); then every package
+ * with an upstream, of the run's kind, has a newer release authenticated
+ * the way its recipe says -- origin trust (rung 4) or a signed checksum
+ * list (rung 2) -- and recorded as a candidate (srcrecord.h). begin
  * refuses when one is running; the caller then runs work in a helper
- * process (network I/O) and done in the parent; abort clears a refresh
- * whose helper never started. A package that cannot be read records why,
- * and the source catalogue shows it.
+ * process (network I/O) and done in the parent; abort clears a run
+ * whose helper never started. A package that cannot be read or
+ * authenticated records why, and the source catalogue shows it.
  */
 int pkg_upstream_refresh_begin(char *err, size_t err_size);
-int pkg_upstream_refresh_work(void *unused);
+/* What one run covers: kind "" for every kind, and refresh 0 to authenticate
+ * against what is already held without fetching any feed. */
+struct pkg_discover_params {
+	char kind[32];
+	int refresh;
+};
+
+/* params: a struct pkg_discover_params *, as helper_run passes it. */
+int pkg_upstream_refresh_work(void *params);
 void pkg_upstream_refresh_done(int exit_status, void *unused);
 void pkg_upstream_refresh_abort(void);
+/* 1 while a discovery run's helper is running. */
+int pkg_upstream_refresh_running(void);
 
 /*
  * ADR-0323: after a refresh, the author stage for the first

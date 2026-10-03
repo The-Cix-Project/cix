@@ -164,9 +164,11 @@ const char *cbs_explain_upstream(const struct cbs_explain *ex);
  * (ADR-0323): "" when absent, null, or no upstream. Never NULL. */
 const char *cbs_explain_upstream_param(const struct cbs_explain *ex, const char *key);
 
-/* upstream.verify.method ("origin", "signed-tag", ...): "" when
+/* upstream.verify.<key> (ADR-0323): "method" ("origin", "checksums",
+ * "signature", "signed-tag"), and for the signed rungs "format", "url"
+ * (a template) and "key" (the pinned fingerprint). "" when
  * absent. Never NULL. */
-const char *cbs_explain_upstream_verify(const struct cbs_explain *ex);
+const char *cbs_explain_upstream_verify(const struct cbs_explain *ex, const char *key);
 
 /*
  * The packages this recipe may take over files from (cbs#275, cix#553):

@@ -17823,6 +17823,114 @@ static int cmd_pkg_bad_versions(const struct cix_client *c, int json_mode, int a
 	return 2;
 }
 
+/* ADR-0318: one key per line. */
+static void fmt_upstream_keys(const struct json_value *v)
+{
+	const struct json_value *arr = json_object_get(v, "keys");
+	const char *pkg = json_as_string(json_object_get(v, "package"));
+	size_t i;
+
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("(%s has no upstream key -- no release of it can be authenticated by a "
+		       "signature)\n",
+		       pkg != NULL ? pkg : "the package");
+		return;
+	}
+	printf("%-42s %8s  %s\n", "FINGERPRINT", "BYTES", "ADDED");
+	for (i = 0; i < arr->u.array.count; i++) {
+		const struct json_value *e = arr->u.array.items[i];
+		const char *fpr = json_as_string(json_object_get(e, "fingerprint"));
+
+		printf("%-42s %8ld  %ld\n", fpr != NULL ? fpr : "",
+		       (long)json_as_number(json_object_get(e, "bytes")),
+		       (long)json_as_number(json_object_get(e, "added_at")));
+	}
+}
+
+/*
+ * cixctl pkg upstream-keys ls NAME | add NAME --fingerprint=FPR --file=KEY.asc | rm NAME FPR
+ * The fingerprint is the pin an operator checked out of band; the
+ * daemon refuses the key unless it is that key's own.
+ */
+static int cmd_pkg_upstream_keys(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	static const char usage[] = "usage: cixctl pkg upstream-keys ls NAME | add NAME "
+	                            "--fingerprint=FPR --file=KEY.asc | rm NAME FPR\n";
+	char path[512], fpr[64];
+	struct cix_response r;
+	size_t i, n;
+
+	if (argc == 2 && strcmp(argv[0], "ls") == 0) {
+		snprintf(path, sizeof(path), CIX_API_listPkgUpstreamKeys, argv[1]);
+		if (cix_client_request(c, CIX_API_listPkgUpstreamKeys_METHOD, path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_upstream_keys);
+	}
+	if (argc == 4 && strcmp(argv[0], "add") == 0) {
+		const char *pin = NULL, *file = NULL;
+		char *content = NULL;
+		size_t content_len = 0;
+		struct json_writer w;
+		int k;
+
+		for (k = 2; k < 4; k++) {
+			if (strncmp(argv[k], "--fingerprint=", 14) == 0)
+				pin = argv[k] + 14;
+			else if (strncmp(argv[k], "--file=", 7) == 0)
+				file = argv[k] + 7;
+		}
+		if (pin == NULL || file == NULL) {
+			fputs(usage, stderr);
+			return 2;
+		}
+		if (read_local_file(file, &content, &content_len) != 0) {
+			fprintf(stderr, "cixctl: could not read %s\n", file);
+			return 1;
+		}
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "fingerprint");
+		jw_str(&w, pin);
+		jw_key(&w, "key");
+		jw_str(&w, content);
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+		free(content);
+		snprintf(path, sizeof(path), CIX_API_addPkgUpstreamKey, argv[1]);
+		if (cix_client_request(c, CIX_API_addPkgUpstreamKey_METHOD, path, w.buf, &r) != 0) {
+			jw_free(&w);
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		jw_free(&w);
+		return emit(&r, json_mode, fmt_upstream_keys);
+	}
+	if (argc == 3 && strcmp(argv[0], "rm") == 0) {
+		/* A pin copied with its spaces goes in a path without them. */
+		for (i = 0, n = 0; argv[2][i] != '\0' && n + 1 < sizeof(fpr); i++)
+			if (argv[2][i] != ' ')
+				fpr[n++] = argv[2][i];
+		fpr[n] = '\0';
+		snprintf(path, sizeof(path), CIX_API_removePkgUpstreamKey, argv[1], fpr);
+		if (cix_client_request(c, CIX_API_removePkgUpstreamKey_METHOD, path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		if (r.status != 204) {
+			int rc = emit(&r, json_mode, NULL);
+
+			return rc != 0 ? rc : 1;
+		}
+		cix_response_free(&r);
+		printf("%s: key %s removed\n", argv[1], fpr);
+		return 0;
+	}
+	fputs(usage, stderr);
+	return 2;
+}
+
 static int cmd_pkg_upstreams(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct cix_response r;
@@ -17868,6 +17976,9 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "               from (ADR-0323 rung 4); a fresh host trusts none\n"
 		                "       cixctl pkg bad-versions ls | clear NAME VERSION  -- versions that failed\n"
 		                "               at runtime after a roll; rolling skips them (ADR-0323)\n"
+		                "       cixctl pkg upstream-keys ls NAME | add NAME --fingerprint=FPR --file=KEY.asc |\n"
+		                "               rm NAME FPR  -- OpenPGP keys that may authenticate NAME's releases\n"
+		                "               (ADR-0318); added only under their own pinned fingerprint\n"
 		                "       cixctl pkg source-policy ls | set-default | set NAME | clear NAME\n"
 		                "       cixctl pkg ls\n"
 		                "       cixctl pkg rm NAME[@IMAGE]\n"
@@ -17913,6 +18024,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_pkg_source_policy(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "upstreams") == 0)
 		return cmd_pkg_upstreams(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "upstream-keys") == 0)
+		return cmd_pkg_upstream_keys(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "bad-versions") == 0)
 		return cmd_pkg_bad_versions(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "trusted-origins") == 0)

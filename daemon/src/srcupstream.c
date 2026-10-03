@@ -74,25 +74,13 @@ static long giteatags_fetched_at(const char *package)
 	return srcgitea_fetched_at(package);
 }
 
-static int giteatags_note(const char *package, const char *version, struct srcupstream_note *out)
-{
-	struct srcgitea_note n;
-
-	if (srcgitea_note(package, &n) != 0 || version == NULL || strcmp(n.version, version) != 0)
-		return -1;
-	snprintf(out->stage, sizeof(out->stage), "%s", n.stage);
-	snprintf(out->status, sizeof(out->status), "%s", n.status);
-	snprintf(out->reason, sizeof(out->reason), "%s", n.reason);
-	return 0;
-}
-
 static const struct srcupstream_kind KINDS[] = {
 	{ "kernel.org", KORG_CHANNELS,
 	  "kernel.org releases.json; checksums from its signed sha256sums.asc",
-	  kernelorg_candidates, kernelorg_fetched_at, NULL, NULL },
+	  kernelorg_candidates, kernelorg_fetched_at, NULL },
 	{ "gitea-tags", NULL,
 	  "the tags of the package's own Gitea repository, read from its upstream source template",
-	  giteatags_candidates, giteatags_fetched_at, srcgitea_error, giteatags_note },
+	  giteatags_candidates, giteatags_fetched_at, srcgitea_error },
 };
 
 size_t srcupstream_candidates(const struct srcupstream_kind *kind, const char *package,
@@ -121,13 +109,38 @@ void srcupstream_problem(const struct srcupstream_kind *kind, const char *packag
 		out[0] = '\0';
 }
 
-int srcupstream_note(const struct srcupstream_kind *kind, const char *package, const char *version,
-                     struct srcupstream_note *out)
+int srcupstream_expand(const char *tmpl, const char *version, char *out, size_t out_size)
 {
-	if (kind == NULL || kind->note == NULL || out == NULL)
+	const char *p;
+	size_t n = 0, major;
+
+	if (tmpl == NULL || version == NULL || out == NULL || out_size == 0)
 		return -1;
-	memset(out, 0, sizeof(*out));
-	return kind->note(package, version, out);
+	major = strcspn(version, ".");
+	for (p = tmpl; *p != '\0';) {
+		const char *piece = p;
+		size_t len = 1;
+
+		if (strncmp(p, "{version}", 9) == 0) {
+			piece = version;
+			len = strlen(version);
+			p += 9;
+		} else if (strncmp(p, "{major}", 7) == 0) {
+			piece = version;
+			len = major;
+			p += 7;
+		} else {
+			p++;
+		}
+		if (n + len >= out_size) {
+			out[0] = '\0';
+			return -1;
+		}
+		memcpy(out + n, piece, len);
+		n += len;
+	}
+	out[n] = '\0';
+	return 0;
 }
 
 size_t srcupstream_count(void)

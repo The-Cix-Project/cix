@@ -30,6 +30,7 @@
 #include "pkg.h"
 #include "pkgbad.h"
 #include "srcgitea.h"
+#include "srcrecord.h"
 #include "srcpolicy.h"
 
 #include <limits.h>
@@ -81,6 +82,7 @@ static char g_kern_path[256];
 static char g_rel_path[256];
 static char g_bad_path[256];
 static char g_git_dir[256];
+static char g_rec_dir[300];
 
 static void fail(const char *fmt, const char *a, const char *b)
 {
@@ -259,8 +261,9 @@ int main(void)
 		static const char *const CURRENT[] = { "0.49.1-2", "0.99.5-1" };
 
 		snprintf(g_git_dir, sizeof(g_git_dir), "/tmp/cix_srcresolve_git_%d", (int)getpid());
-		if (srcgitea_init(g_git_dir) != 0) {
-			fprintf(stderr, "  FAIL: srcgitea_init\n");
+		snprintf(g_rec_dir, sizeof(g_rec_dir), "%s/discovery", g_git_dir);
+		if (srcgitea_init(g_git_dir) != 0 || srcrecord_init(g_rec_dir) != 0) {
+			fprintf(stderr, "  FAIL: srcgitea_init or srcrecord_init\n");
 			return 1;
 		}
 		expect("gitea-tags never fetched", "hibr", "gitea-tags", OLD, 1, PIPELINE_DISCOVER,
@@ -275,7 +278,7 @@ int main(void)
 		expect("gitea-tags current", "hibr", "gitea-tags", CURRENT, 2, PIPELINE_AUTHOR,
 		        PIPELINE_OK, "0.99.5", NULL);
 		{
-			struct srcgitea_note note;
+			struct srcrecord_note note;
 
 			memset(&note, 0, sizeof(note));
 			snprintf(note.version, sizeof(note.version), "0.99.5");
@@ -283,7 +286,7 @@ int main(void)
 			snprintf(note.status, sizeof(note.status), "failed");
 			snprintf(note.reason, sizeof(note.reason),
 			         "origin https://git.example is not trusted on this host");
-			if (srcgitea_store_note("hibr", &note) != 0) {
+			if (srcrecord_store_note("hibr", &note) != 0) {
 				fprintf(stderr, "  FAIL: could not store the hibr note\n");
 				return 1;
 			}
@@ -292,7 +295,7 @@ int main(void)
 			expect("note ignored once built", "hibr", "gitea-tags", CURRENT, 2, PIPELINE_AUTHOR,
 			        PIPELINE_OK, "0.99.5", NULL);
 			snprintf(note.version, sizeof(note.version), "0.99.4");
-			if (srcgitea_store_note("hibr", &note) != 0) {
+			if (srcrecord_store_note("hibr", &note) != 0) {
 				fprintf(stderr, "  FAIL: could not store the old note\n");
 				return 1;
 			}
