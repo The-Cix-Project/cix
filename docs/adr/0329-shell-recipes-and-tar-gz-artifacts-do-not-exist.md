@@ -39,7 +39,11 @@ The store on .95 held 991 shell recipe versions against 805 CPDL ones. Nothing i
 
 ## Ordering
 
-Clause 4 deletes `gcc@16.2.0-13`'s recipe. `cix-builder` and `kernel-builder` follow their git recipe and converge (ADR-0320), so their `gcc` pins move to `16.2.0-18` in cix-recipes **before** a release carrying this change reaches a host. The image then installs the cached `.cixpkg` instead of a version with no recipe left to rebuild it from. On 2026-10-03 that waits for the 03:00 host roll that boots kernel 7.2.9 (#566), so that one nightly window does not change the kernel and the build images together.
+Clause 4 deletes `gcc@16.2.0-13`'s recipe, and `cix-builder` and `kernel-builder` still held 16.2.0-13 when this was decided. The plan was to move them to the cached `16.2.0-18` first. That did not survive measurement, and does not need to:
+
+- **16.2.0-18 cannot install anywhere.** Its `cc1` links `libzstd.so.1`, which its recipe never declares, so cix#389's gate refuses it (192.168.15.95, 2026-10-04). Configure had detected zstd in the composed build environment, although with `--disable-lto` it has no use. `gcc@16.2.0-19` configures `--without-zstd`.
+- **Nothing depends on 16.2.0-13's recipe.** The images keep the files they hold, and a build composes the newest installed copy of a tool from any image, which is already 16.2.0-18 (`probe-gcc`, `probe-verify`). So 0.2.57-460 ships without waiting for gcc.
+- **The images move on their own.** The three build images now roll every entry (cix-recipes `8cde290`). A 0.2.57-459 daemon cannot apply them, because its sync reads only `.sh` image recipes (fixed in this release). Once 460 runs, they converge onto 16.2.0-19 once it is built. The last `.tar.gz` in the LAN cache, `gcc-16.2.0-13`, is deleted after that.
 
 ## Consequences
 
