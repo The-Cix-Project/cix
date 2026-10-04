@@ -21,6 +21,7 @@ Task-oriented "how do I do X" instructions for building, installing, operating, 
 | [`images.md`](images.md) | Images: manifests, image recipes, versions, and reclaiming old versions |
 | [`network-services.md`](network-services.md) | DNS, DHCP, NTP and syslog: standing them up, registering servers, health and drain |
 | [`staying-updated.md`](staying-updated.md) | Keeping an already-installed system current: control plane + packages |
+| [`rolling.md`](rolling.md) | What rolls and how far: source policy (channel, depth `n`/`n-1`), the recipe and `cbs revise`, and what an image takes (`rolling` entries, artifact policy) |
 | [`administration.md`](administration.md) | Monitoring, backup/restore, and disk management day to day |
 | [`storage.md`](storage.md) | Disks, the five assignable roles and what each is for, btrfs vs ext4, snapshots and quotas |
 | [`reinstall-and-restore.md`](reinstall-and-restore.md) | Wiping and reinstalling a host, and what a reinstall destroys that a backup cannot carry |

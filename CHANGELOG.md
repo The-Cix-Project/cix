@@ -6,6 +6,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Docs: a guide to what rolls and how far
+
+`docs/guides/rolling.md` explains rolling as three decisions: the source policy (channel, and a depth such as `n` or `n-1`) decides which upstream release is built; the recipe, written once per version and revised by `cbs revise`, decides how; and an image's `rolling` entries with the artifact policy decide which built version it takes. Linked from `staying-updated.md` and the guides index.
+
 ### Shell recipes and `.tar.gz` artifacts do not exist (#569, ADR-0329)
 
 The owner's direction of 2026-10-03: *"What are shell recepies, those should not exist, please deprecate them."* ADR-0309 had kept published shell recipes as history once the shell build path went. On 192.168.15.95 that history was 991 stored versions against 805 CPDL ones, and one installed version still came from one (`gcc@16.2.0-13`).

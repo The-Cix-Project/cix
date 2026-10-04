@@ -1,6 +1,6 @@
 # Staying updated
 
-Keeping an installed system current. [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) covers kernel updates (build, write, reboot, confirm); this guide covers the control plane and packages, and what runs on its own.
+Keeping an installed system current. [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) covers kernel updates (build, write, reboot, confirm); this guide covers the control plane and packages, and what runs on its own. [`rolling.md`](rolling.md) explains what rolls and how far: source policy, recipes, and what an image takes.
 
 ## Two independent things to keep current
 
