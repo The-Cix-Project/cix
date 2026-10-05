@@ -7869,6 +7869,7 @@ skip_resume:
 			char ktmpl[256], kurl[256], klist[256], kdecls[1024], krecipe[4096];
 			char kdir[PATH_MAX], kfile[PATH_MAX + 32], kcmd[PATH_MAX + 32], kkeys[128];
 			char kreq[PATH_MAX], kdecoded[8192];
+			char krun[400] = "";
 			struct json_value *sent;
 			const char *b64;
 			FILE *fp;
@@ -8032,6 +8033,10 @@ skip_resume:
 
 			memset(&r, 0, sizeof(r));
 			cix_client_request(&client, "POST", "/v1/schedules/discover-kernel/run", NULL, &r);
+			/* Kept for the failure message: the schedule's own answer is the
+			 * only thing that says why discovery did not run (ADR-0330 probe,
+			 * 0.2.57-464: the author step never ran and nothing said why). */
+			snprintf(krun, sizeof(krun), "%d %.300s", r.status, r.body != NULL ? r.body : "");
 			cix_response_free(&r);
 			for (waited = 0; waited < 120 && !kpublished; waited++) {
 				memset(&r, 0, sizeof(r));
@@ -8055,8 +8060,19 @@ skip_resume:
 			    strstr(kdecoded, KSHA7) == NULL || strstr(kdecoded, "version \"7.2.8\"") == NULL ||
 			    strstr(kdecoded, "verified by signed checksums") == NULL) {
 				fprintf(stderr, "FAIL: rung 2 discovery did not author kfake@7.2.8-1 from the "
-				                "signed list (published=%d): %s\n",
-				        kpublished, dn >= 0 ? kdecoded : "(nothing committed)");
+				                "signed list (published=%d): %s\n"
+				                "      run answered: %s\n",
+				        kpublished, dn >= 0 ? kdecoded : "(nothing committed)", krun);
+				/* What the schedule and the commit stage say now, so a
+				 * miss names its stage rather than only its symptom. */
+				memset(&r, 0, sizeof(r));
+				cix_client_request(&client, "GET", "/v1/schedules/discover-kernel", NULL, &r);
+				fprintf(stderr, "      schedule: %.400s\n", r.body != NULL ? r.body : "");
+				cix_response_free(&r);
+				memset(&r, 0, sizeof(r));
+				cix_client_request(&client, "GET", "/v1/pkg/recipe-commit", NULL, &r);
+				fprintf(stderr, "      recipe-commit: %.400s\n", r.body != NULL ? r.body : "");
+				cix_response_free(&r);
 				ok = 0;
 			}
 			json_free(sent);
