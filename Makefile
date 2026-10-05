@@ -174,6 +174,12 @@ DAEMON_SELFTESTS = \
 # invisible through a mounted overlay). An excluded test does not stop
 # costing; it stops reporting.
 #
+# test_pkg_sync joined in 0.2.57-461 (cix#569). It already asserted that a
+# first sync adds the image recipe, and would have caught 460 offering
+# image recipes by `.sh` while walking `.json` -- every JSON image recipe
+# silently unowned and skipped on 192.168.15.95. It was in no list, so the
+# assertion never ran.
+#
 DAEMON_SELFTESTS_2 = \
 	$(BUILD)/test_artifact_export \
 	$(BUILD)/test_cli \
@@ -200,6 +206,7 @@ DAEMON_SELFTESTS_2 = \
 	$(BUILD)/test_networks \
 	$(BUILD)/test_ntp \
 	$(BUILD)/test_overlay \
+	$(BUILD)/test_pkg_sync \
 	$(BUILD)/test_pki \
 	$(BUILD)/test_syslogfwd \
 	$(BUILD)/test_system_backup \

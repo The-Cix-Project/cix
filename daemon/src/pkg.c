@@ -17060,9 +17060,9 @@ int pkg_sync_merge(void)
 		if (access(dir, F_OK) != 0 || refused[i])
 			continue;
 		snprintf(sub, sizeof(sub), "%s/recipes/package", dir);
-		sync_collect_offers(sub, "package", "cbs", "sh", &items, &n, &cap);
+		sync_collect_offers(sub, "package", "cbs", NULL, &items, &n, &cap);
 		snprintf(sub, sizeof(sub), "%s/recipes/image", dir);
-		sync_collect_offers(sub, "image", "sh", NULL, &items, &n, &cap);
+		sync_collect_offers(sub, "image", "json", NULL, &items, &n, &cap);
 		snprintf(sub, sizeof(sub), "%s/recipes/deployment", dir);
 		sync_collect_offers(sub, "deployment", "json", NULL, &items, &n, &cap);
 		pkgsource_offers_write(pkgsource_at(i)->name, (const char *const *)items, n);

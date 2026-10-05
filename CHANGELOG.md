@@ -6,6 +6,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### JSON image recipes are owned by their source, so a sync applies them (#569)
+
+0.2.57-460 walked `recipes/image/*.json` but still collected each source's image offers by `.sh`. With no source owning any JSON image recipe, the sync skipped every one without counting it. Measured on 192.168.15.95 after 460 booted: `cix-builder`, `kernel-builder` and `cix-hosttools` kept their old `.sh` recipe text and their pins.
+
+- A source offers `.json` image recipes and `.cbs` package recipes, and nothing else. Package offers no longer list `.sh`.
+- `test_pkg_sync`, which already asserted that a first sync adds the image recipe, joins `DAEMON_SELFTESTS_2`. It was in no list, so that assertion never ran.
+
 ### Docs: a guide to what rolls and how far
 
 `docs/guides/rolling.md` explains rolling as three decisions: the source policy (channel, and a depth such as `n` or `n-1`) decides which upstream release is built; the recipe, written once per version and revised by `cbs revise`, decides how; and an image's `rolling` entries with the artifact policy decide which built version it takes. Linked from `staying-updated.md` and the guides index.
