@@ -8052,6 +8052,13 @@ static void converge_uninstall_strays(const char *image_arg,
 
 	snprintf(image, sizeof(image), "%s", normalize_image(image_arg));
 	imagepolicy_get(image, &policy);
+	/*
+	 * An empty manifest is not "keep nothing": it is a recipe with no
+	 * entries or a manifest not written yet, and trimming against it would
+	 * empty the image. No followed image has one; this keeps it that way.
+	 */
+	if (entry_count == 0)
+		return;
 	if (policy.recipe != IMAGE_POLICY_RECIPE_FOLLOW || policy.apply != IMAGE_POLICY_APPLY_CONVERGE)
 		return;
 

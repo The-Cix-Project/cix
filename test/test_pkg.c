@@ -1271,6 +1271,33 @@ static int json_bool_field(const struct json_value *obj, const char *key)
 }
 
 /*
+ * Waits for a package entry to exist at all. poll_pkg_state() treats a
+ * 404 as failure, which is right after a POST /pkg/install -- the entry
+ * exists before the request returns -- and wrong for an install a
+ * converge starts on its own, where the entry appears only when the
+ * rebuild drain gets to it (ADR-0330). Returns 0 once it exists.
+ */
+static int wait_pkg_exists(const struct cix_client *c, const char *name, int tries)
+{
+	char path[256];
+	int i;
+
+	snprintf(path, sizeof(path), "/v1/pkg/%s", name);
+	for (i = 0; i < tries; i++) {
+		struct cix_response r;
+		int status;
+
+		memset(&r, 0, sizeof(r));
+		status = cix_client_request(c, "GET", path, NULL, &r) == 0 ? r.status : 0;
+		cix_response_free(&r);
+		if (status == 200)
+			return 0;
+		usleep(250000);
+	}
+	return -1;
+}
+
+/*
  * Issue #407: PkgEntry.build_container must be non-null EXACTLY while a
  * build is in flight, and the gate is the whole correctness of the
  * field. Nothing clears the daemon's own build_container_name when a
@@ -2454,12 +2481,14 @@ int main(void)
 			ok = 0;
 		}
 		cix_response_free(&r);
-		if (poll_pkg_state(&client, "convkeep@convimg", state, sizeof(state), 200) != 0 ||
+		if (wait_pkg_exists(&client, "convkeep@convimg", 240) != 0 ||
+		    poll_pkg_state(&client, "convkeep@convimg", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: ADR-0330 converge did not install convkeep ('%s')\n", state);
 			ok = 0;
 		}
-		if (poll_pkg_state(&client, "convstray@convimg", state, sizeof(state), 200) != 0 ||
+		if (wait_pkg_exists(&client, "convstray@convimg", 240) != 0 ||
+		    poll_pkg_state(&client, "convstray@convimg", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: ADR-0330 converge did not install convstray ('%s')\n", state);
 			ok = 0;
