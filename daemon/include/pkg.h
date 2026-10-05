@@ -905,6 +905,13 @@ int pkg_recipe_seed_source_offers(const char *source);
 const char *pkg_recipe_add_last_error(void);
 
 /*
+ * What a pkg_error means: its HTTP status (the return value), its phrase,
+ * and the sentence an operator reads, written into msg. One mapping for
+ * every caller -- a request handler, the host roll, the rolling drain.
+ */
+int pkg_error_describe(enum pkg_error err, const char **phrase, char *msg, size_t msg_size);
+
+/*
  * Removes recipe version(s) for name. version NULL or "" removes every
  * version of name (the whole pkg_dir/recipes/<name>/ directory);
  * a specific version removes only that one version's subdirectory,
@@ -1930,6 +1937,7 @@ struct pkg_image_downgrade {
 
 struct pkg_image_apply_result {
 	int declared;   /* manifest entries written */
+	int removed;    /* entries the followed recipe dropped, removed (ADR-0330) */
 	int converging; /* 1 if the image was queued to install what it declares */
 	int downgrade_count;
 	struct pkg_image_downgrade downgrades[PKG_IMAGE_APPLY_MAX];

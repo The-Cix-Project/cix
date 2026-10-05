@@ -2412,6 +2412,102 @@ int main(void)
 	}
 
 	/*
+	 * ADR-0330 (#571): under recipe=follow and apply=converge an image
+	 * holds its recipe's runtime closure and nothing else. A package
+	 * the recipe drops is uninstalled by the converge itself, with no
+	 * operator `pkg rm`. Measured before this, 192.168.15.95 on
+	 * 2026-10-05: cix-hosttools kept tar, gzip and bzip2 after its
+	 * recipe dropped them, and four followed images held 46 packages
+	 * their recipes never declared.
+	 */
+	{
+		int k, gone = 0;
+
+		if (write_recipe(&client, "convkeep", "1.0", tarball_path, sha256, "") != 0 ||
+		    write_recipe(&client, "convstray", "1.0", tarball_path, sha256, "") != 0 ||
+		    create_image(&client, "convimg") != 0) {
+			fprintf(stderr, "FAIL: ADR-0330 could not set up convkeep/convstray/convimg\n");
+			ok = 0;
+		}
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/images/convimg/policy",
+		                       "{\"recipe\":\"follow\",\"apply\":\"converge\"}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: ADR-0330 PUT convimg policy, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* Both declared: a following, converging image installs both by
+		 * itself, with no install request. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/images/recipes",
+		                       "{\"name\":\"convimg\",\"content\":\"{\\\"packages\\\":["
+		                       "{\\\"package\\\":\\\"convkeep\\\",\\\"mode\\\":\\\"rolling\\\","
+		                       "\\\"version\\\":\\\"1.0-1\\\"},"
+		                       "{\\\"package\\\":\\\"convstray\\\",\\\"mode\\\":\\\"rolling\\\","
+		                       "\\\"version\\\":\\\"1.0-1\\\"}]}\"}",
+		                       &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: ADR-0330 publish convimg's recipe with both, status=%d %s\n",
+			        r.status, r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		cix_response_free(&r);
+		if (poll_pkg_state(&client, "convkeep@convimg", state, sizeof(state), 200) != 0 ||
+		    strcmp(state, "installed") != 0) {
+			fprintf(stderr, "FAIL: ADR-0330 converge did not install convkeep ('%s')\n", state);
+			ok = 0;
+		}
+		if (poll_pkg_state(&client, "convstray@convimg", state, sizeof(state), 200) != 0 ||
+		    strcmp(state, "installed") != 0) {
+			fprintf(stderr, "FAIL: ADR-0330 converge did not install convstray ('%s')\n", state);
+			ok = 0;
+		}
+
+		/* The recipe drops convstray: the converge uninstalls it, and
+		 * keeps convkeep. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/images/recipes",
+		                       "{\"name\":\"convimg\",\"content\":\"{\\\"packages\\\":["
+		                       "{\\\"package\\\":\\\"convkeep\\\",\\\"mode\\\":\\\"rolling\\\","
+		                       "\\\"version\\\":\\\"1.0-1\\\"}]}\"}",
+		                       &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: ADR-0330 publish convimg's recipe without convstray, "
+			                "status=%d %s\n",
+			        r.status, r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		cix_response_free(&r);
+		for (k = 0; k < 120 && !gone; k++) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/convstray@convimg", NULL, &r) == 0 &&
+			    r.status == 404)
+				gone = 1;
+			cix_response_free(&r);
+			if (!gone)
+				usleep(250000);
+		}
+		if (!gone) {
+			fprintf(stderr, "FAIL: ADR-0330 convstray is still installed in convimg 30s after "
+			                "its followed recipe dropped it\n");
+			ok = 0;
+		}
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/pkg/convkeep@convimg", NULL, &r) != 0 ||
+		    r.status != 200 || r.json == NULL ||
+		    strcmp(json_str_field(r.json, "state") != NULL ? json_str_field(r.json, "state") : "",
+		           "installed") != 0) {
+			fprintf(stderr, "FAIL: ADR-0330 convkeep, which the recipe still lists, must stay "
+			                "installed (status=%d)\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+	}
+
+	/*
 	 * Issue #64: which version an omitted version resolves to is a
 	 * per-package policy, not one fixed rule.
 	 *

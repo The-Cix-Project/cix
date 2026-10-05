@@ -8026,6 +8026,98 @@ int pkg_rebuild_queue_depth(void)
 }
 
 /*
+ * ADR-0330 (#571): under recipe=follow and apply=converge, an image
+ * holds its recipe's runtime closure and nothing else. Called by the
+ * rebuild drain once every manifest entry is satisfied; a no-op for any
+ * other policy.
+ *
+ * The closure is walked from the manifest through the `depends` each
+ * installed entry recorded at fetch time (ADR-0302) -- what that build
+ * actually needed to run -- rather than re-read from whichever recipe
+ * revision is highest now. Everything in the image outside it is
+ * uninstalled, one pkg_delete() at a time, each logged by name.
+ *
+ * Measured before this existed, 192.168.15.95 on 2026-10-05: four
+ * followed images held 46 packages their recipes did not declare,
+ * cix-hosttools alone 21 -- the ISO toolchain among them, installed by
+ * hand into an image whose recipe never mentioned it.
+ */
+static void converge_uninstall_strays(const char *image_arg,
+                                      const struct image_manifest_entry *entries, int entry_count)
+{
+	static unsigned char keep[PKG_MAX_PACKAGES];
+	char image[PKG_IMAGE_NAME_MAX];
+	struct image_policy policy;
+	int i, j, changed;
+
+	snprintf(image, sizeof(image), "%s", normalize_image(image_arg));
+	imagepolicy_get(image, &policy);
+	if (policy.recipe != IMAGE_POLICY_RECIPE_FOLLOW || policy.apply != IMAGE_POLICY_APPLY_CONVERGE)
+		return;
+
+	memset(keep, 0, sizeof(keep));
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		if (!g_packages[i].in_use || strcmp(normalize_image(g_packages[i].image), image) != 0)
+			continue;
+		for (j = 0; j < entry_count; j++) {
+			if (strcmp(g_packages[i].name, entries[j].package) == 0) {
+				keep[i] = 1;
+				break;
+			}
+		}
+	}
+	do {
+		changed = 0;
+		for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+			char deps[PKG_DEPENDS_MAX];
+			char *tok, *save;
+
+			if (!keep[i])
+				continue;
+			snprintf(deps, sizeof(deps), "%s", g_packages[i].depends);
+			for (tok = strtok_r(deps, " \t", &save); tok != NULL;
+			     tok = strtok_r(NULL, " \t", &save)) {
+				for (j = 0; j < PKG_MAX_PACKAGES; j++) {
+					if (keep[j] || !g_packages[j].in_use ||
+					    strcmp(g_packages[j].name, tok) != 0 ||
+					    strcmp(normalize_image(g_packages[j].image), image) != 0)
+						continue;
+					keep[j] = 1;
+					changed = 1;
+				}
+			}
+		}
+	} while (changed);
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		char name[PKG_NAME_MAX];
+		enum pkg_error perr;
+
+		if (keep[i] || !g_packages[i].in_use ||
+		    strcmp(normalize_image(g_packages[i].image), image) != 0 ||
+		    (g_packages[i].state != PKG_STATE_INSTALLED && g_packages[i].state != PKG_STATE_FAILED))
+			continue;
+		snprintf(name, sizeof(name), "%s", g_packages[i].name);
+		perr = pkg_delete(name, image);
+		if (perr == PKG_OK) {
+			logstore_write("cixd", "info",
+			               "image %s: uninstalled %s -- outside the runtime closure of the "
+			               "recipe it follows (ADR-0330)",
+			               image, name);
+		} else {
+			const char *phrase;
+			char msg[512];
+
+			pkg_error_describe(perr, &phrase, msg, sizeof(msg));
+			logstore_write("cixd", "warn",
+			               "image %s: could not uninstall %s, which its recipe does not cover: %s "
+			               "(ADR-0330)",
+			               image, name, msg);
+		}
+	}
+}
+
+/*
  * ADR-0270: put an image on the same queue a rolling recipe publish
  * uses, from outside pkg.c.
  *
@@ -8065,6 +8157,8 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 		int entry_count, i;
 		int started = 0;
 		int deferred = 0; /* an entry waits on the same package elsewhere */
+		int refused = 0;  /* entries whose install could not start */
+		enum pkg_error perr;
 
 		if (gate_holds(PKG_GATE_ROLL, image)) {
 			qi++;
@@ -8163,16 +8257,33 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 				 * dependency the rebuild pulls carries it too. */
 				snprintf(g_next_run_trigger, sizeof(g_next_run_trigger), "%s",
 				         PKG_RUN_TRIGGER_ROLLING);
-				if (pkg_install_start(entries[i].package, image, want_version, e != NULL, 0,
-				                       started_name, sizeof(started_name), out_pid,
-				                       out_pidfd, out_chain_idx) == PKG_OK) {
+				perr = pkg_install_start(entries[i].package, image, want_version, e != NULL, 0,
+				                         started_name, sizeof(started_name), out_pid,
+				                         out_pidfd, out_chain_idx);
+				if (perr == PKG_OK) {
 					started = 1;
 					break;
 				}
-				/* Couldn't start this particular entry (recipe removed
-				 * out from under the manifest, etc.) -- try the rest of
-				 * the manifest rather than getting stuck on one bad
-				 * entry. */
+				/*
+				 * Couldn't start this entry (recipe removed out from
+				 * under the manifest, etc.) -- try the rest of the
+				 * manifest rather than getting stuck on one bad entry,
+				 * and say so. This was silent, so a converge that
+				 * started nothing read exactly like one with nothing to
+				 * do: iso-builder's first converge on 192.168.15.95
+				 * installed none of its 40 entries and logged nothing
+				 * (2026-10-05, ADR-0330).
+				 */
+				refused++;
+				{
+					const char *phrase;
+					char msg[512];
+
+					pkg_error_describe(perr, &phrase, msg, sizeof(msg));
+					logstore_write("cixd", "warn",
+					               "image %s: converge could not start %s: %s (ADR-0330)", image,
+					               entries[i].package, msg);
+				}
 			}
 		}
 
@@ -8200,8 +8311,25 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 			continue;
 		}
 
-		/* Every manifest entry already satisfied -- this image is
-		 * caught up, drop it and try whatever's queued next. */
+		/*
+		 * Nothing started and nothing waits, so this pass is done with
+		 * the image: either every entry is satisfied, or the ones that
+		 * are not could not start and each said why above. This comment
+		 * used to call it "caught up" in both cases, which is how a
+		 * converge that installed nothing read as one with nothing to
+		 * do (ADR-0330).
+		 *
+		 * Only a fully satisfied image has its strays uninstalled: one
+		 * that never reached its manifest may still need what a refused
+		 * entry would have brought.
+		 */
+		if (refused == 0)
+			converge_uninstall_strays(image, entries, entry_count);
+		else
+			logstore_write("cixd", "warn",
+			               "image %s: converge ended with %d entr%s not installed -- each is "
+			               "named above (ADR-0330)",
+			               image, refused, refused == 1 ? "y" : "ies");
 		approval_consume(PKG_GATE_ROLL, image);
 		rebuild_queue_remove_at(qi);
 	}
@@ -20895,6 +21023,35 @@ enum pkg_error pkg_image_recipe_apply(const char *image, int allow_downgrade,
 		if (out != NULL)
 			out->declared++;
 	}
+	/*
+	 * ADR-0330 (#571): under recipe=follow the manifest IS the recipe,
+	 * so an entry the recipe no longer lists leaves it. Before this, a
+	 * package dropped from an image recipe in git stayed declared
+	 * forever -- cix-hosttools 2.4.1 dropped tar, gzip and bzip2 and
+	 * the next converge reinstalled them (192.168.15.95, 2026-10-05).
+	 * Under recipe=manual the manifest is the operator's, and an apply
+	 * only adds and moves entries, as before.
+	 */
+	if (policy.recipe == IMAGE_POLICY_RECIPE_FOLLOW) {
+		int j, k;
+
+		for (j = 0; j < current_count; j++) {
+			int listed = 0;
+
+			for (k = 0; k < recipe.entry_count && !listed; k++)
+				listed = strcmp(current[j].package, recipe.entries[k].package) == 0;
+			if (listed)
+				continue;
+			if (image_manifest_unset(image, current[j].package) != IMAGE_OK)
+				return PKG_ERR_INVALID_RECIPE;
+			logstore_write("cixd", "info",
+			               "image %s: %s left the manifest -- the recipe it follows no longer "
+			               "lists it (ADR-0330)",
+			               image, current[j].package);
+			if (out != NULL)
+				out->removed++;
+		}
+	}
 	/* ADR-0320: converge is the rolling drain's own job -- it installs,
 	 * upgrades or downgrades every entry that disagrees with the
 	 * manifest, one job at a time -- so it is queued, not re-built. */
@@ -21078,4 +21235,91 @@ int pkg_installed_list_names(char names[][PKG_IMAGE_NAME_MAX], int max)
 		count++;
 	}
 	return count;
+}
+
+/*
+ * What a pkg_error means, once: its HTTP status and phrase, and the
+ * sentence an operator reads. respond_pkg_error() answers a request with
+ * it; the host roll (ADR-0327) and the rolling drain (ADR-0330), which
+ * have no request, log the sentence. Here rather than in main.c since
+ * ADR-0330, so the package code that raises these can describe them too.
+ */
+int pkg_error_describe(enum pkg_error err, const char **phrase, char *msg, size_t msg_size)
+{
+	switch (err) {
+	case PKG_ERR_DEP_UNRESOLVABLE:
+		*phrase = "Bad Request";
+		snprintf(msg, msg_size,
+		         "a dependency of this package could not be resolved -- the package and its own "
+		         "recipe are fine; the daemon log names the dependency and why");
+		return 400;
+	case PKG_ERR_INVALID_NAME:
+		*phrase = "Bad Request";
+		snprintf(msg, msg_size, "invalid package name");
+		return 400;
+	case PKG_ERR_NOT_FOUND:
+		*phrase = "Not Found";
+		snprintf(msg, msg_size, "no such package");
+		return 404;
+	case PKG_ERR_INVALID_RECIPE:
+		*phrase = "Bad Request";
+		snprintf(msg, msg_size, "no such recipe, or it failed to parse");
+		return 400;
+	case PKG_ERR_DUPLICATE:
+		*phrase = "Conflict";
+		snprintf(msg, msg_size, "package is already installed");
+		return 409;
+	case PKG_ERR_BUSY: {
+		/*
+		 * Name what is holding the slots (#246). "Another install is in
+		 * progress" is true and useless: it is the same message whether
+		 * a real build is running or a leaked chain slot is holding the
+		 * budget with nothing behind it, and telling those apart used to
+		 * require reading an unrelated endpoint's error text.
+		 */
+		char busy[512];
+		int n = pkg_active_chain_names(busy, sizeof(busy));
+
+		*phrase = "Conflict";
+		if (n > 0)
+			snprintf(msg, msg_size,
+			         "all %d package job slots are in use (%s) -- wait for one to finish, or "
+			         "cancel it with POST /v1/pkg/cancel",
+			         n, busy);
+		else
+			snprintf(msg, msg_size, "another package install is already in progress");
+		return 409;
+	}
+	case PKG_ERR_FULL:
+		*phrase = "Internal Server Error";
+		snprintf(msg, msg_size, "package table full");
+		return 500;
+	case PKG_ERR_NOT_BUILDING:
+		/*
+		 * Issue #213: the entry exists and has no build in flight. 409
+		 * rather than 404 -- the package is plainly there, and saying
+		 * "no such package" would send the caller looking for the wrong
+		 * problem.
+		 */
+		*phrase = "Conflict";
+		snprintf(msg, msg_size, "no build is in flight for that package and image");
+		return 409;
+	case PKG_ERR_INVALID_TOOLCHAIN:
+		*phrase = "Bad Request";
+		snprintf(msg, msg_size, "toolchain_path missing, unreadable, or not a regular file");
+		return 400;
+	case PKG_ERR_BUILD_MEMORY_OVER_CEILING:
+		*phrase = "Conflict";
+		snprintf(msg, msg_size,
+		         "the recipe declares more build memory (resources { memory }) than "
+		         "memory_max_ceiling allows -- the cixd log names both; raise it with PUT "
+		         "/v1/system/pkg-build-config");
+		return 409;
+	case PKG_ERR_SPAWN_FAILED:
+	case PKG_ERR_PERSIST_FAILED:
+	default:
+		*phrase = "Internal Server Error";
+		snprintf(msg, msg_size, "package operation failed");
+		return 500;
+	}
 }

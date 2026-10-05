@@ -20702,9 +20702,12 @@ components:
         declared:
           type: integer
           description: Manifest entries written; 0 on a 409.
+        removed:
+          type: integer
+          description: "Manifest entries the recipe no longer lists, removed because the image follows its recipe (`recipe: follow`, ADR-0330); 0 otherwise."
         converging:
           type: boolean
-          description: "The image was queued to install what it declares (`apply: converge`)."
+          description: "The image was queued to match what it declares (`apply: converge`): install, upgrade or downgrade each entry, and, under `recipe: follow`, uninstall any package outside the recipe's runtime closure (ADR-0330)."
         downgrades:
           type: array
           description: Pinned entries older than the image has.
@@ -20729,13 +20732,17 @@ components:
           enum: [manual, follow]
           description: >
             `follow` applies a changed recipe as soon as it reaches the
-            store (by sync or publish); `manual` (default) waits for an
+            store (by sync or publish), and the manifest becomes exactly the
+            recipe: an entry it no longer lists is removed (ADR-0330).
+            `manual` (default) waits for an
             operator.
         apply:
           type: string
           enum: [declare, converge]
           description: >
-            `converge` also installs what an apply declares; `declare`
+            `converge` also installs, upgrades or downgrades to match what an
+            apply declares and, with `recipe: follow`, uninstalls any package
+            outside the recipe's runtime closure (ADR-0330); `declare`
             (default) sets the manifest only.
         downgrade:
           type: string

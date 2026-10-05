@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A followed image holds its recipe, and nothing else (#571, ADR-0330)
+
+The owner's decision of 2026-10-05: when a package leaves an image's recipe in git, the box uninstalls it. Under `recipe: follow` an apply only ever added and moved entries, and converge only installed, so a dropped package stayed. On 192.168.15.95 the four followed images held 46 packages their recipes never declared, and `cix-hosttools` reinstalled the tar, gzip and bzip2 its recipe had just dropped.
+
+- **Under `recipe: follow` the manifest is the recipe.** An apply removes the entries the recipe no longer lists, logs each, and reports `removed` in its result (`cixctl` and the dashboard show it).
+- **With `apply: converge`, the drain uninstalls** every package outside the closure of the manifest, walked through each package's recorded runtime `depends`, once the image is satisfied. Each uninstall is logged by name.
+- **A converge that cannot start an install now says so.** The drain logged nothing when `pkg_install_start()` refused, and called the image caught up: `iso-builder`'s first converge installed none of its 40 entries in silence. Refusals are logged with their reason, and such an image is not trimmed. `pkg_error_describe()` moves from `main.c` to `pkg.c` so the drain words them as a request would.
+- **The recipes were made true first** (cix-recipes): `iso-builder` 1.4.0 is created as the ISO toolchain's one home, `cix-builder` 6.2.1 declares its 20 build tools, `cix-hosttools` 2.4.2 declares `cbs`, `jumpbox` 2.9.6 declares bind-utils and diffutils.
+- The dashboard's two recipe-apply messages share `imageApplySummary()`, and lose a branch for an asynchronous apply that has not existed since ADR-0209.
+- Docs: ADR-0330 (amends ADR-0320), `openapi.yaml` (`removed`, the policy descriptions) with `docs/api/README.md`, `images.md`, CLAUDE.md.
+- Tests: `test_image_recipe` checks the manifest removal; `test_pkg` checks a followed, converging image installs two packages from its recipe and uninstalls the one the recipe drops.
+
 ### JSON image recipes are owned by their source, so a sync applies them (#569)
 
 0.2.57-460 walked `recipes/image/*.json` but still collected each source's image offers by `.sh`. With no source owning any JSON image recipe, the sync skipped every one without counting it. Measured on 192.168.15.95 after 460 booted: `cix-builder`, `kernel-builder` and `cix-hosttools` kept their old `.sh` recipe text and their pins.

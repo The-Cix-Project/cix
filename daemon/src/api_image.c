@@ -899,6 +899,8 @@ void handle_image_recipe_apply(int fd, const char *name, const char *body, size_
 	jw_str(&w, name);
 	jw_key(&w, "declared");
 	jw_int(&w, res->declared);
+	jw_key(&w, "removed");
+	jw_int(&w, res->removed);
 	jw_key(&w, "converging");
 	jw_bool(&w, res->converging);
 	jw_key(&w, "downgrades");

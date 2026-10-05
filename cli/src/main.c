@@ -11472,6 +11472,7 @@ static void fmt_image_apply(const struct json_value *v)
 	const char *err = json_str_field(v, "error");
 	const char *image = json_str_field(v, "image");
 	long long declared = (long long)json_as_number(json_object_get(v, "declared"));
+	long long removed = (long long)json_as_number(json_object_get(v, "removed"));
 	size_t i;
 
 	if (err != NULL)
@@ -11481,6 +11482,9 @@ static void fmt_image_apply(const struct json_value *v)
 		       declared, declared == 1 ? "y" : "ies",
 		       json_bool_field(v, "converging") ? ", converging -- installs follow one at a time"
 		                                         : "");
+	if (err == NULL && removed > 0)
+		printf("  %lld entr%s the recipe no longer lists removed (ADR-0330)\n", removed,
+		       removed == 1 ? "y" : "ies");
 	if (downs == NULL || downs->type != JSON_ARRAY)
 		return;
 	for (i = 0; i < downs->u.array.count; i++) {

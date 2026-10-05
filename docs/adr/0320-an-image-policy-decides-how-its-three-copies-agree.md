@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted by the owner on 2026-09-30, as proposed, defaults included, for [#535](https://git.home.arpa/itdlabs/cix/issues/535). It supersedes [ADR-0252](0252-an-image-recipe-is-authoritative.md), which made the recipe authoritative by rule.
+Accepted by the owner on 2026-09-30, as proposed, defaults included; amended by [ADR-0330](0330-a-followed-image-holds-its-recipe-and-nothing-else.md) on 2026-10-05, under which a followed recipe also removes what it drops and a converge uninstalls it, for [#535](https://git.home.arpa/itdlabs/cix/issues/535). It supersedes [ADR-0252](0252-an-image-recipe-is-authoritative.md), which made the recipe authoritative by rule.
 
 The owner's direction on #535: *"We should be able to upgrade, downgrade, and we should be able to put a recipe that's hand made in the repo, and edit one on the box ... we should have the flexibility, but it should be settable on the policy."* So this ADR does **not** collapse the three copies into one. The single source of truth is the **policy** that says which copy wins, and when.
 

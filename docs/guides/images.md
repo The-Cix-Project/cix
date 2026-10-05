@@ -43,8 +43,8 @@ cixctl image policy jumpbox --recipe=follow --apply=converge  # set some of it
 
 | setting | values (default first) | what it decides |
 |---|---|---|
-| `recipe` | `manual`, `follow` | Under `follow`, a changed recipe is applied as soon as it reaches the box, by the 6-hourly sync or a publish. Committing it to cix-recipes `main` is then a deploy. |
-| `apply` | `declare`, `converge` | Under `converge`, applying also queues the image to install, upgrade or downgrade every entry to match, one job at a time, like a rolling rebuild. `image materialize` is the one-shot, waited-for version of the same thing. |
+| `recipe` | `manual`, `follow` | Under `follow`, a changed recipe is applied as soon as it reaches the box, by the 6-hourly sync or a publish. Committing it to cix-recipes `main` is then a deploy, and the manifest becomes exactly the recipe: an entry the recipe drops is removed ([ADR-0330](../adr/0330-a-followed-image-holds-its-recipe-and-nothing-else.md)). |
+| `apply` | `declare`, `converge` | Under `converge`, applying also queues the image to install, upgrade or downgrade every entry to match, one job at a time, like a rolling rebuild. `image materialize` is the one-shot, waited-for version of the same thing. With `recipe: follow`, converge also uninstalls every package outside the recipe's runtime closure once the image is satisfied, so everything a followed image should keep, build tools included, belongs in its recipe (ADR-0330). |
 | `downgrade` | `refuse`, `allow` | Under `refuse`, an apply that would move a pin to an older version is refused and lists each one. `--allow-downgrade` applies it anyway, once. |
 
 Two rules hold whatever the policy:

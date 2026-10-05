@@ -379,6 +379,38 @@ int main(void)
 		manifest_version(&client, "bulkimg", "foo", v, sizeof(v));
 		CHECK(strcmp(v, "1.5") == 0, "ADR-0320: recipe=follow applied the new recipe by itself");
 
+		/*
+		 * ADR-0330 (#571): under recipe=follow the manifest IS the
+		 * recipe, so an entry the recipe drops leaves it. Before, a
+		 * dropped package stayed declared for good -- cix-hosttools
+		 * kept tar, gzip and bzip2 after its recipe removed them, and
+		 * converge reinstalled them (192.168.15.95, 2026-10-05).
+		 */
+		manifest_version(&client, "bulkimg", "bar", v, sizeof(v));
+		CHECK(strcmp(v, "2.0") == 0, "ADR-0330: bar is declared before its recipe drops it");
+		{
+			struct json_writer w;
+
+			jw_init(&w);
+			jw_obj_open(&w);
+			jw_key(&w, "name");
+			jw_str(&w, "bulkimg");
+			jw_key(&w, "content");
+			jw_str(&w, "{\"packages\":[{\"package\":\"foo\",\"mode\":\"pinned\",\"version\":\"1.5\"}]}");
+			jw_obj_close(&w);
+			w.buf[w.len] = '\0';
+			memset(&r, 0, sizeof(r));
+			CHECK(cix_client_request(&client, "POST", "/v1/images/recipes", w.buf, &r) == 0 &&
+			          r.status == 204,
+			      "ADR-0330: publish the recipe without bar");
+			cix_response_free(&r);
+			jw_free(&w);
+		}
+		manifest_version(&client, "bulkimg", "bar", v, sizeof(v));
+		CHECK(v[0] == '\0', "ADR-0330: recipe=follow removed bar from the manifest");
+		manifest_version(&client, "bulkimg", "foo", v, sizeof(v));
+		CHECK(strcmp(v, "1.5") == 0, "ADR-0330: and kept foo, which the recipe still lists");
+
 		/* Back to the defaults, which is the same as having no policy. */
 		memset(&r, 0, sizeof(r));
 		CHECK(cix_client_request(&client, "PUT", "/v1/images/bulkimg/policy",

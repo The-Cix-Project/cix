@@ -6080,6 +6080,22 @@ async function loadImageRecipeContent(name) {
 	return imageRecipeContentCache.content;
 }
 
+// What an image-recipe apply did, in one sentence (ADR-0320, ADR-0330).
+// Shared by the image page and the recipe list, so the two cannot word it
+// differently. An apply is synchronous since ADR-0209; there is no
+// "started" state to report.
+function imageApplySummary(name, result) {
+	const declared = result && typeof result.declared === "number" ? result.declared : 0;
+	const removed = result && typeof result.removed === "number" ? result.removed : 0;
+	let msg = "Recipe applied for " + name + ": " + declared + (declared === 1 ? " entry" : " entries") + " declared";
+
+	if (removed > 0)
+		msg += ", " + removed + (removed === 1 ? " entry" : " entries") + " the recipe no longer lists removed";
+	if (result && result.converging)
+		msg += "; converging, installs follow one at a time";
+	return msg;
+}
+
 function renderImageRecipeTab(name) {
 	const missingEl = document.getElementById("imgd-recipe-missing");
 	const presentEl = document.getElementById("imgd-recipe-present");
@@ -6128,12 +6144,7 @@ function renderImageRecipeTab(name) {
 			const r = await apiRequest("POST", CIX_API.applyImageRecipe(name));
 
 			clearStatus();
-			showStatus(
-				r && r.state === "running"
-					? "Recipe apply started for " + name + " (async artifact fetch)"
-					: "Recipe applied for " + name,
-				false
-			);
+			showStatus(imageApplySummary(name, r), false);
 			await refreshImageDetailVersioning(name);
 		} catch (e) {
 			showStatus("Failed to apply recipe for " + name + ": " + e.message, true);
@@ -11202,12 +11213,7 @@ function renderImageRecipesTable() {
 				const result = await apiRequest("POST", CIX_API.applyImageRecipe(r.name));
 
 				clearStatus();
-				showStatus(
-					result && result.state === "running"
-						? "Recipe apply started for " + r.name + " (async artifact fetch)"
-						: "Recipe applied for " + r.name,
-					false
-				);
+				showStatus(imageApplySummary(r.name, result), false);
 			} catch (e) {
 				showStatus("Failed to apply recipe for " + r.name + ": " + e.message, true);
 			}

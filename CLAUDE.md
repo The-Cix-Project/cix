@@ -274,6 +274,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **`cixctl image policy NAME`**: `recipe` manual|follow, `apply` declare|converge, `downgrade` refuse|allow. The defaults are manual / declare / refuse, and only the last differs from what came before.
 - **A downgrade is always possible and never a side effect**: an apply that walks a pin back is a 409 listing each one, unless `--allow-downgrade` or `downgrade: allow`.
 - **An explicit install moves the pin with it**, and `image recipe export NAME` writes the box's state back as a recipe. Under `recipe: follow`, committing an image recipe to cix-recipes `main` is a deploy.
+- **Under `recipe: follow` + `apply: converge`, git decides removals too** (the owner, 2026-10-05, #571): an entry the recipe drops leaves the manifest, and converge uninstalls any package outside the recipe's runtime closure, as it already installs, upgrades and downgrades. So a package an image needs, a build tool included, belongs in that image's recipe. **One image per job**: a tool installed by hand into an image whose recipe does not declare it is an undeclared second job, which is how `cix-hosttools` came to hold the ISO toolchain that `iso-builder` exists for.
 
 ## Default package sources
 

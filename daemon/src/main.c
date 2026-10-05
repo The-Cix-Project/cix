@@ -9117,7 +9117,6 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir);
 static void hostroll_tick(void);
 static void hostroll_assembly_done(int ok);
 static void kernel_running_version(char *out, size_t out_size);
-static int pkg_error_describe(enum pkg_error err, const char **phrase, char *msg, size_t msg_size);
 
 /* ADR-0207 phase 2: force the direct-rootfs container path with a COPY
  * instead of a snapshot, so the btrfs-incapable dev sandbox (ext4, no
@@ -20464,91 +20463,6 @@ static void handle_container_recipe_apply(int fd, const char *name, const char *
 
 	handle_create(fd, rendered, strlen(rendered));
 	free(rendered);
-}
-
-/*
- * What a pkg_error means, once: its HTTP status and phrase, and the
- * sentence an operator reads. respond_pkg_error() answers a request with
- * it; the host roll (ADR-0327), which has no request, logs the sentence.
- */
-static int pkg_error_describe(enum pkg_error err, const char **phrase, char *msg, size_t msg_size)
-{
-	switch (err) {
-	case PKG_ERR_DEP_UNRESOLVABLE:
-		*phrase = "Bad Request";
-		snprintf(msg, msg_size,
-		         "a dependency of this package could not be resolved -- the package and its own "
-		         "recipe are fine; the daemon log names the dependency and why");
-		return 400;
-	case PKG_ERR_INVALID_NAME:
-		*phrase = "Bad Request";
-		snprintf(msg, msg_size, "invalid package name");
-		return 400;
-	case PKG_ERR_NOT_FOUND:
-		*phrase = "Not Found";
-		snprintf(msg, msg_size, "no such package");
-		return 404;
-	case PKG_ERR_INVALID_RECIPE:
-		*phrase = "Bad Request";
-		snprintf(msg, msg_size, "no such recipe, or it failed to parse");
-		return 400;
-	case PKG_ERR_DUPLICATE:
-		*phrase = "Conflict";
-		snprintf(msg, msg_size, "package is already installed");
-		return 409;
-	case PKG_ERR_BUSY: {
-		/*
-		 * Name what is holding the slots (#246). "Another install is in
-		 * progress" is true and useless: it is the same message whether
-		 * a real build is running or a leaked chain slot is holding the
-		 * budget with nothing behind it, and telling those apart used to
-		 * require reading an unrelated endpoint's error text.
-		 */
-		char busy[512];
-		int n = pkg_active_chain_names(busy, sizeof(busy));
-
-		*phrase = "Conflict";
-		if (n > 0)
-			snprintf(msg, msg_size,
-			         "all %d package job slots are in use (%s) -- wait for one to finish, or "
-			         "cancel it with POST /v1/pkg/cancel",
-			         n, busy);
-		else
-			snprintf(msg, msg_size, "another package install is already in progress");
-		return 409;
-	}
-	case PKG_ERR_FULL:
-		*phrase = "Internal Server Error";
-		snprintf(msg, msg_size, "package table full");
-		return 500;
-	case PKG_ERR_NOT_BUILDING:
-		/*
-		 * Issue #213: the entry exists and has no build in flight. 409
-		 * rather than 404 -- the package is plainly there, and saying
-		 * "no such package" would send the caller looking for the wrong
-		 * problem.
-		 */
-		*phrase = "Conflict";
-		snprintf(msg, msg_size, "no build is in flight for that package and image");
-		return 409;
-	case PKG_ERR_INVALID_TOOLCHAIN:
-		*phrase = "Bad Request";
-		snprintf(msg, msg_size, "toolchain_path missing, unreadable, or not a regular file");
-		return 400;
-	case PKG_ERR_BUILD_MEMORY_OVER_CEILING:
-		*phrase = "Conflict";
-		snprintf(msg, msg_size,
-		         "the recipe declares more build memory (resources { memory }) than "
-		         "memory_max_ceiling allows -- the cixd log names both; raise it with PUT "
-		         "/v1/system/pkg-build-config");
-		return 409;
-	case PKG_ERR_SPAWN_FAILED:
-	case PKG_ERR_PERSIST_FAILED:
-	default:
-		*phrase = "Internal Server Error";
-		snprintf(msg, msg_size, "package operation failed");
-		return 500;
-	}
 }
 
 static void respond_pkg_error(int fd, enum pkg_error err)
