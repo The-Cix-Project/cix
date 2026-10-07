@@ -125,6 +125,14 @@ SELFTESTS = \
 #                            is one of them; the probe gave a false
 #                            positive and the gate is what found it.
 #
+# test_apishape joined in 0.2.57-465 (cix#575). It walks every
+# parameterless GET in the generated shape table and asserts a 200
+# carries the keys its schema declares required -- the link ADR-0218
+# built for routes and nobody had built for response bodies, which is
+# how cix#574 shipped a blank verdict on 172 catalogue rows past four
+# green API gates. Daemon-linked because the only honest way to ask
+# what a handler sends is to ask the handler.
+#
 DAEMON_SELFTESTS = \
 	$(BUILD)/test_web $(BUILD)/test_backup_config \
 	$(BUILD)/test_network_interfaces $(BUILD)/test_routes \
@@ -133,6 +141,7 @@ DAEMON_SELFTESTS = \
 	$(BUILD)/test_kmod $(BUILD)/test_layout_upgrade \
 	$(BUILD)/test_signing_keys $(BUILD)/test_stallwatch $(BUILD)/test_sysctl \
 	$(BUILD)/test_system_update $(BUILD)/test_tls_throttle $(BUILD)/test_rtnetlink \
+	$(BUILD)/test_apishape \
 	\
 	$(DAEMON_SELFTESTS_2)
 
@@ -477,7 +486,7 @@ testreport: all
 
 .PHONY: all clean aggressive
 
-all: $(BUILD)/cix-init $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/test_container_pty $(BUILD)/pty_child $(BUILD)/cixd $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/cixctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_slow_client $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_network_interfaces $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_ntp $(BUILD)/test_ldap $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/cix-install $(BUILD)/cix-recover $(BUILD)/test_dual_console $(BUILD)/dual_console_child $(BUILD)/console_term_child $(BUILD)/console_input_child $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/mktoolchainimage $(BUILD)/test_console_pki_bootstrap $(BUILD)/test_console_exec $(BUILD)/test_container_lifecycle $(BUILD)/output_child $(BUILD)/stats_child $(BUILD)/test_container_stats $(BUILD)/test_disk_quota $(BUILD)/test_diskpart $(BUILD)/test_sysctl $(BUILD)/test_kmod $(BUILD)/test_kmod_build $(BUILD)/test_routes $(BUILD)/test_management_address $(BUILD)/test_pkg_build_log $(BUILD)/test_pkg_concurrent_stress $(BUILD)/test_pkg_sync $(BUILD)/test_pkg_cache $(BUILD)/test_image_recipe $(BUILD)/test_container_recipe $(BUILD)/test_rolling_restart $(BUILD)/syslog_recv_child $(BUILD)/test_syslogfwd $(BUILD)/test_hostproc $(BUILD)/test_tls_throttle $(BUILD)/test_https_chain $(BUILD)/test_layout_upgrade $(BUILD)/test_treecopy $(BUILD)/test_storage_placement $(BUILD)/test_backup_config $(BUILD)/test_container_storage_migrate $(BUILD)/test_container_dns_servers $(BUILD)/test_hostauth $(BUILD)/test_device_hotplug $(BUILD)/test_subid $(BUILD)/test_volume $(BUILD)/volume_child $(BUILD)/test_userns_run $(BUILD)/run_child $(BUILD)/test_factory_reset $(BUILD)/test_boot_console $(BUILD)/test_signing_keys $(BUILD)/test_stallwatch $(BUILD)/test_kernelpolicy $(BUILD)/test_dhcp $(BUILD)/test_artifact_export $(BUILD)/test_esp $(BUILD)/test_btrfs $(BUILD)/test_direct_rootfs $(BUILD)/test_childdiag $(BUILD)/test_bzimage $(BUILD)/apigen $(BUILD)/test_apigen $(BUILD)/test_apiroute $(BUILD)/test_api_surfaces $(BUILD)/test_docindex $(BUILD)/test_web_vt $(BUILD)/test_web_syntax $(BUILD)/test_secrets $(BUILD)/test_curl_guards $(BUILD)/test_timebounds $(BUILD)/test_procfuse $(BUILD)/test_lint $(BUILD)/test_naming $(BUILD)/test_recipe_docs $(BUILD)/test_pkicrypto $(BUILD)/test_forgecommit $(BUILD)/test_pkgsource $(BUILD)/test_pkgrepo $(BUILD)/test_catalogue $(BUILD)/test_srcgitea $(BUILD)/test_srcrecord $(BUILD)/test_srctrust $(BUILD)/test_pkgbad $(BUILD)/test_upstreamkeys $(BUILD)/test_versioning $(BUILD)/test_http_put $(BUILD)/test_osrelease $(BUILD)/test_json $(BUILD)/test_jsondiff $(BUILD)/test_cbsrecipe $(BUILD)/test_nsswitch $(BUILD)/test_nicreport $(BUILD)/test_mkinstalleriso_args $(BUILD)/test_controlplane_programs $(BUILD)/test_blocking_waits $(BUILD)/test_listenbind $(BUILD)/test_bootorder $(BUILD)/test_pkg_finalize $(BUILD)/test_fresh_output_dir $(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc $(BUILD)/test_releasekey $(BUILD)/test_aggressive $(BUILD)/cix-boot.efi $(BUILD)/cix-xorriso
+all: $(BUILD)/cix-init $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/test_container_pty $(BUILD)/pty_child $(BUILD)/cixd $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/cixctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_slow_client $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_network_interfaces $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_ntp $(BUILD)/test_ldap $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/cix-install $(BUILD)/cix-recover $(BUILD)/test_dual_console $(BUILD)/dual_console_child $(BUILD)/console_term_child $(BUILD)/console_input_child $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/mktoolchainimage $(BUILD)/test_console_pki_bootstrap $(BUILD)/test_console_exec $(BUILD)/test_container_lifecycle $(BUILD)/output_child $(BUILD)/stats_child $(BUILD)/test_container_stats $(BUILD)/test_disk_quota $(BUILD)/test_diskpart $(BUILD)/test_sysctl $(BUILD)/test_kmod $(BUILD)/test_kmod_build $(BUILD)/test_routes $(BUILD)/test_management_address $(BUILD)/test_pkg_build_log $(BUILD)/test_pkg_concurrent_stress $(BUILD)/test_pkg_sync $(BUILD)/test_pkg_cache $(BUILD)/test_image_recipe $(BUILD)/test_container_recipe $(BUILD)/test_rolling_restart $(BUILD)/syslog_recv_child $(BUILD)/test_syslogfwd $(BUILD)/test_hostproc $(BUILD)/test_tls_throttle $(BUILD)/test_https_chain $(BUILD)/test_layout_upgrade $(BUILD)/test_treecopy $(BUILD)/test_storage_placement $(BUILD)/test_backup_config $(BUILD)/test_container_storage_migrate $(BUILD)/test_container_dns_servers $(BUILD)/test_hostauth $(BUILD)/test_device_hotplug $(BUILD)/test_subid $(BUILD)/test_volume $(BUILD)/volume_child $(BUILD)/test_userns_run $(BUILD)/run_child $(BUILD)/test_factory_reset $(BUILD)/test_boot_console $(BUILD)/test_signing_keys $(BUILD)/test_stallwatch $(BUILD)/test_kernelpolicy $(BUILD)/test_dhcp $(BUILD)/test_artifact_export $(BUILD)/test_esp $(BUILD)/test_btrfs $(BUILD)/test_direct_rootfs $(BUILD)/test_childdiag $(BUILD)/test_bzimage $(BUILD)/apigen $(BUILD)/test_apigen $(BUILD)/test_apiroute $(BUILD)/test_api_surfaces $(BUILD)/test_apishape $(BUILD)/test_docindex $(BUILD)/test_web_vt $(BUILD)/test_web_syntax $(BUILD)/test_secrets $(BUILD)/test_curl_guards $(BUILD)/test_timebounds $(BUILD)/test_procfuse $(BUILD)/test_lint $(BUILD)/test_naming $(BUILD)/test_recipe_docs $(BUILD)/test_pkicrypto $(BUILD)/test_forgecommit $(BUILD)/test_pkgsource $(BUILD)/test_pkgrepo $(BUILD)/test_catalogue $(BUILD)/test_srcgitea $(BUILD)/test_srcrecord $(BUILD)/test_srctrust $(BUILD)/test_pkgbad $(BUILD)/test_upstreamkeys $(BUILD)/test_versioning $(BUILD)/test_http_put $(BUILD)/test_osrelease $(BUILD)/test_json $(BUILD)/test_jsondiff $(BUILD)/test_cbsrecipe $(BUILD)/test_nsswitch $(BUILD)/test_nicreport $(BUILD)/test_mkinstalleriso_args $(BUILD)/test_controlplane_programs $(BUILD)/test_blocking_waits $(BUILD)/test_listenbind $(BUILD)/test_bootorder $(BUILD)/test_pkg_finalize $(BUILD)/test_fresh_output_dir $(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc $(BUILD)/test_releasekey $(BUILD)/test_aggressive $(BUILD)/cix-boot.efi $(BUILD)/cix-xorriso
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -668,6 +677,9 @@ $(BUILD)/test_bootroot_args: test/test_bootroot_args.c | $(BUILD)
 $(BUILD)/test_diskpart: test/test_diskpart.c test/test_image_fixture.c daemon/src/disk.c daemon/src/diskpart.c daemon/src/diskrole.c daemon/src/partlabel.c daemon/src/persist.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
+$(BUILD)/test_apishape: test/test_apishape.c test/test_image_fixture.c $(CLIENT_SRCS) $(BUILD)/generated/api_shapes.h | $(BUILD)
+	$(CC) $(CLIENT_CFLAGS) -I$(BUILD) $(filter %.c,$^) -o $@
+
 $(BUILD)/test_sysctl: test/test_sysctl.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
@@ -856,6 +868,14 @@ web/api.js: docs/api/openapi.yaml $(BUILD)/apigen
 $(BUILD)/generated/api_routes.h: docs/api/openapi.yaml $(BUILD)/apigen
 	@mkdir -p $(BUILD)/generated
 	$(BUILD)/apigen docs/api/openapi.yaml --emit-routes $@
+
+# The response-shape table (#575): one entry per operation, with the keys
+# its 200 JSON response declares required. ADR-0218 made the spec
+# authoritative over routes; this extends the same authority to response
+# bodies, which is the link cix#574 slipped through.
+$(BUILD)/generated/api_shapes.h: docs/api/openapi.yaml $(BUILD)/apigen
+	@mkdir -p $(BUILD)/generated
+	$(BUILD)/apigen docs/api/openapi.yaml --emit-shapes $@
 
 # ADR-0317 (#540): the closed permission vocabulary, for hostauth.c. From
 # the spec's x-cix-permissions, the list apigen checks every operation's

@@ -6,6 +6,44 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A 200 response must carry the keys its contract declares required (#575)
+
+ADR-0218 made the spec authoritative over which *routes* exist: a path the contract does not declare
+is unroutable. Nothing did the same for a response **body**. A handler could stop sending a field the
+spec marks `required`, or rename it, and every gate stayed green — `test_apigen` counts operations and
+permissions, `test_apiroute` checks routing, `test_api_surfaces` checks that no presentation channel
+invents a path, and none of them compared a response's keys against its schema.
+
+That is #574 exactly: `GET /v1/pkg/source-catalogue` moved to an ADR-0256 `stage`/`status` pair plus
+four differently-named counts, the spec kept declaring the old shape, and an operator got a blank
+verdict on all 172 rows and a summary of four zeros — on the one surface ADR-0323 names for roll
+visibility. Two existing tests called that endpoint and both passed, because each asserted the fields
+it happened to use rather than the ones the contract promises.
+
+- **`apigen` learned to read response shapes.** A new pass collects each `components/schemas` entry's
+  `required` list and any array property whose `items` name another schema, and each operation's 200
+  JSON schema — a `$ref` (159 operations) or an inline `required` (42 of the 69 inline objects),
+  measured. `--emit-shapes` writes `build/generated/api_shapes.h`: one entry per operation, with the
+  top-level keys and the item keys of **every** array property that declares any.
+- **A table, not 339 `#define`s**, because the consumer is a loop. A hand-written list of endpoints to
+  check would be the second source of truth this generator exists to remove.
+- **The new pass reads a narrow subset and is silent about the rest, which is the opposite of the
+  route reader's posture and deliberate.** A route `apigen` fails to read is unroutable, so refusing
+  an unrecognised construct is the only safe answer there. A schema it fails to read costs an
+  assertion, not a route — and the schema grammar carries `allOf`, `oneOf`, nested objects and
+  discriminators this tool has no business modelling. So `test_apishape` **prints its coverage**, and
+  fails below a floor of 40 gated operations: an exact count would be a fifth place to edit on every
+  spec change (`test_apigen` already holds the operation count in four, and two releases failed on a
+  missed one), while a floor fails only when the gate gets materially weaker.
+- **`test_apishape` walks the parameterless GETs** — 82 of them carry a required list — and asserts
+  the implication only: *if* 200, *then* the promised keys, naming every missing key rather than the
+  first, because a rename takes its neighbours with it. A non-200 is not a failure: several of these
+  endpoints legitimately 404 on a daemon with no state (`GET /pkg/build/log` is live-only by design),
+  and this gate has nothing to say about a response the schema does not describe.
+- Reintroducing #574's shape against the new table shows it caught: `getSourceCatalogue` now carries
+  `packages, total, ok, blocked, failed, not_implemented` at the top level and
+  `name, stage, status, reason` for `packages[]`.
+
 ### test_pkg rung 2 waits for its discovery run to be accepted (#573)
 
 A FLOOR_SELFTEST that fails intermittently is worse than one that fails: it gates every release, so a

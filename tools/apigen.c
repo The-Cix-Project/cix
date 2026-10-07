@@ -44,6 +44,9 @@
 #define APIGEN_MAX_COMP_PARAMS 128
 #define APIGEN_MAX_PERMS 64
 #define APIGEN_PERM_MAX 48
+#define APIGEN_MAX_COMP_SCHEMAS 512
+#define APIGEN_MAX_REQUIRED 24
+#define APIGEN_MAX_ARRAY_PROPS 8
 
 struct api_op {
 	char method[12];   /* uppercased: GET, POST, ... */
@@ -74,6 +77,31 @@ struct api_op {
 	 */
 	char query[APIGEN_MAX_QUERY][APIGEN_QNAME_MAX];
 	int n_query;
+	/*
+	 * The shape of this operation's 200 JSON response (#575).
+	 *
+	 * ADR-0218 made a route the spec does not declare unroutable, and
+	 * nothing did the same for a response BODY: a handler could stop
+	 * sending a field the spec marks `required`, or rename it, and
+	 * every gate stayed green. That is cix#574 -- the source
+	 * catalogue moved from a `state` string plus four counts to a
+	 * `stage`/`status` pair plus four differently-named counts, the
+	 * spec kept declaring the old shape as required, and the result
+	 * was a blank verdict on 172 rows.
+	 *
+	 * resp_schema is a components/schemas key; resp_required holds an
+	 * INLINE schema's own required list. One or the other, never
+	 * both, and both empty for the forms this tool deliberately does
+	 * not read (a bare array, allOf, a string). That silence is
+	 * reported as a COUNT by the test that consumes this, so
+	 * under-coverage is a visible number rather than a quiet pass --
+	 * the route table must be complete because a missing route is
+	 * unroutable, but a shape it cannot read simply contributes no
+	 * assertion.
+	 */
+	char resp_schema[APIGEN_ID_MAX];
+	char resp_required[APIGEN_MAX_REQUIRED][APIGEN_QNAME_MAX];
+	int n_resp_required;
 };
 
 /*
@@ -295,6 +323,223 @@ static int perm_word_is_valid(const char *w)
 	return 1;
 }
 
+/*
+ * components/schemas, reduced to the one question #575 asks: which keys
+ * does a response of this shape PROMISE?
+ *
+ * Its own pass, for the same reason load_component_params() has one --
+ * components: sits after paths: and the paths reader stops at the first
+ * column-0 key that follows.
+ *
+ * Reads a narrow, named subset and is silent about the rest, which is a
+ * different posture from the route reader directly above and worth
+ * saying why. A route this tool fails to read is UNROUTABLE, so
+ * refusing an unrecognised construct is the only safe answer. A schema
+ * it fails to read costs an assertion, not a route -- and the schema
+ * grammar really does carry allOf, oneOf, nested objects and
+ * discriminators that this tool has no business modelling. So it takes
+ * `required: [...]` and array properties, leaves everything else, and
+ * the consuming test reports how many operations it could gate. An
+ * honest number beats a tool pretending to understand OpenAPI.
+ */
+struct comp_schema {
+	char comp[APIGEN_ID_MAX];
+	char required[APIGEN_MAX_REQUIRED][APIGEN_QNAME_MAX];
+	int n_required;
+	/*
+	 * A property that is an array whose items name another schema, and
+	 * that schema's key -- ONE level deep.
+	 *
+	 * One level because that is where the half of cix#574 that an
+	 * operator actually saw lived: `SourceCatalogue.packages[]` holds
+	 * `SourceCatalogueEntry`, whose `stage`/`status` were the blank
+	 * columns. A general recursive walk would need the rest of the
+	 * grammar this pass just declined to model.
+	 */
+	struct {
+		char prop[APIGEN_QNAME_MAX];
+		char items[APIGEN_ID_MAX];
+	} arr[APIGEN_MAX_ARRAY_PROPS];
+	int n_arr;
+};
+
+static struct comp_schema g_comp_schemas[APIGEN_MAX_COMP_SCHEMAS];
+static int g_comp_schema_count;
+
+/* The last path segment of a "#/components/schemas/Name" reference. */
+static void ref_tail(const char *text, char *out, size_t out_size)
+{
+	const char *q = strchr(text, '#');
+	size_t n = 0;
+
+	out[0] = '\0';
+	if (q == NULL)
+		return;
+	q = strrchr(q, '/');
+	if (q == NULL)
+		return;
+	q++;
+	while (*q != '\0' && *q != '"' && *q != '\'' && *q != ' ' && *q != '\r' && *q != '\n' &&
+	       n + 1 < out_size)
+		out[n++] = *q++;
+	out[n] = '\0';
+}
+
+/*
+ * `required: [a, b, c]` into out[], returning how many landed.
+ *
+ * The flow form is the only one the spec uses -- 131 of them, and zero
+ * block lists (measured 2026-10-07). A block list would read as zero
+ * entries here, which costs assertions rather than correctness, and is
+ * why the consuming test prints its coverage.
+ */
+static int parse_inline_list(const char *v, char out[][APIGEN_QNAME_MAX], int max)
+{
+	const char *c = v;
+	int n = 0;
+
+	while (*c == ' ')
+		c++;
+	if (*c != '[')
+		return 0;
+	c++;
+	while (*c != '\0' && *c != ']' && n < max) {
+		size_t k = 0;
+
+		while (*c == ' ' || *c == ',')
+			c++;
+		while (*c != '\0' && *c != ',' && *c != ']' && *c != ' ' &&
+		       k + 1 < (size_t)APIGEN_QNAME_MAX)
+			out[n][k++] = *c++;
+		out[n][k] = '\0';
+		if (k > 0)
+			n++;
+		while (*c != '\0' && *c != ',' && *c != ']')
+			c++;
+	}
+	return n;
+}
+
+static void load_component_schemas(const char *spec)
+{
+	FILE *f = fopen(spec, "r");
+	char line[4096];
+	int in_components = 0, in_schemas = 0, cur = -1;
+	int in_props = 0;
+	char prop[APIGEN_QNAME_MAX] = "";
+	int prop_is_array = 0;
+
+	if (f == NULL)
+		return;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		char key[APIGEN_PATH_MAX];
+		int ind;
+
+		if (is_ignorable(line))
+			continue;
+		ind = indent_of(line);
+		if (ind == 0) {
+			in_components = key_at(line, 0, key, sizeof(key)) &&
+			                strcmp(key, "components") == 0;
+			in_schemas = 0;
+			cur = -1;
+			in_props = 0;
+			continue;
+		}
+		if (!in_components)
+			continue;
+		if (ind == 2) {
+			in_schemas = key_at(line, 2, key, sizeof(key)) &&
+			             strcmp(key, "schemas") == 0;
+			cur = -1;
+			in_props = 0;
+			continue;
+		}
+		if (!in_schemas)
+			continue;
+		if (ind == 4) {
+			in_props = 0;
+			prop[0] = '\0';
+			if (!key_at(line, 4, key, sizeof(key))) {
+				cur = -1;
+				continue;
+			}
+			if (g_comp_schema_count >= APIGEN_MAX_COMP_SCHEMAS)
+				die_at(spec, 0, "more than %d component schemas",
+				       APIGEN_MAX_COMP_SCHEMAS);
+			cur = g_comp_schema_count++;
+			memset(&g_comp_schemas[cur], 0, sizeof(g_comp_schemas[cur]));
+			snprintf(g_comp_schemas[cur].comp, sizeof(g_comp_schemas[cur].comp), "%s", key);
+			continue;
+		}
+		if (cur < 0)
+			continue;
+		if (ind == 6 && key_at(line, 6, key, sizeof(key))) {
+			in_props = strcmp(key, "properties") == 0;
+			prop[0] = '\0';
+			if (strcmp(key, "required") == 0) {
+				char v[1024];
+
+				snprintf(v, sizeof(v), "%s", value_of(line));
+				strip_eol(v);
+				g_comp_schemas[cur].n_required =
+				    parse_inline_list(v, g_comp_schemas[cur].required,
+				                      APIGEN_MAX_REQUIRED);
+			}
+			continue;
+		}
+		if (!in_props)
+			continue;
+		if (ind == 8) {
+			prop_is_array = 0;
+			if (!key_at(line, 8, prop, sizeof(prop)))
+				prop[0] = '\0';
+			continue;
+		}
+		if (prop[0] == '\0')
+			continue;
+		if (ind == 10 && key_at(line, 10, key, sizeof(key)) && strcmp(key, "type") == 0) {
+			char v[32];
+
+			snprintf(v, sizeof(v), "%s", value_of(line));
+			strip_eol(v);
+			prop_is_array = strcmp(v, "array") == 0;
+			continue;
+		}
+		/* items: at 10, its $ref: at 12 -- the only nesting this pass
+		 * follows, and only for a property it has just seen typed as
+		 * an array. */
+		if (ind == 12 && prop_is_array && key_at(line, 12, key, sizeof(key)) &&
+		    strcmp(key, "$ref") == 0) {
+			char items[APIGEN_ID_MAX];
+			int a;
+
+			ref_tail(value_of(line), items, sizeof(items));
+			if (items[0] == '\0')
+				continue;
+			if (g_comp_schemas[cur].n_arr >= APIGEN_MAX_ARRAY_PROPS)
+				continue;
+			a = g_comp_schemas[cur].n_arr++;
+			snprintf(g_comp_schemas[cur].arr[a].prop,
+			         sizeof(g_comp_schemas[cur].arr[a].prop), "%s", prop);
+			snprintf(g_comp_schemas[cur].arr[a].items,
+			         sizeof(g_comp_schemas[cur].arr[a].items), "%s", items);
+			prop_is_array = 0;
+		}
+	}
+	fclose(f);
+}
+
+static const struct comp_schema *comp_schema_find(const char *comp)
+{
+	int i;
+
+	for (i = 0; i < g_comp_schema_count; i++)
+		if (strcmp(g_comp_schemas[i].comp, comp) == 0)
+			return &g_comp_schemas[i];
+	return NULL;
+}
+
 static int perm_is_known(const char *w)
 {
 	int i;
@@ -389,6 +634,11 @@ static void op_add_query(int op, const char *name, const char *spec, int lineno)
 static char g_item_name[APIGEN_QNAME_MAX];
 static int g_item_is_query;
 static int g_in_params;
+
+/* Where the response-shape reader is: inside an operation's `responses:`,
+ * and inside its `"200":` (#575). */
+static int g_in_responses;
+static int g_in_200;
 
 static void param_item_flush(int op, const char *spec, int lineno)
 {
@@ -569,6 +819,172 @@ static void emit_cli(const char *out_path, const char *spec)
 		        g_ops[i].method);
 	}
 	fprintf(o, "\n#endif /* CIX_GENERATED_API_H */\n");
+	fclose(o);
+}
+
+/*
+ * Emits build/generated/api_shapes.h: the keys each operation's 200
+ * response PROMISES, as a table something can walk (#575).
+ *
+ * A table and not a #define per operation, which is what emit_cli()
+ * writes, because the consumer is a loop: a test that calls every
+ * parameterless GET and compares the keys that came back against the
+ * keys the contract declares required. A header of 339 #defines cannot
+ * be iterated, and a hand-written list of endpoints to check is the
+ * second source of truth this whole generator exists to remove.
+ *
+ * `required` is NULL when the contract declares none and when the
+ * schema is a form this tool deliberately does not read. Those are
+ * different facts to a reader and the same fact to the gate -- nothing
+ * to assert -- so they are not distinguished here. What matters is that
+ * the consumer reports how many operations it DID gate, which is the
+ * number that goes stale visibly if the spec drifts towards shapes this
+ * cannot see.
+ */
+static void emit_shapes(const char *out_path, const char *spec)
+{
+	FILE *o = fopen(out_path, "w");
+	int i, j, k;
+
+	if (o == NULL) {
+		fprintf(stderr, "apigen: cannot write %s\n", out_path);
+		exit(1);
+	}
+	fprintf(o,
+	        "/*\n"
+	        " * GENERATED by tools/apigen.c from %s -- DO NOT EDIT.\n"
+	        " *\n"
+	        " * One entry per API operation: its path, method, how many path\n"
+	        " * parameters it takes, the keys its 200 response declares required,\n"
+	        " * and the same for the items of every array property that declares\n"
+	        " * any (#575). Regenerated on every build and emitted under build/,\n"
+	        " * so it can never be committed (ADR-0218).\n"
+	        " */\n"
+	        "#ifndef CIX_GENERATED_API_SHAPES_H\n"
+	        "#define CIX_GENERATED_API_SHAPES_H\n\n"
+	        "struct cix_api_shape_array {\n"
+	        "\tconst char *prop;                 /* NULL terminates the list */\n"
+	        "\tconst char *const *required;      /* NULL-terminated */\n"
+	        "};\n\n"
+	        "struct cix_api_shape {\n"
+	        "\tconst char *op_id;\n"
+	        "\tconst char *path;    /* with %%s per path parameter */\n"
+	        "\tconst char *method;\n"
+	        "\tint n_params;\n"
+	        "\tconst char *const *required;             /* NULL-terminated, or NULL */\n"
+	        "\tconst struct cix_api_shape_array *arrays; /* prop==NULL terminated, or NULL */\n"
+	        "};\n\n",
+	        spec);
+	/*
+	 * Named arrays first: a C initializer cannot hold an anonymous one
+	 * with static storage duration.
+	 */
+	for (i = 0; i < g_op_count; i++) {
+		const struct comp_schema *cs = NULL;
+		int n_req, n_emitted = 0;
+
+		if (g_ops[i].resp_schema[0] != '\0')
+			cs = comp_schema_find(g_ops[i].resp_schema);
+		n_req = cs != NULL ? cs->n_required : g_ops[i].n_resp_required;
+		if (n_req > 0) {
+			fprintf(o, "static const char *const shape_req_%s[] = { ", g_ops[i].op_id);
+			for (j = 0; j < n_req; j++)
+				fprintf(o, "\"%s\", ",
+				        cs != NULL ? cs->required[j] : g_ops[i].resp_required[j]);
+			fprintf(o, "NULL };\n");
+		}
+		if (cs == NULL)
+			continue;
+		/*
+		 * EVERY array property whose items declare keys, not the first
+		 * one. `Pipeline` carries both `packages[]` and `edges[]`, and
+		 * which of the two a gate happens to pick is not a question
+		 * that should have an answer -- picking one would need
+		 * defending and would leave the other able to drift.
+		 */
+		for (j = 0; j < cs->n_arr; j++) {
+			const struct comp_schema *it = comp_schema_find(cs->arr[j].items);
+
+			if (it == NULL || it->n_required == 0)
+				continue;
+			fprintf(o, "static const char *const shape_item_%s_%d[] = { ",
+			        g_ops[i].op_id, n_emitted);
+			for (k = 0; k < it->n_required; k++)
+				fprintf(o, "\"%s\", ", it->required[k]);
+			fprintf(o, "NULL };\n");
+			n_emitted++;
+		}
+		if (n_emitted == 0)
+			continue;
+		fprintf(o, "static const struct cix_api_shape_array shape_arrays_%s[] = {",
+		        g_ops[i].op_id);
+		n_emitted = 0;
+		for (j = 0; j < cs->n_arr; j++) {
+			const struct comp_schema *it = comp_schema_find(cs->arr[j].items);
+
+			if (it == NULL || it->n_required == 0)
+				continue;
+			fprintf(o, " { \"%s\", shape_item_%s_%d },", cs->arr[j].prop, g_ops[i].op_id,
+			        n_emitted);
+			n_emitted++;
+		}
+		fprintf(o, " { NULL, NULL } };\n");
+	}
+	fprintf(o, "\nstatic const struct cix_api_shape cix_api_shapes[] = {\n");
+	for (i = 0; i < g_op_count; i++) {
+		const struct comp_schema *cs = NULL;
+		const char *c;
+		int have_req = 0, have_arrays = 0, n_params = 0;
+		int in_param = 0;
+
+		if (g_ops[i].resp_schema[0] != '\0')
+			cs = comp_schema_find(g_ops[i].resp_schema);
+		have_req = cs != NULL ? cs->n_required > 0 : g_ops[i].n_resp_required > 0;
+		if (cs != NULL) {
+			for (j = 0; j < cs->n_arr; j++) {
+				const struct comp_schema *it = comp_schema_find(cs->arr[j].items);
+
+				if (it != NULL && it->n_required > 0) {
+					have_arrays = 1;
+					break;
+				}
+			}
+		}
+		for (c = g_ops[i].path; *c != '\0'; c++) {
+			if (*c == '{')
+				in_param = 1;
+			else if (*c == '}' && in_param) {
+				in_param = 0;
+				n_params++;
+			}
+		}
+		fprintf(o, "\t{ \"%s\", \"/v1", g_ops[i].op_id);
+		in_param = 0;
+		for (c = g_ops[i].path; *c != '\0'; c++) {
+			if (*c == '{') {
+				in_param = 1;
+				fputs("%s", o);
+				continue;
+			}
+			if (*c == '}') {
+				in_param = 0;
+				continue;
+			}
+			if (!in_param)
+				fputc(*c, o);
+		}
+		fprintf(o, "\", \"%s\", %d, ", g_ops[i].method, n_params);
+		if (have_req)
+			fprintf(o, "shape_req_%s, ", g_ops[i].op_id);
+		else
+			fputs("NULL, ", o);
+		if (have_arrays)
+			fprintf(o, "shape_arrays_%s", g_ops[i].op_id);
+		else
+			fputs("NULL", o);
+		fputs(" },\n", o);
+	}
+	fprintf(o, "};\n\n#endif /* CIX_GENERATED_API_SHAPES_H */\n");
 	fclose(o);
 }
 
@@ -929,12 +1345,13 @@ int main(int argc, char **argv)
 	const char *emit_web_path = NULL;
 	const char *emit_config_path = NULL;
 	const char *emit_permissions_path = NULL;
+	const char *emit_shapes_path = NULL;
 
 	if (argc < 2) {
 		fprintf(stderr, "usage: apigen <openapi.yaml> "
 		                "[--list | --emit-routes <out.h> | --emit-cli <out.h> | "
 		                "--emit-web <out.js> | --emit-config-sections <out.h> | "
-		                "--emit-permissions <out.h>]\n");
+		                "--emit-permissions <out.h> | --emit-shapes <out.h>]\n");
 		return 2;
 	}
 	spec = argv[1];
@@ -949,6 +1366,8 @@ int main(int argc, char **argv)
 			emit_web_path = argv[++i];
 		else if (strcmp(argv[i], "--emit-permissions") == 0 && i + 1 < argc)
 			emit_permissions_path = argv[++i];
+		else if (strcmp(argv[i], "--emit-shapes") == 0 && i + 1 < argc)
+			emit_shapes_path = argv[++i];
 		else if (strcmp(argv[i], "--emit-config-sections") == 0 && i + 1 < argc)
 			emit_config_path = argv[++i];
 		else {
@@ -960,6 +1379,9 @@ int main(int argc, char **argv)
 	/* Parameters referenced by $ref must be known before the paths are
 	 * read, and components: comes after paths: in the file (#282). */
 	load_component_params(spec);
+	/* #575: a response schema named by $ref must be known before the
+	 * paths are read, for the same reason -- components: comes after. */
+	load_component_schemas(spec);
 	/* ADR-0317: the words every x-cix-permission is checked against. */
 	load_permission_vocabulary(spec);
 
@@ -1048,6 +1470,15 @@ int main(int argc, char **argv)
 			 * may have preceded it (#282). */
 			param_item_flush(cur_op, spec, lineno);
 			g_in_params = strcmp(key, "parameters") == 0;
+			/*
+			 * #575: the same for the response-shape reader. An
+			 * operation-level key that is not `responses` ends it, so a
+			 * `required` belonging to some later section cannot be read
+			 * as a response's.
+			 */
+			g_in_responses = strcmp(key, "responses") == 0;
+			if (!g_in_responses)
+				g_in_200 = 0;
 			if (strcmp(key, "operationId") == 0) {
 				char v[APIGEN_ID_MAX];
 
@@ -1104,6 +1535,42 @@ int main(int argc, char **argv)
 				snprintf(g_ops[cur_op].expose, sizeof(g_ops[cur_op].expose), "%s", v);
 			}
 			continue;
+		}
+
+		/*
+		 * The 200 response's schema (#575).
+		 *
+		 * Two forms, and they are the only two the spec uses for an
+		 * object response -- measured 2026-10-07: 159 operations name
+		 * a components/schemas entry with `$ref` at indent 16, and 69
+		 * declare an inline `type: object`, of which 42 carry their
+		 * own `required`. A bare array (2), a string (3), and anything
+		 * reached through allOf nest deeper than this reads, so they
+		 * record no shape -- see api_op's own comment for why silence
+		 * is the right answer here and a refusal is the right answer
+		 * for a route.
+		 */
+		if (g_in_responses && cur_op >= 0) {
+			if (ind == 8) {
+				g_in_200 = key_at(line, 8, key, sizeof(key)) &&
+				           strcmp(key, "\"200\"") == 0;
+				continue;
+			}
+			if (g_in_200 && ind == 16 && key_at(line, 16, key, sizeof(key))) {
+				if (strcmp(key, "$ref") == 0) {
+					ref_tail(value_of(line), g_ops[cur_op].resp_schema,
+					         sizeof(g_ops[cur_op].resp_schema));
+				} else if (strcmp(key, "required") == 0) {
+					char v[1024];
+
+					snprintf(v, sizeof(v), "%s", value_of(line));
+					strip_eol(v);
+					g_ops[cur_op].n_resp_required =
+					    parse_inline_list(v, g_ops[cur_op].resp_required,
+					                      APIGEN_MAX_REQUIRED);
+				}
+				continue;
+			}
 		}
 
 		/*
@@ -1203,6 +1670,8 @@ int main(int argc, char **argv)
 		emit_routes(emit_path, spec);
 	if (emit_cli_path != NULL)
 		emit_cli(emit_cli_path, spec);
+	if (emit_shapes_path != NULL)
+		emit_shapes(emit_shapes_path, spec);
 	if (emit_web_path != NULL)
 		emit_web(emit_web_path, spec);
 	if (emit_permissions_path != NULL)
