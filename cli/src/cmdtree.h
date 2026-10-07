@@ -337,6 +337,7 @@ static const char *const n_iso_publish_flags[] = {
 static const struct cli_node n_iso_subs[] = {
 	{ "build", n_iso_build_flags, NULL },
 	{ "publish", n_iso_publish_flags, NULL },
+	{ "published", NULL, NULL },
 	{ "status", NULL, NULL },
 	{ NULL, NULL, NULL },
 };
