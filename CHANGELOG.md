@@ -6,6 +6,43 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The API README's endpoint table is complete, and gated in both directions (#576)
+
+The table went from **324 of 339** (method, path) pairs to **339 of 339**, and `test_docindex` now
+checks both directions exactly, with no allow-list.
+
+Three numbers, measured 2026-10-07, and they are easy to confuse:
+
+| | |
+|---|---|
+| **19** | rows naming an endpoint that does not exist — 8 dead `/disks*` paths after the rename to `/storage*`, 11 volume rows spelling `{name}`/`{volume}` against the contract's `{volume_name}`. Fixed in 0.2.57-466. |
+| **4** | operations the gate could not see, because the parser recognised one method per cell and the table covers a read/write pair in one row (`\| GET, PUT \|`). Fixed in 0.2.57-467. |
+| **15** | operations with no row at all. Added here. |
+
+- **The fifteen were ordinary operator capabilities, not a category anyone had chosen to leave out**:
+  `GET`/`POST /system/assembly` (the route for a hostbuild already installed, #308), `POST /config` and
+  `POST /config/diff` (ADR-0292), `POST /pki/export` and `POST /pki/import`,
+  `POST /storage/{name}/unmount`, `PUT /networks/{name}`, `PUT /containers/{name}/sysctls`,
+  `DELETE /containers/{name}/files`, `GET /volumes/{volume_name}/usage`, `GET /schedules/{name}`,
+  `POST /pipeline/revoke`, `GET /pkg/buildenv` and `DELETE /pkg/buildenv/{name}`. Each row is written
+  in the table's own register from the contract's own `summary`, placed beside its siblings — a row
+  reading "Returns the image policy" next to one reading "Which disk (if any) is the active placement
+  for the consolidated log store" would pass the gate and make the document worse.
+- **No allow-list, deliberately, and this is the decision to revisit rather than route around.** The
+  reverse direction was going to need a judgement about what counts as documented — until the count
+  came back as fifteen ordinary endpoints rather than a coherent exempt category. They were added
+  instead of exempted, so the check needs no exceptions. When a 340th operation lands without a row,
+  the gate will say so by name; the fix is the row, not an entry in a list where the next fifteen
+  would accumulate.
+- **The fixture grew the two edges the real document has and could not exercise**: a row whose purpose
+  cell contains a backtick (the path is the *first* backticked cell, and `POST /pki/import`'s purpose
+  cites `POST /pki/export`), and a row whose method cell is prose, which must be skipped rather than
+  refused. Six rows now yield seven pairs; the markdown header, the separator, two rows with no path
+  cell and one with prose in the method cell must yield none.
+- The forward floor now names the **parser** when it trips: a parser matching nothing reports no
+  forward failure and makes the reverse direction fail 339 times, every message reading "the table has
+  no row for it". One line says which it actually is.
+
 ### The endpoint-table gate skipped a row covering a read/write pair (#576)
 
 0.2.57-466's gate had a hole: the table legitimately covers a read/write pair in **one row** —

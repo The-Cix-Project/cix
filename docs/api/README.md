@@ -10,6 +10,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 |---|---|---|
 | GET | `/health` | Liveness check -- minimal, low-latency, no build/slot identity; carries `auth_gating_active` (#370) |
 | GET | `/config` | The whole running configuration as one ordered, redacted document (ADR-0206) |
+| POST | `/config` | Apply a configuration document to this host (ADR-0292) |
+| POST | `/config/diff` | What a configuration document would change, changing nothing |
 | POST | `/login` | Authenticate, get a session token (ADR-0144) -- `public`, needs no session |
 | POST | `/logout` | Invalidate the current session (idempotent, `public`) |
 | GET | `/whoami` | Is the caller's own bearer token currently authenticated, and its permissions -- `public`, never consumes a single-use session (ADR-0164) |
@@ -38,6 +40,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/system/shutdown` | Stop `cixd`; powers off the host too when running as real PID 1 |
 | POST | `/system/reboot` | Stop `cixd`; restarts the host too when running as real PID 1 |
 | POST | `/system/update` | Write a fresh control-plane squashfs and/or a fresh kernel onto this daemon's own inactive A/B slot |
+| GET | `/system/assembly` | What control-plane assembly is doing right now (issue #182, ADR-0230) |
+| POST | `/system/assembly` | Assemble a control-plane root now — the route for a hostbuild that is already installed (issue #308) |
 | GET | `/system/boot-next` | What is armed to boot next, if anything |
 | POST | `/system/boot-next` | Boot a slot **once**, then revert to normal selection (#154) |
 | — | container `userns` field | User namespaces by default; opt-out per container or platform-wide (ADR-0207) |
@@ -141,10 +145,12 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/containers/{name}/migrate-storage` | Move this container's own storage to a new disk, or back to the default |
 | GET | `/containers/{name}/files` | Read one file's raw bytes back out of a container's rootfs | **Read `X-Cix-Source` (#394)** — `container`, `writable` or `image`: a 200 means "some tree the daemon can reach has these bytes", and only `container` answers "what does this container see". The endpoint once returned 2 MB of valid ELF for a binary a shell inside that same container could not find, and was believed over the shell twice. `X-Cix-Mode`/`Uid`/`Gid`/`Size` carry the metadata the body cannot (#139).
 | PUT | `/containers/{name}/files` | Write/overwrite one file inside an already-existing container, live, without a recreate (ADR-0153) | The write lands in the container's **host-side rootfs** when it has one — the tree it pivoted onto, reached without crossing its id-mapped mount. Creating a file through `/proc/<pid>/root` is refused with `EOVERFLOW` on a running userns container, which is why this returned 500 for every container on a userns-by-default host while `GET` on the same container worked (#333). The kernel-side mechanism is **not established** — the obvious id-mapped-mount explanation is ruled out, since the rootfs that failed is not id-mapped. Omitting `owner`/`group` inherits the rootfs's own ownership, which is what makes the file read as root inside the container under either userns presentation. A path shadowed inside the container by a mount (`/run`, a volume) gets a **409 with nothing written**, rather than a 204 that would be invisible to it. |
+| DELETE | `/containers/{name}/files` | Remove one file from inside an already-existing container, live, without a recreate |
 | POST | `/containers/{name}/networks` | Attach a network to an already-running container, live, without a recreate (ADR-0156) |
 | DELETE | `/containers/{name}/networks/{network}` | Detach a live-attached network; refuses a create-time attachment (409) |
 | POST | `/containers/{name}/devices` | Attach a device to an already-running container, live, without a recreate (ADR-0161) |
 | DELETE | `/containers/{name}/devices/{id}` | Detach a live-attached device; refuses a create-time attachment (409) |
+| PUT | `/containers/{name}/sysctls` | Set a container's `net.*` sysctls, live when it is running (#447) |
 | GET | `/containers/{name}/console` | Upgrade to a WebSocket; attach to one of the consoles the container **declares** (`?console=NAME`, default the first). A container declaring none has no console (#248). `?term=`/`?cols=`/`?rows=` give the session a real terminal type and size |
 | GET | `/deployments` | List deployments (metadata only) (ADR-0151, renamed #371) |
 | POST | `/deployments` | Add/replace a deployment -- content must be a real `POST /containers` body, its own `"name"` matching the deployment's |
@@ -161,6 +167,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | DELETE | `/storage-roles/{name}` | Remove a disk's role assignment |
 | GET | `/storage/{name}/format` | Status of the most recent (or running) format+mount job for this disk |
 | POST | `/storage/{name}/format` | Destructive: mkfs (ext4 or btrfs) + mount an already role-assigned disk |
+| POST | `/storage/{name}/unmount` | Detach an already-mounted, non-OS disk from the running system, without touching its content |
 | POST | `/storage/{name}/partition-table` | Destructive: writes a fresh, empty GPT partition table to a whole disk |
 | POST | `/storage/{name}/partitions` | Append one new partition to a disk's existing table |
 | DELETE | `/storage/{name}/partitions/{partition_name}` | Remove one partition |
@@ -177,6 +184,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/volumes` | List every persistent volume (issue #88, ADR-0183) |
 | POST | `/volumes` | Create a volume -- named storage whose lifetime is independent of any container |
 | GET | `/volumes/{volume_name}` | Inspect one volume |
+| GET | `/volumes/{volume_name}/usage` | How much a volume actually holds (issue #365) |
 | GET | `/software` | What is declared (has a recipe) against what is actually installed (issue #97) |
 | GET | `/system/volume-backup-config` | The shared schedule for volume content snapshots (issue #96) |
 | PUT | `/system/volume-backup-config` | Set it — target disk, on/off, interval |
@@ -192,6 +200,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/networks` | List all networks this daemon knows about |
 | POST | `/networks` | Create a network (a real bridge, persisted across restarts) |
 | GET | `/networks/{name}` | Inspect one network |
+| PUT | `/networks/{name}` | Update a network's auto-allocation window (issue #137) |
 | DELETE | `/networks/{name}` | Remove a network (refused if any container is still attached, or if it carries the management address) |
 | POST | `/networks/{name}/interfaces` | Attach a real host network interface to this network's bridge |
 | DELETE | `/networks/{name}/interfaces/{ifname}` | Detach a previously-attached interface (refused while the network carries the management address) |
@@ -260,6 +269,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/pki/certs/{name}` | Inspect one issued certificate (metadata + cert, never the key) |
 | DELETE | `/pki/certs/{name}` | Remove an issued certificate |
 | POST | `/pki/reset` | Wipe and regenerate the entire CA chain, reissuing every currently-tracked leaf |
+| POST | `/pki/export` | The whole PKI store, encrypted under an operator passphrase, to carry across a reinstall |
+| POST | `/pki/import` | Restore a store from `POST /pki/export`, into an install that has no CA yet |
 | POST | `/pkg/bootstrap` | Stage the sandboxed build toolchain image (`toolchain_path` local import, or `toolchain_url`+`toolchain_sha256` for the daemon to fetch it itself; once; idempotent) |
 | GET | `/pkg/bootstrap` | Status of the most recent `toolchain_url` fetch |
 | GET | `/pkg/recipes` | List every published recipe version known to this daemon (metadata only) |
@@ -282,10 +293,12 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/pipeline` | The delivery graph: where every package, image, deployment and the host stands, and what is stopping it (ADR-0256, ADR-0269) |
 | GET | `/pipeline/runs` | What has *happened* to an atom, newest first — one record per run, with retention of its own (ADR-0272) |
 | GET | `/pipeline/approvals` | What is held waiting for a person, and what has been approved (ADR-0273) |
+| POST | `/pipeline/revoke` | Withdraw an approval that has not been used yet (#381) |
 | POST | `/pipeline/approve` | Let one held change through |
 | GET | `/system/pipeline-config` | Pipeline settings that are an operator's to choose |
 | PUT | `/system/pipeline-config` | Change one — currently `run_retention` |
 | GET | `/schedules` | Everything this host does on a clock, in one place (ADR-0257) |
+| GET | `/schedules/{name}` | Inspect one |
 | PUT | `/schedules/{name}` | Create or replace one |
 | DELETE | `/schedules/{name}` | Remove one |
 | POST | `/schedules/{name}/run` | Run one now, even if disabled |
@@ -363,6 +376,8 @@ The kind is set in the single function that records a failure, and it is a **req
 | GET | `/pkg` | List every known package (installed or in-flight) with its state |
 | GET | `/pkg/{name}` | Inspect one package's current state |
 | DELETE | `/pkg/{name}` | Uninstall a package, or clear a permanently-failed entry (never actually merged into any image, so no new image version is produced) |
+| GET | `/pkg/buildenv` | The composed build environments this host is holding (ADR-0221) |
+| DELETE | `/pkg/buildenv/{name}` | Reclaim one now, rather than waiting for the drain (ADR-0221) |
 
 **Seeing whether an install actually landed.** `GET /pkg` and the image can disagree, and nothing surfaced it. An image version is a hash of the installed package set (ADR-0108), so installing a `name@version` the set already holds reproduces the same hash — and the freshly built tree is discarded in favour of the existing directory (ADR-0155). When that directory really holds the content, discarding is correct. When it does not, the install reports success and the files are absent: observed on the reference host as `GET /v1/pkg` reporting `htop` installed into `jumpbox` while the container answered `bash: htop: command not found` (#281). The operator's first evidence was a missing binary, which names neither the image nor the dedup.
 

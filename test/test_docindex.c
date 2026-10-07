@@ -494,26 +494,32 @@ static int next_endpoint_row(const char **p, char *methods, size_t methods_size,
 	return 0;
 }
 
+#define CIX_API_SHAPE_COUNT ((int)(sizeof(cix_api_shapes) / sizeof(cix_api_shapes[0])))
+
 /*
- * Does the contract declare this method and path?
+ * Which operation this method and path name, or -1.
  *
  * Exact, parameter names included -- `path_raw` is the contract's own
  * spelling. A row naming `{disk_name}` where the contract says `{name}`
  * is a real defect for anyone copying a path out of the table, and it
  * was part of the drift #576 reports.
+ *
+ * Returns the index rather than a yes/no so the caller can record WHICH
+ * operations the table covered, which is what the reverse direction
+ * needs.
  */
-static int contract_declares(const char *method, const char *bare_path)
+static int contract_index(const char *method, const char *bare_path)
 {
 	char want[280];
 	int i;
 
 	snprintf(want, sizeof(want), "/v1%s", bare_path);
-	for (i = 0; i < (int)(sizeof(cix_api_shapes) / sizeof(cix_api_shapes[0])); i++) {
+	for (i = 0; i < CIX_API_SHAPE_COUNT; i++) {
 		if (strcmp(cix_api_shapes[i].method, method) == 0 &&
 		    strcmp(cix_api_shapes[i].path_raw, want) == 0)
-			return 1;
+			return i;
 	}
-	return 0;
+	return -1;
 }
 
 /*
@@ -523,17 +529,19 @@ static int contract_declares(const char *method, const char *bare_path)
  * wrong" from "I parsed nothing" -- both report no failures. This tells
  * them apart, and it needs no daemon, no box and no probe cycle.
  *
- * FIVE rows yield SIX (method, path) pairs; every other line in the
+ * SIX rows yield SEVEN (method, path) pairs; every other line in the
  * fixture must yield none.
  *
- * Five of those six pairs name real operations: `/health`,
+ * Six of those seven pairs name real operations: `/health`,
  * `/pkg/{name}`, the two-parameter volumes delete, and BOTH halves of a
  * `| GET, PUT |` row -- which is the case that mattered. The real table
  * carries exactly two such rows (`GET, POST /whoami/app-passwords` and
  * `GET, PUT /images/{name}/policy`, measured 2026-10-07); a parser
  * recognising only a single method skipped both, so four operations went
- * unchecked while the gate reported clean. The sixth pair names a path
- * the contract does not declare and must be refused.
+ * unchecked while the gate reported clean. A second `/health` row
+ * carries a backtick in its PURPOSE cell, which must not be mistaken
+ * for the path -- the real table has rows like that. The seventh pair
+ * names a path the contract does not declare and must be refused.
  *
  * What must yield nothing: the markdown header and separator lines, two
  * rows with no path cell, and one with prose in the method cell.
@@ -545,7 +553,7 @@ static int contract_declares(const char *method, const char *bare_path)
  * backtick at all, so the guard goes unexercised and the test passes for
  * the wrong reason.
  *
- * The five good pairs are spelled exactly as the contract spells them,
+ * The six good pairs are spelled exactly as the contract spells them,
  * so if any of those operations is renamed this fixture fails too. That
  * is deliberate: it would mean the real table needs the same edit.
  */
@@ -562,6 +570,7 @@ static void check_endpoint_row_parser(void)
 	    "| DELETE | `/containers/{name}/volumes/{volume_name}` | two of them |\n"
 	    "| GET, PUT | `/images/{name}/policy` | a read/write pair in ONE row |\n"
 	    "| Deliberately | `/health` | SKIPPED: the first cell is not a method |\n"
+	    "| GET | `/health` | a backtick in the PURPOSE cell: the `status` field |\n"
 	    "| GET | `/no/such/endpoint` | deliberately absent from the contract |\n";
 	const char *p = fixture;
 	char methods[64], method[12], path[256];
@@ -572,7 +581,7 @@ static void check_endpoint_row_parser(void)
 
 		for (i = 0; method_at(methods, i, method, sizeof(method)); i++) {
 			pairs++;
-			if (contract_declares(method, path))
+			if (contract_index(method, path) >= 0)
 				declared++;
 			else
 				refused++;
@@ -584,13 +593,13 @@ static void check_endpoint_row_parser(void)
 	 * one. Two rows with no path cell and one whose first cell is prose
 	 * must contribute none.
 	 */
-	if (pairs != 6)
+	if (pairs != 7)
 		fail("the endpoint-row parser found %d (method, path) pair(s) in a fixture "
-		     "holding 6 -- three of its rows must be skipped and one must yield TWO "
+		     "holding 7 -- three of its lines must be skipped and one row must yield TWO "
 		     "pairs, which is the case a single-method parser silently dropped (#576)",
 		     pairs);
-	if (declared != 5)
-		fail("the endpoint-row parser resolved %d of 5 fixture pairs naming real "
+	if (declared != 6)
+		fail("the endpoint-row parser resolved %d of 6 fixture pairs naming real "
 		     "operations; a gate that resolves nothing cannot tell a correct document "
 		     "from one it failed to read",
 		     declared);
@@ -624,26 +633,36 @@ static void check_endpoint_row_parser(void)
  * applied to the one index whose rows point into the contract rather
  * than at a file.
  *
- * Two different numbers, and they are easy to confuse: 19 is how many
- * rows named something that did not exist, which this fixed. 15 is how
- * many operations have no row at all, which it does not -- see the
- * note that follows.
+ * BOTH DIRECTIONS, exactly, with no allow-list. Every row must resolve
+ * to a real operation, and every operation must have a row. The two
+ * catch different failures: the forward one catches an endpoint removed
+ * or renamed, the reverse one catches a NEW endpoint nobody documented,
+ * which is the failure this table will have next.
  *
- * ONE DIRECTION ONLY, deliberately. Every row must resolve to a real
- * operation; an operation with no row is not a failure here. 15 of 339
- * have none, and the reverse direction is the more valuable one -- it
- * catches a NEW endpoint nobody documented, which is the failure this
- * table will have next. It is also the one that needs a decision about
- * what counts as documented, since the table legitimately covers a
- * read/write pair in one row (`| GET, PUT |`). #576 carries it.
+ * Three numbers, measured 2026-10-07 and easy to confuse. 19 rows
+ * named something that did not exist (fixed first). 4 more rows
+ * went unchecked because the parser recognised only one method per
+ * cell, so `| GET, PUT |` rows were skipped entirely. 15 operations
+ * then had no row at all -- `GET /system/assembly`, `POST /config`,
+ * `POST /pki/export`, `PUT /networks/{name}` and so on: ordinary
+ * operator capabilities, not a category anyone had decided to leave
+ * out. They were added rather than exempted, so the table is 339 of 339
+ * and this check needs no exceptions.
  */
 static void check_api_endpoint_index(void)
 {
+	static char covered[2048];
 	char *doc = slurp("docs/api/README.md");
 	const char *p;
 	char methods[64], method[12], path[256];
-	int pairs = 0;
+	int pairs = 0, i;
 
+	if (CIX_API_SHAPE_COUNT > (int)sizeof(covered)) {
+		fail("the contract declares %d operations, more than this check can track -- "
+		     "raise `covered` rather than let the reverse direction go unsound",
+		     CIX_API_SHAPE_COUNT);
+		return;
+	}
 	if (doc == NULL) {
 		fail("docs/api/README.md is unreadable -- it is the narrative index into the "
 		     "REST contract");
@@ -651,30 +670,63 @@ static void check_api_endpoint_index(void)
 	}
 	p = doc;
 	while (next_endpoint_row(&p, methods, sizeof(methods), path, sizeof(path))) {
-		int i;
+		int m;
 
-		for (i = 0; method_at(methods, i, method, sizeof(method)); i++) {
+		for (m = 0; method_at(methods, m, method, sizeof(method)); m++) {
+			int idx = contract_index(method, path);
+
 			pairs++;
-			if (!contract_declares(method, path))
+			if (idx < 0)
 				fail("docs/api/README.md's endpoint table offers `%s %s`, which the "
 				     "contract does not declare -- a reader copying that path gets a "
 				     "404 (#576)",
 				     method, path);
+			else
+				covered[idx] = 1;
 		}
 	}
 	/*
-	 * A floor, for the reason the fixture above exists: a parser that
-	 * silently matched nothing would report no failures. 250 is well
-	 * under the 324 (method, path) pairs measured on 2026-10-07 and
-	 * well over anything a broken parse would find.
+	 * The reverse direction: an operation the table does not name.
+	 *
+	 * This is the half that catches a NEW endpoint nobody documented,
+	 * which is the failure this table will have next -- the forward
+	 * direction only catches one that was removed or renamed.
+	 *
+	 * Exact, with no allow-list, because the table turned out to be a
+	 * complete index by intent rather than a selection: it already held
+	 * 324 of the 339 (method, path) pairs when this check was written,
+	 * and the fifteen it lacked were ordinary operator capabilities --
+	 * `GET /system/assembly`, `POST /config`, `POST /pki/export`,
+	 * `PUT /networks/{name}` and so on -- not a category anyone had
+	 * decided to leave out. So they were added rather than exempted,
+	 * and the table is now 339 of 339. An allow-list here would be a
+	 * place for the next fifteen to accumulate.
+	 */
+	for (i = 0; i < CIX_API_SHAPE_COUNT; i++) {
+		if (covered[i])
+			continue;
+		fail("the contract declares `%s %s` (%s) and docs/api/README.md's endpoint table "
+		     "has no row for it -- the table is a complete index, so a new operation "
+		     "needs a row in the same change (#576)",
+		     cix_api_shapes[i].method, cix_api_shapes[i].path_raw, cix_api_shapes[i].op_id);
+	}
+	/*
+	 * A floor on the forward count, which names the PARSER.
+	 *
+	 * A parser that silently matched nothing reports no forward failure
+	 * at all, and the reverse direction above then fails 339 times --
+	 * loud, but every message says "the table has no row for it", which
+	 * reads as 339 documentation bugs. This one line says which it is.
 	 */
 	if (pairs < 250)
 		fail("only %d endpoint-table pair(s) were found in docs/api/README.md, against "
-		     "324 measured on 2026-10-07 -- either the table shrank sharply or the "
-		     "parser stopped reading it",
+		     "339 measured on 2026-10-07 -- the parser stopped reading the table, and "
+		     "any \"no row for it\" failures above are a consequence of that rather "
+		     "than 339 separate documentation gaps",
 		     pairs);
-	printf("  api endpoint index: %d (method, path) pair(s) checked against the contract\n",
-	       pairs);
+	printf("  api endpoint index: %d (method, path) pair(s), both directions against %d "
+	       "declared operations\n",
+	       pairs, CIX_API_SHAPE_COUNT);
 	free(doc);
 }
 
