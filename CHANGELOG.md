@@ -6,6 +6,42 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Every image gets a /dev/tty (#577)
+
+`pkg_seed_image_baseline()`'s device table staged `null`, `zero`, `full`, `random` and `urandom`, plus
+`/dev/ptmx` as a symlink (ADR-0150). It did not stage `tty`, and nothing else did — so **no image this
+platform builds had a controlling-terminal node.**
+
+Measured on 192.168.15.95 on a throwaway container from the `jumpbox` image, a console running
+`exec 0</dev/tty`:
+
+```
+/usr/bin/bash: line 1: /dev/tty: No such file or directory
+```
+
+while the same container's terminal was entirely healthy — a sibling console reported
+`tty=[/dev/pts/0]` with `/proc/self/fd/0 -> /dev/pts/0`, and an unbuffered write to stderr reached the
+client at once.
+
+- **It is not a convenience.** `/dev/tty` is the only way to reach the controlling terminal once a
+  program's own stdin and stdout are redirected, which is what `sudo`, `su`, `ssh -t`, every passphrase
+  prompt and any `read x < /dev/tty` depend on. On an image whose purpose is humans logging in, each of
+  those failed with a message naming a missing *file*.
+- **A static node, not a symlink.** `/dev/ptmx` needs the symlink because pty allocation needs a real
+  devpts mounted beneath it; the kernel resolves 5:0 to the caller's own controlling terminal, so it
+  needs nothing underneath.
+- **Checked that the node would actually be openable**, because one that exists and cannot be opened is
+  not a fix: `container_dev_bpf_attach()` attaches no `BPF_CGROUP_DEVICE` program at all when a
+  container declares no devices, and all twelve containers on the box declare none.
+- **The control-plane root is unaffected** — it gets a real devtmpfs at boot, which creates the node
+  itself.
+- `test_pkg`'s baseline assertion, which already checked the other five nodes and `/run`, now covers it.
+  It is a FLOOR_SELFTEST, so a future table edit that drops the entry fails the release.
+
+A pre-existing gap found beside it is filed as #578 rather than folded in: a container that *does*
+declare a device gets a policy allowing only what it declared, which denies the baseline nodes —
+`/dev/null` included. Never hit on this host because no container declares one.
+
 ### The API README's endpoint table is complete, and gated in both directions (#576)
 
 The table went from **324 of 339** (method, path) pairs to **339 of 339**, and `test_docindex` now

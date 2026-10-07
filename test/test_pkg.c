@@ -3791,6 +3791,12 @@ int main(void)
 			    stat(router_path("/dev/full"), &st) != 0 ||
 			    stat(router_path("/dev/random"), &st) != 0 ||
 			    stat(router_path("/dev/urandom"), &st) != 0 ||
+			    /* tty (5:0), added with the node itself (#577): the only
+			     * way to reach the controlling terminal once stdin and
+			     * stdout are redirected, which is what sudo, su, ssh -t
+			     * and any `read x < /dev/tty` depend on. Measured absent
+			     * from every image before this. */
+			    stat(router_path("/dev/tty"), &st) != 0 ||
 			    stat(router_path("/run"), &st) != 0) {
 				fprintf(stderr,
 				        "FAIL: router image missing its baseline dev nodes/run dir after "
