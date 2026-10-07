@@ -3670,6 +3670,18 @@ static int write_finalize_script(const char *upperdir)
  * the jsonl properly -- phase timings and cache-hit counts into the
  * REST progress fields -- is worth doing and is not this.
  *
+ * That remains true and it is now ASKED FOR rather than merely noted:
+ * cix-build-system#282 requests `--events-fd N` (or `--events-file`),
+ * so the stream can go somewhere other than stderr. CBS hard-wires it
+ * at src/main.c:1672, `event_fd = dup(fileno(stderr))`, while
+ * src/report.c:71 already parameterises the sink -- so it is flag
+ * parsing upstream, not a redesign. Until that lands, reading the
+ * events means disambiguating machine records from command output on
+ * one merged fd, which is guessing which lines are the reporter: the
+ * same defect cix#489 names, in a worse form. So this stays `human`
+ * deliberately, and cix#489 carries the design for the day the fd
+ * exists.
+ *
  * finalize.sh is CBS's own --finalize-command rather than a shell step
  * after it (ADR-0307 clause 2). Measured at tag v0.1.29 rather than
  * assumed, because the ordering is the whole point:

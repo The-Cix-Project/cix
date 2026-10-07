@@ -6,6 +6,34 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Asked CBS for a separate event channel instead of parsing a merged one (#489, cix-build-system#282)
+
+#489 asks cixd to read CBS's structured build-event stream instead of its human reporter, so a build's
+REST state can name the phase it is in and the command that failed. Its first deliverable is "use
+`--events jsonl`", and that cannot be done as written.
+
+**CBS hard-wires the event stream to a dup of stderr** — `src/main.c:1672`,
+`event_fd = dup(fileno(stderr))` — which is the same fd every build command's own output goes to, and
+the fd cixd's build log reads. So `--events jsonl` does not give cixd a machine channel; it mixes
+machine records into the operator's log. `pkg.c`'s own comment already recorded that choice as
+deliberate for exactly this reason.
+
+Parsing the merged stream was the alternative and it is worse than what #489 objects to: cixd would
+have to decide per line whether `{…` is a CBS event or something a build printed — and a recipe
+running `cbs explain`, or a test printing JSON, is indistinguishable from an event. Replacing "scrape
+the human reporter" with "guess which lines are the machine reporter" is the same defect with a
+less visible failure.
+
+So the ask went upstream: **cix-build-system#282** requests `--events-fd N` (or `--events-file`).
+`src/report.c:71` already parameterises the sink (`FILE *stream = user == NULL ? stderr : user;`), so
+it is flag parsing upstream rather than a redesign. `pkg.c`'s comment now names that ticket, so the
+next reader of *"worth doing and is not this"* knows it has been asked for rather than forgotten.
+
+**Deliverable 3 of #489 is already done, by a better route.** It asks for a staged-tree file count of
+zero at `artifact-finalized` to fail the build closed. `staged_tree_has_content()` already does that
+by inspecting the tree directly — the daemon measuring rather than the tool reporting — and it is what
+refused the empty `keepver@1.1` fixture in #570's gate. The event-based version is unnecessary.
+
 ### Every image gets a /dev/tty (#577)
 
 `pkg_seed_image_baseline()`'s device table staged `null`, `zero`, `full`, `random` and `urandom`, plus
