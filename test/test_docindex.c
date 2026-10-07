@@ -357,6 +357,250 @@ static void check_adr_headers(void)
 	closedir(d);
 }
 
+/*
+ * The next endpoint-table row at or after *p, if any.
+ *
+ * Rows look like `| GET | `/path` | what it does |`, and the method
+ * cell may name SEVERAL -- `| GET, PUT | `/images/{name}/policy` |`
+ * covers a read/write pair in one row, which is a form the table uses
+ * deliberately and is not drift. So this yields the cell verbatim and
+ * `method_at()` walks it; a parser that recognised only a single method
+ * silently skipped those rows, and skipping is the one failure a gate
+ * must not have (measured: 2 rows, 4 operations, unchecked).
+ *
+ * Found by scanning cells rather than parsing markdown: the shape is
+ * regular, and unlike source code (see test_api_surfaces' own reasoning
+ * for why enumeration is unreliable THERE) a table row either matches
+ * this shape or is not a row at all.
+ *
+ * A separate function from its two callers so the parser can be
+ * exercised on a fixture holding rows it must reject and rows it must
+ * skip. Without that, a gate over a correct document proves only that
+ * it found nothing wrong -- which is also what a parser matching zero
+ * rows reports.
+ */
+static int is_method_word(const char *w, size_t len)
+{
+	static const char *const methods[] = { "GET", "PUT", "POST", "DELETE",
+	                                       "PATCH", "HEAD", NULL };
+	int i;
+
+	for (i = 0; methods[i] != NULL; i++)
+		if (strlen(methods[i]) == len && strncmp(w, methods[i], len) == 0)
+			return 1;
+	return 0;
+}
+
+/*
+ * The i-th method in a cell like "GET, PUT". Returns 0 once there are
+ * no more, so a caller walks it with an ordinary for loop.
+ */
+static int method_at(const char *cell, int want, char *out, size_t out_size)
+{
+	const char *c = cell;
+	int i = 0;
+
+	while (*c != '\0') {
+		const char *start;
+		size_t len;
+
+		while (*c == ' ' || *c == ',')
+			c++;
+		if (*c == '\0')
+			break;
+		start = c;
+		while (*c != '\0' && *c != ' ' && *c != ',')
+			c++;
+		len = (size_t)(c - start);
+		if (i++ != want)
+			continue;
+		if (len >= out_size)
+			return 0;
+		memcpy(out, start, len);
+		out[len] = '\0';
+		return 1;
+	}
+	return 0;
+}
+
+/* Is every word in the cell an HTTP method? A cell of prose is not a
+ * row this gate has anything to say about. */
+static int cell_is_methods(const char *cell)
+{
+	const char *c = cell;
+	int words = 0;
+
+	while (*c != '\0') {
+		const char *start;
+
+		while (*c == ' ' || *c == ',')
+			c++;
+		if (*c == '\0')
+			break;
+		start = c;
+		while (*c != '\0' && *c != ' ' && *c != ',')
+			c++;
+		if (!is_method_word(start, (size_t)(c - start)))
+			return 0;
+		words++;
+	}
+	return words > 0;
+}
+
+static int next_endpoint_row(const char **p, char *methods, size_t methods_size, char *path,
+                             size_t path_size)
+{
+	while ((*p = strchr(*p, '\n')) != NULL) {
+		const char *q, *bar, *tick, *end;
+		size_t n;
+
+		(*p)++;
+		if (**p != '|')
+			continue;
+		end = strchr(*p, '\n');
+		/* First cell: the method or methods. */
+		q = *p + 1;
+		bar = strchr(q, '|');
+		if (bar == NULL || (end != NULL && bar > end))
+			continue;
+		n = (size_t)(bar - q);
+		while (n > 0 && (q[0] == ' ')) {
+			q++;
+			n--;
+		}
+		while (n > 0 && q[n - 1] == ' ')
+			n--;
+		if (n == 0 || n >= methods_size)
+			continue;
+		memcpy(methods, q, n);
+		methods[n] = '\0';
+		if (!cell_is_methods(methods))
+			continue;
+		/* Second cell: the path, in backticks, on this same line. */
+		tick = strchr(bar, '`');
+		if (tick == NULL || (end != NULL && tick > end))
+			continue;
+		tick++;
+		q = strchr(tick, '`');
+		if (q == NULL || (end != NULL && q > end))
+			continue;
+		n = (size_t)(q - tick);
+		if (n == 0 || n >= path_size || tick[0] != '/')
+			continue;
+		memcpy(path, tick, n);
+		path[n] = '\0';
+		return 1;
+	}
+	return 0;
+}
+
+/*
+ * Does the contract declare this method and path?
+ *
+ * Exact, parameter names included -- `path_raw` is the contract's own
+ * spelling. A row naming `{disk_name}` where the contract says `{name}`
+ * is a real defect for anyone copying a path out of the table, and it
+ * was part of the drift #576 reports.
+ */
+static int contract_declares(const char *method, const char *bare_path)
+{
+	char want[280];
+	int i;
+
+	snprintf(want, sizeof(want), "/v1%s", bare_path);
+	for (i = 0; i < (int)(sizeof(cix_api_shapes) / sizeof(cix_api_shapes[0])); i++) {
+		if (strcmp(cix_api_shapes[i].method, method) == 0 &&
+		    strcmp(cix_api_shapes[i].path_raw, want) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+/*
+ * The parser and the refusal, on a fixture (#576).
+ *
+ * A gate run only over a correct document cannot tell "nothing is
+ * wrong" from "I parsed nothing" -- both report no failures. This tells
+ * them apart, and it needs no daemon, no box and no probe cycle.
+ *
+ * FIVE rows yield SIX (method, path) pairs; every other line in the
+ * fixture must yield none.
+ *
+ * Five of those six pairs name real operations: `/health`,
+ * `/pkg/{name}`, the two-parameter volumes delete, and BOTH halves of a
+ * `| GET, PUT |` row -- which is the case that mattered. The real table
+ * carries exactly two such rows (`GET, POST /whoami/app-passwords` and
+ * `GET, PUT /images/{name}/policy`, measured 2026-10-07); a parser
+ * recognising only a single method skipped both, so four operations went
+ * unchecked while the gate reported clean. The sixth pair names a path
+ * the contract does not declare and must be refused.
+ *
+ * What must yield nothing: the markdown header and separator lines, two
+ * rows with no path cell, and one with prose in the method cell.
+ *
+ * The two with no path cell sit deliberately BEFORE the backticked ones.
+ * Such a row is skipped because the backtick search runs past the end of
+ * its line, which is guarded by comparing the backtick position against
+ * the newline -- place them last instead and the search finds no
+ * backtick at all, so the guard goes unexercised and the test passes for
+ * the wrong reason.
+ *
+ * The five good pairs are spelled exactly as the contract spells them,
+ * so if any of those operations is renamed this fixture fails too. That
+ * is deliberate: it would mean the real table needs the same edit.
+ */
+static void check_endpoint_row_parser(void)
+{
+	static const char fixture[] =
+	    "\n"
+	    "| Method | Path | Purpose |\n"
+	    "|---|---|---|\n"
+	    "| GET | `/health` | liveness |\n"
+	    "| GET | not a path cell | SKIPPED, no backticks -- and before the backticked\n"
+	    "| PUT | still not a path cell | rows on purpose, so the parser has to skip\n"
+	    "| GET | `/pkg/{name}` | one path parameter |\n"
+	    "| DELETE | `/containers/{name}/volumes/{volume_name}` | two of them |\n"
+	    "| GET, PUT | `/images/{name}/policy` | a read/write pair in ONE row |\n"
+	    "| Deliberately | `/health` | SKIPPED: the first cell is not a method |\n"
+	    "| GET | `/no/such/endpoint` | deliberately absent from the contract |\n";
+	const char *p = fixture;
+	char methods[64], method[12], path[256];
+	int pairs = 0, declared = 0, refused = 0;
+
+	while (next_endpoint_row(&p, methods, sizeof(methods), path, sizeof(path))) {
+		int i;
+
+		for (i = 0; method_at(methods, i, method, sizeof(method)); i++) {
+			pairs++;
+			if (contract_declares(method, path))
+				declared++;
+			else
+				refused++;
+		}
+	}
+	/*
+	 * Six (method, path) pairs: /health, /pkg/{name}, the volumes
+	 * delete, BOTH halves of the GET,PUT policy row, and the absent
+	 * one. Two rows with no path cell and one whose first cell is prose
+	 * must contribute none.
+	 */
+	if (pairs != 6)
+		fail("the endpoint-row parser found %d (method, path) pair(s) in a fixture "
+		     "holding 6 -- three of its rows must be skipped and one must yield TWO "
+		     "pairs, which is the case a single-method parser silently dropped (#576)",
+		     pairs);
+	if (declared != 5)
+		fail("the endpoint-row parser resolved %d of 5 fixture pairs naming real "
+		     "operations; a gate that resolves nothing cannot tell a correct document "
+		     "from one it failed to read",
+		     declared);
+	if (refused != 1)
+		fail("the endpoint-row parser accepted `GET /no/such/endpoint`, which the "
+		     "contract does not declare -- the refusal path is what makes this gate a "
+		     "gate (#576)");
+	printf("  api endpoint parser: %d pair(s), %d resolved, %d refused\n", pairs, declared,
+	       refused);
+}
 
 /*
  * docs/api/README.md's endpoint table names only endpoints that exist
@@ -368,114 +612,79 @@ static void check_adr_headers(void)
  * routing, test_apigen on operations and permissions, test_api_surfaces
  * on channels inventing paths -- while the contract-to-PROSE link had
  * only a rule in CLAUDE.md's Documentation Map: "Updated in the same
- * change as any openapi.yaml edit, never after -- this is the rule that
- * was missing when it drifted 10 phases stale."
+ * change as any `openapi.yaml` edit, never after -- this is the rule
+ * that was missing when it drifted 10 phases stale."
  *
  * The rule existed and the table drifted anyway: measured 2026-10-07,
- * 23 references to 8 endpoints that 404, because the /disks* paths were
- * renamed to /storage* and the README was not. Its own index rows
- * offered `GET /disks` and `POST /disks/{disk_name}/format`. That is
- * the same argument this file's header already makes -- a rule cannot
- * notice -- applied to the one index whose rows point into the contract
- * rather than at a file.
+ * 19 endpoints a reader could not call. Eight were `/disks*` paths
+ * renamed to `/storage*` without the README following, its own index
+ * rows among them; eleven were volume rows spelling `{name}` or
+ * `{volume}` where the contract says `{volume_name}`. That is the same
+ * argument this file's header already makes -- a rule cannot notice --
+ * applied to the one index whose rows point into the contract rather
+ * than at a file.
+ *
+ * Two different numbers, and they are easy to confuse: 19 is how many
+ * rows named something that did not exist, which this fixed. 15 is how
+ * many operations have no row at all, which it does not -- see the
+ * note that follows.
  *
  * ONE DIRECTION ONLY, deliberately. Every row must resolve to a real
- * operation; an operation with no row is NOT a failure here. The
- * reverse direction is the more valuable one and needs a judgement this
- * gate should not make on its own: 339 operations against a table that
- * legitimately groups some, and a mechanical demand for 339 rows would
- * push the document towards being a worse version of the spec. #576
- * carries it.
- *
- * The comparison is exact, method and path together, parameter names
- * included -- `path_raw` is the contract's own spelling. A row naming
- * `{disk_name}` where the contract says `{name}` is a real defect for
- * anyone copying a path out of the table, and it was part of this
- * drift.
+ * operation; an operation with no row is not a failure here. 15 of 339
+ * have none, and the reverse direction is the more valuable one -- it
+ * catches a NEW endpoint nobody documented, which is the failure this
+ * table will have next. It is also the one that needs a decision about
+ * what counts as documented, since the table legitimately covers a
+ * read/write pair in one row (`| GET, PUT |`). #576 carries it.
  */
 static void check_api_endpoint_index(void)
 {
 	char *doc = slurp("docs/api/README.md");
 	const char *p;
-	int rows = 0;
+	char methods[64], method[12], path[256];
+	int pairs = 0;
 
 	if (doc == NULL) {
 		fail("docs/api/README.md is unreadable -- it is the narrative index into the "
 		     "REST contract");
 		return;
 	}
-	/*
-	 * Rows look like `| GET | `/path` | what it does |`. Found by
-	 * scanning for the method inside the first cell rather than by
-	 * parsing markdown: the shape is regular, and unlike source code
-	 * (see test_api_surfaces' own reasoning for why enumeration is
-	 * unreliable THERE) a table row either matches this shape or is
-	 * not a row at all.
-	 */
-	for (p = doc; (p = strchr(p, '\n')) != NULL; ) {
-		static const char *const methods[] = { "GET", "PUT", "POST", "DELETE",
-		                                       "PATCH", "HEAD", NULL };
-		char method[12], path[256], want[280];
-		const char *q, *tick, *end;
-		size_t n;
-		int m, i, found = 0;
+	p = doc;
+	while (next_endpoint_row(&p, methods, sizeof(methods), path, sizeof(path))) {
+		int i;
 
-		p++;
-		if (*p != '|')
-			continue;
-		q = p + 1;
-		while (*q == ' ')
-			q++;
-		for (m = 0; methods[m] != NULL; m++) {
-			size_t len = strlen(methods[m]);
-
-			if (strncmp(q, methods[m], len) == 0 &&
-			    (q[len] == ' ' || q[len] == '|'))
-				break;
+		for (i = 0; method_at(methods, i, method, sizeof(method)); i++) {
+			pairs++;
+			if (!contract_declares(method, path))
+				fail("docs/api/README.md's endpoint table offers `%s %s`, which the "
+				     "contract does not declare -- a reader copying that path gets a "
+				     "404 (#576)",
+				     method, path);
 		}
-		if (methods[m] == NULL)
-			continue;
-		snprintf(method, sizeof(method), "%s", methods[m]);
-		/* The path is the next cell, in backticks. */
-		q = strchr(q, '|');
-		if (q == NULL)
-			continue;
-		tick = strchr(q, '`');
-		end = strchr(q, '\n');
-		if (tick == NULL || (end != NULL && tick > end))
-			continue;
-		tick++;
-		q = strchr(tick, '`');
-		if (q == NULL || (end != NULL && q > end))
-			continue;
-		n = (size_t)(q - tick);
-		if (n == 0 || n >= sizeof(path) || tick[0] != '/')
-			continue;
-		memcpy(path, tick, n);
-		path[n] = '\0';
-		rows++;
-		snprintf(want, sizeof(want), "/v1%s", path);
-		for (i = 0; i < (int)(sizeof(cix_api_shapes) / sizeof(cix_api_shapes[0])); i++) {
-			if (strcmp(cix_api_shapes[i].method, method) == 0 &&
-			    strcmp(cix_api_shapes[i].path_raw, want) == 0) {
-				found = 1;
-				break;
-			}
-		}
-		if (!found)
-			fail("docs/api/README.md's endpoint table offers `%s %s`, which the contract "
-			     "does not declare -- a reader copying that path gets a 404 (#576)",
-			     method, path);
 	}
-	printf("  api endpoint index: %d row(s) checked against the contract\n", rows);
+	/*
+	 * A floor, for the reason the fixture above exists: a parser that
+	 * silently matched nothing would report no failures. 250 is well
+	 * under the 324 (method, path) pairs measured on 2026-10-07 and
+	 * well over anything a broken parse would find.
+	 */
+	if (pairs < 250)
+		fail("only %d endpoint-table pair(s) were found in docs/api/README.md, against "
+		     "324 measured on 2026-10-07 -- either the table shrank sharply or the "
+		     "parser stopped reading it",
+		     pairs);
+	printf("  api endpoint index: %d (method, path) pair(s) checked against the contract\n",
+	       pairs);
 	free(doc);
 }
+
 int main(void)
 {
 	check_adr_index();
 	check_adr_headers();
 	check_directory_indexes();
 	check_guides_index();
+	check_endpoint_row_parser();
 	check_api_endpoint_index();
 
 	if (g_failures > 0) {

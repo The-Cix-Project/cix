@@ -6,6 +6,30 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The endpoint-table gate skipped a row covering a read/write pair (#576)
+
+0.2.57-466's gate had a hole: the table legitimately covers a read/write pair in **one row** —
+`| GET, PUT | `/images/{name}/policy` |` and `| GET, POST | `/whoami/app-passwords` |` — and the
+parser recognised only a single method per cell, so it skipped both rows entirely. **Four operations
+went unchecked while the gate reported clean**, which is the one failure a gate must not have.
+
+- **The parser yields the method cell and `method_at()` walks it**, so a row contributes one
+  (method, path) pair per method it names. Both forms the README uses are `"METHOD, METHOD"`
+  (measured: exactly two rows, no other separator form).
+- **A row whose first cell is prose is skipped, not refused.** `cell_is_methods()` requires every
+  word in the cell to be an HTTP method, so the table's own header, its separator, and any ordinary
+  row are passed over rather than reported — the gate has nothing to say about them.
+- **The fixture grew the case that was missing.** Five rows now yield six pairs, including both halves
+  of a `GET, PUT` row; the markdown header, the separator, two rows with no path cell and one with
+  prose in the method cell must yield none. The two with no path cell sit deliberately *before* the
+  backticked rows: placed last, the backtick search finds nothing at all and the guard that compares
+  the backtick's position against the newline goes unexercised.
+- **Corrected counts.** 466 reported 320 rows and 19 operations with no row; with combined cells
+  handled it is **324 (method, path) pairs, 0 orphans, and 15 operations with no row**. Four of the
+  "19" were the two combined rows all along — they were documented, and the gate could not see them.
+  The two numbers are easy to confuse and the code now says so: 19 was how many rows named something
+  that did not exist (fixed in 466), 15 is how many operations have no row (still open on #576).
+
 ### The API README's endpoint table is gated against the contract, and named 19 wrong endpoints (#576)
 
 `docs/api/README.md` opens with a table of every endpoint — a hand-maintained copy of the list
