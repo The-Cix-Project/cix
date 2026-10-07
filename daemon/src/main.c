@@ -24347,11 +24347,23 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 	 * shape as #382, which really did put ten copies of one job into all
 	 * ten slots, reached by hand rather than by the drain.
 	 *
-	 * Here and not in pkg_install_start(): the rolling drain reads a
-	 * failed start as "try the rest of this image's manifest" and then
-	 * pops the image as caught up, so refusing down there would drop a
-	 * converging image out of the queue. "You already asked for this" is
-	 * only the honest answer to a request.
+	 * Kept here for the MESSAGE, not for the rule (#572). The rule now
+	 * lives in pkg_install_start(), beside pkg_any_job_busy(), because
+	 * three other callers reached it with a weaker check or none and
+	 * #572 was two of them starting one target at once. This check runs
+	 * one frame earlier so a person gets "you already asked for this"
+	 * and the two ways out, where the invariant alone would answer a
+	 * bare 409 BUSY.
+	 *
+	 * This comment used to say "Here and NOT in pkg_install_start()",
+	 * and its reason was real: the drain reads a failed start as "try
+	 * the rest of this image's manifest" and then calls
+	 * approval_consume() and rebuild_queue_remove_at(), popping the
+	 * image as caught up -- so refusing down there would drop a
+	 * converging image out of the queue with its roll approval spent.
+	 * That is why the drain now treats PKG_ERR_BUSY as a DEFER rather
+	 * than a refusal: a deferred image stays queued, approval intact.
+	 * The objection was answered rather than argued with.
 	 */
 	if (pkg_job_in_flight_for(name, image, 0)) {
 		json_free(root);

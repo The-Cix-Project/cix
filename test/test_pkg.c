@@ -1843,6 +1843,126 @@ out:
 	return ok;
 }
 
+/*
+ * #572: one job per target, and an unnamed image is `base` rather than
+ * "no image at all".
+ *
+ * `cixctl pkg install --name=X` with no --image omits the field (the
+ * CLI only writes it `if (image != NULL)`), so the handler sees
+ * image == NULL. pkg_job_in_flight_for() used to require image != NULL
+ * before comparing, so it answered "nothing in flight" for EVERY such
+ * request -- and two of them in a row each got 202 and took a chain
+ * slot for the same target. That is the invariant #572 is about,
+ * reachable by the most ordinary CLI call there is.
+ *
+ * Reintroduce-to-prove-it: put `image != NULL &&` back into that
+ * predicate and the second POST below answers 202 instead of 409.
+ *
+ * The third arm is the control against over-refusing: the same package
+ * into a DIFFERENT image is a different target and must still start.
+ */
+static int test_one_job_per_target(void)
+{
+	char dir[PATH_MAX];
+	char saved_data_dir[PATH_MAX];
+	struct cix_client c;
+	struct cix_response r;
+	pid_t pid = -1;
+	int ok = 1, waited;
+	int saw_fetching = 0;
+
+	snprintf(saved_data_dir, sizeof(saved_data_dir), "%s", g_data_dir);
+	if (test_data_dir_create(dir, sizeof(dir)) != 0) {
+		fprintf(stderr, "FAIL: #572 could not create a data dir\n");
+		return 0;
+	}
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", dir);
+	cix_client_init(&c, "127.0.0.1", TEST_PORT);
+
+	pid = start_daemon();
+	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+		fprintf(stderr, "FAIL: #572 daemon never accepted connections\n");
+		ok = 0;
+		goto out;
+	}
+	/* A source that never answers, so the first job stays in flight for
+	 * the whole test: TEST-NET-1, and the fetch's own retry schedule
+	 * (retry_count 8, retry_delay 3) holds it there regardless of how
+	 * each attempt fails. */
+	if (publish_cpdl_recipe_url(&c, "dupjob", "1.0", "https://192.0.2.1/nothing.tar.gz",
+	                             "0000000000000000000000000000000000000000000000000000000000000000",
+	                             CPDL_STD_TOOLS, "        run \"true\" {\n        }\n",
+	                             "        mkdir \"${dest}/usr/share/dupjob\" parents\n") != 0) {
+		fprintf(stderr, "FAIL: #572 could not publish the dupjob recipe\n");
+		ok = 0;
+		goto out;
+	}
+
+	/* 1. No image named at all -- means base. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "POST", "/v1/pkg/install", "{\"name\":\"dupjob\"}", &r) != 0 ||
+	    r.status != 202) {
+		fprintf(stderr, "FAIL: #572 first install (no image) status=%d, expected 202\n", r.status);
+		ok = 0;
+		cix_response_free(&r);
+		goto out;
+	}
+	cix_response_free(&r);
+
+	for (waited = 0; waited < 100 && !saw_fetching; waited++) {
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&c, "GET", "/v1/pkg/dupjob", NULL, &r) == 0 && r.status == 200 &&
+		    r.json != NULL && str_eq(json_str_field(r.json, "state"), "fetching"))
+			saw_fetching = 1;
+		cix_response_free(&r);
+		if (!saw_fetching)
+			usleep(100000);
+	}
+	if (!saw_fetching) {
+		fprintf(stderr, "FAIL: #572 dupjob never reached state fetching, so no job was in "
+		                "flight to collide with\n");
+		ok = 0;
+		goto out;
+	}
+
+	/* 2. The same request again must be refused, not given a second slot. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "POST", "/v1/pkg/install", "{\"name\":\"dupjob\"}", &r) != 0 ||
+	    r.status != 409) {
+		fprintf(stderr,
+		        "FAIL: #572 a second install of dupjob with no image named answered %d, "
+		        "expected 409 -- an unnamed image is base, and base already has this job\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/* 3. Control: a different image is a different target and still starts. */
+	if (create_image(&c, "dupjob-img2") != 0) {
+		fprintf(stderr, "FAIL: #572 could not create the control image\n");
+		ok = 0;
+		goto out;
+	}
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "POST", "/v1/pkg/install",
+	                        "{\"name\":\"dupjob\",\"image\":\"dupjob-img2\"}", &r) != 0 ||
+	    r.status != 202) {
+		fprintf(stderr,
+		        "FAIL: #572 dupjob into a second image answered %d, expected 202 -- the "
+		        "refusal is per (name, image) and must not reject a different image\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+out:
+	if (pid > 0)
+		(void)stop_daemon(pid);
+	test_data_dir_cleanup(dir);
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", saved_data_dir);
+	return ok;
+}
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -1870,6 +1990,11 @@ int main(void)
 	 * with the other self-contained cases so nothing after it is
 	 * talking to the daemon it killed. */
 	if (!test_interrupted_run_recovered())
+		ok = 0;
+	/* #572: same shape -- its own data dir and its own daemon, placed
+	 * here so the hanging fetch it leaves cannot occupy a chain slot
+	 * anything after it needs. */
+	if (!test_one_job_per_target())
 		ok = 0;
 
 	reset_pkg_state();

@@ -6,6 +6,60 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### One job per target, whoever asked (#572)
+
+`pkgconf` was recorded `INSTALLED with no version` on 192.168.15.95 while a converge, an
+`image materialize` and two explicit installs overlapped on a fresh `iso-builder`. Two chain slots
+held the same package in the same image, both leaked, and the `materialize` client waited on a queue
+entry that had been dropped. The detectors from #326, #339 and #246 caught and repaired it; the
+finding was that the state was reachable at all, and the issue recorded the cause as **not
+established**.
+
+**It is established now, from the code.** The invariant "two jobs for one package in one image must
+not both start" was enforced in exactly one of four callers:
+
+| path | guard |
+|---|---|
+| `handle_pkg_install()` | `pkg_job_in_flight_for(name, image, 0)` — name **and** image |
+| rebuild drain, `pkg_try_start_queued_rebuild()` | `package_job_in_flight(name)` — name only |
+| `handle_pkg_update_all()` | **none** |
+| `pkg_seed_default_image_libc()` | **none** |
+
+And `pkg_install_start()` did not close the gap: its only busy gate is `pkg_any_job_busy()`, whose own
+comment says it asks *"whether ANY chain slot is free, not whether THIS image is already building"* —
+and `max_concurrent_jobs=10` on that host, so it essentially never fires. `chain_alloc()` takes no
+name or image at all and cannot know another slot holds the same target.
+
+**#382 is the same bug one caller earlier**, and its comment records the cost: ADR-0273 stopped
+popping an image when its build started, nothing else prevented a second start, and *"a real host put
+ten copies of one job into all ten slots, after which no build of anything could start until cixd
+restarted."* That was fixed by adding `image_has_job_in_flight()` to the drain — at the call site.
+#572 is the next call site to need it, so the rule moves to the invariant rather than becoming a
+third copy.
+
+**A reachable hole in the same invariant, fixed and gated.** `pkg_job_in_flight_for()` required
+`image != NULL` before comparing, and `cixctl pkg install --name=X` omits the field entirely (the CLI
+writes it only `if (image != NULL)`), so the handler saw `image == NULL` and the predicate answered
+"nothing in flight" for *every* such request. Two `cixctl pkg install --name=X` calls with no
+`--image` therefore each got 202 and took a slot for the same `X@base`. `normalize_image()` already
+answers NULL as `base`, and `g_chains[].image` is stored normalized, so dropping that one condition
+is the whole fix. `test_one_job_per_target()` in `test_pkg` gates it: the second POST must be 409,
+and a third arm asserts the same package into a *different* image still starts, so the refusal cannot
+over-reach. **Whether this was #572's own mechanism is not established** — that report's installs
+named `iso-builder` — so this is a second instance of the one invariant failing, not a reproduction of
+the first.
+
+**The prior objection was answered, not argued with.** `handle_pkg_install()`'s comment said the check
+lived there *"and not in `pkg_install_start()`"* for a real reason: the drain reads a failed start as
+"try the rest of this image's manifest" and then calls `approval_consume()` and
+`rebuild_queue_remove_at()`, popping the image as caught up — so refusing down there would drop a
+converging image with its roll approval spent. The drain now treats `PKG_ERR_BUSY` as a **defer**
+(`deferred` keeps the image queued, approval intact) rather than a refusal. Today that branch is
+unreachable, because the drain's broader name-only check already defers everything that could reach
+it — but that shield is incidental, and narrowing it later would otherwise resurrect the harm. The
+handler keeps its check for the *message*, which names the two ways out, where the invariant alone
+answers a bare 409.
+
 ### The image baseline and the device policy read one list (#578, ADR-0331)
 
 `container_dev_bpf_attach()` built its `BPF_CGROUP_DEVICE` program from the container's **declared**

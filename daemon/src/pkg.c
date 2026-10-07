@@ -1333,7 +1333,18 @@ int pkg_job_in_flight_for(const char *name, const char *image, int hostbuild)
 				return 1;
 			continue;
 		}
-		if (name != NULL && image != NULL && strcmp(g_chains[i].name, name) == 0 &&
+		/*
+		 * #572: normalize_image() already answers a NULL or empty
+		 * image -- it means `base`, which the daemon creates at boot.
+		 * This condition used to require image != NULL as well, so a
+		 * caller that named NO image (which handle_pkg_install()
+		 * permits, and which means base) matched nothing at all and
+		 * the question answered "not in flight" about a job that was.
+		 * g_chains[].image is stored normalized (see
+		 * pkg_install_start()), so one normalize on the argument is
+		 * the whole comparison.
+		 */
+		if (name != NULL && strcmp(g_chains[i].name, name) == 0 &&
 		    strcmp(g_chains[i].image, normalize_image(image)) == 0)
 			return 1;
 	}
@@ -8358,6 +8369,30 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 					break;
 				}
 				/*
+				 * BUSY is transient, so it defers rather than counts
+				 * as refused (#572). This matters because of what the
+				 * two outcomes cost: a deferred image stays queued
+				 * with its roll approval intact, while a pass that
+				 * started nothing and refused something calls
+				 * approval_consume() and rebuild_queue_remove_at() --
+				 * it pops the image as caught up.
+				 *
+				 * handle_pkg_install()'s own comment warned about
+				 * exactly that when it explained why the one-job-per-
+				 * target check lived there and not in
+				 * pkg_install_start(). That check has now moved to the
+				 * invariant, and this is what makes the move safe
+				 * rather than safe-by-accident: today the broader
+				 * package_job_in_flight() above already deferred every
+				 * case that could reach it, so BUSY was unreachable
+				 * here -- but that shield is incidental, and narrowing
+				 * it later would otherwise drop a converging image.
+				 */
+				if (perr == PKG_ERR_BUSY) {
+					deferred = 1;
+					continue;
+				}
+				/*
 				 * Couldn't start this entry (recipe removed out from
 				 * under the manifest, etc.) -- try the rest of the
 				 * manifest rather than getting stuck on one bad entry,
@@ -10179,6 +10214,43 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
 	 * POST /v1/images -- so those tests now create their images first
 	 * and the request is refused at the API.
 	 */
+	/*
+	 * ONE job per target, whoever asked (#572).
+	 *
+	 * This is an invariant of the chain table, not a validation of a
+	 * request, which is why it belongs here beside pkg_any_job_busy()
+	 * rather than in a handler. No caller legitimately wants two
+	 * concurrent jobs for the same (name, image): two chains for one
+	 * target is what recorded pkgconf INSTALLED with no version, leaked
+	 * both slots holding it, and left an `image materialize` client
+	 * waiting for a queue entry that had been dropped (#572, measured
+	 * on 192.168.15.95, 2026-10-05).
+	 *
+	 * It was enforced in exactly one of four callers. handle_pkg_install()
+	 * asks this same question one frame earlier; the rebuild drain asks a
+	 * BROADER one (package_job_in_flight(), name only, so it defers
+	 * rather than refuses); handle_pkg_update_all() asked nothing at
+	 * all; and pkg_seed_default_image_libc() asks nothing. What they
+	 * shared was pkg_any_job_busy(), whose own comment says it "asks
+	 * whether ANY chain slot is free, not whether THIS image is already
+	 * building" -- the narrower question named by its absence.
+	 *
+	 * #382 is the same bug one caller earlier: ADR-0273 stopped popping
+	 * an image when its build started, nothing else prevented a second
+	 * start, and a real host put ten copies of one job into all ten
+	 * slots until cixd restarted. That was fixed by adding
+	 * image_has_job_in_flight() to the drain -- at the call site. #572
+	 * is the next call site to need it, so it goes at the invariant
+	 * instead of becoming a third copy of one rule.
+	 *
+	 * NOT the image-existence refusal, which ADR-0320/#500 deliberately
+	 * keeps in handle_pkg_install(): that one has legitimate internal
+	 * callers passing images the daemon chose, and moving it down
+	 * refused five tests' own images. This one has no legitimate caller
+	 * at all, which is the difference.
+	 */
+	if (pkg_job_in_flight_for(name, image, 0))
+		return PKG_ERR_BUSY;
 	if (pkg_any_job_busy())
 		return PKG_ERR_BUSY;
 	chain_idx = chain_alloc();
