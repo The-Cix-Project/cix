@@ -5493,6 +5493,63 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/iso/published:
+    get:
+      summary: Installer ISOs this host has published, newest first (#428)
+      description: >
+        A LOG of what left this box, which is a different resource from
+        GET /system/iso's snapshot of what is on it -- the same split
+        ADR-0272 drew between GET /pipeline and GET /pipeline/runs, and
+        for the same reason: a status is one state and a history
+        appends forever, so polling the first should not carry the
+        second.
+
+
+        Why it exists: a built ISO was visible in exactly one place, the
+        current build's own status, and nothing recorded where a
+        published one went. Measured on 192.168.15.95, 2026-10-07: the
+        box held a ready ISO built at 0.2.57-417 with publish_state
+        "none", while the LAN cache held four, the newest at
+        0.2.57-406 -- so the artifact on disk was eleven releases newer
+        than anything published and nothing on any surface said so
+        (#428).
+
+
+        ONE ENTRY PER (ISO, REPOSITORY), appended when that repository
+        has taken both the signature and the image. Not one entry per
+        ISO carrying a list of repositories: an entry is written once
+        and never amended, and the moment a record becomes true is the
+        moment one repository finished, not the moment the last one
+        did. A publish to three repositories is three entries, and a
+        repository that failed leaves none -- its failure is reported
+        by GET /system/iso's publish_error, not recorded here as a
+        publish that did not happen.
+
+
+        BOTH uploads, never just the image: cix-cache refuses an ISO
+        whose signature it does not have with 409, so an entry written
+        after the image alone would name an ISO the repository will not
+        serve.
+
+
+        THIS HOST'S OWN PUBLISHES, from the release that added this
+        endpoint. It is not an inventory of any repository: answering
+        that would mean this daemon making an outbound HTTP request
+        inside a GET handler, which blocks the reactor (#399 is 366
+        seconds of why). So an empty list means this host has published
+        nothing since the record existed -- never that a repository is
+        empty, and never that the four measured above are gone.
+      operationId: getSystemIsoPublished
+      x-cix-permission: system:read
+      x-cix-expose: [cli, web]
+      responses:
+        "200":
+          description: Every publish this host has recorded, newest first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IsoPublishedList"
+
   /pkg/buildenv:
     get:
       summary: The composed build environments this host is holding (ADR-0221)
@@ -20111,6 +20168,73 @@ components:
             gcc/dev build actually exercises) are synchronous and never
             touch this state at all.
 
+    IsoPublishedList:
+      type: object
+      required: [published]
+      properties:
+        published:
+          type: array
+          description: >
+            Newest first, and capped: the oldest entries are dropped
+            past IsoPublished's own ceiling, the same way the pipeline
+            run store trims. An ISO is published rarely, so the cap is
+            a guard against a file that grows forever rather than a
+            retention policy anyone tunes.
+          items:
+            $ref: "#/components/schemas/IsoPublished"
+    IsoPublished:
+      type: object
+      required: [name, signature_name, version, bytes, sha256, repository, at]
+      properties:
+        name:
+          type: string
+          description: >
+            The published artifact name, which is what a reader asks a
+            repository for -- arch-stamped, e.g.
+            "cix-installer-0.2.57-406-x86_64.iso". Composed by
+            pkg_artifact_published_name(), never locally: that helper's
+            own comment records it drifting when the ISO path had a
+            second copy of the rule.
+        signature_name:
+          type: string
+          description: >
+            The published name of the minisign signature beside it
+            (ADR-0220). Recorded because without it a reader cannot
+            verify the ISO without Cix software, which is the whole
+            point of publishing the signature -- and because the
+            repository refuses the ISO with 409 unless this landed
+            first, so its presence here is also what makes the entry
+            true.
+        version:
+          type: string
+          description: The release this ISO was built from, e.g. "0.2.57-406".
+        bytes:
+          type: integer
+          description: >
+            Size of the ISO as published. Recorded here rather than
+            read from disk, unlike IsoStatus.iso_bytes: the file this
+            describes is no longer on this box, so the filesystem
+            cannot be the truth for it.
+        sha256:
+          type: string
+          description: >
+            The ISO's checksum, as sent to the repository. What makes
+            an entry verifiable rather than a claim: ADR-0324 decides
+            what a repository accepts by artifact_sha256 and signature,
+            so this is the same value that decided it.
+        repository:
+          type: string
+          description: >
+            The repository that took it, by its configured name. One
+            entry per repository, so a publish to three is three
+            entries -- see this endpoint's own description for why an
+            entry is never amended to add a second.
+        at:
+          type: integer
+          description: >
+            Unix seconds when this repository finished taking both
+            uploads. Not when the publish was requested: an entry is
+            written at the moment it became true.
     IsoStatus:
       type: object
       required: [state, iso_path, error]

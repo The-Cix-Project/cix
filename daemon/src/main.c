@@ -11090,6 +11090,180 @@ static char g_iso_publish_status_path[PATH_MAX];
 /* ADR-0324: the repository being published to -- every one marked push, in turn. */
 static int g_iso_publish_repo;
 
+/*
+ * What this host has published, and where it went (#428).
+ *
+ * A LOG, not state: GET /system/iso describes the ISO on this box's
+ * disk, this describes the ones that left it. ADR-0272 drew the same
+ * line between GET /pipeline and GET /pipeline/runs, and the owner
+ * stopped an earlier draft of this that hung the log off /system/iso
+ * as a `published[]` array -- a status gets polled on an interval and
+ * would have carried a growing array nobody polling reads.
+ *
+ * Why it needs to exist at all: a package's durable evidence of
+ * publishing is the artifact approval written back into its recipe,
+ * which lands in git (ADR-0324). An ISO has no recipe, so it had
+ * nowhere to write back to, and its publish state was one in-memory
+ * enum describing the most recent attempt. Measured on
+ * 192.168.15.95, 2026-10-07: the box held a ready ISO built at
+ * 0.2.57-417 with publish_state "none" while the cache's newest was
+ * 0.2.57-406 -- eleven releases of drift that no surface reported.
+ *
+ * ONE ENTRY PER (ISO, REPOSITORY), appended the moment that
+ * repository has taken BOTH uploads. Never one entry amended to add a
+ * second repository: an entry is written when it becomes true and is
+ * never touched again, which is the same discipline ADR-0272 imposes
+ * on a run record. Both uploads and not just the image, because
+ * cix-cache refuses an ISO whose signature it does not hold with 409,
+ * so an entry written after the image alone would name an ISO the
+ * repository will not serve.
+ */
+/* Defined below, beside the publish path it belongs to; needed here
+ * because iso_published_record() composes the signature's published
+ * name through it rather than keeping a second copy of the rule. */
+static void iso_publish_canonical_name(char *out, size_t out_size, const char *suffix);
+#define ISO_PUBLISHED_MAX 200
+struct iso_published_entry {
+	char name[256];
+	char sig_name[256];
+	char version[64];
+	char sha256[65];
+	char repository[PKG_SOURCE_NAME_MAX];
+	long long bytes;
+	time_t at;
+};
+static struct iso_published_entry g_iso_published[ISO_PUBLISHED_MAX];
+static int g_iso_published_count;
+/*
+ * The child's own digest and size, carried back through the status
+ * file it already writes. NOT recomputed here: the child's own comment
+ * says hashing an ISO on the event-loop thread "would stall every
+ * other request for as long as the file is big", and that is the same
+ * reason this record cannot verify itself at read time either.
+ */
+static char g_iso_publish_sha[65];
+static long long g_iso_publish_bytes;
+
+static void iso_published_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/published.json", ISO_DIR);
+}
+
+static void iso_published_save(void)
+{
+	struct json_writer w;
+	char path[PATH_MAX];
+	int i;
+
+	if (ISO_DIR[0] == '\0')
+		return;
+	iso_published_path(path, sizeof(path));
+	jw_init(&w);
+	jw_arr_open(&w);
+	for (i = 0; i < g_iso_published_count; i++) {
+		jw_obj_open(&w);
+		jw_key(&w, "name");
+		jw_str(&w, g_iso_published[i].name);
+		jw_key(&w, "signature_name");
+		jw_str(&w, g_iso_published[i].sig_name);
+		jw_key(&w, "version");
+		jw_str(&w, g_iso_published[i].version);
+		jw_key(&w, "sha256");
+		jw_str(&w, g_iso_published[i].sha256);
+		jw_key(&w, "repository");
+		jw_str(&w, g_iso_published[i].repository);
+		jw_key(&w, "bytes");
+		jw_int(&w, g_iso_published[i].bytes);
+		jw_key(&w, "at");
+		jw_int(&w, (long long)g_iso_published[i].at);
+		jw_obj_close(&w);
+	}
+	jw_arr_close(&w);
+	if (w.buf != NULL)
+		(void)persist_atomic_write(path, w.buf, w.len);
+	jw_free(&w);
+}
+
+/* Oldest first on disk, so an append is a push_back and a trim drops
+ * the front -- the same shape pkg_runs_trim() uses. */
+static void iso_published_load(void)
+{
+	char path[PATH_MAX];
+	char *text = NULL;
+	size_t len = 0;
+	struct json_value *root;
+	size_t i;
+
+	if (ISO_DIR[0] == '\0')
+		return;
+	iso_published_path(path, sizeof(path));
+	if (persist_read_file(path, &text, &len) != 0)
+		return;
+	root = json_parse(text, len);
+	free(text);
+	if (root == NULL || root->type != JSON_ARRAY) {
+		json_free(root);
+		return;
+	}
+	g_iso_published_count = 0;
+	for (i = 0; i < root->u.array.count && g_iso_published_count < ISO_PUBLISHED_MAX; i++) {
+		const struct json_value *o = root->u.array.items[i];
+		struct iso_published_entry *e = &g_iso_published[g_iso_published_count];
+		const char *sv;
+
+		if (o == NULL || o->type != JSON_OBJECT)
+			continue;
+		memset(e, 0, sizeof(*e));
+		sv = json_as_string(json_object_get(o, "name"));
+		if (sv == NULL || sv[0] == '\0')
+			continue; /* an entry that names no artifact names nothing */
+		snprintf(e->name, sizeof(e->name), "%s", sv);
+		sv = json_as_string(json_object_get(o, "signature_name"));
+		snprintf(e->sig_name, sizeof(e->sig_name), "%s", sv != NULL ? sv : "");
+		sv = json_as_string(json_object_get(o, "version"));
+		snprintf(e->version, sizeof(e->version), "%s", sv != NULL ? sv : "");
+		sv = json_as_string(json_object_get(o, "sha256"));
+		snprintf(e->sha256, sizeof(e->sha256), "%s", sv != NULL ? sv : "");
+		sv = json_as_string(json_object_get(o, "repository"));
+		snprintf(e->repository, sizeof(e->repository), "%s", sv != NULL ? sv : "");
+		e->bytes = (long long)json_as_number(json_object_get(o, "bytes"));
+		e->at = (time_t)json_as_number(json_object_get(o, "at"));
+		g_iso_published_count++;
+	}
+	json_free(root);
+}
+
+/* Appends one (ISO, repository) publish and persists it at once: the
+ * next thing this daemon does may be exiting, and a record that only
+ * existed in memory is the gap this closes. */
+static void iso_published_record(const char *repository)
+{
+	struct iso_published_entry *e;
+	char sig_name[256];
+
+	if (repository == NULL || repository[0] == '\0' || g_iso_publish_name[0] == '\0')
+		return;
+	if (g_iso_published_count >= ISO_PUBLISHED_MAX) {
+		memmove(&g_iso_published[0], &g_iso_published[1],
+		        (size_t)(ISO_PUBLISHED_MAX - 1) * sizeof(g_iso_published[0]));
+		g_iso_published_count = ISO_PUBLISHED_MAX - 1;
+	}
+	e = &g_iso_published[g_iso_published_count++];
+	memset(e, 0, sizeof(*e));
+	snprintf(e->name, sizeof(e->name), "%s", g_iso_publish_name);
+	/* Through the one helper that composes a published name, never
+	 * locally: its own comment records the rule drifting when the ISO
+	 * path kept a second copy of it. */
+	iso_publish_canonical_name(sig_name, sizeof(sig_name), ".minisig");
+	snprintf(e->sig_name, sizeof(e->sig_name), "%s", sig_name);
+	snprintf(e->version, sizeof(e->version), "%s", g_iso_built_version);
+	snprintf(e->sha256, sizeof(e->sha256), "%s", g_iso_publish_sha);
+	snprintf(e->repository, sizeof(e->repository), "%s", repository);
+	e->bytes = g_iso_publish_bytes;
+	e->at = time(NULL);
+	iso_published_save();
+}
+
 /* The next repository marked push at or after `from`, or -1. */
 static int iso_publish_next_repo(int from)
 {
@@ -11230,8 +11404,20 @@ static int start_iso_publish_upload(enum iso_publish_step step)
 
 		sfd = open(g_iso_publish_status_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 		if (sfd >= 0) {
-			char buf[16];
-			int n = snprintf(buf, sizeof(buf), "%ld", http_status);
+			/*
+			 * HTTP status, then the digest and size this child
+			 * already computed (#428). The record the parent keeps
+			 * needs both, and the parent cannot work them out for
+			 * itself: hashing an ISO on the event-loop thread is
+			 * exactly what the comment above says not to do, and the
+			 * file is gone from this box's point of view once it is
+			 * published. So they ride back through the one channel
+			 * that already exists rather than a second one.
+			 */
+			struct stat lst;
+			char buf[128];
+			int n = snprintf(buf, sizeof(buf), "%ld %s %lld", http_status, sha,
+			                 stat(local, &lst) == 0 ? (long long)lst.st_size : 0LL);
 			ssize_t ignored = write(sfd, buf, (size_t)n);
 
 			(void)ignored;
@@ -11284,7 +11470,17 @@ static void handle_iso_publish_event(struct conn *cc)
 
 	f = fopen(g_iso_publish_status_path, "r");
 	if (f != NULL) {
-		if (fscanf(f, "%d", &http) != 1)
+		/*
+		 * The digest and size come back with the status (#428). Read
+		 * leniently on purpose: a status file written by a daemon that
+		 * predates them has only the number, so a short read leaves
+		 * the record's sha256 and bytes empty rather than failing a
+		 * publish that worked. The HTTP status is the only field this
+		 * path has ever depended on.
+		 */
+		g_iso_publish_sha[0] = '\0';
+		g_iso_publish_bytes = 0;
+		if (fscanf(f, "%d %64s %lld", &http, g_iso_publish_sha, &g_iso_publish_bytes) < 1)
 			http = 0;
 		fclose(f);
 	}
@@ -11326,6 +11522,16 @@ static void handle_iso_publish_event(struct conn *cc)
 		logstore_write("cixd", "info", "iso publish: published %s to %s", g_iso_publish_name,
 		               pkgrepo_at(g_iso_publish_repo) != NULL ? pkgrepo_at(g_iso_publish_repo)->name
 		                                                      : "?");
+		/*
+		 * #428: recorded HERE, where this repository has taken both
+		 * the signature and the image -- not at ISO_PUB_DONE below,
+		 * which fires only after the LAST repository and would lose
+		 * every earlier one, and not after the image alone, which
+		 * would name an ISO cix-cache refuses to serve without its
+		 * signature (409).
+		 */
+		if (pkgrepo_at(g_iso_publish_repo) != NULL)
+			iso_published_record(pkgrepo_at(g_iso_publish_repo)->name);
 		if (next >= 0) {
 			g_iso_publish_repo = next;
 			free(cc);
@@ -12262,6 +12468,48 @@ static void handle_system_iso_get(int fd)
 	write_iso_status(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
+
+/*
+ * GET /v1/system/iso/published (#428) -- the log of what left this box.
+ *
+ * Newest first, which is the order an operator reads it in: the
+ * question is almost always "what is the latest published ISO", and
+ * the comparison that matters is against GET /system/iso's
+ * built_version. The store itself is oldest-first so an append is a
+ * push_back and a trim drops the front, so this walks it backwards.
+ */
+static void handle_system_iso_published_get(int fd)
+{
+	struct json_writer w;
+	int i;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "published");
+	jw_arr_open(&w);
+	for (i = g_iso_published_count - 1; i >= 0; i--) {
+		jw_obj_open(&w);
+		jw_key(&w, "name");
+		jw_str(&w, g_iso_published[i].name);
+		jw_key(&w, "signature_name");
+		jw_str(&w, g_iso_published[i].sig_name);
+		jw_key(&w, "version");
+		jw_str(&w, g_iso_published[i].version);
+		jw_key(&w, "bytes");
+		jw_int(&w, g_iso_published[i].bytes);
+		jw_key(&w, "sha256");
+		jw_str(&w, g_iso_published[i].sha256);
+		jw_key(&w, "repository");
+		jw_str(&w, g_iso_published[i].repository);
+		jw_key(&w, "at");
+		jw_int(&w, (long long)g_iso_published[i].at);
+		jw_obj_close(&w);
+	}
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
 }
 
 /*
@@ -26106,6 +26354,12 @@ static void op_getSystemIso(const struct api_ctx *ctx)
 	handle_system_iso_get(ctx->fd);
 }
 
+/* GET /v1/system/iso/published */
+static void op_getSystemIsoPublished(const struct api_ctx *ctx)
+{
+	handle_system_iso_published_get(ctx->fd);
+}
+
 /* POST /v1/system/iso */
 static void op_postSystemIso(const struct api_ctx *ctx)
 {
@@ -33158,6 +33412,13 @@ static int cixd_main(int argc, char **argv)
 	 * log store, learned a third time.
 	 */
 	iso_recover_state();
+	/*
+	 * #428: separately from iso_recover_state() above, which returns
+	 * early when no ISO is on disk. This log is about artifacts that
+	 * LEFT this box, so it is loaded whether or not one is sitting
+	 * here now -- a box with no ISO built has still published them.
+	 */
+	iso_published_load();
 	/*
 	 * ADR-0221: reclaim build environments idle beyond the retention
 	 * window. At boot rather than on a timer -- the growth is slow

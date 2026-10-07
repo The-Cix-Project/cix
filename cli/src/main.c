@@ -435,6 +435,9 @@ static const char USAGE_TEXT[] =
 	        "               call reproduces the original edit-at-the-GRUB-menu placeholder ISO\n"
 	        "  iso status  -- state/iso_path/error of the most recent ISO build\n"
 	        "  iso publish [--wait]  -- put the ISO + its signature in the artifact cache\n"
+	        "  iso published  -- installer ISOs this host has published, newest first; a\n"
+	        "               log of what left the box, separate from `iso status`, which is\n"
+	        "               the one on it right now (#428)\n"
 	        "  routes  -- the box's own real kernel IPv4 routing table (ADR-0066); the\n"
 	        "               only way to see this on a real install, no SSH/general shell\n"
 	        "  routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]  -- add a real\n"
@@ -18105,6 +18108,45 @@ static int poll_iso(const struct cix_client *c, struct cix_response *out)
 	}
 }
 
+
+/*
+ * #428: what this host has published, newest first. A log, so it
+ * prints one line per (ISO, repository) -- a publish to three
+ * repositories really is three facts, and collapsing them would hide
+ * the one that failed.
+ */
+static void fmt_iso_published(const struct json_value *v)
+{
+	const struct json_value *arr = json_object_get(v, "published");
+	size_t i;
+
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		/* Never "no ISOs exist": this is what THIS host recorded
+		 * publishing, and a repository may well hold ISOs from before
+		 * the record did. The endpoint's own description says so. */
+		printf("no publishes recorded by this host\n");
+		return;
+	}
+	for (i = 0; i < arr->u.array.count; i++) {
+		const struct json_value *e = arr->u.array.items[i];
+
+		printf("%-44s %-14s %12lld  %s\n", json_str_or(e, "name"), json_str_or(e, "version"),
+		       (long long)json_as_number(json_object_get(e, "bytes")),
+		       json_str_or(e, "repository"));
+	}
+}
+
+static int cmd_iso_published(const struct cix_client *c, int json_mode)
+{
+	struct cix_response r;
+
+	if (cix_client_request(c, CIX_API_getSystemIsoPublished_METHOD, CIX_API_getSystemIsoPublished,
+	                        NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_iso_published);
+}
 static int cmd_iso_status(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
@@ -18245,6 +18287,7 @@ static int cmd_iso(const struct cix_client *c, int json_mode, int argc, char **a
 		        "usage: cixctl iso build [--disk=DEV --ip=A.B.C.D --prefix=N "
 		        "--gateway=A.B.C.D --interface=IFNAME] [--wait]\n"
 		        "       cixctl iso status\n"
+		        "       cixctl iso published  -- what this host published, newest first\n"
 		        "       cixctl iso publish [--wait]\n");
 		return 2;
 	}
@@ -18253,6 +18296,8 @@ static int cmd_iso(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_iso_build(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "status") == 0)
 		return cmd_iso_status(c, json_mode);
+	if (strcmp(sub, "published") == 0)
+		return cmd_iso_published(c, json_mode);
 	if (strcmp(sub, "publish") == 0)
 		return cmd_iso_publish(c, json_mode, argc - 1, argv + 1);
 

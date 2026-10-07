@@ -6,6 +6,62 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A published installer ISO is recorded, and the gap to the built one is visible (#428, partial)
+
+A built ISO was visible on exactly one tab, and nothing recorded where a published one went. Measured
+on 192.168.15.95, 2026-10-07, and the live state was a sharper finding than the report: the box held a
+ready ISO built at **0.2.57-417** with `publish_state: "none"`, while the LAN cache's newest was
+**0.2.57-406**. Eleven releases of drift, and no surface said so — somebody built an installer and it
+never went anywhere.
+
+It strands because `cixctl iso publish` is a separate step an operator has to remember, where
+`pkg install` publishes to every push repository as part of the job (ADR-0324).
+
+**Why an ISO needed a record when a package does not.** A package's durable evidence of publishing is
+the artifact approval written back into its recipe, which lands in git. An ISO has no recipe, so it
+had nowhere to write back to, and its publish state was a single in-memory enum describing only the
+most recent attempt — lost on restart. (A correction to a claim made while investigating: that
+approval records *that a byte sequence was accepted*, not which repositories took it when, and
+ADR-0324's "the first copy that lands records the artifact approval" means repositories #2..N are not
+recorded at all. So packages do not have the record this needed either; they have a weaker one that
+is right for their purpose.)
+
+`GET /system/iso/published` is that record. **One entry per (ISO, repository)**, appended the moment
+that repository has taken *both* the signature and the image — not at `ISO_PUB_DONE`, which fires
+only after the last repository and would lose every earlier one, and not after the image alone, which
+would name an ISO cix-cache refuses to serve without its signature (409). An entry is written when it
+becomes true and never amended, which is the discipline ADR-0272 imposes on a run record.
+
+The digest and size ride back through the status file the publish child already writes. They are not
+recomputed in the parent: that child's own comment says hashing an ISO on the event-loop thread
+"would stall every other request for as long as the file is big", and the file is gone from this
+box's point of view once published, so the filesystem cannot be the truth for it either. The parse is
+lenient, so a status file from a daemon that predates the extra fields still reports its HTTP status.
+
+**A design the owner stopped, and the project's own precedent they were right about.** The first cut
+hung the log off `GET /system/iso` as a `published[]` array. The owner said it felt like too tight a
+coupling, and the contract already contained the counter-example: ADR-0272 split `/pipeline` (what is
+happening) from `/pipeline/runs` (what happened), in the same file. A status is a snapshot of this
+box's disk polled on an interval; a history is an append-only log of what left it. Two resources, two
+endpoints, each with one reader. The justification offered for the coupling was also a misreading —
+`docs/guides/web-ux-guidelines.md`'s "one source of truth for a resource's state" is about one
+*widget* per resource, and does not ask one endpoint to serve two.
+
+**Auto-publish on build was considered and dropped**, not deferred. A `pkg install` publish sits
+behind an approval (`PKG_GATE_ROLL`); an ISO publish has no such gate because `cixctl iso publish`
+*is* the approval, by being a human act. Auto-publishing would remove the only gate there is and mean
+inventing an ISO approval to replace it — new policy, not parity. And the stranded 417 shows the step
+gets forgotten, not that anyone wanted that build published; it may have been a discarded test. So
+the dashboard surfaces the gap instead: when the built version is newer than anything published, the
+ISO panel says so in those words, and the operator decides.
+
+**What is NOT closed.** #428's second half — the ISO being absent from the Build and Software views —
+is untouched; this adds the record, the CLI (`cixctl iso published`) and the panel's own list, so
+"nowhere to find it afterwards" is answered and "absent from the build overview" is not. The issue
+stays open for that. And the dashboard change is unverified visually: `cixctl` compiles here and the
+contract gates (`test_apishape`, `test_api_surfaces`, `test_docindex`) cover the API and both
+surfaces' existence, but nothing here renders a page.
+
 ### One job per target, whoever asked (#572)
 
 `pkgconf` was recorded `INSTALLED with no version` on 192.168.15.95 while a converge, an

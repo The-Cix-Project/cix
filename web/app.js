@@ -9273,6 +9273,45 @@ async function refreshIso() {
 
 		document.getElementById("iso-build").disabled = s.state === "building";
 		document.getElementById("iso-publish").disabled = s.state !== "ready";
+		/*
+		 * #428: what this host has PUBLISHED, read from its own
+		 * endpoint rather than from the status above. Two resources --
+		 * the status is the ISO on this box, this is the ones that
+		 * left it -- so they are two requests and one panel, not one
+		 * request carrying a growing array (ADR-0272's split, the same
+		 * as /pipeline vs /pipeline/runs).
+		 *
+		 * The gap is the point of showing it: a box can hold a ready
+		 * ISO built at one release while the newest published is many
+		 * releases older, and nothing said so (measured on
+		 * 192.168.15.95, 2026-10-07: built 0.2.57-417, newest
+		 * published 0.2.57-406). Publishing is the operator's act
+		 * (ADR-0324 -- never push by default), so this surfaces the
+		 * gap rather than closing it behind their back.
+		 */
+		const pub = await apiRequest("GET", CIX_API.getSystemIsoPublished());
+		/*
+		 * Inside the dataChanged() guard above on purpose: a publish
+		 * changes publish_state and published_name in the status, so
+		 * the guard opens exactly when this list has something new to
+		 * show, and a quiet box re-renders neither.
+		 */
+		const entries = Array.isArray(pub.published) ? pub.published : [];
+
+		if (entries.length === 0) {
+			/* Never "nothing exists": this is what THIS host recorded,
+			 * and a repository may hold ISOs from before the record. */
+			box.appendChild(fieldBlock("Published", "none recorded by this host"));
+		} else {
+			box.appendChild(fieldBlock("Last published",
+			    entries[0].version + " — " + entries[0].name +
+			    " (" + entries[0].repository + ")"));
+			if (s.built_version && entries[0].version !== s.built_version)
+				box.appendChild(fieldBlock("Not published",
+				    "the ISO on this box was built from " + s.built_version +
+				    ", newer than anything published"));
+			box.appendChild(fieldBlock("Publishes recorded", String(entries.length)));
+		}
 	} catch (e) {
 		/* Best-effort, same as every other panel here. */
 	}
