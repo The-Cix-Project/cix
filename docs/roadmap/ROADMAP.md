@@ -2445,6 +2445,168 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 258 (done): what this host published is recorded, and the gap to what it built is visible (#428)
+
+A built installer ISO was visible on exactly one dashboard tab, and nothing recorded where a published one went. The live state was the sharper finding: the box held a ready ISO built at `0.2.57-417` with `publish_state: "none"` while the LAN cache's newest was `0.2.57-406` -- eleven releases of drift that no surface reported, because `cixctl iso publish` is a separate step an operator has to remember where `pkg install` publishes as part of the job.
+
+`GET /system/iso/published` is the record: one entry per (ISO, repository), appended the moment that repository has taken both the signature and the image, never amended afterwards. Not at the end of the whole publish, which would lose every repository but the last, and not after the image alone, which would name an ISO cix-cache refuses to serve unsigned. The digest and size ride back through the status file the publish child already writes, because hashing an ISO on the event-loop thread is what that child's own comment exists to forbid. An ISO has no recipe to write an artifact approval into, which is why a package needed no such record and this did.
+
+A first design hung the log off `GET /system/iso` as a `published[]` array; the owner stopped it as too tight a coupling and was right -- the contract already split `/pipeline` from `/pipeline/runs` for exactly this reason (ADR-0272). Auto-publishing on build was considered and dropped: `cixctl iso publish` *is* the ISO's approval by being a human act, where a package has `PKG_GATE_ROLL`.
+
+Verified: `0.2.57-472`, `probe-cix-compile@0.2.57-483` with `SELFTEST: PASS`. `test_apishape` confirmed the endpoint answers 200 carrying `published` on a live daemon rather than merely compiling; `test_api_surfaces` confirmed both the CLI and the dashboard call it, which `x-cix-expose: [cli, web]` obliges. #428 remains open for its second half -- the ISO is still absent from the Build and Software views.
+
+## Part 257 (done): the image baseline and the device policy read one list (#578, ADR-0331)
+
+`container_dev_bpf_attach()` built its `BPF_CGROUP_DEVICE` program from a container's *declared* devices alone, so a container that declared one device -- a GPU, a radio, a serial port, which is the whole point of ADR-0017 -- got a policy that denied `/dev/null`. Latent rather than rare: no program is attached when the declared list is empty, and every container on the host declares one.
+
+The six baseline nodes are now declared once as an X-macro in `include/container.h`, which both the image seeder and the policy expand; one loop emits baseline blocks then declared ones, and the instruction budget and jump offsets follow the merged count. A container declaring no devices is still governed by nothing, gated by its own assertion. A shared `static const` array was written first and rejected -- a header-scope array emits a copy per translation unit and risks `-Wunused` under the mandatory `-Werror`.
+
+Verified: `0.2.57-470`, `probe-cix-compile@0.2.57-479` with `SELFTEST: PASS` and zero warnings. `test_devices` proves it end to end: a container declaring only 1:7 opens the baseline 1:3 node, is denied a non-baseline 5:1 node, and a container declaring nothing opens that same 5:1 node -- the pair is what makes the denial mean the policy refused it. The premise was re-measured first: `src/mountns.c` never mounts `/dev`, so it is the image rootfs's own directory and the policy really governs that open.
+
+## Part 256 (done): a build the daemon does not outlive is recorded, and one job per target (#375, #572)
+
+Two gaps in the package manager's own bookkeeping, both found and closed by the release gate rather than by review.
+
+An open pipeline run lived in memory only, so a daemon that died mid-build recorded nothing for the run it was in the middle of. The issue's proposed fix cannot work -- `save_state()` persists only installed entries, so a first install is in no record at all -- and log reconciliation misses the fetch entirely. The in-flight fact is checkpointed to `open_runs.json`, explicitly not the run store, drained at startup into closed `failed` runs and unlinked, so ADR-0272's invariant holds and "the daemon stopped" becomes an outcome it can name. Writing its test found a second bug: the fetch child is a plain `fork()` with no `execve()`, so it inherited every descriptor including the listening socket, and an orphan held it across a restart.
+
+Separately, the rule that two jobs for one package in one image must not both start was enforced in one of four callers. `pkg_any_job_busy()` asks only whether any slot is free, and `chain_alloc()` takes no name or image at all. The rule moved to the invariant, and the rebuild drain now treats a transient busy as a defer so a converging image is not dropped with its roll approval spent -- which is the objection a previous author had written into the code against exactly this move.
+
+Verified: `0.2.57-469` and `0.2.57-471`, each with `SELFTEST: PASS` including the three floor tests. `test_interrupted_run_recovered()` kills a daemon mid-fetch and asserts the run is recorded failed, then restarts again and asserts exactly one. `test_one_job_per_target()` asserts a second image-less install answers 409 and that a different image still answers 202.
+
+## Part 255 (done): the API contract is gated in both directions (#574, #575, #576)
+
+ADR-0218 made the spec authoritative over which *routes* exist, and `test_apiroute` gated that. Nothing did the same for a response *body* or for the prose that documents it. #574 is what that cost: `GET /pkg/source-catalogue` moved from a `state` string plus four counts to an ADR-0256 `stage`/`status` pair plus four differently-named counts, the spec kept declaring the old shape as required, and `cixctl` kept reading it -- so an operator got a blank verdict on all 172 rows of the one surface ADR-0323 names for roll visibility. Two tests already called that endpoint and both passed, because each asserted the fields it happened to use.
+
+`test_apishape` now walks every parameterless GET from a generated shape table and asserts the keys its schema declares required, one level into arrays that declare item keys. `test_docindex` compares the API README's endpoint table against the contract in both directions with no allow-list. Both are in SELFTESTS.
+
+Verified: released across `0.2.57-463` to `0.2.57-467`. The endpoint-table parser was itself wrong when first shipped -- it skipped rows declaring two methods, leaving four operations unchecked in a gate already released as 466 -- and 467 fixed it. Each gate was proven by reintroducing the defect it exists to catch.
+
+## Part 254 (done): a followed image holds its recipe, and nothing else (#571, ADR-0330)
+
+ADR-0320 made git authoritative for an image under `recipe: follow`, and in practice it was authoritative for half: applying a recipe only ever set entries, and converge only ever installed. An entry the recipe dropped stayed in the manifest for good. Measured: the four images that follow and converge held 46 packages their recipes did not declare, and some were load-bearing -- nine build tools of the ISO toolchain lived only in `cix-hosttools`, installed by hand because the `iso-builder` image their recipe declares had never been created.
+
+Under `recipe: follow` the manifest is the recipe: an apply removes every entry the recipe no longer lists, and converge uninstalls every package outside the manifest's runtime closure. An image that did not reach its manifest is not trimmed, because a refused install used to be silent and the drain then described the image as caught up.
+
+Verified: `0.2.57-462`. One image per job is the operating rule that follows -- a tool installed by hand into an image whose recipe does not declare it is an undeclared second job, and the converge now removes it.
+## Part 253 (done): Cix produces no tarball, and shell recipes do not exist (#569, ADR-0328, ADR-0329)
+
+Two owner directions of 2026-10-03, taken to completion rather than deprecation: *"An image export should not produce a tarball"*, and *"What are shell recepies, those should not exist, please deprecate them"*. The image export was removed rather than converted, ADR-0209 having already retired its only consumer; a hostbuild exports as a `.cixpkg` by `cbs package`.
+
+What remained of the shell path went with it, and not for reinstallability: the box's stored shell revisions, the parser that read them, the `.tar.gz` artifact path they installed through, the `.sh` image-recipe form, and the test fixtures written in it. The control-plane root now carries no `tar`, `gzip`, `xz` or `bzip2` at all, and a host deletes any `.tar.gz` left in its cache at startup. All 452 `.tar.gz` files in the LAN cache were deleted, `cix` releases included.
+
+Verified: completed 2026-10-05 with #569 closed. Source tarballs are untouched and remain ordinary -- the rule is about the artifact format Cix produces, never about what upstream ships.
+
+## Part 252 (done): the host follows its rolling packages, in a nightly window (ADR-0327)
+
+The owner's answer of 2026-10-03 when asked when a host should take its own new builds: *"nightly window at 03:00"*. `system.roll` hostbuilds whichever of the kernel and cix is newer -- kernel first, because the root carries its modules -- assembles, stages root and kernel together, and reboots inside the window. The boot counter is the rollback.
+
+It extends ADR-0323 from packages to the host itself, and deliberately adds no manual step back into that path. A roll that stops reports where and why through `pkg source-catalogue`.
+
+Verified: live and unattended on 192.168.15.95, which rolled its own kernel to 7.2.9. The window is the only thing that moves the host; a release published during the day is taken at the next 03:00.
+
+## Part 251 (done): upstream keys travel in the signed catalogue (ADR-0326)
+
+The owner's answer of 2026-10-03 when asked how an upstream signing key should reach a host: *"keys in the catalogue"*. A key lives at `recipes/keys/<package>@<FINGERPRINT>.asc` in the source that owns the package, and is adopted at sync from a `trust_keys` source only when the key's own fingerprint is its name. Removing the file revokes it.
+
+There is no trust-on-first-use, and making a host's operator install an upstream key by hand is explicitly not the normal route -- `cixctl pkg upstream-keys add` exists for a host's own key.
+
+Verified: accepted 2026-10-03 and implemented against the existing signed-catalogue machinery of ADR-0324 step C.
+
+## Part 250 (done): a login survives a restart (#562, ADR-0325)
+
+The owner's report was *"after adding rbac, the web ui has become flaky"* -- and the real behaviour was worse than flaky: a deploy or reboot signed every operator out, and the dashboard went on claiming they were logged in over panels the daemon was refusing. A surface that looks fine while being wrong is a product bug of the first rank, which is the bar this part was measured against.
+
+Sessions now survive a restart, and the dashboard reads refusal as refusal rather than rendering a logged-in frame around it.
+
+Verified: `0.2.57-442`. This is the part that prompted the standing rule that a feature is not done when its endpoint answers -- it is done when every surface shows the true state, including across a restart and a lapsed session.
+
+## Part 249 (done): many recipe sources, many package repositories (ADR-0324)
+
+The owner's decisions of 2026-10-02, answered point by point: as many sources and as many package repositories as a host wants. Write is a property of a source, not of a host, so a host authors only for packages a source it may write owns. One package, one source: a name offered by two halts until the operator chooses, never resolved by list order. Repositories are mirrors whose order is speed and never trust -- what is accepted is decided by `artifact_sha256` and the signature.
+
+Git is authoritative for recipes and a change made on a box writes back: a sync whose copy differs only in comments refreshes the stored text with no rebuild, while a real divergence keeps the version on the bytes that were built and restores git to them. The public catalogue is the owner's alone, and because every commit to the forge reaches it by push mirror, a commit from 192.168.15.95 is a publish to every Cix user.
+
+Verified: the sources list, git-authoritative refresh and write-back were live by `0.2.57-437`; step C, the signed catalogue, by `0.2.57-441`, inert until the owner's own catalogue key exists. `probe-cix-tarball@289-1` was the first recipe written on the box and committed through `pkg recipe commit`.
+
+## Part 248 (done): every package can roll -- a discovery kind, an authentication method, a green build (ADR-0323)
+
+The owner on 2026-10-02: *"a rolling release is a rolling release, should never wait, unless it's not a rolling release"*. It supersedes ADR-0318's signed-assets-only rule while keeping its git-first writer and separate key store. Authentication is a declared ladder -- a signature over the tarball, a signed checksum list, a signed git tag, or origin trust -- and a source with none of them stays pinned. Origin trust is for the owner's own forge; an external unsigned project is pinned unless its recipe opts in for that one origin.
+
+Never weaker, never re-pinned: a written revision never uses a weaker method than its predecessor, and once a version's sha256 is committed, different bytes later halt the package and say so. A failed build undoes nothing; a container that crash-loops or fails its health check on a rolled image goes back to its previous image and marks that version bad.
+
+Verified: rolling is live and unattended, with `hibr` self-rolling on 192.168.15.95. There is no approval mode -- `pkg source-policy set NAME --pinned=on` is how a package is held, shipped in `0.2.57-451` for #565. Only a small minority of packages roll; the rest are pinned by design, which is worth re-deriving before estimating the blast radius of any change here.
+
+## Part 247 (done): a recipe declares the memory its build needs, within an operator ceiling (#558, ADR-0322)
+
+The owner on #558: *"yes a recepie can declare how much it needs, but it cannot exceed a preallocated max"*. The declaration is CPDL `resources { memory "4GiB" }`, read from `cbs explain`'s typed field rather than an opaque `metadata` key -- which would have been a workaround, and cix-build-system#276 records why.
+
+`memory_max_ceiling` is never below `memory_max` and defaults to it, so the default is no raise. A need above the ceiling is refused before the build starts, never clamped and never silently run under the smaller budget. One shared budget is raised rather than per-build limits, and the raise is held until no build is running, because lowering `memory.max` under running builds makes the kernel reclaim from them.
+
+Verified: implemented against cbs v0.1.100's `resources` block, closing the #85 line of work on build memory.
+
+## Part 246 (done): cixd's cryptography is done in the libcrypto it links (#351, ADR-0321)
+
+The owner's instruction of 2026-10-01 was *"do it all"*. Every cryptographic operation cixd performs happens in the libcrypto it already links against, never by forking the `openssl` command -- which removes a class of failure where a missing or differently-built binary changes what the daemon can verify, and removes the binary itself from the control-plane root's requirements.
+
+Verified: accepted and implemented for #351.
+
+## Part 245 (done): an image's policy decides how its three copies agree (#535, ADR-0320)
+
+An image's recipe in cix-recipes, its live manifest and its installed set are three legitimate writers of one fact. The owner's framing on 2026-09-30 was *"We should be able to upgrade, downgrade, and we should be able to put a recipe that's hand made in the repo, and edit one on the box ... but it should be settable on the policy"* -- so the single source of truth is the image's POLICY, not one of the copies. Collapsing them into one copy was offered and rejected.
+
+`cixctl image policy NAME` carries `recipe` manual|follow, `apply` declare|converge and `downgrade` refuse|allow, defaulting to manual/declare/refuse. A downgrade is always possible and never a side effect: an apply that would walk a pin back is a 409 listing each one unless explicitly allowed.
+
+Verified: `0.2.57-435` onwards, with five followed images on 192.168.15.95. Amended by ADR-0330 (Part 254), which gave follow+converge the power to remove as well as add.
+
+## Part 244 (done): a path in an image belongs to one installed package (#553, ADR-0319)
+
+The owner chose Debian's `Replaces:` rule on 2026-09-30. An install whose files include a path another installed package in that image owns is refused, naming both packages and the path, unless the installing package declares that it replaces the other.
+
+It replaces "the last install wins", which is how coreutils 9.11-8's bundled `libcap.so.2` came to sit under libcap's name -- after which every build that composed libcap got coreutils' link without its target, which is what broke every build in the #510 rollout. A package's own previous version is not another package, so an ordinary upgrade is unaffected, and a collision is a recipe bug to fix rather than a path to exempt.
+
+Verified: implemented with cbs v0.1.99's `replaces { package "NAME" }` (cix-build-system#275). No allow-list exists, deliberately.
+
+## Part 243 (done): permissions are declared by the API contract (#304, ADR-0317)
+
+The owner's direction, with three decisions of 2026-09-29: the annotation is mandatory, every read needs a login, and machine credentials are glauth-style app passwords on the user rather than a separate token store -- *"Glauth handles app passwords, which I think should be the same"*.
+
+Every operation carries one `x-cix-permission` and `apigen` refuses a spec without it. Groups hold permissions and `admin_groups` is derived from them. `authorize_route()` in `dispatch()` is the one enforcement point, and adding a permission check in a handler is the parallel implementation this decision exists to prevent. The one trap is anything answered before `dispatch()` -- the console and build-log WebSocket upgrades -- which must call `authorize_upgrade_route()` themselves or be unauthenticated, as the console was on every gated release before `0.2.57-392`.
+
+Verified: all six sections done by `0.2.57-396`, follow-ups #545-#549 by `0.2.57-399`, #304 closed.
+
+## Part 242 (done): a fresh host has defaults -- the public catalogue, the public cache, and a sync schedule (ADR-0315, ADR-0316)
+
+The owner on 2026-09-29, asked whether both should be defaults: *"yes, both are defaults moving forwards, and can be changed if the use wants to? right?"*, and straight after, *"add a default recipe-sync schedule too"*. A host that has never saved a source or repository list starts on the public catalogue and the public cache, pull-only, with a `pkg.sync` schedule every six hours.
+
+Changeable and clearable for good: the first change saves the list, and a saved empty list means cleared and is never replaced by the default again. Never push by default and never a token by default -- publishing is the operator's act.
+
+Verified: tests never use the defaults' network; test data directories start cleared, and a new test that wipes its pkg state dir calls the seed again. 192.168.15.95 keeps its own saved configuration, and a test there that points it at the public sources restores that configuration immediately afterwards.
+
+## Part 241 (done): the cbs bootstrap seed is the previous Cix root (ADR-0314)
+
+ADR-0309 left clause 5 open: once shell recipes are gone, what builds the build system the first time on a host that has none? The answer is the previous Cix root, which already carries a working `cbs` -- so the bootstrap is the platform's own last release rather than anything foreign, and the Build Provenance Mandate holds without an exception.
+
+Verified: accepted and implemented as the seam ADR-0309 named.
+
+## Part 240 (done): the version is `0.2.x`, the release is the counter, and the `v2.57` line is retired (#532, ADR-0312, ADR-0313)
+
+The owner on 2026-09-26: *"I think it's 0.2.57 release 358, right? ... I want this plastered on CLAUDE.md and our readme files and our build files so that we don't mix things up ... I want to stop exaggerating with versioning."* One string everywhere with no `v` prefix: the git tag, `CIX_VERSION`, the os-release `BUILD_ID`, the recipe identity and the artifact name are spelled identically, and the recipe passes `${version}-${release}` so two builds in a line are never indistinguishable.
+
+The leading zero is a claim and it is true -- Cix has not shipped a stable interface, and the scheme this replaced asserted two major generations of one. Retiring the old line was load-bearing rather than tidiness: `pkg_version_compare()` is a natural sort, so `0.2.57` loses to `v2.57.358` on the first byte, and leaving one old recipe in the corpus would make a version-less `pkg install cix` resolve to the retired line forever.
+
+Verified: 404 artifacts and 610 recipes removed with #532 closed; `test_versioning` is the gate and is in SELFTESTS. An epoch was measured and rejected -- the artifact cache answers HTTP 400 to a colon in an artifact name -- so that avenue should not be reached for again.
+
+## Part 239 (done): an artifact's format is declared, recipes are their own repository, and an image recipe is JSON (ADR-0307, ADR-0308, ADR-0311)
+
+Three structural corrections taken together. A package's artifact format is the one its recipe declares, with cixd forking `cbs` rather than parsing the format itself. Recipes left this repository for `cix-recipes`, one flat file per `<name>@<version>.<ext>`, so a recipe change is no longer a change to the platform's own source tree -- tests reach the corpus through `test_recipes_root()` and the two repositories are cloned side by side. And an image recipe is JSON, because it was never a script.
+
+Verified: ADR-0307 implemented on 192.168.15.95 at `v2.57.232`; the recipes move landed with #505. ADR-0307's shell half and ADR-0309's clause 1 were both later superseded by ADR-0329 (Part 253), which removed the shell path rather than keeping its published revisions.
+
+## Part 238 (done): a package keeps its documentation and its licence (#491, ADR-0306, ADR-0310)
+
+ADR-0251's finalize phase had been deleting `usr/share/{man,info,doc,locale,i18n}` from every artifact. ADR-0306 withdrew that clause, and keeping it restored nothing for the 57 recipes that deleted those trees themselves -- licences included, which is the part that matters beyond convenience. ADR-0310 made the adjacent correction that a compiler runtime archive is not a duplicate of its shared counterpart and must not be stripped as one.
+
+Verified: the last three self-deleting recipes -- glibc 2.44-20, gcc 16.2.0-18 and node 24.21.0-3 -- stopped on 2026-10-01, and `test_recipe_docs` keeps the count at zero.
 ## Part 237 (done): a recipe may be written in CPDL, and the build system builds itself (#487, ADR-0305)
 
 Stages 1 and 2 of the owner-directed move from shell recipes to CBS -- CPDL 0.1 documents built by `cix-build-system` instead of by a shell. A recipe's format is its **filename**: `<name>/<version>/build.sh` is a shell recipe, `build.cbs` a CBS one, a version holds one or the other and never both. Nothing sniffs content and no recipe declares its own language, because a filename cannot disagree with what will actually run -- and `cbs` requires the extension anyway.
