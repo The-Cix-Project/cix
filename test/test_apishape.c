@@ -38,12 +38,14 @@
  * is not the one the schema describes, so it asserts the implication
  * only: IF 200, THEN the promised keys.
  *
- * It also prints how many operations it checked. That number is the
- * honest measure of the gate, because `apigen` reads a narrow schema
- * subset on purpose -- a bare array, an `allOf`, a schema with no
- * `required` at all contribute no assertion. A spec drifting towards
- * shapes the generator cannot see would weaken this test silently
- * otherwise; printed, the coverage is visible in the selftest output.
+ * `apigen` reads a narrow schema subset on purpose -- a bare array, an
+ * `allOf`, a schema with no `required` at all contribute no assertion
+ * -- so a spec drifting towards shapes the generator cannot see would
+ * weaken this test. What stops that being silent is NOT the count it
+ * prints: `make selftest` captures both streams and prints them only
+ * on FAIL, so a passing run's output is discarded. It is the named
+ * assertion below, which fails if #574's own endpoint ever leaves the
+ * gate.
  */
 #include "httpclient.h"
 #include "json.h"
@@ -142,6 +144,8 @@ int main(void)
 	int ok = 1;
 	size_t i;
 	int checked = 0, items_checked = 0, skipped_status = 0;
+	/* #574's own endpoint, asserted by name below. */
+	int catalogue_gated = 0;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -204,6 +208,8 @@ int main(void)
 			ok = 0;
 		} else {
 			checked++;
+			if (strcmp(s->op_id, "getSourceCatalogue") == 0)
+				catalogue_gated = 1;
 		}
 
 		/*
@@ -244,25 +250,47 @@ int main(void)
 	}
 
 	/*
-	 * A floor on coverage, not an exact count -- and a deliberately
-	 * loose one on its first release.
+	 * The endpoint this test exists for, asserted BY NAME.
 	 *
-	 * An exact number would be a fifth place to edit on every spec
+	 * A count is the wrong guarantee here, and `make selftest` is why:
+	 * it captures both streams of every test and prints them only on
+	 * FAIL, then deletes the log -- so a passing test's output is
+	 * discarded, and the coverage line below is invisible in exactly
+	 * the case where the gate is healthy. (The same shape as
+	 * logstore_write() not echoing to stderr: adding a line is not the
+	 * same as making it visible.) A floor nobody can read the real
+	 * number against is a safety net, not a measure.
+	 *
+	 * So the thing that must not silently stop being true is named:
+	 * cix#574 was `GET /pkg/source-catalogue` answering with a shape
+	 * its contract did not describe, and if that endpoint ever leaves
+	 * this gate -- renamed, parameterised, its `required` list dropped,
+	 * or answering a status this test skips -- the failure says so
+	 * instead of a count quietly going down by one.
+	 */
+	if (!catalogue_gated) {
+		fprintf(stderr,
+		        "FAIL: GET /v1/pkg/source-catalogue was not gated against its contract, "
+		        "and it is the endpoint this test exists for (#574). Either its schema "
+		        "stopped declaring required keys, or it did not answer 200 here, or the "
+		        "operationId changed -- all three need a look rather than a silently "
+		        "smaller count\n");
+		ok = 0;
+	}
+
+	/*
+	 * And a floor, as a net under the rest.
+	 *
+	 * An exact count would be a fifth place to edit on every spec
 	 * change; test_apigen already holds the operation count in four,
-	 * and two releases failed on a missed one. A floor fails only when
-	 * the gate gets materially WEAKER, which is the thing worth
-	 * catching: a response schema losing its `required` list, or an
-	 * endpoint moving to a shape apigen cannot read.
-	 *
-	 * 20 rather than something near the real figure, because the real
-	 * figure here has never been measured. 82 operations are gateable
-	 * and 81 of them answered 200 on a LIVE host (192.168.15.95,
-	 * 2026-10-07) -- but this daemon is fresh, with no sources, no
-	 * images but `base` and no containers, and how many of the 82 can
-	 * answer 200 in that state is exactly what the line below prints.
-	 * Guessing at it would make this gate fail for being new rather
-	 * than for being weak. Raise it on the next release, from the
-	 * number this test reports.
+	 * and two releases failed on a missed one. 20 rather than something
+	 * near the real figure, because the real figure for a FRESH daemon
+	 * has never been measured -- 82 operations are gateable and 81
+	 * answered 200 on a live host (192.168.15.95, 2026-10-07), but this
+	 * daemon has no sources, no images but `base` and no containers.
+	 * Guessing near 81 would make the gate fail for being new rather
+	 * than for being weak, and the number cannot be read off a passing
+	 * run to do better. Run `./build/test_apishape` directly to see it.
 	 */
 	if (checked < 20) {
 		fprintf(stderr,
@@ -272,6 +300,9 @@ int main(void)
 		        checked);
 		ok = 0;
 	}
+
+	/* Discarded by `make selftest` on a pass -- see the comment above.
+	 * Here for a direct run, and for the failure output. */
 	printf("%s: %d operation(s) gated against their declared response shape, %d of them one "
 	       "level into an array; %d answered a status other than 200 and were not gated\n",
 	       ok ? "ok" : "FAIL", checked, items_checked, skipped_status);

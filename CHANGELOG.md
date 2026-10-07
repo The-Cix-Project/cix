@@ -52,10 +52,16 @@ it happened to use rather than the ones the contract promises.
   route reader's posture and deliberate.** A route `apigen` fails to read is unroutable, so refusing
   an unrecognised construct is the only safe answer there. A schema it fails to read costs an
   assertion, not a route — and the schema grammar carries `allOf`, `oneOf`, nested objects and
-  discriminators this tool has no business modelling. So `test_apishape` **prints its coverage**, and
-  fails below a floor of 20 gated operations — deliberately loose on its first release, because 81 of the 82 answered 200 on a *live* host and nobody has measured how many can on a fresh one; the test prints the real number so the floor can be raised with evidence. An exact count would be a fifth place to edit on every
-  spec change (`test_apigen` already holds the operation count in four, and two releases failed on a
-  missed one), while a floor fails only when the gate gets materially weaker.
+  discriminators this tool has no business modelling. So what stops a drift towards unreadable shapes
+  being silent is an assertion **by name**: `GET /pkg/source-catalogue` — #574's own endpoint — must
+  have been gated, and the failure says so if it is ever renamed, parameterised, stripped of its
+  `required` list, or answering a status the test skips. A count cannot carry that job here, because
+  `make selftest` captures both streams of every test and prints them only on FAIL: a passing run's
+  output is discarded, so the coverage line is invisible in exactly the healthy case (the same shape
+  as `logstore_write()` not echoing to stderr). A floor of 20 sits under it as a net — loose because
+  the figure for a *fresh* daemon has never been measured, 81 of 82 having answered 200 on a live
+  host; an exact count would be a fifth place to edit on every spec change (`test_apigen` holds the
+  operation count in four, and two releases failed on a missed one).
 - **`test_apishape` walks the parameterless GETs** — 82 of them carry a required list — and asserts
   the implication only: *if* 200, *then* the promised keys, naming every missing key rather than the
   first, because a rename takes its neighbours with it. A non-200 is not a failure: several of these
