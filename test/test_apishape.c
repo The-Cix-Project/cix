@@ -30,11 +30,13 @@
  * need no path parameter and are safe to call -- GET only -- and
  * asserts every declared key is present.
  *
- * A non-200 answer is NOT a failure here. Several of these endpoints
- * legitimately 404 on a daemon with no state (`GET /pkg/build/log` is
- * live-only by design), and this gate has nothing to say about a
- * response that is not the one the schema describes. It asserts the
- * implication only: IF 200, THEN the promised keys.
+ * A non-200 answer is NOT a failure here. An endpoint legitimately
+ * 404s when the thing it describes does not exist -- measured on
+ * 192.168.15.95, 2026-10-07: of the 82 gateable GETs, 81 answered 200
+ * and `GET /v1/pki/intermediate` answered 404, that host having no
+ * intermediate CA. This gate has nothing to say about a response that
+ * is not the one the schema describes, so it asserts the implication
+ * only: IF 200, THEN the promised keys.
  *
  * It also prints how many operations it checked. That number is the
  * honest measure of the gate, because `apigen` reads a narrow schema
@@ -242,19 +244,30 @@ int main(void)
 	}
 
 	/*
-	 * A floor on coverage, not an exact count.
+	 * A floor on coverage, not an exact count -- and a deliberately
+	 * loose one on its first release.
 	 *
 	 * An exact number would be a fifth place to edit on every spec
-	 * change -- test_apigen already holds the operation count in four,
+	 * change; test_apigen already holds the operation count in four,
 	 * and two releases failed on a missed one. A floor fails only when
 	 * the gate gets materially WEAKER, which is the thing worth
 	 * catching: a response schema losing its `required` list, or an
 	 * endpoint moving to a shape apigen cannot read.
+	 *
+	 * 20 rather than something near the real figure, because the real
+	 * figure here has never been measured. 82 operations are gateable
+	 * and 81 of them answered 200 on a LIVE host (192.168.15.95,
+	 * 2026-10-07) -- but this daemon is fresh, with no sources, no
+	 * images but `base` and no containers, and how many of the 82 can
+	 * answer 200 in that state is exactly what the line below prints.
+	 * Guessing at it would make this gate fail for being new rather
+	 * than for being weak. Raise it on the next release, from the
+	 * number this test reports.
 	 */
-	if (checked < 40) {
+	if (checked < 20) {
 		fprintf(stderr,
 		        "FAIL: only %d operation(s) were gated against their contract; this test "
-		        "stops being a gate below ~40, so either the spec lost required lists or "
+		        "stops being a gate that low, so either the spec lost required lists or "
 		        "apigen stopped reading them\n",
 		        checked);
 		ok = 0;

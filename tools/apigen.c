@@ -99,6 +99,20 @@ struct api_op {
 	 * unroutable, but a shape it cannot read simply contributes no
 	 * assertion.
 	 */
+	/*
+	 * The property NAMES an inline 200 schema declares, as ",a,b,c,"
+	 * so a membership test is one strstr().
+	 *
+	 * Only for the self-consistency check below: a schema whose
+	 * `required` names a property it does not declare is a contract
+	 * that contradicts itself, and the spec had exactly one --
+	 * `listStorage` promised `disks` while declaring `storage`, which
+	 * is what the daemon has always sent. Found by sweeping all 82
+	 * gateable GETs against 192.168.15.95 before this gate had ever
+	 * been compiled; nothing else in 339 operations or 144 component
+	 * schemas has it, so refusing is affordable and permanent.
+	 */
+	char resp_props[1024];
 	char resp_schema[APIGEN_ID_MAX];
 	char resp_required[APIGEN_MAX_REQUIRED][APIGEN_QNAME_MAX];
 	int n_resp_required;
@@ -346,6 +360,9 @@ struct comp_schema {
 	char comp[APIGEN_ID_MAX];
 	char required[APIGEN_MAX_REQUIRED][APIGEN_QNAME_MAX];
 	int n_required;
+	int line;                  /* where the schema key is, for a refusal */
+	/* Its property names as ",a,b,c," -- see api_op.resp_props. */
+	char props[2048];
 	/*
 	 * A property that is an array whose items name another schema, and
 	 * that schema's key -- ONE level deep.
@@ -425,6 +442,7 @@ static void load_component_schemas(const char *spec)
 	FILE *f = fopen(spec, "r");
 	char line[4096];
 	int in_components = 0, in_schemas = 0, cur = -1;
+	int lineno = 0;
 	int in_props = 0;
 	char prop[APIGEN_QNAME_MAX] = "";
 	int prop_is_array = 0;
@@ -435,6 +453,7 @@ static void load_component_schemas(const char *spec)
 		char key[APIGEN_PATH_MAX];
 		int ind;
 
+		lineno++;
 		if (is_ignorable(line))
 			continue;
 		ind = indent_of(line);
@@ -470,6 +489,7 @@ static void load_component_schemas(const char *spec)
 			cur = g_comp_schema_count++;
 			memset(&g_comp_schemas[cur], 0, sizeof(g_comp_schemas[cur]));
 			snprintf(g_comp_schemas[cur].comp, sizeof(g_comp_schemas[cur].comp), "%s", key);
+			g_comp_schemas[cur].line = lineno;
 			continue;
 		}
 		if (cur < 0)
@@ -494,6 +514,18 @@ static void load_component_schemas(const char *spec)
 			prop_is_array = 0;
 			if (!key_at(line, 8, prop, sizeof(prop)))
 				prop[0] = '\0';
+			else {
+				size_t used = strlen(g_comp_schemas[cur].props);
+
+				if (used + strlen(prop) + 2 >= sizeof(g_comp_schemas[cur].props))
+					die_at(spec, 0,
+					       "schema %s declares more properties than this tool can "
+					       "record; raise props rather than let the self-consistency "
+					       "check go unsound",
+					       g_comp_schemas[cur].comp);
+				snprintf(g_comp_schemas[cur].props + used,
+				         sizeof(g_comp_schemas[cur].props) - used, "%s,", prop);
+			}
 			continue;
 		}
 		if (prop[0] == '\0')
@@ -639,6 +671,8 @@ static int g_in_params;
  * and inside its `"200":` (#575). */
 static int g_in_responses;
 static int g_in_200;
+/* Inside an inline 200 schema's own `properties:` (#575). */
+static int g_in_resp_props;
 
 static void param_item_flush(int op, const char *spec, int lineno)
 {
@@ -1428,6 +1462,9 @@ int main(int argc, char **argv)
 				       "start with '/'", key);
 			param_item_flush(cur_op, spec, lineno);
 			g_in_params = 0;
+			g_in_responses = 0;
+			g_in_200 = 0;
+			g_in_resp_props = 0;
 			snprintf(cur_path, sizeof(cur_path), "%s", key);
 			cur_op = -1;
 			continue;
@@ -1448,6 +1485,13 @@ int main(int argc, char **argv)
 				die_at(spec, lineno, "more than %d operations", APIGEN_MAX_OPS);
 			param_item_flush(cur_op, spec, lineno);
 			g_in_params = 0;
+			/* #575: the response reader resets here for the same reason
+			 * g_in_params does -- a new operation must not inherit where
+			 * the previous one left off, even where the grammar makes it
+			 * harmless today. */
+			g_in_responses = 0;
+			g_in_200 = 0;
+			g_in_resp_props = 0;
 			cur_op = g_op_count++;
 			memset(&g_ops[cur_op], 0, sizeof(g_ops[cur_op]));
 			for (j = 0; key[j] != '\0'; j++)
@@ -1477,6 +1521,7 @@ int main(int argc, char **argv)
 			 * as a response's.
 			 */
 			g_in_responses = strcmp(key, "responses") == 0;
+			g_in_resp_props = 0;
 			if (!g_in_responses)
 				g_in_200 = 0;
 			if (strcmp(key, "operationId") == 0) {
@@ -1569,6 +1614,22 @@ int main(int argc, char **argv)
 					    parse_inline_list(v, g_ops[cur_op].resp_required,
 					                      APIGEN_MAX_REQUIRED);
 				}
+				g_in_resp_props = strcmp(key, "properties") == 0;
+				continue;
+			}
+			/* An inline schema's own property names, at 18. */
+			if (g_in_200 && g_in_resp_props && ind == 18 &&
+			    key_at(line, 18, key, sizeof(key))) {
+				size_t used = strlen(g_ops[cur_op].resp_props);
+
+				if (used + strlen(key) + 2 >= sizeof(g_ops[cur_op].resp_props))
+					die_at(spec, lineno,
+					       "operation \"%s\" declares more inline response properties "
+					       "than this tool can record; raise resp_props rather than let "
+					       "the self-consistency check below go unsound",
+					       g_ops[cur_op].op_id);
+				snprintf(g_ops[cur_op].resp_props + used,
+				         sizeof(g_ops[cur_op].resp_props) - used, "%s,", key);
 				continue;
 			}
 		}
@@ -1642,6 +1703,57 @@ int main(int argc, char **argv)
 			       "daemon handler and each channel, so an operation without one cannot "
 			       "be routed",
 			       g_ops[i].method, g_ops[i].path);
+	}
+	/*
+	 * #575: a schema whose `required` names a property it does not
+	 * declare is a contract that contradicts itself, and nothing could
+	 * ever satisfy it.
+	 *
+	 * A build failure rather than a warning, by the same argument every
+	 * other refusal in this tool makes: the spec is the authority, and
+	 * an authority that disagrees with itself is worse than one that is
+	 * merely incomplete. There is no legitimate reason to write one.
+	 *
+	 * The spec had exactly one, found by sweeping all 82 gateable GETs
+	 * against 192.168.15.95 before `test_apishape` had ever been
+	 * compiled: `listStorage` declared `required: [disks]` with a
+	 * `properties` block naming `storage`, which is what the daemon has
+	 * always sent. Fixed in the same change. 144 component schemas and
+	 * the other 338 operations were clean, so this check costs nothing
+	 * and closes the hole permanently -- and it needs no daemon, which
+	 * makes it the cheaper half of #575's two gates.
+	 */
+	for (i = 0; i < g_op_count; i++) {
+		int q;
+
+		for (q = 0; q < g_ops[i].n_resp_required; q++) {
+			char needle[APIGEN_QNAME_MAX + 2];
+
+			snprintf(needle, sizeof(needle), "%s,", g_ops[i].resp_required[q]);
+			if (strstr(g_ops[i].resp_props, needle) != NULL)
+				continue;
+			die_at(spec, g_ops[i].line,
+			       "%s declares its 200 response requires \"%s\", but that schema's own "
+			       "properties do not include it -- nothing could satisfy this, so it is "
+			       "a contract that contradicts itself",
+			       g_ops[i].op_id, g_ops[i].resp_required[q]);
+		}
+	}
+	for (i = 0; i < g_comp_schema_count; i++) {
+		int q;
+
+		for (q = 0; q < g_comp_schemas[i].n_required; q++) {
+			char needle[APIGEN_QNAME_MAX + 2];
+
+			snprintf(needle, sizeof(needle), "%s,", g_comp_schemas[i].required[q]);
+			if (strstr(g_comp_schemas[i].props, needle) != NULL)
+				continue;
+			die_at(spec, g_comp_schemas[i].line,
+			       "schema %s requires \"%s\", but does not declare it as a property -- "
+			       "nothing could satisfy this, so it is a contract that contradicts "
+			       "itself",
+			       g_comp_schemas[i].comp, g_comp_schemas[i].required[q]);
+		}
 	}
 	/*
 	 * ADR-0317 (#539): every operation states the permission it

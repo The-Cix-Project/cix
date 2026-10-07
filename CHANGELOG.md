@@ -32,14 +32,24 @@ it happened to use rather than the ones the contract promises.
   an unrecognised construct is the only safe answer there. A schema it fails to read costs an
   assertion, not a route — and the schema grammar carries `allOf`, `oneOf`, nested objects and
   discriminators this tool has no business modelling. So `test_apishape` **prints its coverage**, and
-  fails below a floor of 40 gated operations: an exact count would be a fifth place to edit on every
+  fails below a floor of 20 gated operations — deliberately loose on its first release, because 81 of the 82 answered 200 on a *live* host and nobody has measured how many can on a fresh one; the test prints the real number so the floor can be raised with evidence. An exact count would be a fifth place to edit on every
   spec change (`test_apigen` already holds the operation count in four, and two releases failed on a
   missed one), while a floor fails only when the gate gets materially weaker.
 - **`test_apishape` walks the parameterless GETs** — 82 of them carry a required list — and asserts
   the implication only: *if* 200, *then* the promised keys, naming every missing key rather than the
   first, because a rename takes its neighbours with it. A non-200 is not a failure: several of these
-  endpoints legitimately 404 on a daemon with no state (`GET /pkg/build/log` is live-only by design),
+  endpoint legitimately 404s when the thing it describes does not exist (`GET /v1/pki/intermediate` was the one, on a box with no intermediate CA),
   and this gate has nothing to say about a response the schema does not describe.
+- **`apigen` also refuses a schema that contradicts itself** — a `required` list naming a property the
+  schema does not declare. Nothing could ever satisfy one, so it is a build failure by the same
+  argument as every other refusal in that tool, and it needs no daemon, which makes it the cheaper of
+  #575's two gates. Both arms are proven by reintroducing a break: the inline arm names the operation
+  and the key, the component arm names the schema and its line.
+- **The sweep found one, before the test had ever been compiled.** All 82 gateable GETs were called
+  against 192.168.15.95 with `curl` first — 81 answered 200 — and `listStorage` answered 200 without
+  `disks`. The contract contradicted *itself*: `required: [disks]` above a `properties` block
+  declaring `storage`, which is what the daemon has always sent. The contract was stale, exactly as in
+  #574; `required: [storage]` now. The other 338 operations and all 144 component schemas were clean.
 - Reintroducing #574's shape against the new table shows it caught: `getSourceCatalogue` now carries
   `packages, total, ok, blocked, failed, not_implemented` at the top level and
   `name, stage, status, reason` for `packages[]`.

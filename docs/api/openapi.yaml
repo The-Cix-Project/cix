@@ -5792,7 +5792,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [disks]
+                required: [storage]
                 properties:
                   storage:
                     type: array
