@@ -21575,6 +21575,15 @@ components:
             against. "base" unless a non-default image was given at install time.
         version:
           type: string
+          description: >
+            The version installed in this image. A failed or cancelled
+            UPGRADE leaves this at the version that is STILL installed,
+            never the one that was attempted: that version is on the run
+            (GET /pipeline/runs), which is the surface asking the other
+            question. The install stage did not honour this until
+            0.2.57-463 -- it reported the attempted version with state
+            `failed` while the image still held and pinned the old one
+            (#570).
         depends:
           type: string
           description: >
@@ -21596,7 +21605,12 @@ components:
         error:
           type: string
           nullable: true
-          description: Populated only when state is "failed".
+          description: >
+            Populated when the last operation on this entry failed or was
+            cancelled -- not only when `state` is "failed". A failed UPGRADE
+            reads `installed`, because the version it names is still there and
+            still working, and carries the error of the attempt alongside the
+            `stage` and `status` it reached.
         stage:
           type: string
           nullable: true

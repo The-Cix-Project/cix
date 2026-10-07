@@ -6271,6 +6271,125 @@ skip_hostbuild:
 		}
 		cix_response_free(&r);
 	}
+
+	/*
+	 * #570: a refused UPGRADE leaves the entry naming what is installed.
+	 *
+	 * `POST /pkg/cancel`'s contract already stated the rule for every
+	 * failure -- "an upgrade that is cancelled leaves the package
+	 * installed at the version it already had, exactly as any other
+	 * failed upgrade does" -- and every BUILD-stage failure honoured it.
+	 * Every INSTALL-stage failure passed a literal 0 instead, in the
+	 * same function with the same variable in scope, so the entry moved
+	 * to the version that was refused and went FAILED. Measured on
+	 * 192.168.15.95, 2026-10-04: the #389 gate refused gcc@16.2.0-18
+	 * into cix-builder and `pkg ls` named a version the image did not
+	 * contain, as the image's gcc, while a working 16.2.0-13 sat pinned.
+	 *
+	 * Refused here by the empty-staging gate rather than #389's, which
+	 * needs an ELF linking an undeclared soname: the rule under test is
+	 * what the entry says afterwards, and both gates reach it through
+	 * the same pkg_fail() call. 1.0 stages a real file; 1.1 stages only
+	 * a directory, which is the one thing that would publish an empty
+	 * package.
+	 */
+	{
+		char st[64];
+		const char *stt, *ver, *err;
+
+		if (publish_cpdl_recipe(&client, "keepver", "1.0", tarball_path, sha256, NULL,
+		                         CPDL_STD_TOOLS, NULL,
+		                         "        run \"tcc\" {\n"
+		                         "            \"-o\" \"hello\" \"hello.c\"\n"
+		                         "        }\n",
+		                         "        mkdir \"${dest}/usr/bin\" parents chmod 0755\n"
+		                         "        copy \"${build}/hello\" to \"${dest}/usr/bin/keepver\"\n") != 0 ||
+		    publish_cpdl_recipe(&client, "keepver", "1.1", tarball_path, sha256, NULL,
+		                         CPDL_STD_TOOLS, NULL, "        run \"true\" {\n        }\n",
+		                         "        mkdir \"${dest}/usr/bin\" parents chmod 0755\n") != 0) {
+			fprintf(stderr, "FAIL: #570 could not publish the keepver fixtures\n");
+			ok = 0;
+			goto skip_keepver;
+		}
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pkg/install",
+		                       "{\"name\":\"keepver\",\"version\":\"1.0-1\"}", &r) != 0 ||
+		    r.status != 202) {
+			fprintf(stderr, "FAIL: #570 install keepver 1.0-1, status=%d\n", r.status);
+			ok = 0;
+			cix_response_free(&r);
+			goto skip_keepver;
+		}
+		cix_response_free(&r);
+		if (poll_pkg_state(&client, "keepver", st, sizeof(st), 200) != 0 ||
+		    strcmp(st, "installed") != 0) {
+			fprintf(stderr, "FAIL: #570 keepver 1.0-1 ended '%s', expected installed\n", st);
+			ok = 0;
+			goto skip_keepver;
+		}
+
+		/* The upgrade the install stage refuses. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pkg/install",
+		                       "{\"name\":\"keepver\",\"version\":\"1.1-1\",\"upgrade\":true}",
+		                       &r) != 0 ||
+		    r.status != 202) {
+			fprintf(stderr, "FAIL: #570 upgrade keepver to 1.1-1, status=%d\n", r.status);
+			ok = 0;
+			cix_response_free(&r);
+			goto skip_keepver;
+		}
+		cix_response_free(&r);
+		/*
+		 * It ends INSTALLED, so there is no terminal `failed` to poll
+		 * for: wait for the stage/status pair the refusal records.
+		 */
+		{
+			int waited;
+
+			for (waited = 0; waited < 200; waited++) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/keepver", NULL, &r) == 0 &&
+				    r.status == 200 && r.json != NULL &&
+				    str_eq(json_str_field(r.json, "stage"), "install") &&
+				    str_eq(json_str_field(r.json, "status"), "failed"))
+					break;
+				cix_response_free(&r);
+				usleep(500000);
+			}
+		}
+		stt = r.json != NULL ? json_str_field(r.json, "state") : NULL;
+		ver = r.json != NULL ? json_str_field(r.json, "version") : NULL;
+		err = r.json != NULL ? json_str_field(r.json, "error") : NULL;
+		if (!str_eq(stt, "installed") ||
+		    !str_eq(ver, "1.0-1") || err == NULL || err[0] == '\0') {
+			fprintf(stderr, "FAIL: #570 a refused upgrade must leave keepver installed at "
+			                "1.0-1 with the error of the attempt, got state=%s version=%s "
+			                "error=%s\n",
+			        stt != NULL ? stt : "(none)", ver != NULL ? ver : "(none)",
+			        err != NULL ? err : "(none)");
+			ok = 0;
+		}
+		cix_response_free(&r);
+		/*
+		 * The 1.1 that failed is on the RUN, which is the surface
+		 * asking what was attempted (ADR-0272). Not GET /pipeline,
+		 * which reports where each package stands NOW -- that one
+		 * correctly says 1.0-1, which is the whole point of the
+		 * assertion above.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/pipeline/runs?name=keepver",
+		                       NULL, &r) != 0 ||
+		    r.body == NULL || strstr(r.body, "keepver") == NULL ||
+		    strstr(r.body, "1.1-1") == NULL) {
+			fprintf(stderr, "FAIL: #570 the refused 1.1-1 must appear on a run: %.300s\n",
+			        r.body != NULL ? r.body : "(none)");
+			ok = 0;
+		}
+		cix_response_free(&r);
+	}
+skip_keepver:
 skip_keep_on_failure:
 
 	/* 19. resume (ADR-0177/issue #46): a build container preserved via

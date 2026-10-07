@@ -13703,6 +13703,41 @@ static void transfer_replaced_paths(const char *image, const struct pkg_entry *s
 }
 
 /*
+ * #570: an install-stage failure that never touched the image leaves the
+ * package installed at the version it already had, and the entry says so.
+ *
+ * `pkg_fail(e, keep_installed, ...)` already carries that rule and every
+ * BUILD-stage failure in pkg_build_completed() passes `is_upgrade` to it.
+ * Every INSTALL-stage failure passed a literal 0, in the same function,
+ * with the same variable in scope -- so a refused upgrade reported the
+ * package as FAILED at a version that was never installed. Measured on
+ * 192.168.15.95, 2026-10-04: the #389 gate refused `gcc@16.2.0-18` into
+ * cix-builder, `pkg ls` then read `gcc cix-builder 16.2.0-18
+ * failed:install/failed`, and the image still held and pinned a working
+ * 16.2.0-13 -- so the package list named a version the image did not
+ * contain, as the image's gcc, in a failed state.
+ *
+ * Two fields have to move back together, because the entry is also where
+ * the version moves to the one being installed (above, at the harvest).
+ * That write happens before these gates, so keeping the state alone would
+ * trade one wrong answer for a worse one: INSTALLED at the refused
+ * version.
+ *
+ * Called AFTER pkg_fail() deliberately: pkg_run_close() reads e->version
+ * inside it (ADR-0272), so the run keeps the version that failed while
+ * the entry goes back to the one that works. The two questions have
+ * different answers and each surface asks a different one.
+ */
+static void install_keep_prev_version(struct pkg_entry *e, int is_upgrade,
+                                      const char *prev_version, const char *prev_depends)
+{
+	if (e == NULL || !is_upgrade || prev_version == NULL || prev_version[0] == '\0')
+		return;
+	snprintf(e->version, sizeof(e->version), "%s", prev_version);
+	snprintf(e->depends, sizeof(e->depends), "%s", prev_depends != NULL ? prev_depends : "");
+}
+
+/*
  * ADR-0320: an explicit install moves the image's pin for that package
  * to the version it installed, so the manifest and the installed set do
  * not disagree. They used to, and only ever by accident: #535 measured
@@ -13741,9 +13776,14 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	char container_base[PATH_MAX];
 	char dest_dir[PATH_MAX];
 	int is_final, is_upgrade;
+	/* #570: what is installed now, kept so an install-stage refusal can
+	 * put the entry back on it. */
+	char prev_version[PKG_VERSION_MAX], prev_depends[PKG_DEPENDS_MAX];
 	int chain_idx;
 
 	out_hostbuild_done_name[0] = '\0';
+	prev_version[0] = '\0';
+	prev_depends[0] = '\0';
 	*out_kept = 0;
 
 	chain_idx = pkg_build_container_chain_index(container_name);
@@ -14135,6 +14175,10 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	 * own version cannot change halfway through; looking it up twice
 	 * was the whole defect.
 	 */
+	/* #570: the version this entry is leaving, for an install-stage
+	 * refusal that never reaches the image. */
+	snprintf(prev_version, sizeof(prev_version), "%s", e->version);
+	snprintf(prev_depends, sizeof(prev_depends), "%s", e->depends);
 	if (g_chains[chain_idx].fetch_resolved_version[0] != '\0') {
 		snprintf(e->version, sizeof(e->version), "%s",
 		         g_chains[chain_idx].fetch_resolved_version);
@@ -14184,7 +14228,8 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		         "whether the finalize phase removed everything it staged (#486)",
 		         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_CBS);
 		logstore_write("cixd", "error", "pkg install: %s@%s: %s", e->name, e->version, msg);
-		pkg_fail(e, 0, PIPELINE_INSTALL, msg);
+		pkg_fail(e, is_upgrade, PIPELINE_INSTALL, msg);
+		install_keep_prev_version(e, is_upgrade, prev_version, prev_depends);
 		g_chains[chain_idx].name[0] = '\0';
 		g_chains[chain_idx].dep_queue_count = 0;
 		g_chains[chain_idx].is_hostbuild = 0;
@@ -14235,7 +14280,8 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 */
 		if (persist_fresh_output_dir(artifact_dir) != 0 ||
 		    merge_tree(dest_dir, artifact_dir, "", e, 1) != 0) {
-			pkg_fail(e, 0, PIPELINE_INSTALL, "failed to harvest the built artifact");
+			pkg_fail(e, is_upgrade, PIPELINE_INSTALL, "failed to harvest the built artifact");
+			install_keep_prev_version(e, is_upgrade, prev_version, prev_depends);
 			g_chains[chain_idx].name[0] = '\0';
 			g_chains[chain_idx].dep_queue_count = 0;
 			g_chains[chain_idx].is_hostbuild = 0;
@@ -14279,7 +14325,8 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 */
 		if (undeclared_link_gate(e, g_chains[chain_idx].image, dest_dir, refused,
 		                          sizeof(refused)) != 0) {
-			pkg_fail(e, 0, PIPELINE_INSTALL, refused);
+			pkg_fail(e, is_upgrade, PIPELINE_INSTALL, refused);
+			install_keep_prev_version(e, is_upgrade, prev_version, prev_depends);
 			g_chains[chain_idx].name[0] = '\0';
 			g_chains[chain_idx].dep_queue_count = 0;
 			return 0;
@@ -14291,7 +14338,8 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		                    g_chains[chain_idx].fetch_resolved_replaces, refused,
 		                    sizeof(refused)) != 0) {
 			logstore_write("cixd", "error", "pkg install: %s: %s", e->name, refused);
-			pkg_fail(e, 0, PIPELINE_INSTALL, refused);
+			pkg_fail(e, is_upgrade, PIPELINE_INSTALL, refused);
+			install_keep_prev_version(e, is_upgrade, prev_version, prev_depends);
 			g_chains[chain_idx].name[0] = '\0';
 			g_chains[chain_idx].dep_queue_count = 0;
 			return 0;
@@ -14312,6 +14360,9 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			         "image \"%s\" could not produce a new version%s%s",
 			         g_chains[chain_idx].image, why != NULL ? ": " : "",
 			         why != NULL ? why : "");
+			/* NOT kept installed (#570): install_mutate() frees this entry's
+			 * file list before merging, so a failure part-way leaves it
+			 * describing neither version. */
 			pkg_fail(e, 0, PIPELINE_INSTALL, msg);
 			g_chains[chain_idx].name[0] = '\0';
 			g_chains[chain_idx].dep_queue_count = 0;
@@ -14345,6 +14396,10 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 				         g_chains[chain_idx].image, missing, e->file_count, first_missing);
 				logstore_write("cixd", "error", "pkg %s@%s: %s", e->name,
 				                g_chains[chain_idx].image, msg);
+				/* NOT kept installed (#570): the merge disturbed this entry's own
+				 * file list, and the files it names are not in the image's
+				 * current version. An entry claiming INSTALLED here is the
+				 * split this check exists to catch. */
 				pkg_fail(e, 0, PIPELINE_INSTALL, "%s", msg);
 				g_chains[chain_idx].name[0] = '\0';
 				g_chains[chain_idx].dep_queue_count = 0;

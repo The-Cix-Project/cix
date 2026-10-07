@@ -6,6 +6,40 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A failed upgrade keeps the version that still works, at the install stage too (#570)
+
+`pkg ls` on 192.168.15.95 read `gcc  cix-builder  16.2.0-18  failed:install/failed` while the image
+held and pinned a working `16.2.0-13` — so the package list named a version the image did not
+contain, as the image's gcc. The #389 gate had refused 16.2.0-18 for an undeclared `libzstd.so.1`,
+which is the gate doing its job; what was wrong is what the entry said afterwards.
+
+The contract already mandated the rule — `POST /pkg/cancel` documents that a cancelled upgrade
+leaves the package installed at the version it already had — and `pkg_fail(e, keep_installed, ...)`
+already carries it. `pkg_build_completed()` passed `is_upgrade` at every BUILD-stage failure and a
+literal `0` at every INSTALL-stage one, in the same function with the same variable in scope.
+
+- **The four install-stage gates that refuse before touching the image now keep the entry
+  installed**: empty staging (#486), a failed artifact harvest, the undeclared-link gate (#389) and
+  the one-package-owns-a-path gate (#553). The entry goes back to the version that is still there,
+  and `stage`/`status`/`error` still describe the attempt, so a row reads `installed:install/failed`
+  — the old version works, and here is why the new one did not arrive.
+- **The version and the `depends` move back together.** `e->version` is set to the version being
+  installed before these gates run, so restoring the state alone would have traded one wrong answer
+  for a worse one: INSTALLED at the version that was refused.
+- **The run keeps the version that failed.** `install_keep_prev_version()` is called *after*
+  `pkg_fail()` because `pkg_run_close()` reads `e->version` inside it (ADR-0272) — so
+  `GET /pipeline/runs` answers "what was attempted" and the entry answers "what is installed".
+- **Two install-stage failures still report `failed`, deliberately**, each with a comment saying
+  why: `image_produce_new_version()` runs after `install_mutate()` has freed the entry's file list,
+  and the ADR-0155 `installed_files_missing` check exists precisely to catch an entry whose files
+  are not in the image's current version. An `installed` there would assert the thing being refused.
+- **`test_pkg` gates it** (a FLOOR_SELFTEST): `keepver@1.0` stages a real file and installs,
+  `keepver@1.1` stages only a directory so the #486 gate refuses the upgrade, and the entry must then
+  read `state=installed version=1.0-1` with a non-empty error while `1.1-1` appears on
+  `GET /pipeline/runs?name=keepver`.
+- `openapi.yaml`'s `version` and `error` descriptions now state the rule, and `docs/api/README.md`
+  gains the paragraph with the measurement.
+
 ### The source catalogue reports a verdict again (#574)
 
 `cixctl pkg source-catalogue` showed a blank `STATE` for all 172 packages on 192.168.15.95, a summary reading `0 current, 0 missing, 0 unresolved, 0 pinned`, and no row's reason — on the one surface ADR-0323 names for roll visibility: *"a roll that stops says where and why"*.
