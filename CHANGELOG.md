@@ -6,6 +6,36 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### ADR-0275's phase mechanism is corrected: all of it now waits on CBS (#388, cix-build-system#282)
+
+#388 asks for the phases inside a build stage to be visible, so an operator watching a package
+"building" for many minutes can see which phase it is in. ADR-0275 decided the model and recorded two
+mechanisms — one for shell recipes, one for CPDL. Picking it up, all three of its implementation
+claims turned out to be stale, and the ADR now says so in place (the model it decides is unaffected).
+
+- **"CBS emits no phase event … that is cbs#131, and it does not exist yet"** — it does.
+  `src/report.c:76` dispatches on `phase-begin` and the jsonl sink emits it like any other event. So
+  #131's substance is delivered; what is missing is only that the stream can be *reached*, because
+  `src/main.c:1672` hard-wires it to `dup(fileno(stderr))`. That is **cix-build-system#282**, filed
+  for #489, and it is the real dependency. Anyone following the ADR would have gone to ask for
+  something already built.
+- **"which phase failed, from the exit"** — not derivable. CBS's own manual defines exit `3` as
+  "recipe, source, build, or runtime failure", one code for four causes, and then says *"for a runtime
+  failure, inspect the reported phase"* — i.e. the phase is in the output, which this ADR's own
+  requirement forbids cixd from parsing.
+- **"the shell case ships whole on its own"** — the shell case does not exist. #569 and ADR-0329
+  removed shell recipes entirely, `PKG_BUILD_CMD` included (it appears zero times in `pkg.c` now). The
+  half of ADR-0275 that was designed to arrive without waiting on anything is gone.
+
+So the ordering ADR-0275 was careful to guarantee has inverted: **the whole feature now waits on
+cix-build-system#282**, which also blocks #489. What remains implementable today is the declared plan
+alone — `cbs explain --json` does emit `"phases":[{"name":…,"operations":N}]` and cixd already parses
+explain output in `cbsrecipe.c` — but that is a list of phase names with no status, no position and no
+failure attribution. It does not answer the question #388 was filed about, so it is not shipped as a
+"smaller answer".
+
+Two issues, one upstream flag. That consolidation is the useful outcome.
+
 ### Asked CBS for a separate event channel instead of parsing a merged one (#489, cix-build-system#282)
 
 #489 asks cixd to read CBS's structured build-event stream instead of its human reporter, so a build's

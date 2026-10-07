@@ -165,14 +165,61 @@ from `cbs explain RECIPE.cbs --json`, which exists and emits
 `{"phases":[{"name":…,"operations":N}]}` — the declared plan, before
 execution, which is exactly what is wanted and is why deriving it does
 not need markers at all. The **position** has no mechanism: cixd cannot
-inject a marker between phases that `cbs` runs internally, and CBS emits
-no phase event. That is `itdlabs/cix-build-system` #131, and it does not
-exist yet. Until it lands, a CPDL build reports its plan and its final
-outcome — which phase failed, from the exit — and reports no live
-position. That is a smaller answer, not a wrong one.
+inject a marker between phases that `cbs` runs internally.
+
+> **Corrected 2026-10-07, and both corrections matter to anyone
+> implementing this.** This paragraph said CBS "emits no phase event.
+> That is `itdlabs/cix-build-system` #131, and it does not exist yet",
+> and that a CPDL build can report "which phase failed, from the exit".
+> Neither is true of CBS at `ced27bb`, measured in its tree rather than
+> inferred:
+>
+> **CBS does emit a phase event.** `src/report.c:76` dispatches on
+> `phase-begin`, and the jsonl sink emits it like any other. So #131's
+> substance is delivered; what is missing is only that the stream can
+> be *reached*. `src/main.c:1672` hard-wires it to `dup(fileno(stderr))`
+> — the fd every build command's own output already uses, and the one
+> cixd's build log reads — so taking `--events jsonl` today would
+> interleave machine records into the text an operator reads, and
+> sorting them back out means deciding per line whether `{…` is an
+> event or something a build printed. That is `cix-build-system` #282,
+> which asks for `--events-fd N`, and it is the real dependency.
+>
+> **The exit status does not name the phase.** CBS's own manual
+> (`docs/user-manual.md` §8) defines `3` as "recipe, source, build, or
+> runtime failure" — one code for all four — and then says "for a
+> runtime failure, inspect the reported phase", i.e. the phase is in the
+> *output*. This section's own requirement forbids cixd from reading
+> that, so the failed phase is not derivable either, and it waits on
+> #282 with the position.
+>
+> What that leaves implementable today is the declared plan alone: a
+> list of phase names with no status, no position and no failure
+> attribution. That does not answer the question #388 was filed about —
+> a build "building for many minutes with no indication of what it was
+> doing" — so the honest state is that the CPDL half waits on #282
+> rather than that a smaller answer ships now.
 
 That ordering is deliberate: this must not be a feature that only arrives
 when CBS does, and it does not — the shell case ships whole on its own.
+
+> **And that ordering no longer holds, 2026-10-07.** It rested on the
+> shell case shipping independently — but shell recipes do not exist
+> any more. #569 and ADR-0329 removed them entirely: the parser, the
+> stored revisions, the `.sh` recipe form and `PKG_BUILD_CMD` itself.
+> The paragraph above describing "Shell recipes — complete today" is a
+> record of a path that has since been deleted, kept rather than
+> rewritten because it is what was decided at the time.
+>
+> So the half of this decision that was meant to arrive without waiting
+> on anything is gone, and the whole of it now waits on
+> `cix-build-system` #282. That is the opposite of what this section
+> set out to guarantee, and it is worth saying plainly rather than
+> leaving the reader to notice that `PKG_BUILD_CMD` is not in the tree.
+>
+> The MODEL this ADR decides — a stage has phases, phases carry the
+> same status axis, a phase is never load-bearing — is unaffected and
+> still what should be built.
 
 A marker in an output stream can be spoofed by a recipe that prints the
 same line. That is acceptable **because a phase is never load-bearing**:
