@@ -260,6 +260,15 @@ int test_image_fixture_stage_toolchain(const char *image_root)
 	 * /dev/tty is deliberately omitted -- nothing in a batch
 	 * "./configure && make && make install" sequence needs a
 	 * controlling terminal.
+	 *
+	 * This list is therefore a deliberate SUBSET of
+	 * CIX_BASELINE_DEVICES in container.h, which is the one list
+	 * pkg_seed_image_baseline() and container_dev_bpf_attach() share
+	 * (ADR-0331, #578). It is not a stale third copy and must not be
+	 * converged onto that list: /dev/tty would add a mknod of 5:0
+	 * inside the build container the floor tests run in, and the loop
+	 * below fails the whole fixture on any errno but EEXIST, for a node
+	 * a batch build has no use for.
 	 */
 	{
 		char dev_dir[PATH_MAX];

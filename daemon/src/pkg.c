@@ -7487,51 +7487,26 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 	 * shipped a baseline FHS layout beyond what pkg install itself
 	 * produces, and both were fixed by hand, directly on the router
 	 * image's own on-disk files, not reproducible from a fresh install.
-	 * Standard char device nodes, same table/pattern
-	 * test_image_fixture_stage_toolchain()'s own dev_nodes[] (test/
-	 * test_image_fixture.c) already proves safe in this exact sandbox
-	 * (its own ancestor cgroup's BPF_CGROUP_DEVICE policy permits
-	 * exactly this set).
+	 * Standard char device nodes, expanded from CIX_BASELINE_DEVICES in
+	 * container.h -- the ONE list (ADR-0331, #578).
+	 * container_dev_bpf_attach()'s allow set expands the same list, so
+	 * staging a node the device policy then denies is no longer
+	 * expressible; that divergence is what #578 was.
+	 *
+	 * test_image_fixture_stage_toolchain() stages a SUBSET of this and
+	 * deliberately so -- it builds a build image, whose /dev exists for
+	 * configure scripts, and its own comment states that /dev/tty is
+	 * omitted because nothing in a batch ./configure && make sequence
+	 * needs a controlling terminal. It is not a third copy to converge;
+	 * do not "fix" it to match this list.
 	 */
 	static const struct {
 		const char *name;
 		unsigned int major, minor;
 	} dev_nodes[] = {
-		{ "null", 1, 3 }, { "zero", 1, 5 }, { "full", 1, 7 }, { "random", 1, 8 },
-		{ "urandom", 1, 9 },
-		/*
-		 * tty (5:0) -- the controlling terminal, added 2026-10-07 (#577).
-		 *
-		 * Measured absent from every image, because this table is what
-		 * every image's /dev holds: a console running
-		 * `exec 0</dev/tty` on the jumpbox image answered
-		 * "/dev/tty: No such file or directory" while that same
-		 * container's terminal was entirely healthy -- `tty` reported
-		 * /dev/pts/0 and an unbuffered write to stderr reached the
-		 * client at once.
-		 *
-		 * It is the only way to reach the controlling terminal when a
-		 * program's own stdin and stdout have been redirected, which is
-		 * what `sudo`, `su`, `ssh -t`, a passphrase prompt and any
-		 * `read x < /dev/tty` all depend on. On an image whose purpose
-		 * is humans logging in, each of those failed with a message
-		 * naming a missing FILE.
-		 *
-		 * A static node like the five above rather than ptmx's symlink:
-		 * the kernel resolves 5:0 to the caller's own controlling
-		 * terminal, so it needs no filesystem mounted beneath it.
-		 *
-		 * One caveat, and it is pre-existing rather than introduced
-		 * here: container_dev_bpf_attach() attaches NO policy when a
-		 * container declares no devices (device_count <= 0 returns
-		 * early), so this node is openable in the ordinary case -- all
-		 * twelve containers on 192.168.15.95 declare none. A container
-		 * that DOES declare devices gets a policy allowing only those,
-		 * which would deny 5:0 -- and equally denies /dev/null today.
-		 * That gap is this table's, not this entry's, and is tracked
-		 * separately.
-		 */
-		{ "tty", 5, 0 },
+#define CIX_BASELINE_ENTRY_(dname, maj, min) { dname, maj, min },
+		CIX_BASELINE_DEVICES(CIX_BASELINE_ENTRY_)
+#undef CIX_BASELINE_ENTRY_
 	};
 	const char *target_rootfs = rootfs_path;
 	size_t i;

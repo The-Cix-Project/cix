@@ -303,6 +303,81 @@ struct device_spec {
 };
 
 /*
+ * The device nodes EVERY image has, declared once (ADR-0331, #578).
+ *
+ * `pkg_seed_image_baseline()` stages these into every image's /dev, and
+ * `container_dev_bpf_attach()` permits them ahead of whatever a
+ * container declared. Both read this list, because they were two lists
+ * and disagreed: the BPF policy is built from the DECLARED devices
+ * alone, so a container that declared one device got a program whose
+ * deny epilogue denied /dev/null. Nothing had ever hit it because a
+ * container declaring no devices gets no program at all, and all twelve
+ * containers on 192.168.15.95 declare none (measured 2026-10-07).
+ *
+ * Why these nodes are the ones a container really opens, measured on
+ * 192.168.15.95, 2026-10-07: /dev is never mounted inside a container's
+ * mount namespace. src/mountns.c mounts exactly proc, sysfs, cgroup2
+ * and devpts at /dev/pts, and only mkdir()s /dev when it is absent --
+ * so /dev is the image rootfs's own directory, made private per
+ * container by the overlay upperdir, and these are its contents.
+ *
+ * `test_image_fixture_stage_toolchain()` (test/test_image_fixture_host.c)
+ * stages a SUBSET of this and does NOT expand it. Deliberately: it
+ * builds a build image, whose /dev exists so configure scripts can
+ * redirect to /dev/null, and its own comment says /dev/tty is omitted
+ * because nothing in a batch ./configure && make sequence needs a
+ * controlling terminal. Do not converge it onto this list.
+ *
+ * An X-macro rather than a shared array, which is the convention
+ * include/controlplane_programs.h already set for a table with several
+ * consumers that each want a different shape: this one's two want
+ * {name,major,minor} to mknod and {major,minor} to compare.
+ * Nothing is emitted until a translation unit expands it, so including
+ * this header costs no storage and cannot trip -Wunused under -Werror.
+ *
+ * X(name, major, minor). The type is not a parameter because every
+ * baseline node is a char device, and deliberately so: a baseline node
+ * is one an image needs to run at all, and a block device is always a
+ * considered grant.
+ *
+ * The `ptmx` symlink is NOT in this list. It is a symlink to pts/ptmx,
+ * whose target lives on the devpts mount the policy treats separately,
+ * so pkg_seed_image_baseline() stages it alone and there is no node
+ * here to permit. Do not add it.
+ */
+#define CIX_BASELINE_DEVICES(X)                                                                    \
+	X("null", 1, 3)                                                                            \
+	X("zero", 1, 5)                                                                            \
+	X("full", 1, 7)                                                                            \
+	X("random", 1, 8)                                                                          \
+	X("urandom", 1, 9)                                                                         \
+	/* tty 5:0 (#577): the controlling terminal -- what sudo, su and ssh -t need. */        \
+	X("tty", 5, 0)
+
+/*
+ * Provenance of the sixth entry, kept here because it is a measurement
+ * and this is now where the list lives.
+ *
+ * tty 5:0 was absent from every image until 2026-10-07 (#577): a
+ * console running `exec 0</dev/tty` on the jumpbox image answered
+ * "/dev/tty: No such file or directory" while that same container's
+ * terminal was entirely healthy -- `tty` reported /dev/pts/0 and an
+ * unbuffered write to stderr reached the client at once. On an image
+ * whose purpose is humans logging in, sudo, su, ssh -t and every
+ * passphrase prompt failed with a message naming a missing FILE.
+ *
+ * A static node like the other five rather than ptmx's symlink: the
+ * kernel resolves 5:0 to the caller's own controlling terminal, so it
+ * needs no filesystem mounted beneath it.
+ *
+ * #577's own comment closed with a caveat -- that a container
+ * declaring devices got a policy denying 5:0, "and equally denies
+ * /dev/null today" -- and noted the gap was the table's rather than
+ * that entry's. ADR-0331 is that gap closed; the caveat is gone rather
+ * than kept as a stale claim.
+ */
+
+/*
  * A generous fixed bound, mirroring CONTAINER_MAX_DEVICES's own
  * reasoning -- host hardware, not a daemon-created resource, so no
  * natural daemon-side ceiling to mirror; enough for a router with a

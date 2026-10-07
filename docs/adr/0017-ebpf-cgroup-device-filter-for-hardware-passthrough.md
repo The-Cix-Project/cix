@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Amended by [ADR-0331](0331-the-image-baseline-and-the-device-policy-read-one-list.md) on 2026-10-07: this ADR decided the program is built from what a container DECLARES, and never said what happens to the nodes every image already has, so a container declaring one device got a policy denying `/dev/null` (cix#578). The baseline and the policy now read one list.
 
 ## Context
 

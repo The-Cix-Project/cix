@@ -42,6 +42,29 @@
 #define CIX_BPF_DEVCG_DEV_BLOCK 1
 #define CIX_BPF_DEVCG_DEV_CHAR  2
 
+/*
+ * The image baseline's own nodes, permitted ahead of whatever a
+ * container declared (ADR-0331, #578).
+ *
+ * Expanded from the one list in container.h, which
+ * pkg_seed_image_baseline() stages into every image. They were two
+ * lists and disagreed: this program is built from the DECLARED devices
+ * alone, so a container that declared one device got a deny epilogue
+ * that denied /dev/null -- and nothing had hit it because a container
+ * declaring nothing gets no program at all.
+ *
+ * Only the numbers are kept, because every baseline node is a char
+ * device; the list's own comment says why that is deliberate.
+ */
+static const struct {
+	unsigned int major, minor;
+} g_baseline_devices[] = {
+#define CIX_BASELINE_ENTRY_(name, maj, min) { maj, min },
+	CIX_BASELINE_DEVICES(CIX_BASELINE_ENTRY_)
+#undef CIX_BASELINE_ENTRY_
+};
+#define CIX_BASELINE_N ((int)(sizeof(g_baseline_devices) / sizeof(g_baseline_devices[0])))
+
 static void emit(struct cix_bpf_insn *prog, int *idx, uint8_t code, uint8_t dst, uint8_t src,
                   int16_t off, int32_t imm)
 {
@@ -55,23 +78,35 @@ static void emit(struct cix_bpf_insn *prog, int *idx, uint8_t code, uint8_t dst,
 int container_dev_bpf_attach(int cgroup_fd, const struct device_spec *devices, int device_count,
                               int *out_prog_fd)
 {
-	/* Prologue (4) + one 4-insn comparison block per device + a 2-insn
-	 * deny epilogue + a 2-insn allow epilogue. */
-	struct cix_bpf_insn prog[4 + 4 * CONTAINER_MAX_DEVICES + 4];
+	/* Prologue (4) + one 4-insn comparison block per device, baseline
+	 * and declared alike + a 2-insn deny epilogue + a 2-insn allow
+	 * epilogue. The baseline count is in the dimension because the
+	 * program now carries those blocks too (ADR-0331). */
+	struct cix_bpf_insn prog[4 + 4 * (CIX_BASELINE_N + CONTAINER_MAX_DEVICES) + 4];
 	struct cix_bpf_prog_load_attr load_attr;
 	struct cix_bpf_prog_attach_attr attach_attr;
 	static const char license[] = "GPL";
 	int idx = 0;
 	int allow_idx;
 	int prog_fd;
+	int total;
 	int i;
 
+	/*
+	 * UNCHANGED, and load-bearing: a container that declares no devices
+	 * is governed by no program at all. ADR-0331 added the baseline to
+	 * the allow set for containers that DO declare one; it must not
+	 * start restricting the ones that were never restricted -- every
+	 * container on 192.168.15.95 declares an empty list (measured
+	 * 2026-10-07). test_devices gates this arm by name.
+	 */
 	if (device_count <= 0) {
 		*out_prog_fd = -1;
 		return 0;
 	}
 
-	allow_idx = 4 + 4 * device_count + 2;
+	total = CIX_BASELINE_N + device_count;
+	allow_idx = 4 + 4 * total + 2;
 
 	/* r2 = ctx->major; r3 = ctx->minor; r4 = ctx->access_type & 0xffff */
 	emit(prog, &idx, CIX_OP_LDX_MEM_W, CIX_REG_2, CIX_REG_1, 4, 0);
@@ -79,14 +114,35 @@ int container_dev_bpf_attach(int cgroup_fd, const struct device_spec *devices, i
 	emit(prog, &idx, CIX_OP_LDX_MEM_W, CIX_REG_4, CIX_REG_1, 0, 0);
 	emit(prog, &idx, CIX_OP_ALU64_AND_K, CIX_REG_4, 0, 0, 0xffff);
 
-	for (i = 0; i < device_count; i++) {
-		int devtype = (devices[i].type == DEVICE_NODE_BLOCK) ? CIX_BPF_DEVCG_DEV_BLOCK
-		                                                      : CIX_BPF_DEVCG_DEV_CHAR;
+	/*
+	 * ONE loop over the baseline blocks then the declared ones, rather
+	 * than two loops with the same body: the block shape is identical
+	 * and a second copy of it is the parallel implementation this
+	 * change exists to remove. Baseline first so a declared grant that
+	 * happens to name a baseline node is simply a redundant block, not
+	 * a conflict.
+	 */
+	for (i = 0; i < total; i++) {
+		unsigned int major, minor;
+		int devtype;
+
+		if (i < CIX_BASELINE_N) {
+			major = g_baseline_devices[i].major;
+			minor = g_baseline_devices[i].minor;
+			devtype = CIX_BPF_DEVCG_DEV_CHAR; /* every baseline node is char */
+		} else {
+			const struct device_spec *d = &devices[i - CIX_BASELINE_N];
+
+			major = d->major;
+			minor = d->minor;
+			devtype = (d->type == DEVICE_NODE_BLOCK) ? CIX_BPF_DEVCG_DEV_BLOCK
+			                                         : CIX_BPF_DEVCG_DEV_CHAR;
+		}
 
 		/* Any mismatch falls through to the next block (or the deny
 		 * epilogue, for the last device); a full match jumps to allow. */
-		emit(prog, &idx, CIX_OP_JMP_JNE_K, CIX_REG_2, 0, 3, (int32_t)devices[i].major);
-		emit(prog, &idx, CIX_OP_JMP_JNE_K, CIX_REG_3, 0, 2, (int32_t)devices[i].minor);
+		emit(prog, &idx, CIX_OP_JMP_JNE_K, CIX_REG_2, 0, 3, (int32_t)major);
+		emit(prog, &idx, CIX_OP_JMP_JNE_K, CIX_REG_3, 0, 2, (int32_t)minor);
 		emit(prog, &idx, CIX_OP_JMP_JNE_K, CIX_REG_4, 0, 1, devtype);
 		emit(prog, &idx, CIX_OP_JMP_JA, 0, 0, (int16_t)(allow_idx - idx - 1), 0);
 	}
