@@ -978,8 +978,8 @@ $(BUILD)/test_web_tree: test/test_web_tree.c | $(BUILD)
 $(BUILD)/test_web_vt: test/test_web_vt.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/test_docindex: test/test_docindex.c | $(BUILD)
-	$(CC) $(CFLAGS) test/test_docindex.c -o $@
+$(BUILD)/test_docindex: test/test_docindex.c $(BUILD)/generated/api_shapes.h | $(BUILD)
+	$(CC) $(CFLAGS) -I$(BUILD) test/test_docindex.c -o $@
 
 
 

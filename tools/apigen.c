@@ -903,6 +903,7 @@ static void emit_shapes(const char *out_path, const char *spec)
 	        "struct cix_api_shape {\n"
 	        "\tconst char *op_id;\n"
 	        "\tconst char *path;    /* with %%s per path parameter */\n"
+	        "\tconst char *path_raw; /* as the contract spells it, {name} and all */\n"
 	        "\tconst char *method;\n"
 	        "\tint n_params;\n"
 	        "\tconst char *const *required;             /* NULL-terminated, or NULL */\n"
@@ -1007,7 +1008,7 @@ static void emit_shapes(const char *out_path, const char *spec)
 			if (!in_param)
 				fputc(*c, o);
 		}
-		fprintf(o, "\", \"%s\", %d, ", g_ops[i].method, n_params);
+		fprintf(o, "\", \"/v1%s\", \"%s\", %d, ", g_ops[i].path, g_ops[i].method, n_params);
 		if (have_req)
 			fprintf(o, "shape_req_%s, ", g_ops[i].op_id);
 		else

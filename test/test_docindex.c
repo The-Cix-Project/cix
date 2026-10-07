@@ -27,6 +27,11 @@
 #include <string.h>
 #include <sys/stat.h>
 
+/* The generated route table (#576): what the contract actually declares,
+ * so the endpoint index below is compared against the spec rather than
+ * against a second hand-written list. */
+#include "generated/api_shapes.h"
+
 static int g_failures;
 
 static void fail(const char *fmt, ...)
@@ -352,12 +357,126 @@ static void check_adr_headers(void)
 	closedir(d);
 }
 
+
+/*
+ * docs/api/README.md's endpoint table names only endpoints that exist
+ * (#576).
+ *
+ * That table is a hand-maintained copy of the list openapi.yaml owns,
+ * and until this check nothing compared them. ADR-0218's
+ * contract-to-CODE link is gated three times over -- test_apiroute on
+ * routing, test_apigen on operations and permissions, test_api_surfaces
+ * on channels inventing paths -- while the contract-to-PROSE link had
+ * only a rule in CLAUDE.md's Documentation Map: "Updated in the same
+ * change as any openapi.yaml edit, never after -- this is the rule that
+ * was missing when it drifted 10 phases stale."
+ *
+ * The rule existed and the table drifted anyway: measured 2026-10-07,
+ * 23 references to 8 endpoints that 404, because the /disks* paths were
+ * renamed to /storage* and the README was not. Its own index rows
+ * offered `GET /disks` and `POST /disks/{disk_name}/format`. That is
+ * the same argument this file's header already makes -- a rule cannot
+ * notice -- applied to the one index whose rows point into the contract
+ * rather than at a file.
+ *
+ * ONE DIRECTION ONLY, deliberately. Every row must resolve to a real
+ * operation; an operation with no row is NOT a failure here. The
+ * reverse direction is the more valuable one and needs a judgement this
+ * gate should not make on its own: 339 operations against a table that
+ * legitimately groups some, and a mechanical demand for 339 rows would
+ * push the document towards being a worse version of the spec. #576
+ * carries it.
+ *
+ * The comparison is exact, method and path together, parameter names
+ * included -- `path_raw` is the contract's own spelling. A row naming
+ * `{disk_name}` where the contract says `{name}` is a real defect for
+ * anyone copying a path out of the table, and it was part of this
+ * drift.
+ */
+static void check_api_endpoint_index(void)
+{
+	char *doc = slurp("docs/api/README.md");
+	const char *p;
+	int rows = 0;
+
+	if (doc == NULL) {
+		fail("docs/api/README.md is unreadable -- it is the narrative index into the "
+		     "REST contract");
+		return;
+	}
+	/*
+	 * Rows look like `| GET | `/path` | what it does |`. Found by
+	 * scanning for the method inside the first cell rather than by
+	 * parsing markdown: the shape is regular, and unlike source code
+	 * (see test_api_surfaces' own reasoning for why enumeration is
+	 * unreliable THERE) a table row either matches this shape or is
+	 * not a row at all.
+	 */
+	for (p = doc; (p = strchr(p, '\n')) != NULL; ) {
+		static const char *const methods[] = { "GET", "PUT", "POST", "DELETE",
+		                                       "PATCH", "HEAD", NULL };
+		char method[12], path[256], want[280];
+		const char *q, *tick, *end;
+		size_t n;
+		int m, i, found = 0;
+
+		p++;
+		if (*p != '|')
+			continue;
+		q = p + 1;
+		while (*q == ' ')
+			q++;
+		for (m = 0; methods[m] != NULL; m++) {
+			size_t len = strlen(methods[m]);
+
+			if (strncmp(q, methods[m], len) == 0 &&
+			    (q[len] == ' ' || q[len] == '|'))
+				break;
+		}
+		if (methods[m] == NULL)
+			continue;
+		snprintf(method, sizeof(method), "%s", methods[m]);
+		/* The path is the next cell, in backticks. */
+		q = strchr(q, '|');
+		if (q == NULL)
+			continue;
+		tick = strchr(q, '`');
+		end = strchr(q, '\n');
+		if (tick == NULL || (end != NULL && tick > end))
+			continue;
+		tick++;
+		q = strchr(tick, '`');
+		if (q == NULL || (end != NULL && q > end))
+			continue;
+		n = (size_t)(q - tick);
+		if (n == 0 || n >= sizeof(path) || tick[0] != '/')
+			continue;
+		memcpy(path, tick, n);
+		path[n] = '\0';
+		rows++;
+		snprintf(want, sizeof(want), "/v1%s", path);
+		for (i = 0; i < (int)(sizeof(cix_api_shapes) / sizeof(cix_api_shapes[0])); i++) {
+			if (strcmp(cix_api_shapes[i].method, method) == 0 &&
+			    strcmp(cix_api_shapes[i].path_raw, want) == 0) {
+				found = 1;
+				break;
+			}
+		}
+		if (!found)
+			fail("docs/api/README.md's endpoint table offers `%s %s`, which the contract "
+			     "does not declare -- a reader copying that path gets a 404 (#576)",
+			     method, path);
+	}
+	printf("  api endpoint index: %d row(s) checked against the contract\n", rows);
+	free(doc);
+}
 int main(void)
 {
 	check_adr_index();
 	check_adr_headers();
 	check_directory_indexes();
 	check_guides_index();
+	check_api_endpoint_index();
 
 	if (g_failures > 0) {
 		printf("DOCINDEX RESULT: FAIL (%d)\n", g_failures);

@@ -6,26 +6,41 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
-### The API README named eight endpoints that do not exist (#576)
+### The API README's endpoint table is gated against the contract, and named 19 wrong endpoints (#576)
 
-Found while sweeping endpoints for #575. `docs/api/README.md` opens with a table of every endpoint —
-a second copy of the list `openapi.yaml` owns — and the `/disks*` paths were renamed to `/storage*`
-without it following. **23 references to 8 endpoints that 404**, including its own index rows for
-`GET /disks`, `POST /disks/{disk_name}/format`, `POST /disks/{disk_name}/partition-table` and
-`GET /disks/{name}/free-space`. The parameter names had drifted too — `{disk_name}` and `{part}`
-against the spec's `{name}` and `{partition_name}` — which matters for a reader copying a path out of
-the table.
+`docs/api/README.md` opens with a table of every endpoint — a hand-maintained copy of the list
+`openapi.yaml` owns — and nothing compared them. ADR-0218's contract-to-**code** link is gated three
+times over (`test_apiroute` on routing, `test_apigen` on operations and permissions,
+`test_api_surfaces` on channels inventing paths); the contract-to-**prose** link had only a rule in
+CLAUDE.md's Documentation Map: *"Updated in the same change as any `openapi.yaml` edit, never after —
+this is the rule that was missing when it drifted 10 phases stale."*
 
-All ten path templates the README now names resolve to a real spec path. CLAUDE.md carried four of
-the same references: the two that were operational advice now point at `/v1/storage`, and the two
-inside dated measurements keep their original wording with the rename noted beside them, because a
-record of what was measured stays what it was.
+The rule existed and it drifted anyway, which is the same argument `test_docindex`'s own header makes
+about index completeness: a rule cannot notice.
 
-The Documentation Map's rule for that file — *updated in the same change as any `openapi.yaml` edit,
-never after* — already existed. Nothing notices when it is not followed, which is the same argument
-`test_docindex` makes about why index completeness is enforced rather than left to care: ADR-0218's
-contract-to-code link is gated three times over (`test_apiroute`, `test_apigen`,
-`test_api_surfaces`) and the contract-to-prose link is gated nowhere. #576 carries that gap.
+- **What had drifted, measured 2026-10-07.** The `/disks*` paths were renamed to `/storage*` and the
+  README was not: 23 references to 8 endpoints that 404, its own index rows among them
+  (`GET /disks`, `POST /disks/{disk_name}/format`, `POST /disks/{disk_name}/partition-table`,
+  `GET /disks/{name}/free-space`). Then the gate found **11 more**, all volumes: the contract spells
+  them `{volume_name}` and the table said `{name}` or `{volume}`. Nineteen endpoints in total that a
+  reader could not call. All 320 rows now resolve to a real operation.
+- **`apigen` emits the contract's own spelling.** The shape table gains `path_raw` —
+  `/v1/storage/{name}/partitions/{partition_name}` as written — so a row is compared **exactly**,
+  method and parameter names included. That strictness is what found the volume cases, and it is the
+  right strictness: a row naming `{disk_name}` where the contract says `{name}` is a real defect for
+  anyone copying a path out of the table.
+- **`test_docindex` gained the check**, because its job is already "an index is complete and its links
+  resolve" — here the link is a path into the contract rather than a file. Not `test_api_surfaces`,
+  whose header argues against enumeration for source code, where it was attempted three times and
+  gave three answers; a markdown table row either matches the shape or is not a row, so enumeration
+  is reliable there and unreliable here.
+- **One direction only, deliberately.** Every row must resolve to a real operation; an operation with
+  no row is not a failure. 19 of 339 have none today, and a mechanical demand for all 339 would push
+  the document towards being a worse copy of the spec — the reverse direction needs a judgement about
+  grouping, so #576 stays open carrying it.
+- CLAUDE.md carried four of the same stale references: the two that were operational advice now point
+  at `/v1/storage`, and the two inside dated measurements keep their original wording with the rename
+  noted beside them, because a record of what was measured stays what it was.
 
 ### A 200 response must carry the keys its contract declares required (#575)
 
