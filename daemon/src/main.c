@@ -12468,6 +12468,7 @@ static void handle_system_iso_get(int fd)
 	write_iso_status(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
+}
 
 /*
  * GET /v1/system/iso/published (#428) -- the log of what left this box.
@@ -12509,7 +12510,6 @@ static void handle_system_iso_published_get(int fd)
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
-}
 }
 
 /*
