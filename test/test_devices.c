@@ -10,14 +10,17 @@
  * 2. Container A: one real device grant -- its own node opens, and
  *    fstat() confirms the major:minor the kernel actually reports
  *    matches what was granted.
- * 3. Container B: a different real device grant, plus an attempt to
- *    open a device baked into the shared base image but never granted
- *    to B -- denied with EPERM. The concrete "two containers, one
- *    denied" proof.
- * 4. Container C: no devices granted at all -- opens the same
- *    baked-in device fine, byte-for-byte identical to every
+ * 3. Container B: a different real device grant, plus BOTH baked-in
+ *    devices. The baseline one (1:3) must OPEN although B never
+ *    granted it -- ADR-0331/#578, and this assertion used to be the
+ *    opposite, which was the bug written down as expected behaviour.
+ *    The non-baseline one (5:1) must be denied with EPERM, which keeps
+ *    the concrete "two containers, one denied" proof.
+ * 4. Container C: no devices granted at all -- no program is attached,
+ *    so BOTH baked-in devices open, byte-for-byte identical to every
  *    container's behavior before this feature existed (No
- *    Regressions).
+ *    Regressions). Its 5:1 arm is also the control that makes B's
+ *    denial mean our policy refused it rather than something else.
  */
 #include "container.h"
 #include "internal.h"
@@ -52,8 +55,30 @@
  * environments, not a limitation of the mechanism itself.
  */
 #define SHARED_MAJOR 1
-#define SHARED_MINOR 3 /* /dev/null */
+#define SHARED_MINOR 3 /* /dev/null -- IN the image baseline since ADR-0331 */
 
+/*
+ * A second shared-but-ungranted node, at numbers the image baseline
+ * does NOT contain (ADR-0331, #578).
+ *
+ * It exists because 1:3 stopped being able to prove a denial. Before
+ * #578 this test proved "ungranted is denied" with the 1:3 node above,
+ * and that assertion was the bug written down as expected behaviour:
+ * /dev/null is in every image's baseline, so denying it to a container
+ * that declared a GPU is exactly what ADR-0331 fixed. A denial proof
+ * now needs a real device outside the baseline, and 5:1 is the
+ * console's own pair.
+ *
+ * Its openability is not assumed. Container C declares no devices and
+ * so gets no program at all, and it asserts this node OPENS -- so if
+ * 5:1 is unopenable wherever this runs, C fails and names it, instead
+ * of B's denial silently passing because an ancestor cgroup denied it
+ * rather than our own program. The pair is the proof, the same
+ * discipline a wrong-password control gives an LDAP bind.
+ */
+#define UNGRANTED_DEV_PATH IMAGE_ROOT "/dev/kxtest_ungranted"
+#define UNGRANTED_MAJOR 5
+#define UNGRANTED_MINOR 1 /* /dev/console */
 static int mkdir_p1(const char *path)
 {
 	if (mkdir(path, 0755) != 0 && errno != EEXIST) {
@@ -178,17 +203,31 @@ int main(void)
 	if (test_image_fixture_build(IMAGE_ROOT, "build/dev_child", "dev_child") != 0)
 		return 1;
 
-	/* A device baked into the shared base image itself (like
+	/* Two devices baked into the shared base image itself (like
 	 * test_dns.c's own ensure_dev_node() precedent), visible to every
-	 * container via the shared OverlayFS lowerdir -- but never in any
-	 * container's own device grant list, so only a container with NO
-	 * BPF program attached at all (device_count == 0) should be able
-	 * to open it. */
+	 * container via the shared OverlayFS lowerdir and named in no
+	 * container's own grant list. They are not equivalent any more,
+	 * and that is the point of ADR-0331:
+	 *
+	 *   SHARED (1:3, /dev/null's pair) is in the IMAGE BASELINE, so a
+	 *   container with a program attached opens it anyway. That used to
+	 *   be the denial proof, and that assertion was #578 written down
+	 *   as expected behaviour.
+	 *
+	 *   UNGRANTED (5:1, the console's pair) is in neither the baseline
+	 *   nor any grant list, so it is what a denial is proved with now.
+	 */
 	if (mkdir_p1(IMAGE_ROOT "/dev") != 0)
 		return 1;
 	unlink(SHARED_DEV_PATH);
 	if (mknod(SHARED_DEV_PATH, S_IFCHR | 0666, makedev(SHARED_MAJOR, SHARED_MINOR)) != 0) {
 		perror("mknod shared test device");
+		return 1;
+	}
+	unlink(UNGRANTED_DEV_PATH);
+	if (mknod(UNGRANTED_DEV_PATH, S_IFCHR | 0666,
+	           makedev(UNGRANTED_MAJOR, UNGRANTED_MINOR)) != 0) {
+		perror("mknod ungranted test device");
 		return 1;
 	}
 
@@ -212,14 +251,25 @@ int main(void)
 	}
 
 	/* 3. Container B: a different real grant (/dev/full's own
-	 * major:minor), PLUS an attempt at the shared-but-ungranted device
-	 * -- must be denied with EPERM. The concrete "two containers, one
-	 * denied" proof. */
+	 * major:minor), PLUS the two baked-in devices -- and this is the
+	 * #578 gate.
+	 *
+	 * The baseline node (1:3) must OPEN even though B never declared
+	 * it: that is ADR-0331, and before it this assertion was the
+	 * opposite. The non-baseline node (5:1) must still be DENIED with
+	 * EPERM, which keeps the concrete "two containers, one denied"
+	 * proof this case has always carried.
+	 *
+	 * Reintroduce-to-prove-it: revert container_dev_bpf_attach()'s
+	 * baseline blocks and the 1:3 triple below fails, because a
+	 * container that declares one device gets a policy denying
+	 * /dev/null. */
 	{
 		struct container_spec specB;
 		struct device_spec devB[1];
-		char *argv[] = { "/bin/dev_child", "/dev/kxtestB", "1", "1:7", "/dev/kxtest_shared",
-			          "0", "-", NULL };
+		char *argv[] = { "/bin/dev_child", "/dev/kxtestB", "1", "1:7",
+			          "/dev/kxtest_shared", "1", "1:3",
+			          "/dev/kxtest_ungranted", "0", "-", NULL };
 
 		memset(devB, 0, sizeof(devB));
 		devB[0].type = DEVICE_NODE_CHAR;
@@ -235,12 +285,23 @@ int main(void)
 
 	/* 4. Container C: no devices granted at all -- no BPF program is
 	 * attached (container_dev_bpf_attach()'s device_count == 0 no-op),
-	 * so the shared baked-in device opens exactly as it always has,
+	 * so BOTH baked-in devices open exactly as they always have,
 	 * proving this feature adds zero restriction to a container that
-	 * doesn't opt in. */
+	 * doesn't opt in. ADR-0331 did not change this arm and must not:
+	 * every container on 192.168.15.95 declares an empty list.
+	 *
+	 * The 5:1 triple is also the CONTROL for container B's denial. B
+	 * asserts 5:1 is refused; that only means our program refused it if
+	 * the node is openable here at all. If 5:1 turns out unopenable in
+	 * some environment -- an ancestor cgroup, a kernel without the
+	 * driver -- this arm fails and names it, instead of B's denial
+	 * passing for a reason that has nothing to do with the policy. The
+	 * pair is the proof, the same discipline a wrong-password control
+	 * gives an LDAP bind. */
 	{
 		struct container_spec specC;
-		char *argv[] = { "/bin/dev_child", "/dev/kxtest_shared", "1", "1:3", NULL };
+		char *argv[] = { "/bin/dev_child", "/dev/kxtest_shared", "1", "1:3",
+			          "/dev/kxtest_ungranted", "1", "5:1", NULL };
 
 		if (build_container_spec(&specC, "tcc-dev-c", "/run/device_test/c", NULL, 0, argv,
 		                          envp) != 0)

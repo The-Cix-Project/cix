@@ -6,6 +6,54 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The image baseline and the device policy read one list (#578, ADR-0331)
+
+`container_dev_bpf_attach()` built its `BPF_CGROUP_DEVICE` program from the container's **declared**
+devices and nothing else, so a container that declared one device — a GPU, a radio, a serial port,
+which is the whole point of ADR-0017 — got a policy that **denied `/dev/null`**. Almost nothing
+survives that, and the `EPERM` names a device nobody asked about.
+
+It was latent rather than rare, and that is why it lasted: no program is attached at all when the
+declared list is empty, and all twelve containers on 192.168.15.95 declare an empty list (measured
+2026-10-07), so the policy had never governed a running container there. The feature's own test could
+not have caught it either — `test_devices` declares devices deliberately and had no reason to open
+`/dev/null`.
+
+**The premise needed its own measurement, and #578 did not have one.** The report asserted the deny
+from reading the emitter, but never established the fact underneath it: that the `/dev/null` a
+container opens is really the node `pkg_seed_image_baseline()` staged. `src/mountns.c` mounts exactly
+four filesystems inside a container's mount namespace — `proc`, `sysfs`, `cgroup2`, and `devpts` at
+`/dev/pts` — and **never mounts `/dev`**, only `mkdir`ing it when absent (`mountns.c:309`). So `/dev`
+is the image rootfs's own directory, private per container through the overlay upperdir, and the
+policy governs that open. Had it been a devtmpfs or a bind mount, the issue would have needed
+rewriting rather than fixing.
+
+The list is declared once, in `include/container.h`, as an X-macro — the convention
+`controlplane_programs.h` already set for a table whose consumers each want a different shape. A
+shared `static const` array was written first and rejected: a header-scope array emits a copy in every
+translation unit that includes `container.h`, which is most of the daemon, and risks `-Wunused` under
+the mandatory `-Werror` — unverifiable here, since this sandbox compiles nothing but `cixctl`.
+`container.h` is also the only layer that works, since `src/container_dev.c` is the runtime library
+and includes no daemon headers, so the list cannot live in `pkg.c` and be read downward.
+
+**What looked like a third copy is a deliberate subset.** `test_image_fixture_stage_toolchain()`
+stages five nodes, not six, and its own comment gives the reason: *"/dev/tty is deliberately omitted
+-- nothing in a batch `./configure && make && make install` sequence needs a controlling terminal."*
+It builds a *build* image, whose `/dev` exists so configure scripts can redirect to `/dev/null`; it is
+not describing what a Cix image is. Converging it would have added a `mknod` of 5:0 inside the build
+container the floor tests run in, where any errno but `EEXIST` fails the fixture outright. Left alone,
+with a comment saying why — and `pkg.c`'s comment pointing at it named the wrong file
+(`test_image_fixture.c`; it is `test_image_fixture_host.c`), which is fixed too.
+
+**The regression test had the bug written into it as an expectation.** `test_devices`' container B
+declared 1:7 and asserted the ungranted 1:3 node was **denied** — and 1:3 is `/dev/null`'s pair, so
+that assertion was exactly the behaviour #578 says is wrong. It now asserts 1:3 **opens**, which fails
+before this change and is the reintroduce-to-prove-it gate. The denial proof moves to a second
+baked-in node at 5:1, the console's pair, which is in neither the baseline nor any grant list — and
+container C, which declares nothing and so gets no program, asserts that same node **opens**. That
+pair is what makes the denial mean *our policy refused it* rather than an ancestor cgroup or a missing
+driver, the same discipline a wrong-password control gives an LDAP bind.
+
 ### A build the daemon does not outlive is recorded as failed, not forgotten (#375)
 
 `cixctl pipeline runs` is the operator's record of what a package attempted. Until now it held only runs
