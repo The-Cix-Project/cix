@@ -6,6 +6,27 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The API README named eight endpoints that do not exist (#576)
+
+Found while sweeping endpoints for #575. `docs/api/README.md` opens with a table of every endpoint —
+a second copy of the list `openapi.yaml` owns — and the `/disks*` paths were renamed to `/storage*`
+without it following. **23 references to 8 endpoints that 404**, including its own index rows for
+`GET /disks`, `POST /disks/{disk_name}/format`, `POST /disks/{disk_name}/partition-table` and
+`GET /disks/{name}/free-space`. The parameter names had drifted too — `{disk_name}` and `{part}`
+against the spec's `{name}` and `{partition_name}` — which matters for a reader copying a path out of
+the table.
+
+All ten path templates the README now names resolve to a real spec path. CLAUDE.md carried four of
+the same references: the two that were operational advice now point at `/v1/storage`, and the two
+inside dated measurements keep their original wording with the rename noted beside them, because a
+record of what was measured stays what it was.
+
+The Documentation Map's rule for that file — *updated in the same change as any `openapi.yaml` edit,
+never after* — already existed. Nothing notices when it is not followed, which is the same argument
+`test_docindex` makes about why index completeness is enforced rather than left to care: ADR-0218's
+contract-to-code link is gated three times over (`test_apiroute`, `test_apigen`,
+`test_api_surfaces`) and the contract-to-prose link is gated nowhere. #576 carries that gap.
+
 ### A 200 response must carry the keys its contract declares required (#575)
 
 ADR-0218 made the spec authoritative over which *routes* exist: a path the contract does not declare
