@@ -6,6 +6,26 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### test_pkg rung 2 waits for its discovery run to be accepted (#573)
+
+A FLOOR_SELFTEST that fails intermittently is worse than one that fails: it gates every release, so a
+flake costs a probe cycle and teaches people to re-run rather than read. Rung 2 failed once in three
+consecutive release selftests on 192.168.15.95 (2026-10-05) with
+`FAIL: rung 2 discovery did not author kfake@7.2.8-1 from the signed list (published=0)`, and the
+fixture log showed no request for the kfake release list at all.
+
+The step fires `POST /v1/schedules/discover-kernel/run` directly after the previous step has
+triggered a gitea-tags discovery for `giteapkg`, and `action_discover()` declines with *"a discovery
+run is already in progress"* while `pkg_upstream_refresh_running()` or `g_discover_after_kernel` is
+still set. **The run's answer was captured only for the failure message, never checked** — so a
+declined run became a 60-second wait for a recipe nobody had asked for, reported as a symptom two
+steps from its cause.
+
+The run is now retried until the daemon accepts it, and a run that is never accepted fails there,
+naming the daemon's own answer. That is what the step always meant; it does not assume the race *is*
+the cause, which is still not established — it removes one possible cause and makes any remaining one
+name its own stage.
+
 ### An entry that says INSTALLED must name what is installed, and now does (#572)
 
 On 192.168.15.95 (0.2.57-461, 2026-10-05) `pkgconf`'s record in a just-created `iso-builder` read

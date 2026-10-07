@@ -8001,7 +8001,7 @@ skip_resume:
 			struct json_value *sent;
 			const char *b64;
 			FILE *fp;
-			int kfound = 0, kpublished = 0, dn = -1;
+			int kfound = 0, kpublished = 0, kstarted = 0, dn = -1;
 
 			snprintf(ktmpl, sizeof(ktmpl),
 			         "http://127.0.0.1:%d/k/{version}/linux-fixture-{major}.tar.xz", forge_port);
@@ -8239,13 +8239,45 @@ skip_resume:
 			cix_response_free(&r);
 			jw_free(&w);
 
-			memset(&r, 0, sizeof(r));
-			cix_client_request(&client, "POST", "/v1/schedules/discover-kernel/run", NULL, &r);
-			/* Kept for the failure message: the schedule's own answer is the
-			 * only thing that says why discovery did not run (ADR-0330 probe,
-			 * 0.2.57-464: the author step never ran and nothing said why). */
-			snprintf(krun, sizeof(krun), "%d %.300s", r.status, r.body != NULL ? r.body : "");
-			cix_response_free(&r);
+			/*
+			 * #573: retried until the daemon ACCEPTS it, not fired once.
+			 *
+			 * The step before this one triggers a gitea-tags discovery
+			 * for giteapkg, and action_discover() declines with "a
+			 * discovery run is already in progress" while
+			 * pkg_upstream_refresh_running() or g_discover_after_kernel
+			 * is still set. This POST's answer was kept only for the
+			 * failure message, so a declined run became a 60-second wait
+			 * for a recipe nobody had asked for, reported as "discovery
+			 * did not author kfake" -- a symptom two steps away from its
+			 * cause. Measured in the release selftest on 192.168.15.95,
+			 * 2026-10-05: one failure in three consecutive runs, with no
+			 * request for the kfake release list at all.
+			 *
+			 * Waiting for acceptance is what the step always meant. It
+			 * does not assume the race IS the cause -- a run that is
+			 * never accepted now fails here, naming the daemon's own
+			 * answer, instead of being discovered later as a missing
+			 * recipe.
+			 */
+			kstarted = 0;
+			for (waited = 0; waited < 120 && !kstarted; waited++) {
+				memset(&r, 0, sizeof(r));
+				cix_client_request(&client, "POST", "/v1/schedules/discover-kernel/run", NULL, &r);
+				snprintf(krun, sizeof(krun), "%d %.300s", r.status,
+				         r.body != NULL ? r.body : "");
+				if (r.status == 200 && r.body != NULL &&
+				    strstr(r.body, "discovery started") != NULL)
+					kstarted = 1;
+				cix_response_free(&r);
+				if (!kstarted)
+					usleep(500000);
+			}
+			if (!kstarted) {
+				fprintf(stderr, "FAIL: rung 2 the kernel.org discovery run was never "
+				                "accepted; last answer: %s\n", krun);
+				ok = 0;
+			}
 			for (waited = 0; waited < 120 && !kpublished; waited++) {
 				memset(&r, 0, sizeof(r));
 				if (cix_client_request(&client, "GET", "/v1/pkg/recipes/kfake", NULL, &r) == 0 &&
