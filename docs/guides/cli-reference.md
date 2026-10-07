@@ -140,6 +140,7 @@ Nine sections are replaced whole, the ones a single setter owns: site, daemon, r
 | `iso build [--disk=DEV] [--ip=A.B.C.D] [--prefix=N] [--gateway=A.B.C.D] [--interface=IFNAME] [--wait]` | Assemble an installer ISO on the host from the latest `cix`, `kernel` and `isotools` hostbuild artifacts ([ADR-0064](../adr/0064-rest-driven-iso-assembly.md)). Every flag is optional; with none, the installer asks for everything at install time |
 | `iso status` | State, `iso_path` and error of the most recent ISO build |
 | `iso publish [--wait]` | Put the ISO and its signature in the artifact cache |
+| `iso published` | Installer ISOs this host has published, newest first — one line per (ISO, repository), since a publish to three repositories is three facts. A log of what left the box, separate from `iso status`, which is the one on it now ([#428](https://git.home.arpa/itdlabs/cix/issues/428)) |
 | `signing-keys [show]` | Whether this host holds the Secure Boot signing key pair `iso build` needs, and the certificate's identity |
 | `signing-keys set --key=PATH --cert=PATH` | Install the pair ([ADR-0212](../adr/0212-signing-keys-over-rest.md)). The private key is never returned by any endpoint |
 | `signing-keys clear` | Remove it from this host |
