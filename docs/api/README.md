@@ -1494,6 +1494,7 @@ Each row reports a `stage` and a `status` — ADR-0256's one vocabulary, the sam
 | `author` / `blocked` | The policy resolved and no recipe builds that release yet. Blocked on a person, not failed |
 | `discover` / `failed` | The release list has never been fetched on this host, or it could not be read, and the reason says why (a gitea-tags recipe with no `source` template, a listing the forge refused) |
 | `resolve` / `failed` | The list is there and policy could not pick from it — a channel the project does not publish, a depth deeper than the feed goes |
+| `author` / `not-implemented` | An operator holds the package (`--pinned=on`, #565). It resolved, and `reason` names the hold and how to lift it. Told apart from `discover` / `not-implemented` by the resolved release: a hold has one, a recipe with no `upstream` never does |
 
 The last two used to be one `unresolved` state, and they need opposite responses.
 

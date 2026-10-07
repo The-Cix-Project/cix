@@ -6,6 +6,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The source catalogue reports a verdict again (#574)
+
+`cixctl pkg source-catalogue` showed a blank `STATE` for all 172 packages on 192.168.15.95, a summary reading `0 current, 0 missing, 0 unresolved, 0 pinned`, and no row's reason — on the one surface ADR-0323 names for roll visibility: *"a roll that stops says where and why"*.
+
+The daemon was right the whole time. It returns per row `stage`, `status` and `reason` (ADR-0256's vocabulary, shared with `GET /pipeline`) and top-level `total`, `ok`, `blocked`, `failed`, `not_implemented`. It moved to that pair when discovery grew stages; the contract and `cixctl` did not follow. `docs/api/README.md` had — so the index into the contract was right while the contract was wrong.
+
+- **`openapi.yaml` now declares what is served**: `SourceCatalogueEntry` requires `[name, stage, status, reason]` with both enums spelled out, and `SourceCatalogue` requires the four real counts. The old `state` enum is recorded in the endpoint's description as what it was until 0.2.57-463, so the next reader of a 462 client knows why it printed nothing.
+- **`cixctl` renders the documented columns** — `PACKAGE STAGE STATUS CHANNEL RESOLVED "NEWEST RECIPE"` — and prints each row's reason, except for a package that does not roll at all, which is 170 of 172 rows and would bury the rest. An operator's hold (#565) is `not-implemented` too and does get its line: it is a choice someone made, told apart by having a resolved release.
+- **Measured after the fix**, same box: `kernel author ok stable 7.2.9 7.2.9-2`, `hibr author ok - 0.99.84 0.99.84-1`, and `172 package(s): 2 ok, 0 blocked, 0 failed, 170 not implemented`.
+- **`test_pkg` asserts the shape**, not the values: every row carries name/stage/status/reason, the four counts are present as numbers, and they sum to `total`. `json_as_number()` answers 0 for an absent field, which is exactly how four zeros printed with nothing failing. Two tests already called this endpoint and both passed, because each asserted the fields it happened to use.
+- `docs/api/README.md` gains the `author`/`not-implemented` row for an operator hold, a shipped combination its table did not list.
+
+Nothing gates a response against the `required` fields its contract declares, which is how this survived a release: #575.
+
 ### A followed image holds its recipe, and nothing else (#571, ADR-0330)
 
 The owner's decision of 2026-10-05: when a package leaves an image's recipe in git, the box uninstalls it. Under `recipe: follow` an apply only ever added and moved entries, and converge only installed, so a dropped package stayed. On 192.168.15.95 the four followed images held 46 packages their recipes never declared, and `cix-hosttools` reinstalled the tar, gzip and bzip2 its recipe had just dropped.

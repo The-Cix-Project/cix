@@ -11596,19 +11596,33 @@ paths:
         row carries `upstream_fetched_at` so stale data is visible
         rather than implied.
 
-        `state` answers "do we have it", not "is upstream newer". The
-        policy says which release is wanted; the useful question is
+        Each row carries a `stage` and a `status` -- ADR-0256's one
+        vocabulary, the same pair GET /pipeline and GET /pkg/{name} use,
+        so a roll that stops is read the same way wherever it is read
+        (ADR-0323). It answers "do we have it", not "is upstream newer".
+        The policy says which release is wanted; the useful question is
         whether a recipe builds it. Those come apart: with recipes for
         6.18.40-24 and 7.2.3-2 both present, a longterm policy resolving
-        to 6.18.46 is `missing` even though the highest recipe on disk
-        is numerically greater. Both versions are reported so the
-        direction is never hidden behind the verdict.
+        to 6.18.46 is `author`/`blocked` even though the highest recipe
+        on disk is numerically greater. Both versions are reported so
+        the direction is never hidden behind the verdict.
 
-        `pinned` is a permanent, first-class answer, not a gap: a
+        A package that declares no upstream is `discover`/
+        `not-implemented` -- a permanent, correct answer, not a gap: a
         project publishing neither a machine-readable release list nor
-        signed checksums cannot be rolled safely. A package that cannot
-        resolve appears as `unresolved` WITH its reason -- never as a
-        blank row, since a missing row reads as up to date.
+        signed checksums cannot be rolled safely. An operator's hold
+        (#565) reports the same pair, with the hold named in `reason`.
+        A package that cannot resolve appears as `failed` WITH its
+        reason -- never as a blank row, since a missing row reads as up
+        to date.
+
+        This endpoint declared a four-value `state` until 0.2.57-463
+        (`pinned`/`current`/`missing`/`unresolved`). The daemon moved to
+        the stage/status pair when discovery grew stages (ADR-0323) and
+        this contract did not follow, so `cixctl pkg source-catalogue`
+        rendered a blank verdict for every package and a summary of four
+        zeros against 172 rows -- on the one surface the charter names
+        for "a roll that stops says where and why" (cix#574).
 
         Note the kernel has two resolvers with different jobs.
         GET /system/kernel-policy (ADR-0193) steers longterm by the
@@ -18374,20 +18388,33 @@ components:
 
     SourceCatalogueEntry:
       type: object
-      required: [name, state, reason]
+      required: [name, stage, status, reason]
       properties:
         name:
           type: string
-        state:
+        stage:
           type: string
-          enum: [pinned, current, missing, unresolved]
+          enum: [discover, resolve, authenticate, author, fetch, unpack, build,
+                 install, publish, roll, deploy, acquire, assemble, stage, verify]
           description: >
-            pinned -- the recipe declares no pkg_upstream, a permanent
-            and correct answer for a project that cannot be rolled
-            safely. current -- a recipe exists for the resolved release.
-            missing -- the policy resolved and no recipe builds that
-            release. unresolved -- a kind is declared but resolution
-            failed; `reason` says why.
+            How far this package's roll has got, in ADR-0256's stage
+            vocabulary. A catalogue row reaches `discover` (is there a
+            feed), `resolve` (what does the policy pick), `authenticate`
+            (is that release's digest trustworthy), `author` (does a
+            recipe build it) or `verify` (a rolled container failed and
+            the version is marked bad, ADR-0323). The later build and
+            deploy stages belong to GET /pipeline.
+        status:
+          type: string
+          enum: [ok, blocked, failed, cancelled, not-implemented]
+          description: >
+            Where that stage stands. `ok` -- a recipe builds the
+            resolved release. `blocked` -- waiting on a person, not
+            broken: the policy resolved and no recipe builds that
+            release. `failed` -- the stage could not complete, and
+            `reason` says why. `not-implemented` -- the package does
+            not roll, either because its recipe declares no upstream or
+            because an operator holds it (#565).
         upstream:
           type: [string, "null"]
           description: The discovery kind, or null when pinned.
@@ -18416,14 +18443,14 @@ components:
         reason:
           type: string
           description: >
-            Always populated, for every state including current. A
-            failure that says only "unresolved" leaves an operator to go
+            Always populated, for every row including an `ok` one. A
+            failure that says only "failed" leaves an operator to go
             and find out; this says what was asked for and what was
             available.
 
     SourceCatalogue:
       type: object
-      required: [packages, total, pinned, current, missing, unresolved]
+      required: [packages, total, ok, blocked, failed, not_implemented]
       properties:
         packages:
           type: array
@@ -18431,14 +18458,20 @@ components:
             $ref: "#/components/schemas/SourceCatalogueEntry"
         total:
           type: integer
-        pinned:
+        ok:
           type: integer
-        current:
+        blocked:
           type: integer
-        missing:
+        failed:
           type: integer
-        unresolved:
+        not_implemented:
           type: integer
+          description: >
+            One count per `status`, so a page knows how many packages
+            need attention before it renders a row, and cannot disagree
+            with GET /pipeline about it. `cancelled` has no count: no
+            catalogue row is ever cancelled, since reading the endpoint
+            IS running the check. The four sum to `total`.
 
     SystemStats:
       type: object

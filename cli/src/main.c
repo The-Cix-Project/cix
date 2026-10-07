@@ -16837,36 +16837,56 @@ static void fmt_source_catalogue(const struct json_value *root)
 		printf("no package recipes\n");
 		return;
 	}
-	printf("%-20s %-11s %-10s %-12s %-12s\n", "PACKAGE", "STATE", "CHANNEL", "RESOLVED",
-	        "NEWEST RECIPE");
+	printf("%-22s %-13s %-16s %-10s %-12s %s\n", "PACKAGE", "STAGE", "STATUS", "CHANNEL",
+	        "RESOLVED", "NEWEST RECIPE");
 	for (i = 0; i < arr->u.array.count; i++) {
 		const struct json_value *e = arr->u.array.items[i];
-		const char *state = json_str_field(e, "state");
+		const char *stage = json_str_field(e, "stage");
+		const char *status = json_str_field(e, "status");
 		const char *channel = json_str_field(e, "channel");
 		const char *resolved = json_str_field(e, "resolved_version");
 		const char *newest = json_str_field(e, "newest_recipe_version");
 		const char *name = json_str_field(e, "name");
 		const char *reason = json_str_field(e, "reason");
 
-		printf("%-20s %-11s %-10s %-12s %-12s\n", name != NULL ? name : "-",
-		        state != NULL ? state : "-", channel != NULL ? channel : "-",
-		        resolved != NULL ? resolved : "-", newest != NULL ? newest : "-");
+		printf("%-22s %-13s %-16s %-10s %-12s %s\n", name != NULL ? name : "-",
+		        stage != NULL ? stage : "-", status != NULL ? status : "-",
+		        channel != NULL ? channel : "-", resolved != NULL ? resolved : "-",
+		        newest != NULL ? newest : "-");
 		/*
-		 * The reason is printed only for the rows that need an action.
-		 * A `current` package explaining itself on every line would
-		 * bury the handful that do not resolve, which are the whole
-		 * point of reading this.
+		 * The reason, for the rows an operator acts on. A package that
+		 * does not roll at all explains itself on every line otherwise,
+		 * and on 192.168.15.95 that is 170 of 172 rows (2026-10-07) --
+		 * which would bury the handful that stopped, the whole reason
+		 * this is read (ADR-0323).
+		 *
+		 * A HELD package (#565) is `not-implemented` too and does get
+		 * its line, because it is a choice someone made rather than a
+		 * property of the project. The two are told apart by the
+		 * resolved release: a hold has one, a recipe with no upstream
+		 * never does.
 		 */
-		if (state != NULL && reason != NULL &&
-		    (strcmp(state, "missing") == 0 || strcmp(state, "unresolved") == 0))
-			printf("  %s\n", reason);
+		if (status == NULL || reason == NULL || strcmp(status, "ok") == 0)
+			continue;
+		if (strcmp(status, "not-implemented") == 0 && resolved == NULL)
+			continue;
+		printf("  %s\n", reason);
 	}
-	printf("\n%ld package(s): %ld current, %ld missing, %ld unresolved, %ld pinned\n",
+	/*
+	 * ADR-0256's status axis, as the daemon counts it -- the same four
+	 * GET /pipeline reports, so the two surfaces cannot disagree about
+	 * how many packages need attention. This read `current`, `missing`,
+	 * `unresolved` and `pinned` until 0.2.57-463: fields the daemon
+	 * stopped sending when discovery grew stages, so every row showed a
+	 * blank verdict and the summary read four zeros against 172
+	 * packages (cix#574).
+	 */
+	printf("\n%ld package(s): %ld ok, %ld blocked, %ld failed, %ld not implemented\n",
 	        (long)json_as_number(json_object_get(root, "total")),
-	        (long)json_as_number(json_object_get(root, "current")),
-	        (long)json_as_number(json_object_get(root, "missing")),
-	        (long)json_as_number(json_object_get(root, "unresolved")),
-	        (long)json_as_number(json_object_get(root, "pinned")));
+	        (long)json_as_number(json_object_get(root, "ok")),
+	        (long)json_as_number(json_object_get(root, "blocked")),
+	        (long)json_as_number(json_object_get(root, "failed")),
+	        (long)json_as_number(json_object_get(root, "not_implemented")));
 }
 
 static void fmt_source_policy(const struct json_value *root)

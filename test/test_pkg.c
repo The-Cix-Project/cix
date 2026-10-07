@@ -7991,6 +7991,86 @@ skip_resume:
 			}
 			cix_response_free(&r);
 
+			/*
+			 * cix#574: the catalogue carries the shape its contract
+			 * declares required -- every row a stage, a status and a
+			 * reason, and one count per status summing to the total.
+			 *
+			 * Asserted as PRESENCE, not as values, because that is the
+			 * failure that happened: the daemon moved to the
+			 * stage/status pair and `cixctl` went on reading a `state`
+			 * string and the counts `current`/`missing`/`unresolved`/
+			 * `pinned`. json_as_number() answers 0 for an absent field,
+			 * so the summary read four zeros against 172 packages and
+			 * nothing anywhere failed. Two tests already called this
+			 * endpoint and both passed, because each asserted the
+			 * fields it happened to use.
+			 *
+			 * Per-endpoint, which is cheap here and does not scale to
+			 * 339 operations; the general gate is cix#575.
+			 */
+			{
+				const struct json_value *ps, *tot, *c[4];
+				static const char *const CKEY[4] = { "ok", "blocked", "failed",
+				                                     "not_implemented" };
+				long sum = 0;
+				size_t z;
+				int shape_ok = 1;
+
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/source-catalogue", NULL, &r) != 0 ||
+				    r.status != 200 || r.json == NULL) {
+					fprintf(stderr, "FAIL: cix#574 GET source-catalogue, status=%d\n", r.status);
+					ok = 0;
+					shape_ok = 0;
+				}
+				ps = shape_ok ? json_object_get(r.json, "packages") : NULL;
+				if (shape_ok && (ps == NULL || ps->type != JSON_ARRAY || ps->u.array.count == 0)) {
+					fprintf(stderr, "FAIL: cix#574 source-catalogue has no packages array\n");
+					ok = 0;
+					shape_ok = 0;
+				}
+				for (z = 0; shape_ok && z < ps->u.array.count; z++) {
+					const struct json_value *e = ps->u.array.items[z];
+
+					if (json_str_field(e, "name") != NULL &&
+					    json_str_field(e, "stage") != NULL &&
+					    json_str_field(e, "status") != NULL &&
+					    json_str_field(e, "reason") != NULL)
+						continue;
+					fprintf(stderr, "FAIL: cix#574 catalogue row %zu is missing one of "
+					                "name/stage/status/reason, which the contract requires\n",
+					        z);
+					ok = 0;
+					break;
+				}
+				tot = shape_ok ? json_object_get(r.json, "total") : NULL;
+				if (shape_ok && (tot == NULL || tot->type != JSON_NUMBER)) {
+					fprintf(stderr, "FAIL: cix#574 source-catalogue carries no `total`\n");
+					ok = 0;
+					shape_ok = 0;
+				}
+				for (z = 0; shape_ok && z < 4; z++) {
+					c[z] = json_object_get(r.json, CKEY[z]);
+					if (c[z] == NULL || c[z]->type != JSON_NUMBER) {
+						fprintf(stderr, "FAIL: cix#574 source-catalogue carries no `%s` count -- "
+						                "a reader gets 0 for an absent number and says so\n",
+						        CKEY[z]);
+						ok = 0;
+						shape_ok = 0;
+						break;
+					}
+					sum += (long)json_as_number(c[z]);
+				}
+				if (shape_ok && sum != (long)json_as_number(tot)) {
+					fprintf(stderr, "FAIL: cix#574 the status counts sum to %ld against a total "
+					                "of %ld, so some package is in no count\n",
+					        sum, (long)json_as_number(tot));
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
+
 			/* Pinned under a fingerprint that is not the key's own: refused. */
 			jw_init(&w);
 			jw_obj_open(&w);
