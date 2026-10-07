@@ -54,6 +54,19 @@ retrying** — the same scenario #375 exists for, failing twice over. Fixed with
 descriptor sweep `buildenv_image_for()`'s composer child has carried for the same reason (#237); that child's comment
 asserted "unlike the fetch child this one never execve()s", which was false and is corrected in place.
 
+**A lookup that is not a lookup, found by the release gate.** The first cut of the checkpoint writer
+asked `pkg_chain_index_for_target()` which slot a job was in, to record the version being attempted.
+That function reads like a pure lookup and is not: its first act is `chain_reap_stale()`, which calls
+`pkg_fail()` on a leaked slot, which reaches `pkg_record_outcome()` and then `pkg_run_close()` —
+which calls the checkpoint writer. So **writing a file mutated live state and failed packages**, and
+the funnel re-entered itself. Measured by `probe-cix-compile@0.2.57-476` on 192.168.15.95,
+2026-10-07: the release selftest reported `floor package binutils did not reach installed in 180 s`
+with no error of any kind — an entry reaped out from under its own install — in both floor tests,
+with 11 cascading failures behind it and a build that took 27 minutes against the previous probe's
+12. The non-reaping half is now `chain_index_for_target_noreap()` and the reaping version calls it,
+so there is one lookup and one place that decides to reap. Anything that only wants to *know* which
+slot a job is in uses the quiet one.
+
 ### ADR-0275's phase mechanism is corrected: all of it now waits on CBS (#388, cix-build-system#282)
 
 #388 asks for the phases inside a build stage to be visible, so an operator watching a package

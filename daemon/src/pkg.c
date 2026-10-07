@@ -1341,6 +1341,39 @@ int pkg_job_in_flight_for(const char *name, const char *image, int hostbuild)
 }
 
 /*
+ * The slot a (name, image) job occupies, WITHOUT reaping first.
+ *
+ * Split out for #375, after the reaping version below turned out to be
+ * unusable from an observer. `pkg_chain_index_for_target()` reads like
+ * a pure lookup and is not: its first act is chain_reap_stale(), which
+ * calls pkg_fail() on a leaked slot, which reaches pkg_record_outcome()
+ * and then pkg_run_close(). So a caller that runs DURING a run close,
+ * or that is itself called by one, re-enters the whole funnel.
+ *
+ * Measured on 192.168.15.95, 2026-10-07 (probe-cix-compile@0.2.57-476):
+ * pkg_open_runs_save() called the reaping version, which made writing a
+ * checkpoint file mutate live state and fail packages. The release
+ * selftest reported `floor package binutils did not reach installed in
+ * 180 s` with no error of any kind -- an entry reaped out from under
+ * its own install -- and 11 cascading failures behind it.
+ *
+ * Anything that only wants to KNOW which slot a job is in belongs here.
+ */
+static int chain_index_for_target_noreap(const char *name, const char *image)
+{
+	const char *norm_image = normalize_image(image);
+	int i;
+
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+		if (g_chains[i].name[0] != '\0' &&
+		    strcmp(g_chains[i].name, name) == 0 &&
+		    strcmp(g_chains[i].image, norm_image) == 0)
+			return i;
+	}
+	return -1;
+}
+
+/*
  * ADR-0157 Phase 2: which in-flight chain (if any) is building the
  * given top-level target -- used by main.c's own GET /v1/pkg/build/log
  * WebSocket-upgrade handler to resolve a caller-supplied ?name=&image=
@@ -1352,9 +1385,6 @@ int pkg_job_in_flight_for(const char *name, const char *image, int hostbuild)
  */
 int pkg_chain_index_for_target(const char *name, const char *image)
 {
-	const char *norm_image = normalize_image(image);
-	int i;
-
 	/* A slot can still carry a name after its job ended, when some
 	 * path failed to release it -- #246 exists because six did. Every
 	 * "what is in flight" question reaps first (pkg_job_in_flight_for()
@@ -1362,13 +1392,7 @@ int pkg_chain_index_for_target(const char *name, const char *image)
 	 * answer differently about the same slot. It costs a warn log the
 	 * one time a leak is reclaimed, which is the point. */
 	chain_reap_stale();
-	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
-		if (g_chains[i].name[0] != '\0' &&
-		    strcmp(g_chains[i].name, name) == 0 &&
-		    strcmp(g_chains[i].image, norm_image) == 0)
-			return i;
-	}
-	return -1;
+	return chain_index_for_target_noreap(name, image);
 }
 
 /*
@@ -12817,7 +12841,7 @@ static void pkg_open_runs_save(void)
 
 		if (!e->in_use || e->run_started_at == 0)
 			continue;
-		ci = pkg_chain_index_for_target(e->name, e->image);
+		ci = chain_index_for_target_noreap(e->name, e->image);
 		base = strrchr(e->build_log_path, '/');
 		jw_obj_open(&w);
 		jw_key(&w, "name");
