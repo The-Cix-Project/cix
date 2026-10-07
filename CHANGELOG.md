@@ -48,9 +48,12 @@ direction. And worse: a fetch child **orphaned** by a daemon that died mid-fetch
 control-plane *listening* socket for the rest of its retry schedule — `retry_count 8` × `retry_delay
 3` is the floor, and minutes if each attempt reaches the 60-second low-speed timeout. cixd sets
 `SO_REUSEADDR` and not `SO_REUSEPORT`, and `main.c`'s own rebind comments state that `SO_REUSEADDR`
-does not help against a held listener, so the restarting daemon's `bind()` fails `EADDRINUSE`. **The
-daemon that crashed during a fetch could not come back until an orphan nobody can see finished
-retrying** — the same scenario #375 exists for, failing twice over. Fixed with the identical
+does not help against a held listener. **Derived by inspection of `start_fetch_for()`, not observed**:
+the sweep went in before any probe ran, so no run ever exercised the unswept path under `SIGKILL` --
+what was measured is the plain `fork()` with no `execve()`, the retry constants, and the socket
+options, and the consequence that follows from them is that a restarting daemon's `bind()` would
+fail `EADDRINUSE`, so a daemon that crashed during a fetch could not come back until an orphan
+nobody can see finished retrying -- the same scenario #375 exists for, failing twice over. Fixed with the identical
 descriptor sweep `buildenv_image_for()`'s composer child has carried for the same reason (#237); that child's comment
 asserted "unlike the fetch child this one never execve()s", which was false and is corrected in place.
 

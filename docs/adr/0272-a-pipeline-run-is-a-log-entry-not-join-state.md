@@ -144,7 +144,10 @@ the rule above.** An open run is checkpointed to `open_runs.json`, a file that i
 not the run store and that nothing serves; at the next start it is drained into
 real, closed `failed` runs and deleted. The store still only ever gains a run
 that has an outcome -- what changed is that "the daemon stopped" is now one of
-the outcomes it can name, written once, at the moment it becomes known.
+the outcomes it can name, written once, at the moment it becomes known. On a
+CLEAN stop the checkpoint answers nothing: `pkg_runs_close_open_at_shutdown()`
+closes each open run normally and the file is removed, so it exists only while a
+run is genuinely in flight and is read only when the daemon never got that far.
 
 This is also why a run records a `trigger` and not an actor. "Requested" versus
 "rolling" is the distinction that changes what an operator does next, and it is knowable
