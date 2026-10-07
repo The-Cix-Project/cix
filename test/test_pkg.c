@@ -6295,18 +6295,27 @@ skip_hostbuild:
 	 */
 	{
 		char st[64];
+		char kv_srcdir[160], kv_install[512];
 		const char *stt, *ver, *err;
 
+		/* A real staged FILE, copied out of the source tree rather
+		 * than compiled: the subject is what the entry says after a
+		 * refusal, and a compiler in the fixture only adds a way for
+		 * it to fail for an unrelated reason. 1.1 stages the same
+		 * directory and no file, which is what #486's gate refuses. */
+		fixture_srcdir(tarball_path, kv_srcdir, sizeof(kv_srcdir));
+		snprintf(kv_install, sizeof(kv_install),
+		         "        mkdir \"${dest}/usr/share/keepver\" parents chmod 0755\n"
+		         "        copy \"${src}/keepver/%s/hello.c\" to "
+		         "\"${dest}/usr/share/keepver/hello.c\"\n",
+		         kv_srcdir);
 		if (publish_cpdl_recipe(&client, "keepver", "1.0", tarball_path, sha256, NULL,
-		                         CPDL_STD_TOOLS, NULL,
-		                         "        run \"tcc\" {\n"
-		                         "            \"-o\" \"hello\" \"hello.c\"\n"
-		                         "        }\n",
-		                         "        mkdir \"${dest}/usr/bin\" parents chmod 0755\n"
-		                         "        copy \"${build}/hello\" to \"${dest}/usr/bin/keepver\"\n") != 0 ||
+		                         CPDL_STD_TOOLS, NULL, "        run \"true\" {\n        }\n",
+		                         kv_install) != 0 ||
 		    publish_cpdl_recipe(&client, "keepver", "1.1", tarball_path, sha256, NULL,
 		                         CPDL_STD_TOOLS, NULL, "        run \"true\" {\n        }\n",
-		                         "        mkdir \"${dest}/usr/bin\" parents chmod 0755\n") != 0) {
+		                         "        mkdir \"${dest}/usr/share/keepver\" parents "
+		                         "chmod 0755\n") != 0) {
 			fprintf(stderr, "FAIL: #570 could not publish the keepver fixtures\n");
 			ok = 0;
 			goto skip_keepver;

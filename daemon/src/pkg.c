@@ -14192,9 +14192,18 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	 * image_produce_new_version() call needs e's final post-install
 	 * state (name/version/state all correct) to compute the new
 	 * image version's own manifest hash (ADR-0108) for THIS package's
-	 * contribution. Safe: both branches below unconditionally
-	 * overwrite this back to PKG_STATE_FAILED on their own failure
-	 * path, so a failed merge never leaves a falsely-INSTALLED entry.
+	 * contribution.
+	 *
+	 * Safe, with one deliberate exception. Every failure below goes
+	 * through pkg_fail(), which writes PKG_STATE_FAILED unless the
+	 * caller asks it to keep the install -- so a failed merge never
+	 * leaves a falsely-INSTALLED entry. The four gates that refuse
+	 * BEFORE the image is touched do ask (#570): the entry stays
+	 * INSTALLED, and install_keep_prev_version() puts it back on the
+	 * version that is still there, so the INSTALLED it keeps is the
+	 * old one rather than this job's. The two failures after
+	 * install_mutate() has run do not ask, for the reasons recorded at
+	 * each of them.
 	 */
 	/* #424: the install stage begins here, where a successful build's
 	 * output starts going into the image. */
