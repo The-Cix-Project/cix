@@ -1683,6 +1683,166 @@ out:
 	return ok;
 }
 
+
+/*
+ * #375: a run that was in flight when the daemon stopped is still
+ * recorded.
+ *
+ * ADR-0272 keeps an in-flight run in memory only -- deliberately, so
+ * the store never holds a record whose outcome is unknown -- and says
+ * in as many words that this leaves a gap: "a daemon restarted
+ * mid-build records nothing for the run it was in the middle of". That
+ * is the one history an operator most wants afterwards, because "it
+ * was building and the box went down" is exactly the thing nothing
+ * else remembers.
+ *
+ * WHY A FETCH RATHER THAN A BUILD. A run opens in start_fetch_for(),
+ * before any build container exists, so the window this tests is the
+ * earliest one -- and it needs no build floor, no toolchain and no
+ * artifacts. `unreachable` points at 192.0.2.1 (TEST-NET-1, routed
+ * nowhere), so the fetch stays in flight for as long as the test needs
+ * rather than racing it. Killing during a BUILD exercises the same
+ * checkpoint through the same two call sites.
+ *
+ * SIGKILL rather than stop_daemon(): the subject is a daemon that got
+ * no chance to tidy up. A clean SIGTERM would let any shutdown path
+ * run, which is a different question and not the one #375 asks.
+ *
+ * Its own data directory, and g_data_dir saved and restored around it,
+ * following the defaults case above -- a test that kills its daemon
+ * must not leave the rest of this file talking to a corpse.
+ */
+static int test_interrupted_run_recovered(void)
+{
+	char dir[PATH_MAX];
+	char saved_data_dir[PATH_MAX];
+	struct cix_client c;
+	struct cix_response r;
+	pid_t pid;
+	int ok = 1, waited;
+	int saw_fetching = 0;
+
+	snprintf(saved_data_dir, sizeof(saved_data_dir), "%s", g_data_dir);
+	if (test_data_dir_create(dir, sizeof(dir)) != 0) {
+		fprintf(stderr, "FAIL: #375 could not create a data dir\n");
+		return 0;
+	}
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", dir);
+	cix_client_init(&c, "127.0.0.1", TEST_PORT);
+
+	pid = start_daemon();
+	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+		fprintf(stderr, "FAIL: #375 daemon never accepted connections\n");
+		ok = 0;
+		goto out;
+	}
+	if (publish_cpdl_recipe_url(&c, "stuckfetch", "1.0", "https://192.0.2.1/nothing.tar.gz",
+	                             "0000000000000000000000000000000000000000000000000000000000000000",
+	                             CPDL_STD_TOOLS, "        run \"true\" {\n        }\n",
+	                             "        mkdir \"${dest}/usr/share/stuckfetch\" parents\n") != 0) {
+		fprintf(stderr, "FAIL: #375 could not publish the stuckfetch recipe\n");
+		ok = 0;
+		goto out;
+	}
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "POST", "/v1/pkg/install", "{\"name\":\"stuckfetch\"}", &r) != 0 ||
+	    r.status != 202) {
+		fprintf(stderr, "FAIL: #375 install stuckfetch, status=%d\n", r.status);
+		ok = 0;
+		cix_response_free(&r);
+		goto out;
+	}
+	cix_response_free(&r);
+
+	/* The run is open from the moment the fetch starts, which is what
+	 * this waits for -- not for anything to finish. */
+	for (waited = 0; waited < 100 && !saw_fetching; waited++) {
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&c, "GET", "/v1/pkg/stuckfetch", NULL, &r) == 0 &&
+		    r.status == 200 && r.json != NULL &&
+		    str_eq(json_str_field(r.json, "state"), "fetching"))
+			saw_fetching = 1;
+		cix_response_free(&r);
+		if (!saw_fetching)
+			usleep(100000);
+	}
+	if (!saw_fetching) {
+		fprintf(stderr, "FAIL: #375 stuckfetch never reached state fetching, so no run was "
+		                "open to interrupt\n");
+		ok = 0;
+		goto out;
+	}
+
+	/* The outage. */
+	kill(pid, SIGKILL);
+	waitpid(pid, NULL, 0);
+	pid = start_daemon();
+	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+		fprintf(stderr, "FAIL: #375 daemon did not come back after being killed\n");
+		ok = 0;
+		goto out;
+	}
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "GET", "/v1/pipeline/runs?name=stuckfetch", NULL, &r) != 0 ||
+	    r.status != 200 || r.body == NULL || strstr(r.body, "stuckfetch") == NULL ||
+	    strstr(r.body, "\"status\":\"failed\"") == NULL ||
+	    strstr(r.body, "in flight") == NULL) {
+		fprintf(stderr,
+		        "FAIL: #375 a run interrupted by the daemon stopping must be recorded, "
+		        "failed, saying so: %.400s\n",
+		        r.body != NULL ? r.body : "(none)");
+		ok = 0;
+	}
+	cix_response_free(&r);
+	/*
+	 * And exactly once, across a FURTHER restart. A checkpoint that
+	 * survived its own recovery would re-record the same outage at
+	 * every later start, which is worse than not recording it: the
+	 * history would grow a new entry each time the box rebooted.
+	 * Restarting again is the only way to catch that.
+	 */
+	if (stop_daemon(pid) != 0) {
+		fprintf(stderr, "FAIL: #375 daemon did not stop cleanly before the second restart\n");
+		ok = 0;
+		pid = -1;
+		goto out;
+	}
+	pid = start_daemon();
+	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+		fprintf(stderr, "FAIL: #375 daemon did not come back for the second restart\n");
+		ok = 0;
+		goto out;
+	}
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "GET", "/v1/pipeline/runs?name=stuckfetch", NULL, &r) == 0 &&
+	    r.status == 200 && r.body != NULL) {
+		const char *p = r.body;
+		int runs = 0;
+
+		while ((p = strstr(p, "\"name\":\"stuckfetch\"")) != NULL) {
+			runs++;
+			p++;
+		}
+		if (runs != 1) {
+			fprintf(stderr,
+			        "FAIL: #375 the interrupted run must be recovered exactly once, but "
+			        "after a second restart there are %d -- the checkpoint outlived its "
+			        "own recovery\n",
+			        runs);
+			ok = 0;
+		}
+	}
+	cix_response_free(&r);
+
+out:
+	if (pid > 0)
+		(void)stop_daemon(pid);
+	test_data_dir_cleanup(dir);
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", saved_data_dir);
+	return ok;
+}
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -1705,6 +1865,11 @@ int main(void)
 	if (!test_pkg_config_defaults())
 		ok = 0;
 	if (!test_schedule_defaults())
+		ok = 0;
+	/* #375: its own data dir and its own daemon, which it kills. Placed
+	 * with the other self-contained cases so nothing after it is
+	 * talking to the daemon it killed. */
+	if (!test_interrupted_run_recovered())
 		ok = 0;
 
 	reset_pkg_state();

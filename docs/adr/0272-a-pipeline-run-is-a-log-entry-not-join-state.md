@@ -135,10 +135,16 @@ returns before any run exists, so a consumed-at-open value survived a refused
 rolling rebuild and mislabelled the next operator-requested install; and a chain
 resolves its dependencies first, so only the first atom would have consumed it
 and every dependency a rolling rebuild pulled would have recorded itself as
-requested. A chain has one cause, and that is where it lives. Issue
-[#375](https://git.home.arpa/itdlabs/cix/issues/375) records the remaining gap:
-an open run is in memory only, so a daemon restarted mid-build records nothing
-for the run it was in the middle of.
+requested. A chain has one cause, and that is where it lives.
+
+Issue [#375](https://git.home.arpa/itdlabs/cix/issues/375) recorded the gap this
+left: an open run lived in memory only, so a daemon that died mid-build recorded
+nothing for the run it was in the middle of. **That is closed, without weakening
+the rule above.** An open run is checkpointed to `open_runs.json`, a file that is
+not the run store and that nothing serves; at the next start it is drained into
+real, closed `failed` runs and deleted. The store still only ever gains a run
+that has an outcome -- what changed is that "the daemon stopped" is now one of
+the outcomes it can name, written once, at the moment it becomes known.
 
 This is also why a run records a `trigger` and not an actor. "Requested" versus
 "rolling" is the distinction that changes what an operator does next, and it is knowable

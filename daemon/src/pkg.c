@@ -1641,6 +1641,8 @@ static int gate_holds(const char *gate, const char *target);
 static void approval_consume(const char *gate, const char *target);
 static void approval_forget(const char *gate, const char *target);
 static void pkg_runs_load(void);           /* ADR-0272 */
+static void pkg_open_runs_save(void);      /* #375 */
+static void pkg_open_runs_recover(void);   /* #375 */
 
 static void pkg_record_outcome(struct pkg_entry *e, int keep_installed,
                                 enum pipeline_stage stage, enum pipeline_status status,
@@ -6316,6 +6318,13 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 	 * first runs are most worth keeping.
 	 */
 	pkg_runs_load();
+	/*
+	 * #375: immediately after, so a run that was in flight when this
+	 * daemon last stopped becomes a real, closed run before anything
+	 * can read the store -- and before load_state() reinstates entries
+	 * whose run_started_at is deliberately not persisted.
+	 */
+	pkg_open_runs_recover();
 	/* cix#569: before anything resolves a recipe, so nothing meets a
 	 * build.sh in the store. */
 	retire_shell_recipes();
@@ -7324,9 +7333,11 @@ static int buildenv_image_for(const char *declared, char *out_image, size_t out_
 
 			/*
 			 * Every descriptor this daemon holds was inherited by the
-			 * fork, and unlike the fetch child this one never execve()s,
-			 * so SOCK_CLOEXEC does nothing for it. Leaving them open
-			 * would keep live client sockets from reaching EOF for as
+			 * fork, and this one never execve()s, so SOCK_CLOEXEC does
+			 * nothing for it. (This used to read "unlike the fetch
+			 * child" -- that child does not execve() either, which is
+			 * why it now carries this same sweep; see #375.) Leaving them
+			 * open would keep live client sockets from reaching EOF for as
 			 * long as composition runs -- reintroducing #237's symptom
 			 * from the other direction, through the very change meant to
 			 * stop blocking clients. Closed bluntly from stderr up: this
@@ -9591,6 +9602,13 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	                                     * fresh-slot case, this covers the upgrade-reuse
 	                                     * case (e != NULL, not memset()'d) too. */
 	e->cache_hit = cache_hit;
+	/*
+	 * #375: checkpoint the open run, HERE rather than beside
+	 * run_started_at above -- the trigger and this run's stage clocks are
+	 * set in the lines between, so a checkpoint taken earlier would
+	 * record an empty trigger and the PREVIOUS run's timestamps.
+	 */
+	pkg_open_runs_save();
 
 	if (persist_mkdir_p(g_sources_dir) != 0) {
 		pkg_fail(e, is_upgrade, PIPELINE_FETCH, "could not create sources directory");
@@ -9604,15 +9622,53 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 		return PKG_ERR_SPAWN_FAILED;
 	}
 	if (pid == 0) {
-		/* One curl per source entry, sequentially, inside this same
-		 * forked child (ADR-0036) -- a grandchild per URL, not a
-		 * generated shell command, so a recipe-supplied URL never
-		 * passes through shell interpolation. The single pidfd the
-		 * caller registers for *this* child already covers the whole
+		/* One fetch per source entry, sequentially, inside this same
+		 * forked child (ADR-0036) -- each one a libcurl call in this
+		 * process, never an exec'd curl and never a generated shell
+		 * command, so a recipe-supplied URL never passes through shell
+		 * interpolation. (This comment used to say "a grandchild per
+		 * URL"; there is no grandchild. Every fetch in this file is
+		 * curlfetch_perform(), all eleven of them, and the file execs
+		 * no curl anywhere -- which is exactly what the descriptor
+		 * sweep below exists for.) The single pidfd the caller
+		 * registers for *this* child already covers the whole
 		 * sequence; pkg_fetch_completed()'s existing "one exit status
 		 * summarizes the whole fetch" contract needs no change. */
 		int j;
 		char fetch_err_path[PATH_MAX];
+		int fd;
+
+		/*
+		 * #375: every descriptor this daemon holds was inherited by
+		 * the fork, and this child never execve()s -- the sources
+		 * below are fetched by libcurl IN PROCESS, not by an exec'd
+		 * curl -- so SOCK_CLOEXEC does nothing for it.
+		 *
+		 * Two consequences, both measured by reading this file rather
+		 * than guessed, and the second is why it is fixed here. A live
+		 * client socket cannot reach EOF for as long as a fetch runs,
+		 * which is #237's symptom from the other direction. And a
+		 * fetch child ORPHANED by a daemon that died mid-fetch goes on
+		 * holding the control-plane listening socket for the rest of
+		 * its retry schedule -- at least retry_count * retry_delay,
+		 * 8 * 3 seconds for a source, and minutes if each attempt
+		 * reaches the low-speed timeout. cixd sets SO_REUSEADDR and
+		 * not SO_REUSEPORT, and this file's own rebind comments say
+		 * SO_REUSEADDR does not help against a held listener, so the
+		 * restarting daemon's bind() fails EADDRINUSE: the daemon that
+		 * crashed during a fetch could not come back until an orphan
+		 * nobody can see finished retrying.
+		 *
+		 * Closed bluntly from stderr up, the same sweep and the same
+		 * reasoning as buildenv_image_for()'s composer child: this
+		 * child needs the filesystem and the sockets libcurl opens
+		 * after the fork, and nothing it inherited. It reports through
+		 * its exit status and the error sidecar on disk (ADR-0036),
+		 * never through a pipe, so there is nothing to keep.
+		 */
+		for (fd = 3; fd < 4096; fd++)
+			close(fd);
+
 
 		/* #501: nothing this slot fetched before is needed any more,
 		 * and nothing another slot is fetching is touched. */
@@ -12462,6 +12518,9 @@ static void pkg_run_close(struct pkg_entry *e)
 		return;
 	if (pkg_runs_alloc() != 0) {
 		e->run_started_at = 0;
+		/* The checkpoint would otherwise outlive the run it describes
+		 * and be recovered again at the next start (#375). */
+		pkg_open_runs_save();
 		return;
 	}
 	if (g_run_count >= PKG_RUN_MAX) {
@@ -12500,6 +12559,10 @@ static void pkg_run_close(struct pkg_entry *e)
 	e->run_started_at = 0;
 	e->run_trigger[0] = '\0';
 	pkg_runs_trim();
+	/* #375: the run is closed and in the store, so the checkpoint has
+	 * nothing left to say. Cleared here rather than at every caller,
+	 * for the same reason the run itself closes here. */
+	pkg_open_runs_save();
 	pkg_runs_save();
 }
 
@@ -12519,11 +12582,12 @@ static void pkg_run_close(struct pkg_entry *e)
  * which would say somebody asked for this. Nobody did.
  *
  * This covers a clean stop: a reboot, an update, a SIGTERM -- which is
- * how this daemon almost always goes down, deploys included. It does
- * NOT cover a panic or a power cut, where nothing can be written at the
- * time. Closing that hole needs durable knowledge that a run was open,
- * and the obvious place to put it is the run store, which ADR-0272
- * forbids. Stated here rather than half-solved; see #375.
+ * how this daemon almost always goes down, deploys included. The panic
+ * and power-cut case, where nothing can be written at the time, is
+ * covered instead by the open_runs.json checkpoint below
+ * (pkg_open_runs_save() / pkg_open_runs_recover()): this function is
+ * the cheap path that leaves no file behind, and the checkpoint is what
+ * answers when this one never gets to run.
  */
 void pkg_runs_close_open_at_shutdown(void)
 {
@@ -12673,6 +12737,223 @@ static void pkg_runs_load(void)
 	}
 	json_free(root);
 	pkg_runs_trim();
+}
+
+/*
+ * #375: the runs that were open when this daemon last wrote state.
+ *
+ * ADR-0272 is explicit that the run store holds no run whose outcome is
+ * unknown -- "writing a half-record and amending it later would create
+ * exactly the mutable second copy this ADR exists to avoid" -- and it
+ * names this issue as the gap that leaves: an open run lives in memory
+ * only, so a daemon that dies mid-build records nothing for the run it
+ * was in the middle of. "It was building, the box went down" is exactly
+ * the history an operator goes looking for.
+ *
+ * This file is NOT that half-record, and the distinction is the whole
+ * design. It is the daemon's own checkpoint -- a note to itself about
+ * what was in flight -- never a report anyone reads. Nothing serves it,
+ * `GET /pipeline/runs` cannot see it, and it is deleted the moment its
+ * contents become real runs. The store still only ever contains
+ * outcomes.
+ *
+ * WHY NOT THE OTHER TWO SHAPES, both of which were considered first:
+ *
+ * The issue proposed two additive keys in the installed-state JSON.
+ * That cannot work: save_state() persists only entries whose state is
+ * PKG_STATE_INSTALLED, so a fresh install killed mid-build is not in
+ * that file at all and there is nothing to carry a key on. It would
+ * also put in-flight bookkeeping into the one file that records what is
+ * installed, which is the file a bug must not reach.
+ *
+ * Reconstructing from the build logs on disk was the other: a log whose
+ * stamp is newer than the newest run and which no run references is an
+ * interrupted build. It needs no new file, and it misses the fetch
+ * entirely -- a run opens in start_fetch_for(), and the log is not
+ * opened until pkg_build_log_open(), which start_build_container_spec()
+ * reaches only once the fetch has already succeeded. A daemon killed
+ * while fetching a large source has an open run and no log to find it
+ * by.
+ *
+ * Written whole on every change rather than appended to: the set is at
+ * most PKG_MAX_CONCURRENT_JOBS entries, and one writer that renders the
+ * current truth cannot drift from it the way an incremental journal
+ * can.
+ */
+static void pkg_open_runs_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/open_runs.json", g_pkg_dir);
+}
+
+static void pkg_open_runs_save(void)
+{
+	struct json_writer w;
+	char path[PATH_MAX];
+	int i, n = 0;
+
+	if (g_pkg_dir[0] == '\0')
+		return;
+	pkg_open_runs_path(path, sizeof(path));
+	for (i = 0; i < PKG_MAX_PACKAGES; i++)
+		if (g_packages[i].in_use && g_packages[i].run_started_at != 0)
+			n++;
+	/* Nothing open: remove the file rather than write an empty array,
+	 * so a clean shutdown leaves nothing for the next start to read and
+	 * the recovery path below does no work in the ordinary case. */
+	if (n == 0) {
+		(void)unlink(path);
+		return;
+	}
+	/* Same defensiveness as pkg_runs_save()'s own mkdir, and for the
+	 * same reason: persist_atomic_write() into a directory that is not
+	 * there fails silently. */
+	(void)persist_mkdir_p(g_pkg_dir);
+	jw_init(&w);
+	jw_arr_open(&w);
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		const struct pkg_entry *e = &g_packages[i];
+		const char *base;
+		int ci;
+
+		if (!e->in_use || e->run_started_at == 0)
+			continue;
+		ci = pkg_chain_index_for_target(e->name, e->image);
+		base = strrchr(e->build_log_path, '/');
+		jw_obj_open(&w);
+		jw_key(&w, "name");
+		jw_str(&w, e->name);
+		jw_key(&w, "image");
+		jw_str(&w, e->image);
+		jw_key(&w, "version");
+		/*
+		 * The version being ATTEMPTED, not the one installed. For a
+		 * fresh install e->version is still empty here and for an
+		 * upgrade it is the old one -- neither answers "what was it
+		 * doing when the box went down". The chain carries what the
+		 * recipe resolved to (#326), so prefer it and fall back only
+		 * when no chain owns this entry any more.
+		 */
+		jw_str(&w, ci >= 0 && g_chains[ci].fetch_resolved_version[0] != '\0'
+		              ? g_chains[ci].fetch_resolved_version
+		              : e->version);
+		jw_key(&w, "trigger");
+		jw_str(&w, e->run_trigger[0] != '\0' ? e->run_trigger : PKG_RUN_TRIGGER_REQUEST);
+		jw_key(&w, "started_at");
+		jw_int(&w, (long long)e->run_started_at);
+		jw_key(&w, "build_started_at");
+		jw_int(&w, (long long)e->build_started_at);
+		jw_key(&w, "install_started_at");
+		jw_int(&w, (long long)e->install_started_at);
+		jw_key(&w, "stage");
+		jw_str(&w, pipeline_stage_name(e->stage));
+		jw_key(&w, "log");
+		jw_str(&w, base != NULL ? base + 1 : e->build_log_path);
+		jw_obj_close(&w);
+	}
+	jw_arr_close(&w);
+	if (w.buf != NULL)
+		(void)persist_atomic_write(path, w.buf, w.len);
+	jw_free(&w);
+}
+
+/*
+ * Turn whatever was in flight at the last write into real, closed runs.
+ *
+ * Called once at startup, AFTER pkg_runs_load() so these land at the end
+ * of the store the way any other closed run would, and before anything
+ * can serve GET /pipeline/runs.
+ *
+ * The status is `failed` rather than `cancelled`: ADR-0256's
+ * `cancelled` means an operator stopped it, and nobody did. The error
+ * says what happened in the words an operator would use, because the
+ * run record is the only place this will ever be explained.
+ *
+ * No attempt is made to decide whether the build might have succeeded
+ * after the daemon stopped. It did not finish from this platform's
+ * point of view -- nothing harvested an artifact, nothing moved an
+ * image version -- and a run that claimed otherwise would be inventing
+ * an outcome it never saw.
+ */
+static void pkg_open_runs_recover(void)
+{
+	char path[PATH_MAX];
+	struct json_value *root;
+	char *text = NULL;
+	size_t len = 0;
+	size_t i;
+	int recovered = 0;
+
+	if (g_pkg_dir[0] == '\0')
+		return;
+	pkg_open_runs_path(path, sizeof(path));
+	if (persist_read_file(path, &text, &len) != 0)
+		return;
+	root = json_parse(text, len);
+	free(text);
+	if (root == NULL || root->type != JSON_ARRAY) {
+		json_free(root);
+		(void)unlink(path);
+		return;
+	}
+	for (i = 0; i < root->u.array.count; i++) {
+		const struct json_value *o = root->u.array.items[i];
+		const char *sv = json_as_string(json_object_get(o, "name"));
+		struct pkg_run *r;
+
+		if (sv == NULL || sv[0] == '\0')
+			continue;
+		if (pkg_runs_alloc() != 0)
+			break;
+		if (g_run_count >= PKG_RUN_MAX) {
+			memmove(&g_runs[0], &g_runs[1],
+			        (size_t)(PKG_RUN_MAX - 1) * sizeof(g_runs[0]));
+			g_run_count = PKG_RUN_MAX - 1;
+		}
+		r = &g_runs[g_run_count++];
+		memset(r, 0, sizeof(*r));
+		snprintf(r->name, sizeof(r->name), "%s", sv);
+		sv = json_as_string(json_object_get(o, "image"));
+		snprintf(r->image, sizeof(r->image), "%s", sv != NULL ? sv : "");
+		sv = json_as_string(json_object_get(o, "version"));
+		snprintf(r->version, sizeof(r->version), "%s", sv != NULL ? sv : "");
+		sv = json_as_string(json_object_get(o, "trigger"));
+		snprintf(r->trigger, sizeof(r->trigger), "%s",
+		         sv != NULL && sv[0] != '\0' ? sv : PKG_RUN_TRIGGER_REQUEST);
+		sv = json_as_string(json_object_get(o, "log"));
+		snprintf(r->log, sizeof(r->log), "%s", sv != NULL ? sv : "");
+		r->started_at = (time_t)json_as_number(json_object_get(o, "started_at"));
+		r->build_started_at =
+		    (time_t)json_as_number(json_object_get(o, "build_started_at"));
+		r->install_started_at =
+		    (time_t)json_as_number(json_object_get(o, "install_started_at"));
+		r->stages_known = 1;
+		if (pipeline_stage_from_name(json_as_string(json_object_get(o, "stage")),
+		                             &r->stage) != 0)
+			r->stage = PIPELINE_FETCH;
+		r->status = PIPELINE_FAILED;
+		/*
+		 * ended_at is NOW, not the last known timestamp: the run ended
+		 * when this daemon noticed, and that is the only instant it can
+		 * honestly name. A duration computed from it is the outage, not
+		 * the build, which is what an operator reading "the box went
+		 * down" wants to see.
+		 */
+		r->ended_at = time(NULL);
+		snprintf(r->error, sizeof(r->error),
+		         "the daemon stopped while this run was in flight, so it never reported an "
+		         "outcome -- recovered at startup (#375)");
+		recovered++;
+	}
+	json_free(root);
+	(void)unlink(path);
+	if (recovered > 0) {
+		pkg_runs_trim();
+		pkg_runs_save();
+		logstore_write("cixd", "warn",
+		               "pkg: recovered %d run(s) that were in flight when this daemon last "
+		               "stopped; each is recorded failed with no outcome (#375)",
+		               recovered);
+	}
 }
 
 int pkg_run_retention_get(void)

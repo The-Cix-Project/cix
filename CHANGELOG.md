@@ -6,6 +6,54 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A build the daemon does not outlive is recorded as failed, not forgotten (#375)
+
+`cixctl pipeline runs` is the operator's record of what a package attempted. Until now it held only runs
+that *ended* — a build interrupted by a panic, a `kill`, or an ordinary reboot left nothing behind at
+all, so the one case an operator most wants explained is the one the log is silent about. #375 is
+that gap, and ADR-0272 names it: the run store is a log of closed runs, and it may never hold an entry
+whose outcome is unknown.
+
+**The fix the issue proposed cannot work, and that is worth recording.** It asks for the in-flight
+state to be persisted with the package entry — but `save_state()` (`daemon/src/pkg.c:5709`) writes
+only entries whose `state` is `PKG_STATE_INSTALLED`. An entry that dies mid-job is `PKG_STATE_FETCHING`
+or `PKG_STATE_BUILDING`, so a package being installed for the first time is in no persisted record
+whatever and there is nothing for a restart to notice. **Reconciling from the build log does not work
+either**: a run opens when the fetch starts (`pkg.c:9581`) and no log exists until the build container
+is started (`pkg_build_log_open()`, `pkg.c:10464`), so a daemon killed during a fetch — the longest
+window of the three — leaves no log to reconcile against.
+
+So the in-flight fact is checkpointed somewhere that is explicitly **not** the run store:
+`open_runs.json` in the package directory, written whole whenever a run opens or closes
+(`pkg_open_runs_save()`), drained at startup into real, closed `failed` runs and then unlinked
+(`pkg_open_runs_recover()`). ADR-0272's invariant is kept exactly — the store still only ever gains a
+run that has an outcome; the checkpoint is a separate file that exists only while one is in flight,
+and a clean shutdown leaves none. Recovery runs after `pkg_runs_load()`, so a recovered run lands at
+the end of the store the way any other closed run would, and carries the version the chain was
+actually attempting rather than the entry's installed one.
+
+`test_interrupted_run_recovered()` in `test/test_pkg.c` proves it the only way that means anything:
+it publishes a package whose source is `https://192.0.2.1/nothing.tar.gz` (TEST-NET-1, which does not
+answer), waits for `state: fetching`, `SIGKILL`s the daemon, restarts it, and asserts
+`/v1/pipeline/runs?name=stuckfetch` now carries a `failed` run saying the daemon stopped while it was
+in flight. It then restarts a **second** time and asserts there is still exactly one — the checkpoint
+is unlinked after it is drained, so a recovered run is not re-recovered on every subsequent boot.
+
+**And the test found a second bug, in the same path, which is fixed here too.** The fetch child is a
+plain `fork()` with no `execve()` anywhere in it — every source is fetched by `curlfetch_perform()`,
+libcurl in this process, all eleven call sites, and `pkg.c` execs no `curl` at all — so it inherits
+every descriptor the daemon holds and `SOCK_CLOEXEC` protects none of them. Two consequences. A live
+client socket cannot reach EOF for as long as any fetch runs, which is #237's symptom from the other
+direction. And worse: a fetch child **orphaned** by a daemon that died mid-fetch goes on holding the
+control-plane *listening* socket for the rest of its retry schedule — `retry_count 8` × `retry_delay
+3` is the floor, and minutes if each attempt reaches the 60-second low-speed timeout. cixd sets
+`SO_REUSEADDR` and not `SO_REUSEPORT`, and `main.c`'s own rebind comments state that `SO_REUSEADDR`
+does not help against a held listener, so the restarting daemon's `bind()` fails `EADDRINUSE`. **The
+daemon that crashed during a fetch could not come back until an orphan nobody can see finished
+retrying** — the same scenario #375 exists for, failing twice over. Fixed with the identical
+descriptor sweep `buildenv_image_for()`'s composer child has carried for the same reason (#237); that child's comment
+asserted "unlike the fetch child this one never execve()s", which was false and is corrected in place.
+
 ### ADR-0275's phase mechanism is corrected: all of it now waits on CBS (#388, cix-build-system#282)
 
 #388 asks for the phases inside a build stage to be visible, so an operator watching a package
