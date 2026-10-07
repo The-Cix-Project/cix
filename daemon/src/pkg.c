@@ -977,14 +977,29 @@ static void chain_reap_stale(void)
 			 * leave the report wrong forever.
 			 *
 			 * pkg_fail() rather than pkg_fail_cancelled(): nobody
-			 * cancelled this, it stopped reporting. is_upgrade is not
-			 * knowable this late -- the chain slot is being reclaimed
-			 * precisely because its bookkeeping is unreliable -- so
-			 * the installed record is kept (1), which cannot lose a
-			 * version that really is installed and at worst preserves
-			 * one this dead build was going to replace.
+			 * cancelled this, it stopped reporting.
+			 *
+			 * Whether to keep the install is decided by e->version, not
+			 * by a literal (#572). This passed 1, reasoning that
+			 * is_upgrade is unknowable this late -- the slot is being
+			 * reclaimed precisely because its bookkeeping is unreliable
+			 * -- and that keeping the record cannot lose a version that
+			 * really is installed. The second half is right and the
+			 * premise is wrong: e->version answers the question. It
+			 * moves to the version being installed only at the harvest
+			 * in pkg_build_completed(), which by definition never ran
+			 * here, so a non-empty version is the previous install and
+			 * keeping it is correct, while an EMPTY one means this was a
+			 * first install and there is nothing to keep. Passing 1
+			 * there wrote state=INSTALLED with no version -- a claim
+			 * about an image holding none of this package's files, and
+			 * exactly the inconsistency pkg_record_outcome()'s own #326
+			 * detector logs one line later. Measured on 192.168.15.95,
+			 * 2026-10-05 (0.2.57-461): pkgconf, a fresh install into a
+			 * just-created iso-builder, read
+			 * "installed:build/failed" with an empty version (#572).
 			 */
-			pkg_fail(e, 1, PIPELINE_BUILD,
+			pkg_fail(e, e->version[0] != '\0', PIPELINE_BUILD,
 			         "the build container %s is gone and never reported an exit, so this "
 			         "build cannot complete; its job slot has been reclaimed (#339)",
 			         e->build_container_name);
@@ -1636,26 +1651,42 @@ static void pkg_record_outcome(struct pkg_entry *e, int keep_installed,
 	e->status = status;
 	vsnprintf(e->error, sizeof(e->error), fmt, ap);
 	/*
-	 * The invariant #326 was a violation of, asserted rather than
-	 * assumed: an entry that says INSTALLED must name what is
-	 * installed. Three fields that cannot all be true at once is a
-	 * second source of truth about the host, and the measured case --
-	 * state=installed, version="", a stale error -- had no operation
-	 * that would reset it short of uninstalling a working package.
+	 * An entry that says INSTALLED must name what is installed -- the
+	 * invariant #326 was a violation of, and the one this function
+	 * enforces rather than merely reports (#572).
 	 *
-	 * The cause is fixed upstream of here (the version is captured once
-	 * at fetch start instead of re-read at completion), so this should
-	 * be unreachable. It logs rather than repairs: a silent correction
-	 * would hide whichever new path reopened the hole, and this
-	 * function is the one funnel every failure reaches (ADR-0272), so
-	 * it is the right place to notice.
+	 * A caller asking to keep the install when there is no version to
+	 * keep is describing a first install that never completed: the
+	 * version moves to the one being installed at the harvest in
+	 * pkg_build_completed(), so an empty version here means that point
+	 * was never reached and the image holds none of this package's
+	 * files. INSTALLED is then a claim about the host that is simply
+	 * false, and the measured case -- state=installed, version="", a
+	 * stale error -- had no operation that would reset it short of
+	 * uninstalling a working package.
+	 *
+	 * So the record is corrected to FAILED, which is what it is, AND
+	 * the ask is logged. This used to log without correcting, on the
+	 * grounds that "a silent correction would hide whichever new path
+	 * reopened the hole". The concern is right and it is about silence,
+	 * not about correcting: an operator reads the entry, not the log,
+	 * so leaving the impossible record in place shows them the lie and
+	 * keeps the signal only for whoever greps. Logging the correction
+	 * keeps both. Measured on 192.168.15.95, 2026-10-05 (0.2.57-461):
+	 * chain_reap_stale() passed a literal 1 for a vanished build
+	 * container, and pkgconf -- a fresh install into a just-created
+	 * iso-builder -- read "installed:build/failed" with no version
+	 * (#572). That site now decides from e->version; this is the funnel,
+	 * so no future caller can reopen it.
 	 */
-	if (e->state == PKG_STATE_INSTALLED && e->version[0] == '\0')
+	if (keep_installed && e->version[0] == '\0') {
+		e->state = PKG_STATE_FAILED;
 		logstore_write("cixd", "error",
-		               "pkg %s@%s: recorded INSTALLED with no version -- a failed attempt kept "
-		               "an install this entry cannot name (#326); the record is inconsistent "
-		               "and how it got here is a bug",
+		               "pkg %s@%s: a failed attempt asked to keep an install this entry "
+		               "cannot name, so there was none to keep -- recorded failed instead "
+		               "(#326, #572); how it got here is still a bug",
 		               e->name, e->image);
+	}
 	/*
 	 * ADR-0272: the one funnel every failure and cancellation reaches,
 	 * so the run is closed here rather than at each of the two dozen

@@ -6,6 +6,43 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An entry that says INSTALLED must name what is installed, and now does (#572)
+
+On 192.168.15.95 (0.2.57-461, 2026-10-05) `pkgconf`'s record in a just-created `iso-builder` read
+`installed:build/failed` with an **empty version**, and cixd logged within the same second that it
+had "recorded INSTALLED with no version -- a failed attempt kept an install this entry cannot name
+(#326); the record is inconsistent and how it got here is a bug". It was right, and it only said so.
+
+- **`chain_reap_stale()` decides from `e->version`, not from a literal.** When a build container
+  vanishes without reporting an exit (#339), the reap repairs the entry as well as the slot. It
+  passed a literal `1` for `keep_installed`, reasoning that `is_upgrade` is unknowable that late.
+  The reasoning about not losing a version is right; the premise is not. `e->version` moves to the
+  version being installed only at the harvest in `pkg_build_completed()`, which by definition never
+  ran — so a non-empty version is the previous install and keeping it is correct, while an empty one
+  means this was a first install and there is nothing to keep. pkgconf was a first install.
+- **`pkg_record_outcome()` now enforces the invariant instead of reporting it.** A caller that asks
+  to keep an install the entry cannot name gets `failed`, which is what it is, and the ask is logged.
+  This used to log without correcting, on the grounds that "a silent correction would hide whichever
+  new path reopened the hole" — the concern is about silence, not about correcting, and an operator
+  reads the entry rather than the log, so leaving the impossible record in place showed them the lie
+  and kept the signal only for whoever greps. Logging the correction keeps both, and this is the one
+  funnel every failure reaches (ADR-0272), so no future caller can reopen it.
+- **The report's own reading of its evidence does not survive the code, and the issue now says so.**
+  It inferred that "two jobs for pkgconf@iso-builder started at once" from two slots being reclaimed
+  for the same pair. The reclaim logs `g_chains[i].name` — the chain's top-level name — and the reap
+  walks slots in order: slot 0 took the #339 branch and set the entry INSTALLED, after which slot 1
+  found that same entry neither fetching nor building and reported the #246 leak. That is one entry
+  across two slots, not two jobs. All three paths that could start a second top-level job for one
+  pair already refuse or defer (the request handler's 409, the rebuild drain's defer, and
+  `image materialize`, which is a CLI loop over the same endpoint), so a fourth guard was not what
+  was missing. How slot 1 came to be held without release is still not established; #572 stays open
+  for that half.
+
+No test drives the reap path, and none ever has: reaching it needs a registry entry to disappear
+without the container-event path running, which is the leak itself rather than something the API can
+be asked for. Every route that can be asked for — stop, delete, cancel — runs
+`pkg_build_completed()` with a real exit status and never reaches this branch.
+
 ### A failed upgrade keeps the version that still works, at the install stage too (#570)
 
 `pkg ls` on 192.168.15.95 read `gcc  cix-builder  16.2.0-18  failed:install/failed` while the image
