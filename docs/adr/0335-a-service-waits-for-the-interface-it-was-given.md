@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-09. Issue [#344](https://git.home.arpa/itdlabs/cix/issues/344). Applies [ADR-0247](0247-the-reactor-does-not-block-and-that-is-the-defence.md) and [ADR-0278](0278-the-reactor-forks-work-it-cannot-afford-to-wait-for.md) to the interface-attach path, and extends what a container declares under [ADR-0260](0260-a-container-declares-services-not-a-command.md).
+Accepted, 2026-10-09, the owner's decision on the proposed text. Issue [#344](https://git.home.arpa/itdlabs/cix/issues/344). Applies [ADR-0247](0247-the-reactor-does-not-block-and-that-is-the-defence.md) and [ADR-0278](0278-the-reactor-forks-work-it-cannot-afford-to-wait-for.md) to the interface-attach path, and extends what a container declares under [ADR-0260](0260-a-container-declares-services-not-a-command.md).
 
 ## Context
 

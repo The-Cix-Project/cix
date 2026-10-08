@@ -66,8 +66,15 @@ struct cixinit_table {
  * list rather than one address is what makes the mistake hard to
  * repeat: there is no "first address" to reach for early.
  */
+/*
+ * ifaces/iface_count: the interfaces this container was given, which
+ * no service may start before (#344/ADR-0335). NULL and 0 for a
+ * container given none, which is every build container.
+ */
 int cixinit_table_from_json(const struct json_value *jservices, const unsigned int *addr_be,
-                            int addr_count, struct cixinit_table *out, char *err, size_t err_size);
+                            int addr_count, const char (*ifaces)[CONTAINER_IFNAME_MAX],
+                            int iface_count, struct cixinit_table *out, char *err,
+                            size_t err_size);
 
 /*
  * The hello can carry every address a container can have. A negative
@@ -76,6 +83,15 @@ int cixinit_table_from_json(const struct json_value *jservices, const unsigned i
  */
 typedef char cix_init_addrs_must_cover_every_network
     [(CIXINIT_MAX_ADDRS >= CONTAINER_MAX_NETWORKS) ? 1 : -1];
+
+/* And every interface, for the same reason and by the same device. */
+typedef char cix_init_ifaces_must_cover_every_interface
+    [(CIXINIT_MAX_IFACES >= CONTAINER_MAX_INTERFACES) ? 1 : -1];
+
+/* And a name must fit: an interface name is at most IFNAMSIZ, and the
+ * hello's slot is CIXINIT_NAME_MAX. */
+typedef char cix_init_iface_name_must_fit
+    [(CIXINIT_NAME_MAX >= CONTAINER_IFNAME_MAX) ? 1 : -1];
 
 /*
  * A table of exactly one service -- the build container's "build"

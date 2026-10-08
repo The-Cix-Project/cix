@@ -14971,7 +14971,14 @@ static int create_container_from_body(const char *body, size_t body_len,
 
 		for (i = 0; i < (size_t)net_count; i++)
 			svc_addrs[i] = net_attachments[i].ip_be;
-		if (cixinit_table_from_json(jservices, svc_addrs, net_count, &init_table, err_msg,
+		/*
+		 * #344/ADR-0335: the interfaces travel in the hello, so no
+		 * service starts before they are up. Parsed above, well
+		 * before here -- the same values that reach spec.interfaces,
+		 * from one place rather than two.
+		 */
+		if (cixinit_table_from_json(jservices, svc_addrs, net_count, interface_names,
+		                            interface_count, &init_table, err_msg,
 		                            err_msg_size) != 0) {
 			json_free(root);
 			return 400;

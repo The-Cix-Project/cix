@@ -131,6 +131,7 @@ void cix_sigreturn(void);
 #define EAGAIN 11
 #define EINPROGRESS 115
 
+#define O_RDONLY 0
 #define O_RDWR 2
 #define O_NONBLOCK 04000
 #define O_CLOEXEC 02000000
@@ -139,6 +140,9 @@ void cix_sigreturn(void);
 #define F_SETFL 4
 #define FD_CLOEXEC 1
 #define AT_FDCWD (-100)
+/* <linux/if.h>'s IFF_UP, which this file cannot include. Bit 0 of
+ * /sys/class/net/<if>/flags, set by rtnl_link_set_up() (ADR-0335). */
+#define IFF_UP 0x1
 
 #define WNOHANG 1
 #define POLLIN 1
@@ -357,6 +361,154 @@ static long now_ms(void)
 	ts.tv_nsec = 0;
 	sc2(SYS_clock_gettime, CLOCK_MONOTONIC, (long)&ts);
 	return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/*
+ * ADR-0335 (#344): the interfaces this container was given, and the
+ * wait that keeps a service from starting before they are up.
+ *
+ * Why this is here at all: creating a container that carries a radio
+ * blocked the daemon's single-threaded reactor for 1.66 s, measured on
+ * 192.168.15.95, because the daemon waited for the bring-up itself.
+ * It no longer does -- so somebody has to, or hostapd starts on a down
+ * wlan0, dies, and ADR-0323 marks the image bad. That somebody is the
+ * process already inside the netns with nothing else to do yet.
+ *
+ * Why sysfs rather than netlink: mountns_pivot() mounts a fresh sysfs
+ * inside the container AFTER creating the netns, deliberately, so
+ * /sys/class/net answers about this container's own namespace. And
+ * reading a file needs openat/read/close, which this binary already
+ * issues -- where netlink would need a socket, a protocol and a
+ * message parser in a freestanding PID 1 that must not depend on the
+ * image's userspace.
+ *
+ * Why IFF_UP and not operstate: measured on 2026-10-09 inside a
+ * container whose lo had just been brought up by the same
+ * rtnl_link_set_up() this waits on, flags read 0x9 (IFF_UP |
+ * IFF_LOOPBACK) while operstate read "unknown" -- not "up". An
+ * operstate test would have been satisfied before the bring-up as
+ * well as after, so this would have waited for nothing while
+ * appearing to work.
+ */
+static int g_iface_count;
+static char g_iface[CIXINIT_MAX_IFACES][CIXINIT_NAME_MAX];
+
+/*
+ * The low 16 bits of /sys/class/net/<if>/flags, or -1 if it cannot be
+ * read. The file holds "0x1003\n" -- always 0x-prefixed lower-case
+ * hex, which is why this parses that and nothing else: a format this
+ * narrow is better refused than guessed at.
+ */
+static long iface_flags(const char *name)
+{
+	char path[64];
+	char buf[32];
+	long fd;
+	long n;
+	long v = 0;
+	int i = 0;
+	int digits = 0;
+
+	/*
+	 * Built by hand: this binary has no libc and no snprintf. The name
+	 * is at most CIXINIT_NAME_MAX and the two literals are 15 and 6
+	 * bytes, so path[64] cannot overflow -- but the bound is checked
+	 * rather than argued, because a buffer in a freestanding PID 1 is
+	 * the last place to trust arithmetic done in a comment.
+	 */
+	{
+		const char *pre = "/sys/class/net/";
+		const char *post = "/flags";
+		size_t o = 0;
+		size_t k;
+
+		for (k = 0; pre[k] != '\0' && o + 1 < sizeof(path); k++)
+			path[o++] = pre[k];
+		for (k = 0; name[k] != '\0' && o + 1 < sizeof(path); k++)
+			path[o++] = name[k];
+		for (k = 0; post[k] != '\0' && o + 1 < sizeof(path); k++)
+			path[o++] = post[k];
+		path[o] = '\0';
+		if (o + 1 >= sizeof(path))
+			return -1;
+	}
+	fd = sc4(SYS_openat, AT_FDCWD, (long)path, O_RDONLY, 0);
+	if (fd < 0)
+		return -1;
+	n = sc3(SYS_read, fd, (long)buf, (long)sizeof(buf) - 1);
+	sc1(SYS_close, fd);
+	if (n <= 0)
+		return -1;
+	buf[n] = '\0';
+	if (buf[0] != '0' || (buf[1] != 'x' && buf[1] != 'X'))
+		return -1;
+	for (i = 2; buf[i] != '\0'; i++) {
+		int d;
+
+		if (buf[i] >= '0' && buf[i] <= '9')
+			d = buf[i] - '0';
+		else if (buf[i] >= 'a' && buf[i] <= 'f')
+			d = buf[i] - 'a' + 10;
+		else if (buf[i] >= 'A' && buf[i] <= 'F')
+			d = buf[i] - 'A' + 10;
+		else
+			break;
+		v = v * 16 + d;
+		digits++;
+	}
+	if (digits == 0)
+		return -1;
+	return v;
+}
+
+/*
+ * Called once, after the table is parsed and before anything starts.
+ * Never fatal: an interface that never comes up is a hardware fault,
+ * and a PID 1 that refuses to start the services it was given would
+ * turn that into a container nobody can inspect.
+ */
+static void wait_for_interfaces(void)
+{
+	long deadline;
+	int i;
+
+	if (g_iface_count == 0)
+		return;
+
+	deadline = now_ms() + CIXINIT_IFACE_WAIT_MS;
+	for (i = 0; i < g_iface_count; i++) {
+		long flags = iface_flags(g_iface[i]);
+		long waited = 0;
+		long t0 = now_ms();
+
+		while ((flags < 0 || (flags & IFF_UP) == 0) && now_ms() < deadline) {
+			struct pollfd p;
+
+			p.fd = -1;
+			p.events = 0;
+			p.revents = 0;
+			/* Zero fds and a timeout: a sleep, the way the
+			 * supervise loop below already sleeps. */
+			sc3(SYS_poll, (long)&p, 0, 25);
+			flags = iface_flags(g_iface[i]);
+		}
+		waited = now_ms() - t0;
+		/*
+		 * Logged every time, not only on timeout. ADR-0335 asks for
+		 * the flags value a radio actually reports, because the 0x9
+		 * that justified reading this file was measured on lo -- the
+		 * same syscall, a different driver -- and one real line turns
+		 * that inference into a reading.
+		 */
+		if (flags < 0)
+			say2("interface never became readable: ", g_iface[i]);
+		else if ((flags & IFF_UP) == 0)
+			say_num("interface still down after the wait, starting anyway: flags ", flags,
+			        g_iface[i]);
+		else
+			say_num("interface up: flags ", flags, g_iface[i]);
+		(void)waited;
+	}
 }
 
 static volatile int g_sigchld;
@@ -607,6 +759,24 @@ static void read_table(void)
 	g_addr_count = hello.addr_count;
 	for (i = 0; i < g_addr_count; i++)
 		g_addr_be[i] = hello.addr_be[i];
+	/*
+	 * #344/ADR-0335: the interfaces no service may start before.
+	 * Refused rather than clamped, for the same reason the counts
+	 * above are -- a clamped list would wait for some of the
+	 * interfaces and start services on the rest, which is the race
+	 * this exists to close, arrived at silently.
+	 */
+	if (hello.iface_count < 0 || hello.iface_count > CIXINIT_MAX_IFACES)
+		die("hello announcing an impossible interface count");
+	g_iface_count = hello.iface_count;
+	for (i = 0; i < g_iface_count; i++) {
+		int k;
+
+		for (k = 0; k < CIXINIT_NAME_MAX; k++)
+			g_iface[i][k] = hello.iface[i][k];
+		if (!str_ok(g_iface[i], CIXINIT_NAME_MAX))
+			die("hello announcing an unterminated interface name");
+	}
 
 	for (i = 0; i < g_count; i++) {
 		struct svc *s = &g_svc[i];
@@ -1507,6 +1677,15 @@ int cix_main(long argc, char **argv)
 	/* The fd arguments are parsed; nothing reads argv past here, so the
 	 * argv area is free to become "cix-init:<container>" (#456). */
 	set_own_cmdline(argc, argv);
+
+	/*
+	 * Before anything starts, and before UP: a container is not up
+	 * while an interface it was given is still coming up (ADR-0335).
+	 * Nothing in the daemon blocks on the UP event -- it is handled as
+	 * a reactor event, not awaited -- so spending the wait here costs
+	 * the reactor nothing, which is the whole point of moving it.
+	 */
+	wait_for_interfaces();
 
 	report(-1, CIXINIT_EV_UP, CIXINIT_VERSION, g_count);
 

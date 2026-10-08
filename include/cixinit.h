@@ -82,8 +82,11 @@
  * the table is rebuilt from the persisted body on every replay, so no
  * old table ever meets a new reader -- the version exists so a
  * mismatch dies with a message instead of misreading a struct.
+ *
+ * 3: the hello carries the interfaces the container was given, and no
+ * service starts before they report IFF_UP (#344/ADR-0335).
  */
-#define CIXINIT_VERSION 2
+#define CIXINIT_VERSION 3
 
 #define CIXINIT_MAX_SERVICES 16
 /*
@@ -93,7 +96,25 @@
  * asserts the two agree, on the side where both headers are visible.
  */
 #define CIXINIT_MAX_ADDRS 64
+/*
+ * How many moved interfaces the hello can carry. Mirrors
+ * CONTAINER_MAX_INTERFACES, asserted in cixinit_table.c for the same
+ * reason and in the same place as CIXINIT_MAX_ADDRS above.
+ */
+#define CIXINIT_MAX_IFACES 16
 #define CIXINIT_NAME_MAX 32
+/*
+ * How long cix-init waits for a given interface to report IFF_UP
+ * before starting services anyway (ADR-0335 clause 2).
+ *
+ * The same ceiling CONTAINER_EXEC_WAIT_MS uses for the child's own
+ * exec, and about three times the 1658 ms a radio's rtnl_link_set_up()
+ * measured on 192.168.15.95 under 0.2.57-475. On timeout the services
+ * start regardless and cix-init says so: an interface that never comes
+ * up is a hardware fault, and refusing to start is a worse answer than
+ * starting and letting on_exit decide.
+ */
+#define CIXINIT_IFACE_WAIT_MS 5000
 /*
  * argv as one buffer: argv[0] NUL argv[1] NUL ... NUL NUL. At most
  * CIXINIT_ARGC_MAX entries. The daemon enforces both; cix-init refuses a
@@ -147,6 +168,22 @@ struct cixinit_hello {
 	 */
 	int addr_count; /* 0..CIXINIT_MAX_ADDRS */
 	unsigned int addr_be[CIXINIT_MAX_ADDRS];
+	/*
+	 * The interfaces this container was given -- a moved netdev or a
+	 * whole wiphy -- which no service may start before (#344/ADR-0335).
+	 *
+	 * Per container for the same reason the addresses above are: it is
+	 * what the container was given, not what any one service asked
+	 * for. A container given an interface is a container that wants it,
+	 * so every service waits for every interface rather than each
+	 * recipe repeating what the container spec already says.
+	 *
+	 * 0 for every container that was given none, which is every
+	 * container on this host but one and every build container -- and
+	 * for those cix-init reaches none of the waiting code at all.
+	 */
+	int iface_count; /* 0..CIXINIT_MAX_IFACES */
+	char iface[CIXINIT_MAX_IFACES][CIXINIT_NAME_MAX];
 };
 
 struct cixinit_service {

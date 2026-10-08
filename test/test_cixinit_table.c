@@ -42,6 +42,9 @@ static int g_fails;
  * order.
  */
 static const unsigned int g_test_addrs[2] = { 0x0500000au, 0x0500010au };
+/* One moved interface, so the #344/ADR-0335 hello field is exercised
+ * by every table this test builds rather than only in its zero case. */
+static const char g_test_ifaces[1][CONTAINER_IFNAME_MAX] = { "wlan0" };
 
 static int build(const char *json, struct cixinit_table *t, char *err, size_t err_size)
 {
@@ -53,8 +56,14 @@ static int build(const char *json, struct cixinit_table *t, char *err, size_t er
 		snprintf(err, err_size, "test json did not parse");
 		return -1;
 	}
-	rc = cixinit_table_from_json(json_object_get(root, "services"), g_test_addrs, 2, t, err,
-	                             err_size);
+	/*
+	 * One interface, so every table this test builds exercises the
+	 * #344/ADR-0335 field rather than only its zero case -- the hello
+	 * has to carry it, and a test that always passed 0 would not
+	 * notice if it stopped.
+	 */
+	rc = cixinit_table_from_json(json_object_get(root, "services"), g_test_addrs, 2,
+	                             g_test_ifaces, 1, t, err, err_size);
 	json_free(root);
 	return rc;
 }
@@ -107,6 +116,15 @@ static void test_example(void)
 	CHECK(t.hello.addr_count == 2 && t.hello.addr_be[0] == g_test_addrs[0] &&
 	          t.hello.addr_be[1] == g_test_addrs[1] && t.hello.addr_be[2] == 0,
 	      "the container's addresses are on the hello, in order (addr_count=%d)", t.hello.addr_count);
+	/*
+	 * #344/ADR-0335: and the interfaces no service may start before,
+	 * on the hello for the same reason the addresses are -- it is what
+	 * the container was given, not what a service asked for.
+	 */
+	CHECK(t.hello.iface_count == 1 && strcmp(t.hello.iface[0], "wlan0") == 0 &&
+	          t.hello.iface[1][0] == '\0',
+	      "the container's interfaces are on the hello (iface_count=%d, [0]=\"%s\")",
+	      t.hello.iface_count, t.hello.iface[0]);
 	CHECK(cixinit_table_index(&t, "sshd") == 2 && cixinit_table_index(&t, "nope") == -1, "index");
 	CHECK(t.order[0] == 0 && t.order[1] == 1 && t.order[2] == 2, "order kept");
 }

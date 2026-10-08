@@ -321,7 +321,9 @@ static int parse_one(const struct json_value *item,
 }
 
 int cixinit_table_from_json(const struct json_value *jservices, const unsigned int *addr_be,
-                            int addr_count, struct cixinit_table *out, char *err, size_t err_size)
+                            int addr_count, const char (*ifaces)[CONTAINER_IFNAME_MAX],
+                            int iface_count, struct cixinit_table *out, char *err,
+                            size_t err_size)
 {
 	struct cixinit_service parsed[CIXINIT_MAX_SERVICES];
 	char after[CIXINIT_MAX_SERVICES][CIXINIT_MAX_SERVICES][CIXINIT_NAME_MAX];
@@ -438,6 +440,21 @@ int cixinit_table_from_json(const struct json_value *jservices, const unsigned i
 	out->hello.addr_count = addr_count;
 	for (i = 0; i < addr_count; i++)
 		out->hello.addr_be[i] = addr_be[i];
+	/*
+	 * #344/ADR-0335: the interfaces no service may start before.
+	 * Refused rather than clamped, like the addresses above -- a
+	 * clamped list would wait for some interfaces and start services
+	 * on the rest, which is the race this closes, reached silently.
+	 */
+	if (iface_count < 0 || iface_count > CIXINIT_MAX_IFACES) {
+		snprintf(err, err_size,
+		         "a container with more than %d interfaces cannot declare services",
+		         CIXINIT_MAX_IFACES);
+		return -1;
+	}
+	out->hello.iface_count = iface_count;
+	for (i = 0; i < iface_count; i++)
+		snprintf(out->hello.iface[i], sizeof(out->hello.iface[i]), "%s", ifaces[i]);
 	return 0;
 }
 
