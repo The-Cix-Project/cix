@@ -4070,27 +4070,32 @@ int main(void)
 				        "FAIL: router image missing its own C runtime after first install\n");
 				ok = 0;
 			}
-			/* ADR-0041: the same first-install baseline seeding must also
-			 * land the standard dev nodes and an empty /run -- the real,
-			 * generic gap Phase 23 (iptables' /run/xtables.lock) and Phase
-			 * 24 (bird crashing with no /dev/null) both hit, previously
-			 * fixed by hand on the already-built image, not reproducible
-			 * from a fresh pkg install until now. */
-			if (stat(router_path("/dev/null"), &st) != 0 ||
-			    stat(router_path("/dev/zero"), &st) != 0 ||
-			    stat(router_path("/dev/full"), &st) != 0 ||
-			    stat(router_path("/dev/random"), &st) != 0 ||
-			    stat(router_path("/dev/urandom"), &st) != 0 ||
-			    /* tty (5:0), added with the node itself (#577): the only
-			     * way to reach the controlling terminal once stdin and
-			     * stdout are redirected, which is what sudo, su, ssh -t
-			     * and any `read x < /dev/tty` depend on. Measured absent
-			     * from every image before this. */
-			    stat(router_path("/dev/tty"), &st) != 0 ||
-			    stat(router_path("/run"), &st) != 0) {
-				fprintf(stderr,
-				        "FAIL: router image missing its baseline dev nodes/run dir after "
-				        "first install\n");
+			/*
+			 * ADR-0041: the same first-install baseline seeding must
+			 * also land an empty /run -- the real, generic gap Phase 23
+			 * (iptables' /run/xtables.lock) hit, previously fixed by
+			 * hand on the already-built image and not reproducible from
+			 * a fresh pkg install until it was seeded.
+			 *
+			 * THE DEVICE NODES ARE DELIBERATELY NOT CHECKED HERE ANY
+			 * MORE (ADR-0333, #581). This used to stat /dev/null,
+			 * /dev/zero, /dev/full, /dev/random, /dev/urandom and
+			 * /dev/tty in the IMAGE, and that was right while the
+			 * platform staged them there. It no longer does: an image's
+			 * content comes only from its packages, and the nodes are
+			 * created per container by container_dev_stage_baseline().
+			 * An image having them would now be the bug.
+			 *
+			 * What proves they arrive is a container, not an image:
+			 * test_devices' three arms for the policy, and
+			 * test_userns_run / any container that starts at all for
+			 * their presence -- /dev/pts cannot be mounted inside a
+			 * container whose /dev is missing or unwritable, which is
+			 * exactly how the first version of that change was caught.
+			 */
+			if (stat(router_path("/run"), &st) != 0) {
+				fprintf(stderr, "FAIL: router image missing its baseline /run dir after "
+				                "first install\n");
 				ok = 0;
 			}
 			if (stat(base_path("/usr/bin/greeter"), &st) == 0) {

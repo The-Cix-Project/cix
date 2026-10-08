@@ -485,8 +485,25 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	 */
 	if (spec->userns_enabled && spec->ov.userns_rootfs != NULL &&
 	    spec->ov.userns_rootfs[0] != '\0') {
-		if (container_dev_stage_baseline(spec->ov.userns_rootfs,
-		                                  (uid_t)spec->userns_uid_base) != 0) {
+		/*
+		 * The OWNER depends on which userns presentation this is, and
+		 * getting it wrong fails as a permission denial two steps
+		 * later rather than here. ADR-0207 phase 3 (userns_idmap) is a
+		 * host-uid-0-owned snapshot presented through an id-mapped
+		 * mount: the MAP makes uid 0 the container's root, so these
+		 * nodes stay root-owned and a chown to the base would put them
+		 * OUTSIDE the map. ADR-0179 phase 2b (userns_idmap == 0) is a
+		 * chowned copy, where the base is the container's root and the
+		 * nodes must match the tree around them.
+		 *
+		 * Measured: chowning in both cases made the id-mapped arm fail
+		 * with `mountns_pivot: mkdir(/dev/pts): Permission denied`,
+		 * exit 112 -- the mapped root could not write a /dev it
+		 * appeared not to own (test_userns_run, probe 0.2.57-490).
+		 */
+		uid_t dev_offset = spec->userns_idmap ? 0 : (uid_t)spec->userns_uid_base;
+
+		if (container_dev_stage_baseline(spec->ov.userns_rootfs, dev_offset) != 0) {
 			int saved_errno = errno;
 
 			perror("container_create: container_dev_stage_baseline");
