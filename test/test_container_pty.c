@@ -66,7 +66,7 @@ static void rm_tree(const char *path)
 
 /*
  * Same five static device nodes plus the /dev/ptmx symlink
- * pkg_seed_image_baseline() (daemon/src/pkg.c) seeds into every real
+ * the old image baseline seeded into every real
  * image -- reproduced by hand here since this test, like
  * test_overlay.c, builds a minimal lowerdir directly rather than
  * going through the daemon's own image-baseline machinery.

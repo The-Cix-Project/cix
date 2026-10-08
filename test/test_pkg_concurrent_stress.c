@@ -496,7 +496,7 @@ int main(void)
 	 * partially overwritten by, or missing entirely because of, a
 	 * concurrent sibling build).
 	 *
-	 * `--exclude=dev`: pkg_seed_image_baseline() (ADR-0150) seeds a
+	 * `--exclude=dev`: the old image baseline (ADR-0150) seeded a
 	 * fixed set of character-special device nodes (/dev/null, /dev/
 	 * zero, ...) and a dangling /dev/ptmx placeholder symlink into
 	 * every fresh image, completely independent of which packages get

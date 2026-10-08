@@ -288,7 +288,7 @@ int mountns_pivot(const struct mount_spec *mnt)
 	 * deeper: each container gets its own mount namespace here, so the
 	 * host's own /dev/pts mount is never inherited into it, and this
 	 * project's own containers use a plain overlay /dev (no devtmpfs,
-	 * unlike the host) with only pkg_seed_image_baseline()'s five
+	 * unlike the host) with only the old image baseline's five
 	 * static device nodes -- no /dev/ptmx at all. A container-side
 	 * process needing a real pty (sshd's own interactive session
 	 * allocation being the case that surfaced this) fails outright
@@ -301,8 +301,10 @@ int mountns_pivot(const struct mount_spec *mnt)
 	 */
 	/* Unlike /proc, /sys, /run (all fresh top-level dirs regardless of
 	 * what the lowerdir provides), /dev itself is only guaranteed to
-	 * exist for a real Cix-managed image (pkg_seed_image_baseline()
-	 * creates it) -- a minimal hand-built rootfs with no /dev at all is
+	 * exist where something created it first -- for a userns container
+	 * container_dev_stage_baseline() has already done so in the parent
+	 * (ADR-0333), and an image no longer carries one at all. A minimal
+	 * hand-built rootfs with no /dev is still
 	 * a legitimate case (mkdir("/dev/pts", ...) would otherwise fail
 	 * ENOENT, its parent missing), so /dev itself gets the same
 	 * guaranteed-present treatment first. */

@@ -5,7 +5,7 @@
  * actual blind spot that let two real bugs (docs/adr/0035) hide this
  * whole time: cixd shells out to /usr/bin/openssl (and curl/tar/
  * sha256sum/cp/rm) at runtime, but nothing ever staged them onto the
- * installed root, and pkg_seed_image_baseline() (then still named
+ * installed root, and the old image baseline (then still named
  * pkg_seed_image_runtime()) read from the wrong
  * path entirely -- confirmed live, before either fix, that "pki ca
  * bootstrap" on a real console failed outright ("CA genpkey failed").

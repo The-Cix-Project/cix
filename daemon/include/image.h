@@ -92,10 +92,16 @@ void image_init(const char *images_dir);
  * names already use), IMAGE_ERR_DUPLICATE if manifest.json already
  * exists (the authoritative "this image exists" signal -- ADR-0107/8).
  * Otherwise builds and commits an initial version from the empty
- * package set (sha256 of the empty string) -- a fresh, seeded rootfs
- * (pkg_seed_image_baseline(), ADR-0023, ADR-0041), immediately usable
- * before any pkg install ever targets it, exactly like before this
- * design -- only the storage layout underneath changed.
+ * package set (sha256 of the empty string) -- and an EMPTY rootfs.
+ *
+ * Nothing is seeded into it (ADR-0333). This used to call
+ * pkg_seed_image_baseline() and describe the result as "immediately
+ * usable before any pkg install ever targets it", which stopped being
+ * true when ADR-0216 closed the glibc floor: a fresh image has no C
+ * library and POST /v1/containers refuses it by name. ADR-0333 removed
+ * the rest for the same reason -- an image's content comes only from
+ * its packages, and everything the baseline wrote was per-container
+ * state that is now created per container.
  */
 enum image_error image_create(const char *name);
 

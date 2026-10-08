@@ -186,7 +186,7 @@ int main(void)
 	 * asserting they are "never expected under any of this project's
 	 * own storage-placement trees". That is true for the state tree and
 	 * log-storage and false for the image store, which is exactly what
-	 * rebuildable-storage migration moves: pkg_seed_image_baseline()
+	 * rebuildable-storage migration moves: the old image baseline
 	 * stages /dev/null, /dev/zero, /dev/full and /dev/ptmx into every
 	 * image rootfs (ADR-0150 added ptmx so posix_openpt() works). A
 	 * migration that "succeeded" would have produced an image store

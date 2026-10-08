@@ -43,15 +43,18 @@
 #define CIX_BPF_DEVCG_DEV_CHAR  2
 
 /*
- * The image baseline's own nodes, permitted ahead of whatever a
- * container declared (ADR-0331, #578).
+ * The standard nodes, permitted ahead of whatever a container declared
+ * (ADR-0331, #578).
  *
  * Expanded from the one list in container.h, which
- * pkg_seed_image_baseline() stages into every image. They were two
- * lists and disagreed: this program is built from the DECLARED devices
- * alone, so a container that declared one device got a deny epilogue
- * that denied /dev/null -- and nothing had hit it because a container
- * declaring nothing gets no program at all.
+ * container_dev_stage_baseline() below also expands to CREATE them --
+ * so what a container is given and what it is permitted are one list in
+ * one file. They were two lists and disagreed: this program is built
+ * from the DECLARED devices alone, so a container that declared one
+ * device got a deny epilogue that denied /dev/null -- and nothing had
+ * hit it because a container declaring nothing gets no program at all.
+ * Until ADR-0333 the creating half was an image's baseline, which is
+ * why the two could drift at all.
  *
  * Only the numbers are kept, because every baseline node is a char
  * device; the list's own comment says why that is deliberate.
@@ -227,7 +230,7 @@ int container_dev_mknod(const struct device_spec *devices, int device_count)
 		 * process's umask (POSIX) -- explicit chmod() guarantees the
 		 * real 0666 this function already intends, regardless of
 		 * whatever umask this daemon happens to have inherited. See
-		 * pkg_seed_image_baseline()'s own identical fix and comment
+		 * the old image baseline's own identical fix and comment
 		 * for the live confirmation (a real /dev/null ended up 0644,
 		 * not 0666, the same class of bug this device-passthrough
 		 * path shares. */
@@ -339,8 +342,9 @@ int container_dev_stage_baseline(const char *rootfs_dir, uid_t owner_offset)
 		 * is subject to this process's umask (POSIX), and a real
 		 * /dev/null created without this ended up 0644 rather than the
 		 * 0666 asked for -- measured, and the same fix
-		 * container_dev_mknod() above and pkg_seed_image_baseline()
-		 * both carry. A standard device node must stay
+		 * container_dev_mknod() above carries, and the image baseline
+		 * carried before ADR-0333 removed it. A standard device node
+		 * must stay
 		 * world-writable: a non-root process inside a container
 		 * redirecting to /dev/null is entirely ordinary.
 		 */

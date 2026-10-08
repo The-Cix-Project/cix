@@ -575,7 +575,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 * copy+chown path instead -- the fix has to cover both.
 		 *
 		 * Rootfs device nodes are deliberate content:
-		 * pkg_seed_image_baseline() stages /dev/null, /dev/zero,
+		 * the image baseline staged (removed, ADR-0333) /dev/null, /dev/zero,
 		 * /dev/full and /dev/ptmx into every image. What a container
 		 * may DO with a device is enforced by the BPF_CGROUP_DEVICE
 		 * program attached unconditionally in this function (ADR-0017),
@@ -793,7 +793,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			 * beside them ran.
 			 *
 			 * Rootfs device nodes are deliberate content:
-			 * pkg_seed_image_baseline() stages null, zero, full,
+			 * the image baseline staged (removed, ADR-0333) null, zero, full,
 			 * random, urandom and ptmx into every image. What a
 			 * container may DO with a device stays enforced by the
 			 * BPF_CGROUP_DEVICE allow-list (ADR-0017), which is the
@@ -1285,7 +1285,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 				 *
 				 * A container's rootfs device nodes are deliberate
 				 * content, not something a workload smuggled in:
-				 * pkg_seed_image_baseline() stages /dev/null,
+				 * the image baseline staged (removed, ADR-0333) /dev/null,
 				 * /dev/zero, /dev/full and /dev/ptmx into every image.
 				 * What a container may actually DO with a device is
 				 * enforced by the BPF_CGROUP_DEVICE program attached

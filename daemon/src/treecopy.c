@@ -156,7 +156,7 @@ static int treecopy_walk(const char *src_root, const char *dst_root, const char 
 		} else if (S_ISCHR(st.st_mode) || S_ISBLK(st.st_mode) || S_ISFIFO(st.st_mode)) {
 			/*
 			 * Device nodes are REAL content here, not stray junk.
-			 * pkg_seed_image_baseline() stages /dev/null, /dev/zero,
+			 * the image baseline staged (removed, ADR-0333) /dev/null, /dev/zero,
 			 * /dev/full and /dev/ptmx into every image rootfs
 			 * (ADR-0150 added ptmx specifically so posix_openpt()
 			 * works), so an image-store migration that dropped them

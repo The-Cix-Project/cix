@@ -4071,33 +4071,29 @@ int main(void)
 				ok = 0;
 			}
 			/*
-			 * ADR-0041: the same first-install baseline seeding must
-			 * also land an empty /run -- the real, generic gap Phase 23
-			 * (iptables' /run/xtables.lock) hit, previously fixed by
-			 * hand on the already-built image and not reproducible from
-			 * a fresh pkg install until it was seeded.
+			 * NOTHING ABOUT A BASELINE IS CHECKED HERE ANY MORE
+			 * (ADR-0333, #581), and an image carrying any of it would
+			 * now be the bug.
 			 *
-			 * THE DEVICE NODES ARE DELIBERATELY NOT CHECKED HERE ANY
-			 * MORE (ADR-0333, #581). This used to stat /dev/null,
-			 * /dev/zero, /dev/full, /dev/random, /dev/urandom and
-			 * /dev/tty in the IMAGE, and that was right while the
-			 * platform staged them there. It no longer does: an image's
-			 * content comes only from its packages, and the nodes are
-			 * created per container by container_dev_stage_baseline().
-			 * An image having them would now be the bug.
+			 * This used to stat all six device nodes and /run in the
+			 * IMAGE after a first install, and that was right while the
+			 * platform seeded them there (ADR-0041, for the real gap
+			 * Phase 23's iptables /run/xtables.lock hit). An image's
+			 * content is now only its packages: the device nodes are
+			 * created per container by container_dev_stage_baseline(),
+			 * nsswitch.conf and the CA bundle by
+			 * stage_container_platform_files(), and /run is a fresh
+			 * tmpfs at every container start (mountns.c) -- which it
+			 * always was, making the image's copy dead weight even
+			 * before this.
 			 *
-			 * What proves they arrive is a container, not an image:
-			 * test_devices' three arms for the policy, and
-			 * test_userns_run / any container that starts at all for
-			 * their presence -- /dev/pts cannot be mounted inside a
-			 * container whose /dev is missing or unwritable, which is
-			 * exactly how the first version of that change was caught.
+			 * What proves all of it arrives is a container, not an
+			 * image: test_devices' three arms for the policy, and
+			 * test_userns_run or any container that starts at all for
+			 * presence -- /dev/pts cannot be mounted inside a container
+			 * whose /dev is missing or unwritable, which is exactly how
+			 * the first version of this change was caught.
 			 */
-			if (stat(router_path("/run"), &st) != 0) {
-				fprintf(stderr, "FAIL: router image missing its baseline /run dir after "
-				                "first install\n");
-				ok = 0;
-			}
 			if (stat(base_path("/usr/bin/greeter"), &st) == 0) {
 				fprintf(stderr,
 				        "FAIL: greeter@router install leaked into the base image "
@@ -6514,7 +6510,7 @@ skip_hostbuild:
 		 *
 		 * This used /etc/os-release, on the premise that it exists on the
 		 * host but not in the build tree. The daemon now writes a Cix
-		 * os-release into every image it seeds (pkg_seed_image_baseline(),
+		 * os-release into every image it seeds (the old image baseline,
 		 * ADR-0274), so that path answered 200 from the container's own
 		 * tree (cix-tests on 192.168.15.95, 2026-09-23) and could no
 		 * longer tell a leak from a correct read.

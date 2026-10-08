@@ -263,7 +263,7 @@ int test_image_fixture_stage_toolchain(const char *image_root)
 	 *
 	 * This list is therefore a deliberate SUBSET of
 	 * CIX_BASELINE_DEVICES in container.h, which is the one list
-	 * pkg_seed_image_baseline() and container_dev_bpf_attach() share
+	 * the old image baseline and container_dev_bpf_attach() share
 	 * (ADR-0331, #578). It is not a stale third copy and must not be
 	 * converged onto that list: /dev/tty would add a mknod of 5:0
 	 * inside the build container the floor tests run in, and the loop
@@ -342,7 +342,7 @@ static const struct {
 	/*
 	 * glibc is the C library every composed build environment now gets
 	 * implicitly (#186) -- the loader and libc that used to be copied
-	 * off the build host by pkg_seed_image_baseline(). A fixture build
+	 * off the build host by the old image baseline. A fixture build
 	 * cannot exec anything at all without it, so it belongs in the
 	 * floor for exactly the reason the others do: an install that must
 	 * be a cache hit, from a real artifact this platform built.

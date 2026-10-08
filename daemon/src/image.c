@@ -287,8 +287,22 @@ enum image_error image_create(const char *name)
 		if (cix_btrfs_subvol_create_or_dir(rootfs) != 0)
 			return IMAGE_ERR_CREATE_FAILED;
 	}
-	if (pkg_seed_image_baseline(rootfs) != PKG_OK)
-		return IMAGE_ERR_CREATE_FAILED;
+	/*
+	 * ADR-0333: nothing is seeded into it. A new image is an EMPTY
+	 * tree, and its content arrives only by installing packages.
+	 *
+	 * This used to call pkg_seed_image_baseline(), which wrote device
+	 * nodes, nsswitch.conf, a CA bundle, os-release and two directories
+	 * -- making the platform a writer of image content beside the
+	 * package manager, unversioned and reaching only images created
+	 * after a change (#577). Every one of those was per-container state
+	 * and now arrives per container.
+	 *
+	 * An image with nothing in it was already the norm for the thing
+	 * that matters most: ADR-0216 closed the glibc floor, so a fresh
+	 * image has no C library and POST /v1/containers refuses it by
+	 * name. This extends that to everything.
+	 */
 
 	memset(&new_state, 0, sizeof(new_state));
 	snprintf(new_state.current_version, sizeof(new_state.current_version), "%s", hash);

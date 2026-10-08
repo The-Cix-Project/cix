@@ -317,7 +317,7 @@ int main(void)
 	cix_response_free(&r);
 
 	/*
-	 * #478/ADR-0296: the baseline pkg_seed_image_baseline() writes into
+	 * #478/ADR-0296: the baseline the image baseline wrote (removed, ADR-0333) into
 	 * a freshly created image's rootfs must name the dns backend. Until
 	 * this, it said "hosts: files" -- so glibc never consulted DNS and
 	 * any resolv.conf staged into a container from that image was

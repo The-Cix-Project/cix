@@ -3835,9 +3835,12 @@ static int copy_one_file_preserving(const char *src, const char *dst)
 	if (S_ISDIR(st.st_mode))
 		return persist_mkdir_p(dst);
 	if (!S_ISREG(st.st_mode)) {
-		/* Device nodes and the like come from pkg_seed_image_baseline(),
-		 * not from a package's manifest -- one arriving here is a
-		 * surprise worth failing on rather than silently skipping. */
+		/* A package's manifest carries regular files, directories and
+		 * symlinks. Anything else -- a device node, a socket, a fifo --
+		 * is a surprise worth failing on rather than silently skipping.
+		 * Device nodes in particular are created for a CONTAINER, by
+		 * container_dev_stage_baseline(), and never belong in an image
+		 * at all (ADR-0333). */
 		return -1;
 	}
 	if (copy_file_simple(src, dst) != 0)
@@ -4587,7 +4590,7 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
  * merge_tree()'s own symlink handling -- hard-linking a symlink's own
  * dentry works on Linux but is needless fragility for a file that's a
  * few bytes either way), and every other type (regular files, and the
- * char device nodes pkg_seed_image_baseline() creates) HARD-LINKED
+ * char device nodes an image used to carry, before ADR-0333) HARD-LINKED
  * (link(2), not copied). This is ADR-0107/0108's own "copy-forward"
  * mechanism -- an unchanged file occupies zero new disk space or copy
  * time, only the genuinely new/changed files a subsequent merge_tree()
@@ -6979,8 +6982,9 @@ static int buildenv_resolve_tools(const char *declared, struct buildenv_tool *ou
 	 *
 	 * Checked here rather than assumed: an environment holds exactly
 	 * its tools' own manifest files, and no tool's manifest carries
-	 * libc, so before this the loader arrived only because
-	 * pkg_seed_image_baseline() copied one off the build host. With
+	 * libc, so before this the loader arrived only because the image
+	 * baseline copied one off the build host (ADR-0216 ended that, and
+	 * ADR-0333 removed the baseline itself). With
 	 * that gone and this absent, every build dies at
 	 * execve(/usr/bin/bash) with ENOENT -- which reads as a missing
 	 * bash and is really a missing loader (#186).
@@ -7118,14 +7122,15 @@ static int buildenv_mutate(const char *staging_rootfs, void *ctx_v)
 	int i;
 	int pass;
 
-	/* The same baseline every image gets: device nodes and the handful
-	 * of files a process needs to start at all. Not a "tool", and not
-	 * something a recipe should have to declare. */
-	if (pkg_seed_image_baseline(staging_rootfs) != PKG_OK) {
-		logstore_write("cixd", "error",
-		               "build environment: seeding the image baseline failed");
-		return -1;
-	}
+	/*
+	 * ADR-0333: nothing is seeded here either. A build-environment
+	 * image is composed from its declared tools and nothing else, and
+	 * the build CONTAINER gets its device nodes, nsswitch.conf and CA
+	 * bundle when it is created -- which is also why
+	 * spawn_pkgbuild_container() stages them: it drives
+	 * registry_create() directly and reaches none of the container
+	 * handler's staging.
+	 */
 	/*
 	 * Two passes, and the order is the point: everything else first,
 	 * the C library LAST (#187).
@@ -7440,231 +7445,6 @@ int pkg_toolchain_has_gcc(void)
 		return 0;
 	snprintf(gcc_path, sizeof(gcc_path), "%s/usr/bin/gcc", rootfs);
 	return stat(gcc_path, &st) == 0;
-}
-
-enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
-{
-	/*
-	 * Source paths deliberately have no "/usr" prefix -- they must match
-	 * exactly where mkbootroot.c's test_image_fixture_build()/
-	 * test_image_fixture_add_lib() calls actually write these files on
-	 * the installed control-plane root (lib64/..., lib/x86_64-linux-gnu/...,
-	 * no /usr/lib/... form ever exists there). The previous /usr-prefixed
-	 * paths only ever resolved by accident on a rich dev sandbox (merged-
-	 * /usr symlinks make /lib64/... and /usr/lib/.../... the same file
-	 * there) -- confirmed directly they silently never matched anything
-	 * on a real install, so image create()'s own runtime seeding
-	 * (ADR-0023) was a no-op there: "not present on this host -- skip,
-	 * not fatal" swallowed the failure, leaving every freshly created
-	 * image with no ld.so/libc.so.6 at all. This form is correct on both:
-	 * a real install has these files ONLY at this path; this dev
-	 * sandbox's own /lib64 -> /usr/lib symlink chain (confirmed via
-	 * readlink -f) resolves it to the identical real file either way.
-	 */
-	/*
-	 * THE GLIBC FLOOR IS CLOSED (#186).
-	 *
-	 * Four files used to be copied here straight off the build host --
-	 * the dynamic loader, libc, libm and the files-NSS backend --
-	 * because nothing in this project had ever built glibc, and an
-	 * image with no C library cannot run anything at all. ADR-0209
-	 * named them plainly as "the only files in any image that this
-	 * project did not build", and said closing it meant building glibc
-	 * from source on a Cix host.
-	 *
-	 * That is done. `glibc` is an ordinary recipe now, built on a Cix
-	 * host with this platform's own gcc against its own kernel headers,
-	 * and its package carries all four of those paths -- both spellings
-	 * of the loader included. So an image gets its C library the same
-	 * way it gets everything else: by installing a package, recorded in
-	 * its manifest, with a version that can be upgraded and an origin
-	 * that can be audited. Every composed build environment gets one
-	 * implicitly (PKG_BASE_LIBC, see buildenv_resolve_tools()), and an
-	 * image that runs containers declares one like any other package.
-	 *
-	 * A freshly created image therefore has NO runtime, and that is
-	 * correct rather than a gap: POST /v1/containers refuses an image
-	 * with no loader and names what to install, instead of letting it
-	 * surface later as a container exiting 127.
-	 *
-	 * Nothing in any image is copied off the build host any more. What
-	 * this function still does below -- directories, a written
-	 * nsswitch.conf, the host's CA bundle -- it CREATES; it does not
-	 * borrow.
-	 *
-	 * AND IT IS GOING AWAY (ADR-0333, #581). The device nodes have
-	 * already left: an image's content comes only from its packages, so
-	 * the platform is not a writer of image content beside the package
-	 * manager, and they are created per container by
-	 * container_dev_stage_baseline() instead. The three things left here
-	 * are per-container state too and follow by the same route; this
-	 * function is removed when the last of them does. Do not add
-	 * anything to it.
-	 */
-	const char *target_rootfs = rootfs_path;
-
-
-	/*
-	 * /run has no "host source" that might legitimately be absent the
-	 * way a runtime library once did, so a real mkdir_p() failure here
-	 * is a genuine I/O or permission problem rather than a tolerable
-	 * gap, and is fatal.
-	 *
-	 * This paragraph used to begin "Dev nodes and /run" and to contrast
-	 * itself with "the loop above", which was the device-node loop and
-	 * is gone (ADR-0333). It also promised that "only EEXIST on mknod is
-	 * tolerated", about a mknod this function no longer performs.
-	 */
-
-	{
-		char run_dir[PATH_MAX];
-
-		snprintf(run_dir, sizeof(run_dir), "%s/run", target_rootfs);
-		if (persist_mkdir_p(run_dir) != 0)
-			return PKG_ERR_PERSIST_FAILED;
-	}
-
-	/*
-	 * ADR-0051: stage the platform's own CA trust chain into this
-	 * image, so a TLS client running inside any container built on it
-	 * (curl, openssl, ...) can verify a Cix-issued cert without
-	 * -k/--insecure. No image built by this platform has ever shipped
-	 * ANY CA trust (not even public roots) -- a real, closeable gap,
-	 * not something this seeding step is regressing. Idempotent (skip
-	 * if already staged, same as the runtime-libs loop above) and
-	 * tolerant of no CA existing yet (PKI_ERR_NOT_BOOTSTRAPPED is the
-	 * common state on a fresh install's very first image) -- only a
-	 * real write failure is fatal, matching the dev/run block's own
-	 * "real I/O problem, not a tolerable gap" stance.
-	 */
-	{
-		char bundle_dst[PATH_MAX];
-		struct stat dst_st;
-		enum pki_error perr;
-
-		snprintf(bundle_dst, sizeof(bundle_dst), "%s" PKG_IMAGE_CA_BUNDLE_PATH,
-		         target_rootfs);
-		if (stat(bundle_dst, &dst_st) != 0) {
-			char bundle_dir[PATH_MAX];
-
-			snprintf(bundle_dir, sizeof(bundle_dir), "%s/etc/ssl/certs", target_rootfs);
-			if (persist_mkdir_p(bundle_dir) != 0)
-				return PKG_ERR_PERSIST_FAILED;
-
-			perr = pki_write_trust_bundle_file(bundle_dst);
-			if (perr != PKI_OK && perr != PKI_ERR_NOT_BOOTSTRAPPED)
-				return PKG_ERR_PERSIST_FAILED;
-		}
-	}
-
-	/*
-	 * A real /etc/nsswitch.conf, so glibc consults the NSS backends it
-	 * has rather than whatever its compiled-in default names -- that
-	 * default is a moving target across glibc versions and this
-	 * project has no reason to depend on it being correct.
-	 *
-	 * The backends come from the glibc PACKAGE, not from here:
-	 * measured 2026-09-17, glibc 2.44-16 in jumpbox ships 13 libnss
-	 * files including libnss_files.so.2 and libnss_dns.so.2. (ADR-0111
-	 * once staged libnss_files.so.2 from this function; nothing in the
-	 * tree does now -- `grep -rn libnss` over the C sources finds only
-	 * these comments. So every image with glibc already has the dns
-	 * backend, and #478 was purely that the file never named it.)
-	 *
-	 * Content comes from nsswitch.c, which is also where the
-	 * ldap_client variant comes from, so the two cannot disagree the
-	 * way they did in #478.
-	 *
-	 * WRITTEN WHENEVER THE CONTENT DIFFERS, not merely when the file
-	 * is absent, and that is the load-bearing half. ADR-0111 wrote it
-	 * only when absent, which was harmless while the content never
-	 * changed and became the reason every image already built kept
-	 * "hosts: files" -- and would have kept it forever, since nothing
-	 * else ever rewrites it. A file whose content the platform
-	 * declares is a file the platform has to converge (ADR-0296).
-	 *
-	 * Reaching an image still depends on ADR-0155: this runs against a
-	 * staging rootfs whose new version is discarded if the package
-	 * manifest is unchanged, so convergence arrives with the next real
-	 * install or rolling rebuild, not with the daemon that carries it.
-	 */
-	{
-		const char *nsswitch_content = nsswitch_baseline_content();
-		char nsswitch_dst[PATH_MAX];
-		/*
-		 * 512 is larger than either declared variant (the longer,
-		 * ldap_client, is under 200 bytes), and a file that does not
-		 * fit is deliberately rewritten rather than read fully: a
-		 * short read fills the buffer, have_len comes back as 512,
-		 * and nsswitch_needs_write() sees a length mismatch. That is
-		 * the wanted answer -- anything that is not byte-identical to
-		 * what the platform declares gets replaced (ADR-0296) -- so
-		 * this is not a truncation bug to "fix" with a bigger buffer.
-		 */
-		char have[512];
-		size_t have_len = 0;
-		FILE *nf;
-
-		snprintf(nsswitch_dst, sizeof(nsswitch_dst), "%s/etc/nsswitch.conf", target_rootfs);
-		nf = fopen(nsswitch_dst, "rb");
-		if (nf != NULL) {
-			have_len = fread(have, 1, sizeof(have), nf);
-			fclose(nf);
-		}
-		if (nsswitch_needs_write(nf != NULL ? have : NULL, have_len, nsswitch_content)) {
-			char etc_dir[PATH_MAX];
-
-			snprintf(etc_dir, sizeof(etc_dir), "%s/etc", target_rootfs);
-			if (persist_mkdir_p(etc_dir) != 0)
-				return PKG_ERR_PERSIST_FAILED;
-			if (persist_atomic_write(nsswitch_dst, nsswitch_content,
-			                          strlen(nsswitch_content)) != 0)
-				return PKG_ERR_PERSIST_FAILED;
-		}
-	}
-
-	/*
-	 * /etc/os-release, so a container can say what platform it is on.
-	 *
-	 * Without it every reader falls back to "linux" -- the freedesktop
-	 * spec's own documented default when ID is absent -- so a Cix
-	 * container reported itself as generic Linux to anything that
-	 * asked. Found while packaging fastfetch, which reads exactly this
-	 * file and had no way to identify the platform it was running on.
-	 *
-	 * The content comes from osrelease_render() rather than a literal
-	 * here, because mkbootroot stages the same file into the
-	 * control-plane root and two copies would drift -- leaving a host
-	 * and the containers running on it disagreeing about what they
-	 * are.
-	 *
-	 * BUILD_ID is the DAEMON's build, which is the honest answer: an
-	 * image has no version of its own that means anything to a reader
-	 * (ADR-0155's image version is a hash of a package manifest), and
-	 * what actually produced this rootfs is this daemon. Same
-	 * already-present check as nsswitch above: a package that ships its
-	 * own os-release wins, and re-seeding never overwrites it.
-	 */
-	{
-		char osr_dst[PATH_MAX];
-		struct stat dst_st;
-
-		snprintf(osr_dst, sizeof(osr_dst), "%s/etc/os-release", target_rootfs);
-		if (stat(osr_dst, &dst_st) != 0) {
-			char osr[OSRELEASE_MAX];
-			char etc_dir[PATH_MAX];
-
-			if (osrelease_render(osr, sizeof(osr), CIX_BUILD_VERSION) != 0)
-				return PKG_ERR_PERSIST_FAILED;
-			snprintf(etc_dir, sizeof(etc_dir), "%s/etc", target_rootfs);
-			if (persist_mkdir_p(etc_dir) != 0)
-				return PKG_ERR_PERSIST_FAILED;
-			if (persist_atomic_write(osr_dst, osr, strlen(osr)) != 0)
-				return PKG_ERR_PERSIST_FAILED;
-		}
-	}
-
-	return PKG_OK;
 }
 
 int pkg_recipe_seed_source_offers(const char *source)
@@ -13516,10 +13296,15 @@ void pkg_build_output_close(int chain_idx)
  * upgrade, the OLD manifest's files are unlinked first (a version that
  * renamed/dropped files shouldn't leave the old ones behind in the
  * new version) and e's own file list is forgotten before merge_tree()
- * repopulates it fresh from dest_dir. pkg_seed_image_baseline() is
- * still called every time (not just on a brand first version) --
- * cheap and idempotent (stat-based skip), and lets an image that
- * missed baseline seeding self-heal on its very next install. */
+ * repopulates it fresh from dest_dir.
+ *
+ * It used to call pkg_seed_image_baseline() on every install, on the
+ * reasoning that an image which missed baseline seeding would then
+ * self-heal. ADR-0155 measured that it does not -- a same-manifest
+ * reinstall reproduces the same version hash, so the freshly seeded
+ * tree is deduplicated away -- and ADR-0333 removed the premise
+ * entirely: there is no baseline to miss, because an image's content is
+ * only its packages. */
 struct install_mutate_ctx {
 	const char *dest_dir;
 	struct pkg_entry *e;
@@ -13802,8 +13587,9 @@ static int install_mutate(const char *staging_rootfs, void *ctx_v)
 		unlink_manifest_files(ctx->e, staging_rootfs);
 		pkg_entry_free_files(ctx->e);
 	}
-	if (pkg_seed_image_baseline(staging_rootfs) != PKG_OK)
-		return -1;
+	/* ADR-0333: no baseline re-seed. An install puts the package's files
+	 * in and nothing else; what a container needs beyond its packages is
+	 * created for the container. */
 	return merge_tree(ctx->dest_dir, staging_rootfs, "", ctx->e, ctx->keep_privileged);
 }
 
@@ -19698,10 +19484,11 @@ enum pkg_error pkg_seed_default_image_libc(pid_t *out_pid, int *out_pidfd, int *
 	 *
 	 * This used to ask whether the dynamic loader FILE existed, and that
 	 * is a different question with the same shape (#241).
-	 * pkg_seed_image_baseline() stages a loader and a libc into every
-	 * image, so the file is always there and this always concluded
-	 * "already runnable" -- meaning the default image never received the
-	 * glibc package at all. It then carried a baseline libc for the rest
+	 * pkg_seed_image_baseline() used to stage a loader and a libc into
+	 * every image (it no longer exists at all -- ADR-0216 closed the
+	 * glibc floor and ADR-0333 removed the function), so the file was
+	 * always there and this always concluded "already runnable" --
+	 * meaning the default image never received the glibc package at all. It then carried a baseline libc for the rest
 	 * of its life, and the first binary installed into it that needed a
 	 * newer one failed at runtime:
 	 *

@@ -15449,10 +15449,12 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * refuses every connection rather than falling back --
 			 * the safe failure, and an opaque one.
 			 *
-			 * The path is the bundle pkg_seed_image_baseline()
-			 * stages into every image (ADR-0051), not something this
-			 * container has to carry: it is already there, in every
-			 * image, before any of this runs. Emitted only when TLS
+			 * The path is the bundle this container is given
+			 * (ADR-0051), not something it has to carry in its image.
+			 * stage_container_platform_files() writes it for every
+			 * container -- including this one, a few lines below --
+			 * where it used to come from the image baseline until
+			 * ADR-0333 removed that. Emitted only when TLS
 			 * is on, so a plaintext deployment's nslcd.conf is
 			 * byte-identical to what it was.
 			 */
@@ -15682,8 +15684,10 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 * creation and re-staged on every restart, from the DAEMON's own
 	 * build version.
 	 *
-	 * pkg_seed_image_baseline() also writes this, and that copy is not
-	 * enough on its own for two reasons found by deploying it.
+	 * The image baseline also wrote this until ADR-0333 removed it, and
+	 * that copy was never enough on its own, for two reasons found by
+	 * deploying it -- which is why this staging already existed and is
+	 * now the only writer.
 	 *
 	 * It only lands when an image produces a NEW VERSION. Every image
 	 * that already existed when os-release shipped therefore has none,

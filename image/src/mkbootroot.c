@@ -839,7 +839,7 @@ int main(int argc, char **argv)
 	/*
 	 * cixd itself never needs libtinfo -- this is staged purely so
 	 * the RUNNING system's own root reliably has it available at its
-	 * real, well-known host path, the source pkg_seed_image_baseline()
+	 * real, well-known host path, the source the old image baseline
 	 * (daemon/src/pkg.c) copies from when seeding a container image's
 	 * own C runtime. Without this, that mechanism would only ever find
 	 * ld.so/libc.so.6 (already staged above) on a real installed
@@ -850,7 +850,7 @@ int main(int argc, char **argv)
 	 * AND (via test_image_fixture_add_lib()'s own "image_root + this
 	 * path" convention) the destination inside the assembled image --
 	 * it must be the bare "/lib/..." form, not "/usr/lib/...", to
-	 * match exactly where pkg_seed_image_baseline()'s own
+	 * match exactly where the old image baseline's own
 	 * runtime_libs[] table looks for it later on the real installed
 	 * system's own root. Confirmed live as a real, previously-
 	 * undiscovered bug (not just a theoretical mismatch): the wrong,
@@ -1577,7 +1577,7 @@ int main(int argc, char **argv)
 	 * this file.
 	 *
 	 * osrelease_render() rather than a literal, because
-	 * pkg_seed_image_baseline() stages the same file into every
+	 * the image baseline staged (removed, ADR-0333) the same file into every
 	 * container image. Two copies of this text would drift, and the
 	 * shape of that drift is a host and the containers running on it
 	 * disagreeing about what they are.

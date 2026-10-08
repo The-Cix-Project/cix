@@ -8,7 +8,7 @@
  *
  * ONE definition, called from both places that stage the file -- the
  * control-plane root (image/src/mkbootroot.c) and every container image
- * (pkg_seed_image_baseline()). They are assembled by different programs
+ * (the old image baseline). They are assembled by different programs
  * at different times, and two copies of this text would drift the way
  * every duplicated constant in this project has: silently, and in the
  * direction that makes a host and the containers on it disagree about

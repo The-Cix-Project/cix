@@ -8,7 +8,7 @@
  * ADR-0296).
  *
  * There are two callers and they used to carry separate string
- * literals: pkg_seed_image_baseline() writes an image's baseline copy,
+ * literals: the image baseline wrote (removed, ADR-0333) an image's baseline copy,
  * and create_container_from_body()'s ldap_client block REPLACES it for
  * a container that joins the directory. They disagreed, and the
  * disagreement is what #478 is:

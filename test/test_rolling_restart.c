@@ -19,7 +19,7 @@
  * already-compiled test binary (build/daemon_child, dynamically linked
  * against system glibc like everything else this project produces) tar-
  * wrapped as the recipe's declared source, with a no-op build phase and
- * an install that just copies it -- pkg_seed_image_baseline()
+ * an install that just copies it -- the old image baseline
  * already stages the runtime lib closure (ld-linux/libc/...) onto
  * every image, so this binary runs inside the container with no
  * compiler ever invoked.

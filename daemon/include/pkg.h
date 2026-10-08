@@ -77,8 +77,11 @@
 #define PKG_DEFAULT_IMAGE "base"
 
 /*
- * The CA trust bundle pkg_seed_image_baseline() stages into every image
- * (ADR-0051), as the image's own filesystem sees it. Named here rather
+ * The CA trust bundle every CONTAINER is given (ADR-0051), as its own
+ * filesystem sees it. Written by stage_container_platform_files(); it
+ * used to be staged into every image by pkg_seed_image_baseline(),
+ * which ADR-0333 removed -- the bundle is this host's own PEM, so it
+ * was never image content. Named here rather
  * than spelled twice because a second consumer arrived: the nslcd.conf
  * the daemon renders for an ldap_client container points at this exact
  * file for tls_cacertfile (#414), and a path that is written in one
@@ -510,35 +513,6 @@ int pkg_toolchain_has_gcc(void);
  * that has already migrated or never had a flat sandbox.
  */
 void pkg_migrate_build_sandbox(void);
-
-/*
- * Seeds a target rootfs directory with the fixed baseline every
- * container needs but no image ever gets from pkg install alone
- * (ADR-0019, ADR-0023, ADR-0041): the C runtime a dynamically-linked
- * package needs to actually execve() (ld.so, libc.so.6, libtinfo.so.6,
- * ...), from the same fixed host paths pkg_bootstrap_build_image() and
- * this project's own test/install-image tooling already use; standard
- * char device nodes (/dev/{null,zero,full,random,urandom}, same
- * table/pattern test_image_fixture_stage_toolchain() already proves
- * safe); and a plain, empty /run directory. Takes the target rootfs
- * *path* directly (ADR-0107/0108: an image version's own rootfs is
- * IMAGES_DIR/<image>/<version>/rootfs, not a flat per-image path --
- * image.h's image_version_rootfs_path() is the one place that path is
- * ever computed, so this function no longer derives it itself from an
- * image name). The runtime-lib half is idempotent (skips a file
- * already staged) and tolerant of a missing source file on this
- * particular host (skip, not fatal -- same precedent
- * pkg_bootstrap_build_image() already sets); the dev-node/run half has
- * no such "host source might be missing" excuse, so any real mkdir/
- * mknod failure there is fatal. Either half failing returns
- * PKG_ERR_PERSIST_FAILED. Called automatically by pkg_build_completed()
- * for whatever new image version a job is merging into -- exposed
- * publicly too so image_create() can seed a freshly created version's
- * still-empty rootfs immediately. This is a fixed, hardcoded baseline
- * set, not an extensible "package declares what it needs" mechanism
- * (ADR-0041).
- */
-enum pkg_error pkg_seed_image_baseline(const char *rootfs_path);
 
 /*
  * Natural-sort/dpkg-style version comparison (ADR-0107): walks both
