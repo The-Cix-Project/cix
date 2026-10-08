@@ -19,6 +19,11 @@
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include "json.h"
+/* CIX_BASELINE_GENERATION: the ADR-0332 case asserts the generation a
+ * re-produced version records against the one this build declares, so
+ * that it stays correct when the baseline next moves rather than
+ * pinning today's number. */
+#include "container.h"
 #include "test_image_fixture.h"
 #include "test_floor.h"
 #include "test_pgp_fixture.h"
@@ -178,6 +183,53 @@ static int slurp_file(const char *path, char **out, size_t *out_len)
 	*out = buf;
 	*out_len = (size_t)size;
 	return 0;
+}
+
+/*
+ * Replaces every occurrence of `from` with `to` in the file at path.
+ * Both must be the same length, so the file is rewritten in place with
+ * no reallocation and no parse. Returns how many were replaced, or -1 on
+ * an I/O failure or a length mismatch.
+ *
+ * Used to stage state a running daemon would not otherwise produce
+ * (ADR-0332's stale baseline generation, below). Deliberately a byte
+ * substitution rather than a JSON round-trip: re-serialising the
+ * document through this test's own writer would mostly prove that writer
+ * agrees with itself, while editing the daemon's own bytes leaves every
+ * other field exactly as the daemon wrote it.
+ */
+static int file_replace_all(const char *path, const char *from, const char *to)
+{
+	char *buf;
+	size_t len, flen = strlen(from);
+	int count = 0;
+	char *p;
+	FILE *f;
+
+	if (flen == 0 || flen != strlen(to))
+		return -1;
+	if (slurp_file(path, &buf, &len) != 0)
+		return -1;
+
+	for (p = buf; (p = memmem(p, len - (size_t)(p - buf), from, flen)) != NULL; p += flen) {
+		memcpy(p, to, flen);
+		count++;
+	}
+	if (count > 0) {
+		f = fopen(path, "wb");
+		if (f == NULL) {
+			free(buf);
+			return -1;
+		}
+		if (fwrite(buf, 1, len, f) != len) {
+			fclose(f);
+			free(buf);
+			return -1;
+		}
+		fclose(f);
+	}
+	free(buf);
+	return count;
 }
 
 /*
@@ -2824,6 +2876,160 @@ int main(void)
 			ok = 0;
 		}
 		cix_response_free(&r);
+	}
+
+	/*
+	 * ADR-0332 (#579): a baseline change reaches an image that ALREADY
+	 * EXISTS, not only images created afterwards.
+	 *
+	 * This is the arrival half of ADR-0332, and the half that #577 got
+	 * wrong. test_baseline gates the generation NUMBER -- that it moves
+	 * when the device table does -- and nothing it can see proves the
+	 * new baseline reaches a satisfied image. That is what failed
+	 * before: tty 5:0 shipped in 0.2.57-468 and jumpbox still could not
+	 * run sudo, because an image whose packages do not change produces
+	 * no new version, so the re-seeded tree was never built.
+	 *
+	 * HOW A STALE IMAGE IS STAGED. There is no runtime knob for the
+	 * generation, by design -- it is a compile-time constant so that a
+	 * baseline change cannot arrive without someone editing a number in
+	 * a diff. So the test writes the stale state instead: converge a
+	 * fully satisfied image, then rewrite its manifest.json so the
+	 * current version's baseline_generation reads 0, which is exactly
+	 * what every version staged before this field existed carries.
+	 * image.c's load_state() reads that file on every call, so the
+	 * daemon sees the edit with no restart.
+	 *
+	 * Reintroduce-to-prove-it: drop the
+	 * image_reseed_if_baseline_stale() call from the converge drain and
+	 * the version never moves, which is the #577 bug exactly.
+	 */
+	{
+		char v_before[128] = "";
+		char mpath[PATH_MAX];
+		int moved = 0, gen_after = -1, k;
+
+		if (write_recipe(&client, "bslpkg", "1.0", tarball_path, sha256, "") != 0 ||
+		    create_image(&client, "bslimg") != 0) {
+			fprintf(stderr, "FAIL: ADR-0332 could not set up bslpkg/bslimg\n");
+			ok = 0;
+		}
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/images/bslimg/policy",
+		                       "{\"recipe\":\"follow\",\"apply\":\"converge\"}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: ADR-0332 PUT bslimg policy, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/images/recipes",
+		                       "{\"name\":\"bslimg\",\"content\":\"{\\\"packages\\\":["
+		                       "{\\\"package\\\":\\\"bslpkg\\\",\\\"mode\\\":\\\"rolling\\\","
+		                       "\\\"version\\\":\\\"1.0-1\\\"}]}\"}",
+		                       &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: ADR-0332 publish bslimg's recipe, status=%d %s\n", r.status,
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* Satisfied: the converge installed the one entry its recipe
+		 * declares, so nothing about its packages will change again. */
+		if (wait_pkg_exists(&client, "bslpkg@bslimg", 240) != 0 ||
+		    poll_pkg_state(&client, "bslpkg@bslimg", state, sizeof(state), 200) != 0 ||
+		    strcmp(state, "installed") != 0) {
+			fprintf(stderr, "FAIL: ADR-0332 converge did not install bslpkg ('%s')\n", state);
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/images/bslimg", NULL, &r) == 0 &&
+		    r.status == 200 && json_str_field(r.json, "current_version") != NULL)
+			snprintf(v_before, sizeof(v_before), "%s",
+			         json_str_field(r.json, "current_version"));
+		cix_response_free(&r);
+		if (v_before[0] == '\0') {
+			fprintf(stderr, "FAIL: ADR-0332 bslimg has no current version to go stale from\n");
+			ok = 0;
+		}
+
+		/*
+		 * Make it stale. Every entry is rewritten rather than just the
+		 * current one: the substitution is a test fixture, not a
+		 * mechanism, and a version other than the current one reading 0
+		 * changes nothing the trigger looks at.
+		 */
+		snprintf(mpath, sizeof(mpath), "%s/rebuildable/images/bslimg/manifest.json", g_data_dir);
+		if (v_before[0] != '\0' && file_replace_all(mpath, "\"baseline_generation\":1",
+		                                             "\"baseline_generation\":0") <= 0) {
+			fprintf(stderr,
+			         "FAIL: ADR-0332 could not stage a stale baseline in %s -- if the daemon "
+			         "stopped writing baseline_generation, this test is measuring nothing\n",
+			         mpath);
+			ok = 0;
+		}
+
+		/* One more converge pass. The packages still agree with the
+		 * recipe, so a version-blind converge does nothing at all. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/images/bslimg/apply-recipe", "{}", &r) != 0 ||
+		    (r.status != 200 && r.status != 202)) {
+			fprintf(stderr, "FAIL: ADR-0332 POST bslimg/apply-recipe, status=%d %s\n", r.status,
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		for (k = 0; k < 240 && !moved; k++) {
+			const char *now;
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/images/bslimg", NULL, &r) == 0 &&
+			    r.status == 200) {
+				now = json_str_field(r.json, "current_version");
+				if (now != NULL && strcmp(now, v_before) != 0) {
+					const struct json_value *versions =
+					    json_object_get(r.json, "versions");
+					size_t vi;
+
+					moved = 1;
+					/* The generation recorded against the version it
+					 * moved TO -- the whole point is that the new tree
+					 * was staged with today's baseline. */
+					if (versions != NULL && versions->type == JSON_ARRAY) {
+						for (vi = 0; vi < versions->u.array.count; vi++) {
+							const struct json_value *ent = versions->u.array.items[vi];
+							const char *ev = json_str_field(ent, "version");
+
+							if (ev != NULL && strcmp(ev, now) == 0)
+								gen_after = (int)json_as_number(
+								    json_object_get(ent, "baseline_generation"));
+						}
+					}
+				}
+			}
+			cix_response_free(&r);
+			if (!moved)
+				usleep(250000);
+		}
+		if (v_before[0] != '\0' && !moved) {
+			fprintf(stderr,
+			         "FAIL: ADR-0332 bslimg's version never moved after its baseline went "
+			         "stale -- a satisfied image is not re-produced, which is #577: the fix "
+			         "reaches new images only\n");
+			ok = 0;
+		}
+		if (moved && gen_after != CIX_BASELINE_GENERATION) {
+			fprintf(stderr,
+			         "FAIL: ADR-0332 bslimg re-produced, but its new version records baseline "
+			         "generation %d rather than %d -- the tree was re-staged and the record "
+			         "disagrees with it\n",
+			         gen_after, CIX_BASELINE_GENERATION);
+			ok = 0;
+		}
 	}
 
 	/*

@@ -1198,11 +1198,30 @@ static void fmt_image_detail(const struct json_value *v)
 		const struct json_value *entry = versions->u.array.items[i];
 		const char *version = json_str_field(entry, "version");
 		long long created_at = (long long)json_as_number(json_object_get(entry, "created_at"));
+		int baseline = (int)json_as_number(json_object_get(entry, "baseline_generation"));
 		int is_current = current_version != NULL && version != NULL &&
 		                  strcmp(current_version, version) == 0;
 
-		printf("    %s  created_at=%lld%s\n", version != NULL ? version : "?", created_at,
-		       is_current ? "  (current)" : "");
+		/*
+		 * ADR-0332: which baseline this version's tree was staged with.
+		 * Shown because the point of recording it is that an operator
+		 * can SEE a stale image -- before this, telling whether a
+		 * platform baseline change had reached an image meant creating
+		 * two containers and comparing their /dev timestamps. 0 is a
+		 * version produced before the daemon recorded this, and is
+		 * spelled "unrecorded" rather than printed as a number,
+		 * because "baseline=0" reads like a real generation and it is
+		 * not one.
+		 */
+		char baseline_text[32];
+
+		if (baseline > 0)
+			snprintf(baseline_text, sizeof(baseline_text), "%d", baseline);
+		else
+			snprintf(baseline_text, sizeof(baseline_text), "unrecorded");
+
+		printf("    %s  created_at=%lld  baseline=%s%s\n", version != NULL ? version : "?",
+		       created_at, baseline_text, is_current ? "  (current)" : "");
 	}
 }
 
