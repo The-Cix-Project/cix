@@ -179,6 +179,72 @@ int test_floor_install_all(const struct cix_client *c)
 			return -1;
 	return 0;
 }
+
+/*
+ * The daemon's own log lines mentioning pkg (#580).
+ *
+ * The companion to test_print_build_log() below, for everything that
+ * fails BEFORE a build container exists and therefore leaves no build
+ * log: a fetch, a recipe that will not parse, a build environment that
+ * could not be composed, an image that could not produce a new version.
+ * Each of those writes its reason with logstore_write() and nothing
+ * else, so this is the only place it can be read from -- and it has to
+ * be read while the daemon is still up, because a test daemon's store
+ * is inside the mkdtemp directory the test removes on exit.
+ *
+ * Filtered by package name through the endpoint's own regex, not by
+ * taking the tail outright: these tests run builds concurrently, so the
+ * newest lines are usually some other package's. The same reasoning
+ * test_print_build_log() already applies to choosing a build log.
+ *
+ * Best effort by design. It runs on a path that is ALREADY failing, so
+ * it must never become a second failure -- every error here is reported
+ * as a line of context and nothing more.
+ */
+void test_print_daemon_log(const struct cix_client *c, const char *pkg, int lines)
+{
+	struct cix_response r;
+	char path[256];
+	size_t i;
+	size_t count;
+	size_t first;
+
+	if (lines <= 0)
+		lines = 20;
+	snprintf(path, sizeof(path), "/v1/system/logs?source=cixd&regex=%s&tail=%d", pkg, lines);
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0 || r.status != 200 || r.json == NULL ||
+	    r.json->type != JSON_ARRAY) {
+		fprintf(stderr, "    (daemon log unavailable: GET %s status=%d)\n", path, r.status);
+		cix_response_free(&r);
+		return;
+	}
+
+	count = r.json->u.array.count;
+	if (count == 0) {
+		/*
+		 * Worth saying rather than printing nothing: it means the
+		 * daemon recorded no reason at all under this name, which is
+		 * itself the finding -- the next place to look is whether the
+		 * failing code path logs before it returns.
+		 */
+		fprintf(stderr, "    (the daemon logged nothing mentioning %s)\n", pkg);
+		cix_response_free(&r);
+		return;
+	}
+
+	first = count > (size_t)lines ? count - (size_t)lines : 0;
+	for (i = first; i < count; i++) {
+		const char *msg = json_as_string(json_object_get(r.json->u.array.items[i], "msg"));
+		const char *lvl = json_as_string(json_object_get(r.json->u.array.items[i], "level"));
+
+		if (msg != NULL)
+			fprintf(stderr, "    dlog[%s]: %.200s\n", lvl != NULL ? lvl : "?", msg);
+	}
+	cix_response_free(&r);
+}
+
 /*
  * The last `lines` lines of the newest retained build log whose name
  * begins with "<pkg>-" (GET /v1/pkg/build-logs, then /{file}).
@@ -224,7 +290,30 @@ void test_print_build_log(const struct cix_client *c, const char *pkg, int lines
 	}
 	cix_response_free(&list);
 	if (found[0] == '\0') {
-		fprintf(stderr, "    (no retained build log for %s)\n", pkg);
+		/*
+		 * NO BUILD LOG MEANS THE FAILURE HAPPENED BEFORE ANY BUILD
+		 * STARTED, and that is the case this function used to leave
+		 * undiagnosable (#580).
+		 *
+		 * A fetch that failed, a recipe that would not parse, a build
+		 * environment that could not be composed -- none of them reach
+		 * a build container, so none of them produce a build log. Their
+		 * reason is written with logstore_write(), which does not echo
+		 * to stderr, and for a test daemon the store lives under the
+		 * mkdtemp data directory the test deletes on exit. So the
+		 * reason was gone before anyone could read it, and the build
+		 * log carried the consequence rather than the cause.
+		 *
+		 * That is not hypothetical: 0.2.57-487 failed with `greeter
+		 * failed: could not compose a build environment from the
+		 * declared tools` cascading to eleven assertions, and which of
+		 * image_produce_new_version()'s failure exits it was could not
+		 * be established from the log at all.
+		 */
+		fprintf(stderr, "    (no retained build log for %s -- it never reached a build "
+		                "container; the daemon's own lines follow)\n",
+		        pkg);
+		test_print_daemon_log(c, pkg, lines > 0 ? lines : 20);
 		return;
 	}
 

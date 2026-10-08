@@ -44,3 +44,19 @@ int test_floor_install_all(const struct cix_client *c);
  * test_floor.c.
  */
 void test_print_build_log(const struct cix_client *c, const char *pkg, int lines);
+
+/*
+ * The daemon's own log lines mentioning pkg, on stderr (#580).
+ *
+ * For a failure that never reached a build container and so left no
+ * build log to read -- a fetch, an unparseable recipe, a build
+ * environment that could not be composed. Their reason goes to
+ * logstore_write() and nowhere else, and a test daemon's store is
+ * deleted with its data directory, so it must be read while the daemon
+ * is still up or not at all.
+ *
+ * test_print_build_log() calls this itself when it finds no build log,
+ * which is the case that needs it; it is exposed because a caller that
+ * knows a build never started can ask directly.
+ */
+void test_print_daemon_log(const struct cix_client *c, const char *pkg, int lines);
