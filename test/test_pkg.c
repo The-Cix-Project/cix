@@ -2984,7 +2984,7 @@ int main(void)
 		cix_response_free(&r);
 
 		for (k = 0; k < 240 && !moved; k++) {
-			const char *now;
+			const char *now = NULL;
 
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "GET", "/v1/images/bslimg", NULL, &r) == 0 &&
