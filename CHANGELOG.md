@@ -6,6 +6,58 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An image's content comes only from packages, and the baseline stops existing (ADR-0333, supersedes ADR-0332)
+
+The owner's direction of 2026-10-08: *"I want the baseline to be a package, 100% no other way to
+orchestrate an image except through the packages (for content), and json config of the image"*.
+
+An image had **four** writers of its content — its installed packages, plus three things
+`pkg_seed_image_baseline()` created directly: device nodes, a written `/etc/nsswitch.conf` with the
+directory layout around it, and the host's CA trust bundle. Only the first was versioned, declared or
+visible anywhere, which is why #577's `tty` (5:0) reached newly created images and no others, leaving
+`jumpbox` unable to run `sudo` while #577 read as closed.
+
+**ADR-0332 is superseded before it shipped, and that is the useful part of this entry.** It gave the
+baseline a generation, folded it into the image-version hash, taught the converge path to act on it,
+added two gates, and went green on the box. It was still the wrong fix: it *versioned* the fourth
+writer instead of removing it. Every mechanism it needed — a hand-maintained number, a re-seed
+trigger, a keyed pin, a reported field — existed only because the baseline was not a package. The
+question to ask of an unversioned thing is whether it should exist, not how to version it, and nobody
+asked until the owner did.
+
+**The measured finding is that nothing the baseline did becomes a package**, which is the opposite of
+what the direction first suggests. All four jobs are per-container state, and two are already done at
+container creation today — redundantly:
+
+- `/run` is a fresh tmpfs on every container start and `/dev` is `mkdir`ed there (`mountns.c:239`,
+  `:309`), so the image's copies are dead weight.
+- `/etc/nsswitch.conf` already has a per-container path — `main.c:15291` stages the `ldap_client`
+  variant. Written at every start from live state it cannot go stale, which serves ADR-0296's
+  convergence requirement better than a package would.
+- The CA bundle is host-generated (`pki_write_trust_bundle_file()` writes that host's own root and
+  intermediate PEM), so it can never be a checksummed, cache-published artifact.
+- The device nodes are staged host-side into the container's upperdir by the daemon, the same
+  mechanism `/etc/passwd` already uses.
+
+**Device nodes can be neither a package nor the container's own work, and both were measured rather
+than assumed.** `mknod` is gated on `CAP_MKNOD` against the *initial* user namespace, which no userns
+container has ever held (`src/container.c:810`, #321) — and userns is the default, which is the real
+reason the nodes were in the image. And on 192.168.15.95, 2026-10-08: zero installed packages ship
+any `dev/` path, `coreutils` as built here ships no `mknod` binary, and CPDL has no `mknod` operation,
+so nothing in the build path can create one. The daemon holds the capability the container lacks, so
+it stages them — which also tightens ADR-0331 instead of relaxing it, because the staging and
+`container_dev_bpf_attach()`'s allow set expand the same `CIX_BASELINE_DEVICES` list in one file at
+one moment.
+
+Consequences worth stating: the release-wide version churn ADR-0332 weighed does not happen at all,
+and neither do the five followed-image recipe commits a literal baseline package would have needed.
+Old image trees keep their now-unused `/dev` and `nsswitch.conf` until their versions are reclaimed
+(#551); nothing is written into an existing version's tree, so ADR-0107/0108 immutability is
+untouched.
+
+This is documentation and direction only. ADR-0332's implementation is on `master`, unreleased, and is
+removed as part of ADR-0333's implementation rather than left beside it.
+
 ### An image version identifies its baseline, so a baseline fix reaches images that already exist (#579, ADR-0332)
 
 `sudo`, `su` and `ssh -t` still failed in `jumpbox` after the fix for them shipped. #577 added `tty`

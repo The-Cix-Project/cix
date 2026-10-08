@@ -2,9 +2,11 @@
 
 ## Status
 
-Proposed, 2026-10-08, for [cix#579](https://git.home.arpa/itdlabs/cix/issues/579). It amends [ADR-0108](0108-image-version-content-hash.md), which defined an image version as a hash of its package manifest, and [ADR-0155](0155-baseline-reseed-manifest-hash-dedup-gap.md), which recorded the consequence this corrects.
+Superseded by [ADR-0333](0333-an-images-content-comes-only-from-packages.md), 2026-10-08, before it ever shipped. It was Proposed for [cix#579](https://git.home.arpa/itdlabs/cix/issues/579), implemented, and passed its gates; the owner then asked why the baseline is not a package, and the answer made this the wrong fix. It versions a fourth, unversioned writer of image content instead of removing it, and every mechanism below exists only because that writer exists. Nothing from it was released.
 
-Proposed rather than accepted: it changes what every image's version string is, on every host, which is host-wide and hard to reverse. The owner should weigh the churn described under Consequences before it ships.
+Kept in full, unedited below, because the reasoning is why we changed our mind: the diagnosis of the identity bug is correct and is what ADR-0333 acts on, and one finding in the Amendment — that a version difference cannot be computed as a hash comparison — stays true of this codebase regardless of which decision stands.
+
+It amended [ADR-0108](0108-image-version-content-hash.md), which defined an image version as a hash of its package manifest, and [ADR-0155](0155-baseline-reseed-manifest-hash-dedup-gap.md), which recorded the consequence it corrects. Both are now amended by ADR-0333 instead.
 
 ## Context
 
@@ -45,6 +47,7 @@ So an image's content is *its packages plus the baseline*, while its identity is
 - **Leave it.** Defensible, and the status quo: a baseline addition reaches new images and no others. It is how #577 came to be closed with its symptom still reproducing. Rejected because the failure is silent and recurs with every future addition.
 - **Re-seed an existing version in place.** Smallest change, and breaks the immutability ADR-0107/0108 rest on.
 - **Reconcile at daemon start.** Produce a fresh version for any image whose rootfs lacks a baseline node. Testable and surgical, but it needs the hash to differ anyway or dedup discards its work — so it arrives at this decision by a longer road, with a boot-time special case added on top.
+- **Remove the baseline from the image entirely, so there is nothing unversioned left to version.** *This alternative was not considered when this ADR was written, and it is the one that won* — see [ADR-0333](0333-an-images-content-comes-only-from-packages.md). Every alternative above asks *how should the fix arrive*; none asks whether the baseline should exist as a concept. The owner asked the latter, and the answer is that all four of its jobs are per-container state: `/run` and `/dev` are already created at every container start, `nsswitch.conf` already has a per-container path, the CA bundle is host-generated, and the device nodes can be staged host-side by the daemon, which holds the `CAP_MKNOD` that no userns container has. That leaves an image's content as exactly its packages, which ADR-0108's hash already covers — so the generation, the trigger, the keyed gate and the reported field in this ADR all become unnecessary rather than merely smaller.
 
 ## Amendment, 2026-10-08, from implementing it
 
