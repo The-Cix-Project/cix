@@ -409,7 +409,7 @@ See [`networking.md`](networking.md).
 |---|---|
 | `image create --name=NAME` | An empty image with the C runtime seeded, ready for `pkg install --image=NAME` |
 | `image materialize NAME` | Create the image if absent, declare its manifest from the image recipe `NAME`, and install every package in it (#141) |
-| `image ls` / `image show NAME` | List / inspect one (manifest, current version, version history) |
+| `image ls` / `image show NAME` | List / inspect one (manifest, current version, version history with each version's baseline generation -- ADR-0332) |
 | `image rm NAME` | Remove one; refused for `base`, for an image in use, or with packages installed |
 | `image manifest set --image=NAME --package=NAME --mode=pinned\|rolling --version=VERSION` | Add or replace one manifest entry (ADR-0107). `pinned` never advances; `rolling` rebuilds onto a newer recipe version when one is published |
 | `image manifest rm --image=NAME --package=NAME` | Remove one entry |

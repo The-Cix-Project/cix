@@ -5,7 +5,8 @@ An image is what a container runs from: a root filesystem made of a small create
 Three ideas carry the whole model:
 
 - **The manifest** is what the image should contain: a list of `package` / `mode` / `version` entries, where `mode` is `pinned` (exactly that version) or `rolling` (the highest available version at or above that floor) ([ADR-0107](../adr/0107-package-image-versioning.md)).
-- **A version** is one immutable build of that content. Its identifier is a hash of the resolved `name@version` set ([ADR-0108](../adr/0108-image-version-content-hash.md)). A container records the version it was created from and keeps running it.
+- **A version** is one immutable build of that content. Its identifier is a hash of the resolved `name@version` set *and* of the baseline generation staged alongside it ([ADR-0108](../adr/0108-image-version-content-hash.md), [ADR-0332](../adr/0332-an-image-version-identifies-its-baseline-too.md)). A container records the version it was created from and keeps running it.
+- **The baseline** is what every image gets regardless of its packages: the device nodes, the dynamic loader and C library staging, `nsswitch.conf`, a minimal `passwd`/`group`. It has a generation, and it is half of what a version identifies — which is the fix for a platform baseline change reaching only newly created images. When the baseline moves, an image whose recorded generation is behind is re-produced with the current one on its next converge; `image show` prints the generation per version, and `unrecorded` for a version built before this was recorded.
 - **An image recipe** is the manifest written down as a file, so the image can be rebuilt from text ([ADR-0123](../adr/0123-pkg-redesign-part4-image-recipes-and-artifact.md), [ADR-0252](../adr/0252-an-image-recipe-is-authoritative.md)).
 
 Every command below is `cixctl` against a real host (`--host=` implied). The request and response shapes are in [`openapi.yaml`](../api/openapi.yaml) under `/images`.
@@ -90,7 +91,7 @@ cixctl image show dns
 cixctl image manifest show --image=dns --version=<hash>
 ```
 
-`image show` prints the current version, the declared manifest, and every version newest first, with the current one marked. The declared manifest is live intent: for a `rolling` entry its version is a floor, not the version installed. To see what a version actually holds — the question that matters for a container, since a container runs a fixed version — use `image manifest show` with that version's hash.
+`image show` prints the current version, the declared manifest, and every version newest first, with the current one marked and each one's baseline generation. The declared manifest is live intent: for a `rolling` entry its version is a floor, not the version installed. To see what a version actually holds — the question that matters for a container, since a container runs a fixed version — use `image manifest show` with that version's hash.
 
 The dashboard shows the same under **Software > Build > Local Images** and each image's own page (Containers using this image, Packages installed, Manifest, Recipe, Versions).
 
