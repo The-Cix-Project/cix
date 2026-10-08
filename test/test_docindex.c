@@ -1003,6 +1003,23 @@ static void check_architecture_components(void)
 			checked++;
 	}
 
+	/*
+	 * The gate must not pass vacuously, and it cannot report that it
+	 * did not. Every name check above is conditional on its source
+	 * file existing, so a tree carrying the document but not
+	 * daemon/src would skip all seventeen and report success having
+	 * compared nothing -- and the count printed below is invisible
+	 * where it matters: `make selftest` prints one PASS/FAIL line
+	 * per binary and none of its stdout (measured in
+	 * probe-cix-compile@0.2.57-498's log, 2026-10-08: 314 lines, zero
+	 * of them a test's own output). So the count is asserted here
+	 * rather than left for a reader who will never see it.
+	 */
+	if (checked == 0)
+		fail("docs/architecture/architecture.md was read, and not one component source in "
+		     "daemon/src exists -- this gate compared nothing, so its success means nothing "
+		     "(ADR-0334)");
+
 	printf("  architecture: %d components named\n", checked);
 	free(doc);
 }
