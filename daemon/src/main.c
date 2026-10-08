@@ -13160,8 +13160,76 @@ static int stage_container_file(const char *upperdir, const char *path, const ch
 	                             id_offset);
 }
 
+/*
+ * ADR-0333 (#581): the platform files every container gets regardless of
+ * what it has installed -- `/etc/nsswitch.conf` and the host's own CA
+ * trust bundle.
+ *
+ * These were written into every IMAGE by pkg_seed_image_baseline(),
+ * which made the platform a writer of image content beside the package
+ * manager: unversioned, undeclared, and reaching only images created
+ * after a change (#577). An image's content is now only its packages,
+ * so these arrive the way /etc/resolv.conf and /etc/passwd already do.
+ *
+ * NOT in container_create() with the device nodes, and the distinction
+ * is the point: a device node's content is a compile-time list, so what
+ * it needed was the one function both creation paths share. These two
+ * are rendered from LIVE platform state -- which nsswitch variant this
+ * container needs, and this host's own PKI -- and the runtime library
+ * must not know either (the API-First mandate). So the content decision
+ * stays here, and both callers of registry_create() call this.
+ *
+ * CALLED FROM BOTH, which preserves today's behaviour exactly rather
+ * than improving on it: every container already got both from its
+ * image, build containers included, because buildenv_mutate() seeds a
+ * build-environment image the same way. Dropping them from the build
+ * path might well be correct -- a sealed build container has no egress,
+ * so the bundle buys it nothing -- but that is a behaviour CHANGE and
+ * owes its own evidence. This change owes none.
+ *
+ * skip_nsswitch is for the one container kind that renders its own
+ * variant: an ldap_client gets nsswitch_ldap_client_content() from the
+ * block that also writes its nslcd.conf, and staging the baseline
+ * variant over it would be the ADR-0296 regression -- `hosts: files`
+ * where the container has resolvers it cannot use.
+ */
+static int stage_container_platform_files(const char *stage_dir, uid_t id_offset, int skip_nsswitch,
+                                           char *err, size_t err_size)
+{
+	char *bundle = NULL;
+	size_t bundle_len = 0;
+	int rc;
 
+	if (!skip_nsswitch &&
+	    stage_container_file(stage_dir, "/etc/nsswitch.conf", nsswitch_baseline_content(), 0644,
+	                          (uid_t)-1, (gid_t)-1, id_offset) != 0) {
+		snprintf(err, err_size, "failed to stage /etc/nsswitch.conf");
+		return -1;
+	}
 
+	/*
+	 * The bundle is this HOST's own root and intermediate PEM, which is
+	 * why it can never be a package: a package is one immutable byte
+	 * sequence with a shared checksum, and this differs per host and
+	 * changes when a CA is rotated.
+	 *
+	 * A host with no PKI bootstrapped yet has no bundle to write, and
+	 * that is not an error -- it is every container created before
+	 * `pki init`, which worked before this existed and must keep
+	 * working. The image path treated it the same way.
+	 */
+	if (pki_trust_bundle_pem(&bundle, &bundle_len) != PKI_OK || bundle == NULL)
+		return 0;
+
+	rc = stage_container_bytes(stage_dir, PKG_IMAGE_CA_BUNDLE_PATH, bundle, bundle_len, 0644,
+	                            (uid_t)-1, (gid_t)-1, id_offset);
+	free(bundle);
+	if (rc != 0) {
+		snprintf(err, err_size, "failed to stage " PKG_IMAGE_CA_BUNDLE_PATH);
+		return -1;
+	}
+	return 0;
+}
 
 
 /*
@@ -15672,6 +15740,23 @@ static int create_container_from_body(const char *body, size_t body_len,
 		if (osrelease_render(osr, sizeof(osr), CIX_BUILD_VERSION) == 0)
 			(void)stage_container_file(stage_dir, "/etc/os-release", osr, 0644, (uid_t)-1,
 			                            (gid_t)-1, stage_id_offset);
+	}
+
+	/*
+	 * ADR-0333: the rest of what pkg_seed_image_baseline() used to put
+	 * into every image -- nsswitch.conf and this host's CA bundle.
+	 *
+	 * After the os-release block, so every platform file this handler
+	 * writes sits together, and after the ldap_client block, which
+	 * renders its OWN nsswitch variant: passing ldap_client as the skip
+	 * flag is what stops the baseline variant overwriting it, which
+	 * would be the ADR-0296 regression -- `hosts: files` in a container
+	 * that has resolvers and cannot use them.
+	 */
+	if (stage_container_platform_files(stage_dir, stage_id_offset, ldap_client, err_msg,
+	                                    err_msg_size) != 0) {
+		json_free(root);
+		return 500;
 	}
 
 	/* spec was zeroed before the rootfs provisioning above, which sets
@@ -24837,7 +24922,22 @@ static enum registry_error spawn_pkgbuild_container(int chain_idx, const char *w
 		if (cixinit_table_single(&init_table, "build", spec->argv, CIXINIT_TYPE_ONESHOT,
 		                         CIXINIT_ON_EXIT_FAIL_CONTAINER) != 0 ||
 		    init_transport_open(&init_tp, &init_table, out, spec, err, sizeof(err)) != 0 ||
-		    stage_cix_init(spec->ov.upperdir, 0, err, sizeof(err)) != 0) {
+		    stage_cix_init(spec->ov.upperdir, 0, err, sizeof(err)) != 0 ||
+		    /*
+		     * ADR-0333: the platform files a build container used to
+		     * get from its build-environment IMAGE, which
+		     * buildenv_mutate() seeded with pkg_seed_image_baseline().
+		     * Staged here because this handler drives registry_create()
+		     * directly and reaches none of
+		     * create_container_from_body()'s staging -- the same split
+		     * that decided where the device nodes go, and the reason
+		     * "a container gets it" is two claims rather than one.
+		     *
+		     * id_offset 0 and no nsswitch skip: a build container is
+		     * never userns (spec->userns_enabled = 0 above) and is
+		     * never an ldap_client.
+		     */
+		    stage_container_platform_files(spec->ov.upperdir, 0, 0, err, sizeof(err)) != 0) {
 			logstore_write("cixd", "error", "pkgbuild %s (%s): cix-init setup failed: %s", what,
 			               build_container_name, err);
 			init_transport_close_all(&init_tp);
