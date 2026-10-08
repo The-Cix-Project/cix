@@ -6,6 +6,51 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The radio attach's 1.66 s is one netlink call, and the inference that said so is now a reading (#344, 0.2.57-475)
+
+`bring_up` was 1613 ms of a 1633 ms attach, and the next sentence was going to be "`fork()` and
+`setns()` are obviously microseconds, so it is `rtnl_link_set_up()` on a USB radio, so the cost is
+unavoidable and can only be moved off the reactor." Every word after *obviously* was a conclusion,
+and a competing mechanism had an incompatible fix: `dev_change_net_namespace()` tears down and
+re-registers every netdev on the wiphy, so `set_up` 16 ms later may have been waiting on the kernel
+to finish settling — in which case the answer was sequencing and the cost would have **disappeared**
+rather than moved.
+
+So the helper reports its own split, and the reading is:
+
+```
+container ar-1: interface attach 1676 ms total -- classify 0, down 0, move 16, bring-up 1660
+                                  (of which setns 0, rtnl_open 0, set_up 1658)
+```
+
+`rtnl_link_set_up()` owns **1658 of 1676 ms**. `setns` and `rtnl_open` are 0; the 2 ms between 1660
+and 1658 is the `fork()` and the `waitpid()`. The inference was right — and the point is that it is
+now measured, because the version where it was wrong led somewhere else entirely.
+
+It follows `container_net_teardown_interfaces()`'s own convention in the same file rather than a new
+one: the child closes the read end and writes with `(void)write()`, the parent closes the write end,
+reads, then waits, and takes the split only on an exact-size read. The write end closes **before**
+the read, or the parent blocks forever on a writer it still holds — a deadlock that in a diagnostic
+path would hang a container create. A failed `pipe()` degrades to zeros; nothing branches on these
+numbers.
+
+**Still not established, and it matters less than expected.** Driver `ndo_open` and migration-settle
+both predict a slow `set_up`, and this cannot separate them — timing a second `set_up` does not
+either, since on an already-up interface it is a no-op under both. What would: a delay before the
+first `set_up`, or a `set_up` with no migration involved. Both need the radio out of `ar-1`, which
+takes the access point down. **The fix is the same shape either way**: under the settle hypothesis
+you could call `set_up` later, but nothing tells you when "later" is without waiting, and waiting is
+what is being removed. The distinction would only change whether the cost also gets *shorter*.
+
+**What it is not: the obvious fix.** Reaping the helper by pidfd and returning frees the reactor and
+buys a race — `ar-1` declares `on_exit: "fail-container"`, so hostapd starting on a still-down
+`wlan0` fails the container, [ADR-0323](docs/adr/0323-every-package-can-roll-discovery-authentication-and-a-green-build.md)
+marks the image bad, and the AP goes down on every reboot. That trade is a regression, and "the
+failure surfaces some other way" is a stop-gap. The real fix frees the reactor *and* holds the
+container's services until the bring-up finishes, which is a protocol addition to `cix-init` and
+touches [ADR-0260](docs/adr/0260-a-container-declares-services-not-a-command.md)'s model of what a
+container declares — an ADR, not a patch.
+
 ### A radio create's 1.7 s is the bring-up helper, not either operation the issue suspected (#344, 0.2.57-474)
 
 Creating a container that carries a radio blocks the reactor for about 1.7 seconds, every time.
