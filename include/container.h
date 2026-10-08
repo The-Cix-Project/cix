@@ -303,11 +303,21 @@ struct device_spec {
 };
 
 /*
- * The device nodes EVERY image has, declared once (ADR-0331, #578).
+ * The device nodes EVERY container gets, declared once (ADR-0331, #578).
  *
- * `pkg_seed_image_baseline()` stages these into every image's /dev, and
+ * This said "every IMAGE" until ADR-0333, and that is the whole point of
+ * the change: they were image content staged by
+ * `pkg_seed_image_baseline()`, which made the platform a writer of
+ * images beside the package manager, so a node added here reached newly
+ * created images and no others (#577). An image's content is now only
+ * its packages. These are created per container, host-side, by
+ * `container_dev_stage_baseline()`.
+ *
+ * `container_dev_stage_baseline()` creates them and
  * `container_dev_bpf_attach()` permits them ahead of whatever a
- * container declared. Both read this list, because they were two lists
+ * container declared -- now two functions in ONE file, at one moment,
+ * which is as tight as this coupling can be. Both read this list,
+ * because they were two lists
  * and disagreed: the BPF policy is built from the DECLARED devices
  * alone, so a container that declared one device got a program whose
  * deny epilogue denied /dev/null. Nothing had ever hit it because a
@@ -318,8 +328,9 @@ struct device_spec {
  * 192.168.15.95, 2026-10-07: /dev is never mounted inside a container's
  * mount namespace. src/mountns.c mounts exactly proc, sysfs, cgroup2
  * and devpts at /dev/pts, and only mkdir()s /dev when it is absent --
- * so /dev is the image rootfs's own directory, made private per
- * container by the overlay upperdir, and these are its contents.
+ * so /dev is an ordinary directory in the container's own rootfs, and
+ * these are its contents. Since ADR-0333 that directory and these nodes
+ * are created for the container rather than inherited from its image.
  *
  * `test_image_fixture_stage_toolchain()` (test/test_image_fixture_host.c)
  * stages a SUBSET of this and does NOT expand it. Deliberately: it
@@ -342,8 +353,8 @@ struct device_spec {
  *
  * The `ptmx` symlink is NOT in this list. It is a symlink to pts/ptmx,
  * whose target lives on the devpts mount the policy treats separately,
- * so pkg_seed_image_baseline() stages it alone and there is no node
- * here to permit. Do not add it.
+ * so container_dev_stage_baseline() creates it alone and there is no
+ * node here to permit. Do not add it.
  */
 #define CIX_BASELINE_DEVICES(X)                                                                    \
 	X("null", 1, 3)                                                                            \

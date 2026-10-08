@@ -444,6 +444,73 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	}
 
 	/*
+	 * ADR-0333: the standard device nodes, created into this container's
+	 * own rootfs HERE -- host-side, in the parent, before anything else
+	 * touches that tree.
+	 *
+	 * They used to live in the image, staged by
+	 * pkg_seed_image_baseline(). An image's content is now only its
+	 * packages, so a container gets them the way it gets /etc/passwd and
+	 * /etc/resolv.conf: made for it, from live platform state.
+	 *
+	 * HERE and not in the child, because mknod is gated on CAP_MKNOD
+	 * against the INITIAL user namespace, which no userns container has
+	 * ever held (#321, and the id-mapped-rootfs comment further down
+	 * says the same of every create the child attempts) -- and userns is
+	 * the default. HERE and not in the request handler's file staging,
+	 * because registry_create() has two callers and only one of them is
+	 * that handler: a build container comes through
+	 * spawn_pkgbuild_container(), which stages nothing, so nodes put
+	 * there would leave every ./configure in every package build with no
+	 * /dev/null. This function is the one point both paths share.
+	 *
+	 * BEFORE the open_tree() below, deliberately: for a userns container
+	 * that rootfs becomes an id-mapped mount, and the kernel presents
+	 * the mapping for lookups only -- a CREATE through it needs the
+	 * caller's fsuid inside the map, which host uid 0 is not, so it
+	 * fails EOVERFLOW. That is the #321 failure recorded below, arrived
+	 * at from the other direction.
+	 *
+	 * ONLY the userns case is staged here, and the reason is not
+	 * symmetry but btrfs. A non-userns container's rootfs is an overlay
+	 * whose upperdir the CHILD creates -- and on btrfs it creates it as
+	 * a SUBVOLUME, so the container can carry a disk quota (ADR-0062,
+	 * #678). overlay_create_btrfs_upperdir() tolerates EEXIST on that
+	 * ioctl, assuming a previous run left a subvolume; a plain directory
+	 * pre-created here would satisfy that tolerance and silently cost
+	 * every container its quota. So the non-userns case is staged by the
+	 * child instead, where it is real root anyway -- beside
+	 * container_dev_mknod(), which does the granted nodes for the same
+	 * reason in the same place.
+	 */
+	if (spec->userns_enabled && spec->ov.userns_rootfs != NULL &&
+	    spec->ov.userns_rootfs[0] != '\0') {
+		if (container_dev_stage_baseline(spec->ov.userns_rootfs,
+		                                  (uid_t)spec->userns_uid_base) != 0) {
+			int saved_errno = errno;
+
+			perror("container_create: container_dev_stage_baseline");
+			container_set_last_error_step("container_create: container_dev_stage_baseline");
+			close(diag_pipe[0]);
+			close(diag_pipe[1]);
+			if (want_net) {
+				close(net_pipe[0]);
+				close(net_pipe[1]);
+			}
+			/* Unconditional, unlike the sibling cleanups above: this
+			 * branch is only reached with userns enabled, so the pipe
+			 * was certainly created. */
+			close(userns_pipe[0]);
+			close(userns_pipe[1]);
+			if (bpf_prog_fd >= 0)
+				close(bpf_prog_fd);
+			close(cgroup_fd);
+			errno = saved_errno;
+			return -1;
+		}
+	}
+
+	/*
 	 * ADR-0179 phase 2c option (a): a userns container uses its OWN
 	 * per-container rootfs (a copy of the image, prepared host-side by the
 	 * daemon and chown'd to the container's subordinate <base> id --
@@ -959,6 +1026,28 @@ int container_create(const struct container_spec *spec, struct container_handle 
 				_exit(112);
 			}
 		}
+		/*
+		 * ADR-0333: the standard device nodes, for a NON-USERNS
+		 * container only -- this child is real root, so it holds the
+		 * CAP_MKNOD a userns child never does (#321), and a userns
+		 * container was already staged by the parent before clone3().
+		 *
+		 * Here rather than in the parent for this case because the
+		 * parent must not pre-create the overlay upperdir: on btrfs
+		 * overlay_create() makes it a SUBVOLUME so the container can
+		 * carry a disk quota (ADR-0062, #678), and it tolerates EEXIST
+		 * on that ioctl -- so a plain directory left by the parent
+		 * would be accepted and the quota silently lost.
+		 *
+		 * "" is this child's own root: pivot_root has happened, so /dev
+		 * is the container's private directory (mountns_pivot() mkdir's
+		 * it when absent), which is exactly what it was when these
+		 * nodes came out of the image.
+		 */
+		if (!spec->userns_enabled && container_dev_stage_baseline("", 0) != 0) {
+			child_diag(diag_pipe[1], "child: container_dev_stage_baseline");
+			_exit(137);
+		}
 		if (container_dev_mknod(spec->devices, spec->device_count) != 0) {
 			child_diag(diag_pipe[1], "child: container_dev_mknod");
 			_exit(113);
@@ -1444,6 +1533,8 @@ void container_decode_exit_status(int exit_status, int term_signal, char *buf, s
 		       "container's rootfs path is not traversable" },
 		{ 127, "exec failed (errno out of encodable range)" },
 		{ 138, "fcntl(keep_fds, F_SETFD) failed -- an fd named on cix-init's argv was not open" },
+		{ 137, "container_dev_stage_baseline failed -- the standard device nodes could not be "
+		        "created in this container's own /dev (ADR-0333)" },
 		{ 130, "overlay: lowerdir stat failed" },
 		{ 131, "overlay: upperdir mkdir failed" },
 		{ 132, "overlay: disk quota setup failed" },

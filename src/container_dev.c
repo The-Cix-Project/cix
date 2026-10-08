@@ -237,3 +237,135 @@ int container_dev_mknod(const struct device_spec *devices, int device_count)
 
 	return 0;
 }
+
+/*
+ * The standard device nodes every container gets, created HOST-SIDE into
+ * a container's own rootfs before it starts (ADR-0333, #581).
+ *
+ * WHY HERE AND NOT IN AN IMAGE. These used to be staged into every image
+ * by pkg_seed_image_baseline(), which made the platform a writer of
+ * image content beside the package manager -- unversioned, undeclared,
+ * and invisible, so a node added to the list reached newly created
+ * images and no others (#577: `tty` shipped and `jumpbox` still could
+ * not run sudo). An image's content is now only its packages
+ * (ADR-0333), and these are per-container state like /etc/passwd and
+ * /etc/resolv.conf already are.
+ *
+ * WHY THE PARENT AND NOT THE CHILD. container_dev_mknod() above runs in
+ * the cloned child, after pivot_root, and cannot do this job: mknod is
+ * gated on CAP_MKNOD against the INITIAL user namespace, which no
+ * userns container has ever held (#321, src/container.c's own comment on
+ * the id-mapped rootfs), and userns is the default. The daemon's own
+ * process is real root in the initial namespace, so it can. That is
+ * also why this takes a host path rather than operating relative to "/"
+ * the way container_dev_mknod() does.
+ *
+ * WHY IN THIS FILE. container_dev_bpf_attach() below expands the same
+ * CIX_BASELINE_DEVICES list for its allow-set, so the nodes a container
+ * gets and the nodes its policy permits are one list in one file --
+ * ADR-0331 exists because those two diverged (#578: a container with
+ * /dev/null staged and a policy denying it). Keep them together.
+ *
+ * owner_offset is the container's subordinate uid base, or 0 for a
+ * container that is not id-mapped -- the same convention
+ * stage_container_bytes() uses for every other staged file: with an
+ * offset, the node is owned by the offset itself, which is what the
+ * container's own userns maps back to uid 0.
+ *
+ * rootfs_dir "" MEANS THE CALLER'S CURRENT ROOT, which is how the child
+ * calls this after pivot_root. Both callers exist and the split is a
+ * kernel constraint, not a preference:
+ *
+ *   - a USERNS container is staged by the PARENT, into its own rootfs
+ *     copy, because its child holds no CAP_MKNOD in the initial
+ *     namespace (#321);
+ *   - a NON-USERNS container is staged by the CHILD, at "", because its
+ *     child IS real root -- and because the parent must not pre-create
+ *     an overlay upperdir it would otherwise get as a btrfs SUBVOLUME.
+ *     overlay_create_btrfs_upperdir() tolerates EEXIST on the
+ *     subvolume ioctl on the assumption that a previous run made a
+ *     subvolume; a plain directory left there by this function would
+ *     satisfy that tolerance and silently cost the container its disk
+ *     quota (ADR-0062, #678). Measured by reading src/overlay.c:46-80
+ *     before writing this, not after.
+ */
+int container_dev_stage_baseline(const char *rootfs_dir, uid_t owner_offset)
+{
+	static const struct {
+		const char *name;
+		unsigned int major, minor;
+	} nodes[] = {
+#define CIX_BASELINE_ENTRY_(dname, maj, min) { dname, maj, min },
+		CIX_BASELINE_DEVICES(CIX_BASELINE_ENTRY_)
+#undef CIX_BASELINE_ENTRY_
+	};
+	char dev_dir[PATH_MAX];
+	char path[PATH_MAX];
+	size_t i;
+
+	if (rootfs_dir == NULL) {
+		errno = EINVAL;
+		return -1;
+	}
+	/* "" yields "/dev" -- the child's case, deliberately, rather than a
+	 * second code path for it. */
+	if (snprintf(dev_dir, sizeof(dev_dir), "%s/dev", rootfs_dir) >= (int)sizeof(dev_dir)) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	if (cix_mkdir_p(dev_dir) != 0)
+		return -1;
+	/*
+	 * /dev itself is chowned too, not just the nodes. The container's
+	 * own init mounts devpts at /dev/pts from inside
+	 * (mountns_pivot()), which is a create in this directory -- and for
+	 * an id-mapped container that create is performed by the mapped
+	 * root, which must therefore own it.
+	 */
+	if (owner_offset != 0 && chown(dev_dir, owner_offset, (gid_t)owner_offset) != 0)
+		return -1;
+
+	for (i = 0; i < sizeof(nodes) / sizeof(nodes[0]); i++) {
+		mode_t mode = (mode_t)(S_IFCHR | 0666);
+
+		if (snprintf(path, sizeof(path), "%s/%s", dev_dir, nodes[i].name) >= (int)sizeof(path)) {
+			errno = ENAMETOOLONG;
+			return -1;
+		}
+		if (mknod(path, mode, makedev(nodes[i].major, nodes[i].minor)) != 0 && errno != EEXIST)
+			return -1;
+		/*
+		 * Unconditional, including on the EEXIST path: mknod()'s mode
+		 * is subject to this process's umask (POSIX), and a real
+		 * /dev/null created without this ended up 0644 rather than the
+		 * 0666 asked for -- measured, and the same fix
+		 * container_dev_mknod() above and pkg_seed_image_baseline()
+		 * both carry. A standard device node must stay
+		 * world-writable: a non-root process inside a container
+		 * redirecting to /dev/null is entirely ordinary.
+		 */
+		if (chmod(path, mode & 07777) != 0)
+			return -1;
+		if (owner_offset != 0 && chown(path, owner_offset, (gid_t)owner_offset) != 0)
+			return -1;
+	}
+
+	/*
+	 * /dev/ptmx is a SYMLINK to pts/ptmx, not a node -- its target lives
+	 * on the devpts mount the container makes for itself, so there is
+	 * nothing here to permit and it is deliberately absent from
+	 * CIX_BASELINE_DEVICES (see that list's own comment). lchown rather
+	 * than chown: the target does not exist yet at this point, and
+	 * chown would follow the link and fail ENOENT.
+	 */
+	if (snprintf(path, sizeof(path), "%s/ptmx", dev_dir) >= (int)sizeof(path)) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	if (symlink("pts/ptmx", path) != 0 && errno != EEXIST)
+		return -1;
+	if (owner_offset != 0 && lchown(path, owner_offset, (gid_t)owner_offset) != 0)
+		return -1;
+
+	return 0;
+}

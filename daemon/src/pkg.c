@@ -7488,113 +7488,33 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 	 * surface later as a container exiting 127.
 	 *
 	 * Nothing in any image is copied off the build host any more. What
-	 * this function still does below -- device nodes, directories, a
-	 * written nsswitch.conf -- it CREATES; it does not borrow.
-	 */
-	/*
-	 * ADR-0041: the same real, generic gap Phase 23 (iptables' own
-	 * /run/xtables.lock) and Phase 24 (bird hard-crashing with no
-	 * /dev/null at all) both hit -- no image this platform builds ever
-	 * shipped a baseline FHS layout beyond what pkg install itself
-	 * produces, and both were fixed by hand, directly on the router
-	 * image's own on-disk files, not reproducible from a fresh install.
-	 * Standard char device nodes, expanded from CIX_BASELINE_DEVICES in
-	 * container.h -- the ONE list (ADR-0331, #578).
-	 * container_dev_bpf_attach()'s allow set expands the same list, so
-	 * staging a node the device policy then denies is no longer
-	 * expressible; that divergence is what #578 was.
+	 * this function still does below -- directories, a written
+	 * nsswitch.conf, the host's CA bundle -- it CREATES; it does not
+	 * borrow.
 	 *
-	 * test_image_fixture_stage_toolchain() stages a SUBSET of this and
-	 * deliberately so -- it builds a build image, whose /dev exists for
-	 * configure scripts, and its own comment states that /dev/tty is
-	 * omitted because nothing in a batch ./configure && make sequence
-	 * needs a controlling terminal. It is not a third copy to converge;
-	 * do not "fix" it to match this list.
+	 * AND IT IS GOING AWAY (ADR-0333, #581). The device nodes have
+	 * already left: an image's content comes only from its packages, so
+	 * the platform is not a writer of image content beside the package
+	 * manager, and they are created per container by
+	 * container_dev_stage_baseline() instead. The three things left here
+	 * are per-container state too and follow by the same route; this
+	 * function is removed when the last of them does. Do not add
+	 * anything to it.
 	 */
-	static const struct {
-		const char *name;
-		unsigned int major, minor;
-	} dev_nodes[] = {
-#define CIX_BASELINE_ENTRY_(dname, maj, min) { dname, maj, min },
-		CIX_BASELINE_DEVICES(CIX_BASELINE_ENTRY_)
-#undef CIX_BASELINE_ENTRY_
-	};
 	const char *target_rootfs = rootfs_path;
-	size_t i;
 
 
 	/*
-	 * Dev nodes and /run have no "host source" that might legitimately
-	 * be absent the way a runtime lib does -- a real mknod()/mkdir_p()
-	 * failure here is a genuine I/O or permission problem, not a
-	 * tolerable gap, so unlike the loop above this is fatal (matching
-	 * that loop's own fatal handling of a real copy failure, not its
-	 * tolerant handling of a missing source). Only EEXIST on mknod is
-	 * tolerated, for idempotent re-runs.
+	 * /run has no "host source" that might legitimately be absent the
+	 * way a runtime library once did, so a real mkdir_p() failure here
+	 * is a genuine I/O or permission problem rather than a tolerable
+	 * gap, and is fatal.
+	 *
+	 * This paragraph used to begin "Dev nodes and /run" and to contrast
+	 * itself with "the loop above", which was the device-node loop and
+	 * is gone (ADR-0333). It also promised that "only EEXIST on mknod is
+	 * tolerated", about a mknod this function no longer performs.
 	 */
-	{
-		char dev_dir[PATH_MAX];
-
-		snprintf(dev_dir, sizeof(dev_dir), "%s/dev", target_rootfs);
-		if (persist_mkdir_p(dev_dir) != 0)
-			return PKG_ERR_PERSIST_FAILED;
-		for (i = 0; i < sizeof(dev_nodes) / sizeof(dev_nodes[0]); i++) {
-			char path[PATH_MAX];
-
-			snprintf(path, sizeof(path), "%s/%s", dev_dir, dev_nodes[i].name);
-			if (mknod(path, S_IFCHR | 0666, makedev(dev_nodes[i].major, dev_nodes[i].minor)) !=
-			        0 &&
-			    errno != EEXIST)
-				return PKG_ERR_PERSIST_FAILED;
-			/*
-			 * mknod()'s own requested mode is subject to the calling
-			 * process's umask like any other file-creation call (POSIX;
-			 * confirmed live -- a real /dev/null created this way ended
-			 * up 0644, not the 0666 requested here, since nothing in
-			 * this daemon ever calls umask(0)). A standard device node
-			 * MUST stay world-writable regardless of whatever umask
-			 * this daemon process happens to inherit at startup -- a
-			 * non-root process inside a container writing to /dev/null
-			 * (e.g. redirecting a subprocess's own stderr, ADR-0144
-			 * task #838's own AuthorizedKeysCommand script) is a
-			 * completely ordinary, expected operation, not something
-			 * that should ever depend on this daemon's own environment.
-			 * chmod() explicitly here, unconditionally (even on the
-			 * EEXIST/idempotent-rerun path above, to also correct any
-			 * node an earlier, umask-affected run already created
-			 * wrong) -- deliberately not a process-wide umask(0) call,
-			 * which would affect every other file this daemon creates
-			 * too, not just these five nodes.
-			 */
-			if (chmod(path, 0666) != 0)
-				return PKG_ERR_PERSIST_FAILED;
-		}
-
-		/*
-		 * /dev/ptmx as a symlink to pts/ptmx, the real devpts-provided
-		 * multiplexor device -- a static mknod()'d node the way the
-		 * five above are can't work here: this project's containers
-		 * use a plain overlay /dev (no devtmpfs), and pty allocation
-		 * needs a genuine devpts filesystem actually mounted, which
-		 * only happens fresh on each container start (mountns_pivot(),
-		 * src/mountns.c) -- this symlink is the static, one-time part
-		 * of that fix; the mount itself can't be seeded here since
-		 * mount points don't persist in image content. Same convention
-		 * every real distro/container runtime uses (glibc's own
-		 * posix_openpt() opens literally "/dev/ptmx"), not invented
-		 * here. See mountns_pivot()'s own doc comment for the full
-		 * root cause this closes (found investigating a real "PTY
-		 * allocation request failed" during an interactive SSH
-		 * session).
-		 */
-		{
-			char ptmx_path[PATH_MAX];
-
-			snprintf(ptmx_path, sizeof(ptmx_path), "%s/ptmx", dev_dir);
-			if (symlink("pts/ptmx", ptmx_path) != 0 && errno != EEXIST)
-				return PKG_ERR_PERSIST_FAILED;
-		}
-	}
 
 	{
 		char run_dir[PATH_MAX];

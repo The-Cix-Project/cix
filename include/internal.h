@@ -286,12 +286,43 @@ int container_dev_bpf_detach(int cgroup_fd, int prog_fd);
  * pivoted mount namespace, no longer the host's or any sibling's).
  * mknod()s each of devices[]'s granted nodes (creating dev_path's
  * parent directories first, e.g. /dev/bus/usb/002/), mode 0666 --
- * this project's containers already run as full root with no user
- * namespace, so the real access gate is the BPF program
- * container_dev_bpf_attach() already attached before clone3(), not
- * these POSIX permission bits. A no-op if device_count == 0.
+ * the real access gate is the BPF program container_dev_bpf_attach()
+ * already attached before clone3(), not these POSIX permission bits.
+ * A no-op if device_count == 0.
+ *
+ * That paragraph used to justify the 0666 with "this project's
+ * containers already run as full root with no user namespace", which
+ * has been false since ADR-0179/ADR-0207 made user namespaces the
+ * DEFAULT. The conclusion was right and the reason had rotted; the
+ * reason is now just the BPF program, which is true either way. The
+ * same staleness is why this function cannot do the baseline nodes --
+ * see container_dev_stage_baseline() below.
  */
 int container_dev_mknod(const struct device_spec *devices, int device_count);
+
+/*
+ * PARENT side, before clone3(): the standard device nodes every
+ * container gets, created into its own rootfs at rootfs_dir
+ * (ADR-0333, #581). They used to be staged into every IMAGE by
+ * pkg_seed_image_baseline(), which made the platform a writer of image
+ * content beside the package manager.
+ *
+ * Not the child's job, and that is a kernel constraint rather than a
+ * preference: mknod is gated on CAP_MKNOD against the INITIAL user
+ * namespace, which no userns container holds (#321), and userns is the
+ * default. The daemon's own process is real root there.
+ *
+ * rootfs_dir is a HOST path and which one depends on how the container
+ * presents its rootfs -- the per-container copy for a userns container,
+ * the overlay upperdir otherwise, the rootfs itself for a direct one.
+ * container_create() picks it.
+ *
+ * owner_offset is the container's subordinate uid base, or 0 when it is
+ * not id-mapped: the same convention every other staged file uses.
+ * Idempotent, so a re-created container over a surviving rootfs is
+ * fine.
+ */
+int container_dev_stage_baseline(const char *rootfs_dir, uid_t owner_offset);
 
 /*
  * Child side, called right before the final execve() in container_create()
