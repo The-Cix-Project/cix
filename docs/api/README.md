@@ -3445,7 +3445,7 @@ POST /v1/images/router/manifest
 
 `mode: "pinned"` means exactly that version, never auto-advancing; `mode: "rolling"` means `version` is a floor, resolving to the highest available recipe version `>=` it. Re-`POST`ing the same `package` updates its mode/version in place (upsert), never duplicates. `GET /v1/images/router` echoes the full manifest alongside the bare `name` it always returned. `DELETE /v1/images/router/manifest/bird` removes one entry. This only records intent — it does not itself install anything.
 
-**Every install/upgrade/uninstall against an image produces a new, immutable version** (ADR-0108) — `/var/lib/cix/rebuildable/images/router/<version>/rootfs`, where `<version>` is a hash of the image's full installed-package manifest (`name@version` pairs, sorted). Prior versions are never mutated or deleted; a version whose content hash already exists in the image's history is deduplicated (no new directory, `current_version` just repoints). New containers created against `router` are pinned to whatever `current_version` resolves to at creation time (`registry.json`'s own `image_version` field) — they keep running against that exact rootfs even if `router` moves on to a newer version later; only a fresh create or explicit restart-with-replay re-resolves. `GET /v1/images/router` reports both:
+**Every install/upgrade/uninstall against an image produces a new, immutable version** (ADR-0108) — `/var/lib/cix/rebuildable/images/router/<version>/rootfs`, where `<version>` is a hash of the image's full installed-package manifest (`name@version` pairs, sorted) **and the generation of the baseline staged alongside it** ([ADR-0332](../adr/0332-an-image-version-identifies-its-baseline-too.md)). Prior versions are never mutated or deleted; a version whose content hash already exists in the image's history is deduplicated (no new directory, `current_version` just repoints). New containers created against `router` are pinned to whatever `current_version` resolves to at creation time (`registry.json`'s own `image_version` field) — they keep running against that exact rootfs even if `router` moves on to a newer version later; only a fresh create or explicit restart-with-replay re-resolves. `GET /v1/images/router` reports both:
 
 ```json
 {
@@ -3453,13 +3453,17 @@ POST /v1/images/router/manifest
   "manifest": [{"package": "bird", "mode": "pinned", "version": "2.19.1"}],
   "current_version": "3f9c2a...",
   "versions": [
-    {"version": "3f9c2a...", "created_at": 1786292454},
-    {"version": "a01de8...", "created_at": 1786290011}
+    {"version": "3f9c2a...", "created_at": 1786292454, "baseline_generation": 1},
+    {"version": "a01de8...", "created_at": 1786290011, "baseline_generation": 0}
   ]
 }
 ```
 
-`versions` is newest-first. `current_version` is `""` for an image that has never had a package installed/upgraded/removed against it (no version produced yet).
+`versions` is newest-first.
+
+**`baseline_generation` is the half of an image's content that is not its packages** (ADR-0332). Every image gets a baseline regardless of what it installs — the device nodes, the loader and libc, `nsswitch.conf`, a minimal `passwd` — and until this field existed a version's identity covered only the packages. So adding a node to the baseline left every existing image's version string byte-identical, dedup repointed at the old tree, and the freshly seeded one was discarded: `tty` (5:0) shipped in 0.2.57-468 and `jumpbox` still had device nodes weeks older than the fix, so `sudo`, `su` and `ssh -t` kept failing on it. `0` means the version predates this field, and anything below the daemon's current generation is re-produced with the current baseline on that image's next converge.
+
+A **fresh image already has a version**: `POST /v1/images` stages the baseline and records the hash of its own empty package manifest, so `current_version` is non-empty from creation. "Has a current version" is therefore not the same question as "has anything been installed into it" — a distinction that matters, because treating the two as one is how a created-but-never-composed build-environment image was once accepted as ready, and the build then died at `execve(/usr/bin/bash)` with nothing in the image at all.
 
 **A `rolling`-mode manifest entry auto-rebuilds** the moment a matching recipe with a higher version is published via `POST /v1/pkg/recipes` — no manual re-install needed. The daemon re-derives what's satisfied on every attempt (pinned: exact version match; rolling: currently-installed version must equal the current highest recipe version `>=` the manifest's floor), queues at most one rebuild per image at a time, and re-checks the queue as each job completes.
 

@@ -79,6 +79,24 @@ struct image_manifest_entry {
 struct image_version_entry {
 	char version[IMAGE_VERSION_MAX];
 	long created_at; /* Unix epoch seconds, real time(NULL) at creation -- ADR-0108 */
+	/*
+	 * Which baseline generation (CIX_BASELINE_GENERATION, container.h)
+	 * this version's tree was staged with -- ADR-0332, #579.
+	 *
+	 * An image's content is its packages plus what
+	 * pkg_seed_image_baseline() stages, so this is the second half of
+	 * what the version IS, recorded rather than inferred. It answers
+	 * two questions with one field: whether a version's tree predates
+	 * the current baseline (the trigger that re-produces it), and what
+	 * generation an operator is looking at (reported on the image).
+	 * Deriving those two separately would be two accounts of one fact.
+	 *
+	 * 0 means "written before this field existed", which is the honest
+	 * answer for every version on disk today and is what makes the
+	 * first converge after this release correct the tree exactly once.
+	 * A missing JSON key loads as 0 for the same reason.
+	 */
+	int baseline_generation;
 };
 
 /* Call once at daemon startup, before serving any request -- just
@@ -270,6 +288,24 @@ enum image_error image_manifest_unset(const char *name, const char *package);
  * which always produces one; surfaced rather than assumed impossible).
  */
 enum image_error image_current_version(const char *name, char *out, size_t out_size);
+
+/*
+ * The baseline generation name's CURRENT version was staged with
+ * (ADR-0332, #579). Fills out with 0 for a version recorded before the
+ * field existed, which is what makes it actionable rather than just
+ * informational: a value below CIX_BASELINE_GENERATION means this
+ * image's tree is missing whatever the baseline has gained since, and
+ * the converge/apply paths re-produce it on that basis.
+ *
+ * IMAGE_ERR_NOT_FOUND if name does not exist,
+ * IMAGE_ERR_NO_CURRENT_VERSION if it has no current version, and
+ * IMAGE_ERR_NO_CURRENT_VERSION too when the current version is not in
+ * the recorded history -- the history is bounded
+ * (IMAGE_MAX_VERSION_HISTORY) and an old entry can be dropped from it,
+ * so "I cannot tell you" is a real answer and is not reported as 0,
+ * which would claim staleness that has not been established.
+ */
+enum image_error image_current_baseline_generation(const char *name, int *out);
 
 /* Pure path construction, no I/O, always succeeds --
  * IMAGES_DIR/<name>/<version>/rootfs. */

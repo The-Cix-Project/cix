@@ -45,3 +45,26 @@ So an image's content is *its packages plus the baseline*, while its identity is
 - **Leave it.** Defensible, and the status quo: a baseline addition reaches new images and no others. It is how #577 came to be closed with its symptom still reproducing. Rejected because the failure is silent and recurs with every future addition.
 - **Re-seed an existing version in place.** Smallest change, and breaks the immutability ADR-0107/0108 rest on.
 - **Reconcile at daemon start.** Produce a fresh version for any image whose rootfs lacks a baseline node. Testable and surgical, but it needs the hash to differ anyway or dedup discards its work — so it arrives at this decision by a longer road, with a boot-time special case added on top.
+
+## Amendment, 2026-10-08, from implementing it
+
+Decision points 1, 2, 3 and 5 are as written and are implemented. Point 4 is implemented too, but **not the way this ADR implied, and the correction is the finding worth recording.**
+
+**The trigger cannot be a hash comparison.** The obvious reading of "acts on a version difference" is: compute what the version *should* be from the current installed set and re-produce when it differs from what the image is on. That is wrong twice over, and both ways are silent.
+
+- `image_record_version()` repoints `current_version` at any version already in the image's history without touching the installed set. After a deliberate repoint to an older version, the hash test is unequal — so it would re-produce and undo the repoint, as a side effect of a converge nobody connected to it.
+- Three callers pass `image_produce_new_version()` an `extra_identity` (the build sandbox's toolchain seed and migration, and build-environment composition). Their versions are chained hashes — `H(manifest, previous, change)` — which never equal the plain manifest hash, so the test would fire on those images on every single pass.
+
+**So the generation is recorded per version, not recomputed.** `struct image_version_entry` gains `baseline_generation`; `image_create()` and the record path write today's value, and a version written before the field existed loads as `0`. The trigger asks "was this tree staged under the current baseline", which is the actual question, and a missing answer (`0`, or a current version that has aged out of the bounded history) is distinguished from a stale one. This also means clause 5 reports the same field the trigger reads, so the two cannot disagree — deriving the report one way and the trigger another would have been two accounts of one fact.
+
+**Three claims in the first draft of this amendment were wrong, and are corrected here rather than quietly dropped.** It argued that point 4 needed a new asynchronous, pidfd-tracked job, on three premises:
+
+- *That a rootfs copy cannot run on the event loop.* The ordinary install path already calls `image_produce_new_version()` straight through from `pkg_build_completed()`, an event-loop callback, and has for its whole history. A forked re-seed beside it would have been a second mechanism for one operation.
+- *That the copy is hundreds of megabytes.* It is an O(1) copy-on-write btrfs snapshot, or a hardlink copy on ext4 — ADR-0207 made it so deliberately. Neither copies the data.
+- *That identity-alone spends the churn without buying the benefit.* Without point 4 nothing compares expected against current, so an untouched image keeps its version and an installing one gets a version it would have gotten anyway. The identity change alone is zero-churn, and it already fixes ADR-0155's same-manifest reinstall trap.
+
+All three came from reading one call site — the one fork — and generalising from it. The ADR under-estimated point 4 before implementation and the amendment then over-estimated it, from the same cause both times: a conclusion about the shape of the work drawn without reading the paths that do it.
+
+**What arrives where.** The re-seed runs at one place: the converge drain's fully-satisfied point, immediately after `converge_uninstall_strays()`. An unsatisfied image needs nothing there, because the installs still to come each produce a version and the last carries the current baseline. An `apply: converge` enqueues onto that same drain, so an operator apply reaches it. An `apply: declare` deliberately realizes nothing into a rootfs (ADR-0320), so it does not re-seed either — a declare-mode image takes the new baseline on its next real install, and one that never installs keeps the tree it has, which Consequences already states.
+
+**The gate is `test_baseline`, in SELFTESTS.** It pins the device list keyed BY generation, so changing the list without the number fails, and moving the number without recording what it stages fails too. Keyed rather than a flat pin because a flat pin passes for anyone who edits the list and the pin together and leaves the generation behind — the two edits sit in the same diff and read as one change. It is in SELFTESTS and not in `test_devices`, where the subject matter belongs, because `test_devices` creates real containers and a build container cannot run it (#224): a gate in an excluded test is a gate that never runs. It covers the device nodes only; the rest of the baseline is unpinned and says so in both places.

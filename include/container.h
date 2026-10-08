@@ -355,6 +355,48 @@ struct device_spec {
 	X("tty", 5, 0)
 
 /*
+ * The baseline's own generation, which is part of an image version's
+ * identity (ADR-0332, #579).
+ *
+ * WHY A VERSION NEEDS IT. An image's CONTENT is its installed packages
+ * plus whatever pkg_seed_image_baseline() stages; its IDENTITY was the
+ * installed packages alone (build_image_manifest_string(), ADR-0108).
+ * So a baseline change left the version string identical,
+ * image_produce_new_version() deduped, and the freshly seeded tree was
+ * discarded -- ADR-0155 recorded that as a trap to work around without
+ * naming this as the cause. Measured on 192.168.15.95, 2026-10-08: #577
+ * added tty 5:0 and shipped in 0.2.57-468, a freshly created image has
+ * the node, and `jumpbox` still does not -- its device nodes are dated
+ * Sep 21, weeks older than the fix, so sudo, su, ssh -t and every
+ * passphrase prompt still fail on the one image whose purpose is humans
+ * logging in.
+ *
+ * 1 IS THE FIRST GENERATION TO BE IDENTIFIED AT ALL. Everything before
+ * the release that adds this was unversioned, so this does not claim a
+ * history it cannot reconstruct: it starts the count rather than
+ * numbering the past.
+ *
+ * BUMP IT FOR ANY CHANGE TO WHAT THE BASELINE STAGES -- a device node,
+ * the ptmx symlink, the nsswitch.conf or passwd content, a directory.
+ * It is hand-maintained on purpose, the same way test_apigen pins the
+ * operation count: a number that has to change in a diff is how the
+ * change stays visible. Forgetting it is the one failure mode, so
+ * test_baseline (in SELFTESTS) pins the device list BY generation and
+ * fails both ways: when the list moves and this number does not, and
+ * when this number moves and no row records what it stages.
+ *
+ * That gate covers the DEVICE NODES only. A change to the rest of what
+ * pkg_seed_image_baseline() stages -- the loader and libc, the ptmx
+ * symlink, nsswitch.conf, the minimal passwd/group -- still needs this
+ * bumped, with nothing to catch it if you forget. They are not pinned
+ * because they are host-sourced paths and content rather than a table
+ * this header expands, so a pin would duplicate pkg.c's staging list
+ * and drift from it. Worth knowing rather than worth pretending
+ * otherwise; test_baseline's own header comment says the same.
+ */
+#define CIX_BASELINE_GENERATION 1
+
+/*
  * Provenance of the sixth entry, kept here because it is a measurement
  * and this is now where the list lives.
  *

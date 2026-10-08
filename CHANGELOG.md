@@ -6,6 +6,60 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An image version identifies its baseline, so a baseline fix reaches images that already exist (#579, ADR-0332)
+
+`sudo`, `su` and `ssh -t` still failed in `jumpbox` after the fix for them shipped. #577 added `tty`
+(5:0) to the image baseline, 0.2.57-468 carried it, 192.168.15.95 took it on the 2026-10-08 03:00
+roll — and measured that morning, a freshly created image had the node while `jumpbox` did not, its
+device nodes dated `Sep 21 17:29`. Weeks older than the fix, on the one image whose purpose is humans
+logging in, with #577 reading as closed. #578 added a sixth node the next day and would have landed
+identically.
+
+**The cause is an identity that covers half the content.** An image's content is its installed
+packages *plus* what `pkg_seed_image_baseline()` stages; `build_image_manifest_string()` hashed the
+packages alone (ADR-0108). So a baseline change produced a byte-identical version string,
+`image_produce_new_version()` deduplicated on it, repointed at the pre-existing tree, and discarded
+the freshly seeded one. ADR-0155 recorded that behaviour from two live incidents and called it a trap
+to work around ("delete and recreate the image"); it did not name this as the cause. Dedup was never
+malfunctioning — it was being asked a question that omitted one of the two things that decide the
+answer.
+
+**The version string now leads with the baseline generation**, and `struct image_version_entry`
+records which generation each version's tree was staged under. The converge drain re-produces a fully
+satisfied image whose stored generation is behind the daemon's, so the fix arrives the way every other
+image change arrives rather than needing an operator to know a platform change missed them (ADR-0332
+clauses 1 and 4). `GET /v1/images/{name}` reports `baseline_generation` per version, so a stale image
+is visible instead of needing two containers and a timestamp comparison to detect (clause 5). Nothing
+is written into an existing version's tree — the immutability ADR-0107/0108 rest on, and what makes
+dedup sound, is kept (clause 2).
+
+**The trigger is a recorded generation, not a hash comparison, and the difference is not cosmetic.**
+Comparing the current version against a freshly computed manifest hash is the obvious implementation
+and is wrong twice, silently: `image_record_version()` repoints `current_version` at any version
+already in the image's history without touching the installed set, so after a deliberate repoint to an
+older version the hash test is unequal and would re-produce — undoing the repoint as a side effect of
+an unrelated converge. And three callers pass `image_produce_new_version()` an `extra_identity`, whose
+chained `H(manifest, previous, change)` never equals a plain manifest hash, so the test would fire on
+those images every pass, forever. A version that has aged out of the bounded history reports "unknown"
+rather than 0, so "I cannot tell" never masquerades as "stale".
+
+**`test_baseline` is the gate, in SELFTESTS.** The generation is hand-maintained on purpose — the
+device ADR-0224 uses for the gcc recipe count — and forgetting it is silent, so the device list is
+pinned *keyed by generation*: changing the list without the number fails, and moving the number
+without recording what it stages fails too. A flat pin would not hold, because editing the list and
+the pin together reads as one change in one diff. It is a new binary rather than a case in
+`test_devices`, which creates real containers and so cannot run in a build container (#224) — a gate
+in an excluded test is a gate that never runs.
+
+Also corrected while in here: `docs/api/README.md` claimed `current_version` is `""` for an image with
+nothing installed. `image_create()` has always recorded one immediately (the hash of its own empty
+manifest), which is precisely why "has a current version" is not "has been composed" — the distinction
+that once let a created-but-never-composed build-environment image be accepted as ready, after which
+the build died at `execve(/usr/bin/bash)` with nothing in the image at all.
+
+**Not released.** ADR-0332 is Proposed, not Accepted: this changes what every image's version string
+is, on every host, which is host-wide and hard to reverse. It waits on the owner.
+
 ### A published installer ISO is recorded, and the gap to the built one is visible (#428, partial)
 
 A built ISO was visible on exactly one tab, and nothing recorded where a published one went. Measured
