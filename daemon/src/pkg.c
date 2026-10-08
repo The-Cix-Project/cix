@@ -8313,9 +8313,42 @@ static void image_reseed_if_baseline_stale(const char *image)
 	 * current version has fallen out of the bounded history. Neither
 	 * establishes that the tree is stale, and re-producing on "I
 	 * cannot tell" would stage a tree every pass, forever.
+	 *
+	 * But the second case is SAID OUT LOUD, because it is permanent and
+	 * would otherwise be invisible -- and clause 5 of ADR-0332 exists
+	 * precisely so that a stale image is visible rather than inferred,
+	 * which a silent skip is the opposite of. At
+	 * IMAGE_MAX_VERSION_HISTORY (256) image_record_version() can no
+	 * longer add an entry, so it repoints current_version at a version
+	 * the history does not list, and from then on this image's
+	 * generation is unknowable and no baseline change ever reaches it.
+	 * Measured on 192.168.15.95, 2026-10-08: `jumpbox` -- the image
+	 * #579 was filed for -- already carries 165 versions, and every
+	 * re-produce adds one.
+	 *
+	 * Recoverable rather than permanent, which is why the message names
+	 * the remedy: image_delete_version() drops the history entry along
+	 * with the tree, so reclaiming unreferenced versions
+	 * (POST /v1/images/gc, #551) frees slots and the generation becomes
+	 * readable again.
+	 *
+	 * An image with no current version at all is the ordinary case and
+	 * stays quiet: nothing has been produced for it yet, so the first
+	 * install produces one under today's generation.
 	 */
-	if (image_current_baseline_generation(image, &stored) != IMAGE_OK)
+	if (image_current_baseline_generation(image, &stored) != IMAGE_OK) {
+		char current[IMAGE_VERSION_MAX];
+
+		if (image_current_version(image, current, sizeof(current)) == IMAGE_OK)
+			logstore_write("cixd", "warn",
+			               "image %s: its current version %s is not in the recorded version "
+			               "history, so the baseline generation it was staged under cannot be "
+			               "read and the image is NOT being re-produced -- the history is "
+			               "bounded at %d entries; reclaim unreferenced versions to free slots "
+			               "(ADR-0332)",
+			               image, current, IMAGE_MAX_VERSION_HISTORY);
 		return;
+	}
 	if (stored >= CIX_BASELINE_GENERATION)
 		return;
 
