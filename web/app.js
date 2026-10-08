@@ -6284,7 +6284,7 @@ function renderImageDetailVersions(name, data) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
 
-		cell.colSpan = 3;
+		cell.colSpan = 4;
 		cell.className = "empty";
 		cell.textContent = "No version history";
 		row.appendChild(cell);
@@ -6303,6 +6303,22 @@ function renderImageDetailVersions(name, data) {
 		const createdCell = document.createElement("td");
 		createdCell.textContent = v.created_at ? new Date(v.created_at * 1000).toLocaleString() : "-";
 		row.appendChild(createdCell);
+
+		/* Which baseline generation this version's tree was staged with
+		 * (ADR-0332). An image's content is its packages plus the
+		 * baseline -- the device nodes, loader, libc and config files
+		 * every image gets regardless of what it installs -- so a
+		 * version staged under an older generation is missing whatever
+		 * the baseline has gained since, and is re-produced on the
+		 * image's next converge. 0 means the version predates the
+		 * daemon recording this, and is shown as "unrecorded" rather
+		 * than as a number, because a 0 in this column would read as a
+		 * real generation. */
+		const baselineCell = document.createElement("td");
+		const baseline = Number(v.baseline_generation) || 0;
+
+		baselineCell.textContent = baseline > 0 ? String(baseline) : "unrecorded";
+		row.appendChild(baselineCell);
 
 		const statusCell = document.createElement("td");
 		if (isCurrent) {

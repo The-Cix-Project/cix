@@ -2894,11 +2894,13 @@ int main(void)
 	 * generation, by design -- it is a compile-time constant so that a
 	 * baseline change cannot arrive without someone editing a number in
 	 * a diff. So the test writes the stale state instead: converge a
-	 * fully satisfied image, then rewrite its manifest.json so the
-	 * current version's baseline_generation reads 0, which is exactly
-	 * what every version staged before this field existed carries.
+	 * fully satisfied image, then edit its manifest.json to look like
+	 * an image produced before this field existed. That takes BOTH an
+	 * absent record and a version string no current build would compute
+	 * -- the comment on the staging block below says why one without
+	 * the other stages an impossible state that fails as a daemon bug.
 	 * image.c's load_state() reads that file on every call, so the
-	 * daemon sees the edit with no restart.
+	 * daemon sees the edits with no restart.
 	 *
 	 * Reintroduce-to-prove-it: drop the
 	 * image_reseed_if_baseline_stale() call from the converge drain and
@@ -2906,8 +2908,10 @@ int main(void)
 	 */
 	{
 		char v_before[128] = "";
+		char stale[128] = "";
 		char mpath[PATH_MAX];
 		int moved = 0, gen_after = -1, k;
+		int reproduced_expected = 0;
 
 		if (write_recipe(&client, "bslpkg", "1.0", tarball_path, sha256, "") != 0 ||
 		    create_image(&client, "bslimg") != 0) {
@@ -2957,19 +2961,56 @@ int main(void)
 		}
 
 		/*
-		 * Make it stale. Every entry is rewritten rather than just the
-		 * current one: the substitution is a test fixture, not a
-		 * mechanism, and a version other than the current one reading 0
-		 * changes nothing the trigger looks at.
+		 * Make it stale, FAITHFULLY -- and the first attempt at this
+		 * was not, which is worth recording because it looked right.
+		 *
+		 * Setting baseline_generation to 0 and leaving current_version
+		 * alone stages a state that CANNOT occur. A version string
+		 * carrying "baseline=1;" was by construction produced under
+		 * generation 1, so its record says 1. Worse, the trigger would
+		 * then recompute that very same hash, find the tree already
+		 * there, dedup onto it, and never move the version -- so the
+		 * test would have failed on its own fixture and read as a bug
+		 * in the daemon.
+		 *
+		 * What a real pre-ADR-0332 image looks like is the opposite:
+		 * its version was hashed by code that had no baseline field at
+		 * all, so the string differs from anything this build computes,
+		 * and its record is absent. Both halves are staged here -- the
+		 * version is renamed to one this build cannot produce (one hex
+		 * digit flipped), on disk and in the manifest, and the record
+		 * goes to 0. Then the re-produce recomputes the real hash,
+		 * finds no tree for it, and has to stage one.
+		 *
+		 * Both edits are same-length substitutions, which is why
+		 * file_replace_all() requires that: the manifest is the
+		 * daemon's own bytes with two values overwritten in place.
 		 */
 		snprintf(mpath, sizeof(mpath), "%s/rebuildable/images/bslimg/manifest.json", g_data_dir);
-		if (v_before[0] != '\0' && file_replace_all(mpath, "\"baseline_generation\":1",
-		                                             "\"baseline_generation\":0") <= 0) {
-			fprintf(stderr,
-			         "FAIL: ADR-0332 could not stage a stale baseline in %s -- if the daemon "
-			         "stopped writing baseline_generation, this test is measuring nothing\n",
-			         mpath);
-			ok = 0;
+		snprintf(stale, sizeof(stale), "%s", v_before);
+		stale[0] = (v_before[0] == '0') ? '1' : '0';
+		if (v_before[0] != '\0') {
+			char from_dir[PATH_MAX], to_dir[PATH_MAX];
+
+			snprintf(from_dir, sizeof(from_dir), "%s/rebuildable/images/bslimg/%s", g_data_dir,
+			         v_before);
+			snprintf(to_dir, sizeof(to_dir), "%s/rebuildable/images/bslimg/%s", g_data_dir, stale);
+			if (rename(from_dir, to_dir) != 0) {
+				fprintf(stderr, "FAIL: ADR-0332 could not rename %s to %s: %s\n", from_dir,
+				        to_dir, strerror(errno));
+				ok = 0;
+			} else if (file_replace_all(mpath, v_before, stale) <= 0) {
+				fprintf(stderr, "FAIL: ADR-0332 manifest %s does not name version %s\n", mpath,
+				        v_before);
+				ok = 0;
+			} else if (file_replace_all(mpath, "\"baseline_generation\":1",
+			                             "\"baseline_generation\":0") <= 0) {
+				fprintf(stderr,
+				         "FAIL: ADR-0332 could not stage a stale baseline in %s -- if the daemon "
+				         "stopped writing baseline_generation, this test measures nothing\n",
+				         mpath);
+				ok = 0;
+			}
 		}
 
 		/* One more converge pass. The packages still agree with the
@@ -2990,12 +3031,22 @@ int main(void)
 			if (cix_client_request(&client, "GET", "/v1/images/bslimg", NULL, &r) == 0 &&
 			    r.status == 200) {
 				now = json_str_field(r.json, "current_version");
-				if (now != NULL && strcmp(now, v_before) != 0) {
+				if (now != NULL && strcmp(now, stale) != 0) {
 					const struct json_value *versions =
 					    json_object_get(r.json, "versions");
 					size_t vi;
 
 					moved = 1;
+					/*
+					 * And it moved to the RIGHT version, not merely to
+					 * a different one: the hash this build computes for
+					 * an unchanged package set under today's baseline
+					 * is exactly what the image had before the fixture
+					 * renamed it, so the re-produce must land back on
+					 * v_before. Asserting only "it changed" would pass
+					 * for a version produced from the wrong string.
+					 */
+					reproduced_expected = strcmp(now, v_before) == 0;
 					/* The generation recorded against the version it
 					 * moved TO -- the whole point is that the new tree
 					 * was staged with today's baseline. */
@@ -3020,6 +3071,14 @@ int main(void)
 			         "FAIL: ADR-0332 bslimg's version never moved after its baseline went "
 			         "stale -- a satisfied image is not re-produced, which is #577: the fix "
 			         "reaches new images only\n");
+			ok = 0;
+		}
+		if (moved && !reproduced_expected) {
+			fprintf(stderr,
+			         "FAIL: ADR-0332 bslimg re-produced to a version other than the hash of its "
+			         "own unchanged package set under baseline generation %d (expected %s) -- the "
+			         "identity it was rebuilt under is not the one it should have\n",
+			         CIX_BASELINE_GENERATION, v_before);
 			ok = 0;
 		}
 		if (moved && gen_after != CIX_BASELINE_GENERATION) {
