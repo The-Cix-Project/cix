@@ -6,6 +6,60 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A radio create's 1.7 s is the bring-up helper, not either operation the issue suspected (#344, 0.2.57-474)
+
+Creating a container that carries a radio blocks the reactor for about 1.7 seconds, every time.
+#344 measured that precisely — one slow pass per apply, worst figure stable to a few milliseconds
+across seven creations, which is a single synchronous operation rather than contention — and said
+plainly that **which** operation had not been established, naming two candidates.
+
+Reading the path before instrumenting it found **four** operations, not two. Measured on
+192.168.15.95 under `0.2.57-474`:
+
+```
+container ar-1: interface attach 1633 ms total -- classify 2, down 0, move 18, bring-up 1613
+```
+
+| step | ms | share |
+|---|---|---|
+| `classify` — `nl80211_is_wireless()` | 2 | 0.1% |
+| `down` — `rtnl_link_set_down()` before the phy move | **0** | 0% |
+| `move` — `NL80211_CMD_SET_WIPHY_NETNS` | **18** | 1.1% |
+| `bring_up` — `fork()` + `setns()` + `rtnl_link_set_up()` + `waitpid()` | **1613** | **98.8%** |
+
+**Both suspects are innocent**, and the cost is in the step the issue never listed: a `fork()` whose
+child enters the netns and brings the moved interface up, waited on by a **blocking `waitpid()` in
+the request handler** — the shape [ADR-0247](docs/adr/0247-the-reactor-does-not-block-and-that-is-the-defence.md)
+exists to forbid, and the shape that froze this control plane for 366 seconds in #399. 1633 ms
+against stallwatch's 1718–1724 ms worst pass is consistent; the remainder is the rest of the create
+in that same pass.
+
+`container_net_last_attach_ms()` reports the five numbers, following the
+`container_create_last_error_step()` convention — a static in the runtime library read by the daemon
+through an accessor, because the library does not depend on the daemon. `monotonic_millis()` is
+deliberately identical to `stallwatch.c`'s in name, type and body, with a comment saying why it is
+copied rather than shared across that boundary. `errno` is preserved across every measurement that
+brackets a failing call: two of these steps feed `container_set_last_error_step()`, which renders
+`strerror(errno)`, and `clock_gettime()` may set `errno` even on success — an unguarded timing call
+here is exactly how a step gets reported with the wrong cause.
+
+**Still inference, and labelled as such:** `fork()` and `setns()` are microseconds, so almost all of
+the 1613 ms is almost certainly `rtnl_link_set_up()` on the USB radio — a driver bringing a device
+up. The instrumentation brackets the whole helper and does not split it. That distinction decides
+whether the 1.6 s can be reduced or only moved: if it is the driver, no restructuring makes it
+faster.
+
+**And one thing this measurement found that the original report could not.** Stallwatch recorded no
+slow pass for this create, although the 1613 ms happened — the container was re-created at boot by
+the daemon's own restore path, and stallwatch's `activity` keys on an in-flight request. The stall
+is real either way; at boot nobody is waiting on the reactor. But "stallwatch is quiet" is not
+evidence this path is cheap.
+
+Not a fix. The measurement stays regardless: a slow interface attach is worth recording whether or
+not #344 closes, one line per interface-carrying create, via `logstore_write()` rather than a
+response field, because the cost is the reactor's and the reader is whoever is asking why an
+unrelated request was slow.
+
 ### The architecture diagram is six legible charts, not one unreadable one (#582, ADR-0334)
 
 The owner's verdict on the first mermaid version: it renders, *"a little crazy small"*. That is a real
