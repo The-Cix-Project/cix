@@ -38,7 +38,7 @@ recipes/image/cix-builder@1.4.0.sh
 recipes/deployment/dns-1@1.2.0.json
 ```
 
-The extension is the format, which is [ADR-0305](0305-a-recipes-filename-is-its-format.md)
+The extension is the format, which is [ADR-0305](0305-a-recipes-format-is-its-filename.md)
 finishing its own thought: `cbs` for a CBS recipe in CPDL, `sh` for a
 shell one, `json` for a container deployment definition.
 

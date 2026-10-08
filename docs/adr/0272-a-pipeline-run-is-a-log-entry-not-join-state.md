@@ -5,7 +5,7 @@
 Accepted
 
 Issue [#371](https://git.home.arpa/itdlabs/cix/issues/371) (Deploy 3 of four).
-Extends [ADR-0256](0256-a-package-has-a-position-in-a-pipeline.md) and
+Extends [ADR-0256](0256-the-pipeline-is-the-model.md) and
 [ADR-0269](0269-one-pipeline-model-for-four-kinds.md) along the time axis; stores its
 records the way [ADR-0070](0070-consolidated-log-store.md) stores lines.
 

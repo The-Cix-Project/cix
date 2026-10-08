@@ -1376,17 +1376,61 @@ int main(void)
 		}
 		cix_response_free(&r);
 
+		/*
+		 * ADR-0333: THE BUNDLE IS A CONTAINER'S, NOT AN IMAGE'S.
+		 *
+		 * This used to read it out of the freshly created imgtrust
+		 * image, because the image baseline wrote it there. An image's
+		 * content now comes only from its packages -- the bundle is
+		 * this host's own PEM, so it was never image content -- and
+		 * stage_container_platform_files() writes it for each
+		 * container. Both halves are asserted: the image must NOT have
+		 * it, and a real container must.
+		 *
+		 * The openssl chain verification below is unchanged and is the
+		 * point of the whole block: that the assembled bundle actually
+		 * validates the host leaf. Only where the file is read from
+		 * moved.
+		 */
 		{
-			char image_dir[PATH_MAX], version[128];
+			char image_dir[PATH_MAX], version[128], image_bundle[PATH_MAX];
 
 			snprintf(image_dir, sizeof(image_dir), "%s/rebuildable/images/imgtrust", g_data_dir);
 			if (test_image_fixture_read_current_version(image_dir, version, sizeof(version)) != 0)
 				version[0] = '\0';
-			snprintf(bundle_path, sizeof(bundle_path),
+			snprintf(image_bundle, sizeof(image_bundle),
 			         "%s/%s/rootfs/etc/ssl/certs/cix-ca-bundle.pem", image_dir, version);
+			if (stat(image_bundle, &st) == 0) {
+				fprintf(stderr,
+				        "FAIL: a freshly created image carries cix-ca-bundle.pem at %s -- the "
+				        "bundle is this host's own PEM and belongs to a container, not an "
+				        "image (ADR-0333)\n",
+				        image_bundle);
+				ok = 0;
+			}
 		}
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"trustc\",\"image\":\"pkitest\","
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"ignore\","
+		                       "\"cmd\":[\"/bin/daemon_child\"]}]}",
+		                       &r) != 0 ||
+		    (r.status != 201 && r.status != 200)) {
+			fprintf(stderr, "FAIL: POST trustc for the trust-bundle check, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		snprintf(bundle_path, sizeof(bundle_path),
+		         "%s/containers/trustc/upper/etc/ssl/certs/cix-ca-bundle.pem", g_data_dir);
+
 		if (stat(bundle_path, &st) != 0 || st.st_size == 0) {
-			fprintf(stderr, "FAIL: cix-ca-bundle.pem missing or empty at %s\n", bundle_path);
+			fprintf(stderr, "FAIL: cix-ca-bundle.pem missing or empty at %s -- "
+			                "stage_container_platform_files() must write it for every "
+			                "container (ADR-0333)\n",
+			        bundle_path);
 			ok = 0;
 		} else {
 			char host_cert_pem[8192] = { 0 };
@@ -1420,7 +1464,7 @@ int main(void)
 					if (run_openssl_argv(argv) != 0) {
 						fprintf(stderr,
 						        "FAIL: host cert does not verify against the "
-						        "staged image trust bundle\n");
+						        "trust bundle staged into a container\n");
 						ok = 0;
 					}
 					snprintf(cmd, sizeof(cmd), "rm -rf '%s'", scratch_dir);
@@ -1429,6 +1473,10 @@ int main(void)
 			}
 		}
 
+		memset(&r, 0, sizeof(r));
+		cix_client_request(&client, "DELETE", "/v1/containers/trustc", NULL, &r);
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
 		cix_client_request(&client, "DELETE", "/v1/images/imgtrust", NULL, &r);
 		cix_response_free(&r);
 	}

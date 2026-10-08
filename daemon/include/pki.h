@@ -76,7 +76,7 @@ int pki_intermediate_bootstrapped(void);
  * ADR-0136) that needs to add it as an *extra* chain certificate
  * alongside an already-loaded leaf, distinct from pki_cert_deliver()'s
  * own chain_pem (which builds a full leaf+intermediate file for a
- * container to receive) and pki_write_trust_bundle_file()'s own
+ * container to receive) and the trust bundle's own
  * root+intermediate trust bundle (a different concern -- what this
  * host trusts outbound, not what it presents inbound). Returns 1 and
  * fills *out_pem (malloc'd, caller frees)/*out_len if bootstrapped, 0
@@ -250,22 +250,19 @@ enum pki_error pki_ca_reset(const char *root_common_name, const char *intermedia
                              struct json_writer *w);
 
 /*
- * Writes the current CA trust chain (root alone, or root+intermediate
- * if one is bootstrapped -- order doesn't matter for a pure trust-
- * anchor bundle the way it does for pki_cert_deliver()'s own
- * leaf-first fullchain.pem) to dest_path. For staging into a
- * container image's own trust store (ADR-0051) -- a different job
- * from pki_cert_deliver()'s "hand a running container its own leaf
- * identity." PKI_ERR_NOT_BOOTSTRAPPED if no root exists yet.
- */
-enum pki_error pki_write_trust_bundle_file(const char *dest_path);
-
-/*
- * The same chain pki_write_trust_bundle_file() writes, returned in
- * memory instead: *out_pem is a malloc'd, NUL-terminated PEM the
- * caller frees, and *out_len (optional) its length. The file writer
- * is implemented on top of this, so there is one composition of
- * root+intermediate rather than two that can disagree.
+ * The current CA trust chain -- root alone, or root+intermediate if one
+ * is bootstrapped (order does not matter for a pure trust-anchor bundle
+ * the way it does for pki_cert_deliver()'s leaf-first fullchain.pem).
+ * *out_pem is a malloc'd, NUL-terminated PEM the caller frees, and
+ * *out_len (optional) its length. PKI_ERR_NOT_BOOTSTRAPPED if no root
+ * exists yet.
+ *
+ * There was a pki_write_trust_bundle_file() beside this that wrote the
+ * same chain straight to a path, for staging into an image's trust
+ * store (ADR-0051). ADR-0333 removed the image baseline that was its
+ * only caller -- the bundle is per-container state now, staged with an
+ * ownership offset like every other container file, which this
+ * in-memory form serves and a path-writer cannot.
  *
  * This exists for a caller that needs the current anchor *at the
  * moment it dials* rather than a copy on disk: #416's LDAPS bind in

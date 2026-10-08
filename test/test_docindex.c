@@ -89,6 +89,33 @@ static int file_exists(const char *path)
 }
 
 /*
+ * Does this path name a document this tree owns? Used both to pick the
+ * files the link check reads and to decide which link targets it is
+ * willing to resolve.
+ *
+ * An extension list rather than "anything without a scheme",
+ * deliberately: a link to a directory, to an issue, or to a source file
+ * by line number is perfectly good prose and none of it is a document
+ * whose absence this test can judge. Checking only these extensions is
+ * what keeps the check free of the false positives that would get it
+ * deleted.
+ */
+static int looks_like_document(const char *path)
+{
+	static const char *const exts[] = { ".md", ".yaml", ".svg", ".pub", ".asc", ".json" };
+	size_t len = strlen(path);
+	size_t i;
+
+	for (i = 0; i < sizeof(exts) / sizeof(exts[0]); i++) {
+		size_t elen = strlen(exts[i]);
+
+		if (len > elen && strcmp(path + len - elen, exts[i]) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+/*
  * 1. Every ADR is listed in the ADR index, and every listed link
  *    resolves.
  *
@@ -730,6 +757,167 @@ static void check_api_endpoint_index(void)
 	free(doc);
 }
 
+/*
+ * 7. Every local link in every document resolves.
+ *
+ * check_adr_index() above already does this for the ADR index's own
+ * rows. Nothing did it for links INSIDE documents, and on 2026-10-08 an
+ * audit found TEN broken ones that had accumulated silently -- eight
+ * ADRs citing each other by a filename the file never had
+ * (`0305-a-recipes-filename-is-its-format.md` for
+ * `0305-a-recipes-format-is-its-filename.md`: the right words in the
+ * wrong order), one citing ADR-0155 by a title it never carried, and a
+ * CHANGELOG entry naming ADR-0215 as `a-boot-manager-of-our-own`.
+ *
+ * Every one of them was written by someone who knew which ADR they
+ * meant and guessed at its filename, which is exactly the failure a
+ * machine should catch instead of a reader. A document's links are part
+ * of what it claims.
+ *
+ * FENCED BLOCKS ARE SKIPPED, and that is not a convenience: 0000-adr-
+ * process.md's worked example of the ADR format contains
+ * `[ADR-0099](0099-something.md)`, which is an illustration and must
+ * stay. A checker that flagged it would be wrong, and the first thing
+ * anyone would do is delete the check.
+ *
+ * Only targets with a document extension are checked. A link to a
+ * directory, an anchor, or anything external is not this test's
+ * business -- external links cannot be resolved offline, which is the
+ * same line check_adr_index() already draws.
+ */
+static void check_links_in_file(const char *path)
+{
+	char *buf = slurp(path);
+	char dir[512];
+	char target[512];
+	char resolved[1100];
+	const char *slash;
+	char *line, *next;
+	int fence = 0;
+
+	if (buf == NULL) {
+		fail("%s: unreadable -- it is in this test's own list of documents", path);
+		return;
+	}
+
+	slash = strrchr(path, '/');
+	if (slash == NULL)
+		snprintf(dir, sizeof(dir), ".");
+	else
+		snprintf(dir, sizeof(dir), "%.*s", (int)(slash - path), path);
+
+	for (line = buf; line != NULL && *line != '\0'; line = next) {
+		const char *p;
+
+		next = strchr(line, '\n');
+		if (next != NULL)
+			*next++ = '\0';
+
+		/* A fence toggles, and its own line is never scanned. */
+		if (strncmp(line, "```", 3) == 0) {
+			fence = !fence;
+			continue;
+		}
+		if (fence)
+			continue;
+
+		for (p = line; (p = strstr(p, "](")) != NULL; p += 2) {
+			const char *start = p + 2;
+			const char *end = strchr(start, ')');
+			const char *hash;
+			size_t len;
+
+			if (end == NULL)
+				break;
+			len = (size_t)(end - start);
+			if (len == 0 || len >= sizeof(target))
+				continue;
+			memcpy(target, start, len);
+			target[len] = '\0';
+
+			/* An anchor on the end is not part of the path. */
+			hash = strchr(target, '#');
+			if (hash != NULL)
+				target[hash - target] = '\0';
+			if (target[0] == '\0' || target[0] == '#')
+				continue;
+			/* External (scheme:) or absolute: not checkable here. */
+			if (strchr(target, ':') != NULL || target[0] == '/')
+				continue;
+			if (!looks_like_document(target))
+				continue;
+
+			snprintf(resolved, sizeof(resolved), "%s/%s", dir, target);
+			if (!file_exists(resolved))
+				fail("%s links to %s, which does not exist", path, target);
+		}
+	}
+
+	free(buf);
+}
+
+static void check_doc_links(void)
+{
+	static const char *const root_docs[] = { "README.md",       "CHANGELOG.md", "CLAUDE.md",
+		                                  "CONTRIBUTING.md", "SECURITY.md",  "TRADEMARK.md" };
+	DIR *d;
+	struct dirent *de;
+	size_t i;
+	int files = 0;
+
+	for (i = 0; i < sizeof(root_docs) / sizeof(root_docs[0]); i++) {
+		check_links_in_file(root_docs[i]);
+		files++;
+	}
+
+	d = opendir("docs");
+	if (d == NULL) {
+		fail("docs/ is unreadable");
+		return;
+	}
+	while ((de = readdir(d)) != NULL) {
+		char path[512];
+		struct stat st;
+
+		if (de->d_name[0] == '.')
+			continue;
+		snprintf(path, sizeof(path), "docs/%s", de->d_name);
+		if (stat(path, &st) != 0)
+			continue;
+		if (S_ISREG(st.st_mode)) {
+			if (looks_like_document(de->d_name)) {
+				check_links_in_file(path);
+				files++;
+			}
+			continue;
+		}
+		if (!S_ISDIR(st.st_mode))
+			continue;
+		{
+			DIR *sub = opendir(path);
+			struct dirent *se;
+
+			if (sub == NULL)
+				continue;
+			while ((se = readdir(sub)) != NULL) {
+				char spath[600];
+
+				if (se->d_name[0] == '.' || !looks_like_document(se->d_name))
+					continue;
+				snprintf(spath, sizeof(spath), "%s/%s", path, se->d_name);
+				if (file_exists(spath)) {
+					check_links_in_file(spath);
+					files++;
+				}
+			}
+			closedir(sub);
+		}
+	}
+	closedir(d);
+
+	printf("  doc links: %d documents scanned\n", files);
+}
+
 int main(void)
 {
 	check_adr_index();
@@ -738,6 +926,7 @@ int main(void)
 	check_guides_index();
 	check_endpoint_row_parser();
 	check_api_endpoint_index();
+	check_doc_links();
 
 	if (g_failures > 0) {
 		printf("DOCINDEX RESULT: FAIL (%d)\n", g_failures);

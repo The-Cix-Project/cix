@@ -1201,20 +1201,6 @@ enum pki_error pki_trust_bundle_pem(char **out_pem, size_t *out_len)
 	return PKI_OK;
 }
 
-enum pki_error pki_write_trust_bundle_file(const char *dest_path)
-{
-	char *bundle = NULL;
-	size_t bundle_len = 0;
-	enum pki_error result = pki_trust_bundle_pem(&bundle, &bundle_len);
-
-	if (result != PKI_OK)
-		return result;
-	if (persist_atomic_write(dest_path, bundle, bundle_len) != 0)
-		result = PKI_ERR_PERSIST_FAILED;
-	free(bundle);
-	return result;
-}
-
 /* cert_pem may be NULL (list view: metadata only, never a key). */
 static void write_cert_json(const struct pki_cert_record *rec, const char *cert_pem,
                              struct json_writer *w)

@@ -5,7 +5,7 @@
 Accepted
 
 Issue [#389](https://git.home.arpa/itdlabs/cix/issues/389). Applies
-[ADR-0199](0199-a-build-environment-is-declared-not-inherited.md)'s rule
+[ADR-0199](0199-recipes-declare-their-build-tools.md)'s rule
 — a build environment is declared, not inherited — to the *runtime*
 half, which had no equivalent gate.
 

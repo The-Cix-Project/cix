@@ -5,7 +5,7 @@
 Accepted
 
 Issue [#371](https://git.home.arpa/itdlabs/cix/issues/371) (Deploy 4 of four, the last).
-Builds on [ADR-0256](0256-a-package-has-a-position-in-a-pipeline.md) (the stage/status
+Builds on [ADR-0256](0256-the-pipeline-is-the-model.md) (the stage/status
 vocabulary it reuses rather than extends), [ADR-0269](0269-one-pipeline-model-for-four-kinds.md)
 (`blocked_on`), [ADR-0271](0271-an-action-is-attributable-to-a-person.md) (who approved),
 and [ADR-0272](0272-a-pipeline-run-is-a-log-entry-not-join-state.md) (the store this

@@ -17,7 +17,7 @@ Two things the deploy showed, neither visible on paper:
 **An image stager only fires when an image produces a new version.**
 Every image that already existed when this shipped has no
 `/etc/os-release` and gets none until something changes its package
-manifest — and by [ADR-0155](0155-an-image-version-is-a-manifest-hash.md)
+manifest — and by [ADR-0155](0155-baseline-reseed-manifest-hash-dedup-gap.md)
 reinstalling a package at its own version reproduces the same manifest
 hash, dedups, and discards the re-seeded tree. Measured on
 192.168.15.95 after deploying and rebooting into the feature: `jump`

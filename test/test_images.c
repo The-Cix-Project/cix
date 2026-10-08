@@ -317,24 +317,35 @@ int main(void)
 	cix_response_free(&r);
 
 	/*
-	 * #478/ADR-0296: the baseline the image baseline wrote (removed, ADR-0333) into
-	 * a freshly created image's rootfs must name the dns backend. Until
-	 * this, it said "hosts: files" -- so glibc never consulted DNS and
-	 * any resolv.conf staged into a container from that image was
-	 * inert, measured on 192.168.15.95 with libnss_dns.so.2 present and
-	 * `getent hosts` rc=2.
+	 * ADR-0333: A FRESHLY CREATED IMAGE IS EMPTY, and this asserts it
+	 * positively rather than being deleted.
 	 *
-	 * Read off disk rather than through an API, because no endpoint
-	 * exposes an image's rootfs and this file is the image's, not a
-	 * container's. test_nsswitch gates the content and the convergence
-	 * rule as pure logic; this gates that the seeder actually wrote it.
+	 * It used to assert the opposite -- that the image's own
+	 * /etc/nsswitch.conf named the dns backend (#478/ADR-0296), which
+	 * was right while the platform seeded the file into every image.
+	 * The platform no longer writes anything into an image: its content
+	 * comes only from its packages, and nsswitch.conf is staged for each
+	 * container by stage_container_platform_files(). An image carrying
+	 * one would mean a second writer had come back.
+	 *
+	 * So the check inverts, and it is a stronger gate than the one it
+	 * replaces: the old one could only notice the seeder getting the
+	 * CONTENT wrong, while this notices anything at all re-acquiring the
+	 * habit of writing into images.
+	 *
+	 * Where the property it used to guard now lives: test_nsswitch gates
+	 * the content as pure logic, and test_daemon gates that a real
+	 * container receives it -- for both the ldap_client variant and the
+	 * ordinary one.
 	 */
-	if (run_cmd("grep -qE '^hosts:[[:space:]]+files[[:space:]]+dns$' "
-	            "'%s'/imgtest_empty/*/rootfs/etc/nsswitch.conf",
-	            g_images_dir) != 0) {
-		fprintf(stderr, "FAIL: a new image's baseline /etc/nsswitch.conf has no "
-		                "\"hosts: files dns\" (#478)\n");
-		run_cmd("cat '%s'/imgtest_empty/*/rootfs/etc/nsswitch.conf >&2", g_images_dir);
+	if (run_cmd("test ! -e '%s'/imgtest_empty/*/rootfs/etc/nsswitch.conf", g_images_dir) != 0) {
+		fprintf(stderr, "FAIL: a freshly created image carries /etc/nsswitch.conf -- an image's "
+		                "content must come only from its packages (ADR-0333)\n");
+		ok = 0;
+	}
+	if (run_cmd("test ! -e '%s'/imgtest_empty/*/rootfs/dev/null", g_images_dir) != 0) {
+		fprintf(stderr, "FAIL: a freshly created image carries /dev/null -- device nodes are a "
+		                "container's, created by container_dev_stage_baseline() (ADR-0333)\n");
 		ok = 0;
 	}
 
