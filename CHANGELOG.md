@@ -6,6 +6,39 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The architecture diagram is six legible charts, not one unreadable one (#582, ADR-0334)
+
+The owner's verdict on the first mermaid version: it renders, *"a little crazy small"*. That is a real
+defect rather than polish — a renderer scales a chart to the page width, so one chart holding **41
+nodes** shrinks every label past reading. A diagram nobody can read is the state the Documentation
+Map calls worse than none.
+
+Split into an overview plus one chart per layer: **7, 14, 5, 6, 6 and 5 nodes**. The nested
+`subgraph` that drove the width is gone, and each per-layer chart is `flowchart LR`, so a list of
+siblings stacks vertically instead of sprawling across the page — the cixd chart's nine subsystems
+are now a column beside the reactor rather than a row of nine.
+
+This is [ADR-0334](docs/adr/0334-the-architecture-diagram-is-generated-from-text.md)'s own clause 5
+("the picture carries the shape; the prose carries the detail") applied one level further than the
+first attempt took it: each chart now sits immediately above the prose section that explains it,
+rather than every box living in one picture at the top.
+
+Two things that came out of it rather than being planned:
+
+- **The gate's blind spot is now written into the document itself.** `test_docindex` checks that a
+  component is *named*; it passed green on a version that drew authorisation as a gateway in front
+  of the reactor and inverted the boot path. The "Keeping this current" section says so, and says
+  what to do instead — read a new or rewired diagram's edges against the code once, deliberately.
+- **The structural checker I wrote to verify the charts was wrong three times before it was right**,
+  and each wrong version reported success. It tokenised label text as node ids, then missed nodes
+  declared inline on the right of an arrow, and in between an `awk -v` that came after the program
+  left the output directory empty — so it checked zero files and printed "structurally sound". The
+  fix that mattered was counting what it had examined and asserting the count, which is the same
+  `checked == 0` lesson the architecture gate itself had learned hours earlier.
+
+Verified: all 17 component names still present, every link in the tree resolves, six `mermaid`
+blocks, 34 edge endpoints all declared, every line balanced.
+
 ### Eight wrong arrows in the new architecture diagram, found by reading the code (#582, ADR-0334)
 
 The mermaid diagram landed two commits ago with its component *names* gated and its **arrows
