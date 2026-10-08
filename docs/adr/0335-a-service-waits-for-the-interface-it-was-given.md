@@ -31,15 +31,24 @@ One netlink call — `rtnl_link_set_up()` on the moved radio — is 1658 of 1676
 
 1. **The daemon reaps the bring-up helper by its pidfd** instead of `waitpid()`ing for it, which is the convention every other child the daemon tracks already uses. `container_create()` returns after the move — 16 ms of netlink — and the reactor serves other requests while the radio comes up.
 
-2. **`cix-init` holds a service until its container's interfaces report up**, before `execve()`. It reads `/sys/class/net/<name>/operstate` and waits for it to leave `down`, bounded by a timeout, after which it starts the service anyway and says so: a radio that never comes up is a hardware fault, and refusing to start is a worse answer than starting and letting `on_exit` decide.
+2. **`cix-init` holds a service until its container's interfaces have `IFF_UP`**, before `execve()`. It reads `/sys/class/net/<name>/flags` and waits for bit 0, bounded by **5000 ms** — the same ceiling `CONTAINER_EXEC_WAIT_MS` already uses for the child's exec, and three times the 1658 ms measured above. On timeout it starts the service anyway and logs that it did: a radio that never comes up is a hardware fault, and refusing to start is a worse answer than starting and letting `on_exit` decide.
 
-3. **The check is sysfs, not netlink, and that is a measurement rather than a preference.** `mountns_pivot()` mounts a *fresh* sysfs inside the container, deliberately after the netns is created — its own comment explains that a carried-in submount stays pinned to the netns it was set up in and "would keep showing devices from the wrong namespace". So the container's `/sys/class/net` reports the container's own netns, which is exactly the question being asked. And `cix-init` already issues `openat`, `read`, `close`, `poll` and `clock_gettime`: a bounded poll of one file needs **no new syscall**, no netlink, no libc, and nothing added to any image.
+3. **`flags`, not `operstate` — and that distinction is the difference between working and silently not working.** Measured on 192.168.15.95, 2026-10-09, from inside a container whose `lo` had just been brought up by `container_net_child_loopback_up()`, which calls the same `rtnl_link_set_up()` this decision waits on:
 
-4. **The daemon derives the list; the recipe does not have to declare it.** A container given an interface is a container that wants it, so every service waits for every interface the container carries. Waiting for an interface a particular service does not need costs that service some milliseconds once; requiring each recipe to repeat what the container spec already says would be a second place to state one fact.
+   ```
+   /sys/class/net/lo/flags      0x9      IFF_UP (0x1) | IFF_LOOPBACK (0x8)
+   /sys/class/net/lo/operstate  unknown
+   ```
 
-5. **The interface list travels in the spec `cix-init` already receives**, not over the control socket. The socket carries operations on a running container (`CIXINIT_OP_SHUTDOWN`); this is part of what the container *is*, known before PID 1 starts, and a value known at creation does not belong in a runtime message.
+   An interface that is genuinely up reports `operstate` as `unknown`, not `up` — the kernel writes `up` there only for a driver that reports carrier, and a wireless interface that is administratively up but not yet associated reports `dormant`. An earlier draft of this decision waited for `operstate` to leave `down`; `unknown` satisfies that before *and* after the bring-up, so `cix-init` would never have waited at all and the race would have survived with the mechanism appearing to be in place. `IFF_UP` is set by `rtnl_link_set_up()` and by nothing else on this path, which makes it the one signal that answers the question being asked.
 
-6. **Nothing changes for a container with no interfaces**, which is every container on this host but one, and every build container. No list, no poll, no new code path reached.
+4. **The check is sysfs, not netlink, and that is a measurement rather than a preference.** `mountns_pivot()` mounts a *fresh* sysfs inside the container, deliberately after the netns is created — its own comment explains that a carried-in submount stays pinned to the netns it was set up in and "would keep showing devices from the wrong namespace". So the container's `/sys/class/net` reports the container's own netns, which is exactly the question being asked. And `cix-init` needs **no new syscall**: it already issues `openat`, `read` and `close`, and it already uses `poll` with zero file descriptors as a sleep (`init/src/cix_init.c:1558`, a 250 ms tick when there is no control fd), which is what bounds the retry. It has no `nanosleep` and does not need one. No netlink, no libc, nothing added to any image.
+
+5. **The daemon derives the list; the recipe does not have to declare it.** A container given an interface is a container that wants it, so every service waits for every interface the container carries. Waiting for an interface a particular service does not need costs that service some milliseconds once; requiring each recipe to repeat what the container spec already says would be a second place to state one fact.
+
+6. **The interface list travels in the spec `cix-init` already receives**, not over the control socket. The socket carries operations on a running container (`CIXINIT_OP_SHUTDOWN`); this is part of what the container *is*, known before PID 1 starts, and a value known at creation does not belong in a runtime message.
+
+7. **Nothing changes for a container with no interfaces**, which is every container on this host but one, and every build container. No list, no poll, no new code path reached.
 
 ## Consequences
 

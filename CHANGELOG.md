@@ -23,7 +23,7 @@ marks that image version bad, and the access point goes down on every reboot. Th
 1.7 s stall for a broken AP.
 
 **The decision**: the daemon reaps the helper by pidfd *and* `cix-init` holds each service until the
-container's interfaces leave `down`, before `execve()`. The reactor is held for the 16 ms move; the
+container's interfaces have `IFF_UP` in `/sys/class/net/<if>/flags`, before `execve()`. The reactor is held for the 16 ms move; the
 radio still takes 1.66 s, because no design makes hardware faster; and a service cannot observe a
 down interface it was given, because it has not started yet. `#549`'s meaning of "created" is
 untouched — the child's exec is still waited for.
@@ -52,6 +52,17 @@ rejected but is unavailable: shortening the 1.66 s, because whether `rtnl_link_s
 the driver's `ndo_open` or in the kernel settling the migration is still not established, and the
 experiments that would separate them need the radio out of `ar-1` and the AP down.
 
+
+**Corrected before it was accepted, and the correction is the point.** The first draft of Decision 2
+waited for `operstate` to leave `down`. Measured from inside a container whose `lo` had just been
+brought up by the same `rtnl_link_set_up()` call this waits on: `flags` reads `0x9`
+(`IFF_UP | IFF_LOOPBACK`) and `operstate` reads **`unknown`** — not `up`. So "leaves `down`" was
+already satisfied before the bring-up as well as after, and `cix-init` would never have waited at
+all: the race would have survived intact with the mechanism apparently in place. `IFF_UP` is what
+`rtnl_link_set_up()` sets and the only signal that answers the question. Decision 2 now reads
+`flags` bit 0, Decision 3 records the measurement and why `operstate` was rejected, and the timeout
+has a number — 5000 ms, matching `CONTAINER_EXEC_WAIT_MS` and three times the 1658 ms measured.
+A design that works by coincidence of ordering is the shape this session has now caught four times.
 Proposed, not accepted. It changes when a container is considered ready, so it is the owner's call.
 
 ### The radio attach's 1.66 s is one netlink call, and the inference that said so is now a reading (#344, 0.2.57-475)
