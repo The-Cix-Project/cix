@@ -1413,12 +1413,16 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"trustc\",\"image\":\"pkitest\","
-		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"ignore\","
-		                       "\"cmd\":[\"/bin/daemon_child\"]}]}",
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"20\"]}]}",
 		                       &r) != 0 ||
-		    (r.status != 201 && r.status != 200)) {
-			fprintf(stderr, "FAIL: POST trustc for the trust-bundle check, status=%d\n",
-			        r.status);
+		    r.status != 201) {
+			/* err_of() rather than the bare status: the first version of
+			 * this used on_exit "ignore", which is not a value the
+			 * contract has, and a 400 with no body printed says nothing
+			 * about which field was wrong. */
+			fprintf(stderr, "FAIL: POST trustc for the trust-bundle check, status=%d: %s\n",
+			        r.status, err_of(&r));
 			ok = 0;
 		}
 		cix_response_free(&r);
