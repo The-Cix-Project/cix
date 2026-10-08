@@ -6,6 +6,50 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Eight wrong arrows in the new architecture diagram, found by reading the code (#582, ADR-0334)
+
+The mermaid diagram landed two commits ago with its component *names* gated and its **arrows
+unchecked** — `test_docindex` asserts that a component with a daemon source file is named, which is
+exactly the limit ADR-0334 states. Reading each edge against the code found eight wrong, and two of
+them asserted an architecture this project forbids.
+
+- **`clients → rbac → reactor` put authorisation in front of the reactor**, which draws a gateway —
+  the parallel implementation [ADR-0317](docs/adr/0317-permissions-are-declared-by-the-api-contract.md)
+  exists to forbid. `authorize_route()` is `daemon/src/main.c:28593` and `dispatch()` at `:28706`
+  calls it, so the reactor accepts and parses *first*: `reactor → rbac → subsys`. Five edges.
+- **`esp → slots → kernel` inverted the boot path.** `image/src/cix-boot.c:770` is `LoadImage()` on
+  the kernel the entry names, started with that entry's own load options — so the ESP's loader loads
+  the kernel and the kernel mounts the slot the options name: `esp → kernel → slots`. Two edges.
+- **The scheduler's node said `pkg.sync, pkg.discover, system.roll` and had arrows for two of the
+  three.** `sched → pkgimg` added.
+
+Two prose claims were wrong in the same way — stated from memory rather than measured:
+
+- **`/etc/passwd` and `/etc/resolv.conf` were listed as platform-staged.** They are not: every
+  `/etc/passwd` mention in the daemon is a *comment* citing it as precedent, and nothing writes it.
+  Both arrive as operator-supplied `files[]` content and `dns_servers`, where omitting the field
+  stages nothing at all ([ADR-0143](docs/adr/0143-container-dns-servers-field.md)) — the platform
+  deliberately does not guess what accounts or resolvers a container should have. The paragraph now
+  separates the two halves, which is the distinction that matters.
+- **"no initramfs, no systemd" cited ADR-0247**, which is about the reactor not blocking. The PID-1
+  decision is [ADR-0016](docs/adr/0016-reboot-syscall-for-cixd-shutdown.md), the squashfs A/B root is
+  [ADR-0014](docs/adr/0014-squashfs-ab-root-with-native-boot-counting.md) (whose systemd-boot
+  counting ADR-0215 later replaced), and the absence of an initramfs is load-bearing at
+  `daemon/src/main.c:1887` rather than in an ADR. Both are now cited where they belong, and
+  `architecture.md` carries 29 resolving ADR links.
+
+One claim was checked and **held**: that nothing but cixd links `container.h`. `cli/src/main.c`
+matches a grep for it seven times and every hit is a comment (*"Matches daemon's
+CONTAINER_MAX_NETWORKS — see include/container.h"*); `cixctl`'s link line is
+`cli/src/main.c client/src/console.c $(CLIENT_SRCS)` with no `LIB_SRCS` and it calls no
+`container_*()` function.
+
+**The lesson is about the gate, not the diagram.** A names-only check is worth having — it would have
+caught the 34-ADR drift at ADR-0316 — and it passed green on a diagram with a security boundary drawn
+backwards. Asserting the *shape* is not mechanically checkable, which ADR-0334 already says; what
+follows is that a new diagram's edges get read against the code once, deliberately, rather than
+trusted because the gate is green.
+
 ### The architecture diagram is mermaid, and a test keeps it current (#582, ADR-0334)
 
 `docs/architecture/architecture.svg` is deleted and replaced by

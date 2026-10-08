@@ -64,11 +64,12 @@ flowchart TB
         esp["ESP<br/>boot entries, tries-left counter, confirm_boot"]
     end
 
-    cli --> rbac
-    web --> rbac
-    pcon --> rbac
-    rbac --> reactor
-    reactor --> subsys
+    cli --> reactor
+    web --> reactor
+    pcon --> reactor
+    reactor --> rbac
+    rbac --> subsys
+    sched --> pkgimg
     sched --> rolling
     sched --> system
 
@@ -83,8 +84,8 @@ flowchart TB
     runtime --> containers
     imgs -. "lower layer" .-> containers
     system --> slots
-    slots --> kernel
-    esp --> slots
+    esp --> kernel
+    kernel --> slots
     runtime --> kernel
 ```
 
@@ -127,7 +128,7 @@ An **image** is a set of immutable, content-addressed rootfs trees, one per vers
 - **netplane** talks to the kernel over rtnetlink sockets directly, never shelling out to `ip`/iproute2 — and over `nl80211` for a radio, because a wireless netdev belongs to a wiphy and cannot move alone.
 - **`BPF_CGROUP_DEVICE`** is a default-deny allow-list ([ADR-0017](../adr/0017-ebpf-cgroup-device-filter-for-hardware-passthrough.md)): the devices a container declared plus the standard nodes, then a deny epilogue. A container declaring no devices gets no program, and so no restriction.
 
-**What a container is given, and how:** device nodes and the standard `/dev` set are created for it at creation ([ADR-0333](../adr/0333-an-images-content-comes-only-from-packages.md)), `/etc/nsswitch.conf`, the host CA bundle, `/etc/resolv.conf`, `/etc/passwd` and `/etc/os-release` are staged into it, and a real NIC or an entire wiphy can be **moved into its network namespace** — a different mechanism from device passthrough, where exclusivity is automatic because a moved interface stops existing on the host.
+**What a container is given, and how — and the two halves are different.** The *platform* stages device nodes and the standard `/dev` set at creation ([ADR-0333](../adr/0333-an-images-content-comes-only-from-packages.md)), `/etc/nsswitch.conf`, the host CA bundle, and `/etc/os-release`, re-rendered at every create. The *operator* supplies `/etc/passwd`, `/etc/group` and `/etc/resolv.conf` — as ordinary `files[]` content and `dns_servers`, where omitting the field stages nothing at all ([ADR-0143](../adr/0143-container-dns-servers-field.md)). Nothing here guesses what accounts or resolvers a container should have. Separately, a real NIC or an entire wiphy can be **moved into its network namespace** — a different mechanism from device passthrough, where exclusivity is automatic because a moved interface stops existing on the host.
 
 ## Containers
 
@@ -137,9 +138,9 @@ Each has its own namespaces and cgroup and is driven by cixd, never by a client.
 
 ## Host OS
 
-**cixd runs as PID 1 directly** — no initramfs, no systemd ([ADR-0247](../adr/0247-the-reactor-does-not-block-and-that-is-the-defence.md)). Mainline Linux, EFI stub boot.
+**cixd runs as PID 1 directly** — no initramfs, no init system ([ADR-0016](../adr/0016-reboot-syscall-for-cixd-shutdown.md); `daemon/src/main.c:1887` is where the absence of one is load-bearing). Mainline Linux, EFI stub boot.
 
-**A/B root slots**: one boots, the other is the write target for the next update and is never touched live. The control-plane root is a self-built squashfs. The ESP holds the boot entries and an assessment tries-left counter; `confirm_boot()` renames the healthy slot's entry once it is serving, which is the rollback ([ADR-0031](../adr/0031-host-and-package-update-mechanism.md), [ADR-0202](../adr/0202-the-esp-is-reachable-over-rest.md), [ADR-0215](../adr/0215-our-own-efi-boot-manager.md)).
+**A/B root slots**: one boots, the other is the write target for the next update and is never touched live. The control-plane root is a self-built squashfs ([ADR-0014](../adr/0014-squashfs-ab-root-with-native-boot-counting.md), whose systemd-boot counting ADR-0215 later replaced with cix-boot). The ESP holds the boot entries and an assessment tries-left counter; `confirm_boot()` renames the healthy slot's entry once it is serving, which is the rollback ([ADR-0031](../adr/0031-host-and-package-update-mechanism.md), [ADR-0202](../adr/0202-the-esp-is-reachable-over-rest.md), [ADR-0215](../adr/0215-our-own-efi-boot-manager.md)).
 
 ## Keeping this current
 
