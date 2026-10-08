@@ -975,6 +975,33 @@ struct container_net_attach_ms {
 	long long move;     /* the netns move itself, summed */
 	long long bring_up; /* fork + setns + rtnl_link_set_up + waitpid */
 	long long total;    /* the whole call, so the four above can be checked against it */
+	/*
+	 * The helper's own split, reported back up a pipe -- bring_up
+	 * measured 1613 ms of a 1633 ms attach, and "the fork and the setns
+	 * are obviously microseconds" was an inference rather than a
+	 * reading. It is the inference that decides the fix: if
+	 * rtnl_link_set_up() owns the time, a driver is bringing a USB
+	 * device up and the cost can only be moved off the reactor; if it
+	 * is the kernel still settling the PHY migration that
+	 * dev_change_net_namespace() just performed, the answer is
+	 * sequencing and the cost disappears instead. Zero when the pipe
+	 * could not be made or the helper died before reporting, which is
+	 * the correct degradation for a number nothing branches on.
+	 */
+	long long setns;
+	long long rtnl_open;
+	long long set_up;
+};
+
+/*
+ * What the bring-up helper writes back to its parent. A struct rather
+ * than three writes so a short read is detectable as one: the parent
+ * takes the split only when it reads exactly this many bytes.
+ */
+struct container_net_helper_split {
+	long long setns;
+	long long rtnl_open;
+	long long set_up;
 };
 const struct container_net_attach_ms *container_net_last_attach_ms(void);
 

@@ -240,6 +240,7 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 	int status;
 	long long t_fn;
 	long long t0;
+	int split_report[2] = { -1, -1 };
 
 	memset(&g_attach_ms, 0, sizeof(g_attach_ms));
 	*out_netns_fd = -1;
@@ -384,15 +385,46 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 	 * for the same reason: a netlink socket can only address
 	 * interfaces visible in its own netns.
 	 */
+	/*
+	 * #344: the helper reports its OWN split back up a pipe, because the
+	 * parent cannot see inside it and the whole point of this
+	 * measurement is to stop inferring.
+	 *
+	 * The parent's bring_up number is 1613 ms of which fork() and
+	 * setns() "are obviously microseconds" -- which is an inference, and
+	 * the one that decides the fix. If rtnl_link_set_up() owns it, the
+	 * cost is a driver bringing a USB device up and can only be moved
+	 * off the reactor. If setns() or the fork owns any of it, that is a
+	 * different problem with a different answer. Measured, then.
+	 *
+	 * A failed pipe() is not fatal: the helper still does its job and
+	 * the split simply reads as zeros, which is the correct degradation
+	 * for a diagnostic. Nothing branches on these numbers.
+	 */
+	if (pipe(split_report) != 0) {
+		split_report[0] = -1;
+		split_report[1] = -1;
+	}
+
 	t0 = monotonic_millis();
 	helper = fork();
 	if (helper < 0) {
+		if (split_report[0] >= 0) {
+			close(split_report[0]);
+			close(split_report[1]);
+		}
 		close(*out_netns_fd);
 		*out_netns_fd = -1;
 		return -1;
 	}
 	if (helper == 0) {
 		int hfd;
+		struct container_net_helper_split split;
+		long long h0;
+
+		if (split_report[0] >= 0)
+			close(split_report[0]);
+		memset(&split, 0, sizeof(split));
 
 		/*
 		 * Exit with the REAL errno of whatever failed, clamped into an
@@ -404,20 +436,35 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 		 * for a failure that had nothing to do with a file, and cost a
 		 * full deploy cycle to see through.
 		 */
+		h0 = monotonic_millis();
 		if (setns(*out_netns_fd, CLONE_NEWNET) != 0)
 			_exit(errno > 0 && errno < 256 ? errno : EIO);
+		split.setns = monotonic_millis() - h0;
+		h0 = monotonic_millis();
 		hfd = rtnl_open();
 		if (hfd < 0)
 			_exit(errno > 0 && errno < 256 ? errno : EIO);
+		split.rtnl_open = monotonic_millis() - h0;
 		for (i = 0; i < interface_count; i++) {
+			h0 = monotonic_millis();
 			if (rtnl_link_set_up(hfd, interfaces[i]) != 0) {
 				int e = errno;
 
 				rtnl_close(hfd);
 				_exit(e > 0 && e < 256 ? e : EIO);
 			}
+			split.set_up += monotonic_millis() - h0;
 		}
 		rtnl_close(hfd);
+		/*
+		 * Best-effort, and deliberately after every real step: a
+		 * diagnostic must never be the reason a container fails to
+		 * come up. A short write or a closed reader changes nothing.
+		 */
+		if (split_report[1] >= 0) {
+			(void)write(split_report[1], &split, sizeof(split));
+			close(split_report[1]);
+		}
 		_exit(0);
 	}
 	/*
@@ -427,6 +474,27 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 	 * blocking wait is the shape ADR-0247 exists to forbid and #399
 	 * already cost 366 seconds of frozen control plane once.
 	 */
+	/*
+	 * The write end goes first, or the read below blocks forever waiting
+	 * on a writer this process still holds -- the classic pipe deadlock,
+	 * and in a diagnostic path it would hang a container create.
+	 */
+	if (split_report[1] >= 0) {
+		close(split_report[1]);
+		split_report[1] = -1;
+	}
+	if (split_report[0] >= 0) {
+		struct container_net_helper_split split;
+		ssize_t n = read(split_report[0], &split, sizeof(split));
+
+		if (n == (ssize_t)sizeof(split)) {
+			g_attach_ms.setns = split.setns;
+			g_attach_ms.rtnl_open = split.rtnl_open;
+			g_attach_ms.set_up = split.set_up;
+		}
+		close(split_report[0]);
+		split_report[0] = -1;
+	}
 	if (waitpid(helper, &status, 0) != helper) {
 		g_attach_ms.bring_up = monotonic_millis() - t0;
 		close(*out_netns_fd);
