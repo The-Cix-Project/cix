@@ -6,6 +6,54 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### ADR-0335 (proposed): a service waits for the interface it was given (#344)
+
+The design for #344, written as a decision record rather than a patch because the obvious fix is a
+regression and the real one changes what a container declares.
+
+**What the measurement settled.** `set_up 1658` of a 1676 ms attach. `NL80211_CMD_SET_WIPHY_NETNS` —
+which moves an entire PHY and every interface on it, and which #344 named as a prime suspect — is
+16 ms. The `setns()` and the `rtnl_open()` are 0. One netlink call owns 98.9% of a radio create.
+
+**Why "stop waiting" is not the fix.** The work is already forked; only the `waitpid()` blocks. But
+`ar-1` declares `on_exit: "fail-container"` for `hostapd`, correctly — a service whose purpose is
+the radio should fail if the radio is absent. Return while the interface is still down and hostapd
+dies, the container fails, [ADR-0323](docs/adr/0323-every-package-can-roll-discovery-authentication-and-a-green-build.md)
+marks that image version bad, and the access point goes down on every reboot. That is trading a
+1.7 s stall for a broken AP.
+
+**The decision**: the daemon reaps the helper by pidfd *and* `cix-init` holds each service until the
+container's interfaces leave `down`, before `execve()`. The reactor is held for the 16 ms move; the
+radio still takes 1.66 s, because no design makes hardware faster; and a service cannot observe a
+down interface it was given, because it has not started yet. `#549`'s meaning of "created" is
+untouched — the child's exec is still waited for.
+
+**Two premises were checked rather than assumed, and both held better than expected.**
+`mountns_pivot()` mounts a **fresh** sysfs inside the container, deliberately after the netns exists
+— its own comment says a carried-in submount "would keep showing devices from the wrong namespace" —
+so `/sys/class/net` inside answers about the container's own netns, which is exactly the question.
+And `cix-init` already issues `openat`, `read`, `close`, `poll` and `clock_gettime`, so a bounded
+poll of one file needs **no new syscall**, no netlink, no libc, and nothing added to any image. That
+last point is what makes this possible at all: bringing an interface up from inside the container
+would need iproute2 and a shell, which `container_net.c`'s own comment records this platform as
+deliberately not having, and which ADR-0333 would make a package in every image carrying a radio.
+
+**Costs stated rather than elided.** An interface that never comes up now delays its services by a
+timeout instead of failing the create — the better trade, since an operator can do nothing about a
+hardware fault through the API, but a behaviour change and a judgement about the timeout, so it is
+logged when it fires. And `cix-init` grows a reason to read the filesystem, which it has never
+needed: bounded, one known path, a string compare, existing syscalls only — but new surface in the
+one binary that must not depend on the image's userspace.
+
+Six alternatives are recorded as rejected with their reasons, including the two that look best at a
+glance: reaping the pidfd alone (the regression above) and a synthetic gate service the daemon
+injects (an ordering-graph entry no recipe wrote and no operator can see). And one that is **not**
+rejected but is unavailable: shortening the 1.66 s, because whether `rtnl_link_set_up()` blocks in
+the driver's `ndo_open` or in the kernel settling the migration is still not established, and the
+experiments that would separate them need the radio out of `ar-1` and the AP down.
+
+Proposed, not accepted. It changes when a container is considered ready, so it is the owner's call.
+
 ### The radio attach's 1.66 s is one netlink call, and the inference that said so is now a reading (#344, 0.2.57-475)
 
 `bring_up` was 1613 ms of a 1633 ms attach, and the next sentence was going to be "`fork()` and
