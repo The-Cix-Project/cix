@@ -949,6 +949,36 @@ int container_cap_name_valid(const char *name);
 const char *container_create_last_error_step(void);
 
 /*
+ * #344: how long the interface-attach path took, per step, in
+ * milliseconds.
+ *
+ * Creating a container that carries a radio blocks the reactor for about
+ * 1.7 s, every time -- stallwatch records it as ONE slow pass with a
+ * worst figure stable to a few milliseconds across seven creations,
+ * which is what a single synchronous operation looks like rather than
+ * contention. The issue named two candidates on this path; it has four,
+ * and the one it did not name is the fork-and-blocking-waitpid that
+ * brings the moved interface up, which is the shape ADR-0247 exists to
+ * forbid and the shape that froze the control plane for 366 seconds in
+ * #399. Which step owns the 1.7 s decides where ADR-0278's fork-it
+ * remedy belongs, so it is measured rather than argued.
+ *
+ * Valid after container_create() returns for a spec with
+ * interface_count > 0, and zeroed at the start of every attach -- so a
+ * container with no interfaces reads as zeros rather than as the
+ * previous container's numbers. Same single-threaded-static reasoning
+ * as container_create_last_error_step() above.
+ */
+struct container_net_attach_ms {
+	long long classify; /* nl80211_is_wireless(), summed over interfaces */
+	long long down;     /* rtnl_link_set_down() on each radio, summed */
+	long long move;     /* the netns move itself, summed */
+	long long bring_up; /* fork + setns + rtnl_link_set_up + waitpid */
+	long long total;    /* the whole call, so the four above can be checked against it */
+};
+const struct container_net_attach_ms *container_net_last_attach_ms(void);
+
+/*
  * Race-free wait via the handle's pidfd. On return *exit_status holds
  * the child's raw status as reported by waitid()'s si_status, and
  * *term_signal disambiguates what that number means (issue #78): 0 if

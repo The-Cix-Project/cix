@@ -16079,6 +16079,23 @@ static int create_container_from_body(const char *body, size_t body_len,
 	                        ip_forward,
 	                        device_attachments, device_count, file_paths, file_count, disk_name,
 	                        dns_server_ips, dns_server_count, &entry);
+	/*
+	 * #344: where a radio create spends its ~1.7 s. One line, only when
+	 * this container actually carried an interface, because the attach
+	 * path is the only thing it measures and every other container would
+	 * log five zeros. logstore_write() rather than a response field: the
+	 * cost is the REACTOR's, so the operator reading it is whoever is
+	 * asking why an unrelated request was slow, and they are reading the
+	 * log -- not the create they did not make.
+	 */
+	if (rerr == REGISTRY_OK && spec.interface_count > 0) {
+		const struct container_net_attach_ms *a = container_net_last_attach_ms();
+
+		logstore_write("cixd", "info",
+		               "container %s: interface attach %lld ms total -- classify %lld, down %lld, "
+		               "move %lld, bring-up %lld",
+		               name, a->total, a->classify, a->down, a->move, a->bring_up);
+	}
 	/* Observability for the ADR-0207 default flip: which isolation mode
 	 * this container actually got is a fact operators and tests need
 	 * readable back, not inferred. */

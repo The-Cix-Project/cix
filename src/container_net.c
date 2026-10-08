@@ -9,7 +9,46 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
+
+/*
+ * #344: the interface-attach path's own step durations. See
+ * include/container.h for the struct and for why the split is measured
+ * rather than argued. A plain static is safe for the same reason
+ * container_create_last_error_step()'s buffer is: one caller, one
+ * thread, read immediately after the call it describes.
+ */
+static struct container_net_attach_ms g_attach_ms;
+
+/*
+ * CLOCK_MONOTONIC, because this measures an interval and a wall clock
+ * can be stepped underneath it -- this platform sets the host clock
+ * from NTP (daemon/src/ntp.c) and a container create is exactly the
+ * kind of thing that can be in flight when it does. A failure returns
+ * 0, which makes a step read as 0 ms rather than as a wild number.
+ *
+ * Deliberately the same name, type and body as stallwatch.c's own
+ * monotonic_millis() (daemon/src/stallwatch.c:176). It is not shared
+ * because it cannot be: this file is the runtime library and that one
+ * is the daemon, and the library does not depend on the daemon -- which
+ * is why container_create_last_error_step() exists rather than a direct
+ * logstore_write(). Two copies of four lines in two layers beats a
+ * dependency inversion, but they should at least read as one idea.
+ */
+static long long monotonic_millis(void)
+{
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+		return 0;
+	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+const struct container_net_attach_ms *container_net_last_attach_ms(void)
+{
+	return &g_attach_ms;
+}
 
 int container_net_host_setup(const struct network_spec *nets, int net_count, pid_t child_pid,
                               int ready_pipe_write)
@@ -199,10 +238,14 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 	int i;
 	pid_t helper;
 	int status;
+	long long t_fn;
+	long long t0;
 
+	memset(&g_attach_ms, 0, sizeof(g_attach_ms));
 	*out_netns_fd = -1;
 	if (interface_count == 0)
 		return 0;
+	t_fn = monotonic_millis();
 
 	snprintf(ns_path, sizeof(ns_path), "/proc/%d/ns/net", (int)child_pid);
 	*out_netns_fd = open(ns_path, O_RDONLY);
@@ -231,8 +274,12 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 		 * radio until this container is deleted. That is the kernel's
 		 * model, not a choice made here.
 		 */
-		int wireless = nl80211_is_wireless(interfaces[i]);
+		int wireless;
 		int rc;
+
+		t0 = monotonic_millis();
+		wireless = nl80211_is_wireless(interfaces[i]);
+		g_attach_ms.classify += monotonic_millis() - t0;
 
 		/*
 		 * A wiphy will not move while its interfaces are up. nl80211.h
@@ -252,22 +299,51 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 		 * over already-configured would be a change this code has no
 		 * reason to make.
 		 */
-		if (wireless && rtnl_link_set_down(fd, interfaces[i]) != 0) {
-			char step[128];
+		/*
+		 * errno is carried across the measurement deliberately.
+		 * container_set_last_error_step() below renders strerror(errno),
+		 * and clock_gettime() is permitted to set errno even when it
+		 * succeeds -- so timing a failing call without saving it first
+		 * is how a step gets reported with the wrong cause, which this
+		 * file already guards against around the move below.
+		 */
+		if (wireless) {
+			int down_rc;
+			int down_errno;
 
-			snprintf(step, sizeof(step),
-			         "container_create: radio \"%s\": could not be brought down before the "
-			         "phy move",
-			         interfaces[i]);
-			container_set_last_error_step(step);
-			rtnl_close(fd);
-			close(*out_netns_fd);
-			*out_netns_fd = -1;
-			return -1;
+			t0 = monotonic_millis();
+			down_rc = rtnl_link_set_down(fd, interfaces[i]);
+			down_errno = errno;
+			g_attach_ms.down += monotonic_millis() - t0;
+			errno = down_errno;
+
+			if (down_rc != 0) {
+				char step[128];
+
+				snprintf(step, sizeof(step),
+				         "container_create: radio \"%s\": could not be brought down "
+				         "before the phy move",
+				         interfaces[i]);
+				container_set_last_error_step(step);
+				rtnl_close(fd);
+				close(*out_netns_fd);
+				*out_netns_fd = -1;
+				return -1;
+			}
 		}
 
+		t0 = monotonic_millis();
 		rc = wireless ? nl80211_move_phy_to_netns_fd(interfaces[i], *out_netns_fd)
 		              : rtnl_link_set_netns_pid(fd, interfaces[i], child_pid);
+		{
+			/* Same reasoning as the down step above: the move's own
+			 * errno is the whole diagnosis below, so the measurement
+			 * is not allowed to stand between it and its reader. */
+			int move_errno = errno;
+
+			g_attach_ms.move += monotonic_millis() - t0;
+			errno = move_errno;
+		}
 
 		if (rc != 0) {
 			char step[128];
@@ -308,6 +384,7 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 	 * for the same reason: a netlink socket can only address
 	 * interfaces visible in its own netns.
 	 */
+	t0 = monotonic_millis();
 	helper = fork();
 	if (helper < 0) {
 		close(*out_netns_fd);
@@ -343,11 +420,20 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 		rtnl_close(hfd);
 		_exit(0);
 	}
+	/*
+	 * Measured around the whole fork/setns/up/waitpid sequence rather
+	 * than around the waitpid alone, because what the reactor pays is
+	 * the wall time it spends not serving anything else -- and this
+	 * blocking wait is the shape ADR-0247 exists to forbid and #399
+	 * already cost 366 seconds of frozen control plane once.
+	 */
 	if (waitpid(helper, &status, 0) != helper) {
+		g_attach_ms.bring_up = monotonic_millis() - t0;
 		close(*out_netns_fd);
 		*out_netns_fd = -1;
 		return -1;
 	}
+	g_attach_ms.bring_up = monotonic_millis() - t0;
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
 		/* The child's own errno, not this process's stale one. */
 		int e = WIFEXITED(status) ? WEXITSTATUS(status) : EIO;
@@ -363,6 +449,7 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 		return -1;
 	}
 
+	g_attach_ms.total = monotonic_millis() - t_fn;
 	return 0;
 }
 
