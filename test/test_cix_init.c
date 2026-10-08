@@ -375,8 +375,14 @@ static int test_sizes(void)
 	 * hello (4 + 64*4 bytes) and the per-service ready_addr_be went
 	 * away. These are the numbers that stop one side of the wire
 	 * changing without the other.
+	 *
+	 * 272 -> 788 with #344/ADR-0335: the interfaces no service may
+	 * start before moved onto the hello too, by the same argument and
+	 * in the same place (4 + 16*32 bytes). This check is why that
+	 * change could not be made on one side only -- it failed here
+	 * first, with both numbers in the message.
 	 */
-	if (sizeof(int) != 4 || sizeof(struct cixinit_hello) != 272 || sizeof(struct cixinit_command) != 16 ||
+	if (sizeof(int) != 4 || sizeof(struct cixinit_hello) != 788 || sizeof(struct cixinit_command) != 16 ||
 	    sizeof(struct cixinit_report) != 16 || sizeof(struct cixinit_service) != 1372) {
 		fprintf(stderr, "  FAIL: hello=%zu command=%zu report=%zu service=%zu\n",
 		        sizeof(struct cixinit_hello), sizeof(struct cixinit_command),
