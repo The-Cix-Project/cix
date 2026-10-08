@@ -8,13 +8,13 @@ Stated by the owner on 2026-10-08, in these words: *"I want the baseline to be a
 
 ## Context
 
-An image had **four** writers of its content: its installed packages, and three things `pkg_seed_image_baseline()` created directly — device nodes, a written `/etc/nsswitch.conf` and the directory layout around it, and the host's CA trust bundle. Only the first was versioned, declared, or visible anywhere.
+An image had **two** writers of its content: its installed packages, and `pkg_seed_image_baseline()`, which created five things directly — the standard device nodes with `/dev/ptmx`, a written `/etc/nsswitch.conf`, the host's CA trust bundle, `/etc/os-release`, and the `/run` and `/dev` directories. Only the packages were versioned, declared, or visible anywhere.
 
 **The project had already started down this road and stopped half way.** Until [ADR-0216](0216-the-glibc-floor-is-closed.md) the baseline also copied the dynamic loader, libc, libm and the files-NSS backend off the build host — [ADR-0209](0209-derived-images-and-one-container-mechanism.md) named them "the only files in any image that this project did not build". `glibc` became an ordinary recipe, and the function's own comment records the result: *"Nothing in any image is copied off the build host any more. What this function still does below — device nodes, directories, a written nsswitch.conf — it CREATES; it does not borrow."* A freshly created image has no C library, and `POST /v1/containers` refuses it by name rather than letting it surface as exit 127. That is the precedent this ADR generalises.
 
 **What the remainder cost.** #577 added `tty` (5:0) to the baseline and shipped in 0.2.57-468. A freshly created image got the node; `jumpbox` did not — its device nodes were dated `Sep 21 17:29`, weeks older than the fix — so `sudo`, `su` and `ssh -t` still failed on the one image whose purpose is humans logging in, while #577 read as closed. #578 added a sixth node the next day and would have landed identically.
 
-ADR-0332 proposed fixing that by giving the baseline a generation and folding it into the image-version hash. It was implemented and passed its gates. **It solves the wrong problem**, and the owner's question — why is the baseline not a package? — is what exposed it: it versions a fourth writer of image content instead of removing it. Every mechanism it needs exists only because the baseline is not a package.
+ADR-0332 proposed fixing that by giving the baseline a generation and folding it into the image-version hash. It was implemented and passed its gates. **It solves the wrong problem**, and the owner's question — why is the baseline not a package? — is what exposed it: it versions a second writer of image content instead of removing it. Every mechanism it needs exists only because the baseline is not a package.
 
 ## Decision
 
@@ -24,14 +24,15 @@ ADR-0332 proposed fixing that by giving the baseline a generation and folding it
 
 2. **Intent is the image's JSON** — its manifest and its recipe, reconciled by its policy ([ADR-0320](0320-an-image-policy-decides-how-its-three-copies-agree.md)). There is no third kind of input.
 
-3. **`pkg_seed_image_baseline()` ceases to exist, and *nothing it did becomes a package*.** That is the finding that decided the shape of this ADR, and it is the opposite of what "make the baseline a package" first suggests: measured against the code, every one of its four jobs is **per-container state**, and two of them are already done at container creation today — redundantly.
+3. **`pkg_seed_image_baseline()` ceases to exist, and *nothing it did becomes a package*.** That is the finding that decided the shape of this ADR, and it is the opposite of what "make the baseline a package" first suggests: measured against the code, every one of its five jobs is **per-container state**, and two of them are already done at container creation today — redundantly.
 
    | What the baseline did | Where it belongs | Evidence |
    |---|---|---|
    | `/run` and `/dev` directories | Already created at every container start | `mountns.c:239` mkdir + a **fresh tmpfs on every start**; `mountns.c:309` `mkdir("/dev")`. The image copies are dead weight. |
-   | 6 char device nodes, `/dev/ptmx` | Created host-side into `spec->ov.upperdir` by the **parent side of `container_create()`** | The daemon runs as real root and holds `CAP_MKNOD`; `container_dev_bpf_attach()` already runs there (`src/container.c:378`). **Not** `create_container_from_body()`'s staging block — see the next clause. |
-   | `/etc/nsswitch.conf` | Per-container, written from live state; it already has that path for one variant | `main.c:15291` stages the `ldap_client` variant per container today. Which creation paths need it is a measurement, not an assumption -- see Consequences. |
-   | CA trust bundle | Per-container; host-generated, so it can never be an artifact | `pki_write_trust_bundle_file()` writes *that host's* own root and intermediate PEM. Same measurement owed. |
+   | 6 char device nodes, `/dev/ptmx` | `container_dev_stage_baseline()`, in `src/container_dev.c` beside the policy. **Parent** for a userns container, **child** for a non-userns one — see clause 4 | The daemon holds the `CAP_MKNOD` no userns container has; a non-userns child is real root and the parent must not touch its upperdir. **Not** `create_container_from_body()`'s staging block. |
+   | `/etc/nsswitch.conf` | Per-container, written from live state; it already has that path for one variant | `main.c:15291` stages the `ldap_client` variant per container today. Staged for BOTH creation paths, which preserves today's behaviour exactly -- every container already gets it from its image, build containers included, so omitting it from one path would be the change needing evidence. |
+   | CA trust bundle | Per-container; host-generated, so it can never be an artifact | `pki_write_trust_bundle_file()` writes *that host's* own root and intermediate PEM. It has **no** per-container path today — this one is new code, unlike the three above it. |
+   | `/etc/os-release` | Already staged per container, and re-rendered at every create | `main.c:15673`. Missed when this table was first written: the function had **five** jobs, not four. The image's copy is redundant for the same reason `/run`'s is, and for a sharper one — a container must report the build it is running under, not the one its image was made with (#393). |
 
 4. **Device nodes are staged by the daemon, not created by the container and not carried in a package.** Both alternatives were measured and both fail:
 
@@ -44,7 +45,13 @@ ADR-0332 proposed fixing that by giving the baseline a generation and folding it
 
    That placement also **tightens** ADR-0331 rather than relaxing it: the node creation and `container_dev_bpf_attach()`'s allow set expand the same `CIX_BASELINE_DEVICES` list, in one function, at one moment, so a node the policy denies is not expressible. Today the nodes live in the image and the policy is decided per container, so the two agree only by discipline.
 
-   One case the implementation must handle rather than assume: a container with **no overlay** has `lowerdir`/`upperdir`/`workdir` unused (`include/container.h:205`), so the nodes go into its rootfs directly. The spec says which.
+   **Amended by implementing it (#581 step 1, commits `c9932923` and `dc57ca76`): the work splits across the fork, and the second reason is the one nobody would guess.**
+
+   A userns container is staged by the **parent**, into `spec->ov.userns_rootfs`, before the `open_tree()` that id-maps it — because its child holds no `CAP_MKNOD`, and because a create *through* an id-mapped mount needs the caller's fsuid inside the map, which host uid 0 is not, so it fails `EOVERFLOW`.
+
+   A non-userns container is staged by the **child**, beside `container_dev_mknod()`, which does the granted nodes in the same place for the same reason: that child is real root. And the parent *must not* do it, which is the part found only by reading `src/overlay.c` first: a non-userns rootfs is an overlay whose upperdir the child creates, and on btrfs it creates it as a **subvolume** so the container can carry a disk quota (ADR-0062, #678). `overlay_create_btrfs_upperdir()` tolerates `EEXIST` on that ioctl, assuming a previous run left a subvolume — so a plain directory pre-created by the parent would satisfy that tolerance exactly and every container would silently lose its quota.
+
+   And the OWNER depends on which userns presentation it is, which failed two steps from its cause: `userns_idmap` (ADR-0207 phase 3) is a host-uid-0-owned snapshot behind an id-mapped mount, where the map makes uid 0 the container's root, so the nodes stay root-owned; `userns_idmap == 0` (ADR-0179 phase 2b) is a chowned copy where the base is the container's root. Chowning in both cases produced `mountns_pivot: mkdir(/dev/pts): Permission denied`, exit 112 — a mapped root unable to write a `/dev` it appeared not to own.
 
 5. **ADR-0332's baseline generation is removed, not kept.** With no fourth writer, ADR-0108's hash already covers all of an image's content, and ADR-0155's "silently discards correct fixes" trap closes for the same reason. Keeping a mechanism whose superseding decision has landed is the stop-gap the No Stop-Gaps maxim forbids and the parallel implementation No Parallel Implementations forbids.
 
@@ -64,7 +71,7 @@ ADR-0332 proposed fixing that by giving the baseline a generation and folding it
 
 ## Alternatives rejected
 
-- **Version the baseline in place — [ADR-0332](0332-an-image-version-identifies-its-baseline-too.md).** Implemented and green before this decision. It makes the identity correct and leaves a fourth, unversioned writer of image content in place, with a hand-maintained generation, a re-seed trigger on the converge path, and a gate that can only cover the device list while the rest rides on a comment. Rejected because the content model, not the hash, was what was wrong.
+- **Version the baseline in place — [ADR-0332](0332-an-image-version-identifies-its-baseline-too.md).** Implemented and green before this decision. It makes the identity correct and leaves a second, unversioned writer of image content in place, with a hand-maintained generation, a re-seed trigger on the converge path, and a gate that can only cover the device list while the rest rides on a comment. Rejected because the content model, not the hash, was what was wrong.
 - **Make the baseline a literal package.** The direct reading of the owner's words, and measurement says the content is not package-shaped: the trust bundle is host-generated, `nsswitch.conf` is per-container, `/run` is a fresh tmpfs every start, and nothing in the build path can create a device node. A package would also decouple the nodes from the policy, re-opening the divergence #578 was and ADR-0331 closed. The direction is honoured by removing the content from the image, which is what it was for.
 - **Add a CPDL `mknod` operation so devices can ship in a package.** A real option, and an upstream request to cix-build-system. Rejected as unnecessary once staging host-side works: it would add a build-system feature, an artifact-format question, and a new gate asserting the package's nodes against the BPF list — to reach a worse place than the daemon writing six nodes where it already writes `/etc/passwd`.
 - **Keep the trust bundle in the image, regenerated on change.** Putting host-specific generated state into an immutable, checksummed, cache-published artifact is a category error, and regenerating it into existing version trees breaks the immutability ADR-0107/0108 rest on.
