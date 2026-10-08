@@ -5,7 +5,7 @@ This directory holds every durable, non-code artifact describing Cix: why it exi
 | Directory | Job | Start here |
 |---|---|---|
 | [`mission/`](mission/) | *Why* Cix exists at all — the original charter, verbatim, frozen | [`mission/MISSION.md`](mission/MISSION.md) |
-| [`roadmap/`](roadmap/) | *What* has shipped, phase by phase, and how each phase was verified | [`roadmap/ROADMAP.md`](roadmap/ROADMAP.md) |
+| [`roadmap/`](roadmap/) | *What* has shipped and how it was verified -- one part per coherent piece of work. It used to say "phase by phase", and phases ended when development moved to issues and release tags | [`roadmap/ROADMAP.md`](roadmap/ROADMAP.md) |
 | [`adr/`](adr/) | *Why* a specific, significant, hard-to-reverse engineering decision was made the way it was — reasoning and alternatives, not implementation detail | [`adr/README.md`](adr/README.md) |
 | [`api/`](api/) | The REST API contract, both as data (OpenAPI) and as a human-readable walkthrough | [`api/openapi.yaml`](api/openapi.yaml) (authoritative), [`api/README.md`](api/README.md) (narrative) |
 | [`architecture/`](architecture/) | A visual map of the system's components and how they connect — a picture of what exists now, updated whenever a change adds, removes or rewires a box or arrow it shows | [`architecture/architecture.svg`](architecture/architecture.svg) |
@@ -15,6 +15,8 @@ This directory holds every durable, non-code artifact describing Cix: why it exi
 | [`brand/`](brand/) | The Cix brand system — the guidelines transcription, the owner's logo reference sheet, and brand assets. Content authority stays with the owner: files here are faithful copies, replaced only by new versions from them, never edited ad hoc | [`brand/README.md`](brand/README.md) |
 
 Two more project documents live outside `docs/` entirely, at the repository root, because they're read before anything under `docs/` is: [`CLAUDE.md`](../CLAUDE.md) (living instructions for working in this repository — rules, conventions, environment facts) and [`CHANGELOG.md`](../CHANGELOG.md) (the chronological record of every change, newest first). The root [`README.md`](../README.md) is the project's own front door — what Cix is, a quickstart pointer — and links back into every directory listed above rather than repeating their content (in particular, it does not carry its own phase-status table — that's `roadmap/ROADMAP.md`'s job alone). The recipe catalog itself is no longer in this repository at all — it moved to [cix-recipes](https://git.home.arpa/itdlabs/cix-recipes) on 2026-09-21 ([ADR-0308](adr/0308-recipes-are-their-own-repository-flat.md)), carrying its own README; [`guides/writing-recipes.md`](guides/writing-recipes.md) remains the place that explains how to write one.
+
+Three more live at the root and are **project policy rather than documentation of the system**, which is why they are not in the table above and are changed only by the owner: [`SECURITY.md`](../SECURITY.md) (how to report a suspected vulnerability privately, and what happens next), [`CONTRIBUTING.md`](../CONTRIBUTING.md) (DCO sign-off, the licence of contributions) and [`TRADEMARK.md`](../TRADEMARK.md) (the rules for the Cix name and marks). They are named here because a reader browsing `docs/` would otherwise never find them, and `SECURITY.md` is the one somebody may need in a hurry.
 
 ## Which document answers which question
 

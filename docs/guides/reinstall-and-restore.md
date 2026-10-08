@@ -62,9 +62,22 @@ first boot, as on a first install ([Secure Boot](installing.md#secure-boot)).
 
 ### Volume content
 
-The backup carries volume *definitions*, never volume *content*. Volume data
-lives under `/var/lib/cix/volumes/<name>` on the `cix-containers` partition,
-which the installer formats. Copy it out with the workload's own export tooling.
+The backup carries volume *definitions*, never volume *content*, and that
+boundary is deliberate — the bundle is configuration, on the same reasoning that
+keeps image content out of it. Volume data lives under
+`/var/lib/cix/volumes/<name>` on the `cix-containers` partition, which the
+installer formats.
+
+**Volumes have their own backups, and they are the answer here** (issue #96):
+`cixctl volume backups NAME --enable [--retain=N]` opts a volume into the shared
+snapshot schedule (`PUT /v1/system/volume-backup-config`), `cixctl volume backup
+NAME` takes one now, and `cixctl volume restore NAME SNAPSHOT` replaces the
+volume's contents with one. **Enable them before you reinstall**, and make sure
+the snapshots live on a disk the installer will not format — they are no use on
+the partition you are about to lose.
+
+This section used to end "copy it out with the workload's own export tooling",
+which was the only answer before that feature existed and is no longer one.
 
 `GET /v1/containers/{name}/files` can read content out, but it returns content
 only — no mode, no ownership

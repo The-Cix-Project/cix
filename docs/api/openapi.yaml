@@ -7169,10 +7169,12 @@ paths:
                       $ref: "#/components/schemas/Image"
     post:
       summary: >
-        Creates an empty image: an empty manifest and no packages, not even a C
-        library. An image gets its C library as a package (glibc) like everything
-        else, and POST /containers refuses an image with no loader, naming what to
-        install (daemon/src/pkg.c, pkg_seed_image_baseline()). This is the only way an
+        Creates an EMPTY image: an empty manifest, and a rootfs with nothing in
+        it at all -- not a C library, and since ADR-0333 not the device nodes or
+        config files the platform used to seed either. An image's content comes
+        only from its packages; everything else a container needs is created for
+        the container. POST /containers refuses an image with no loader, naming
+        what to install. This is the only way an
         image is made: POST /pkg/install into a name with no image is a 400 naming this
         endpoint (#500), where it used to create one implicitly.
       operationId: createImage

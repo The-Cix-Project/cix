@@ -217,7 +217,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | DELETE | `/dhcp/static/{mac}` | Remove a reservation |
 | GET | `/networks/{name}/ports` | What is plugged into this network's bridge right now, per port, with each port's own counters (issue #26) |
 | GET | `/images` | List every image this daemon knows about |
-| POST | `/images` | Create an empty image: no packages, not even a C library (install `glibc` before running a container on it) |
+| POST | `/images` | Create an **empty** image: no packages, not even a C library, and since [ADR-0333](../adr/0333-an-images-content-comes-only-from-packages.md) nothing the platform seeds either — an image is exactly its packages (install `glibc` before running a container on it) |
 | POST | `/images/gc` | Reclaim image versions nothing references; `{"dry_run":true}` to preview |
 | GET | `/images/{name}` | Inspect one image, including its manifest |
 | DELETE | `/images/{name}` | Remove an image (refused for `base`, if in use, or if it still has packages) |
