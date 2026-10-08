@@ -43,8 +43,9 @@ Data that must outlive that goes on a [volume](#volumes).
 
 ## Images
 
-A container is always created from a named image. An image is its
-declared packages plus a small baseline, built on the host from recipes:
+A container is always created from a named image. An image is exactly
+its declared packages, built on the host from recipes
+([ADR-0333](../adr/0333-an-images-content-comes-only-from-packages.md)):
 
 ```sh
 cixctl image ls
@@ -53,8 +54,9 @@ cixctl pkg install --name=glibc --image=resolver      # the C library, installed
 cixctl pkg install --name=dnsmasq --image=resolver    # builds from its recipe if no artifact exists
 ```
 
-**A new image has no C library.** `image create` makes only the
-baseline (device nodes, directories, `nsswitch.conf`), and
+**A new image is empty.** `image create` produces a rootfs with
+nothing in it at all — not even the device nodes and `nsswitch.conf` it
+once carried, which a container is now given when it starts — and
 `POST /v1/containers` refuses an image with no dynamic loader, saying
 `install a libc package (glibc)` (`daemon/src/pkg.c`,
 `daemon/src/main.c`). Install `glibc` yourself: packages such as `bash`

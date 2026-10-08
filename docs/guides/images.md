@@ -1,6 +1,6 @@
 # Images
 
-An image is what a container runs from: a root filesystem made of a small created baseline (device nodes, directories, `nsswitch.conf`) plus the files of every package declared for it. Nothing else enters an image — nothing is copied from any host ([ADR-0209](../adr/0209-derived-images-and-one-container-mechanism.md), [ADR-0225](../adr/0225-build-images-are-composed-from-packages.md)).
+An image is what a container runs from: a root filesystem made of **the files of its declared packages and nothing else** ([ADR-0333](../adr/0333-an-images-content-comes-only-from-packages.md)). It used to also carry a small platform-created baseline — device nodes, directories, `nsswitch.conf`, the host's CA bundle — and that is gone: all of it was per-container state and is now created for each container when it starts, so a change to it reaches containers on existing images instead of only newly created ones. Nothing else enters an image — nothing is copied from any host ([ADR-0209](../adr/0209-derived-images-and-one-container-mechanism.md), [ADR-0225](../adr/0225-build-images-are-composed-from-packages.md)).
 
 Three ideas carry the whole model:
 

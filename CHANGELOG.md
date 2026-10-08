@@ -6,6 +6,64 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The image baseline is gone: an image's content is exactly its packages (#581, ADR-0333)
+
+`pkg_seed_image_baseline()` is deleted, with its declaration and all three call sites. An image's
+content is now only the files of its declared packages — the owner's direction of 2026-10-08, *"100%
+no other way to orchestrate an image except through the packages (for content), and json config of
+the image"*.
+
+Its five jobs are accounted for and **none became a package**, which is the opposite of what the
+direction first suggests and is what the code said when each was checked:
+
+| Job | Now |
+|---|---|
+| 6 device nodes, `/dev/ptmx` | `container_dev_stage_baseline()`, per container |
+| `/etc/nsswitch.conf`, the CA bundle | `stage_container_platform_files()`, per container, from both creation paths |
+| `/etc/os-release` | already staged per container and re-rendered at every create |
+| `/run`, `/dev` directories | already made at every container start — a fresh tmpfs and a mkdir |
+
+**Device nodes could be neither a package nor the container's own work, and both were measured.**
+`mknod` is gated on `CAP_MKNOD` against the *initial* user namespace, which no userns container has
+ever held (#321) — and userns is the default, which is the real reason the nodes lived in an image
+rather than an accident. And a package cannot carry one: zero installed packages ship any `dev/`
+path, `coreutils` as built here has no `mknod` binary, and CPDL has no such operation. The daemon
+holds the capability the container lacks, so it creates them.
+
+**The work splits across the fork, and the second reason would not be guessed.** A userns container
+is staged by the parent, into its own rootfs copy, before the `open_tree()` that id-maps it — a
+create *through* an id-mapped mount needs the caller's fsuid inside the map, which host uid 0 is not,
+and fails `EOVERFLOW`. A non-userns container is staged by the child, where it is real root. And the
+parent *must not* do that case: its upperdir is created by the child as a btrfs **subvolume** so the
+container can carry a disk quota (ADR-0062, #678), and the subvolume ioctl tolerates `EEXIST` on the
+assumption that a previous run left a subvolume — so a plain directory pre-created by the parent
+would satisfy that tolerance and every container would silently lose its quota.
+
+The owner's **ownership** depends on which userns presentation it is, and getting it wrong failed two
+steps from its cause (`mountns_pivot: mkdir(/dev/pts): Permission denied`, exit 112): an id-mapped
+rootfs is host-uid-0-owned and the map makes uid 0 the container's root, so the nodes stay
+root-owned; a chowned copy needs them owned by the subordinate base.
+
+**What this buys.** The #577/#578 class of bug cannot recur: a change to what every container gets is
+one list in one file, applied at every container start, with no image tree to go stale. ADR-0331's
+coupling gets *tighter* — `container_dev_stage_baseline()` and `container_dev_bpf_attach()` expand
+the same `CIX_BASELINE_DEVICES` macro in one file, so a node the policy denies is no longer
+expressible, where before the nodes were in the image and the policy was decided per container and
+the two agreed only by discipline.
+
+Forty comments referenced the removed function and all were corrected, four of which were wrong in
+load-bearing ways — `pkg.h` promised the CA bundle is "already there, in every image, before any of
+this runs" and the nslcd.conf writer depends on that file existing; `image.h` promised `image_create()`
+yields a rootfs "immediately usable before any pkg install", untrue since ADR-0216 closed the glibc
+floor; `mountns.c` said `/dev` is "only guaranteed to exist for a real Cix-managed image", now exactly
+inverted; and `install_mutate()` claimed the re-seed lets an image "self-heal on its very next
+install", which ADR-0155 had already measured to be false.
+
+Verified on 192.168.15.95 in four probes, each green before the next step began: `0.2.57-489`
+(ADR-0332's implementation removed), `-491` (device nodes, with `test_devices` and `test_userns_run`
+passing), `-492` (nsswitch and the CA bundle, added before anything was removed), `-493` (the
+baseline deleted).
+
 ### An image's content comes only from packages, and the baseline stops existing (ADR-0333, supersedes ADR-0332)
 
 The owner's direction of 2026-10-08: *"I want the baseline to be a package, 100% no other way to
