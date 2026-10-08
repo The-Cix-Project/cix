@@ -6,6 +6,50 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The architecture diagram is mermaid, and a test keeps it current (#582, ADR-0334)
+
+`docs/architecture/architecture.svg` is deleted and replaced by
+`docs/architecture/architecture.md` — a mermaid `flowchart` plus a prose section per layer. The
+owner's decision: *"Mermaid it is!"*.
+
+**The SVG went 34 ADRs stale and said so in its own title** (*"as of Part 92"*, while ROADMAP was
+past 270). Measured against its own text content before deleting it: zero occurrences of `schedul`,
+`catalogue`, `discover`, `upstream`, `repositor` or `forge`, so the scheduler, the recipe sources,
+the package repositories, package rolling, the nightly host roll, the signed catalogue and the RBAC
+enforcement point — ADR-0316, ADR-0317, ADR-0323, ADR-0324, ADR-0326 and ADR-0327 — were all
+absent.
+
+**Two causes, and only one of them was effort.** It was 102 rects, 202 text elements and 46 lines at
+hand-computed coordinates, so adding a box meant choosing numbers that collided with none of the
+other 101. And the only *sanctioned* way to check such an edit was forbidden: CLAUDE.md said to
+render it with `rsvg-convert` and explicitly rejected reading the raw source instead, while THE
+SANDBOX RULE says nothing but `cixctl` runs here. The procedure the file demanded was one the same
+file prohibited.
+
+- **Mermaid in a fenced block, not a bare `.mmd`** — Gitea renders mermaid in its Markdown viewer,
+  so the diagram is visible with no renderer anywhere in the loop, which is the whole requirement
+  the SVG could not meet.
+- **`test_docindex` now asserts the document names what exists.** `check_architecture_components()`
+  holds 17 pairs — `scheduler.c` requires "Scheduler", `pkgsource.c` requires "Recipe sources",
+  `hostauth.c` requires "authorize_route" — and fails if a daemon source file exists while the
+  document does not mention its component. A string check, impossible against coordinates, and it
+  would have caught this drift at ADR-0316 rather than ADR-0333.
+- **`check_doc_links()` checks every relative link in every document in the tree**, fenced blocks
+  skipped. It landed two commits earlier, in the documentation audit (`8593c4de`), with no entry of
+  its own — recorded here because it is the companion gate: one asserts the diagram names what
+  exists, the other that everything it points at resolves. The same check run as a shell one-liner
+  here, which is all THE SANDBOX RULE allows, found 10 broken links in this document while it was
+  being written, and reports none now.
+- The SVG is deleted rather than frozen beside the new document: the Documentation Map calls this
+  artefact *"a picture of what exists now, not a decision record"*, and git keeps every version.
+- `rsvg-convert` is deliberately **not** sanctioned, and its Environment note is removed. The
+  exception would restore one session's ability to maintain the SVG, and that maintenance cost is
+  the cause of this entry.
+
+The replacement carries 79 lines of mermaid and 26 distinct ADR links. CLAUDE.md's Documentation
+Map row, `docs/README.md`'s three rows, the root `README.md` and `docs/adr/README.md` all point at the
+new path.
+
 ### The image baseline is gone: an image's content is exactly its packages (#581, ADR-0333)
 
 `pkg_seed_image_baseline()` is deleted, with its declaration and all three call sites. An image's

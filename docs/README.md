@@ -8,7 +8,7 @@ This directory holds every durable, non-code artifact describing Cix: why it exi
 | [`roadmap/`](roadmap/) | *What* has shipped and how it was verified -- one part per coherent piece of work. It used to say "phase by phase", and phases ended when development moved to issues and release tags | [`roadmap/ROADMAP.md`](roadmap/ROADMAP.md) |
 | [`adr/`](adr/) | *Why* a specific, significant, hard-to-reverse engineering decision was made the way it was — reasoning and alternatives, not implementation detail | [`adr/README.md`](adr/README.md) |
 | [`api/`](api/) | The REST API contract, both as data (OpenAPI) and as a human-readable walkthrough | [`api/openapi.yaml`](api/openapi.yaml) (authoritative), [`api/README.md`](api/README.md) (narrative) |
-| [`architecture/`](architecture/) | A visual map of the system's components and how they connect — a picture of what exists now, updated whenever a change adds, removes or rewires a box or arrow it shows | [`architecture/architecture.svg`](architecture/architecture.svg) |
+| [`architecture/`](architecture/) | A visual map of the system's components and how they connect — a picture of what exists now, updated whenever a change adds, removes or rewires a box or arrow it shows | [`architecture/architecture.md`](architecture/architecture.md) |
 | [`retrospective/`](retrospective/) | *Why an entire episode was harder than the work inside it* — a root-cause analysis spanning several bugs at once, written when the pattern matters more than any individual fix | [`retrospective/README.md`](retrospective/README.md) |
 | [`guides/`](guides/) | Task-oriented operator/user instructions — how to build, install, update, administer, network, secure, or write a recipe for Cix | [`guides/README.md`](guides/README.md) |
 | [`keys/`](keys/) | The public halves of the keys Cix signs with, published so an outsider can verify what this project ships — never any private key | [`keys/README.md`](keys/README.md) |
@@ -24,7 +24,7 @@ Three more live at the root and are **project policy rather than documentation o
 - **"Has feature X shipped yet? How was it verified?"** → [`roadmap/ROADMAP.md`](roadmap/ROADMAP.md).
 - **"Why is it built *this* way and not some other way?"** → [`adr/`](adr/) — check the index for the specific decision first; if none exists, the choice was either not yet significant enough to record or genuinely undecided.
 - **"What does the API actually accept and return?"** → [`api/openapi.yaml`](api/openapi.yaml) is the ground truth; [`api/README.md`](api/README.md) is the same information organized for reading start to finish.
-- **"What talks to what, at a glance?"** → [`architecture/architecture.svg`](architecture/architecture.svg).
+- **"What talks to what, at a glance?"** → [`architecture/architecture.md`](architecture/architecture.md).
 - **"How do I actually build/install/update/administer Cix, or write a recipe?"** → [`guides/`](guides/) — check the index for the specific task first.
 - **"What are the official colours, the logo, the typography?"** → [`brand/`](brand/) — the owner's own brand documents, transcribed rather than reinterpreted.
 - **"Why was that whole episode so painful, and has anything changed since?"** → [`retrospective/`](retrospective/).
@@ -57,9 +57,9 @@ Every directory here is one of exactly two things, and the naming follows from w
 | [`brand/`](brand/) | replaced, never edited | the owner's own filenames, kept verbatim | [`brand/README.md`](brand/README.md) |
 | [`mission/`](mission/) | frozen | `MISSION.md` | — single document |
 | [`roadmap/`](roadmap/) | living | `ROADMAP.md` | — single document |
-| [`architecture/`](architecture/) | living | `architecture.svg` | — single document |
+| [`architecture/`](architecture/) | living | `architecture.md` | — single document |
 
-**A single-document directory has no index**, and deliberately so: a `README.md` beside one file could only repeat that file's own opening or restate the row above, which is duplication wearing an index's clothes. The directory *is* the document. Its file takes the directory's own name in the SHOUTING form the ecosystem already uses for a canonical top-level document (`README`, `CHANGELOG`, `LICENSE`) — hence `MISSION.md`, `ROADMAP.md` — except `architecture/`, whose payload is an image and takes the ordinary lowercase asset name.
+**A single-document directory has no index**, and deliberately so: a `README.md` beside one file could only repeat that file's own opening or restate the row above, which is duplication wearing an index's clothes. The directory *is* the document. Its file takes the directory's own name in the SHOUTING form the ecosystem already uses for a canonical top-level document (`README`, `CHANGELOG`, `LICENSE`) — hence `MISSION.md`, `ROADMAP.md` — except `architecture/`, which keeps the lowercase name it carried when its payload was an SVG — renaming it would churn every pointer into it and buy a reader nothing.
 
 **A directory with more than one document has a `README.md` that points and never repeats.** `test/test_docindex.c` enforces the mechanical half of this: every subdirectory has a row in this file and in `CLAUDE.md`'s Documentation Map, every ADR and every guide has a row in its own index, and every one of those rows resolves to a file that exists. What a row *says* is review; that it exists and resolves is a build failure.
 

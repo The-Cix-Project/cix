@@ -918,6 +918,95 @@ static void check_doc_links(void)
 	printf("  doc links: %d documents scanned\n", files);
 }
 
+/*
+ * 8. The architecture document names every component that exists
+ *    (ADR-0334, #582).
+ *
+ * This is the gate the hand-laid-out SVG made impossible, and its
+ * absence is why that diagram went 34 ADRs stale while saying so in its
+ * own title ("as of Part 92", against a ROADMAP past 270). Whether a
+ * picture is current was a judgement nobody made; against a text source
+ * it is a string match.
+ *
+ * WHAT IT CHECKS, and the limit is as important as the check: that a
+ * component with a daemon source file of its own is NAMED in the
+ * document. Not that the arrows round it are right, not that the shape
+ * is accurate -- neither is mechanically checkable, and a gate
+ * pretending to check them would pass while the thing it names was
+ * wrong. A subsystem with no source file of its own is invisible here
+ * too. What it catches is the failure that actually happened: a whole
+ * subsystem shipping and the picture never hearing about it.
+ *
+ * The pairing is explicit rather than derived from the filename,
+ * because the two vocabularies differ on purpose -- `pkgrepo.c` is
+ * "Package repositories" to a reader, and a check that demanded the
+ * word "pkgrepo" in prose would be enforcing the code's names on the
+ * documentation. Adding a subsystem means adding a row here, which is
+ * the same deliberate-edit-in-a-diff device test_apigen's operation
+ * count and ADR-0224's gcc recipe count already use.
+ */
+static void check_architecture_components(void)
+{
+	static const struct {
+		const char *source; /* daemon/src/<source> -- the component exists if this does */
+		const char *names;  /* ... then the document must contain this */
+	} components[] = {
+		{ "scheduler.c", "Scheduler" },
+		{ "pkgsource.c", "Recipe sources" },
+		{ "pkgrepo.c", "Package repositories" },
+		{ "catalogue.c", "catalogue" },
+		{ "upstreamkeys.c", "Upstream" },
+		{ "pkgbad.c", "roll back" },
+		{ "registry.c", "Registry" },
+		{ "network.c", "Network" },
+		{ "dns.c", "DNS" },
+		{ "pki.c", "PKI" },
+		{ "ldap.c", "LDAP" },
+		{ "ntp.c", "NTP" },
+		{ "volume.c", "volume" },
+		{ "logstore.c", "Logs" },
+		{ "hostauth.c", "authorize_route" },
+		{ "procfuse.c", "procfuse" },
+		{ "esp.c", "ESP" },
+	};
+	char *doc = slurp("docs/architecture/architecture.md");
+	size_t i;
+	int checked = 0;
+
+	if (doc == NULL) {
+		fail("docs/architecture/architecture.md is unreadable -- the architecture diagram must "
+		     "exist, and since ADR-0334 it is this file rather than an SVG");
+		return;
+	}
+
+	/*
+	 * The diagram itself, not just the prose. A document that described
+	 * every component in sentences and drew none of them would satisfy
+	 * a bare substring search while being no diagram at all.
+	 */
+	if (strstr(doc, "```mermaid") == NULL)
+		fail("docs/architecture/architecture.md carries no ```mermaid block -- ADR-0334 made the "
+		     "diagram a fenced mermaid source precisely so it renders in the forge");
+
+	for (i = 0; i < sizeof(components) / sizeof(components[0]); i++) {
+		char path[256];
+
+		snprintf(path, sizeof(path), "daemon/src/%s", components[i].source);
+		if (!file_exists(path))
+			continue; /* component gone: nothing to require */
+		if (strstr(doc, components[i].names) == NULL)
+			fail("daemon/src/%s exists but docs/architecture/architecture.md never says \"%s\" "
+			     "-- a subsystem shipped and the architecture picture did not hear about it "
+			     "(ADR-0334)",
+			     components[i].source, components[i].names);
+		else
+			checked++;
+	}
+
+	printf("  architecture: %d components named\n", checked);
+	free(doc);
+}
+
 int main(void)
 {
 	check_adr_index();
@@ -927,6 +1016,7 @@ int main(void)
 	check_endpoint_row_parser();
 	check_api_endpoint_index();
 	check_doc_links();
+	check_architecture_components();
 
 	if (g_failures > 0) {
 		printf("DOCINDEX RESULT: FAIL (%d)\n", g_failures);
