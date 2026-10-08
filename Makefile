@@ -49,7 +49,7 @@ SELFTESTS = \
 	$(BUILD)/test_lint $(BUILD)/test_naming $(BUILD)/test_recipe_docs $(BUILD)/test_pkicrypto $(BUILD)/test_forgecommit $(BUILD)/test_pkgsource $(BUILD)/test_pkgrepo $(BUILD)/test_catalogue $(BUILD)/test_srcgitea $(BUILD)/test_srcrecord $(BUILD)/test_srctrust $(BUILD)/test_pkgbad $(BUILD)/test_versioning $(BUILD)/test_http_put \
 	$(BUILD)/test_osrelease \
 	$(BUILD)/test_json $(BUILD)/test_jsondiff $(BUILD)/test_nsswitch $(BUILD)/test_nicreport \
-	$(BUILD)/test_mkinstalleriso_args $(BUILD)/test_controlplane_programs $(BUILD)/test_baseline \
+	$(BUILD)/test_mkinstalleriso_args $(BUILD)/test_controlplane_programs \
 	$(BUILD)/test_cbsrecipe \
 	$(BUILD)/test_blocking_waits $(BUILD)/test_listenbind $(BUILD)/test_bootorder \
 	$(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc \
@@ -1110,13 +1110,6 @@ $(BUILD)/test_mkinstalleriso_args: test/test_mkinstalleriso_args.c include/mkins
 
 $(BUILD)/test_controlplane_programs: test/test_controlplane_programs.c include/controlplane_programs.h | $(BUILD)
 	$(CC) $(CFLAGS) test/test_controlplane_programs.c -o $@
-
-# The baseline generation moves when the baseline does (ADR-0332, #579).
-# Depends on container.h because that is the whole subject: the device
-# X-macro and CIX_BASELINE_GENERATION both live there, and this fails
-# when one changes without the other.
-$(BUILD)/test_baseline: test/test_baseline.c include/container.h | $(BUILD)
-	$(CC) $(CFLAGS) test/test_baseline.c -o $@
 
 $(BUILD)/cix-install: image/src/cix-install.c image/src/dual_console.c image/src/nicreport.c daemon/src/treecopy.c daemon/src/partlabel.c daemon/src/netconf.c daemon/src/kmod.c daemon/src/json.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@

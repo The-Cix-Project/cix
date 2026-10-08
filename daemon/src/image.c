@@ -1,7 +1,4 @@
 #include "image.h"
-/* CIX_BASELINE_GENERATION: an image version records the baseline it was
- * staged with, so this file writes it (ADR-0332, #579). */
-#include "container.h"
 #include "json.h"
 #include "namecheck.h"
 #include "persist.h"
@@ -197,15 +194,6 @@ static int load_state(const char *name, struct image_state *st)
 			         sizeof(st->versions[0].version), "%s", version);
 			st->versions[st->version_count].created_at =
 			    (long)json_as_number(json_object_get(item, "created_at"));
-			/*
-			 * Absent reads as 0 -- "staged before this field existed"
-			 * (ADR-0332). json_as_number() of a NULL value already
-			 * returns 0, so no branch is needed and none is written:
-			 * every manifest.json on disk today lacks this key, and 0
-			 * is the correct, actionable answer for all of them.
-			 */
-			st->versions[st->version_count].baseline_generation =
-			    (int)json_as_number(json_object_get(item, "baseline_generation"));
 			st->version_count++;
 		}
 	}
@@ -247,12 +235,6 @@ static int save_state(const char *name, const struct image_state *st)
 		jw_str(&w, st->versions[i].version);
 		jw_key(&w, "created_at");
 		jw_int(&w, st->versions[i].created_at);
-		/* ADR-0332: written always, including the 0 a pre-field entry
-		 * carries, so a rewritten manifest keeps saying "unknown"
-		 * rather than silently acquiring today's generation for a tree
-		 * that was staged under an older one. */
-		jw_key(&w, "baseline_generation");
-		jw_int(&w, st->versions[i].baseline_generation);
 		jw_obj_close(&w);
 	}
 	jw_arr_close(&w);
@@ -312,13 +294,6 @@ enum image_error image_create(const char *name)
 	snprintf(new_state.current_version, sizeof(new_state.current_version), "%s", hash);
 	snprintf(new_state.versions[0].version, sizeof(new_state.versions[0].version), "%s", hash);
 	new_state.versions[0].created_at = (long)time(NULL);
-	/*
-	 * ADR-0332: the seed above is this generation's baseline, so record
-	 * it. This is what keeps a brand-new image out of the re-produce
-	 * path entirely -- it is already current, so claiming otherwise
-	 * would cost every fresh image a redundant version directory.
-	 */
-	new_state.versions[0].baseline_generation = CIX_BASELINE_GENERATION;
 	new_state.version_count = 1;
 
 	if (save_state(name, &new_state) != 0)
@@ -755,35 +730,6 @@ enum image_error image_current_version(const char *name, char *out, size_t out_s
 	return IMAGE_OK;
 }
 
-enum image_error image_current_baseline_generation(const char *name, int *out)
-{
-	struct image_state st;
-	int i;
-
-	if (!image_name_is_valid(name))
-		return IMAGE_ERR_NOT_FOUND;
-	if (load_state(name, &st) != 0)
-		return IMAGE_ERR_NOT_FOUND;
-	if (st.current_version[0] == '\0')
-		return IMAGE_ERR_NO_CURRENT_VERSION;
-
-	for (i = 0; i < st.version_count; i++) {
-		if (strcmp(st.versions[i].version, st.current_version) == 0) {
-			*out = st.versions[i].baseline_generation;
-			return IMAGE_OK;
-		}
-	}
-	/*
-	 * The current version is not in the history. image_record_version()
-	 * repoints current_version even when the bounded history array is
-	 * full and the entry could not be added, so this is reachable, and
-	 * it is reported rather than answered with 0: 0 means "staged
-	 * before the field existed" and would send the caller off to
-	 * re-produce a tree whose generation is simply unknown.
-	 */
-	return IMAGE_ERR_NO_CURRENT_VERSION;
-}
-
 enum image_error image_version_history_write_json(const char *name, struct json_writer *w)
 {
 	struct image_state st;
@@ -801,12 +747,6 @@ enum image_error image_version_history_write_json(const char *name, struct json_
 		jw_str(w, st.versions[i].version);
 		jw_key(w, "created_at");
 		jw_int(w, st.versions[i].created_at);
-		/* ADR-0332 clause 5: a stale image is visible rather than
-		 * inferred. Before this, telling whether a platform baseline
-		 * change had reached an image meant creating two containers
-		 * and comparing their /dev timestamps. */
-		jw_key(w, "baseline_generation");
-		jw_int(w, st.versions[i].baseline_generation);
 		jw_obj_close(w);
 	}
 	jw_arr_close(w);
@@ -833,18 +773,6 @@ enum image_error image_record_version(const char *name, const char *version)
 		snprintf(st.versions[st.version_count].version, sizeof(st.versions[0].version), "%s",
 		         version);
 		st.versions[st.version_count].created_at = (long)time(NULL);
-		/*
-		 * ADR-0332: a version recorded here was just staged by this
-		 * daemon, so it carries this daemon's baseline generation.
-		 *
-		 * Only on a NEW entry. The loop above repoints current_version
-		 * at a version already in the history and returns, deliberately
-		 * leaving that entry's generation alone: its tree really was
-		 * staged under whatever generation it says, and overwriting
-		 * that would make a repoint to an older version claim to be
-		 * current when its tree is not.
-		 */
-		st.versions[st.version_count].baseline_generation = CIX_BASELINE_GENERATION;
 		st.version_count++;
 	}
 	/* else: history array full -- current_version still gets repointed to

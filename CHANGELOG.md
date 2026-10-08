@@ -60,6 +60,13 @@ removed as part of ADR-0333's implementation rather than left beside it.
 
 ### An image version identifies its baseline, so a baseline fix reaches images that already exist (#579, ADR-0332)
 
+> **Superseded and removed, unreleased.** Everything below was implemented and went green on the box,
+> and none of it shipped: [ADR-0333](docs/adr/0333-an-images-content-comes-only-from-packages.md)
+> removes the baseline from the image instead of versioning it, which makes all of this unnecessary.
+> The code was deleted in the same change that accepted ADR-0333 — so this entry records what was
+> built and why, not anything a reader will find in the tree. Kept rather than deleted because the
+> diagnosis is what ADR-0333 acts on.
+
 `sudo`, `su` and `ssh -t` still failed in `jumpbox` after the fix for them shipped. #577 added `tty`
 (5:0) to the image baseline, 0.2.57-468 carried it, 192.168.15.95 took it on the 2026-10-08 03:00
 roll — and measured that morning, a freshly created image had the node while `jumpbox` did not, its

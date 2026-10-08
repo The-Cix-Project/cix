@@ -19722,15 +19722,13 @@ components:
             $ref: "#/components/schemas/ImageVersionHistoryEntry"
           description: >
             Every version this image has ever produced, newest first.
-            Deduplicated by the hash of its package manifest AND its
-            baseline generation (ADR-0108, ADR-0332) -- an
+            Deduplicated by manifest-content hash (ADR-0108) -- an
             install/upgrade/uninstall cycle that reproduces an
-            already-seen package set under the same baseline does not
-            add a new entry.
+            already-seen package set does not add a new entry.
 
     ImageVersionHistoryEntry:
       type: object
-      required: [version, created_at, baseline_generation]
+      required: [version, created_at]
       properties:
         version:
           type: string
@@ -19739,23 +19737,6 @@ components:
           type: integer
           format: int64
           description: Unix timestamp (seconds) this version was produced.
-        baseline_generation:
-          type: integer
-          description: >
-            Which generation of the image baseline -- the device nodes,
-            loader, libc and config files every image gets regardless of
-            its packages -- this version's rootfs was staged with
-            (ADR-0332). An image's content is its packages plus that
-            baseline, so this is the second half of what the version is.
-
-            0 means the version was produced before the daemon recorded
-            this, which is true of every version staged before the
-            release that added it. A value below the daemon's current
-            generation means this rootfs is missing whatever the
-            baseline has gained since, and the image is re-produced with
-            the current baseline on its next converge -- so this is the
-            field that makes a stale image visible instead of needing
-            two containers and a timestamp comparison to detect.
 
     ImageManifestEntry:
       type: object

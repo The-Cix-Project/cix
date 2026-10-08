@@ -4689,31 +4689,7 @@ static const char *build_image_manifest_string(const char *image)
 	}
 	qsort(refs, (size_t)count, sizeof(refs[0]), manifest_ref_cmp);
 
-	/*
-	 * The baseline generation leads, because it is part of what this
-	 * version IS (ADR-0332, #579). An image's content is its installed
-	 * packages plus what pkg_seed_image_baseline() stages, and until
-	 * this field existed the identity covered only the first half -- so
-	 * a baseline change produced a byte-identical string,
-	 * image_produce_new_version() deduped on it, and the freshly seeded
-	 * tree was thrown away. Dedup was never wrong; it was being asked a
-	 * question that omitted one of the two things that decide the
-	 * answer.
-	 *
-	 * First rather than appended, so the field cannot be lost to the
-	 * truncation guard below on an image with a very large installed
-	 * set: a version that silently stopped identifying its baseline
-	 * would reintroduce exactly the bug this closes, and would do it
-	 * only on the biggest images.
-	 */
 	g_manifest_string_buf[0] = '\0';
-	{
-		int n = snprintf(g_manifest_string_buf, sizeof(g_manifest_string_buf), "baseline=%d;",
-		                  CIX_BASELINE_GENERATION);
-
-		if (n > 0 && (size_t)n < sizeof(g_manifest_string_buf))
-			pos = (size_t)n;
-	}
 	for (i = 0; i < count; i++) {
 		int n = snprintf(g_manifest_string_buf + pos, sizeof(g_manifest_string_buf) - pos,
 		                  "%s%s@%s", (i > 0) ? "," : "", refs[i].name, refs[i].version);
@@ -8245,132 +8221,6 @@ static void converge_uninstall_strays(const char *image_arg,
 	}
 }
 
-/* image_produce_new_version()'s mutate() for a baseline-only re-seed
- * (ADR-0332). Stages nothing else: the packages are already in the tree
- * this was snapshotted from, and the baseline is the half that moved. */
-static int baseline_reseed_mutate(const char *staging_rootfs, void *ctx_v)
-{
-	(void)ctx_v;
-
-	if (pkg_seed_image_baseline(staging_rootfs) != PKG_OK) {
-		logstore_write("cixd", "error", "baseline re-seed: seeding the image baseline failed");
-		return -1;
-	}
-	return 0;
-}
-
-/*
- * ADR-0332 clause 4: re-produce image if the version it is on was
- * staged under an older baseline generation.
- *
- * WHY THIS EXISTS. Every other path that re-produces an image is
- * triggered by a package changing -- an install, an upgrade, a delete.
- * A baseline change moves no package, so a fully satisfied image sits
- * on a tree missing whatever the baseline has gained. That is not
- * hypothetical: #577 added tty 5:0, shipped in 0.2.57-468, and
- * `jumpbox` still had device nodes dated Sep 21 -- so sudo, su and
- * ssh -t kept failing on the one image whose purpose is humans logging
- * in, while #577 read as closed. Without this the corrected identity
- * is right and inert.
- *
- * WHY A STORED GENERATION AND NOT A HASH COMPARISON. The obvious test
- * is "does the current version equal the hash of the current manifest",
- * and it is wrong twice over. image_record_version() repoints
- * current_version at any version already in its history without
- * touching g_packages, so after a repoint to an older version that
- * test is unequal and would re-produce -- silently undoing the
- * repoint. And three callers pass image_produce_new_version() an
- * extra_identity (the build sandbox's two, and build-environment
- * composition), whose chained hashes never equal the plain manifest
- * hash, so the test would fire on them on every single pass. The
- * question is not "is the hash what I would compute now" but "was this
- * tree staged with the current baseline", and that is a fact worth
- * recording rather than inferring -- which is also what clause 5
- * reports, from the same field, so the two cannot disagree.
- *
- * WHY IT IS NOT AN ASYNCHRONOUS JOB. Producing a version is an O(1)
- * btrfs snapshot, or a hardlink copy on ext4 -- not a copy of the
- * data -- and the ordinary install path already calls
- * image_produce_new_version() straight through from
- * pkg_build_completed(), an event-loop callback. Matching that is one
- * mechanism; a forked, pidfd-tracked re-seed beside it would be a
- * second way to do one thing. ADR-0332's first amendment claimed the
- * copy forced a fork, which was wrong on both counts and is corrected
- * there.
- *
- * Cheap in the common case: two small file reads and no filesystem
- * work when the generation already matches, and it logs only when it
- * acts, so a converged host stays quiet.
- */
-static void image_reseed_if_baseline_stale(const char *image)
-{
-	int stored = 0;
-
-	if (image == NULL || image[0] == '\0')
-		return;
-	/*
-	 * Not OK covers an image with no current version and one whose
-	 * current version has fallen out of the bounded history. Neither
-	 * establishes that the tree is stale, and re-producing on "I
-	 * cannot tell" would stage a tree every pass, forever.
-	 *
-	 * But the second case is SAID OUT LOUD, because it is permanent and
-	 * would otherwise be invisible -- and clause 5 of ADR-0332 exists
-	 * precisely so that a stale image is visible rather than inferred,
-	 * which a silent skip is the opposite of. At
-	 * IMAGE_MAX_VERSION_HISTORY (256) image_record_version() can no
-	 * longer add an entry, so it repoints current_version at a version
-	 * the history does not list, and from then on this image's
-	 * generation is unknowable and no baseline change ever reaches it.
-	 * Measured on 192.168.15.95, 2026-10-08: `jumpbox` -- the image
-	 * #579 was filed for -- already carries 165 versions, and every
-	 * re-produce adds one.
-	 *
-	 * Recoverable rather than permanent, which is why the message names
-	 * the remedy: image_delete_version() drops the history entry along
-	 * with the tree, so reclaiming unreferenced versions
-	 * (POST /v1/images/gc, #551) frees slots and the generation becomes
-	 * readable again.
-	 *
-	 * An image with no current version at all is the ordinary case and
-	 * stays quiet: nothing has been produced for it yet, so the first
-	 * install produces one under today's generation.
-	 */
-	if (image_current_baseline_generation(image, &stored) != IMAGE_OK) {
-		char current[IMAGE_VERSION_MAX];
-
-		if (image_current_version(image, current, sizeof(current)) == IMAGE_OK)
-			logstore_write("cixd", "warn",
-			               "image %s: its current version %s is not in the recorded version "
-			               "history, so the baseline generation it was staged under cannot be "
-			               "read and the image is NOT being re-produced -- the history is "
-			               "bounded at %d entries; reclaim unreferenced versions to free slots "
-			               "(ADR-0332)",
-			               image, current, IMAGE_MAX_VERSION_HISTORY);
-		return;
-	}
-	if (stored >= CIX_BASELINE_GENERATION)
-		return;
-
-	logstore_write("cixd", "info",
-	               "image %s: its current version was staged under baseline generation %d, now "
-	               "%d -- re-producing with the current baseline (ADR-0332)",
-	               image, stored, CIX_BASELINE_GENERATION);
-
-	if (image_produce_new_version(image, baseline_reseed_mutate, NULL, NULL) != 0) {
-		const char *why = pkg_last_image_produce_failure();
-
-		/*
-		 * Reported, not retried here. The image keeps the version it
-		 * had, which is exactly its state before this ran, so a
-		 * failure costs the fix's arrival and nothing else -- and the
-		 * next converge asks again.
-		 */
-		logstore_write("cixd", "error", "image %s: baseline re-seed failed%s%s (ADR-0332)", image,
-		               why != NULL ? ": " : "", why != NULL ? why : "");
-	}
-}
-
 /*
  * ADR-0270: put an image on the same queue a rolling recipe publish
  * uses, from outside pkg.c.
@@ -8601,23 +8451,13 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 		 * that never reached its manifest may still need what a refused
 		 * entry would have brought.
 		 */
-		if (refused == 0) {
+		if (refused == 0)
 			converge_uninstall_strays(image, entries, entry_count);
-			/*
-			 * ADR-0332 clause 4, and only for a fully satisfied image.
-			 * On an unsatisfied one the installs still to come each
-			 * produce a version anyway, and the last of them carries
-			 * the current baseline for free -- so asking here as well
-			 * would stage an extra tree per pass and change nothing
-			 * about the outcome.
-			 */
-			image_reseed_if_baseline_stale(image);
-		} else {
+		else
 			logstore_write("cixd", "warn",
 			               "image %s: converge ended with %d entr%s not installed -- each is "
 			               "named above (ADR-0330)",
 			               image, refused, refused == 1 ? "y" : "ies");
-		}
 		approval_consume(PKG_GATE_ROLL, image);
 		rebuild_queue_remove_at(qi);
 	}
