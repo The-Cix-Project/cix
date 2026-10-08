@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 1420" font-family="'DejaVu Sans', Verdana, Arial, sans-serif">
-  <title>Cix Architecture (as of Part 92)</title>
+  <title>Cix Architecture (as of ROADMAP Part 92 -- INCOMPLETE, see cix#582)</title>
   <desc>
     Cix hardware/workload orchestration platform architecture: REST-only client
     surfaces (cixctl CLI, web dashboard, the PID1-spawned physical console) talking
@@ -10,6 +10,19 @@
     plus a consolidated log store with optional syslog forwarding, LDAP-backed
     Unix/SSH account sync, and the A/B boot / on-disk layout cixd manages as
     host PID 1.
+
+    INCOMPLETE, stated here so the picture does not read as current (cix#582).
+    Every box drawn below still exists and is still correct. What is MISSING is
+    everything added since ROADMAP Part 92 -- most of a month's architecture:
+    recipe SOURCES as external components (a git forge, the public catalogue;
+    ADR-0308, ADR-0315, ADR-0324), package REPOSITORIES as many mirrors rather
+    than one cache (ADR-0324), the daemon's SCHEDULER (ADR-0316, ADR-0327),
+    package ROLLING from discovery through authentication to a green build and a
+    runtime rollback (ADR-0323), the nightly host roll that hostbuilds,
+    assembles, stages and reboots (ADR-0327), the signed catalogue and upstream
+    key trust (ADR-0326), and the RBAC enforcement point in the request path
+    (authorize_route() in dispatch(), ADR-0317). Read it as a true picture of a
+    smaller system than the one that exists.
   </desc>
 
   <defs>
