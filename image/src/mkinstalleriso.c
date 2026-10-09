@@ -1622,14 +1622,21 @@ int main(int argc, char **argv)
 	          * to finish if the image does not actually carry what
 	          * these two lines claim.
 	          *
-	          * The CD/DVD entries keep root=/dev/sr0 deliberately. An
-	          * optical drive is not enumerated among the disks, so the
-	          * ambiguity PARTUUID solves does not arise there, and
-	          * whether the kernel even creates partition devices for
-	          * sr* is not something this change measured -- so the
-	          * path that works is left exactly as it was rather than
-	          * changed on an assumption. Collapsing the four entries
-	          * into two is what that measurement would buy.
+	          * The CD/DVD entries keep root=/dev/sr0, and they always
+	          * will: PARTUUID cannot name an optical device at all.
+	          * Read from kernel 7.2.9's own source on 2026-10-09
+	          * (probe-srpart@1-1, the booted version) --
+	          * drivers/scsi/sr.c:657 sets
+	          * `disk->flags |= GENHD_FL_REMOVABLE | GENHD_FL_NO_PART`,
+	          * and block/partitions/core.c:441 answers -EINVAL to a
+	          * partition added on a disk carrying that flag, with :689
+	          * gating the scan path on it too. No sr0p1 can exist, so
+	          * root=PARTUUID= has nothing to match. FOUR ENTRIES IS
+	          * THE CORRECT SHAPE, not a wart awaiting a tidy-up:
+	          * collapsing them into two is impossible while optical
+	          * media is supported, so do not try. An optical drive is
+	          * also not enumerated among the disks, so the ambiguity
+	          * PARTUUID solves never arose there in the first place.
 	          */
 	         "menuentry \"Cix Install (USB media)\" {\n"
 	         "    linux /boot/cix-bzImage console=tty0 console=ttyS0 root=PARTUUID=%s "

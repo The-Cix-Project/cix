@@ -27,8 +27,10 @@ EFI pushes are gated only on an EFI platform being present, under none of its `s
 So `cix-xorriso` appends the ESP past the end of the image instead, as `-append_partition 2 0xef`,
 and removes only the pair that described the embedded copy as a partition. `--efi-boot efi.img`
 stays, so the El Torito catalogue still points at the in-filesystem copy and **the optical boot path
-is untouched** — the CD/DVD entries keep `root=/dev/sr0`, deliberately, because an optical drive is
-not enumerated among the disks and whether the kernel partitions `sr*` at all was not measured.
+is untouched** — the CD/DVD entries keep `root=/dev/sr0`, and always will, because **PARTUUID cannot
+name an optical device at all**: kernel 7.2.9's `drivers/scsi/sr.c:657` sets `GENHD_FL_NO_PART`, and
+`block/partitions/core.c:441` answers `-EINVAL` to a partition added on such a disk (`probe-srpart@1-1`).
+No `sr0p1` can exist, so four menu entries is the correct shape rather than a wart to tidy away.
 Three native settings are prepended ahead of `-as mkisofs`, which consumes its own argument list to
 the end: `partition_offset=16` (the partition-relative volume descriptor, without which the kernel
 cannot mount the partition as iso9660), `gpt_disk_guid=`, and `appended_part_as=gpt`.

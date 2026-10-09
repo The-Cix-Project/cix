@@ -37,7 +37,16 @@ Seven clauses.
 
 1. **`cix-xorriso` removes `-efi-boot-part --efi-boot-image` and appends the same image instead**, as `-append_partition 2 0xef <path>`. `--efi-boot efi.img` **stays**, so the El Torito catalogue still points at the copy inside the filesystem. grub-mkrescue keeps that copy deliberately — its own comment at `:870` says *"so that we have a duplicate on the ISO 9660 file system"* — so there is always a file to append.
 
-2. **The optical boot path is not changed, and the CD/DVD entries keep `root=/dev/sr0`.** An optical drive is not enumerated among the disks, so the ambiguity PARTUUID solves does not arise there; and whether the kernel creates partition devices for `sr*` at all was not measured, so the path that works is left exactly as it is rather than changed on an assumption. Collapsing the four menu entries into two is what that measurement would buy, and it is not claimed here.
+2. **The optical boot path is not changed, and the CD/DVD entries keep `root=/dev/sr0` — permanently, because PARTUUID cannot name an optical device at all.** This clause originally left that unmeasured and said so; it is measured now, and the answer closes the question rather than deferring it. Read from kernel 7.2.9's own source (`probe-srpart@1-1`, 2026-10-09, the booted version):
+
+   | | |
+   |---|---|
+   | `drivers/scsi/sr.c:657` | `disk->flags \|= GENHD_FL_REMOVABLE \| GENHD_FL_NO_PART;` |
+   | `block/partitions/core.c:441` | a disk carrying that flag gets `ret = -EINVAL; goto out;` — adding a partition is refused outright |
+   | `block/partitions/core.c:689` | the same flag gates the scan path |
+   | `block/early-lookup.c` | `match_dev_by_uuid()` matches on `bdev->bd_meta_info`, which is partition metadata |
+
+   So no `sr0p1` can ever exist, and `root=PARTUUID=` has nothing to match on a disc. **Four menu entries is therefore the correct shape, not a wart**, and collapsing them into two is not deferred work — it is impossible while optical media is supported. An optical drive is also not enumerated among the disks, so the ambiguity PARTUUID solves never arose there in the first place.
 
 3. **Three native settings are prepended, before `-as mkisofs`**: `partition_offset=16`, `gpt_disk_guid=`, `appended_part_as=gpt`. They are parameters of xorriso's *native* `-boot_image` command rather than options of the mkisofs emulation, and `-as mkisofs` consumes its own argument list to the end. `-append_partition` is an emulation option and so goes at the tail. This ordering is measured, not inferred: `xorriso -as mkisofs -help` prints nothing at all, while `xorriso -help` lists both settings inside `-boot_image`'s own parameter list.
 

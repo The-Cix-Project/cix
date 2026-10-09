@@ -70,7 +70,7 @@ This produces `build/cix-install.iso`, which boots from a USB stick or an optica
 
 The **USB** entries name the media by `root=PARTUUID=`, so they work whatever the stick enumerates as ([#430](https://git.home.arpa/itdlabs/cix/issues/430), [ADR-0336](../adr/0336-the-installer-iso-carries-a-partition-over-its-own-filesystem.md)). This matters more than it sounds: these entries used to say `/dev/sda`, and an installer's target machine usually has a disk of its own that is just as likely to be `sda` as the stick is. The PARTUUID is derived from the release, so every ISO built from one release carries the same one and two different releases never collide.
 
-The **CD/DVD** entries still name `/dev/sr0`. An optical drive is not enumerated among the disks, so the ambiguity does not arise there.
+The **CD/DVD** entries still name `/dev/sr0`, and always will — the kernel creates no partition devices for an optical drive, so there is nothing for a PARTUUID to name. An optical drive is also not enumerated among the disks, so the ambiguity does not arise there anyway. That is why there are four entries rather than two, and it is the correct shape rather than something awaiting a tidy-up.
 
 Choosing the wrong entry for your media fails immediately and legibly with `Cannot open root device`, and installs nothing — pick the other and boot again.
 
