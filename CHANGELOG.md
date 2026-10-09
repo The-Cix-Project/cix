@@ -83,11 +83,30 @@ kernel-args string that can itself be 512 bytes, with the `snprintf` return unch
 enough kernel-args would have silently truncated the installer's own bootloader configuration
 mid-entry. Sized to hold the worst case and the truncation is now checked.
 
-**Not established, and not establishable here: whether an appended ESP boots on real firmware.**
-Every UEFI machine finds its ESP through the GPT, which this now provides correctly, and El Torito
-is unchanged — but "should" is not "does". #430's verification has always been a real USB boot on the
-machine from #429, and that remains the gate. What is verified is that the media carries the
-structure a correct `root=PARTUUID=` needs, on every build.
+**Verified on real media.** Deployed as `0.2.57-478`, and an installer ISO built on the deployed
+daemon. mkinstalleriso's gate printed `partition 1: ISO9660 at LBA 64, PARTUUID
+28c91145-16af-9e77-d501-898175d24dac; partition 2: EFI system partition` on its first real run,
+which also means grub-mkrescue's capability probe passed through the rewritten wrapper — the one
+design question no probe could settle. Reading the published artifact (`probe-isoverify@1-1`,
+`@2-1`): **LBA 0 carries one `0xEE` protective entry and nothing else** — xorriso's own summary is
+`MBR protective-msdos-label cyl-align-off GPT`, so this is **not** a hybrid MBR, which was the whole
+of the residual firmware concern; the GPT reads `partition_offset: 16`, disk GUID `…d500…` with
+partitions `d501`/`d502`/`d503`, entry 1 `ISO9660` at 64 for 142416 sectors and entry 2 the ESP type
+at 142480 for 5760; byte 65537 reads `CD001`; the El Torito catalogue sits at sector 921 pointing at
+`/efi.img`, UEFI, bootable; and **both copies of `efi.img` are byte for byte identical** —
+2,949,120 bytes each, both `e062b8c2…369b897b`, reached by independent routes.
+
+Two of those matter more than they look. The release-derived GUID is the first read with distinct
+bytes, so it is the first that genuinely tests `guid_to_text()`'s mixed-endian conversion — every
+earlier measurement used a repeated-nibble GUID that would have passed with that convention
+backwards. And the identical hashes mean **which route firmware prefers cannot matter**, since El
+Torito and the GPT ESP load the same `BOOTX64.EFI`.
+
+**What remains unverified is one sentence: firmware that refuses a conformant GPT carrying a plain
+protective MBR and no hybrid entries.** That is a firmware bug rather than a property of this
+medium. The boot cannot be tested on any Cix host — no qemu, no OVMF, no recipe for either, filed
+as #584 — so #430 stays open against a real USB boot on the machine from #429, with a three-outcome
+procedure recorded there.
 
 ### A radio create no longer freezes the control plane: 1612 ms of reactor time becomes 32 (#344, ADR-0335, 0.2.57-476 and -477)
 

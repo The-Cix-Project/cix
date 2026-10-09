@@ -2471,7 +2471,19 @@ The disk GUID is derived by cixd from sha256 of `CIX_BUILD_VERSION` and passed a
 
 Two artefacts corrected. An earlier #430 comment said grub-mkrescue already passed `partition_offset=16` -- it does not, and that was a wrapper's own echoed injection read as its input; a grep of `grub-mkrescue.c` finds the identifier nowhere. And `cix-xorriso.c`'s HFS+ strip table, previously taken from grub's source alone, is now confirmed term for term against a real argv, which also established that it fires only when `--directory=` is passed. Separately, `grub_cfg` was a 1024-byte buffer holding four menu entries plus a kernel-args string that can itself be 512 bytes, with the `snprintf` return unchecked -- a long enough one would have silently truncated the installer's own bootloader configuration mid-entry. Sized for the worst case, and the truncation checked.
 
-**Not verified, and stated as such: whether an appended ESP boots on real firmware.** Every UEFI machine finds its ESP through the GPT, which this now provides correctly, and El Torito is unchanged -- but #430's verification has always been a real USB boot on the machine from #429, and that is the owner's. What this part verifies is that the media carries the structure a correct `root=PARTUUID=` needs, on every build, by its own gate.
+**Verified on real media, deployed.** `0.2.57-478` is live on 192.168.15.95 (slot b -> a, clean boot) and an installer ISO built on it, published as `cix-installer-0.2.57-478-x86_64.iso`. `mkinstalleriso`'s own gate printed `partition 1: ISO9660 at LBA 64, PARTUUID 28c91145-16af-9e77-d501-898175d24dac; partition 2: EFI system partition` on its first real run -- which also means grub-mkrescue's capability probe passed through the rewritten wrapper untouched, the one design question the probes could not settle. `probe-isoverify@1-1` and `@2-1` then read the published artifact directly:
+
+| read | result |
+|---|---|
+| LBA 0, the protective MBR -- never dumped by any earlier probe | one `0xEE` entry at LBA 1 spanning the disk, entries 2-4 zeroed; xorriso's own summary reads `MBR protective-msdos-label cyl-align-off GPT`. **Not a hybrid MBR** |
+| the GPT, with a release-derived disk GUID | `...d500...` with partitions `d501`/`d502`/`d503`, `partition_offset: 16`, entry 1 `ISO9660` at 64 for 142416 sectors, entry 2 the ESP type at 142480 for 5760 |
+| byte 65537 | `CD001` |
+| both copies of `efi.img`, by independent routes | 2,949,120 bytes each, both `e062b8c2...369b897b` -- **byte for byte identical** |
+| the El Torito catalogue | sector 921, image `/efi.img`, platform UEFI, bootable, `Ldsiz 5760` |
+
+Two of those are worth more than they look. The release-derived GUID is the **first** read with distinct bytes, so it is the first that genuinely tests `guid_to_text()`'s mixed-endian conversion -- every earlier measurement used a repeated-nibble GUID that would have passed with that convention backwards. And the identical hashes mean **which route firmware prefers cannot matter**, since El Torito and the GPT ESP load the same `BOOTX64.EFI`; that was a reasoned claim and is now a measured one.
+
+**What is not verified reduces to one sentence: firmware that refuses a conformant GPT carrying a plain protective MBR and no hybrid entries.** That is a firmware bug rather than a property of this medium. The boot itself cannot be tested on any Cix host -- no qemu, no OVMF, and no recipe for either, which is **#584** -- so #430 stays open against a real USB boot on the machine from #429, with a three-outcome procedure recorded there.
 
 ## Part 263 (done): a radio create stops freezing the control plane -- 1612 ms of reactor time becomes 32 (#344, ADR-0335)
 
