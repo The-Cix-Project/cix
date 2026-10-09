@@ -31,7 +31,8 @@
 	X(ISOTOOLS_ROOT, "isotools-root")                                                          \
 	X(SEED_DIR, "seed-dir")                                                                    \
 	X(MODULES_DIR, "kernel-modules-dir")                                                       \
-	X(KMOD_BIN_DIR, "kmod-bin-dir")
+	X(KMOD_BIN_DIR, "kmod-bin-dir")                                                            \
+	X(DISK_GUID, "gpt-disk-guid")
 
 #define MKISO_ARG_ENUM_(id, name) MKISO_ARG_##id,
 enum mkinstalleriso_arg {

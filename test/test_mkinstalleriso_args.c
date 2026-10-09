@@ -11,9 +11,14 @@
  *
  *   - one argument short and one too many are refused with exit 2 and
  *     a usage line naming every argument in the list, in order;
- *   - exactly MKISO_ARGC is accepted past the count check. Every path
- *     is inside a fresh temporary directory and none exists, so it
- *     then fails on its first missing input -- anything but usage.
+ *   - exactly MKISO_ARGC is accepted past the count check. Every
+ *     argument is a path inside a fresh temporary directory and none
+ *     exists, so it then fails on the first one it validates -- since
+ *     #430 that is gpt-disk-guid, which a path is not, and before it
+ *     was the first missing input. Either way the assertion is the
+ *     same and deliberately loose: anything but usage, and not
+ *     success. What this test exists to catch is a count mismatch, so
+ *     it must not also pin WHICH complaint comes first.
  *
  * Runs build/mkinstalleriso from the repository root, as test_installer
  * does; `make selftest` builds it as a SELFTEST_HELPER.

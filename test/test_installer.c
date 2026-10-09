@@ -622,6 +622,28 @@ int main(void)
 			                 * answered with a fragment of usage text.
 			                 */
 			                (char *)"",                    (char *)"",
+			                /*
+			                 * The GPT disk GUID (#430). cixd derives
+			                 * this from the release it is building;
+			                 * a fixture has no release, so it passes
+			                 * a fixed one shaped the way the contract
+			                 * requires -- 8-4-4-4-12 lowercase hex
+			                 * whose fourth group ends in a byte low
+			                 * enough to add a partition number to.
+			                 * The repeated nibbles mirror the probe
+			                 * GUID that measured the mechanism on
+			                 * 192.168.15.95, so a raw dump of this
+			                 * fixture's media reads the same way the
+			                 * measurements in #430 do.
+			                 *
+			                 * mkinstalleriso writes the ISO9660
+			                 * partition's PARTUUID into the USB boot
+			                 * entries and then re-reads the finished
+			                 * image to check it is really there, so
+			                 * this value is also what that gate
+			                 * compares against.
+			                 */
+			                (char *)"11111111-2222-3333-4400-555555555555",
 			                NULL };
 
 		if (build_isotools_fixture(workdir, isotools_root, sizeof(isotools_root)) != 0) {

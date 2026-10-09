@@ -429,6 +429,258 @@ static int write_text_file(const char *path, const char *content)
 	return 0;
 }
 
+/*
+ * The ISO9660 filesystem's own GPT partition (cix#430).
+ *
+ * cix-xorriso rewrites grub-mkrescue's arguments so the media carries a
+ * partition covering its filesystem, which is what lets the USB boot
+ * entries say `root=PARTUUID=` instead of hardcoding /dev/sda. The
+ * layout it produces, measured on 192.168.15.95, 2026-10-09
+ * (probe-isogrub@9-1):
+ *
+ *   1  ISO9660     basic data   LBA 64..19207    <- the filesystem
+ *   2  Appended2   ESP type     LBA 19208..24967
+ *   3  Gap1        basic data   LBA 24968..25567
+ *
+ * and xorriso derives each partition's unique GUID from the disk GUID
+ * by raising the low byte of the fourth text group by the partition
+ * number: a disk GUID ending that group in 00 gives partition 1 the
+ * suffix 01. Measured three times, across three different layouts.
+ */
+#define ISO9660_PARTITION_NUMBER 1
+#define ISO9660_PARTITION_FIRST_LBA 64
+#define ISO9660_PARTITION_NAME "ISO9660"
+
+/* Offsets within the GPT header (at LBA 1) and a partition entry. */
+#define GPT_HEADER_OFFSET 512
+#define GPT_SIG "EFI PART"
+#define GPT_HDR_ENTRY_ARRAY_LBA 72
+#define GPT_HDR_ENTRY_COUNT 80
+#define GPT_HDR_ENTRY_SIZE 84
+#define GPT_ENT_UNIQUE_GUID 16
+#define GPT_ENT_FIRST_LBA 32
+#define GPT_ENT_NAME 56
+/* The name field is the entry's last 72 bytes: 36 UTF-16 code units. */
+#define GPT_ENT_NAME_UNITS 36
+
+/*
+ * The partition-relative volume descriptor `partition_offset=16` writes.
+ * A partition starting at 512-byte LBA 64 sees byte 65536 as its own
+ * 2048-byte block 16, which is where a primary volume descriptor must
+ * be -- so without this the kernel cannot mount the partition as
+ * iso9660 even though the whole-device filesystem is valid. Measured
+ * absent on the published media (cix#430) and present after the fix.
+ */
+#define ISO_PARTITION_PVD_OFFSET 65536
+
+static int valid_disk_guid(const char *s)
+{
+	size_t i;
+
+	if (s == NULL || strlen(s) != 36)
+		return 0;
+	for (i = 0; i < 36; i++) {
+		if (i == 8 || i == 13 || i == 18 || i == 23) {
+			if (s[i] != '-')
+				return 0;
+			continue;
+		}
+		if (!((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'f')))
+			return 0;
+	}
+	return 1;
+}
+
+static int hex_byte(const char *p, unsigned *out)
+{
+	unsigned v = 0;
+	int i;
+
+	for (i = 0; i < 2; i++) {
+		v <<= 4;
+		if (p[i] >= '0' && p[i] <= '9')
+			v |= (unsigned)(p[i] - '0');
+		else if (p[i] >= 'a' && p[i] <= 'f')
+			v |= (unsigned)(p[i] - 'a' + 10);
+		else
+			return -1;
+	}
+	*out = v;
+	return 0;
+}
+
+/*
+ * The PARTUUID of the partition holding the ISO9660 filesystem, from
+ * the disk GUID. Caller has already validated the GUID's shape.
+ *
+ * The byte that moves is the fourth group's low one, characters 21 and
+ * 22. A carry would silently name a different partition than the one
+ * the media actually has, so it is refused rather than wrapped -- cixd
+ * zeroes that byte when it derives the disk GUID precisely so this
+ * cannot happen, and if that ever changes this says so instead of
+ * producing an ISO that does not boot.
+ */
+static int iso_partuuid(const char *disk_guid, char *out, size_t out_size)
+{
+	unsigned low;
+
+	if (out_size < 37)
+		return -1;
+	if (hex_byte(disk_guid + 21, &low) != 0)
+		return -1;
+	if (low + ISO9660_PARTITION_NUMBER > 0xff)
+		return -1;
+	snprintf(out, out_size, "%.21s%02x%s", disk_guid, low + ISO9660_PARTITION_NUMBER,
+	         disk_guid + 23);
+	return 0;
+}
+
+static unsigned long long le_uint(const unsigned char *p, int bytes)
+{
+	unsigned long long v = 0;
+	int i;
+
+	for (i = bytes - 1; i >= 0; i--)
+		v = (v << 8) | p[i];
+	return v;
+}
+
+/*
+ * A GPT GUID's canonical text form. The first three fields are stored
+ * little-endian and the remaining eight bytes in order, which is the
+ * one piece of endianness this file has to know: everything else keeps
+ * the GUID in text so that xorriso and the kernel each apply this same
+ * convention to it without us reasoning about either.
+ */
+static void guid_to_text(const unsigned char *b, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+	         b[3], b[2], b[1], b[0], b[5], b[4], b[7], b[6], b[8], b[9], b[10], b[11], b[12],
+	         b[13], b[14], b[15]);
+}
+
+static int read_at(FILE *f, long long off, void *buf, size_t len, const char *what)
+{
+	if (fseek(f, (long)off, SEEK_SET) != 0) {
+		fprintf(stderr, "seek to %s failed\n", what);
+		return -1;
+	}
+	if (fread(buf, 1, len, f) != len) {
+		fprintf(stderr, "short read of %s\n", what);
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * Re-reads the finished ISO and refuses to call it built unless it
+ * really carries what grub.cfg now claims: a partition named ISO9660
+ * starting at LBA 64, whose PARTUUID is the one written into the boot
+ * entries, with the partition-relative volume descriptor at its first
+ * block.
+ *
+ * This is a gate rather than a diagnostic because the alternative
+ * failure is the worst shape available: an ISO that builds, signs,
+ * publishes and then cannot find its own root filesystem, discovered by
+ * someone standing at a machine with a USB stick. Every input to the
+ * derivation is a measurement that could change under a new xorriso --
+ * the partition index, the name it chooses, the GUID arithmetic -- so
+ * each is checked against the image rather than trusted. It fails
+ * loudly and can never pass wrongly: a mistake in guid_to_text() above
+ * makes this refuse a correct ISO, not accept a broken one.
+ */
+static int verify_iso_partition(const char *iso, const char *want_partuuid)
+{
+	unsigned char hdr[96];
+	unsigned char ent[128];
+	unsigned char pvd[8];
+	char got_partuuid[40];
+	char name[GPT_ENT_NAME_UNITS + 1];
+	unsigned long long array_lba, entry_size, entry_count, first_lba;
+	size_t i;
+	FILE *f = fopen(iso, "rb");
+	int rc = -1;
+
+	if (f == NULL) {
+		perror(iso);
+		return -1;
+	}
+	if (read_at(f, GPT_HEADER_OFFSET, hdr, sizeof(hdr), "the GPT header") != 0)
+		goto out;
+	if (memcmp(hdr, GPT_SIG, 8) != 0) {
+		fprintf(stderr, "%s has no GPT: expected \"%s\" at byte %d\n", iso, GPT_SIG,
+		        GPT_HEADER_OFFSET);
+		goto out;
+	}
+	array_lba = le_uint(hdr + GPT_HDR_ENTRY_ARRAY_LBA, 8);
+	entry_count = le_uint(hdr + GPT_HDR_ENTRY_COUNT, 4);
+	entry_size = le_uint(hdr + GPT_HDR_ENTRY_SIZE, 4);
+	if (entry_size != sizeof(ent) ||
+	    entry_count < (unsigned long long)ISO9660_PARTITION_NUMBER) {
+		fprintf(stderr,
+		        "%s: GPT describes %llu entries of %llu bytes; expected at least %d of %zu\n",
+		        iso, entry_count, entry_size, ISO9660_PARTITION_NUMBER, sizeof(ent));
+		goto out;
+	}
+	if (read_at(f, (long long)(array_lba * 512 + (ISO9660_PARTITION_NUMBER - 1) * entry_size),
+	            ent, sizeof(ent), "the ISO9660 partition entry") != 0)
+		goto out;
+
+	/* The name is UTF-16LE; every character this one can hold is ASCII,
+	 * so the high byte of each unit must be zero for the comparison to
+	 * mean anything. */
+	name[GPT_ENT_NAME_UNITS] = '\0';
+	for (i = 0; i < GPT_ENT_NAME_UNITS; i++) {
+		unsigned char lo = ent[GPT_ENT_NAME + i * 2];
+		unsigned char hi = ent[GPT_ENT_NAME + i * 2 + 1];
+
+		/* Anything outside ASCII cannot be a name this code writes,
+		 * and must not silently compare equal to one. */
+		name[i] = (hi != 0) ? '?' : (char)lo;
+		if (name[i] == '\0')
+			break;
+	}
+	if (strcmp(name, ISO9660_PARTITION_NAME) != 0) {
+		fprintf(stderr,
+		        "%s: partition %d is named \"%s\", not \"%s\" -- the media does not "
+		        "carry a partition over its own filesystem, so root=PARTUUID= in "
+		        "grub.cfg would name nothing (cix#430)\n",
+		        iso, ISO9660_PARTITION_NUMBER, name, ISO9660_PARTITION_NAME);
+		goto out;
+	}
+	first_lba = le_uint(ent + GPT_ENT_FIRST_LBA, 8);
+	if (first_lba != ISO9660_PARTITION_FIRST_LBA) {
+		fprintf(stderr, "%s: partition %d starts at LBA %llu, not %d\n", iso,
+		        ISO9660_PARTITION_NUMBER, first_lba, ISO9660_PARTITION_FIRST_LBA);
+		goto out;
+	}
+	guid_to_text(ent + GPT_ENT_UNIQUE_GUID, got_partuuid, sizeof(got_partuuid));
+	if (strcmp(got_partuuid, want_partuuid) != 0) {
+		fprintf(stderr,
+		        "%s: partition %d's PARTUUID is %s but grub.cfg names %s -- the "
+		        "derivation from the disk GUID no longer matches what xorriso "
+		        "writes (cix#430)\n",
+		        iso, ISO9660_PARTITION_NUMBER, got_partuuid, want_partuuid);
+		goto out;
+	}
+	if (read_at(f, ISO_PARTITION_PVD_OFFSET, pvd, sizeof(pvd),
+	            "the partition-relative volume descriptor") != 0)
+		goto out;
+	if (memcmp(pvd + 1, "CD001", 5) != 0) {
+		fprintf(stderr,
+		        "%s: no partition-relative volume descriptor at byte %d, so the "
+		        "kernel cannot mount partition %d as iso9660 (cix#430)\n",
+		        iso, ISO_PARTITION_PVD_OFFSET + 1, ISO9660_PARTITION_NUMBER);
+		goto out;
+	}
+	printf("partition %d: %s at LBA %llu, PARTUUID %s\n", ISO9660_PARTITION_NUMBER, name,
+	       first_lba, got_partuuid);
+	rc = 0;
+out:
+	fclose(f);
+	return rc;
+}
+
 static int run_subprocess(const char *bin, char *const argv[])
 {
 	pid_t pid;
@@ -592,7 +844,20 @@ int main(int argc, char **argv)
 	const char *seed_dir;
 	char dst[600];
 	char grub_cfg_path[600];
-	char grub_cfg[1024];
+	/*
+	 * Four menu entries plus the preamble, with the kernel-args string
+	 * appearing twice. kernel_args is itself up to 512 bytes, so 1024
+	 * -- what this was -- could be overrun by a long enough one, and
+	 * snprintf truncates in silence: the result would be a grub.cfg cut
+	 * off mid-entry, in the one file that boots the installer. Sized to
+	 * hold the worst case outright, and the write below checks for
+	 * truncation anyway rather than relying on this arithmetic staying
+	 * true as entries are added.
+	 */
+	char grub_cfg[4096];
+	size_t cfg_len;
+	const char *disk_guid;
+	char iso_partuuid_buf[40];
 	char grub_module_dir[600];
 	char xorriso_bin[600];
 	char isotools_bin_dir[600];
@@ -650,7 +915,14 @@ int main(int argc, char **argv)
 		        "  freshly installed box has a package source before it has a network\n"
 		        "  (#189/#135). Its artifacts are verified against their own recipes by\n"
 		        "  the daemon before anything is installed from them, so this is a\n"
-		        "  delivery mechanism and not a trust boundary.\n",
+		        "  delivery mechanism and not a trust boundary.\n"
+		        "  gpt-disk-guid: the GPT disk GUID to build this media with, in\n"
+		        "  8-4-4-4-12 lowercase hex, whose fourth group must end in a byte low\n"
+		        "  enough to add a partition number to (cixd zeroes it). It decides the\n"
+		        "  PARTUUID of the partition covering the ISO9660 filesystem, which the\n"
+		        "  USB boot entries name as root= (#430), so it is an argument rather\n"
+		        "  than something generated here: the caller knows the release, and the\n"
+		        "  same release must produce the same PARTUUID every time it is built.\n",
 		        argv[0]);
 		return 2;
 	}
@@ -669,6 +941,37 @@ int main(int argc, char **argv)
 	seed_dir = argv[MKISO_ARG_SEED_DIR];
 	modules_dir = argv[MKISO_ARG_MODULES_DIR];
 	kmod_bin_dir = argv[MKISO_ARG_KMOD_BIN_DIR];
+	disk_guid = argv[MKISO_ARG_DISK_GUID];
+
+	/*
+	 * The GPT disk GUID (cix#430), checked here because this is the one
+	 * place that both hands it to xorriso and derives the PARTUUID it
+	 * writes into grub.cfg. A malformed value would reach xorriso as a
+	 * setting it rejects, which fails the build loudly enough -- but it
+	 * would ALSO reach grub.cfg, and the shape of the text is what the
+	 * derivation below indexes into, so the format rule lives here once
+	 * rather than being half-enforced in two places.
+	 */
+	if (!valid_disk_guid(disk_guid)) {
+		fprintf(stderr,
+		        "gpt-disk-guid \"%s\" is not 8-4-4-4-12 lowercase hex -- it names "
+		        "the ISO9660 partition this media's root=PARTUUID= boots from\n",
+		        disk_guid);
+		return 1;
+	}
+	if (iso_partuuid(disk_guid, iso_partuuid_buf, sizeof(iso_partuuid_buf)) != 0) {
+		fprintf(stderr, "could not derive the ISO9660 partition's PARTUUID from \"%s\"\n",
+		        disk_guid);
+		return 1;
+	}
+	/*
+	 * Read by cix-xorriso, which turns it into xorriso's native
+	 * `-boot_image any gpt_disk_guid=` setting. Same convention as
+	 * CIX_REAL_XORRISO above, and for the same reason: grub-mkrescue
+	 * builds xorriso's argument list itself and takes nothing from us
+	 * but the path of the binary to run.
+	 */
+	setenv("CIX_ISO_DISK_GUID", disk_guid, 1);
 
 	snprintf(g_grub_mkrescue_bin, sizeof(g_grub_mkrescue_bin), "%s/bin/grub-mkrescue",
 	         g_isotools_root);
@@ -1207,7 +1510,7 @@ int main(int argc, char **argv)
 	 * touch, what to reset) is either hardcoded (its own header comment
 	 * explains why) or gathered interactively at its own console prompt.
 	 */
-	snprintf(grub_cfg, sizeof(grub_cfg),
+	cfg_len = (size_t)snprintf(grub_cfg, sizeof(grub_cfg),
 	         "set timeout=10\n"
 	         "set default=0\n"
 	         /* "keep": hand the kernel the EFI console mode GRUB is
@@ -1258,17 +1561,32 @@ int main(int argc, char **argv)
 	          * intermittently even with usb-storage built in; on
 	          * optical media it costs nothing.
 	          *
-	          * root=/dev/sda is knowingly the same class of hardcode
-	          * #305 was filed for -- a name the kernel assigns by
-	          * enumeration order. It is here as a visible operator
-	          * choice rather than a silent panic, and #430 carries the
-	          * measured reason PARTUUID cannot be used on this media
-	          * yet: its GPT has no partition covering the ISO9660
-	          * filesystem at all (only Gap0/ESP/Gap1), and the disk
-	          * GUID xorriso generates differs on every build.
+	          * The USB entries name the media by PARTUUID (#430), not
+	          * by device. They used to say root=/dev/sda, which is the
+	          * same class of hardcode #305 was filed for -- a name the
+	          * kernel assigns by enumeration order -- and it is a
+	          * particularly poor one here, because an installer's
+	          * target machine usually has a disk of its own and it is
+	          * just as likely to be sda as the stick is. That was not
+	          * a choice anyone preferred: the media genuinely had
+	          * nothing to name, its GPT carrying no partition over the
+	          * ISO9660 filesystem at all (only Gap0/ESP/Gap1) and a
+	          * fresh random disk GUID on every build. cix-xorriso now
+	          * gives it both, and verify_iso_partition() below refuses
+	          * to finish if the image does not actually carry what
+	          * these two lines claim.
+	          *
+	          * The CD/DVD entries keep root=/dev/sr0 deliberately. An
+	          * optical drive is not enumerated among the disks, so the
+	          * ambiguity PARTUUID solves does not arise there, and
+	          * whether the kernel even creates partition devices for
+	          * sr* is not something this change measured -- so the
+	          * path that works is left exactly as it was rather than
+	          * changed on an assumption. Collapsing the four entries
+	          * into two is what that measurement would buy.
 	          */
 	         "menuentry \"Cix Install (USB media)\" {\n"
-	         "    linux /boot/cix-bzImage console=tty0 console=ttyS0 root=/dev/sda "
+	         "    linux /boot/cix-bzImage console=tty0 console=ttyS0 root=PARTUUID=%s "
 	         "rootfstype=iso9660 rootwait ro init=/bin/cix-install -- %s\n"
 	         "}\n"
 	         "\n"
@@ -1278,7 +1596,7 @@ int main(int argc, char **argv)
 	         "}\n"
 	         "\n"
 	         "menuentry \"Cix Recovery, USB media (reset host-auth admin_groups)\" {\n"
-	         "    linux /boot/cix-bzImage console=tty0 console=ttyS0 root=/dev/sda "
+	         "    linux /boot/cix-bzImage console=tty0 console=ttyS0 root=PARTUUID=%s "
 	         "rootfstype=iso9660 rootwait ro init=/bin/cix-recover\n"
 	         "}\n"
 	         "\n"
@@ -1286,7 +1604,19 @@ int main(int argc, char **argv)
 	         "    linux /boot/cix-bzImage console=tty0 console=ttyS0 root=/dev/sr0 "
 	         "rootfstype=iso9660 rootwait ro init=/bin/cix-recover\n"
 	         "}\n",
-	         kernel_args, kernel_args);
+	         iso_partuuid_buf, kernel_args, kernel_args, iso_partuuid_buf);
+	/*
+	 * A truncated grub.cfg is a bootloader configuration cut off
+	 * mid-entry, and snprintf reports that only in its return value.
+	 * Checked rather than sized-and-hoped: the buffer above is
+	 * generous today, and an entry added later is exactly the change
+	 * that would quietly overrun it.
+	 */
+	if (cfg_len >= sizeof(grub_cfg)) {
+		fprintf(stderr, "grub.cfg needs %zu bytes, buffer holds %zu\n", cfg_len + 1,
+		        sizeof(grub_cfg));
+		return 1;
+	}
 	snprintf(grub_cfg_path, sizeof(grub_cfg_path), "%s/boot/grub/grub.cfg", stage_dir);
 	if (write_text_file(grub_cfg_path, grub_cfg) != 0)
 		return 1;
@@ -1311,6 +1641,18 @@ int main(int argc, char **argv)
 		if (run_subprocess(g_grub_mkrescue_bin, argv_grub) != 0)
 			return 1;
 	}
+
+	/*
+	 * The media must actually carry the partition grub.cfg just named
+	 * (cix#430). Checked here, against the finished image, because
+	 * every step between that line and this one belongs to a tool this
+	 * project does not own -- grub-mkrescue's argument list, xorriso's
+	 * partition naming, its GUID arithmetic -- and a change in any of
+	 * them would otherwise surface as an ISO that builds, signs,
+	 * publishes and then cannot find its own root filesystem.
+	 */
+	if (verify_iso_partition(out_iso, iso_partuuid_buf) != 0)
+		return 1;
 
 	if (report_media_sizes(stage_dir, out_iso) != 0)
 		return 1;

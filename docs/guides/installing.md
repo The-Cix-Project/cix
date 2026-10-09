@@ -66,7 +66,13 @@ The generated media carries a "Cix Recovery" entry per media kind — a break-gl
 
 This produces `build/cix-install.iso`, which boots from a USB stick or an optical drive. Write it to a stick with a plain byte copy (`dd if=cix-install.iso of=/dev/sdX bs=4M` against the *whole device*, not a partition), or attach it as a CD-ROM to a VM.
 
-**Pick the entry matching your media at the GRUB menu** — "Cix Install (USB media)" or "Cix Install (CD/DVD media)". With no initramfs there is nothing to go and find the installer's own filesystem, so the device holding it is named on the kernel command line, and the two differ: a USB stick is a SCSI disk (`/dev/sda`), an optical drive is `/dev/sr0`. Choosing the wrong one fails immediately and legibly with `Cannot open root device`, and installs nothing — pick the other and boot again. Naming `sda` also assumes the stick is the machine's first SCSI disk, which is true of a machine whose only other disk is NVMe; [#430](https://git.home.arpa/itdlabs/cix/issues/430) carries the measured reason this is not yet a `PARTUUID=`, which would need no choice at all.
+**Pick the entry matching your media at the GRUB menu** — "Cix Install (USB media)" or "Cix Install (CD/DVD media)". With no initramfs there is nothing to go and find the installer's own filesystem, so the device holding it is named on the kernel command line, and the two are named differently.
+
+The **USB** entries name the media by `root=PARTUUID=`, so they work whatever the stick enumerates as ([#430](https://git.home.arpa/itdlabs/cix/issues/430), [ADR-0336](../adr/0336-the-installer-iso-carries-a-partition-over-its-own-filesystem.md)). This matters more than it sounds: these entries used to say `/dev/sda`, and an installer's target machine usually has a disk of its own that is just as likely to be `sda` as the stick is. The PARTUUID is derived from the release, so every ISO built from one release carries the same one and two different releases never collide.
+
+The **CD/DVD** entries still name `/dev/sr0`. An optical drive is not enumerated among the disks, so the ambiguity does not arise there.
+
+Choosing the wrong entry for your media fails immediately and legibly with `Cannot open root device`, and installs nothing — pick the other and boot again.
 
 Nothing else needs editing: the empty kernel-args argument above passes the installer nothing, and it asks. It lists the machine's own disks with their sizes, has you pick one by number, and makes you type `ERASE` against that specific disk before it touches it. Then it lists the real network interfaces and asks for the management interface, address, prefix and gateway, defaulting where there is a sensible default.
 

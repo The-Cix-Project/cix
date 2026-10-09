@@ -30,6 +30,7 @@
 #include "resolv.h"
 #include "signingkeys.h"
 #include "releasekey.h"
+#include "pkicrypto.h"
 #include "base64.h"
 #include "childdiag.h"
 #include "bzimage.h"
@@ -10542,6 +10543,79 @@ static void register_iso_assemble_pidfd(pid_t pid, int pidfd)
 }
 
 /*
+ * The GPT disk GUID for the installer ISO, derived from the release
+ * that builds it (cix#430).
+ *
+ * The media needs one at all because its ISO9660 filesystem has to be a
+ * named GPT partition for `root=PARTUUID=` to replace the `/dev/sda`
+ * hardcode in the USB boot entries, and xorriso otherwise generates a
+ * fresh random disk GUID on every run -- measured across two published
+ * ISOs in cix#430, d27ef9f4-... and 3edd5e48-..., which is why a
+ * PARTUUID could not be written into grub.cfg before.
+ *
+ * It is derived rather than fixed, and derived from the version rather
+ * than read back out of the finished image, for three reasons each of
+ * which rules out an alternative that was considered:
+ *
+ *   - A constant would give every Cix installer ever built the same
+ *     PARTUUID. Two sticks of different releases in one machine would
+ *     then be indistinguishable to the kernel, and it would root on
+ *     whichever enumerated first -- the same class of bug as the
+ *     /dev/sda hardcode this replaces, moved rather than fixed.
+ *   - Reading the GUID back out of the ISO and writing it into
+ *     grub.cfg is circular: grub.cfg is ISO content, so it is already
+ *     sealed inside the image whose table would be read.
+ *   - Discovering it at boot from GRUB (`probe --part-uuid`) needs no
+ *     determinism at all, but on EFI media $root is the ESP, so
+ *     deriving the sibling partition's device needs string work GRUB
+ *     has no primitives for, and nothing short of a real boot tests it.
+ *
+ * So: sha256 of the release string, laid out as the 8-4-4-4-12 text
+ * form, which is what xorriso's `gpt_disk_guid=` takes. No endianness
+ * reasoning is involved here precisely because this stays in text --
+ * GPT stores a GUID's first three fields little-endian, and letting
+ * xorriso and the kernel each apply that convention to the same text
+ * keeps the round trip faithful without this function knowing about it.
+ *
+ * THE FOURTH GROUP'S LOW BYTE IS FORCED TO ZERO, and that is load-
+ * bearing rather than cosmetic. Measured on 192.168.15.95, 2026-10-09
+ * (probe-isogrub@6-1, @7-1 and @9-1, three times with different
+ * layouts): xorriso derives partition n's unique GUID from the disk
+ * GUID by raising exactly that byte by n -- a disk GUID ending its
+ * fourth group in 44 yields partitions 4445, 4446, 4447. Zeroing it
+ * means partition 1 is 01 and no carry into the neighbouring byte is
+ * possible for any partition count this medium could reach, so the
+ * PARTUUID mkinstalleriso predicts is derivable by addition and
+ * verifiable afterwards. It also cross-checks against the published
+ * ISO recorded at the top of cix#430, whose three entries differ from
+ * its disk GUID "only in one nibble".
+ *
+ * No RFC 4122 version or variant bits are set. A GPT GUID is sixteen
+ * opaque bytes, and stamping this one as version 4 ("random") or 5
+ * ("name-based, SHA-1") would be a false claim about how it was made.
+ */
+static int iso_disk_guid_derive(const char *version, char *out, size_t out_size)
+{
+	char hex[65];
+
+	/* 36 characters and the terminator. */
+	if (out_size < 37)
+		return -1;
+	if (pkicrypto_sha256_hex(version, strlen(version), hex, sizeof(hex)) != 0)
+		return -1;
+	/*
+	 * Groups 1 to 3 and the trailing 12 come straight from the digest;
+	 * the fourth group keeps only its high byte, so the two digits the
+	 * partition derivation moves start at zero. The digits at hex[18]
+	 * and hex[19] are deliberately unused, which is why the last group
+	 * reads from hex + 20 rather than continuing.
+	 */
+	snprintf(out, out_size, "%.8s-%.4s-%.4s-%.2s00-%.12s", hex, hex + 8, hex + 12,
+	         hex + 16, hex + 20);
+	return 0;
+}
+
+/*
  * Validates every real precondition (the "cix"/"kernel" hostbuild
  * artifacts, the "isotools" hostbuild artifact, and the operator-
  * populated signing key pair at SIGNING_KEYS_DIR) up front, so a
@@ -10574,12 +10648,15 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	char kernel_args[512];
 	char iso_modules_dir[PATH_MAX];
 	char iso_kmod_bin_dir[PATH_MAX];
+	char iso_disk_guid[40];
 	/*
-	 * 17, for argv[0..15] and the NULL terminator. It was 15, which
-	 * held exactly the previous 14 arguments and that NULL -- so the
-	 * two added below would have written past the end of the array.
-	 * That is not hypothetical: #415 was a real argv overflow on this
-	 * same pattern, found in a crash rather than in review.
+	 * Every argument plus the NULL terminator, sized off the one list
+	 * in include/mkinstalleriso_args.h so that adding an argument
+	 * cannot leave this behind. It was once a literal that held
+	 * exactly the arguments of the day and that NULL, so the next two
+	 * added wrote past the end of the array -- #415 was a real argv
+	 * overflow on this same pattern, found in a crash rather than in
+	 * review.
 	 */
 	char *argv[MKISO_ARGC + 1];
 	pid_t pid;
@@ -10721,6 +10798,27 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	argv[MKISO_ARG_OUT_ISO] = ISO_OUTPUT_PATH;
 	argv[MKISO_ARG_KERNEL_ARGS] = kernel_args;
 	argv[MKISO_ARG_ISOTOOLS_ROOT] = isotools_root;
+	/*
+	 * The GPT disk GUID (cix#430). Derived here rather than in
+	 * mkinstalleriso because this is where the release string lives
+	 * and because cixd already links libcrypto, which keeps a
+	 * control-plane host tool free of a dependency it would otherwise
+	 * need for one hash. mkinstalleriso then uses the one value twice
+	 * -- exported to cix-xorriso, and turned into the PARTUUID it
+	 * writes into grub.cfg -- so the two cannot disagree.
+	 *
+	 * CIX_BUILD_VERSION is the same string g_iso_built_version records
+	 * for the finished media, so an ISO's PARTUUID and the release it
+	 * reports are derived from one fact.
+	 */
+	if (iso_disk_guid_derive(CIX_BUILD_VERSION, iso_disk_guid, sizeof(iso_disk_guid)) != 0) {
+		snprintf(err_msg, err_msg_size,
+		         "could not derive the installer ISO's GPT disk GUID from "
+		         "build version \"%s\"",
+		         CIX_BUILD_VERSION);
+		return -1;
+	}
+	argv[MKISO_ARG_DISK_GUID] = iso_disk_guid;
 	/*
 	 * The kernel module tree and the module tools (#429 follow-on).
 	 *

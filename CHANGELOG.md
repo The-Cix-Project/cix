@@ -6,6 +6,89 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The installer's USB entries name the media by PARTUUID, not /dev/sda (#430, ADR-0336)
+
+The installer ISO's USB boot entries said `root=/dev/sda`. That is a name the kernel assigns by
+enumeration order, and it is a poor one on exactly the hardware those entries exist for: an
+installer's target machine usually has a disk of its own, and it is just as likely to be `sda` as
+the stick is. They now say `root=PARTUUID=<derived>`, which works whatever the stick enumerates as.
+
+**The media genuinely had nothing to name, and not by oversight — that is the finding this took six
+probes to establish.** `grub-mkrescue` creates `efi.img` *inside* the staged tree that becomes the
+ISO (`grub-mkrescue.c:857`) and asks xorriso to describe that in-filesystem copy as the EFI system
+partition (`:865-868`). So the ESP's blocks sit in the middle of the filesystem, a partition
+spanning the filesystem would contain them, and GPT partitions do not overlap — xorriso describes
+the same space as `Gap0` / `EFI boot partition` / `Gap1` instead, none of which covers the
+filesystem. Asking for the overlapping isohybrid layout anyway is **refused, not ignored**:
+`part_like_isohybrid=on` fails the build with *"libisofs: FAILURE : Image write error / Caused by:
+Overlapping MBR partition entries requested"*. And grub-mkrescue has no switch for it — the three
+EFI pushes are gated only on an EFI platform being present, under none of its `system_area` guards.
+
+So `cix-xorriso` appends the ESP past the end of the image instead, as `-append_partition 2 0xef`,
+and removes only the pair that described the embedded copy as a partition. `--efi-boot efi.img`
+stays, so the El Torito catalogue still points at the in-filesystem copy and **the optical boot path
+is untouched** — the CD/DVD entries keep `root=/dev/sr0`, deliberately, because an optical drive is
+not enumerated among the disks and whether the kernel partitions `sr*` at all was not measured.
+Three native settings are prepended ahead of `-as mkisofs`, which consumes its own argument list to
+the end: `partition_offset=16` (the partition-relative volume descriptor, without which the kernel
+cannot mount the partition as iso9660), `gpt_disk_guid=`, and `appended_part_as=gpt`.
+
+Measured through grub-mkrescue's real argument list on 192.168.15.95, 2026-10-09:
+
+| # | name | type | first LBA | last LBA |
+|---|---|---|---|---|
+| 1 | `ISO9660` | basic data | 64 | 19207 |
+| 2 | `Appended2` | `C12A7328-F81F-11D2-BA4B-00A0C93EC93B` | 19208 | 24967 |
+| 3 | `Gap1` | basic data | 24968 | 25567 |
+
+with byte 65537 reading `CD001`. A conformant GPT rather than an isohybrid one.
+
+**The disk GUID is derived from the release**, by cixd, from sha256 of `CIX_BUILD_VERSION`, and
+passed to `mkinstalleriso` as a new `gpt-disk-guid` argument on the one list in
+`include/mkinstalleriso_args.h`. A fixed constant would give every Cix installer ever built the same
+PARTUUID, making two releases' sticks indistinguishable to the kernel — the same class of bug as the
+`/dev/sda` hardcode, moved rather than fixed. Reading the GUID back out of the finished image is
+circular, since `grub.cfg` is already sealed inside the image whose table would be read. xorriso
+derives partition *n*'s GUID by raising the fourth text group's low byte by *n* — measured three
+times across three layouts, and cross-checking the published ISO whose entries differ from its disk
+GUID "only in one nibble" — so cixd zeroes that byte and no carry is possible.
+
+**`mkinstalleriso` re-reads the finished ISO and refuses to call it built** unless the partition is
+really there: named `ISO9660`, at LBA 64, with the PARTUUID `grub.cfg` names and the descriptor at
+its first block. Every input to that derivation belongs to a tool this project does not own, so each
+is checked against the image rather than trusted, and the gate is fail-safe in the direction that
+matters — a mistake in its own GUID formatting refuses a correct ISO rather than accepting a broken
+one. The failure it prevents is an ISO that builds, signs, publishes and then cannot find its own
+root filesystem, discovered by someone standing at a machine with a USB stick.
+
+**One constraint cost four probe revisions and is worth recording.** `grub-mkrescue` runs the xorriso
+it was given **twice**: `check_xorriso()` first forks `xorriso -as mkisofs -help` through a pipe and
+greps for `graft-points`, then the real write follows. A wrapper that rewrites or refuses that first
+call fails the check — and its complaint goes into grub's pipe where nothing can see it, so the
+result is `error: xorriso not found` for a binary that is present and executable. `cix-xorriso` now
+passes such an invocation through untouched, keyed on `-o` being absent rather than on the EFI
+arguments: keying on those would mean that if grub-mkrescue ever stopped pushing them, a *real*
+image write would pass through unmodified and produce media with no `ISO9660` partition while
+`grub.cfg` still named its PARTUUID — an unbootable ISO from a silent success.
+
+Two corrections to artefacts along the way. An earlier comment on #430 said grub-mkrescue already
+passed `partition_offset=16`; it does not, and that line was a wrapper's own echoed injection read as
+its input — a grep of `grub-mkrescue.c` finds `partition_offset`, `append_partition` and
+`appended_part` nowhere. And `cix-xorriso.c`'s HFS+ strip table, previously taken from grub's source
+alone, is now confirmed term for term against a real argv; it fires only when `--directory=` is
+passed, which is why no probe without that flag ever saw an HFS+ argument.
+
+Also fixed while in the file: `grub_cfg` was a 1024-byte buffer holding four menu entries and a
+kernel-args string that can itself be 512 bytes, with the `snprintf` return unchecked — a long
+enough kernel-args would have silently truncated the installer's own bootloader configuration
+mid-entry. Sized to hold the worst case and the truncation is now checked.
+
+**Not established, and not establishable here: whether an appended ESP boots on real firmware.**
+Every UEFI machine finds its ESP through the GPT, which this now provides correctly, and El Torito
+is unchanged — but "should" is not "does". #430's verification has always been a real USB boot on the
+machine from #429, and that remains the gate. What is verified is that the media carries the
+structure a correct `root=PARTUUID=` needs, on every build.
+
 ### A radio create no longer freezes the control plane: 1612 ms of reactor time becomes 32 (#344, ADR-0335, 0.2.57-476 and -477)
 
 Creating a container that carries a radio held cixd's single-threaded reactor for 1.66 seconds,
