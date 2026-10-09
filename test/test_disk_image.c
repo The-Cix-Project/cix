@@ -394,8 +394,10 @@ enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char
 	 * binaries a guest executes), so that load fails and qemu exits 1
 	 * before any guest runs: `failed to find romfile
 	 * "vgabios-stdvga.bin"`. Measured on 192.168.15.95, 2026-10-09 by
-	 * probe-qemu-boot@2-1 and @3-1, where -vga none cleared it and the
-	 * ISO then booted. Nothing here renders, so no display is wanted.
+	 * probe-qemu-boot@2-1, which hit it; @3-1, where -vga none cleared
+	 * it and exposed the NIC's ROM instead; and @4-1, which booted the
+	 * ISO once that device was removed too. Nothing here renders, so no
+	 * display is wanted.
 	 */
 	qemu_argv[argc++] = "-vga";
 	qemu_argv[argc++] = "none";
