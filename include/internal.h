@@ -152,8 +152,17 @@ int container_net_child_configure(const struct network_spec *nets, int net_count
  * userspace inside the container owns that once installed via
  * `pkg install`.
  */
+/*
+ * ADR-0335 step 2 (#344): the bring-up helper is NOT waited for. Its pid
+ * and the read end of its timing-split pipe come back in the two out
+ * params, for the caller to reap through whatever it already uses to
+ * track children -- for the daemon, its own epoll. 0 and -1 when no
+ * helper was forked. See struct container_handle's own comment for why
+ * neither the wait nor the pipe read can happen here.
+ */
 int container_net_host_attach_interfaces(const char *const *interfaces, int interface_count,
-                                          pid_t child_pid, int *out_netns_fd);
+                                          pid_t child_pid, int *out_netns_fd,
+                                          pid_t *out_helper_pid, int *out_split_fd);
 
 /*
  * Called at container removal (registry_remove()), regardless of

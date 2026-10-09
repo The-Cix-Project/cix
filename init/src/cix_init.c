@@ -500,14 +500,27 @@ static void wait_for_interfaces(void)
 		 * same syscall, a different driver -- and one real line turns
 		 * that inference into a reading.
 		 */
-		if (flags < 0)
+		if (flags < 0) {
 			say2("interface never became readable: ", g_iface[i]);
-		else if ((flags & IFF_UP) == 0)
-			say_num("interface still down after the wait, starting anyway: flags ", flags,
-			        g_iface[i]);
-		else
-			say_num("interface up: flags ", flags, g_iface[i]);
-		(void)waited;
+		} else {
+			/*
+			 * Written out rather than via say_num(), which emits
+			 * its prefix, number and suffix with no separator --
+			 * the first run of this printed "flags 4099wlan0",
+			 * with the value and the name run together. The
+			 * interface name is a runtime value and has to sit
+			 * BEFORE the number to read properly, which say_num's
+			 * shape cannot express.
+			 */
+			fd_str(2, "cix-init: interface ");
+			fd_str(2, g_iface[i]);
+			fd_str(2, (flags & IFF_UP) ? " up, flags " : " STILL DOWN after the wait, "
+			                                             "starting anyway, flags ");
+			fd_num(2, flags);
+			fd_str(2, ", waited ");
+			fd_num(2, waited);
+			fd_str(2, " ms\n");
+		}
 	}
 }
 

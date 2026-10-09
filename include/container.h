@@ -695,6 +695,37 @@ struct container_handle {
 	 */
 	int interfaces_netns_fd;
 	/*
+	 * ADR-0335 step 2 (#344): the bring-up helper, handed back for the
+	 * CALLER to reap rather than waited on here.
+	 *
+	 * container_net_host_attach_interfaces() forks a short-lived helper
+	 * that enters the new netns and brings the moved interfaces up.
+	 * That one call measured 1658 ms of a 1676 ms attach on a radio --
+	 * a driver bringing a USB device up -- and waiting for it held the
+	 * daemon's single-threaded reactor for all of it, which is the
+	 * shape ADR-0247 exists to forbid. So it is not waited for: the pid
+	 * and the fd come back here, the daemon reaps the pid through its
+	 * own epoll like every other child it tracks, and reads the fd for
+	 * the step timings when the pidfd fires.
+	 *
+	 * The split fd cannot be read here either, for the same reason:
+	 * the helper writes it only after the bring-up it is timing, so a
+	 * read would block for exactly the interval being removed.
+	 *
+	 * 0 and -1 when there was no helper -- interface_count was 0, or
+	 * the fork failed. A caller that ignores a live one leaks a zombie
+	 * and a descriptor, so every caller must reap.
+	 *
+	 * container_create() never has to: every failure path inside the
+	 * attach returns before the fork, and after the attach succeeds the
+	 * create's only remaining steps are wait_for_child_exec() and
+	 * `return 0` -- there is no path that abandons a create holding a
+	 * live helper. Checked rather than assumed, because the obvious
+	 * reading is that an abort after the attach would orphan it.
+	 */
+	pid_t iface_bringup_pid;
+	int iface_bringup_split_fd;
+	/*
 	 * Read end of an internal, always-on diagnostic pipe (see
 	 * container_create()'s own comment): the child's pre-exec setup
 	 * failures and a failed final execve() both write a human-readable

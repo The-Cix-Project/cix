@@ -4667,6 +4667,19 @@ static void register_pkg_fetch_pidfd(pid_t pid, int pidfd, int chain_idx);
  * them -- pkg.sync's completion is the first caller. */
 static int helper_run(int (*work)(void *), void *work_arg, void (*done)(int, void *), void *ctx,
                       const char *what);
+/* ADR-0335 (#344): same reason, same place -- a container create is far
+ * above the pidfd handlers and adopts the library's bring-up helper.
+ * The struct is defined here rather than beside the callback because
+ * the call site allocates one, and sizeof needs a complete type. */
+struct iface_bringup_ctx {
+	char name[REGISTRY_NAME_MAX];
+	int split_fd;
+	long long classify; /* the steps already measured before the fork */
+	long long down;
+	long long move;
+};
+static int helper_adopt(pid_t pid, void (*done)(int, void *), void *ctx, const char *what);
+static void iface_bringup_done(int exit_status, void *ctx);
 
 /* Gives the default image a C library if it has none and one can be
  * installed without building anything (#189, see pkg_seed_default_
@@ -16087,23 +16100,62 @@ static int create_container_from_body(const char *body, size_t body_len,
 	                        device_attachments, device_count, file_paths, file_count, disk_name,
 	                        dns_server_ips, dns_server_count, &entry);
 	/*
-	 * #344: where a radio create spends its ~1.7 s. One line, only when
-	 * this container actually carried an interface, because the attach
-	 * path is the only thing it measures and every other container would
-	 * log five zeros. logstore_write() rather than a response field: the
-	 * cost is the REACTOR's, so the operator reading it is whoever is
-	 * asking why an unrelated request was slow, and they are reading the
-	 * log -- not the create they did not make.
+	 * #344/ADR-0335 step 2: adopt the bring-up helper rather than wait
+	 * for it. The library forked it and did NOT wait -- that wait was
+	 * 1658 ms of rtnl_link_set_up() on a radio, held on this reactor --
+	 * so the pid comes back in the handle and is registered here,
+	 * through the same ADR-0278 mechanism every other forked job uses.
+	 *
+	 * The timings are logged by the callback, not here: the only steps
+	 * known at this point are the ones before the fork, and the line
+	 * would say nothing about the part that costs anything.
+	 *
+	 * A failure to adopt is logged and the helper reaped inline rather
+	 * than failing the create. The create has already succeeded -- the
+	 * container exists and its interfaces are moved -- and the only
+	 * thing lost is the completion report, which is worth a line and
+	 * not worth destroying a working container for.
 	 */
-	if (rerr == REGISTRY_OK && spec.interface_count > 0) {
+	if (rerr == REGISTRY_OK && entry != NULL && entry->handle.iface_bringup_pid > 0) {
 		const struct container_net_attach_ms *a = container_net_last_attach_ms();
+		struct iface_bringup_ctx *c = calloc(1, sizeof(*c));
 
-		logstore_write("cixd", "info",
-		               "container %s: interface attach %lld ms total -- classify %lld, down %lld, "
-		               "move %lld, bring-up %lld (of which setns %lld, rtnl_open %lld, "
-		               "set_up %lld)",
-		               name, a->total, a->classify, a->down, a->move, a->bring_up, a->setns,
-		               a->rtnl_open, a->set_up);
+		if (c != NULL) {
+			snprintf(c->name, sizeof(c->name), "%s", name);
+			c->split_fd = entry->handle.iface_bringup_split_fd;
+			c->classify = a->classify;
+			c->down = a->down;
+			c->move = a->move;
+		}
+		if (c == NULL ||
+		    helper_adopt(entry->handle.iface_bringup_pid, iface_bringup_done, c,
+		                 "interface bring-up") != 0) {
+			/*
+			 * The pid is already handled: helper_attach() calls
+			 * abandon_unwatchable_helper() on every failure, which
+			 * kills and WNOHANG-reaps it rather than blocking. Only
+			 * the fd and the context are this path's to clean up --
+			 * reaping here too would be a second reaper and a
+			 * blocking wait, which is what ADR-0278 exists to avoid.
+			 *
+			 * Worth naming the cost honestly: that kill can land
+			 * mid-bring-up, leaving the interface down. It takes a
+			 * failed calloc, pidfd_open or epoll_ctl to get here, and
+			 * a daemon in that state has larger problems than one
+			 * radio -- but cix-init's own wait will then expire and
+			 * start the services on a down link, which the error
+			 * below is what an operator has to go on.
+			 */
+			logstore_write("cixd", "error",
+			               "container %s: could not watch its interface bring-up (%s) -- the "
+			               "helper was killed, so its interfaces may never come up",
+			               name, strerror(errno));
+			if (entry->handle.iface_bringup_split_fd >= 0)
+				close(entry->handle.iface_bringup_split_fd);
+			free(c);
+		}
+		entry->handle.iface_bringup_pid = 0;
+		entry->handle.iface_bringup_split_fd = -1;
 	}
 	/* Observability for the ADR-0207 default flip: which isolation mode
 	 * this container actually got is a fact operators and tests need
@@ -29125,13 +29177,55 @@ static void abandon_unwatchable_helper(pid_t pid, const char *what)
  * fork or the watch could not be set up, so the caller can fall back to
  * doing the work inline rather than losing it.
  */
+/*
+ * The half that needs a pid: open a pidfd on it, record what to call
+ * when it exits, and put it in the one epoll. Shared by helper_run(),
+ * which forked the child itself, and helper_adopt() (ADR-0335), which
+ * was handed one the runtime library forked -- so there is one
+ * registration and one teardown rather than two that drift.
+ *
+ * Takes ownership of hc on every path, success or failure.
+ */
+static int helper_attach(struct conn *hc, pid_t pid, void (*done)(int, void *), void *ctx,
+                         const char *what)
+{
+	struct cix_epoll_event ev;
+	int pidfd = sys_pidfd_open(pid, 0);
+
+	if (pidfd < 0) {
+		int saved = errno;
+
+		abandon_unwatchable_helper(pid, what);
+		free(hc);
+		errno = saved;
+		return -1;
+	}
+	hc->kind = CONN_HELPER;
+	hc->fd = pidfd;
+	hc->pkg_fetch_pid = pid;
+	hc->helper_done = done;
+	hc->helper_ctx = ctx;
+	hc->helper_what = what;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = hc;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, pidfd, &ev) != 0) {
+		int saved = errno;
+
+		close(pidfd);
+		abandon_unwatchable_helper(pid, what);
+		free(hc);
+		errno = saved;
+		return -1;
+	}
+	return 0;
+}
+
 static int helper_run(int (*work)(void *), void *work_arg, void (*done)(int, void *), void *ctx,
                       const char *what)
 {
 	struct conn *hc;
-	struct cix_epoll_event ev;
 	pid_t pid;
-	int pidfd;
 
 	/*
 	 * Allocated BEFORE the fork, so the one failure that is actually
@@ -29160,34 +29254,98 @@ static int helper_run(int (*work)(void *), void *work_arg, void (*done)(int, voi
 		_exit(work(work_arg) == 0 ? 0 : 1);
 	}
 
-	pidfd = sys_pidfd_open(pid, 0);
-	if (pidfd < 0) {
-		int saved = errno;
+	return helper_attach(hc, pid, done, ctx, what);
+}
 
-		abandon_unwatchable_helper(pid, what);
-		free(hc);
-		errno = saved;
+/*
+ * ADR-0335 (#344): adopt a child somebody ELSE forked.
+ *
+ * helper_run() above owns the common case -- it forks the work itself.
+ * But the interface bring-up is forked inside the runtime library,
+ * because only code already holding the new netns fd can setns() into
+ * it, and that library must not depend on the daemon. The process is
+ * still a child of cixd either way, so the pidfd and the waitpid work
+ * identically; all that differs is who called fork().
+ *
+ * The allocation happens here rather than before the fork, which is the
+ * one thing helper_run() does differently and does deliberately (see
+ * its own comment). There is no fork to fail after it in this path, so
+ * the ordering that matters there does not arise.
+ */
+static int helper_adopt(pid_t pid, void (*done)(int, void *), void *ctx, const char *what)
+{
+	struct conn *hc = calloc(1, sizeof(*hc));
+
+	if (hc == NULL) {
+		errno = ENOMEM;
 		return -1;
 	}
-	hc->kind = CONN_HELPER;
-	hc->fd = pidfd;
-	hc->pkg_fetch_pid = pid;
-	hc->helper_done = done;
-	hc->helper_ctx = ctx;
-	hc->helper_what = what;
-	memset(&ev, 0, sizeof(ev));
-	ev.events = EPOLLIN;
-	ev.data.ptr = hc;
-	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, pidfd, &ev) != 0) {
-		int saved = errno;
+	return helper_attach(hc, pid, done, ctx, what);
+}
 
-		close(pidfd);
-		abandon_unwatchable_helper(pid, what);
-		free(hc);
-		errno = saved;
-		return -1;
+/*
+ * ADR-0335 step 2 (#344): the interface bring-up finished.
+ *
+ * Runs in the reactor, after the create that started it has long since
+ * answered. Two jobs, and the second is the one that justifies tracking
+ * the helper at all rather than letting it be orphaned:
+ *
+ *   - read the step split the helper wrote (setns / rtnl_open / set_up)
+ *     and log the whole attach, which is now the only place the
+ *     bring-up's duration is known: container_net_host_attach_interfaces()
+ *     returns before it happens.
+ *   - report a FAILURE. Until this step a non-zero helper exit failed
+ *     the create, with "bringing moved interfaces up inside the
+ *     container netns" and the child's errno. The create cannot carry
+ *     that any more, so if this is dropped the only signal that a
+ *     container's interface never came up is lost -- and cix-init's own
+ *     5 s wait would then start the services anyway, on a down link,
+ *     with nothing anywhere saying why.
+ *
+ * The context is a heap copy of the container's name, because the
+ * registry entry it came from may be gone by now: a container can be
+ * deleted inside the 1.66 s this takes.
+ */
+
+static void iface_bringup_done(int exit_status, void *ctx)
+{
+	struct iface_bringup_ctx *c = ctx;
+	struct container_net_helper_split split;
+	ssize_t n = -1;
+
+	if (c == NULL)
+		return;
+	if (c->split_fd >= 0) {
+		n = read(c->split_fd, &split, sizeof(split));
+		close(c->split_fd);
+		c->split_fd = -1;
 	}
-	return 0;
+	if (n == (ssize_t)sizeof(split))
+		logstore_write("cixd", "info",
+		               "container %s: interface attach -- classify %lld, down %lld, move %lld, "
+		               "bring-up setns %lld, rtnl_open %lld, set_up %lld",
+		               c->name, c->classify, c->down, c->move, split.setns, split.rtnl_open,
+		               split.set_up);
+	else
+		logstore_write("cixd", "info",
+		               "container %s: interface attach -- classify %lld, down %lld, move %lld; "
+		               "the helper reported no split",
+		               c->name, c->classify, c->down, c->move);
+	/*
+	 * The helper exits with the errno of whatever failed inside the
+	 * netns, clamped into a status (see the child in
+	 * container_net_host_attach_interfaces()). handle_helper_event()
+	 * logs a generic warn for any non-zero exit; this says which
+	 * container and what it means, because "helper for X exited 19" is
+	 * not something an operator can act on.
+	 */
+	if (exit_status != 0)
+		logstore_write("cixd", "error",
+		               "container %s: bringing its moved interfaces up inside the container "
+		               "netns failed (%s) -- its services will start on a down link once "
+		               "cix-init's own wait expires",
+		               c->name, exit_status > 0 ? strerror(exit_status) : "unknown cause");
+	free(c);
 }
 
 /*

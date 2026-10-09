@@ -1393,6 +1393,8 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	}
 
 	out->interfaces_netns_fd = -1;
+	out->iface_bringup_pid = 0;
+	out->iface_bringup_split_fd = -1;
 	if (spec->interface_count > 0) {
 		const char *iface_ptrs[CONTAINER_MAX_INTERFACES];
 		int i;
@@ -1401,7 +1403,9 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			iface_ptrs[i] = spec->interfaces[i];
 
 		if (container_net_host_attach_interfaces(iface_ptrs, spec->interface_count, (pid_t)ret,
-		                                          &out->interfaces_netns_fd) != 0) {
+		                                          &out->interfaces_netns_fd,
+		                                          &out->iface_bringup_pid,
+		                                          &out->iface_bringup_split_fd) != 0) {
 			/*
 			 * Unlike the veth path above, the child was never blocked
 			 * waiting on anything interface-related -- it may already

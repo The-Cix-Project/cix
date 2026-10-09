@@ -236,7 +236,7 @@ static const struct budget g_budgets[] = {
 	/* 3 -> 4 (#447): container_net_apply_sysctls_running() waits for its
 	 * setns() helper, which writes at most CONTAINER_MAX_SYSCTLS files under
 	 * /proc/sys/net and exits -- the same bounded shape as the other three. */
-	{ "src/container_net.c", 4, "netns helpers, bounded" },
+	{ "src/container_net.c", 3, "netns helpers, bounded" },
 	{ "src/mountns.c", 1, "mount helper, bounded" },
 };
 
@@ -271,8 +271,12 @@ static const struct budget g_budgets[] = {
  * whole-rootfs `cp`, removed along with the fork. Then 57 -> 56 for
  * #351: opensslrun.c's wait on a forked openssl, gone with the file.
  * Then 56 -> 52 for ADR-0328: targz.c's four waits on its tar and gzip
- * children, gone with the file and the tarball it wrote. */
-#define TOTAL_ALLOWED 52
+ * children, gone with the file and the tarball it wrote.
+ * Then 52 -> 51 for #344/ADR-0335 step 2: container_net.c's wait on the
+ * interface bring-up helper, which held the reactor for 1658 ms of
+ * rtnl_link_set_up() on a radio. The helper still runs; the daemon
+ * reaps it through its own epoll instead of standing still for it. */
+#define TOTAL_ALLOWED 51
 
 static int is_comment(const char *line)
 {

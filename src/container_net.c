@@ -231,19 +231,21 @@ int container_net_child_configure(const struct network_spec *nets, int net_count
 }
 
 int container_net_host_attach_interfaces(const char *const *interfaces, int interface_count,
-                                          pid_t child_pid, int *out_netns_fd)
+                                          pid_t child_pid, int *out_netns_fd,
+                                          pid_t *out_helper_pid, int *out_split_fd)
 {
 	char ns_path[64];
 	int fd;
 	int i;
 	pid_t helper;
-	int status;
 	long long t_fn;
 	long long t0;
 	int split_report[2] = { -1, -1 };
 
 	memset(&g_attach_ms, 0, sizeof(g_attach_ms));
 	*out_netns_fd = -1;
+	*out_helper_pid = 0;
+	*out_split_fd = -1;
 	if (interface_count == 0)
 		return 0;
 	t_fn = monotonic_millis();
@@ -475,48 +477,49 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 	 * already cost 366 seconds of frozen control plane once.
 	 */
 	/*
-	 * The write end goes first, or the read below blocks forever waiting
-	 * on a writer this process still holds -- the classic pipe deadlock,
-	 * and in a diagnostic path it would hang a container create.
+	 * The write end goes first, unconditionally: this process must not
+	 * keep a writer alive on a pipe somebody else will read to EOF.
+	 * The read itself is the CALLER's now -- see below.
 	 */
 	if (split_report[1] >= 0) {
 		close(split_report[1]);
 		split_report[1] = -1;
 	}
-	if (split_report[0] >= 0) {
-		struct container_net_helper_split split;
-		ssize_t n = read(split_report[0], &split, sizeof(split));
 
-		if (n == (ssize_t)sizeof(split)) {
-			g_attach_ms.setns = split.setns;
-			g_attach_ms.rtnl_open = split.rtnl_open;
-			g_attach_ms.set_up = split.set_up;
-		}
-		close(split_report[0]);
-		split_report[0] = -1;
-	}
-	if (waitpid(helper, &status, 0) != helper) {
-		g_attach_ms.bring_up = monotonic_millis() - t0;
-		close(*out_netns_fd);
-		*out_netns_fd = -1;
-		return -1;
-	}
-	g_attach_ms.bring_up = monotonic_millis() - t0;
-	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-		/* The child's own errno, not this process's stale one. */
-		int e = WIFEXITED(status) ? WEXITSTATUS(status) : EIO;
-
-		close(*out_netns_fd);
-		*out_netns_fd = -1;
-		errno = e > 0 ? e : EIO;
-		/* The move itself already succeeded if we are here, so this
-		 * is specifically the inside-the-namespace half: setns, a
-		 * netlink socket in that namespace, or bringing a link up. */
-		container_set_last_error_step(
-		        "container_create: bringing moved interfaces up inside the container netns");
-		return -1;
-	}
-
+	/*
+	 * ADR-0335 step 2: neither the wait nor the read happens here.
+	 *
+	 * The helper's whole cost is one rtnl_link_set_up() -- 1658 ms of a
+	 * 1676 ms attach on a radio, measured -- and it writes its split
+	 * only after that call returns. So waiting for the pid and reading
+	 * the pipe are the same 1.66 s, and doing either here spends it on
+	 * the daemon's single-threaded reactor, which is precisely what
+	 * this change removes.
+	 *
+	 * Both come back to the caller instead. g_attach_ms keeps the
+	 * steps measured BEFORE the fork -- classify, down, move -- and the
+	 * helper's own three stay zero here; whoever reaps the pid fills
+	 * them in from the fd if it wants them. bring_up and total are
+	 * likewise not this function's to report any more: it no longer
+	 * knows when the bring-up ended.
+	 *
+	 * A failure inside the helper is therefore no longer this create's
+	 * failure. It cannot be: the create has already returned by the
+	 * time the helper exits. The reaper reports it.
+	 */
+	/*
+	 * What this used to do here, recorded because the contract changed
+	 * rather than merely moved: it waited, and a non-zero helper exit
+	 * failed the create with
+	 * "bringing moved interfaces up inside the container netns" and the
+	 * child's own errno. It cannot any more -- the create has returned
+	 * by the time the helper exits -- so reporting that failure is the
+	 * reaper's job, and a reaper that drops it loses the only signal
+	 * that a container's interface never came up.
+	 */
+	*out_helper_pid = helper;
+	*out_split_fd = split_report[0];
+	split_report[0] = -1;
 	g_attach_ms.total = monotonic_millis() - t_fn;
 	return 0;
 }
