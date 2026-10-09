@@ -1119,12 +1119,26 @@ int main(int argc, char **argv)
 				 * shelled_bins[] only because it was first staged back
 				 * when mkbootroot ran on a dev host with a full /usr.
 				 *
-				 * The dev fallback is /usr/bin/btrfs, not /usr/sbin: a
-				 * merged-usr dev host puts it there, the same mismatch
-				 * between fallback path and rootfs path that rm above
-				 * documents.
+				 * THE DEV FALLBACK IS /usr/sbin/btrfs, and it used to
+				 * be /usr/bin/btrfs on the grounds that "a merged-usr
+				 * dev host puts it there". That was true of the Debian
+				 * sandbox this file was written on and is false of the
+				 * only host that matters now: Cix's own btrfs-progs
+				 * installs usr/sbin/btrfs and usr/sbin/mkfs.btrfs
+				 * (recipes/package/btrfs-progs@7.1-12.cbs, lines 91-92),
+				 * and a Cix BUILD CONTAINER is where mkbootroot runs
+				 * without a host_tools_dir now that the QEMU boot tests
+				 * can run on a Cix host at all.
+				 *
+				 * Measured on 192.168.15.95, 2026-10-09 by
+				 * probe-cix-bootest@3-1: test_boot died in 24 ms with
+				 * "/usr/bin/btrfs: No such file or directory" from
+				 * mkbootroot, in a container that had btrfs-progs
+				 * declared and installed. The fallback path and the
+				 * rootfs path now agree, which also removes the
+				 * mismatch the old comment pointed at rm for.
 				 */
-				{ "/usr/bin/btrfs", "usr/sbin/btrfs", "usr/sbin/btrfs" },
+				{ "/usr/sbin/btrfs", "usr/sbin/btrfs", "usr/sbin/btrfs" },
 				/*
 				 * mksquashfs (issue #146). ADR-0078 called the
 				 * host_tools_dir == "" path a safe fallback -- "a box
