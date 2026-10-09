@@ -6,6 +6,66 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### UEFI firmware is built from source on a Cix host (#584, ovmf@202608-1, edk2-basetools@202608-5)
+
+Cix's QEMU boot tests boot an installer ISO and that ISO boots by EFI, so without firmware there is
+nothing for them to boot on. OVMF is now built from edk2 on 192.168.15.95 and installs
+`OVMF.fd`, `OVMF_CODE.fd` and `OVMF_VARS.fd` under `/usr/share/OVMF`. One half of #584; qemu is
+the other.
+
+**Every submodule is at edk2's own gitlink pin, because guessing one costs a build cycle.** A
+source tarball carries no submodules and OVMF reaches six of edk2's thirteen — openssl, mbedtls,
+brotli (one commit at two paths), mipisyst and libspdm. `brotli v1.1.0` was a guess: it parsed
+cleanly and then failed to link (`prefix.o`, `static_init.o`, `static_dict_lut.o`) a full cycle
+later, with an error naming files nobody here wrote. The pins are free to read — GitHub's contents
+API returns a submodule's commit `sha` for a ref, **and a wrong commit is a 404, so a successful
+fetch validates the pin** — and six fetch-only probes installed together measured six sha256s in
+one round. The parent is the tag `edk2-stable202608`, not a branch head: `refs/heads/master.tar.gz`
+under a `sha256` is a moving target that upstream's next push halts (ADR-0323), while a tag fixes
+the tarball and every gitlink in it.
+
+**openssl is not optional with Secure Boot off.** `OvmfPkgX64.dsc` maps `BaseCryptLib` at lines
+276, 370, 411, 504, 542 and 791, every one outside the `!if $(SECURE_BOOT_ENABLE)` guards at 245,
+581, 890 and 1048, and `CRYPTO_SERVICES` appears nowhere. The committed `OpensslGen` headers
+matched the pinned tree exactly, which was the largest risk in the approach.
+
+**Two blockers were ours.** `-t GCC` passes `-flto` and Cix's gcc has no LTO (`cc1: LTO support
+has not been enabled in this configuration`), so the build uses `-t GCCNOLTO`, edk2's own tag for
+that configuration, rather than rebuilding gcc for an option firmware does not need. And gcc
+16.2.0 is newer than this edk2 was tested against, so `-Wmaybe-uninitialized` fired on
+`UefiCpuPkg/Library/MpInitLib/X64/AmdSev.c:326` under edk2's `-Werror`; `-Wno-error=` goes into
+edk2's own `Conf/tools_def.txt`, the file `edksetup` copies from a template so a site can edit it.
+The warnings still print — only their fatality is declined (ADR-0226).
+
+**BaseTools became a package, and that reasoning generalises.** edk2's generated makefiles invoke
+its tools by bare name and upstream resolves it with `PATH`, declared in
+`BinWrappers/PosixLike/posix_path_env.yaml` as `"flags": ["set_path"]`. CPDL forbids a `PATH`
+override (`CPDL-E3006`) because a composed build environment holds exactly the declared tools
+(ADR-0199), so the one sanctioned route is to be a declared tool. Four probes closed every
+alternative: `EDK_TOOLS_BIN` is **Windows-only** (`toolsetup.bat` prepends it; on POSIX
+`build.py:795` only prints it, and the recipe had set it inertly for eleven revisions);
+`BinWrappers` appears nowhere in edk2's python; `Conf/tools_def.txt` has no entry for `Trim`,
+`GenSec`, `GenFfs`, `GenFv`, `Split` or `AmlToC`; and `GenMake.py`'s `CmdName == 'Trim'` is
+dependency-list construction, not tool resolution. Adapting to a constraint another component
+deliberately imposes is not a workaround, and `bind-utils@9.18.30-10` is the precedent.
+
+**Three findings came from the package's own gates.** `GenDepex` is not a tool — gating each
+wrapped name on the `.py` its wrapper would exec caught it, and `on_fail` printed the real list
+(`GenDepex` lives inside `AutoGen` and is imported in-process, so edk2's own wrapper of that name
+could never have worked). The wrappers are ours because an upstream one locates its payload with
+`dirname $BASH_SOURCE`, which resolves to `/Source/Python/...` from `/usr/bin`. And the ELF gate
+named two real dependencies: `DevicePath` links `libuuid.so.1`, and `VfrCompile` linked a shared
+`libstdc++.so.6` that no package here provides — so it is static, via `VFR_LFLAGS`, VfrCompile's
+own link variable at `GNUmakefile:48`; `BUILD_LFLAGS` appears nowhere in that tree and silently
+did nothing for a revision.
+
+Verified on 192.168.15.95, 2026-10-09: `edk2-basetools@202608-5` and `ovmf@202608-1` both report
+`state=installed` at those versions with no error, the firmware build ran 585 s, openssl compiled
+from the pinned tree (4.1 MB of build log), and the installed package's own file list is exactly
+`usr/share/OVMF/OVMF.fd`, `OVMF_CODE.fd` and `OVMF_VARS.fd`. Not verified: that a guest boots on
+it — that needs qemu.
+
+
 ### Every container gets a /dev/shm, so POSIX shared memory and named semaphores work (#584)
 
 `sem_open()` and `shm_open()` could not work in any Cix container, because there was no
