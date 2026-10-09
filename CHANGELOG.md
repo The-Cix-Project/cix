@@ -6,6 +6,34 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### `-kernel` direct boot works with OVMF and no SeaBIOS, correcting the entry below (#587)
+
+The qemu entry below says `-kernel` direct boot cannot work, because the `qemu` package ships none
+of qemu's prebuilt firmware and the x86 `-kernel` path needs SeaBIOS plus a `linuxboot`/`pvh`
+option ROM. **That is true of the legacy BIOS path and not true here.** SeaBIOS loads an option ROM
+that pulls the kernel out of `fw_cfg`; edk2's `QemuKernelLoaderFsDxe` makes OVMF expose a `fw_cfg`
+kernel as a boot option by itself — no BIOS, no option ROM, nothing prebuilt. The thing that entry
+called blocked was untested, not blocked.
+
+Measured on 192.168.15.95, 2026-10-09 by `probe-qemu-kernel@2-1`. The kernel came from the cache as
+`kernel-7.2.9-2-x86_64.cixpkg` and was unpacked in-build by `cbs extract`, so it is the kernel this
+host built and booted rather than a foreign bzImage fetched to exercise a feature:
+
+```
+Linux version 7.2.9 (@__pkgbuild-0) (gcc (GCC) 16.2.0, GNU ld (GNU Binutils) 2.42)
+Command line: console=ttyS0 panic=-1
+Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
+```
+
+The panic is the correct end for a guest handed no root, and proves the kernel ran to init.
+`panic=-1` with `-no-reboot` is what bounded the run — qemu exited by itself after 5,647 ms.
+
+So `test_boot`, `test_boot_ab` and `test_boot_update` are unblocked as far as firmware goes, with
+no new packages. #587 shrinks to what genuinely needs an upstream we do not package: legacy BIOS
+(SeaBIOS), and any guest with a NIC or a display (iPXE and vgabios option ROMs, which is why every
+qemu invocation here passes `-vga none`).
+
+
 ### The installer's default boot entry is chosen by the media, not frozen at build time (#588)
 
 An installer ISO booted from a CD/DVD hung with no error. GRUB's menu rendered, the kernel
@@ -51,8 +79,10 @@ Not verified: USB media, which has no `$root` of the optical shape and so takes 
 
 ### A guest boots on Cix's own emulator, firmware and ISO (#584, qemu@11.1.2-9, eight new packages)
 
-**What does not work, first.** `-kernel` direct boot does not, so `test/test_boot.c` still cannot run
-on a Cix host; legacy BIOS boot does not; and a guest with a NIC or a display does not start at all.
+**What does not work, first.** Legacy BIOS boot does not, and a guest with a NIC or a display
+does not start at all. (This entry also said `-kernel` direct boot was blocked, so `test_boot`
+could not run. **That was wrong** -- a later entry carries the measurement that it works, via
+edk2's own fw_cfg kernel loader, with no SeaBIOS involved.)
 One deliberate cause, tracked as #587. And the boot that did happen found a real installer bug,
 #588: GRUB's default entry is the USB one, whose `root=PARTUUID=` can never resolve on optical
 media, so an unattended DVD boot hangs at `Waiting for root device`.

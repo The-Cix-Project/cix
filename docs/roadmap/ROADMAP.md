@@ -2445,6 +2445,29 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 269 (done): `-kernel` direct boot works with OVMF and no SeaBIOS, which corrects part 267 (#587)
+
+Part 267 stated that `-kernel` direct boot could not work, because qemu's `qemu` package ships none of qemu's prebuilt firmware and the x86 `-kernel` path needs SeaBIOS plus a `linuxboot`/`pvh` option ROM. **That is true of the legacy BIOS path and it is not true here**, which is one probe's worth of measurement against an assumption I wrote into three artefacts.
+
+SeaBIOS loads an option ROM that pulls the kernel out of `fw_cfg`. But edk2 grew `QemuKernelLoaderFsDxe`, which makes OVMF expose a `fw_cfg` kernel as a boot option **by itself** — no BIOS, no option ROM, nothing prebuilt. So the thing part 267 called blocked was never blocked; it was untested.
+
+Measured on 192.168.15.95, 2026-10-09 by `probe-qemu-kernel@2-1`. The kernel came from the cache as `kernel-7.2.9-2-x86_64.cixpkg` and was unpacked in-build by `cbs extract`, so it is the kernel this host built and booted rather than a foreign bzImage fetched to exercise a feature:
+
+```
+Linux version 7.2.9 (@__pkgbuild-0) (gcc (GCC) 16.2.0, GNU ld (GNU Binutils) 2.42) #1 SMP PREEMPT Sun Oct  4 03:50:56 UTC 2026
+Command line: console=ttyS0 panic=-1
+...
+Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
+```
+
+That panic is the correct end for a guest handed no root, and it is the proof the kernel ran the whole way to init. `panic=-1` plus `-no-reboot` is what made the run bound itself: qemu exited on its own after 5,647 ms rather than sitting at a timeout.
+
+**What this changes.** `test/test_boot.c`, `test_boot_ab` and `test_boot_update` use `-kernel`, and as far as firmware goes they are unblocked with **no new packages at all**. #587 shrinks to what genuinely needs an upstream we do not yet package: legacy BIOS boot (SeaBIOS), and any guest with a NIC or a display (iPXE and vgabios option ROMs, which is why every invocation here passes `-vga none`).
+
+**And the probe design earned its keep twice.** Its `find` ran before the boot, so when the bzImage turned out to sit at the artifact's own root rather than the `/boot/cix-bzImage` the ISO's grub.cfg uses, the log named the real path and the correction cost the same single cycle a discovery-only probe would have cost anyway.
+
+Verified on 192.168.15.95, 2026-10-09. Part 267's and the CHANGELOG's claims are corrected in place, and CLAUDE.md's `qemu` bullet now carries the measurement instead of the assumption. Not verified: that `test_boot` itself passes — it wants a real disk image and a built test binary, which is #584's remaining wiring.
+
 ## Part 268 (done): the installer's default boot entry is chosen by the media, and the first qemu-found bug is fixed (#588, 0.2.57-480)
 
 Part 267 built qemu and immediately found a real bug with it. This fixes that bug and verifies the fix the same way it was found, which is the loop the capability was for.
@@ -2469,7 +2492,7 @@ Verified on 192.168.15.95, 2026-10-09. Booted `0.2.57-480` (slot b, kernel 7.2.9
 
 ## Part 267 (done): a guest boots on Cix's own emulator, firmware and ISO (#584, qemu@11.1.2-9, and eight new packages)
 
-**What does not work, first, because an operator needs that before the good news.** `-kernel` direct boot does not, so `test/test_boot.c` still cannot run on a Cix host; legacy BIOS boot does not; and a guest with a NIC or a display does not start at all. All four are the same cause and it is a deliberate one — see the provenance paragraph below — tracked as [#587](https://git.home.arpa/itdlabs/cix/issues/587). `test_disk_image.c`'s `with_nic` case therefore needs more than slirp. And the boot that *did* happen exposed a real installer bug, [#588](https://git.home.arpa/itdlabs/cix/issues/588): GRUB's default entry is the USB one, whose `root=PARTUUID=` can never resolve on optical media, so an unattended DVD boot hangs at `Waiting for root device`.
+**What does not work, first, because an operator needs that before the good news.** `-kernel` direct boot was believed not to, and that was WRONG -- part 269 measured it working; legacy BIOS boot does not; and a guest with a NIC or a display does not start at all. All four are the same cause and it is a deliberate one — see the provenance paragraph below — tracked as [#587](https://git.home.arpa/itdlabs/cix/issues/587). `test_disk_image.c`'s `with_nic` case therefore needs more than slirp. And the boot that *did* happen exposed a real installer bug, [#588](https://git.home.arpa/itdlabs/cix/issues/588): GRUB's default entry is the USB one, whose `root=PARTUUID=` can never resolve on optical media, so an unattended DVD boot hangs at `Waiting for root device`.
 
 **What works, measured rather than asserted.** `cix-installer-0.2.57-478-x86_64.iso` boots under `qemu@11.1.2-9` on `ovmf@202608-1`, and every layer in that sentence was built on this host:
 
