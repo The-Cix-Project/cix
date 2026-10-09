@@ -6,6 +6,70 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A radio create no longer freezes the control plane: 1612 ms of reactor time becomes 32 (#344, ADR-0335, 0.2.57-476 and -477)
+
+Creating a container that carries a radio held cixd's single-threaded reactor for 1.66 seconds,
+every time. It no longer does.
+
+```
+before (0.2.57-476)
+  container ar-1: interface attach 1612 ms total -- classify 1, down 0, move 9,
+                                   bring-up 1602 (of which setns 0, rtnl_open 0, set_up 1599)
+
+after  (0.2.57-477)
+  container ar-1: interface attach -- classify 4, down 13, move 15,
+                                   bring-up setns 0, rtnl_open 0, set_up 1641
+```
+
+The second line is written by the completion callback rather than by the create, and carries no
+"N ms total" deliberately: `container_net_host_attach_interfaces()` now returns before the bring-up
+happens and does not know the total. What a create pays is `classify + down + move` — **32 ms**.
+
+**The proof that the cost moved rather than stopped being logged:**
+
+```
+cix-init: interface wlan0 up, flags 4099, waited 1649 ms
+hostapd:  wlan0: interface state UNINITIALIZED->ENABLED
+hostapd:  wlan0: AP-ENABLED
+```
+
+`cix-init` **waited 1649 ms**. On `0.2.57-476` — the same code, with the daemon still blocking — it
+waited ~0, because the interface was up before cix-init ever looked. That the wait became real is
+what shows the daemon returned early; hostapd starting after it is what shows the race was closed
+rather than won.
+
+**Shipped in two releases on purpose, and the order is the whole risk management.** `0.2.57-476`
+taught `cix-init` to wait while the daemon still blocked: zero risk, since the interface was always
+already up, and it produced the one measurement [ADR-0335](docs/adr/0335-a-service-waits-for-the-interface-it-was-given.md)
+had left as inference — a **radio** reports `flags 4099` (`IFF_UP | IFF_BROADCAST | IFF_MULTICAST`),
+where the `0x9` that justified reading that file had been measured on `lo`. `0.2.57-477` then stopped
+the daemon waiting, with the protection already live and already exercised on the real radio.
+
+**Two things deliberately not built.** No new epoll kind:
+[ADR-0278](docs/adr/0278-the-reactor-forks-work-it-cannot-afford-to-wait-for.md) already has
+`CONN_HELPER` with a `done(exit_status, ctx)` callback, and the only missing piece was adopting a pid
+someone *else* forked — so `helper_attach()` is factored out of `helper_run()` and both use it, one
+registration rather than two that drift. And no reaper: the first draft reaped the helper on an
+adoption failure, but `abandon_unwatchable_helper()` already kills and `WNOHANG`-reaps every
+unwatchable helper, so that was a second reaper *and* a blocking wait in the handler.
+
+**Three self-inflicted errors worth recording, because none was caught by a compiler.** An
+`if (0) { ... }` block keeping the old post-wait code "as the text of the contract that moved" — dead
+code for narrative, which No Stop-Gaps forbids. `sizeof(*c)` at a call site where the context struct
+was only forward-declared. And an `operstate` test in the ADR's first draft that would have been
+satisfied before *and* after the bring-up, so `cix-init` would never have waited at all and the race
+would have survived with the mechanism apparently installed.
+
+`test_blocking_waits` moves 4 -> 3 for `container_net.c` and 52 -> 51 overall — removing a blocking
+wait is as visible in a diff as adding one, which is what that gate is for. `test_cix_init`'s
+wire-size pin moves 272 -> 788 for the hello's new field, and caught the change when only one side
+of the wire had moved.
+
+**Still not established, and the fix did not need it:** whether `rtnl_link_set_up()` blocks in the
+driver's `ndo_open` or in the kernel settling the PHY migration. Under both the cost had to leave the
+reactor; it would only decide whether 1.64 s could also become shorter. The experiments that would
+separate them need the radio out of `ar-1` and the access point down.
+
 ### ADR-0335 (proposed): a service waits for the interface it was given (#344)
 
 The design for #344, written as a decision record rather than a patch because the obvious fix is a
