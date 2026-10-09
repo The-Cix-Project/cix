@@ -328,10 +328,18 @@ int main(int argc, char **argv)
 	 * arguments -- grub-mkrescue's own temporary tree, whose name
 	 * changes every run. So it is found by asking which of the
 	 * arguments is a directory that actually contains that file, rather
-	 * than by pattern-matching a path shape. Later matches win, since
-	 * the content directories come after grub's own staged tree and a
-	 * medium's own file should take precedence over grub's if both ever
-	 * carried one.
+	 * than by pattern-matching a path shape.
+	 *
+	 * EXACTLY ONE MUST MATCH, and two is a refusal rather than a
+	 * choice. The bytes that have to be appended are the ones
+	 * `--efi-boot` names TO GRUB, which is grub's own staged copy; a
+	 * different file that merely shares the relative name would append
+	 * the wrong bytes and produce a medium whose ESP is not the ESP its
+	 * El Torito catalogue points at. Today only grub's tree carries an
+	 * efi.img -- mkinstalleriso creates none, measured by grep -- so
+	 * the ambiguity does not arise, and that is exactly why it has to
+	 * be refused rather than resolved by an ordering rule nobody would
+	 * revisit when a second one appeared.
 	 */
 	efi_abs[0] = '\0';
 	for (i = 1; i < n; i++) {
@@ -339,6 +347,15 @@ int main(int argc, char **argv)
 			continue;
 		if (!is_file_under(out[i], efi_rel, candidate, sizeof(candidate)))
 			continue;
+		if (found_efi) {
+			fprintf(stderr, "cix-xorriso: both \"%s\" and \"%s\" contain \"%s\", "
+			                "so which one grub-mkrescue means by --efi-boot is "
+			                "ambiguous -- refusing rather than guessing which "
+			                "bytes become the ESP (cix#430)\n",
+			        efi_abs, candidate, efi_rel);
+			free(out);
+			return 1;
+		}
 		memcpy(efi_abs, candidate, strlen(candidate) + 1);
 		found_efi = 1;
 	}

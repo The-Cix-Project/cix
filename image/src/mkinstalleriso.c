@@ -450,6 +450,23 @@ static int write_text_file(const char *path, const char *content)
 #define ISO9660_PARTITION_NUMBER 1
 #define ISO9660_PARTITION_FIRST_LBA 64
 #define ISO9660_PARTITION_NAME "ISO9660"
+/*
+ * The appended EFI system partition, which is what firmware reads the
+ * GPT to find. Partition 1 existing proves the kernel can reach its
+ * root; it does not prove the machine can reach a bootloader, and those
+ * are different failures with the same cause. Checked separately.
+ *
+ * C12A7328-F81F-11D2-BA4B-00A0C93EC93B in GPT's own storage order --
+ * the first three fields little-endian, the rest as written. Measured
+ * from a real image rather than transcribed from the specification
+ * (probe-isogrub@9-1, 2026-10-09).
+ */
+#define ESP_PARTITION_NUMBER 2
+#define ESP_TYPE_GUID_BYTES                                                                        \
+	{                                                                                          \
+		0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11, 0xba, 0x4b, 0x00, 0xa0, 0xc9,      \
+		    0x3e, 0xc9, 0x3b                                                               \
+	}
 
 /* Offsets within the GPT header (at LBA 1) and a partition entry. */
 #define GPT_HEADER_OFFSET 512
@@ -663,6 +680,35 @@ static int verify_iso_partition(const char *iso, const char *want_partuuid)
 		        iso, ISO9660_PARTITION_NUMBER, got_partuuid, want_partuuid);
 		goto out;
 	}
+	/*
+	 * The appended ESP. Read after partition 1 rather than alongside
+	 * it because the two answer different questions, and reporting
+	 * which one is missing is the whole value of checking both.
+	 */
+	if (entry_count < (unsigned long long)ESP_PARTITION_NUMBER) {
+		fprintf(stderr, "%s: GPT describes only %llu entries, so there is no ESP\n", iso,
+		        entry_count);
+		goto out;
+	}
+	if (read_at(f, (long long)(array_lba * 512 + (ESP_PARTITION_NUMBER - 1) * entry_size), ent,
+	            sizeof(ent), "the ESP partition entry") != 0)
+		goto out;
+	{
+		static const unsigned char esp_type[16] = ESP_TYPE_GUID_BYTES;
+		char got_type[40];
+
+		if (memcmp(ent, esp_type, sizeof(esp_type)) != 0) {
+			guid_to_text(ent, got_type, sizeof(got_type));
+			fprintf(stderr,
+			        "%s: partition %d's type is %s, not the EFI system "
+			        "partition -- firmware reads the GPT to find a bootloader, "
+			        "so this medium would not boot even though its root is "
+			        "reachable (cix#430)\n",
+			        iso, ESP_PARTITION_NUMBER, got_type);
+			goto out;
+		}
+	}
+
 	if (read_at(f, ISO_PARTITION_PVD_OFFSET, pvd, sizeof(pvd),
 	            "the partition-relative volume descriptor") != 0)
 		goto out;
@@ -673,8 +719,8 @@ static int verify_iso_partition(const char *iso, const char *want_partuuid)
 		        iso, ISO_PARTITION_PVD_OFFSET + 1, ISO9660_PARTITION_NUMBER);
 		goto out;
 	}
-	printf("partition %d: %s at LBA %llu, PARTUUID %s\n", ISO9660_PARTITION_NUMBER, name,
-	       first_lba, got_partuuid);
+	printf("partition %d: %s at LBA %llu, PARTUUID %s; partition %d: EFI system partition\n",
+	       ISO9660_PARTITION_NUMBER, name, first_lba, got_partuuid, ESP_PARTITION_NUMBER);
 	rc = 0;
 out:
 	fclose(f);
