@@ -21,8 +21,21 @@ extern char **environ;
 #define MREN_BIN "/usr/bin/mren"
 #define MKSQUASHFS_BIN "/usr/bin/mksquashfs"
 #define QEMU_BIN "/usr/bin/qemu-system-x86_64"
-#define OVMF_CODE "/usr/share/OVMF/OVMF_CODE_4M.fd"
-#define OVMF_CODE_SECURE "/usr/share/OVMF/OVMF_CODE_4M.ms.fd"
+/*
+ * edk2's own filenames, which is what Cix's `ovmf` package installs --
+ * measured from the installed package's file list on 192.168.15.95,
+ * 2026-10-09: usr/share/OVMF/{OVMF.fd,OVMF_CODE.fd,OVMF_VARS.fd}.
+ * These used to be Debian's `_4M` spellings, which is what the dev
+ * sandbox happened to have when this harness was written and which no
+ * Cix host has ever carried (cix#584).
+ *
+ * OVMF_CODE_SECURE has NO provider yet: ovmf@202608-1 builds with
+ * SECURE_BOOT_ENABLE=FALSE, so any test passing secure_boot still
+ * cannot run and this path is a statement of what such a build would
+ * install, not of something present.
+ */
+#define OVMF_CODE "/usr/share/OVMF/OVMF_CODE.fd"
+#define OVMF_CODE_SECURE "/usr/share/OVMF/OVMF_CODE.secure.fd"
 
 int run_subprocess(const char *bin, char *const argv[])
 {
@@ -340,7 +353,14 @@ enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char
 	enum qemu_boot_outcome outcome;
 	size_t total = 0;
 	struct timespec deadline, now;
-	char *qemu_argv[36];
+	/*
+	 * 35 entries is the current maximum, counted: 16 fixed (through
+	 * -vga none and -no-reboot), 2 for secure_boot, 4 for the two
+	 * pflash drives, 2 for the disk, 2 for a second disk, 4 for a
+	 * NIC, 4 for a direct kernel, and the NULL. Sized above that so a
+	 * future argument is an edit here rather than a stack overrun.
+	 */
+	char *qemu_argv[40];
 	int argc = 0;
 	int next_input = 0;
 	size_t match_search_from = 0;
@@ -365,6 +385,19 @@ enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char
 	qemu_argv[argc++] = "-cpu";
 	qemu_argv[argc++] = "qemu64";
 	qemu_argv[argc++] = "-display";
+	qemu_argv[argc++] = "none";
+	/*
+	 * -display none hides the display; it does NOT remove the device,
+	 * and q35 creates a std VGA by default whose option ROM qemu
+	 * loads at startup. Cix's `qemu` package ships none of qemu's
+	 * prebuilt firmware (Build Provenance Mandate -- they are foreign
+	 * binaries a guest executes), so that load fails and qemu exits 1
+	 * before any guest runs: `failed to find romfile
+	 * "vgabios-stdvga.bin"`. Measured on 192.168.15.95, 2026-10-09 by
+	 * probe-qemu-boot@2-1 and @3-1, where -vga none cleared it and the
+	 * ISO then booted. Nothing here renders, so no display is wanted.
+	 */
+	qemu_argv[argc++] = "-vga";
 	qemu_argv[argc++] = "none";
 	qemu_argv[argc++] = "-serial";
 	qemu_argv[argc++] = "stdio";
@@ -391,6 +424,17 @@ enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char
 		qemu_argv[argc++] = "-drive";
 		qemu_argv[argc++] = disk2_arg;
 	}
+	/*
+	 * with_nic CANNOT RUN on a Cix host yet, for the same reason the
+	 * -vga none above exists: qemu loads a NIC's option ROM at
+	 * startup, Cix's `qemu` package ships none of qemu's prebuilt
+	 * firmware, and so `failed to find romfile "efi-virtio.rom"`
+	 * exits 1 before any guest runs. libslirp IS packaged and slirp
+	 * IS enabled in qemu@11.1.2-9, so -netdev user itself is fine --
+	 * it is the device's ROM that is missing, which cix#587 tracks.
+	 * Measured on 192.168.15.95, 2026-10-09 (probe-qemu-boot@3-1 hit
+	 * the identical failure for e1000e).
+	 */
 	if (opts->with_nic) {
 		qemu_argv[argc++] = "-netdev";
 		qemu_argv[argc++] = "user,id=n0";
