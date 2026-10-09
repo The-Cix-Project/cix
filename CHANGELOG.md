@@ -6,6 +6,48 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A guest boots on Cix's own emulator, firmware and ISO (#584, qemu@11.1.2-9, eight new packages)
+
+**What does not work, first.** `-kernel` direct boot does not, so `test/test_boot.c` still cannot run
+on a Cix host; legacy BIOS boot does not; and a guest with a NIC or a display does not start at all.
+One deliberate cause, tracked as #587. And the boot that did happen found a real installer bug,
+#588: GRUB's default entry is the USB one, whose `root=PARTUUID=` can never resolve on optical
+media, so an unattended DVD boot hangs at `Waiting for root device`.
+
+**What works.** `cix-installer-0.2.57-478-x86_64.iso` boots under `qemu@11.1.2-9` on
+`ovmf@202608-1`, and every layer was built on this host:
+
+```
+BdsDxe: starting Boot0002 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+GNU GRUB  version 2.14
+Linux version 7.2.9 (@__pkgbuild-0) (gcc (GCC) 16.2.0, GNU ld (GNU Binutils) 2.42)
+```
+
+Eight new packages, bottom-up: `libffi@3.8.0-4`, `pcre2@10.49-1`, `ninja@1.13.2-1`,
+`meson@1.12.1-1`, `pixman@0.46.4-2`, `glib@2.90.1-1`, `libslirp@4.9.2-1`, `qemu@11.1.2-9`.
+`pcre2` is the only one tcc could compile: **meson does not recognise this tcc at all**
+(`Unknown compiler(s): [['tcc']]`, before any source file is read), which decides pixman, glib,
+libslirp and qemu together, and libffi is gcc because tcc answers `_Complex is not yet supported`.
+
+**No prebuilt firmware is shipped.** `make install` lays about seventy prebuilt blobs into
+`/usr/share/qemu` — SeaBIOS, vgabios, iPXE ROMs, firmware for architectures this build does not
+produce, and `edk2-x86_64-code.fd`, a prebuilt OVMF which is exactly what `ovmf@202608-1` builds
+from source. Every one is a foreign binary a guest executes, so none is shipped; the installed
+package is ten binaries and zero `.bin`/`.rom`/`.fd`/`.img`/`.dtb` files. ADR-0251's finalize
+surfaced them by refusing to strip `hppa-firmware.img`.
+
+**And the cost was measured, which corrected something I had already written down.**
+`kvmvapic.bin` being absent is **not** fatal — qemu prints a rom error and boots. What is fatal is
+a *device* whose option ROM is missing, and `q35` creates two by default, so `-vga none` cleared
+vgabios and exposed `efi-e1000e.rom`, and `-vga none -nic none` booted. qemu needs no prebuilt
+firmware; it will not start a device whose option ROM it cannot find.
+
+Verified on 192.168.15.95, 2026-10-09: all eight report `state=installed` with no error, and
+`probe-qemu-boot@4-1` produced 35,864 bytes of serial log, bounded by `timeout 2m` because a
+firmware with nothing left to do waits forever. Not verified: that any of the seven boot tests
+passes — wiring them to this qemu is separate work, and #588 is a bug to fix first.
+
+
 ### UEFI firmware is built from source on a Cix host (#584, ovmf@202608-1, edk2-basetools@202608-5)
 
 Cix's QEMU boot tests boot an installer ISO and that ISO boots by EFI, so without firmware there is
