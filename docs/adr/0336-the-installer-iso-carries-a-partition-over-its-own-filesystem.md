@@ -57,6 +57,8 @@ Seven clauses.
 
    The discriminator is `-o` rather than the absence of the EFI arguments, deliberately. Keying on those would mean that if grub-mkrescue ever stopped pushing them, a *real* image write would be passed through unmodified — producing media with no `ISO9660` partition while `grub.cfg` still named its PARTUUID, an unbootable ISO from a silent success. With `-o` as the test, such an invocation reaches the rewrite and fails loudly instead.
 
+   **What is measured here and what is not, since the two differ.** That the probe argv carries no `--efi-boot` is measured: a wrapper keyed on it passed the probe through and the build proceeded. That it carries no `-o` is *not* measured — the probe's output goes into grub's pipe, so no log of this project's could show its argument list, and `-o`'s absence is read from grub-mkrescue's documented description of the call (`xorriso -as mkisofs -help`) rather than from the call itself. If that is wrong, the first real ISO build refuses with the clause's own message naming the missing `--efi-boot`, which is a loud failure and not bad media — so it is resolved by the next build either way, and no speculative second condition is added here to cover it.
+
 ## Consequences
 
 The media's GPT becomes, measured through grub-mkrescue's real argument list:

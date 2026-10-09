@@ -195,10 +195,10 @@ int main(int argc, char **argv)
 	 * call must be left alone. check_xorriso() forks
 	 * `xorriso -as mkisofs -help` through a pipe and greps the output
 	 * for "graft-points" to decide the binary is usable
-	 * (grub-mkrescue.c:337, :509). That argv carries none of the
-	 * image-writing arguments, so a wrapper that rewrites or refuses it
-	 * fails the check -- and its complaint goes into grub's pipe, where
-	 * nothing can see it. Measured on 192.168.15.95, 2026-10-09:
+	 * (grub-mkrescue.c:337, :509). A wrapper that rewrites or refuses
+	 * that call fails the check -- and its complaint goes into grub's
+	 * pipe, where nothing can see it. Measured on 192.168.15.95,
+	 * 2026-10-09:
 	 * probe-isogrub@8-1 refused that invocation for having no
 	 * --efi-boot and grub-mkrescue stopped 5 ms later with
 	 * `error: xorriso not found.`, for a binary that was present and
@@ -212,6 +212,15 @@ int main(int argc, char **argv)
 	 * partition while grub.cfg still named its PARTUUID, i.e. an
 	 * unbootable ISO from a silent success. With `-o` as the test, such
 	 * an invocation reaches the rewrite below and fails loudly instead.
+	 *
+	 * That the probe argv carries no `--efi-boot` is measured. That it
+	 * carries no `-o` is NOT: the probe's output goes into grub's pipe,
+	 * so nothing here can log its argument list, and `-o`'s absence
+	 * comes from grub-mkrescue's own description of the call rather
+	 * than from the call. If that is wrong, the first real ISO build
+	 * refuses with the "passed no --efi-boot" message below, which is a
+	 * loud failure rather than bad media -- so no second condition is
+	 * guessed at here to cover it.
 	 */
 	for (i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "-o") == 0) {
