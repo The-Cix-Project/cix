@@ -29,8 +29,11 @@ int mountns_make_private(void);
  * which one actually failed -- confirmed the hard way chasing issue
  * #34's own mountns_pivot() EXDEV on 192.168.15.95, where the errno
  * alone (already surfaced) wasn't enough to know which of pivot_root()
- * itself, one of the umount2() calls, or one of the four fresh-mount
- * calls (proc/sysfs/run/devpts) was the real source).
+ * itself, one of the umount2() calls, or one of the fresh-mount calls
+ * was the real source). That list read "the four ... (proc/sysfs/run/
+ * devpts)" when written and is six now -- /tmp and /dev/shm joined it --
+ * so it names no count: the enum below is the list, and a comment that
+ * restates its length is a second copy that goes stale silently.
  */
 enum mountns_pivot_error {
 	MOUNTNS_PIVOT_ERR_MKDIR_PUT_OLD = -1,
@@ -49,6 +52,8 @@ enum mountns_pivot_error {
 	MOUNTNS_PIVOT_ERR_MOUNT_DEV_PTS = -14,
 	MOUNTNS_PIVOT_ERR_MKDIR_TMP = -15,
 	MOUNTNS_PIVOT_ERR_MOUNT_TMP = -16,
+	MOUNTNS_PIVOT_ERR_MKDIR_DEV_SHM = -17,
+	MOUNTNS_PIVOT_ERR_MOUNT_DEV_SHM = -18,
 };
 
 /*

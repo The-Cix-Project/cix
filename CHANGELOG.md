@@ -6,6 +6,48 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Every container gets a /dev/shm, so POSIX shared memory and named semaphores work (#584)
+
+`sem_open()` and `shm_open()` could not work in any Cix container, because there was no
+`/dev/shm` for glibc to create their backing files in. Measured on 192.168.15.95, 2026-10-09: a
+build container's `/proc/mounts` held `overlay /`, `proc`, `sysfs`, `tmpfs /run`, `tmpfs /tmp` and
+`devpts /dev/pts`, and its `/dev` held `full null pts random tty urandom zero` — **no `shm` entry of
+any kind**, so this was not a broken mount but an absent one.
+
+**The failure never says "shared memory", which is why it survived this long.** edk2's `build.py`
+imports Python's `multiprocessing` and dies at import with `ImportError: This platform lacks a
+functioning sem_open implementation, therefore, the required synchronization primitives needed will
+not function` — before it has parsed its own arguments. Any Python build system reaching for a
+process pool fails the same way, and the message points at Python rather than at the mount.
+
+It is a general gap rather than one package's problem: glibc implements both `shm_open()` and
+`sem_open()` as files under `/dev/shm`, so anything using POSIX shared memory between processes has
+been failing in Cix containers since containers existed, each in whatever terms its own abstraction
+happened to report.
+
+`mountns_pivot()` now mounts a tmpfs there, beside the `/run` and `/tmp` it already creates. Three
+choices in it worth stating:
+
+- **mode 01777 with the sticky bit**, the same reasoning `/tmp` already carries: world-writable by
+  definition, and without the sticky bit one process could unlink another's segment.
+- **`nosuid` and `nodev`, deliberately not `noexec`.** No Linux distribution sets `noexec` on
+  `/dev/shm`, because a JIT or runtime that maps an anonymous file executable legitimately needs it;
+  a mount option stricter than every other Unix would surface only as somebody else's crash.
+  `/dev/pts` keeps `noexec` because nothing can be executed from a devpts at all.
+- **through `mount_container_tmpfs()`**, for the ownership reason that function documents: under a
+  user namespace the mounter's fsuid is unmapped, so a bare `mount()` comes up owned by 65534 and the
+  container's own root cannot write to it — exactly how `/run` was once broken.
+
+Also corrected: `enum mountns_pivot_error`'s own comment said "the four fresh-mount calls
+(proc/sysfs/run/devpts)". It was six before this change and seven mounts are now described by the
+enum, so it names no count at all — a comment restating a list's length is a second copy of it that
+goes stale in silence, which is what had happened.
+
+**No selftest covers this**, and that is stated rather than papered over: asserting it needs a real
+container, and every container-creating test is excluded from `SELFTESTS` because a build container
+cannot `unshare`/`mount`/cgroup (#224, #480). The verification is edk2's own build getting past that
+`ImportError` on the box, which exercises `sem_open` for real.
+
 ### The installer's USB entries name the media by PARTUUID, not /dev/sda (#430, ADR-0336)
 
 The installer ISO's USB boot entries said `root=/dev/sda`. That is a name the kernel assigns by

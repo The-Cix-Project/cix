@@ -323,6 +323,55 @@ int mountns_pivot(const struct mount_spec *mnt)
 	}
 
 	/*
+	 * /dev/shm, which is where POSIX shared memory and NAMED SEMAPHORES
+	 * live (cix#584).
+	 *
+	 * Without it `sem_open()` cannot work at all, and the failure does
+	 * not mention shared memory: Python's `multiprocessing` raises
+	 * `ImportError: This platform lacks a functioning sem_open
+	 * implementation` at IMPORT time, so every build system written in
+	 * Python that reaches for a process pool dies before it has parsed
+	 * its own arguments. Measured on 192.168.15.95, 2026-10-09: edk2's
+	 * `build.py` failed exactly that way, and a probe then read the
+	 * build container's `/proc/mounts` -- overlay /, proc, sysfs, tmpfs
+	 * /run, tmpfs /tmp, devpts /dev/pts -- and its `/dev`, which held
+	 * `full null pts random tty urandom zero` and no `shm` entry of any
+	 * kind. So this was not a broken mount; there was nothing there.
+	 *
+	 * That is a general gap rather than one package's problem. glibc
+	 * implements `shm_open()` and `sem_open()` by creating files under
+	 * /dev/shm, so anything using POSIX shared memory between processes
+	 * -- not only Python -- has been failing here since containers
+	 * existed, each in whatever terms its own abstraction reports.
+	 *
+	 * MODE 01777 WITH THE STICKY BIT, the same reasoning /tmp above
+	 * states: it is world-writable by definition, and without the
+	 * sticky bit one process could unlink another's segment.
+	 *
+	 * NOSUID and NODEV, but deliberately NOT NOEXEC. Linux
+	 * distributions do not set noexec on /dev/shm, because a JIT or a
+	 * runtime that maps an anonymous file executable legitimately needs
+	 * it, and a mount option this platform adds beyond what every other
+	 * Unix ships would be a difference that only shows up as somebody
+	 * else's crash. /dev/pts above takes NOEXEC because nothing can be
+	 * executed from a devpts at all.
+	 *
+	 * Through mount_container_tmpfs() for the ownership reason that
+	 * function documents at length: the mounter's fsuid is unmapped
+	 * under a user namespace, so a bare mount would come up owned by
+	 * 65534 and the container's own root could not write to it -- which
+	 * is exactly how /run was once broken.
+	 */
+	if (mkdir("/dev/shm", 01777) != 0 && errno != EEXIST) {
+		perror("mountns_pivot: mkdir(/dev/shm)");
+		return MOUNTNS_PIVOT_ERR_MKDIR_DEV_SHM;
+	}
+	if (mount_container_tmpfs("/dev/shm", "mode=1777", MS_NOSUID | MS_NODEV) != 0) {
+		perror("mountns_pivot: mount(tmpfs /dev/shm)");
+		return MOUNTNS_PIVOT_ERR_MOUNT_DEV_SHM;
+	}
+
+	/*
 	 * ADR-0262/#336: the container's own /proc/meminfo and friends.
 	 *
 	 * This is the ONLY window in which it can be done. The source lives
