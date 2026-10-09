@@ -37,6 +37,17 @@ test is positive — detect optical, move the default — so a GRUB without the 
 Collapsing to two entries remains impossible for the kernel reason above; this changes only which
 of the four is preselected.
 
+Verified before and after with the same probe, emulator and firmware — `probe-qemu-boot@4-1`
+against `cix-installer-0.2.57-478` and `@5-1` against `cix-installer-0.2.57-480`, both as a
+DVD-ROM under `qemu@11.1.2-9` with `ovmf@202608-1`. 478 took `root=PARTUUID=28c91145-…` and sat at
+`Waiting for root device` forever; 480 takes `root=/dev/sr0`, reports
+`VFS: Mounted root (iso9660 filesystem) readonly on device 11:0.` and reaches
+`Run /bin/cix-install as init process`. The installer then stops at `cix-install: no disks found
+under /sys/class/block`, which is correct — that probe gives the guest no target disk.
+
+Not verified: USB media, which has no `$root` of the optical shape and so takes the unchanged
+`default=0` path. That is the owner's hardware test, as it is for #430.
+
 
 ### A guest boots on Cix's own emulator, firmware and ISO (#584, qemu@11.1.2-9, eight new packages)
 

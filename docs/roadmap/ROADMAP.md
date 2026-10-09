@@ -2445,6 +2445,28 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 268 (done): the installer's default boot entry is chosen by the media, and the first qemu-found bug is fixed (#588, 0.2.57-480)
+
+Part 267 built qemu and immediately found a real bug with it. This fixes that bug and verifies the fix the same way it was found, which is the loop the capability was for.
+
+**The bug.** An installer ISO booted from a CD/DVD hung with no error: GRUB's menu rendered, the kernel started and printed normally, and then it sat at `Waiting for root device PARTUUID=28c91145-16af-9e77-d501-898175d24dac...` forever. `grub.cfg` carried a fixed `set default=0`, which is `Cix Install (USB media)` and boots `root=PARTUUID=` — and on optical media that can never resolve, because `drivers/scsi/sr.c` sets `GENHD_FL_NO_PART` so no partition node exists for a PARTUUID to match. That is the same kernel fact that makes four entries necessary (#430, ADR-0336); the four entries were right and only the *default* was wrong. `rootwait` means the kernel waits rather than failing, so the operator got a hang with nothing to read — the shape CLAUDE.md calls a product bug of the first rank.
+
+**The fix.** Which entry is correct depends on the media and is only knowable at boot, so GRUB chooses it: `$root` names the device GRUB loaded its configuration from, which the EFI image's own `search --fs-uuid` has already pointed at the ISO9660 filesystem — `cd0` on optical, and `hd0,gptN` on a USB stick precisely because #430 made that filesystem a partition of its own. The test is **positive** (detect optical, move the default), so a GRUB without the `regexp` module leaves `default=0` exactly as before rather than silently breaking the USB case, which is the common one.
+
+**Verified before and after, with the same probe, the same emulator and the same firmware.** `probe-qemu-boot@4-1` against `cix-installer-0.2.57-478` and `@5-1` against `cix-installer-0.2.57-480`, both booted as a DVD-ROM under `qemu@11.1.2-9` with `ovmf@202608-1`:
+
+| | 478 | 480 |
+|---|---|---|
+| kernel command line | `root=PARTUUID=28c91145-…` | `root=/dev/sr0` |
+| outcome | `Waiting for root device …`, forever | `VFS: Mounted root (iso9660 filesystem) readonly on device 11:0.` |
+| then | — | `Run /bin/cix-install as init process` |
+
+The installer then stopped at `cix-install: no disks found under /sys/class/block`, which is correct: that probe gives the guest no target disk. So the whole chain runs — firmware, bootloader, kernel, root, init — and the next thing to exercise is an install against a blank disk, which is `test_installer`'s job.
+
+**And the boot harness has its first compile.** `test/test_disk_image.c` is linked by seven test binaries and none is in `SELFTESTS` or `FLOOR_SELFTESTS`, so no gate had ever built it — which is how part 267's `-vga none` and OVMF-path changes went in uncompiled. `probe-cix-compile@0.2.57-513` adds `build/test_boot` for exactly that reason, and it compiles clean under `-Wall -Werror`. It is compiled, not run: running it needs a real QEMU and a real disk image, which a build container does not have.
+
+Verified on 192.168.15.95, 2026-10-09. Booted `0.2.57-480` (slot b, kernel 7.2.9). `probe-cix-compile@0.2.57-512` and `@0.2.57-513` both `installed` with `SELFTEST: PASS`, the latter covering the boot harness. `cixctl iso build` produced and signed a fresh ISO, published as `cix-installer-0.2.57-480-x86_64.iso`, 76,869,632 bytes, sha256 `efc5bc54a86efd57c7b957573edf639e209cd762557b27cc2e3c8d2e305d0feb` — confirmed both from the cache's artifact listing and from its `X-Cix-Sha256` HEAD header. Not verified: USB media, which has no `$root` of the optical shape and so takes the unchanged `default=0` path — that is the owner's hardware test, as it is for #430.
+
 ## Part 267 (done): a guest boots on Cix's own emulator, firmware and ISO (#584, qemu@11.1.2-9, and eight new packages)
 
 **What does not work, first, because an operator needs that before the good news.** `-kernel` direct boot does not, so `test/test_boot.c` still cannot run on a Cix host; legacy BIOS boot does not; and a guest with a NIC or a display does not start at all. All four are the same cause and it is a deliberate one — see the provenance paragraph below — tracked as [#587](https://git.home.arpa/itdlabs/cix/issues/587). `test_disk_image.c`'s `with_nic` case therefore needs more than slirp. And the boot that *did* happen exposed a real installer bug, [#588](https://git.home.arpa/itdlabs/cix/issues/588): GRUB's default entry is the USB one, whose `root=PARTUUID=` can never resolve on optical media, so an unattended DVD boot hangs at `Waiting for root device`.
