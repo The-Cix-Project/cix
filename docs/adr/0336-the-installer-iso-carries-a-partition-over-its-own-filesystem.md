@@ -1,9 +1,8 @@
-# ADR-0336: The installer ISO carries a partition over its own filesystem
+# 0336 — The installer ISO carries a partition over its own filesystem
 
-- **Status:** Accepted
-- **Date:** 2026-10-09
-- **Issue:** [#430](https://git.home.arpa/itdlabs/cix/issues/430)
-- **Supersedes nothing.** Follows [#429](https://git.home.arpa/itdlabs/cix/issues/429)'s per-media GRUB entries, and [ADR-0064](0064-mkinstalleriso-takes-an-explicit-isotools-root.md)'s isotools contract.
+## Status
+
+Accepted, 2026-10-09. Issue [#430](https://git.home.arpa/itdlabs/cix/issues/430). Supersedes nothing; follows [#429](https://git.home.arpa/itdlabs/cix/issues/429)'s per-media GRUB entries and amends the argument contract of [ADR-0064](0064-rest-driven-iso-assembly.md)'s REST-driven ISO assembly.
 
 ## Context
 
