@@ -6,6 +6,38 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The installer's default boot entry is chosen by the media, not frozen at build time (#588)
+
+An installer ISO booted from a CD/DVD hung with no error. GRUB's menu rendered, the kernel
+started and printed normally, and then it sat at
+
+```
+Waiting for root device PARTUUID=28c91145-16af-9e77-d501-898175d24dac...
+```
+
+forever. Measured on 192.168.15.95, 2026-10-09 by `probe-qemu-boot@4-1`, booting
+`cix-installer-0.2.57-478-x86_64.iso` as a DVD-ROM under `qemu@11.1.2-9` with `ovmf@202608-1` —
+the first time anything had booted this ISO under EFI on a Cix host, because until this week no
+Cix host had QEMU.
+
+**The four entries were right; the default was wrong.** `grub.cfg` carried a fixed `set default=0`,
+which is `Cix Install (USB media)` and boots `root=PARTUUID=`. On optical media that can never
+resolve — `drivers/scsi/sr.c` sets `GENHD_FL_NO_PART`, so no partition node exists for a PARTUUID
+to match, which is exactly why there are four entries rather than two (#430, ADR-0336). And
+`rootwait` means the kernel waits instead of failing, so the operator sees a hang with nothing to
+read. Anyone booting from a DVD without knowing to press down-arrow twice was stuck.
+
+Which entry is correct depends on the media, and that is only knowable at boot — so GRUB now
+chooses it. `$root` names the device GRUB loaded its configuration from, which the EFI image's own
+`search --fs-uuid` has already pointed at the ISO9660 filesystem: `cd0` on optical, `hd0,gptN` on
+a USB stick, the latter because since #430 that filesystem really is a partition of its own. The
+test is positive — detect optical, move the default — so a GRUB without the `regexp` module leaves
+`default=0` exactly as before rather than silently breaking the USB case, which is the common one.
+
+Collapsing to two entries remains impossible for the kernel reason above; this changes only which
+of the four is preselected.
+
+
 ### A guest boots on Cix's own emulator, firmware and ISO (#584, qemu@11.1.2-9, eight new packages)
 
 **What does not work, first.** `-kernel` direct boot does not, so `test/test_boot.c` still cannot run

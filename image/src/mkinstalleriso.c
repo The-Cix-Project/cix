@@ -1559,6 +1559,38 @@ int main(int argc, char **argv)
 	cfg_len = (size_t)snprintf(grub_cfg, sizeof(grub_cfg),
 	         "set timeout=10\n"
 	         "set default=0\n"
+	         /*
+	          * WHICH DEFAULT IS CORRECT DEPENDS ON THE MEDIA, and that
+	          * is only knowable at boot -- so it is chosen here rather
+	          * than frozen into the file (#588). The four entries below
+	          * are the right shape and cannot collapse; what was wrong
+	          * was a fixed `default=0`, the USB entry, whose
+	          * root=PARTUUID= can never resolve on optical media for
+	          * the GENHD_FL_NO_PART reason spelled out below. Measured
+	          * on 192.168.15.95, 2026-10-09 by probe-qemu-boot@4-1:
+	          * cix-installer-0.2.57-478 booted as a DVD-ROM under
+	          * qemu with OVMF, GRUB took entry 0, and the kernel sat
+	          * at `Waiting for root device PARTUUID=28c91145-...`
+	          * forever. `rootwait` means it waits rather than failing,
+	          * so there is not even an error to read.
+	          *
+	          * GRUB knows the answer: `$root` names the device its
+	          * configuration was loaded from, which the EFI image's own
+	          * `search --fs-uuid` has already pointed at the ISO9660
+	          * filesystem. On optical that device is `cd0` (GRUB's EFI
+	          * disk layer names CD media `cd%d`); on a USB stick it is
+	          * `hd0,gptN`, because since #430 the ISO9660 filesystem
+	          * really is a partition of its own.
+	          *
+	          * The test is POSITIVE -- detect optical and move the
+	          * default -- so that a GRUB without the regexp module
+	          * leaves `default=0` exactly as before rather than
+	          * silently breaking the USB case, which is the common one.
+	          */
+	         "insmod regexp\n"
+	         "if regexp '^cd' \"${root}\"; then\n"
+	         "    set default=1\n"
+	         "fi\n"
 	         /* "keep": hand the kernel the EFI console mode GRUB is
 	          * already running in, framebuffer info included. The
 	          * previous value here, "text", was itself an attempted fix
