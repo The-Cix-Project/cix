@@ -6,7 +6,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
-### The root's programs and libraries are derived from one list, with no build-host fallback (#350, ADR-0337)
+### The root's programs and libraries are derived from one list, with no build-host fallback (#350, 0.2.57-482, ADR-0337)
 
 Five mechanisms inside `mkbootroot.c` decided what the control-plane root contains: two
 hand-maintained program tables, two one-off blocks for a program each, and one list of library
