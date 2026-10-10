@@ -825,8 +825,8 @@ the operator meets it as a round-trip `400` instead of a field that will not sub
 So a constraint goes in the schema as `pattern`, `minimum`/`maximum`, `maxLength` or `enum`, and the
 description explains *why* rather than restating it. The three added with the first conversions are
 `ImageCreateRequest.name`, `SyslogTargetCreateRequest.container` and `registerDhcpServer`'s own
-`container`, all `^[A-Za-z0-9_-]+$` — the same rule the container-name path parameter has carried all
-along. `NtpServerBindingCreateRequest.container`, `DnsServerBindingCreateRequest.container`,
+`container`, all `^[A-Za-z0-9_\-]+$` — the same rule the container-name path parameter has carried all
+along (and see the hyphen rule below: `\-`, never a bare `-`, or a browser discards the pattern). `NtpServerBindingCreateRequest.container`, `DnsServerBindingCreateRequest.container`,
 `LdapServerBindingCreateRequest.container`, `addImageRecipeRequest.name` and `addDeploymentRequest.name`
 followed with each conversion. The last two were read off the daemon rather than written from memory:
 `image_recipe_add()` validates with `pkg_image_is_valid()` and `container_recipe_add()` with

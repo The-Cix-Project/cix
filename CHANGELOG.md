@@ -6,6 +6,26 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### What two gate cycles cost, and what wired the gate that was inert (#596)
+
+Two failed gates in a row, both mine, both the same shape and worth recording rather than quietly fixing.
+
+**486 failed on two assertions written against a structure that had changed.** The field hint moved *inside*
+its label when the first real modal was rendered — it had been landing in the next grid column — and the
+two assertions reading `form.children[1]` were never updated, because that change had not been through a
+gate. **487 failed on one assertion holding a pattern's old spelling**, after all 27 patterns were corrected
+to `\-`. The rule this project already writes down for a protocol fix — *not finished until every other copy
+in the tree has been looked at* — applies to a mechanical sweep too, and one `grep` for the old spelling
+would have caught it.
+
+**And the gate the 487 release claimed to add did not exist.** `test_apigen` counted emitted patterns ending
+a class with a bare `-` and then never read the count: the detection loop was there, the `fail()` after it
+was not, so CHANGELOG, `docs/api/README.md`, CLAUDE.md and 487's own recipe changelog all described a
+mechanism that refused nothing. Wired now. The detection *rule* is proven — regenerating `api.js` from the
+pre-fix contract and grepping it finds **16 field lines** carrying an inert pattern, against 0 in the
+current one — and the C loop implementing it goes through this release's suite, which is stated here rather
+than implied.
+
 ### The LDAP forms, and an edit that revoked a grant every time (#596, #604, ADR-0338)
 
 `ldap-group-form` and `ldap-user-form` are gone — the last two of the dual-mode forms, and with them the

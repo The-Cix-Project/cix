@@ -307,12 +307,23 @@ int main(void)
 		       "(f) => f.name === \"prefix_len\")).max",
 		       "30");
 
-		/* The NTP binding's container carries a pattern, moved into
-		 * the contract when its hand-written form was retired. */
+		/*
+		 * The NTP binding's container carries a pattern, moved into
+		 * the contract when its hand-written form was retired.
+		 *
+		 * The hyphen is `\-` and that is load-bearing, not a style:
+		 * a browser compiles this with the regex `v` flag, under
+		 * which a bare `-` at the end of a class is a SyntaxError,
+		 * and the HTML spec then SKIPS the constraint silently. This
+		 * assertion expected the bare form and is what the 487 gate
+		 * caught when all 27 patterns were corrected -- which is the
+		 * gate working, and a reminder that a mechanical sweep is not
+		 * finished until its dependents have been grepped for.
+		 */
 		expect(ctx, "a string field carries the contract's pattern",
 		       "fieldControl(CIX_API.FIELDS.NtpServerBindingCreateRequest.find("
 		       "(f) => f.name === \"container\")).pattern",
-		       "^[A-Za-z0-9_-]+$");
+		       "^[A-Za-z0-9_\\-]+$");
 		expect(ctx, "a required field is required",
 		       "String(fieldControl(CIX_API.FIELDS.NtpServerBindingCreateRequest.find("
 		       "(f) => f.name === \"container\")).required)",
