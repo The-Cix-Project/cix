@@ -154,6 +154,13 @@ static const char *const DOM_SHIM =
     "globalThis.showStatus = (m) => { globalThis.status_said = m; };\n"
     "globalThis.runRefreshers = async () => {};\n"
     "globalThis.refreshersForView = () => [];\n"
+    /*
+     * Records rather than acts: the real one installs a blur listener,
+     * and what matters here is WHICH fields it is applied to -- the
+     * decision is the contract's `format: hostname`, and the site
+     * knowledge it needs is app.js's.
+     */
+    "globalThis.qualifyHostname = (el) => { el.dataset.qualified = \"1\"; };\n"
     "globalThis.document = {\n"
     "  getElementById(id) {\n"
     "    if (this._byId === undefined)\n"
@@ -375,7 +382,24 @@ int main(void)
 		       "  const f = document.getElementById(\"generated-form\");\n"
 		       "  return f.children.map((c) => c.tag).join(\",\");\n"
 		       "})()",
-		       "label,p,button");
+		       "label,button");
+		/*
+		 * `label,button` and not `label,p,button`: the hint lives
+		 * INSIDE its label, so a field is one grid cell containing
+		 * name, control and explanation. It was a form child until
+		 * the first real modal was rendered, where it landed in the
+		 * next grid column and read as a peer of the field rather
+		 * than as its explanation -- and this assertion, written
+		 * against the old shape, is what the 486 gate caught.
+		 */
+		expect(ctx, "and the field's own hint is inside its label",
+		       "(() => {\n"
+		       "  const f = document.getElementById(\"generated-form\");\n"
+		       "  const label = f.children[0];\n"
+		       "  return label === undefined ? \"no field\"\n"
+		       "    : label.children.map((c) => c.tag).join(\",\");\n"
+		       "})()",
+		       "input,p");
 		/*
 		 * These three read what the call above produced, so each
 		 * answers "not opened" or "no such child" rather than throwing
@@ -399,7 +423,8 @@ int main(void)
 		expect(ctx, "the field's hint is the contract's own description",
 		       "(() => {\n"
 		       "  const f = document.getElementById(\"generated-form\");\n"
-		       "  const hint = f.children[1];\n"
+		       "  const label = f.children[0];\n"
+		       "  const hint = label === undefined ? undefined : label.children[1];\n"
 		       "  return hint === undefined ? \"no hint\"\n"
 		       "    : hint.textContent.slice(0, 24);\n"
 		       "})()",
@@ -633,6 +658,43 @@ int main(void)
 		       "JSON.stringify(generatedFormBody("
 		       "document.getElementById(\"generated-form\")))",
 		       "{\"name\":\"jump\",\"content\":\"{}\"}");
+		/*
+		 * `format: hostname` gets the bare-label convenience, and a
+		 * field that is not a hostname does not. This was wired to
+		 * two element ids before, so only those two had it -- a
+		 * convenience attached to an id cannot reach the next field
+		 * of the same kind that anyone adds.
+		 */
+		expect(ctx, "a hostname field gets the bare-label qualifier",
+		       "String(fieldControl(CIX_API.FIELDS.DnsRecordCreateRequest.find("
+		       "(f) => f.name === \"name\")).dataset.qualified)",
+		       "1");
+		expect(ctx, "and an ordinary string field does not",
+		       "String(fieldControl(CIX_API.FIELDS.DnsRecordCreateRequest.find("
+		       "(f) => f.name === \"ip\")).dataset.qualified)",
+		       "undefined");
+		expect(ctx, "a hostname's pattern accepts a dotted name",
+		       "String(new RegExp(CIX_API.FIELDS.DnsRecordCreateRequest"
+		       ".find((f) => f.name === \"name\").pattern).test(\"db.home.arpa\"))",
+		       "true");
+		/* The daemon's own rule, not the RFC's: dns_name_is_valid()
+		 * checks the charset and the label length and nothing else,
+		 * so a leading hyphen is accepted and the contract says so --
+		 * a stricter pattern would make the form refuse a name the
+		 * daemon takes. */
+		expect(ctx, "and a leading hyphen, which the daemon accepts",
+		       "String(new RegExp(CIX_API.FIELDS.DnsRecordCreateRequest"
+		       ".find((f) => f.name === \"name\").pattern).test(\"-db.home.arpa\"))",
+		       "true");
+		expect(ctx, "while an empty label is refused",
+		       "String(new RegExp(CIX_API.FIELDS.DnsRecordCreateRequest"
+		       ".find((f) => f.name === \"name\").pattern).test(\"db..arpa\"))",
+		       "false");
+		expect(ctx, "and an underscore, which the charset excludes",
+		       "String(new RegExp(CIX_API.FIELDS.DnsRecordCreateRequest"
+		       ".find((f) => f.name === \"name\").pattern).test(\"db_1.arpa\"))",
+		       "false");
+
 		expect(ctx, "the document field of that same form is the wide one",
 		       "(() => {\n"
 		       "  const form = document.getElementById(\"generated-form\");\n"

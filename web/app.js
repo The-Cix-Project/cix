@@ -425,9 +425,6 @@ function closeModal() {
 	/* Edit-mode state (tasks #749/#750) is scoped to a single modal
 	 * session -- always reset back to "create" on close, regardless of
 	 * how it closed (submit, X button, Escape, outside click). */
-	dnsRecordEditName = null;
-	document.getElementById("df-name").readOnly = false;
-	document.getElementById("df-submit").textContent = "Create";
 	/* #544: the permissions form's edit state, and a new app password's
 	 * secret -- which must not stay in the page once its modal is shut. */
 	permissionsEditGroup = null;
@@ -8427,19 +8424,27 @@ async function formatDisk(diskName, fsType) {
 
 /* ---------- DNS Records ---------- */
 
-/* Set while the DNS record modal form is open in edit mode (task #749) --
- * null means the next submit is a create (POST). */
-let dnsRecordEditName = null;
-
+/*
+ * Editing a record is a DIFFERENT OPERATION, not the same form in a
+ * mode (#596).
+ *
+ * `updateDnsRecord` is `PUT /dns/records/{name}` with a body of `{ip}`
+ * alone, so the generated form renders one field and takes the name as
+ * a path argument. The hand-written form had to be both: one markup
+ * block, a module-level `dnsRecordEditName` deciding POST from PUT, a
+ * `readOnly` toggled on the name, a button whose words were rewritten,
+ * and three lines in closeModal() to put all of that back -- a mode
+ * that outlives its modal is exactly the state a form should not have.
+ */
 function editDnsRecord(rec) {
-	/* Set AFTER openModal() -- it calls closeModal(), which resets this
-	 * to null (otherwise the submit handler POSTs instead of PUTs). */
-	openModal("dns-record-form", "Edit DNS record");
-	dnsRecordEditName = rec.name;
-	document.getElementById("df-name").value = rec.name;
-	document.getElementById("df-name").readOnly = true;
-	document.getElementById("df-ip").value = rec.ip;
-	document.getElementById("df-submit").textContent = "Save";
+	openForm("updateDnsRecord", {
+		title: "Edit DNS record " + rec.name,
+		submit: "Save",
+		args: [rec.name],
+		values: { ip: rec.ip },
+		after: refreshDnsRecords,
+		failed: "Failed to update DNS record " + rec.name,
+	});
 }
 
 function renderDnsRecords(records) {
@@ -13126,25 +13131,6 @@ document.getElementById("route-add-form").addEventListener("submit", async (even
 });
 
 
-document.getElementById("dns-record-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const name = document.getElementById("df-name").value.trim();
-	const ip = document.getElementById("df-ip").value.trim();
-
-	try {
-		if (dnsRecordEditName !== null)
-			await apiRequest("PUT", CIX_API.updateDnsRecord(dnsRecordEditName), { ip: ip });
-		else
-			await apiRequest("POST", CIX_API.createDnsRecord(), { name: name, ip: ip });
-		clearStatus();
-		document.getElementById("dns-record-form").reset();
-		closeModal();
-		await refreshDnsRecords();
-	} catch (e) {
-		showStatus((dnsRecordEditName !== null ? "Failed to update" : "Failed to create") + " DNS record: " + e.message, true);
-	}
-});
 
 
 
@@ -13475,7 +13461,6 @@ async function refreshSiteConfig() {
 			document.getElementById("sitef-site-name").value = site.site_name;
 			document.getElementById("sitef-domain-suffix").value = site.domain_suffix;
 		}
-		document.getElementById("df-name").placeholder = suggestedFqdn("db") || "db.internal";
 		document.getElementById("pf-name").placeholder = suggestedFqdn("svc") || "svc.internal";
 
 		const label = document.getElementById("tree-instance-label");
@@ -13492,11 +13477,20 @@ async function refreshSiteConfig() {
 	}
 }
 
-/* On leaving a bare-label name field (no dot typed -- an FQDN the
+/*
+ * On leaving a bare-label name field (no dot typed -- an FQDN the
  * operator already fully typed is left alone), auto-expand it to this
  * site's suggested FQDN. Still a plain text field afterward -- fully
- * editable, never enforced. */
-function qualifyOnBlur(input) {
+ * editable, never enforced.
+ *
+ * form.js calls this for every `format: hostname` field (#596), which
+ * is how the convenience reaches a field nobody wired by hand. It used
+ * to be attached to two specific element ids, so only those two had
+ * it; the site's own suffix is this file's knowledge, which is why the
+ * behaviour lives here and the DECISION to apply it lives with the
+ * field's own format.
+ */
+function qualifyHostname(input) {
 	input.addEventListener("blur", () => {
 		const value = input.value.trim();
 
@@ -13508,8 +13502,14 @@ function qualifyOnBlur(input) {
 	});
 }
 
-qualifyOnBlur(document.getElementById("df-name"));
-qualifyOnBlur(document.getElementById("pf-name"));
+/* The one hostname field still written by hand. `pki-cert-form` keeps
+ * its own submit because the response is the only place a leaf key is
+ * ever returned and the modal has to STAY OPEN to show it once -- a
+ * generated form closes on success. So this id stays wired until that
+ * question has an answer, and `PkiCertCreateRequest.name` deliberately
+ * does NOT carry `format: hostname` yet, because nothing would read
+ * it. */
+qualifyHostname(document.getElementById("pf-name"));
 
 document.getElementById("sitef-instance-name").addEventListener("input", () => {
 	siteConfigDirty = true;

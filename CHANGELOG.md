@@ -6,6 +6,38 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Every name pattern in the contract was ignored by the browser (#596, ADR-0338)
+
+**HTML compiles an `<input pattern>` with the regex `v` flag, and the spec's answer to a pattern it cannot
+compile is to skip the constraint entirely.** Under `v`, a hyphen at the end of a character class —
+`[A-Za-z0-9_-]` — is a `SyntaxError`. **27 of `openapi.yaml`'s 29 patterns were written that way**, which is
+every name field in the API, so the one thing ADR-0338 moves a constraint into the schema *for* — a form
+that refuses what the daemon would refuse — was not actually happening for any of them.
+
+Measured in a real browser, because nothing else could see it: the generator was right, the daemon was
+right, and `test_web_form` compiled each pattern with `new RegExp(p)` and no flag, which also accepts it.
+An `<input>` carrying the DNS-name pattern answered `checkValidity() === true` for `db_1.arpa`, with
+`validity.patternMismatch === false`, while the control (`^[a-z]+$` against `ABC`) correctly answered
+`false`. `\-` compiles under `u`, under `v` and under no flag and matches identically, so that is the
+spelling everywhere now; a *leading* `-` in the class throws under `v`, so it is not the fix. All 27
+patterns moved to single-quoted YAML with `\-`, and `test_apigen` refuses an emitted pattern containing a
+bare `-]` — textually, because a C gate cannot compile a regex and does not need to.
+
+**`format: hostname` now carries a behaviour, not just a hint.** `DnsRecordCreateRequest.name` gained
+OpenAPI's own standard format alongside the pattern, and the generated form applies the dashboard's
+bare-label convenience to any field that declares it: typing `db` leaves `db.uk.home.arpa`. That was wired
+by hand onto two element ids, which is why only those two had it — a convenience attached to an *id* rather
+than to a *kind of field* cannot reach the next hostname field anyone adds. Its pattern is the daemon's own
+rule and not the RFC's, deliberately: `dns_name_is_valid()` checks the charset and the 63-char label length
+and nothing else, so a label may begin with a hyphen, and a stricter pattern would make the form refuse a
+name the daemon accepts.
+
+**`dns-record-form` is gone**, and with it the shape it existed in: one markup block that was both create
+and edit, a module-level `dnsRecordEditName` deciding POST from PUT, a `readOnly` toggled on the name, a
+button whose words were rewritten, and three lines in `closeModal()` to put all of that back. Creating and
+updating are two operations — `POST /dns/records` and `PUT /dns/records/{name}` with a body of `{ip}`
+alone — so they are two generated forms, and a mode that outlives its modal is state a form no longer has.
+
 ### Two more conversions, and a regex that YAML can break silently (#596, ADR-0338)
 
 `createDnsServer` and `createLdapServer` now open the generated form: two panels, two submit handlers and
@@ -41,7 +73,7 @@ authored.
   be valid JSON: …"* — on the status line, with the modal still open and the text still in it.
 
 **`textarea` appeared ZERO times in `web/style.css`.** `form input, form select` carried the one control
-height, border, surface and ink for every form in the dashboard, and the ten hand-written textareas — PEM
+height, border, surface and ink for every form in the dashboard, and the nine hand-written textareas — PEM
 blocks, recipes, a secrets object, a services line — had been rendering as a browser-default white box with
 black text inside a dark panel, ignoring every theme token, for as long as they had existed. Found by
 grepping for the selector while adding the generated one, not by looking at the page. `form textarea` now

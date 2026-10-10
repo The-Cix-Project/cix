@@ -3197,7 +3197,7 @@ paths:
               properties:
                 container:
                   type: string
-                  pattern: "^[A-Za-z0-9_-]+$"
+                  pattern: '^[A-Za-z0-9_\-]+$'
                   description: >
                     A running container serving dnsmasq. Register the same
                     container as a DNS server too and its leases resolve
@@ -7074,7 +7074,7 @@ paths:
           required: true
           schema:
             type: string
-            pattern: "^[A-Za-z0-9_-]{1,15}$"
+            pattern: '^[A-Za-z0-9_\-]{1,15}$'
       responses:
         "204":
           description: Detached
@@ -7470,7 +7470,7 @@ paths:
               properties:
                 name:
                   type: string
-                  pattern: "^[A-Za-z0-9_-]+$"
+                  pattern: '^[A-Za-z0-9_\-]+$'
                   description: The target image's own name -- an image recipe's name is always its image's name.
                 content:
                   type: string
@@ -7770,7 +7770,7 @@ paths:
               properties:
                 name:
                   type: string
-                  pattern: "^[A-Za-z0-9_-]+$"
+                  pattern: '^[A-Za-z0-9_\-]+$'
                   description: Also the container name this recipe creates -- must equal content's own "name" field.
                 content:
                   type: string
@@ -15105,7 +15105,7 @@ components:
       required: true
       schema:
         type: string
-        pattern: "^[A-Za-z0-9_-]+$"
+        pattern: '^[A-Za-z0-9_\-]+$'
 
     ServiceName:
       name: service
@@ -15113,7 +15113,7 @@ components:
       required: true
       schema:
         type: string
-        pattern: "^[A-Za-z0-9_-]+$"
+        pattern: '^[A-Za-z0-9_\-]+$'
 
     NetworkName:
       name: name
@@ -15121,7 +15121,7 @@ components:
       required: true
       schema:
         type: string
-        pattern: "^[A-Za-z0-9_-]{1,15}$"
+        pattern: '^[A-Za-z0-9_\-]{1,15}$'
 
     ImageName:
       name: name
@@ -15129,7 +15129,7 @@ components:
       required: true
       schema:
         type: string
-        pattern: "^[A-Za-z0-9_-]+$"
+        pattern: '^[A-Za-z0-9_\-]+$'
 
     DnsRecordName:
       name: name
@@ -15144,7 +15144,7 @@ components:
       required: true
       schema:
         type: string
-        pattern: "^[A-Za-z0-9_-]+$"
+        pattern: '^[A-Za-z0-9_\-]+$'
 
     LdapServerContainerName:
       name: container
@@ -15152,7 +15152,7 @@ components:
       required: true
       schema:
         type: string
-        pattern: "^[A-Za-z0-9_-]+$"
+        pattern: '^[A-Za-z0-9_\-]+$'
 
     LdapGroupName:
       name: name
@@ -15160,7 +15160,7 @@ components:
       required: true
       schema:
         type: string
-        pattern: "^[a-z_][a-z0-9_-]*$"
+        pattern: '^[a-z_][a-z0-9_\-]*$'
 
     LdapUserName:
       name: name
@@ -15168,7 +15168,7 @@ components:
       required: true
       schema:
         type: string
-        pattern: "^[a-z_][a-z0-9_-]*$"
+        pattern: '^[a-z_][a-z0-9_\-]*$'
 
     PkiCertName:
       name: name
@@ -15199,7 +15199,7 @@ components:
         per-image, so an "@" is simply rejected as an invalid name.
       schema:
         type: string
-        pattern: "^[A-Za-z0-9_-]+$"
+        pattern: '^[A-Za-z0-9_\-]+$'
 
     PkgRecipeVersionQuery:
       name: version
@@ -15560,7 +15560,7 @@ components:
       properties:
         name:
           type: string
-          pattern: "^[A-Za-z0-9_-]+$"
+          pattern: '^[A-Za-z0-9_\-]+$'
           description: >
             Unique container name. Used verbatim as the on-disk directory
             name under /var/lib/cix/containers/, so it is restricted to
@@ -15901,7 +15901,7 @@ components:
                 type: string
                 minLength: 1
                 maxLength: 31
-                pattern: "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+                pattern: '^[A-Za-z0-9][A-Za-z0-9_\-]*$'
                 description: >
                   How this console is selected and displayed. Unique
                   within the container.
@@ -16519,7 +16519,7 @@ components:
           type: string
           minLength: 1
           maxLength: 31
-          pattern: "^[A-Za-z0-9_-]+$"
+          pattern: '^[A-Za-z0-9_\-]+$'
           description: Unique within the container. Names the service everywhere -- reports, output attribution, the service endpoints.
         type:
           type: string
@@ -16842,7 +16842,7 @@ components:
       properties:
         name:
           type: string
-          pattern: "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
+          pattern: '^[A-Za-z0-9_][A-Za-z0-9_\-]*$'
           description: >
             Unique volume name, used verbatim as the on-disk directory
             name, hence the character restriction.
@@ -16881,7 +16881,7 @@ components:
       properties:
         name:
           type: string
-          pattern: "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
+          pattern: '^[A-Za-z0-9_][A-Za-z0-9_\-]*$'
         disk:
           type: string
           description: Optional disk-role name; omitted means default OS-disk placement.
@@ -19609,7 +19609,7 @@ components:
       properties:
         name:
           type: string
-          pattern: "^[A-Za-z0-9_-]{1,15}$"
+          pattern: '^[A-Za-z0-9_\-]{1,15}$'
           description: >
             Unique network name. Used verbatim as the Linux bridge
             interface's name, so it is restricted to IFNAMSIZ (15
@@ -19709,7 +19709,7 @@ components:
       properties:
         name:
           type: string
-          pattern: "^[A-Za-z0-9_-]+$"
+          pattern: '^[A-Za-z0-9_\-]+$'
           description: >
             Unique image name. Used verbatim as the directory name under
             /var/lib/cix/rebuildable/images/ (ADR-0141), so it is
@@ -19786,10 +19786,17 @@ components:
       properties:
         name:
           type: string
+          format: hostname
+          pattern: '^[A-Za-z0-9\-]{1,63}(\.[A-Za-z0-9\-]{1,63})*$'
+          maxLength: 253
           description: >
             Hostname: dot-separated labels of [A-Za-z0-9-], each 1-63 chars, ≤253 chars
-            total (RFC 1035). Deliberately a different charset from network/container
-            names, which don't allow dots.
+            total. Deliberately a different charset from network/container names, which
+            don't allow dots. The pattern is exactly what dns_name_is_valid() enforces,
+            which is LOOSER than RFC 1035 in one way worth knowing: a label may begin or
+            end with a hyphen. The contract carries the daemon's rule rather than the
+            RFC's, because a form generated from a stricter pattern would refuse a name
+            the daemon accepts.
         ip:
           type: string
           description: IPv4 address (dotted-quad) this name resolves to.
@@ -19820,7 +19827,7 @@ components:
       properties:
         container:
           type: string
-          pattern: "^[A-Za-z0-9_-]+$"
+          pattern: '^[A-Za-z0-9_\-]+$'
           description: Name of an existing, running container (see /containers) to keep in sync.
         hosts_path:
           type: string
@@ -19846,7 +19853,7 @@ components:
       properties:
         container:
           type: string
-          pattern: "^[A-Za-z0-9_-]+$"
+          pattern: '^[A-Za-z0-9_\-]+$'
           description: Name of an existing, running container (see /containers) -- the LDAP-serving target.
         config_path:
           type: string
@@ -20019,7 +20026,7 @@ components:
       properties:
         name:
           type: string
-          pattern: "^[a-z_][a-z0-9_-]*$"
+          pattern: '^[a-z_][a-z0-9_\-]*$'
         gidnumber:
           type: integer
           minimum: 1
@@ -20043,7 +20050,7 @@ components:
       properties:
         name:
           type: string
-          pattern: "^[a-z_][a-z0-9_-]*$"
+          pattern: '^[a-z_][a-z0-9_\-]*$'
         uidnumber:
           type: integer
           minimum: 1
@@ -20600,7 +20607,7 @@ components:
       properties:
         container:
           type: string
-          pattern: "^[A-Za-z0-9_-]+$"
+          pattern: '^[A-Za-z0-9_\-]+$'
           description: >
             An already-running container (see /containers) to register as
             an internal time source. The daemon resolves its live IP fresh
@@ -20620,7 +20627,7 @@ components:
       properties:
         container:
           type: string
-          pattern: "^[A-Za-z0-9_-]+$"
+          pattern: '^[A-Za-z0-9_\-]+$'
           description: >
             An already-running container (see /containers) to register as
             an optional, redundant syslog forward target -- every

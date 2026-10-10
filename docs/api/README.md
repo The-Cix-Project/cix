@@ -833,6 +833,16 @@ followed with each conversion. The last two were read off the daemon rather than
 `pkg_name_is_valid()`, both of which are `simple_name_is_valid()` in `daemon/include/namecheck.h`, and
 that function accepts exactly a non-empty name of `[A-Za-z0-9_-]`.
 
+**WRITE A HYPHEN IN A CHARACTER CLASS AS `\-`, OR THE BROWSER IGNORES THE WHOLE PATTERN.** Measured in
+Chromium on 2026-10-10: HTML compiles an `<input pattern>` with the regex **`v` flag**, under which
+`[A-Za-z0-9_-]` is a `SyntaxError` — and the HTML spec's answer to an uncompilable pattern is to skip the
+constraint entirely, silently. So `checkValidity()` returned `true` for `db_1.arpa` against a pattern that
+excludes `_`, while a control pattern (`^[a-z]+$` against `ABC`) correctly returned `false`. **27 of this
+contract's 29 patterns were written that way** — every name field — so the one thing moving a constraint
+into the schema buys, a form that refuses what the daemon refuses, was not actually happening. `\-`
+compiles under `u`, under `v` and under no flag and matches identically, so every class now spells it that
+way, and `test_apigen` refuses an emitted pattern with a bare `-]`.
+
 **A path pattern has one trap, and it is YAML's rather than ours.** `DnsServerBindingCreateRequest`'s
 `hosts_path` and `LdapServerBindingCreateRequest`'s `config_path` carry `'^/(?!.*\.\.).+$'` — absolute,
 and no `..` anywhere — which is exactly the rule those two endpoints already enforced in prose. It is a

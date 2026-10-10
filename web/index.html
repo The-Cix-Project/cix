@@ -166,7 +166,7 @@
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">DNS</button>
 					<ul class="menu-submenu-menu" hidden>
-						<li><button type="button" data-modal="dns-record-form" data-op="createDnsRecord" data-title="Create DNS record">New Record</button></li>
+						<li><button type="button" data-modal="generated-form" data-op="createDnsRecord" data-title="Create DNS record" data-submit="Create">New Record</button></li>
 						<li><button type="button" data-modal="generated-form" data-op="createDnsServer" data-title="Register DNS server" data-submit="Register">Register Server</button></li>
 					</ul>
 				</li>
@@ -3510,20 +3510,6 @@
 				</form>
 			</div>
 
-
-			<div id="modal-dns-record-form" hidden>
-				<form id="dns-record-form">
-					<label>
-						Name
-						<input type="text" id="df-name" placeholder="db.internal" required>
-					</label>
-					<label>
-						IP
-						<input type="text" id="df-ip" placeholder="172.31.0.5" required>
-					</label>
-					<button type="submit" id="df-submit">Create</button>
-				</form>
-			</div>
 
 
 			<div id="modal-dhcp-range-form" hidden>

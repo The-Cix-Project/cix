@@ -543,6 +543,8 @@ int main(void)
 		int shapes = 0, saw_fields = 0, saw_prefix = 0, bare_option = 0, options = 0;
 		int saw_spaced = 0, saw_spanned_enum = 0, saw_spanned_required = 0;
 		int in_storage_device = 0, bad_type = 0;
+		int vmode_pattern = 0, vmode_line = 0;
+		char vmode_text[160] = "";
 		char bad_type_text[80] = "";
 		const char *tp;
 		char *dsc;
@@ -620,6 +622,45 @@ int main(void)
 					 * rather than nearly-always-right -- and nothing
 					 * after the loop reads the description text. */
 					*dsc = '\0';
+				}
+				/*
+				 * A HYPHEN AT THE END OF A CHARACTER CLASS, which a
+				 * browser answers by IGNORING THE WHOLE PATTERN.
+				 *
+				 * Measured in Chromium on 2026-10-10: HTML compiles an
+				 * input's `pattern` with the regex `v` flag, under
+				 * which `[A-Za-z0-9_-]` is a SyntaxError -- and the
+				 * HTML spec's answer to an uncompilable pattern is to
+				 * skip the constraint entirely. So `checkValidity()`
+				 * returned true for `db_1.arpa` against a pattern
+				 * that excludes `_`, while a control pattern
+				 * (`^[a-z]+$` vs `ABC`) correctly returned false.
+				 *
+				 * 27 of this contract's 29 patterns were written that
+				 * way, which is every name field -- so the one thing
+				 * moving a constraint into the schema was supposed to
+				 * buy, a form that refuses what the daemon refuses,
+				 * was silently not happening. `\-` compiles under
+				 * `u`, under `v` and under no flag, and matches
+                                 * identically.
+				 *
+				 * Textual on purpose: this gate cannot compile a
+				 * regex, and it does not need to -- the defect has an
+				 * exact spelling.
+				 */
+				if ((tp = strstr(buf, "pattern: \"")) != NULL) {
+					const char *q;
+
+					for (q = tp + 10; *q != '\0' && *q != '"'; q++)
+						if (*q == ']' && q > tp + 10 && q[-1] == '-' &&
+						    (q - 2 < tp + 10 || q[-2] != '\\')) {
+							if (vmode_pattern++ == 0) {
+								vmode_line = lno;
+								snprintf(vmode_text, sizeof(vmode_text),
+								         "%.150s", tp);
+							}
+							break;
+						}
 				}
 				if (strstr(buf, "_SHAPE: {") != NULL)
 					shapes++;

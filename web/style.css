@@ -1520,7 +1520,7 @@ form select {
 }
 
 /*
- * A textarea, which until now had NO RULE AT ALL -- so all ten of them
+ * A textarea, which until now had NO RULE AT ALL -- so all nine of them
  * in this dashboard rendered as a browser-default white box with black
  * text, inside a dark panel, ignoring every theme token. Found while
  * giving the generated form a textarea (#596): the grep for `textarea`

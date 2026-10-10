@@ -22,7 +22,9 @@
  * What this file expects app.js to have defined, which is the whole of
  * its dependency on the dashboard and is deliberately short enough to
  * stub in a test: `openModal`, `sessionMay`, `sessionRefusal`,
- * `showStatus`, `runRefreshers` and `refreshersForView`.
+ * `showStatus`, `runRefreshers`, `refreshersForView` and
+ * `qualifyHostname`. The last one is site knowledge -- what this
+ * host's own domain is -- which only app.js has.
  */
 /*
  * ---------- what a request schema becomes ----------
@@ -140,6 +142,22 @@ function fieldControl(f) {
 			el.pattern = f.pattern;
 		if (f.maxLength !== undefined)
 			el.maxLength = f.maxLength;
+		/*
+		 * `format: hostname` -- OpenAPI's own standard format, read
+		 * the same way `format: password` is, and it earns the
+		 * dashboard's bare-label convenience: typing `db` leaves the
+		 * field as `db.<site>.<domain>`.
+		 *
+		 * That used to be wired by hand onto two specific element ids
+		 * (`df-name`, `pf-name`), which is why only those two had it
+		 * -- a convenience attached to an id rather than to a KIND OF
+		 * FIELD cannot reach the next hostname field anyone adds. The
+		 * site's own suffix is app.js's to know, so the behaviour is
+		 * a global this file declares (see the header) rather than
+		 * something derived here.
+		 */
+		if (f.format === "hostname")
+			qualifyHostname(el);
 	}
 	el.id = "gf-" + f.name;
 	el.dataset.field = f.name;
