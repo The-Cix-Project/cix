@@ -24,6 +24,69 @@
 </script>
 </head>
 <body>
+<!--
+  THE SESSION SHELL (ADR-0338, #597).
+
+  Two panels over the dashboard, which is the markup below and is
+  already rendered underneath them. They part on unlock and converge on
+  lock, and that is the whole of the session boundary.
+
+  It is NOT a modal, and that is the point: a modal is the widget for
+  creating a resource, and web-ux-guidelines' session-shell row exists
+  to end the swap this dashboard used to make (`openModal("login-form",
+  "Log in")`).
+
+  The left panel carries only what is honestly knowable with no session
+  -- the wordmark, the host it is talking to, whether that host answers
+  and whether it gates. Build, slot and kernel all need a login, so they
+  are absent rather than guessed.
+
+  The right panel carries the credentials and nothing else: no
+  navigation, no status, no links. Its fields are not written here --
+  `lockFields()` builds them from `postLogin`'s own request schema, so
+  the password field is obscured because the contract says
+  `format: password` and not because this file remembered to say
+  type="password".
+-->
+<div id="lock-shell" class="lock-shell" role="dialog" aria-modal="true" aria-labelledby="lock-heading" hidden>
+	<div class="lock-seam" aria-hidden="true"></div>
+
+	<div class="lock-panel lock-panel-left">
+		<div class="lock-stack">
+			<span class="lock-eyebrow">Control plane</span>
+			<span class="lock-host" id="lock-host">&hellip;</span>
+		</div>
+
+		<div class="lock-stack lock-stack-wide">
+			<h1 class="lock-wordmark">cix</h1>
+			<p class="lock-charter">A rolling-release hardware and workload orchestration platform, compiled from source.</p>
+		</div>
+
+		<dl class="lock-facts">
+			<div class="lock-fact">
+				<dt>Host</dt>
+				<dd><span class="led" id="lock-host-led"></span><span id="lock-host-state">checking&hellip;</span></dd>
+			</div>
+			<div class="lock-fact">
+				<dt>Access</dt>
+				<dd id="lock-access">&hellip;</dd>
+			</div>
+		</dl>
+	</div>
+
+	<div class="lock-panel lock-panel-right">
+		<form class="lock-form" id="lock-form">
+			<div class="lock-stack">
+				<h2 id="lock-heading">Log in</h2>
+				<p class="lock-note" id="lock-notice">Enter the credentials for this host.</p>
+			</div>
+			<div id="lock-fields"></div>
+			<button type="submit" class="lock-submit">Unlock</button>
+			<p class="lock-note">Nothing else lives on this side. A login screen that offers a second thing is a login screen you can get lost in.</p>
+		</form>
+	</div>
+</div>
+
 <header>
 	<!--
 	  The menu bar's topics are the tree's own top-level names, in the
@@ -3028,20 +3091,6 @@
 						<dd id="about-kernel">&hellip;</dd>
 					</dl>
 				</div>
-			</div>
-
-			<div id="modal-login-form" hidden>
-				<form id="login-form">
-					<label>
-						Username
-						<input type="text" id="lf-username" autocomplete="username" required>
-					</label>
-					<label>
-						Password
-						<input type="password" id="lf-password" autocomplete="current-password" required>
-					</label>
-					<button type="submit" id="lf-submit">Log in</button>
-				</form>
 			</div>
 
 			<div id="modal-run-form" hidden>

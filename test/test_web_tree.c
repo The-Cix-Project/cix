@@ -557,6 +557,54 @@ int main(void)
 		fprintf(stderr, "FAIL: parsed no tree hashes at all -- this test is not testing\n");
 		return 1;
 	}
+
+	/*
+	 * The session boundary is the session shell, not a modal (#597).
+	 *
+	 * web-ux-guidelines' session-shell row exists to end one specific
+	 * swap -- `openModal("login-form", "Log in")`, the
+	 * create-a-resource widget doing a session's job -- and a rule
+	 * stated in prose is a rule that comes back. This is the same
+	 * argument `test_naming` makes for counting a forbidden spelling
+	 * rather than preferring the right one in words.
+	 *
+	 * Checked on a non-comment line, so the guidelines and the code
+	 * may both keep explaining what they replaced.
+	 */
+	{
+		const char *p = app;
+		int offenders = 0;
+
+		while ((p = strstr(p, "openModal(\"login-form\"")) != NULL) {
+			const char *line = p;
+			int commented = 0;
+
+			while (line > app && line[-1] != '\n')
+				line--;
+			while (*line == ' ' || *line == '\t')
+				line++;
+			if (line[0] == '*' || (line[0] == '/' && (line[1] == '*' || line[1] == '/')))
+				commented = 1;
+			if (!commented)
+				offenders++;
+			p += 1;
+		}
+		if (offenders > 0) {
+			char n[16];
+
+			snprintf(n, sizeof(n), "%d", offenders);
+			fail("web/app.js opens the login form as a MODAL in %s place(s) -- the "
+			     "session boundary is the session shell (lockSession/unlockSession), "
+			     "and a modal is the widget for creating a resource%s",
+			     n, "");
+		}
+	}
+	if (strstr(html, "id=\"lock-shell\"") == NULL ||
+	    strstr(html, "id=\"lock-form\"") == NULL)
+		fail("index.html has no session shell -- #lock-shell and #lock-form are what "
+		     "the dashboard locks behind, and without them a lapsed session has "
+		     "nowhere to be stated%s%s",
+		     "", "");
 	if (g_failures > 0) {
 		printf("test_web_tree: %d failure(s)\n", g_failures);
 		return 1;

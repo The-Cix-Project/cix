@@ -443,9 +443,6 @@ function closeModal() {
 	document.getElementById("luf-submit").textContent = "Create";
 	document.getElementById("irf-name").readOnly = false;
 
-	/* Never leave a typed password sitting in the DOM past this modal
-	 * session, whether closed by submit, X, Escape, or an outside click. */
-	document.getElementById("lf-password").value = "";
 	/*
 	 * The generated form is emptied rather than reset (ADR-0338): its
 	 * controls were built from the operation's schema at open time, so
@@ -836,8 +833,12 @@ let inBackgroundSweep = false;
 function promptReauth() {
 	if (inBackgroundSweep)
 		return;
-	if (modalOverlay.hidden)
-		openModal("login-form", "Log in");
+	/* The session went away under the operator, so the shell converges
+	 * (#597). No `modalOverlay.hidden` guard any more: that existed
+	 * because one modal could not open over another, and the session
+	 * shell is not a modal -- it goes over whatever is there, and
+	 * closes it, because nothing under it is reachable now. */
+	lockSession("expired");
 }
 
 /*
@@ -1056,10 +1057,9 @@ async function noteHostGating(gatingActive) {
 		return;
 	if (authToken)
 		setAuth(null, null);
-	if (modalOverlay.hidden) {
-		openModal("login-form", "Log in");
-		document.getElementById("lf-username").focus();
-	}
+	/* First load against a gating host: the shell is already closed in
+	 * the markup, so this is what states WHY (#597). */
+	lockSession("first");
 }
 
 authActionBtn.addEventListener("click", async () => {
@@ -1072,26 +1072,180 @@ authActionBtn.addEventListener("click", async () => {
 		}
 		setAuth(null, null);
 		clearStatus();
+		/* Logging out is the operator CHOOSING the boundary, so the
+		 * shell converges and says so -- the same motion an expiry
+		 * produces, because it is the same state (#597). */
+		lockSession("manual");
 	} else {
-		openModal("login-form", "Log in");
-		document.getElementById("lf-username").focus();
+		lockSession("first");
 	}
 });
 
-document.getElementById("login-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
 
-	const username = document.getElementById("lf-username").value.trim();
-	const password = document.getElementById("lf-password").value;
+/*
+ * ---------- the session shell (ADR-0338, #597) ----------
+ *
+ * Locking and unlocking the dashboard, which is the session boundary
+ * and nothing else. Not a modal: web-ux-guidelines' session-shell row
+ * exists to end `openModal("login-form", "Log in")`, the
+ * create-a-resource widget doing a session's job.
+ *
+ * The right panel's fields are GENERATED from `postLogin`'s own request
+ * schema, so the password field is obscured because the contract says
+ * `format: password`. That is the whole reason those eight fields were
+ * annotated: a login screen is the one form where getting the control
+ * wrong is a security defect rather than an inconvenience.
+ */
+const LOCK_NOTICES = {
+	first: "Enter the credentials for this host.",
+	expired: "The session expired. The dashboard was cleared.",
+	manual: "Locked. The dashboard was cleared.",
+	refused: "That did not work. Check the username and password.",
+};
 
-	try {
-		const result = await apiRequest("POST", CIX_API.postLogin(), { username: username, password: password });
+let lockShellBuilt = false;
 
-		setAuth(result.token, username);
-		document.getElementById("login-form").reset();
+/*
+ * The credentials, from the contract.
+ *
+ * `fieldControl()` gives the control the field's own constraints call
+ * for -- an obscured input for `password`, a plain one for `username`,
+ * both required -- and this authors only the layout around it. Built
+ * once: the schema cannot change while the page is open.
+ */
+function lockFields() {
+	const host = document.getElementById("lock-fields");
+	const fields = CIX_API.FIELDS[CIX_API.postLogin_SHAPE.request] || [];
+
+	if (lockShellBuilt)
+		return;
+	host.textContent = "";
+	for (const f of fields) {
+		const label = document.createElement("label");
+		const name = document.createElement("span");
+		const control = fieldControl(f);
+
+		label.className = "lock-field";
+		name.textContent = fieldLabel(f.name);
+		label.appendChild(name);
+		/* autocomplete is a browser affordance rather than a schema
+		 * fact, and it is the one thing a password manager needs to
+		 * fill this form at all. */
+		control.autocomplete = f.format === "password" ? "current-password" : "username";
+		label.appendChild(control);
+		host.appendChild(label);
+	}
+	lockShellBuilt = true;
+}
+
+/*
+ * Lock, for a stated reason.
+ *
+ * The dashboard is CLEARED on the way down, and that is deliberate:
+ * leaving the last session's containers and addresses rendered behind a
+ * login screen is #562's complaint in the other direction -- a surface
+ * that looks right while being wrong. What the panels part to reveal
+ * once a session exists is freshly read.
+ */
+function lockSession(reason) {
+	const shell = document.getElementById("lock-shell");
+	const notice = document.getElementById("lock-notice");
+
+	lockFields();
+	notice.textContent = LOCK_NOTICES[reason] || LOCK_NOTICES.first;
+	/*
+	 * Never leave a typed password in the DOM across a session
+	 * boundary. The modal this replaced cleared one field by id; this
+	 * resets the whole form, which covers every field the contract has
+	 * or later gains -- the same reasoning as closeModal()'s treatment
+	 * of the generated form.
+	 */
+	document.getElementById("lock-form").reset();
+	shell.hidden = false;
+	shell.classList.remove("lock-shell-open");
+	refreshLockFacts();
+	/* Anything that was open under the lock is not reachable now, so it
+	 * does not stay open behind it. */
+	if (!modalOverlay.hidden)
 		closeModal();
+	const first = document.querySelector("#lock-fields input:not([type=password])");
+
+	if (first !== null)
+		first.focus();
+}
+
+/*
+ * Unlock. The panels leave along the axis; the shell is hidden only
+ * once they have, so `display: none` never truncates the motion.
+ */
+function unlockSession() {
+	const shell = document.getElementById("lock-shell");
+
+	shell.classList.add("lock-shell-open");
+	window.setTimeout(() => {
+		if (shell.classList.contains("lock-shell-open"))
+			shell.hidden = true;
+	}, 320);
+}
+
+/*
+ * The two facts the left panel states, and the reason there are only
+ * two: `GET /v1/health` is the one read a caller with no session may
+ * perform, so it is the only honest source here. Build, slot and kernel
+ * all need a login, so they are absent rather than guessed.
+ *
+ * Reachability reads the counter refreshHealth() already keeps, rather
+ * than a second flag: that counter encodes this dashboard's own policy
+ * of not calling a host unreachable on one missed check, and a login
+ * screen is the worst place to be more alarmist than the status bar.
+ */
+function refreshLockFacts() {
+	const led = document.getElementById("lock-host-led");
+	const state = document.getElementById("lock-host-state");
+	const access = document.getElementById("lock-access");
+
+	document.getElementById("lock-host").textContent = window.location.host;
+	if (consecutiveHealthFailures === 0) {
+		led.style.setProperty("--led-color", "var(--phosphor)");
+		state.textContent = "reachable";
+	} else if (consecutiveHealthFailures === 1) {
+		led.style.setProperty("--led-color", "var(--amber)");
+		state.textContent = "retrying";
+	} else {
+		led.style.setProperty("--led-color", "var(--fault)");
+		state.textContent = "not answering";
+	}
+	access.textContent = hostGated ? "This host requires a login"
+	                               : "This host is not gating reads";
+}
+
+document.getElementById("lock-form").addEventListener("submit", async (event) => {
+	const form = event.target;
+	const body = {};
+
+	event.preventDefault();
+	for (const el of form.querySelectorAll("[data-field]"))
+		body[el.dataset.field] = el.value;
+	try {
+		const result = await apiRequest("POST", CIX_API.postLogin(), body);
+
+		setAuth(result.token, body.username);
+		form.reset();
 		clearStatus();
+		unlockSession();
+		/*
+		 * What the panels part to reveal is read FRESH -- the
+		 * permissions this session has, the core panels, and the view
+		 * the operator is actually looking at. Without the last one,
+		 * the dashboard underneath would show the previous session's
+		 * rows for up to one poll interval, which is the "looks right
+		 * while being wrong" surface #562 was filed for.
+		 */
+		await refreshSessionPermissions();
+		await runRefreshers(CORE_REFRESHERS);
+		await refreshVisibleView();
 	} catch (e) {
+		document.getElementById("lock-notice").textContent = LOCK_NOTICES.refused;
 		showStatus("Login failed: " + e.message, true);
 	}
 });
@@ -16385,6 +16539,12 @@ function refreshersForView(view) {
 
 async function poll() {
 	await refreshHealth();
+	/* The session shell's own two facts come from that health read and
+	 * from nothing else, so they refresh here -- a locked dashboard
+	 * left open overnight should still say truthfully whether the host
+	 * is answering (#597). */
+	if (!document.getElementById("lock-shell").hidden)
+		refreshLockFacts();
 	/* Health only while hidden: the LEDs and the reachability colour
 	 * stay honest for anyone who looks back at the tab, and nothing
 	 * else is being read by anybody. */

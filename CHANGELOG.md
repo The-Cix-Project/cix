@@ -6,6 +6,64 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The session shell: login stops being a modal (#597, ADR-0338)
+
+The owner's request, in their words: *"a login screen that is purely login, when logged in imagine two
+sides pulled apart, and the UI appears, so the UI should be under already. and when it locks, it's like
+they converge from the sides to the middle and lock again."*
+
+That is what `#lock-shell` is. Two panels over the dashboard — which is the markup below them and is
+already rendered underneath — parting on unlock and converging on lock, with a copper seam on the axis
+they meet at, faded a beat after they start moving so the eye reads one object splitting rather than two
+arriving. `lockSession(reason)` and `unlockSession()` are the whole API, and the reason is one of `first`,
+`expired`, `manual` or `refused`, each with its own sentence.
+
+**It replaces a modal, which is the point.** Login was `openModal("login-form", "Log in")` at three call
+sites — the create-a-resource widget doing the session boundary's job, which is the swap
+`web-ux-guidelines`' session-shell row was written to end. The row said it would become a worked example
+here when it landed; it has, and the modal panel, its two hand-written fields and its submit handler are
+gone.
+
+**The left panel carries only what is honestly knowable with no session**: the wordmark, the host being
+talked to, whether it answers and whether it gates. `GET /v1/health` is the one read a caller without a
+session may perform, and build, slot and kernel all need a login — so they are absent rather than guessed.
+Reachability reads the counter `refreshHealth()` already keeps rather than a second flag, because that
+counter encodes this dashboard's own policy of not calling a host unreachable on one missed check, and a
+login screen is the worst place to be more alarmist than the status bar.
+
+**The right panel carries the credentials and nothing else** — no navigation, no status, no links. Its
+fields are **generated from `postLogin`'s own request schema**, so the password field is obscured because
+the contract says `format: password`. That annotation existed before this screen did, which is the whole
+argument for having done #594 and #595 first: a login screen is the one form where getting a control wrong
+is a security defect rather than an inconvenience, and nothing here decides it.
+
+Three properties worth copying rather than re-deciding:
+
+- **Motion is the affordance, not the message.** Under `prefers-reduced-motion` the panels cross-fade and
+  never translate. The state change still reads; nothing slides.
+- **The dashboard is read fresh on unlock** — permissions, the core panels, and the view the operator is
+  actually looking at. Without that last one the panels would part onto the previous session's rows for up
+  to a poll interval, which is exactly the "looks right while being wrong" surface #562 was filed for. The
+  lock also resets its form, so nothing typed survives a boundary — one line covering every field the
+  contract has or later gains, where the modal cleared one field by id.
+- **The swap is gated, not just described.** `test_web_tree` now fails if `openModal("login-form"` appears
+  on a non-comment line of `app.js`, and if `index.html` has no `#lock-shell`. Prose does not hold a rule
+  like this — the same argument `test_naming` makes for counting a forbidden spelling rather than
+  preferring the right one in words.
+
+Every colour is an existing token: the design mock's hex values turned out to map exactly onto `--carbon`,
+`--ferrite`, `--machined`, `--paper`, `--nickel`, `--copper` and `--phosphor`, so the shell introduced
+none. The one thing it does author is its own responsiveness, below 60rem, where 50% of the viewport is not
+enough for the form: the halves stack, the motion stays on the same axis, and the left panel becomes a
+header strip. #600 still owns the dashboard's own rule — this is the session shell's, and it is here
+because a login screen that cannot be used on a phone is not a login screen.
+
+**What is not verified: how it looks.** The sandbox rule allows nothing but `cixctl` here, so there is no
+browser and no screenshot. The gates prove the three files parse, that the shell and form exist, that the
+modal swap is gone, and that the fields come from the contract. The motion, the spacing and the
+proportions are the mock's, approved before the code was written, and they want an operator's eye on the
+real thing.
+
 ### One value reads one way everywhere, and the renderers that read it (#595)
 
 `fieldText(f, value)` ends the measurable half of "the UI is not cohesive". Counted in `app.js` before it

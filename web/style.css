@@ -3210,3 +3210,306 @@ pre {
 .bo-elapsed {
 	font-variant-numeric: tabular-nums;
 }
+
+/* ---------- the session shell (ADR-0338, #597) ----------
+ *
+ * Two panels over the dashboard, which is already rendered underneath.
+ * They part on unlock and converge on lock, and that is the whole of
+ * the session boundary: no modal, because a modal is the widget for
+ * creating a resource and a session is not one (web-ux-guidelines'
+ * session-shell row exists to end exactly that swap).
+ *
+ * z-index 3000, above the modal overlay's 2000: while the session is
+ * locked nothing else may be reached, including a modal left open when
+ * it expired.
+ *
+ * Geometry is deliberately simple -- two 50% halves and a seam on the
+ * axis -- because the transform is what carries the meaning and a
+ * complicated shape would make the motion read as decoration.
+ */
+.lock-shell {
+	position: fixed;
+	inset: 0;
+	z-index: 3000;
+}
+
+.lock-shell[hidden] {
+	display: none;
+}
+
+/* The axis the two halves meet on, and the only ornament here. Shown
+ * while closed and faded a beat after they start moving, so the eye
+ * reads one object splitting rather than two arriving. */
+.lock-seam {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	left: 50%;
+	width: 2px;
+	margin-left: -1px;
+	background: var(--copper);
+	opacity: 1;
+	transition: opacity 180ms linear 100ms;
+}
+
+.lock-panel {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	width: 50%;
+	box-sizing: border-box;
+	padding: 4rem;
+	display: flex;
+	flex-direction: column;
+	transition: transform 280ms cubic-bezier(0.2, 0, 0, 1), opacity 280ms linear;
+}
+
+.lock-panel-left {
+	left: 0;
+	background: var(--carbon);
+	border-right: 1px solid var(--machined);
+	justify-content: space-between;
+}
+
+.lock-panel-right {
+	right: 0;
+	background: var(--ferrite);
+	justify-content: center;
+}
+
+/*
+ * Unlocked: the halves leave along the axis and stop taking clicks.
+ * Kept as a state class on the shell rather than two inline styles, so
+ * the only thing that ever changes at runtime is which state the shell
+ * is in.
+ */
+.lock-shell-open .lock-panel {
+	opacity: 0;
+	pointer-events: none;
+}
+
+.lock-shell-open .lock-panel-left {
+	transform: translateX(-100%);
+}
+
+.lock-shell-open .lock-panel-right {
+	transform: translateX(100%);
+}
+
+.lock-shell-open .lock-seam {
+	opacity: 0;
+}
+
+/*
+ * Motion is the affordance, not the message. With reduced motion the
+ * panels cross-fade and never translate -- the state change still
+ * reads, and nothing slides.
+ */
+@media (prefers-reduced-motion: reduce) {
+	.lock-panel {
+		transition: opacity 160ms linear;
+		transform: none !important;
+	}
+
+	.lock-seam {
+		transition: opacity 120ms linear;
+	}
+}
+
+/* A labelled group. Three of them make the left panel's top/middle/
+ * bottom, which `justify-content: space-between` then spaces without
+ * anything here knowing the viewport's height. */
+.lock-stack {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
+.lock-stack-wide {
+	gap: 1.5rem;
+}
+
+.lock-eyebrow {
+	font-size: 0.6875rem;
+	font-weight: 600;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--nickel);
+}
+
+.lock-host {
+	font-family: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo,
+		Consolas, "Liberation Mono", monospace;
+	font-size: 0.8125rem;
+	color: var(--nickel);
+}
+
+.lock-wordmark {
+	margin: 0;
+	font-size: 4.5rem;
+	line-height: 0.98;
+	font-weight: 700;
+	letter-spacing: -0.03em;
+}
+
+.lock-charter {
+	margin: 0;
+	font-size: 1.0625rem;
+	line-height: 1.5;
+	color: var(--nickel);
+	max-width: 24rem;
+}
+
+/* What is honestly knowable with no session: the host answers, and it
+ * says whether it gates. Build, slot and kernel need a login, so they
+ * are absent here rather than guessed. */
+.lock-facts {
+	margin: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.75rem;
+}
+
+.lock-fact {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+}
+
+.lock-fact dt {
+	width: 6rem;
+	flex-shrink: 0;
+	font-size: 0.6875rem;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--nickel);
+}
+
+.lock-fact dd {
+	margin: 0;
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+	font-size: 0.8125rem;
+}
+
+.lock-form {
+	width: 100%;
+	max-width: 22.5rem;
+	display: flex;
+	flex-direction: column;
+	gap: 1.5rem;
+}
+
+.lock-form h2 {
+	margin: 0;
+	font-size: 1.3125rem;
+	font-weight: 600;
+}
+
+.lock-field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.375rem;
+}
+
+.lock-field > span {
+	font-size: 0.6875rem;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--nickel);
+}
+
+.lock-field > input {
+	height: 2.5rem;
+	padding: 0 0.75rem;
+	box-sizing: border-box;
+	background: var(--carbon);
+	border: 1px solid var(--machined);
+	border-radius: 3px;
+	color: var(--paper);
+	font-family: inherit;
+	font-size: 0.875rem;
+}
+
+.lock-field > input:focus {
+	outline: 2px solid var(--copper);
+	outline-offset: 1px;
+}
+
+.lock-submit {
+	height: 2.75rem;
+	border: 0;
+	border-radius: 3px;
+	background: var(--copper);
+	color: var(--carbon);
+	font-family: inherit;
+	font-size: 0.875rem;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.lock-note {
+	margin: 0;
+	font-size: 0.75rem;
+	line-height: 1.45;
+	color: var(--nickel);
+}
+
+/*
+ * The panel is 50% of the viewport, and below about 60rem that is not
+ * enough for a 22.5rem form and its padding. One stacked layout rather
+ * than a scale: the left half becomes a header strip and the right
+ * takes the rest, which keeps the part/converge motion on the same
+ * axis (#600 owns the dashboard's own responsiveness rule; this is the
+ * session shell's, and it is here because a login screen that cannot
+ * be used on a phone is not a login screen).
+ */
+@media (max-width: 60rem) {
+	.lock-panel {
+		width: 100%;
+		padding: 1.5rem;
+	}
+
+	.lock-panel-left {
+		bottom: auto;
+		height: 11rem;
+		border-right: 0;
+		border-bottom: 1px solid var(--machined);
+		justify-content: flex-end;
+		gap: 0.75rem;
+	}
+
+	.lock-panel-right {
+		top: 11rem;
+	}
+
+	.lock-wordmark {
+		font-size: 2.5rem;
+	}
+
+	.lock-charter,
+	.lock-facts {
+		display: none;
+	}
+
+	.lock-seam {
+		top: 11rem;
+		bottom: auto;
+		left: 0;
+		right: 0;
+		width: auto;
+		height: 2px;
+		margin-left: 0;
+	}
+
+	.lock-shell-open .lock-panel-left {
+		transform: translateY(-100%);
+	}
+
+	.lock-shell-open .lock-panel-right {
+		transform: translateY(100%);
+	}
+}
