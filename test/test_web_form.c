@@ -184,7 +184,7 @@ static const char *const DOM_SHIM =
     "    let text = \"\";\n"
     "    Object.defineProperty(el, \"textContent\", {\n"
     "      get() { return text; },\n"
-    "      set(v) { text = v; if (v === \"\") el.children.length = 0; },\n"
+    "      set(v) { text = v; if (v === \"\") this.children.length = 0; },\n"
     "    });\n"
     "    return el;\n"
     "  },\n"
@@ -232,6 +232,8 @@ static void expect(JSContext *ctx, const char *what, const char *expr, const cha
 int main(void)
 {
 	JSRuntime *rt = JS_NewRuntime();
+	JSValue shim;
+	int shim_bad;
 	JSContext *ctx;
 
 	if (rt == NULL) {
@@ -245,8 +247,19 @@ int main(void)
 		return 1;
 	}
 
-	if (JS_IsException(JS_Eval(ctx, DOM_SHIM, strlen(DOM_SHIM), "<dom>",
-	                           JS_EVAL_TYPE_GLOBAL)))
+	/*
+	 * The shim's value is FREED, not discarded. Its last statement is
+	 * an assignment, so the eval returns the object assigned -- a real
+	 * GC object, and leaking it makes JS_FreeRuntime() assert
+	 * `list_empty(&rt->gc_obj_list)` at teardown. That is what gate 535
+	 * reported: every assertion in this file passed and the runtime
+	 * then refused to shut down, which reads as a test failure and is
+	 * a leak in the test.
+	 */
+	shim = JS_Eval(ctx, DOM_SHIM, strlen(DOM_SHIM), "<dom>", JS_EVAL_TYPE_GLOBAL);
+	shim_bad = JS_IsException(shim);
+	JS_FreeValue(ctx, shim);
+	if (shim_bad)
 		fail("the DOM shim itself does not load");
 	else if (run_file(ctx, "web/api.js") == 0 && run_file(ctx, "web/form.js") == 0) {
 		/*
