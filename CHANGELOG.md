@@ -6,6 +6,42 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The control-plane root is built from packages, not from the previous root (#589, 0.2.57-481)
+
+`mkbootroot` staged its binaries and libraries from `/usr/sbin` and `/lib/x86_64-linux-gnu` of
+whatever host ran it — and on an installed host that host *is* the control-plane root. Every
+assembly copied the previous root's copy forward, so whatever the first run on a Debian dev host
+put there stayed.
+
+Measured before changing anything (`probe-rootlibs@2-1`, unsquashing a real root out of
+`cix-installer-0.2.57-480` and reading every `DT_NEEDED`): **65 shared objects, 23 with no Cix
+package**, and **two libcurls** — ours needing three libraries, a 712,120-byte foreign one needing
+ten, with `/lib/x86_64-linux-gnu` ahead of `/usr/lib` so **`cixd` linked the foreign one**. The
+staged *binaries* were foreign too: Cix's `e2fsprogs` and `util-linux` are built without
+`--enable-elf-shlibs`, so the packages' tools name only `libc`, while the root's named `libext2fs`
+and `libcom_err` (`probe-pkgbins@1-1`).
+
+Measuring is what kept the fix right: `libcom_err`, `liblzo2` and `liblz4` look exactly like curl
+closure and are needed by the ext4 tools and `unsquashfs`. Trimming by name would have broken the
+root.
+
+`cix-hosttools@2.4.3` adds `e2fsprogs` and `util-linux`; `mkbootroot` prefers
+`${host_tools_dir}/${rootfs_path}` with a guard on the assumption; the staged library list goes
+**43 → 9**, and the root squashfs 19,787,776 → **16,277,504 bytes**.
+
+**The first attempt broke TLS, which is the part worth keeping.** 481 booted, reported health ok
+and ran all 11 containers — and the next `pkg recipe commit` failed with `unable to get local
+issuer certificate (20)`, breaking every HTTPS `pkg_source` fetch too. A reachability proof cannot
+see a *behavioural* substitution: `cixd` still needed `libcurl.so.4` and simply started getting
+ours, whose compiled-in CA path `./configure` had auto-detected in a build container.
+`curl@8.21.0-7` names `/etc/ssl/certs/ca-certificates.crt` explicitly — same roots, chosen path.
+
+Verified on 192.168.15.95, 2026-10-10: booted `0.2.57-481` slot a, health ok, 11 containers, and
+TLS checked on both paths 481 broke — a git-first `pkg recipe commit` succeeded and an HTTPS fetch
+from github pulled 292,385 bytes. Still open on #589: the bundle itself is a dev host's file, since
+no Cix package provides a public root store.
+
+
 ### `-kernel` direct boot works with OVMF and no SeaBIOS, correcting the entry below (#587)
 
 The qemu entry below says `-kernel` direct boot cannot work, because the `qemu` package ships none
