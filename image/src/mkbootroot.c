@@ -865,6 +865,84 @@ static int stage_controlplane_programs(const char *image_root, const char *host_
 }
 
 /*
+ * cix#350: the FILES the control plane needs that are not programs and
+ * not libraries, from the same image and for the same reason.
+ *
+ * THE CA BUNDLE IS DELIBERATELY NOT HERE, and that is a measurement
+ * rather than an omission -- see the block in main() that still copies
+ * it from the build host, and cix#591 for the decision it needs. The
+ * short version: `git.home.arpa`'s certificate is issued by a PRIVATE
+ * CA (`O=itdlabs, OU=Root Authority, CN=gibnet Intermediate CA`,
+ * measured 2026-10-10), no package can ship a site's own CA, and
+ * `curlfetch.c`/`forgecommit.c` set no CURLOPT_CAINFO -- so that one
+ * file is the whole trust store for every HTTPS fetch this host makes.
+ * Replacing it with a public-roots package would have broken the
+ * forge, which is to say broken the box's ability to fetch its own
+ * next fix. That is the 0.2.57-481 failure exactly, and this time it
+ * was caught before shipping rather than after.
+ *
+ * openssl.cnf belongs here for two reasons, the second stronger than
+ * provenance: the config has to MATCH the library that reads it. #351
+ * moved the PKI in-process to the libcrypto cixd links, and ADR-0337
+ * made that Cix's own libcrypto from usr/lib -- so the config it reads
+ * at init should be Cix's openssl's, not a Debian machine's.
+ *
+ * No fallback, for the reasons ADR-0337 states, and an absence names
+ * the install that fixes it.
+ */
+static int stage_controlplane_files(const char *image_root, const char *host_tools_dir)
+{
+	static const struct {
+		const char *path; /* identical in the image and in the root */
+		const char *pkg;
+		const char *why;
+	} files[] = {
+		{ "/usr/lib/ssl/openssl.cnf", "openssl",
+		  "the config the libcrypto cixd links reads at init, and it should be the "
+		  "config of the openssl this platform BUILT rather than a build machine's -- "
+		  "found originally by a real `pki ca bootstrap` failing with \"req -x509 "
+		  "failed: Can't open /usr/lib/ssl/openssl.cnf\", not guessed at" },
+	};
+	size_t i;
+
+	if (host_tools_dir[0] == '\0')
+		return 1; /* stage_controlplane_programs() already said why */
+	for (i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+		char src[PATH_MAX];
+		char dst[PATH_MAX];
+		char parent[PATH_MAX];
+		char *slash;
+		struct stat st;
+
+		if (snprintf(src, sizeof(src), "%s%s", host_tools_dir, files[i].path) >=
+		        (int)sizeof(src) ||
+		    snprintf(dst, sizeof(dst), "%s%s", image_root, files[i].path) >= (int)sizeof(dst)) {
+			fprintf(stderr, "path too long: %s\n", files[i].path);
+			return 1;
+		}
+		if (stat(src, &st) != 0) {
+			fprintf(stderr,
+			        "%s is absent, so the assembled root would have no %s -- %s. Fix it "
+			        "with: pkg install --image=cix-hosttools %s\n",
+			        src, files[i].path, files[i].why, files[i].pkg);
+			return 1;
+		}
+		snprintf(parent, sizeof(parent), "%s", files[i].path + 1);
+		slash = strrchr(parent, '/');
+		if (slash != NULL) {
+			*slash = '\0';
+			if (ensure_dir_path_under(image_root, parent) != 0)
+				return 1;
+		}
+		if (test_image_fixture_copy_file(src, dst) != 0)
+			return 1;
+	}
+	fprintf(stderr, "staged %zu control-plane files from %s\n",
+	        sizeof(files) / sizeof(files[0]), host_tools_dir);
+	return 0;
+}
+
+/*
  * #554: refuses a root missing any program in
  * include/controlplane_programs.h, naming it. Each must be a regular
  * file, following symlinks, with an execute bit. A CP_KMOD program is
@@ -1313,42 +1391,49 @@ int main(int argc, char **argv)
 		}
 
 		/*
-		 * openssl's own default config path -- found by an actual "pki
-		 * ca bootstrap" failing, not guessed at: "req -x509 failed:
-		 * Can't open /usr/lib/ssl/openssl.cnf". On this build host that
-		 * path is itself a symlink chain into /etc/ssl/openssl.cnf --
-		 * test_image_fixture_copy_file()'s plain open()/read()/write()
-		 * transparently follows symlinks, so this lands the real config
-		 * content as one ordinary file at the expected path, no /etc/ssl
-		 * symlink chain needed on the target at all.
+		 * openssl.cnf, from this same image (cix#350). It used to be
+		 * copied off the build host here, which on an installed host
+		 * is the control-plane root -- stage_controlplane_files()
+		 * above carries the argument.
 		 */
-		if (ensure_dir_under(image_root, "usr/lib") != 0)
+		if (stage_controlplane_files(image_root, host_tools_dir) != 0)
 			return 1;
-		if (ensure_dir_under(image_root, "usr/lib/ssl") != 0)
-			return 1;
-		{
-			char dst[PATH_MAX];
-
-			snprintf(dst, sizeof(dst), "%s/usr/lib/ssl/openssl.cnf", image_root);
-			if (test_image_fixture_copy_file("/usr/lib/ssl/openssl.cnf", dst) != 0)
-				return 1;
-		}
 
 		/*
-		 * ADR-0096's own follow-on: curl.recipe's ./configure auto-
-		 * detects a CA bundle path at build time from whatever machine
-		 * builds it (Debian convention: /etc/ssl/certs/ca-certificates.crt)
-		 * and compiles that path in as its default -- but nothing in this
-		 * file has ever actually staged a real bundle there, so every
-		 * host-side HTTPS pkg_source fetch (PKG_CURL_BIN) has had no way
-		 * to verify a TLS cert at all. Found live via ADR-0096's own new
-		 * diagnostic capture: "curl: (77) error setting certificate file:
-		 * /etc/ssl/certs/ca-certificates.crt" on a real cix hostbuild
-		 * fetch, previously invisible behind a bare "curl exit status 1".
-		 * Same fix shape as openssl.cnf just above: copy the real bundle
-		 * from wherever this tool itself runs -- test_image_fixture_copy_file()
-		 * follows symlinks transparently, so a distro's usual
-		 * ca-certificates -> a real file chain lands as one plain file.
+		 * THE CA BUNDLE STILL COMES FROM THE BUILD HOST, and after
+		 * cix#350 it is the last content in this root that does. It
+		 * stays because the obvious fix is measurably WRONG, not
+		 * because nobody has got to it (cix#591).
+		 *
+		 * ADR-0096's finding, which is why it is staged at all:
+		 * curl.recipe's ./configure auto-detects a CA bundle path at
+		 * build time and compiles it in as its default
+		 * (/etc/ssl/certs/ca-certificates.crt), and nothing used to
+		 * put a bundle there -- so every host-side HTTPS pkg_source
+		 * fetch had no way to verify a certificate, which surfaced as
+		 * "curl: (77) error setting certificate file".
+		 *
+		 * WHY A PACKAGE CANNOT REPLACE IT. Measured on 2026-10-10,
+		 * before writing the change that would have: `git.home.arpa`'s
+		 * certificate is issued by a private CA -- `O=itdlabs,
+		 * OU=Root Authority, CN=gibnet Intermediate CA` -- so it is in
+		 * no public root program, and `ca-certificates@2026.09.03-2`
+		 * (Mozilla's set as curl.se publishes it, which the owner
+		 * chose) does not contain it and never can. The file this line
+		 * copies works precisely BECAUSE the build host's copy has the
+		 * site's own CA added to it. And curlfetch.c and
+		 * forgecommit.c set no CURLOPT_CAINFO, so this single file is
+		 * the entire trust store for every HTTPS fetch cixd makes.
+		 * Swapping it for public roots alone would therefore have
+		 * broken the forge -- i.e. broken the box's ability to fetch
+		 * its own next fix, which is what 0.2.57-481 did for a
+		 * different reason in the same place.
+		 *
+		 * So the real question is how a host trusts its OPERATOR's CA,
+		 * which is not a packaging decision and is cix#591's subject.
+		 * ca-certificates IS now installed in cix-hosttools (image
+		 * 2.4.4) so that whatever lands there has its public half
+		 * ready; it is deliberately not staged from there yet.
 		 */
 		if (ensure_dir_under(image_root, "etc") != 0)
 			return 1;
