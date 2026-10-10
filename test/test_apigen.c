@@ -642,7 +642,7 @@ int main(void)
 				 * buy, a form that refuses what the daemon refuses,
 				 * was silently not happening. `\-` compiles under
 				 * `u`, under `v` and under no flag, and matches
-                                 * identically.
+				 * identically.
 				 *
 				 * Textual on purpose: this gate cannot compile a
 				 * regex, and it does not need to -- the defect has an
@@ -816,6 +816,17 @@ int main(void)
 			     "as a scalar lands here as a broken string literal, which costs the "
 			     "whole file rather than one field",
 			     bad_type, bad_type_text);
+		if (vmode_pattern > 0)
+			fail("%d emitted pattern(s) end a character class with a bare `-`, the first "
+			     "at line %d: %s\n"
+			     "      A browser compiles an <input pattern> with the regex `v` flag, "
+			     "under which that is a SyntaxError -- and the HTML spec's answer to an "
+			     "uncompilable pattern is to SKIP THE CONSTRAINT, silently. The form then "
+			     "accepts everything, which is indistinguishable from a pattern that "
+			     "passes. Write the hyphen as `\\-`: it compiles under `u`, under `v` and "
+			     "under no flag, and matches identically. A LEADING `-` in the class is "
+			     "not the fix -- that throws under `v` too.",
+			     vmode_pattern, vmode_line, vmode_text);
 		if (odd_quotes > 0)
 			fail("%d line(s) of api.js carry an odd number of unescaped quotes, the first "
 			     "at line %d -- a string literal that does not close, which is a "
