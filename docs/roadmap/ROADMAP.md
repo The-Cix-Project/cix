@@ -2445,6 +2445,58 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 275 (done): a form can hold a document, and every name pattern was being ignored (#592 epic, #596, #604, ADR-0338, 0.2.57-486 through -488)
+
+Seven more hand-written forms are gone -- `createDnsServer`, `createLdapServer`, `addImageRecipe`
+(three call sites), `applyDeployment`, `createDnsRecord`/`updateDnsRecord`,
+`createLdapGroup`/`updateLdapGroup` and `createLdapUser`/`updateLdapUser` -- and with them the last
+of the dual-mode forms: one markup block that was both create and edit, a module-level `*EditName`
+deciding POST from PUT, a `readOnly` toggled on a name, a button whose words were rewritten, and the
+lines in `closeModal()` that put all of it back. Create and update are separate operations in the
+contract and are separate generated forms now.
+
+**What the generator learned.** `x-cix-ui: textarea` is ADR-0338's sanctioned override used for the
+first time, for a string that is a document rather than a line -- JSON Schema cannot say "multi-line"
+and an image recipe is -- and apigen **refuses** any other value, because an unknown control falls
+through to a text input and is silently wrong. A free-form `type: object` needs no annotation and
+derives a JSON textarea, since a one-line input is never right for JSON. `openForm` gained `values`
+and `fixed` (a draft to edit, and the key that identifies the resource: read-only and still sent),
+and an array's item type now rides on its control, because `secondary_groups` was being sent as
+`["10001","10002"]` and read by `json_as_number()` as a list of zeroes.
+
+**EVERY NAME PATTERN IN THE CONTRACT WAS VALIDATING NOTHING IN THE BROWSER**, which is the finding
+that matters most here. HTML compiles an `<input pattern>` with the regex `v` flag, under which
+`[A-Za-z0-9_-]` is a `SyntaxError` -- and the spec's answer to a pattern it cannot compile is to
+**skip the constraint entirely**. 27 of `openapi.yaml`'s 29 patterns were written that way, so
+ADR-0338's central claim (a generated form cannot offer what the daemon would refuse) was not true
+for any name field. Nothing we own could see it: the generator was right, the daemon was right, and
+`test_web_form` compiled each pattern with `new RegExp(p)` and no flag, which accepts it.
+
+**Verified**, in this order. The gate: 0.2.57-488's selftest, green on the conjunction
+(`state=installed`, `version=0.2.57-488`, `error` null) -- 486 and 487 each failed first, on
+assertions written against a structure that had changed and a pattern's old spelling, which is the
+gate working. The deploy: staged to slot b, booted `0.2.57-488`, health ok, 12/12 containers. The
+property: `api.js` **fetched from the box over HTTP** and its six distinct patterns compiled in
+Chromium under both `v` and `u`, each refusing a junk value, with the control that used to pass --
+`db_1.arpa` against the DNS-name pattern -- now correctly invalid and `db.home.arpa` valid. Before
+the fix, regenerating `api.js` from the pre-fix contract and grepping it finds **16 field lines**
+carrying an inert pattern; after, zero, and `test_apigen` refuses a bare `-]` textually.
+
+Two more defects were found only by rendering, not by any gate: `textarea` had **no rule at all** in
+`style.css`, so all nine hand-written ones had been browser-default white boxes inside a dark panel
+for as long as they existed; and the hand-written LDAP user form never sent `can_search`, which the
+daemon reads as false and writes unconditionally, so every edit through the dashboard silently
+revoked that user's search grant (#604, closed).
+
+**What this part does NOT do, stated because the next reader will assume otherwise.** These forms are
+story 4 of #592 wired to the contract; they are **not** yet the `Generated` board of the owner's UI
+design canvas. The board specifies an uppercase tracked label carrying a human word, a
+`required`/`optional` marker beside it, a monospace constraint chip, and one authored sentence of
+hint. What ships here derives its label from the schema key (so `sn` renders as "Sn" and `ip` as
+"Ip" -- what the guidelines' fifth principle exists to forbid), shows no marker and no chip, and
+renders the contract's reference `description` clamped to three lines. The accepted IA board is
+untouched. Both are open work, not oversights to rediscover.
+
 ## Part 274 (done): login stops being a modal -- the session shell (#592 epic, #597, ADR-0338)
 
 The owner's request, in their words: *"a login screen that is purely login, when logged in imagine two
