@@ -1146,6 +1146,17 @@ int main(int argc, char **argv)
 		 * outages to find, because assembly reported success every
 		 * time -- copying files is not the same as producing an image
 		 * that runs.
+		 *
+		 * DO NOT GO LOOKING FOR shelled_bin_libs[]: it is gone
+		 * (cix#350, ADR-0337), and the hazard it created cannot recur
+		 * because nothing writes into these directories any more. The
+		 * ordering is kept for the reason that outlived it -- the
+		 * libc.so.6 and loader that test_image_fixture_build() read
+		 * off the BUILD HOST near the top of this function still have
+		 * to be replaced by the ones this platform built, and
+		 * verify_platform_libs_intact() below assumes this block ran
+		 * last. The history is kept because it is why the guard
+		 * exists, not because the list still does.
 		 */
 		/*
 		 * Replace the C library the fixture just staged with the one this
