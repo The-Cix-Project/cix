@@ -2445,6 +2445,68 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 273 (done): the dashboard's first generated form, and a renderer a gate can run (#592 epic, #595, ADR-0338)
+
+Part 272 made the contract emit the dashboard's structure. This is the first surface that reads it.
+
+`openForm(opId, opts)` -- the signature `web-ux-guidelines` had already fixed -- builds a modal's fields
+from the operation's own request schema. One panel in `index.html`, deliberately empty, because a field
+written there would be a second copy of something the contract states. Every control comes from the field:
+options make a select carrying its own values in contract order, a boolean a checkbox, a numeric type a
+number input bearing the contract's own `minimum` and `maximum`, `format: password` an obscured input, a
+string its `pattern` and `maxLength`. **No branch is keyed on a field's name** -- a `name === "password"`
+case would be the parallel the guidelines forbid, which is why the eight secrets an operator types now
+carry `format: password` in the contract, documented in `docs/api/README.md` and deliberately NOT on
+`AppPasswordCreated.password`, the one secret that travels the other way and is shown once to be copied.
+
+Authored at the call site: the title, the button's three words, the failure message. **The refresh stopped
+being authored** -- every screen already declares its refreshers in `VIEW_REFRESHERS`, so the default is to
+refresh the visible view, where all 36 hand-written forms carried their own copy of that call.
+
+**The renderer is EXECUTED by a gate rather than parsed.** `web/form.js` is its own file for exactly that:
+it depends on nothing but `document` and six named globals, so `test_web_form` (new, in SELFTESTS) hands
+quickjs the real generated `api.js`, the real `form.js` and a DOM shim small enough to write down. That
+distinction is not academic -- Part 272 records three releases in one day whose `api.js` passed every
+assertion put to it and would not load in a browser, and the check that caught them was the one that
+handed the file to a real engine.
+
+**Two defects of the author's own, both worth recording because they are the same mistake in two forms.**
+Gate 531 refused a `form.js` whose first line was an orphaned ` * `, because an awk range began one line
+inside a comment block -- the extraction's function list and tail were checked and its BOUNDARY was not.
+And reading the code while waiting for a gate found that `openForm()` built its fields and then called
+`openModal()`, which begins with `closeModal()`, which empties the form: every generated form would have
+opened empty, and no gate would have caught it. That second one is why `openForm` moved into the testable
+file, and why the shim's `textContent` is an ACCESSOR -- a plain property would have recorded the
+assignment, kept the children, and made the shim agree with the bug.
+
+**`fieldText(f, value)` ends the measurable half of the incoherence the owner described.** Counted in
+`app.js` beforehand: a boolean read `yes`/`no` 16 times, `enabled`/`disabled` 4 and `true`/`false` once;
+an absent value read `-` 67 times, `none` 41, `unknown` 12, `unset` 4 and an em dash 3. Two facts, eleven
+spellings. One subtlety the hand-written code had right: an absent boolean whose schema declares a
+`default` is not unknown, so the contract's default is consulted before anything is called absent.
+
+`renderTableRows` and `renderDetailRows` are built and gated beside it, with `fieldBlock` and
+`simpleTableRows` moved into the same file unchanged. **They have no callers yet**, which is stated rather
+than implied away: measuring the 62 tables first showed that a table is not three text cells -- 31 places
+build a `button-danger` inside a row, the first cell is usually a link, and of 14 `simpleTableRows` sites
+most pass `[]` because they are the empty state while populated rows are hand-built for exactly those two
+reasons. The dominant shape is `[link] [derived cells] [actions]`, so the next signature takes both ends
+rather than being widened one caller at a time.
+
+And the rule every conversion so far has demonstrated, which is the real content of #596: **a
+hand-written surface carries something the contract does not say, and converting it is only correct if
+that something moves into the contract.** The NTP form carried a `pattern` the contract lacked and a hint
+about ADR-0110's live-IP resolution; both moved, and that is why it converted cleanly. The network detail
+page carries `has_address ? address : "(none -- pure L2)"`, which is not a spelling of absent but a fact
+about the network -- an em dash would delete it. Each conversion is a contract edit.
+
+Verified: `probe-cix-compile@0.2.57-537` on commit `e8dd665d` -- **115 PASS, zero `FAIL:` lines,
+`SELFTEST: PASS`** -- with `test_web_form`,
+`test_web_syntax`, `test_api_surfaces` and `test_apigen` all PASS. `test_api_surfaces` learned the third
+place the dashboard names an operation, since a generated form is markup (`data-op`) resolved through
+`CIX_API[opId]`, a dynamic lookup no textual check can see -- without which converting a form would have
+reported the dashboard stopping a capability at the moment it started offering a better form of it.
+
 ## Part 272 (done): the dashboard's structure is generated from the contract (#592 epic, #593, #594, #602, ADR-0338)
 
 The owner's judgement was that the web UI works and is not cohesive. What the measurements said is that
