@@ -1268,6 +1268,30 @@ static int g_in_responses;
  * sits at indent 14 -- two shallower than a response's, because
  * responses carry the status-code level and a request body does not. */
 static int g_in_request;
+/*
+ * AN INLINE REQUEST BODY (#603).
+ *
+ * 82 of this contract's 123 request bodies are written inline rather
+ * than as a `$ref` to a component -- counted, and each of the 82
+ * confirmed against its own `_SHAPE` -- so a reader that resolves only
+ * a `$ref` leaves the dashboard with a request schema for a third of
+ * the operations that take a body. ADR-0338 has a form render from that
+ * schema, so this is the difference between a generated form and a
+ * hand-written one for most of the API.
+ *
+ * The body is read into a SYNTHESIZED schema named `<operationId>Request`,
+ * which is then an ordinary member of g_comp_schemas: it appears in
+ * FIELDS, and `<op>_SHAPE.request` names it, with nothing downstream
+ * needing to know it was not written as a component. The contract is
+ * unchanged -- the alternative was editing 82 request bodies into named
+ * components to suit a generator, which is churn in the authoritative
+ * document for no gain to anyone reading it (the same call as #602:
+ * read the contract as written).
+ *
+ * `g_req_schema` is the index being filled, or -1.
+ */
+static struct schema_reader g_req_rd;
+static int g_req_schema = -1;
 static int g_in_200;
 /* Inside an inline 200 schema's own `properties:` (#575). */
 static int g_in_resp_props;
@@ -2249,6 +2273,11 @@ int main(int argc, char **argv)
 		char key[APIGEN_PATH_MAX];
 		int ind;
 
+		/* An inline request body's folded description, before any
+		 * dispatch and before is_ignorable() -- see schema_desc_line()
+		 * for why that ordering is the whole point (#603). */
+		if (g_req_schema >= 0 && schema_desc_line(&g_req_rd, spec, lineno, line))
+			continue;
 		if (is_ignorable(line))
 			continue;
 		ind = indent_of(line);
@@ -2283,6 +2312,8 @@ int main(int argc, char **argv)
 			g_in_responses = 0;
 			g_in_200 = 0;
 			g_in_resp_props = 0;
+			g_in_request = 0;
+			g_req_schema = -1;
 			snprintf(cur_path, sizeof(cur_path), "%s", key);
 			cur_op = -1;
 			continue;
@@ -2310,6 +2341,8 @@ int main(int argc, char **argv)
 			g_in_responses = 0;
 			g_in_200 = 0;
 			g_in_resp_props = 0;
+			g_in_request = 0;
+			g_req_schema = -1;
 			cur_op = g_op_count++;
 			memset(&g_ops[cur_op], 0, sizeof(g_ops[cur_op]));
 			for (j = 0; key[j] != '\0'; j++)
@@ -2342,8 +2375,15 @@ int main(int argc, char **argv)
 			g_in_resp_props = 0;
 			if (!g_in_responses)
 				g_in_200 = 0;
-			/* ADR-0338: and the same for the request-body reader. */
+			/* ADR-0338: and the same for the request-body reader.
+			 * An operation-level key that is not `requestBody` ends
+			 * it, which is also where a synthesized inline schema
+			 * (#603) stops receiving lines -- its own reader state
+			 * must go with it, or the next operation's body would be
+			 * read into the previous operation's schema. */
 			g_in_request = strcmp(key, "requestBody") == 0;
+			if (!g_in_request)
+				g_req_schema = -1;
 			if (strcmp(key, "x-cix-destructive") == 0) {
 				char v[16];
 
@@ -2427,12 +2467,61 @@ int main(int argc, char **argv)
 		 * for a route.
 		 */
 		/* ADR-0338: requestBody: content: application/json: schema:
-		 * $ref -- the $ref at 14, and nothing else from this block. */
+		 * $ref -- the $ref at 14, which names a component. */
 		if (g_in_request && cur_op >= 0 && ind == 14 &&
 		    key_at(line, 14, key, sizeof(key)) && strcmp(key, "$ref") == 0) {
 			ref_tail(value_of(line), g_ops[cur_op].req_schema,
 			         sizeof(g_ops[cur_op].req_schema));
 			continue;
+		}
+		/*
+		 * Or the schema is written out here, which is how 82 of the 123
+		 * are (#603). It is read into a synthesized component named
+		 * `<operationId>Request` by the same reader that reads a real
+		 * one, at base 16 instead of 8.
+		 *
+		 * `type:` is not required to come first -- `required:` and
+		 * `properties:` appear in both orders in this spec -- so the
+		 * schema is created by the first line at 14 that is not a
+		 * `$ref`, whatever it is.
+		 */
+		if (g_in_request && cur_op >= 0 && ind >= 14) {
+			if (g_req_schema < 0 && ind == 14 && key_at(line, 14, key, sizeof(key)) &&
+			    (strcmp(key, "type") == 0 || strcmp(key, "required") == 0 ||
+			     strcmp(key, "properties") == 0)) {
+				char name[APIGEN_ID_MAX];
+				int s;
+
+				snprintf(name, sizeof(name), "%sRequest", g_ops[cur_op].op_id);
+				/*
+				 * A synthesized name must not collide with a real
+				 * component: one would silently overwrite the other,
+				 * and which won would depend on pass order. The
+				 * contract is free to add a component called
+				 * `fooRequest` at any time, so this is checked rather
+				 * than assumed to be impossible.
+				 */
+				if (comp_schema_find(name) != NULL)
+					die_at(spec, lineno,
+					       "%s's inline request body would be synthesized as "
+					       "\"%s\", which is already a component schema -- give "
+					       "one of them another name",
+					       g_ops[cur_op].op_id, name);
+				if (g_comp_schema_count >= APIGEN_MAX_COMP_SCHEMAS)
+					die_at(spec, lineno, "more than %d component schemas",
+					       APIGEN_MAX_COMP_SCHEMAS);
+				s = g_comp_schema_count++;
+				memset(&g_comp_schemas[s], 0, sizeof(g_comp_schemas[s]));
+				snprintf(g_comp_schemas[s].comp, sizeof(g_comp_schemas[s].comp),
+				         "%s", name);
+				g_comp_schemas[s].line = lineno;
+				snprintf(g_ops[cur_op].req_schema, sizeof(g_ops[cur_op].req_schema),
+				         "%s", name);
+				schema_reader_init(&g_req_rd, 16, s);
+				g_req_schema = s;
+			}
+			if (g_req_schema >= 0 && schema_body_line(&g_req_rd, spec, lineno, line, ind))
+				continue;
 		}
 		if (g_in_responses && cur_op >= 0) {
 			if (ind == 8) {
@@ -2532,6 +2621,35 @@ int main(int argc, char **argv)
 		fprintf(stderr, "apigen: %s: no operations found -- refusing to emit an empty "
 		                "route table, which would silently unroute the whole API\n", spec);
 		return 1;
+	}
+
+	/*
+	 * A request schema that names NOTHING is worse than none (#603).
+	 *
+	 * FIELDS omits a schema with no fields, so an operation whose
+	 * `request:` names such a schema hands a renderer a key that
+	 * resolves to undefined -- which fails at render time, where
+	 * `request: null` would have fallen back to an authored form
+	 * correctly. A body with no properties is not a form, and saying so
+	 * is the whole of the fix.
+	 *
+	 * This really happens: a request body may be a bare scalar
+	 * (`schema: { type: string }`), and before the keyword allow-list
+	 * above, `attachContainerNetwork`'s `oneOf` body produced exactly
+	 * this -- a name in its shape and no table to look it up in.
+	 */
+	{
+		int i;
+
+		for (i = 0; i < g_op_count; i++) {
+			const struct comp_schema *s;
+
+			if (g_ops[i].req_schema[0] == '\0')
+				continue;
+			s = comp_schema_find(g_ops[i].req_schema);
+			if (s != NULL && s->n_field == 0)
+				g_ops[i].req_schema[0] = '\0';
+		}
 	}
 
 	/*

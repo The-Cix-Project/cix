@@ -6,6 +6,53 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A request body written inline is still the contract (#603)
+
+ADR-0338 has a dashboard form render from its operation's request schema. `apigen` resolved one only from
+a `$ref`, so most operations had nothing to render from -- and the reason that was invisible is that the
+missing ones look exactly like operations that take no body at all.
+
+Counted, with no search window, so the arithmetic closes rather than nearly closes: **124** request bodies,
+of which **41** are a `$ref` to a component, **82** are written inline, and **1** is a `oneOf`. 340
+operations, so 216 correctly take no body. 41 + 82 + 1 + 216 = 340, and `request: null` was being reported
+for 299 of them.
+
+An inline body is now read into a schema named `<operationId>Request` and is thereafter an ordinary member
+of the table: it appears in `FIELDS`, `<op>_SHAPE.request` names it, and nothing downstream knows it was
+not written as a component. **The contract is unchanged.** Editing 82 request bodies into named components
+would have been churn in the authoritative document to suit a generator -- the same call as #602, and the
+same reason: the contract is the authority and the tool reads it.
+
+**One body of code reads both.** A JSON Schema object looks the same wherever it is written; the only
+difference between a component and an inline body is the column it starts at (a property name sits at 8 in
+one and 16 in the other). So the reader takes a base indent, as `struct schema_reader` with
+`schema_desc_line()` and `schema_body_line()`. That refactor landed separately and with a proof -- all four
+generated artefacts byte-identical before and after -- because the alternative, a second reader for the
+inline depths, is what #602 was: six flow lists read correctly at one depth and wrongly at another, with no
+single place to fix.
+
+Result: **121** operations now name a request schema (41 components, 80 synthesized), 219 report `null`.
+The three that take a body and still report `null` do so correctly, and this is the part worth writing
+down, because a generated form cannot be made from any of them: `attachContainerNetwork`'s body is either
+a bare string or a `NetworkAttachmentRequest`, a choice no renderer can make for the operator;
+`patchContainer`'s is `type: object` with no properties, an arbitrary patch document; and
+`setContainerSysctls`' is `additionalProperties`, a map of operator-chosen keys. Those stay authored.
+
+**And a dangling name is worse than no name**, which the generator produced before this was finished:
+`attachContainerNetwork_SHAPE` named `attachContainerNetworkRequest`, which appeared exactly once in the
+whole file, because `FIELDS` omits a schema with no fields. A renderer resolves that to `undefined` and
+fails at render time, where `request: null` would have fallen back to an authored form. Two things fix it
+-- an allow-list of the keywords that may open a synthesized schema, and a post-pass that clears any
+request name whose schema ended up empty -- and `test_apigen` now asserts the property directly: every
+name a shape gives must open a `FIELDS` block.
+
+**The 82 was nearly reported as 24.** A first measurement mapped each dashboard form to the first
+`CIX_API.*()` call after its submit listener and concluded that only 24 of 71 form/operation pairs had a
+usable schema. The first call after a listener is not necessarily the submit (it caught a GET), and the
+per-op lookup in the same loop returned empty for operations that demonstrably had one. Neither figure
+reached the ticket. The contract-level count did, because it is measured at the source instead of through
+two layers of inference.
+
 ### The description goes last, so a text-matching reader can be exact (#594, #603)
 
 A consequence of the previous entry worth separating, because it is a property rather than a fix.

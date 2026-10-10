@@ -21,6 +21,10 @@
 #include <string.h>
 #include <unistd.h>
 
+/* The most request schemas this check will hold; the contract names 121
+ * today (41 components plus 80 synthesized from inline bodies, #603). */
+#define APIGEN_TEST_MAX_REQ 256
+
 static int failures;
 
 static void fail(const char *fmt, ...)
@@ -796,6 +800,107 @@ int main(void)
 			     "searches free English, where `options: [` and `required: true` are "
 			     "things a sentence about this API can say",
 			     desc_not_last);
+	}
+
+	/*
+	 * 7. Every request schema a shape NAMES must exist in FIELDS (#603).
+	 *
+	 * `FIELDS` omits a schema with no fields, so a `request:` naming
+	 * one hands a renderer a key that resolves to undefined -- which
+	 * fails at render time, where `request: null` would correctly have
+	 * fallen back to an authored form. That is strictly worse than no
+	 * schema, and the generator really did produce it while #603 was
+	 * being written: `attachContainerNetwork_SHAPE` named
+	 * `attachContainerNetworkRequest`, which appeared exactly once in
+	 * the whole file, because its body is a `oneOf` that no generated
+	 * form can render and so no fields were ever recorded under it.
+	 * Three bodies in this contract are of that kind -- that `oneOf`,
+	 * and two free-form objects (`type: object` with no properties, and
+	 * one with `additionalProperties`) which are maps rather than
+	 * forms.
+	 *
+	 * A dangling reference is exactly the kind of defect that passes
+	 * every presence check, so it gets a check of its own.
+	 */
+	{
+		char js_path[256];
+		char buf[16384];
+		char names[APIGEN_TEST_MAX_REQ][96];
+		char have[APIGEN_TEST_MAX_REQ][96];
+		FILE *f;
+		int n_names = 0, n_have = 0, i, dangling = 0;
+		char first[96] = "";
+
+		snprintf(js_path, sizeof(js_path), "/tmp/apigen_req_%d.js", (int)getpid());
+		snprintf(buf, sizeof(buf), "--emit-web %s", js_path);
+		status = run_apigen("docs/api/openapi.yaml", buf, out, sizeof(out));
+		if (status != 0)
+			fail("apigen --emit-web failed: %.200s", out);
+		f = fopen(js_path, "r");
+		if (f == NULL) {
+			fail("apigen --emit-web wrote nothing");
+		} else {
+			/*
+			 * One pass, collecting both sides: every name a shape's
+			 * `request:` gives, and every schema that opens a FIELDS
+			 * block. A pass per name would be 121 reads of a 323 KB
+			 * file to answer a question two lists already answer.
+			 */
+			while (fgets(buf, sizeof(buf), f) != NULL) {
+				const char *r;
+
+				if (strncmp(buf, "\t\t", 2) == 0 && buf[2] != '\t' &&
+				    strstr(buf, ": [") != NULL) {
+					if (n_have < APIGEN_TEST_MAX_REQ) {
+						size_t k = 0;
+
+						while (buf[2 + k] != ':' && buf[2 + k] != '\0' &&
+						       k + 1 < sizeof(have[0]))
+							k++;
+						memcpy(have[n_have], buf + 2, k);
+						have[n_have][k] = '\0';
+						n_have++;
+					}
+					continue;
+				}
+				if (strstr(buf, "_SHAPE: {") == NULL)
+					continue;
+				r = strstr(buf, ", request: \"");
+				if (r == NULL)
+					continue;
+				r += 12;
+				if (n_names < APIGEN_TEST_MAX_REQ) {
+					size_t k = 0;
+
+					while (r[k] != '"' && r[k] != '\0' &&
+					       k + 1 < sizeof(names[0]))
+						k++;
+					memcpy(names[n_names], r, k);
+					names[n_names][k] = '\0';
+					n_names++;
+				}
+			}
+			for (i = 0; i < n_names; i++) {
+				int j, found = 0;
+
+				for (j = 0; j < n_have; j++)
+					if (strcmp(names[i], have[j]) == 0)
+						found = 1;
+				if (!found && dangling++ == 0)
+					snprintf(first, sizeof(first), "%s", names[i]);
+			}
+			fclose(f);
+			unlink(js_path);
+		}
+		if (n_names == 0)
+			fail("no operation in api.js names a request schema -- 124 of the "
+			     "contract's 340 carry a requestBody, so this is a reader that "
+			     "resolved none of them");
+		if (dangling > 0)
+			fail("%d operation(s) name a request schema with no FIELDS entry, the first "
+			     "`%s` -- a renderer resolves that to undefined and fails at render "
+			     "time, where request: null would have fallen back correctly",
+			     dangling, first);
 	}
 
 	if (failures == 0)
