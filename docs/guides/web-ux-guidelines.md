@@ -6,7 +6,7 @@ Read this as binding, not advisory. If a change would introduce a second way to 
 
 It is a sibling of [`web-dashboard.md`](web-dashboard.md) (which tours the dashboard for an operator) and of [`building-cix.md`](building-cix.md) (which builds it). This one governs *how it is built* so it stays consistent. The reference implementations it names live in `web/app.js`, `web/index.html` and `web/style.css`.
 
-## The five governing principles
+## The six governing principles
 
 These are the [Immutable Maxims](../mission/MISSION.md) as they apply to an interface. Every rule further down is one of these made concrete.
 
@@ -19,6 +19,8 @@ These are the [Immutable Maxims](../mission/MISSION.md) as they apply to an inte
 4. **Show live truth, never re-derive it.** State the daemon owns — `mounted`, `protected`, `role`, `status`, `is_os_disk` — is read from its live response and shown as-is. The dashboard does not reconstruct it from other fields or cache it into a second copy. A value that is briefly absent (a partition label just after boot, say) is shown as "not known yet", never guessed.
 
 5. **Name things by what the person recognises.** A control says what happens in the user's vocabulary, not the system's: "Remove", "Unmount", "Grow", not "DELETE /v1/…". The verb on the button matches the sentence in the toast that follows it ("Remove" → "Removed").
+
+6. **The contract generates structure; a human authors meaning** ([ADR-0338](../adr/0338-the-dashboard-renders-from-the-contract.md)). The test is whether two competent people would write it identically from the schema. *Generated*, so it cannot drift: field names, types, required flags, enum options, constraints, descriptions-as-hints, which operations a resource has, which are destructive. *Authored*, because it takes judgement: layout, which columns a table shows and in what order, which tab a thing lives on, the three words on a button, the empty-state sentence. This is what finally makes principle 3 true rather than aspirational — a form that carries the schema's own `pattern` and bounds cannot offer an action the daemon would refuse. **Never hand-write a field a schema already describes**; where the generated default is genuinely wrong, the override is `x-cix-ui` in the contract, never a special case in `app.js`.
 
 ## The widget vocabulary
 
@@ -44,6 +46,11 @@ Each widget has exactly one job. The "reach for instead" column is the anti-swap
 | **Hint** | `.hint`, `.hint-inline` | One line of guidance next to a control or empty area | it is an action result → **status message** |
 | **Console** | the VT ([ADR-0243](../adr/0243-the-dashboard-terminal-is-a-real-vt.md)) | An interactive terminal into a container | anything that is not a real TTY stream |
 | **Floating window** | `.log-window` (`#build-log-window`), moved and sized by `makeResizable()` | Watch something that keeps changing -- a build log -- while using the rest of the page. Non-blocking, closable (button and Escape), position and size persisted | the reader must finish with it before doing anything else → a **modal form**; it is a fixed facet of one resource → a **tab** |
+| **Session shell** | the two-panel lock over the dashboard ([ADR-0338](../adr/0338-the-dashboard-renders-from-the-contract.md)) | The session boundary, and only that: parts on unlock, converges on lock or expiry. Left panel carries only what is knowable with no session (the wordmark, host reachability, whether the host gates); right panel is the generated login form and nothing else | the condition is standing but the UI is still usable → a **banner**; you reached for `openModal("login-form", …)` → **stop, that is the swap this row exists to end** |
+| **Port faceplate** | `.switch-panel`, `.switch-port*` | Answer "what is plugged in where" for a virtual switch, as a physical panel: one jack per port, rx/tx **dots** for liveness, and attached / up / down / unattributed as the port's own state. Position carries meaning | the question is "which ports exist" or the viewer needs to compare figures → a **list table** (a faceplate is spatial, a table is peer records) |
+| **Usage gauge** | `.usage-gauge`, `-track`, `-fill` | One proportion of a known whole, read at a glance. **Width carries the magnitude; colour carries the threshold state** (`--ok`, then `--paused` at 75%, `--error` at 90%). The width is what keeps the colour from carrying the state alone, so the pair is legitimate — and the value must appear as text beside it, because a gauge is not a measurement | the value has no known maximum, or precision matters more than shape → **text**; it is a reported state rather than a proportion → a **badge** |
+| **Allocation chart** | `.alloc-chart`, `-legend`, `-swatch` | How one whole divides between a few named parts. A legend is always present, since identity must never be colour alone | the reader needs the exact figures → a **list table**; there is only one part → a **usage gauge** |
+| **Stat tile** | `.stats-card` in a `.stats-grid` | One headline number with its label — the case where the right answer is *not a chart*. A flat material surface, never a glass card, and never boxed when a plain row would do | the numbers are one resource's fields → a **key–value table**; the number only matters as a trend → a **chart** |
 
 Two widgets that look similar are still not interchangeable: a **badge** carries a *value* (a state the daemon reported), a **dot/LED** carries *liveness* (reachable / not). A **banner** is a standing condition, a **status message** is a moment. Pick by which of those the thing actually is, not by which looks nicer in the spot.
 
@@ -87,6 +94,39 @@ Two widgets that look similar are still not interchangeable: a **badge** carries
 
 **Theme.** The dashboard is theme-aware; colours come only from the CSS tokens, never literals, so both themes stay legible. A new colour is a new token, defined for both themes, never a hex value inlined in a component.
 
+## Four layers, and the rule has a JavaScript half
+
+Tokens → primitives → compositions → screens. Each layer may consume only the one beneath it ([ADR-0338](../adr/0338-the-dashboard-renders-from-the-contract.md)).
+
+| Layer | What lives there | A defect at this layer looks like |
+|---|---|---|
+| **Tokens** | every colour, space, radius, type size and duration — `web/style.css`'s `:root`, both themes | a hex literal or a bare `px` in a component |
+| **Primitives** | one implementation each of the vocabulary's atoms: button, badge, dot, hint, input, row, panel | a second button family; a `*-badge` class |
+| **Compositions** | the assembled patterns: detail page + tabs, list table, modal form, context menu, floating window, session shell, faceplate | a composition reaching for a token directly instead of a primitive |
+| **Screens** | the 19 pages. They arrange compositions and supply authored meaning — column choice, labels, placement | **anything below** |
+
+**A screen-level style rule is a defect — and so is a screen that constructs DOM or sets a class no composition exported.** Both clauses, because only the second one reaches where the drift actually is: measured on 2026-10-10, `web/app.js` is 585 KB with 612 `createElement`, 207 `className =` assignments, 31 inline `style.` writes, and **40 of `dg-*`'s 53 classes set from JavaScript**. A rule confined to stylesheets would have passed a clean `style.css` over an unchanged problem.
+
+The practical form: a screen calls `openForm(opId)`, `renderTable(schema, rows, columns)`, `renderDetail(schema, obj)` and the other composition functions. It does not build a `<table>`, and it does not invent a class name. When a screen needs something no composition offers, **extend the composition so every caller benefits** — the rule the vocabulary already states for widgets, applied one layer up.
+
+## Charts and meters
+
+Four rules, because three of the widgets above are data marks and a chart gone wrong is wrong *persuasively*.
+
+**Form before colour, and sometimes the answer is not a chart.** Pick by the data's job — a proportion of a known whole is a **gauge**, a division of one whole is an **allocation chart**, a single headline figure is a **stat tile**, a quantity over time is a line. A number that only matters as itself does not become a chart to look busy.
+
+**Status colour is reserved.** `--ok`, `--paused`, `--error` and `--muted` mean the four semantic states on every page and are **never** reused to tell one series from another. A series that happens to be green does not mean healthy, and that ambiguity is exactly why the rule exists.
+
+**Series colour is assigned in fixed order and never cycled.** `--series-1` … `--series-3`, in that order, so a filter that changes how many series are shown never repaints the survivors — colour follows the entity, not its rank. A fourth series is not a new hue: it folds into "Other", or the chart becomes small multiples.
+
+**Identity is never colour alone.** Two or more series always carry a legend; text wears the text tokens (`--text`, `--muted`), never a series colour. Dark mode is *chosen* rather than flipped — each series gets its own step, legible on `--bg` in that theme.
+
+**One measured gap, recorded rather than left implicit.** The series palette has not been validated against the colour-vision-deficiency separation it needs, and two of its three entries are suspect on inspection: `--series-2` is `var(--nickel)`, which is also `--muted`, so a series wears the secondary-text colour; and `--series-3` is `var(--copper)`, the brand accent whose documented job is focus and selected state, so data wears the focus colour. Both are reasoning from the token definitions, not a validated result — see [#601](https://git.home.arpa/itdlabs/cix/issues/601).
+
+## Responsiveness
+
+Deliberately not specified yet, and said here rather than left as a silence: the dashboard commits to exactly one layout breakpoint (`max-width: 720px`, five rules in `style.css`), and this document has never named the widths it supports, what a too-wide table does, or what the tree does when the window is narrow. Naming them is a decision about who this dashboard is for, which is [#600](https://git.home.arpa/itdlabs/cix/issues/600)'s subject. Until it is answered, do not add a second breakpoint: one undocumented breakpoint is a gap, two are a drift.
+
 ## Reference implementations
 
 When in doubt, copy the shape of these — they are the canonical form of each pattern:
@@ -108,5 +148,9 @@ Every place the dashboard had drifted from the principles above has been folded 
 - **Ad-hoc badge classes** ([#459](https://git.home.arpa/itdlabs/cix/issues/459)). The `badge-*` class was built inline at nine call sites, each with its own `state === … ? …` ladder. Collapsed into one `statusBadge(kind)` helper, so the vocabulary and the state→colour mapping live once.
 - **The `pipeline-badge` parallel** ([#460](https://git.home.arpa/itdlabs/cix/issues/460)). The build pipeline had its own `pipeline-badge` status-pill system. Removed; the pipeline now uses the one `.badge` widget through `statusBadge(pipelineStatusKind(status))` (No Parallel Implementations).
 - **Every action and every list panel asks the session** ([#548](https://git.home.arpa/itdlabs/cix/issues/548)). #544 put `sessionMay()` in place for the header and two panels; the rest of the dashboard offered actions a session would be refused and, for a refused read, claimed "No <things>". Now 64 render-time buttons use `gateAction()`, 16 context-menu items carry `op`, 23 list panels use `emptyStateText()`, and `apiRequest()` pre-checks every request -- all reading the one session source.
+
+- **The vocabulary was narrower than the stylesheet** ([#593](https://git.home.arpa/itdlabs/cix/issues/593), [ADR-0338](../adr/0338-the-dashboard-renders-from-the-contract.md)). Five widget families existed in `style.css` with no row here — the session shell, the switch port faceplate (15 classes), the usage gauge, the allocation chart and the stat tile. **A class with no row has no rule saying when it is wrong**, which is the hole the drift below came through, so the table gained all five and the chart rules that govern three of them. Found by counting class families against the table rather than by reading the code: `switch-*` turned out not to be a toggle at all but the best idea in the dashboard — a virtual switch drawn as a physical panel, which is the brand's "mechanism over machinery" principle made literal.
+
+Two violations are **found and not yet fixed**, so they are filed rather than described here: login is still a modal ([#597](https://git.home.arpa/itdlabs/cix/issues/597) — `openModal("login-form", …)`, the create-a-resource widget doing the session boundary's job), and `dg-*` is still a 53-class parallel visual system for one page with 40 of those classes set from JavaScript ([#598](https://git.home.arpa/itdlabs/cix/issues/598)). Both become worked examples here when they land, not before.
 
 When a new drift is found and fixed, add it here as a worked example in the same change — and when a new violation is found but not yet fixed, file it in the issue tracker rather than leaving it only in prose.

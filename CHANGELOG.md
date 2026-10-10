@@ -6,6 +6,47 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The dashboard's design system gains the rows the stylesheet already had (#593, ADR-0338)
+
+The owner's judgement: the dashboard works and is not cohesive. Measured before designing anything, and
+two of the measurements contradict the obvious diagnosis.
+
+**The design system is not the problem** — 164 tokens, the brand palette by name, both themes, and light
+mode already correct where it is easiest to get wrong (`--muted` is `#6b767d`, a *darkened* nickel,
+because Nickel on Paper fails at about 2.3:1). **The contract is not the problem** — 22,036 lines,
+340 operations, 181 schemas, 107 enums, 1,982 descriptions, **174 constraints**. The join is: `apigen`
+hands `web/api.js` three symbols per operation, so **36 hand-written forms re-type what 30 request
+schemas already state** and those constraints reach the operator as a round-trip `400`.
+
+So principle **6** is new doctrine: *the contract generates structure; a human authors meaning*, with the
+test being whether two competent people would write it identically from the schema.
+
+**Five widget families existed in `style.css` with no row in the vocabulary**, and a class with no row has
+no rule saying when it is wrong — which is the hole the drift comes through. Found by counting class
+families against the table rather than by reading code, which is also how `switch-*` turned out not to be
+a toggle: it is a virtual switch drawn as a **physical port faceplate**, rx/tx dots and all — the brand's
+"mechanism over machinery" made literal, and the best idea in the current UI. The table gained the
+session shell, the faceplate, the usage gauge, the allocation chart and the stat tile.
+
+**Four layers, and the containment rule has a JavaScript half**: tokens → primitives → compositions →
+screens, where a screen-level style rule is a defect *and so is a screen that builds DOM or sets a class
+no composition exported*. Only the second clause reaches the real drift — `app.js` is 585 KB with 612
+`createElement`, 207 `className =`, and **40 of `dg-*`'s 53 classes set from JavaScript**, so a CSS-only
+rule would have passed a clean stylesheet over an unchanged problem.
+
+**Charts gained four rules** because three of the new rows are data marks: form before colour (and
+sometimes the answer is not a chart), status colour is reserved and never a series, series order is fixed
+and never cycled, identity is never colour alone. The gauge's own pairing is recorded as legitimate —
+width carries magnitude, colour carries the 75%/90% threshold, and the width is what stops colour
+carrying the state alone.
+
+Two things are deliberately **not** claimed. The series palette is recorded as **unvalidated** (#601):
+`--series-2` is the secondary-text token and `--series-3` is the brand accent, both reasoned from the
+definitions rather than measured, because the validator is a script and the sandbox runs nothing but
+`cixctl` — the rule working, not an obstacle. And responsiveness stays unspecified (#600), because naming
+the supported widths is a decision about who the dashboard is for; the document says so rather than
+leaving a silence, and forbids a second breakpoint until it is answered.
+
 ### openssl.cnf comes from the image; the CA bundle measurably cannot (#350, #591, 0.2.57-483)
 
 ADR-0337 left build-host reads in `mkbootroot`, and I had catalogued them as one, then two. A
