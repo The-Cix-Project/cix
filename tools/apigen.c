@@ -824,65 +824,292 @@ static int parse_enum_list(const char *v, char out[][APIGEN_ENUM_ITEM_MAX], int 
 	return n;
 }
 
+/*
+ * ONE SCHEMA BODY, AT ANY DEPTH (#603).
+ *
+ * A JSON Schema object looks the same wherever it is written: a
+ * `required` flow list, a `properties` map, each property a key with
+ * its own detail keys beneath it, and an array property's `items` one
+ * level deeper again. The only thing that differs between a schema
+ * under `components/schemas` and a request body written inline in a
+ * path item is the COLUMN it starts at -- a property name sits at 8 in
+ * the first and at 16 in the second.
+ *
+ * So this takes the base indent and reads either. The alternative was a
+ * second reader for the inline depths, and #602 is the concrete
+ * argument against it rather than the maxims' abstract one: six flow
+ * lists in this contract were being read correctly at one depth and
+ * wrongly at another, by code that had no single place to be fixed.
+ */
+struct schema_reader {
+	int base;    /* the indent a property NAME sits at */
+	int schema;  /* index into g_comp_schemas */
+	int in_props;
+	char prop[APIGEN_QNAME_MAX];
+	int prop_is_array;
+	/*
+	 * Inside a folded `description: >`: the indent its key sat at, the
+	 * arena offset being built, and whether a blank line is owed as a
+	 * paragraph break. -1 when not in one.
+	 */
+	int desc_ind;
+	int desc_off;
+	int desc_para;
+};
+
+static void schema_reader_init(struct schema_reader *r, int base, int schema)
+{
+	memset(r, 0, sizeof(*r));
+	r->base = base;
+	r->schema = schema;
+	r->desc_ind = -1;
+	r->desc_off = -1;
+}
+
+/*
+ * A folded description's own lines, consumed BEFORE anything dispatches
+ * on indentation -- including before is_ignorable(), because a blank
+ * line inside a `>` block is a paragraph break and not noise, and 128
+ * of them exist in this contract. Returns 1 if the line was part of a
+ * description.
+ *
+ * That ordering is the whole point: continuation lines sit at base+2
+ * and deeper, which are depths this reader also reads KEYS at, and the
+ * prose really does contain lines like `Default: 30 seconds`.
+ * Dispatching first would read a sentence as a field attribute.
+ */
+static int schema_desc_line(struct schema_reader *r, const char *spec, int lineno,
+                            const char *line)
+{
+	int ind;
+
+	if (r->desc_ind < 0)
+		return 0;
+	if (is_blank(line)) {
+		r->desc_para = 1;
+		return 1;
+	}
+	ind = indent_of(line);
+	if (ind > r->desc_ind) {
+		char text[1024];
+
+		snprintf(text, sizeof(text), "%s", line + ind);
+		strip_eol(text);
+		desc_append(spec, lineno, r->desc_off, r->desc_para ? "\n\n" : " ", text);
+		r->desc_para = 0;
+		return 1;
+	}
+	r->desc_ind = -1;
+	r->desc_off = -1;
+	r->desc_para = 0;
+	return 0;
+}
+
+/*
+ * One line of a schema body. Returns 1 if it was consumed.
+ *
+ * `schema_desc_line()` must have been given the line first; this
+ * function dispatches on indentation and would read a description's
+ * prose as keys.
+ */
+static int schema_body_line(struct schema_reader *r, const char *spec, int lineno,
+                            const char *line, int ind)
+{
+	struct comp_schema *s = &g_comp_schemas[r->schema];
+	char key[APIGEN_PATH_MAX];
+
+	if (ind == r->base - 2 && key_at(line, r->base - 2, key, sizeof(key))) {
+		r->in_props = strcmp(key, "properties") == 0;
+		r->prop[0] = '\0';
+		if (strcmp(key, "required") == 0) {
+			char v[1024];
+
+			snprintf(v, sizeof(v), "%s", value_of(line));
+			strip_eol(v);
+			s->n_required = parse_inline_list(v, s->required, APIGEN_MAX_REQUIRED);
+			if (s->n_required > APIGEN_MAX_REQUIRED)
+				die_at(spec, lineno, "%s lists %d required names, apigen caps at %d",
+				       s->comp, s->n_required, APIGEN_MAX_REQUIRED);
+		}
+		return 1;
+	}
+	if (!r->in_props)
+		return 1;
+	if (ind == r->base) {
+		r->prop_is_array = 0;
+		if (!key_at(line, r->base, r->prop, sizeof(r->prop)))
+			r->prop[0] = '\0';
+		else {
+			size_t used = strlen(s->props);
+
+			if (used + strlen(r->prop) + 2 >= sizeof(s->props))
+				die_at(spec, 0,
+				       "schema %s declares more properties than this tool can "
+				       "record; raise props rather than let the self-consistency "
+				       "check go unsound",
+				       s->comp);
+			snprintf(s->props + used, sizeof(s->props) - used, "%s,", r->prop);
+			/* ADR-0338: and a field record, in schema order, for
+			 * the keys read at base+2 below to fill in. */
+			if (s->n_field >= APIGEN_MAX_FIELDS)
+				die_at(spec, lineno,
+				       "schema %s declares more than %d properties; raise "
+				       "APIGEN_MAX_FIELDS rather than let the dashboard render "
+				       "a form that silently omits one",
+				       s->comp, APIGEN_MAX_FIELDS);
+			snprintf(s->field[s->n_field].name, sizeof(s->field[0].name), "%s",
+			         r->prop);
+			s->field[s->n_field].desc = -1;
+			s->field[s->n_field].nullable = 0;
+			s->n_field++;
+		}
+		return 1;
+	}
+	/*
+	 * The current property's own keys, at base+2 (ADR-0338).
+	 *
+	 * All but one are a single-line scalar in this spec. `description`
+	 * is the exception and is read in BOTH its forms (#594): 1,023 are
+	 * a single-line scalar and 427 open a folded `>` block, whose lines
+	 * schema_desc_line() gathers. It is read because it is the one
+	 * thing in a schema that is authored MEANING rather than derived
+	 * structure, which is exactly what ADR-0338's sixth principle says
+	 * a human supplies -- and a human already did, once, in the
+	 * contract. The dashboard re-typed 185 of them into `index.html` as
+	 * hint paragraphs, which is the duplication this removes.
+	 *
+	 * An unrecognised key is passed over rather than refused -- unlike
+	 * the route table, where a key this tool cannot read would make a
+	 * route unroutable, a field detail it cannot read simply renders as
+	 * an unconstrained input, which is what the hand-written form did
+	 * anyway.
+	 */
+	if (ind == r->base + 2 && key_at(line, r->base + 2, key, sizeof(key))) {
+		struct schema_field *fl =
+		    s->n_field > 0 ? &s->field[s->n_field - 1] : NULL;
+		char v[APIGEN_ENUM_MAX];
+
+		snprintf(v, sizeof(v), "%s", value_of(line));
+		strip_eol(v);
+
+		if (strcmp(key, "type") == 0) {
+			char tname[APIGEN_ENUM_ITEM_MAX] = "";
+			int null_ok = 0;
+
+			if (v[0] == '[') {
+				char ms[APIGEN_ENUM_ITEMS_MAX][APIGEN_ENUM_ITEM_MAX];
+				int nm = parse_enum_list(v, ms, APIGEN_ENUM_ITEMS_MAX);
+				int m;
+
+				if (nm < 0 || nm > APIGEN_ENUM_ITEMS_MAX)
+					die_at(spec, lineno, "type list is not readable: %s", v);
+				for (m = 0; m < nm; m++) {
+					if (strcmp(ms[m], "null") == 0)
+						null_ok = 1;
+					else if (tname[0] == '\0')
+						snprintf(tname, sizeof(tname), "%s", ms[m]);
+				}
+				if (tname[0] == '\0')
+					die_at(spec, lineno,
+					       "type list names no type other than null: %s", v);
+			} else {
+				snprintf(tname, sizeof(tname), "%s", v);
+			}
+			r->prop_is_array = strcmp(tname, "array") == 0;
+			if (fl != NULL) {
+				snprintf(fl->type, sizeof(fl->type), "%s", tname);
+				fl->nullable = null_ok;
+			}
+			return 1;
+		}
+		if (fl == NULL)
+			return 1;
+		if (strcmp(key, "format") == 0)
+			snprintf(fl->format, sizeof(fl->format), "%s", v);
+		else if (strcmp(key, "pattern") == 0)
+			snprintf(fl->pattern, sizeof(fl->pattern), "%s", v);
+		else if (strcmp(key, "enum") == 0)
+			snprintf(fl->enum_list, sizeof(fl->enum_list), "%s", v);
+		else if (strcmp(key, "minimum") == 0)
+			snprintf(fl->minimum, sizeof(fl->minimum), "%s", v);
+		else if (strcmp(key, "maximum") == 0)
+			snprintf(fl->maximum, sizeof(fl->maximum), "%s", v);
+		else if (strcmp(key, "maxLength") == 0)
+			snprintf(fl->max_length, sizeof(fl->max_length), "%s", v);
+		else if (strcmp(key, "default") == 0)
+			snprintf(fl->default_lit, sizeof(fl->default_lit), "%s", v);
+		else if (strcmp(key, "readOnly") == 0)
+			fl->read_only = strcmp(v, "true") == 0;
+		else if (strcmp(key, "description") == 0) {
+			/* `>` or `>-` opens a block whose lines
+			 * schema_desc_line() gathers; anything else is the
+			 * whole description on this line. */
+			fl->desc = desc_begin();
+			if (strcmp(v, ">") == 0 || strcmp(v, ">-") == 0) {
+				r->desc_ind = r->base + 2;
+				r->desc_off = fl->desc;
+				r->desc_para = 0;
+				g_desc_used = fl->desc + 1;
+			} else {
+				desc_append(spec, lineno, fl->desc, "", v);
+			}
+		}
+		return 1;
+	}
+	if (ind == r->base + 4 && r->prop_is_array && s->n_field > 0 &&
+	    key_at(line, r->base + 4, key, sizeof(key)) && strcmp(key, "type") == 0) {
+		struct schema_field *fl = &s->field[s->n_field - 1];
+		char v[APIGEN_TYPE_MAX];
+
+		snprintf(v, sizeof(v), "%s", value_of(line));
+		strip_eol(v);
+		snprintf(fl->items, sizeof(fl->items), "%s", v);
+		return 1;
+	}
+	/* items: at base+2, its $ref: at base+4 -- the only nesting this
+	 * pass follows, and only for a property it has just seen typed as
+	 * an array. */
+	if (ind == r->base + 4 && r->prop_is_array &&
+	    key_at(line, r->base + 4, key, sizeof(key)) && strcmp(key, "$ref") == 0) {
+		char items[APIGEN_ID_MAX];
+		int a;
+
+		ref_tail(value_of(line), items, sizeof(items));
+		if (items[0] == '\0')
+			return 1;
+		if (s->n_arr >= APIGEN_MAX_ARRAY_PROPS)
+			return 1;
+		a = s->n_arr++;
+		snprintf(s->arr[a].prop, sizeof(s->arr[a].prop), "%s", r->prop);
+		snprintf(s->arr[a].items, sizeof(s->arr[a].items), "%s", items);
+		r->prop_is_array = 0;
+		return 1;
+	}
+	return 0;
+}
+
 static void load_component_schemas(const char *spec)
 {
 	FILE *f = fopen(spec, "r");
 	char line[4096];
 	int in_components = 0, in_schemas = 0, cur = -1;
 	int lineno = 0;
-	int in_props = 0;
-	char prop[APIGEN_QNAME_MAX] = "";
-	int prop_is_array = 0;
 	/*
-	 * Inside a folded `description: >` for a field: the indent the key
-	 * sat at, the arena offset being built, and whether a blank line is
-	 * owed as a paragraph break. -1 when not in one.
-	 *
-	 * This is consumed at the TOP of the loop, before anything
-	 * dispatches on indentation, and that ordering is the whole point:
-	 * a description's continuation lines sit at indent 12, which is a
-	 * depth this reader also reads keys at, and the prose in this
-	 * contract really does contain lines like `Note: ...` and
-	 * `Default: 30 seconds`. Dispatching first would read a sentence as
-	 * a field attribute -- the same mistake as deciding on a field
-	 * index instead of the whole line.
+	 * A component schema's property names sit at indent 8, so that is
+	 * this reader's base; the inline request-body reader (#603) uses
+	 * the same code at 16.
 	 */
-	int desc_ind = -1;
-	int desc_off = -1;
-	int desc_para = 0;
+	struct schema_reader rd;
 
+	schema_reader_init(&rd, 8, 0);
 	if (f == NULL)
 		return;
 	while (read_spec_line(line, sizeof(line), f, spec, &lineno) != NULL) {
 		char key[APIGEN_PATH_MAX];
 		int ind;
 
-		/*
-		 * A folded description's own lines, first, before any
-		 * dispatch -- including before is_ignorable(), because a BLANK
-		 * line inside a `>` block is a paragraph break and not noise,
-		 * and 128 of them exist in this contract.
-		 */
-		if (desc_ind >= 0) {
-			int dind = indent_of(line);
-
-			if (is_blank(line)) {
-				desc_para = 1;
-				continue;
-			}
-			if (dind > desc_ind) {
-				char text[1024];
-
-				snprintf(text, sizeof(text), "%s", line + dind);
-				strip_eol(text);
-				desc_append(spec, lineno, desc_off, desc_para ? "\n\n" : " ", text);
-				desc_para = 0;
-				continue;
-			}
-			desc_ind = -1;
-			desc_off = -1;
-			desc_para = 0;
-		}
+		if (schema_desc_line(&rd, spec, lineno, line))
+			continue;
 		if (is_ignorable(line))
 			continue;
 		ind = indent_of(line);
@@ -891,7 +1118,7 @@ static void load_component_schemas(const char *spec)
 			                strcmp(key, "components") == 0;
 			in_schemas = 0;
 			cur = -1;
-			in_props = 0;
+			rd.in_props = 0;
 			continue;
 		}
 		if (!in_components)
@@ -900,14 +1127,14 @@ static void load_component_schemas(const char *spec)
 			in_schemas = key_at(line, 2, key, sizeof(key)) &&
 			             strcmp(key, "schemas") == 0;
 			cur = -1;
-			in_props = 0;
+			rd.in_props = 0;
 			continue;
 		}
 		if (!in_schemas)
 			continue;
 		if (ind == 4) {
-			in_props = 0;
-			prop[0] = '\0';
+			rd.in_props = 0;
+			rd.prop[0] = '\0';
 			if (!key_at(line, 4, key, sizeof(key))) {
 				cur = -1;
 				continue;
@@ -919,191 +1146,13 @@ static void load_component_schemas(const char *spec)
 			memset(&g_comp_schemas[cur], 0, sizeof(g_comp_schemas[cur]));
 			snprintf(g_comp_schemas[cur].comp, sizeof(g_comp_schemas[cur].comp), "%s", key);
 			g_comp_schemas[cur].line = lineno;
+			schema_reader_init(&rd, 8, cur);
 			continue;
 		}
 		if (cur < 0)
 			continue;
-		if (ind == 6 && key_at(line, 6, key, sizeof(key))) {
-			in_props = strcmp(key, "properties") == 0;
-			prop[0] = '\0';
-			if (strcmp(key, "required") == 0) {
-				char v[1024];
-
-				snprintf(v, sizeof(v), "%s", value_of(line));
-				strip_eol(v);
-				g_comp_schemas[cur].n_required =
-				    parse_inline_list(v, g_comp_schemas[cur].required,
-				                      APIGEN_MAX_REQUIRED);
-				if (g_comp_schemas[cur].n_required > APIGEN_MAX_REQUIRED)
-					die_at(spec, lineno, "%s lists %d required names, apigen caps at %d",
-					       g_comp_schemas[cur].comp,
-					       g_comp_schemas[cur].n_required, APIGEN_MAX_REQUIRED);
-			}
+		if (schema_body_line(&rd, spec, lineno, line, ind))
 			continue;
-		}
-		if (!in_props)
-			continue;
-		if (ind == 8) {
-			prop_is_array = 0;
-			if (!key_at(line, 8, prop, sizeof(prop)))
-				prop[0] = '\0';
-			else {
-				size_t used = strlen(g_comp_schemas[cur].props);
-
-				if (used + strlen(prop) + 2 >= sizeof(g_comp_schemas[cur].props))
-					die_at(spec, 0,
-					       "schema %s declares more properties than this tool can "
-					       "record; raise props rather than let the self-consistency "
-					       "check go unsound",
-					       g_comp_schemas[cur].comp);
-				snprintf(g_comp_schemas[cur].props + used,
-				         sizeof(g_comp_schemas[cur].props) - used, "%s,", prop);
-				/* ADR-0338: and a field record, in schema order, for
-				 * the keys read at 10 below to fill in. */
-				if (g_comp_schemas[cur].n_field >= APIGEN_MAX_FIELDS)
-					die_at(spec, lineno,
-					       "schema %s declares more than %d properties; raise "
-					       "APIGEN_MAX_FIELDS rather than let the dashboard render "
-					       "a form that silently omits one",
-					       g_comp_schemas[cur].comp, APIGEN_MAX_FIELDS);
-				snprintf(g_comp_schemas[cur].field[g_comp_schemas[cur].n_field].name,
-				         sizeof(g_comp_schemas[cur].field[0].name), "%s", prop);
-				g_comp_schemas[cur].field[g_comp_schemas[cur].n_field].desc = -1;
-				g_comp_schemas[cur].field[g_comp_schemas[cur].n_field].nullable = 0;
-				g_comp_schemas[cur].n_field++;
-			}
-			continue;
-		}
-		if (prop[0] == '\0')
-			continue;
-		/*
-		 * The current property's own keys, at 10 (ADR-0338).
-		 *
-		 * All but one are a single-line scalar in this spec.
-		 * `description` is the exception and is read in BOTH its forms
-		 * (#594): 1,023 are a single-line scalar and 427 open a folded
-		 * `>` block, whose lines are gathered by the state at the top
-		 * of this loop. It is read because it is the one thing in a
-		 * schema that is authored MEANING rather than derived
-		 * structure, which is exactly what ADR-0338's sixth principle
-		 * says a human supplies -- and a human already did, once, in
-		 * the contract. The dashboard re-typed 185 of them into
-		 * `index.html` as hint paragraphs, which is the duplication
-		 * this removes.
-		 *
-		 * An unrecognised key is passed over rather than refused -- unlike the route table,
-		 * where a key this tool cannot read would make a route
-		 * unroutable, a field detail it cannot read simply renders as
-		 * an unconstrained input, which is what the hand-written form
-		 * did anyway.
-		 */
-		if (ind == 10 && key_at(line, 10, key, sizeof(key))) {
-			struct schema_field *fl =
-			    g_comp_schemas[cur].n_field > 0
-			        ? &g_comp_schemas[cur].field[g_comp_schemas[cur].n_field - 1]
-			        : NULL;
-			char v[APIGEN_ENUM_MAX];
-
-			snprintf(v, sizeof(v), "%s", value_of(line));
-			strip_eol(v);
-
-			if (strcmp(key, "type") == 0) {
-				char tname[APIGEN_ENUM_ITEM_MAX] = "";
-				int null_ok = 0;
-
-				if (v[0] == '[') {
-					char ms[APIGEN_ENUM_ITEMS_MAX][APIGEN_ENUM_ITEM_MAX];
-					int nm = parse_enum_list(v, ms, APIGEN_ENUM_ITEMS_MAX);
-					int m;
-
-					if (nm < 0 || nm > APIGEN_ENUM_ITEMS_MAX)
-						die_at(spec, lineno, "type list is not readable: %s", v);
-					for (m = 0; m < nm; m++) {
-						if (strcmp(ms[m], "null") == 0)
-							null_ok = 1;
-						else if (tname[0] == '\0')
-							snprintf(tname, sizeof(tname), "%s", ms[m]);
-					}
-					if (tname[0] == '\0')
-						die_at(spec, lineno,
-						       "type list names no type other than null: %s", v);
-				} else {
-					snprintf(tname, sizeof(tname), "%s", v);
-				}
-				prop_is_array = strcmp(tname, "array") == 0;
-				if (fl != NULL) {
-					snprintf(fl->type, sizeof(fl->type), "%s", tname);
-					fl->nullable = null_ok;
-				}
-				continue;
-			}
-			if (fl == NULL)
-				continue;
-			if (strcmp(key, "format") == 0)
-				snprintf(fl->format, sizeof(fl->format), "%s", v);
-			else if (strcmp(key, "pattern") == 0)
-				snprintf(fl->pattern, sizeof(fl->pattern), "%s", v);
-			else if (strcmp(key, "enum") == 0)
-				snprintf(fl->enum_list, sizeof(fl->enum_list), "%s", v);
-			else if (strcmp(key, "minimum") == 0)
-				snprintf(fl->minimum, sizeof(fl->minimum), "%s", v);
-			else if (strcmp(key, "maximum") == 0)
-				snprintf(fl->maximum, sizeof(fl->maximum), "%s", v);
-			else if (strcmp(key, "maxLength") == 0)
-				snprintf(fl->max_length, sizeof(fl->max_length), "%s", v);
-			else if (strcmp(key, "default") == 0)
-				snprintf(fl->default_lit, sizeof(fl->default_lit), "%s", v);
-			else if (strcmp(key, "readOnly") == 0)
-				fl->read_only = strcmp(v, "true") == 0;
-			else if (strcmp(key, "description") == 0) {
-				/* `>` or `>-` opens a block whose lines the top of
-				 * this loop gathers; anything else is the whole
-				 * description on this line. */
-				fl->desc = desc_begin();
-				if (strcmp(v, ">") == 0 || strcmp(v, ">-") == 0) {
-					desc_ind = 10;
-					desc_off = fl->desc;
-					desc_para = 0;
-					g_desc_used = fl->desc + 1;
-				} else {
-					desc_append(spec, lineno, fl->desc, "", v);
-				}
-			}
-			continue;
-		}
-		/* An array of scalars: `items:` at 10 carries `type:` at 12.
-		 * The $ref form below is the other half and is unaffected. */
-		if (ind == 12 && prop_is_array && g_comp_schemas[cur].n_field > 0 &&
-		    key_at(line, 12, key, sizeof(key)) && strcmp(key, "type") == 0) {
-			struct schema_field *fl =
-			    &g_comp_schemas[cur].field[g_comp_schemas[cur].n_field - 1];
-			char v[APIGEN_TYPE_MAX];
-
-			snprintf(v, sizeof(v), "%s", value_of(line));
-			strip_eol(v);
-			snprintf(fl->items, sizeof(fl->items), "%s", v);
-			continue;
-		}
-		/* items: at 10, its $ref: at 12 -- the only nesting this pass
-		 * follows, and only for a property it has just seen typed as
-		 * an array. */
-		if (ind == 12 && prop_is_array && key_at(line, 12, key, sizeof(key)) &&
-		    strcmp(key, "$ref") == 0) {
-			char items[APIGEN_ID_MAX];
-			int a;
-
-			ref_tail(value_of(line), items, sizeof(items));
-			if (items[0] == '\0')
-				continue;
-			if (g_comp_schemas[cur].n_arr >= APIGEN_MAX_ARRAY_PROPS)
-				continue;
-			a = g_comp_schemas[cur].n_arr++;
-			snprintf(g_comp_schemas[cur].arr[a].prop,
-			         sizeof(g_comp_schemas[cur].arr[a].prop), "%s", prop);
-			snprintf(g_comp_schemas[cur].arr[a].items,
-			         sizeof(g_comp_schemas[cur].arr[a].items), "%s", items);
-			prop_is_array = 0;
-		}
 	}
 	fclose(f);
 }
