@@ -6,6 +6,39 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A form that opens empty, found by reading, and the gate that now catches it (#595)
+
+`openModal()` begins by calling `closeModal()`, and `closeModal()` now empties the generated form so that
+nothing typed into it survives a close. The first draft of `openForm()` built its fields and *then* opened
+the modal -- so every generated form would have opened with nothing in it.
+
+Nothing caught that. `test_web_syntax` proves a file parses, `test_web_form` was asserting the field
+mapping, and neither touches the order two functions are called in. It was found by reading the code while
+waiting for a gate, which is luck dressed up as diligence.
+
+So the renderer's boundary moved: `openForm()` is in `web/form.js` too, and `app.js` keeps only the submit
+listener -- an HTTP request and a status line, the one part that cannot be stubbed meaningfully. The six
+globals form.js now expects from app.js (`openModal`, `sessionMay`, `sessionRefusal`, `showStatus`,
+`runRefreshers`, `refreshersForView`) are stated in its header and stubbed in the test, which is short
+enough to be a feature rather than a dependency to apologise for.
+
+**The stub reproduces the one DOM behaviour the bug turned on.** `textContent` is an accessor, not a
+field, so assigning `""` removes every child exactly as a browser does -- a plain property would have
+recorded the assignment, kept the children, and made the shim agree with the bug instead of catching it.
+On top of that the test asserts a form opens as `label,p,button`, that the modal was asked to open with
+the authored title, that the button carries the authored words, and that the hint is the contract's own
+description.
+
+Also recorded in CLAUDE.md, measured from the Makefile's own `selftest` target while watching it happen:
+**a gate costs the whole suite even when the defect is in the first ninety seconds.** The loop runs every
+one of 114 binaries, collects `fail=1`, and exits non-zero only at the end -- so `test_web_syntax`
+refusing a file at test 8 still ran the three slow floor tests afterwards and reported eleven minutes
+later. That is the right design, one cycle telling you about every failure rather than one failure per
+cycle, and its consequence is the opposite of what it first suggests: there is no cheap gate, so the
+saving is in not needing a second one. Gate 531 bought exactly that lesson -- a `form.js` whose first line
+was an orphaned ` * ` because an awk range began one line inside a comment block, which reading the
+boundary would have caught in thirty seconds.
+
 ### The first generated form, and a gate that RUNS it (#595, ADR-0338)
 
 `openForm(opId)` -- the API the design system already specified -- builds a modal's fields from the

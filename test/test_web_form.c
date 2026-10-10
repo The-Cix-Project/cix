@@ -126,10 +126,40 @@ static int run_file(JSContext *ctx, const char *path)
  * the one attribute the body collector selects on.
  */
 static const char *const DOM_SHIM =
+    /*
+     * The six globals form.js expects app.js to have defined, stubbed
+     * to record rather than act. `openModal` empties the form first,
+     * exactly as the real one does by calling closeModal() -- which is
+     * the whole reason this stub is worth having: the first draft of
+     * openForm() built its fields and THEN opened the modal, so every
+     * form would have opened empty, and nothing but reading the code
+     * caught it.
+     */
+    "globalThis.opened = null;\n"
+    "globalThis.openModal = (id, title) => {\n"
+    "  globalThis.opened = { id: id, title: title };\n"
+    "  document.getElementById(\"generated-form\").textContent = \"\";\n"
+    "};\n"
+    "globalThis.sessionMay = () => true;\n"
+    "globalThis.sessionRefusal = () => \"no\";\n"
+    "globalThis.status_said = null;\n"
+    "globalThis.showStatus = (m) => { globalThis.status_said = m; };\n"
+    "globalThis.runRefreshers = async () => {};\n"
+    "globalThis.refreshersForView = () => [];\n"
     "globalThis.document = {\n"
+    "  getElementById(id) {\n"
+    "    if (this._byId === undefined)\n"
+    "      this._byId = {};\n"
+    "    if (this._byId[id] === undefined) {\n"
+    "      this._byId[id] = this.createElement(\"form\");\n"
+    "      this._byId[id].id = id;\n"
+    "    }\n"
+    "    return this._byId[id];\n"
+    "  },\n"
+    "  querySelector() { return null; },\n"
     "  createElement(tag) {\n"
-    "    return {\n"
-    "      tag: tag, dataset: {}, children: [], textContent: \"\",\n"
+    "    const el = {\n"
+    "      tag: tag, dataset: {}, children: [],\n"
     "      appendChild(c) { this.children.push(c); },\n"
     "      querySelectorAll(sel) {\n"
     "        const out = [];\n"
@@ -144,6 +174,19 @@ static const char *const DOM_SHIM =
     "        return out;\n"
     "      },\n"
     "    };\n"
+    /*
+     * textContent is an ACCESSOR, not a field, because the one DOM
+     * behaviour the renderer depends on is that assigning "" removes
+     * every child. A plain property would record the assignment and
+     * keep the children, which would make this shim agree with a bug
+     * instead of catching it.
+     */
+    "    let text = \"\";\n"
+    "    Object.defineProperty(el, \"textContent\", {\n"
+    "      get() { return text; },\n"
+    "      set(v) { text = v; if (v === \"\") el.children.length = 0; },\n"
+    "    });\n"
+    "    return el;\n"
     "  },\n"
     "};\n";
 
@@ -292,6 +335,41 @@ int main(void)
 		       "  return JSON.stringify(generatedFormBody(f));\n"
 		       "})()",
 		       "{\"on\":true,\"n\":7,\"l\":[\"a\",\"b\",\"c\"]}");
+
+		/*
+		 * And openForm() itself, which is in form.js for this reason.
+		 *
+		 * A form that opens EMPTY is the failure to guard against, and
+		 * it is not hypothetical: the first draft built the fields and
+		 * then called openModal(), which begins by calling
+		 * closeModal(), which empties the form -- so every form would
+		 * have opened with nothing in it. Nothing caught that; it was
+		 * found by reading. The stub reproduces the clearing
+		 * faithfully (textContent is an accessor above), so this
+		 * assertion fails if the order is ever swapped back.
+		 */
+		expect(ctx, "a form opens with its one field and its button",
+		       "(() => {\n"
+		       "  openForm(\"createNtpServer\", { title: \"T\", submit: \"Register\" });\n"
+		       "  const f = document.getElementById(\"generated-form\");\n"
+		       "  return f.children.map((c) => c.tag).join(\",\");\n"
+		       "})()",
+		       "label,p,button");
+		expect(ctx, "the modal was asked to open with the authored title",
+		       "globalThis.opened.id + \"/\" + globalThis.opened.title",
+		       "generated-form/T");
+		expect(ctx, "the button carries the authored words",
+		       "(() => {\n"
+		       "  const f = document.getElementById(\"generated-form\");\n"
+		       "  return f.children[f.children.length - 1].textContent;\n"
+		       "})()",
+		       "Register");
+		expect(ctx, "the field's hint is the contract's own description",
+		       "(() => {\n"
+		       "  const f = document.getElementById(\"generated-form\");\n"
+		       "  return f.children[1].textContent.slice(0, 24);\n"
+		       "})()",
+		       "An already-running conta");
 	}
 
 	JS_FreeContext(ctx);

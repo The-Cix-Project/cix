@@ -475,91 +475,16 @@ function openModal(formId, title) {
  * session, the status line and the refresh. The split is so the first
  * half can be EXECUTED by a test rather than only parsed (see that
  * file's own header).
- */
-
-/* The two things a submit needs that are not in the form: what to
- * refresh afterwards and what to say if it fails. Authored per call
- * site, held here because the one submit listener reads them. */
-let generatedFormAfter = null;
-let generatedFormFailed = "";
-
-/*
- * The default `after`: whatever keeps the view the operator is looking
- * at honest.
  *
- * Every screen already declares its own refreshers in VIEW_REFRESHERS,
- * and both the poll loop and the tab bar run them that way -- so a
- * generated form needs no per-form refresh wiring at all. Each of the
- * 36 hand-written forms carried its own copy of that call, which is one
- * more thing that could be forgotten on the 37th.
+ * What is left here is the submit, and only because it is the one part
+ * that cannot be stubbed meaningfully: it is an HTTP request and the
+ * status line. Everything up to and including `openForm()` lives in
+ * form.js, which is how `test_web_form` can assert that a form opens
+ * with its fields present -- a property that was briefly broken in the
+ * first draft, found by reading the code rather than by any gate,
+ * because `openModal()` begins by calling `closeModal()` and the
+ * fields were being built before it.
  */
-async function refreshVisibleView() {
-	const view = document.querySelector(".view:not([hidden])");
-
-	if (view !== null)
-		await runRefreshers(refreshersForView(view.id));
-}
-
-/*
- * Open the generated form for one operation.
- *
- * opts.title    the modal's heading                (authored)
- * opts.submit   the words on the button            (authored)
- * opts.args     the operation's path parameters, in contract order
- * opts.after    what to refresh once it succeeds   (authored)
- * opts.failed   what to say if it does not         (authored)
- */
-function openForm(opId, opts) {
-	const shape = CIX_API[opId + "_SHAPE"];
-	const options = opts || {};
-	const form = document.getElementById("generated-form");
-	const fields = shape && shape.request ? CIX_API.FIELDS[shape.request] || [] : [];
-	const button = document.createElement("button");
-	const allowed = sessionMay(opId);
-
-	if (shape === undefined) {
-		showStatus("No such operation: " + opId, true);
-		return;
-	}
-	form.textContent = "";
-	form.dataset.opId = opId;
-	form.dataset.args = JSON.stringify(options.args || []);
-	generatedFormAfter = options.after || refreshVisibleView;
-	generatedFormFailed = options.failed || ("Failed to " + (options.submit || "submit"));
-
-	for (const f of fields) {
-		const label = document.createElement("label");
-
-		/* A field the daemon only ever reports is not a field anyone
-		 * fills in. */
-		if (f.readOnly)
-			continue;
-		label.textContent = fieldLabel(f.name);
-		label.appendChild(fieldControl(f));
-		form.appendChild(label);
-		if (f.description !== undefined) {
-			const hint = document.createElement("p");
-
-			hint.className = "hint";
-			hint.textContent = f.description;
-			form.appendChild(hint);
-		}
-	}
-	button.type = "submit";
-	button.textContent = options.submit || "Save";
-	if (shape.destructive)
-		button.className = "button-danger";
-	/* web-ux-guidelines: a modal's own submit sets disabled and its
-	 * reason from sessionMay() directly, since it must be re-enabled
-	 * when a later login grants it. */
-	button.disabled = !allowed;
-	if (!allowed)
-		button.title = sessionRefusal(opId);
-	form.appendChild(button);
-	openModal("generated-form", options.title || fieldLabel(opId));
-}
-
-
 document.getElementById("generated-form").addEventListener("submit", async (event) => {
 	const form = event.target;
 	const opId = form.dataset.opId;
