@@ -245,12 +245,9 @@ int main(void)
 			     "the page, not in the tree",
 			     hash, parent_view);
 		} else if (!is_child) {
-			const char *ls = p;
-			const char *blk;
-
+			/* Group-ness is derived per entry above now, so this is
+			 * only here to remember the page a child must land on. */
 			snprintf(parent_view, sizeof(parent_view), "%s", view);
-			(void)ls;
-			(void)blk;
 		}
 		if (tabbed) {
 			tabbed_checked++;
@@ -304,14 +301,14 @@ int main(void)
 				}
 				fail("tree group \"%s\" carries a hash of its own -- a group names a "
 				     "group, not a destination, and every one of these used to land on "
-				     "one of its own children's pages (#592)",
-				     label);
+				     "one of its own children's pages (#592)%s",
+				     label, "");
 			}
 			b += strlen("group: true");
 		}
 		if (groups == 0)
 			fail("no tree group found at all -- this check reads `group: true` out of "
-			     "topLevel, so a rename makes it silently gate nothing%s", "");
+			     "topLevel, so a rename makes it silently gate nothing%s%s", "", "");
 	}
 
 	/*
