@@ -317,6 +317,21 @@ int main(void)
 		expect(ctx, "and the escaped hyphen reads as a hyphen",
 		       "String(constraintText({ pattern: \"^[A-Za-z0-9_\\\\-]+$\" }).indexOf(\"\\\\\"))",
 		       "-1");
+		/* A hostname's class sits at the FRONT, inside a repeated
+		 * group -- `^[A-Za-z0-9\-]{1,63}(\.…)*$`. Reading only the
+		 * end-anchored class fell through to the format word, so the
+		 * chip said "hostname" beside a label reading HOSTNAME. */
+		expect(ctx, "a class inside a repeated group is still read",
+		       "constraintText(CIX_API.FIELDS.DnsRecordCreateRequest.find("
+		       "(f) => f.name === \"name\"))",
+		       "1–63 · [A-Za-z0-9-]");
+		/* And an unreadable pattern shows nothing rather than a regex:
+		 * `^/(?!.*\.\.).+$` has no class to extract, and the hint
+		 * already says "absolute path". */
+		expect(ctx, "a pattern with no class shows no chip",
+		       "constraintText(CIX_API.FIELDS.DnsServerBindingCreateRequest.find("
+		       "(f) => f.name === \"hosts_path\"))",
+		       "");
 		expect(ctx, "a format with no numeric constraint shows in words",
 		       "constraintText(CIX_API.FIELDS.NetworkCreateRequest.find("
 		       "(f) => f.name === \"subnet\"))",

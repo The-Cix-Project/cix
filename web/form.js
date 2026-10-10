@@ -107,9 +107,18 @@ function constraintText(f) {
 		parts.push("≤ " + f.maximum);
 
 	if (f.pattern !== undefined) {
-		/* The one shape this contract writes: an optional anchor class,
-		 * then the repeated class, then a length. `\-` reads as `-`. */
-		const m = /\[([^\]]+)\](\{(\d+),(\d+)\})?[+*]?\$?$/.exec(f.pattern);
+		/*
+		 * The END-anchored class first, then the first class as a
+		 * fallback. Two real shapes in this contract need both:
+		 * `^[a-z_][a-z0-9_\-]*$` leads with a one-character anchor
+		 * class and the meaningful one is at the end, while a
+		 * hostname's `^[A-Za-z0-9\-]{1,63}(\.…)*$` ends inside a
+		 * group and the meaningful one is first. `\-` reads as `-`,
+		 * since that spelling is for the regex engine and not for a
+		 * person.
+		 */
+		const m = /\[([^\]]+)\](\{(\d+),(\d+)\})?[+*]?\$?$/.exec(f.pattern) ||
+			/\[([^\]]+)\](\{(\d+),(\d+)\})?/.exec(f.pattern);
 
 		if (m !== null) {
 			cls = "[" + m[1].replace(/\\-/g, "-") + "]";
