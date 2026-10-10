@@ -162,6 +162,19 @@ function fieldControl(f) {
 	el.id = "gf-" + f.name;
 	el.dataset.field = f.name;
 	el.dataset.ftype = f.type;
+	/*
+	 * An array's ITEM type, because a comma-separated list of digits
+	 * is not a list of numbers until someone converts it (#596).
+	 *
+	 * `LdapUserCreateRequest.secondary_groups` is `items: integer`,
+	 * and without this the body carried `["10001","10002"]` -- which
+	 * the daemon reads with json_as_number() on a JSON string, so
+	 * every gid would have arrived as 0 and the user would have been
+	 * put in no secondary group at all. Found by rendering the real
+	 * form and printing the body it collects, not by reading.
+	 */
+	if (f.type === "array" && f.items !== undefined)
+		el.dataset.fitems = f.items;
 	if (f.required && f.type !== "boolean")
 		el.required = true;
 	return el;
@@ -230,10 +243,19 @@ function generatedFormBody(form) {
 			continue;
 		}
 		if (type === "array") {
-			body[name] = el.value
+			const items = el.value
 				.split(",")
 				.map((s) => s.trim())
 				.filter((s) => s.length > 0);
+			const itemType = el.dataset.fitems;
+
+			/* The item type decides, exactly as the field's own type
+			 * decides a scalar -- a numeric list sent as strings is
+			 * read by the daemon's json_as_number() as a list of
+			 * zeroes, which is silent and wrong rather than refused. */
+			body[name] = itemType === "integer" || itemType === "number"
+				? items.map((s) => Number(s))
+				: items;
 			continue;
 		}
 		body[name] = el.value;

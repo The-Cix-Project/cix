@@ -695,6 +695,39 @@ int main(void)
 		       ".find((f) => f.name === \"name\").pattern).test(\"db_1.arpa\"))",
 		       "false");
 
+		/*
+		 * An array's ITEM type, which a comma-separated list does not
+		 * carry by itself.
+		 *
+		 * `secondary_groups` is `items: integer`, and the body used to
+		 * carry `["10001","10002"]` -- which the daemon reads with
+		 * json_as_number() on a JSON string, so every gid arrived as
+		 * 0 and the user landed in no secondary group. Silent and
+		 * wrong rather than refused, which is why it is gated.
+		 */
+		expect(ctx, "a numeric list arrives as numbers, not strings",
+		       "(() => {\n"
+		       "  const f = CIX_API.FIELDS.LdapUserCreateRequest.find(\n"
+		       "    (x) => x.name === \"secondary_groups\");\n"
+		       "  const el = fieldControl(f);\n"
+		       "  const form = document.createElement(\"form\");\n"
+		       "  el.value = \"10001, 10002\";\n"
+		       "  form.appendChild(el);\n"
+		       "  return JSON.stringify(generatedFormBody(form));\n"
+		       "})()",
+		       "{\"secondary_groups\":[10001,10002]}");
+		expect(ctx, "and a list of strings still arrives as strings",
+		       "(() => {\n"
+		       "  const f = CIX_API.FIELDS.PkiCertCreateRequest.find(\n"
+		       "    (x) => x.name === \"sans\");\n"
+		       "  const el = fieldControl(f);\n"
+		       "  const form = document.createElement(\"form\");\n"
+		       "  el.value = \"a.b, c.d\";\n"
+		       "  form.appendChild(el);\n"
+		       "  return JSON.stringify(generatedFormBody(form));\n"
+		       "})()",
+		       "{\"sans\":[\"a.b\",\"c.d\"]}");
+
 		expect(ctx, "the document field of that same form is the wide one",
 		       "(() => {\n"
 		       "  const form = document.getElementById(\"generated-form\");\n"

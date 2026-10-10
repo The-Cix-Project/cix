@@ -432,12 +432,6 @@ function closeModal() {
 	appPasswordScope = null;
 	document.getElementById("apf-secret-value").value = "";
 	document.getElementById("apf-secret").hidden = true;
-	ldapGroupEditName = null;
-	document.getElementById("lgf-name").readOnly = false;
-	document.getElementById("lgf-submit").textContent = "Create";
-	ldapUserEditName = null;
-	document.getElementById("luf-name").readOnly = false;
-	document.getElementById("luf-submit").textContent = "Create";
 
 	/*
 	 * The generated form is emptied rather than reset (ADR-0338): its
@@ -8635,19 +8629,15 @@ async function removeLdapServer(container) {
 
 /* ---------- LDAP Groups (task #726) ---------- */
 
-/* Set while the LDAP group modal form is open in edit mode (task #750) --
- * null means the next submit is a create (POST). */
-let ldapGroupEditName = null;
-
 function editLdapGroup(group) {
-	/* Set AFTER openModal() -- it calls closeModal(), which resets this
-	 * to null (otherwise the submit handler POSTs instead of PUTs). */
-	openModal("ldap-group-form", "Edit LDAP group");
-	ldapGroupEditName = group.name;
-	document.getElementById("lgf-name").value = group.name;
-	document.getElementById("lgf-name").readOnly = true;
-	document.getElementById("lgf-gidnumber").value = group.gidnumber;
-	document.getElementById("lgf-submit").textContent = "Save";
+	openForm("updateLdapGroup", {
+		title: "Edit LDAP group " + group.name,
+		submit: "Save",
+		args: [group.name],
+		values: { gidnumber: group.gidnumber },
+		after: refreshLdapGroups,
+		failed: "Failed to update LDAP group " + group.name,
+	});
 }
 
 function renderLdapGroups(groups) {
@@ -8716,31 +8706,52 @@ async function removeLdapGroup(name) {
 
 /* ---------- LDAP Users (task #726) ---------- */
 
-/* Set while the LDAP user modal form is open in edit mode (task #731,
- * following the exact ldapGroupEditName pattern from task #750) -- null
- * means the next submit is a create (POST). */
-let ldapUserEditName = null;
-
+/*
+ * Editing a user is `updateLdapUser`, whose request schema IS
+ * `LdapUserCreateRequest` -- a PUT here is a full-record replacement,
+ * so the form has to carry every field and send every field. That is
+ * what makes the generated version a bug fix rather than a port:
+ *
+ *   - **`can_search` was silently revoked by every edit.** The
+ *     hand-written body never included it, `parse_ldap_user_body()`
+ *     reads an absent `can_search` as FALSE, and `ldap_user_update()`
+ *     writes `u->can_search` unconditionally -- so changing a service
+ *     account's mail address dropped its search grant, which is what
+ *     an nslcd binddn and a live AuthorizedKeysCommand bind need. The
+ *     contract has said "Full-field-replacement on PUT like every
+ *     other field here" the whole time; the form was the only thing
+ *     that disagreed (cix#604).
+ *   - **`disabled` rendered as a large grey square**, because its
+ *     markup carried no `class="checkbox"` and the global
+ *     `form input` rule gives every input `width: 100%`.
+ *
+ * `password` is left empty on purpose and omitted: `fill_user_fields()`
+ * only overwrites the hash when the value is non-NULL and non-empty,
+ * so an untouched password field keeps the existing credential --
+ * measured, and the contract's own description says so.
+ */
 function editLdapUser(user) {
-	/* openModal() calls closeModal(), which resets ldapUserEditName to
-	 * null -- so this MUST be set AFTER openModal(), or the submit
-	 * handler sees null and POSTs (create) instead of PUT (update),
-	 * 409-ing on the existing name. */
-	openModal("ldap-user-form", "Edit LDAP user");
-	ldapUserEditName = user.name;
-	document.getElementById("luf-name").value = user.name;
-	document.getElementById("luf-name").readOnly = true;
-	document.getElementById("luf-uidnumber").value = user.uidnumber;
-	document.getElementById("luf-primarygroup").value = user.primarygroup;
-	document.getElementById("luf-secondary-groups").value = (user.secondary_groups || []).join(",");
-	document.getElementById("luf-givenname").value = user.givenname || "";
-	document.getElementById("luf-sn").value = user.sn || "";
-	document.getElementById("luf-mail").value = user.mail || "";
-	document.getElementById("luf-loginshell").value = user.loginshell || "";
-	document.getElementById("luf-homedirectory").value = user.homedirectory || "";
-	document.getElementById("luf-ssh-key").value = user.ssh_public_key || "";
-	document.getElementById("luf-disabled").checked = !!user.disabled;
-	document.getElementById("luf-submit").textContent = "Save";
+	openForm("updateLdapUser", {
+		title: "Edit LDAP user " + user.name,
+		submit: "Save",
+		args: [user.name],
+		fixed: { name: user.name },
+		values: {
+			uidnumber: user.uidnumber,
+			primarygroup: user.primarygroup,
+			secondary_groups: user.secondary_groups || [],
+			givenname: user.givenname,
+			sn: user.sn,
+			mail: user.mail,
+			loginshell: user.loginshell,
+			homedirectory: user.homedirectory,
+			ssh_public_key: user.ssh_public_key,
+			can_search: user.can_search,
+			disabled: user.disabled,
+		},
+		after: refreshLdapUsers,
+		failed: "Failed to update LDAP user " + user.name,
+	});
 }
 
 function renderLdapUsers(users, emptyText = "No LDAP users") {
@@ -13134,79 +13145,6 @@ document.getElementById("route-add-form").addEventListener("submit", async (even
 
 
 
-document.getElementById("ldap-group-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const name = document.getElementById("lgf-name").value.trim();
-	const gidnumberRaw = document.getElementById("lgf-gidnumber").value;
-
-	try {
-		if (ldapGroupEditName !== null) {
-			await apiRequest("PUT", CIX_API.updateLdapGroup(ldapGroupEditName), {
-				gidnumber: parseInt(gidnumberRaw, 10),
-			});
-		} else {
-			const body = { name: name };
-			if (gidnumberRaw !== "")
-				body.gidnumber = parseInt(gidnumberRaw, 10);
-			await apiRequest("POST", CIX_API.createLdapGroup(), body);
-		}
-		clearStatus();
-		document.getElementById("ldap-group-form").reset();
-		closeModal();
-		await refreshLdapGroups();
-	} catch (e) {
-		showStatus((ldapGroupEditName !== null ? "Failed to update" : "Failed to create") + " LDAP group: " + e.message, true);
-	}
-});
-
-document.getElementById("ldap-user-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	/* Comma-separated GID numbers, matching cixctl's own
-	 * --secondary-groups= parsing convention exactly -- PUT is a real
-	 * full-field-replacement (same as every other field here), so this
-	 * is always sent, defaulting to an empty array (no secondary
-	 * groups) rather than omitted, the same way every other field on
-	 * this form already behaves whether editing or creating. */
-	const secondaryGroups = document
-		.getElementById("luf-secondary-groups")
-		.value.split(",")
-		.map((s) => s.trim())
-		.filter((s) => s !== "")
-		.map((s) => parseInt(s, 10));
-
-	const body = {
-		name: document.getElementById("luf-name").value.trim(),
-		primarygroup: parseInt(document.getElementById("luf-primarygroup").value, 10),
-		secondary_groups: secondaryGroups,
-		givenname: document.getElementById("luf-givenname").value.trim(),
-		sn: document.getElementById("luf-sn").value.trim(),
-		mail: document.getElementById("luf-mail").value.trim(),
-		loginshell: document.getElementById("luf-loginshell").value.trim(),
-		homedirectory: document.getElementById("luf-homedirectory").value.trim(),
-		password: document.getElementById("luf-password").value,
-		ssh_public_key: document.getElementById("luf-ssh-key").value.trim(),
-		disabled: document.getElementById("luf-disabled").checked,
-	};
-	const uidnumberRaw = document.getElementById("luf-uidnumber").value;
-
-	if (uidnumberRaw !== "")
-		body.uidnumber = parseInt(uidnumberRaw, 10);
-
-	try {
-		if (ldapUserEditName !== null)
-			await apiRequest("PUT", CIX_API.updateLdapUser(ldapUserEditName), body);
-		else
-			await apiRequest("POST", CIX_API.createLdapUser(), body);
-		clearStatus();
-		document.getElementById("ldap-user-form").reset();
-		closeModal();
-		await refreshLdapUsers();
-	} catch (e) {
-		showStatus((ldapUserEditName !== null ? "Failed to update" : "Failed to create") + " LDAP user: " + e.message, true);
-	}
-});
 
 document.getElementById("pki-ca-form").addEventListener("submit", async (event) => {
 	event.preventDefault();

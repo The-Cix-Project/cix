@@ -173,8 +173,8 @@
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">LDAP</button>
 					<ul class="menu-submenu-menu" hidden>
-						<li><button type="button" data-modal="ldap-user-form" data-op="createLdapUser" data-title="Create LDAP user">New User</button></li>
-						<li><button type="button" data-modal="ldap-group-form" data-op="createLdapGroup" data-title="Create LDAP group">New Group</button></li>
+						<li><button type="button" data-modal="generated-form" data-op="createLdapUser" data-title="Create LDAP user" data-submit="Create">New User</button></li>
+						<li><button type="button" data-modal="generated-form" data-op="createLdapGroup" data-title="Create LDAP group" data-submit="Create">New Group</button></li>
 						<li><button type="button" id="menu-grant-permissions" data-op="putHostauthGroupPermissions">Grant Permissions</button></li>
 						<li><button type="button" data-modal="generated-form" data-op="createLdapServer" data-title="Register LDAP server" data-submit="Register">Register Server</button></li>
 					</ul>
@@ -3568,20 +3568,6 @@
 
 
 
-			<div id="modal-ldap-group-form" hidden>
-				<form id="ldap-group-form">
-					<label>
-						Name
-						<input type="text" id="lgf-name" pattern="[a-z_][a-z0-9_-]*" required>
-					</label>
-					<label>
-						GID number
-						<input type="number" id="lgf-gidnumber" min="1" placeholder="auto-allocated if blank">
-					</label>
-					<button type="submit" id="lgf-submit">Create</button>
-				</form>
-			</div>
-
 			<!-- #447: set one net.* sysctl on an existing container, live when
 			     it is running (PUT /v1/containers/{name}/sysctls). -->
 			<div id="modal-container-sysctl-form" hidden>
@@ -3647,65 +3633,6 @@
 						script sends it as HTTP Basic, <code>USER:PASSWORD</code>, on each request.</p>
 					<input type="text" id="apf-secret-value" readonly>
 				</div>
-			</div>
-
-			<div id="modal-ldap-user-form" hidden>
-				<form id="ldap-user-form">
-					<label>
-						Name
-						<input type="text" id="luf-name" pattern="[a-z_][a-z0-9_-]*" required>
-					</label>
-					<label>
-						UID number
-						<input type="number" id="luf-uidnumber" min="1" placeholder="auto-allocated if blank">
-					</label>
-					<label>
-						Primary group (GID number)
-						<input type="number" id="luf-primarygroup" min="1" required>
-					</label>
-					<label>
-						Secondary groups (GID numbers)
-						<input type="text" id="luf-secondary-groups" placeholder="1000,10000">
-					</label>
-					<label>
-						Given name
-						<input type="text" id="luf-givenname">
-					</label>
-					<label>
-						Surname
-						<input type="text" id="luf-sn">
-					</label>
-					<label>
-						Mail
-						<input type="text" id="luf-mail">
-					</label>
-					<label>
-						Login shell
-						<!-- /usr/bin/bash, never /bin/bash: this project's minimal images
-						     have no /bin at all, and sshd refuses a login whose configured
-						     shell doesn't exist -- surfacing only as a misleading
-						     "Permission denied" (sshd deliberately runs the auth with a
-						     bogus credential for an account it considers invalid, so the
-						     LDAP bind is what appears to fail). See docs/api/README.md. -->
-						<input type="text" id="luf-loginshell" placeholder="/usr/bin/bash">
-					</label>
-					<label class="wide">
-						Home directory
-						<input type="text" id="luf-homedirectory" placeholder="/home/j_doe">
-					</label>
-					<label class="wide">
-						Password
-						<input type="password" id="luf-password">
-					</label>
-					<label class="wide">
-						SSH public key
-						<input type="text" id="luf-ssh-key" placeholder="ssh-ed25519 AAAA... (enables sync to any registered SSH target)">
-					</label>
-					<label>
-						<input type="checkbox" id="luf-disabled"> Disabled
-					</label>
-					<button type="submit" id="luf-submit">Create</button>
-				</form>
 			</div>
 
 			<div id="modal-pki-cert-form" hidden>

@@ -6,6 +6,34 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The LDAP forms, and an edit that revoked a grant every time (#596, #604, ADR-0338)
+
+`ldap-group-form` and `ldap-user-form` are gone — the last two of the dual-mode forms, and with them the
+third and fourth copy of the `*EditName` module variable, the `readOnly` toggled on a name, the button
+whose words were rewritten and the six lines in `closeModal()` putting it all back. Creating and updating
+are four generated forms now, keyed by path argument where the contract keys them that way.
+
+**Converting the user form fixed a real bug** ([#604](https://git.home.arpa/itdlabs/cix/issues/604)): the
+hand-written PUT body carried eleven fields and `can_search` was not one of them, so *every* edit of an
+LDAP user through the dashboard — a mail address, a shell — silently revoked that user's search grant.
+Measured by reading the daemon: `parse_ldap_user_body()` reads an absent `can_search` as **false**, and
+`ldap_user_update()` writes it unconditionally, with its own comment stating that this is by design. The
+contract said the same thing all along; only the form disagreed. A generated boolean is a checkbox and is
+always sent, and the edit path prefills it from the record, so the class of bug is gone rather than this
+instance of it. The same markup also rendered `disabled` as a large grey square, having carried no
+`class="checkbox"`.
+
+**And rendering the converted form found one of its own:** `secondary_groups` is `items: integer`, and the
+body collector sent `["10001","10002"]` — strings, which the daemon reads with `json_as_number()` as a list
+of zeroes, so the user would have landed in no secondary group at all. Silent and wrong rather than
+refused. An array's item type now rides on the control as `data-fitems` and decides the conversion, exactly
+as the field's own type decides a scalar. Found by printing the body the real form collects, not by reading
+it — the fourth defect this release that only a browser could show.
+
+`LdapUserCreateRequest.loginshell` gained the description its markup comment had been carrying: an absolute
+path that exists in the image, `/usr/bin/bash` and never `/bin/bash`, because sshd refuses a login whose
+shell is missing and reports it as a misleading "Permission denied".
+
 ### Every name pattern in the contract was ignored by the browser (#596, ADR-0338)
 
 **HTML compiles an `<input pattern>` with the regex `v` flag, and the spec's answer to a pattern it cannot

@@ -20082,6 +20082,14 @@ components:
           type: string
         loginshell:
           type: string
+          description: >
+            An absolute path that exists in the image this user logs into --
+            /usr/bin/bash, never /bin/bash: this project's minimal images ship no
+            /bin entry but sh. sshd refuses a login whose configured shell is
+            missing and surfaces it only as a misleading "Permission denied",
+            because it deliberately runs the auth with a bogus credential for an
+            account it considers invalid -- so the LDAP bind is what appears to
+            fail. Empty means the directory's own default.
         homedirectory:
           type: string
         password:
