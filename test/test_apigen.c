@@ -648,19 +648,26 @@ int main(void)
 				 * regex, and it does not need to -- the defect has an
 				 * exact spelling.
 				 */
-				if ((tp = strstr(buf, "pattern: \"")) != NULL) {
+				{
+					/* Its own local rather than the shared `tp`
+					 * below: two readers sharing one cursor is an
+					 * ordering trap waiting for the next check to be
+					 * inserted between them. */
+					const char *pat = strstr(buf, "pattern: \"");
 					const char *q;
 
-					for (q = tp + 10; *q != '\0' && *q != '"'; q++)
-						if (*q == ']' && q > tp + 10 && q[-1] == '-' &&
-						    (q - 2 < tp + 10 || q[-2] != '\\')) {
-							if (vmode_pattern++ == 0) {
-								vmode_line = lno;
-								snprintf(vmode_text, sizeof(vmode_text),
-								         "%.150s", tp);
+					if (pat != NULL)
+						for (q = pat + 10; *q != '\0' && *q != '"'; q++)
+							if (*q == ']' && q > pat + 10 && q[-1] == '-' &&
+							    (q - 2 < pat + 10 || q[-2] != '\\')) {
+								if (vmode_pattern++ == 0) {
+									vmode_line = lno;
+									snprintf(vmode_text,
+									         sizeof(vmode_text),
+									         "%.150s", pat);
+								}
+								break;
 							}
-							break;
-						}
 				}
 				if (strstr(buf, "_SHAPE: {") != NULL)
 					shapes++;

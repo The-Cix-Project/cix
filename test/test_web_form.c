@@ -577,12 +577,20 @@ int main(void)
 		 * keeps asking for it, which apigen cannot see.
 		 */
 		expect(ctx, "the only control the contract ever asks for is one this builds",
+		       /* A plain object as the set, and no spread: this runs
+		        * under the engine the release's selftest carries, and
+		        * an assertion that depends on a newer builtin fails as
+		        * a TypeError about itself rather than reporting the
+		        * property it was written to check. */
 		       "(() => {\n"
-		       "  const seen = new Set();\n"
-		       "  for (const name of Object.keys(CIX_API.FIELDS))\n"
-		       "    for (const f of CIX_API.FIELDS[name])\n"
-		       "      if (f.ui !== undefined) seen.add(f.ui);\n"
-		       "  return [...seen].sort().join(\",\");\n"
+		       "  const seen = {};\n"
+		       "  const names = Object.keys(CIX_API.FIELDS);\n"
+		       "  for (let i = 0; i < names.length; i++) {\n"
+		       "    const fields = CIX_API.FIELDS[names[i]];\n"
+		       "    for (let j = 0; j < fields.length; j++)\n"
+		       "      if (fields[j].ui !== undefined) seen[fields[j].ui] = 1;\n"
+		       "  }\n"
+		       "  return Object.keys(seen).sort().join(\",\");\n"
 		       "})()",
 		       "textarea");
 
