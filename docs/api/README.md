@@ -725,6 +725,19 @@ Each operation in `openapi.yaml` carries `x-cix-permission`, naming the one perm
 
 `apigen` refuses to generate if an operation has no permission, names one outside the list, or names two, so an endpoint with no stated authorisation cannot be added. Each permission is generated into the route table, and the dispatcher checks it there ([#541](https://git.home.arpa/itdlabs/cix/issues/541)).
 
+### A secret a caller TYPES is marked `format: password`
+
+Eight request fields carry it: `POST /login`'s `password`, the `passphrase` on `POST /pki/export` and
+`POST /pki/import`, the `token` on the add and update of both `/pkg/sources` and `/pkg/repositories`, and
+`LdapUserCreateRequest`'s `password`. It changes nothing on the wire -- it is OpenAPI's own standard hint
+that a value is a secret being entered -- and the dashboard renders such a field obscured, because since
+[ADR-0338](../adr/0338-the-dashboard-renders-from-the-contract.md) a form is generated from this schema and
+a generated `type: string` would otherwise be a plain text input showing the password as it is typed.
+
+**It is deliberately NOT on `AppPasswordCreated.password`**, which is the one place a secret travels the
+other way: that field is a generated app password in a *response*, shown once so an operator can copy it,
+and obscuring it would defeat the only reason it is returned.
+
 **Which groups hold which permissions ([#540](https://git.home.arpa/itdlabs/cix/issues/540)).** `GET /system/hostauth/permissions` returns `{"vocabulary": [...], "groups": {"<group>": ["containers:read", ...]}}`, and `PUT /system/hostauth/permissions/{group}` with `{"permissions": [...]}` replaces one group's set. A user holds the union over every group they are in, read on every request, so a grant or a membership change takes effect on the next request of a session already open. A word outside the vocabulary is a `400` naming it. `GET /whoami` reports the caller's own set as `permissions`.
 
 The mapping is the one stored statement; `admin_groups` in `hostauth-config` is derived from it -- the groups holding every permission. A `PUT /system/hostauth-config` naming a group grants it every permission, and a group that held every permission and is no longer named loses its entry. On the first start after upgrading to #540, each existing admin group was granted every permission, so nobody gained or lost anything. Deleting an LDAP group removes its entry, so a new group of the same name inherits nothing; renaming one moves its grants.

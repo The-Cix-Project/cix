@@ -227,6 +227,19 @@ static void check_declared_exposure(void)
 	char *cli_console = slurp("client/src/console.c");
 	char *cli = NULL;
 	char *web = slurp("web/app.js");
+	/*
+	 * ADR-0338 (#595): index.html is a third place the dashboard names
+	 * an operation, and the only place a GENERATED form names one.
+	 *
+	 * A converted form is markup -- `data-modal="generated-form"
+	 * data-op="createNtpServer"` -- and app.js resolves it through
+	 * `CIX_API[opId]`, which is a dynamic lookup that no textual check
+	 * can see. Reading only app.js would therefore report that the
+	 * dashboard had stopped offering a capability at the exact moment
+	 * it started offering a better form of it, which is the failure
+	 * mode this check's own comment below already warned about.
+	 */
+	char *web_html = slurp("web/index.html");
 	FILE *p;
 	char line[1024];
 	int checked = 0;
@@ -246,6 +259,7 @@ static void check_declared_exposure(void)
 		failures++;
 		free(cli);
 		free(web);
+		free(web_html);
 		return;
 	}
 	/* #234: a comment naming an operation is not a call to it. */
@@ -257,6 +271,7 @@ static void check_declared_exposure(void)
 		failures++;
 		free(cli);
 		free(web);
+		free(web_html);
 		return;
 	}
 	while (fgets(line, sizeof(line), p) != NULL) {
@@ -274,9 +289,11 @@ static void check_declared_exposure(void)
 		has_cli = mentions(cli, want_cli);
 		has_web = mentions(web, want_web);
 		/*
-		 * ADR-0338 (#594): a renderer-driven surface names its
+		 * ADR-0338 (#594): a renderer-driven surface may name its
 		 * operation by the generated SHAPE rather than by the path
-		 * helper -- `openForm(CIX_API.createNetwork_SHAPE)`.
+		 * helper -- `CIX_API.createNetwork_SHAPE`, which a screen
+		 * reads for a method, a permission or whether an operation is
+		 * destructive.
 		 *
 		 * mentions() is a WHOLE-identifier test, deliberately, so
 		 * `CIX_API.createNetwork` does not match inside
@@ -293,6 +310,14 @@ static void check_declared_exposure(void)
 
 			snprintf(want_shape, sizeof(want_shape), "CIX_API.%s_SHAPE", op_id);
 			has_web = mentions(web, want_shape);
+		}
+		/* And a generated form names its operation in the markup
+		 * (#595), where `data-op="<opId>"` is the whole wiring. */
+		if (!has_web && web_html != NULL) {
+			char want_attr[176];
+
+			snprintf(want_attr, sizeof(want_attr), "data-op=\"%s\"", op_id);
+			has_web = strstr(web_html, want_attr) != NULL;
 		}
 
 		if (decl_cli && !has_cli) {
@@ -324,6 +349,7 @@ static void check_declared_exposure(void)
 	pclose(p);
 	free(cli);
 	free(web);
+	free(web_html);
 	if (checked == 0) {
 		fprintf(stderr, "FAIL: no operations checked -- apigen produced nothing, so a green "
 		                "result here would mean nothing\n");

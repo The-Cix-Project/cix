@@ -264,6 +264,7 @@ paths:
                   type: string
                 password:
                   type: string
+                  format: password
       responses:
         "200":
           description: Authenticated
@@ -9241,6 +9242,7 @@ paths:
               properties:
                 passphrase:
                   type: string
+                  format: password
                   description: >
                     Encrypts the bundle. Never stored by the daemon, and
                     never recoverable from it -- without it the bundle is
@@ -9316,6 +9318,7 @@ paths:
               properties:
                 passphrase:
                   type: string
+                  format: password
                 bundle:
                   type: string
                   description: The `bundle` string from POST /pki/export, verbatim.
@@ -9812,6 +9815,7 @@ paths:
                   description: Branch or tag to sync; main when omitted
                 token:
                   type: string
+                  format: password
                   description: Write-only
                 write:
                   type: boolean
@@ -9872,6 +9876,7 @@ paths:
                   type: string
                 token:
                   type: string
+                  format: password
                 write:
                   type: boolean
                 trust_keys:
@@ -10774,6 +10779,7 @@ paths:
                     fetched at <url>/<name>-<version>-<arch>.cixpkg.
                 token:
                   type: string
+                  format: password
                   description: Write-only. Sent as an Authorization Bearer header.
                 push:
                   type: boolean
@@ -10822,6 +10828,7 @@ paths:
                   type: string
                 token:
                   type: string
+                  format: password
                 push:
                   type: boolean
       responses:
@@ -20051,6 +20058,7 @@ components:
           type: string
         password:
           type: string
+          format: password
           description: >
             Plaintext, hashed server-side with bcrypt (ADR-0144) into
             glauth's own "passbcrypt" config field, hex-encoded there to
@@ -20571,7 +20579,12 @@ components:
       properties:
         container:
           type: string
-          description: Name of an existing, running container (see /containers) to register as a time source.
+          pattern: "^[A-Za-z0-9_-]+$"
+          description: >
+            An already-running container (see /containers) to register as
+            an internal time source. The daemon resolves its live IP fresh
+            at every sync attempt and queries it directly, ahead of any
+            configured upstream address (ADR-0110).
 
     NtpServerBinding:
       type: object

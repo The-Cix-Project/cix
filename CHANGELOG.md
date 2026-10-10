@@ -6,6 +6,56 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The first generated form, and a gate that RUNS it (#595, ADR-0338)
+
+`openForm(opId)` -- the API the design system already specified -- builds a modal's fields from the
+operation's own request schema. One panel in `index.html`, deliberately empty, because a field written
+there would be a second copy of something the contract states.
+
+Everything a control needs comes from the field: options make a select carrying its own values in contract
+order, a boolean a checkbox, a numeric type a number input bearing the contract's own minimum and maximum,
+`format: password` an obscured input, a string its `pattern` and `maxLength`, and an array of scalars a
+comma-separated input -- the convention the hand-written container form already used. **No branch is keyed
+on a field's NAME**; a `name === "password"` special case here is the parallel the guidelines forbid, and
+is why the eight secrets an operator types now carry `format: password` in the contract instead.
+
+Authored at the call site, because it takes judgement: the title, the three words on the button, and what
+to say when it fails. **The refresh is not authored any more** -- every screen already declares its
+refreshers in `VIEW_REFRESHERS`, so the default is to refresh the view the operator is looking at. Each of
+the 36 hand-written forms carried its own copy of that call, which is one more thing the 37th could
+forget.
+
+**Two properties worth stating.** An empty OPTIONAL field is omitted from the body rather than sent as
+`""`, because every partial-update endpoint here reads an absent key as "leave it alone" and an empty
+string as "set it to empty" -- sending the second for the first is how a generated form would quietly
+clear a field nobody touched. And `closeModal()` empties the generated form rather than resetting it, so
+nothing typed into any of its controls survives the close: that is one line covering every secret field
+the contract has or ever gains, where each hand-written form needed its own.
+
+**The first conversion is `createNtpServer`, and it moved two things into the contract rather than
+dropping them.** Its hand-written form carried `pattern="[A-Za-z0-9_-]+"` that the contract did not state,
+and a hint explaining ADR-0110's live-IP resolution that was richer than the contract's one-line
+description. Both now live in `NtpServerBindingCreateRequest`, which is where a second client would also
+have needed them. That is what converting a form actually costs, and it is the point: the duplication was
+hiding a contract that said less than the dashboard knew.
+
+**And the renderer is EXECUTED by a gate, not just parsed.** `web/form.js` is its own file for exactly
+that reason -- it depends on nothing but `document` and `CIX_API`, so `test_web_form` (new, in SELFTESTS)
+hands quickjs the real generated `api.js`, the real `form.js` and a DOM small enough to write down, then
+asserts what an operator would otherwise have to open a browser to see: that `postLoginRequest.password`
+renders obscured and `username` does not, that `prefix_len` carries 8 and 30, that the NTP container field
+carries its new pattern, that `SourceCatalogueEntry.stage` becomes a select holding all fifteen of its
+values, that an empty optional is omitted, and that a checkbox arrives as a boolean and a list as an
+array. Keeping it inside `app.js` would have made that impossible: evaluating that file runs a
+dashboard's worth of wiring against hundreds of element ids, so its only possible gate is that it parses
+-- which is the gap that let three unparseable `api.js` releases through in one day.
+
+`test_api_surfaces` learned the third place the dashboard names an operation: a generated form is markup
+(`data-modal="generated-form" data-op="createNtpServer"`) resolved through `CIX_API[opId]`, a dynamic
+lookup no textual check can see. Without that, converting a form would report the dashboard had stopped
+offering a capability at the moment it started offering a better form of it -- which is the failure that
+check's own comment had already warned about.
+
 ### A request body written inline is still the contract (#603)
 
 ADR-0338 has a dashboard form render from its operation's request schema. `apigen` resolved one only from

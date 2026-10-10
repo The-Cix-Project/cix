@@ -446,6 +446,18 @@ function closeModal() {
 	/* Never leave a typed password sitting in the DOM past this modal
 	 * session, whether closed by submit, X, Escape, or an outside click. */
 	document.getElementById("lf-password").value = "";
+	/*
+	 * The generated form is emptied rather than reset (ADR-0338): its
+	 * controls were built from the operation's schema at open time, so
+	 * removing them removes whatever was typed into any of them.
+	 *
+	 * That is also why this needs no entry per secret field. The eight
+	 * the contract marks `format: password` -- and every one added
+	 * later -- are covered by the fact that nothing survives the close,
+	 * where the hand-written forms above each needed their own line
+	 * here and the next one would have needed another.
+	 */
+	document.getElementById("generated-form").textContent = "";
 }
 
 function openModal(formId, title) {
@@ -454,6 +466,121 @@ function openModal(formId, title) {
 	document.getElementById("modal-" + formId).hidden = false;
 	modalOverlay.hidden = false;
 }
+
+/*
+ * ---------- the generated form, dashboard half (ADR-0338, #595) ----------
+ *
+ * `web/form.js` turns the contract's own description of a request into
+ * controls; this is the part that needs the dashboard -- the modal, the
+ * session, the status line and the refresh. The split is so the first
+ * half can be EXECUTED by a test rather than only parsed (see that
+ * file's own header).
+ */
+
+/* The two things a submit needs that are not in the form: what to
+ * refresh afterwards and what to say if it fails. Authored per call
+ * site, held here because the one submit listener reads them. */
+let generatedFormAfter = null;
+let generatedFormFailed = "";
+
+/*
+ * The default `after`: whatever keeps the view the operator is looking
+ * at honest.
+ *
+ * Every screen already declares its own refreshers in VIEW_REFRESHERS,
+ * and both the poll loop and the tab bar run them that way -- so a
+ * generated form needs no per-form refresh wiring at all. Each of the
+ * 36 hand-written forms carried its own copy of that call, which is one
+ * more thing that could be forgotten on the 37th.
+ */
+async function refreshVisibleView() {
+	const view = document.querySelector(".view:not([hidden])");
+
+	if (view !== null)
+		await runRefreshers(refreshersForView(view.id));
+}
+
+/*
+ * Open the generated form for one operation.
+ *
+ * opts.title    the modal's heading                (authored)
+ * opts.submit   the words on the button            (authored)
+ * opts.args     the operation's path parameters, in contract order
+ * opts.after    what to refresh once it succeeds   (authored)
+ * opts.failed   what to say if it does not         (authored)
+ */
+function openForm(opId, opts) {
+	const shape = CIX_API[opId + "_SHAPE"];
+	const options = opts || {};
+	const form = document.getElementById("generated-form");
+	const fields = shape && shape.request ? CIX_API.FIELDS[shape.request] || [] : [];
+	const button = document.createElement("button");
+	const allowed = sessionMay(opId);
+
+	if (shape === undefined) {
+		showStatus("No such operation: " + opId, true);
+		return;
+	}
+	form.textContent = "";
+	form.dataset.opId = opId;
+	form.dataset.args = JSON.stringify(options.args || []);
+	generatedFormAfter = options.after || refreshVisibleView;
+	generatedFormFailed = options.failed || ("Failed to " + (options.submit || "submit"));
+
+	for (const f of fields) {
+		const label = document.createElement("label");
+
+		/* A field the daemon only ever reports is not a field anyone
+		 * fills in. */
+		if (f.readOnly)
+			continue;
+		label.textContent = fieldLabel(f.name);
+		label.appendChild(fieldControl(f));
+		form.appendChild(label);
+		if (f.description !== undefined) {
+			const hint = document.createElement("p");
+
+			hint.className = "hint";
+			hint.textContent = f.description;
+			form.appendChild(hint);
+		}
+	}
+	button.type = "submit";
+	button.textContent = options.submit || "Save";
+	if (shape.destructive)
+		button.className = "button-danger";
+	/* web-ux-guidelines: a modal's own submit sets disabled and its
+	 * reason from sessionMay() directly, since it must be re-enabled
+	 * when a later login grants it. */
+	button.disabled = !allowed;
+	if (!allowed)
+		button.title = sessionRefusal(opId);
+	form.appendChild(button);
+	openModal("generated-form", options.title || fieldLabel(opId));
+}
+
+
+document.getElementById("generated-form").addEventListener("submit", async (event) => {
+	const form = event.target;
+	const opId = form.dataset.opId;
+	const shape = CIX_API[opId + "_SHAPE"];
+	const args = JSON.parse(form.dataset.args || "[]");
+
+	event.preventDefault();
+	/* A destructive operation confirms, because the contract says it is
+	 * destructive -- not because whoever wrote this screen remembered. */
+	if (shape.destructive && !window.confirm("This cannot be undone. Continue?"))
+		return;
+	try {
+		await apiRequest(shape.method, CIX_API[opId](...args), generatedFormBody(form));
+		clearStatus();
+		closeModal();
+		if (generatedFormAfter !== null)
+			await generatedFormAfter();
+	} catch (e) {
+		showStatus(generatedFormFailed + ": " + e.message, true);
+	}
+});
 
 document.getElementById("signing-keys-form").addEventListener("submit", (event) => {
 	event.preventDefault();
@@ -640,6 +767,18 @@ window.addEventListener("scroll", repositionOpenMenu, true);
  * above) all open the same modal shell the old single +Create
  * dropdown already used -- only where they live changed. */
 for (const item of document.querySelectorAll(".menu-bar button[data-modal]")) {
+	/* `data-modal="generated-form"` means the form is built from the
+	 * operation's request schema (ADR-0338) rather than written out in
+	 * index.html -- the only per-entry difference is the three authored
+	 * words on its button, which `data-submit` carries. */
+	if (item.dataset.modal === "generated-form") {
+		item.addEventListener("click", () =>
+			openForm(item.dataset.op, {
+				title: item.dataset.title,
+				submit: item.dataset.submit,
+			}));
+		continue;
+	}
 	item.addEventListener("click", () => openModal(item.dataset.modal, item.dataset.title));
 }
 
@@ -10266,22 +10405,6 @@ async function removeNtpServer(container) {
 		showStatus("Failed to unregister NTP server " + container + ": " + e.message, true);
 	}
 }
-
-document.getElementById("ntp-server-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const container = document.getElementById("nsf-container").value.trim();
-
-	try {
-		await apiRequest("POST", CIX_API.createNtpServer(), { container: container });
-		clearStatus();
-		document.getElementById("ntp-server-form").reset();
-		closeModal();
-		await refreshNtpServers();
-	} catch (e) {
-		showStatus("Failed to register NTP server: " + e.message, true);
-	}
-});
 
 /* ---- Syslog forward targets: registered container log receivers
  * (ADR-0127) -- same shape as NTP Servers above, mirrored exactly. */

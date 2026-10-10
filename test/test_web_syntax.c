@@ -213,7 +213,7 @@ int main(int argc, char **argv)
 	 * note. It was a note once; that made a build which had somehow not
 	 * generated it report a pass having checked half the surface.
 	 */
-	static const char *const files[] = { "web/api.js", "web/vt.js", "web/app.js",
+	static const char *const files[] = { "web/api.js", "web/vt.js", "web/form.js", "web/app.js",
 		                             "web/index.html" };
 	JSRuntime *rt = JS_NewRuntime();
 	JSContext *ctx;
