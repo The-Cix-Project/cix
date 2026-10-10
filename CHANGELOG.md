@@ -6,6 +6,38 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### openssl.cnf comes from the image; the CA bundle measurably cannot (#350, #591, 0.2.57-483)
+
+ADR-0337 left build-host reads in `mkbootroot`, and I had catalogued them as one, then two. A
+`grep` says **three**: `MKSQUASHFS_BIN`'s fallback exec path, `/usr/lib/ssl/openssl.cnf`, and the CA
+bundle.
+
+**`openssl.cnf` moves to the host-tools image, for a reason stronger than provenance:** the config
+has to match the library that reads it. #351 moved the PKI in-process to the libcrypto `cixd` links
+and ADR-0337 made that Cix's *own* libcrypto from `usr/lib`, so the config read at init should be
+that openssl's rather than a Debian machine's. `openssl` already ships the path in `cix-hosttools`,
+so this is one call site and no new package.
+
+**The CA bundle stays on the build host, and the attempt to move it is the more useful record.** The
+change was written: the owner chose Mozilla's root program as curl.se publishes it,
+`ca-certificates@2026.09.03-2` already pinned exactly that at exactly this path, and
+`cix-hosttools` 2.4.4 declares it. Then it was measured:
+
+```
+$ curl -k -v https://git.home.arpa/
+*  issuer: C=GB; ST=London; L=London; O=itdlabs; OU=Root Authority; CN=gibnet Intermediate CA
+```
+
+The forge's certificate is issued by a **private CA**. No public root program contains it and no
+package can ship a site's own CA — and `curlfetch.c`/`forgecommit.c` set no `CURLOPT_CAINFO`, so
+that single file is the entire trust store for every HTTPS fetch the host makes. The build host's
+copy works *because the site's CA was added to it*. Public roots alone would have broken the forge,
+which is to say the box's ability to fetch its own next fix — 0.2.57-481's failure again, same
+place, different cause, **caught before shipping this time**.
+
+How a host trusts its operator's CA is not a packaging decision; #591 carries it, with the
+measurement, and so does the code beside the line that still does the copy.
+
 ### The root's programs and libraries are derived from one list, with no build-host fallback (#350, 0.2.57-482, ADR-0337)
 
 Five mechanisms inside `mkbootroot.c` decided what the control-plane root contains: two
