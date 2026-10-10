@@ -6,6 +6,53 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### apigen reads a flow list that spans lines, and refuses the three truncations it used to hide (#594, #602, ADR-0338)
+
+Two defects in one reader, the second found by the first's guard, both of the same kind: a silent
+truncation that produces a UI offering a value the daemon has never accepted.
+
+**#594 -- an enum value with a space in it.** `parse_inline_list()` was written for `required: [a, b, c]`
+and ends an item at a SPACE, and the `_SHAPE`/`FIELDS` emission reused it for `enum`. The contract
+carries both forms that break it, four lines apart: `enum: [now, on next start]` truncated to `on`, and
+`enum: [now, "on next start"]` ended an item on a lone double quote, which the JS writer escaped into an
+**unterminated string** -- it swallowed the remaining 974 lines of `web/api.js` and `test_web_syntax`
+refused the file with `expecting '}'`. Found by `probe-apigen@1-1` rather than by reading, since every
+presence assertion in `test_apigen` passed while the file would not parse. Fixed with
+`parse_enum_list()`, which splits on commas only; `parse_inline_list()` is untouched, because `required:`
+depends on its behaviour and widening a shared reader to suit a second caller is how the first one
+breaks.
+
+**#602 -- a flow list written across physical lines.** The guard added for #594 refused the contract on
+its first run, which is how this was found. **Six** flow collections span lines (every line's bracket
+balance counted, both directions, so that is the population and not a sample), in three shapes --
+`enum: [a, b,` + continuation, `required: [a, b,` + continuation, and `required:` with the whole list on
+the following line. The third is the one no refusal could ever catch: nothing on the key's own line is
+unbalanced, so the key simply reads as having no value.
+
+Two of the six sit where a reader reads, and both were wrong in the generated artefacts:
+`SourceCatalogueEntry.stage` emitted **7 of its 15** values, so the generated select offered neither
+`acquire`, `assemble`, `stage` nor `verify`; and `StorageDevice` declared **8 of its 17** required names,
+which `api_shapes.h` hands to the contract-vs-daemon gate -- so nine fields of every storage response
+went unchecked. The daemon emits all nine unconditionally (`daemon/src/disk.c`), so nothing downstream was
+broken; the gate was weaker than it read. The other four sit deeper than any reader looks and changed no
+output.
+
+Fixed by `read_spec_line()`, which all five read loops now take their lines from. It owns `lineno`, so a
+diagnostic still names a physical line; it joins while bracket depth is open; it joins a key with no value
+when the next line opens a flow list (peek and rewind otherwise); and it is **bounded** -- an unclosed
+list after 8 lines, or at EOF, is a refusal naming the line rather than a reader that swallows the rest of
+the file.
+
+**And three truncations became refusals**, each of which would have produced the same class of wrong UI
+silently: an enum value longer than its item buffer, an enum with more values than the array holds, and a
+`required` list longer than `APIGEN_MAX_REQUIRED`. Measured headroom at the time of writing: 15 values,
+17 characters, 17 names.
+
+The gate asserts the LAST entry of each spanned list -- `"verify"` and `parent_disk`. A count would also
+pass on a list truncated somewhere else; the tail is what distinguishes joined from truncated. The #593
+entry below said 107 enums, measured with a grep that matched single-line lists only; it is **109**, and
+that two-list gap is this entry.
+
 ### The dashboard's design system gains the rows the stylesheet already had (#593, ADR-0338)
 
 The owner's judgement: the dashboard works and is not cohesive. Measured before designing anything, and
@@ -14,7 +61,7 @@ two of the measurements contradict the obvious diagnosis.
 **The design system is not the problem** — 164 tokens, the brand palette by name, both themes, and light
 mode already correct where it is easiest to get wrong (`--muted` is `#6b767d`, a *darkened* nickel,
 because Nickel on Paper fails at about 2.3:1). **The contract is not the problem** — 22,036 lines,
-340 operations, 181 schemas, 107 enums, 1,982 descriptions, **174 constraints**. The join is: `apigen`
+340 operations, 181 schemas, 109 enums, 1,982 descriptions, **174 constraints**. The join is: `apigen`
 hands `web/api.js` three symbols per operation, so **36 hand-written forms re-type what 30 request
 schemas already state** and those constraints reach the operator as a round-trip `400`.
 

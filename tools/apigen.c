@@ -65,6 +65,19 @@
 #define APIGEN_NUMLIT_MAX 24
 #define APIGEN_PATTERN_MAX 192
 #define APIGEN_ENUM_MAX 320
+/*
+ * One enum value, and how many of them. Measured against
+ * docs/api/openapi.yaml on 2026-10-10: 109 enums, the longest
+ * carrying 15 values (SourceCatalogueEntry.stage, written across two
+ * lines) and the longest single value 17 characters
+ * (`nothing to update`). Both caps are therefore at least 2x the contract's
+ * current need, and apigen REFUSES a spec that exceeds either rather
+ * than truncating -- a dropped or shortened value is a select offering
+ * something the daemon never accepts, which is exactly the silent
+ * wrongness #594 was filed for.
+ */
+#define APIGEN_ENUM_ITEM_MAX 64
+#define APIGEN_ENUM_ITEMS_MAX 32
 
 struct api_op {
 	char method[12];   /* uppercased: GET, POST, ... */
@@ -260,6 +273,134 @@ static void strip_eol(char *s)
 		s[--n] = '\0';
 }
 
+static int bracket_depth(const char *s)
+{
+	int d = 0;
+
+	for (; *s != '\0'; s++) {
+		if (*s == '[')
+			d++;
+		else if (*s == ']')
+			d--;
+	}
+	return d;
+}
+
+static int ends_with_colon(const char *s)
+{
+	size_t n = strlen(s);
+
+	while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r' || s[n - 1] == ' ' ||
+	                 s[n - 1] == '\t'))
+		n--;
+	return n > 0 && s[n - 1] == ':';
+}
+
+/*
+ * ONE LOGICAL LINE OF THE SPEC -- every reader in this tool takes its
+ * lines from here (#602).
+ *
+ * YAML's flow collections may span physical lines, and this tool is a
+ * line-oriented scanner by design (ADR-0218), so a list written across
+ * lines reads as a list that silently ENDS EARLY. Measured against
+ * docs/api/openapi.yaml on 2026-10-10 -- SIX of them, in three shapes
+ * (every line's bracket balance counted, both directions, so six is the
+ * whole population and not a sample):
+ *
+ *     enum: [discover, resolve, ...,            7 of 15 values
+ *            install, publish, ...]                 SourceCatalogueEntry.stage
+ *
+ *     required: [name, dev_path, ...,           8 of 17 names
+ *                used_bytes, ...]                   StorageDevice
+ *
+ *     required:                                 the key reads as EMPTY
+ *       [user_jiffies, nice_jiffies, ...]           SystemStats.cpu, .memory
+ *
+ * TWO of the six were at positions a reader here actually reads, and
+ * both were wrong in the generated artefacts: the stage select offered
+ * 7 of its 15 values, and StorageDevice declared 8 of its 17 required
+ * names -- which `api_shapes.h` hands to the contract-vs-daemon gate,
+ * so nine fields went unchecked in every response carrying one. Fixed
+ * and measured after: 15 options, 17 required, `parent_disk` among
+ * them. The other four sit deeper than any reader looks (an enum at
+ * indent 26, a response's array-item `required` at 22, and the two
+ * nested `required:` keys at 10, where only property-detail keys are
+ * read) -- so joining them changes no output today and removes the trap
+ * for when one of those depths gains a reader.
+ *
+ * The third shape is the one no refusal could ever catch, which is why
+ * the fix is a reader rather than a check: nothing on the key's own
+ * line is unbalanced, so the key simply reads as having no value at
+ * all.
+ *
+ * So a flow list arrives here joined with single spaces whichever way
+ * it was written. Two properties worth stating because they are what
+ * keep this honest: the join counts brackets and is NOT string-aware,
+ * which is sound for this contract (no line in it carries an unbalanced
+ * bracket inside a string -- counted, both directions), and it is
+ * BOUNDED -- an unclosed list is a refusal naming the line, never a
+ * reader that swallows the rest of the file.
+ *
+ * `lineno` is owned here and counts physical lines, so it still names
+ * the line an operator can go and look at.
+ */
+#define APIGEN_MAX_FLOW_LINES 8
+
+static char *read_spec_line(char *buf, size_t cap, FILE *f, const char *spec, int *lineno)
+{
+	int joins;
+
+	if (fgets(buf, (int)cap, f) == NULL)
+		return NULL;
+	if (lineno != NULL)
+		(*lineno)++;
+
+	for (joins = 0; joins <= APIGEN_MAX_FLOW_LINES; joins++) {
+		char next[1024];
+		const char *p;
+		long pos;
+		size_t len;
+		int open = bracket_depth(buf);
+
+		if (open <= 0 && !ends_with_colon(buf))
+			return buf;
+		if (joins == APIGEN_MAX_FLOW_LINES)
+			die_at(spec, lineno != NULL ? *lineno : 0,
+			       "flow list is still open after %d lines", APIGEN_MAX_FLOW_LINES);
+
+		pos = ftell(f);
+		if (fgets(next, sizeof(next), f) == NULL) {
+			if (open > 0)
+				die_at(spec, lineno != NULL ? *lineno : 0,
+				       "flow list is not closed before the end of the file");
+			return buf;
+		}
+		p = next;
+		while (*p == ' ' || *p == '\t')
+			p++;
+		/* A key with no value on its own line is only continued when
+		 * the next line opens a flow list -- which in YAML is that
+		 * key's value. Anything else is an ordinary nested block, and
+		 * the line goes back for the caller to read as itself. */
+		if (open <= 0 && *p != '[') {
+			if (pos >= 0)
+				fseek(f, pos, SEEK_SET);
+			return buf;
+		}
+		strip_eol(buf);
+		len = strlen(buf);
+		if (len + 1 + strlen(p) + 1 >= cap)
+			die_at(spec, lineno != NULL ? *lineno : 0,
+			       "flow list is longer than this reader's %d-byte line",
+			       (int)cap);
+		buf[len] = ' ';
+		snprintf(buf + len + 1, cap - len - 1, "%s", p);
+		if (lineno != NULL)
+			(*lineno)++;
+	}
+	return buf;
+}
+
 
 /*
  * Emits build/generated/api_routes.h: forward declarations of every
@@ -292,10 +433,11 @@ static void load_component_params(const char *spec)
 	FILE *f = fopen(spec, "r");
 	char line[4096];
 	int in_components = 0, in_params = 0, cur = -1;
+	int lineno = 0;
 
 	if (f == NULL)
 		return;
-	while (fgets(line, sizeof(line), f) != NULL) {
+	while (read_spec_line(line, sizeof(line), f, spec, &lineno) != NULL) {
 		char key[APIGEN_PATH_MAX];
 		int ind;
 
@@ -480,12 +622,20 @@ static void ref_tail(const char *text, char *out, size_t out_size)
 }
 
 /*
- * `required: [a, b, c]` into out[], returning how many landed.
+ * `required: [a, b, c]` into out[], returning the number of names the
+ * list CONTAINS -- which may exceed `max`, since only the first `max`
+ * are written and dropping the rest silently is the caller's refusal to
+ * make rather than this reader's to hide.
  *
  * The flow form is the only one the spec uses -- 131 of them, and zero
- * block lists (measured 2026-10-07). A block list would read as zero
- * entries here, which costs assertions rather than correctness, and is
- * why the consuming test prints its coverage.
+ * block lists (measured 2026-10-07). This comment used to add that a
+ * block list "would read as zero entries here, which costs assertions
+ * rather than correctness", and the second half was wrong (#602): a
+ * flow list may SPAN LINES, four do, and one of those is StorageDevice,
+ * whose 17 required names read as 8 -- which is not an assertion, it is
+ * `api_shapes.h` telling the contract-vs-daemon gate to check nine
+ * fewer fields than the contract declares. read_spec_line() joins every
+ * such list now, before this function ever sees the value.
  */
 static int parse_inline_list(const char *v, char out[][APIGEN_QNAME_MAX], int max)
 {
@@ -497,18 +647,95 @@ static int parse_inline_list(const char *v, char out[][APIGEN_QNAME_MAX], int ma
 	if (*c != '[')
 		return 0;
 	c++;
-	while (*c != '\0' && *c != ']' && n < max) {
+	while (*c != '\0' && *c != ']') {
+		char item[APIGEN_QNAME_MAX];
 		size_t k = 0;
 
 		while (*c == ' ' || *c == ',')
 			c++;
 		while (*c != '\0' && *c != ',' && *c != ']' && *c != ' ' &&
 		       k + 1 < (size_t)APIGEN_QNAME_MAX)
-			out[n][k++] = *c++;
-		out[n][k] = '\0';
-		if (k > 0)
+			item[k++] = *c++;
+		item[k] = '\0';
+		if (k > 0) {
+			if (n < max)
+				snprintf(out[n], APIGEN_QNAME_MAX, "%s", item);
 			n++;
+		}
 		while (*c != '\0' && *c != ',' && *c != ']')
+			c++;
+	}
+	return n;
+}
+
+/*
+ * An inline enum list, which is NOT what parse_inline_list() reads
+ * (ADR-0338, #594).
+ *
+ * That function was written for `required: [a, b, c]` -- bare
+ * identifiers -- and terminates an item at a SPACE. Reusing it for
+ * `enum` was reusing it outside its contract, and this spec contains
+ * both forms that break it:
+ *
+ *     enum: [now, on next start]      -> items "now", "on"
+ *     enum: [now, "on next start"]    -> items "now", "\"on"
+ *
+ * The first truncates silently, so a select would offer "on" for a
+ * value the daemon has never accepted. The second ends an item on a
+ * lone double quote, which the JS writer then escapes into an
+ * unterminated string -- measured by probe-apigen@1-1, where it
+ * swallowed the remaining 974 lines of api.js and test_web_syntax
+ * refused the file with `expecting '}'`.
+ *
+ * So: split on commas only, trim the ends, and drop one matching pair
+ * of surrounding quotes. parse_inline_list() is left exactly as it is,
+ * because `required:` depends on its behaviour and widening a shared
+ * reader to fix a second caller is how the first one breaks.
+ *
+ * Returns the number of values the list CONTAINS, which may exceed
+ * `max` -- only the first `max` are written -- or -1 if any one value
+ * is too long for an item. Both are the caller's refusal to make, with
+ * the field's name, rather than a quiet truncation here.
+ */
+static int parse_enum_list(const char *v, char out[][APIGEN_ENUM_ITEM_MAX], int max)
+{
+	const char *c = v;
+	int n = 0;
+
+	while (*c == ' ')
+		c++;
+	if (*c != '[')
+		return 0;
+	c++;
+	while (*c != '\0' && *c != ']') {
+		const char *start;
+		const char *end;
+		size_t len;
+
+		while (*c == ' ')
+			c++;
+		start = c;
+		while (*c != '\0' && *c != ',' && *c != ']')
+			c++;
+		end = c;
+		while (end > start && end[-1] == ' ')
+			end--;
+		len = (size_t)(end - start);
+		if (len >= 2 && ((start[0] == '"' && end[-1] == '"') ||
+		                 (start[0] == '\'' && end[-1] == '\''))) {
+			start++;
+			len -= 2;
+		}
+		if (len > 0) {
+			if (len >= APIGEN_ENUM_ITEM_MAX)
+				return -1;
+			if (n < max) {
+				memcpy(out[n], start, len);
+				out[n][len] = '\0';
+			}
+			n++;
+		}
+		if (*c == ',')
 			c++;
 	}
 	return n;
@@ -526,11 +753,10 @@ static void load_component_schemas(const char *spec)
 
 	if (f == NULL)
 		return;
-	while (fgets(line, sizeof(line), f) != NULL) {
+	while (read_spec_line(line, sizeof(line), f, spec, &lineno) != NULL) {
 		char key[APIGEN_PATH_MAX];
 		int ind;
 
-		lineno++;
 		if (is_ignorable(line))
 			continue;
 		ind = indent_of(line);
@@ -582,6 +808,10 @@ static void load_component_schemas(const char *spec)
 				g_comp_schemas[cur].n_required =
 				    parse_inline_list(v, g_comp_schemas[cur].required,
 				                      APIGEN_MAX_REQUIRED);
+				if (g_comp_schemas[cur].n_required > APIGEN_MAX_REQUIRED)
+					die_at(spec, lineno, "%s lists %d required names, apigen caps at %d",
+					       g_comp_schemas[cur].comp,
+					       g_comp_schemas[cur].n_required, APIGEN_MAX_REQUIRED);
 			}
 			continue;
 		}
@@ -734,13 +964,12 @@ static void load_permission_vocabulary(const char *spec)
 
 	if (f == NULL)
 		return;
-	while (fgets(line, sizeof(line), f) != NULL) {
+	while (read_spec_line(line, sizeof(line), f, spec, &lineno) != NULL) {
 		char key[APIGEN_PATH_MAX];
 		char w[APIGEN_PERM_MAX];
 		const char *text;
 		int ind;
 
-		lineno++;
 		if (is_ignorable(line))
 			continue;
 		ind = indent_of(line);
@@ -1365,12 +1594,24 @@ static void emit_web(const char *out_path, const char *spec)
 				 * UNDEFINED IDENTIFIERS, i.e. a ReferenceError that
 				 * takes the whole dashboard down at load. Every value
 				 * is re-quoted. */
-				char items[APIGEN_MAX_REQUIRED][APIGEN_QNAME_MAX];
+				char items[APIGEN_ENUM_ITEMS_MAX][APIGEN_ENUM_ITEM_MAX];
 				char tmp[APIGEN_ENUM_MAX];
 				int n, e;
 
 				snprintf(tmp, sizeof(tmp), "%s", fl->enum_list);
-				n = parse_inline_list(tmp, items, APIGEN_MAX_REQUIRED);
+				n = parse_enum_list(tmp, items, APIGEN_ENUM_ITEMS_MAX);
+				if (n < 0) {
+					fprintf(stderr, "apigen: %s.%s has an enum value longer "
+					        "than %d characters\n", s->comp, fl->name,
+					        APIGEN_ENUM_ITEM_MAX - 1);
+					exit(1);
+				}
+				if (n > APIGEN_ENUM_ITEMS_MAX) {
+					fprintf(stderr, "apigen: %s.%s has %d enum values, "
+					        "api.js caps at %d\n", s->comp, fl->name, n,
+					        APIGEN_ENUM_ITEMS_MAX);
+					exit(1);
+				}
 				fprintf(o, ", options: [");
 				for (e = 0; e < n; e++) {
 					if (e > 0)
@@ -1520,11 +1761,10 @@ static void emit_config_sections(const char *out_path, const char *spec)
 		fprintf(stderr, "apigen: cannot reopen %s\n", spec);
 		exit(1);
 	}
-	while (fgets(line, sizeof(line), f) != NULL) {
+	while (read_spec_line(line, sizeof(line), f, spec, &lineno) != NULL) {
 		char key[APIGEN_PATH_MAX];
 		int ind;
 
-		lineno++;
 		if (is_ignorable(line))
 			continue;
 		ind = indent_of(line);
@@ -1742,11 +1982,10 @@ int main(int argc, char **argv)
 	}
 	cur_path[0] = '\0';
 
-	while (fgets(line, sizeof(line), f) != NULL) {
+	while (read_spec_line(line, sizeof(line), f, spec, &lineno) != NULL) {
 		char key[APIGEN_PATH_MAX];
 		int ind;
 
-		lineno++;
 		if (is_ignorable(line))
 			continue;
 		ind = indent_of(line);
@@ -1950,6 +2189,11 @@ int main(int argc, char **argv)
 					g_ops[cur_op].n_resp_required =
 					    parse_inline_list(v, g_ops[cur_op].resp_required,
 					                      APIGEN_MAX_REQUIRED);
+					if (g_ops[cur_op].n_resp_required > APIGEN_MAX_REQUIRED)
+						die_at(spec, lineno,
+						       "%s's response lists %d required names, apigen "
+						       "caps at %d", g_ops[cur_op].op_id,
+						       g_ops[cur_op].n_resp_required, APIGEN_MAX_REQUIRED);
 				}
 				g_in_resp_props = strcmp(key, "properties") == 0;
 				continue;

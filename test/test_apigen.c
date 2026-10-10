@@ -525,6 +525,7 @@ int main(void)
 		char buf[1024];
 		FILE *f;
 		int shapes = 0, saw_fields = 0, saw_prefix = 0, bare_option = 0, options = 0;
+		int saw_spaced = 0, saw_spanned_enum = 0, saw_spanned_required = 0;
 
 		snprintf(js_path, sizeof(js_path), "/tmp/apigen_web_%d.js", (int)getpid());
 		snprintf(buf, sizeof(buf), "--emit-web %s", js_path);
@@ -549,6 +550,19 @@ int main(void)
 				    strstr(buf, "minimum: 8") != NULL &&
 				    strstr(buf, "maximum: 30") != NULL)
 					saw_prefix = 1;
+				if (strstr(buf, "options: [\"now\", \"on next start\"]") != NULL)
+					saw_spaced = 1;
+				/* #602: the last value of a flow list written across
+				 * two lines, and the last name of one written across
+				 * three. Both are the END of their list, which is
+				 * exactly what a reader that stops at the first
+				 * physical line drops. */
+				if (strstr(buf, "name: \"stage\"") != NULL &&
+				    strstr(buf, "\"assemble\", \"stage\", \"verify\"]") != NULL)
+					saw_spanned_enum = 1;
+				if (strstr(buf, "name: \"parent_disk\"") != NULL &&
+				    strstr(buf, "required: true") != NULL)
+					saw_spanned_required = 1;
 				op = strstr(buf, "options: [");
 				if (op != NULL) {
 					options++;
@@ -577,6 +591,53 @@ int main(void)
 			     "written through verbatim is a JS array of undefined identifiers, which "
 			     "is a ReferenceError at load",
 			     bare_option);
+		/*
+		 * The case that actually broke, and the reason this block is
+		 * not the real gate.
+		 *
+		 * An enum value here may contain SPACES and may be quoted in
+		 * the YAML, both forms in one spec: `[now, on next start]` and
+		 * `[now, "on next start"]`. The first truncates to "on" if the
+		 * reader stops at a space -- a select offering a value the
+		 * daemon never accepts -- and the second yields a lone double
+		 * quote that the JS writer escapes into an UNTERMINATED
+		 * string, which swallowed 974 lines of api.js and made
+		 * test_web_syntax refuse the whole file.
+		 *
+		 * Every check above passed while that was true, because they
+		 * assert PRESENCE and the defect was PARSEABILITY. The real
+		 * gate is test_web_syntax, which parses the file with a real
+		 * engine and caught this; this assertion is the specific-case
+		 * belt, so the truncating variant cannot come back quietly.
+		 */
+		if (!saw_spaced)
+			fail("an enum value containing spaces did not survive into api.js -- expected "
+			     "options: [\"now\", \"on next start\"], which is the pair of YAML forms "
+			     "that broke this emitter once");
+		/*
+		 * #602: a YAML flow list may span physical lines, and this
+		 * tool is a line-oriented scanner, so such a list used to be
+		 * read as a list that ended at the first line -- silently, and
+		 * only at its END, which is the half nothing looks at.
+		 *
+		 * Both of these are measured positions rather than invented
+		 * ones: SourceCatalogueEntry.stage spans two lines and was
+		 * emitting 7 of its 15 values, and StorageDevice's `required`
+		 * spans three and was emitting 8 of its 17 names -- which
+		 * api_shapes.h hands to the contract-vs-daemon gate, so nine
+		 * fields of every storage response went unchecked. Asserting
+		 * the LAST entry of each is what distinguishes a joined list
+		 * from a truncated one; a count would also pass on a list
+		 * truncated somewhere else.
+		 */
+		if (!saw_spanned_enum)
+			fail("SourceCatalogueEntry.stage lost the tail of its enum -- its 15 values "
+			     "are written across two lines in the contract, and \"verify\" is the "
+			     "last of them");
+		if (!saw_spanned_required)
+			fail("StorageDevice lost the tail of its required list -- its 17 names are "
+			     "written across three lines in the contract, and parent_disk is the "
+			     "last of them");
 	}
 
 	if (failures == 0)
