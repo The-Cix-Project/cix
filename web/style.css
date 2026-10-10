@@ -1010,6 +1010,27 @@ main {
 	white-space: nowrap;
 }
 
+/*
+ * A group label is a real <button> -- it expands and collapses and
+ * navigates nowhere (#592, the accepted IA board) -- so it needs the
+ * browser's own button chrome taken off to sit level with the links
+ * beside it. A real button rather than a span with a handler, because
+ * Tab has to reach it; `role`/`onClick` on a div is the accessibility
+ * mistake the guidelines name by hand.
+ */
+.tree-category.tree-group {
+	background: none;
+	border: 0;
+	margin: 0;
+	font: inherit;
+	font-size: 0.8rem;
+	text-align: left;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	width: auto;
+	height: auto;
+}
+
 .tree-category:hover {
 	color: var(--text);
 }

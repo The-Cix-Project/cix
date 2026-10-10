@@ -2199,7 +2199,7 @@ const CATEGORY_VIEWS = {
 	"signing-keys": "view-bootloader",
 	"kernel-policy": "view-kernel",
 	logs: "view-host",
-	kmsg: "view-kernel",
+	kmsg: "view-host",
 	"server-health": "view-server-health",
 	stalls: "view-control-plane",
 	schedules: "view-control-plane",
@@ -2698,6 +2698,33 @@ function treeLink(href, text, className, icon, iconColorClass) {
 	return a;
 }
 
+/*
+ * A GROUP LABEL THAT GOES NOWHERE, because it names a group and not a
+ * destination (#592, the accepted IA board).
+ *
+ * All three of this tree's groups used to be links as well: Software
+ * went to the Pipeline, Services to Server Health, Host to host stats.
+ * So clicking the word "Services" landed an operator on a page about
+ * none of the six things underneath it -- the tree's own rule, written
+ * in its own comment, is that TABS LIVE ON THE PAGE AND THE TREE'S
+ * CHILDREN ARE THE LIVE THINGS, and a group that is secretly one of
+ * its children's pages breaks it.
+ *
+ * A real `<button>` rather than a span with a handler: it is operated
+ * by keyboard, and `role`/`onClick` on a div is the accessibility
+ * mistake the design guidelines name explicitly.
+ */
+function treeGroupLabel(text, className, icon) {
+	const b = document.createElement("button");
+
+	b.type = "button";
+	b.className = className + " tree-group";
+	if (icon)
+		b.appendChild(treeIcon(icon, undefined));
+	b.appendChild(treeLabel(text));
+	return b;
+}
+
 /* Containers only -- the only resource with a real running/paused/
  * stopped/exited state (Container.status per the API, ADR-0045: the
  * full real set is these four, not just running/paused/"other" --
@@ -2748,7 +2775,11 @@ function buildTreeNode(item, parentUl, parentId, depth, parentPath) {
 
 	nodeParent[nodeId] = parentId;
 	nodeDepth[nodeId] = depth;
-	(hashToNodeIds[item.hash] || (hashToNodeIds[item.hash] = [])).push(nodeId);
+	/* A group with no hash routes nowhere, so it must not claim a
+	 * route either -- registering `undefined` here would make
+	 * findCurrentNodeId() able to pick it. */
+	if (item.hash !== undefined)
+		(hashToNodeIds[item.hash] || (hashToNodeIds[item.hash] = [])).push(nodeId);
 
 	/* Collapse state is keyed by this label-built path, not by
 	 * item.hash: several groups deliberately alias their own hash to a
@@ -2787,7 +2818,9 @@ function buildTreeNode(item, parentUl, parentId, depth, parentPath) {
 	row.appendChild(toggle);
 
 	const anchor =
-		item.status !== undefined
+		item.hash === undefined
+			? treeGroupLabel(item.label, "tree-category", item.icon)
+			: item.status !== undefined
 			? treeItemLinkWithStatus("#" + item.hash, item.label, item.status, item.icon)
 			: treeLink(
 					"#" + item.hash,
@@ -2849,6 +2882,16 @@ function buildTreeNode(item, parentUl, parentId, depth, parentPath) {
 			event.preventDefault();
 			setCollapsed(!ul.hidden);
 		});
+
+		/* A group label navigates nowhere, so ONE click is the whole
+		 * gesture: the paragraph above argues against swallowing a
+		 * link's first click to wait for a second, and with no link
+		 * there is nothing to swallow. */
+		if (item.hash === undefined)
+			anchor.addEventListener("click", (event) => {
+				event.preventDefault();
+				setCollapsed(!ul.hidden);
+			});
 	}
 	parentUl.appendChild(li);
 }
@@ -3098,10 +3141,15 @@ function renderTree() {
 			 * The hash stays "pipeline"; this is a label change, not
 			 * a route change, and the pipeline model underneath keeps
 			 * its name.
+			 *
+			 * ...and the hash is GONE now (#592, the accepted IA
+			 * board). It was "pipeline", so clicking the word
+			 * "Software" landed on the build pipeline -- one of the
+			 * subjects underneath it, wearing the group's name. The
+			 * pipeline is reachable as what it is, a Build tab.
 			 */
 			label: "Software",
 			group: true,
-			hash: "pipeline",
 			icon: "software",
 			children: [
 				{ label: "Catalogue", hash: "pkg-recipes", icon: "recipes" },
@@ -3111,36 +3159,59 @@ function renderTree() {
 		},
 		{
 			/*
-			 * The group is selectable and lands on its own page --
-			 * the health of every registered service, which is the
-			 * overview for this group rather than a sibling of the
-			 * five services it summarises.
+			 * This group used to be selectable and land on Server
+			 * Health, argued at the time as "the overview for this
+			 * group rather than a sibling of the services it
+			 * summarises". The accepted IA board (#592) overrules
+			 * that: an operator clicking "Services" got a page about
+			 * none of the six things underneath, and the fix is not
+			 * to pick a better destination but to have none -- the
+			 * group expands, and Health takes its place among the
+			 * children it was always a sibling of.
 			 */
 			label: "Services",
 			group: true,
-			hash: "server-health",
 			icon: "pki",
 			children: [
 				{ label: "PKI", hash: "pki-ca", icon: "pki" },
 				{ label: "DNS", hash: "dns-records", icon: "dns" },
+				/* LDAP stays here until Host > Identity exists to
+				 * receive it (the board's call A). Moving it first
+				 * would strand the only route to it. */
 				{ label: "LDAP", hash: "ldap-servers", icon: "ldap" },
 				{ label: "NTP", hash: "ntp-config", icon: "ntp" },
 				{ label: "DHCP", hash: "dhcp-servers", icon: "dhcp" },
 				{ label: "Syslog", hash: "syslog-targets", icon: "syslog" },
+				{ label: "Health", hash: "server-health", icon: "system" },
 			],
 		},
 		{
 			/*
-			 * Selectable, like every other node: clicking Host opens
-			 * the host's own page. Control Plane, Devices and Kernel
-			 * are the machine's other subjects, not siblings of the
-			 * host itself -- which is why there is no "Host > Host".
+			 * This used to be selectable too -- "clicking Host opens
+			 * the host's own page", which was host stats, one of the
+			 * nine tabs that page carries. Same correction as the
+			 * other two groups (#592): the group expands, and Health
+			 * is a child like the rest.
+			 *
+			 * Health is where host stats, processes and BOTH log
+			 * surfaces belong. The last of those is the board's
+			 * fourth defect: Logs sat on Host and kmsg on Kernel.
+			 * Measured before moving it, because a board states a
+			 * cause the same way an issue does: GET /system/logs is
+			 * the CONSOLIDATED store and its `source` enum really is
+			 * [kernel, cixd, audit, container] (ADR-0070), so the
+			 * kernel's lines were already on the Host page and the
+			 * second page was the invention. GET /system/kmsg is
+			 * still its own endpoint though -- the LIVE ring buffer
+			 * rather than the persisted store -- so it keeps its own
+			 * tab beside Log Store rather than collapsing into a
+			 * filter of it.
 			 */
 			label: "Host",
 			group: true,
-			hash: "host-stats",
 			icon: "system",
 			children: [
+				{ label: "Health", hash: "host-stats", icon: "system" },
 				{ label: "Control Plane", hash: "tls-throttle", icon: "system" },
 				{ label: "Devices", hash: "devicemaps", icon: "devices" },
 				{ label: "Kernel", hash: "kernel-policy", icon: "system" },

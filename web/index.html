@@ -1083,6 +1083,16 @@
 				<button type="button" class="tab-button" data-tab="running-config">Running Config</button>
 				<button type="button" class="tab-button" data-tab="site">Name</button>
 				<button type="button" class="tab-button" data-tab="logs">Log Store</button>
+				<!-- Kernel Log moved here from the Kernel page (#592, the
+				     accepted IA board). The daemon's consolidated store
+				     already carries the kernel's own lines -- GET
+				     /system/logs' source enum is [kernel, cixd, audit,
+				     container], ADR-0070 -- so reading "what went wrong"
+				     meant knowing which of two pages recorded it.
+				     /system/kmsg is still its own endpoint, the LIVE ring
+				     buffer rather than the persisted store, which is why
+				     it stays its own tab rather than becoming a filter. -->
+				<button type="button" class="tab-button" data-tab="kmsg">Kernel Log</button>
 				<button type="button" class="tab-button" data-tab="factory-reset">Factory Reset</button>
 			</div>
 
@@ -1262,6 +1272,20 @@
 					<button type="submit">Save</button>
 				</form>
 				<p class="hint">Enforced at segment granularity (8 rotating segments, oldest dropped whole when a new one is needed), not byte-exact -- a few percent of slop against this cap is expected.</p>
+			</div>
+		
+			</div>
+<div class="tab-panel" data-tab="kmsg" hidden>
+			<div class="view-list">
+				<p class="hint">The kernel's own ring buffer (<code>/dev/kmsg</code>) &mdash; dmesg over REST. This is where mount failures, driver probes and OOM kills surface, and on a real installed host with no shell it is the only way to read them. Distinct from the Log Store, which carries <code>cixd</code>'s own diagnostics and the audit trail.</p>
+				<form id="kmsg-form">
+					<label>
+						Tail (entries)
+						<input type="number" id="kmsg-tail" min="1" max="1024" value="200">
+					</label>
+					<button type="submit">Refresh</button>
+				</form>
+				<pre id="kmsg-output" class="log-output">(not loaded)</pre>
 			</div>
 		
 			</div>
@@ -1524,9 +1548,6 @@
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="kernel-policy">Kernel Line</button>
 				<button type="button" class="tab-button" data-tab="sysctl">Sysctl</button>
-				
-				<button type="button" class="tab-button" data-tab="kmsg">Kernel Log</button>
-							
 			</div>
 <div class="tab-panel" data-tab="kernel-policy">
 			<div class="view-list">
@@ -1579,20 +1600,6 @@
 			</div>
 			</div>
 
-<div class="tab-panel" data-tab="kmsg" hidden hidden>
-			<div class="view-list">
-				<p class="hint">The kernel's own ring buffer (<code>/dev/kmsg</code>) &mdash; dmesg over REST. This is where mount failures, driver probes and OOM kills surface, and on a real installed host with no shell it is the only way to read them. Distinct from the Log Store, which carries <code>cixd</code>'s own diagnostics and the audit trail.</p>
-				<form id="kmsg-form">
-					<label>
-						Tail (entries)
-						<input type="number" id="kmsg-tail" min="1" max="1024" value="200">
-					</label>
-					<button type="submit">Refresh</button>
-				</form>
-				<pre id="kmsg-output" class="log-output">(not loaded)</pre>
-			</div>
-		
-			</div>
 
 		</section>
 
