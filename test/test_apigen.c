@@ -545,6 +545,19 @@ int main(void)
 		int in_storage_device = 0, bad_type = 0;
 		int vmode_pattern = 0, vmode_line = 0;
 		char vmode_text[160] = "";
+		/*
+		 * The two `title` gates, and both are SELF-SCOPING (#596).
+		 *
+		 * A schema nobody has adopted yet has no titles at all and is
+		 * not judged; one that has started gets held to finishing.
+		 * That matters because the contract has 385 request-schema
+		 * fields and the dashboard renders 35 of them today -- a gate
+		 * that demanded all 385 at once would simply be switched off.
+		 */
+		int titled_block = 0, untitled_in_block = 0, half_titled = 0;
+		int long_first = 0, long_first_line = 0;
+		char half_titled_text[160] = "", long_first_text[200] = "";
+		char block_name[96] = "";
 		char bad_type_text[80] = "";
 		const char *tp;
 		char *dsc;
@@ -668,6 +681,66 @@ int main(void)
 								}
 								break;
 							}
+				}
+				/*
+				 * A FIELDS block that has STARTED carrying `title` must
+				 * finish, and its titled fields must lead their
+				 * descriptions with a sentence a form can show.
+				 *
+				 * `title` is the operator's label (#596). Without it the
+				 * renderer de-cases the schema key, which produced "Sn",
+				 * "Ip" and "Uidnumber" on real forms -- the dashboard
+				 * speaking its own schema's vocabulary at a person. A
+				 * half-titled schema is the bad state: some fields read
+				 * as English and the rest as JSON keys, in one modal.
+				 */
+				if (buf[0] == '\t' && buf[1] == '\t' && strstr(buf, ": [") != NULL) {
+					size_t k = 2;
+
+					while (buf[k] != '\0' && buf[k] != ':' && k - 2 < sizeof(block_name) - 1) {
+						block_name[k - 2] = buf[k];
+						k++;
+					}
+					block_name[k - 2] = '\0';
+					titled_block = 0;
+					untitled_in_block = 0;
+				} else if (buf[0] == '\t' && buf[1] == '\t' && buf[2] == ']') {
+					if (titled_block && untitled_in_block > 0 && half_titled++ == 0)
+						snprintf(half_titled_text, sizeof(half_titled_text),
+						         "%s (%d of its fields have no title)", block_name,
+						         untitled_in_block);
+					block_name[0] = '\0';
+				} else if (strstr(buf, "{ name: \"") != NULL) {
+					const char *ti = strstr(buf, ", title: \"");
+
+					if (ti == NULL)
+						untitled_in_block++;
+					else
+						titled_block = 1;
+					/*
+					 * The first sentence is the hint the form shows, so
+					 * on a titled field it has to BE one. 160 characters
+					 * is the measured ceiling: across this contract's
+					 * 684 property descriptions the mean first sentence
+					 * is 81 characters, and the ones past 160 are
+					 * reference paragraphs with no sentence break in
+					 * them rather than long sentences.
+					 */
+					if (ti != NULL) {
+						const char *ds = strstr(buf, ", description: \"");
+
+						if (ds != NULL) {
+							const char *stop = strstr(ds + 16, ". ");
+							size_t n = stop != NULL ? (size_t)(stop - (ds + 16))
+							                        : strlen(ds + 16);
+
+							if (n > 160 && long_first++ == 0) {
+								long_first_line = lno;
+								snprintf(long_first_text, sizeof(long_first_text),
+								         "%.150s", ds + 16);
+							}
+						}
+					}
 				}
 				if (strstr(buf, "_SHAPE: {") != NULL)
 					shapes++;
@@ -823,6 +896,21 @@ int main(void)
 			     "as a scalar lands here as a broken string literal, which costs the "
 			     "whole file rather than one field",
 			     bad_type, bad_type_text);
+		if (half_titled > 0)
+			fail("%d request schema(s) carry `title` on some fields and not others, the "
+			     "first being %s.\n"
+			     "      A title is the operator's label (#596) and the fallback de-cases "
+			     "the schema key, so a half-titled schema renders half English and half "
+			     "JSON in one modal -- \"Surname\" beside \"Sn\". Finish the schema or "
+			     "start it later; this gate only judges one that has begun.",
+			     half_titled, half_titled_text);
+		if (long_first > 0)
+			fail("%d titled field(s) open their description with more than 160 characters "
+			     "before the first sentence break, the first at line %d: %s...\n"
+			     "      The form shows that first sentence as the field's hint and keeps "
+			     "the whole description on hover, so it has to be a sentence an operator "
+			     "can read. Lead with what they need and let the reference detail follow.",
+			     long_first, long_first_line, long_first_text);
 		if (vmode_pattern > 0)
 			fail("%d emitted pattern(s) end a character class with a bare `-`, the first "
 			     "at line %d: %s\n"

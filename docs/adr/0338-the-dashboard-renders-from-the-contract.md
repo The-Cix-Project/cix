@@ -28,7 +28,7 @@ So the daemon already renders behaviour from the contract's meaning while the da
 
 | Field | Hand-written | In the contract |
 |---|---|---|
-| `name` | `type=text`, required | + `pattern: ^[A-Za-z0-9_-]{1,15}$`, and why (it becomes the bridge's `IFNAMSIZ`-limited name) |
+| `name` | `type=text`, required | + `pattern: ^[A-Za-z0-9_\-]{1,15}$`, and why (it becomes the bridge's `IFNAMSIZ`-limited name) |
 | `subnet` | `type=text`, required | + the host-bits-must-be-zero rule, and the overlap `400` |
 | `prefix_len` | `type=number`, required | + `minimum: 8`, `maximum: 30` |
 | `address` | `type=text`, optional | + nine lines distinguishing an L2-only bridge from an addressed one |

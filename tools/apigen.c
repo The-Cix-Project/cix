@@ -41,6 +41,10 @@
 #define APIGEN_EXPOSE_MAX 64
 #define APIGEN_MAX_QUERY 12
 #define APIGEN_QNAME_MAX 48
+/* A property's `title`: the operator's label, so a few words. Longer
+ * than that is a description wearing a label's clothes, and apigen
+ * refuses it rather than letting it reach a form. */
+#define APIGEN_LABEL_MAX 48
 #define APIGEN_MAX_COMP_PARAMS 128
 #define APIGEN_MAX_PERMS 64
 #define APIGEN_PERM_MAX 48
@@ -590,6 +594,23 @@ struct schema_field {
 	 */
 	char ui[APIGEN_TYPE_MAX];
 	/*
+	 * `title` -- JSON Schema's own short name for the property, and
+	 * the operator's LABEL (#596, the Generated and Primitives boards
+	 * of the owner's UI canvas).
+	 *
+	 * Without it a label is derived from the key, which produces "Sn",
+	 * "Ip", "Uidnumber" and "Givenname" -- the dashboard speaking its
+	 * own schema's vocabulary at a person, which is exactly what
+	 * web-ux-guidelines' fifth principle forbids. The Primitives board
+	 * says where the fix belongs in one line: *"A label that needs to
+	 * differ goes in the contract, not in app.js."*
+	 *
+	 * A STANDARD keyword rather than an `x-cix-` extension, because
+	 * JSON Schema already has exactly this concept and every other
+	 * reader of this contract gets it for free.
+	 */
+	char title[APIGEN_LABEL_MAX];
+	/*
 	 * `type: [string, "null"]` -- a nullable type, which this contract
 	 * writes 30 times, 15 of them at property depth. A scalar reader
 	 * truncated that to `[string, ` at APIGEN_TYPE_MAX and emitted it
@@ -1069,7 +1090,14 @@ static int schema_body_line(struct schema_reader *r, const char *spec, int linen
 		 * field's NAME, which is the rule this whole design exists to
 		 * forbid.
 		 */
-		else if (strcmp(key, "x-cix-ui") == 0) {
+		else if (strcmp(key, "title") == 0) {
+			if (strlen(v) >= APIGEN_LABEL_MAX)
+				die_at(spec, lineno,
+				       "title \"%s\" is %d characters; a label is a few words "
+				       "and the explanation belongs in description", v,
+				       (int)strlen(v));
+			snprintf(fl->title, sizeof(fl->title), "%s", v);
+		} else if (strcmp(key, "x-cix-ui") == 0) {
 			/*
 			 * A CLOSED SET, refused here. An unknown control name
 			 * reaches fieldControl(), which knows one, and falls
@@ -1893,6 +1921,13 @@ static void emit_web(const char *out_path, const char *spec)
 					req = 1;
 			fprintf(o, "\t\t\t{ name: \"%s\", type: \"%s\", required: %s", fl->name,
 			        fl->type[0] != '\0' ? fl->type : "string", req ? "true" : "false");
+			/* Early, beside the name it replaces: a reader of this
+			 * file should see the operator's word next to the
+			 * schema's. */
+			if (fl->title[0] != '\0') {
+				fprintf(o, ", title: ");
+				emit_js_string(o, fl->title);
+			}
 			if (fl->items[0] != '\0')
 				fprintf(o, ", items: \"%s\"", fl->items);
 			if (fl->format[0] != '\0')

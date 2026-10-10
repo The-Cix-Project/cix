@@ -282,8 +282,64 @@ int main(void)
 		 * contract and the renderer are checked against each other
 		 * rather than against a fixture that could drift from both.
 		 */
-		expect(ctx, "a field name reads as a label", "fieldLabel(\"prefix_len\")",
+		/*
+		 * ---- the label, the marker, the chip and the hint (#596) ----
+		 *
+		 * The four things the Generated and Primitives boards of the
+		 * owner's UI canvas put on a field, each asserted against a
+		 * real schema so the contract and the renderer are checked
+		 * against each other.
+		 */
+		expect(ctx, "the label is the contract's own title",
+		       "fieldLabel(CIX_API.FIELDS.NetworkCreateRequest.find("
+		       "(f) => f.name === \"prefix_len\"))",
+		       "Prefix length");
+		expect(ctx, "an LDAP surname is not called Sn",
+		       "fieldLabel(CIX_API.FIELDS.LdapUserCreateRequest.find("
+		       "(f) => f.name === \"sn\"))",
+		       "Surname");
+		/* The fallback still works for a bare name, which is what the
+		 * modal heading uses -- and shows why a title is needed. */
+		expect(ctx, "and the fallback de-cases a key, badly", "fieldLabel(\"prefix_len\")",
 		       "Prefix len");
+
+		expect(ctx, "a bounded number shows its range",
+		       "constraintText(CIX_API.FIELDS.NetworkCreateRequest.find("
+		       "(f) => f.name === \"prefix_len\"))",
+		       "8 – 30");
+		expect(ctx, "a patterned name shows its length and charset",
+		       "constraintText(CIX_API.FIELDS.NetworkCreateRequest.find("
+		       "(f) => f.name === \"name\"))",
+		       "1–15 · [A-Za-z0-9_-]");
+		/* `\-` is how the pattern must be spelled -- a bare `-` there
+		 * makes a browser discard the whole pattern -- and it is not
+		 * how it should be READ. */
+		expect(ctx, "and the escaped hyphen reads as a hyphen",
+		       "String(constraintText({ pattern: \"^[A-Za-z0-9_\\\\-]+$\" }).indexOf(\"\\\\\"))",
+		       "-1");
+		expect(ctx, "a format with no numeric constraint shows in words",
+		       "constraintText(CIX_API.FIELDS.NetworkCreateRequest.find("
+		       "(f) => f.name === \"subnet\"))",
+		       "dotted quad");
+		expect(ctx, "a field with nothing to say shows nothing",
+		       "constraintText({ type: \"string\" })", "");
+
+		expect(ctx, "the hint is the description's first sentence",
+		       "fieldHint(CIX_API.FIELDS.NetworkCreateRequest.find("
+		       "(f) => f.name === \"name\"))",
+		       "Used verbatim as the Linux bridge interface's name, so it is limited to "
+		       "15 characters.");
+		expect(ctx, "a one-sentence description is the whole of it",
+		       "fieldHint(CIX_API.FIELDS.NetworkCreateRequest.find("
+		       "(f) => f.name === \"prefix_len\"))",
+		       "CIDR prefix length.");
+		/* "e.g." ends no sentence. Without this the hint for any field
+		 * whose description gives an example stops at the example. */
+		expect(ctx, "an abbreviation does not end the sentence",
+		       "fieldHint({ description: \"Absolute, e.g. /etc/hosts. The daemon writes it.\" })",
+		       "Absolute, e.g. /etc/hosts.");
+		expect(ctx, "a field with no description has no hint",
+		       "fieldHint({ type: \"string\" })", "");
 
 		/* postLogin's password: the first reason `format: password`
 		 * exists in the contract at all. */
@@ -403,14 +459,28 @@ int main(void)
 		 * than as its explanation -- and this assertion, written
 		 * against the old shape, is what the 486 gate caught.
 		 */
-		expect(ctx, "and the field's own hint is inside its label",
+		/*
+		 * The field's own shape, as the boards draw it: a head row
+		 * carrying the label, the required marker and the constraint,
+		 * then the control, then one line of hint.
+		 */
+		expect(ctx, "and a field is a head row, a control and a hint",
 		       "(() => {\n"
 		       "  const f = document.getElementById(\"generated-form\");\n"
 		       "  const label = f.children[0];\n"
 		       "  return label === undefined ? \"no field\"\n"
-		       "    : label.children.map((c) => c.tag).join(\",\");\n"
+		       "    : label.children.map((c) => c.tag + \"/\" + (c.className || \"-\"))\n"
+		       "        .join(\" \");\n"
 		       "})()",
-		       "input,p");
+		       "span/field-head input/- p/hint");
+		expect(ctx, "and the head carries the label and the marker",
+		       "(() => {\n"
+		       "  const f = document.getElementById(\"generated-form\");\n"
+		       "  const head = f.children[0].children[0];\n"
+		       "  return head.children.map((c) => c.className + \"=\" + c.textContent)\n"
+		       "    .join(\" \");\n"
+		       "})()",
+		       "field-name=Container field-req=required field-rule=[A-Za-z0-9_-]");
 		/*
 		 * These three read what the call above produced, so each
 		 * answers "not opened" or "no such child" rather than throwing
@@ -435,7 +505,7 @@ int main(void)
 		       "(() => {\n"
 		       "  const f = document.getElementById(\"generated-form\");\n"
 		       "  const label = f.children[0];\n"
-		       "  const hint = label === undefined ? undefined : label.children[1];\n"
+		       "  const hint = label === undefined ? undefined : label.children[2];\n"
 		       "  return hint === undefined ? \"no hint\"\n"
 		       "    : hint.textContent.slice(0, 24);\n"
 		       "})()",
@@ -669,7 +739,8 @@ int main(void)
 		       "  openForm(\"addImageRecipe\", { title: \"Edit\", submit: \"Save\",\n"
 		       "    fixed: { name: \"jump\" }, values: { content: \"{}\" } });\n"
 		       "  const form = document.getElementById(\"generated-form\");\n"
-		       "  const el = form.children[0].children[0];\n"
+		       /* [0] is the head row now, [1] the control. */
+		       "  const el = form.children[0].children[1];\n"
 		       "  return el.tag + \"/\" + el.value + \"/\" + el.readOnly;\n"
 		       "})()",
 		       "input/jump/true");
@@ -747,13 +818,16 @@ int main(void)
 		       "})()",
 		       "{\"sans\":[\"a.b\",\"c.d\"]}");
 
-		expect(ctx, "the document field of that same form is the wide one",
+		/* No `.wide` any more: the form is one column, so a document
+		 * field already spans it and a class that does nothing is a
+		 * class the next reader has to look up. */
+		expect(ctx, "the document field of that same form is a textarea",
 		       "(() => {\n"
 		       "  const form = document.getElementById(\"generated-form\");\n"
-		       "  return form.children[1].className + \"/\" +\n"
-		       "    form.children[1].children[0].tag;\n"
+		       "  return (form.children[1].className || \"-\") + \"/\" +\n"
+		       "    form.children[1].children[1].tag;\n"
 		       "})()",
-		       "wide/textarea");
+		       "-/textarea");
 	}
 
 	JS_FreeContext(ctx);

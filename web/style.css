@@ -3395,8 +3395,11 @@ pre {
  * this dashboard already looks.
  */
 #generated-form > button {
-	grid-column: 1 / -1;
-	justify-self: start;
+	/* `align-self`, not `justify-self`: the form became a single flex
+	 * column when it was built to the design canvas, and `grid-column`
+	 * / `justify-self` are both inert on a flex item -- a rule that
+	 * silently stops applying is worse than one that is removed. */
+	align-self: flex-start;
 }
 
 /* A labelled group. Three of them make the left panel's top/middle/
@@ -3655,4 +3658,109 @@ pre {
 
 #generated-form label.checkbox > .hint {
 	flex-basis: 100%;
+}
+
+/*
+ * ---------- the generated form, as the design canvas draws it ----------
+ *
+ * The Generated and Primitives boards of the owner's Cix UI Design
+ * System, which are the spec for this renderer and which it was not
+ * built to (#592, #596). Four things change, and each is a rule from
+ * one of those boards rather than a preference:
+ *
+ *   - ONE COLUMN. The inherited `repeat(auto-fit, minmax(15rem, 1fr))`
+ *     put twelve LDAP fields in two columns with their explanations
+ *     interleaved, so the eye had no single path down the form. Both
+ *     boards draw a form as one column of stacked fields.
+ *   - A LABEL ROW, not a word: the operator's term, whether the field
+ *     is required, and the constraint in monospace pushed right.
+ *   - The label is 11px UPPERCASE and tracked, which is what makes a
+ *     one-column form scannable -- the field's value is the thing
+ *     being read, and the label is signage.
+ *   - The input sits on `--bg`, RECESSED into the panel rather than
+ *     level with it. Both boards draw `#0A0D0F` inputs on `#151A1E`.
+ */
+#generated-form {
+	display: flex;
+	flex-direction: column;
+	/* STRETCH, overriding the global `form { align-items: start }`,
+	 * which is there for the grid forms. Without it every field
+	 * shrinks to its own content and the form becomes a ragged
+	 * staircase -- the identical defect the lock screen's first render
+	 * had, found the same way, by looking at it. */
+	align-items: stretch;
+	gap: var(--s4);
+}
+
+#generated-form > label {
+	gap: 0.375rem;
+}
+
+/* The board's hint is 12px and sits directly under its control; the
+ * shared `.hint` carries a top margin for the standalone case. */
+#generated-form .hint {
+	margin: 0;
+	font-size: 0.75rem;
+}
+
+#generated-form input,
+#generated-form select,
+#generated-form textarea {
+	background: var(--bg);
+}
+
+.field-head {
+	display: flex;
+	align-items: baseline;
+	gap: 0.5rem;
+	min-width: 0;
+}
+
+.field-name {
+	font-size: 0.6875rem;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--muted);
+}
+
+/* Both words are drawn, as the board draws them: an unmarked field
+ * reads as "nobody said", and someone meeting a form for the first
+ * time should not have to infer which of the two it is. Copper for
+ * required, because that is the one that changes what they must do. */
+.field-req {
+	font-size: 0.6875rem;
+	color: var(--accent);
+}
+
+.field-opt {
+	font-size: 0.6875rem;
+	color: var(--muted);
+}
+
+/*
+ * The constraint, right-aligned and monospace so a column of them
+ * lines up and reads as data rather than prose. It is the same fact
+ * the input enforces -- shown, so the operator meets it before
+ * pressing the button rather than after.
+ */
+.field-rule {
+	margin-left: auto;
+	font-family: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo,
+		Consolas, "Liberation Mono", monospace;
+	font-size: 0.6875rem;
+	color: var(--muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/*
+ * A checkbox keeps its box BESIDE its name rather than at the far edge
+ * of the modal: `.checkbox` is a row, so a head that grows pushes the
+ * tick 600px away from the words it answers. A boolean never carries a
+ * constraint chip, so nothing needs the space.
+ */
+#generated-form label.checkbox .field-head {
+	flex-grow: 0;
 }

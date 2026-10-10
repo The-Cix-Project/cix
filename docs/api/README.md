@@ -738,6 +738,42 @@ a generated `type: string` would otherwise be a plain text input showing the pas
 other way: that field is a generated app password in a *response*, shown once so an operator can copy it,
 and obscuring it would defeat the only reason it is returned.
 
+### A property's `title` is the operator's label, and its description's first sentence is the hint
+
+Two standard JSON Schema keywords doing the two jobs a form needs, so neither is an extension:
+
+```yaml
+sn:
+  type: string
+  title: Surname
+loginshell:
+  type: string
+  title: Login shell
+  description: >
+    An absolute path that exists in the image this user logs into --
+    /usr/bin/bash, never /bin/bash: this project's minimal images ship
+    no /bin entry but sh.
+```
+
+**`title` is the label.** Without one the dashboard de-cases the schema key, which is all it can do, and
+real forms rendered **"Sn"**, **"Ip"**, **"Uidnumber"** and **"Givenname"** — the API's own vocabulary
+pointed at a person. `web-ux-guidelines.md`'s fifth principle forbids exactly that, and its Primitives
+board states where the fix belongs in one line: *"a label that needs to differ goes in the contract, not in
+app.js."* `apigen` refuses a `title` of 48 characters or more, because at that length it is a description
+wearing a label's clothes.
+
+**The first sentence of `description` is the field's hint**; the whole description stays available on
+hover. That is a writing convention rather than a second key, and it was chosen by measurement: across
+this contract's 684 property descriptions, **89% have a first sentence that works as a hint on its own**,
+mean 81 characters. So a description leads with what an operator needs and lets the reference detail
+follow — which is better technical writing anyway. An opening of *"Optional."* or *"(ADR-0144) …"* is the
+thing to fix, not a reason for another field.
+
+Both gates are **self-scoping**, because the contract has 385 request-schema fields and the dashboard
+renders 35 of them today: `test_apigen` fails a schema that carries `title` on *some* of its fields and not
+others, and fails a *titled* field whose description runs past 160 characters before its first sentence
+break. A schema nobody has started is not judged; one that has started gets held to finishing.
+
 ### `x-cix-ui`: the one override, for what the schema cannot say
 
 A generated form derives its control from the field's own facts -- an `enum` is a select, `minimum`/`maximum`

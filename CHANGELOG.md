@@ -6,6 +6,45 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The generated form, built to the design canvas it should have been built to (#592, #596, ADR-0338)
+
+The owner, looking at six screenshots: *"I thought we're doing a revamp."* They were right. The renderer
+shipped in story 3 was built to match the **hand-written forms it replaces** rather than the `Generated`
+and `Primitives` boards of the Cix UI Design System canvas — which are its spec — and every form converted
+since had inherited that. So the plumbing was real and the revamp had not started.
+
+**A field is now the four things the boards draw.** A head row with the operator's label (11px, uppercase,
+tracked), `required` in copper or `optional` in muted, and the constraint as a monospace chip pushed
+right; the control, recessed onto `--bg`; then one sentence of hint. One column, not the inherited
+auto-fit grid. Rendered against the board's own `createNetwork` example, **three of its four fields now
+match term for term** — label, marker, chip and hint; the fourth differs only in its chip, because
+`within subnet` is a cross-field rule no schema keyword expresses and the hint carries it instead.
+
+**Two standard JSON Schema keywords, no new extension.** `title` is the label: without it the renderer
+de-cases the schema key, and real forms were rendering **"Sn"**, **"Ip"**, **"Uidnumber"** and
+**"Givenname"** — the API's vocabulary pointed at a person, which the guidelines' fifth principle forbids
+and which the Primitives board answers in one line, *"a label that needs to differ goes in the contract,
+not in app.js."* 35 fields across the 13 rendered schemas now carry one. And the hint is the
+**first sentence** of `description`, with the whole text on hover — chosen by measuring rather than by
+inventing a key: of this contract's 684 property descriptions, 89% have a first sentence that works as a
+hint on its own, mean 81 characters. The 11% that do not are a writing fix, and eight of them were fixed
+here: a description that opened *"Optional."*, *"(ADR-0144)"* or with two lines of bcrypt implementation
+detail now leads with what the operator needs.
+
+Both gates are **self-scoping**, because 385 request-schema fields exist and 35 render: `test_apigen`
+fails a schema carrying `title` on some fields and not others — half English, half JSON keys, in one modal
+— and fails a titled field whose description runs 160 characters before its first sentence break. A schema
+nobody has started is not judged; one that has started must finish.
+
+Three things only rendering could have found, all fixed: the single-column form inherited the global
+`form { align-items: start }` and every field shrank to its own content, a ragged staircase — the
+identical defect the lock screen's first render had; `#generated-form > button` still carried
+`grid-column` and `justify-self`, both inert on a flex item; and a checkbox's head row grew, pushing the
+tick 600px from the words it answers.
+
+Also fixed here: ADR-0338's own worked-example table quoted `pattern: ^[A-Za-z0-9_-]{1,15}$`, the bare
+hyphen a browser discards — a factual claim gone stale in the document that is the spec for this work.
+
 ### What two gate cycles cost, and what wired the gate that was inert (#596)
 
 Two failed gates in a row, both mine, both the same shape and worth recording rather than quietly fixing.

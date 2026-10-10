@@ -50,15 +50,146 @@
  * carry `format: password` in the contract instead.
  */
 
-/* The label a field name reads as. Derived, because the schema already
- * named the field; a hand-written label is the duplication principle 6
- * exists to stop. `prefix_len` reads as "Prefix len", which is plain
- * rather than pretty -- when that is genuinely wrong the fix is the
- * contract's own `x-cix-ui`, never a table here. */
-function fieldLabel(name) {
+/*
+ * THE OPERATOR'S WORD FOR A FIELD, which is the contract's `title`.
+ *
+ * The fallback de-cases the schema key, and that is all it can do:
+ * `sn` becomes "Sn", `ip` becomes "Ip", `uidnumber` becomes
+ * "Uidnumber". Those are real renders from a real form and they are
+ * the dashboard speaking its own schema's vocabulary at a person --
+ * what web-ux-guidelines' fifth principle exists to forbid. So the
+ * fallback is a LAST RESORT and not the design: the Primitives board
+ * puts the rule in one line, *"a label that needs to differ goes in
+ * the contract, not in app.js"*, and JSON Schema's own `title` is
+ * where it goes.
+ *
+ * It still takes a bare name as well as a field, because the modal's
+ * own heading falls back to the operation id when no title is
+ * authored at the call site.
+ */
+function fieldLabel(f) {
+	const name = typeof f === "string" ? f : f.name;
 	const words = name.replace(/_/g, " ");
 
+	if (typeof f === "object" && f.title)
+		return f.title;
 	return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/*
+ * THE CONSTRAINT, IN THE OPERATOR'S SIGHT RATHER THAN ONLY IN THE
+ * INPUT -- the monospace chip the Generated board puts to the right of
+ * every label (`1-15 · [A-Za-z0-9-]`, `8 - 30`).
+ *
+ * Derived entirely, because every part of it is already a fact of the
+ * schema. The point is not decoration: a `pattern` that silently
+ * refuses a keystroke is worse than one the operator can read, and
+ * until this existed the contract's 174 constraints were invisible
+ * until the form would not submit.
+ *
+ * A pattern is shown as its CHARACTER CLASS rather than as the regex,
+ * because `^[A-Za-z0-9_\-]+$` is not a thing to put in front of
+ * someone. Where that cannot be extracted the pattern is not shown at
+ * all -- an unreadable chip is worse than no chip, and the hint still
+ * carries the rule in words.
+ */
+function constraintText(f) {
+	const parts = [];
+	const lo = f.minimum !== undefined;
+	const hi = f.maximum !== undefined;
+	let cls = null;
+
+	if (lo && hi)
+		parts.push(f.minimum + " – " + f.maximum);
+	else if (lo)
+		parts.push("≥ " + f.minimum);
+	else if (hi)
+		parts.push("≤ " + f.maximum);
+
+	if (f.pattern !== undefined) {
+		/* The one shape this contract writes: an optional anchor class,
+		 * then the repeated class, then a length. `\-` reads as `-`. */
+		const m = /\[([^\]]+)\](\{(\d+),(\d+)\})?[+*]?\$?$/.exec(f.pattern);
+
+		if (m !== null) {
+			cls = "[" + m[1].replace(/\\-/g, "-") + "]";
+			if (m[3] !== undefined)
+				parts.push(m[3] + "–" + m[4]);
+		}
+	}
+	if (f.maxLength !== undefined && f.pattern === undefined)
+		parts.push("≤ " + f.maxLength + " chars");
+	if (cls !== null)
+		parts.push(cls);
+	/*
+	 * A standard `format`, in words, when nothing numeric was derived
+	 * -- the board's chip for `subnet` is "dotted quad", which is what
+	 * `format: ipv4` means to a person. The map is RENDERING, the same
+	 * kind of decision as `format: password` producing an obscured
+	 * input; the fact itself stays in the contract.
+	 */
+	if (parts.length === 0 && f.format !== undefined && FORMAT_WORD[f.format] !== undefined)
+		parts.push(FORMAT_WORD[f.format]);
+	return parts.join(" · ");
+}
+
+const FORMAT_WORD = {
+	ipv4: "dotted quad",
+	ipv6: "IPv6",
+	hostname: "hostname",
+	"date-time": "RFC 3339",
+	uri: "URL",
+	email: "email",
+	byte: "base64",
+};
+
+/*
+ * ONE SENTENCE, not the reference paragraph.
+ *
+ * The contract's `description` is API documentation -- 214 characters
+ * on average, up to 2,064 -- and rendering it under every input turns
+ * a four-field form into a wall of prose. Clamping it to three lines
+ * was the first attempt and it was wrong: it hid the symptom and left
+ * a sentence cut mid-word.
+ *
+ * Measured across this contract on 2026-10-10: of 684 property
+ * descriptions, 89% have a first sentence that works as a hint on its
+ * own, mean 81 characters. So the first sentence IS the hint, the
+ * whole description stays on the label's `title` for hover, and the
+ * convention that follows is a writing rule rather than a second key:
+ * **the first sentence of a property description is what an operator
+ * needs; everything after it is reference detail.** The 11% that do
+ * not comply are a contract fix, and `test_apigen` names them.
+ *
+ * An abbreviation is why this is not a bare split on ". " -- "e.g. "
+ * and "i.e. " end no sentence, and the contract uses both. A scan
+ * rather than a regex with a sentinel: the sentinel version of this
+ * function wrote two literal NUL bytes into this file, which git saw
+ * as a binary change.
+ */
+const HINT_ABBREV = ["e.g.", "i.e.", "cf.", "vs.", "approx.", "etc."];
+
+function fieldHint(f) {
+	if (f.description === undefined)
+		return "";
+	const text = f.description.replace(/\s+/g, " ").trim();
+	let at = 0;
+
+	for (;;) {
+		const dot = text.indexOf(". ", at);
+
+		if (dot < 0)
+			return text;
+		const upto = text.slice(0, dot + 1);
+		let abbrev = false;
+
+		for (const a of HINT_ABBREV)
+			if (upto.endsWith(a))
+				abbrev = true;
+		if (!abbrev)
+			return upto;
+		at = dot + 2;
+	}
 }
 
 /*
@@ -367,12 +498,49 @@ function openForm(opId, opts) {
 		const values = options.values || {};
 		const fixed = options.fixed || {};
 		let control;
+		let head;
+		let name;
+		let rule;
+		let req;
 
 		/* A field the daemon only ever reports is not a field anyone
 		 * fills in. */
 		if (f.readOnly)
 			continue;
-		label.textContent = fieldLabel(f.name);
+		/*
+		 * The label ROW, which the Generated board specifies as three
+		 * things on one line: the operator's word, whether the field
+		 * is required, and the constraint in monospace on the right.
+		 *
+		 * All three are facts the schema already states and that the
+		 * dashboard used to keep to itself -- a required field looked
+		 * exactly like an optional one, and the 174 constraints were
+		 * enforced invisibly by the input until it refused to submit.
+		 */
+		head = document.createElement("span");
+		head.className = "field-head";
+		name = document.createElement("span");
+		name.className = "field-name";
+		name.textContent = fieldLabel(f);
+		head.appendChild(name);
+		/* Both words, as the board draws them. Marking only the
+		 * exception was the tidier instinct and it is wrong here: an
+		 * unmarked field reads as "nobody said", and a form an
+		 * operator is meeting for the first time should not make them
+		 * infer which of the two it is. */
+		req = document.createElement("span");
+		req.className = f.required ? "field-req" : "field-opt";
+		req.textContent = f.required ? "required" : "optional";
+		head.appendChild(req);
+		rule = constraintText(f);
+		if (rule !== "") {
+			const chip = document.createElement("span");
+
+			chip.className = "field-rule";
+			chip.textContent = rule;
+			head.appendChild(chip);
+		}
+		label.appendChild(head);
 		/*
 		 * A boolean uses the dashboard's own checkbox layout -- name
 		 * beside a real-sized box, not above a full-width one. Without
@@ -385,13 +553,11 @@ function openForm(opId, opts) {
 		if (f.type === "boolean")
 			label.className = "checkbox";
 		/*
-		 * A textarea takes the whole row, the same `.wide` the
-		 * hand-written forms gave theirs. A document in a 15rem grid
-		 * column is unreadable, and every one of these fields is a
-		 * document.
+		 * No `.wide` here any more: the generated form is one column,
+		 * so every field already spans it. The class stays in the
+		 * stylesheet for the hand-written forms, which are still
+		 * grids.
 		 */
-		if (f.ui === "textarea" || f.type === "object")
-			label.className = "wide";
 		control = fieldControl(f);
 		/* `readOnly` is right for every `fixed` field there is or is
 		 * likely to be -- a key is a name, so a text input. It is
@@ -444,8 +610,12 @@ function openForm(opId, opts) {
 			 * heuristic in the generator, which would have thrown the
 			 * rest away for every reader.
 			 */
-			hint.className = "hint hint-clamp";
-			hint.textContent = f.description;
+			hint.className = "hint";
+			hint.textContent = fieldHint(f);
+			/* The whole thing on hover, so nothing is lost -- the
+			 * contract stays the source and this is a display
+			 * decision, the same split the clamp was reaching for and
+			 * getting wrong. */
 			hint.title = f.description;
 			label.appendChild(hint);
 		}
