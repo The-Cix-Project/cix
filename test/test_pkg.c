@@ -1380,6 +1380,24 @@ static int poll_pkg_state(const struct cix_client *c, const char *name, char *ou
 			/* And WHY, which the error field never says: it carries an
 			 * exit status and nothing more (cix#516). */
 			test_print_build_log(c, name, 40);
+			/*
+			 * And the daemon's own reason, for the failures that never
+			 * reach a build container at all and so leave no build log
+			 * to read (cix#580).
+			 *
+			 * This is the case that cost two release probe cycles in
+			 * three days: `greeter failed: could not compose a build
+			 * environment from the declared tools` followed by `(no
+			 * retained build log for greeter)`, with the actual reason
+			 * -- which of image_produce_new_version()'s exits was
+			 * taken -- written by logstore_write() into a store that
+			 * lives inside the mkdtemp directory this test deletes on
+			 * exit. So it has to be read here, while the daemon is
+			 * still up, or it is gone. test_print_daemon_log() was
+			 * written for exactly this and said so in its own comment;
+			 * nothing called it.
+			 */
+			test_print_daemon_log(c, name, 20);
 		}
 		cix_response_free(&r);
 		if (strcmp(out_state, "fetching") != 0 && strcmp(out_state, "building") != 0)
@@ -5690,6 +5708,27 @@ skip_pin_isolation:
 		if (strcmp(hb_state, "installed") != 0) {
 			fprintf(stderr, "FAIL: hbtest hostbuild ended in state '%s', expected installed\n",
 			        hb_state);
+			/*
+			 * WHY, which the state alone never says (cix#580).
+			 *
+			 * This loop is hand-rolled rather than going through
+			 * wait_for_pkg_state(), so it inherited none of that
+			 * function's diagnostics -- and that is not hypothetical:
+			 * measured on 192.168.15.95, 2026-10-10, this exact line
+			 * failed a release gate with `__pkgbuild-0: exited (status
+			 * 3, signal 0) after 5s` and nothing else anywhere, on a
+			 * commit whose diff against the previous green one was an
+			 * ADR, two guides, a string literal and a comment. The
+			 * only instrument left was to re-run the identical bytes
+			 * and see, which is eleven minutes to learn one bit.
+			 *
+			 * Both logs, because the two failure shapes need
+			 * different ones: a build that started and failed leaves a
+			 * retained build log, and a hostbuild that never composed
+			 * an environment leaves only the daemon's own line.
+			 */
+			test_print_build_log(&client, "hbtest", 40);
+			test_print_daemon_log(&client, "hbtest", 20);
 			ok = 0;
 			goto skip_hostbuild;
 		}
