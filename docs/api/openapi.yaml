@@ -7470,10 +7470,16 @@ paths:
               properties:
                 name:
                   type: string
+                  pattern: "^[A-Za-z0-9_-]+$"
                   description: The target image's own name -- an image recipe's name is always its image's name.
                 content:
                   type: string
-                  description: The image recipe, a JSON document (ADR-0311).
+                  x-cix-ui: textarea
+                  description: >
+                    The whole image recipe, replacing any previous one: a JSON
+                    object (ADR-0311) with a non-empty "packages" array whose
+                    entries are {"package", "mode" ("pinned" or "rolling"),
+                    "version"}, plus optional "image", "version" and "notes".
       responses:
         "204":
           description: Recipe added/replaced
@@ -7764,9 +7770,11 @@ paths:
               properties:
                 name:
                   type: string
+                  pattern: "^[A-Za-z0-9_-]+$"
                   description: Also the container name this recipe creates -- must equal content's own "name" field.
                 content:
                   type: string
+                  x-cix-ui: textarea
                   description: A complete POST /containers body, as raw JSON text; may embed {{SECRET:KEY}} tokens.
       responses:
         "204":
@@ -7872,7 +7880,10 @@ paths:
                   type: object
                   additionalProperties:
                     type: string
-                  description: KEY -> real value, one per {{SECRET:KEY}} token the recipe's own content references.
+                  description: >
+                    KEY -> real value, one per {{SECRET:KEY}} token the recipe's
+                    own content references. A token with no matching key is left
+                    exactly as it is, never silently blanked.
       responses:
         "201":
           description: Container created
@@ -19809,9 +19820,11 @@ components:
       properties:
         container:
           type: string
+          pattern: "^[A-Za-z0-9_-]+$"
           description: Name of an existing, running container (see /containers) to keep in sync.
         hosts_path:
           type: string
+          pattern: '^/(?!.*\.\.).+$'
           description: >
             Absolute path, as the container's own filesystem sees it (e.g.
             "/etc/dnsmasq-hosts"), that the daemon writes the current record set into
@@ -19833,9 +19846,11 @@ components:
       properties:
         container:
           type: string
+          pattern: "^[A-Za-z0-9_-]+$"
           description: Name of an existing, running container (see /containers) -- the LDAP-serving target.
         config_path:
           type: string
+          pattern: '^/(?!.*\.\.).+$'
           description: >
             Absolute path, as the container's own filesystem sees it (e.g.
             "/etc/glauth/glauth.cfg"), to glauth's own config file (the one it was

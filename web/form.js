@@ -72,7 +72,38 @@ function fieldLabel(name) {
 function fieldControl(f) {
 	let el;
 
-	if (Array.isArray(f.options) && f.options.length > 0) {
+	/*
+	 * `ui` FIRST, because it is the contract overriding a derivation
+	 * it has already judged wrong (ADR-0338) -- a derived control that
+	 * won over an explicit one would make the override unreliable in
+	 * exactly the cases it exists for.
+	 *
+	 * Only `textarea` is known, and nothing else can reach here:
+	 * apigen refuses any other value of `x-cix-ui` at generation,
+	 * because a control this function does not know would fall through
+	 * to a plain text input and be silently wrong. The refusal belongs
+	 * there rather than in a throw here, which would take a form down
+	 * in a browser over a contract typo.
+	 *
+	 * An `object` field needs no annotation and gets one anyway: a
+	 * free-form object (`additionalProperties`, so the contract names
+	 * no properties to render) is typed as JSON, and a one-line text
+	 * input is never the right control for JSON. That is DERIVED,
+	 * which is the rule -- `x-cix-ui` exists for the string case,
+	 * where the schema really does say nothing.
+	 *
+	 * The row counts are the one judgement here: a document field
+	 * holds a recipe (the hand-written forms it replaces used 10 and
+	 * 16), a JSON object field holds a handful of keys (they used 3
+	 * and 6). `resize: vertical` means neither is a ceiling.
+	 */
+	if (f.ui === "textarea" || f.type === "object") {
+		el = document.createElement("textarea");
+		el.rows = f.type === "object" ? 6 : 12;
+		el.spellcheck = false;
+		if (f.maxLength !== undefined)
+			el.maxLength = f.maxLength;
+	} else if (Array.isArray(f.options) && f.options.length > 0) {
 		el = document.createElement("select");
 		if (!f.required) {
 			const blank = document.createElement("option");
@@ -138,6 +169,42 @@ function generatedFormBody(form) {
 			body[name] = el.checked;
 			continue;
 		}
+		/*
+		 * A free-form object -- `additionalProperties`, so the
+		 * contract names no fields to render -- is typed as JSON and
+		 * parsed here. `secrets` on applyDeployment is the first.
+		 *
+		 * It THROWS rather than reporting, because the one submit
+		 * listener already calls this inside its own try/catch and
+		 * shows the message on the status line without closing the
+		 * modal: the typed text survives, which is the whole point
+		 * when the text is the thing that was mistyped.
+		 *
+		 * Trimmed before the emptiness test below, because a textarea
+		 * the operator tabbed through holds a newline rather than "".
+		 */
+		if (type === "object") {
+			const text = el.value.trim();
+			let parsed;
+
+			if (text === "") {
+				if (!el.required)
+					continue;
+				throw new Error(fieldLabel(name) + " is required");
+			}
+			try {
+				parsed = JSON.parse(text);
+			} catch (e) {
+				throw new Error(fieldLabel(name) + " must be valid JSON: " +
+				                e.message);
+			}
+			if (parsed === null || typeof parsed !== "object" ||
+			    Array.isArray(parsed))
+				throw new Error(fieldLabel(name) +
+				                " must be a JSON object, not a bare value");
+			body[name] = parsed;
+			continue;
+		}
 		if (el.value === "" && !el.required)
 			continue;
 		if (type === "integer" || type === "number") {
@@ -180,6 +247,36 @@ async function refreshVisibleView() {
 }
 
 /*
+ * One value into its control, whatever control the field got.
+ *
+ * The inverse of generatedFormBody()'s own per-type reading, and it has
+ * to be, or a form opened on a resource and submitted unchanged would
+ * send something different from what it was given -- an array shown as
+ * "a,b" and read back by splitting on commas, an object shown as JSON
+ * and read back by parsing it.
+ */
+function setFieldValue(el, f, v) {
+	if (v === undefined || v === null)
+		return;
+	if (f.type === "boolean") {
+		el.checked = v === true;
+		return;
+	}
+	if (f.type === "array") {
+		el.value = Array.isArray(v) ? v.join(", ") : String(v);
+		return;
+	}
+	if (f.type === "object") {
+		/* Indented, because the operator is about to read and edit it
+		 * -- JSON.stringify's default one-line form is not a thing
+		 * anyone edits in a textarea. */
+		el.value = typeof v === "string" ? v : JSON.stringify(v, null, 2);
+		return;
+	}
+	el.value = String(v);
+}
+
+/*
  * Open the generated form for one operation.
  *
  * opts.title    the modal's heading                (authored)
@@ -187,6 +284,18 @@ async function refreshVisibleView() {
  * opts.args     the operation's path parameters, in contract order
  * opts.after    what to refresh once it succeeds   (authored)
  * opts.failed   what to say if it does not         (authored)
+ * opts.values   starting values, by field name -- a draft to edit
+ * opts.fixed    values that IDENTIFY the resource, so not editable
+ *
+ * `values` and `fixed` are two different facts and not one with a flag.
+ * An upsert keyed by a body field -- addImageRecipe, addDeployment --
+ * is the SAME operation for a create and for an edit, and the only
+ * difference is that on an edit the key names a resource that already
+ * exists: typing over it would not rename anything, it would quietly
+ * address a different one. So `fixed` renders read-only and is still
+ * SENT, because the operation needs it. That is a separate thing from
+ * the contract's own `readOnly`, which means the daemon reports this
+ * field and never accepts it -- those fields are not rendered at all.
  */
 function openForm(opId, opts) {
 	const shape = CIX_API[opId + "_SHAPE"];
@@ -215,6 +324,9 @@ function openForm(opId, opts) {
 
 	for (const f of fields) {
 		const label = document.createElement("label");
+		const values = options.values || {};
+		const fixed = options.fixed || {};
+		let control;
 
 		/* A field the daemon only ever reports is not a field anyone
 		 * fills in. */
@@ -232,7 +344,28 @@ function openForm(opId, opts) {
 		 */
 		if (f.type === "boolean")
 			label.className = "checkbox";
-		label.appendChild(fieldControl(f));
+		/*
+		 * A textarea takes the whole row, the same `.wide` the
+		 * hand-written forms gave theirs. A document in a 15rem grid
+		 * column is unreadable, and every one of these fields is a
+		 * document.
+		 */
+		if (f.ui === "textarea" || f.type === "object")
+			label.className = "wide";
+		control = fieldControl(f);
+		/* `readOnly` is right for every `fixed` field there is or is
+		 * likely to be -- a key is a name, so a text input. It is
+		 * inert on a `<select>`, so a fixed enum would show as
+		 * editable; that is a real gap and not a current one, and the
+		 * fix when it arrives is `disabled` plus keeping the value in
+		 * the body, which generatedFormBody() already would. */
+		if (Object.prototype.hasOwnProperty.call(fixed, f.name)) {
+			setFieldValue(control, f, fixed[f.name]);
+			control.readOnly = true;
+		} else {
+			setFieldValue(control, f, values[f.name]);
+		}
+		label.appendChild(control);
 		/*
 		 * The hint goes INSIDE the label, not beside it.
 		 *

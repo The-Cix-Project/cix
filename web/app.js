@@ -441,7 +441,6 @@ function closeModal() {
 	ldapUserEditName = null;
 	document.getElementById("luf-name").readOnly = false;
 	document.getElementById("luf-submit").textContent = "Create";
-	document.getElementById("irf-name").readOnly = false;
 
 	/*
 	 * The generated form is emptied rather than reset (ADR-0338): its
@@ -487,6 +486,8 @@ document.getElementById("generated-form").addEventListener("submit", async (even
 	const opId = form.dataset.opId;
 	const shape = CIX_API[opId + "_SHAPE"];
 	const args = JSON.parse(form.dataset.args || "[]");
+	let body;
+	let result;
 
 	event.preventDefault();
 	/* A destructive operation confirms, because the contract says it is
@@ -494,11 +495,26 @@ document.getElementById("generated-form").addEventListener("submit", async (even
 	if (shape.destructive && !window.confirm("This cannot be undone. Continue?"))
 		return;
 	try {
-		await apiRequest(shape.method, CIX_API[opId](...args), generatedFormBody(form));
+		/* Read BEFORE the request, and inside the try: collecting the
+		 * body can refuse it -- a free-form object field is typed as
+		 * JSON and parsed here, so a mistyped brace must report
+		 * itself and leave the modal open with the text still in it,
+		 * exactly like a 400 would. */
+		body = generatedFormBody(form);
+		result = await apiRequest(shape.method, CIX_API[opId](...args), body);
 		clearStatus();
 		closeModal();
+		/*
+		 * The body, because an `after` often needs the name of the
+		 * thing just written and on a create nobody knew it until it
+		 * was typed -- and the response, because an operation with
+		 * more than one success answers which one it took. applying a
+		 * container recipe is the case: 201 created, 202 queued behind
+		 * an image build (ADR-0270), and the hand-written form
+		 * reported "created" for both.
+		 */
 		if (generatedFormAfter !== null)
-			await generatedFormAfter();
+			await generatedFormAfter(body, result);
 	} catch (e) {
 		showStatus(generatedFormFailed + ": " + e.message, true);
 	}
@@ -6306,10 +6322,14 @@ function renderImageRecipeTab(name) {
 		} catch (e) {
 			/* No recipe yet -- start from an empty template. */
 		}
-		openModal("image-recipe-form", "Edit image recipe");
-		document.getElementById("irf-name").value = name;
-		document.getElementById("irf-name").readOnly = true;
-		document.getElementById("irf-content").value = content;
+		openForm("addImageRecipe", {
+			title: "Edit image recipe",
+			submit: "Save",
+			fixed: { name: name },
+			values: { content: content },
+			after: afterImageRecipeSave,
+			failed: "Failed to save the image recipe for " + name,
+		});
 	};
 	document.getElementById("imgd-remove-recipe").onclick = async () => {
 		try {
@@ -6335,28 +6355,25 @@ function renderImageRecipeTab(name) {
 }
 
 
-document.getElementById("image-recipe-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const name = document.getElementById("irf-name").value.trim();
-	const content = document.getElementById("irf-content").value;
-
-	if (name === "" || content.trim() === "")
-		return;
-
-	try {
-		await apiRequest("POST", CIX_API.addImageRecipe(), { name: name, content: content });
-		clearStatus();
-		document.getElementById("image-recipe-form").reset();
-		closeModal();
-		imageRecipeContentCache = { name: null, content: null };
-		if (onPageOf("images") && parseHash().name === name)
-			renderImageRecipeTab(name);
-		await refreshImageRecipesList();
-	} catch (e) {
-		showStatus("Failed to save image recipe for " + name + ": " + e.message, true);
-	}
-});
+/*
+ * What a saved image recipe invalidates, which is all that was left of
+ * this form's own submit handler once the generated form took the
+ * request itself (#596).
+ *
+ * It takes the submitted body rather than reading a field, because on
+ * an "Add" the name is whatever the operator typed and no call site
+ * knows it in advance.
+ *
+ * `refreshVisibleView()` covers the recipes table -- it is in that
+ * view's own VIEW_REFRESHERS -- but not the image detail page's recipe
+ * tab, which is a tab of `images` and renders from a cache of its own.
+ */
+async function afterImageRecipeSave(body) {
+	imageRecipeContentCache = { name: null, content: null };
+	if (onPageOf("images") && parseHash().name === body.name)
+		renderImageRecipeTab(body.name);
+	await refreshVisibleView();
+}
 
 /* GET /v1/images/{name} isn't part of the images-list cache (that only
  * ever carries {"name":...} per entry, deliberately minimal) -- the
@@ -11421,10 +11438,14 @@ function renderImageRecipesTable() {
 			} catch (e) {
 				/* Shouldn't happen for a name the list itself just returned. */
 			}
-			openModal("image-recipe-form", "Edit image recipe");
-			document.getElementById("irf-name").value = r.name;
-			document.getElementById("irf-name").readOnly = true;
-			document.getElementById("irf-content").value = content;
+			openForm("addImageRecipe", {
+				title: "Edit image recipe",
+				submit: "Save",
+				fixed: { name: r.name },
+				values: { content: content },
+				after: afterImageRecipeSave,
+				failed: "Failed to save the image recipe for " + r.name,
+			});
 		});
 		actionCell.appendChild(editButton);
 
@@ -11497,9 +11518,13 @@ function renderContainerRecipesTable() {
 		applyButton.textContent = "Apply…";
 		gateAction(applyButton, "applyDeployment");
 		applyButton.addEventListener("click", () => {
-			openModal("container-recipe-apply-form", "Apply recipe: " + r.name);
-			document.getElementById("craf-name").value = r.name;
-			document.getElementById("craf-secrets").value = "{}";
+			openForm("applyDeployment", {
+				title: "Apply recipe: " + r.name,
+				submit: "Apply -- create container",
+				args: [r.name],
+				after: (b, result) => afterContainerRecipeApply(r.name, result),
+				failed: "Failed to apply recipe " + r.name,
+			});
 		});
 		actionCell.appendChild(applyButton);
 
@@ -11547,8 +11572,12 @@ document.getElementById("recipes-container-search").addEventListener("input", re
 
 document.getElementById("recipes-pkg-add").addEventListener("click", () => openModal("pkg-recipe-form", "Add recipe"));
 document.getElementById("recipes-image-add").addEventListener("click", () => {
-	openModal("image-recipe-form", "Add image recipe");
-	document.getElementById("irf-name").readOnly = false;
+	openForm("addImageRecipe", {
+		title: "Add image recipe",
+		submit: "Add",
+		after: afterImageRecipeSave,
+		failed: "Failed to add the image recipe",
+	});
 });
 document.getElementById("recipes-container-add").addEventListener("click", () => openModal("container-recipe-form", "Add container recipe"));
 
@@ -11576,34 +11605,29 @@ document.getElementById("container-recipe-form").addEventListener("submit", asyn
 	}
 });
 
-document.getElementById("container-recipe-apply-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const name = document.getElementById("craf-name").value;
-	const secretsText = document.getElementById("craf-secrets").value.trim();
-	let secrets = {};
-
-	if (secretsText !== "") {
-		try {
-			secrets = JSON.parse(secretsText);
-		} catch (e) {
-			showStatus("Secrets must be valid JSON: " + e.message, true);
-			return;
-		}
-	}
-
-	try {
-		await apiRequest("POST", CIX_API.applyDeployment(name), { secrets: secrets });
-		clearStatus();
+/*
+ * Which of an apply's two successes happened, said out loud.
+ *
+ * 201 creates the container; 202 queues it behind an image that is not
+ * built yet and creates it when that image is realized (ADR-0270). The
+ * hand-written form this replaces reported "created" for both, which
+ * was simply false in the second case -- and that case is the one an
+ * operator most needs to be told about, because nothing appears in the
+ * container list for a while and the apply looks like it did nothing.
+ *
+ * The discriminator is the contract's own `state`, a declared enum of
+ * one value, rather than the absence of some field on the 201 body.
+ */
+async function afterContainerRecipeApply(name, result) {
+	if (result !== null && result.state === "awaiting-image")
+		showStatus("Recipe " + name + " is queued: image " +
+			(result.awaiting_image || "it names") + " is being built, and the " +
+			"container is created once it is ready (ADR-0270).", false);
+	else
 		showStatus("Container " + name + " created from recipe.", false);
-		document.getElementById("container-recipe-apply-form").reset();
-		closeModal();
-		await refreshContainers();
-		renderTree();
-	} catch (e) {
-		showStatus("Failed to apply recipe " + name + ": " + e.message, true);
-	}
-});
+	await refreshContainers();
+	renderTree();
+}
 
 /*
  * How far behind this host is, shown next to the verb that fixes it.
@@ -13122,39 +13146,7 @@ document.getElementById("dns-record-form").addEventListener("submit", async (eve
 	}
 });
 
-document.getElementById("dns-server-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
 
-	const container = document.getElementById("sf-container").value.trim();
-	const hostsPath = document.getElementById("sf-hosts-path").value.trim();
-
-	try {
-		await apiRequest("POST", CIX_API.createDnsServer(), { container: container, hosts_path: hostsPath });
-		clearStatus();
-		document.getElementById("dns-server-form").reset();
-		closeModal();
-		await refreshDnsServers();
-	} catch (e) {
-		showStatus("Failed to register DNS server: " + e.message, true);
-	}
-});
-
-document.getElementById("ldap-server-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const container = document.getElementById("lf-container").value.trim();
-	const configPath = document.getElementById("lf-config-path").value.trim();
-
-	try {
-		await apiRequest("POST", CIX_API.createLdapServer(), { container: container, config_path: configPath });
-		clearStatus();
-		document.getElementById("ldap-server-form").reset();
-		closeModal();
-		await refreshLdapServers();
-	} catch (e) {
-		showStatus("Failed to register LDAP server: " + e.message, true);
-	}
-});
 
 document.getElementById("ldap-group-form").addEventListener("submit", async (event) => {
 	event.preventDefault();

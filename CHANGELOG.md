@@ -6,6 +6,74 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Two more conversions, and a regex that YAML can break silently (#596, ADR-0338)
+
+`createDnsServer` and `createLdapServer` now open the generated form: two panels, two submit handlers and
+four element ids gone, with the menu entries carrying `data-modal="generated-form"` + `data-op` and nothing
+else. Four constraints moved into the contract with them — `^[A-Za-z0-9_-]+$` on both
+`DnsServerBindingCreateRequest.container` and `LdapServerBindingCreateRequest.container`, and
+`'^/(?!.*\.\.).+$'` on `hosts_path` and `config_path`, which is precisely the rule those two endpoints
+already enforced and had only ever stated in prose.
+
+**The path patterns are single-quoted YAML, and that is not a style choice.** `apigen` reads the contract's
+raw bytes rather than parsing YAML escapes, and the JS writer escapes each backslash again — so a
+double-quoted `"^/(?!.*\\.\\.).+$"` would reach the browser as a regex demanding a literal backslash, a
+pattern that compiles cleanly and matches nothing anyone would type. Nothing short of compiling it can tell
+the two spellings apart, so `test_web_form` compiles the emitted pattern and tries three real paths
+(`/etc/dnsmasq-hosts` accepted, `etc/dnsmasq-hosts` and `/etc/../shadow` rejected). The same three were run
+through a real browser's own regex engine before the assertion was written.
+
+### A form can hold a document now, and the stylesheet had never heard of one (#596, ADR-0338)
+
+Six hand-written forms were blocked on one missing control: their field is a recipe or a config document,
+not a line of text. Both ways of asking for a multi-line control now exist, and only one of them is
+authored.
+
+- **`x-cix-ui: textarea`**, the first real use of ADR-0338's sanctioned override, on
+  `addImageRecipeRequest.content` and `addDeploymentRequest.content`. JSON Schema has no way to say
+  "multi-line", so the contract says it — and **`apigen` refuses any other value**, naming the set, because
+  an unknown control would fall through to a plain text input and be silently wrong rather than visibly
+  broken. The alternative was guessing from the field's *name*, which is the rule this whole design exists
+  to forbid.
+- **A free-form `type: object` needs no annotation and gets none.** A one-line input is never the right
+  control for JSON, so the renderer derives a textarea, shows the value as indented JSON and parses it
+  back. `applyDeploymentRequest.secrets` is the first. A mistyped brace is refused by name — *"Secrets must
+  be valid JSON: …"* — on the status line, with the modal still open and the text still in it.
+
+**`textarea` appeared ZERO times in `web/style.css`.** `form input, form select` carried the one control
+height, border, surface and ink for every form in the dashboard, and the ten hand-written textareas — PEM
+blocks, recipes, a secrets object, a services line — had been rendering as a browser-default white box with
+black text inside a dark panel, ignoring every theme token, for as long as they had existed. Found by
+grepping for the selector while adding the generated one, not by looking at the page. `form textarea` now
+matches its siblings and is monospace, because every one of them holds a document rather than prose.
+
+**`openForm` learned `values` and `fixed`**, which are two facts rather than one with a flag. `values` is a
+draft the operator may edit; `fixed` identifies the resource being edited, renders read-only, **and is
+still sent**, because an upsert keyed by a body field (`addImageRecipe`, `addDeployment`) is one operation
+for a create and for an edit and the key is what addresses the right one. That is a different concept from
+the contract's own `readOnly` — a field the daemon reports and never accepts — which is not rendered at
+all. `form input[readonly]` gained the recessed surface five hand-written forms had already been setting
+`.readOnly` with no styling to show it; its text stays full-strength, because muted ink on that surface
+measured 3.75:1 in light mode against the 4.5:1 a value has to meet.
+
+**Two forms converted**, and the second one fixed a lie. `image-recipe-form` is gone, its three call sites
+now `openForm("addImageRecipe", …)` with the name `fixed` on the two edit paths — including the leak where
+"Add" had to reset `irf-name.readOnly = false` because the previous *edit* had set it. And
+`container-recipe-apply-form` is gone: applying a recipe answers **201 created or 202 queued behind an
+image build** (ADR-0270), and the hand-written form reported "Container x created from recipe." for both.
+It now says which happened, from the contract's own `state: "awaiting-image"` enum — and that is the case
+an operator most needs told, because nothing appears in the container list for a while and the apply looks
+like it did nothing. The submit listener hands `after(body, result)` both, so no call site has to re-read
+what it just sent.
+
+Rendered in a real browser before anything was committed, both themes: the read-only key recessed and
+legible, the document textarea full-width, monospace and themed, and a prefilled object round-tripping to
+`{"secrets":{"KEY":"real"}}`. `test_web_form` gates each of those, plus the set of every `ui` value in the
+whole generated surface against the one the renderer builds — the other half of apigen's refusal, since
+apigen cannot see the renderer losing a branch. `test_api_surfaces` learned that `openForm("<opId>"` is web
+wiring too: an edit flow reaches a generated form from JS and no static attribute can carry the name of
+the row that was clicked.
+
 ### The first three conversions, and what a real form looks like (#596, ADR-0338)
 
 `createSyslogTarget`, `registerDhcpServer` and `createImage` now open the generated form. Three hand-written

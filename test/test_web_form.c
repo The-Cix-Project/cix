@@ -23,7 +23,15 @@
  *   - an empty optional field is OMITTED from the body rather than sent
  *     as "", because every partial-update endpoint here reads an absent
  *     key as "leave it alone";
- *   - a boolean is a checkbox and arrives as a boolean, not as "on".
+ *   - a boolean is a checkbox and arrives as a boolean, not as "on";
+ *   - a field the contract marks `x-cix-ui: textarea`, and any field
+ *     typed `object`, renders multi-line -- and every `ui` value in
+ *     the whole generated surface is one this renderer knows, which
+ *     is the half of that pair apigen cannot gate;
+ *   - a free-form object round-trips as JSON and a mistyped one is
+ *     refused by name rather than sent;
+ *   - a `fixed` field -- the key of an upsert addressing something
+ *     that already exists -- renders read-only and is still SENT.
  *
  * The DOM shim is deliberately the smallest thing form.js actually
  * uses. It is not a browser, and a test that needed more of one would
@@ -424,6 +432,36 @@ int main(void)
 		       "fieldText({ type: \"boolean\" }, undefined)", "—");
 		expect(ctx, "an array joins", "fieldText({ type: \"array\" }, [\"a\", \"b\"])",
 		       "a, b");
+
+		/*
+		 * A pattern must survive YAML, apigen and the JS writer and
+		 * still be the regex the contract meant (#596).
+		 *
+		 * `hosts_path` is the first one with a backslash in it, and
+		 * that is where the chain can break silently: a DOUBLE-quoted
+		 * YAML scalar would have to write `\\.` for one backslash,
+		 * apigen reads the raw bytes rather than parsing YAML escapes,
+		 * and `emit_js_string()` then doubles each one again -- so the
+		 * browser would compile `\\.` and demand a literal backslash.
+		 * The contract uses a single-quoted scalar for that reason.
+		 * Compiling it here and trying real paths is the only check
+		 * that can tell the two apart.
+		 */
+		expect(ctx, "a path pattern accepts an absolute path",
+		       "String(new RegExp(CIX_API.FIELDS.DnsServerBindingCreateRequest"
+		       ".find((f) => f.name === \"hosts_path\").pattern)"
+		       ".test(\"/etc/dnsmasq-hosts\"))",
+		       "true");
+		expect(ctx, "and rejects a relative one",
+		       "String(new RegExp(CIX_API.FIELDS.DnsServerBindingCreateRequest"
+		       ".find((f) => f.name === \"hosts_path\").pattern)"
+		       ".test(\"etc/dnsmasq-hosts\"))",
+		       "false");
+		expect(ctx, "and rejects one containing ..",
+		       "String(new RegExp(CIX_API.FIELDS.DnsServerBindingCreateRequest"
+		       ".find((f) => f.name === \"hosts_path\").pattern)"
+		       ".test(\"/etc/../shadow\"))",
+		       "false");
 		expect(ctx, "an empty array is absent",
 		       "fieldText({ type: \"array\" }, [])", "—");
 
@@ -464,6 +502,144 @@ int main(void)
 		       "  return b.children.map((r) => r.children[0].textContent).join(\",\");\n"
 		       "})()",
 		       "Name,Subnet,Prefix len,Has address,Address,Management,Interfaces");
+
+		/*
+		 * ---- the multi-line control, and the two ways a field asks
+		 * for one (#596) ----
+		 *
+		 * A STRING asks explicitly, with `x-cix-ui: textarea`, because
+		 * nothing in JSON Schema distinguishes one line from twenty
+		 * and an image recipe is twenty. An OBJECT needs no annotation
+		 * and is derived: a free-form object is typed as JSON, and a
+		 * one-line input is never the right control for JSON.
+		 *
+		 * Both name a real field of a real schema, so a contract that
+		 * loses the annotation fails here rather than rendering a
+		 * recipe document into a 15rem text box.
+		 */
+		expect(ctx, "an x-cix-ui string field is a textarea",
+		       "fieldControl(CIX_API.FIELDS.addImageRecipeRequest.find("
+		       "(f) => f.name === \"content\")).tag",
+		       "textarea");
+		expect(ctx, "and it is tall enough to hold a document",
+		       "String(fieldControl(CIX_API.FIELDS.addImageRecipeRequest.find("
+		       "(f) => f.name === \"content\")).rows)",
+		       "12");
+		expect(ctx, "an object field is a textarea with no annotation at all",
+		       "fieldControl(CIX_API.FIELDS.applyDeploymentRequest.find("
+		       "(f) => f.name === \"secrets\")).tag",
+		       "textarea");
+		expect(ctx, "the contract still asks for one, in one place",
+		       "String(CIX_API.FIELDS.addImageRecipeRequest.find("
+		       "(f) => f.name === \"content\").ui)",
+		       "textarea");
+		/*
+		 * EVERY `ui` value in the whole generated surface, against the
+		 * one this renderer knows. apigen refuses an unknown value at
+		 * generation; this is the other half of that pair -- it fails
+		 * if the renderer ever loses the branch while the contract
+		 * keeps asking for it, which apigen cannot see.
+		 */
+		expect(ctx, "the only control the contract ever asks for is one this builds",
+		       "(() => {\n"
+		       "  const seen = new Set();\n"
+		       "  for (const name of Object.keys(CIX_API.FIELDS))\n"
+		       "    for (const f of CIX_API.FIELDS[name])\n"
+		       "      if (f.ui !== undefined) seen.add(f.ui);\n"
+		       "  return [...seen].sort().join(\",\");\n"
+		       "})()",
+		       "textarea");
+
+		/*
+		 * A free-form object round-trips: shown as indented JSON,
+		 * read back as an object. The two halves are written in
+		 * different functions and a form opened on a resource and
+		 * submitted unchanged must send what it was given.
+		 */
+		expect(ctx, "an object field is shown as JSON and read back as an object",
+		       "(() => {\n"
+		       "  const f = CIX_API.FIELDS.applyDeploymentRequest.find(\n"
+		       "    (x) => x.name === \"secrets\");\n"
+		       "  const el = fieldControl(f);\n"
+		       "  const form = document.createElement(\"form\");\n"
+		       "  setFieldValue(el, f, { KEY: \"real\" });\n"
+		       "  form.appendChild(el);\n"
+		       "  return JSON.stringify(generatedFormBody(form));\n"
+		       "})()",
+		       "{\"secrets\":{\"KEY\":\"real\"}}");
+		expect(ctx, "an untouched optional object field sends nothing",
+		       "(() => {\n"
+		       "  const f = CIX_API.FIELDS.applyDeploymentRequest.find(\n"
+		       "    (x) => x.name === \"secrets\");\n"
+		       "  const el = fieldControl(f);\n"
+		       "  const form = document.createElement(\"form\");\n"
+		       "  el.value = \"\\n  \";\n"
+		       "  form.appendChild(el);\n"
+		       "  return JSON.stringify(generatedFormBody(form));\n"
+		       "})()",
+		       "{}");
+		/*
+		 * And a mistyped one REFUSES, with the field named. It throws
+		 * because the one submit listener collects the body inside its
+		 * own try/catch: the message reaches the status line and the
+		 * modal stays open with the text still in it, which is the
+		 * whole point when the text is what was mistyped.
+		 */
+		expect(ctx, "invalid JSON is refused, naming the field",
+		       "(() => {\n"
+		       "  const f = CIX_API.FIELDS.applyDeploymentRequest.find(\n"
+		       "    (x) => x.name === \"secrets\");\n"
+		       "  const el = fieldControl(f);\n"
+		       "  const form = document.createElement(\"form\");\n"
+		       "  el.value = \"{oops\";\n"
+		       "  form.appendChild(el);\n"
+		       "  try { generatedFormBody(form); return \"accepted\"; }\n"
+		       "  catch (e) { return e.message.slice(0, 27); }\n"
+		       "})()",
+		       "Secrets must be valid JSON:");
+		expect(ctx, "and so is a bare value that is not an object",
+		       "(() => {\n"
+		       "  const f = CIX_API.FIELDS.applyDeploymentRequest.find(\n"
+		       "    (x) => x.name === \"secrets\");\n"
+		       "  const el = fieldControl(f);\n"
+		       "  const form = document.createElement(\"form\");\n"
+		       "  el.value = \"7\";\n"
+		       "  form.appendChild(el);\n"
+		       "  try { generatedFormBody(form); return \"accepted\"; }\n"
+		       "  catch (e) { return e.message; }\n"
+		       "})()",
+		       "Secrets must be a JSON object, not a bare value");
+
+		/*
+		 * ---- `fixed`: the key of an upsert, shown and not editable ----
+		 *
+		 * addImageRecipe is one operation for a create and for an
+		 * edit, and on an edit its `name` names something that already
+		 * exists -- typing over it would not rename anything, it would
+		 * address a different image. So it renders read-only and is
+		 * STILL SENT, which is the part a flag called "disabled" would
+		 * have got wrong.
+		 */
+		expect(ctx, "a form opened on an existing resource shows its key, locked",
+		       "(() => {\n"
+		       "  openForm(\"addImageRecipe\", { title: \"Edit\", submit: \"Save\",\n"
+		       "    fixed: { name: \"jump\" }, values: { content: \"{}\" } });\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  const el = form.children[0].children[0];\n"
+		       "  return el.tag + \"/\" + el.value + \"/\" + el.readOnly;\n"
+		       "})()",
+		       "input/jump/true");
+		expect(ctx, "and sends it, because the operation needs it",
+		       "JSON.stringify(generatedFormBody("
+		       "document.getElementById(\"generated-form\")))",
+		       "{\"name\":\"jump\",\"content\":\"{}\"}");
+		expect(ctx, "the document field of that same form is the wide one",
+		       "(() => {\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  return form.children[1].className + \"/\" +\n"
+		       "    form.children[1].children[0].tag;\n"
+		       "})()",
+		       "wide/textarea");
 	}
 
 	JS_FreeContext(ctx);

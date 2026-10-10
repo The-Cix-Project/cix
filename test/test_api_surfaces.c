@@ -319,6 +319,23 @@ static void check_declared_exposure(void)
 			snprintf(want_attr, sizeof(want_attr), "data-op=\"%s\"", op_id);
 			has_web = strstr(web_html, want_attr) != NULL;
 		}
+		/*
+		 * And a generated form opened from JS rather than from a menu
+		 * entry: `openForm("<opId>"` is that wiring (#596).
+		 *
+		 * Every EDIT flow arrives this way and no static attribute
+		 * can serve it -- the resource's name is known to the row
+		 * that was clicked, so the call site is the only place that
+		 * has it. A plain strstr is exact here because the pattern
+		 * ends in the closing quote, which no longer identifier can
+		 * be a prefix of.
+		 */
+		if (!has_web) {
+			char want_open[176];
+
+			snprintf(want_open, sizeof(want_open), "openForm(\"%s\"", op_id);
+			has_web = strstr(web, want_open) != NULL;
+		}
 
 		if (decl_cli && !has_cli) {
 			fprintf(stderr,

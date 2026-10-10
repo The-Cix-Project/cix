@@ -578,6 +578,18 @@ struct schema_field {
 	char default_lit[APIGEN_NUMLIT_MAX];
 	int read_only;
 	/*
+	 * `x-cix-ui` -- the control the contract ASKS for, where the one
+	 * derived from type and format is genuinely wrong (ADR-0338).
+	 *
+	 * Empty for all but a handful of fields, and it has to be: the
+	 * whole point of the generated form is that the contract's own
+	 * facts decide the control, so every value here is a place where
+	 * the derivation had nothing to work from. JSON Schema says
+	 * nothing about a string being one line or twenty, and a recipe
+	 * body is twenty.
+	 */
+	char ui[APIGEN_TYPE_MAX];
+	/*
 	 * `type: [string, "null"]` -- a nullable type, which this contract
 	 * writes 30 times, 15 of them at property depth. A scalar reader
 	 * truncated that to `[string, ` at APIGEN_TYPE_MAX and emitted it
@@ -1040,6 +1052,39 @@ static int schema_body_line(struct schema_reader *r, const char *spec, int linen
 			snprintf(fl->default_lit, sizeof(fl->default_lit), "%s", v);
 		else if (strcmp(key, "readOnly") == 0)
 			fl->read_only = strcmp(v, "true") == 0;
+		/*
+		 * `x-cix-ui` -- the sanctioned override, and its first real
+		 * use (ADR-0338, #596).
+		 *
+		 * The ADR says that where the generated default is genuinely
+		 * wrong the override belongs in the contract and never as a
+		 * special case in app.js. Six forms need a TEXTAREA, because
+		 * their field is a recipe or a config document rather than a
+		 * line of text, and nothing in JSON Schema says "multi-line"
+		 * -- so the contract says it.
+		 *
+		 * A bare scalar naming the control, not a nested object: one
+		 * need, one word, and a second key can arrive when something
+		 * actually wants one. The alternative was guessing from the
+		 * field's NAME, which is the rule this whole design exists to
+		 * forbid.
+		 */
+		else if (strcmp(key, "x-cix-ui") == 0) {
+			/*
+			 * A CLOSED SET, refused here. An unknown control name
+			 * reaches fieldControl(), which knows one, and falls
+			 * through to a plain text input -- a silently wrong
+			 * field rather than an error, which is the worst
+			 * available outcome and exactly what apigen refusing a
+			 * missing x-cix-permission already exists to prevent.
+			 * Generation is when a contract typo is cheap.
+			 */
+			if (strcmp(v, "textarea") != 0)
+				die_at(spec, lineno,
+				       "x-cix-ui: %s names no control the dashboard "
+				       "builds; the set is { textarea }", v);
+			snprintf(fl->ui, sizeof(fl->ui), "%s", v);
+		}
 		else if (strcmp(key, "description") == 0) {
 			/* `>` or `>-` opens a block whose lines
 			 * schema_desc_line() gathers; anything else is the
@@ -1912,6 +1957,10 @@ static void emit_web(const char *out_path, const char *spec)
 			}
 			if (fl->read_only)
 				fprintf(o, ", readOnly: true");
+			if (fl->ui[0] != '\0') {
+				fprintf(o, ", ui: ");
+				emit_js_string(o, fl->ui);
+			}
 			/*
 			 * DESCRIPTION LAST, DELIBERATELY, and gated as an invariant
 			 * in test_apigen.

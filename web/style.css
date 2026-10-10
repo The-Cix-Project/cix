@@ -1519,8 +1519,58 @@ form select {
 	font-family: inherit;
 }
 
+/*
+ * A textarea, which until now had NO RULE AT ALL -- so all ten of them
+ * in this dashboard rendered as a browser-default white box with black
+ * text, inside a dark panel, ignoring every theme token. Found while
+ * giving the generated form a textarea (#596): the grep for `textarea`
+ * in this file returned nothing.
+ *
+ * Monospace because every one of them holds a document rather than
+ * prose -- a CPDL recipe, an image or container recipe's JSON, a
+ * secrets object, a PEM block, a services line. No `height`: the
+ * element's own `rows` decides that, and the ten differ (3 to 16)
+ * because the documents do.
+ */
+form textarea {
+	box-sizing: border-box;
+	width: 100%;
+	min-width: 0;
+	padding: var(--s2);
+	border: 1px solid var(--border);
+	border-radius: var(--r-control);
+	background: var(--panel);
+	color: var(--text);
+	font-size: var(--t-body);
+	font-family: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo,
+		Consolas, "Liberation Mono", monospace;
+	resize: vertical;
+}
+
+/*
+ * A read-only control, which had no styling either -- so a field the
+ * operator CANNOT change looked exactly like one they could. Five
+ * hand-written forms already set `.readOnly = true` on the name of the
+ * thing being edited (image recipe, DNS record, LDAP user and group,
+ * a group's permissions), and the generated form does it for every
+ * `fixed` field, which is the key of an upsert addressing something
+ * that already exists.
+ *
+ * Recessed rather than disabled-looking: the text still matters and is
+ * still selectable, it is just not yours to edit. The BACKGROUND
+ * carries that and the text keeps `--text`, because a read-only
+ * field's value is content -- the name of the thing being edited --
+ * and not a label. Rendering it muted measured 3.75:1 against this
+ * surface in light mode, below the 4.5:1 a value has to meet.
+ */
+form input[readonly],
+form textarea[readonly] {
+	background: var(--bg);
+}
+
 form input:focus,
-form select:focus {
+form select:focus,
+form textarea:focus {
 	/* The accent means focus -- the guidelines' own role for Copper. */
 	outline: none;
 	border-color: var(--accent);

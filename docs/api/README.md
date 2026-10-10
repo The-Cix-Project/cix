@@ -738,6 +738,38 @@ a generated `type: string` would otherwise be a plain text input showing the pas
 other way: that field is a generated app password in a *response*, shown once so an operator can copy it,
 and obscuring it would defeat the only reason it is returned.
 
+### `x-cix-ui`: the one override, for what the schema cannot say
+
+A generated form derives its control from the field's own facts -- an `enum` is a select, `minimum`/`maximum`
+are a number input's bounds, `format: password` is obscured, `type: boolean` is a checkbox. **`x-cix-ui`
+names a control where no fact in the schema can**, and it has exactly one value today:
+
+```yaml
+content:
+  type: string
+  x-cix-ui: textarea
+```
+
+`textarea` is for a string that is a **document** -- an image recipe, a container recipe, a config file, a
+PEM block. JSON Schema has no way to distinguish one line of text from twenty, so without this the contract
+describes a recipe exactly as it describes a hostname and a form would render it in a 15rem text box.
+
+Two rules keep it from becoming a second place where the dashboard is designed:
+
+- **`apigen` refuses any other value**, naming the set, because an unknown control would fall through to a
+  plain text input: the field would be silently wrong rather than visibly broken. Generation is when a
+  contract typo is cheap.
+- **Reach for it only when the derivation has nothing to work from.** A free-form object
+  (`additionalProperties`) needs no annotation and gets none -- the dashboard renders `type: object` as a
+  JSON textarea on its own, because a one-line input is never right for JSON. If a control can be derived,
+  it is derived.
+
+**And where operation-level prose goes.** Each hand-written form used to carry a paragraph under it
+explaining the operation; a generated form renders each field's own `description` as that field's hint and
+has nowhere to put a form-level one. That is the right pressure: those paragraphs were almost always *about
+one field* -- the recipe's JSON shape, what happens to an unmatched `{{SECRET:KEY}}` token -- and they now
+live in that field's `description`, where the CLI's help and this document get them too.
+
 **Which groups hold which permissions ([#540](https://git.home.arpa/itdlabs/cix/issues/540)).** `GET /system/hostauth/permissions` returns `{"vocabulary": [...], "groups": {"<group>": ["containers:read", ...]}}`, and `PUT /system/hostauth/permissions/{group}` with `{"permissions": [...]}` replaces one group's set. A user holds the union over every group they are in, read on every request, so a grant or a membership change takes effect on the next request of a session already open. A word outside the vocabulary is a `400` naming it. `GET /whoami` reports the caller's own set as `permissions`.
 
 The mapping is the one stored statement; `admin_groups` in `hostauth-config` is derived from it -- the groups holding every permission. A `PUT /system/hostauth-config` naming a group grants it every permission, and a group that held every permission and is no longer named loses its entry. On the first start after upgrading to #540, each existing admin group was granted every permission, so nobody gained or lost anything. Deleting an LDAP group removes its entry, so a new group of the same name inherits nothing; renaming one moves its grants.
@@ -794,7 +826,20 @@ So a constraint goes in the schema as `pattern`, `minimum`/`maximum`, `maxLength
 description explains *why* rather than restating it. The three added with the first conversions are
 `ImageCreateRequest.name`, `SyslogTargetCreateRequest.container` and `registerDhcpServer`'s own
 `container`, all `^[A-Za-z0-9_-]+$` — the same rule the container-name path parameter has carried all
-along.
+along. `NtpServerBindingCreateRequest.container`, `DnsServerBindingCreateRequest.container`,
+`LdapServerBindingCreateRequest.container`, `addImageRecipeRequest.name` and `addDeploymentRequest.name`
+followed with each conversion. The last two were read off the daemon rather than written from memory:
+`image_recipe_add()` validates with `pkg_image_is_valid()` and `container_recipe_add()` with
+`pkg_name_is_valid()`, both of which are `simple_name_is_valid()` in `daemon/include/namecheck.h`, and
+that function accepts exactly a non-empty name of `[A-Za-z0-9_-]`.
+
+**A path pattern has one trap, and it is YAML's rather than ours.** `DnsServerBindingCreateRequest`'s
+`hosts_path` and `LdapServerBindingCreateRequest`'s `config_path` carry `'^/(?!.*\.\.).+$'` — absolute,
+and no `..` anywhere — which is exactly the rule those two endpoints already enforced in prose. It is a
+**single-quoted** YAML scalar deliberately: `apigen` reads the contract's raw bytes rather than parsing
+YAML escapes, and the JS writer escapes each backslash again, so a double-quoted `"^/(?!.*\\.\\.).+$"`
+would reach the browser demanding a literal backslash. The compiled regex is asserted against three real
+paths in `test_web_form`, because nothing short of compiling it can tell the two spellings apart.
 
 The same move applies to a field's **hint**: the dashboard had re-typed 185 of them into `index.html`,
 and the richer wording generally lived there rather than in the contract. Converting a form moves that
