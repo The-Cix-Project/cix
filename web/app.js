@@ -833,12 +833,19 @@ let inBackgroundSweep = false;
 function promptReauth() {
 	if (inBackgroundSweep)
 		return;
-	/* The session went away under the operator, so the shell converges
-	 * (#597). No `modalOverlay.hidden` guard any more: that existed
-	 * because one modal could not open over another, and the session
-	 * shell is not a modal -- it goes over whatever is there, and
-	 * closes it, because nothing under it is reachable now. */
-	lockSession("expired");
+	/*
+	 * The shell converges (#597). No `modalOverlay.hidden` guard any
+	 * more: that existed because one modal could not open over another,
+	 * and the session shell is not a modal -- it goes over whatever is
+	 * there, and closes it, because nothing under it is reachable now.
+	 *
+	 * "expired" only when there WAS a session. A first load against a
+	 * gating host 401s too, and telling someone their session expired
+	 * when they have never had one is a small lie that reads as a bug
+	 * in the host. The first deployed render said exactly that, which
+	 * is how this was found.
+	 */
+	lockSession(sessionEverAuthenticated ? "expired" : "first");
 }
 
 /*
@@ -859,6 +866,14 @@ function promptReauth() {
  */
 let hostGated = false;
 let sessionAuthenticated = false;
+/*
+ * Whether a session has EVER existed in this page's life (#597).
+ *
+ * Only this can tell "your session expired" apart from "this host
+ * wants a login", because both arrive as the same 401. Never reset:
+ * once a session has existed, a later refusal really is an expiry.
+ */
+let sessionEverAuthenticated = false;
 let sessionPermissions = new Set();
 let sessionChecked = false; /* whoami answered at least once this page load */
 
@@ -1009,6 +1024,8 @@ async function refreshSessionPermissions() {
 		const wasAuthenticated = sessionAuthenticated;
 
 		sessionAuthenticated = !!(me && me.authenticated);
+		if (sessionAuthenticated)
+			sessionEverAuthenticated = true;
 		/* A session just began: sweep on the next tick rather than up
 		 * to SWEEP_INTERVAL_MS later, so the page fills in at once.
 		 *

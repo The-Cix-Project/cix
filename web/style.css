@@ -3231,6 +3231,17 @@ pre {
 	position: fixed;
 	inset: 0;
 	z-index: 3000;
+	/*
+	 * The shell carries the THEME, it does not fight it. Its panels used
+	 * to hard-code --carbon and --ferrite while letting the text inherit
+	 * --text, which is `--paper` in dark and `--carbon` in LIGHT -- so in
+	 * light mode every inherited string (the wordmark, both fact values,
+	 * the "Log in" heading) was carbon on carbon and simply absent. Found
+	 * by rendering the deployed page in a browser, which is the only
+	 * thing that could have found it: the markup was right, the file
+	 * parsed, and every gate passed.
+	 */
+	color: var(--text);
 }
 
 .lock-shell[hidden] {
@@ -3248,6 +3259,10 @@ pre {
 	width: 2px;
 	margin-left: -1px;
 	background: var(--copper);
+	/* ABOVE the panels. They come later in the DOM, so without this the
+	 * seam paints underneath them and is simply not there -- which is
+	 * how it shipped, and what the first render showed. */
+	z-index: 2;
 	opacity: 1;
 	transition: opacity 180ms linear 100ms;
 }
@@ -3257,6 +3272,7 @@ pre {
 	top: 0;
 	bottom: 0;
 	width: 50%;
+	z-index: 1;
 	box-sizing: border-box;
 	padding: 4rem;
 	display: flex;
@@ -3266,14 +3282,14 @@ pre {
 
 .lock-panel-left {
 	left: 0;
-	background: var(--carbon);
-	border-right: 1px solid var(--machined);
+	background: var(--bg);
+	border-right: 1px solid var(--border);
 	justify-content: space-between;
 }
 
 .lock-panel-right {
 	right: 0;
-	background: var(--ferrite);
+	background: var(--panel);
 	justify-content: center;
 }
 
@@ -3334,14 +3350,14 @@ pre {
 	font-weight: 600;
 	letter-spacing: 0.1em;
 	text-transform: uppercase;
-	color: var(--nickel);
+	color: var(--muted);
 }
 
 .lock-host {
 	font-family: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo,
 		Consolas, "Liberation Mono", monospace;
 	font-size: 0.8125rem;
-	color: var(--nickel);
+	color: var(--muted);
 }
 
 .lock-wordmark {
@@ -3356,7 +3372,7 @@ pre {
 	margin: 0;
 	font-size: 1.0625rem;
 	line-height: 1.5;
-	color: var(--nickel);
+	color: var(--muted);
 	max-width: 24rem;
 }
 
@@ -3383,7 +3399,7 @@ pre {
 	font-weight: 600;
 	letter-spacing: 0.06em;
 	text-transform: uppercase;
-	color: var(--nickel);
+	color: var(--muted);
 }
 
 .lock-fact dd {
@@ -3400,12 +3416,38 @@ pre {
 	display: flex;
 	flex-direction: column;
 	gap: 1.5rem;
+	/*
+	 * STRETCH, explicitly, because the global `form` rule is a grid
+	 * with `align-items: start` and that declaration survives this
+	 * rule changing `display` to flex. On a column flex container the
+	 * cross axis is horizontal, so `start` makes every child
+	 * shrink-to-fit: measured in the browser at 1440px, the form was
+	 * 360px wide while its fields were 228 and the Unlock button 79.
+	 * The approved design has both spanning the form.
+	 */
+	align-items: stretch;
 }
 
 .lock-form h2 {
 	margin: 0;
 	font-size: 1.3125rem;
 	font-weight: 600;
+}
+
+/*
+ * The generated fields are children of ONE element, so that element
+ * owns the rhythm between them.
+ *
+ * Without this they are plain blocks inside a single flex item and
+ * stack with no gap at all: the first deployed render had PASSWORD's
+ * label 8px under the username input where every other gap in the form
+ * is 24px. The form's own `gap` cannot reach them -- it spaces the
+ * form's children, and they are grandchildren.
+ */
+#lock-fields {
+	display: flex;
+	flex-direction: column;
+	gap: 1.5rem;
 }
 
 .lock-field {
@@ -3419,17 +3461,17 @@ pre {
 	font-weight: 600;
 	letter-spacing: 0.06em;
 	text-transform: uppercase;
-	color: var(--nickel);
+	color: var(--muted);
 }
 
 .lock-field > input {
 	height: 2.5rem;
 	padding: 0 0.75rem;
 	box-sizing: border-box;
-	background: var(--carbon);
-	border: 1px solid var(--machined);
+	background: var(--bg);
+	border: 1px solid var(--border);
 	border-radius: 3px;
-	color: var(--paper);
+	color: var(--text);
 	font-family: inherit;
 	font-size: 0.875rem;
 }
@@ -3444,7 +3486,7 @@ pre {
 	border: 0;
 	border-radius: 3px;
 	background: var(--copper);
-	color: var(--carbon);
+	color: var(--carbon); /* on copper, which is mid-tone, so this reads in both themes */
 	font-family: inherit;
 	font-size: 0.875rem;
 	font-weight: 600;
@@ -3455,7 +3497,7 @@ pre {
 	margin: 0;
 	font-size: 0.75rem;
 	line-height: 1.45;
-	color: var(--nickel);
+	color: var(--muted);
 }
 
 /*
@@ -3477,7 +3519,7 @@ pre {
 		bottom: auto;
 		height: 11rem;
 		border-right: 0;
-		border-bottom: 1px solid var(--machined);
+		border-bottom: 1px solid var(--border);
 		justify-content: flex-end;
 		gap: 0.75rem;
 	}

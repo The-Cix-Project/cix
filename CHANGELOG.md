@@ -6,6 +6,47 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Six defects the first render found, and none of them a gate could have (#597)
+
+The owner relaxed the sandbox rule for browser verification, and the first screenshot of the deployed lock
+screen showed six things wrong. Every gate was green: the files parsed, the markup carried `#lock-shell`,
+the fields came from the contract, `test_web_tree` confirmed the modal was gone. **Not one of those
+checks can see a page.**
+
+**Three were one cause, and it is the interesting one.** The panels hard-coded `--carbon` and `--ferrite`
+for their surfaces while letting the text inherit `--text` — which is `--paper` in dark mode and
+**`--carbon` in light**. So in light mode the wordmark, both fact values and the "Log in" heading were
+carbon on carbon: present in the DOM, correct in the markup, and invisible. Headless Chromium defaults to
+light, which is why one screenshot caught what the approved dark mock never could.
+
+The fix is not a colour, it is a principle: **the shell carries the theme rather than fighting it.** Its
+surfaces are `--bg`/`--panel`/`--border`, its text `--text`/`--muted`. In dark mode those resolve to
+exactly the carbon and ferrite the mock specified, so the approved design is unchanged — and light mode
+now works, which it never had.
+
+**The other three were layout, and each is a thing the dashboard does to a form that the shell did not
+intend.** The copper seam was painted *under* the panels, because they come later in the DOM and nothing
+declared a stacking order. The two generated fields had no gap between them — the form's own `gap` spaces
+its children and they are grandchildren of it, inside `#lock-fields`. And every child of the form was
+shrink-to-fit, because the global `form` rule is a grid with `align-items: start` and that declaration
+survives a rule that changes only `display`: measured in the browser, the form was 360px wide while its
+fields were 228 and the Unlock button 79, where the approved design has both spanning the form.
+
+**And a seventh, in the JavaScript rather than the CSS**: the first load said *"The session expired. The
+dashboard was cleared."* A first load against a gating host 401s exactly like an expiry does, and
+`promptReauth()` could not tell them apart. It can now — `sessionEverAuthenticated` is set once a session
+has existed and never reset, so "expired" is only ever said to someone who had one. Telling a first-time
+visitor their session expired is a small lie that reads as a fault in the host.
+
+The method is worth keeping as much as the fixes. A **self-contained preview** — the real `style.css`
+inlined with the real lock markup lifted out of `index.html` — renders locally in both themes by setting
+`data-theme` on `<html>`, which turns a 25-minute gate-and-deploy cycle into a one-second one. And a
+**debug build of that preview** writes `getBoundingClientRect()` into a `<pre>` that `--dump-dom` prints,
+which is how the 360/228/79 measurement was taken rather than guessed. One harness bug worth recording so
+nobody repeats it: `sed 's|data-theme="dark"|data-theme="light"|'` rewrites every line, including the
+stylesheet's own `:root[data-theme="dark"]` selector, so the "light" preview rendered dark and looked like
+a theme bug. Anchor that substitution to line 1.
+
 ### The session shell: login stops being a modal (#597, ADR-0338)
 
 The owner's request, in their words: *"a login screen that is purely login, when logged in imagine two
