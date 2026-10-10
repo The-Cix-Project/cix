@@ -355,19 +355,32 @@ int main(void)
 		       "  return f.children.map((c) => c.tag).join(\",\");\n"
 		       "})()",
 		       "label,p,button");
+		/*
+		 * These three read what the call above produced, so each
+		 * answers "not opened" or "no such child" rather than throwing
+		 * on a null or an empty array. A dependent assertion that
+		 * throws reports a TypeError about its own expression and
+		 * hides the failure it was downstream of -- which is one more
+		 * eleven-minute cycle to work out that the first assertion was
+		 * the real one.
+		 */
 		expect(ctx, "the modal was asked to open with the authored title",
-		       "globalThis.opened.id + \"/\" + globalThis.opened.title",
+		       "globalThis.opened === null ? \"not opened\"\n"
+		       "  : globalThis.opened.id + \"/\" + globalThis.opened.title",
 		       "generated-form/T");
 		expect(ctx, "the button carries the authored words",
 		       "(() => {\n"
 		       "  const f = document.getElementById(\"generated-form\");\n"
-		       "  return f.children[f.children.length - 1].textContent;\n"
+		       "  const last = f.children[f.children.length - 1];\n"
+		       "  return last === undefined ? \"no children\" : last.textContent;\n"
 		       "})()",
 		       "Register");
 		expect(ctx, "the field's hint is the contract's own description",
 		       "(() => {\n"
 		       "  const f = document.getElementById(\"generated-form\");\n"
-		       "  return f.children[1].textContent.slice(0, 24);\n"
+		       "  const hint = f.children[1];\n"
+		       "  return hint === undefined ? \"no hint\"\n"
+		       "    : hint.textContent.slice(0, 24);\n"
 		       "})()",
 		       "An already-running conta");
 	}
