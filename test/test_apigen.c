@@ -526,6 +526,9 @@ int main(void)
 		FILE *f;
 		int shapes = 0, saw_fields = 0, saw_prefix = 0, bare_option = 0, options = 0;
 		int saw_spaced = 0, saw_spanned_enum = 0, saw_spanned_required = 0;
+		int in_storage_device = 0, bad_type = 0;
+		char bad_type_text[80] = "";
+		const char *tp;
 
 		snprintf(js_path, sizeof(js_path), "/tmp/apigen_web_%d.js", (int)getpid());
 		snprintf(buf, sizeof(buf), "--emit-web %s", js_path);
@@ -556,11 +559,22 @@ int main(void)
 				 * two lines, and the last name of one written across
 				 * three. Both are the END of their list, which is
 				 * exactly what a reader that stops at the first
-				 * physical line drops. */
+				 * physical line drops.
+				 *
+				 * The required half is anchored to StorageDevice's own
+				 * block rather than to the field name alone: a bare
+				 * `parent_disk` + `required: true` match would be
+				 * satisfied by any schema that happens to carry that
+				 * field, which is a weaker claim than the one this
+				 * asserts. */
+				if (strstr(buf, "\t\tStorageDevice: [") != NULL)
+					in_storage_device = 1;
+				else if (in_storage_device && strstr(buf, "\t\t],") != NULL)
+					in_storage_device = 0;
 				if (strstr(buf, "name: \"stage\"") != NULL &&
 				    strstr(buf, "\"assemble\", \"stage\", \"verify\"]") != NULL)
 					saw_spanned_enum = 1;
-				if (strstr(buf, "name: \"parent_disk\"") != NULL &&
+				if (in_storage_device && strstr(buf, "name: \"parent_disk\"") != NULL &&
 				    strstr(buf, "required: true") != NULL)
 					saw_spanned_required = 1;
 				op = strstr(buf, "options: [");
@@ -568,6 +582,44 @@ int main(void)
 					options++;
 					if (op[10] != '"' && op[10] != ']')
 						bare_option++;
+				}
+				/*
+				 * Every type must be one of JSON Schema's own, and
+				 * this is the assertion that was missing (#594).
+				 *
+				 * `type: [string, "null"]` -- a nullable type, which
+				 * this contract writes 30 times -- was read by a
+				 * scalar reader and truncated at 16 characters to
+				 * `[string, "null`, then emitted verbatim inside
+				 * quotes: `type: "[string, "null""`. JS reads that as
+				 * a string, a bare `null`, and an unterminated string,
+				 * so the whole file failed to parse and the dashboard
+				 * ran no script at all. test_web_syntax caught it
+				 * twice, on the box, a release apart; nothing here
+				 * did, because every assertion in this block tested
+				 * PRESENCE. A closed set of legal values is the cheap
+				 * check that fails in the right place.
+				 */
+				tp = strstr(buf, " type: \"");
+				if (tp != NULL) {
+					const char *const ok[] = { "string", "integer", "boolean",
+						                       "array",  "object",  "number" };
+					size_t k;
+					int good = 0;
+
+					tp += 8;
+					for (k = 0; k < sizeof(ok) / sizeof(ok[0]); k++) {
+						size_t l = strlen(ok[k]);
+
+						if (strncmp(tp, ok[k], l) == 0 && tp[l] == '"')
+							good = 1;
+					}
+					if (!good) {
+						bad_type++;
+						if (bad_type == 1)
+							snprintf(bad_type_text, sizeof(bad_type_text), "%.60s",
+							         tp - 8);
+					}
 				}
 			}
 			fclose(f);
@@ -638,6 +690,12 @@ int main(void)
 			fail("StorageDevice lost the tail of its required list -- its 17 names are "
 			     "written across three lines in the contract, and parent_disk is the "
 			     "last of them");
+		if (bad_type > 0)
+			fail("%d field(s) in api.js carry a type that is not one of JSON Schema's "
+			     "six -- the first is `%s`. A nullable `type: [string, \"null\"]` read "
+			     "as a scalar lands here as a broken string literal, which costs the "
+			     "whole file rather than one field",
+			     bad_type, bad_type_text);
 	}
 
 	if (failures == 0)

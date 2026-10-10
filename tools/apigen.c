@@ -221,6 +221,16 @@ static int is_ignorable(const char *s)
 	return s[i] == '\0' || s[i] == '\n' || s[i] == '#';
 }
 
+/* Blank, as distinct from ignorable: a `#` line is a comment and a
+ * blank line inside a folded block is a paragraph break, so the two
+ * cannot share one test. */
+static int is_blank(const char *s)
+{
+	int i = indent_of(s);
+
+	return s[i] == '\0' || s[i] == '\n';
+}
+
 static int is_http_method(const char *w)
 {
 	static const char *const m[] = { "get", "put", "post", "delete",
@@ -360,9 +370,9 @@ static char *read_spec_line(char *buf, size_t cap, FILE *f, const char *spec, in
 		const char *p;
 		long pos;
 		size_t len;
-		int open = bracket_depth(buf);
+		int depth = bracket_depth(buf);
 
-		if (open <= 0 && !ends_with_colon(buf))
+		if (depth <= 0 && !ends_with_colon(buf))
 			return buf;
 		if (joins == APIGEN_MAX_FLOW_LINES)
 			die_at(spec, lineno != NULL ? *lineno : 0,
@@ -370,7 +380,7 @@ static char *read_spec_line(char *buf, size_t cap, FILE *f, const char *spec, in
 
 		pos = ftell(f);
 		if (fgets(next, sizeof(next), f) == NULL) {
-			if (open > 0)
+			if (depth > 0)
 				die_at(spec, lineno != NULL ? *lineno : 0,
 				       "flow list is not closed before the end of the file");
 			return buf;
@@ -382,7 +392,7 @@ static char *read_spec_line(char *buf, size_t cap, FILE *f, const char *spec, in
 		 * the next line opens a flow list -- which in YAML is that
 		 * key's value. Anything else is an ordinary nested block, and
 		 * the line goes back for the caller to read as itself. */
-		if (open <= 0 && *p != '[') {
+		if (depth <= 0 && *p != '[') {
 			if (pos >= 0)
 				fseek(f, pos, SEEK_SET);
 			return buf;
@@ -567,6 +577,24 @@ struct schema_field {
 	char max_length[APIGEN_NUMLIT_MAX];
 	char default_lit[APIGEN_NUMLIT_MAX];
 	int read_only;
+	/*
+	 * `type: [string, "null"]` -- a nullable type, which this contract
+	 * writes 30 times, 15 of them at property depth. A scalar reader
+	 * truncated that to `[string, ` at APIGEN_TYPE_MAX and emitted it
+	 * into api.js verbatim, so a renderer dispatching on type had 15
+	 * fields of an unknown one, and `prop_is_array` missed the single
+	 * `[array, "null"]` entirely. The member that is not "null"
+	 * becomes the type and this records the rest of the fact.
+	 */
+	int nullable;
+	/*
+	 * The field's own `description`, as an offset into g_desc_arena, or
+	 * -1. An offset rather than a buffer because of arithmetic: 512
+	 * schemas x 48 fields is 24,576 slots, and the longest description
+	 * in this contract is 2,064 characters, so a per-field buffer would
+	 * be 63 MB of BSS to hold 189 KB of text.
+	 */
+	int desc;
 };
 
 struct comp_schema {
@@ -601,6 +629,61 @@ struct comp_schema {
 
 static struct comp_schema g_comp_schemas[APIGEN_MAX_COMP_SCHEMAS];
 static int g_comp_schema_count;
+
+/*
+ * THE DESCRIPTION ARENA (ADR-0338, #594).
+ *
+ * Every field description in one buffer, each field holding an offset.
+ * Sized from the contract rather than guessed -- measured against
+ * docs/api/openapi.yaml on 2026-10-10, counting only descriptions at
+ * property depth: 1,023 written as a single-line scalar totalling
+ * 46,056 bytes, and 427 written as a folded `>` block totalling 141,609
+ * bytes once joined, longest 2,064. That is ~189 KB including
+ * terminators, so 256 KiB leaves about a third spare and a full arena is
+ * a refusal naming the field rather than a description that stops
+ * mid-sentence.
+ *
+ * NOT ONE of the 427 uses `|`, and not one carries a line indented
+ * deeper than its first -- both counted, in the same pass -- so there is
+ * no literal-newline case and no nested list case to model. What there
+ * IS: 128 blank lines inside those blocks, which YAML `>` folds to a
+ * paragraph break rather than a space. They are kept as "\n\n", because
+ * flattening them would be a choice about display made in the wrong
+ * place; a form hint can clamp, a detail view can honour them.
+ */
+#define APIGEN_DESC_ARENA (256 * 1024)
+
+static char g_desc_arena[APIGEN_DESC_ARENA];
+static int g_desc_used;
+
+/* Starts a description, returning its offset. */
+static int desc_begin(void)
+{
+	int off = g_desc_used;
+
+	g_desc_arena[off] = '\0';
+	return off;
+}
+
+/*
+ * Appends to the description at `off`, which must be the most recent
+ * one begun. `sep` goes between what is already there and `text`.
+ */
+static void desc_append(const char *spec, int lineno, int off, const char *sep,
+                        const char *text)
+{
+	size_t have = strlen(g_desc_arena + off);
+	size_t add = (have > 0 ? strlen(sep) : 0) + strlen(text);
+
+	if ((size_t)off + have + add + 1 >= APIGEN_DESC_ARENA)
+		die_at(spec, lineno,
+		       "the %d KiB description arena is full -- raise APIGEN_DESC_ARENA",
+		       APIGEN_DESC_ARENA / 1024);
+	if (have > 0)
+		strcpy(g_desc_arena + off + have, sep);
+	strcpy(g_desc_arena + off + have + (have > 0 ? strlen(sep) : 0), text);
+	g_desc_used = off + (int)strlen(g_desc_arena + off) + 1;
+}
 
 /* The last path segment of a "#/components/schemas/Name" reference. */
 static void ref_tail(const char *text, char *out, size_t out_size)
@@ -750,6 +833,23 @@ static void load_component_schemas(const char *spec)
 	int in_props = 0;
 	char prop[APIGEN_QNAME_MAX] = "";
 	int prop_is_array = 0;
+	/*
+	 * Inside a folded `description: >` for a field: the indent the key
+	 * sat at, the arena offset being built, and whether a blank line is
+	 * owed as a paragraph break. -1 when not in one.
+	 *
+	 * This is consumed at the TOP of the loop, before anything
+	 * dispatches on indentation, and that ordering is the whole point:
+	 * a description's continuation lines sit at indent 12, which is a
+	 * depth this reader also reads keys at, and the prose in this
+	 * contract really does contain lines like `Note: ...` and
+	 * `Default: 30 seconds`. Dispatching first would read a sentence as
+	 * a field attribute -- the same mistake as deciding on a field
+	 * index instead of the whole line.
+	 */
+	int desc_ind = -1;
+	int desc_off = -1;
+	int desc_para = 0;
 
 	if (f == NULL)
 		return;
@@ -757,6 +857,32 @@ static void load_component_schemas(const char *spec)
 		char key[APIGEN_PATH_MAX];
 		int ind;
 
+		/*
+		 * A folded description's own lines, first, before any
+		 * dispatch -- including before is_ignorable(), because a BLANK
+		 * line inside a `>` block is a paragraph break and not noise,
+		 * and 128 of them exist in this contract.
+		 */
+		if (desc_ind >= 0) {
+			int dind = indent_of(line);
+
+			if (is_blank(line)) {
+				desc_para = 1;
+				continue;
+			}
+			if (dind > desc_ind) {
+				char text[1024];
+
+				snprintf(text, sizeof(text), "%s", line + dind);
+				strip_eol(text);
+				desc_append(spec, lineno, desc_off, desc_para ? "\n\n" : " ", text);
+				desc_para = 0;
+				continue;
+			}
+			desc_ind = -1;
+			desc_off = -1;
+			desc_para = 0;
+		}
 		if (is_ignorable(line))
 			continue;
 		ind = indent_of(line);
@@ -842,6 +968,8 @@ static void load_component_schemas(const char *spec)
 					       g_comp_schemas[cur].comp, APIGEN_MAX_FIELDS);
 				snprintf(g_comp_schemas[cur].field[g_comp_schemas[cur].n_field].name,
 				         sizeof(g_comp_schemas[cur].field[0].name), "%s", prop);
+				g_comp_schemas[cur].field[g_comp_schemas[cur].n_field].desc = -1;
+				g_comp_schemas[cur].field[g_comp_schemas[cur].n_field].nullable = 0;
 				g_comp_schemas[cur].n_field++;
 			}
 			continue;
@@ -851,10 +979,19 @@ static void load_component_schemas(const char *spec)
 		/*
 		 * The current property's own keys, at 10 (ADR-0338).
 		 *
-		 * Every one is a single-line scalar in this spec, which is why
-		 * this stays a scalar reader: `description` is the folded-block
-		 * case and is deliberately not read here. An unrecognised key
-		 * is passed over rather than refused -- unlike the route table,
+		 * All but one are a single-line scalar in this spec.
+		 * `description` is the exception and is read in BOTH its forms
+		 * (#594): 1,023 are a single-line scalar and 427 open a folded
+		 * `>` block, whose lines are gathered by the state at the top
+		 * of this loop. It is read because it is the one thing in a
+		 * schema that is authored MEANING rather than derived
+		 * structure, which is exactly what ADR-0338's sixth principle
+		 * says a human supplies -- and a human already did, once, in
+		 * the contract. The dashboard re-typed 185 of them into
+		 * `index.html` as hint paragraphs, which is the duplication
+		 * this removes.
+		 *
+		 * An unrecognised key is passed over rather than refused -- unlike the route table,
 		 * where a key this tool cannot read would make a route
 		 * unroutable, a field detail it cannot read simply renders as
 		 * an unconstrained input, which is what the hand-written form
@@ -871,9 +1008,33 @@ static void load_component_schemas(const char *spec)
 			strip_eol(v);
 
 			if (strcmp(key, "type") == 0) {
-				prop_is_array = strcmp(v, "array") == 0;
-				if (fl != NULL)
-					snprintf(fl->type, sizeof(fl->type), "%s", v);
+				char tname[APIGEN_ENUM_ITEM_MAX] = "";
+				int null_ok = 0;
+
+				if (v[0] == '[') {
+					char ms[APIGEN_ENUM_ITEMS_MAX][APIGEN_ENUM_ITEM_MAX];
+					int nm = parse_enum_list(v, ms, APIGEN_ENUM_ITEMS_MAX);
+					int m;
+
+					if (nm < 0 || nm > APIGEN_ENUM_ITEMS_MAX)
+						die_at(spec, lineno, "type list is not readable: %s", v);
+					for (m = 0; m < nm; m++) {
+						if (strcmp(ms[m], "null") == 0)
+							null_ok = 1;
+						else if (tname[0] == '\0')
+							snprintf(tname, sizeof(tname), "%s", ms[m]);
+					}
+					if (tname[0] == '\0')
+						die_at(spec, lineno,
+						       "type list names no type other than null: %s", v);
+				} else {
+					snprintf(tname, sizeof(tname), "%s", v);
+				}
+				prop_is_array = strcmp(tname, "array") == 0;
+				if (fl != NULL) {
+					snprintf(fl->type, sizeof(fl->type), "%s", tname);
+					fl->nullable = null_ok;
+				}
 				continue;
 			}
 			if (fl == NULL)
@@ -894,6 +1055,20 @@ static void load_component_schemas(const char *spec)
 				snprintf(fl->default_lit, sizeof(fl->default_lit), "%s", v);
 			else if (strcmp(key, "readOnly") == 0)
 				fl->read_only = strcmp(v, "true") == 0;
+			else if (strcmp(key, "description") == 0) {
+				/* `>` or `>-` opens a block whose lines the top of
+				 * this loop gathers; anything else is the whole
+				 * description on this line. */
+				fl->desc = desc_begin();
+				if (strcmp(v, ">") == 0 || strcmp(v, ">-") == 0) {
+					desc_ind = 10;
+					desc_off = fl->desc;
+					desc_para = 0;
+					g_desc_used = fl->desc + 1;
+				} else {
+					desc_append(spec, lineno, fl->desc, "", v);
+				}
+			}
 			continue;
 		}
 		/* An array of scalars: `items:` at 10 carries `type:` at 12.
@@ -1439,6 +1614,26 @@ static void emit_js_string(FILE *o, const char *raw)
 	}
 	fputc('"', o);
 	for (i = 0; i < n; i++) {
+		/*
+		 * A raw newline inside a JS string literal is a SyntaxError,
+		 * not a stray character -- the same way an unterminated string
+		 * was in #594, and with the same blast radius, since one
+		 * unparseable line takes the whole file down. Descriptions
+		 * carry "\n\n" for a YAML paragraph break, so this is reached
+		 * rather than theoretical.
+		 */
+		if (raw[i] == '\n') {
+			fputs("\\n", o);
+			continue;
+		}
+		if (raw[i] == '\r') {
+			fputs("\\r", o);
+			continue;
+		}
+		if (raw[i] == '\t') {
+			fputs("\\t", o);
+			continue;
+		}
 		if (raw[i] == '\\' || raw[i] == '"')
 			fputc('\\', o);
 		fputc(raw[i], o);
@@ -1631,6 +1826,12 @@ static void emit_web(const char *out_path, const char *spec)
 			if (fl->max_length[0] != '\0') {
 				fprintf(o, ", maxLength: ");
 				emit_js_literal(o, fl->max_length);
+			}
+			if (fl->nullable)
+				fprintf(o, ", nullable: true");
+			if (fl->desc >= 0 && g_desc_arena[fl->desc] != '\0') {
+				fprintf(o, ", description: ");
+				emit_js_string(o, g_desc_arena + fl->desc);
 			}
 			if (fl->default_lit[0] != '\0') {
 				/* `fallback`, not `default` -- the latter is a reserved

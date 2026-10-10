@@ -6,6 +6,48 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A nullable type, a description, and the gate that would have caught both (#594, ADR-0338)
+
+`test_web_syntax` refused `web/api.js` on two gated releases a revision apart -- `SyntaxError: expecting
+'}'` -- while `test_apigen` passed both times. Two different constructs, one cause: every assertion in
+that block tested **presence**, and the defect was **parseability**.
+
+**The second construct, found by auditing the emitter's own output rather than by reading the code.**
+Counting every distinct `type:` value in `api.js` turned up nine spelled `[string, ` and six more like it.
+The contract writes a nullable type as a flow list -- `type: [string, "null"]`, **30 times**, 15 at
+property depth -- the scalar reader truncated that at `APIGEN_TYPE_MAX` (16) to `[string, "null`, and the
+emitter wrote it raw inside quotes: `type: "[string, "null""`. JS reads a string, a bare `null`, and an
+unterminated string. One field's wrong type costs the **whole file**, so the dashboard ran no script at
+all. The member that is not `null` is now the type, with `nullable: true` beside it -- 15 of them, which
+is the measured count exactly -- and `prop_is_array` stops missing the single `[array, "null"]`.
+
+**The gate is a closed set**: every type in `api.js` must be one of JSON Schema's six. Checked against the
+recorded broken text, it fires; against the current output, zero non-conforming types. That is the kind of
+assertion the block was missing -- a legal-values check fails in the right place, where a presence check
+cannot.
+
+**And the descriptions.** `description` was the one property key apigen deliberately skipped, because 427
+of them open a folded `>` block. They are read now, in both forms, because a description is the one thing
+in a schema that is authored **meaning** rather than derived structure -- ADR-0338's sixth principle --
+and the dashboard had re-typed **185** of them into `index.html` as hint paragraphs. Measured before
+writing the reader: 1,023 single-line (46,056 bytes) and 427 folded (141,609 joined, longest 2,064); not
+one uses `|`; not one carries a line indented deeper than its first; and **128 blank lines sit inside those
+blocks**, which YAML folds to a paragraph break rather than a space, so they are kept as `\n\n` and
+`emit_js_string()` now escapes a newline -- a raw one inside a JS string is the same whole-file
+SyntaxError as above.
+
+They live in a 256 KiB arena with an offset per field, not a per-field buffer: 512 schemas x 48 fields is
+24,576 slots, so a buffer sized for the longest description would be 63 MB of BSS to hold 189 KB of text.
+`api.js` goes 182,508 -> 322,986 bytes, against 52 KB of hint paragraphs in `index.html` that #596 can now
+delete.
+
+**One ordering matters more than any of it.** A folded description's continuation lines sit at indent 12,
+which is a depth this reader also reads keys at, and the prose really does contain lines like
+`Default: 30 seconds`. So the block state is consumed at the TOP of the loop, before anything dispatches
+on indentation -- and before `is_ignorable()`, because a blank line inside a block is a paragraph break
+and not noise. Dispatch-by-position would have read a sentence as a field attribute, which is the same
+mistake as deciding on a field index instead of the whole line.
+
 ### apigen reads a flow list that spans lines, and refuses the three truncations it used to hide (#594, #602, ADR-0338)
 
 Two defects in one reader, the second found by the first's guard, both of the same kind: a silent
