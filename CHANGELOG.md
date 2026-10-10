@@ -6,6 +6,42 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The first three conversions, and what a real form looks like (#596, ADR-0338)
+
+`createSyslogTarget`, `registerDhcpServer` and `createImage` now open the generated form. Three hand-written
+panels, three submit handlers and six element ids are gone, and each conversion moved into the contract
+what the markup had been carrying alone: a `pattern` of `^[A-Za-z0-9_-]+$` on all three, and the syslog
+form's richer hint about ADR-0127's RFC 3164 forwarding. `ImageCreateRequest.name` is the clearest case —
+its description already *said* "restricted to [A-Za-z0-9_-]" while only the dashboard enforced it, which
+is a rule the generated form could not apply and an operator met as a round-trip `400`.
+
+**Then the real modal was rendered, and the generated form needed four fixes** — none of which the lock
+screen could have shown, because it has two fields and no descriptions.
+
+- **A hint landed in the next column.** A dashboard form is a grid of auto-fit columns, so a hint appended
+  to the form is its own grid item: the syslog field sat in column one with its own explanation beside it
+  in column two. The hint goes *inside* the label now, where `form label`'s flex column stacks name,
+  control and hint as one cell. The hand-written forms had the same shape — but they carried 185 hints
+  between them where the contract has a description for 583 fields, so an oddity on a few forms would
+  have become the norm on every one.
+- **The submit button followed the grid.** With the hint folded in, a one-field form put its button in
+  column two, beside the field it submits. `#generated-form > button` takes `grid-column: 1 / -1` with
+  `justify-self: start` — its own row, button-sized, which is how every hand-written form already looks.
+- **A boolean rendered as a large grey square**, because the global `form input` rule gives every input
+  `width: 100%; height: 2.25rem` so text fields line up. The dashboard already had
+  `form label.checkbox input[type="checkbox"]` for its own forms; a generated boolean takes that class
+  now, and its hint wraps under the control rather than being squeezed into a three-line column beside a
+  tick box.
+- **The hints were a wall of prose.** The contract's descriptions are reference documentation — 331
+  characters on average, up to 2,064 — so `pkgInstall`'s four fields produced four paragraphs and pushed
+  its own submit button off the bottom of the modal. They are clamped to three lines with the full text
+  as the element's `title`.
+
+That last one is a **display** decision and deliberately not a generator one. Nothing is truncated in
+`api.js`, nothing is summarised, and the whole description is one hover away — which is the difference
+between this and the first-sentence heuristic rejected when descriptions were added, where every reader
+would have lost the rest permanently.
+
 ### Six defects the first render found, and none of them a gate could have (#597)
 
 The owner relaxed the sandbox rule for browser verification, and the first screenshot of the deployed lock

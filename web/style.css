@@ -3332,6 +3332,23 @@ pre {
 	}
 }
 
+/*
+ * The generated form's submit gets its own row (ADR-0338, #596).
+ *
+ * A dashboard form is a grid of auto-fit columns and nothing places a
+ * submit button, so it flows like any other item: with one field and
+ * its hint now in a single cell, the button landed in column two,
+ * beside the field it submits. Rendering the real modal is what showed
+ * it. `1 / -1` puts it on its own row whatever the column count, and
+ * `justify-self: start` keeps it button-sized rather than stretching
+ * it across a wide modal -- which is how every hand-written form in
+ * this dashboard already looks.
+ */
+#generated-form > button {
+	grid-column: 1 / -1;
+	justify-self: start;
+}
+
 /* A labelled group. Three of them make the left panel's top/middle/
  * bottom, which `justify-content: space-between` then spaces without
  * anything here knowing the viewport's height. */
@@ -3554,4 +3571,38 @@ pre {
 	.lock-shell-open .lock-panel-right {
 		transform: translateY(100%);
 	}
+}
+
+/*
+ * A generated field's hint, clamped (ADR-0338, #596).
+ *
+ * The contract's descriptions are reference documentation -- 331
+ * characters on average, up to 2,064 -- and a form that renders four
+ * of them verbatim is a wall of prose with its submit button pushed
+ * off the bottom, which is what rendering pkgInstall showed. Three
+ * lines is enough to say what the field is; the whole text is the
+ * element's `title`, so nothing is hidden, only folded.
+ */
+.hint-clamp {
+	display: -webkit-box;
+	-webkit-line-clamp: 3;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+
+/*
+ * A generated checkbox's hint wraps under it, not beside it.
+ *
+ * `form label.checkbox` is a row -- name, box -- which is right for
+ * the control and wrong for a paragraph: rendering pkgInstall put
+ * "Keep on failure" in a three-line column beside a tick box. Letting
+ * the row wrap and giving the hint the full basis keeps the control on
+ * one line and the explanation under it.
+ */
+#generated-form label.checkbox {
+	flex-wrap: wrap;
+}
+
+#generated-form label.checkbox > .hint {
+	flex-basis: 100%;
 }

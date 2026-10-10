@@ -221,15 +221,62 @@ function openForm(opId, opts) {
 		if (f.readOnly)
 			continue;
 		label.textContent = fieldLabel(f.name);
+		/*
+		 * A boolean uses the dashboard's own checkbox layout -- name
+		 * beside a real-sized box, not above a full-width one. Without
+		 * the class, the global `form input` rule (width: 100%,
+		 * height: 2.25rem, which exists so text fields line up) makes
+		 * a checkbox a large grey square. Rendering pkgInstall is what
+		 * showed it; `form label.checkbox input[type="checkbox"]`
+		 * already existed for the hand-written forms.
+		 */
+		if (f.type === "boolean")
+			label.className = "checkbox";
 		label.appendChild(fieldControl(f));
-		form.appendChild(label);
+		/*
+		 * The hint goes INSIDE the label, not beside it.
+		 *
+		 * A dashboard form is a grid -- `repeat(auto-fit, minmax(15rem,
+		 * 1fr))` -- so a hint appended to the form is its own grid
+		 * item and lands in the NEXT COLUMN, reading as a peer of the
+		 * field rather than as its explanation. Rendering the real
+		 * modal is what showed it: the syslog field sat in column one
+		 * with its own description beside it in column two.
+		 *
+		 * The hand-written forms had the same shape, so this is not a
+		 * regression -- but they carried 185 hints between them while
+		 * the contract has a description for 583 fields, so what was
+		 * an oddity on a few forms would have become the norm on every
+		 * one. Inside the label, `form label`'s own flex column stacks
+		 * name, control and hint as one cell.
+		 */
 		if (f.description !== undefined) {
 			const hint = document.createElement("p");
 
-			hint.className = "hint";
+			/*
+			 * CLAMPED, with the whole thing on hover.
+			 *
+			 * The contract's descriptions are reference documentation
+			 * -- 331 characters on average and up to 2,064 -- because
+			 * that is the right length for the document they were
+			 * written in. Rendered verbatim, a four-field form becomes
+			 * a wall of prose taller than the modal: pkgInstall's four
+			 * fields produced four paragraphs and pushed its own
+			 * submit button off the bottom.
+			 *
+			 * Clamping is a DISPLAY decision and keeps the contract
+			 * the source -- nothing is truncated in api.js, nothing is
+			 * summarised, and `title` carries the full text. That is
+			 * the difference between this and a first-sentence
+			 * heuristic in the generator, which would have thrown the
+			 * rest away for every reader.
+			 */
+			hint.className = "hint hint-clamp";
 			hint.textContent = f.description;
-			form.appendChild(hint);
+			hint.title = f.description;
+			label.appendChild(hint);
 		}
+		form.appendChild(label);
 	}
 	button.type = "submit";
 	button.textContent = options.submit || "Save";

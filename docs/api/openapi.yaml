@@ -3197,6 +3197,11 @@ paths:
               properties:
                 container:
                   type: string
+                  pattern: "^[A-Za-z0-9_-]+$"
+                  description: >
+                    A running container serving dnsmasq. Register the same
+                    container as a DNS server too and its leases resolve
+                    immediately.
       responses:
         "201":
           description: Registered
@@ -19693,6 +19698,7 @@ components:
       properties:
         name:
           type: string
+          pattern: "^[A-Za-z0-9_-]+$"
           description: >
             Unique image name. Used verbatim as the directory name under
             /var/lib/cix/rebuildable/images/ (ADR-0141), so it is
@@ -20599,7 +20605,14 @@ components:
       properties:
         container:
           type: string
-          description: Name of an existing, running container (see /containers) to register as a syslog forward target.
+          pattern: "^[A-Za-z0-9_-]+$"
+          description: >
+            An already-running container (see /containers) to register as
+            an optional, redundant syslog forward target -- every
+            subsequent container-sourced log line is also sent to it as a
+            real RFC 3164 UDP datagram, alongside (never instead of) the
+            consolidated log store, which stays the one source of truth
+            (ADR-0127).
 
     SyslogTarget:
       type: object

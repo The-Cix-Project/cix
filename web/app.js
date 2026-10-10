@@ -5668,20 +5668,6 @@ document.getElementById("dhcp-range-form").addEventListener("submit", async (eve
 	}
 });
 
-document.getElementById("dhcp-server-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	try {
-		await apiRequest("POST", CIX_API.registerDhcpServer(), {
-			container: document.getElementById("dsv-container").value.trim(),
-		});
-		closeModal();
-		document.getElementById("dsv-container").value = "";
-		showStatus("Registered.", false);
-		refreshDhcp();
-	} catch (e) {
-		showStatus("Failed to register: " + e.message, true);
-	}
-});
 
 document.getElementById("dhcp-static-modal-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
@@ -10523,21 +10509,6 @@ async function removeSyslogTarget(container) {
 	}
 }
 
-document.getElementById("syslog-target-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const container = document.getElementById("stf-container").value.trim();
-
-	try {
-		await apiRequest("POST", CIX_API.createSyslogTarget(), { container: container });
-		clearStatus();
-		document.getElementById("syslog-target-form").reset();
-		closeModal();
-		await refreshSyslogTargets();
-	} catch (e) {
-		showStatus("Failed to register syslog target: " + e.message, true);
-	}
-});
 
 /* ---- TLS Throttle: per-source-IP HTTPS-handshake-failure throttling
  * (ADR-0134) ---- */
@@ -13130,22 +13101,6 @@ document.getElementById("route-add-form").addEventListener("submit", async (even
 	closeModal();
 });
 
-document.getElementById("image-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const name = document.getElementById("if-name").value.trim();
-
-	try {
-		await apiRequest("POST", CIX_API.createImage(), { name: name });
-		clearStatus();
-		document.getElementById("image-form").reset();
-		closeModal();
-		await refreshImages();
-		renderTree();
-	} catch (e) {
-		showStatus("Failed to create image: " + e.message, true);
-	}
-});
 
 document.getElementById("dns-record-form").addEventListener("submit", async (event) => {
 	event.preventDefault();

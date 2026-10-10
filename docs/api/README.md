@@ -782,6 +782,23 @@ Response (`201`):
 
 Creating a network creates its bridge immediately via rtnetlink and persists the definition to `/var/lib/cix/state/networks.json` (ADR-0141) — unlike containers (safe to be in-memory-only, since they die with the daemon), a bridge outlives this process, so the daemon reloads and recreates every persisted network's bridge idempotently at startup.
 
+
+### A constraint the daemon enforces belongs in the schema, not only in the prose
+
+`ImageCreateRequest.name`'s description said *"restricted to [A-Za-z0-9_-]"* while only the dashboard's
+hand-written markup enforced it. Since [ADR-0338](../adr/0338-the-dashboard-renders-from-the-contract.md)
+a form is generated from the schema, so a rule stated only in prose is a rule the form cannot apply — and
+the operator meets it as a round-trip `400` instead of a field that will not submit.
+
+So a constraint goes in the schema as `pattern`, `minimum`/`maximum`, `maxLength` or `enum`, and the
+description explains *why* rather than restating it. The three added with the first conversions are
+`ImageCreateRequest.name`, `SyslogTargetCreateRequest.container` and `registerDhcpServer`'s own
+`container`, all `^[A-Za-z0-9_-]+$` — the same rule the container-name path parameter has carried all
+along.
+
+The same move applies to a field's **hint**: the dashboard had re-typed 185 of them into `index.html`,
+and the richer wording generally lived there rather than in the contract. Converting a form moves that
+text into the field's `description`, which is where a second client would have needed it too.
 ### Attaching a real host interface
 
 ```

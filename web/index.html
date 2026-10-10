@@ -145,7 +145,7 @@
 		<div class="menu-dropdown">
 			<button type="button" class="menu-dropdown-toggle" data-menu="pipeline">Software</button>
 			<ul class="menu-dropdown-menu" data-menu="pipeline" hidden>
-				<li><button type="button" data-modal="image-form" data-op="createImage" data-title="Create image">New Image</button></li>
+				<li><button type="button" data-modal="generated-form" data-op="createImage" data-title="Create image" data-submit="Create">New Image</button></li>
 				<li><button type="button" data-modal="pkg-install-form" data-op="pkgInstall" data-title="Install a package">Install Package</button></li>
 				<li><button type="button" data-modal="pkg-recipe-form" data-op="addPkgRecipe" data-title="Add or update a recipe">New/Update Recipe</button></li>
 				<li><button type="button" data-modal="pkg-source-form" data-op="addPkgSource" data-title="New recipe source">New Recipe Source</button></li>
@@ -188,7 +188,7 @@
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">DHCP</button>
 					<ul class="menu-submenu-menu" hidden>
-						<li><button type="button" data-modal="dhcp-server-form" data-op="registerDhcpServer" data-title="Register DHCP server">Register Server</button></li>
+						<li><button type="button" data-modal="generated-form" data-op="registerDhcpServer" data-title="Register DHCP server" data-submit="Register">Register Server</button></li>
 						<li><button type="button" data-modal="dhcp-range-form" data-op="setDhcpNetwork" data-title="DHCP range">New/Edit Range</button></li>
 						<li><button type="button" data-modal="dhcp-static-modal-form" data-op="addDhcpReservation" data-title="Reserve an address">Reserve an Address</button></li>
 					</ul>
@@ -196,7 +196,7 @@
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">Syslog</button>
 					<ul class="menu-submenu-menu" hidden>
-						<li><button type="button" data-modal="syslog-target-form" data-op="createSyslogTarget" data-title="Register syslog forward target">Register Target</button></li>
+						<li><button type="button" data-modal="generated-form" data-op="createSyslogTarget" data-title="Register syslog forward target" data-submit="Register">Register Target</button></li>
 					</ul>
 				</li>
 			</ul>
@@ -3510,15 +3510,6 @@
 				</form>
 			</div>
 
-			<div id="modal-image-form" hidden>
-				<form id="image-form">
-					<label>
-						Name
-						<input type="text" id="if-name" pattern="[A-Za-z0-9_-]+" required>
-					</label>
-					<button type="submit">Create</button>
-				</form>
-			</div>
 
 			<div id="modal-dns-record-form" hidden>
 				<form id="dns-record-form">
@@ -3534,17 +3525,6 @@
 				</form>
 			</div>
 
-			<div id="modal-dhcp-server-form" hidden>
-				<form id="dhcp-server-form">
-					<label>
-						Container
-						<input type="text" id="dsv-container" pattern="[A-Za-z0-9_-]+" required>
-					</label>
-					<p class="hint">A running container serving dnsmasq. Register the same container
-						as a DNS server too and its leases resolve immediately.</p>
-					<button type="submit">Register</button>
-				</form>
-			</div>
 
 			<div id="modal-dhcp-range-form" hidden>
 				<form id="dhcp-range-form">
@@ -3627,22 +3607,6 @@
 			</div>
 
 
-			<div id="modal-syslog-target-form" hidden>
-				<form id="syslog-target-form">
-					<label>
-						Container
-						<input type="text" id="stf-container" pattern="[A-Za-z0-9_-]+" required>
-					</label>
-					<p class="hint">
-						Registers an already-running container (e.g. syslog-1/syslog-2 running
-						sysklogd) as an optional, redundant syslog forward target -- every
-						subsequent container-sourced log line is also sent to it as a real
-						RFC 3164 UDP datagram, alongside (never instead of) the consolidated
-						log store, which stays the one source of truth (ADR-0127).
-					</p>
-					<button type="submit">Register</button>
-				</form>
-			</div>
 
 			<div id="modal-ldap-group-form" hidden>
 				<form id="ldap-group-form">
