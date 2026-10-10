@@ -32479,8 +32479,19 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 	 * torn down its fd table, so this either returns real data still
 	 * sitting in the pipe or immediate EOF, never blocks). Read
 	 * regardless of exit status: real, useful stdout (e.g. a progress
-	 * line) isn't exclusively a failure-path signal, though only the
-	 * failure branches below actually log it.
+	 * line) isn't exclusively a failure-path signal.
+	 *
+	 * This sentence used to end "though only the failure branches
+	 * below actually log it", and that stopped being true when the
+	 * success branch gained its own `info`-level log of the output --
+	 * fifty lines below, with its own comment explaining why. It cost
+	 * a bogus issue (cix#590, closed by its own disproof): I read this
+	 * comment, concluded a successful assembly's account was
+	 * discarded, filed that, and then found `staged 9 control-plane
+	 * programs ...` sitting in the log store where the code below had
+	 * always put it. A comment is a claim about the code beneath it,
+	 * and this one was load-bearing for exactly as long as nobody
+	 * checked.
 	 */
 	child_output_readable(&g_bootroot_output);
 	output_len = g_bootroot_output.len;
