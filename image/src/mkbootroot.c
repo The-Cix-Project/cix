@@ -1046,61 +1046,114 @@ int main(int argc, char **argv)
 			 * needs libssl too. Only the openssl PROGRAM left the root. */
 			"libssl.so.3",
 			"libcrypto.so.3",
-			/* our libcurl's remaining dependency, and unsquashfs's */
+			/* our libcurl's remaining dependency, and libarchive's */
 			"libz.so.1",
 			/* cbs, unsquashfs and libarchive all name it */
 			"libzstd.so.1",
-			/* libext2fs, e2fsck, mkfs.ext4, resize2fs */
-			"libcom_err.so.2",
+			/* mksquashfs, unsquashfs and libarchive */
+			"liblzma.so.5",
 			/* glibc's own libnss_dns and libnss_hesiod */
 			"libresolv.so.2",
-			/* unsquashfs */
+			/* mksquashfs and unsquashfs */
 			"libpthread.so.0",
 			"libm.so.6",
-			"liblzma.so.5",
-			"liblzo2.so.2",
-			"liblz4.so.1",
 			/*
 			 * libpthread's own pthread_exit()/pthread_cancel() lazily
 			 * dlopen() this for stack-unwinding support -- never a
 			 * DT_NEEDED entry, so it is invisible to any closure
-			 * derived from readelf alone, including the one above.
-			 * Confirmed the hard way: mksquashfs starts and runs fine,
-			 * then aborts at its own normal pthread_exit() with
-			 * "libgcc_s.so.1 must be installed for pthread_exit to
-			 * work". Needed by any shelled-out binary linking
-			 * libpthread that exits a thread normally. KEEP THIS even
-			 * when the list becomes derived -- a DT_NEEDED walk cannot
-			 * see it.
+			 * derived from readelf, including the one this list now
+			 * reflects. Confirmed the hard way: mksquashfs starts and
+			 * runs fine, then aborts at its own normal pthread_exit()
+			 * with "libgcc_s.so.1 must be installed for pthread_exit
+			 * to work". KEEP THIS even when the list becomes derived --
+			 * a DT_NEEDED walk cannot see it.
 			 */
 			"libgcc_s.so.1",
-			/* mkfs.ext4 (mke2fs) */
-			"libext2fs.so.2",
-			"libblkid.so.1",
-			"libuuid.so.1",
-			"libe2p.so.2",
-			/* sfdisk. libreadline comes in through libfdisk's
-			 * interactive-prompt support, which nothing here uses, but
-			 * the dynamic linker resolves it at load time regardless.
-			 * libtinfo.so.6 is needed by libreadline and sfdisk and has
-			 * never been in this list -- the root gets it elsewhere,
-			 * which the old comment here asserted was "already staged
-			 * above" and was wrong about. */
-			"libfdisk.so.1",
-			"libsmartcols.so.1",
-			"libreadline.so.8",
+			/*
+			 * TEN ENTRIES LEFT HERE WITH THE FOREIGN BINARIES THEY
+			 * SERVED: libcom_err, libext2fs, libblkid, libuuid,
+			 * libe2p, libfdisk, libsmartcols, libreadline, liblzo2
+			 * and liblz4.
+			 *
+			 * They were the dependency closure of a dev host's
+			 * dynamically-linked e2fsprogs, util-linux and
+			 * squashfs-tools, which the staging above used to copy out
+			 * of the previous control-plane root. Cix's own are static:
+			 * measured on 192.168.15.95, 2026-10-09
+			 * (probe-pkgbins@1-1, reading the cached artifacts with
+			 * readelf), e2fsck, mkfs.ext4, resize2fs and sfdisk name
+			 * only libc and the loader, and mksquashfs/unsquashfs name
+			 * only libm, libmvec, liblzma and libc. So once the
+			 * binaries come from cix-hosttools -- which has carried
+			 * e2fsprogs and util-linux since image 2.4.3 -- nothing in
+			 * the root reaches any of the ten.
+			 *
+			 * This is also why the trim and the loop change above must
+			 * ship together: trimming while the binaries still came
+			 * from the running root would have removed libraries those
+			 * foreign copies needed (cix#589).
+			 */
 		};
 		size_t i;
 
 		for (i = 0; i < sizeof(shelled_bins) / sizeof(shelled_bins[0]); i++) {
+			char src[PATH_MAX];
 			char dst[PATH_MAX];
+			const char *use_src = shelled_bins[i].host_path;
+			struct stat st;
 
+			/*
+			 * PREFER THE cix-hosttools COPY, because host_path is
+			 * this build host's own filesystem and on an installed
+			 * host that IS the control-plane root -- so every
+			 * assembly copied the previous root's copy forward, and
+			 * whatever a dev host first put there stayed. The same
+			 * mechanism host_tool_bins[]'s own comment already
+			 * describes for mkfs.btrfs: "gets away with
+			 * shelled_bins[] only because it was first staged back
+			 * when mkbootroot ran on a dev host with a full /usr".
+			 *
+			 * Measured on 192.168.15.95, 2026-10-09
+			 * (probe-rootlibs@2-1, probe-pkgbins@1-1): a real
+			 * control-plane root's e2fsck, mkfs.ext4, resize2fs and
+			 * sfdisk link libext2fs and libcom_err DYNAMICALLY,
+			 * while the packages' own binaries link only libc --
+			 * Cix's e2fsprogs and util-linux are built without
+			 * --enable-elf-shlibs, so they are static. The root was
+			 * carrying a dev host's binaries, and shelled_bin_libs[]
+			 * had grown into their dependency closure (cix#589).
+			 *
+			 * rootfs_path doubles as the cix-hosttools-relative
+			 * path, which is true of every entry and is CHECKED
+			 * rather than assumed: a future entry where it does not
+			 * hold fails here by name instead of silently staging
+			 * the dev-host copy.
+			 */
+			if (shelled_bins[i].host_path[0] != '/' ||
+			    strcmp(shelled_bins[i].host_path + 1, shelled_bins[i].rootfs_path) != 0) {
+				fprintf(stderr,
+				        "shelled_bins[%zu]: rootfs_path must be host_path without its "
+				        "leading slash so it can double as the cix-hosttools-relative "
+				        "path (%s vs %s)\n",
+				        i, shelled_bins[i].host_path, shelled_bins[i].rootfs_path);
+				return 1;
+			}
+			if (host_tools_dir[0] != '\0') {
+				if (snprintf(src, sizeof(src), "%s/%s", host_tools_dir,
+				             shelled_bins[i].rootfs_path) >= (int)sizeof(src)) {
+					fprintf(stderr, "path too long: %s/%s\n", host_tools_dir,
+					        shelled_bins[i].rootfs_path);
+					return 1;
+				}
+				if (stat(src, &st) == 0)
+					use_src = src;
+			}
 			if (snprintf(dst, sizeof(dst), "%s/%s", image_root, shelled_bins[i].rootfs_path) >=
 			    (int)sizeof(dst)) {
 				fprintf(stderr, "path too long: %s/%s\n", image_root, shelled_bins[i].rootfs_path);
 				return 1;
 			}
-			if (test_image_fixture_copy_file(shelled_bins[i].host_path, dst) != 0)
+			if (test_image_fixture_copy_file(use_src, dst) != 0)
 				return 1;
 		}
 		{
