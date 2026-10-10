@@ -35,11 +35,30 @@ static int run_mkbootroot2(const char *firmware_dir, const char *modules_dir,
 {
 	pid_t pid;
 	int status;
+	/*
+	 * The host-tools root is "/" rather than "" (cix#350).
+	 *
+	 * mkbootroot derives the root's programs from
+	 * include/controlplane_programs.h and its libraries from the
+	 * host-tools image, with no build-host fallback for either, so ""
+	 * is refused outright -- a root with no CPDL engine cannot install
+	 * a package and a root with no mksquashfs cannot assemble its
+	 * successor. A synthetic stand-in is not an option the way it is
+	 * for firmware and modules below: this root carries a real
+	 * build/cixd, so whatever is given here has to carry cixd's own
+	 * library closure, which only a real root does.
+	 *
+	 * "/" is that root wherever this test legitimately runs. ADR-0078
+	 * defines the argument as an image's installed rootfs, and both a
+	 * real Cix host (whose own root carries exactly these nine
+	 * programs) and a composed build container that declares them are
+	 * one.
+	 */
 	char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN,   (char *)STAGE_DIR,
 		                     (char *)"build/cixd",   (char *)"build/cixctl",
 		                     (char *)"web",             (char *)OUT_SQUASHFS,
 		                     (char *)firmware_dir,      (char *)modules_dir,
-		                     (char *)kmod_bin_dir,      (char *)"",
+		                     (char *)kmod_bin_dir,      (char *)"/",
 		                     NULL };
 
 	pid = fork();
@@ -96,10 +115,11 @@ int main(void)
 
 	/* 1. firmware_dir="" (every real call site's own value) is a
 	 * complete no-op for firmware specifically -- lib/ itself already
-	 * exists regardless (test_image_fixture_build()/_add_lib() already
-	 * stage ld.so/libc.so.6/libtinfo.so.6 there for cixd's own
-	 * needs, nothing to do with firmware), so lib/firmware -- only ever
-	 * created by this new staging path -- is the real marker. */
+	 * exists regardless (test_image_fixture_build() stages ld.so and
+	 * libc.so.6 there for cixd's own needs, and the host-tools image's
+	 * own shared objects land there too, neither having anything to do
+	 * with firmware), so lib/firmware -- only ever created by this new
+	 * staging path -- is the real marker. */
 	if (run_mkbootroot("") != 0) {
 		fprintf(stderr, "FAIL: mkbootroot with firmware_dir=\"\" failed\n");
 		ok = 0;

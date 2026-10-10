@@ -261,13 +261,16 @@ FLOOR_SELFTESTS = \
 #
 #   test_mkbootroot_firmware  asserts that every binary the daemon
 #       shells out to by absolute path -- mkfs.ext4, mkfs.btrfs,
-#       sfdisk, resize2fs, e2fsck, unsquashfs, openssl, mksquashfs --
-#       is staged into a control-plane root from the BUILD HOST. That
-#       is a real and valuable check, and it is a check ABOUT THE HOST:
-#       it passes where those tools exist and fails where they do not.
-#       A composed build container holds exactly the recipe's declared
-#       tools (ADR-0199), so it fails there by construction. It belongs
+#       sfdisk, resize2fs, e2fsck, unsquashfs, mksquashfs, btrfs, cbs --
+#       is staged into a control-plane root. It is a check ABOUT THE
+#       HOST-TOOLS ROOT it is given: it passes where those nine exist
+#       and fails where they do not. A composed build container holds
+#       exactly the recipe's declared tools (ADR-0199), so it fails
+#       there unless the recipe declares all nine, and it also seals a
+#       real squashfs, which needs a working mksquashfs. It belongs
 #       wherever a real image is assembled, not in a build gate.
+#       (It said "from the BUILD HOST" until cix#350, which is where
+#       those binaries used to come from and no longer do.)
 #
 #   test_harness  creates a real overlay mount and namespaces. It
 #       includes container.h and is a container-runtime test; my

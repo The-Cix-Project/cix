@@ -649,10 +649,71 @@ static int verify_platform_libs_intact(const char *image_root, const char *host_
 }
 
 /*
+ * cix#350: the libraries NOTHING IN THE ROOT DECLARES.
+ *
+ * Every other library the root carries is there because the
+ * cix-hosttools image carries it, and every one it NEEDS is checked by
+ * verify_root_closure() reading each object's own DT_NEEDED. That pair
+ * has one blind spot, and it is structural rather than an oversight: a
+ * dlopen() names its library at runtime, in a string, so no amount of
+ * reading ELF headers can see it.
+ *
+ * So this is the whole of the hand-maintained set now -- one entry,
+ * with the measurement that put it there and the install that fixes
+ * it. An entry is added here only for a library that is loaded by name
+ * at runtime and would therefore pass every other gate in this file.
+ *
+ * Checked with stat() rather than lstat() deliberately: the image
+ * installs most of these as a symlink to a versioned file, and a
+ * symlink whose target did not come along is exactly as broken as an
+ * absence while looking exactly like a success.
+ */
+static int require_dlopened_libs(const char *image_root)
+{
+	static const struct {
+		const char *soname;
+		const char *pkg;
+		const char *why;
+	} libs[] = {
+		{ "libgcc_s.so.1", "squashfs-tools",
+		  "libpthread's own pthread_exit() and pthread_cancel() dlopen() it for stack "
+		  "unwinding, so a program using threads starts, runs, and aborts at its own "
+		  "normal exit with \"libgcc_s.so.1 must be installed for pthread_exit to work\" "
+		  "-- measured the hard way on mksquashfs, which is how the root seals itself" },
+	};
+	static const char *const dirs[] = CIX_LIB_DIRS_SEARCH;
+	size_t l, d;
+
+	for (l = 0; l < sizeof(libs) / sizeof(libs[0]); l++) {
+		int found = 0;
+
+		for (d = 0; d < sizeof(dirs) / sizeof(dirs[0]) && !found; d++) {
+			char p[PATH_MAX];
+			struct stat st;
+
+			if (snprintf(p, sizeof(p), "%s/%s/%s", image_root, dirs[d], libs[l].soname) >=
+			    (int)sizeof(p))
+				continue;
+			if (stat(p, &st) == 0 && S_ISREG(st.st_mode))
+				found = 1;
+		}
+		if (!found) {
+			fprintf(stderr,
+			        "the assembled root has no %s, which nothing in it declares and "
+			        "everything that threads needs: %s. Fix it with: pkg install "
+			        "--image=cix-hosttools %s\n",
+			        libs[l].soname, libs[l].why, libs[l].pkg);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/*
  * cix#569: every ELF object in the assembled root has its DT_NEEDED
  * closure inside the root, checked at the seal.
  *
- * shelled_bin_libs[] is a list kept beside the binaries by hand, and
+ * shelled_bin_libs[] was a list kept beside the binaries by hand, and
  * nothing compared the two: a library could stay staged long after its
  * last consumer left (tar's libacl/libselinux/libpcre2/libattr, and
  * bzip2's libbz2, which no Cix package even builds), and a program
@@ -664,6 +725,13 @@ static int verify_platform_libs_intact(const char *image_root, const char *host_
  *
  * -1 refuses too: that is "could not tell", and a root is sealed on
  * evidence, never on ignorance (elfcheck.h).
+ *
+ * SINCE cix#350 THIS IS ALSO THE SUPPLY SIDE'S GATE. There is no list
+ * of libraries any more: the root gets every shared object the
+ * cix-hosttools image carries, and this walk says whether that was
+ * enough. So a hit no longer means "someone forgot to add a line
+ * here", it means the image is missing a package -- which is why the
+ * message names the install rather than a table.
  */
 static int verify_root_closure(const char *image_root)
 {
@@ -680,10 +748,106 @@ static int verify_root_closure(const char *image_root)
 	else
 		fprintf(stderr,
 		        "the assembled root's /%s needs %s, which nothing in the root provides -- "
-		        "stage it in shelled_bin_libs[] (image/src/mkbootroot.c) or stop staging "
-		        "/%s (cix#569)\n",
-		        file, soname, file);
+		        "the root carries the cix-hosttools image's shared objects and that image "
+		        "has none named %s, so install the package that provides it there, or stop "
+		        "staging /%s (cix#569, cix#350)\n",
+		        file, soname, soname, file);
 	return 1;
+}
+
+/*
+ * cix#350: the root's PROGRAM SET IS DERIVED from
+ * include/controlplane_programs.h -- the same list the seal already
+ * gates on -- and every entry comes from the cix-hosttools image
+ * (ADR-0078), at the identical absolute path.
+ *
+ * This replaces two hand-maintained tables and two one-off blocks
+ * (shelled_bins[], host_tool_bins[], a tolerant mkfs.btrfs stage and a
+ * required cbs stage), which between them spelled out nine programs a
+ * third time, in a third shape, beside the list that declares them and
+ * the loop that verifies them. Every drift those tables had was in one
+ * direction -- declared and not staged, which is a feature that can
+ * only fail at execve() on a host that has already booted.
+ *
+ * THERE IS NO BUILD-HOST FALLBACK, and removing it is the point rather
+ * than a simplification. Each of those tables carried one, and on an
+ * installed host the build host IS the control-plane root -- so every
+ * assembly copied the previous root's copy forward and whatever a dev
+ * machine first put there stayed, for as long as the box lived
+ * (cix#589). Measured on 192.168.15.95, 2026-10-10 from the daemon's
+ * own per-package file lists: all nine paths below are present in the
+ * cix-hosttools image, supplied by squashfs-tools, cbs, util-linux,
+ * e2fsprogs and btrfs-progs. So the fallback was never reaching
+ * anything the image could not supply; it was only reaching a worse
+ * copy of it.
+ *
+ * An absence is therefore fatal and says which install fixes it, which
+ * is the one thing a fallback genuinely bought: a box whose
+ * cix-hosttools predates a program used to assemble a root silently
+ * missing it. It now refuses to assemble one, at the moment the fix
+ * costs a single install rather than a reboot.
+ */
+static int stage_controlplane_programs(const char *image_root, const char *host_tools_dir)
+{
+	static const struct {
+		const char *path;
+		enum controlplane_program_source source;
+		const char *pkg;
+	} programs[] = {
+#define CP_STAGE_(id, path, source, pkg) { path, source, pkg },
+		CONTROLPLANE_PROGRAMS(CP_STAGE_)
+#undef CP_STAGE_
+	};
+	size_t i;
+	int staged = 0;
+
+	if (host_tools_dir[0] == '\0') {
+		fprintf(stderr,
+		        "no cix-hosttools root given, so this root would carry none of the programs "
+		        "the control plane executes -- no CPDL engine to install a package with "
+		        "(ADR-0307 clause 6), no mksquashfs to assemble its own next root with, and "
+		        "no disk tools at all (ADR-0078, cix#350)\n");
+		return 1;
+	}
+	for (i = 0; i < sizeof(programs) / sizeof(programs[0]); i++) {
+		char src[PATH_MAX];
+		char dst[PATH_MAX];
+		char parent[PATH_MAX];
+		char *slash;
+		struct stat st;
+
+		if (programs[i].source != CP_HOSTTOOLS)
+			continue;
+		if (snprintf(src, sizeof(src), "%s%s", host_tools_dir, programs[i].path) >=
+		        (int)sizeof(src) ||
+		    snprintf(dst, sizeof(dst), "%s%s", image_root, programs[i].path) >= (int)sizeof(dst)) {
+			fprintf(stderr, "path too long: %s\n", programs[i].path);
+			return 1;
+		}
+		if (stat(src, &st) != 0) {
+			fprintf(stderr,
+			        "%s is absent, so the assembled root would have no %s -- code running on "
+			        "the control plane executes it by that absolute path "
+			        "(include/controlplane_programs.h). Fix it with: pkg install "
+			        "--image=cix-hosttools %s\n",
+			        src, programs[i].path, programs[i].pkg);
+			return 1;
+		}
+		/* Derived from the declared path, so a list that grows a new
+		 * directory needs no second edit here. */
+		snprintf(parent, sizeof(parent), "%s", programs[i].path + 1);
+		slash = strrchr(parent, '/');
+		if (slash != NULL) {
+			*slash = '\0';
+			if (ensure_dir_path_under(image_root, parent) != 0)
+				return 1;
+		}
+		if (test_image_fixture_copy_file(src, dst) != 0)
+			return 1;
+		staged++;
+	}
+	fprintf(stderr, "staged %d control-plane programs from %s\n", staged, host_tools_dir);
+	return 0;
 }
 
 /*
@@ -701,8 +865,9 @@ static int verify_controlplane_programs(const char *image_root, int have_kmod)
 	static const struct {
 		const char *path;
 		enum controlplane_program_source source;
+		const char *pkg;
 	} programs[] = {
-#define CP_ENTRY_(id, path, source) { path, source },
+#define CP_ENTRY_(id, path, source, pkg) { path, source, pkg },
 		CONTROLPLANE_PROGRAMS(CP_ENTRY_)
 #undef CP_ENTRY_
 	};
@@ -837,61 +1002,51 @@ int main(int argc, char **argv)
 	if (test_image_fixture_build(image_root, cixctl_bin, "cixctl") != 0)
 		return 1;
 	/*
-	 * cixd itself never needs libtinfo -- this is staged purely so
-	 * the RUNNING system's own root reliably has it available at its
-	 * real, well-known host path, the source the old image baseline
-	 * (daemon/src/pkg.c) copies from when seeding a container image's
-	 * own C runtime. Without this, that mechanism would only ever find
-	 * ld.so/libc.so.6 (already staged above) on a real installed
-	 * system -- this dev sandbox's own rich /usr made that gap easy to
-	 * miss (see ADR-0023).
+	 * libtinfo.so.6 WAS STAGED HERE BY NAME, from the build host, and
+	 * is not any more (cix#350).
 	 *
-	 * The path passed here is BOTH the read source on this build host
-	 * AND (via test_image_fixture_add_lib()'s own "image_root + this
-	 * path" convention) the destination inside the assembled image --
-	 * it must be the bare "/lib/..." form, not "/usr/lib/...", to
-	 * match exactly where the old image baseline's own
-	 * runtime_libs[] table looks for it later on the real installed
-	 * system's own root. Confirmed live as a real, previously-
-	 * undiscovered bug (not just a theoretical mismatch): the wrong,
-	 * "/usr/lib/..."-prefixed destination silently landed this file
-	 * where nothing ever looked for it, so every hostbuild whose
-	 * build_image needed bash (which needs libtinfo) failed with
-	 * "libtinfo.so.6: cannot open shared object file" -- invisible in
-	 * every local test, since a locally-run cixd reads its own
-	 * sandbox's real /lib and /usr/lib directly (merged-usr symlinks
-	 * here make both forms resolve identically for the READ side),
-	 * never from an assembled squashfs mounted as root the way a real
-	 * install does. Same "this dev sandbox's own rich /usr masks a
-	 * real-install-only path bug" pattern as CONFIG_OVERLAY_FS/
-	 * CONFIG_SWAP/the mkbootroot gzip-bzip2-xz gap earlier this
-	 * session -- found this time via the new build-output capture
-	 * mechanism reading the real "cannot open shared object file"
-	 * error straight out of a live remote hostbuild attempt.
+	 * Its stated reason was that the running root is where the image
+	 * baseline (daemon/src/pkg.c) copied a container image's C runtime
+	 * from. Both halves of that are gone: ADR-0210 removed the
+	 * installer's copy of the same three files, and ADR-0333 removed
+	 * the baseline itself, so nothing has read this one since. A
+	 * comment describing a mechanism that no longer exists is what the
+	 * next reader believes instead of reading the code, so it goes
+	 * with the staging rather than staying as a note.
+	 *
+	 * The root still carries libtinfo and carries it better: ncurses is
+	 * in the cix-hosttools image (bash's and perl's dependency), so the
+	 * platform block below brings its usr/lib/libtinfo.so.6 -- a
+	 * symlink onto libncursesw.so.6 -- whereas this staging put a
+	 * Debian build of it at lib/x86_64-linux-gnu, which the loader
+	 * searches first (probe-rootlibs@5-1, 2026-10-10: 204,088 bytes of
+	 * it, sitting in front of ours).
 	 */
-	if (test_image_fixture_add_lib(image_root, "/" CIX_LIB_DIR_RUNTIME "/libtinfo.so.6") != 0)
-		return 1;
 
 	/*
-	 * The real binaries cixd itself shells out to at runtime --
-	 * grep-confirmed against daemon/src/pki.c's/daemon/src/pkg.c's own
-	 * hardcoded absolute-path _BIN macros, the authoritative list, not
-	 * docs/roadmap/ROADMAP.md's own partly-stale "dnsmasq" mention (dnsmasq
-	 * runs inside operator-created containers; cixd itself never
-	 * execve()s it). Previously entirely absent from this image --
-	 * confirmed live: booting a fresh install and running "pki ca
-	 * bootstrap" on the console failed outright ("CA genpkey failed")
-	 * because /usr/bin/openssl simply didn't exist there. Each
-	 * binary's real shared-library closure (from a real `ldd` on this
-	 * build host) is staged the same way test_dns.c's own
-	 * DNSMASQ_LIBS[] already does for a real, unmodified third-party
-	 * binary with more dependencies than the bare ld.so+libc pair --
-	 * regenerate via `ldd /usr/bin/<name>` if a newer build of one of
-	 * these ever needs a different dependency set. Unlike firmware_dir
-	 * below, failure here is fatal, not silently skipped: these are
-	 * unconditionally required for cixd's own core PKI/pkg
-	 * functionality, not an operator-opt-in extra -- silently
-	 * tolerating their absence is exactly the bug this closes.
+	 * The programs code on this root executes, and the libraries they
+	 * need. Both are DERIVED now (cix#350): the programs from
+	 * include/controlplane_programs.h, the libraries from what the
+	 * cix-hosttools image carries, with the seal checking the result
+	 * against every object's own DT_NEEDED.
+	 *
+	 * This comment used to call the daemon's `_BIN` defines "the
+	 * authoritative list" and tell the reader to regenerate a library
+	 * set with `ldd` on the build host. Both were true when written
+	 * and are not now: the defines are declarations that
+	 * controlplane_programs.h collects (#554), and a build host's `ldd`
+	 * answers for a build host -- which on an installed Cix machine is
+	 * this very root, so following that instruction is what carried
+	 * Debian's libraries forward release after release (cix#589).
+	 *
+	 * What has not changed is why any of it is here, and it is worth
+	 * keeping: these were once entirely absent, and booting a fresh
+	 * install and running `pki ca bootstrap` on the console failed with
+	 * "CA genpkey failed" because /usr/bin/openssl was simply not
+	 * there. (That one is gone again for a better reason -- #351 moved
+	 * the PKI in-process to the libcrypto cixd links.) Failure here is
+	 * fatal rather than silently skipped, unlike firmware_dir below:
+	 * tolerating an absence is the bug, not the kindness.
 	 */
 	if (ensure_dir_under(image_root, "usr") != 0)
 		return 1;
@@ -902,515 +1057,66 @@ int main(int argc, char **argv)
 	if (ensure_dir_under(image_root, "bin") != 0)
 		return 1;
 	{
-		static const struct {
-			const char *host_path;   /* where this build host has it */
-			const char *rootfs_path; /* relative to image_root, matching the _BIN macro exactly */
-		} shelled_bins[] = {
-			/* openssl: NOT here any more (#351) -- the PKI, release-key
-			 * and signing-key code moved in-process to the libcrypto cixd
-			 * already links (daemon/src/pkicrypto.c), and nothing else in
-			 * the control plane execve()s it. */
-			/* curl: NOT here any more (#410) -- cixd's own fetches all
-			 * moved in-process to libcurl (daemon/src/curlfetch.c),
-			 * and nothing else in the control plane ever execve()s
-			 * curl. Staging the binary itself had no consumer left. */
-			/* tar, gzip, xz, bzip2: NOT here any more (cix#569) --
-			 * cixd unpacks only gitea/github recipe archives, with
-			 * the libarchive it links (zlib and liblzma in-process),
-			 * and cbs reads .cixpkg itself. Nothing in this root
-			 * executes any of the four. */
-			{ "/usr/bin/unsquashfs", "usr/bin/unsquashfs" }, /* PKG_UNSQUASHFS_BIN -- the
-			                                                   * pkg_bootstrap_from_toolchain()
-			                                                   * import path, no mount/loop-device
-			                                                   * needed (this dev sandbox's own
-			                                                   * documented "no /dev/loop* at all"
-			                                                   * constraint; real hardware
-			                                                   * shouldn't need one for this either). */
-			/*
-			 * mkfs.ext4 -- DISKFORMAT_MKFS_EXT4_BIN, daemon/src/diskformat.c
-			 * (multi-disk management Phase C). "/usr/sbin/mkfs.ext4" is
-			 * itself a symlink to the real binary "mke2fs" on this build
-			 * host; test_image_fixture_copy_file()'s plain open()/read()
-			 * transparently follows it, landing the real mke2fs ELF
-			 * content at this path (no symlink staged, no "mke2fs" binary
-			 * needed alongside it -- the daemon only ever invokes the
-			 * "mkfs.ext4" name).
-			 */
-			{ "/usr/sbin/mkfs.ext4", "usr/sbin/mkfs.ext4" },
-			/*
-			 * mkfs.btrfs -- DISKFORMAT_MKFS_BTRFS_BIN, same file. The
-			 * API has accepted fs_type: "btrfs" since multi-disk
-			 * management shipped, and this binary was never staged, so
-			 * on a real installed host that request could only ever
-			 * fail at execve() -- reported by an operator who asked for
-			 * btrfs and got ext4. (The ext4 they got was a separate
-			 * dashboard bug; this is why btrfs could not have worked
-			 * even once that was fixed.) btrfs is not a hypothetical
-			 * here either: ADR-0103 uses btrfs qgroups for volume
-			 * quotas, so the platform already treats it as a supported
-			 * filesystem.
-			 */
-			{ "/usr/sbin/mkfs.btrfs", "usr/sbin/mkfs.btrfs" },
-			/*
-			 * sfdisk -- DISKPART_SFDISK_BIN, daemon/src/diskpart.c
-			 * (partition-level disk management, ADR-0158). This was
-			 * missing from the moment that feature shipped, which is
-			 * exactly why it was never verified on real hardware: the
-			 * code was correct, the binary simply was not there, so the
-			 * very first real POST /disks/{name}/partition-table on an
-			 * installed host could only ever fail. Easy to miss because
-			 * cix-install.c drives the same sfdisk at install time and
-			 * works fine -- the installer runs from the ISO, which has a
-			 * full environment; the daemon on the installed host does
-			 * not. Same "this build sandbox's own rich /usr made the gap
-			 * invisible" pattern ADR-0023 names for libtinfo.
-			 */
-			{ "/usr/sbin/sfdisk", "usr/sbin/sfdisk" },
-			/*
-			 * resize2fs + e2fsck -- DISKPART_RESIZE2FS_BIN and
-			 * DISKPART_E2FSCK_BIN, daemon/src/diskpart.c (issue #94).
-			 * Growing a partition is two operations, not one: the table
-			 * entry grows, and then the filesystem inside it has to be
-			 * grown to match, or the extra space is simply invisible.
-			 * resize2fs requires a clean filesystem, which is what
-			 * e2fsck is for. Both need only libraries mkfs.ext4 above
-			 * already pulls in.
-			 */
-			{ "/usr/sbin/resize2fs", "usr/sbin/resize2fs" },
-			{ "/usr/sbin/e2fsck", "usr/sbin/e2fsck" },
-		};
+		if (stage_controlplane_programs(image_root, host_tools_dir) != 0)
+			return 1;
+
 		/*
-		 * Library NAMES, not paths (#184). Every entry used to spell
-		 * out /lib/x86_64-linux-gnu/ for itself, forty times, which
-		 * made a directory that is an inherited Debian convention into
-		 * something this file asserted forty times over -- and made
-		 * moving any package a forty-line edit here.
+		 * NO LIBRARY IS NAMED HERE ANY MORE (cix#350).
 		 *
-		 * Where each one is found is already flexible: add_lib()
-		 * searches CIX_LIB_DIRS_SEARCH by name (#224). Where each one
-		 * LANDS is CIX_LIB_DIR_RUNTIME, resolved once at the call site
-		 * below, so this list says what the control plane needs and
-		 * the layout says where it goes.
+		 * shelled_bin_libs[] stood here: nine sonames, each copied from
+		 * the BUILD HOST into CIX_LIB_DIR_RUNTIME. The platform block
+		 * below already copies every shared object the cix-hosttools
+		 * image carries, preserving that image's own directories -- so
+		 * the two were staging the same libraries twice, from two
+		 * different builds, into two different directories.
+		 *
+		 * AND THE FOREIGN COPY WON. glibc's compiled-in search path is
+		 * slibdir then libdir (include/libdirs.h), which is
+		 * lib/x86_64-linux-gnu then usr/lib -- and the hand list wrote
+		 * into the first while five of the nine packages install into
+		 * the second. Measured on 192.168.15.95, 2026-10-10 by
+		 * probe-rootlibs@5-1, which unsquashed the real control-plane
+		 * root out of cix-installer-0.2.57-481 and hashed every
+		 * lib*.so* in it: SIX libraries existed twice, with different
+		 * bytes, the Debian-sized copy first in the search order.
+		 *
+		 *   libcrypto.so.3   5,499,360 B vs 4,833,688 B
+		 *   libssl.so.3        688,160 B vs   729,056 B
+		 *   liblzma.so.5     3,233,805 B vs   327,440 B
+		 *   libgcc_s.so.1      885,664 B vs   190,992 B
+		 *   libz.so.1, libzstd.so.1, libtinfo.so.6  likewise
+		 *
+		 * The attribution is measured rather than argued: openssl's own
+		 * published artifact was extracted beside the root in the same
+		 * probe, and its usr/lib/libssl.so.3 is byte-identical
+		 * (6fcdb10f...) to the root's usr/lib copy and different from
+		 * the root's lib/x86_64-linux-gnu one. So cixd -- which needs
+		 * libssl and libcrypto -- was linking a foreign OpenSSL while
+		 * ours sat one directory later. That is exactly the libcurl
+		 * finding of the day before (cix#589), and it had the same
+		 * cause: a list that sources from the build host, which on an
+		 * installed host is the control-plane root itself.
+		 *
+		 * All nine were already provided by the image, checked against
+		 * the daemon's own file lists for the 21 packages installed in
+		 * cix-hosttools, so this is a deletion rather than a
+		 * substitution. What was true of the other three (libm,
+		 * libpthread, libresolv) is worth stating because it is why
+		 * this went unnoticed: glibc installs those AT
+		 * lib/x86_64-linux-gnu, so the platform block overwrote the
+		 * host's copies and the ordering comment below is the only
+		 * thing that kept them right.
+		 *
+		 * WHAT REPLACES THE LIST IS THE SEAL, which already reads the
+		 * root rather than a list: verify_root_closure() walks every
+		 * ELF object in the assembled tree and refuses one whose
+		 * DT_NEEDED soname nothing provides. A library the root needs
+		 * and the image does not carry therefore fails the build,
+		 * naming the file and the soname -- which is the same posture
+		 * stage_controlplane_programs() takes for programs. The one
+		 * thing no such walk can see is a dlopen(), and
+		 * require_dlopened_libs() below carries that single case.
 		 */
-		/*
-		 * EVERY ENTRY HERE IS REACHED BY SOMETHING IN THE ROOT, and
-		 * that is measured rather than curated. This list used to hold
-		 * 43 libraries and 24 of them were the dependency closure of a
-		 * libcurl that is not ours.
-		 *
-		 * Measured on 192.168.15.95, 2026-10-09 by probe-rootlibs@2-1,
-		 * which unsquashed a real control-plane root out of
-		 * cix-installer-0.2.57-480 and read every DT_NEEDED in it
-		 * (`find root -type f -exec readelf -d {} +`). What it found:
-		 *
-		 *   usr/lib/libcurl.so.4.8.0  -- OURS, from curl@8.21.0-6, and
-		 *       it needs exactly libssl, libcrypto, libz and libc,
-		 *       which is what its --without-nghttp2 --without-libidn2
-		 *       --without-librtmp --without-libssh2 --without-libpsl
-		 *       --without-gssapi --disable-ldap flags imply.
-		 *   lib/x86_64-linux-gnu/libcurl.so.4 -- 712,120 bytes, NOT
-		 *       ours, a full-featured build needing libnghttp2,
-		 *       libidn2, librtmp, libssh2, libpsl, libgssapi_krb5,
-		 *       libldap-2.5, liblber-2.5, libzstd and libbrotlidec.
-		 *   bin/cixd -- needs libcurl.so.4, and /lib/x86_64-linux-gnu
-		 *       precedes /usr/lib in the default search order.
-		 *
-		 * So the control plane was linking a foreign libcurl while ours
-		 * sat unused one directory later, and the whole crypto/ldap
-		 * cluster existed only to satisfy it. Dropping that one file
-		 * makes 23 others unreachable, which is a closed set rather
-		 * than a judged one: cixd now resolves usr/lib/libcurl.so.4
-		 * (the package ships that soname symlink -- checked), whose
-		 * three dependencies are all Cix packages.
-		 *
-		 * THREE ENTRIES LOOK LIKE CURL CLOSURE AND ARE NOT, which is
-		 * why the graph was measured before anything was deleted:
-		 * libcom_err is needed by libext2fs, e2fsck, mkfs.ext4 and
-		 * resize2fs; liblzo2 and liblz4 are needed by unsquashfs.
-		 * Removing them on the strength of their names would have
-		 * broken the ext4 tools and unsquashfs in the root that boots.
-		 * None of the three has a Cix package, so they are foreign AND
-		 * load-bearing -- a packaging gap, tracked in cix#589, not
-		 * something this list can fix.
-		 *
-		 * A HAND-MAINTAINED LIST IS STILL THE WRONG INSTRUMENT. This
-		 * one was Debian's closure, copied forward from host to host
-		 * because the staging reads the running root rather than a
-		 * package. The set should be derived from DT_NEEDED --
-		 * elfcheck_needed_libs() is already linked into this binary --
-		 * and sourced from host_tools_dir. cix#589 carries that.
-		 */
-		static const char *const shelled_bin_libs[] = {
-			/* cixd links both (the HTTPS listener, and since #351 the
-			 * PKI and signing code in pkicrypto.c), and our libcurl
-			 * needs libssl too. Only the openssl PROGRAM left the root. */
-			"libssl.so.3",
-			"libcrypto.so.3",
-			/* our libcurl's remaining dependency, and libarchive's */
-			"libz.so.1",
-			/* cbs, unsquashfs and libarchive all name it */
-			"libzstd.so.1",
-			/* mksquashfs, unsquashfs and libarchive */
-			"liblzma.so.5",
-			/* glibc's own libnss_dns and libnss_hesiod */
-			"libresolv.so.2",
-			/* mksquashfs and unsquashfs */
-			"libpthread.so.0",
-			"libm.so.6",
-			/*
-			 * libpthread's own pthread_exit()/pthread_cancel() lazily
-			 * dlopen() this for stack-unwinding support -- never a
-			 * DT_NEEDED entry, so it is invisible to any closure
-			 * derived from readelf, including the one this list now
-			 * reflects. Confirmed the hard way: mksquashfs starts and
-			 * runs fine, then aborts at its own normal pthread_exit()
-			 * with "libgcc_s.so.1 must be installed for pthread_exit
-			 * to work". KEEP THIS even when the list becomes derived --
-			 * a DT_NEEDED walk cannot see it.
-			 */
-			"libgcc_s.so.1",
-			/*
-			 * TEN ENTRIES LEFT HERE WITH THE FOREIGN BINARIES THEY
-			 * SERVED: libcom_err, libext2fs, libblkid, libuuid,
-			 * libe2p, libfdisk, libsmartcols, libreadline, liblzo2
-			 * and liblz4.
-			 *
-			 * They were the dependency closure of a dev host's
-			 * dynamically-linked e2fsprogs, util-linux and
-			 * squashfs-tools, which the staging above used to copy out
-			 * of the previous control-plane root. Cix's own are static:
-			 * measured on 192.168.15.95, 2026-10-09
-			 * (probe-pkgbins@1-1, reading the cached artifacts with
-			 * readelf), e2fsck, mkfs.ext4, resize2fs and sfdisk name
-			 * only libc and the loader, and mksquashfs/unsquashfs name
-			 * only libm, libmvec, liblzma and libc. So once the
-			 * binaries come from cix-hosttools -- which has carried
-			 * e2fsprogs and util-linux since image 2.4.3 -- nothing in
-			 * the root reaches any of the ten.
-			 *
-			 * This is also why the trim and the loop change above must
-			 * ship together: trimming while the binaries still came
-			 * from the running root would have removed libraries those
-			 * foreign copies needed (cix#589).
-			 */
-		};
-		size_t i;
-
-		for (i = 0; i < sizeof(shelled_bins) / sizeof(shelled_bins[0]); i++) {
-			char src[PATH_MAX];
-			char dst[PATH_MAX];
-			const char *use_src = shelled_bins[i].host_path;
-			struct stat st;
-
-			/*
-			 * PREFER THE cix-hosttools COPY, because host_path is
-			 * this build host's own filesystem and on an installed
-			 * host that IS the control-plane root -- so every
-			 * assembly copied the previous root's copy forward, and
-			 * whatever a dev host first put there stayed. The same
-			 * mechanism host_tool_bins[]'s own comment already
-			 * describes for mkfs.btrfs: "gets away with
-			 * shelled_bins[] only because it was first staged back
-			 * when mkbootroot ran on a dev host with a full /usr".
-			 *
-			 * Measured on 192.168.15.95, 2026-10-09
-			 * (probe-rootlibs@2-1, probe-pkgbins@1-1): a real
-			 * control-plane root's e2fsck, mkfs.ext4, resize2fs and
-			 * sfdisk link libext2fs and libcom_err DYNAMICALLY,
-			 * while the packages' own binaries link only libc --
-			 * Cix's e2fsprogs and util-linux are built without
-			 * --enable-elf-shlibs, so they are static. The root was
-			 * carrying a dev host's binaries, and shelled_bin_libs[]
-			 * had grown into their dependency closure (cix#589).
-			 *
-			 * rootfs_path doubles as the cix-hosttools-relative
-			 * path, which is true of every entry and is CHECKED
-			 * rather than assumed: a future entry where it does not
-			 * hold fails here by name instead of silently staging
-			 * the dev-host copy.
-			 */
-			if (shelled_bins[i].host_path[0] != '/' ||
-			    strcmp(shelled_bins[i].host_path + 1, shelled_bins[i].rootfs_path) != 0) {
-				fprintf(stderr,
-				        "shelled_bins[%zu]: rootfs_path must be host_path without its "
-				        "leading slash so it can double as the cix-hosttools-relative "
-				        "path (%s vs %s)\n",
-				        i, shelled_bins[i].host_path, shelled_bins[i].rootfs_path);
-				return 1;
-			}
-			if (host_tools_dir[0] != '\0') {
-				if (snprintf(src, sizeof(src), "%s/%s", host_tools_dir,
-				             shelled_bins[i].rootfs_path) >= (int)sizeof(src)) {
-					fprintf(stderr, "path too long: %s/%s\n", host_tools_dir,
-					        shelled_bins[i].rootfs_path);
-					return 1;
-				}
-				if (stat(src, &st) == 0)
-					use_src = src;
-			}
-			if (snprintf(dst, sizeof(dst), "%s/%s", image_root, shelled_bins[i].rootfs_path) >=
-			    (int)sizeof(dst)) {
-				fprintf(stderr, "path too long: %s/%s\n", image_root, shelled_bins[i].rootfs_path);
-				return 1;
-			}
-			if (test_image_fixture_copy_file(use_src, dst) != 0)
-				return 1;
-		}
-		{
-			/*
-			 * Programs staged from the cix-hosttools image
-			 * (rm/sha256sum retired by #352, cp by #464, and tar,
-			 * gzip, xz and bzip2 by cix#569 -- all in-process now).
-			 * host_tools_dir, when
-			 * given, is that image's installed rootfs (a
-			 * real `pkg install --image=<name>` result); each binary
-			 * is sourced from THERE instead of this dev build host.
-			 * "" (host_tools_dir unset) falls back to the dev-host
-			 * path, matching every call site that predates this
-			 * argument (test binaries, the server-side ADR-0057
-			 * bootroot-assembly spawn) until they're updated to pass
-			 * a real one.
-			 */
-			static const struct {
-				const char *dev_host_path; /* fallback: this build host's own copy */
-				const char *host_tools_rel; /* relative to host_tools_dir */
-				const char *rootfs_path;    /* relative to image_root, matching the _BIN macro */
-			} host_tool_bins[] = {
-				/*
-				 * btrfs -- DISKPART_BTRFS_BIN, daemon/src/diskpart.c
-				 * (issue #163). The other half of mkfs.btrfs's story:
-				 * the platform could CREATE a btrfs filesystem and do
-				 * nothing whatsoever to maintain one, so a grown btrfs
-				 * partition reported success and gained no usable
-				 * space.
-				 *
-				 * HERE rather than in shelled_bins[] above, and that
-				 * distinction cost a build. shelled_bins[] sources from
-				 * the build host's own filesystem, which on a Cix host
-				 * is the running control-plane root -- and that root
-				 * only contains what a PREVIOUS mkbootroot staged into
-				 * it. A binary that has never been staged is therefore
-				 * not there to stage, and the assembly dies with
-				 * "/usr/sbin/btrfs: No such file or directory". Anything
-				 * genuinely new has to come from cix-hosttools, which
-				 * is what host_tools_dir is. mkfs.btrfs gets away with
-				 * shelled_bins[] only because it was first staged back
-				 * when mkbootroot ran on a dev host with a full /usr.
-				 *
-				 * THE DEV FALLBACK IS /usr/sbin/btrfs, and it used to
-				 * be /usr/bin/btrfs on the grounds that "a merged-usr
-				 * dev host puts it there". That was true of the Debian
-				 * sandbox this file was written on and is false of the
-				 * only host that matters now: Cix's own btrfs-progs
-				 * installs usr/sbin/btrfs and usr/sbin/mkfs.btrfs
-				 * (recipes/package/btrfs-progs@7.1-12.cbs, lines 91-92),
-				 * and a Cix BUILD CONTAINER is where mkbootroot runs
-				 * without a host_tools_dir now that the QEMU boot tests
-				 * can run on a Cix host at all.
-				 *
-				 * Measured on 192.168.15.95, 2026-10-09 by
-				 * probe-cix-bootest@3-1: test_boot died in 24 ms with
-				 * "/usr/bin/btrfs: No such file or directory" from
-				 * mkbootroot, in a container that had btrfs-progs
-				 * declared and installed. The fallback path and the
-				 * rootfs path now agree, which also removes the
-				 * mismatch the old comment pointed at rm for.
-				 */
-				{ "/usr/sbin/btrfs", "usr/sbin/btrfs", "usr/sbin/btrfs" },
-				/*
-				 * mksquashfs (issue #146). ADR-0078 called the
-				 * host_tools_dir == "" path a safe fallback -- "a box
-				 * that never built this image keeps today's
-				 * dev-host-sourced behavior, never a hard failure."
-				 * True on a dev machine, false on an installed host,
-				 * where /usr/bin/mksquashfs does not exist and never
-				 * has. So a freshly installed host could not assemble
-				 * a control-plane image, i.e. could not deploy an
-				 * update to itself.
-				 *
-				 * It belongs HERE rather than in shelled_bins[] above,
-				 * and that distinction is the whole fix: shelled_bins
-				 * are copied from the bare host unconditionally, so
-				 * staging it there only works on a machine that
-				 * already has it -- precisely the machines that do not
-				 * need the fix. Sourced from cix-hosttools when built
-				 * (squashfs-tools.recipe installs exactly this path),
-				 * falling back to the dev host otherwise.
-				 *
-				 * Found the hard way: staged from shelled_bins[] first,
-				 * which failed on the real box with a bare
-				 * "/usr/bin/mksquashfs: No such file or directory" --
-				 * the fix reproducing the very bug it was written for.
-				 */
-				{ "/usr/bin/mksquashfs", "usr/bin/mksquashfs", "usr/bin/mksquashfs" },
-			};
-
-			for (i = 0; i < sizeof(host_tool_bins) / sizeof(host_tool_bins[0]); i++) {
-				char src[PATH_MAX];
-				char dst[PATH_MAX];
-				const char *use_src;
-
-				if (host_tools_dir[0] != '\0') {
-					if (snprintf(src, sizeof(src), "%s/%s", host_tools_dir,
-					             host_tool_bins[i].host_tools_rel) >= (int)sizeof(src)) {
-						fprintf(stderr, "path too long: %s/%s\n", host_tools_dir,
-						        host_tool_bins[i].host_tools_rel);
-						return 1;
-					}
-					use_src = src;
-				} else {
-					use_src = host_tool_bins[i].dev_host_path;
-				}
-				if (snprintf(dst, sizeof(dst), "%s/%s", image_root, host_tool_bins[i].rootfs_path) >=
-				    (int)sizeof(dst)) {
-					fprintf(stderr, "path too long: %s/%s\n", image_root, host_tool_bins[i].rootfs_path);
-					return 1;
-				}
-				if (test_image_fixture_copy_file(use_src, dst) != 0)
-					return 1;
-			}
-		}
-		/*
-		 * mkfs.btrfs -- DISKFORMAT_MKFS_BTRFS_BIN, daemon/src/diskformat.c
-		 * (ADR-0104, task #732). Deliberately NOT added to host_tool_bins[]
-		 * above: every entry there is unconditionally required (a dev-host
-		 * fallback always exists), but this dev sandbox has no mkfs.btrfs
-		 * of its own at all (confirmed directly -- unlike mke2fs, Debian
-		 * doesn't ship btrfs-progs by default) and no real box may have
-		 * built btrfs-progs.recipe onto its cix-hosttools image yet
-		 * either. Staged tolerantly instead, matching firmware_dir/
-		 * modules_dir/kmod_bin_dir's own "absent is a normal, silently-
-		 * skipped state, not a build failure" precedent: only attempted
-		 * when host_tools_dir is given AND that tree's own copy actually
-		 * exists (stat()-gated) -- an older cix-hosttools image built
-		 * before btrfs-progs.recipe existed is not an error here, just a
-		 * box that can't format a disk btrfs yet (POST /v1/disks/{name}/
-		 * format with fs_type=btrfs fails loud with ENOENT at exec time
-		 * on such a box, not silently). Its runtime library closure
-		 * (libuuid.so.1/libblkid.so.1/libz.so.1) needs no new entries in
-		 * shelled_bin_libs[] below -- confirmed via a real local `ldd` on
-		 * a real local mkfs.btrfs build: identical to mke2fs's own
-		 * closure (already staged there) plus libz.so.1 (already staged
-		 * there for curl/unsquashfs).
-		 */
-		if (host_tools_dir[0] != '\0') {
-			char src[PATH_MAX];
-			struct stat st;
-
-			if (snprintf(src, sizeof(src), "%s/usr/sbin/mkfs.btrfs", host_tools_dir) >=
-			    (int)sizeof(src)) {
-				fprintf(stderr, "path too long: %s/usr/sbin/mkfs.btrfs\n", host_tools_dir);
-				return 1;
-			}
-			if (stat(src, &st) == 0) {
-				char dst[PATH_MAX];
-
-				snprintf(dst, sizeof(dst), "%s/usr/sbin/mkfs.btrfs", image_root);
-				if (test_image_fixture_copy_file(src, dst) != 0)
-					return 1;
-			}
-		}
-		/*
-		 * cbs -- PKG_CBS_BIN, daemon/src/pkg.c (ADR-0305). The CPDL
-		 * engine: cixd runs `cbs explain --json` to read a CBS recipe's
-		 * identity at publish, and `cbs build` runs the recipe inside
-		 * the build container.
-		 *
-		 * REQUIRED, FOR TWO INDEPENDENT REASONS. Either alone is
-		 * enough to keep this, which is the point of saying so:
-		 *
-		 *   1. ADR-0307 clause 6 -- a root with no cbs cannot EXTRACT
-		 *      a .cixpkg, so it cannot install packages at all.
-		 *   2. ADR-0314 -- the cbs bootstrap seed IS the previous Cix
-		 *      root. Building cbs from source needs a working cbs, and
-		 *      this staging is what guarantees every booting host has
-		 *      one. A root sealed without it could never build another
-		 *      engine, including its own replacement.
-		 *
-		 * So a future reader who finds a case where reason 1 does not
-		 * apply must not relax this: reason 2 is untouched by
-		 * anything about artifact formats, and relaxing it would need
-		 * ADR-0314 superseded.
-		 *
-		 * Kept out of host_tool_bins[] all the same: every entry there
-		 * has a dev-host fallback, and there is no fallback for this
-		 * one and there must not be. `cbs` is a Cix-built package
-		 * (recipes/package/cbs, built by TCC from an upstream tarball
-		 * pinned by commit), no dev host has one in /usr/bin, and
-		 * taking a foreign binary from a build machine into the
-		 * control-plane root is exactly what the Build Provenance
-		 * Mandate forbids. So: required, and with no fallback to fall
-		 * back to.
-		 *
-		 * THIS COMMENT USED TO ARGUE THE OPPOSITE, and the argument is
-		 * kept rather than deleted because it was right when it was
-		 * written: *"a box whose cix-hosttools image predates `pkg
-		 * install --image=cix-hosttools cbs` simply has no CPDL engine,
-		 * which is a normal state rather than an assembly failure ...
-		 * it fails loudly at the right moment instead: publishing a
-		 * build.cbs on such a host is refused."*
-		 *
-		 * ADR-0307 makes that false. Refusing at publish covered the
-		 * case where a recipe arrives and cannot be read; it does
-		 * nothing for the case that now exists, where an ALREADY
-		 * PUBLISHED package's artifact is a .cixpkg and nothing on the
-		 * host can extract it. A root without cbs is no longer a root
-		 * that cannot publish CBS recipes -- it is a root that cannot
-		 * install packages, and 25 of them are already published in
-		 * that format. Failing here, where the fix is one install away,
-		 * beats failing on a box that has already booted the root.
-		 *
-		 * Its library closure needs no new shelled_bin_libs[] entries,
-		 * and that was checked rather than assumed: cbs links
-		 * libarchive (already staged with the platform's own libraries,
-		 * which is where cixd's own -larchive comes from) and libzstd,
-		 * and it dlopen()s libcurl.so.4 for source fetching it will
-		 * never do here -- libzstd.so.1 and libcurl.so.4 are both
-		 * already in the list below, staged for curl and unsquashfs.
-		 */
-		{
-			char src[PATH_MAX];
-			char dst[PATH_MAX];
-			struct stat st;
-
-			if (host_tools_dir[0] == '\0') {
-				fprintf(stderr,
-				        "no cix-hosttools root given, so this root would carry no CPDL "
-				        "engine -- and a root with no /usr/bin/cbs cannot install any "
-				        "package built by a CBS recipe, itself included (ADR-0307 "
-				        "clause 6)\n");
-				return 1;
-			}
-			if (snprintf(src, sizeof(src), "%s/usr/bin/cbs", host_tools_dir) >=
-			    (int)sizeof(src)) {
-				fprintf(stderr, "path too long: %s/usr/bin/cbs\n", host_tools_dir);
-				return 1;
-			}
-			if (stat(src, &st) != 0) {
-				fprintf(stderr,
-				        "%s is absent, so this root would carry no CPDL engine and could "
-				        "not install any package built by a CBS recipe (ADR-0307 clause "
-				        "6). Fix it with: pkg install --image=cix-hosttools cbs\n",
-				        src);
-				return 1;
-			}
-			snprintf(dst, sizeof(dst), "%s/usr/bin/cbs", image_root);
-			if (test_image_fixture_copy_file(src, dst) != 0)
-				return 1;
-		}
-		for (i = 0; i < sizeof(shelled_bin_libs) / sizeof(shelled_bin_libs[0]); i++) {
-			char lib_path[PATH_MAX];
-
-			if (snprintf(lib_path, sizeof(lib_path), "/%s/%s", CIX_LIB_DIR_RUNTIME,
-			             shelled_bin_libs[i]) >= (int)sizeof(lib_path)) {
-				fprintf(stderr, "library path too long: /%s/%s\n", CIX_LIB_DIR_RUNTIME,
-				        shelled_bin_libs[i]);
-				return 1;
-			}
-			if (test_image_fixture_add_lib(image_root, lib_path) != 0)
-				return 1;
-		}
-
 		/*
 		 * The platform's own libraries go on LAST, after every
 		 * host-sourced library above, because whichever is copied last
@@ -1538,6 +1244,8 @@ int main(int argc, char **argv)
 				        "note: %s carries no shared libraries -- the control-plane root "
 				        "keeps the build host's C library\n",
 				        host_tools_dir);
+			if (require_dlopened_libs(image_root) != 0)
+				return 1;
 		}
 
 		/*

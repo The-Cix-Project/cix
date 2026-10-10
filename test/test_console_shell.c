@@ -137,7 +137,12 @@ int main(void)
 	{
 		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir,
 			                     (char *)CIXD_BIN, (char *)CIXCTL_BIN, "web", root_squashfs,
-			                     "", "", "", "", NULL };
+			                     /* firmware, modules, kmod tools: none needed here. The last is
+			                      * the host-tools root, and "/" rather than "" because mkbootroot
+			                      * refuses a root with none of the programs the control plane
+			                      * executes (cix#350); this test runs on a Cix host or in a
+			                      * composed build container, and both are host-tools roots. */
+			                     "", "", "", "/", NULL };
 		if (run_subprocess(MKBOOTROOT_BIN, mkbootroot_argv) != 0)
 			return 1;
 	}

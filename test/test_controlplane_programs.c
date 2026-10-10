@@ -28,7 +28,7 @@
 #include <string.h>
 
 static const char *const listed[] = {
-#define CP_PATH_(id, path, source) path,
+#define CP_PATH_(id, path, source, pkg) path,
 	CONTROLPLANE_PROGRAMS(CP_PATH_)
 #undef CP_PATH_
 };
