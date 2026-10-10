@@ -2445,6 +2445,61 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 276 (done): the revamp, built to the owner's canvas (#592 epic, #596, ADR-0338, 0.2.57-489 through -491)
+
+The owner, after six screenshots of the converted forms: *"Claude, I thought we're redoing the UI
+according to the new guidelines and plan we've made."* They were right, and the diagnosis is worth
+keeping because nothing in the gates could have produced it. Stories 1-3 and 5 of #592 had shipped and
+story 4 was well under way -- the plumbing was real and it had found real bugs -- but **the renderer had
+been built to match the hand-written forms it replaces rather than the `Generated` and `Primitives`
+boards of the owner's Cix UI Design System canvas, which are its specification.** Every form converted
+since had inherited that, and the accepted `IA` board had not been touched at all. A long session of
+correct work had left the dashboard looking exactly as it had that morning.
+
+**The form, rebuilt.** A field is the four things the boards draw: a head row carrying the operator's
+label (11px, uppercase, tracked), `required` in copper or `optional` in muted, and the constraint as a
+monospace chip pushed right; then the control, recessed onto `--bg`; then one sentence of hint. One
+column, not the inherited auto-fit grid that had interleaved twelve LDAP fields with their
+explanations. Two STANDARD JSON Schema keywords carry it and no new extension was invented: `title` is
+the label, because without one the renderer de-cases the schema key and real forms rendered "Sn",
+"Ip", "Uidnumber" and "Givenname" -- the API's own vocabulary pointed at a person, which is what
+`web-ux-guidelines`' fifth principle exists to forbid and what the Primitives board answers in one
+line, *"a label that needs to differ goes in the contract, not in app.js."* The hint is the first
+sentence of `description`, with the whole text on hover, and that was decided by measuring rather than
+by reaching for a key: of this contract's 684 property descriptions, **89% have a first sentence that
+works as a hint on its own**, mean 81 characters. Eight that did not were rewritten.
+
+**The information architecture, rebuilt**, which is the part no generator decides. All four of the IA
+board's measured defects: three tree groups that were also links, each landing on a subject underneath
+it wearing the group's name; one page carrying nine tabs across identity, auth, swap, stats, logs,
+config and reset; Factory Reset as a peer tab of Stats, two clicks from a group header to the one
+irreversible thing here; and two log surfaces on two pages. The groups expand only, the nine-tab page
+is **Health**, **Identity** and **Configuration**, LDAP moved into Identity, and Factory Reset is a
+`danger-zone` block last on Configuration -- where its button was also found carrying a bare
+`class="danger"` that the stylesheet does not define at all, so the most destructive control in the
+product had been rendering as an ordinary button.
+
+**Verified**, and the order matters. Each gate: 489 and 491 green on the conjunction, with 490 failing
+to compile and 486/487 failing on stale assertions -- four cycles across this part, every one of them
+mine. Each deploy: booted, health ok, 12/12 containers. Then the property, **against the bytes the box
+serves rather than the tree they were built from** -- `api.js`, `form.js`, `index.html` and `style.css`
+fetched over HTTP from 192.168.15.95 and rendered in Chromium: all six emitted patterns compile under
+the regex `v` flag and refuse a junk value, with `db_1.arpa` now correctly invalid; every tree route
+resolves to a section and names a tab there; three groups route nowhere; and each new page's tabs and
+panels match with no orphan either way.
+
+**What the browser found that no gate could**, listed because it is the argument for the owner's
+Chromium exception: the new single-column form inherited the global `form { align-items: start }` and
+every field shrank to its own content; the submit button still carried `grid-column` and
+`justify-self`, both inert on a flex item; a checkbox's head row grew and pushed the tick 600px from
+the words it answers; and the hostname chip read "hostname" beside a label reading HOSTNAME, because
+that pattern keeps its character class at the front of a repeated group. None of these is a wrong
+value; each is a correct value drawn wrongly.
+
+**Still open and deliberately not started here:** loading / empty / refused as three distinct list
+states, which the Primitives board calls *"where much of today's bad experience lives"*; the remaining
+~26 hand-written forms, which are only now safe to convert; and `dg-*` (#598).
+
 ## Part 275 (done): a form can hold a document, and every name pattern was being ignored (#592 epic, #596, #604, ADR-0338, 0.2.57-486 through -488)
 
 Seven more hand-written forms are gone -- `createDnsServer`, `createLdapServer`, `addImageRecipe`
