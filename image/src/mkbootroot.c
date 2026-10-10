@@ -992,42 +992,69 @@ int main(int argc, char **argv)
 		 * below, so this list says what the control plane needs and
 		 * the layout says where it goes.
 		 */
+		/*
+		 * EVERY ENTRY HERE IS REACHED BY SOMETHING IN THE ROOT, and
+		 * that is measured rather than curated. This list used to hold
+		 * 43 libraries and 24 of them were the dependency closure of a
+		 * libcurl that is not ours.
+		 *
+		 * Measured on 192.168.15.95, 2026-10-09 by probe-rootlibs@2-1,
+		 * which unsquashed a real control-plane root out of
+		 * cix-installer-0.2.57-480 and read every DT_NEEDED in it
+		 * (`find root -type f -exec readelf -d {} +`). What it found:
+		 *
+		 *   usr/lib/libcurl.so.4.8.0  -- OURS, from curl@8.21.0-6, and
+		 *       it needs exactly libssl, libcrypto, libz and libc,
+		 *       which is what its --without-nghttp2 --without-libidn2
+		 *       --without-librtmp --without-libssh2 --without-libpsl
+		 *       --without-gssapi --disable-ldap flags imply.
+		 *   lib/x86_64-linux-gnu/libcurl.so.4 -- 712,120 bytes, NOT
+		 *       ours, a full-featured build needing libnghttp2,
+		 *       libidn2, librtmp, libssh2, libpsl, libgssapi_krb5,
+		 *       libldap-2.5, liblber-2.5, libzstd and libbrotlidec.
+		 *   bin/cixd -- needs libcurl.so.4, and /lib/x86_64-linux-gnu
+		 *       precedes /usr/lib in the default search order.
+		 *
+		 * So the control plane was linking a foreign libcurl while ours
+		 * sat unused one directory later, and the whole crypto/ldap
+		 * cluster existed only to satisfy it. Dropping that one file
+		 * makes 23 others unreachable, which is a closed set rather
+		 * than a judged one: cixd now resolves usr/lib/libcurl.so.4
+		 * (the package ships that soname symlink -- checked), whose
+		 * three dependencies are all Cix packages.
+		 *
+		 * THREE ENTRIES LOOK LIKE CURL CLOSURE AND ARE NOT, which is
+		 * why the graph was measured before anything was deleted:
+		 * libcom_err is needed by libext2fs, e2fsck, mkfs.ext4 and
+		 * resize2fs; liblzo2 and liblz4 are needed by unsquashfs.
+		 * Removing them on the strength of their names would have
+		 * broken the ext4 tools and unsquashfs in the root that boots.
+		 * None of the three has a Cix package, so they are foreign AND
+		 * load-bearing -- a packaging gap, tracked in cix#589, not
+		 * something this list can fix.
+		 *
+		 * A HAND-MAINTAINED LIST IS STILL THE WRONG INSTRUMENT. This
+		 * one was Debian's closure, copied forward from host to host
+		 * because the staging reads the running root rather than a
+		 * package. The set should be derived from DT_NEEDED --
+		 * elfcheck_needed_libs() is already linked into this binary --
+		 * and sourced from host_tools_dir. cix#589 carries that.
+		 */
 		static const char *const shelled_bin_libs[] = {
-			/* cixd itself links both (the HTTPS listener, and since #351
-			 * the PKI and signing code in pkicrypto.c), and libcurl needs
-			 * libssl. Only the openssl PROGRAM left the root. */
+			/* cixd links both (the HTTPS listener, and since #351 the
+			 * PKI and signing code in pkicrypto.c), and our libcurl
+			 * needs libssl too. Only the openssl PROGRAM left the root. */
 			"libssl.so.3",
 			"libcrypto.so.3",
-			/* curl */
-			"libcurl.so.4",
+			/* our libcurl's remaining dependency, and unsquashfs's */
 			"libz.so.1",
-			"libnghttp2.so.14",
-			"libidn2.so.0",
-			"librtmp.so.1",
-			"libssh2.so.1",
-			"libpsl.so.5",
-			"libgssapi_krb5.so.2",
-			"libldap-2.5.so.0",
-			"liblber-2.5.so.0",
+			/* cbs, unsquashfs and libarchive all name it */
 			"libzstd.so.1",
-			"libbrotlidec.so.1",
-			"libunistring.so.2",
-			"libgnutls.so.30",
-			"libhogweed.so.6",
-			"libnettle.so.8",
-			"libgmp.so.10",
-			"libkrb5.so.3",
-			"libk5crypto.so.3",
+			/* libext2fs, e2fsck, mkfs.ext4, resize2fs */
 			"libcom_err.so.2",
-			"libkrb5support.so.0",
-			"libsasl2.so.2",
-			"libbrotlicommon.so.1",
-			"libp11-kit.so.0",
-			"libtasn1.so.6",
-			"libkeyutils.so.1",
+			/* glibc's own libnss_dns and libnss_hesiod */
 			"libresolv.so.2",
-			"libffi.so.8",
-			/* unsquashfs -- libz.so.1/libzstd.so.1 already listed above (curl) */
+			/* unsquashfs */
 			"libpthread.so.0",
 			"libm.so.6",
 			"liblzma.so.5",
@@ -1036,31 +1063,29 @@ int main(int argc, char **argv)
 			/*
 			 * libpthread's own pthread_exit()/pthread_cancel() lazily
 			 * dlopen() this for stack-unwinding support -- never a
-			 * DT_NEEDED entry (confirmed via readelf -d: absent from
-			 * every ldd-based closure this file's own comments already
-			 * derived), so it was invisible to every prior "regenerate
-			 * via ldd" pass. Confirmed missing the hard way: mksquashfs
-			 * (host_tools_dir's own copy, ADR-0084) starts and runs
-			 * fine, then aborts at its own normal pthread_exit() with
+			 * DT_NEEDED entry, so it is invisible to any closure
+			 * derived from readelf alone, including the one above.
+			 * Confirmed the hard way: mksquashfs starts and runs fine,
+			 * then aborts at its own normal pthread_exit() with
 			 * "libgcc_s.so.1 must be installed for pthread_exit to
-			 * work" -- reproduced via strace against a genuinely
-			 * non-merged-usr chroot during the same investigation that
-			 * found ADR-0085's ld-linux source-path bug. Needed by any
-			 * shelled-out binary linking libpthread that actually exits
-			 * a thread normally, not just unsquashfs/mksquashfs.
+			 * work". Needed by any shelled-out binary linking
+			 * libpthread that exits a thread normally. KEEP THIS even
+			 * when the list becomes derived -- a DT_NEEDED walk cannot
+			 * see it.
 			 */
 			"libgcc_s.so.1",
-			/* mkfs.ext4 (mke2fs) -- libcom_err.so.2 already listed above
-			 * (curl/krb5) */
+			/* mkfs.ext4 (mke2fs) */
 			"libext2fs.so.2",
 			"libblkid.so.1",
 			"libuuid.so.1",
 			"libe2p.so.2",
-			/* sfdisk -- libtinfo.so.6/libuuid.so.1/libblkid.so.1 are
-			 * already staged above (curl/mke2fs), so only these three
-			 * are new. libreadline is pulled in by libfdisk's own
+			/* sfdisk. libreadline comes in through libfdisk's
 			 * interactive-prompt support, which nothing here uses, but
-			 * the dynamic linker resolves it at load time regardless. */
+			 * the dynamic linker resolves it at load time regardless.
+			 * libtinfo.so.6 is needed by libreadline and sfdisk and has
+			 * never been in this list -- the root gets it elsewhere,
+			 * which the old comment here asserted was "already staged
+			 * above" and was wrong about. */
 			"libfdisk.so.1",
 			"libsmartcols.so.1",
 			"libreadline.so.8",
