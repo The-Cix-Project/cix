@@ -1,0 +1,57 @@
+# 0337 — The root is derived from one list, with no build-host fallback
+
+## Status
+
+Accepted, 2026-10-10. Issue [#350](https://git.home.arpa/itdlabs/cix/issues/350), first stage — not its closure; [ADR-0291](0291-the-control-plane-root-is-an-image.md) (Proposed) is the full design the issue asks for, and this is the retirement its own phase (5) names. Amends [ADR-0078](0078-from-source-host-tools-bootstrap.md), whose `host_tools_dir` argument was introduced as a tolerant default; extends [ADR-0307](0307-a-packages-artifact-format-is-the-one-its-recipe-declares.md) clause 6 from `cbs` alone to every program the control plane executes. Completes the direction [#181](https://git.home.arpa/itdlabs/cix/issues/181)'s platform-library staging already stated — *"whatever libraries that image has, the root takes"* — by removing the hand-staged set that was still contradicting it.
+
+## Context
+
+What is in the control-plane root was decided by five separate mechanisms inside `image/src/mkbootroot.c`: two hand-maintained tables of programs (`shelled_bins[]`, `host_tool_bins[]`), two one-off blocks for a program each (`mkfs.btrfs`, `cbs`), and one hand-maintained list of library sonames (`shelled_bin_libs[]`). #350 opens on precisely this — *"Nobody can answer 'what is in my root?' without reading that C file."*
+
+Three facts about those mechanisms matter more than their number.
+
+**Every entry had a build-host fallback, and on an installed host the build host is the control-plane root.** `mkbootroot` runs as a plain fork from `cixd`, with no chroot, so "copy `/usr/sbin/sfdisk` from this machine" means "copy it from the root that is currently booted" — which contains only what a previous `mkbootroot` staged into it. Each assembly therefore copied the previous root's copy forward, and whatever a dev machine first put there stayed for the life of the box. ADR-0078 called that fallback safe: *"a box that never built this image keeps today's dev-host-sourced behavior, never a hard failure."* That was true of a dev machine and false of every installed host, and ADR-0307 clause 6 had already overruled it for `cbs` alone, on the grounds that a root with no CPDL engine cannot install a package.
+
+**The library list wrote into the directory glibc searches first.** `include/libdirs.h` records that glibc's compiled-in search path is slibdir then libdir — `lib/x86_64-linux-gnu` then `usr/lib`. `shelled_bin_libs[]` staged every soname into the first. Five of the nine packages that provide those sonames install into the second. So the two staging mechanisms were not duplicating each other harmlessly; the hand-staged copy shadowed the platform's own.
+
+Measured on 192.168.15.95, 2026-10-10 by `probe-rootlibs@5-1`, which extracted the real control-plane root from `cix-installer-0.2.57-481` and hashed every `lib*.so*` in it. Six libraries existed twice, with different bytes:
+
+| soname | `lib/x86_64-linux-gnu/` (first) | `usr/lib/` (the package) |
+|---|---|---|
+| `libcrypto.so.3` | 5,499,360 B | 4,833,688 B |
+| `libssl.so.3` | 688,160 B | 729,056 B |
+| `liblzma.so.5` | 3,233,805 B | 327,440 B |
+| `libgcc_s.so.1` | 885,664 B | 190,992 B |
+| `libz.so.1`, `libzstd.so.1`, `libtinfo.so.6` | likewise | likewise |
+
+The attribution is measured rather than argued: the same probe extracted openssl's own published artifact beside the root, and its `usr/lib/libssl.so.3` is byte-identical (`6fcdb10f…`) to the root's `usr/lib` copy and different from the `lib/x86_64-linux-gnu` one. `cixd` needs `libssl` and `libcrypto`, so the control plane was linking a foreign OpenSSL while ours sat one directory later. That is the same finding as the foreign `libcurl` of the day before (#589), from the same cause.
+
+**A list of what the root must contain already existed, and already had two gates.** `include/controlplane_programs.h` (#554) names every program code on this root executes, by the absolute path it is executed at; `verify_controlplane_programs()` refuses to seal a root missing one, and `test_controlplane_programs` (in SELFTESTS) fails a release that executes one the list does not name. The staging tables were a third copy of the same facts, kept in step by eye — and the drift was always in the same direction: a program declared and not staged, which is a feature that can only fail at `execve()` on a host that has already booted. `mkfs.btrfs` did exactly that, found by an operator asking for btrfs.
+
+## Decision
+
+**The root's program set is derived from `include/controlplane_programs.h`, and every program comes from the `cix-hosttools` image with no fallback.** The list that gates the seal now also supplies it (`stage_controlplane_programs()`), so a program declared and not staged is not expressible. Each entry carries the package that provides it, so an absence names the install that fixes it rather than only the path that is missing.
+
+**`host_tools_dir` is required.** `""` is refused, with the reasons stated: no CPDL engine to install a package with, no `mksquashfs` to assemble the next root with, no disk tools at all.
+
+**No library is enumerated.** The root gets every shared object the `cix-hosttools` image carries, in that image's own directories, and `verify_root_closure()` — which already walked every object's `DT_NEEDED` and refused a soname nothing provides (ADR-0329 item 9) — is what says whether that was enough. A hit no longer means a line is missing from a table; it means the image is missing a package, and the message says so.
+
+**One exception, for the one thing no such walk can see.** A `dlopen()` names its library in a string at runtime, so no amount of reading ELF headers finds it. `require_dlopened_libs()` carries that single case: `libgcc_s.so.1`, which `libpthread`'s own `pthread_exit()` and `pthread_cancel()` load by name for stack unwinding — measured the hard way, as `mksquashfs` starting, running, and aborting at its normal exit with *"libgcc_s.so.1 must be installed for pthread_exit to work"*. It is checked for presence, never staged from elsewhere, and checked with `stat()` rather than `lstat()` so a symlink whose target did not come along fails like the absence it is.
+
+## Consequences
+
+- **A box whose `cix-hosttools` image predates a program can no longer assemble a root at all.** That is the one thing the fallback genuinely bought, and losing it is deliberate: it previously bought a root that was silently missing the program, or silently carrying a foreign copy of it. The failure is now at assembly time, where the fix costs one `pkg install`, instead of at `execve()` time on a booted machine. All nine paths are present in `cix-hosttools` today — measured, from the daemon's own per-package file lists for the 21 packages installed in that image — supplied by `squashfs-tools`, `cbs`, `util-linux`, `e2fsprogs` and `btrfs-progs`.
+- **Six foreign libraries leave the root**, and `cixd` resolves OpenSSL, zlib, zstd and xz from the packages this platform built. The precedent for that resolution working is narrow and worth stating exactly: #589 deleted the foreign `libcurl` from this same `lib/x86_64-linux-gnu`, and 0.2.57-481 then booted with `cixd` resolving `usr/lib/libcurl.so.4` — which is precisely the state each of these six is in after this change. It is not evidence that a *shadowed* library resolves correctly, because it never did; the other five foreign copies were still sitting in front of ours when that release booted.
+- **One build-host source is left in `mkbootroot.c`, deliberately**: `/etc/ssl/certs/ca-certificates.crt`, copied unconditionally. It is the same defect in form, and it is not the same decision — which upstream roots this platform trusts is the owner's call, not a derivation, and ADR-0333 already records that a trust bundle cannot be a checksummed cache-published artifact. So it stays, named here rather than quietly left: the root's *programs and libraries* are derived; its trust store is not yet anything.
+- **`libtinfo.so.6`'s hand stage goes with them.** Its stated reader was the image baseline in `daemon/src/pkg.c`; ADR-0210 removed the installer's copy of the same three files and ADR-0333 removed the baseline itself, so the comment described a mechanism that no longer existed. `ncurses` is in `cix-hosttools`, so the root still carries `libtinfo` — as the package's own symlink onto `libncursesw.so.6` rather than a Debian build of it sitting in front.
+- **Five test call sites changed from `""` to `"/"`.** `test_boot` had already made that change for the `cbs` gate; `test_boot_ab`, `test_installer`, `test_console_pkg_bootstrap`, `test_console_shell` and `test_mkbootroot_firmware` follow. `"/"` is truthful rather than a placeholder: ADR-0078 defines the argument as an image's installed rootfs, and both a real Cix host and a composed build container that declares those tools are one.
+- **`verify_platform_libs_intact()` stays.** It re-reads every platform library before the seal and refuses a root whose bytes changed, and it is now a second gate rather than the only one: with no hand list writing into the platform's directories, nothing is left that could overwrite them.
+- **#350 is not closed.** Its proposal is that the root become an image, which is ADR-0291 and is days of work awaiting the owner's review. What this removes is the part of #350 that needed no decision: the hand-maintained tables, which the issue names as the shared cause of its whole family. Every entry retired here is one fewer entry in that eventual manifest.
+
+## Alternatives considered
+
+**Derive the library set by walking `DT_NEEDED` and sourcing each soname.** This was the plan, and measuring it first is what rejected it. The platform block already copies *every* shared object in the host-tools image, so by the time such a walk ran there would be nothing left for it to source — all nine sonames were already provided. A fixed-point loop that never fires is a mechanism that is not there, described by a comment claiming it is, which is the exact failure mode this project has a standing rule against. The correct change was a deletion plus the gate that already existed.
+
+**Keep the build-host fallback for the cases the image might not cover.** Rejected: that fallback is the defect, not a safety net. On an installed host it resolves to the previous root, which is how a dev machine's binaries and libraries came to be carried forward indefinitely. A missing package is a condition to report, with the install that fixes it, not to paper over with a worse copy.
+
+**Make the root an image now (ADR-0291).** The right end state and out of scope for one session; it needs the owner's decision on a design, and it needs `cix-boot` verified byte-for-byte against an assembled root before anything depends on it. Retiring the tables first makes that migration smaller rather than competing with it.

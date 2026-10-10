@@ -34,20 +34,28 @@ The rebuild is a [hostbuild](writing-recipes.md#the-hostbuild-variant) of the `c
 
 A hostbuild composes its build container from the recipe's own declared build tools ([ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md)), so there is no build image to create. The `cix` recipe declares what it uses — TCC, make, the headers, the libraries `cixd` links (`-lssl -lcrypto -larchive -lcurl`), quickjs for the dashboard syntax gate, gcc for `cix-boot.efi`, and the rest — and every declared tool must be installed in some image on the host, or the build fails naming it.
 
-Two optional images change what the assembled root contains. Both are ordinary images built with ordinary installs, found by fixed name when the root is assembled.
+One optional image and one required one change what the assembled root contains. Both are ordinary images built with ordinary installs, found by fixed name when the root is assembled.
 
-#### `cix-hosttools` (optional, ADR-0078)
+#### `cix-hosttools` (REQUIRED since cix#350, ADR-0337 — ADR-0078 introduced it as optional)
 
-`mkbootroot` stages the binaries `cixd` shells out to at runtime into the control-plane root. Without this image it copies them from the host running the assembly — on a Cix host, that is the running control-plane root. With it, these come from Cix-built packages instead:
+Every program the control-plane root carries comes from this image, and so does every library. `mkbootroot` refuses to assemble a root without it, because a root with no `cbs` cannot install a package (ADR-0307 clause 6) and a root with no `mksquashfs` cannot assemble its own successor.
 
 ```
 cixctl image create --name=cix-hosttools
-cixctl pkg install --name=coreutils --image=cix-hosttools
 cixctl pkg install --name=squashfs-tools --image=cix-hosttools
+cixctl pkg install --name=cbs --image=cix-hosttools
+cixctl pkg install --name=util-linux --image=cix-hosttools
+cixctl pkg install --name=e2fsprogs --image=cix-hosttools
 cixctl pkg install --name=btrfs-progs --image=cix-hosttools
 ```
 
-`cix-hosttools` is `HOST_TOOLS_IMAGE` in `daemon/src/main.c`; `spawn_cix_bootroot_assembly()` passes its rootfs to `mkbootroot` as the host-tools directory. From it `mkbootroot` stages `btrfs` and `mkfs.btrfs` (which exist in the root only if this image carries them — without them `fs_type: "btrfs"` fails at exec), and runs `mksquashfs` to seal the root, with the image's own libraries on its search path ([ADR-0154](../adr/0154-host-tools-mksquashfs-ld-library-path.md)). The other tools `cixd` executes (`unsquashfs`, `mkfs.ext4`, `sfdisk` and the rest of `include/controlplane_programs.h`) are staged from the assembling host's own filesystem (`image/src/mkbootroot.c`). The root carries no `tar`, `gzip`, `xz` or `bzip2` ([ADR-0329](../adr/0329-shell-recipes-and-tar-gz-artifacts-do-not-exist.md)), and the assembly refuses to seal a root whose binaries need a library it does not contain.
+Those five supply the nine programs `include/controlplane_programs.h` declares — and that list is what `mkbootroot` stages from, so a program added there is staged with no second edit, and one missing from this image fails the assembly naming the install that fixes it. The image's full recipe is `recipes/image/cix-hosttools@<version>.json` in cix-recipes; it declares more than these five, because `coreutils`, `bash` and `perl` are build tools other work needs from the same image.
+
+`cix-hosttools` is `HOST_TOOLS_IMAGE` in `daemon/src/main.c`; `spawn_cix_bootroot_assembly()` passes its rootfs to `mkbootroot` as the host-tools directory. `mkbootroot` also runs that image's `mksquashfs` to seal the root, with the image's own libraries on its search path ([ADR-0154](../adr/0154-host-tools-mksquashfs-ld-library-path.md)).
+
+**It used to be optional, and what that cost is the reason it is not.** Without it, `mkbootroot` copied each program and a hand-listed set of libraries from the host running the assembly — which on a Cix host is the running control-plane root, so every assembly carried the previous one's copy forward and whatever a dev machine first put there stayed. Measured on 2026-10-09 and 2026-10-10: the root's `e2fsck`/`mkfs.ext4`/`resize2fs`/`sfdisk` were Debian's, and six libraries existed twice with the foreign copy first in glibc's search order, so `cixd` linked a foreign OpenSSL and a foreign libcurl (cix#589, cix#350).
+
+The root carries no `tar`, `gzip`, `xz` or `bzip2` ([ADR-0329](../adr/0329-shell-recipes-and-tar-gz-artifacts-do-not-exist.md)), and the assembly refuses to seal a root whose binaries need a library it does not contain.
 
 #### `cix-firmware` (optional, ADR-0263)
 

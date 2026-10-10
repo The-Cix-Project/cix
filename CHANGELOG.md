@@ -6,6 +6,47 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The root's programs and libraries are derived from one list, with no build-host fallback (#350, ADR-0337)
+
+Five mechanisms inside `mkbootroot.c` decided what the control-plane root contains: two
+hand-maintained program tables, two one-off blocks for a program each, and one list of library
+sonames. #350 opens on that — *"Nobody can answer 'what is in my root?' without reading that C
+file."*
+
+The list it becomes already existed. `include/controlplane_programs.h` (#554) names every program
+code on this root executes, and two gates already read it — `mkbootroot` refusing to seal a root
+missing one, `test_controlplane_programs` failing a release that executes an unlisted one. It now
+**supplies** the root as well, so a program declared and not staged is no longer expressible, and
+each entry carries the package that provides it so an absence names the install that fixes it.
+
+**The build-host fallback is gone**, which is the substance rather than the tidying: on an installed
+host the build host *is* the root, so each assembly copied the previous one's copy forward (#589).
+ADR-0078 called that fallback safe; ADR-0307 clause 6 had already overruled it for `cbs` alone.
+
+`shelled_bin_libs[]` goes with them, and the measurement is why. All nine of its sonames are in
+`cix-hosttools` already, five only at `usr/lib` — while the list wrote build-host copies into
+`lib/x86_64-linux-gnu`, which glibc searches **first**. `probe-rootlibs@5-1` unsquashed the real
+root out of `cix-installer-0.2.57-481` and hashed every `lib*.so*`: **six libraries present twice,
+different bytes, the foreign one in front** — `libcrypto` 5,499,360 vs 4,833,688, `libssl` 688,160
+vs 729,056, `liblzma` 3,233,805 vs 327,440, `libgcc_s` 885,664 vs 190,992, plus `libz`, `libzstd`
+and `libtinfo`. The same probe extracted openssl's own published artifact beside the root: its
+`usr/lib/libssl.so.3` is byte-identical to the root's `usr/lib` copy and different from the other,
+so `cixd` was linking a foreign OpenSSL while ours sat one directory later — the `libcurl` finding
+of the day before, same cause.
+
+What replaces the list is the seal, which already read the root rather than a list:
+`verify_root_closure()` walks every object's `DT_NEEDED`. The one thing no such walk can see is a
+`dlopen()`, so `require_dlopened_libs()` carries that single case — `libgcc_s.so.1`, which
+`libpthread` loads by name for `pthread_exit()`.
+
+**A `DT_NEEDED`-walking staging loop was the plan, and measuring first is what rejected it**: the
+platform block already copies every shared object the image carries, so such a loop would have had
+nothing to source and would never have fired. The correct change was a deletion plus the gate that
+already existed.
+
+First stage of #350, not its closure — ADR-0291 (Proposed) is the root-becomes-an-image design the
+issue asks for, and this is the retirement its own phase (5) names.
+
 ### The control-plane root is built from packages, not from the previous root (#589, 0.2.57-481)
 
 `mkbootroot` staged its binaries and libraries from `/usr/sbin` and `/lib/x86_64-linux-gnu` of

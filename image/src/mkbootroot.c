@@ -675,6 +675,19 @@ static int require_dlopened_libs(const char *image_root)
 		const char *pkg;
 		const char *why;
 	} libs[] = {
+		/*
+		 * squashfs-tools is the provider, and that is deliberate on
+		 * its side rather than an accident worth correcting: its
+		 * recipe stages this library into its own package with
+		 * `stage library "libgcc_s.so.1"` and gates it with a
+		 * `require file`, because a composed build environment does
+		 * not carry a declared tool's runtime dependencies (cix#510)
+		 * and mksquashfs is gcc-built and threads. gcc's own package
+		 * ships the same path, so the two never share an image -- if
+		 * they ever do, "one package owns a path" refuses the second
+		 * and names both, which is that gate working rather than a
+		 * problem here.
+		 */
 		{ "libgcc_s.so.1", "squashfs-tools",
 		  "libpthread's own pthread_exit() and pthread_cancel() dlopen() it for stack "
 		  "unwinding, so a program using threads starts, runs, and aborts at its own "
@@ -829,8 +842,9 @@ static int stage_controlplane_programs(const char *image_root, const char *host_
 			        "%s is absent, so the assembled root would have no %s -- code running on "
 			        "the control plane executes it by that absolute path "
 			        "(include/controlplane_programs.h). Fix it with: pkg install "
-			        "--image=cix-hosttools %s\n",
-			        src, programs[i].path, programs[i].pkg);
+			        "--image=cix-hosttools %s -- or, when this is a build container rather "
+			        "than a host-tools image, by declaring tool \"%s\" in the recipe\n",
+			        src, programs[i].path, programs[i].pkg, programs[i].pkg);
 			return 1;
 		}
 		/* Derived from the declared path, so a list that grows a new

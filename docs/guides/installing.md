@@ -50,11 +50,11 @@ sudo build/mkinstalleriso build/iso_stage build/cix-install build/cix-recover \
      /path/to/kmod-usr-bin
 ```
 
-`mkbootroot` takes nine arguments. The last four may each be `""`:
+`mkbootroot` takes nine arguments. Three of the last four may be `""`; the fourth may not:
 
 - **firmware root**: the GPU firmware above; `""` skips it.
 - **modules dir** and **kmod bin dir**: see **Kernel modules** below; `""` skips them.
-- **host-tools rootfs**: the rootfs of the `cix-hosttools` image (ADR-0078). When given, the tools `mkbootroot` copies into the root come from it rather than from the build machine; `""` uses the build machine's.
+- **host-tools rootfs**: the rootfs of the `cix-hosttools` image (ADR-0078). **Required** — every program and every library in the root comes from it, and `""` is refused, because a root with no `cbs` cannot install a package and a root with no `mksquashfs` cannot assemble its own successor. It was a tolerant default until cix#350 ([ADR-0337](../adr/0337-the-root-is-derived-from-one-list-with-no-build-host-fallback.md)), and what the fallback actually did was copy the assembling host's own files — which on a Cix host is the running control-plane root, so each assembly carried the previous one's forward indefinitely.
 
 `mkinstalleriso` takes fifteen. The last four are worth a word. **isotools-root** is the harvested `isotools` hostbuild artifact (ADR-0064) holding `grub-mkrescue`, `xorriso`, `sbsign`, `mokutil`, shim and their libraries. It is an argument so this tool can run on a Cix host, which has none of those at Debian's paths.
 

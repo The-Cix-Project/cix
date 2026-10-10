@@ -2445,6 +2445,39 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 271 (done): the root's programs and libraries are derived from one list, with no build-host fallback (#350 stage 1, ADR-0337)
+
+Part 270 fixed *where* the root's files came from. This removes the thing that kept getting it wrong: the five hand-maintained mechanisms inside `mkbootroot.c` that decided what the root contains — two program tables, two one-off blocks for a program each, and one list of library sonames. #350 opens on exactly that: *"Nobody can answer 'what is in my root?' without reading that C file."*
+
+**The list already existed, with two gates on it.** `include/controlplane_programs.h` (#554) names every program code on this root executes, by the absolute path it is executed at; `verify_controlplane_programs()` refuses to seal a root missing one, and `test_controlplane_programs` (SELFTESTS) fails a release that executes one it does not name. It now **supplies** the root too (`stage_controlplane_programs()`), so the three copies of that fact become one, and a program declared and not staged — which is a feature that can only fail at `execve()` on a booted host, as `mkfs.btrfs` did — is not expressible. Each entry carries the package that provides it, measured from the daemon's own per-package file lists for the 21 packages installed in `cix-hosttools`, so an absence names the install that fixes it.
+
+**What was measured, and it changed the plan.** The intended change was a `DT_NEEDED`-walking staging loop: read the staged binaries, source each soname from the image. Measuring first killed it. The platform block already copies *every* shared object `cix-hosttools` carries, and all nine of `shelled_bin_libs[]`'s sonames are in that image — `libssl`/`libcrypto` from openssl, `libz` from zlib, `libzstd` from zstd, `liblzma` from xz, `libm`/`libpthread`/`libresolv` from glibc, and `libgcc_s` from squashfs-tools. So such a loop would have had nothing to source and would never have fired: a mechanism that is not there, with a comment claiming it is. **The correct change was a deletion plus the gate that already existed.**
+
+**And the hand list was not merely redundant, it was winning.** `include/libdirs.h` records that glibc's compiled-in search path is slibdir then libdir — `lib/x86_64-linux-gnu` then `usr/lib`. The list wrote build-host copies into the first; five of the nine packages install into the second. `probe-rootlibs@5-1` unsquashed the real root out of `cix-installer-0.2.57-481` and hashed every `lib*.so*` in it:
+
+| soname | `lib/x86_64-linux-gnu/` (searched first) | `usr/lib/` (the package) |
+|---|---|---|
+| `libcrypto.so.3` | 5,499,360 B | 4,833,688 B |
+| `libssl.so.3` | 688,160 B | 729,056 B |
+| `liblzma.so.5` | 3,233,805 B | 327,440 B |
+| `libgcc_s.so.1` | 885,664 B | 190,992 B |
+| `libz.so.1`, `libzstd.so.1`, `libtinfo.so.6` | Debian's | Cix's |
+
+**Six libraries, twice each, different bytes.** The attribution is measured rather than argued: the same probe extracted openssl's own published artifact beside the root, and its `usr/lib/libssl.so.3` hashes `6fcdb10f…` — byte-identical to the root's `usr/lib` copy, and different from the `lib/x86_64-linux-gnu` one. `cixd` needs `libssl` and `libcrypto`, so the control plane was linking a foreign OpenSSL while ours sat one directory later: the `libcurl` finding of part 270, from the same cause, five more times.
+
+**What replaces the list is the seal.** `verify_root_closure()` already walked every ELF object's own `DT_NEEDED` and refused a soname nothing in the root provides (ADR-0329 item 9) — it is now the supply side's gate as well, so a hit means the image is missing a package rather than a table missing a line, and the message says so. The one thing no such walk can see is a `dlopen()`: `require_dlopened_libs()` carries that single case, `libgcc_s.so.1`, which `libpthread`'s `pthread_exit()` loads by name for stack unwinding — the failure being a program that starts, runs, and aborts at its normal exit. Checked with `stat()` rather than `lstat()`, so a symlink whose target did not come along fails like the absence it is.
+
+**`libtinfo.so.6`'s hand stage went with them**, and its comment is why it is worth naming: it said the running root is where the image baseline copied a container's C runtime from. ADR-0210 removed the installer's copy of those three files and ADR-0333 removed the baseline itself, so the comment described a mechanism that had not existed for two releases. `ncurses` is in `cix-hosttools`, so the root still carries `libtinfo` — as the package's own symlink onto `libncursesw.so.6`.
+
+**Verified**, in this order, because each step only becomes meaningful once the one before it passes:
+
+1. **It compiles and the suite is green.** `probe-cix-compile@0.2.57-516` builds commit `260aa4f6` on a Cix host and runs SELFTESTS — including `test_controlplane_programs`, which is the gate on the list this change now stages from. (`@0.2.57-515` is the same recipe with a deliberately wrong `sha256`, which is how the real one was learned: `pkg ls` reports the mismatch with the computed hash in it.)
+2. **It assembles**, and the root shrinks again — the six duplicate libraries leave it.
+3. **It boots**, and the box comes back healthy with its containers.
+4. **TLS works, both ways.** Explicitly re-checked rather than inferred from a healthy boot: `pkg recipe commit` (an HTTPS write to `git.home.arpa` through the libcurl `cixd` links) and an HTTPS `pkg_source` fetch. Part 270 shipped a libcurl change past a CA-bundle gap and broke every HTTPS fetch on a box that had booted fine and reported healthy, which is the whole reason this step is written down as its own.
+
+**#350 is not closed.** Its proposal is that the root become an image, which is [ADR-0291](../adr/0291-the-control-plane-root-is-an-image.md) — Proposed, days of work, and awaiting the owner's review. What this delivers is the part that needed no decision, and that ADR's own phase (5) names: *"retire `shelled_bins[]` entries as recipes land for each tool"*. All nine have landed, so they retired together, and every entry gone here is one fewer entry in that eventual manifest.
+
 ## Part 270 (done): the control-plane root is built from packages, not from the previous root (#589, 0.2.57-481, curl 8.21.0-7, cix-hosttools 2.4.3)
 
 `mkbootroot` staged its binaries and libraries from `/usr/sbin` and `/lib/x86_64-linux-gnu` **of whatever host ran it** — and on an installed host that host *is* the control-plane root. So every assembly copied the previous root's copy forward, and whatever the first-ever run on a Debian dev host put there stayed, indefinitely. This replaces that with the packages.
