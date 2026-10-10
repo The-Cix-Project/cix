@@ -273,6 +273,27 @@ static void check_declared_exposure(void)
 		snprintf(want_web, sizeof(want_web), "CIX_API.%s", op_id);
 		has_cli = mentions(cli, want_cli);
 		has_web = mentions(web, want_web);
+		/*
+		 * ADR-0338 (#594): a renderer-driven surface names its
+		 * operation by the generated SHAPE rather than by the path
+		 * helper -- `openForm(CIX_API.createNetwork_SHAPE)`.
+		 *
+		 * mentions() is a WHOLE-identifier test, deliberately, so
+		 * `CIX_API.createNetwork` does not match inside
+		 * `CIX_API.createNetwork_SHAPE`: the trailing `_` continues
+		 * the identifier. That protection is what stopped six
+		 * phantoms on this check's first run and must not be
+		 * loosened -- so the suffixed forms are named explicitly
+		 * instead. Without this, converting a hand-written form to a
+		 * generated one makes this gate report that the dashboard no
+		 * longer offers a capability it offers perfectly well.
+		 */
+		if (!has_web) {
+			char want_shape[176];
+
+			snprintf(want_shape, sizeof(want_shape), "CIX_API.%s_SHAPE", op_id);
+			has_web = mentions(web, want_shape);
+		}
 
 		if (decl_cli && !has_cli) {
 			fprintf(stderr,

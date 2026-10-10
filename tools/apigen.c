@@ -47,6 +47,24 @@
 #define APIGEN_MAX_COMP_SCHEMAS 512
 #define APIGEN_MAX_REQUIRED 24
 #define APIGEN_MAX_ARRAY_PROPS 8
+/*
+ * ADR-0338 (#594): a schema's fields, in schema order, so the
+ * dashboard renders a form, a table and a detail view from the
+ * contract instead of re-typing them.
+ *
+ * Measured before choosing the sizes: the largest schema in the spec
+ * declares well under 48 properties, the longest `pattern` is under
+ * 80 characters, and the longest inline `enum` under 200. Each limit
+ * is a hard error naming the schema rather than a silent truncation,
+ * for the same reason the props buffer already is: a field this tool
+ * drops is a field the UI will not render, which is invisible.
+ */
+#define APIGEN_MAX_FIELDS 48
+#define APIGEN_TYPE_MAX 16
+#define APIGEN_FORMAT_MAX 24
+#define APIGEN_NUMLIT_MAX 24
+#define APIGEN_PATTERN_MAX 192
+#define APIGEN_ENUM_MAX 320
 
 struct api_op {
 	char method[12];   /* uppercased: GET, POST, ... */
@@ -116,6 +134,28 @@ struct api_op {
 	char resp_schema[APIGEN_ID_MAX];
 	char resp_required[APIGEN_MAX_REQUIRED][APIGEN_QNAME_MAX];
 	int n_resp_required;
+	/*
+	 * ADR-0338 (#594): the REQUEST body's schema, and whether this
+	 * operation destroys something.
+	 *
+	 * The response shape was read for #575 and the request body was
+	 * not read at all, which is exactly the half a form needs: 36
+	 * hand-written forms in web/index.html re-type what 30
+	 * request-shaped schemas already declare.
+	 *
+	 * `destructive` is NOT simply "the method is DELETE". Measured in
+	 * this spec: POST /v1/storage/{name}/format erases a filesystem
+	 * and POST /v1/system/factory-reset erases the host, so a
+	 * method-only rule would hand the dashboard a plain button for
+	 * both. x-cix-destructive states it where the method cannot, and
+	 * DELETE implies it so the common case needs no annotation.
+	 */
+	char req_schema[APIGEN_ID_MAX];
+	int destructive;
+	/* Whether x-cix-destructive was stated. An explicit `false` on a
+	 * DELETE must win over the method's implication, so "unset" and
+	 * "set to false" cannot be the same value. */
+	int destructive_set;
 };
 
 /*
@@ -356,10 +396,47 @@ static int perm_word_is_valid(const char *w)
  * the consuming test reports how many operations it could gate. An
  * honest number beats a tool pretending to understand OpenAPI.
  */
+/*
+ * One property of a component schema (ADR-0338, #594).
+ *
+ * The names and the required list were already read, for the
+ * self-consistency check. What was missing is everything a renderer
+ * needs in order to draw the field rather than have a person draw it:
+ * its type, its enum, and the constraints the daemon already
+ * validates. Measured on 2026-10-10, the spec carries 174 of those
+ * constraints -- 9 pattern, 48 minimum, 32 maximum, 5 maxLength, 14
+ * format, 66 default -- and the dashboard knew none of them, so every
+ * one reached the operator as a round-trip 400.
+ *
+ * `description` is deliberately NOT here yet: in this spec it is
+ * almost always a folded block (`description: >` plus continuation
+ * lines), which is the one piece of this needing new parser state, so
+ * it is its own change rather than a risk bundled into this one.
+ */
+struct schema_field {
+	char name[APIGEN_QNAME_MAX];
+	char type[APIGEN_TYPE_MAX];       /* string, integer, boolean, array, object */
+	char items[APIGEN_TYPE_MAX];      /* an array's item type, when scalar */
+	char format[APIGEN_FORMAT_MAX];
+	char pattern[APIGEN_PATTERN_MAX];
+	char enum_list[APIGEN_ENUM_MAX];  /* the inline list, verbatim */
+	char minimum[APIGEN_NUMLIT_MAX];
+	char maximum[APIGEN_NUMLIT_MAX];
+	char max_length[APIGEN_NUMLIT_MAX];
+	char default_lit[APIGEN_NUMLIT_MAX];
+	int read_only;
+};
+
 struct comp_schema {
 	char comp[APIGEN_ID_MAX];
 	char required[APIGEN_MAX_REQUIRED][APIGEN_QNAME_MAX];
 	int n_required;
+	/* ADR-0338: the fields, in schema order. `required` above stays
+	 * the authority on which are mandatory; it is resolved against
+	 * these names at emit time, because `required:` may appear either
+	 * side of `properties:` and both orders occur in this spec. */
+	struct schema_field field[APIGEN_MAX_FIELDS];
+	int n_field;
 	int line;                  /* where the schema key is, for a refusal */
 	/* Its property names as ",a,b,c," -- see api_op.resp_props. */
 	char props[2048];
@@ -525,17 +602,81 @@ static void load_component_schemas(const char *spec)
 					       g_comp_schemas[cur].comp);
 				snprintf(g_comp_schemas[cur].props + used,
 				         sizeof(g_comp_schemas[cur].props) - used, "%s,", prop);
+				/* ADR-0338: and a field record, in schema order, for
+				 * the keys read at 10 below to fill in. */
+				if (g_comp_schemas[cur].n_field >= APIGEN_MAX_FIELDS)
+					die_at(spec, lineno,
+					       "schema %s declares more than %d properties; raise "
+					       "APIGEN_MAX_FIELDS rather than let the dashboard render "
+					       "a form that silently omits one",
+					       g_comp_schemas[cur].comp, APIGEN_MAX_FIELDS);
+				snprintf(g_comp_schemas[cur].field[g_comp_schemas[cur].n_field].name,
+				         sizeof(g_comp_schemas[cur].field[0].name), "%s", prop);
+				g_comp_schemas[cur].n_field++;
 			}
 			continue;
 		}
 		if (prop[0] == '\0')
 			continue;
-		if (ind == 10 && key_at(line, 10, key, sizeof(key)) && strcmp(key, "type") == 0) {
-			char v[32];
+		/*
+		 * The current property's own keys, at 10 (ADR-0338).
+		 *
+		 * Every one is a single-line scalar in this spec, which is why
+		 * this stays a scalar reader: `description` is the folded-block
+		 * case and is deliberately not read here. An unrecognised key
+		 * is passed over rather than refused -- unlike the route table,
+		 * where a key this tool cannot read would make a route
+		 * unroutable, a field detail it cannot read simply renders as
+		 * an unconstrained input, which is what the hand-written form
+		 * did anyway.
+		 */
+		if (ind == 10 && key_at(line, 10, key, sizeof(key))) {
+			struct schema_field *fl =
+			    g_comp_schemas[cur].n_field > 0
+			        ? &g_comp_schemas[cur].field[g_comp_schemas[cur].n_field - 1]
+			        : NULL;
+			char v[APIGEN_ENUM_MAX];
 
 			snprintf(v, sizeof(v), "%s", value_of(line));
 			strip_eol(v);
-			prop_is_array = strcmp(v, "array") == 0;
+
+			if (strcmp(key, "type") == 0) {
+				prop_is_array = strcmp(v, "array") == 0;
+				if (fl != NULL)
+					snprintf(fl->type, sizeof(fl->type), "%s", v);
+				continue;
+			}
+			if (fl == NULL)
+				continue;
+			if (strcmp(key, "format") == 0)
+				snprintf(fl->format, sizeof(fl->format), "%s", v);
+			else if (strcmp(key, "pattern") == 0)
+				snprintf(fl->pattern, sizeof(fl->pattern), "%s", v);
+			else if (strcmp(key, "enum") == 0)
+				snprintf(fl->enum_list, sizeof(fl->enum_list), "%s", v);
+			else if (strcmp(key, "minimum") == 0)
+				snprintf(fl->minimum, sizeof(fl->minimum), "%s", v);
+			else if (strcmp(key, "maximum") == 0)
+				snprintf(fl->maximum, sizeof(fl->maximum), "%s", v);
+			else if (strcmp(key, "maxLength") == 0)
+				snprintf(fl->max_length, sizeof(fl->max_length), "%s", v);
+			else if (strcmp(key, "default") == 0)
+				snprintf(fl->default_lit, sizeof(fl->default_lit), "%s", v);
+			else if (strcmp(key, "readOnly") == 0)
+				fl->read_only = strcmp(v, "true") == 0;
+			continue;
+		}
+		/* An array of scalars: `items:` at 10 carries `type:` at 12.
+		 * The $ref form below is the other half and is unaffected. */
+		if (ind == 12 && prop_is_array && g_comp_schemas[cur].n_field > 0 &&
+		    key_at(line, 12, key, sizeof(key)) && strcmp(key, "type") == 0) {
+			struct schema_field *fl =
+			    &g_comp_schemas[cur].field[g_comp_schemas[cur].n_field - 1];
+			char v[APIGEN_TYPE_MAX];
+
+			snprintf(v, sizeof(v), "%s", value_of(line));
+			strip_eol(v);
+			snprintf(fl->items, sizeof(fl->items), "%s", v);
 			continue;
 		}
 		/* items: at 10, its $ref: at 12 -- the only nesting this pass
@@ -670,6 +811,10 @@ static int g_in_params;
 /* Where the response-shape reader is: inside an operation's `responses:`,
  * and inside its `"200":` (#575). */
 static int g_in_responses;
+/* ADR-0338 (#594): inside an operation's requestBody. Its schema $ref
+ * sits at indent 14 -- two shallower than a response's, because
+ * responses carry the status-code level and a request body does not. */
+static int g_in_request;
 static int g_in_200;
 /* Inside an inline 200 schema's own `properties:` (#575). */
 static int g_in_resp_props;
@@ -1041,6 +1186,76 @@ static void emit_shapes(const char *out_path, const char *spec)
  * still never committed: the cix recipe copies it out of the build
  * tree at install time, alongside web/*.
  */
+/*
+ * ADR-0338 (#594): three writers that turn a YAML scalar into valid
+ * JavaScript.
+ *
+ * They exist because the first draft of this emitter wrote YAML values
+ * straight through, and YAML's inline forms are not JS: `enum: [ok,
+ * failed]` becomes an array of undefined identifiers, which is a
+ * ReferenceError at load -- the whole dashboard, not one field. The
+ * rule is that nothing from the spec reaches api.js unquoted unless it
+ * is provably a number or a boolean.
+ */
+static void emit_js_string(FILE *o, const char *raw)
+{
+	size_t n = strlen(raw);
+	size_t i;
+
+	/* A YAML scalar may or may not carry its own quotes. */
+	if (n >= 2 && ((raw[0] == '"' && raw[n - 1] == '"') ||
+	               (raw[0] == '\'' && raw[n - 1] == '\''))) {
+		raw++;
+		n -= 2;
+	}
+	fputc('"', o);
+	for (i = 0; i < n; i++) {
+		if (raw[i] == '\\' || raw[i] == '"')
+			fputc('\\', o);
+		fputc(raw[i], o);
+	}
+	fputc('"', o);
+}
+
+/* A schema name, or `null` when the operation has none. */
+static void emit_js_name(FILE *o, const char *name)
+{
+	if (name[0] == '\0') {
+		fprintf(o, "null");
+		return;
+	}
+	emit_js_string(o, name);
+}
+
+/* A number or boolean verbatim; anything else as a string. */
+static void emit_js_literal(FILE *o, const char *raw)
+{
+	const char *p = raw;
+	int digits = 0;
+
+	if (strcmp(raw, "true") == 0 || strcmp(raw, "false") == 0 || strcmp(raw, "null") == 0) {
+		fprintf(o, "%s", raw);
+		return;
+	}
+	if (*p == '-' || *p == '+')
+		p++;
+	for (; *p != '\0'; p++) {
+		if (*p >= '0' && *p <= '9') {
+			digits++;
+			continue;
+		}
+		if (*p == '.' && digits > 0)
+			continue;
+		digits = 0;
+		break;
+	}
+	if (digits > 0) {
+		fprintf(o, "%s", raw);
+		return;
+	}
+	emit_js_string(o, raw);
+}
+
 static void emit_web(const char *out_path, const char *spec)
 {
 	FILE *o = fopen(out_path, "w");
@@ -1090,7 +1305,107 @@ static void emit_web(const char *out_path, const char *spec)
 		/* #548: the path template, so the dashboard can tell which
 		 * operation a request is (its pre-check in apiRequest()). */
 		fprintf(o, "\t%s_PATH: \"/v1%s\",\n", g_ops[i].op_id, g_ops[i].path);
+		/*
+		 * ADR-0338 (#594): everything a renderer needs to pick a
+		 * widget and submit it, in one object -- so a screen names an
+		 * operation and gets a correct form rather than hand-building
+		 * one. `destructive` is what makes the confirm fire because
+		 * the contract says so rather than because someone remembered.
+		 */
+		fprintf(o, "\t%s_SHAPE: { method: \"%s\", path: \"/v1%s\", permission: \"%s\", "
+		           "params: %d, request: ",
+		        g_ops[i].op_id, g_ops[i].method, g_ops[i].path, g_ops[i].permission, np);
+		emit_js_name(o, g_ops[i].req_schema);
+		fprintf(o, ", response: ");
+		emit_js_name(o, g_ops[i].resp_schema);
+		fprintf(o, ", destructive: %s },\n",
+		        (g_ops[i].destructive_set ? g_ops[i].destructive
+		                                  : strcmp(g_ops[i].method, "DELETE") == 0)
+		            ? "true"
+		            : "false");
 	}
+	/*
+	 * ADR-0338: the schemas' own fields, in schema order.
+	 *
+	 * This is the lever the whole change turns on: the modal form, the
+	 * list table and the key-value detail stop being three
+	 * hand-written widgets and become three renderers over one
+	 * structure. A field this emits carries the constraints the daemon
+	 * validates, so a form can refuse what the daemon would refuse
+	 * instead of discovering it in a 400.
+	 */
+	fprintf(o, "\tFIELDS: {\n");
+	for (i = 0; i < g_comp_schema_count; i++) {
+		const struct comp_schema *s = &g_comp_schemas[i];
+		int f;
+
+		if (s->n_field == 0)
+			continue;
+		fprintf(o, "\t\t%s: [\n", s->comp);
+		for (f = 0; f < s->n_field; f++) {
+			const struct schema_field *fl = &s->field[f];
+			int q, req = 0;
+
+			for (q = 0; q < s->n_required; q++)
+				if (strcmp(s->required[q], fl->name) == 0)
+					req = 1;
+			fprintf(o, "\t\t\t{ name: \"%s\", type: \"%s\", required: %s", fl->name,
+			        fl->type[0] != '\0' ? fl->type : "string", req ? "true" : "false");
+			if (fl->items[0] != '\0')
+				fprintf(o, ", items: \"%s\"", fl->items);
+			if (fl->format[0] != '\0')
+				fprintf(o, ", format: \"%s\"", fl->format);
+			if (fl->pattern[0] != '\0') {
+				fprintf(o, ", pattern: ");
+				emit_js_string(o, fl->pattern);
+			}
+			if (fl->enum_list[0] != '\0') {
+				/* An inline bare list in YAML -- `enum: [ok, failed]`
+				 * -- and emitting it verbatim would be a JS array of
+				 * UNDEFINED IDENTIFIERS, i.e. a ReferenceError that
+				 * takes the whole dashboard down at load. Every value
+				 * is re-quoted. */
+				char items[APIGEN_MAX_REQUIRED][APIGEN_QNAME_MAX];
+				char tmp[APIGEN_ENUM_MAX];
+				int n, e;
+
+				snprintf(tmp, sizeof(tmp), "%s", fl->enum_list);
+				n = parse_inline_list(tmp, items, APIGEN_MAX_REQUIRED);
+				fprintf(o, ", options: [");
+				for (e = 0; e < n; e++) {
+					if (e > 0)
+						fprintf(o, ", ");
+					emit_js_string(o, items[e]);
+				}
+				fprintf(o, "]");
+			}
+			if (fl->minimum[0] != '\0') {
+				fprintf(o, ", minimum: ");
+				emit_js_literal(o, fl->minimum);
+			}
+			if (fl->maximum[0] != '\0') {
+				fprintf(o, ", maximum: ");
+				emit_js_literal(o, fl->maximum);
+			}
+			if (fl->max_length[0] != '\0') {
+				fprintf(o, ", maxLength: ");
+				emit_js_literal(o, fl->max_length);
+			}
+			if (fl->default_lit[0] != '\0') {
+				/* `fallback`, not `default` -- the latter is a reserved
+				 * word in JS and an object literal key that reads as
+				 * one invites a future `obj.default` that parses
+				 * differently in older engines. */
+				fprintf(o, ", fallback: ");
+				emit_js_literal(o, fl->default_lit);
+			}
+			if (fl->read_only)
+				fprintf(o, ", readOnly: true");
+			fprintf(o, " },\n");
+		}
+		fprintf(o, "\t\t],\n");
+	}
+	fprintf(o, "\t},\n");
 	fprintf(o, "};\n");
 	fclose(o);
 }
@@ -1525,6 +1840,19 @@ int main(int argc, char **argv)
 			g_in_resp_props = 0;
 			if (!g_in_responses)
 				g_in_200 = 0;
+			/* ADR-0338: and the same for the request-body reader. */
+			g_in_request = strcmp(key, "requestBody") == 0;
+			if (strcmp(key, "x-cix-destructive") == 0) {
+				char v[16];
+
+				snprintf(v, sizeof(v), "%s", value_of(line));
+				strip_eol(v);
+				if (strcmp(v, "true") != 0 && strcmp(v, "false") != 0)
+					die_at(spec, lineno,
+					       "x-cix-destructive must be true or false, not \"%s\"", v);
+				g_ops[cur_op].destructive = strcmp(v, "true") == 0;
+				g_ops[cur_op].destructive_set = 1;
+			}
 			if (strcmp(key, "operationId") == 0) {
 				char v[APIGEN_ID_MAX];
 
@@ -1596,6 +1924,14 @@ int main(int argc, char **argv)
 		 * is the right answer here and a refusal is the right answer
 		 * for a route.
 		 */
+		/* ADR-0338: requestBody: content: application/json: schema:
+		 * $ref -- the $ref at 14, and nothing else from this block. */
+		if (g_in_request && cur_op >= 0 && ind == 14 &&
+		    key_at(line, 14, key, sizeof(key)) && strcmp(key, "$ref") == 0) {
+			ref_tail(value_of(line), g_ops[cur_op].req_schema,
+			         sizeof(g_ops[cur_op].req_schema));
+			continue;
+		}
 		if (g_in_responses && cur_op >= 0) {
 			if (ind == 8) {
 				g_in_200 = key_at(line, 8, key, sizeof(key)) &&

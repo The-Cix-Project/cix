@@ -507,6 +507,78 @@ int main(void)
 			fail("a two-parameter path does not become two %%s in order");
 	}
 
+	/*
+	 * ADR-0338 (#594): the dashboard's generated structure.
+	 *
+	 * Three assertions, and the third is the one that matters most.
+	 * Counting shapes catches an operation the emitter skipped;
+	 * finding one known field catches a constraint silently dropped.
+	 * But an `enum` in this spec is an inline BARE list -- `enum: [ok,
+	 * failed]` -- and writing it through verbatim produces a JS array
+	 * of undefined identifiers, which is a ReferenceError at load:
+	 * not one broken field, the whole dashboard. So every emitted
+	 * option must be quoted, and that is checked rather than trusted,
+	 * because the first draft of the emitter did exactly this.
+	 */
+	{
+		char js_path[256];
+		char buf[1024];
+		FILE *f;
+		int shapes = 0, saw_fields = 0, saw_prefix = 0, bare_option = 0, options = 0;
+
+		snprintf(js_path, sizeof(js_path), "/tmp/apigen_web_%d.js", (int)getpid());
+		snprintf(buf, sizeof(buf), "--emit-web %s", js_path);
+		status = run_apigen("docs/api/openapi.yaml", buf, out, sizeof(out));
+		if (status != 0)
+			fail("apigen --emit-web failed: %.200s", out);
+		f = fopen(js_path, "r");
+		if (f == NULL) {
+			fail("apigen --emit-web wrote nothing");
+		} else {
+			while (fgets(buf, sizeof(buf), f) != NULL) {
+				const char *op;
+
+				if (strstr(buf, "_SHAPE: {") != NULL)
+					shapes++;
+				if (strncmp(buf, "\tFIELDS: {", 10) == 0)
+					saw_fields = 1;
+				/* NetworkCreateRequest's prefix_len carries
+				 * minimum: 8 / maximum: 30 in the contract, and the
+				 * hand-written form carried neither. */
+				if (strstr(buf, "name: \"prefix_len\"") != NULL &&
+				    strstr(buf, "minimum: 8") != NULL &&
+				    strstr(buf, "maximum: 30") != NULL)
+					saw_prefix = 1;
+				op = strstr(buf, "options: [");
+				if (op != NULL) {
+					options++;
+					if (op[10] != '"' && op[10] != ']')
+						bare_option++;
+				}
+			}
+			fclose(f);
+			unlink(js_path);
+		}
+		if (shapes != 340)
+			fail("web api.js has %d _SHAPE entries, expected one per operation (340)",
+			     shapes);
+		if (!saw_fields)
+			fail("web api.js has no FIELDS table -- the renderers have nothing to render "
+			     "from, so every form would go back to being hand-written");
+		if (!saw_prefix)
+			fail("NetworkCreateRequest.prefix_len is emitted without its minimum/maximum -- "
+			     "the constraint the daemon enforces did not reach the form, which is the "
+			     "whole point of generating it");
+		if (options == 0)
+			fail("no enum reached api.js at all, though the contract declares 107 -- the "
+			     "options reader is not running");
+		if (bare_option != 0)
+			fail("%d emitted enum(s) start with an unquoted value -- a YAML inline list "
+			     "written through verbatim is a JS array of undefined identifiers, which "
+			     "is a ReferenceError at load",
+			     bare_option);
+	}
+
 	if (failures == 0)
 		printf("APIGEN RESULT: PASS\n");
 	else
