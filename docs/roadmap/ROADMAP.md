@@ -2445,6 +2445,67 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 272 (done): the dashboard's structure is generated from the contract (#592 epic, #593, #594, #602, ADR-0338)
+
+The owner's judgement was that the web UI works and is not cohesive. What the measurements said is that
+almost none of that is a styling problem. The design system is 164 tokens, the brand palette by name, both
+themes, and light mode already correct where it is easiest to get wrong. The contract is 22,036 lines, 340
+operations, 181 schemas, 109 enums, 1,982 descriptions and **174 constraints**. The join between them is
+where the incoherence lives: `apigen` handed `web/api.js` three symbols per operation, so the dashboard
+hand-wrote **36 forms** that re-type what request schemas already state, re-typed **185** contract
+descriptions into `index.html` as hint paragraphs, and delivered every one of those 174 constraints to the
+operator as a round-trip `400`.
+
+[ADR-0338](../adr/0338-the-dashboard-renders-from-the-contract.md) is the decision: **the contract
+generates structure; a human authors meaning**, with the test being whether two competent people would
+write it identically from the schema. If they would, it is generated. `apigen` now emits
+`<operationId>_SHAPE` (method, path, permission, path-parameter count, request and response schema names,
+and whether the operation is destructive) and a `FIELDS` table of every component schema's fields in
+schema order, each carrying the constraints the daemon validates -- so a form can refuse what the daemon
+would refuse rather than discovering it in a response.
+
+**Three defects in the generator surfaced while building it, and all three were the same defect**: a
+scalar reader applied to a value YAML allows to be a collection, truncating silently. An `enum` value
+containing a space (`[now, "on next start"]`) ended an item on a lone double quote, which the JS writer
+escaped into an unterminated string. Six flow collections **span physical lines**, of which two sat where
+a reader reads -- `SourceCatalogueEntry.stage` emitted 7 of 15 values, and `StorageDevice` declared 8 of
+its 17 required names, which `api_shapes.h` hands to the contract-vs-daemon gate, so nine fields of every
+storage response went unchecked. And a nullable `type: [string, "null"]`, which the contract writes 30
+times, truncated at 16 characters to `[string, "null` and was emitted raw inside quotes as
+`type: "[string, "null""` -- a string, a bare `null`, and an unterminated string.
+
+**The third one is the lesson, not the first two.** All three made `web/api.js` unparseable, which costs
+the whole dashboard rather than one field, and `test_apigen` passed through every one of them because
+every assertion in it tested PRESENCE. `test_web_syntax` -- which parses the file with a real engine --
+caught them, on the box, a release apart. So the gates added are the ones that fail in the right place: a
+closed set of legal types, an odd-unescaped-quote check that names the LINE where quickjs names only the
+file, the last entry of each line-spanning list (`"verify"`, `parent_disk`) rather than a count, and a
+refusal to read on when a line does not fit the reader's buffer -- which had been true of 16 of 827 field
+lines, so the assertions were passing on fragments.
+
+Descriptions are captured too, in both YAML forms, because a description is the one thing in a schema that
+is authored meaning rather than derived structure. Measured before the reader was written: 1,023
+single-line and 427 folded `>`; not one uses `|`; not one carries a line indented deeper than its first;
+and **128 blank lines sit inside those blocks**, which YAML folds to a paragraph break rather than a
+space, so they are kept. They are emitted last in each field object, which makes "match structure, not
+English" exact for every reader of the file.
+
+Verified: `probe-cix-compile@0.2.57-527` on commit `0279500c` -- **111 PASS, zero `FAIL:` lines**, with
+`test_web_syntax PASS` (the gate that had refused `api.js` on both 523 and 525), `test_apigen PASS`,
+`test_api_surfaces PASS`, and `test_apishape PASS` against StorageDevice's restored 17 required names.
+`web/api.js` 182,508 -> 322,986 bytes; 340 `_SHAPE` entries, 827 field entries, 583 descriptions, 54 option
+lists, 15 nullable fields -- that last figure matching the contract's own count of nullable types at
+property depth exactly.
+
+**What this does NOT deliver is the renderers.** #595 through #598 are the three renderers, the conversion
+of the 35 forms, the lock-screen session shell and the `dg-*` collapse, and none of them is started.
+[#603](https://git.home.arpa/itdlabs/cix/issues/603) is the blocker found by auditing the generated output:
+`apigen` resolves a request schema only from a `$ref`, so of 340 operations 216 correctly have no request
+body, 41 are named and usable, **82 inline request bodies are invisible**, and one
+(`attachContainerNetwork`, a `oneOf`) is genuinely polymorphic -- 41 + 82 + 1 + 216 = 340, which is what
+makes that a complete account rather than a sample. A renderer that reads the request schema has one for a
+third of the forms until that lands.
+
 ## Part 271 (done): the root's programs and libraries are derived from one list, with no build-host fallback (#350 stage 1, 0.2.57-482 and -483, ADR-0337)
 
 Part 270 fixed *where* the root's files came from. This removes the thing that kept getting it wrong: the five hand-maintained mechanisms inside `mkbootroot.c` that decided what the root contains — two program tables, two one-off blocks for a program each, and one list of library sonames. #350 opens on exactly that: *"Nobody can answer 'what is in my root?' without reading that C file."*
