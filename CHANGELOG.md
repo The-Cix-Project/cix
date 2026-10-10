@@ -6,6 +6,45 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### One value reads one way everywhere, and the renderers that read it (#595)
+
+`fieldText(f, value)` ends the measurable half of "the UI is not cohesive". Counted in `app.js` before it
+existed: a boolean read `yes`/`no` **16** times, `enabled`/`disabled` **4** and `true`/`false` once; an
+absent value read `-` **67** times, `none` **41**, `unknown` **12**, `unset` **4** and an em dash **3**.
+Two facts, eleven spellings, and nothing anywhere had decided any of it. The field decides now.
+
+One subtlety the hand-written code had right and a naive version loses: **an absent boolean whose schema
+declares a default is not unknown.** `s.enabled === false ? "no" : "yes"` is in `app.js` for a field that
+defaults to true, and it is correct — so the contract's own `default` is consulted before anything is
+called absent.
+
+`renderTableRows(bodyEl, schema, rows, columns, emptyText)` and
+`renderDetailRows(bodyEl, schema, obj, only)` join it, with `fieldBlock` and `simpleTableRows` moved into
+`web/form.js` unchanged (83 and 15 callers, none affected — both are globals). That puts the design
+system's primitives beside the compositions that use them, which is also what makes them testable:
+`test_web_form` now asserts `renderTableRows` over the real `Network` schema and `renderDetailRows`
+producing every field in schema order, alongside eight assertions on `fieldText`.
+
+**They have no callers yet, and that is said plainly rather than implied away.** `web-ux-guidelines`
+already specified these three as the API a screen must use, so building them to that spec with a gate is
+implementing a documented contract; the line that specified them is corrected to the signatures that
+exist, since the shorthand it carried could not express the one thing a renderer needs — the element to
+render into.
+
+**Measuring the tables before converting any of them is what justifies the delay.** A table is not three
+text cells: **31 places build a `button-danger` inside a row**, the first cell is usually a link rather
+than text, and of the 14 `simpleTableRows` call sites **most pass `[]`** — they are the empty state, while
+the populated rows are hand-built precisely because they carry those two things. The dominant shape is
+`[link] [derived cells…] [actions]`, so the next signature has to take both ends rather than be widened
+one caller at a time.
+
+And the rule the conversions keep demonstrating, now stated as one: **every hand-written surface carries
+something the contract does not say, and converting it is only correct if that something moves into the
+contract.** The NTP form carried a `pattern` and a hint about ADR-0110; both moved. The network detail
+page carries `has_address ? address : "(none -- pure L2)"`, which is not a spelling of absent but a fact
+about the network, and `fieldText` returning an em dash would delete it. That is why neither table nor
+detail page is converted here: each one is a contract edit, which is real work and is #596.
+
 ### A form that opens empty, found by reading, and the gate that now catches it (#595)
 
 `openModal()` begins by calling `closeModal()`, and `closeModal()` now empties the generated form so that

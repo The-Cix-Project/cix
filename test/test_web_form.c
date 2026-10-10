@@ -396,6 +396,74 @@ int main(void)
 		       "    : hint.textContent.slice(0, 24);\n"
 		       "})()",
 		       "An already-running conta");
+
+		/*
+		 * fieldText: one value, as text, decided by its field.
+		 *
+		 * The counted inconsistency this ends: before it, a boolean
+		 * read "yes"/"no" 16 times in app.js, "enabled"/"disabled" 4
+		 * and "true"/"false" once, while an absent value read "-" 67
+		 * times, "none" 41, "unknown" 12, "unset" 4 and an em dash 3.
+		 *
+		 * The last case is the one a naive version gets wrong: an
+		 * absent boolean whose schema declares a default is NOT
+		 * unknown. app.js has `s.enabled === false ? "no" : "yes"`
+		 * for exactly that, and it is correct.
+		 */
+		expect(ctx, "a true boolean reads one way everywhere",
+		       "fieldText({ type: \"boolean\" }, true)", "yes");
+		expect(ctx, "a false boolean too",
+		       "fieldText({ type: \"boolean\" }, false)", "no");
+		expect(ctx, "an absent value is one em dash, not five spellings",
+		       "fieldText({ type: \"string\" }, undefined)", "—");
+		expect(ctx, "an empty string is absent, not empty-looking",
+		       "fieldText({ type: \"string\" }, \"\")", "—");
+		expect(ctx, "an absent boolean takes the contract's own default",
+		       "fieldText({ type: \"boolean\", fallback: true }, undefined)", "yes");
+		expect(ctx, "and reports absent when the contract declares none",
+		       "fieldText({ type: \"boolean\" }, undefined)", "—");
+		expect(ctx, "an array joins", "fieldText({ type: \"array\" }, [\"a\", \"b\"])",
+		       "a, b");
+		expect(ctx, "an empty array is absent",
+		       "fieldText({ type: \"array\" }, [])", "—");
+
+		/*
+		 * renderTableRows over the real Network schema, with the four
+		 * columns the hand-written table actually shows -- the authored
+		 * part -- and every cell's text derived.
+		 */
+		expect(ctx, "a table's cells come from the schema's own types",
+		       "(() => {\n"
+		       "  const b = document.createElement(\"tbody\");\n"
+		       "  renderTableRows(b, \"Network\",\n"
+		       "    [{ name: \"mgmt\", subnet: \"10.0.0.0\", prefix_len: 24,\n"
+		       "       address: \"\", management: true, interfaces: [] }],\n"
+		       "    [\"name\", \"subnet\", \"prefix_len\", \"address\", \"management\",\n"
+		       "     \"interfaces\"], \"none\");\n"
+		       "  return b.children[0].children.map((c) => c.textContent).join(\"|\");\n"
+		       "})()",
+		       "mgmt|10.0.0.0|24|—|yes|—");
+		expect(ctx, "an empty table says so once, across the right span",
+		       "(() => {\n"
+		       "  const b = document.createElement(\"tbody\");\n"
+		       "  renderTableRows(b, \"Network\", [], [\"name\", \"subnet\"], \"No networks\");\n"
+		       "  const cell = b.children[0].children[0];\n"
+		       "  return cell.textContent + \"/\" + cell.colSpan + \"/\" + cell.className;\n"
+		       "})()",
+		       "No networks/2/empty");
+
+		/* renderDetailRows: schema order, every field, read-only
+		 * included -- a detail page is where "the daemon reports this
+		 * and you cannot set it" belongs. */
+		expect(ctx, "a detail page shows every field in schema order",
+		       "(() => {\n"
+		       "  const b = document.createElement(\"tbody\");\n"
+		       "  renderDetailRows(b, \"Network\",\n"
+		       "    { name: \"mgmt\", subnet: \"10.0.0.0\", prefix_len: 24,\n"
+		       "      has_address: false, address: \"\", management: true });\n"
+		       "  return b.children.map((r) => r.children[0].textContent).join(\",\");\n"
+		       "})()",
+		       "Name,Subnet,Prefix len,Has address,Address,Management,Interfaces");
 	}
 
 	JS_FreeContext(ctx);

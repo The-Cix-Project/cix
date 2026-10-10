@@ -3430,45 +3430,6 @@ function renderServicesTable(c) {
 	}
 }
 
-function fieldBlock(label, value) {
-	const row = document.createElement("tr");
-	const labelCell = document.createElement("th");
-	const valueCell = document.createElement("td");
-
-	labelCell.className = "field-label";
-	labelCell.scope = "row";
-	labelCell.textContent = label;
-	row.appendChild(labelCell);
-	valueCell.textContent = value;
-	row.appendChild(valueCell);
-	return row;
-}
-
-function simpleTableRows(bodyEl, columns, colCount, emptyText) {
-	bodyEl.textContent = "";
-	if (columns.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = colCount;
-		cell.className = "empty";
-		cell.textContent = emptyText;
-		row.appendChild(cell);
-		bodyEl.appendChild(row);
-		return;
-	}
-	for (const cols of columns) {
-		const row = document.createElement("tr");
-
-		for (const col of cols) {
-			const cell = document.createElement("td");
-
-			cell.textContent = col;
-			row.appendChild(cell);
-		}
-		bodyEl.appendChild(row);
-	}
-}
 
 let consoleWs = null;
 let consoleTerminal = null;

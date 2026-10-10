@@ -243,3 +243,159 @@ function openForm(opId, opts) {
 		button.title = sessionRefusal(opId);
 	form.appendChild(button);
 }
+
+/*
+ * ---------- the primitives, and the two renderers over them ----------
+ *
+ * `fieldBlock` and `simpleTableRows` moved here from app.js unchanged
+ * (83 and 15 callers, all unaffected -- both are globals). They are the
+ * design system's PRIMITIVES layer: pure DOM builders with no screen
+ * knowledge, which is both why they belong beside the renderers that
+ * compose them and why they can be tested at all.
+ */
+function fieldBlock(label, value) {
+	const row = document.createElement("tr");
+	const labelCell = document.createElement("th");
+	const valueCell = document.createElement("td");
+
+	labelCell.className = "field-label";
+	labelCell.scope = "row";
+	labelCell.textContent = label;
+	row.appendChild(labelCell);
+	valueCell.textContent = value;
+	row.appendChild(valueCell);
+	return row;
+}
+
+function simpleTableRows(bodyEl, columns, colCount, emptyText) {
+	bodyEl.textContent = "";
+	if (columns.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = colCount;
+		cell.className = "empty";
+		cell.textContent = emptyText;
+		row.appendChild(cell);
+		bodyEl.appendChild(row);
+		return;
+	}
+	for (const cols of columns) {
+		const row = document.createElement("tr");
+
+		for (const col of cols) {
+			const cell = document.createElement("td");
+
+			cell.textContent = col;
+			row.appendChild(cell);
+		}
+		bodyEl.appendChild(row);
+	}
+}
+
+/*
+ * ONE VALUE, AS TEXT, DECIDED BY ITS FIELD.
+ *
+ * This is the half of the incoherence that is measurable rather than
+ * aesthetic. Counted in app.js on 2026-10-10, before this existed:
+ *
+ *   a boolean reads "yes"/"no" 16 times, "enabled"/"disabled" 4 times
+ *   and "true"/"false" once;
+ *
+ *   an absent value reads "-" 67 times, "none" 41, "unknown" 12,
+ *   "unset" 4 and "—" 3.
+ *
+ * So the same fact reads five different ways depending on which page an
+ * operator is looking at, and nothing anywhere decided that. The field
+ * decides it now.
+ *
+ * The one subtlety is worth stating because the hand-written code had
+ * it right and a naive version would get it wrong: an ABSENT boolean is
+ * not unknown if its schema declares a default. `s.enabled === false ?
+ * "no" : "yes"` is in app.js today for a field that defaults to true,
+ * and it is correct -- so the contract's own `default` (emitted as
+ * `fallback`) is consulted before anything is called absent.
+ */
+const FIELD_ABSENT = "—";
+
+function fieldText(f, value) {
+	const type = f !== undefined ? f.type : "string";
+	let v = value;
+
+	if ((v === undefined || v === null) && f !== undefined && f.fallback !== undefined)
+		v = f.fallback;
+	if (v === undefined || v === null)
+		return FIELD_ABSENT;
+	if (type === "boolean")
+		return v ? "yes" : "no";
+	if (type === "array") {
+		if (!Array.isArray(v) || v.length === 0)
+			return FIELD_ABSENT;
+		return v.join(", ");
+	}
+	if (type === "object")
+		return FIELD_ABSENT;
+	if (v === "")
+		return FIELD_ABSENT;
+	return String(v);
+}
+
+/* The field descriptor for one name, or undefined. */
+function schemaField(schema, name) {
+	const fields = CIX_API.FIELDS[schema];
+
+	if (fields === undefined)
+		return undefined;
+	return fields.find((f) => f.name === name);
+}
+
+/*
+ * A list table's rows, from the schema and an AUTHORED column list.
+ *
+ * Which columns a table shows and in what order is judgement -- the
+ * `networks` table shows 4 of `Network`'s 7 fields, because
+ * `has_address` is a flag the Address cell renders from and `management`
+ * and `interfaces` are not what that page is for. So `columns` is the
+ * authored part, as field names or `{ field, label }` pairs, and
+ * everything else is derived: the cell's text comes from the field's own
+ * type, through fieldText(), so a boolean reads the same here as it does
+ * on a detail page.
+ *
+ * The header stays in index.html for now. Generating it is a separate
+ * change across 62 tables, and doing it in the same breath as this
+ * would make one diff that has to be right about two things.
+ */
+function renderTableRows(bodyEl, schema, rows, columns, emptyText) {
+	const cells = rows.map((row) =>
+		columns.map((col) => {
+			const name = typeof col === "string" ? col : col.field;
+
+			return fieldText(schemaField(schema, name), row[name]);
+		}));
+
+	simpleTableRows(bodyEl, cells, columns.length, emptyText);
+}
+
+/*
+ * A detail page's key/value rows, in SCHEMA order.
+ *
+ * Schema order rather than an authored list, because a detail page's job
+ * is to show everything known about one resource -- when a page wants a
+ * subset it passes one, and when it does not, adding a field to the
+ * contract makes it appear rather than being silently absent until
+ * someone notices.
+ *
+ * A read-only field is shown (unlike a form, which omits it): "the
+ * daemon reports this and you cannot set it" is exactly what a detail
+ * page is for.
+ */
+function renderDetailRows(bodyEl, schema, obj, only) {
+	const fields = CIX_API.FIELDS[schema] || [];
+
+	bodyEl.textContent = "";
+	for (const f of fields) {
+		if (Array.isArray(only) && !only.includes(f.name))
+			continue;
+		bodyEl.appendChild(fieldBlock(fieldLabel(f.name), fieldText(f, obj[f.name])));
+	}
+}
