@@ -522,13 +522,27 @@ int main(void)
 	 */
 	{
 		char js_path[256];
-		char buf[1024];
+		/*
+		 * Wide enough for the longest line this emitter produces, and
+		 * checked below rather than assumed.
+		 *
+		 * This was 1024, and once descriptions arrived (#594) 16 of
+		 * 827 field lines were longer than that -- so every assertion
+		 * here was silently reading half a line, and a pair of strstr()
+		 * calls that must both land on one line could be split across
+		 * two reads. Measured 2026-10-10: longest line 2,157
+		 * characters, longest assertion-bearing line 761.
+		 */
+		char buf[16384];
 		FILE *f;
+		int long_line = 0, odd_quotes = 0, odd_quote_line = 0, lno = 0;
 		int shapes = 0, saw_fields = 0, saw_prefix = 0, bare_option = 0, options = 0;
 		int saw_spaced = 0, saw_spanned_enum = 0, saw_spanned_required = 0;
 		int in_storage_device = 0, bad_type = 0;
 		char bad_type_text[80] = "";
 		const char *tp;
+		char *dsc;
+		int desc_lines = 0, desc_not_last = 0;
 
 		snprintf(js_path, sizeof(js_path), "/tmp/apigen_web_%d.js", (int)getpid());
 		snprintf(buf, sizeof(buf), "--emit-web %s", js_path);
@@ -541,7 +555,68 @@ int main(void)
 		} else {
 			while (fgets(buf, sizeof(buf), f) != NULL) {
 				const char *op;
+				const char *q;
+				size_t len = strlen(buf);
+				int quotes = 0;
 
+				lno++;
+
+				/*
+				 * Two checks on the line ITSELF, before anything looks
+				 * at what is in it.
+				 *
+				 * The first is honesty about this reader: a line that
+				 * did not fit arrived as a fragment, and every
+				 * assertion below would then be testing half a line --
+				 * which is a passing test that proves nothing, the
+				 * worst of the three outcomes.
+				 *
+				 * The second is the whole failure CLASS the two
+				 * specific assertions below are instances of. An odd
+				 * number of unescaped quotes on a line means a string
+				 * literal that does not close, which is how both
+				 * api.js defects presented: `expecting '}'` from
+				 * test_web_syntax on the box, with no indication of
+				 * where. This names the line, and it runs wherever
+				 * this test runs rather than only where quickjs is.
+				 */
+				if (len > 0 && buf[len - 1] != '\n' && !feof(f))
+					long_line = 1;
+				for (q = buf; *q != '\0'; q++) {
+					if (*q == '\\') {
+						if (q[1] != '\0')
+							q++;
+						continue;
+					}
+					if (*q == '"')
+						quotes++;
+				}
+				if (quotes % 2 != 0 && odd_quotes++ == 0)
+					odd_quote_line = lno;
+				/*
+				 * Where this line's prose begins, so every check below
+				 * can match STRUCTURE and not English.
+				 *
+				 * Since #594 a field carries its contract description,
+				 * which is free text about this very API -- a sentence
+				 * may well contain `options: [`, `minimum: 8` or
+				 * `required: true`. apigen emits description LAST for
+				 * exactly this reason, and the assertion after the
+				 * loop proves it still does, so "before dsc" is an
+				 * exact anchor rather than a hopeful one.
+				 */
+				dsc = strstr(buf, ", description: ");
+				if (dsc != NULL) {
+					desc_lines++;
+					if (strstr(dsc, "\" },\n") == NULL &&
+					    strstr(dsc, "\" },") == NULL)
+						desc_not_last++;
+					/* Cut the prose off. Everything below this point
+					 * then matches structure only, which is exact
+					 * rather than nearly-always-right -- and nothing
+					 * after the loop reads the description text. */
+					*dsc = '\0';
+				}
 				if (strstr(buf, "_SHAPE: {") != NULL)
 					shapes++;
 				if (strncmp(buf, "\tFIELDS: {", 10) == 0)
@@ -696,6 +771,31 @@ int main(void)
 			     "as a scalar lands here as a broken string literal, which costs the "
 			     "whole file rather than one field",
 			     bad_type, bad_type_text);
+		if (odd_quotes > 0)
+			fail("%d line(s) of api.js carry an odd number of unescaped quotes, the first "
+			     "at line %d -- a string literal that does not close, which is a "
+			     "SyntaxError for the WHOLE file and therefore a blank dashboard",
+			     odd_quotes, odd_quote_line);
+		if (long_line)
+			fail("a line of api.js is longer than this test's read buffer, so every "
+			     "assertion above was reading a fragment -- raise it rather than let "
+			     "these checks pass on half a line");
+		/*
+		 * The invariant the anchoring rests on: a field's description is
+		 * the LAST thing in its object, so cutting the line there leaves
+		 * exactly the structure. If a future key is emitted after it,
+		 * every text match above silently starts searching English.
+		 */
+		if (desc_lines == 0)
+			fail("no field in api.js carries a description -- the contract has 1,450 of "
+			     "them at property depth and they are the authored meaning a generated "
+			     "form renders as its hint (ADR-0338)");
+		if (desc_not_last > 0)
+			fail("%d field line(s) emit something AFTER the description, so it is no "
+			     "longer last in the object -- every text match in this block then "
+			     "searches free English, where `options: [` and `required: true` are "
+			     "things a sentence about this API can say",
+			     desc_not_last);
 	}
 
 	if (failures == 0)

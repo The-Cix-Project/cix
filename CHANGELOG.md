@@ -6,6 +6,37 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The description goes last, so a text-matching reader can be exact (#594, #603)
+
+A consequence of the previous entry worth separating, because it is a property rather than a fix.
+
+A field in `api.js` now carries free English about this very API, and `options: [`, `minimum: 8` and
+`required: true` are all things such a sentence can say. Six assertions in `test_apigen` match on exactly
+that kind of text. None of them is wrong today -- measured: no description in the current output contains
+`options: [` -- and all six were one authored sentence away from searching prose.
+
+So `description` is emitted **last** in a field object, and `test_apigen` asserts that it still is: 583
+description-bearing lines, every one ending `" },`. The reader then cuts each line at its description and
+matches structure only, which is exact instead of nearly-always-right. A future key emitted after the
+description fails the invariant by name rather than by producing a mysterious assertion result years
+later.
+
+Two other things that block came with. **The read buffer was 1024 bytes and the longest line is now 2,157**
+-- so 16 of 827 field lines were arriving as fragments and every assertion in the block was quietly
+testing half a line, which is the worst of the three outcomes because it passes. It is 16 KiB now, and a
+line that does not fit is a named failure rather than a silent fragment. **And an odd number of unescaped
+quotes on a line is a failure in its own right**: that is the whole class both `api.js` defects belonged
+to, it is what `expecting '}'` means, and checking it here names the line where quickjs on the box names
+only the file.
+
+Also filed from measuring the generated output rather than reading the code, #603: `apigen` resolves a
+request schema only from a `$ref`, so of 340 operations, 216 correctly report no request body, 41 are
+named and usable, **82 inline request bodies are invisible**, and one (`attachContainerNetwork`, a
+`oneOf`) is genuinely polymorphic. 41 + 82 + 1 + 216 = 340, which is what makes that a complete account.
+It blocks #595/#596 -- a renderer that reads the request schema has one for a third of the forms -- and
+the decision recorded there is the same as #602's: read the contract as written, rather than edit 82
+request bodies into named components to suit a generator.
+
 ### A nullable type, a description, and the gate that would have caught both (#594, ADR-0338)
 
 `test_web_syntax` refused `web/api.js` on two gated releases a revision apart -- `SyntaxError: expecting

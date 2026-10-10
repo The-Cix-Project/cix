@@ -1829,10 +1829,6 @@ static void emit_web(const char *out_path, const char *spec)
 			}
 			if (fl->nullable)
 				fprintf(o, ", nullable: true");
-			if (fl->desc >= 0 && g_desc_arena[fl->desc] != '\0') {
-				fprintf(o, ", description: ");
-				emit_js_string(o, g_desc_arena + fl->desc);
-			}
 			if (fl->default_lit[0] != '\0') {
 				/* `fallback`, not `default` -- the latter is a reserved
 				 * word in JS and an object literal key that reads as
@@ -1843,6 +1839,23 @@ static void emit_web(const char *out_path, const char *spec)
 			}
 			if (fl->read_only)
 				fprintf(o, ", readOnly: true");
+			/*
+			 * DESCRIPTION LAST, DELIBERATELY, and gated as an invariant
+			 * in test_apigen.
+			 *
+			 * It is the only value here that is free English, so it is
+			 * the only one that can contain the literal text of another
+			 * key -- `options: [`, `minimum: 8`, `required: true` are
+			 * all things a sentence about this API might say. Every
+			 * reader of this file that matches on a key by text (this
+			 * project's own tests, to begin with) can then anchor to
+			 * "before the description" and be exact, which is not
+			 * possible if prose can sit in the middle of the object.
+			 */
+			if (fl->desc >= 0 && g_desc_arena[fl->desc] != '\0') {
+				fprintf(o, ", description: ");
+				emit_js_string(o, g_desc_arena + fl->desc);
+			}
 			fprintf(o, " },\n");
 		}
 		fprintf(o, "\t\t],\n");
