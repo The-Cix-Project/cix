@@ -2445,6 +2445,99 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 274 (done): login stops being a modal -- the session shell (#592 epic, #597, ADR-0338)
+
+The owner's request, in their words: *"a login screen that is purely login, when logged in imagine two
+sides pulled apart, and the UI appears, so the UI should be under already. and when it locks, it's like
+they converge from the sides to the middle and lock again."*
+
+`#lock-shell` is that, and it replaces `openModal("login-form", "Log in")` at three call sites -- the
+create-a-resource widget doing the session boundary's job, which is the one swap
+`web-ux-guidelines`' session-shell row was written to end. Two panels over the dashboard, which is the
+markup below them and already rendered underneath; they part on unlock and converge on lock, with a copper
+seam on the axis they meet at, faded a beat after they start moving so the eye reads one object splitting
+rather than two arriving. `lockSession(reason)` and `unlockSession()` are the whole API, and the reason is
+one of `first`, `expired`, `manual` or `refused`.
+
+**The left panel carries only what is honestly knowable with no session**: the wordmark, the host, whether
+it answers and whether it gates. `GET /v1/health` is the one read a caller without a session may perform
+(ADR-0317), and build, slot and kernel all need a login -- so they are absent rather than guessed.
+Reachability reads the counter `refreshHealth()` already keeps rather than a second flag, because that
+counter encodes this dashboard's own policy of not calling a host unreachable on one missed check, and a
+login screen is the worst place to be more alarmist than the status bar.
+
+**The right panel carries the credentials and nothing else**, and its fields are GENERATED from
+`postLogin`'s own request schema -- so the password is obscured because the contract says
+`format: password`. That annotation was added in Part 273 with no screen needing it yet, and this is why:
+a login screen is the one form where a wrong control is a security defect rather than an inconvenience,
+and nothing in the markup or the JavaScript decides it.
+
+Three properties worth copying rather than re-deciding. **Motion is the affordance, not the message** --
+under `prefers-reduced-motion` the panels cross-fade and never translate. **The dashboard is read fresh on
+unlock** (permissions, the core panels, and the view the operator is looking at), because parting the
+panels onto the previous session's rows is the same "looks right while being wrong" surface
+[#562](https://git.home.arpa/itdlabs/cix/issues/562) was filed for; the lock also resets its form, so
+nothing typed survives a boundary, which is one line covering every field the contract has or later gains
+where the modal cleared one field by id. And **the swap is gated, not just described**: `test_web_tree`
+fails if `openModal("login-form"` appears on a non-comment line of `app.js`, or if `index.html` has no
+`#lock-shell` -- the same argument `test_naming` makes for counting a forbidden spelling rather than
+preferring the right one in prose.
+
+Every colour is an existing token. The approved mock's hex values turned out to map exactly onto
+`--carbon`, `--ferrite`, `--machined`, `--paper`, `--nickel`, `--copper` and `--phosphor`, so the shell
+introduced none. What it does author is its own responsiveness below 60rem, where 50% of the viewport is
+not enough for the form: the halves stack, the motion stays on the same axis, and the left panel becomes a
+header strip. [#600](https://git.home.arpa/itdlabs/cix/issues/600) still owns the dashboard's own rule.
+
+**Two staging paths were checked by reading before the reboot rather than discovered after it**, because a
+missing `web/form.js` makes every call into the renderer undefined -- a blank dashboard by a different
+route than a missing `app.js`. The package copies the directory (`copy tree "${src}/cix/cix/web"`) and now
+carries a `require file` gate for it alongside the four it already had; `mkbootroot` stages the root with
+a `readdir` loop over every regular file, not a list. And `static_serve()` maps any `.js` path
+generically, so a new asset needs no registration to be served.
+
+**And then it was rendered, which found six more things.** The owner relaxed the sandbox rule for browser
+verification on the same day — *"Relax the rule for browser verification, you should use the locally
+installed Chromium when needed"* — and the first screenshot of the deployed 484 showed the screen was
+wrong in six ways, with every gate green: the files parsed, the markup carried `#lock-shell`, the fields
+came from the contract, and `test_web_tree` confirmed the modal was gone. **None of those can see a
+page.**
+
+Three were one cause. The panels hard-coded `--carbon` and `--ferrite` for their surfaces while letting
+text inherit `--text`, which is `--paper` in dark and **`--carbon` in light** — so in light mode the
+wordmark, both fact values and the "Log in" heading were carbon on carbon: present in the DOM, correct in
+the markup, invisible on screen. Headless Chromium defaults to light, which is why one screenshot caught
+what an approved dark mock never could. The fix is a principle rather than a colour: **the shell carries
+the theme rather than fighting it** — surfaces `--bg`/`--panel`/`--border`, text `--text`/`--muted`. In
+dark mode those resolve to exactly the carbon and ferrite the mock specified, so the approved design is
+unchanged, and light mode works for the first time.
+
+The other three are each something the dashboard does to a form that the shell did not intend: the copper
+seam painted *under* the panels because they come later in the DOM with no stacking order declared; the
+two generated fields had no gap, because a form's `gap` spaces its children and they are grandchildren
+inside `#lock-fields`; and every child of the form was shrink-to-fit, because the global `form` rule is a
+grid with `align-items: start` and that declaration survives a rule changing only `display` — measured in
+the browser as a 360px form holding 228px fields and a 79px button, where the design has both spanning
+it. A seventh was in the JavaScript: a first load said *"The session expired"*, because a first load
+against a gating host 401s exactly like an expiry and `promptReauth()` could not tell them apart.
+
+Two instruments are worth keeping. A **self-contained preview** — the real `style.css` inlined with the
+real lock markup lifted from `index.html`, rendered in both themes by setting `data-theme` on `<html>` —
+turns a 25-minute gate-and-deploy cycle into a one-second one. And a **debug build of that preview**
+writes `getBoundingClientRect()` into a `<pre>` that `--dump-dom` prints, which is where the 360/228/79
+measurement came from rather than a guess about why something looked narrow.
+
+Verified: `probe-cix-compile@0.2.57-541` on `488c18ac` — 115 PASS, zero `FAIL:` lines, `SELFTEST: PASS`.
+Released as **0.2.57-485**, whose tag archive hashes identically to the commit archive the gate ran on.
+Hostbuild `installed`, assembly generation 1 (a fresh 13,266,944-byte image at 16:27:24Z, which the
+deploy guard checked before staging), staged slot a, booted `0.2.57-485` with health `ok` and 12 of 12
+containers. The deployed page was then screenshotted: the wordmark renders, `HOST ● reachable` and
+`ACCESS This host requires a login` carry live values, the fields and Unlock span the form, the seam is
+drawn, the notice reads "Enter the credentials for this host" rather than claiming an expiry, and the
+page logs no JavaScript error. **What is still unverified is the click-through** — driving input needs
+more than Chromium alone, so whether Unlock actually parts the panels is the one thing an operator still
+has to say.
+
 ## Part 273 (done): the dashboard's first generated form, and a renderer a gate can run (#592 epic, #595, ADR-0338)
 
 Part 272 made the contract emit the dashboard's structure. This is the first surface that reads it.
