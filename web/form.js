@@ -19,8 +19,8 @@
  * app.js owns `openForm()` and the submit listener, because those need
  * the session, the modal and the status line.
  */
-
- * ---------- the generated form (ADR-0338, #595) ----------
+/*
+ * ---------- what a request schema becomes ----------
  *
  * One modal panel, built from the operation's own request schema, for
  * every create and edit the dashboard offers.
