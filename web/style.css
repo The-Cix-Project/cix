@@ -1681,6 +1681,46 @@ button:hover {
 	border-color: var(--error);
 }
 
+/*
+ * An irreversible action that lives on a page rather than behind a
+ * destination (#592, the accepted IA board). Factory Reset was a peer
+ * TAB of Stats, so two clicks from a group header landed an operator
+ * on the one thing here that cannot be undone; it is last on
+ * Configuration now, below the tab panels, bounded and marked so it
+ * reads as a region of the page you have to come down to rather than
+ * one you can arrive at.
+ */
+.danger-zone {
+	margin-top: var(--s5);
+	padding: var(--s4);
+	border: 1px solid color-mix(in srgb, var(--error) 35%, transparent);
+	border-radius: var(--r-panel);
+	background: color-mix(in srgb, var(--error) 6%, transparent);
+	display: flex;
+	flex-direction: column;
+	gap: var(--s2);
+}
+
+.danger-zone h3 {
+	margin: 0;
+	font-size: var(--t-body);
+	color: var(--error);
+}
+
+/* Stacked, overriding the global form grid: side by side, the confirm
+ * button sits level with the field's own label and reads as a second
+ * field rather than as the thing that fires. */
+.danger-zone form {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: var(--s2);
+}
+
+.danger-zone form label {
+	width: min(100%, 24rem);
+}
+
 .button-small {
 	padding: 0.3rem 0.7rem;
 	font-size: 0.8rem;

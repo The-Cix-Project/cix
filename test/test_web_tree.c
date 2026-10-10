@@ -160,6 +160,28 @@ int main(void)
 			is_child = strncmp(ls, "\t\t\t\t{", 5) == 0;
 		}
 		/*
+		 * Is the TOP-LEVEL block this entry sits in a group?
+		 *
+		 * Computed per entry from its own enclosing block, which is
+		 * the only form that survives a group with no hash of its own
+		 * (#592): the three groups route nowhere now, so they
+		 * contribute no `hash:` for this loop to see, and the old
+		 * code -- which only recomputed `parent_is_group` when it met
+		 * a TOP-LEVEL HASH -- would have carried Storage's answer
+		 * forward and failed all sixteen of their children as "a tab,
+		 * not a live item".
+		 */
+		{
+			const char *bs = p;
+			const char *kids;
+
+			while (bs > tree && strncmp(bs, "\n\t\t{", 4) != 0)
+				bs--;
+			kids = strstr(bs, "children:");
+			parent_is_group = strstr(bs, "group: true") != NULL &&
+			                  (kids == NULL || strstr(bs, "group: true") < kids);
+		}
+		/*
 		 * A page node is itself selectable and lands on its first tab,
 		 * so a child repeating its parent's label is that same
 		 * destination listed twice -- "Networks > Networks". Caught
@@ -227,13 +249,8 @@ int main(void)
 			const char *blk;
 
 			snprintf(parent_view, sizeof(parent_view), "%s", view);
-			/* A group node says so explicitly. Its children are pages
-			 * of their own and are not expected to share its view. */
-			while (ls > app && strncmp(ls, "\n\t\t{", 4) != 0)
-				ls--;
-			blk = strstr(ls, "hash:");
-			parent_is_group = blk != NULL && strstr(ls, "group: true") != NULL &&
-			                  strstr(ls, "group: true") < blk;
+			(void)ls;
+			(void)blk;
 		}
 		if (tabbed) {
 			tabbed_checked++;
@@ -242,6 +259,59 @@ int main(void)
 				     "name -- the click would land on the page and change nothing",
 				     hash, view);
 		}
+	}
+
+	/*
+	 * A GROUP ROUTES NOWHERE (#592, the accepted IA board).
+	 *
+	 * All three used to be links as well as groups, each landing on
+	 * one of the subjects underneath it wearing the group's name:
+	 * Software went to the Pipeline, Services to Server Health, Host
+	 * to host stats. So clicking "Services" opened a page about none
+	 * of its six children, which is the tree's own stated rule --
+	 * tabs live on the page, the tree's children are the live things
+	 * -- broken by the rows that state it.
+	 *
+	 * Gated rather than described, for the reason `test_naming`
+	 * counts a forbidden spelling: the hash is one line, re-adding it
+	 * looks like a convenience, and nothing else would notice.
+	 */
+	{
+		const char *b = tree;
+		int groups = 0;
+
+		while ((b = strstr(b, "group: true")) != NULL) {
+			const char *blk = b;
+			const char *kids;
+
+			while (blk > tree && strncmp(blk, "\n\t\t{", 4) != 0)
+				blk--;
+			kids = strstr(blk, "children:");
+			groups++;
+			if (strstr(blk, "hash:") != NULL &&
+			    (kids == NULL || strstr(blk, "hash:") < kids)) {
+				char label[64] = "?";
+				const char *lb = strstr(blk, "label: \"");
+				size_t li = 0;
+
+				if (lb != NULL) {
+					lb += strlen("label: \"");
+					while (lb[li] != '"' && li + 1 < sizeof(label)) {
+						label[li] = lb[li];
+						li++;
+					}
+					label[li] = '\0';
+				}
+				fail("tree group \"%s\" carries a hash of its own -- a group names a "
+				     "group, not a destination, and every one of these used to land on "
+				     "one of its own children's pages (#592)",
+				     label);
+			}
+			b += strlen("group: true");
+		}
+		if (groups == 0)
+			fail("no tree group found at all -- this check reads `group: true` out of "
+			     "topLevel, so a rename makes it silently gate nothing%s", "");
 	}
 
 	/*

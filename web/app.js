@@ -2157,10 +2157,10 @@ const CATEGORY_VIEWS = {
 	"dns-records": "view-dns-records",
 	"dns-servers": "view-dns-records",
 	"dns-forwarders": "view-dns-records",
-	"ldap-servers": "view-ldap-servers",
-	"ldap-groups": "view-ldap-servers",
-	"ldap-users": "view-ldap-servers",
-	"ldap-config": "view-ldap-servers",
+	"ldap-servers": "view-identity",
+	"ldap-groups": "view-identity",
+	"ldap-users": "view-identity",
+	"ldap-config": "view-identity",
 	"ntp-config": "view-ntp-config",
 	"ntp-servers": "view-ntp-config",
 	"ntp-time": "view-ntp-config",
@@ -2181,16 +2181,16 @@ const CATEGORY_VIEWS = {
 	"container-recipes": "view-catalogue",
 	pipeline: "view-pipeline",
 	"pipeline-errors": "view-pipeline",
-	"site": "view-host",
+	"site": "view-configuration",
 	"daemon-config": "view-control-plane",
-	"host-swap": "view-host",
+	"host-swap": "view-configuration",
 	"rolling-restart": "view-deployment",
 	"build-overview": "view-integration",
 	"pkg-build-config": "view-integration",
-	"hostauth-sessions": "view-host",
-	"hostauth-permissions": "view-host",
-	"host-stats": "view-host",
-	processes: "view-host",
+	"hostauth-sessions": "view-identity",
+	"hostauth-permissions": "view-identity",
+	"host-stats": "view-health",
+	processes: "view-health",
 	"syslog-targets": "view-syslog-targets",
 	"tls-throttle": "view-control-plane",
 	"control-plane-reservation": "view-control-plane",
@@ -2198,8 +2198,8 @@ const CATEGORY_VIEWS = {
 	esp: "view-bootloader",
 	"signing-keys": "view-bootloader",
 	"kernel-policy": "view-kernel",
-	logs: "view-host",
-	kmsg: "view-host",
+	logs: "view-health",
+	kmsg: "view-health",
 	"server-health": "view-server-health",
 	stalls: "view-control-plane",
 	schedules: "view-control-plane",
@@ -2216,13 +2216,19 @@ const CATEGORY_VIEWS = {
 	packages: "view-integration",
 	"pkg-repo": "view-catalogue",
 	"pkg-cache": "view-integration",
-	"factory-reset": "view-host",
+	/* An ALIAS, not a tab: Factory Reset stopped being a destination
+	 * (#592, the board's call B). The route is kept so an existing
+	 * bookmark lands on the page where the action now lives -- with
+	 * no tab of that name, selectTabFor() leaves the page on its
+	 * first tab and the danger zone is below it. Same shape as
+	 * `recipes` above. */
+	"factory-reset": "view-configuration",
 	"storage-placement": "view-storage",
 	"backup": "view-storage",
 	"update": "view-deployment",
 	"reconcile": "view-deployment",
 	iso: "view-deployment",
-	"running-config": "view-host",
+	"running-config": "view-configuration",
 };
 /*
  * Is the page currently on screen the one that owns `category`?
@@ -3175,10 +3181,11 @@ function renderTree() {
 			children: [
 				{ label: "PKI", hash: "pki-ca", icon: "pki" },
 				{ label: "DNS", hash: "dns-records", icon: "dns" },
-				/* LDAP stays here until Host > Identity exists to
-				 * receive it (the board's call A). Moving it first
-				 * would strand the only route to it. */
-				{ label: "LDAP", hash: "ldap-servers", icon: "ldap" },
+				/* LDAP is gone from here: it is Host > Identity now
+				 * (the board's call A). It is still a service you
+				 * run -- and it is also the only place a user
+				 * exists, which is the fact an operator is following
+				 * when they go looking for one. */
 				{ label: "NTP", hash: "ntp-config", icon: "ntp" },
 				{ label: "DHCP", hash: "dhcp-servers", icon: "dhcp" },
 				{ label: "Syslog", hash: "syslog-targets", icon: "syslog" },
@@ -3212,6 +3219,8 @@ function renderTree() {
 			icon: "system",
 			children: [
 				{ label: "Health", hash: "host-stats", icon: "system" },
+				{ label: "Identity", hash: "hostauth-sessions", icon: "ldap" },
+				{ label: "Configuration", hash: "site", icon: "system" },
 				{ label: "Control Plane", hash: "tls-throttle", icon: "system" },
 				{ label: "Devices", hash: "devicemaps", icon: "devices" },
 				{ label: "Kernel", hash: "kernel-policy", icon: "system" },

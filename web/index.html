@@ -1073,36 +1073,21 @@
      inventory of physical hardware and the kernel routing table are
      not settings about the daemon.
 		-->
-				<section class="view" id="view-host" hidden>
+		<!--
+		     Health, Identity and Configuration: the nine-tab Host page,
+		     split into the three subjects it was holding (#592, the
+		     accepted IA board). That page spanned stats, processes,
+		     swap, sessions, permissions, logs, config and factory reset
+		     -- the settings drawer ADR-0258's own rework says it
+		     removed, reassembled under a different name.
+		-->
+		<section class="view" id="view-health" hidden>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="host-stats">Stats</button>
 				<button type="button" class="tab-button" data-tab="processes">Processes</button>
-				<button type="button" class="tab-button" data-tab="host-swap">Swap</button>
-				<button type="button" class="tab-button" data-tab="hostauth-sessions">Sessions</button>
-				<button type="button" class="tab-button" data-tab="hostauth-permissions">Permissions</button>
-				<button type="button" class="tab-button" data-tab="running-config">Running Config</button>
-				<button type="button" class="tab-button" data-tab="site">Name</button>
 				<button type="button" class="tab-button" data-tab="logs">Log Store</button>
-				<!-- Kernel Log moved here from the Kernel page (#592, the
-				     accepted IA board). The daemon's consolidated store
-				     already carries the kernel's own lines -- GET
-				     /system/logs' source enum is [kernel, cixd, audit,
-				     container], ADR-0070 -- so reading "what went wrong"
-				     meant knowing which of two pages recorded it.
-				     /system/kmsg is still its own endpoint, the LIVE ring
-				     buffer rather than the persisted store, which is why
-				     it stays its own tab rather than becoming a filter. -->
 				<button type="button" class="tab-button" data-tab="kmsg">Kernel Log</button>
-				<button type="button" class="tab-button" data-tab="factory-reset">Factory Reset</button>
 			</div>
-
-
-
-
-
-
-
-
 <div class="tab-panel" data-tab="host-stats">
 			<div class="stats-grid">
 				<div class="stats-card">
@@ -1168,7 +1153,56 @@
 			</div>
 		
 			</div>
-<div class="tab-panel" data-tab="hostauth-sessions" hidden>
+<div class="tab-panel" data-tab="logs" hidden>
+			<div class="view-list">
+				<p class="hint">A consolidated log (ADR-0070/ADR-0126): real kernel dmesg, cixd's own diagnostics, a per-request audit trail, and every container's own stdout/stderr -- all in one place, size-capped with the oldest entries dropped first once the cap is reached. Browse it live in the Log panel at the bottom of every page (source filter includes this browser's own local activity too, kept client-side only) -- this page just configures the store's size cap, not what's logged.</p>
+				<h3>Size cap</h3>
+				<form id="logs-config-form">
+					<label>
+						Max bytes
+						<input type="number" id="lcf-max-bytes" min="1048576" max="107374182400" step="1048576">
+					</label>
+					<button type="submit">Save</button>
+				</form>
+				<p class="hint">Enforced at segment granularity (8 rotating segments, oldest dropped whole when a new one is needed), not byte-exact -- a few percent of slop against this cap is expected.</p>
+			</div>
+		
+			</div>
+<div class="tab-panel" data-tab="kmsg" hidden>
+			<div class="view-list">
+				<p class="hint">The kernel's own ring buffer (<code>/dev/kmsg</code>) &mdash; dmesg over REST. This is where mount failures, driver probes and OOM kills surface, and on a real installed host with no shell it is the only way to read them. Distinct from the Log Store, which carries <code>cixd</code>'s own diagnostics and the audit trail.</p>
+				<form id="kmsg-form">
+					<label>
+						Tail (entries)
+						<input type="number" id="kmsg-tail" min="1" max="1024" value="200">
+					</label>
+					<button type="submit">Refresh</button>
+				</form>
+				<pre id="kmsg-output" class="log-output">(not loaded)</pre>
+			</div>
+		
+			</div>
+		</section>
+
+		<!--
+		     Identity: who may log in and what they may do. The board's
+		     call A, accepted -- LDAP moves here from Services, because
+		     the directory IS this host's user store, and sessions and
+		     permissions are meaningless without the accounts they are
+		     about. LDAP is still a service you run; it is also the only
+		     place a user exists, and that second fact is the one an
+		     operator is following when they come here.
+		-->
+		<section class="view" id="view-identity" hidden>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="hostauth-sessions">Sessions</button>
+				<button type="button" class="tab-button" data-tab="hostauth-permissions">Permissions</button>
+				<button type="button" class="tab-button" data-tab="ldap-users">Users</button>
+				<button type="button" class="tab-button" data-tab="ldap-groups">Groups</button>
+				<button type="button" class="tab-button" data-tab="ldap-servers">Servers</button>
+				<button type="button" class="tab-button" data-tab="ldap-config">Directory</button>
+			</div>
+<div class="tab-panel" data-tab="hostauth-sessions">
 			<div class="view-list">
 				<p class="hint">Every currently active host-auth session (ADR-0152) -- the raw token is
 					never shown here, before or after issuance; only the one-time login response ever
@@ -1222,22 +1256,103 @@
 				</table>
 			</div>
 		</div>
-<div class="tab-panel" data-tab="running-config" hidden>
-			
-			<p class="view-intro">
-				Everything this host is configured to do, in one ordered document
-				(ADR-0206). Rendered live from the daemon on every load -- it is a
-				view, never a stored file, so it cannot drift from what the box is
-				actually doing. Secrets are never shown: tokens and passwords appear
-				as a set/not-set flag, and PKI private keys never appear at all.
+			<div class="tab-panel" data-tab="ldap-users" hidden>
+			<div class="view-list">
+				<h2>LDAP Users</h2>
+				<table id="ldap-users">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>UID</th>
+							<th>Primary group</th>
+							<th>Secondary groups</th>
+							<th>Mail</th>
+							<th>Password</th>
+							<th>Disabled</th>
+							<th>SSH Key</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="ldap-users-body">
+						<tr><td colspan="9" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+			<div class="tab-panel" data-tab="ldap-groups" hidden>
+			<div class="view-list">
+				<h2>LDAP Groups</h2>
+				<table id="ldap-groups">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>GID number</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="ldap-groups-body">
+						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+			<div class="tab-panel" data-tab="ldap-servers" hidden>
+			<div class="view-list">
+				<h2>LDAP Servers</h2>
+				<table id="ldap-servers">
+					<thead>
+						<tr>
+							<th>Container</th>
+							<th>Config path</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="ldap-servers-body">
+						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+			<div class="tab-panel" data-tab="ldap-config" hidden>
+			<h2>LDAP Config</h2>
+			<p class="hint">
+				The floor <code>start_uid</code>/<code>start_gid</code> auto-allocation
+				scans upward from when a group or user is created without an explicit
+				gidnumber/uidnumber. Changing this takes effect for future
+				auto-allocations only -- it never renumbers any existing user or group.
 			</p>
-			<div class="toolbar">
-				<button type="button" id="running-config-refresh">Refresh</button>
-				<button type="button" id="running-config-copy">Copy</button>
+			<form id="ldap-config-form">
+				<label>
+					Start UID
+					<input type="number" id="lcf-start-uid" min="1" required>
+				</label>
+				<label>
+					Start GID
+					<input type="number" id="lcf-start-gid" min="1" required>
+				</label>
+				<button type="submit">Save</button>
+			</form>
+
+			<h3>Client delivery</h3>
+			<p class="hint">
+				What <code>ldap_client</code> containers are actually handed right now
+				(issue #84) -- derived from registered servers when no explicit
+				<code>client_uri</code> is set, and with drained or unhealthy servers
+				dropped either way. A URI pointing at a directory Cix does not manage
+				is never dropped, and if filtering would leave nothing the full list
+				stands: a client with a possibly-down server beats a client with none.
+			</p>
+			<table class="detail-table"><tbody id="ldap-client-delivery"></tbody></table>
+		</div>
+		</section>
+
+		<section class="view" id="view-configuration" hidden>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="site">Name</button>
+				<button type="button" class="tab-button" data-tab="running-config">Running Config</button>
+				<button type="button" class="tab-button" data-tab="host-swap">Swap</button>
 			</div>
-			<pre id="running-config-text" class="logs-pre">Loading…</pre>
-			</div>
-<div class="tab-panel" data-tab="site" hidden>
+<div class="tab-panel" data-tab="site">
 			<p class="hint">
 				A real, operator-set identity for this install, used to label it in the
 				dashboard header and backups, and to suggest a default FQDN
@@ -1260,53 +1375,20 @@
 				<button type="submit">Save</button>
 			</form>
 		</div>
-<div class="tab-panel" data-tab="logs" hidden>
-			<div class="view-list">
-				<p class="hint">A consolidated log (ADR-0070/ADR-0126): real kernel dmesg, cixd's own diagnostics, a per-request audit trail, and every container's own stdout/stderr -- all in one place, size-capped with the oldest entries dropped first once the cap is reached. Browse it live in the Log panel at the bottom of every page (source filter includes this browser's own local activity too, kept client-side only) -- this page just configures the store's size cap, not what's logged.</p>
-				<h3>Size cap</h3>
-				<form id="logs-config-form">
-					<label>
-						Max bytes
-						<input type="number" id="lcf-max-bytes" min="1048576" max="107374182400" step="1048576">
-					</label>
-					<button type="submit">Save</button>
-				</form>
-				<p class="hint">Enforced at segment granularity (8 rotating segments, oldest dropped whole when a new one is needed), not byte-exact -- a few percent of slop against this cap is expected.</p>
+<div class="tab-panel" data-tab="running-config" hidden>
+			
+			<p class="view-intro">
+				Everything this host is configured to do, in one ordered document
+				(ADR-0206). Rendered live from the daemon on every load -- it is a
+				view, never a stored file, so it cannot drift from what the box is
+				actually doing. Secrets are never shown: tokens and passwords appear
+				as a set/not-set flag, and PKI private keys never appear at all.
+			</p>
+			<div class="toolbar">
+				<button type="button" id="running-config-refresh">Refresh</button>
+				<button type="button" id="running-config-copy">Copy</button>
 			</div>
-		
-			</div>
-<div class="tab-panel" data-tab="kmsg" hidden>
-			<div class="view-list">
-				<p class="hint">The kernel's own ring buffer (<code>/dev/kmsg</code>) &mdash; dmesg over REST. This is where mount failures, driver probes and OOM kills surface, and on a real installed host with no shell it is the only way to read them. Distinct from the Log Store, which carries <code>cixd</code>'s own diagnostics and the audit trail.</p>
-				<form id="kmsg-form">
-					<label>
-						Tail (entries)
-						<input type="number" id="kmsg-tail" min="1" max="1024" value="200">
-					</label>
-					<button type="submit">Refresh</button>
-				</form>
-				<pre id="kmsg-output" class="log-output">(not loaded)</pre>
-			</div>
-		
-			</div>
-<div class="tab-panel" data-tab="factory-reset" hidden>
-				<div class="view-list">
-					<p class="hint">Returns this box to its <strong>just-installed</strong> state and reboots.
-						Destroys every container, image, network, DNS/PKI/LDAP/NTP registration, package state,
-						the log store, and <strong>every volume and all data in them</strong>. This cannot be
-						undone and there is no backup taken on your behalf.</p>
-					<p class="hint">It keeps the installed OS itself &mdash; both root slots, the kernel, the
-						ESP and the install-time config &mdash; so the box comes back exactly as the installer
-						left it rather than as nothing. Disks that carried a role are <em>forgotten</em>, not
-						reformatted: the filesystems on them are left alone.</p>
-					<form id="factory-reset-form">
-						<label>
-							Type this install's instance name to confirm
-							<input type="text" id="fr-confirm" placeholder="instance name" required>
-						</label>
-						<button type="submit" class="danger">Factory reset and reboot</button>
-					</form>
-				</div>
+			<pre id="running-config-text" class="logs-pre">Loading…</pre>
 			</div>
 <div class="tab-panel" data-tab="host-swap" hidden>
 			<h2>Host Swap</h2>
@@ -1345,6 +1427,38 @@
 			</form>
 			<table class="detail-table"><tbody id="zswap-kernel"></tbody></table>
 		</div>
+			<!--
+			     Factory Reset is an ACTION, not a destination (the
+			     board's call B, accepted). It was a peer tab of Stats,
+			     so two clicks from a group header landed an operator on
+			     the one irreversible thing this dashboard can do. Last
+			     on Configuration, outside the tab panels, so it is
+			     always below the page rather than ever being the page.
+			     Its typed-instance-name confirm is unchanged.
+			-->
+			<div class="danger-zone">
+				<h3>Factory reset</h3>
+				<p class="hint">Returns this box to its <strong>just-installed</strong> state and reboots.
+					Destroys every container, image, network, DNS/PKI/LDAP/NTP registration, package state,
+					the log store, and <strong>every volume and all data in them</strong>. This cannot be
+					undone and there is no backup taken on your behalf.</p>
+				<p class="hint">It keeps the installed OS itself &mdash; both root slots, the kernel, the
+					ESP and the install-time config &mdash; so the box comes back exactly as the installer
+					left it rather than as nothing. Disks that carried a role are <em>forgotten</em>, not
+					reformatted: the filesystems on them are left alone.</p>
+				<form id="factory-reset-form">
+					<label>
+						Type this install's instance name to confirm
+						<input type="text" id="fr-confirm" placeholder="instance name" required>
+					</label>
+					<!-- `.button-danger`, the vocabulary's own class. This
+					     carried a bare `class="danger"`, which this
+					     stylesheet does not define at all -- so the single
+					     most destructive control in the dashboard rendered
+					     as an ordinary button. -->
+					<button type="submit" class="button-danger">Factory reset and reboot</button>
+				</form>
+			</div>
 		</section>
 
 		<section class="view" id="view-control-plane" hidden>
@@ -1697,102 +1811,6 @@
 		     navigating to find out which one a thing was on. Every old
 		     address still resolves, to its tab.
 		-->
-		<section class="view" id="view-ldap-servers" hidden>
-			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="ldap-servers">Servers</button>
-				<button type="button" class="tab-button" data-tab="ldap-groups">Groups</button>
-				<button type="button" class="tab-button" data-tab="ldap-users">Users</button>
-				<button type="button" class="tab-button" data-tab="ldap-config">Config</button>
-			</div>
-			<div class="tab-panel" data-tab="ldap-servers">
-			<div class="view-list">
-				<h2>LDAP Servers</h2>
-				<table id="ldap-servers">
-					<thead>
-						<tr>
-							<th>Container</th>
-							<th>Config path</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="ldap-servers-body">
-						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</div>
-			<div class="tab-panel" data-tab="ldap-groups" hidden>
-			<div class="view-list">
-				<h2>LDAP Groups</h2>
-				<table id="ldap-groups">
-					<thead>
-						<tr>
-							<th>Name</th>
-							<th>GID number</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="ldap-groups-body">
-						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</div>
-			<div class="tab-panel" data-tab="ldap-users" hidden>
-			<div class="view-list">
-				<h2>LDAP Users</h2>
-				<table id="ldap-users">
-					<thead>
-						<tr>
-							<th>Name</th>
-							<th>UID</th>
-							<th>Primary group</th>
-							<th>Secondary groups</th>
-							<th>Mail</th>
-							<th>Password</th>
-							<th>Disabled</th>
-							<th>SSH Key</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="ldap-users-body">
-						<tr><td colspan="9" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</div>
-			<div class="tab-panel" data-tab="ldap-config" hidden>
-			<h2>LDAP Config</h2>
-			<p class="hint">
-				The floor <code>start_uid</code>/<code>start_gid</code> auto-allocation
-				scans upward from when a group or user is created without an explicit
-				gidnumber/uidnumber. Changing this takes effect for future
-				auto-allocations only -- it never renumbers any existing user or group.
-			</p>
-			<form id="ldap-config-form">
-				<label>
-					Start UID
-					<input type="number" id="lcf-start-uid" min="1" required>
-				</label>
-				<label>
-					Start GID
-					<input type="number" id="lcf-start-gid" min="1" required>
-				</label>
-				<button type="submit">Save</button>
-			</form>
-
-			<h3>Client delivery</h3>
-			<p class="hint">
-				What <code>ldap_client</code> containers are actually handed right now
-				(issue #84) -- derived from registered servers when no explicit
-				<code>client_uri</code> is set, and with drained or unhealthy servers
-				dropped either way. A URI pointing at a directory Cix does not manage
-				is never dropped, and if filtering would leave nothing the full list
-				stands: a client with a possibly-down server beats a client with none.
-			</p>
-			<table class="detail-table"><tbody id="ldap-client-delivery"></tbody></table>
-		</div>
-		</section>
 
 
 

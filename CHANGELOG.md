@@ -6,6 +6,42 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The nine-tab page is three pages, and Factory Reset is an action (#592)
+
+The second and third defects of the accepted IA board, and with them the rest of it.
+
+**`view-host` carried nine tabs** — stats, processes, swap, sessions, permissions, running config,
+name, logs and factory reset — spanning identity, auth, memory, diagnostics and configuration. That is
+the settings drawer ADR-0258's own rework says it removed, reassembled under a different name. It is
+three pages now: **Health** (stats, processes, Log Store, Kernel Log), **Identity** (sessions,
+permissions, users, groups, servers, directory) and **Configuration** (name, running config, swap).
+
+**LDAP moved from Services to Identity** — the board's call A, accepted. It is still a service you run;
+it is also the only place a user exists, and that second fact is the one an operator is following when
+they go looking for one. `view-ldap-servers` is gone, its four panels folded in, and the four routes
+repointed; every old address still resolves.
+
+**Factory Reset stopped being a tab** — the board's call B. It was a peer of Stats, so two clicks from a
+group header landed on the one irreversible thing this dashboard can do. It is a `danger-zone` block
+last on Configuration now, below the tab panels, with its typed-instance-name confirm unchanged.
+`#factory-reset` is kept as an alias so an existing bookmark lands on the page where the action lives:
+with no tab of that name, `selectTabFor()` leaves the page on its first tab. And its button carried a
+bare `class="danger"`, **which this stylesheet does not define at all** — so the single most destructive
+control in the product rendered as an ordinary button. It is `.button-danger`, the vocabulary's own
+class.
+
+**The gate had to learn the new tree before the tree could change.** `test_web_tree` walks `topLevel`
+looking for `hash:` and recomputed "is my parent a group" only when it met a *top-level hash* — so three
+groups that route nowhere are invisible to it, and it would have carried Storage's answer forward and
+failed all sixteen of their children as "a tab, not a live item". It derives that per entry from the
+enclosing block now, and gained the rule the change exists for: **a group carrying a hash of its own is
+a failure**, gated rather than described, for the reason `test_naming` counts a forbidden spelling —
+the hash is one line, re-adding it looks like a convenience, and nothing else would notice.
+
+Verified in a browser at each step: every tree route resolves to a section and names a tab there, three
+groups route nowhere, each new view's tabs and panels match exactly with no orphan of either, no
+`factory-reset` tab exists anywhere, and the page loads with no errors.
+
 ### The generated form, built to the design canvas it should have been built to (#592, #596, ADR-0338)
 
 The owner, looking at six screenshots: *"I thought we're doing a revamp."* They were right. The renderer
