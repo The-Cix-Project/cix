@@ -6490,56 +6490,40 @@ async function refreshImageDetailVersioning(name) {
  * via DELETE .../manifest/{package}; the form below upserts a new or
  * existing entry through that same POST. */
 function renderImageDetailManifest(name, data) {
-	const body = document.querySelector("#imgd-manifest tbody");
 	const manifest = Array.isArray(data.manifest) ? data.manifest : [];
 
-	body.textContent = "";
-	if (manifest.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+	/* Generated (#592). The form below is not table work and stays. */
+	renderTable(document.querySelector("#imgd-manifest"), "ImageManifestEntry",
+	    manifest, [
+		"package",
+		"mode",
+		"version",
+		{ label: "", actions: (e) => {
+			const rm = document.createElement("button");
 
-		cell.colSpan = 4;
-		cell.className = "empty";
-		cell.textContent = "No manifest entries -- this image has no declared package intent";
-		row.appendChild(cell);
-		body.appendChild(row);
-	} else {
-		for (const entry of manifest) {
-			const row = document.createElement("tr");
-
-			const pkgCell = document.createElement("td");
-			pkgCell.textContent = entry.package;
-			row.appendChild(pkgCell);
-
-			const modeCell = document.createElement("td");
-			modeCell.textContent = entry.mode;
-			row.appendChild(modeCell);
-
-			const versionCell = document.createElement("td");
-			versionCell.textContent = entry.version;
-			row.appendChild(versionCell);
-
-			const actionCell = document.createElement("td");
-			const rmButton = document.createElement("button");
-
-			rmButton.textContent = "Remove";
-			gateAction(rmButton, "unsetImageManifestEntry");
-			rmButton.className = "button-danger";
-			rmButton.addEventListener("click", async () => {
+			rm.textContent = "Remove";
+			rm.className = "button-danger";
+			gateAction(rm, "unsetImageManifestEntry");
+			rm.addEventListener("click", async () => {
 				try {
-					await apiRequest("DELETE", CIX_API.unsetImageManifestEntry(name, entry.package));
+					await apiRequest("DELETE",
+					    CIX_API.unsetImageManifestEntry(name, e.package));
 					clearStatus();
 					refreshImageDetailVersioning(name);
-				} catch (e) {
-					showStatus("Failed to remove manifest entry: " + e.message, true);
+				} catch (err) {
+					showStatus("Failed to remove manifest entry: " +
+					    err.message, true);
 				}
 			});
-			actionCell.appendChild(rmButton);
-			row.appendChild(actionCell);
-
-			body.appendChild(row);
-		}
-	}
+			return [rm];
+		} },
+	], {
+		op: "getImage",
+		key: "image-detail-manifest",
+		extra: name,
+		what: "this image's declared intent",
+		empty: "No manifest entries -- this image has no declared package intent",
+	});
 
 	const form = document.getElementById("imgd-manifest-form");
 
@@ -6654,77 +6638,65 @@ function renderImageDetailPackages(name) {
  * DELETE /v1/pkg/{name@image} already take an image, this just supplies
  * it for the recipe row being clicked instead of making the user type
  * a name/image pair into the separate Packages-section modal. */
+/*
+ * Generated (#592). The catalogue is shared across every image
+ * (ADR-0040), so the ROW is the recipe and the only per-image thing is
+ * which of the two buttons it carries -- install onto this image, or
+ * remove from it.
+ */
 function renderImageDetailRecipes(name) {
-	const body = document.querySelector("#imgd-recipes tbody");
+	const installed = new Set(cache.pkgList
+	    .filter((p) => p.image === name && p.state === "installed")
+	    .map((p) => p.name));
 
-	body.textContent = "";
-	if (cache.pkgRecipes.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+	renderTable(document.querySelector("#imgd-recipes"), "PkgRecipe",
+	    cache.pkgRecipes, [
+		"name",
+		"version",
+		"depends",
+		{ label: "", actions: (r) => {
+			const b = document.createElement("button");
 
-		cell.colSpan = 4;
-		cell.className = "empty";
-		cell.textContent = "No recipes found";
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	const installedNames = new Set(
-		cache.pkgList.filter((p) => p.image === name && p.state === "installed").map((p) => p.name)
-	);
-
-	for (const r of cache.pkgRecipes) {
-		const row = document.createElement("tr");
-
-		const nameCell = document.createElement("td");
-		nameCell.textContent = r.name;
-		row.appendChild(nameCell);
-
-		const versionCell = document.createElement("td");
-		versionCell.textContent = r.version;
-		row.appendChild(versionCell);
-
-		const dependsCell = document.createElement("td");
-		dependsCell.textContent = r.depends || "-";
-		row.appendChild(dependsCell);
-
-		const actionCell = document.createElement("td");
-		if (installedNames.has(r.name)) {
-			const rmButton = document.createElement("button");
-
-			rmButton.textContent = "Remove from image";
-			gateAction(rmButton, "deletePkg");
-			rmButton.className = "button-danger";
-			rmButton.addEventListener("click", async () => {
-				await removePkg(r.name, name);
-				await refreshPkgList();
-				renderImageDetailPackages(name);
-				renderImageDetailRecipes(name);
-			});
-			actionCell.appendChild(rmButton);
-		} else {
-			const installButton = document.createElement("button");
-
-			installButton.textContent = "Install onto this image";
-			gateAction(installButton, "pkgInstall");
-			installButton.addEventListener("click", async () => {
+			if (installed.has(r.name)) {
+				b.textContent = "Remove from image";
+				b.className = "button-danger";
+				gateAction(b, "deletePkg");
+				b.addEventListener("click", async () => {
+					await removePkg(r.name, name);
+					await refreshPkgList();
+					renderImageDetailPackages(name);
+					renderImageDetailRecipes(name);
+				});
+				return [b];
+			}
+			b.textContent = "Install onto this image";
+			gateAction(b, "pkgInstall");
+			b.addEventListener("click", async () => {
 				try {
-					await apiRequest("POST", CIX_API.pkgInstall(), { name: r.name, image: name });
+					await apiRequest("POST", CIX_API.pkgInstall(),
+					    { name: r.name, image: name });
 					clearStatus();
 					await refreshPkgList();
 					renderImageDetailPackages(name);
 					renderImageDetailRecipes(name);
 				} catch (e) {
-					showStatus("Failed to install " + r.name + " onto " + name + ": " + e.message, true);
+					showStatus("Failed to install " + r.name + " onto " +
+					    name + ": " + e.message, true);
 				}
 			});
-			actionCell.appendChild(installButton);
-		}
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
+			return [b];
+		} },
+	], {
+		op: "listPkgRecipes",
+		key: "image-detail-recipes",
+		/* The rows are the same for every image; the BUTTONS are not,
+		 * so the image has to be in the compared signature or
+		 * navigating between two images leaves the previous one's
+		 * install/remove choices in place. */
+		extra: name,
+		what: "the recipe catalogue",
+		empty: "No recipes found",
+	});
 }
 
 /* ---------- Devices ---------- */
