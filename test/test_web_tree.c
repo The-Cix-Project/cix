@@ -773,6 +773,54 @@ next:
 	}
 
 	/*
+	 * EVERY `data-modal` TARGET MUST EXIST (#596).
+	 *
+	 * The header menu bar opens a modal by attribute, not by name:
+	 * `openModal(item.dataset.modal, item.dataset.title)` (app.js).
+	 * So deleting `<div id="modal-x">` from index.html, which is what
+	 * converting a hand-written form to `openForm` does, leaves a menu
+	 * item that opens nothing -- and **neither existing gate sees it**.
+	 * The class-orphan gate judges classes, and the retired-spelling
+	 * gate judges one prefix; this is an attribute pointing at an id,
+	 * which is a third kind of reference entirely.
+	 *
+	 * Written before the first conversion rather than after the first
+	 * dead menu entry, because that is exactly the shape #598's three
+	 * surviving media-query rules had: a reference nothing was looking
+	 * at, in a file that two instruments had both called clean.
+	 */
+	{
+		const char *p = html;
+		int checked_modals = 0;
+
+		while ((p = strstr(p, "data-modal=\"")) != NULL) {
+			char target[128];
+			char needle[160];
+			size_t i = 0;
+
+			p += strlen("data-modal=\"");
+			while (p[i] != '"' && p[i] != '\0' && i + 1 < sizeof(target)) {
+				target[i] = p[i];
+				i++;
+			}
+			target[i] = '\0';
+			if (i == 0)
+				continue;
+			checked_modals++;
+			snprintf(needle, sizeof(needle), "id=\"modal-%s\"", target);
+			if (strstr(html, needle) == NULL)
+				fail("index.html has a menu item with data-modal=\"%s\" and no "
+				     "id=\"modal-%s\" to open -- a menu entry that does nothing, "
+				     "which is what converting a form to openForm leaves behind "
+				     "when the menu is not moved with it",
+				     target, target);
+		}
+		if (checked_modals == 0)
+			fail("parsed no data-modal attributes at all -- this check is not "
+			     "checking%s%s", "", "");
+	}
+
+	/*
 	 * EVERY CLASS app.js SETS MUST BE DEFINED IN style.css (#598).
 	 *
 	 * The guidelines' complaint about `dg-*` is not that it is ugly;
