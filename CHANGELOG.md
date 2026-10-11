@@ -6,6 +6,32 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The DHCP page loses its private table helper (#592)
+
+Four more tables generated — DHCP servers, ranges, reservations and leases — and with them
+`dhcpFillTable()`, this page's own copy of "blank the body, and if there are no rows write one cell
+across N columns". Four tables called it, each passing its own column count, and **none of them could
+tell a refused read from an empty one**, because it took a finished sentence rather than the
+operation. `renderTable` owns the empty state, the header and the guard; a page having its own
+version of any of the three is the parallel implementation this epic exists to remove.
+
+**A boolean now reads the same on this page as on every other.** The servers table spelled its two
+booleans by hand as `running`/`not running` and `yes`/`no — not a DNS server`, which is three
+spellings of one type across one page. They derive from the field now, and the column heading carries
+the meaning — "Running: yes" rather than a cell that re-states its own header. That is the
+standardisation, and it is only visible once the renderer is the one rendering.
+
+**Three buttons became one.** Edit, Remove and Unregister differed in their words, their operation
+and whether they confirm; the two without a confirm were building the same nine lines. One
+`dhcpActionButton(text, op, confirmText, run)` now, with `confirmText` null for an action that needs
+none.
+
+**And the lease table needed the guard key the renderer had just gained.** Two tables render leases —
+the DHCP page's own and a network's — so a guard keyed on the operation alone would have skipped the
+second whenever the two held the same rows.
+
+Ten tables are generated now, and ten `<thead>`s have left `index.html`.
+
 ### The table renderer has callers (#592 story 3)
 
 `renderTableRows` was built, gated and documented as the dashboard's list table — and called from

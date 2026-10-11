@@ -5570,182 +5570,142 @@ async function removeNetwork(name) {
  */
 let dhcpCache = { servers: [], networks: [], static: [] };
 
-function dhcpFillTable(tbody, rows, columns, emptyText) {
-	tbody.textContent = "";
-	if (rows.length === 0) {
-		const tr = document.createElement("tr");
-		const td = document.createElement("td");
-
-		td.colSpan = columns;
-		td.className = "empty";
-		td.textContent = emptyText;
-		tr.appendChild(td);
-		tbody.appendChild(tr);
-		return false;
-	}
-	return true;
+/*
+ * The four DHCP tables, generated (#592).
+ *
+ * `dhcpFillTable()` lived here: this page's own private copy of "blank
+ * the body, and if there are no rows write one cell across N columns".
+ * Four tables used it, each passing its own column count, and none of
+ * them could tell a refused read from an empty one. It is gone --
+ * `renderTable` owns the empty state, the header and the guard, and a
+ * page having its own version of any of the three is the parallel
+ * implementation this epic exists to remove.
+ */
+function renderDhcpServers(servers) {
+	renderTable(document.getElementById("dhcp-servers-table"), "DhcpServer", servers, [
+		"container",
+		{ field: "running", label: "Running", badge: (v) => (v ? "ok" : "unknown") },
+		{ field: "resolves_leases", label: "Resolves leases" },
+		{ label: "", actions: (srv) => [dhcpActionButton("Unregister",
+		    "unregisterDhcpServer", null, async () => {
+			await apiRequest("DELETE", CIX_API.unregisterDhcpServer(srv.container));
+			showStatus("Unregistered -- any range that named it has been re-split.", false);
+			refreshDhcp();
+		})] },
+	], {
+		op: "getDhcpServers",
+		what: "DHCP servers",
+		empty: "No DHCP server registered — register one from the Services menu",
+	});
 }
 
-function renderDhcpServers(servers) {
-	const body = document.querySelector("#dhcp-servers-table tbody");
+/*
+ * One button for the three this page offers, because they differed
+ * only in their words, their operation and their confirm -- and the
+ * two that had no confirm were building the identical nine lines.
+ * `confirm` is null for an action that needs none.
+ */
+function dhcpActionButton(text, opId, confirmText, run) {
+	const b = document.createElement("button");
 
-	if (!dhcpFillTable(body, servers, 4,
-	                    emptyStateText("getDhcpServers", "DHCP servers", "No DHCP server registered — register one from the Services menu")))
-		return;
-	for (const srv of servers) {
-		const row = document.createElement("tr");
-		const actions = document.createElement("td");
-		const del = document.createElement("button");
-
-		for (const text of [srv.container, srv.running ? "running" : "not running",
-		                     srv.resolves_leases ? "yes" : "no — not a DNS server"]) {
-			const td = document.createElement("td");
-
-			td.textContent = text;
-			row.appendChild(td);
+	b.type = "button";
+	b.className = "button-small";
+	b.textContent = text;
+	gateAction(b, opId);
+	b.addEventListener("click", async () => {
+		if (confirmText !== null && !confirm(confirmText))
+			return;
+		try {
+			await run();
+		} catch (e) {
+			showStatus("Failed to " + text.toLowerCase() + ": " + e.message, true);
 		}
-		del.type = "button";
-		del.className = "button-small";
-		del.textContent = "Unregister";
-		gateAction(del, "unregisterDhcpServer");
-		del.addEventListener("click", async () => {
-			try {
-				await apiRequest("DELETE", CIX_API.unregisterDhcpServer(srv.container));
-				showStatus("Unregistered — any range that named it has been re-split.", false);
-				refreshDhcp();
-			} catch (e) {
-				showStatus("Failed to unregister: " + e.message, true);
-			}
-		});
-		actions.appendChild(del);
-		row.appendChild(actions);
-		body.appendChild(row);
-	}
+	});
+	return b;
 }
 
 function renderDhcpRanges(networks) {
-	const body = document.querySelector("#dhcp-ranges-table tbody");
-	const configured = networks.filter((n) => n.enabled || n.server_count !== 0 || n.range_start !== null);
+	const configured = networks.filter((n) =>
+	    n.enabled || n.server_count !== 0 || n.range_start !== null);
 
-	if (!dhcpFillTable(body, configured, 6,
-	                    emptyStateText("getDhcp", "DHCP ranges", "No range configured — add one from the Services menu")))
-		return;
-	for (const n of configured) {
-		const row = document.createElement("tr");
-		const nameCell = document.createElement("td");
-		const actions = document.createElement("td");
-		const edit = document.createElement("button");
-
-		nameCell.appendChild(treeLink("#networks/" + encodeURIComponent(n.network), n.network, ""));
-		row.appendChild(nameCell);
-		for (const text of [n.enabled ? "enabled" : "disabled",
-		                     n.range_start === null ? "-" : n.range_start + " – " + n.range_end,
-		                     n.lease_seconds + "s",
-		                     /* The split, not the count: two servers are
-		                      * redundant only because their pools are
-		                      * disjoint, and that is the thing worth seeing. */
-		                     (n.slices || []).length === 0
-		                         ? "-"
-		                         : (n.slices || [])
-		                               .map((s) => s.server + " " + s.range_start + "–" + s.range_end)
-		                               .join(", ")]) {
-			const td = document.createElement("td");
-
-			td.textContent = text;
-			row.appendChild(td);
-		}
-		edit.type = "button";
-		edit.className = "button-small";
-		edit.textContent = "Edit";
-		gateAction(edit, "setDhcpNetwork");
-		edit.addEventListener("click", () => openDhcpRangeModal(n.network));
-		actions.appendChild(edit);
-		{
+	renderTable(document.getElementById("dhcp-ranges-table"), "DhcpNetwork", configured, [
+		{ field: "network", link: (n) => "#networks/" + encodeURIComponent(n.network) },
+		{ field: "enabled", label: "Serving", badge: (v) => (v ? "ok" : "unknown") },
+		{ label: "Range", text: (n) => (n.range_start === null
+		    ? FIELD_ABSENT : n.range_start + " – " + n.range_end) },
+		{ field: "lease_seconds", label: "Lease" },
+		/* The split, not the count: two servers are redundant only
+		 * because their pools are disjoint, and that is the thing
+		 * worth seeing. */
+		{ label: "Slices", text: (n) => ((n.slices || []).length === 0
+		    ? FIELD_ABSENT
+		    : (n.slices || []).map((s) => s.server + " " + s.range_start +
+		        "–" + s.range_end).join(", ")) },
+		{ label: "", actions: (n) => [
+			dhcpActionButton("Edit", "setDhcpNetwork", null,
+			    async () => openDhcpRangeModal(n.network)),
 			/*
 			 * Remove deletes the configuration outright, which is not
 			 * what unticking "Serve DHCP" does -- that disables it and
-			 * keeps the range. Until now the config could be created
-			 * and edited here but never taken back from either channel
-			 * (ADR-0218 layer 2 turned that from an accident into a
-			 * visible gap).
+			 * keeps the range. Until #592 the config could be created
+			 * and edited here but never taken back from either channel.
 			 */
-			const remove = document.createElement("button");
-
-			remove.type = "button";
-			remove.className = "button-small";
-			remove.textContent = "Remove";
-			gateAction(remove, "deleteDhcpNetwork");
-			remove.addEventListener("click", async () => {
-				if (!confirm('Remove the DHCP configuration for "' + n.network +
-				             '"? The range and its server assignments are deleted. To stop ' +
-				             'serving but keep them, edit the range and untick "Serve DHCP".'))
-					return;
-				try {
-					await apiRequest("DELETE", CIX_API.deleteDhcpNetwork(n.network));
-					showStatus("DHCP configuration removed for " + n.network + ".", false);
-					refreshDhcp();
-				} catch (e) {
-					showStatus("Failed to remove the configuration: " + e.message, true);
-				}
-			});
-			actions.appendChild(remove);
-		}
-		row.appendChild(actions);
-		body.appendChild(row);
-	}
+			dhcpActionButton("Remove", "deleteDhcpNetwork",
+			    'Remove the DHCP configuration for "' + n.network +
+			    '"? The range and its server assignments are deleted. To stop ' +
+			    'serving but keep them, edit the range and untick "Serve DHCP".',
+			    async () => {
+				await apiRequest("DELETE", CIX_API.deleteDhcpNetwork(n.network));
+				showStatus("DHCP configuration removed for " + n.network + ".", false);
+				refreshDhcp();
+			}),
+		] },
+	], {
+		op: "getDhcp",
+		key: "dhcp-ranges",
+		what: "DHCP ranges",
+		empty: "No range configured — add one from the Services menu",
+	});
 }
 
 function renderDhcpStatic(entries) {
-	const body = document.querySelector("#dhcp-static-table tbody");
-
-	if (!dhcpFillTable(body, entries, 4,
-	                    emptyStateText("getDhcp", "DHCP reservations", "No reservations — every client gets an address from the range")))
-		return;
-	for (const e of entries) {
-		const row = document.createElement("tr");
-		const actions = document.createElement("td");
-		const del = document.createElement("button");
-
-		for (const text of [e.mac, e.ip, e.hostname === null ? "-" : e.hostname]) {
-			const td = document.createElement("td");
-
-			td.textContent = text;
-			row.appendChild(td);
-		}
-		del.type = "button";
-		del.className = "button-small";
-		del.textContent = "Remove";
-		gateAction(del, "deleteDhcpReservation");
-		del.addEventListener("click", async () => {
-			try {
-				await apiRequest("DELETE", CIX_API.deleteDhcpReservation(e.mac));
-				showStatus("Reservation removed.", false);
-				refreshDhcp();
-			} catch (err) {
-				showStatus("Failed to remove: " + err.message, true);
-			}
-		});
-		actions.appendChild(del);
-		row.appendChild(actions);
-		body.appendChild(row);
-	}
+	renderTable(document.getElementById("dhcp-static-table"), "DhcpReservation", entries, [
+		{ field: "mac", label: "MAC" },
+		{ field: "ip", label: "Address" },
+		"hostname",
+		{ label: "", actions: (e) => [dhcpActionButton("Remove",
+		    "deleteDhcpReservation", null, async () => {
+			await apiRequest("DELETE", CIX_API.deleteDhcpReservation(e.mac));
+			showStatus("Reservation removed.", false);
+			refreshDhcp();
+		})] },
+	], {
+		op: "getDhcp",
+		key: "dhcp-static",
+		what: "DHCP reservations",
+		empty: "No reservations — every client gets an address from the range",
+	});
 }
 
-function renderLeaseRows(tbody, leases) {
-	if (!dhcpFillTable(tbody, leases, 5, emptyStateText("getDhcpLeases", "DHCP leases", "No leases — nothing has asked for an address yet")))
-		return;
-	for (const l of leases) {
-		const row = document.createElement("tr");
-
-		for (const text of [l.mac, l.ip, l.hostname === null ? "-" : l.hostname,
-		                     new Date(l.expires_at * 1000).toLocaleString(), l.server]) {
-			const td = document.createElement("td");
-
-			td.textContent = text;
-			row.appendChild(td);
-		}
-		tbody.appendChild(row);
-	}
+/*
+ * Two tables render leases -- the DHCP page's own and a network's --
+ * so the guard needs a key per table, or the second would be skipped
+ * whenever the two held the same rows.
+ */
+function renderLeaseRows(tbody, leases, key) {
+	renderTable(tbody.closest("table"), "DhcpLease", leases, [
+		{ field: "mac", label: "MAC" },
+		{ field: "ip", label: "Address" },
+		"hostname",
+		{ label: "Expires", text: (l) =>
+		    new Date(l.expires_at * 1000).toLocaleString() },
+		"server",
+	], {
+		op: "getDhcpLeases",
+		key: key,
+		what: "DHCP leases",
+		empty: "No leases — nothing has asked for an address yet",
+	});
 }
 
 async function refreshDhcp() {
@@ -5764,7 +5724,8 @@ async function refreshDhcp() {
 		renderDhcpServers(dhcpCache.servers);
 		renderDhcpRanges(dhcpCache.networks);
 		renderDhcpStatic(dhcpCache.static);
-		renderLeaseRows(document.querySelector("#dhcp-leases-table tbody"), leases.leases || []);
+		renderLeaseRows(document.querySelector("#dhcp-leases-table tbody"),
+		    leases.leases || [], "dhcp-leases");
 	} catch (e) {
 		/* Best-effort, same as every other page here. */
 	}
@@ -5788,7 +5749,8 @@ async function refreshNetworkDhcp(name) {
 		const servers = cfg === undefined ? [] : (cfg.slices || []).map((s) => s.server);
 		const mine = (leases.leases || []).filter((l) => servers.indexOf(l.server) !== -1);
 
-		renderLeaseRows(document.querySelector("#nd-dhcp-leases tbody"), mine);
+		renderLeaseRows(document.querySelector("#nd-dhcp-leases tbody"), mine,
+		    "nd-dhcp-leases");
 	} catch (e) {
 		/* Best-effort. */
 	}
