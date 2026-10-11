@@ -11204,94 +11204,78 @@ async function refreshContainerRecipesList() {
 }
 
 function renderImageRecipesTable() {
-	const body = document.getElementById("image-recipes-body");
 	const filter = document.getElementById("recipes-image-search").value.trim().toLowerCase();
 	const rows = cache.imageRecipes.filter((r) => r.name.toLowerCase().includes(filter));
 
-	/* #432: unchanged tables are left alone -- but the FILTER is an
-	 * input to this render as much as the data is, so it goes in the
-	 * signature. Guarding on the payload alone would freeze the table
-	 * while someone typed in the search box. */
-	if (unchangedAndRendered(body, "image-recipes", { filter: filter, rows: rows }))
-		return;
-	body.textContent = "";
-	if (rows.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+	/* Generated (#592). The FILTER goes in `extra` for the reason the
+	 * hand-written guard put it in its signature: it is an input to
+	 * this render as much as the data is, and guarding on the payload
+	 * alone freezes the table while someone types. */
+	renderTable(document.getElementById("image-recipes"), "ImageRecipe", rows, [
+		{ field: "name", label: "Image",
+		  link: (r) => "#images/" + encodeURIComponent(r.name) },
+		{ label: "", actions: (r) => {
+			const apply = document.createElement("button");
+			const edit = document.createElement("button");
+			const rm = document.createElement("button");
 
-		cell.colSpan = 2;
-		cell.className = "empty";
-		cell.textContent = cache.imageRecipes.length === 0 ? emptyStateText("listImageRecipes", "image recipes", "No image recipes") : "No match";
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
+			apply.textContent = "Apply";
+			gateAction(apply, "applyImageRecipe");
+			apply.addEventListener("click", async () => {
+				try {
+					const result = await apiRequest("POST",
+					    CIX_API.applyImageRecipe(r.name));
 
-	for (const r of rows) {
-		const row = document.createElement("tr");
-
-		const nameCell = document.createElement("td");
-		nameCell.appendChild(treeLink("#images/" + encodeURIComponent(r.name), r.name, ""));
-		row.appendChild(nameCell);
-
-		const actionCell = document.createElement("td");
-
-		const applyButton = document.createElement("button");
-		applyButton.textContent = "Apply";
-		gateAction(applyButton, "applyImageRecipe");
-		applyButton.addEventListener("click", async () => {
-			try {
-				const result = await apiRequest("POST", CIX_API.applyImageRecipe(r.name));
-
-				clearStatus();
-				showStatus(imageApplySummary(r.name, result), false);
-			} catch (e) {
-				showStatus("Failed to apply recipe for " + r.name + ": " + e.message, true);
-			}
-		});
-		actionCell.appendChild(applyButton);
-
-		const editButton = document.createElement("button");
-		editButton.textContent = "Edit";
-		gateAction(editButton, "addImageRecipe");
-		editButton.addEventListener("click", async () => {
-			let content = "";
-
-			try {
-				content = await loadImageRecipeContent(r.name);
-			} catch (e) {
-				/* Shouldn't happen for a name the list itself just returned. */
-			}
-			openForm("addImageRecipe", {
-				title: "Edit image recipe",
-				submit: "Save",
-				fixed: { name: r.name },
-				values: { content: content },
-				after: afterImageRecipeSave,
-				failed: "Failed to save the image recipe for " + r.name,
+					clearStatus();
+					showStatus(imageApplySummary(r.name, result), false);
+				} catch (e) {
+					showStatus("Failed to apply recipe for " + r.name +
+					    ": " + e.message, true);
+				}
 			});
-		});
-		actionCell.appendChild(editButton);
 
-		const rmButton = document.createElement("button");
-		rmButton.textContent = "Delete";
-		gateAction(rmButton, "deleteImageRecipe");
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", async () => {
-			try {
-				await apiRequest("DELETE", CIX_API.deleteImageRecipe(r.name));
-				clearStatus();
-				imageRecipeContentCache = { name: null, content: null };
-				await refreshImageRecipesList();
-			} catch (e) {
-				showStatus("Failed to remove image recipe for " + r.name + ": " + e.message, true);
-			}
-		});
-		actionCell.appendChild(rmButton);
+			edit.textContent = "Edit";
+			gateAction(edit, "addImageRecipe");
+			edit.addEventListener("click", async () => {
+				let content = "";
 
-		row.appendChild(actionCell);
-		body.appendChild(row);
-	}
+				try {
+					content = await loadImageRecipeContent(r.name);
+				} catch (e) {
+					/* Shouldn't happen for a name the list just returned. */
+				}
+				openForm("addImageRecipe", {
+					title: "Edit image recipe",
+					submit: "Save",
+					fixed: { name: r.name },
+					values: { content: content },
+					after: afterImageRecipeSave,
+					failed: "Failed to save the image recipe for " + r.name,
+				});
+			});
+
+			rm.textContent = "Delete";
+			rm.className = "button-danger";
+			gateAction(rm, "deleteImageRecipe");
+			rm.addEventListener("click", async () => {
+				try {
+					await apiRequest("DELETE", CIX_API.deleteImageRecipe(r.name));
+					clearStatus();
+					imageRecipeContentCache = { name: null, content: null };
+					await refreshImageRecipesList();
+				} catch (e) {
+					showStatus("Failed to remove image recipe for " + r.name +
+					    ": " + e.message, true);
+				}
+			});
+			return [apply, edit, rm];
+		} },
+	], {
+		op: "listImageRecipes",
+		what: "image recipes",
+		empty: cache.imageRecipes.length > 0 ? "No match" : "No image recipes",
+		extra: filter,
+	});
 }
 
 let containerRecipeContentCache = { name: null, content: null };
@@ -11306,88 +11290,67 @@ async function loadContainerRecipeContent(name) {
 }
 
 function renderContainerRecipesTable() {
-	const body = document.getElementById("container-recipes-body");
 	const filter = document.getElementById("recipes-container-search").value.trim().toLowerCase();
 	const rows = cache.containerRecipes.filter((r) => r.name.toLowerCase().includes(filter));
 
-	/* #432: unchanged tables are left alone -- but the FILTER is an
-	 * input to this render as much as the data is, so it goes in the
-	 * signature. Guarding on the payload alone would freeze the table
-	 * while someone typed in the search box. */
-	if (unchangedAndRendered(body, "container-recipes", { filter: filter, rows: rows }))
-		return;
-	body.textContent = "";
-	if (rows.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+	/* Generated (#592), with the filter in `extra` as the image
+	 * catalogue's is. */
+	renderTable(document.getElementById("container-recipes"), "Deployment", rows, [
+		"name",
+		{ label: "", actions: (r) => {
+			const apply = document.createElement("button");
+			const edit = document.createElement("button");
+			const rm = document.createElement("button");
 
-		cell.colSpan = 2;
-		cell.className = "empty";
-		cell.textContent = cache.containerRecipes.length === 0 ? emptyStateText("listDeployments", "container recipes", "No container recipes") : "No match";
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const r of rows) {
-		const row = document.createElement("tr");
-
-		const nameCell = document.createElement("td");
-		nameCell.textContent = r.name;
-		row.appendChild(nameCell);
-
-		const actionCell = document.createElement("td");
-
-		const applyButton = document.createElement("button");
-		applyButton.textContent = "Apply…";
-		gateAction(applyButton, "applyDeployment");
-		applyButton.addEventListener("click", () => {
-			openForm("applyDeployment", {
-				title: "Apply recipe: " + r.name,
-				submit: "Apply -- create container",
-				args: [r.name],
-				after: (b, result) => afterContainerRecipeApply(r.name, result),
-				failed: "Failed to apply recipe " + r.name,
+			apply.textContent = "Apply…";
+			gateAction(apply, "applyDeployment");
+			apply.addEventListener("click", () => {
+				openForm("applyDeployment", {
+					title: "Apply recipe: " + r.name,
+					submit: "Apply -- create container",
+					args: [r.name],
+					after: (b, result) => afterContainerRecipeApply(r.name, result),
+					failed: "Failed to apply recipe " + r.name,
+				});
 			});
-		});
-		actionCell.appendChild(applyButton);
 
-		const editButton = document.createElement("button");
-		editButton.textContent = "Edit";
-		gateAction(editButton, "addDeployment");
-		editButton.addEventListener("click", async () => {
-			let content = "";
+			edit.textContent = "Edit";
+			gateAction(edit, "addDeployment");
+			edit.addEventListener("click", async () => {
+				let content = "";
 
-			try {
-				content = await loadContainerRecipeContent(r.name);
-			} catch (e) {
-				/* Shouldn't happen for a name the list itself just returned. */
-			}
-			openModal("container-recipe-form", "Edit container recipe");
-			document.getElementById("crf-name").value = r.name;
-			document.getElementById("crf-content").value = content;
-		});
-		actionCell.appendChild(editButton);
+				try {
+					content = await loadContainerRecipeContent(r.name);
+				} catch (e) {
+					/* Shouldn't happen for a name the list just returned. */
+				}
+				openModal("container-recipe-form", "Edit container recipe");
+				document.getElementById("crf-name").value = r.name;
+				document.getElementById("crf-content").value = content;
+			});
 
-		const rmButton = document.createElement("button");
-		rmButton.textContent = "Delete";
-		gateAction(rmButton, "deleteDeployment");
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", async () => {
-			try {
-				await apiRequest("DELETE", CIX_API.deleteDeployment(r.name));
-				clearStatus();
-				containerRecipeContentCache = { name: null, content: null };
-				await refreshContainerRecipesList();
-			} catch (e) {
-				showStatus("Failed to remove container recipe for " + r.name + ": " + e.message, true);
-			}
-		});
-		actionCell.appendChild(rmButton);
-
-		row.appendChild(actionCell);
-		body.appendChild(row);
-	}
+			rm.textContent = "Delete";
+			rm.className = "button-danger";
+			gateAction(rm, "deleteDeployment");
+			rm.addEventListener("click", async () => {
+				try {
+					await apiRequest("DELETE", CIX_API.deleteDeployment(r.name));
+					clearStatus();
+					containerRecipeContentCache = { name: null, content: null };
+					await refreshContainerRecipesList();
+				} catch (e) {
+					showStatus("Failed to remove container recipe for " +
+					    r.name + ": " + e.message, true);
+				}
+			});
+			return [apply, edit, rm];
+		} },
+	], {
+		op: "listDeployments",
+		what: "container recipes",
+		empty: cache.containerRecipes.length > 0 ? "No match" : "No container recipes",
+		extra: filter,
+	});
 }
 
 document.getElementById("recipes-pkg-search").addEventListener("input", renderRecipesList);
