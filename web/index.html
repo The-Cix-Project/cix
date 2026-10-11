@@ -130,7 +130,7 @@
 		<div class="menu-dropdown">
 			<button type="button" class="menu-dropdown-toggle" data-menu="networks">Networks</button>
 			<ul class="menu-dropdown-menu" data-menu="networks" hidden>
-				<li><button type="button" data-modal="network-form" data-op="createNetwork" data-title="Create network">New Network</button></li>
+				<li><button type="button" data-modal="generated-form" data-op="createNetwork" data-title="Create network" data-submit="Create">New Network</button></li>
 			</ul>
 		</div>
 
@@ -3124,7 +3124,7 @@
 						<legend>Identity</legend>
 						<label>
 							Name
-							<input type="text" id="f-name" pattern="[A-Za-z0-9_-]+" required>
+							<input type="text" id="f-name" pattern="[A-Za-z0-9_\-]+" required>
 						</label>
 						<label>
 							Image
@@ -3340,28 +3340,6 @@
 				</form>
 			</div>
 
-			<div id="modal-network-form" hidden>
-				<form id="network-form">
-					<label>
-						Name
-						<input type="text" id="nf-name" pattern="[A-Za-z0-9_-]{1,15}" required>
-					</label>
-					<label>
-						Subnet
-						<input type="text" id="nf-subnet" placeholder="172.31.0.0" required>
-					</label>
-					<label>
-						Prefix length
-						<input type="number" id="nf-prefix" min="8" max="30" value="24" required>
-					</label>
-					<label>
-						Address (optional)
-						<input type="text" id="nf-address" placeholder="(none), or e.g. 172.31.0.1">
-					</label>
-					<button type="submit">Create</button>
-				</form>
-			</div>
-
 			<div id="modal-schedule-form" hidden>
 				<form id="schedule-form">
 					<label>
@@ -3497,7 +3475,7 @@
 				<form id="devicemap-form">
 					<label>
 						Name
-						<input type="text" id="dmf-name" pattern="[A-Za-z0-9_-]+" required>
+						<input type="text" id="dmf-name" pattern="[A-Za-z0-9_\-]+" required>
 					</label>
 					<label>
 						Kind
@@ -3616,7 +3594,7 @@
 				<form id="permissions-form">
 					<label>
 						Group
-						<input type="text" id="pf-group" pattern="[a-z_][a-z0-9_-]*" required>
+						<input type="text" id="pf-group" pattern="[a-z_][a-z0-9_\-]*" required>
 					</label>
 					<fieldset>
 						<legend>Permissions</legend>
@@ -3683,7 +3661,7 @@
 				<form id="pkg-recipe-form">
 					<label>
 						Name
-						<input type="text" id="rf-name" pattern="[A-Za-z0-9_-]+" required>
+						<input type="text" id="rf-name" pattern="[A-Za-z0-9_\-]+" required>
 					</label>
 					<label class="wide">
 						Recipe file (leave blank to paste/edit content below instead)
@@ -3710,7 +3688,7 @@
 				<form id="pkg-source-form">
 					<label>
 						Name
-						<input type="text" id="psf-name" pattern="[a-z0-9][a-z0-9._-]*" required>
+						<input type="text" id="psf-name" pattern="[a-z0-9][a-z0-9._\-]*" required>
 					</label>
 					<label class="wide">
 						Repository URL
@@ -3759,7 +3737,7 @@
 				<form id="pkg-repository-form">
 					<label>
 						Name
-						<input type="text" id="prepo-name" pattern="[a-z0-9][a-z0-9._-]*" required>
+						<input type="text" id="prepo-name" pattern="[a-z0-9][a-z0-9._\-]*" required>
 					</label>
 					<label class="wide">
 						URL
@@ -3802,7 +3780,7 @@
 				<form id="container-recipe-form">
 					<label>
 						Name
-						<input type="text" id="crf-name" pattern="[A-Za-z0-9_-]+" required>
+						<input type="text" id="crf-name" pattern="[A-Za-z0-9_\-]+" required>
 					</label>
 					<label class="wide">
 						Recipe file (leave blank to paste/edit content below instead)
@@ -3838,7 +3816,7 @@
 				<form id="pkg-install-form">
 					<label>
 						Name
-						<input type="text" id="pkgf-name" pattern="[A-Za-z0-9_-]+" required>
+						<input type="text" id="pkgf-name" pattern="[A-Za-z0-9_\-]+" required>
 					</label>
 					<label>
 						Image

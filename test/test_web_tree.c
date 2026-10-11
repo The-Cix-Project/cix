@@ -773,6 +773,53 @@ next:
 	}
 
 	/*
+	 * A HAND-WRITTEN `pattern` IS A PATTERN TOO (#596).
+	 *
+	 * `test_apigen` refuses a bare `-]` in an EMITTED pattern, because
+	 * a browser compiles `<input pattern>` with the regex `v` flag,
+	 * `[A-Za-z0-9_-]` is a SyntaxError there, and the HTML spec says a
+	 * pattern that will not compile is SKIPPED -- silently, so the
+	 * field validates nothing at all. That gate covers the contract
+	 * and covered nothing in `index.html`, where nine patterns were
+	 * still written the broken way long after the contract's 27 were
+	 * fixed.
+	 *
+	 * Measured in Chromium on 2026-10-11, before and after: all nine
+	 * threw under `v` and answered `checkValidity() === true` for
+	 * `has space` and `a/b`; with `\-` all nine compile, refuse the
+	 * same junk, and still accept a real name. The fields were the
+	 * container, network, device-map, LDAP group, volume, package
+	 * source, repository, container recipe and package names -- every
+	 * name an operator types by hand.
+	 *
+	 * Textual, like `test_apigen`'s, because a C gate cannot compile a
+	 * regex and does not need to: the defect is one character.
+	 */
+	{
+		const char *p = html;
+		int offenders = 0;
+
+		while ((p = strstr(p, "pattern=\"")) != NULL) {
+			const char *q;
+
+			p += strlen("pattern=\"");
+			for (q = p; *q != '"' && *q != '\0'; q++)
+				if (q[0] == '-' && q[1] == ']' && q > p && q[-1] != '\\')
+					offenders++;
+		}
+		if (offenders > 0) {
+			char n[16];
+
+			snprintf(n, sizeof(n), "%d", offenders);
+			fail("index.html has %s hand-written pattern(s) with a bare `-]` -- a "
+			     "browser compiles these with the regex `v` flag, where that is a "
+			     "SyntaxError, and SKIPS a pattern it cannot compile, so the field "
+			     "validates nothing. Write the hyphen as `\\-`%s",
+			     n, "");
+		}
+	}
+
+	/*
 	 * EVERY `data-modal` TARGET MUST EXIST (#596).
 	 *
 	 * The header menu bar opens a modal by attribute, not by name:

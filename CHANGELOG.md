@@ -6,6 +6,53 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Nine hand-written patterns validated nothing, and the first form conversion (#596)
+
+Classifying #596's forms before converting any of them, which turned up a live defect and a
+parallel implementation.
+
+**Nine of the eleven `pattern` attributes in `index.html` were silently dead.** A browser compiles
+`<input pattern>` with the regex `v` flag, `[A-Za-z0-9_-]` is a SyntaxError there, and the HTML spec
+says a pattern that will not compile is **skipped** — so the field validates nothing at all. The
+contract's 27 patterns were fixed when this was found (0.2.57-488), and `test_apigen` gates the
+emitted ones; nothing gated the hand-written ones, and they stayed broken. Measured in Chromium
+before and after: all nine threw under `v` and answered `checkValidity() === true` for `has space`
+and `a/b`; with `\-` all nine compile, refuse the same junk, and still accept a real name. The fields
+are the **container, network, device-map, LDAP group, volume, package-source, repository,
+container-recipe and package names** — every name an operator types by hand. `test_web_tree` now
+refuses a bare `-]` in `index.html` too, textually, the same instrument `test_apigen` uses.
+
+**`createNetwork` had two forms, and the generated one was reachable from nowhere.**
+`NetworkCreateRequest` is fully titled, the renderer was built against it, and a screenshot of it went
+to the owner — but `openForm("createNetwork")` is called from nowhere in `app.js`, so **New Network
+still opened the hand-written modal**. The menu item already carried `data-op="createNetwork"`; it
+needed `data-modal="generated-form"` and a `data-submit`, after which the modal markup and the
+submit handler are deletions. Verified by driving the real menu item in Chromium: the old modal is
+gone, the generated form opens titled "Create network" with Name / Subnet / Prefix length / Address,
+and its Name input carries `^[A-Za-z0-9_\-]{1,15}$`, compiles under `v`, refuses `has space` and
+accepts `svc-1`.
+
+**No refresh wiring was needed and that is the point.** The deleted handler called `refreshNetworks()`
+and `renderTree()` itself; `refreshNetworks` is in `CORE_REFRESHERS`, the poll calls `renderTree()`
+every tick, and `openForm` defaults to the visible view's own refreshers — which is exactly what
+`refreshVisibleView`'s comment already claimed and what each of the 36 hand-written forms carried its
+own copy of.
+
+**And a gate before the first conversion rather than after the first dead menu entry.** The header
+menu opens a modal by attribute, so deleting `<div id="modal-x">` leaves a menu item that opens
+nothing, and neither the class-orphan gate nor the retired-spelling gate can see an attribute
+pointing at an id. `test_web_tree` now checks every `data-modal` target resolves. That is the shape
+#598's three surviving media-query rules had, and it was cheap to refuse to repeat it.
+
+**The classification, for the rest.** 57 form submit handlers call a known operation — 20 modals and
+37 inline settings forms, so #596's "~26" is the modal half. 55 of 57 operations already have a
+generated request schema. Every menu item already names its operation in `data-op`. What is left to
+decide is two kinds: six forms whose operation takes a **path parameter the operator types**
+(`PUT /system/sysctl/{key}`), which `openForm` has no field for; and six with a **select populated
+from live data** (pick a disk, pick a network), where the contract has a plain string and the
+generated control would be a free-text box. Those are contract decisions, not conversions.
+`createContainer` is 45 fields and is its own problem.
+
 ### The three `dg-` rules that survived, and the gate that would have caught them (#598)
 
 The entry below claims `dg-` is zero classes. It was three: `.dg-row` and `.dg-row-header` in one

@@ -13127,34 +13127,6 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 	}
 });
 
-document.getElementById("network-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const name = document.getElementById("nf-name").value.trim();
-	const subnet = document.getElementById("nf-subnet").value.trim();
-	const prefixText = document.getElementById("nf-prefix").value.trim();
-	const address = document.getElementById("nf-address").value.trim();
-
-	const body = {
-		name: name,
-		subnet: subnet,
-		prefix_len: parseInt(prefixText, 10),
-	};
-	if (address)
-		body.address = address;
-
-	try {
-		await apiRequest("POST", CIX_API.createNetwork(), body);
-		clearStatus();
-		document.getElementById("network-form").reset();
-		closeModal();
-		await refreshNetworks();
-		renderTree();
-	} catch (e) {
-		showStatus("Failed to create network: " + e.message, true);
-	}
-});
-
 document.getElementById("devicemap-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
