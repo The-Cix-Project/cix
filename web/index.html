@@ -1872,12 +1872,6 @@
 			<div class="view-list">
 				<h2>NTP Servers</h2>
 				<table id="ntp-servers">
-					<thead>
-						<tr>
-							<th>Container</th>
-							<th></th>
-						</tr>
-					</thead>
 					<tbody id="ntp-servers-body">
 						<tr><td colspan="2" class="empty">Reading&hellip;</td></tr>
 					</tbody>
@@ -2229,12 +2223,6 @@
 			<div class="view-list">
 				<p class="hint">Registered containers (e.g. syslog-1/syslog-2 running sysklogd) that every container-sourced log line is also forwarded to as a real RFC 3164 UDP datagram, alongside (never instead of) the consolidated log store, which stays the one source of truth (ADR-0127). Register one via the "+ Create" menu above.</p>
 				<table id="syslog-targets">
-					<thead>
-						<tr>
-							<th>Container</th>
-							<th></th>
-						</tr>
-					</thead>
 					<tbody id="syslog-targets-body">
 						<tr><td colspan="2" class="empty">Reading&hellip;</td></tr>
 					</tbody>
@@ -2776,13 +2764,10 @@
 					<button type="button" id="images-gc" class="button-danger">Reclaim unused versions</button>
 				</div>
 				<div id="images-gc-status" class="pki-ca-status" hidden></div>
+				<!-- No <thead>: renderTable() writes it from the same
+				     authored column list it renders the rows from, so a
+				     header and its column cannot disagree (#592). -->
 				<table id="images">
-					<thead>
-						<tr>
-							<th>Name</th>
-							<th></th>
-						</tr>
-					</thead>
 					<tbody id="images-body">
 						<tr><td colspan="2" class="empty">Reading&hellip;</td></tr>
 					</tbody>

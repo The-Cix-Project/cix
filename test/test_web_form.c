@@ -161,6 +161,29 @@ static const char *const DOM_SHIM =
      * knowledge it needs is app.js's.
      */
     "globalThis.qualifyHostname = (el) => { el.dataset.qualified = \"1\"; };\n"
+    /*
+     * What `renderTable` needs from app.js (#592 story 3). Each is
+     * the real thing reduced to its contract: `statusBadge` returns
+     * the class string, `treeLink` an <a>, `emptyStateText` the
+     * sentence for the state a list is in. The guard is stubbed OPEN
+     * -- it always re-renders -- because what this test asserts is
+     * what a render produces, and a guard that skipped the second
+     * call would make every assertion after the first one vacuous.
+     */
+    "globalThis.statusBadge = (k) =>\n"
+    "  \"badge badge-\" + ([\"ok\", \"error\", \"paused\"].includes(k) ? k : \"unknown\");\n"
+    "globalThis.treeLink = (href, text) => {\n"
+    "  const a = document.createElement(\"a\");\n"
+    "  a.href = href;\n"
+    "  a.textContent = text;\n"
+    "  return a;\n"
+    "};\n"
+    "globalThis.refusedOps = {};\n"
+    "globalThis.emptyStateText = (op, what, normal) =>\n"
+    "  globalThis.refusedOps[op] !== undefined ? globalThis.refusedOps[op] : normal;\n"
+    "globalThis.listSignature = (rows, op, what, normal) =>\n"
+    "  rows.length === 0 ? [\"empty\", emptyStateText(op, what, normal)] : rows;\n"
+    "globalThis.unchangedAndRendered = () => false;\n"
     "globalThis.document = {\n"
     "  getElementById(id) {\n"
     "    if (this._byId === undefined)\n"
@@ -182,11 +205,29 @@ static const char *const DOM_SHIM =
     "          for (const c of n.children) {\n"
     "            if (sel === \"[data-field]\" && c.dataset.field !== undefined)\n"
     "              out.push(c);\n"
+    "            if (sel === \"td\" && c.tag === \"td\")\n"
+    "              out.push(c);\n"
     "            walk(c);\n"
     "          }\n"
     "        };\n"
     "        walk(this);\n"
     "        return out;\n"
+    "      },\n"
+    /*
+     * The two table APIs renderTable uses. `createTHead()` is kept
+     * rather than hand-rolling find-or-create in the renderer
+     * because the real one also INSERTS IN THE RIGHT PLACE -- a
+     * <thead> appended after a <tbody> renders below the rows, and a
+     * renderer that got that wrong would look right in this shim.
+     */
+    "      get tBodies() { return this.children.filter((c) => c.tag === \"tbody\"); },\n"
+    "      createTHead() {\n"
+    "        let h = this.children.find((c) => c.tag === \"thead\");\n"
+    "        if (h === undefined) {\n"
+    "          h = document.createElement(\"thead\");\n"
+    "          this.children.unshift(h);\n"
+    "        }\n"
+    "        return h;\n"
     "      },\n"
     "    };\n"
     /*
@@ -610,6 +651,60 @@ int main(void)
 		       "  return cell.textContent + \"/\" + cell.colSpan + \"/\" + cell.className;\n"
 		       "})()",
 		       "No networks/2/empty");
+
+		/*
+		 * renderTable: the composition (#592 story 3). The header
+		 * comes from the authored columns and the schema's own
+		 * titles, and the three non-text cell forms each produce
+		 * what the dashboard's own widget would.
+		 */
+		expect(ctx, "a generated table writes its own header",
+		       "(() => {\n"
+		       "  const t = document.createElement(\"table\");\n"
+		       "  renderTable(t, \"Network\", [{ name: \"mgmt\", subnet: \"10.0.0.0\" }],\n"
+		       "    [\"name\", { field: \"subnet\", label: \"CIDR\" }],\n"
+		       "    { op: \"listNetworks\", what: \"networks\", empty: \"none\" });\n"
+		       "  const head = t.children.find((c) => c.tag === \"thead\");\n"
+		       "  return head.children[0].children.map((h) => h.textContent).join(\"|\");\n"
+		       "})()",
+		       "Name|CIDR");
+		expect(ctx, "a link column wraps the derived text, a badge carries its kind",
+		       "(() => {\n"
+		       "  const t = document.createElement(\"table\");\n"
+		       "  renderTable(t, \"Container\", [{ name: \"dns-1\", status: \"exited\" }],\n"
+		       "    [{ field: \"name\", link: (r) => \"#c/\" + r.name },\n"
+		       "     { field: \"status\", badge: () => \"error\" }],\n"
+		       "    { op: \"listContainers\", what: \"containers\", empty: \"none\" });\n"
+		       "  const row = t.tBodies[0].children[0];\n"
+		       "  const a = row.children[0].children[0];\n"
+		       "  const s = row.children[1].children[0];\n"
+		       "  return a.href + \"/\" + a.textContent + \"/\" + s.textContent + \"/\" + s.className;\n"
+		       "})()",
+		       "#c/dns-1/dns-1/exited/badge badge-error");
+		expect(ctx, "an actions column is authored and holds its controls",
+		       "(() => {\n"
+		       "  const t = document.createElement(\"table\");\n"
+		       "  renderTable(t, \"Network\", [{ name: \"mgmt\" }, { name: \"svc\" }],\n"
+		       "    [\"name\", { label: \"\", actions: (r) => {\n"
+		       "       const b = document.createElement(\"button\");\n"
+		       "       b.textContent = \"Remove \" + r.name;\n"
+		       "       return [b];\n"
+		       "    } }],\n"
+		       "    { op: \"listNetworks\", what: \"networks\", empty: \"none\" });\n"
+		       "  return t.tBodies[0].children\n"
+		       "    .map((r) => r.children[1].children[0].textContent).join(\",\");\n"
+		       "})()",
+		       "Remove mgmt,Remove svc");
+		expect(ctx, "a refused list never says there are none",
+		       "(() => {\n"
+		       "  const t = document.createElement(\"table\");\n"
+		       "  globalThis.refusedOps = { listNetworks: \"Log in to see networks\" };\n"
+		       "  renderTable(t, \"Network\", [], [\"name\", \"subnet\"],\n"
+		       "    { op: \"listNetworks\", what: \"networks\", empty: \"No networks\" });\n"
+		       "  globalThis.refusedOps = {};\n"
+		       "  return t.tBodies[0].children[0].children[0].textContent;\n"
+		       "})()",
+		       "Log in to see networks");
 
 		/* renderDetailRows: schema order, every field, read-only
 		 * included -- a detail page is where "the daemon reports this

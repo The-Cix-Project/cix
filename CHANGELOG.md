@@ -6,6 +6,53 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The table renderer has callers (#592 story 3)
+
+`renderTableRows` was built, gated and documented as the dashboard's list table — and called from
+nowhere for a release. The reason, measured: **only five of some thirty hand-written tables are pure
+text.** Every other one has a link in its name cell, a badge in its status cell, or a button in its
+last cell, and a renderer that could express none of those fitted almost nothing. So this is not a
+wiring job; the composition was missing three things and owning two more.
+
+**`renderTable(tableEl, schema, rows, columns, state)`** is story 3's renderer as the epic named it.
+`columns` stays authored and takes four forms:
+
+```
+"name"                                  text, header from the schema's own title
+{ field, label }                        text, authored header
+{ field, link: (row) => "#..." }        text inside a tree link
+{ field, badge: (value, row) => kind }  text inside a status badge
+{ label, actions: (row) => [el, ...] }  authored controls, no field
+```
+
+**It owns the header.** `fieldText`'s comment deferred that — "generating it is a separate change
+across 62 tables" — which was right while nothing was wired and wrong the moment a column list
+existed in JavaScript: a header in markup beside its columns in code is two places for one fact, the
+drift this epic exists to end. A converted table's `<thead>` leaves `index.html`.
+
+**And it owns the empty state and the repaint guard.** Every hand-written table carried its own copy
+of both; folding them in is what makes this a composition rather than a cell-text helper. `state` is
+`{ op, what, empty }`, so the four list outcomes come free, and the guard keys on the operation so no
+caller invents a cache key. `key`/`extra` exist for the one case that needs more — an image's
+"containers using this image" is filtered from `listContainers`, so two images with identical lists
+must still redraw.
+
+**Four tables converted**: images, NTP servers, syslog targets, and an image's containers. What left
+each one is the guard, the empty row and its colspan, the `<thead>`, and the derivation of every
+cell; what stayed is which columns, where a name links, and what may be done to a row.
+
+**It found a defect on the way.** The containers table mapped its badge inline — `running ? ok :
+paused ? paused : unknown` — which renders an **exited** container grey, while the tree icon has
+always shown it red. ADR-0045's whole point is that "exited" means the process died unexpectedly and
+is the one state worth flagging, as against "stopped", which is deliberate. So the list said nothing
+was wrong and the tree said something was, about the same container at the same moment.
+`containerStatusKind()` is the one map now, and exited is red in both.
+
+**Two contract gaps recorded rather than worked around**: `listNtpServers` and `listSyslogTargets`
+both have `response: null`, so nothing describes what they return. The tables render correctly
+anyway — an unknown field is a string and its header is the de-cased name — which is the right
+behaviour and the wrong contract.
+
 ### Reading state is supported on a phone; writing is not promised there (#600)
 
 The open question in the entry below — *the narrowest width this dashboard supports* — is answered,

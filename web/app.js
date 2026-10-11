@@ -1629,6 +1629,34 @@ function statusBadge(kind) {
  * amber (paused), not red, so a screen of blocked rows does not read as a
  * screen of failures.
  */
+/*
+ * A container's own four states, mapped to the shared badge kinds --
+ * the same four `containerStatusColorClass()` already tints the tree
+ * icon with, in one function so the two surfaces cannot disagree
+ * (#592).
+ *
+ * They did disagree. The containers table mapped its badge inline as
+ * `running ? ok : paused ? paused : unknown`, which makes an EXITED
+ * container grey, while the tree icon has always shown it red --
+ * ADR-0045's whole point being that "exited" is its own condition
+ * (the process died unexpectedly) and the one state worth flagging at
+ * a glance, as distinct from "stopped", which is deliberate and fine.
+ * So the list said nothing was wrong and the tree said something was,
+ * about the same container, at the same moment.
+ */
+function containerStatusKind(status) {
+	switch (status) {
+	case "running":
+		return "ok";
+	case "paused":
+		return "paused";
+	case "exited":
+		return "error";
+	default:
+		return "unknown"; /* "stopped": deliberate, not a fault */
+	}
+}
+
 function pipelineStatusKind(status) {
 	switch (status) {
 	case "ok":
@@ -3402,8 +3430,7 @@ function renderContainers(containers) {
 		const statusSpan = document.createElement("span");
 
 		statusSpan.textContent = c.status;
-		statusSpan.className =
-			statusBadge(c.status === "running" ? "ok" : c.status === "paused" ? "paused" : "unknown");
+		statusSpan.className = statusBadge(containerStatusKind(c.status));
 		statusCell.appendChild(statusSpan);
 		row.appendChild(statusCell);
 
@@ -6214,44 +6241,29 @@ async function detachInterface(networkName, ifname) {
 
 /* ---------- Images ---------- */
 
+/*
+ * The first table rendered from the contract (#592 story 3).
+ *
+ * What is gone from here, and is the point: the repaint guard (#432,
+ * which shares a refresh tick with the build-log table), the empty
+ * row and its colspan, the `<thead>` over in index.html, and the
+ * derivation of each cell's text. What is left is the three things
+ * that are genuinely this page's judgement -- which columns, where a
+ * name links to, and what may be done to a row.
+ */
 function renderImages(images) {
-	const body = document.getElementById("images-body");
+	renderTable(document.getElementById("images"), "Image", images, [
+		{ field: "name", link: (img) => "#images/" + encodeURIComponent(img.name) },
+		{ label: "", actions: (img) => {
+			const rm = document.createElement("button");
 
-	/* #432: shares the pkg-build-config refresh tick with the build-log
-	 * table, so guarding only that one still collapsed the page height
-	 * and still lost the reader's place. */
-	if (unchangedAndRendered(body, "images", images))
-		return;
-	body.textContent = "";
-	if (images.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 2;
-		cell.className = "empty";
-		cell.textContent = emptyStateText("listImages", "images", "No images");
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const img of images) {
-		const row = document.createElement("tr");
-		const nameCell = document.createElement("td");
-
-		nameCell.appendChild(treeLink("#images/" + encodeURIComponent(img.name), img.name, ""));
-		row.appendChild(nameCell);
-		const actionCell = document.createElement("td");
-		const rmButton = document.createElement("button");
-
-		rmButton.textContent = "Remove";
-		gateAction(rmButton, "deleteImage");
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removeImage(img.name));
-		actionCell.appendChild(rmButton);
-		row.appendChild(actionCell);
-		body.appendChild(row);
-	}
+			rm.textContent = "Remove";
+			rm.className = "button-danger button-small";
+			gateAction(rm, "deleteImage");
+			rm.addEventListener("click", () => removeImage(img.name));
+			return [rm];
+		} },
+	], { op: "listImages", what: "images", empty: "No images" });
 }
 
 async function refreshImages() {
@@ -6338,30 +6350,26 @@ async function removeImage(name) {
 /* The table half of renderImageDetail(), split out so it can be skipped
  * when nothing about it changed (#432) without skipping the handler
  * wiring and recipe panels that follow it. */
-function renderImageDetailContainers(containersBody, usingContainers) {
-	containersBody.textContent = "";
-	if (usingContainers.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 2;
-		cell.className = "empty";
-		cell.textContent = "No containers use this image";
-		row.appendChild(cell);
-		containersBody.appendChild(row);
-		return;
-	}
-	for (const c of usingContainers) {
-		const row = document.createElement("tr");
-		const nameCell = document.createElement("td");
-		const statusCell = document.createElement("td");
-
-		nameCell.appendChild(treeLink("#containers/" + encodeURIComponent(c.name), c.name, ""));
-		statusCell.textContent = c.status;
-		row.appendChild(nameCell);
-		row.appendChild(statusCell);
-		containersBody.appendChild(row);
-	}
+/*
+ * Generated (#592). The status cell was plain text here and a badge in
+ * the containers list -- the same fact, two renderings -- and it is
+ * the badge in both now, through the one status map.
+ *
+ * This list is a field of an already-loaded image rather than its own
+ * read, so its state is `listContainers`'s only in the sense that the
+ * containers it filters came from there.
+ */
+function renderImageDetailContainers(name, containersBody, usingContainers) {
+	renderTable(containersBody.closest("table"), "Container", usingContainers, [
+		{ field: "name", link: (c) => "#containers/" + encodeURIComponent(c.name) },
+		{ field: "status", badge: (s) => containerStatusKind(s) },
+	], {
+		op: "listContainers",
+		key: "image-detail-containers",
+		extra: name,
+		what: "containers",
+		empty: "No containers use this image",
+	});
 }
 
 function renderImageDetail(name) {
@@ -6377,9 +6385,9 @@ function renderImageDetail(name) {
 	 * image to another with an identical container list must still
 	 * redraw.
 	 */
-	if (!unchangedAndRendered(containersBody, "image-detail-containers",
-	                          { name: name, containers: usingContainers }))
-		renderImageDetailContainers(containersBody, usingContainers);
+	/* The guard lives inside renderTable now; the image name rides in
+	 * as `extra` for the reason this comment already gave. */
+	renderImageDetailContainers(name, containersBody, usingContainers);
 
 	renderImageDetailPackages(name);
 	renderImageDetailRecipes(name);
@@ -10586,41 +10594,32 @@ document.getElementById("ntp-config-form").addEventListener("submit", async (eve
 
 /* ---- NTP Servers: registered container time sources ---- */
 
+/*
+ * Generated (#592). `listNtpServers` has `response: null` in the
+ * contract -- this list's shape is described nowhere -- so the schema
+ * name finds no fields and the cell falls back to the value as text
+ * and the column to its de-cased name. That is the right behaviour
+ * and the wrong contract; the gap is worth closing, and the table
+ * does not have to wait for it.
+ */
 function renderNtpServers(servers) {
-	const body = document.getElementById("ntp-servers-body");
+	renderTable(document.getElementById("ntp-servers"), "NtpServer", servers, [
+		"container",
+		{ label: "", actions: (s) => [unregisterButton("deleteNtpServer",
+		    () => removeNtpServer(s.container))] },
+	], { op: "listNtpServers", what: "NTP servers", empty: "No NTP server bindings" });
+}
 
-	body.textContent = "";
-	if (servers.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+/* The Unregister control these registration lists share, so the three
+ * of them do not each build the same gated danger button. */
+function unregisterButton(opId, onClick) {
+	const b = document.createElement("button");
 
-		cell.colSpan = 2;
-		cell.className = "empty";
-		cell.textContent = emptyStateText("listNtpServers", "NTP servers", "No NTP server bindings");
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const s of servers) {
-		const row = document.createElement("tr");
-
-		const containerCell = document.createElement("td");
-		containerCell.textContent = s.container;
-		row.appendChild(containerCell);
-
-		const actionCell = document.createElement("td");
-		const rmButton = document.createElement("button");
-
-		rmButton.textContent = "Unregister";
-		gateAction(rmButton, "deleteNtpServer");
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removeNtpServer(s.container));
-		actionCell.appendChild(rmButton);
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
+	b.textContent = "Unregister";
+	b.className = "button-danger button-small";
+	gateAction(b, opId);
+	b.addEventListener("click", onClick);
+	return b;
 }
 
 async function refreshNtpServers() {
@@ -10642,41 +10641,17 @@ async function removeNtpServer(container) {
 /* ---- Syslog forward targets: registered container log receivers
  * (ADR-0127) -- same shape as NTP Servers above, mirrored exactly. */
 
+/* Generated (#592), the same shape as the NTP list above. */
 function renderSyslogTargets(targets) {
-	const body = document.getElementById("syslog-targets-body");
-
-	body.textContent = "";
-	if (targets.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 2;
-		cell.className = "empty";
-		cell.textContent = emptyStateText("listSyslogTargets", "syslog targets", "No syslog forward targets registered");
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const t of targets) {
-		const row = document.createElement("tr");
-
-		const containerCell = document.createElement("td");
-		containerCell.textContent = t.container;
-		row.appendChild(containerCell);
-
-		const actionCell = document.createElement("td");
-		const rmButton = document.createElement("button");
-
-		rmButton.textContent = "Unregister";
-		gateAction(rmButton, "deleteSyslogTarget");
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removeSyslogTarget(t.container));
-		actionCell.appendChild(rmButton);
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
+	renderTable(document.getElementById("syslog-targets"), "SyslogTarget", targets, [
+		"container",
+		{ label: "", actions: (t) => [unregisterButton("deleteSyslogTarget",
+		    () => removeSyslogTarget(t.container))] },
+	], {
+		op: "listSyslogTargets",
+		what: "syslog targets",
+		empty: "No syslog forward targets registered",
+	});
 }
 
 async function refreshSyslogTargets() {

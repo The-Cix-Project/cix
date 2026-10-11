@@ -22,9 +22,13 @@
  * What this file expects app.js to have defined, which is the whole of
  * its dependency on the dashboard and is deliberately short enough to
  * stub in a test: `openModal`, `sessionMay`, `sessionRefusal`,
- * `showStatus`, `runRefreshers`, `refreshersForView` and
- * `qualifyHostname`. The last one is site knowledge -- what this
- * host's own domain is -- which only app.js has.
+ * `showStatus`, `runRefreshers`, `refreshersForView`,
+ * `qualifyHostname`, and -- for `renderTable` -- `statusBadge`,
+ * `treeLink`, `emptyStateText`, `listSignature` and
+ * `unchangedAndRendered`. `qualifyHostname` is site knowledge (what
+ * this host's own domain is); the last five are the dashboard's own
+ * status vocabulary, its link shape and its repaint guard, all of
+ * which already exist in one place each and must not be forked here.
  */
 /*
  * ---------- what a request schema becomes ----------
@@ -760,9 +764,9 @@ function schemaField(schema, name) {
  * type, through fieldText(), so a boolean reads the same here as it does
  * on a detail page.
  *
- * The header stays in index.html for now. Generating it is a separate
- * change across 62 tables, and doing it in the same breath as this
- * would make one diff that has to be right about two things.
+ * The header is `renderTable`'s job, not this function's -- see below.
+ * This builds the body only, and is what `renderTable` calls once it
+ * has decided the three non-text cell forms.
  */
 function renderTableRows(bodyEl, schema, rows, columns, emptyText) {
 	const cells = rows.map((row) =>
@@ -773,6 +777,143 @@ function renderTableRows(bodyEl, schema, rows, columns, emptyText) {
 		}));
 
 	simpleTableRows(bodyEl, cells, columns.length, emptyText);
+}
+
+/* A column's heading: authored if it says so, else the field's own
+ * `title` from the contract, else the field name de-cased. So a header
+ * and its column are one fact in one place -- which is the whole
+ * reason `renderTable` owns the `<thead>` rather than leaving it in
+ * `index.html` beside a column list in JavaScript. */
+function columnLabel(schema, col) {
+	if (typeof col === "string")
+		return fieldLabel(schemaField(schema, col) || col);
+	if (col.label !== undefined)
+		return col.label;
+	return fieldLabel(schemaField(schema, col.field) || col.field);
+}
+
+/*
+ * ONE CELL. Text is always derived; the three other forms are authored
+ * because none of them is in the schema.
+ *
+ * A LINK is a route this dashboard chose (`#images/<name>`), not a
+ * fact about the field. A BADGE needs a domain's own state mapped to
+ * one of the four semantic kinds, which `statusBadge`'s own comment
+ * says is the caller's knowledge -- "running" means ok for a container
+ * and nothing at all for a disk. ACTIONS are the operations this page
+ * offers on a row, which is judgement of exactly the kind ADR-0338
+ * reserves for a person.
+ *
+ * What is NOT authored, in any of the four: the text. It comes from
+ * `fieldText()` through the field's own type, so a boolean reads "yes"
+ * here exactly as it does on a detail page, and an absent value is the
+ * same dash everywhere.
+ */
+function tableCell(schema, row, col) {
+	const cell = document.createElement("td");
+
+	if (typeof col === "object" && col.actions !== undefined) {
+		for (const el of col.actions(row) || [])
+			cell.appendChild(el);
+		return cell;
+	}
+
+	const name = typeof col === "string" ? col : col.field;
+	const text = fieldText(schemaField(schema, name), row[name]);
+
+	if (typeof col === "object" && col.link !== undefined) {
+		cell.appendChild(treeLink(col.link(row), text, ""));
+		return cell;
+	}
+	if (typeof col === "object" && col.badge !== undefined) {
+		const span = document.createElement("span");
+
+		span.className = statusBadge(col.badge(row[name], row));
+		span.textContent = text;
+		cell.appendChild(span);
+		return cell;
+	}
+	cell.textContent = text;
+	return cell;
+}
+
+/*
+ * A LIST TABLE: its header, its rows, its four empty states and its
+ * repaint guard, from the schema and an authored column list.
+ *
+ * This is story 3 of #592, and `renderTableRows` alone was not it.
+ * That function derived cell TEXT and left every caller to build its
+ * own header in markup, its own empty row, its own guard, and its own
+ * link/badge/action cells -- which is why, measured on 2026-10-11, it
+ * had **zero callers** after a release: only five of some thirty hand
+ * written tables are pure text, so a renderer that could not express a
+ * button fitted almost none of them.
+ *
+ * `columns` is the authored part, and takes four forms:
+ *
+ *   "name"                                  text, header from the schema
+ *   { field, label }                        text, authored header
+ *   { field, link: (row) => "#..." }        text inside a tree link
+ *   { field, badge: (value, row) => kind }  text inside a status badge
+ *   { label, actions: (row) => [el, ...] }  authored controls, no field
+ *
+ * `state` is `{ op, what, empty, key?, extra? }` -- the operation this
+ * list is read by, its subject, and the sentence for "it answered and
+ * there are none". The other three outcomes come from
+ * `emptyStateText()`, and the guard keys on `op` so no caller invents
+ * a cache key either.
+ *
+ * `key` and `extra` exist for the case where the same operation feeds
+ * a table whose content depends on the route: an image's "containers
+ * using this image" is filtered from `listContainers`, so two images
+ * with identical lists must still redraw when you navigate between
+ * them. `extra` goes into the compared signature, `key` names the
+ * cache slot. Omit both and the op is the whole of each, which is
+ * right for a table that shows one list once.
+ */
+function renderTable(tableEl, schema, rows, columns, state) {
+	const data = rows || [];
+	const sig = listSignature(data, state.op, state.what, state.empty);
+	let body = tableEl.tBodies[0];
+
+	if (body === undefined || body === null) {
+		body = document.createElement("tbody");
+		tableEl.appendChild(body);
+	}
+	if (unchangedAndRendered(body, state.key || state.op,
+	    state.extra === undefined ? sig : { extra: state.extra, sig: sig }))
+		return;
+
+	/* The header is rebuilt with the body so the two cannot disagree;
+	 * an authored column list that grows a column grows its heading in
+	 * the same statement. */
+	{
+		const head = tableEl.createTHead();
+		const hrow = document.createElement("tr");
+
+		head.textContent = "";
+		for (const col of columns) {
+			const th = document.createElement("th");
+
+			th.textContent = columnLabel(schema, col);
+			hrow.appendChild(th);
+		}
+		head.appendChild(hrow);
+	}
+
+	body.textContent = "";
+	if (data.length === 0) {
+		simpleTableRows(body, [], columns.length,
+		    emptyStateText(state.op, state.what, state.empty));
+		return;
+	}
+	for (const row of data) {
+		const tr = document.createElement("tr");
+
+		for (const col of columns)
+			tr.appendChild(tableCell(schema, row, col));
+		body.appendChild(tr);
+	}
 }
 
 /*
