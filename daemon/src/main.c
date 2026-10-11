@@ -23717,7 +23717,8 @@ static void handle_dhcp_static_post(int fd, const char *body, size_t body_len)
 	if (err == DHCP_ERR_INVALID) {
 		respond_error(fd, 400, "Bad Request",
 		               "mac must be lower-case aa:bb:cc:dd:ee:ff, ip must be a valid IPv4 "
-		               "address, and hostname (if given) must be a plain DNS label");
+		               "address, and hostname (if given) must be lower-case letters, digits and "
+		               "hyphens, not starting or ending with one");
 		return;
 	}
 	if (err == DHCP_ERR_DUPLICATE) {

@@ -124,7 +124,7 @@ cixctl dhcp static rm aa:bb:cc:dd:ee:01
 cixctl dhcp leases
 ```
 
-A reservation takes effect without a restart. The MAC must be lower-case `aa:bb:cc:dd:ee:ff`, and the hostname a plain DNS label; a MAC or address already reserved is refused. `dhcp leases` reads each running server's own lease file on every call. A lease is not a DNS record: records are durable intent, leases are short-lived state owned by the server that issued them.
+A reservation takes effect without a restart. The MAC must be lower-case `aa:bb:cc:dd:ee:ff`, and the hostname lower-case letters, digits and hyphens, not starting or ending with one (the daemon accepts no capitals, which "DNS label" used to imply it did); a MAC or address already reserved is refused. `dhcp leases` reads each running server's own lease file on every call. A lease is not a DNS record: records are durable intent, leases are short-lived state owned by the server that issued them.
 
 The dashboard's **Services > DHCP** page has the same four tabs (Servers, Ranges, Reservations, Leases), and a network's own **DHCP** tab lists the leases on that network. Full contract: [DHCP: a self-contained service](../api/README.md#dhcp-a-self-contained-service-adr-0197).
 

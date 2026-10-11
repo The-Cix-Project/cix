@@ -3422,10 +3422,32 @@ paths:
               properties:
                 mac:
                   type: string
+                  title: MAC
+                  pattern: '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$'
+                  description: >
+                    The client's hardware address, lower-case. A
+                    reservation is keyed by it, so one MAC has one
+                    address and adding a second for the same MAC is
+                    refused.
                 ip:
                   type: string
+                  title: Address
+                  format: ipv4
+                  description: >
+                    The address this client always gets. Another
+                    reservation already holding it is refused, because
+                    two machines on one address is a conflict waiting
+                    for both to be switched on at once.
                 hostname:
                   type: string
+                  title: Hostname
+                  pattern: '^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$'
+                  maxLength: 63
+                  description: >
+                    The name the DHCP server answers for this client.
+                    Lower-case letters, digits and hyphens, not
+                    starting or ending with one; omit it for a
+                    reservation that only pins the address.
       responses:
         "201":
           description: Reserved
@@ -9497,13 +9519,30 @@ paths:
               properties:
                 toolchain_path:
                   type: string
-                  description: Local filesystem path to a toolchain squashfs artifact (image/src/mktoolchainimage.c's own output)
+                  title: Toolchain path
+                  description: >
+                    A toolchain squashfs already on this host, by path.
+                    Leave every field here blank only on a rich dev
+                    host: the daemon then copies the toolchain live
+                    from its own filesystem, which is empty on a real
+                    minimal install. Build a portable artifact with
+                    mktoolchainimage, put it on the box, and name it
+                    here.
                 toolchain_url:
                   type: string
-                  description: URL the daemon fetches the toolchain squashfs from itself, host-side (ADR-0065). Requires toolchain_sha256.
+                  title: Toolchain URL
+                  format: uri
+                  description: >
+                    Where the daemon fetches the toolchain squashfs
+                    from itself, host-side (ADR-0065). Requires
+                    toolchain_sha256.
                 toolchain_sha256:
                   type: string
-                  description: Required alongside toolchain_url -- a 64-char hex sha256 the fetched artifact must match before it's ever staged.
+                  title: Toolchain sha256
+                  pattern: '^[0-9a-f]{64}$'
+                  description: >
+                    What the fetched artifact must hash to before it is
+                    ever staged. Required alongside toolchain_url.
       responses:
         "204":
           description: Build toolchain image staged (or already was) -- no-body or toolchain_path modes only
@@ -21709,16 +21748,20 @@ components:
       properties:
         name:
           type: string
+          title: Name
+          pattern: '^[A-Za-z0-9_\-]+$'
           description: >
-            Must match a published <name>/<version>/build.cbs's own package name. Its
-            requires are resolved and installed first automatically
-            (already-installed dependencies are skipped; a circular or unresolvable
-            dependency is a 400).
+            A published recipe's own package name. What it requires is
+            resolved and installed first automatically -- already-installed
+            dependencies are skipped, and a circular or unresolvable one is
+            a 400. (This said "<name>/<version>/build.cbs" until cix#596;
+            a recipe has been one flat <name>@<version>.cbs since ADR-0308.)
         image:
           type: string
+          title: Image
           default: base
           description: >
-            The target image name/version's own rootfs are merged into once built.
+            Which image to install into. The target image name/version's own rootfs are merged into once built.
             Defaults to "base" (every container using the base image). A package name
             is tracked independently per image -- installing "bash" into both "base"
             and "router" are two separate, independently upgradable/removable entries.
@@ -21728,6 +21771,7 @@ components:
             (#500).
         version:
           type: string
+          title: Version
           description: >
             Pins name to exactly this published recipe version (ADR-0107). Omitted
             resolves to the highest available version for name -- the pre-existing
@@ -21738,23 +21782,27 @@ components:
             404/400 if no such (name, version) recipe exists.
         upgrade:
           type: boolean
+          title: Upgrade
           default: false
           description: >
-            If name is already installed, a plain POST (upgrade omitted or false) is
-            always 409, even if the recipe's version has since changed -- explicit intent
-            is required to rebuild a working install. Set true to allow it: still 409 if
+            Allow rebuilding a package that is already installed.
+            Without it a plain POST is always 409, even if the recipe's
+            version has since changed -- explicit intent is required to
+            rebuild a working install. Set true to allow it: still 409 if
             the recipe's version already matches what's installed (nothing to do),
             otherwise proceeds -- the old version's files are removed and the new
             version's are installed once the rebuild succeeds. Only ever applies to name
             itself, never to a dependency pulled in transitively.
         keep_on_failure:
           type: boolean
+          title: Keep the build container on failure
           default: false
           description: >
-            ADR-0175 (issue #35). If the build container fails (any nonzero exit),
-            it is normally torn down immediately like any other exited container.
-            Setting this to true leaves it registered and its overlay mounted
-            instead -- readable afterward via GET /containers/{name}/files?path=...
+            Leave a failed build container mounted so you can read what
+            it produced. A failed build container (any nonzero exit) is
+            normally torn down immediately like any other exited one;
+            this leaves it registered and its overlay mounted instead
+            (ADR-0175, #35) -- readable afterward via GET /containers/{name}/files?path=...
             (ADR-0055), for pulling a crashing binary, a core dump, or a partial
             build tree off the box for real debugging. Only ever applies to the
             single package actually being installed/hostbuilt, never to a

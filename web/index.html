@@ -146,11 +146,11 @@
 			<button type="button" class="menu-dropdown-toggle" data-menu="pipeline">Software</button>
 			<ul class="menu-dropdown-menu" data-menu="pipeline" hidden>
 				<li><button type="button" data-modal="generated-form" data-op="createImage" data-title="Create image" data-submit="Create">New Image</button></li>
-				<li><button type="button" data-modal="pkg-install-form" data-op="pkgInstall" data-title="Install a package">Install Package</button></li>
+				<li><button type="button" data-modal="generated-form" data-op="pkgInstall" data-title="Install a package" data-submit="Install">Install Package</button></li>
 				<li><button type="button" data-modal="pkg-recipe-form" data-op="addPkgRecipe" data-title="Add or update a recipe">New/Update Recipe</button></li>
 				<li><button type="button" data-modal="pkg-source-form" data-op="addPkgSource" data-title="New recipe source">New Recipe Source</button></li>
 				<li><button type="button" data-modal="pkg-repository-form" data-op="addPkgRepository" data-title="New package repository">New Package Repository</button></li>
-				<li><button type="button" data-modal="pkg-bootstrap-form" data-op="pkgBootstrap" data-title="Bootstrap build image">Bootstrap Build Image</button></li>
+				<li><button type="button" data-modal="generated-form" data-op="pkgBootstrap" data-title="Bootstrap build image" data-submit="Bootstrap">Bootstrap Build Image</button></li>
 			</ul>
 		</div>
 
@@ -190,7 +190,7 @@
 					<ul class="menu-submenu-menu" hidden>
 						<li><button type="button" data-modal="generated-form" data-op="registerDhcpServer" data-title="Register DHCP server" data-submit="Register">Register Server</button></li>
 						<li><button type="button" data-modal="dhcp-range-form" data-op="setDhcpNetwork" data-title="DHCP range">New/Edit Range</button></li>
-						<li><button type="button" data-modal="dhcp-static-modal-form" data-op="addDhcpReservation" data-title="Reserve an address">Reserve an Address</button></li>
+						<li><button type="button" data-modal="generated-form" data-op="addDhcpReservation" data-title="Reserve an address" data-submit="Reserve">Reserve an Address</button></li>
 					</ul>
 				</li>
 				<li class="menu-submenu">
@@ -2738,6 +2738,16 @@
 				<p class="hint">What's actually installed, on which image, right now -- one row per real
 					installation. For the recipe catalog itself (add/edit/delete a buildable definition),
 					see Recipes.</p>
+				<!-- Update all and the drift count were inside the install
+				     modal, so the one number this page exists to make
+				     visible was only on screen while you were busy doing
+				     something else (#596). refreshPkgDrift()'s own comment
+				     says "a number nobody can see is a number nobody acts
+				     on"; it is beside the list it describes now. -->
+				<div class="list-toolbar">
+					<button type="button" id="pkg-update-all">Update all (one job)</button>
+					<span id="pkg-drift-summary" class="count"></span>
+				</div>
 				<table id="packages">
 					<thead>
 						<tr>
@@ -3500,24 +3510,6 @@
 				</form>
 			</div>
 
-			<div id="modal-dhcp-static-modal-form" hidden>
-				<form id="dhcp-static-modal-form">
-					<label>
-						MAC
-						<input type="text" id="dsm-mac" placeholder="aa:bb:cc:dd:ee:01" required>
-					</label>
-					<label>
-						IP
-						<input type="text" id="dsm-ip" placeholder="172.30.7.50" required>
-					</label>
-					<label>
-						Hostname (optional)
-						<input type="text" id="dsm-hostname" placeholder="printer">
-					</label>
-					<button type="submit">Reserve</button>
-				</form>
-			</div>
-
 
 
 
@@ -3749,39 +3741,6 @@
 					file's <code>content</code> string; supply real values only when applying.</p>
 			</div>
 
-			<div id="modal-pkg-bootstrap-form" hidden>
-				<form id="pkg-bootstrap-form">
-					<label class="wide">
-						Toolchain artifact path (optional)
-						<input type="text" id="pkgf-toolchain-path" placeholder="/path/to/toolchain.squashfs">
-					</label>
-					<button type="submit">Bootstrap build image</button>
-				</form>
-				<p class="hint">Leave blank only on a rich dev host: it copies the toolchain live from this
-					daemon's own host, which is empty on a real minimal install. On a real install, build a
-					portable artifact with <code>mktoolchainimage</code>, scp it onto this box, and give its
-					path here.</p>
-			</div>
-
-			<div id="modal-pkg-install-form" hidden>
-				<form id="pkg-install-form">
-					<label>
-						Name
-						<input type="text" id="pkgf-name" pattern="[A-Za-z0-9_\-]+" required>
-					</label>
-					<label>
-						Image
-						<input type="text" id="pkgf-image" placeholder="base">
-					</label>
-					<label class="checkbox">
-						<input type="checkbox" id="pkgf-upgrade">
-						Upgrade
-					</label>
-					<button type="submit">Install</button>
-				</form>
-				<button type="button" id="pkg-update-all">Update all (one job)</button>
-				<span id="pkg-drift-summary" class="muted"></span>
-			</div>
 		</div>
 	</div>
 </div>

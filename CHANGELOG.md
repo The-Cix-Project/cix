@@ -6,6 +6,43 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Three more generated forms, and a validation rule the daemon never told anyone (#596)
+
+`addDhcpReservation`, `pkgBootstrap` and `pkgInstall`. Six of the twenty modals are generated now.
+
+**The DHCP reservation's rules were in the C and nowhere else.** Its request body had three
+properties and **no descriptions, no patterns and no formats at all** — so the generated form would
+have offered three bare text boxes. Reading `dhcp.c` rather than the 400's own wording:
+`mac_is_valid()` wants exactly 17 characters, `:` at positions 2/5/8/11/14 and `[0-9a-f]` elsewhere;
+`hostname_is_valid()` wants `[a-z0-9-]`, not starting or ending with a hyphen, under 64 characters.
+Both are now `pattern`s in the contract, so the form refuses what the daemon refuses.
+
+**And the daemon understated its own rule in three places.** The 400 said "hostname (if given) must
+be a plain DNS label", the function's comment said "letters, digits and hyphens", and
+`network-services.md` repeated the 400 — while the loop accepts `'a'`–`'z'` and nothing above it, so
+`Printer` is refused. A DNS label is case-insensitive, so this is the implementation's choice rather
+than the standard's; it is kept (the string is written verbatim into dnsmasq's config, and one
+spelling is one less thing to compare) and all three now say so.
+
+**Two forms gained fields that existed in the contract and nowhere in the UI.** `pkgBootstrap`'s
+markup offered `toolchain_path` alone; the operation also takes `toolchain_url` and
+`toolchain_sha256`, which is the only route on a real minimal install, and they are on the form now.
+`pkgInstall`'s markup offered name, image and upgrade; the operation also takes `version` (ADR-0107
+pinning) and `keep_on_failure` (ADR-0175, leave a failed build container mounted so its output can
+be read). Neither was reachable from the dashboard at all. That is the generated form's second
+effect, after refusing what the daemon refuses: **it cannot silently offer less than the API has.**
+
+**The drift count moved to where it can be seen.** "Update all (one job)" and `#pkg-drift-summary`
+were inside the install modal — so the number `refreshPkgDrift()`'s own comment calls *"a number
+nobody can see is a number nobody acts on"* was only on screen while you were busy installing
+something else. They are a `.list-toolbar` above the installed-packages table now, beside the list
+they describe.
+
+**`PkgInstallRequest.name` was citing a path shape that has not existed since ADR-0308** — "a
+published `<name>/<version>/build.cbs`" — which a flat `<name>@<version>.cbs` replaced when the
+recipes moved to their own repository. Found because its first sentence becomes a hint and a hint
+gets read.
+
 ### Two more forms generated, and what an enum's values look like to an operator (#596)
 
 `createDeviceMap` and `createVolume`, by the same route `createNetwork` took: the menu item already

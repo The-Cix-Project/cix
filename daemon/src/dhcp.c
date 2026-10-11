@@ -43,9 +43,18 @@ static int mac_is_valid(const char *mac)
 
 /*
  * A hostname here becomes a name dnsmasq will answer for, so it is held
- * to the same shape a DNS label has: letters, digits and hyphens, not
+ * to the shape a DNS label has: letters, digits and hyphens, not
  * starting or ending with one. Refused rather than sanitised -- this
  * string is written into a config file the server parses.
+ *
+ * LOWER-CASE ONLY, which this comment used to omit and the 400 used to
+ * omit too -- both said "letters" while the loop below accepts 'a'-'z'
+ * and nothing above it. A DNS label is case-insensitive, so refusing
+ * "Printer" is this implementation's choice rather than the standard's;
+ * it is kept because the stored string is written verbatim into
+ * dnsmasq's config and a single spelling is one less thing to compare.
+ * Stated here because the contract now declares the same pattern and a
+ * generated form refuses what this refuses (ADR-0338, cix#596).
  */
 static int hostname_is_valid(const char *name)
 {

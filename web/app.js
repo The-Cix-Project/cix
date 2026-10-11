@@ -5756,29 +5756,6 @@ document.getElementById("dhcp-range-form").addEventListener("submit", async (eve
 });
 
 
-document.getElementById("dhcp-static-modal-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	const hostname = document.getElementById("dsm-hostname").value.trim();
-	const body = {
-		mac: document.getElementById("dsm-mac").value.trim(),
-		ip: document.getElementById("dsm-ip").value.trim(),
-	};
-
-	if (hostname !== "")
-		body.hostname = hostname;
-	try {
-		await apiRequest("POST", CIX_API.addDhcpReservation(), body);
-		closeModal();
-		showStatus("Reserved.", false);
-		document.getElementById("dsm-mac").value = "";
-		document.getElementById("dsm-ip").value = "";
-		document.getElementById("dsm-hostname").value = "";
-		refreshDhcp();
-	} catch (e) {
-		showStatus("Failed to reserve: " + e.message, true);
-	}
-});
-
 /*
  * ---------- Issue #26: per-network switch panel ----------
  *
@@ -13364,47 +13341,6 @@ document.getElementById("pkg-recipe-form").addEventListener("submit", async (eve
 		renderTree();
 	} catch (e) {
 		showStatus("Failed to add recipe " + name + ": " + e.message, true);
-	}
-});
-
-document.getElementById("pkg-bootstrap-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const toolchainPath = document.getElementById("pkgf-toolchain-path").value.trim();
-	const body = toolchainPath ? { toolchain_path: toolchainPath } : {};
-
-	try {
-		await apiRequest("POST", CIX_API.pkgBootstrap(), body);
-		clearStatus();
-		showStatus("Build toolchain image staged.", false);
-		closeModal();
-		await refreshPkgRecipes();
-	} catch (e) {
-		showStatus("Failed to bootstrap build image: " + e.message, true);
-	}
-});
-
-document.getElementById("pkg-install-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const name = document.getElementById("pkgf-name").value.trim();
-	const image = document.getElementById("pkgf-image").value.trim();
-	const upgrade = document.getElementById("pkgf-upgrade").checked;
-	const body = { name: name };
-
-	if (image !== "")
-		body.image = image;
-	if (upgrade)
-		body.upgrade = true;
-
-	try {
-		await apiRequest("POST", CIX_API.pkgInstall(), body);
-		clearStatus();
-		document.getElementById("pkg-install-form").reset();
-		closeModal();
-		await refreshPkgList();
-	} catch (e) {
-		showStatus("Failed to start install: " + e.message, true);
 	}
 });
 
