@@ -6,6 +6,38 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A table that does not fit scrolls, and the width rules are written down (#600)
+
+`web-ux-guidelines.md` had a *Responsiveness* section whose entire content was that responsiveness
+was not specified. Three of the four things #600 asks for are decidable without anyone being
+consulted, and they are written now; the fourth is named as the owner's and left open.
+
+**The defect was unreachable columns, not awkward ones.** Below `max-width: 720px`,
+`#content-scroll` goes `overflow: visible` — and the document does not scroll horizontally either,
+so a table wider than the viewport put its right-hand columns somewhere no gesture could reach.
+Measured across **twenty views at 500px**: exactly one did it, the Storage table, by 22px. At 768,
+1024 and 1440 nothing overflows at all, which is a better starting state than the issue assumed.
+
+**One rule fixes it**: below the breakpoint every `table` is `display: block; overflow-x: auto`, so
+it scrolls inside its own box while the page does not. That is what the Pipeline page has done since
+#598, so the dashboard now has one answer rather than two. Dropping columns by priority was the
+alternative and was rejected — it needs an authored priority list for each of 62 tables, and it hides
+data rather than moving it.
+
+**The tree's narrow behaviour was already decided and never written down**: hidden below the
+breakpoint, disclosed by the header button, full width when open, because at that size it is the page
+rather than a sidebar. The reasoning was in a CSS comment, which is not where a binding standard
+lives.
+
+**And the check is a measurement, not a reading**: no element may extend past the viewport unless an
+ancestor scrolls on purpose — `getBoundingClientRect().right` against `innerWidth`, walking up for a
+scrolling ancestor. Run it after any layout change.
+
+Left open deliberately: **the narrowest width this dashboard supports.** An operator's console is not
+a phone, and whether it should work like one is a decision about who the dashboard is for rather than
+a fact to measure. Twenty views are clean at 500px, which is the floor headless Chromium allows here,
+so nothing below that has been tested and nothing should be designed for it yet.
+
 ### A list that has not been read says so (#592)
 
 The Primitives board's third state, built after the measurement in the entry below.

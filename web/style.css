@@ -2885,6 +2885,33 @@ pre {
 	}
 }
 
+/*
+ * A TABLE THAT DOES NOT FIT SCROLLS IN ITS OWN BOX; THE PAGE NEVER
+ * SCROLLS SIDEWAYS (#600).
+ *
+ * Below this breakpoint `#content-scroll` goes `overflow: visible`, so
+ * a table wider than the viewport simply escaped it -- and because the
+ * page itself does not scroll horizontally either (`body.scrollWidth`
+ * equals the viewport), those columns were not merely awkward, they
+ * were UNREACHABLE. Measured across twenty views at 500px on
+ * 2026-10-11: exactly one did it, the Storage table, by 22px.
+ *
+ * Two rules were available and this is the one the Pipeline page
+ * already follows (`.delivery-graph` has scrolled since #598), so
+ * choosing it leaves one rule rather than two. The alternative --
+ * dropping columns by priority -- needs an authored priority list per
+ * table, which is 62 judgements, and hides data rather than moving it.
+ *
+ * `display: block` is what makes the table its own scroll container;
+ * its internal rows and cells keep their own table layout inside.
+ */
+@media (max-width: 720px) {
+	table {
+		display: block;
+		overflow-x: auto;
+	}
+}
+
 @media (max-width: 720px) {
 	.detail-table th.field-label {
 		width: 42%;

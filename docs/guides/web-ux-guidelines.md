@@ -141,7 +141,15 @@ Four rules, because three of the widgets above are data marks and a chart gone w
 
 ## Responsiveness
 
-Deliberately not specified yet, and said here rather than left as a silence: the dashboard commits to exactly one layout breakpoint (`max-width: 720px`, five rules in `style.css`), and this document has never named the widths it supports, what a too-wide table does, or what the tree does when the window is narrow. Naming them is a decision about who this dashboard is for, which is [#600](https://git.home.arpa/itdlabs/cix/issues/600)'s subject. Until it is answered, do not add a second breakpoint: one undocumented breakpoint is a gap, two are a drift.
+**One breakpoint, `max-width: 720px`, and it is the whole vocabulary.** Do not add a second: one breakpoint is a decision, two are a scale nobody is maintaining. Three of the four questions [#600](https://git.home.arpa/itdlabs/cix/issues/600) asks are settled below; the fourth is the owner's and is marked as such.
+
+**A table that does not fit scrolls in its own box, and the page never scrolls sideways.** Below the breakpoint every `table` is `display: block; overflow-x: auto`. The alternative — dropping columns by priority — was rejected: it needs an authored priority list per table (62 of them), and it hides data rather than moving it. This is also what the Pipeline page has done since [#598](https://git.home.arpa/itdlabs/cix/issues/598), so there is one rule rather than two. **The defect it fixes was real and unreachable, not merely awkward**: `#content-scroll` goes `overflow: visible` at this width and the document does not scroll horizontally either, so a table wider than the viewport had columns that could not be reached by any means. Measured across twenty views at 500px on 2026-10-11: exactly one did it, Storage, by 22px.
+
+**The tree is hidden below the breakpoint and disclosed by the header button**, taking the full width when open, because at that size it is the page rather than a sidebar. It is first in source order, so leaving it visible fills the first screen and the page looks empty until you scroll past all of it.
+
+**What is checked:** no element may extend past the viewport unless an ancestor scrolls horizontally on purpose, at any supported width. That is a browser measurement, not a reading — `getBoundingClientRect().right` against `innerWidth`, walking up for a scrolling ancestor — and it is the check to run after any layout change.
+
+**Still the owner's: the narrowest width this dashboard supports.** An operator's console is not a phone, so "works on a phone" may legitimately not be a goal. What is measured rather than decided: twenty views are clean at 500px and above, which is the floor headless Chromium allows here, so nothing below that has been tested. Until it is named, treat 500px as the floor the gate holds and do not design for less.
 
 ## Reference implementations
 
