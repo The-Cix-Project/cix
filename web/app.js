@@ -8659,45 +8659,14 @@ async function removeDnsRecord(name) {
 
 /* ---------- DNS Servers ---------- */
 
+/* Generated (#592). */
 function renderDnsServers(servers) {
-	const body = document.getElementById("dns-servers-body");
-
-	body.textContent = "";
-	if (servers.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 3;
-		cell.className = "empty";
-		cell.textContent = emptyStateText("listDnsServers", "DNS servers", "No DNS server bindings");
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const s of servers) {
-		const row = document.createElement("tr");
-
-		const containerCell = document.createElement("td");
-		containerCell.textContent = s.container;
-		row.appendChild(containerCell);
-
-		const pathCell = document.createElement("td");
-		pathCell.textContent = s.hosts_path;
-		row.appendChild(pathCell);
-
-		const actionCell = document.createElement("td");
-		const rmButton = document.createElement("button");
-
-		rmButton.textContent = "Unregister";
-		gateAction(rmButton, "deleteDnsServer");
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removeDnsServer(s.container));
-		actionCell.appendChild(rmButton);
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
+	renderTable(document.getElementById("dns-servers"), "DnsServer", servers, [
+		"container",
+		{ field: "hosts_path", label: "Hosts path" },
+		{ label: "", actions: (s) => [unregisterButton("deleteDnsServer",
+		    () => removeDnsServer(s.container))] },
+	], { op: "listDnsServers", what: "DNS servers", empty: "No DNS server bindings" });
 }
 
 async function refreshDnsServers() {
@@ -8718,45 +8687,16 @@ async function removeDnsServer(container) {
 
 /* ---------- LDAP Servers (task #725) ---------- */
 
+/* Generated (#592). `listLdapServers` has `response: null`, so the
+ * contract describes neither column; the cells are still one code
+ * path with one empty state. */
 function renderLdapServers(servers) {
-	const body = document.getElementById("ldap-servers-body");
-
-	body.textContent = "";
-	if (servers.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 3;
-		cell.className = "empty";
-		cell.textContent = emptyStateText("listLdapServers", "LDAP servers", "No LDAP server bindings");
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const s of servers) {
-		const row = document.createElement("tr");
-
-		const containerCell = document.createElement("td");
-		containerCell.textContent = s.container;
-		row.appendChild(containerCell);
-
-		const pathCell = document.createElement("td");
-		pathCell.textContent = s.config_path;
-		row.appendChild(pathCell);
-
-		const actionCell = document.createElement("td");
-		const rmButton = document.createElement("button");
-
-		rmButton.textContent = "Unregister";
-		gateAction(rmButton, "deleteLdapServer");
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removeLdapServer(s.container));
-		actionCell.appendChild(rmButton);
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
+	renderTable(document.getElementById("ldap-servers"), "LdapServer", servers, [
+		"container",
+		{ field: "config_path", label: "Config path" },
+		{ label: "", actions: (s) => [unregisterButton("deleteLdapServer",
+		    () => removeLdapServer(s.container))] },
+	], { op: "listLdapServers", what: "LDAP servers", empty: "No LDAP server bindings" });
 }
 
 async function refreshLdapServers() {

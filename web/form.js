@@ -817,6 +817,10 @@ function tableCell(schema, row, col) {
 			cell.appendChild(el);
 		return cell;
 	}
+	if (typeof col === "object" && col.text !== undefined) {
+		cell.textContent = col.text(row);
+		return cell;
+	}
 
 	const name = typeof col === "string" ? col : col.field;
 	const text = fieldText(schemaField(schema, name), row[name]);
@@ -856,6 +860,14 @@ function tableCell(schema, row, col) {
  *   { field, link: (row) => "#..." }        text inside a tree link
  *   { field, badge: (value, row) => kind }  text inside a status badge
  *   { label, actions: (row) => [el, ...] }  authored controls, no field
+ *   { label, text: (row) => "..." }         a cell that is not one field
+ *
+ * That last form is the narrow escape hatch and is meant to stay
+ * narrow: it exists for a cell with NO single field behind it -- a
+ * DHCP range is `range_start – range_end`, two fields joined, and the
+ * join is judgement. It is not for re-wording one field, because that
+ * is how three tables came to spell one boolean three ways. If a cell
+ * names exactly one field, it takes its text from the field.
  *
  * `state` is `{ op, what, empty, key?, extra? }` -- the operation this
  * list is read by, its subject, and the sentence for "it answered and
