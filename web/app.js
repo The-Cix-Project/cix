@@ -3425,58 +3425,38 @@ function ensureActiveCategoryExpanded() {
 
 /* ---------- Containers ---------- */
 
+/*
+ * Generated (#592) -- the dashboard's headline table, and the whole of
+ * it is a link, a badge, a field, one derived cell and a button.
+ *
+ * The IP column is derived because `networks` is an array of OBJECTS:
+ * `fieldText` has nothing useful to say about one, and `name:ip` joined
+ * by commas is a judgement about what an operator wants at a glance.
+ *
+ * `containerStatusKind()` is what maps a container's own status word
+ * to one of the four badge kinds, and it stays in app.js because that
+ * mapping is this domain's knowledge -- `statusBadge` takes a kind,
+ * never a domain's state (#592, where `exited` was rendering grey in
+ * this very table while the tree showed it red).
+ */
 function renderContainers(containers) {
-	const body = document.getElementById("containers-body");
+	renderTable(document.getElementById("containers"), "Container", containers, [
+		{ field: "name", link: (c) => "#containers/" + encodeURIComponent(c.name) },
+		{ field: "status", badge: (s) => containerStatusKind(s) },
+		"image",
+		{ label: "IP", text: (c) => (c.networks && c.networks.length > 0
+			? c.networks.map((n) => n.name + ":" + n.ip).join(", ")
+			: FIELD_ABSENT) },
+		{ label: "", actions: (c) => {
+			const rm = document.createElement("button");
 
-	body.textContent = "";
-	if (containers.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 5;
-		cell.className = "empty";
-		cell.textContent = emptyStateText("listContainers", "containers", "No containers");
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const c of containers) {
-		const row = document.createElement("tr");
-
-		const nameCell = document.createElement("td");
-		nameCell.appendChild(treeLink("#containers/" + encodeURIComponent(c.name), c.name, ""));
-		row.appendChild(nameCell);
-
-		const statusCell = document.createElement("td");
-		const statusSpan = document.createElement("span");
-
-		statusSpan.textContent = c.status;
-		statusSpan.className = statusBadge(containerStatusKind(c.status));
-		statusCell.appendChild(statusSpan);
-		row.appendChild(statusCell);
-
-		const imageCell = document.createElement("td");
-		imageCell.textContent = c.image;
-		row.appendChild(imageCell);
-
-		const ipCell = document.createElement("td");
-		ipCell.textContent =
-			c.networks && c.networks.length > 0 ? c.networks.map((n) => n.name + ":" + n.ip).join(", ") : "-";
-		row.appendChild(ipCell);
-
-		const actionCell = document.createElement("td");
-		const rmButton = document.createElement("button");
-
-		rmButton.textContent = "Remove";
-		gateAction(rmButton, "deleteContainer");
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removeContainer(c.name));
-		actionCell.appendChild(rmButton);
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
+			rm.textContent = "Remove";
+			rm.className = "button-danger";
+			gateAction(rm, "deleteContainer");
+			rm.addEventListener("click", () => removeContainer(c.name));
+			return [rm];
+		} },
+	], { op: "listContainers", what: "containers", empty: "No containers" });
 }
 
 /*
