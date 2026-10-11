@@ -151,6 +151,7 @@ int main(void)
 	char *app = slurp("web/app.js");
 	char *html = slurp("web/index.html");
 	char *css = slurp("web/style.css");
+	char *form = slurp("web/form.js");
 	const char *p = app;
 	const char *tree = strstr(app, "const topLevel = [");
 	int checked = 0, tabbed_checked = 0;
@@ -942,18 +943,37 @@ next:
 	 * checked as its PREFIX: at least one class in the stylesheet must
 	 * start with it. That catches a whole family going missing without
 	 * pretending to know what the runtime will append.
+	 *
+	 * THREE SOURCES, not one, and the third is the reason this was
+	 * widened (#592): `renderTable`'s columns may carry `cls`, so a
+	 * caller in app.js can now name a class in a place no
+	 * `className = "` ever appears -- and form.js sets classes of its
+	 * own. form.js's own comment claimed this gate would refuse a
+	 * `cls` naming nothing, which was simply false while the gate read
+	 * one file and one spelling. A comment asserting a mechanism is a
+	 * claim, so the mechanism is what gets fixed.
 	 */
 	{
-		const char *p2 = app;
+		struct { const char *text; const char *needle; } sources[] = {
+			{ app, "className = \"" },
+			{ form, "className = \"" },
+			{ app, "cls: \"" },
+		};
+		size_t si;
+		const char *p2;
 		int orphans = 0;
+		int scanned = 0;
 		char first[96] = "";
 
-		while ((p2 = strstr(p2, "className = \"")) != NULL) {
+		for (si = 0; si < sizeof(sources) / sizeof(sources[0]); si++)
+		for (p2 = sources[si].text;
+		     (p2 = strstr(p2, sources[si].needle)) != NULL; ) {
 			char names[256];
 			size_t n = 0;
 			char *tok;
 
-			p2 += strlen("className = \"");
+			p2 += strlen(sources[si].needle);
+			scanned++;
 			while (*p2 != '"' && *p2 != '\n' && n + 1 < sizeof(names))
 				names[n++] = *p2++;
 			names[n] = '\0';
@@ -973,7 +993,8 @@ next:
 					snprintf(needle, sizeof(needle), ".%s", tok);
 					if (strstr(css, needle) != NULL)
 						continue;
-				} else if (mentions_class(css, tok) || mentions_class(app, tok)) {
+				} else if (mentions_class(css, tok) || mentions_class(app, tok) ||
+					   mentions_class(form, tok)) {
 					/*
 					 * Styles something, or SELECTS something. Both are
 					 * real jobs: `file-row-path` is never styled and is
@@ -991,11 +1012,24 @@ next:
 			char n[32];
 
 			snprintf(n, sizeof(n), "%d", orphans);
-			fail("web/app.js sets %s class(es) that web/style.css never defines, the "
+			fail("the dashboard sets %s class(es) that web/style.css never defines, the "
 			     "first being \"%s\" -- an element wearing a class with no rule renders "
 			     "as a bare one, which is how a Delete button came to carry no danger "
 			     "styling at all",
 			     n, first);
+		}
+		/* The widening is itself worth asserting: a `cls:` spelling
+		 * that stopped matching would silently reduce this to the
+		 * one-file gate it used to be, and nothing fails when a gate
+		 * is merely absent. */
+		if (scanned < 40) {
+			char n[32];
+
+			snprintf(n, sizeof(n), "%d", scanned);
+			fail("the class-orphan gate found only %s class literals across app.js, "
+			     "form.js and `cls:` columns -- it is not reading what it thinks it "
+			     "is reading%s",
+			     n, "");
 		}
 	}
 	if (g_failures > 0) {

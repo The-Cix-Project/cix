@@ -4165,7 +4165,7 @@ function formatBytes(n) {
  * container name would be misleading here. Rendered distinctly rather
  * than shown as the raw sentinel string. */
 function formatOwner(owner) {
-	if (!owner) return "-";
+	if (!owner) return FIELD_ABSENT;
 	if (owner === "__host") return "host (this daemon)";
 	return owner;
 }
@@ -5505,53 +5505,31 @@ function renderContainerDetail(name) {
 
 /* ---------- Networks ---------- */
 
+/*
+ * Generated (#592). `address` is a plain field and not a cell that
+ * re-words two: the contract says it is *"the host-owned address, or
+ * null when has_address is false"*, and the box agrees -- measured
+ * 2026-10-11, `services` and `access` both answer `"address":null`.
+ * So `fieldText` renders the absent case as the dashboard's own "—"
+ * and the hand-written "(none)", a vocabulary only this table used,
+ * goes with it.
+ */
 function renderNetworks(networks) {
-	const body = document.getElementById("networks-body");
+	renderTable(document.getElementById("networks"), "Network", networks, [
+		{ field: "name", link: (n) => "#networks/" + encodeURIComponent(n.name) },
+		"subnet",
+		{ field: "prefix_len", label: "Prefix" },
+		"address",
+		{ label: "", actions: (n) => {
+			const rm = document.createElement("button");
 
-	body.textContent = "";
-	if (networks.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 5;
-		cell.className = "empty";
-		cell.textContent = emptyStateText("listNetworks", "networks", "No networks");
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const n of networks) {
-		const row = document.createElement("tr");
-
-		const nameCell = document.createElement("td");
-		nameCell.appendChild(treeLink("#networks/" + encodeURIComponent(n.name), n.name, ""));
-		row.appendChild(nameCell);
-
-		const subnetCell = document.createElement("td");
-		subnetCell.textContent = n.subnet;
-		row.appendChild(subnetCell);
-
-		const prefixCell = document.createElement("td");
-		prefixCell.textContent = n.prefix_len;
-		row.appendChild(prefixCell);
-
-		const addressCell = document.createElement("td");
-		addressCell.textContent = n.has_address ? n.address : "(none)";
-		row.appendChild(addressCell);
-
-		const actionCell = document.createElement("td");
-		const rmButton = document.createElement("button");
-
-		rmButton.textContent = "Remove";
-		gateAction(rmButton, "deleteNetwork");
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removeNetwork(n.name));
-		actionCell.appendChild(rmButton);
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
+			rm.textContent = "Remove";
+			rm.className = "button-danger";
+			gateAction(rm, "deleteNetwork");
+			rm.addEventListener("click", () => removeNetwork(n.name));
+			return [rm];
+		} },
+	], { op: "listNetworks", what: "networks", empty: "No networks" });
 }
 
 async function refreshNetworks() {
@@ -10844,57 +10822,39 @@ async function refreshPkiIntermediate() {
 	}
 }
 
+/*
+ * Generated (#592). `sans` needs nothing: it is `type: array` in the
+ * contract, so `fieldText` already joins it and already says "—" for
+ * an empty one, where the hand-written cell said "".
+ *
+ * `owner` keeps `formatOwner()` and is the borderline case for the
+ * `text` hatch -- it is one field, which the hatch is not for, but
+ * what it renders is a RESERVED SENTINEL (`__host`, never a real
+ * container name, ADR-0128) and which strings are sentinels is daemon
+ * knowledge. formatOwner is the one place that knowledge lives, so the
+ * cell defers to it rather than restating it.
+ */
 function renderPkiCerts(certs) {
-	const body = document.getElementById("pki-certs-body");
+	renderTable(document.getElementById("pki-certs"), "PkiCert", certs, [
+		"name",
+		"serial",
+		"not_after",
+		{ field: "sans", label: "SANs" },
+		{ label: "Owner", text: (c) => formatOwner(c.owner) },
+		{ label: "", actions: (c) => {
+			const rm = document.createElement("button");
 
-	body.textContent = "";
-	if (certs.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 6;
-		cell.className = "empty";
-		cell.textContent = emptyStateText("listPkiCerts", "certificates", "No certificates issued");
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const cert of certs) {
-		const row = document.createElement("tr");
-
-		const nameCell = document.createElement("td");
-		nameCell.textContent = cert.name;
-		row.appendChild(nameCell);
-
-		const serialCell = document.createElement("td");
-		serialCell.textContent = cert.serial;
-		row.appendChild(serialCell);
-
-		const notAfterCell = document.createElement("td");
-		notAfterCell.textContent = cert.not_after;
-		row.appendChild(notAfterCell);
-
-		const sansCell = document.createElement("td");
-		sansCell.textContent = (cert.sans || []).join(", ");
-		row.appendChild(sansCell);
-
-		const ownerCell = document.createElement("td");
-		ownerCell.textContent = formatOwner(cert.owner);
-		row.appendChild(ownerCell);
-
-		const actionCell = document.createElement("td");
-		const rmButton = document.createElement("button");
-
-		rmButton.textContent = "Remove";
-		gateAction(rmButton, "deletePkiCert");
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removePkiCert(cert.name));
-		actionCell.appendChild(rmButton);
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
+			rm.textContent = "Remove";
+			rm.className = "button-danger";
+			gateAction(rm, "deletePkiCert");
+			rm.addEventListener("click", () => removePkiCert(c.name));
+			return [rm];
+		} },
+	], {
+		op: "listPkiCerts",
+		what: "certificates",
+		empty: "No certificates issued",
+	});
 }
 
 async function refreshPkiCerts() {
