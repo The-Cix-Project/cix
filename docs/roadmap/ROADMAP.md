@@ -2445,6 +2445,70 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 278 (done): nine hand-written patterns validated nothing, and the first three generated forms (#592 epic, #596, ADR-0338, 0.2.57-495 and -496)
+
+Story 4 of #592, begun by classifying all of it before converting any of it -- which is what found
+the defect.
+
+**Nine of the eleven `pattern` attributes in `index.html` validated nothing at all.** A browser
+compiles `<input pattern>` with the regex `v` flag, `[A-Za-z0-9_-]` is a SyntaxError there, and the
+HTML spec **skips** a pattern it cannot compile -- silently, so the field accepts anything and the
+daemon refuses it on submit. The contract's 27 patterns were corrected the day that flag was found
+(0.2.57-488) and `test_apigen` gates them; the markup's nine were missed, and the reason is worth
+more than the fix: **the gate was written where the generator is, not where the hand-written HTML
+is.** A rule enforced on generated output says nothing about hand-written output, and a dashboard
+that is half-generated has both.
+
+Measured in Chromium before and after by asking real `<input>` elements, which is the only
+instrument that can answer this: all nine threw under `v` and returned `checkValidity() === true`
+for `has space` and `a/b`; with `\-` all nine compile, refuse the same junk, and still accept a real
+name. The fields are the **container, network, device-map, LDAP group, volume, package-source,
+repository, container-recipe and package names** -- every name an operator types by hand.
+`test_web_tree` now refuses a bare `-]` in `index.html` too, textually, the same instrument
+`test_apigen` uses.
+
+**And `createNetwork` had two forms, with the generated one reachable from nowhere.**
+`NetworkCreateRequest` was the one fully-titled form schema, the renderer had been built against it,
+and a render of it had gone into a report -- while `openForm("createNetwork")` was called from
+nowhere in `app.js`, so **New Network still opened the hand-written modal.** Two create-network
+forms, which is the parallel implementation the maxims forbid, and the proof of the good one had
+been taken by driving the renderer rather than by clicking the control an operator clicks. The
+lesson is recorded in the guidelines as its own worked example: **drive the real control.**
+
+**Three forms are generated now** -- `createNetwork`, `createDeviceMap` and `createVolume` -- and
+each was three attributes and two deletions, because every menu item already named its operation in
+`data-op`. Two of their fields went opposite ways and together they are ADR-0338's argument:
+`DeviceMapCreateRequest.name` described its charset in prose and carried **no** `pattern`, so
+converting as-is would have lost a constraint the markup had, and the pattern moved into the
+contract; `VolumeCreateRequest.name` is the reverse, a pattern the contract had all along and the
+hand-written form never carried, so the generated field is **stricter than what it replaces**. The
+form-level hint paragraphs moved into the fields they were about, which is the rule the guidelines
+already state. `kind` renders as a real `<select>` from its `enum`, showing `exact` and
+`vendor_model` where the markup showed friendlier labels -- a second vocabulary for the same two
+values with nowhere in the contract to live, so the explanation moved into the hint instead.
+
+**A gate before the first conversion, rather than after the first dead menu entry.** The header menu
+opens a modal by attribute, so deleting `<div id="modal-x">` leaves a menu item that opens nothing,
+and neither the class-orphan gate nor the retired-spelling gate can see an attribute pointing at an
+id. `test_web_tree` checks every `data-modal` target resolves. That is exactly the shape #598's three
+surviving media-query rules had, and refusing to repeat it cost one check.
+
+Verified against the deployed bytes at both releases: 495 and 496 fetched over HTTP from
+192.168.15.95 and driven in Chromium by clicking the real menu items. Zero bare `-]` in the served
+markup; the eight remaining hand-written name fields all compile under `v` and refuse junk; and the
+three converted menus open the generated form with the contract's own titles, `Kind` as a `<select>`,
+and every patterned input refusing `has space`. Both releases booted clean (slot b then slot a,
+health ok, 12/12 containers).
+
+**What is left, measured rather than estimated.** 57 form submit handlers call a known operation --
+20 modals and 37 inline settings forms, so #596's "~26" is the modal half -- and 55 of 57 operations
+already have a generated request schema. Two groups are contract decisions rather than conversions:
+six whose operation takes a **path parameter the operator types** (`PUT /system/sysctl/{key}`), which
+a body-schema renderer has no field for, and six with a **select populated from live data**, where
+the contract holds a plain string and the generated control would be a free-text box.
+`createContainer` is 45 fields. `createPkiCert` looks convertible and is not: it has a post-success
+panel that renders the issued certificate, which is an `after` problem rather than a field problem.
+
 ## Part 277 (done): the Pipeline page's private namespace, and the two instruments that both reported clean (#592 epic, #598, 0.2.57-492 through -494)
 
 Story 6 of #592, and the last filed violation of `web-ux-guidelines.md`: the Pipeline page carried its
