@@ -2445,6 +2445,73 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 277 (done): the Pipeline page's private namespace, and the two instruments that both reported clean (#592 epic, #598, 0.2.57-492 through -494)
+
+Story 6 of #592, and the last filed violation of `web-ux-guidelines.md`: the Pipeline page carried its
+own `dg-*` vocabulary -- 48 selectors in `style.css` and 35 identifiers in `app.js`, comments excluded,
+measured per commit rather than quoted from the issue -- a parallel visual system beside the
+dashboard's own, which is the thing the No Parallel Implementations maxim names.
+
+**The gate came first, because nothing counted them.** "The gate will say when it is done" was the only
+definition of done the epic offered and no gate existed, so `test_web_tree` gained one: every class
+`app.js` sets must either be defined in `style.css` or be selected on in `app.js`. The second clause is
+load-bearing and the first draft lacked it -- `file-row-*` are query hooks that deliberately style
+nothing, so a rule saying only "must be styled" would have failed four correct classes. It found six
+genuine orphans straight away, **four of them product defects**: a volume's **Delete** button wore an
+undefined `danger`, so the most destructive control on that page rendered as an ordinary button; the
+pipeline's cancel wore `btn-small`; container service actions wore `secondary`; and a failed
+schedule run's cell wore `cell-error`.
+
+**The collapse split four ways, and the split is what is worth copying.** Three were *re-inventions* of
+a widget that already existed -- `dg-toolbar` was `.list-toolbar` with a different gap, `dg-search` was
+its search input with different numbers, and `dg-log` was `.log-output` **without its monospace stack**,
+so a build log, the one thing on that page that is machine output, rendered in the body face. Three were
+*one idiom under three names*: `dg-section-head` at 11px, `dg-h` at 12px and `dg-drawer-h` at 10px, all
+uppercase, all tracked, all muted, all naming a group of things -- three sizes nobody had decided, now
+`.section-label` with a vocabulary row. Two were *real widgets this dashboard lacked a name for* and got
+promoted rather than deleted: the **stage mark** and the **legend**, the stage mark's four semantic
+colours turning out to be the badge's four exactly, so it reuses those meanings rather than inventing a
+fifth. The rest were plain renames.
+
+**And two were a composition, which is why the last 19 were not a sweep.** The row grid was a table
+drawn with divs: `dg-row` a four-column `grid-template-columns`, `dg-row-header` *another div* wearing
+the same grid, and `dg-name`/`dg-ver`/`dg-why`/`dg-lane` its cells -- so the page had a header row and
+**no `<th>` anywhere**, and once it became a real `<table class="pipeline-table">` with a `<thead>` it
+gained the NAME / VERSION / WHY column headings it had never had. Drift became a table too, its pill
+became `statusBadge()`, and the runs box became `.log-output` with `.log-entry`/`.log-entry-error` rows,
+so a failed run is red because the log vocabulary already says so. The drawer became the **detail
+panel**, a vocabulary row rather than a modal: it sits beside the grid deliberately, so two rows can be
+compared, and a modal covers the thing being compared.
+
+**Then the finding that outlives the refactor: three rules survived, and both instruments reported
+clean.** `.dg-row` and `.dg-row-header` sat in one narrow-viewport media query and `.dg-lane` in
+another, styling a grid of divs that had become a table an hour earlier -- and "`dg-` is now zero
+classes" was committed as fact. The orphan gate looks one way, at a class `app.js` *sets*, and nothing
+was setting these; the count that said zero was `grep -oE '^\.dg-'`, and **a rule indented inside a
+media query does not match an anchored pattern**. The same grep without the anchor found all three at
+once. That is the `grep | head -1` trap this project already records, in a stylesheet: a read that
+returns something plausible for a question slightly different from the one asked. The fix is
+`test_naming`'s instrument rather than a cleverer analysis -- `dg-` is a retired spelling and
+`test_web_tree` now fails it on any non-comment line of `style.css`, `app.js` or `index.html`, with
+comments exempt because every rule the collapse replaced is recorded in one saying what it was. What
+replaced the three is a single `min-width: 44rem`, so the container's existing horizontal scroll
+engages and the table keeps its shape at phone width; a pipeline row is a name, a version, a stage
+track and a reason, and a stage track read one stage per line is not a track. `.delivery-graph` was
+also declared twice -- `display: flex` from when it was lanes of boxes, `display: block` added below
+when it became rows -- so three of its five declarations had been inert for two releases; one rule now.
+
+Verified by rendering, not by reading. The Pipeline page was driven with the same stub data through the
+same Chromium harness from both trees, and the driver asserted what it found rather than leaving it to
+a screenshot: **62 `dg-` classes in the live DOM before and 0 after, 4 tables, 8 rows and 16 `<th>`
+where there had been none, no console errors either side**, and the "after" run was against the bytes
+192.168.15.95 itself serves on 0.2.57-493, fetched over HTTP. A 390px render confirmed the scroll
+engages and the drift table renders in full. A fourth check came back negative and is recorded rather
+than dropped: `hyphens: auto` does not fix `authenticate` wrapping to "AUTHENTI"/"CATE", because
+`overflow-wrap: anywhere` breaks at the overflow point before any hyphenation opportunity is consulted
+-- the declaration was reverted and the measurement left in the comment. 492 and 493 are deployed and
+live (slot a then slot b, health ok, 12/12 containers each); 494 carries the three-rule fix and the
+retired-spelling gate.
+
 ## Part 276 (done): the revamp, built to the owner's canvas (#592 epic, #596, ADR-0338, 0.2.57-489 through -491)
 
 The owner, after six screenshots of the converted forms: *"Claude, I thought we're redoing the UI
