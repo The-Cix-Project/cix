@@ -6568,47 +6568,36 @@ function renderImageDetailManifest(name, data) {
  * current_version highlighted. Read-only: a version is only ever
  * produced by an install/upgrade/delete or the rolling auto-rebuild
  * trigger (task #720), never created or removed directly here. */
+/*
+ * Generated (#592). `created_at` needs no formatting here at all:
+ * `ImageVersionHistoryEntry.created_at` carries `format:
+ * unix-seconds`, so the renderer reads the contract and the hand-rolled
+ * `formatInstant()` call goes with the cell.
+ *
+ * "current" was a bare `<strong>`, and the Primitives board has a
+ * widget for it: a badge carries a value the daemon reported, and
+ * which version is current is reported (`current_version`). So it is
+ * a badge now -- derived, because currentness is a comparison between
+ * two fields rather than a field of its own.
+ */
 function renderImageDetailVersions(name, data) {
-	const body = document.querySelector("#imgd-versions tbody");
-	const versions = Array.isArray(data.versions) ? data.versions : [];
-	const currentVersion = data.current_version || "";
+	const current = data.current_version || "";
 
-	body.textContent = "";
-	if (versions.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 3;
-		cell.className = "empty";
-		cell.textContent = "No version history";
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const v of versions) {
-		const row = document.createElement("tr");
-		const isCurrent = v.version === currentVersion;
-
-		const versionCell = document.createElement("td");
-		versionCell.textContent = v.version;
-		row.appendChild(versionCell);
-
-		const createdCell = document.createElement("td");
-		createdCell.textContent = formatInstant(v.created_at);
-		row.appendChild(createdCell);
-
-		const statusCell = document.createElement("td");
-		if (isCurrent) {
-			const badge = document.createElement("strong");
-
-			badge.textContent = "current";
-			statusCell.appendChild(badge);
-		}
-		row.appendChild(statusCell);
-
-		body.appendChild(row);
-	}
+	renderTable(document.querySelector("#imgd-versions"),
+	    "ImageVersionHistoryEntry",
+	    Array.isArray(data.versions) ? data.versions : [], [
+		"version",
+		{ field: "created_at", label: "Created" },
+		{ label: "Status",
+		  text: (v) => (v.version === current ? "current" : ""),
+		  badge: () => "ok" },
+	], {
+		op: "getImage",
+		key: "image-detail-versions",
+		extra: name,
+		what: "this image's version history",
+		empty: "No version history",
+	});
 }
 
 /* Installed-on-this-image packages, with a per-row Remove -- same
@@ -11067,72 +11056,53 @@ function renderPackageDetail(name) {
  * needs). Delete here is real, per-version (removePkgRecipe(name,
  * v.version)) -- unlike an image's own immutable version history, a
  * package recipe version genuinely can be deleted on its own. */
+/*
+ * Generated (#592), and the rolling-candidate mark becomes a badge in
+ * its own column rather than a `<strong>` appended inside the version
+ * cell -- the vocabulary's widget for "a value the daemon reported",
+ * which is exactly what this is.
+ *
+ * WHAT IT MARKS IS WORTH KEEPING: the DAEMON's own ADR-0107
+ * resolution, cached from the name-only recipe GET, never a
+ * client-side guess. The first version of this mark sat on the
+ * newest-published row (`i === 0` after the created_at sort) on the
+ * assumption that versions are only ever published in increasing
+ * order, and that broke the session it shipped -- gcc published
+ * 6.4.0-5 after 16.2.0-5, the daemon resolves 16.2.0-5, and the mark
+ * sat on 6.4.0-5 until the owner asked what the criteria actually
+ * were. Until the resolution has loaded there is no mark at all: an
+ * honest blank over a guess, and the post-load re-render fills it in.
+ */
 function renderPackageDetailVersions(name, allVersions) {
-	const body = document.querySelector("#pkgd-versions tbody");
-	const versions = [...allVersions].sort((a, b) => b.created_at - a.created_at);
+	renderTable(document.querySelector("#pkgd-versions"), "PkgRecipe",
+	    [...allVersions].sort((a, b) => b.created_at - a.created_at), [
+		"version",
+		{ label: "Rolling",
+		  text: (v) => (pkgRecipeContentCache.name === name &&
+		                v.version === pkgRecipeContentCache.version
+			? "candidate" : ""),
+		  badge: () => "ok" },
+		"changelog",
+		{ field: "created_at", label: "Created" },
+		{ label: "", actions: (v) => {
+			const view = document.createElement("button");
+			const rm = document.createElement("button");
 
-	body.textContent = "";
-	if (versions.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+			view.textContent = "View…";
+			view.addEventListener("click", () => viewPkgRecipeVersion(v.name, v.version));
 
-		cell.colSpan = 4;
-		cell.className = "empty";
-		cell.textContent = "No recipe on file for this name";
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	versions.forEach((v) => {
-		const row = document.createElement("tr");
-
-		const versionCell = document.createElement("td");
-		versionCell.textContent = v.version;
-		/* The badge marks the DAEMON's own ADR-0107 resolution (cached
-		 * from the name-only recipe GET), never a client-side guess.
-		 * The first version of this badge marked the newest-published
-		 * row (i === 0 after the created_at sort) on the assumption
-		 * that versions are only ever published in increasing order --
-		 * broken in practice the very session it shipped (gcc: 6.4.0-5
-		 * published after 16.2.0-5; the daemon resolves 16.2.0-5, the
-		 * old badge sat on 6.4.0-5 -- caught by the user asking what
-		 * the selection criteria actually was). Until the resolution
-		 * has loaded, no badge at all -- honest blank over a guess;
-		 * the post-load re-render fills it in. */
-		if (pkgRecipeContentCache.name === name && v.version === pkgRecipeContentCache.version) {
-			const badge = document.createElement("strong");
-
-			badge.textContent = " (rolling candidate)";
-			versionCell.appendChild(badge);
-		}
-		row.appendChild(versionCell);
-
-		const changelogCell = document.createElement("td");
-		changelogCell.textContent = v.changelog || "-";
-		row.appendChild(changelogCell);
-
-		const createdCell = document.createElement("td");
-		createdCell.textContent = formatInstant(v.created_at);
-		row.appendChild(createdCell);
-
-		const actionCell = document.createElement("td");
-		const viewButton = document.createElement("button");
-
-		viewButton.textContent = "View…";
-		viewButton.addEventListener("click", () => viewPkgRecipeVersion(v.name, v.version));
-		actionCell.appendChild(viewButton);
-
-		const rmButton = document.createElement("button");
-
-		rmButton.textContent = "Delete";
-		gateAction(rmButton, "deletePkgRecipe");
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removePkgRecipe(v.name, v.version));
-		actionCell.appendChild(rmButton);
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
+			rm.textContent = "Delete";
+			rm.className = "button-danger";
+			gateAction(rm, "deletePkgRecipe");
+			rm.addEventListener("click", () => removePkgRecipe(v.name, v.version));
+			return [view, rm];
+		} },
+	], {
+		op: "listPkgRecipes",
+		key: "package-detail-versions",
+		extra: name,
+		what: "this package's recipe versions",
+		empty: "No recipe on file for this name",
 	});
 }
 

@@ -864,13 +864,19 @@ function tableCell(schema, row, col) {
 			cell.appendChild(el);
 		return cell;
 	}
-	if (typeof col === "object" && col.text !== undefined) {
-		cell.textContent = col.text(row);
-		return cell;
-	}
-
-	const name = typeof col === "string" ? col : col.field;
-	const text = fieldText(schemaField(schema, name), row[name]);
+	/*
+	 * WHERE THE STRING COMES FROM is one decision, and what wraps it
+	 * is another -- so `text` no longer returns early. A derived
+	 * string can wear a badge or be a link, which it could not before:
+	 * two tables marked a row with a bare `<strong>` ("current", "(rolling
+	 * candidate)") where the vocabulary has a badge, and neither mark
+	 * is a field, so the only way to render one correctly was to build
+	 * the cell by hand.
+	 */
+	const derived = typeof col === "object" && col.text !== undefined;
+	const name = derived ? null : (typeof col === "string" ? col : col.field);
+	const text = derived ? col.text(row)
+	                     : fieldText(schemaField(schema, name), row[name]);
 
 	if (typeof col === "object" && col.link !== undefined) {
 		cell.appendChild(treeLink(col.link(row), text, ""));
@@ -879,7 +885,13 @@ function tableCell(schema, row, col) {
 	if (typeof col === "object" && col.badge !== undefined) {
 		const span = document.createElement("span");
 
-		span.className = statusBadge(col.badge(row[name], row));
+		/* No text, no badge: an empty badge is a coloured smudge
+		 * asserting something about a row that has nothing to say.
+		 * This is how a "current version" column marks one row and
+		 * leaves the rest alone. */
+		if (text === "")
+			return cell;
+		span.className = statusBadge(col.badge(derived ? text : row[name], row));
 		span.textContent = text;
 		cell.appendChild(span);
 		return cell;
@@ -908,6 +920,13 @@ function tableCell(schema, row, col) {
  *   { field, badge: (value, row) => kind }  text inside a status badge
  *   { label, actions: (row) => [el, ...] }  authored controls, no field
  *   { label, text: (row) => "..." }         a cell that is not one field
+ *
+ * `text` COMPOSES with `link` and `badge`, because where a string
+ * comes from and what wraps it are two separate decisions. `{ label,
+ * text, badge }` is a status marker derived from more than one field
+ * -- which is what "current" is for an image version, where current-
+ * ness is `version === data.current_version` -- and a `text` returning
+ * "" gets no badge at all rather than an empty coloured smudge.
  *
  * and any of them may carry `cls` -- a class the stylesheet already
  * defines, for a column whose content wants one (a sysctl key is

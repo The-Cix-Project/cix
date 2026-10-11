@@ -726,6 +726,27 @@ int main(void)
 		 * asserting: three tables set it from `pkg.error`, which is
 		 * null for every row that is fine, and an attribute set to ""
 		 * is still an attribute. */
+		/*
+		 * `text` + `badge`: a status marker derived from more than one
+		 * field, which is what "current" is for an image version. The
+		 * empty row is the half that matters -- an empty badge is a
+		 * coloured smudge asserting something about a row with nothing
+		 * to say, and both tables that need this mark exactly one row.
+		 */
+		expect(ctx, "a derived string can wear a badge, and \"\" wears none",
+		       "(() => {\n"
+		       "  const t = document.createElement(\"table\");\n"
+		       "  renderTable(t, \"Network\", [{ name: \"a\" }, { name: \"b\" }],\n"
+		       "    [{ label: \"Status\", text: (r) => (r.name === \"a\" ? \"current\" : \"\"),\n"
+		       "       badge: () => \"ok\" }],\n"
+		       "    { op: \"listNetworks\", what: \"networks\", empty: \"none\" });\n"
+		       "  return t.tBodies[0].children.map((r) => {\n"
+		       "    const c = r.children[0];\n"
+		       "    return c.children.length === 0 ? \"bare\"\n"
+		       "      : c.children[0].className + \"/\" + c.children[0].textContent;\n"
+		       "  }).join(\",\");\n"
+		       "})()",
+		       "badge badge-ok/current,bare");
 		expect(ctx, "a title is set only where there is one",
 		       "(() => {\n"
 		       "  const t = document.createElement(\"table\");\n"
