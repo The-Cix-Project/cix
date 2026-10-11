@@ -6,6 +6,34 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The three `dg-` rules that survived, and the gate that would have caught them (#598)
+
+The entry below claims `dg-` is zero classes. It was three: `.dg-row` and `.dg-row-header` in one
+narrow-viewport media query and `.dg-lane` in another, styling a grid of divs that had become a
+`<table>` an hour earlier. Dead CSS for a layout that no longer exists.
+
+**Two instruments both reported clean, for two different reasons.** The class-orphan gate looks one
+way — a class `app.js` SETS that nothing styles — and nothing was setting these, so there was nothing
+to orphan. And the count that said zero was `grep -oE '^\.dg-'`, which **a rule indented inside a
+media query does not match**; the same grep without the anchor found all three immediately. A pattern
+that is right about the shape it was written for and silently wrong about an indented one is the
+`grep | head -1` trap again, in a stylesheet.
+
+**So the gate is `test_naming`'s instrument rather than a smarter analysis.** `dg-` is a retired
+spelling, and `test_web_tree` now fails it on any non-comment line of `style.css`, `app.js` or
+`index.html`. Comments are exempt, because every rule the collapse replaced is recorded in one saying
+what it was, and that record is the finding.
+
+**What replaced them is one rule, not three.** A pipeline row is a name, a version, a stage track and
+a reason; a stage track read one stage per line is not a track. So the table keeps its shape at any
+width and the container scrolls, which `.delivery-graph` already did — `min-width: 44rem` is what
+makes that scroll engage, since a table with percentage columns otherwise shrinks to fit and crushes
+the eight-stage package track into slivers. **And `.delivery-graph` itself was declared twice**: once
+as `display: flex` from when it was lanes of boxes, once as `display: block` added below when it
+became rows, so three of its five declarations had been inert for two releases. One rule now.
+
+Shipped in 0.2.57-494; 493 carries the three dead rules, which style nothing and change no behaviour.
+
 ### `dg-*`: the last 19 were a table and a panel, and now there are none (#598)
 
 The half of the collapse that was not a rename, and both turned out to be a widget the dashboard
@@ -30,6 +58,10 @@ existing class did this, which is what makes it a vocabulary row and not a re-in
 element ids on that page's own controls (`pipeline-search` and friends are renamed too) and the
 comments recording what each class used to be, kept because "it was `.list-toolbar` with a different
 gap" is the finding and the class is gone.
+
+**That sentence was false when first written, and the next entry says why** — three rules survived in
+two media queries, and the count that said zero was a `^\.dg-` grep, which a rule indented inside a
+media query does not match.
 
 Verified the same way as the first half: the orphan gate reports zero, and the page renders from the
 box's own bytes with stub data before and after.

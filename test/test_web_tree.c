@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 static int g_failures;
 
@@ -703,6 +704,73 @@ int main(void)
 		     "the dashboard locks behind, and without them a lapsed session has "
 		     "nowhere to be stated%s%s",
 		     "", "");
+
+	/*
+	 * `dg-` IS A RETIRED SPELLING AND MAY APPEAR ONLY IN COMMENTS
+	 * (#598).
+	 *
+	 * The class-orphan gate below looks one way -- a class `app.js`
+	 * SETS that nothing styles -- and the collapse left the other
+	 * kind behind: `.dg-row`, `.dg-row-header` and `.dg-lane` sat in
+	 * two narrow-viewport media queries, styling a grid of divs that
+	 * had become a <table>. Nothing set them, so nothing complained,
+	 * and a count of `^\.dg-` missed them because a rule inside a
+	 * media query is indented. Dead CSS for a layout that no longer
+	 * exists is exactly the "a class with no rule has nothing saying
+	 * when it is wrong" problem running backwards.
+	 *
+	 * So this is `test_naming`'s instrument rather than a smarter
+	 * analysis: the prefix is retired, and a retired spelling is
+	 * counted. Comments are exempt, because every one of the rules
+	 * this replaced is recorded in a comment saying what it was --
+	 * which is the finding, and deleting it would lose it.
+	 */
+	{
+		struct { const char *name; const char *text; } files[] = {
+			{ "web/style.css", css },
+			{ "web/app.js", app },
+			{ "web/index.html", html },
+		};
+		size_t fi;
+
+		for (fi = 0; fi < sizeof(files) / sizeof(files[0]); fi++) {
+			const char *p = files[fi].text;
+			const char *base = p;
+			int offenders = 0;
+
+			while ((p = strstr(p, "dg-")) != NULL) {
+				const char *line = p;
+				int commented = 0;
+
+				/* `badge-`, `ldg-`: only a real prefix counts. */
+				if (p > base && (isalnum((unsigned char)p[-1]) ||
+						 p[-1] == '_'))
+					goto next;
+				while (line > base && line[-1] != '\n')
+					line--;
+				while (*line == ' ' || *line == '\t')
+					line++;
+				if (line[0] == '*' ||
+				    (line[0] == '/' && (line[1] == '*' || line[1] == '/')) ||
+				    (line[0] == '<' && line[1] == '!' && line[2] == '-'))
+					commented = 1;
+				if (!commented)
+					offenders++;
+next:
+				p += 1;
+			}
+			if (offenders > 0) {
+				char n[16];
+
+				snprintf(n, sizeof(n), "%d", offenders);
+				fail("%s carries the retired `dg-` prefix on %s non-comment "
+				     "line(s) -- the Pipeline page's private namespace was "
+				     "collapsed into the dashboard's own vocabulary, and a "
+				     "leftover rule styles a layout that is gone",
+				     files[fi].name, n);
+			}
+		}
+	}
 
 	/*
 	 * EVERY CLASS app.js SETS MUST BE DEFINED IN style.css (#598).

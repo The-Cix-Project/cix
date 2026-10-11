@@ -3001,15 +3001,18 @@ pre {
  * own palette would be a second theme to keep in sync with the first,
  * and would be wrong in dark mode the moment anyone stopped looking.
  */
+/* #371: the delivery graph is rows, not lanes of boxes. A row is one
+   thing; the columns are its pipeline's stages, filled to where it is.
+   It was `display: flex` with a gap and `align-items` when it was lanes
+   of boxes, and a second `.delivery-graph { display: block }` was added
+   below when it became rows rather than editing this one -- so three of
+   the five declarations here had been inert for two releases. One rule
+   now, which is what the duplicate should have been (#598). */
 .delivery-graph {
-	display: flex;
-	gap: 12px;
-	align-items: flex-start;
+	display: block;
 	overflow-x: auto;
 	padding: 4px 0 10px 0;
 }
-/* #371: the delivery graph is rows, not lanes of boxes. A row is one
-   thing; the columns are its pipeline's stages, filled to where it is. */
 /*
  * What the Pipeline page's own toolbar, search box and log used to be
  * (#598). `.dg-toolbar` was `.list-toolbar` with a different gap,
@@ -3039,7 +3042,6 @@ pre {
 	font-weight: 600;
 }
 
-.delivery-graph { display: block; overflow-x: auto; }
 /*
  * A SMALL-CAPS LABEL: the dashboard's name for a group of things, as
  * distinct from a heading you would read as a sentence.
@@ -3221,15 +3223,24 @@ pre {
 .legend-key.legend-todo { border-left-color: var(--border); }
 .legend-key.legend-na { border-left-color: var(--muted); border-left-style: dotted; }
 
-@media (max-width: 720px) {
-	.dg-row { grid-template-columns: 1fr; gap: var(--s1); }
-	.dg-row-header { display: none; }
-}
-
-@media (max-width: 720px) {
-	.delivery-graph { flex-direction: column; }
-	.dg-lane { min-width: 0; }
-}
+/*
+ * NARROW VIEWPORTS: the table keeps its shape and the page scrolls to
+ * it (#598).
+ *
+ * This used to be two media queries collapsing `.dg-row` to one column
+ * and hiding `.dg-row-header` -- correct for a grid of divs, and dead
+ * the moment that grid became a <table>, which a stylesheet cannot
+ * notice. The class-orphan gate does not catch this shape either: it
+ * judges classes `app.js` SETS, and nothing was setting these.
+ *
+ * A pipeline row is a name, a version, a stage track and a reason, and
+ * a stage track read one stage per line is not a track. So it stays a
+ * table and the container scrolls, which `.delivery-graph` already
+ * does -- the min-width is what makes that scroll engage, since a
+ * table with percentage columns otherwise shrinks to fit and crushes
+ * the eight-stage package track into unreadable slivers.
+ */
+.pipeline-table { min-width: 44rem; }
 
 /*
  * Software > Build > Overview (#407).
