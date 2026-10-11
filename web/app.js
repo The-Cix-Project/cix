@@ -962,18 +962,57 @@ function opForRequest(method, path) {
 }
 
 /*
- * #548: reads this session was refused -- by the pre-check or by the
- * daemon -- keyed by operation, cleared when the same read succeeds.
- * What a panel's empty state reads (emptyStateText()), so a refused
- * read is never shown as "No <things>" (#538's claim about a host that
- * was not asked).
+ * #548: reads that did not succeed -- refused by the pre-check or by
+ * the daemon, or failed outright -- keyed by operation, cleared when
+ * the same read succeeds. What a panel's empty state reads
+ * (emptyStateText()), so a read that did not happen is never shown as
+ * "No <things>" (#538's claim about a host that was not asked).
+ *
+ * It was `refusedReads` and held 401/403 only, which left a 500, a
+ * timeout or an unreachable host recorded nowhere -- so a panel whose
+ * read really had failed fell through to its "No <things>" sentence,
+ * the exact lie the name says it exists to prevent. `refusalText()`
+ * has always had the branch for it ("Could not load X: ..."); nothing
+ * reached it except four call sites passing the error by hand.
  */
-const refusedReads = new Map();
+const failedReads = new Map();
+
+/*
+ * EVERY LIST THAT IS ITS OWN READ HAS THREE STATES, and the one that
+ * was missing is loading (#592, the Primitives board: "Loading is not
+ * empty. Showing 'none' while a fetch is in flight is a lie, and it is
+ * where much of today's bad experience lives").
+ *
+ * Measured in Chromium before this existed, with no backend and the
+ * app driven the way a person drives it: navigating to Networks
+ * rendered "No routes." -- a claim the host was asked and has none,
+ * when nothing had been answered. 24 list caches start as `[]`, and
+ * one render paints that as "none".
+ *
+ * The honest question is not "is this list empty" but "has this read
+ * happened", and until now nothing recorded the answer. `answered`
+ * does: one entry per operation that has returned at least once, set
+ * beside the line that clears a failure. So the window this fixes is
+ * the one the measurement found -- before the FIRST successful read --
+ * and it needs no change to any of the 27 panels, because they already
+ * route their empty state through here.
+ *
+ * Note what does NOT get a loading state: a list that is a field of an
+ * already-loaded object (a container's `interfaces`, `env`, `files` --
+ * six of `simpleTableRows`' fourteen callers). Those were never
+ * separately read, so "empty" is the whole truth about them, and
+ * giving them a loading state would invent a fetch that never happens.
+ */
+const answeredReads = new Set();
 
 function emptyStateText(opId, what, normalText) {
-	const refusal = refusedReads.get(opId);
+	const failure = failedReads.get(opId);
 
-	return refusal ? refusalText(refusal, what) : normalText;
+	if (failure)
+		return refusalText(failure, what);
+	if (!answeredReads.has(opId))
+		return "Reading…";
+	return normalText;
 }
 
 /*
@@ -1689,7 +1728,7 @@ async function apiRequest(method, path, body, timeoutMs) {
 		err.permission = permissionFor(reqOp);
 		err.local = true;
 		if (method === "GET")
-			refusedReads.set(reqOp, err);
+			failedReads.set(reqOp, err);
 		throw err;
 	}
 	ledBlink(ledTx);
@@ -1736,6 +1775,12 @@ async function apiRequest(method, path, body, timeoutMs) {
 		res = await fetch(path, opts);
 	} catch (e) {
 		noteTransportFailure();
+		/* Nothing answered at all, which is a failed read like any
+		 * other: without this the panel sits on "Reading…" while the
+		 * host is unreachable, and `refusalText()` has the sentence
+		 * for it ("Could not load X: ..."). */
+		if (method === "GET" && reqOp !== undefined)
+			failedReads.set(reqOp, e);
 		throw e;
 	}
 
@@ -1764,8 +1809,11 @@ async function apiRequest(method, path, body, timeoutMs) {
 		err.status = res.status;
 		/* #544: a 403 names the permission it wanted (ADR-0317). */
 		err.permission = json && json.permission ? json.permission : undefined;
-		if (method === "GET" && reqOp !== undefined && (res.status === 401 || res.status === 403))
-			refusedReads.set(reqOp, err);
+		/* Any failed GET, not only 401/403 -- a panel whose read
+		 * returned 500 or never arrived must not fall through to
+		 * "No <things>". refusalText()'s third branch names it. */
+		if (method === "GET" && reqOp !== undefined)
+			failedReads.set(reqOp, err);
 		if (method !== "GET")
 			logLine(method, path, "-> " + res.status + " " + message, "error");
 		if (res.status === 401 && path !== CIX_API.postLogin())
@@ -1790,8 +1838,12 @@ async function apiRequest(method, path, body, timeoutMs) {
 	}
 	if (method !== "GET")
 		logLine(method, path, "-> " + res.status, "ok");
-	if (method === "GET" && reqOp !== undefined)
-		refusedReads.delete(reqOp);
+	if (method === "GET" && reqOp !== undefined) {
+		failedReads.delete(reqOp);
+		/* This read has now happened at least once, which is what
+		 * tells a panel's empty state apart from its loading one. */
+		answeredReads.add(reqOp);
+	}
 	return json;
 }
 
@@ -4685,7 +4737,7 @@ function dataChanged(key, data) {
  * Without the has-rows check the guard has the opposite failure: a
  * panel whose DOM is empty but whose payload matches a previous render
  * would be skipped and stay empty. That is the same distinction
- * showLoadingIfEmpty() below already draws, for the same reason.
+ * showReadingIfEmpty() below already draws, for the same reason.
  *
  * dataChanged() records the signature as a side effect, so this must
  * be called once per render attempt and its answer acted on.
@@ -4705,21 +4757,45 @@ function unchangedAndRendered(tbody, key, data)
 }
 
 /*
+ * WHAT A GUARDED LIST COMPARES ON, once an empty list has three states.
+ *
+ * `unchangedAndRendered()` asks whether the DATA changed, which was the
+ * whole truth while an empty list rendered one fixed sentence. It is
+ * not any more: `[]` renders "Reading…", a refusal, or the authored
+ * "No <things>" depending on whether the read has happened, and the
+ * data is `[]` in all three. So a panel that rendered "Could not load
+ * routes" would keep saying it after the read succeeded and returned
+ * none -- the guard seeing `[]` both times and skipping the repaint.
+ *
+ * Found by driving the four outcomes in a browser rather than by
+ * reading: all four printed the same sentence, because only the first
+ * one ever painted.
+ *
+ * So when a list is empty the thing being rendered IS the sentence,
+ * and the sentence is what the signature must carry.
+ */
+function listSignature(rows, opId, what, normalText) {
+	return rows.length === 0
+	    ? ["empty", emptyStateText(opId, what, normalText)]
+	    : rows;
+}
+
+/*
  * "Loading" belongs to a panel that has never had content, not to
  * every refresh of one that has. Blanking a populated table before a
  * fetch is what made Processes flash empty twice a second.
  */
-function showLoadingIfEmpty(tbody, colspan) {
+function showReadingIfEmpty(tbody, colspan) {
 	if (tbody.querySelector("tr") !== null)
 		return;
 	tbody.innerHTML = '<tr><td colspan="' + colspan +
-	                  '" class="empty">Loading&hellip;</td></tr>';
+	                  '" class="empty">Reading&hellip;</td></tr>';
 }
 
 async function refreshProcesses() {
 	const tbody = document.getElementById("processes-body");
 
-	showLoadingIfEmpty(tbody, 7);
+	showReadingIfEmpty(tbody, 7);
 	try {
 		const procs = await apiRequest("GET", CIX_API.listSystemProcesses());
 
@@ -4831,7 +4907,7 @@ for (const tabButton of document.querySelectorAll(".tab-bar .tab-button")) {
 		 * Every tab on a collapsed page is named after the address it
 		 * replaced, so a tab that IS an address navigates to it rather
 		 * than only revealing its panel. Without this the panel came up
-		 * holding whatever it was built with -- "Loading…", for a page
+		 * holding whatever it was built with -- "Reading…", for a page
 		 * whose render only ever ran on arrival at its own old address
 		 * (confirmed: Host > Routes showed Loading… indefinitely). It
 		 * also makes each tab bookmarkable, which is what those
@@ -4947,7 +5023,7 @@ async function loadContainerRecipe(name) {
 
 	if (statusEl === null || textEl === null)
 		return;
-	statusEl.textContent = "Loading\u2026";
+	statusEl.textContent = "Reading\u2026";
 	textEl.hidden = true;
 	try {
 		const content = await loadContainerRecipeContent(name);
@@ -5015,7 +5091,7 @@ async function loadContainerPackages(name) {
 		if (link !== null)
 			link.href = "#containers/" + encodeURIComponent(name);
 	}
-	statusEl.textContent = "Loading\u2026";
+	statusEl.textContent = "Reading\u2026";
 	try {
 		const d = await apiRequest("GET",
 		                           CIX_API.getImageVersionManifest(c.image, c.image_version));
@@ -9110,7 +9186,7 @@ async function showBuildLog(file) {
 
 	openBuildLogWindow(file);
 	setBuildLogState("", false);
-	view.textContent = "Loading…";
+	view.textContent = "Reading…";
 	try {
 		/* Fetched directly rather than through apiRequest(): the
 		 * response is plain text, not JSON, and it can be megabytes --
@@ -9307,7 +9383,7 @@ async function refreshRunningConfig() {
 	const pre = document.getElementById("running-config-text");
 
 	if (pre.textContent === "")
-		pre.textContent = "Loading…";
+		pre.textContent = "Reading…";
 	try {
 		const doc = await apiRequest("GET", CIX_API.getConfig());
 
@@ -11209,7 +11285,7 @@ function renderPackageDetail(name) {
 		if (pkgRecipeContentCache.name === name) {
 			contentEl.textContent = pkgRecipeContentCache.content;
 		} else {
-			contentEl.textContent = "Loading…";
+			contentEl.textContent = "Reading…";
 			loadPkgRecipeContent(name)
 				.then(() => {
 					/* Full re-render, not just the content text: the load
@@ -12407,7 +12483,7 @@ async function openPermissionsForm(group) {
 	groupInput.value = group === null ? "" : group;
 	groupInput.readOnly = group !== null;
 	document.getElementById("pf-submit").textContent = group === null ? "Grant" : "Save";
-	choices.textContent = "Loading…";
+	choices.textContent = "Reading…";
 	try {
 		if (cache.hostauthPermissions === null || cache.hostauthPermissions === undefined)
 			cache.hostauthPermissions = await apiRequest("GET", CIX_API.getHostauthPermissions());
@@ -13524,11 +13600,17 @@ function renderRoutesList() {
 
 	/* #432: an unchanged table is left alone. Blanking and rebuilding
 	 * it on every tick costs the reader their scroll position. */
-	if (unchangedAndRendered(tbody, "routes", cache.routes))
+	if (unchangedAndRendered(tbody, "routes",
+	    listSignature(cache.routes, "getSystemRoutes", "routes", "No routes.")))
 		return;
 	tbody.textContent = "";
 	if (cache.routes.length === 0) {
-		tbody.innerHTML = '<tr><td colspan="4" class="empty">No routes.</td></tr>';
+		/* Through emptyStateText, because this table is its own read:
+		 * it was the one that reproduced the Primitives board's lie,
+		 * rendering "No routes." in a browser with no backend, where
+		 * nothing had been asked (#592). */
+		simpleTableRows(tbody, [], 4,
+		    emptyStateText("getSystemRoutes", "routes", "No routes."));
 		return;
 	}
 	for (const route of cache.routes)

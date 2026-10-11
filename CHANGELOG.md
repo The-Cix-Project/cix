@@ -6,6 +6,41 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A list that has not been read says so (#592)
+
+The Primitives board's third state, built after the measurement in the entry below.
+
+**`emptyStateText` now answers four outcomes where it answered two**, and the data is `[]` in all of
+them: the read has not happened yet → `Reading…`; it was refused → `refusalText()` names the login
+or the missing permission; it failed outright → `Could not load <what>: …`; it succeeded and there
+are none → the authored sentence. One `answeredReads` set, filled beside the line that already
+clears a failure, is the whole mechanism — and because 27 panels route their empty state through
+that one function, they all became honest at once with no change of their own.
+
+**`refusedReads` became `failedReads`, and now holds what its name always claimed.** It recorded
+401 and 403 only, so a 500, a timeout or an unreachable host was written down nowhere and the panel
+fell through to its "No <things>" sentence — the exact lie the Map's own comment says it exists to
+prevent. `refusalText()` has always had the branch for it; nothing reached that branch except four
+call sites passing the error by hand. A transport failure, where nothing answers at all, records
+too.
+
+**And the repaint guard had to learn about it.** `unchangedAndRendered()` asks whether the DATA
+changed, which was the whole truth while an empty list rendered one fixed sentence. With three
+sentences for the same `[]`, a panel that said "Could not load routes" kept saying it after the read
+succeeded and returned none — the guard seeing `[]` twice and skipping the repaint. **Found by
+driving the four outcomes in a browser rather than by reading them**: all four printed the same
+string, because only the first ever painted. `listSignature()` is the fix — when a list is empty the
+thing being rendered is the sentence, so the sentence is what the signature carries.
+
+**The vocabulary is one word: `Reading…`.** 43 static cells in `index.html`, the `showLoadingIfEmpty`
+helper and five more strings said `Loading…`; the board says `Reading…`, and a design system with two
+words for one state is the drift this document exists to stop.
+
+`getSystemRoutes` is the first panel converted, because it is the one that reproduced the lie.
+**41 hand-written empty sentences still bypass `emptyStateText`**, and that number is the work left —
+though a good share of them are sub-collections of an already-loaded object, which are honest as they
+are.
+
 ### Two generated renderers have no callers, and the guidelines said they did (#592)
 
 Found while scoping the Primitives board's three list states. `renderTableRows` and
