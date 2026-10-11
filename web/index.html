@@ -2066,35 +2066,35 @@
 			     stands. The row IS the pipeline; reading a line answers "where is
 			     this". Replaces lanes-of-boxes, which drew kinds as columns and
 			     left the pipeline as a word inside a box. -->
-			<div class="dg-toolbar">
-				<input type="search" id="dg-search" class="dg-search"
+			<div class="list-toolbar">
+				<input type="search" id="dg-search"
 				       placeholder="Find a package, image or deployment&hellip;"
 				       aria-label="Filter rows by name">
-				<label class="dg-toggle">
+				<label>
 					<input type="checkbox" id="dg-view-all">
 					View all
 				</label>
-				<span id="dg-count" class="dg-count"></span>
+				<span id="dg-count" class="count"></span>
 			</div>
 
 			<div id="delivery-graph" class="delivery-graph"></div>
 
 			<p class="hint" id="delivery-legend">
-				<span class="dg-key dg-k-done">done</span>
-				<span class="dg-key dg-k-here">where it is now</span>
-				<span class="dg-key dg-k-blocked">blocked</span>
-				<span class="dg-key dg-k-failed">failed</span>
-				<span class="dg-key dg-k-todo">not reached</span>
-				<span class="dg-key dg-k-na">does not apply</span>
+				<span class="legend-key legend-done">done</span>
+				<span class="legend-key legend-here">where it is now</span>
+				<span class="legend-key legend-blocked">blocked</span>
+				<span class="legend-key legend-failed">failed</span>
+				<span class="legend-key legend-todo">not reached</span>
+				<span class="legend-key legend-na">does not apply</span>
 			</p>
 
 			<!-- Derived, not stored: packages sitting at more than one version
 			     across images. The per-package row folds its images and so cannot
 			     show this, and it is the thing an operator can act on. -->
-			<h3 class="dg-h">Version drift across images</h3>
+			<h3 class="section-label">Version drift across images</h3>
 			<div id="dg-drift" class="dg-drift"></div>
 
-			<h3 class="dg-h">Where packages stand</h3>
+			<h3 class="section-label">Where packages stand</h3>
 			<div id="pipeline-flow" class="pipeline-flow"></div>
 			<div id="pipeline-deploy" class="pipeline-deploy"></div>
 			<p id="pipeline-summary" class="hint"></p>

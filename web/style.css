@@ -3010,35 +3010,58 @@ pre {
 }
 /* #371: the delivery graph is rows, not lanes of boxes. A row is one
    thing; the columns are its pipeline's stages, filled to where it is. */
-.dg-toolbar {
+/*
+ * What the Pipeline page's own toolbar, search box and log used to be
+ * (#598). `.dg-toolbar` was `.list-toolbar` with a different gap,
+ * `.dg-search` was `.list-toolbar input[type="search"]` with different
+ * numbers, and `.dg-log` was `.log-output` WITHOUT its monospace stack
+ * -- so a build log, the one thing on that page that is machine output,
+ * rendered in the body face. Three classes gone and a defect with them.
+ */
+/* A toolbar's own checkbox and its running count, as part of the
+ * toolbar rather than as a page's private pair. */
+.list-toolbar label {
 	display: flex;
 	align-items: center;
-	gap: var(--s3);
-	margin: var(--s2) 0;
-	flex-wrap: wrap;
+	gap: var(--s1);
+	font-size: 12px;
+	color: var(--muted);
 }
-.dg-search {
-	flex: 1 1 260px;
-	min-width: 180px;
-	padding: var(--s1) var(--s2);
-	font: inherit;
-	color: var(--text);
-	background: var(--bg);
-	border: 1px solid var(--border);
-	border-radius: var(--r-control);
+
+.list-toolbar .count {
+	font-size: 12px;
+	color: var(--muted);
+	margin-left: auto;
 }
-.dg-toggle { display: flex; align-items: center; gap: var(--s1); font-size: 12px; color: var(--muted); }
-.dg-count { font-size: 12px; color: var(--muted); margin-left: auto; }
-.dg-count-bad { color: var(--error); font-weight: 600; }
+
+.list-toolbar .count-bad {
+	color: var(--error);
+	font-weight: 600;
+}
 
 .delivery-graph { display: block; overflow-x: auto; }
 .dg-section { margin-bottom: var(--s5); }
-.dg-section-head {
-	font-size: 11px;
+/*
+ * A SMALL-CAPS LABEL: the dashboard's name for a group of things, as
+ * distinct from a heading you would read as a sentence.
+ *
+ * Promoted out of the Pipeline page's private namespace (#598), where
+ * it existed THREE TIMES at three sizes -- `dg-section-head` at 11px,
+ * `dg-h` at 12px and `dg-drawer-h` at 10px, all uppercase, all tracked,
+ * all muted, all doing the same job. One definition, and the three
+ * sizes were never a decision anyone made.
+ *
+ * `.field-name` in the generated form is the same idiom and stays its
+ * own class deliberately: it is an internal part of a composition and
+ * is also the hook `test_web_form` selects on, so collapsing the two
+ * would couple a page's section headings to a form's field labels.
+ */
+.section-label {
+	font-size: 0.6875rem;
 	text-transform: uppercase;
-	letter-spacing: 0.08em;
+	letter-spacing: 0.06em;
 	color: var(--muted);
-	margin-bottom: var(--s1);
+	margin: 0 0 var(--s1);
 }
 .dg-row {
 	display: grid;
@@ -3095,31 +3118,31 @@ pre {
 
 /* The pipeline itself. Equal columns so a stage lines up down the whole
    section -- scanning a column answers "what is in build right now". */
-.dg-cells { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; }
+.stage-track { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; }
 /* Wraps rather than truncating. Ten stages in a row leaves ~6 characters
    per header, which turned `authenticate` and `author` into two columns
    both reading "AUT..." -- adjacent, and different stages. */
-.dg-colhead {
+.stage-head {
 	font-size: 9px;
 	text-align: center;
 	line-height: 1.1;
 	overflow-wrap: anywhere;
 	align-self: end;
 }
-.dg-cell { height: 12px; border-radius: 2px; background: var(--border); }
-.dg-cell-done { background: var(--ok); opacity: 0.55; }
-.dg-cell-todo { background: transparent; border: 1px solid var(--border); }
+.stage { height: 12px; border-radius: 2px; background: var(--border); }
+.stage-done { background: var(--ok); opacity: 0.55; }
+.stage-todo { background: transparent; border: 1px solid var(--border); }
 /* Does not apply -- not a step this thing has, so it is not drawn as one.
    Recessive rather than absent: the column grid still has to line up, and
    an empty cell would read as "not reached yet", which is a different and
    equally wrong statement. */
-.dg-cell-na { background: transparent; border: 1px dotted var(--border); opacity: 0.4; }
-.dg-cell-here { box-shadow: 0 0 0 1px var(--text); }
-.dg-cell-ok { background: var(--ok); }
-.dg-cell-blocked { background: var(--paused); }
-.dg-cell-failed { background: var(--error); }
-.dg-cell-cancelled { background: var(--muted); }
-.dg-cell-not-implemented { background: transparent; border: 1px dotted var(--border); }
+.stage-na { background: transparent; border: 1px dotted var(--border); opacity: 0.4; }
+.stage-here { box-shadow: 0 0 0 1px var(--text); }
+.stage-ok { background: var(--ok); }
+.stage-blocked { background: var(--paused); }
+.stage-failed { background: var(--error); }
+.stage-cancelled { background: var(--muted); }
+.stage-not-implemented { background: transparent; border: 1px dotted var(--border); }
 
 .dg-chip {
 	display: inline-block;
@@ -3165,27 +3188,7 @@ pre {
 	border-bottom: 1px solid var(--border);
 }
 .dg-drawer-body { padding: var(--s3); font-size: 12px; display: flex; flex-direction: column; gap: var(--s1); }
-.dg-drawer-h {
-	margin-top: var(--s3);
-	font-size: 10px;
-	text-transform: uppercase;
-	letter-spacing: 0.06em;
-	color: var(--muted);
-}
 .dg-drawer-actions { margin-top: var(--s3); }
-.dg-log {
-	max-height: 320px;
-	overflow: auto;
-	margin: 0;
-	padding: var(--s2);
-	background: var(--bg);
-	border: 1px solid var(--border);
-	border-radius: var(--r-control);
-	font-size: 11px;
-	line-height: 1.45;
-	white-space: pre-wrap;
-	overflow-wrap: anywhere;
-}
 
 /* ADR-0272: the run history. Scrolls on its own so a package with a
  * hundred runs cannot push the build log off the drawer. */
@@ -3206,26 +3209,19 @@ pre {
 .dg-run:last-child { border-bottom: 0; }
 .dg-run-bad { color: var(--error); }
 
-.dg-h {
-	font-size: 12px;
-	text-transform: uppercase;
-	letter-spacing: 0.06em;
-	color: var(--muted);
-	margin: var(--s4) 0 var(--s2);
-}
-.dg-key {
+.legend-key {
 	display: inline-block;
 	padding: 0 var(--s2);
 	margin-right: var(--s2);
 	border-left: 3px solid var(--border);
 	font-size: 11px;
 }
-.dg-key.dg-k-done { border-left-color: var(--ok); }
-.dg-key.dg-k-here { border-left-color: var(--text); }
-.dg-key.dg-k-blocked { border-left-color: var(--paused); }
-.dg-key.dg-k-failed { border-left-color: var(--error); }
-.dg-key.dg-k-todo { border-left-color: var(--border); }
-.dg-key.dg-k-na { border-left-color: var(--muted); border-left-style: dotted; }
+.legend-key.legend-done { border-left-color: var(--ok); }
+.legend-key.legend-here { border-left-color: var(--text); }
+.legend-key.legend-blocked { border-left-color: var(--paused); }
+.legend-key.legend-failed { border-left-color: var(--error); }
+.legend-key.legend-todo { border-left-color: var(--border); }
+.legend-key.legend-na { border-left-color: var(--muted); border-left-style: dotted; }
 
 @media (max-width: 720px) {
 	.dg-row { grid-template-columns: 1fr; gap: var(--s1); }

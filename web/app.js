@@ -15532,19 +15532,19 @@ function dgCells(kind, stages, row) {
 	const wrap = document.createElement("div");
 	const at = stages.indexOf(row.stage);
 
-	wrap.className = "dg-cells";
+	wrap.className = "stage-track";
 	stages.forEach((st, i) => {
 		const c = document.createElement("div");
 
-		c.className = "dg-cell";
+		c.className = "stage";
 		if (!stageApplies(kind, st, row))
-			c.classList.add("dg-cell-na");
+			c.classList.add("stage-na");
 		else if (i < at)
-			c.classList.add("dg-cell-done");
+			c.classList.add("stage-done");
 		else if (i === at)
-			c.classList.add("dg-cell-here", "dg-cell-" + (row.status || "ok"));
+			c.classList.add("stage-here", "stage-" + (row.status || "ok"));
 		else
-			c.classList.add("dg-cell-todo");
+			c.classList.add("stage-todo");
 		c.title = st + (i === at ? " ← " + (row.status || "ok") : "");
 		wrap.appendChild(c);
 	});
@@ -15596,7 +15596,7 @@ function dgSection(kind, label, stages, rows, frag) {
 	sec.className = "dg-section";
 
 	const head = document.createElement("div");
-	head.className = "dg-section-head";
+	head.className = "section-label";
 	head.textContent = label + " (" + rows.length + ")";
 	sec.appendChild(head);
 
@@ -15605,10 +15605,10 @@ function dgSection(kind, label, stages, rows, frag) {
 	hdr.appendChild(document.createElement("div")).className = "dg-row-name";
 	hdr.appendChild(document.createElement("div")).className = "dg-row-ver";
 	const hc = document.createElement("div");
-	hc.className = "dg-cells";
+	hc.className = "stage-track";
 	for (const st of stages) {
 		const c = document.createElement("div");
-		c.className = "dg-colhead";
+		c.className = "stage-head";
 		c.textContent = st;
 		/* Ten stages in one row means the header text is truncated; the
 		 * full name has to stay reachable somewhere. */
@@ -15733,7 +15733,7 @@ function renderDeliveryGraph(data) {
 		count.textContent = probs
 			? probs + " need attention"
 			: "nothing blocked, failed or cancelled";
-		count.className = "dg-count" + (probs ? " dg-count-bad" : "");
+		count.className = "count" + (probs ? " count-bad" : "");
 	}
 	renderDrift(data.drift);
 }
@@ -15827,7 +15827,7 @@ async function openPipelineDrawer(kind, row) {
 
 	if (Array.isArray(row.images) && row.images.length) {
 		const h = document.createElement("div");
-		h.className = "dg-drawer-h";
+		h.className = "section-label";
 		h.textContent = "Installed into";
 		body.appendChild(h);
 		for (const im of row.images)
@@ -15870,7 +15870,7 @@ async function openPipelineDrawer(kind, row) {
 	 * here; the log only answers "why did the last one fail".
 	 */
 	const hh = document.createElement("div");
-	hh.className = "dg-drawer-h";
+	hh.className = "section-label";
 	hh.textContent = "History";
 	body.appendChild(hh);
 	const runsBox = document.createElement("div");
@@ -15915,11 +15915,11 @@ async function openPipelineDrawer(kind, row) {
 	}
 
 	const h = document.createElement("div");
-	h.className = "dg-drawer-h";
+	h.className = "section-label";
 	h.textContent = "Build log";
 	body.appendChild(h);
 	const pre = document.createElement("pre");
-	pre.className = "dg-log";
+	pre.className = "log-output";
 	pre.textContent = "loading…";
 	body.appendChild(pre);
 

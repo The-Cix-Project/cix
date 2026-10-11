@@ -6,6 +6,35 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### `dg-*`: 48 classes to 19, and what was actually in them (#598)
+
+The Pipeline page's private namespace — the last filed violation of `web-ux-guidelines.md`, and story 6
+of #592. The collapse split three ways, which is the part worth keeping rather than the number.
+
+**Three were re-inventions of widgets that already existed.** `dg-toolbar` was `.list-toolbar` with a
+different gap; `dg-search` was `.list-toolbar input[type="search"]` with different numbers; and
+`dg-log` was `.log-output` **without its monospace stack** — so a build log, the one thing on that page
+that is machine output, rendered in the body face. Three classes gone and a defect with them.
+
+**Three were one idiom wearing three names.** `dg-section-head` at 11px, `dg-h` at 12px and
+`dg-drawer-h` at 10px: all uppercase, all tracked, all muted, all naming a group of things. The three
+sizes were never a decision anyone made. They are `.section-label` now, with a row in the vocabulary.
+
+**Two were real widgets this dashboard lacked a name for**, and those get promoted rather than deleted
+— the same call `switch-*` got when it turned out to be the best idea in the dashboard. The **stage
+mark** (`.stage` plus its structural and semantic states) and the **legend** (`.legend-key`). The stage
+mark's four semantic colours turned out to be `--ok`, `--paused`, `--error` and `--muted` — **the
+badge's four exactly** — so it reuses those meanings and does not invent a fifth, which is the rule the
+badge row has always stated and the Primitives board repeats.
+
+Verified by rendering the page with stub data before and after each step: pixel-identical, and the
+class gate stays at zero orphans.
+
+**What remains is 19 classes and they are not renames.** The row grid (`dg-row*`, `stage-track`'s
+container) is a table drawn with divs and wants a composition; the detail panel (`dg-drawer*`) is a
+one-page invention that is either the modal or a vocabulary row, and that is a judgement rather than a
+sweep. Stated here rather than left as a number someone has to rediscover.
+
 ### A class that styles nothing and selects nothing is dead, and four were (#598)
 
 The gate story 6 needs before the refactor it measures, written first so "done" is a number rather than
