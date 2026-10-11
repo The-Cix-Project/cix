@@ -1449,6 +1449,11 @@ function ansiToDom(text) {
  * each capable of contributing a new entry once server-log polling
  * merged in, ADR-0129). */
 function buildLogEntryDom(entry) {
+	/* A CLOCK, not formatInstant(): this is one line of a dense log of
+	 * hundreds, every entry within minutes of its neighbours, so the
+	 * date would be the same noise repeated on every row. The one
+	 * deliberate exception to the instant format, along with the UTC
+	 * line in the time panel and the pipeline's two "since" fields. */
 	const time = new Date(entry.ts * 1000).toTimeString().slice(0, 8);
 	const el = document.createElement("div");
 
@@ -12421,7 +12426,7 @@ async function refreshAppPasswords() {
 		const revokeButton = document.createElement("button");
 
 		nameCell.textContent = ap.name;
-		createdCell.textContent = new Date(ap.created * 1000).toISOString().replace(".000Z", "Z");
+		createdCell.textContent = formatInstant(ap.created);
 		revokeButton.textContent = "Revoke";
 		revokeButton.className = "button-small button-danger";
 		gateAction(revokeButton, ops.removeOp);
@@ -16162,6 +16167,12 @@ async function refreshBuildOverview() {
 			 * the daemon's, so any skew shows as a wrong elapsed time
 			 * immediately. The absolute timestamp is used only to
 			 * render the start time, which is what it is good for.
+			 *
+			 * A CLOCK, not formatInstant(): this panel is a live view
+			 * of something running now, beside an elapsed counter, so
+			 * "started 17:24:03" reads and "started 11/10/2026,
+			 * 17:24:03" does not. A build that began yesterday is
+			 * pathological rather than a case to render for.
 			 */
 			if (e.run_started_at)
 				add("started", new Date(e.run_started_at * 1000).toLocaleTimeString());
@@ -16194,6 +16205,7 @@ async function refreshBuildOverview() {
 				dl.appendChild(dt);
 				dl.appendChild(dd);
 			}
+			/* A clock, for the reason "started" above is one. */
 			if (e.build_started_at)
 				add("compiling since",
 				    new Date(e.build_started_at * 1000).toLocaleTimeString());
