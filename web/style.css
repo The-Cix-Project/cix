@@ -3153,7 +3153,13 @@ pre {
 .stage-track { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; }
 /* Wraps rather than truncating. Ten stages in a row leaves ~6 characters
    per header, which turned `authenticate` and `author` into two columns
-   both reading "AUT..." -- adjacent, and different stages. */
+   both reading "AUT..." -- adjacent, and different stages.
+   `authenticate` therefore renders as "AUTHENTI" over "CATE", a wrap
+   that reads like two words. `hyphens: auto` does NOT fix it: measured
+   in Chromium on 2026-10-11, no hyphen appears, because `overflow-wrap:
+   anywhere` breaks at the overflow point before any hyphenation
+   opportunity is consulted. Leaving it unhyphenated rather than
+   carrying a declaration that does nothing. */
 .stage-head {
 	font-size: 9px;
 	text-align: center;
