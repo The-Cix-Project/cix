@@ -6614,64 +6614,48 @@ function renderImageDetailVersions(name, data) {
 /* Installed-on-this-image packages, with a per-row Remove -- same
  * DELETE /v1/pkg/{name@image} removePkg() already uses from the
  * Packages section, just scoped to whichever image is on screen. */
+/*
+ * Generated (#592). It also GAINS ITS OTHER THREE STATES, which is the
+ * part worth stating: this is a filtered view of `cache.pkgList`, read
+ * by `listPkg`, and it used to say "No packages installed into this
+ * image" whatever had happened to that read -- including a refusal,
+ * which is #538's own bug (the owner reported it with three LDAP users
+ * present). Keying on the op is what gives it "Reading…" and the
+ * refusal sentence for free.
+ *
+ * `key` and `extra` because the same operation feeds this table for
+ * every image: two images with identical package lists must still
+ * redraw when you navigate between them.
+ */
 function renderImageDetailPackages(name) {
-	const body = document.querySelector("#imgd-packages tbody");
-	const pkgs = cache.pkgList.filter((p) => p.image === name);
+	renderTable(document.querySelector("#imgd-packages"), "PkgEntry",
+	    cache.pkgList.filter((p) => p.image === name), [
+		{ field: "name", link: (p) => "#packages/" + encodeURIComponent(p.name) },
+		"version",
+		pkgStateColumn(),
+		{ label: "", actions: (p) => {
+			if (p.state !== "installed")
+				return [];
 
-	body.textContent = "";
-	if (pkgs.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+			const rm = document.createElement("button");
 
-		cell.colSpan = 4;
-		cell.className = "empty";
-		cell.textContent = "No packages installed into this image";
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const pkg of pkgs) {
-		const row = document.createElement("tr");
-
-		const nameCell = document.createElement("td");
-		nameCell.appendChild(treeLink("#packages/" + encodeURIComponent(pkg.name), pkg.name, ""));
-		row.appendChild(nameCell);
-
-		const versionCell = document.createElement("td");
-		versionCell.textContent = pkg.version;
-		row.appendChild(versionCell);
-
-		const stateCell = document.createElement("td");
-		/* Issue #101: a package that could not be REACHED and one that
-		 * failed to BUILD both read "failed", and they call for
-		 * opposite responses -- retry the first, fix the second. The
-		 * kind sits next to the state; the message is the hover, so the
-		 * table stays readable. */
-		stateCell.textContent = pkg.stage ? pkg.state + " (" + pkg.stage + "/" + pkg.status + ")"
-		                                          : pkg.state;
-		if (pkg.error)
-			stateCell.title = pkg.error;
-		row.appendChild(stateCell);
-
-		const actionCell = document.createElement("td");
-		if (pkg.state === "installed") {
-			const rmButton = document.createElement("button");
-
-			rmButton.textContent = "Remove";
-			gateAction(rmButton, "deletePkg");
-			rmButton.className = "button-danger";
-			rmButton.addEventListener("click", async () => {
-				await removePkg(pkg.name, pkg.image);
+			rm.textContent = "Remove";
+			rm.className = "button-danger";
+			gateAction(rm, "deletePkg");
+			rm.addEventListener("click", async () => {
+				await removePkg(p.name, p.image);
 				renderImageDetailPackages(name);
 				renderImageDetailRecipes(name);
 			});
-			actionCell.appendChild(rmButton);
-		}
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
+			return [rm];
+		} },
+	], {
+		op: "listPkg",
+		key: "image-detail-packages",
+		extra: name,
+		what: "installed packages",
+		empty: "No packages installed into this image",
+	});
 }
 
 /* The shared recipe catalog (ADR-0040), rendered here with a per-row
@@ -10809,15 +10793,31 @@ async function removePkiCert(name) {
  * shows a given name's full picture -- no separate detail page per
  * list, matching this project's own single-source-of-truth posture. */
 /*
- * Generated (#592), and the first caller of the `title` modifier.
+ * THE STATE OF A PACKAGE ENTRY, as a column, because three tables show
+ * it and all three showed it identically (#592).
  *
- * Issue #101's rule is what needs it: a package that could not be
+ * Issue #101's rule is the whole of it: a package that could not be
  * REACHED and one that failed to BUILD both read "failed", and they
  * call for opposite responses -- retry the first, fix the second. So
  * the kind sits next to the state in the cell and the message is the
- * hover, which keeps the table readable. Three tables do that with the
- * same two lines, which is why it is a column form and not a cell this
- * one builds by hand.
+ * hover, which keeps the table readable at seven columns.
+ *
+ * A column rather than three copies of one, for the reason the
+ * renderer exists: this is the vocabulary a reader learns once, and
+ * three definitions of it are three places for it to drift.
+ */
+function pkgStateColumn() {
+	return {
+		label: "State",
+		text: (p) => (p.stage
+			? p.state + " (" + p.stage + "/" + p.status + ")"
+			: p.state),
+		title: (p) => p.error,
+	};
+}
+
+/*
+ * Generated (#592), and the first caller of the `title` modifier.
  *
  * The repaint guard is the renderer's now: #432's reason for it (a
  * rebuild on every tick costs the reader their scroll position) is
@@ -10829,11 +10829,7 @@ function renderPackagesList() {
 		{ field: "name", link: (p) => "#packages/" + encodeURIComponent(p.name) },
 		"image",
 		"version",
-		{ label: "State",
-		  text: (p) => (p.stage
-			? p.state + " (" + p.stage + "/" + p.status + ")"
-			: p.state),
-		  title: (p) => p.error },
+		pkgStateColumn(),
 		{ label: "", actions: (p) => {
 			if (p.state !== "installed")
 				return [];
@@ -11168,75 +11164,55 @@ async function viewPkgRecipeVersion(name, version) {
 	document.getElementById("rf-content").value = content;
 }
 
+/*
+ * Generated (#592), and the conversion found a REAL BUG in its own
+ * last column: the Remove button was gated on `deletePkgRecipe` while
+ * the thing it calls is `removePkg`. So the control a session is
+ * allowed to use and the request it sends were decided by two
+ * different permissions -- a session that may remove a package but not
+ * a recipe saw it disabled, and one with the reverse saw it enabled
+ * and got a 403 on the click. That is exactly what #548's gating
+ * exists to prevent, and the identical button two tables away is
+ * gated on `deletePkg`. Fixed here.
+ *
+ * `files` is a count rather than the field, because `fieldText` on
+ * `type: array` joins it -- and this array is every path the package
+ * installed, which for coreutils is hundreds.
+ *
+ * Also gains its other three states, as the image's own package table
+ * does: this is a filtered view of a read that can be refused.
+ */
 function renderPackageDetailInstalled(name) {
-	const body = document.querySelector("#pkgd-installed tbody");
-	const pkgs = cache.pkgList.filter((p) => p.name === name);
+	renderTable(document.querySelector("#pkgd-installed"), "PkgEntry",
+	    cache.pkgList.filter((p) => p.name === name), [
+		{ field: "image", link: (p) => "#images/" + encodeURIComponent(p.image) },
+		"version",
+		pkgStateColumn(),
+		{ field: "available_version", label: "Available" },
+		"error",
+		{ label: "Files", text: (p) => String((p.files || []).length) },
+		{ label: "", actions: (p) => {
+			if (p.state !== "installed")
+				return [];
 
-	body.textContent = "";
-	if (pkgs.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+			const rm = document.createElement("button");
 
-		cell.colSpan = 7;
-		cell.className = "empty";
-		cell.textContent = "Not installed on any image";
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const pkg of pkgs) {
-		const row = document.createElement("tr");
-
-		const imageCell = document.createElement("td");
-		imageCell.appendChild(treeLink("#images/" + encodeURIComponent(pkg.image), pkg.image, ""));
-		row.appendChild(imageCell);
-
-		const versionCell = document.createElement("td");
-		versionCell.textContent = pkg.version;
-		row.appendChild(versionCell);
-
-		const stateCell = document.createElement("td");
-		/* Issue #101: a package that could not be REACHED and one that
-		 * failed to BUILD both read "failed", and they call for
-		 * opposite responses -- retry the first, fix the second. The
-		 * kind sits next to the state; the message is the hover, so the
-		 * table stays readable. */
-		stateCell.textContent = pkg.stage ? pkg.state + " (" + pkg.stage + "/" + pkg.status + ")"
-		                                          : pkg.state;
-		if (pkg.error)
-			stateCell.title = pkg.error;
-		row.appendChild(stateCell);
-
-		const availableCell = document.createElement("td");
-		availableCell.textContent = pkg.available_version || "-";
-		row.appendChild(availableCell);
-
-		const errorCell = document.createElement("td");
-		errorCell.textContent = pkg.error || "-";
-		row.appendChild(errorCell);
-
-		const filesCell = document.createElement("td");
-		filesCell.textContent = String((pkg.files || []).length);
-		row.appendChild(filesCell);
-
-		const actionCell = document.createElement("td");
-		if (pkg.state === "installed") {
-			const rmButton = document.createElement("button");
-
-			rmButton.textContent = "Remove";
-			gateAction(rmButton, "deletePkgRecipe");
-			rmButton.className = "button-danger";
-			rmButton.addEventListener("click", async () => {
-				await removePkg(pkg.name, pkg.image);
+			rm.textContent = "Remove";
+			rm.className = "button-danger";
+			gateAction(rm, "deletePkg");
+			rm.addEventListener("click", async () => {
+				await removePkg(p.name, p.image);
 				renderPackageDetailInstalled(name);
 			});
-			actionCell.appendChild(rmButton);
-		}
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
+			return [rm];
+		} },
+	], {
+		op: "listPkg",
+		key: "package-detail-installed",
+		extra: name,
+		what: "installed packages",
+		empty: "Not installed on any image",
+	});
 }
 
 async function refreshPkgRecipes() {
