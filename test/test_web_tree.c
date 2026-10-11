@@ -954,6 +954,7 @@ next:
 	{
 		const char *p2 = app;
 		int checked_schemas = 0;
+		int checked_ops = 0;
 
 		while ((p2 = strstr(p2, "renderTable(")) != NULL) {
 			int depth = 0;
@@ -1001,6 +1002,59 @@ next:
 					     "while a string column still looks right%s",
 					     schema, "");
 			}
+			/*
+			 * AND ITS `op`, which fails the same silent way. The
+			 * renderer keys `failedReads` on it, so an op id the
+			 * contract does not have can never match a recorded
+			 * failure -- and the panel then shows the authored "there
+			 * are none" sentence over a read that was refused. That is
+			 * #538's own bug, which the owner reported with three LDAP
+			 * users present, reintroduced one typo at a time.
+			 *
+			 * Scanned within this call only: depth from the schema
+			 * forward until the call's own closing paren, so an `op:`
+			 * belonging to some later statement cannot be read as this
+			 * table's.
+			 */
+			{
+				int d = 0;
+				const char *q = p2;
+
+				while (*q != '\0' && d >= 0) {
+					if (*q == '(' || *q == '[' || *q == '{')
+						d++;
+					else if (*q == ')' || *q == ']' || *q == '}')
+						d--;
+					else if (strncmp(q, "op: \"", 5) == 0) {
+						char op[96];
+						size_t m = 0;
+						char needle[128];
+
+						q += 5;
+						while (*q != '"' && *q != '\n' && m + 1 < sizeof(op))
+							op[m++] = *q++;
+						op[m] = '\0';
+						checked_ops++;
+						snprintf(needle, sizeof(needle), "\n\t%s_SHAPE:", op);
+						if (strstr(api, needle) == NULL)
+							fail("renderTable() names the operation \"%s\", "
+							     "which the contract does not have -- the "
+							     "refused and loading states are keyed on it, "
+							     "so a panel whose read was refused would say "
+							     "there are none instead%s",
+							     op, "");
+						continue;
+					}
+					q++;
+				}
+			}
+		}
+		if (checked_ops < 10) {
+			char n[32];
+
+			snprintf(n, sizeof(n), "%d", checked_ops);
+			fail("checked only %s renderTable op ids; every call states one, so "
+			     "this gate is not reading what it thinks it is", n, "");
 		}
 		if (checked_schemas < 10) {
 			char n[32];
