@@ -8551,56 +8551,32 @@ function editDnsRecord(rec) {
 	});
 }
 
+/*
+ * Generated (#592). `owner` defers to formatOwner() for the reason the
+ * certificates table does: `__host` is a reserved sentinel (ADR-0128,
+ * here the daemon's own record for its own FQDN) and which strings are
+ * sentinels is daemon knowledge.
+ */
 function renderDnsRecords(records) {
-	const body = document.getElementById("dns-records-body");
+	renderTable(document.getElementById("dns-records"), "DnsRecord", records, [
+		"name",
+		{ field: "ip", label: "IP" },
+		{ label: "Owner", text: (r) => formatOwner(r.owner) },
+		{ label: "", actions: (r) => {
+			const edit = document.createElement("button");
+			const rm = document.createElement("button");
 
-	body.textContent = "";
-	if (records.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+			edit.textContent = "Edit";
+			gateAction(edit, "updateDnsRecord");
+			edit.addEventListener("click", () => editDnsRecord(r));
 
-		cell.colSpan = 4;
-		cell.className = "empty";
-		cell.textContent = emptyStateText("listDnsRecords", "DNS records", "No DNS records");
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const rec of records) {
-		const row = document.createElement("tr");
-
-		const nameCell = document.createElement("td");
-		nameCell.textContent = rec.name;
-		row.appendChild(nameCell);
-
-		const ipCell = document.createElement("td");
-		ipCell.textContent = rec.ip;
-		row.appendChild(ipCell);
-
-		const ownerCell = document.createElement("td");
-		ownerCell.textContent = formatOwner(rec.owner);
-		row.appendChild(ownerCell);
-
-		const actionCell = document.createElement("td");
-		const editButton = document.createElement("button");
-
-		editButton.textContent = "Edit";
-		gateAction(editButton, "updateDnsRecord");
-		editButton.addEventListener("click", () => editDnsRecord(rec));
-		actionCell.appendChild(editButton);
-
-		const rmButton = document.createElement("button");
-
-		rmButton.textContent = "Remove";
-		gateAction(rmButton, "deleteDnsRecord");
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removeDnsRecord(rec.name));
-		actionCell.appendChild(rmButton);
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
+			rm.textContent = "Remove";
+			rm.className = "button-danger";
+			gateAction(rm, "deleteDnsRecord");
+			rm.addEventListener("click", () => removeDnsRecord(r.name));
+			return [edit, rm];
+		} },
+	], { op: "listDnsRecords", what: "DNS records", empty: "No DNS records" });
 }
 
 async function refreshDnsRecords() {
@@ -8690,52 +8666,27 @@ function editLdapGroup(group) {
 	});
 }
 
+/* Generated (#592). Two fields and two buttons -- the shape the
+ * renderer was built for, and the whole of it. */
 function renderLdapGroups(groups) {
-	const body = document.getElementById("ldap-groups-body");
+	renderTable(document.getElementById("ldap-groups"), "LdapGroup", groups, [
+		"name",
+		{ field: "gidnumber", label: "GID number" },
+		{ label: "", actions: (g) => {
+			const edit = document.createElement("button");
+			const rm = document.createElement("button");
 
-	body.textContent = "";
-	if (groups.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+			edit.textContent = "Edit";
+			gateAction(edit, "updateLdapGroup");
+			edit.addEventListener("click", () => editLdapGroup(g));
 
-		cell.colSpan = 3;
-		cell.className = "empty";
-		cell.textContent = emptyStateText("listLdapGroups", "LDAP groups", "No LDAP groups");
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const g of groups) {
-		const row = document.createElement("tr");
-
-		const nameCell = document.createElement("td");
-		nameCell.textContent = g.name;
-		row.appendChild(nameCell);
-
-		const gidCell = document.createElement("td");
-		gidCell.textContent = g.gidnumber;
-		row.appendChild(gidCell);
-
-		const actionCell = document.createElement("td");
-		const editButton = document.createElement("button");
-
-		editButton.textContent = "Edit";
-		gateAction(editButton, "updateLdapGroup");
-		editButton.addEventListener("click", () => editLdapGroup(g));
-		actionCell.appendChild(editButton);
-
-		const rmButton = document.createElement("button");
-
-		rmButton.textContent = "Remove";
-		gateAction(rmButton, "deleteLdapGroup");
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removeLdapGroup(g.name));
-		actionCell.appendChild(rmButton);
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
+			rm.textContent = "Remove";
+			rm.className = "button-danger";
+			gateAction(rm, "deleteLdapGroup");
+			rm.addEventListener("click", () => removeLdapGroup(g.name));
+			return [edit, rm];
+		} },
+	], { op: "listLdapGroups", what: "LDAP groups", empty: "No LDAP groups" });
 }
 
 async function refreshLdapGroups() {
@@ -8804,62 +8755,50 @@ function editLdapUser(user) {
 	});
 }
 
-function renderLdapUsers(users, emptyText = "No LDAP users") {
-	const body = document.getElementById("ldap-users-body");
+/*
+ * Generated (#592). The two "set"/"unset" columns become yes/no, which
+ * is what every other boolean in the dashboard says, and they now say
+ * the same thing as each other: `has_password` is a boolean the
+ * contract already answers that way, and the SSH column is asking the
+ * same yes/no question.
+ *
+ * `ssh_public_key` is the one cell that cannot be a plain field, and
+ * not because of wording: the contract returns the KEY ITSELF, *"as
+ * given, unlike password -- an SSH public key is not a secret"*, so a
+ * plain field would put a 400-character blob in a nine-column table.
+ * What the column shows is whether there is one, which is derived.
+ */
+function renderLdapUsers(users) {
+	renderTable(document.getElementById("ldap-users"), "LdapUser", users, [
+		"name",
+		{ field: "uidnumber", label: "UID" },
+		{ field: "primarygroup", label: "Primary group" },
+		{ field: "secondary_groups", label: "Secondary groups" },
+		{ field: "mail", label: "Mail" },
+		{ field: "has_password", label: "Password" },
+		"disabled",
+		{ label: "SSH key", text: (u) => (u.ssh_public_key ? "yes" : "no") },
+		{ label: "", actions: (u) => {
+			const edit = document.createElement("button");
+			const apps = document.createElement("button");
+			const rm = document.createElement("button");
 
-	body.textContent = "";
-	if (users.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+			edit.textContent = "Edit";
+			gateAction(edit, "updateLdapUser");
+			edit.addEventListener("click", () => editLdapUser(u));
 
-		cell.colSpan = 9;
-		cell.className = "empty";
-		cell.textContent = emptyText;
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
+			/* #544: that user's machine credentials. */
+			apps.textContent = "App passwords";
+			gateAction(apps, "listLdapUserAppPasswords");
+			apps.addEventListener("click", () => openAppPasswords({ user: u.name }));
 
-	for (const u of users) {
-		const row = document.createElement("tr");
-
-		const cells = [u.name, u.uidnumber, u.primarygroup,
-		               (u.secondary_groups || []).join(", ") || "-", u.mail,
-		               u.has_password ? "set" : "unset", u.disabled ? "yes" : "no",
-		               u.ssh_public_key ? "set" : "unset"];
-		for (const v of cells) {
-			const cell = document.createElement("td");
-			cell.textContent = v;
-			row.appendChild(cell);
-		}
-
-		const actionCell = document.createElement("td");
-		const editButton = document.createElement("button");
-
-		editButton.textContent = "Edit";
-		gateAction(editButton, "updateLdapUser");
-		editButton.addEventListener("click", () => editLdapUser(u));
-		actionCell.appendChild(editButton);
-
-		/* #544: that user's machine credentials. */
-		const appPasswordsButton = document.createElement("button");
-
-		appPasswordsButton.textContent = "App passwords";
-		gateAction(appPasswordsButton, "listLdapUserAppPasswords");
-		appPasswordsButton.addEventListener("click", () => openAppPasswords({ user: u.name }));
-		actionCell.appendChild(appPasswordsButton);
-
-		const rmButton = document.createElement("button");
-
-		rmButton.textContent = "Remove";
-		gateAction(rmButton, "deleteLdapUser");
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removeLdapUser(u.name));
-		actionCell.appendChild(rmButton);
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
+			rm.textContent = "Remove";
+			rm.className = "button-danger";
+			gateAction(rm, "deleteLdapUser");
+			rm.addEventListener("click", () => removeLdapUser(u.name));
+			return [edit, apps, rm];
+		} },
+	], { op: "listLdapUsers", what: "LDAP users", empty: "No LDAP users" });
 }
 
 /*
@@ -8881,9 +8820,16 @@ async function refreshLdapUsers() {
 		/* A refresher's 401 does not open the login form (the sweep
 		 * guard), so the panel says why it is empty. Never "No LDAP
 		 * users": nothing was read (#538, reported by the owner
-		 * 2026-09-29 with three users present). */
+		 * 2026-09-29 with three users present).
+		 *
+		 * The sentence is no longer passed in. apiRequest() recorded
+		 * this failure against `listLdapUsers` on its way out, and
+		 * listState() reads it -- so handing refusalText() to the
+		 * renderer was a second copy of one decision, and one that
+		 * could only ever produce the REFUSED state: a panel whose
+		 * read had not come back yet still said "No LDAP users". */
 		cache.ldapUsers = [];
-		renderLdapUsers(cache.ldapUsers, refusalText(e, "LDAP users"));
+		renderLdapUsers(cache.ldapUsers);
 	}
 }
 
