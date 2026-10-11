@@ -8081,7 +8081,6 @@ function renderDiskAllocationChart(d, parts) {
  * point of a partition having one. Clicking a row goes there.
  */
 function renderDiskPartitions(d, parts) {
-	const body = document.getElementById("dd-partitions-body");
 	const note = document.getElementById("dd-part-note");
 	const actions = document.getElementById("dd-part-actions");
 
@@ -8109,48 +8108,57 @@ function renderDiskPartitions(d, parts) {
 
 	renderDiskAllocationChart(d, parts);
 
-	body.textContent = "";
-	if (parts.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+	/*
+	 * Generated (#592). Four of its seven columns are derived and each
+	 * for its own reason, which is worth stating because the `text`
+	 * hatch is meant to stay narrow:
+	 *
+	 *  - Size is `formatBytes`, one of 39 call sites in this file. A
+	 *    byte count rendered for a person is the same kind of fact as
+	 *    an instant and belongs in the contract the same way; until it
+	 *    is there, the cell derives it.
+	 *  - Role prefers the ASSIGNED role over the partition's own
+	 *    label, which is a lookup plus a fallback rather than a field.
+	 *  - Filesystem says "unformatted" rather than "—", because that
+	 *    is a statement about the partition and not a missing value:
+	 *    `fs_type` is "" exactly when there is genuinely no filesystem.
+	 *  - Usage is two fields and a division.
+	 *
+	 * `protected` becomes a plain boolean, so it reads yes/no like
+	 * every other boolean here instead of "protected"/"-". It keeps
+	 * its own column rather than being a suffix on the role:
+	 * protection answers a different question from "what is this for",
+	 * and hanging it off the label meant a partition WITH a role never
+	 * showed it at all.
+	 *
+	 * `mount_path` is a plain field now, and the `p.mounted ? ... : "-"`
+	 * guard is gone -- measured on 192.168.15.95, 2026-10-11: `sr0`
+	 * reports `"mounted":false,"mount_path":""`, so an unmounted device
+	 * carries no path and `fieldText` already says "—".
+	 */
+	renderTable(document.getElementById("dd-partitions"), "StorageDevice", parts, [
+		{ field: "name", link: (p) => "#storage/" + encodeURIComponent(p.name) },
+		{ label: "Size", text: (p) => formatBytes(p.size_bytes) },
+		{ label: "Role", text: (p) => {
+			const role = storageRoleFor(p.name);
 
-		cell.colSpan = 7;
-		cell.className = "empty";
-		cell.textContent = d.is_os_disk ? "No partitions reported" : "No partitions — this disk is unpartitioned";
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-	for (const p of parts) {
-		const row = document.createElement("tr");
-		const role = storageRoleFor(p.name);
-		const nameCell = document.createElement("td");
-
-		nameCell.appendChild(treeLink("#storage/" + encodeURIComponent(p.name), p.name, ""));
-		row.appendChild(nameCell);
-		for (const text of [
-			formatBytes(p.size_bytes),
-			role ? role.role : p.part_label || "-",
-			/*
-			 * Its own column, not a suffix on the role. Protection
-			 * answers a different question from "what is this for",
-			 * and hanging it off the label meant a partition with a
-			 * role never showed it at all.
-			 */
-			p.protected ? "protected" : "-",
-			p.fs_type || "unformatted",
-			p.mounted ? p.mount_path : "-",
-			p.mounted && p.used_bytes + p.free_bytes > 0
-				? Math.round((p.used_bytes / (p.used_bytes + p.free_bytes)) * 100) + "% used"
-				: "-",
-		]) {
-			const td = document.createElement("td");
-
-			td.textContent = text;
-			row.appendChild(td);
-		}
-		body.appendChild(row);
-	}
+			return role ? role.role : (p.part_label || FIELD_ABSENT);
+		} },
+		"protected",
+		{ label: "Filesystem", text: (p) => p.fs_type || "unformatted" },
+		{ field: "mount_path", label: "Mounted" },
+		{ label: "Usage", text: (p) => (p.mounted && p.used_bytes + p.free_bytes > 0
+			? Math.round((p.used_bytes / (p.used_bytes + p.free_bytes)) * 100) + "% used"
+			: FIELD_ABSENT) },
+	], {
+		op: "listStorage",
+		key: "disk-detail-partitions",
+		extra: d.name,
+		what: "this disk's partitions",
+		empty: d.is_os_disk
+			? "No partitions reported"
+			: "No partitions — this disk is unpartitioned",
+	});
 }
 
 /*
