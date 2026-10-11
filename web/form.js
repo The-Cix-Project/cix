@@ -24,7 +24,7 @@
  * stub in a test: `openModal`, `sessionMay`, `sessionRefusal`,
  * `showStatus`, `runRefreshers`, `refreshersForView`,
  * `qualifyHostname`, and -- for `renderTable` -- `statusBadge`,
- * `treeLink`, `emptyStateText`, `listSignature` and
+ * `treeLink`, `listState`, `listSignature` and
  * `unchangedAndRendered`. `qualifyHostname` is site knowledge (what
  * this host's own domain is); the last five are the dashboard's own
  * status vocabulary, its link shape and its repaint guard, all of
@@ -670,14 +670,14 @@ function fieldBlock(label, value) {
 	return row;
 }
 
-function simpleTableRows(bodyEl, columns, colCount, emptyText) {
+function simpleTableRows(bodyEl, columns, colCount, emptyText, emptyCls) {
 	bodyEl.textContent = "";
 	if (columns.length === 0) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
 
 		cell.colSpan = colCount;
-		cell.className = "empty";
+		cell.className = emptyCls ? "empty " + emptyCls : "empty";
 		cell.textContent = emptyText;
 		row.appendChild(cell);
 		bodyEl.appendChild(row);
@@ -812,6 +812,8 @@ function columnLabel(schema, col) {
 function tableCell(schema, row, col) {
 	const cell = document.createElement("td");
 
+	if (typeof col === "object" && col.cls !== undefined)
+		cell.className = col.cls;
 	if (typeof col === "object" && col.actions !== undefined) {
 		for (const el of col.actions(row) || [])
 			cell.appendChild(el);
@@ -861,6 +863,13 @@ function tableCell(schema, row, col) {
  *   { field, badge: (value, row) => kind }  text inside a status badge
  *   { label, actions: (row) => [el, ...] }  authored controls, no field
  *   { label, text: (row) => "..." }         a cell that is not one field
+ *
+ * and any of them may carry `cls` -- a class the stylesheet already
+ * defines, for a column whose content wants one (a sysctl key is
+ * monospace because it is an identifier, not prose). It names an
+ * existing class and never a rule: a screen that invents styling is
+ * the defect the four-layer rule describes, and the class-orphan gate
+ * would refuse a name nothing defines anyway.
  *
  * That last form is the narrow escape hatch and is meant to stay
  * narrow: it exists for a cell with NO single field behind it -- a
@@ -915,8 +924,12 @@ function renderTable(tableEl, schema, rows, columns, state) {
 
 	body.textContent = "";
 	if (data.length === 0) {
-		simpleTableRows(body, [], columns.length,
-		    emptyStateText(state.op, state.what, state.empty));
+		const st = listState(state.op, state.what, state.empty);
+
+		/* Only a refusal takes a class: loading and empty are muted,
+		 * which is what `td.empty` already is. */
+		simpleTableRows(body, [], columns.length, st.text,
+		    st.kind === "refused" ? "empty-refused" : null);
 		return;
 	}
 	for (const row of data) {

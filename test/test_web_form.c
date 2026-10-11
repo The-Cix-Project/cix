@@ -164,8 +164,8 @@ static const char *const DOM_SHIM =
     /*
      * What `renderTable` needs from app.js (#592 story 3). Each is
      * the real thing reduced to its contract: `statusBadge` returns
-     * the class string, `treeLink` an <a>, `emptyStateText` the
-     * sentence for the state a list is in. The guard is stubbed OPEN
+     * the class string, `treeLink` an <a>, `listState` the state a
+     * list is in and its sentence. The guard is stubbed OPEN
      * -- it always re-renders -- because what this test asserts is
      * what a render produces, and a guard that skipped the second
      * call would make every assertion after the first one vacuous.
@@ -179,10 +179,12 @@ static const char *const DOM_SHIM =
     "  return a;\n"
     "};\n"
     "globalThis.refusedOps = {};\n"
-    "globalThis.emptyStateText = (op, what, normal) =>\n"
-    "  globalThis.refusedOps[op] !== undefined ? globalThis.refusedOps[op] : normal;\n"
+    "globalThis.listState = (op, what, normal) =>\n"
+    "  globalThis.refusedOps[op] !== undefined\n"
+    "    ? { kind: \"refused\", text: globalThis.refusedOps[op] }\n"
+    "    : { kind: \"empty\", text: normal };\n"
     "globalThis.listSignature = (rows, op, what, normal) =>\n"
-    "  rows.length === 0 ? [\"empty\", emptyStateText(op, what, normal)] : rows;\n"
+    "  rows.length === 0 ? [\"empty\", listState(op, what, normal).text] : rows;\n"
     "globalThis.unchangedAndRendered = () => false;\n"
     "globalThis.document = {\n"
     "  getElementById(id) {\n"
@@ -705,6 +707,25 @@ int main(void)
 		       "  return t.tBodies[0].children[0].children[0].textContent;\n"
 		       "})()",
 		       "Log in to see networks");
+		/* And it reads at full strength, which is the whole reason
+		 * `listState` returns a kind and not only a sentence: the
+		 * Primitives board mutes loading and empty and colours a
+		 * refusal `--text`, so the three states were indistinguishable
+		 * while every one of them rendered as a bare `td.empty`. */
+		expect(ctx, "a refusal is not muted, and the other two are",
+		       "(() => {\n"
+		       "  const cls = (op) => {\n"
+		       "    const t = document.createElement(\"table\");\n"
+		       "    renderTable(t, \"Network\", [], [\"name\"],\n"
+		       "      { op: op, what: \"networks\", empty: \"No networks\" });\n"
+		       "    return t.tBodies[0].children[0].children[0].className;\n"
+		       "  };\n"
+		       "  globalThis.refusedOps = { listNetworks: \"Log in to see networks\" };\n"
+		       "  const out = cls(\"listNetworks\") + \" / \" + cls(\"listVolumes\");\n"
+		       "  globalThis.refusedOps = {};\n"
+		       "  return out;\n"
+		       "})()",
+		       "empty empty-refused / empty");
 
 		/* renderDetailRows: schema order, every field, read-only
 		 * included -- a detail page is where "the daemon reports this

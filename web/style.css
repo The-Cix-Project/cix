@@ -1803,6 +1803,21 @@ td.empty {
 }
 
 /*
+ * A REFUSED read reads at full strength, where loading and empty are
+ * muted -- the Primitives board's three list states, which colour
+ * only this one `--text`.
+ *
+ * The reason is not emphasis for its own sake: the other two states
+ * say "wait" and "there are none", which a reader can skim past with
+ * nothing lost. A refusal names the permission that would lift it, and
+ * that sentence is the only route out of the state -- muting it hides
+ * the one thing the panel is there to say.
+ */
+td.empty-refused {
+	color: var(--text);
+}
+
+/*
  * A detail panel: one labelled value per row, banded.
  *
  * This replaced a responsive grid of cells. The grid packed more into

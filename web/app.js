@@ -1005,14 +1005,31 @@ const failedReads = new Map();
  */
 const answeredReads = new Set();
 
-function emptyStateText(opId, what, normalText) {
+/*
+ * WHICH of the three states a list is in, and its sentence, as one
+ * value -- because they are not independent. The Primitives board
+ * styles a refusal at full --text while loading and empty are muted
+ * (`color: "#F3F0E7"` against `"#98A2A8"`), so a caller holding only
+ * the sentence cannot render the state correctly, and for a while none
+ * of them did: all three printed muted.
+ *
+ * The board also tints each state's CAPTION differently (loading blue,
+ * empty muted, refused amber). That is the board labelling its own
+ * specimens, not a fourth status colour -- inside the table only the
+ * body colour differs, and only for refused.
+ */
+function listState(opId, what, normalText) {
 	const failure = failedReads.get(opId);
 
 	if (failure)
-		return refusalText(failure, what);
+		return { kind: "refused", text: refusalText(failure, what) };
 	if (!answeredReads.has(opId))
-		return "Reading…";
-	return normalText;
+		return { kind: "loading", text: "Reading…" };
+	return { kind: "empty", text: normalText };
+}
+
+function emptyStateText(opId, what, normalText) {
+	return listState(opId, what, normalText).text;
 }
 
 /*
@@ -9956,54 +9973,35 @@ document.getElementById("ldap-config-form").addEventListener("submit", async (ev
 
 let espDirty = false;
 
+/* Generated (#592). `is_running_slot` is a badge rather than a bare
+ * "yes": it is the one row an operator must not delete, and the
+ * daemon refuses it, so the table says so in the status vocabulary
+ * rather than in a column of yeses. */
 function renderEspEntries(data) {
-	const body = document.getElementById("esp-entries-body");
-	const entries = data.entries || [];
+	renderTable(document.getElementById("esp-entries"), "EspEntry",
+	    data.entries || [], [
+		{ field: "name", label: "Entry" },
+		"title",
+		{ field: "matches_default", label: "Matches default" },
+		{ field: "is_running_slot", label: "Running slot",
+		  badge: (v) => (v ? "ok" : "unknown") },
+		{ label: "", actions: (e) => {
+			const rm = document.createElement("button");
 
-	body.textContent = "";
-	if (entries.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 5;
-		cell.className = "empty";
-		cell.textContent = emptyStateText("getEsp", "loader entries",
-		    "No loader entries");
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const e of entries) {
-		const row = document.createElement("tr");
-
-		for (const text of [e.name, e.title || "-",
-		                     e.matches_default ? "yes" : "no",
-		                     e.is_running_slot ? "yes" : ""]) {
-			const cell = document.createElement("td");
-
-			cell.textContent = text;
-			row.appendChild(cell);
-		}
-
-		const actionCell = document.createElement("td");
-		const rmButton = document.createElement("button");
-
-		rmButton.textContent = "Delete";
-		rmButton.className = "button-danger";
-		/* The daemon refuses to delete the running slot's own entry;
-		 * disabling it here as well makes that a visible rule rather
-		 * than a surprise 409. */
-		rmButton.disabled = !!e.is_running_slot;
-		gateAction(rmButton, "deleteEspEntry");
-		if (e.is_running_slot)
-			rmButton.title = "This is the entry the running system booted from";
-		rmButton.addEventListener("click", () => removeEspEntry(e.name));
-		actionCell.appendChild(rmButton);
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
+			rm.textContent = "Delete";
+			rm.className = "button-danger button-small";
+			/* The daemon refuses to delete the running slot's own
+			 * entry; disabling it here makes that a visible rule
+			 * rather than a surprise 409. gateAction only ever
+			 * disables, so the order of these two does not matter. */
+			rm.disabled = !!e.is_running_slot;
+			gateAction(rm, "deleteEspEntry");
+			if (e.is_running_slot)
+				rm.title = "This is the entry the running system booted from";
+			rm.addEventListener("click", () => removeEspEntry(e.name));
+			return [rm];
+		} },
+	], { op: "getEsp", what: "loader entries", empty: "No loader entries" });
 }
 
 /*
@@ -13532,42 +13530,28 @@ async function removeSysctl(key) {
 	}
 }
 
+/* Generated (#592). The key is monospace because it is an identifier
+ * (net.ipv4.ip_forward), and the value goes through
+ * formatSysctlValue() because a multi-token value is an array in the
+ * response and a space-joined string to a reader. */
 function renderSysctlList() {
-	const tbody = document.getElementById("sysctl-body");
+	renderTable(document.getElementById("sysctl-table"), "SysctlEntry", cache.sysctls, [
+		{ field: "key", cls: "processes-cmdline" },
+		{ label: "Value", text: (s) => formatSysctlValue(s.value) },
+		{ label: "", actions: (s) => {
+			const rm = document.createElement("button");
 
-	/* #432: an unchanged table is left alone. Blanking and rebuilding
-	 * it on every tick costs the reader their scroll position. */
-	if (unchangedAndRendered(tbody, "sysctl",
-	    listSignature(cache.sysctls, "listSystemSysctl", "persisted sysctls",
-	        "No sysctls persisted.")))
-		return;
-	tbody.textContent = "";
-	if (cache.sysctls.length === 0) {
-		simpleTableRows(tbody, [], 3,
-		    emptyStateText("listSystemSysctl", "persisted sysctls",
-		        "No sysctls persisted."));
-		return;
-	}
-	for (const s of cache.sysctls) {
-		const row = document.createElement("tr");
-		const key = document.createElement("td");
-		const value = document.createElement("td");
-		const actionCell = document.createElement("td");
-		const rmButton = document.createElement("button");
-
-		key.textContent = s.key;
-		key.className = "processes-cmdline";
-		value.textContent = formatSysctlValue(s.value);
-		rmButton.textContent = "Remove";
-		gateAction(rmButton, "deleteSystemSysctl");
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removeSysctl(s.key));
-		actionCell.appendChild(rmButton);
-		row.appendChild(key);
-		row.appendChild(value);
-		row.appendChild(actionCell);
-		tbody.appendChild(row);
-	}
+			rm.textContent = "Remove";
+			rm.className = "button-danger button-small";
+			gateAction(rm, "deleteSystemSysctl");
+			rm.addEventListener("click", () => removeSysctl(s.key));
+			return [rm];
+		} },
+	], {
+		op: "listSystemSysctl",
+		what: "persisted sysctls",
+		empty: "No sysctls persisted.",
+	});
 }
 
 /* Parses the web form's own single "KEY=VALUE,KEY=VALUE" text field
