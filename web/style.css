@@ -3040,14 +3040,13 @@ pre {
 }
 
 .delivery-graph { display: block; overflow-x: auto; }
-.dg-section { margin-bottom: var(--s5); }
 /*
  * A SMALL-CAPS LABEL: the dashboard's name for a group of things, as
  * distinct from a heading you would read as a sentence.
  *
  * Promoted out of the Pipeline page's private namespace (#598), where
  * it existed THREE TIMES at three sizes -- `dg-section-head` at 11px,
- * `dg-h` at 12px and `dg-drawer-h` at 10px, all uppercase, all tracked,
+ * `dg-h` at 12px and `detail-panel-h` at 10px, all uppercase, all tracked,
  * all muted, all doing the same job. One definition, and the three
  * sizes were never a decision anyone made.
  *
@@ -3063,57 +3062,90 @@ pre {
 	color: var(--muted);
 	margin: 0 0 var(--s1);
 }
-.dg-row {
-	display: grid;
-	grid-template-columns: minmax(120px, 1.1fr) minmax(52px, 0.5fr) minmax(230px, 2.8fr) minmax(0, 2.2fr);
-	align-items: center;
-	gap: var(--s2);
-	padding: var(--s1) var(--s2);
-	border-radius: var(--r-control);
-	cursor: pointer;
+/*
+ * The Pipeline's rows, as a real table (#598).
+ *
+ * This was seven classes emulating one: every row was its own CSS grid
+ * re-declaring the same four-column template, which lined up only
+ * because they all repeated it and announced no column to anything
+ * reading the page. `table-layout: fixed` plus a width per column does
+ * what `grid-template-columns` did, once.
+ */
+.pipeline-section {
+	margin-bottom: var(--s5);
 }
-.dg-row:hover, .dg-row:focus-visible { background: var(--panel); outline: none; }
-.dg-row-header {
-	cursor: default;
+
+.pipeline-table {
+	table-layout: fixed;
+}
+
+.pipeline-table th,
+.pipeline-table td {
+	padding: var(--s1) var(--s2);
+	font-size: 12px;
+	vertical-align: middle;
+}
+
+.pipeline-table th {
 	font-size: 10px;
 	text-transform: uppercase;
 	letter-spacing: 0.06em;
-	color: var(--muted);
-	border-bottom: 1px solid var(--border);
-	padding-bottom: var(--s1);
-	margin-bottom: var(--s1);
+	font-weight: 600;
 }
-.dg-row-header:hover { background: none; }
-.dg-row-sub { cursor: default; opacity: 0.75; font-size: 12px; }
-.dg-row-sub:hover { background: none; }
-/* min-width:0 on every grid child: a grid track's default `min-width:auto`
-   refuses to shrink below its content, so a long value does not ellipsize
-   -- it overflows its own column and draws on top of the next one. An
-   image's "version" is a 64-character manifest hash (ADR-0108), which
-   painted straight across the stage cells and made the row look broken. */
-.dg-row > * { min-width: 0; }
-.dg-row-name {
+
+.pipeline-table th:nth-child(1),
+.pipeline-table td:nth-child(1) { width: 18%; }
+.pipeline-table th:nth-child(2),
+.pipeline-table td:nth-child(2) { width: 11%; }
+.pipeline-table th:nth-child(3),
+.pipeline-table td:nth-child(3) { width: 40%; }
+
+/* A long value must ellipsize rather than push its column: an image's
+ * "version" is a 64-character manifest hash (ADR-0108), which used to
+ * paint straight across the stage cells. */
+.pipeline-name,
+.pipeline-ver,
+.pipeline-why {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pipeline-name {
 	font-weight: 600;
 	font-size: 13px;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 }
-.dg-row-sub .dg-row-name { font-weight: 400; padding-left: var(--s2); }
-.dg-row-ver {
-	font-size: 11px;
+
+.pipeline-ver {
 	color: var(--muted);
+	font-size: 11px;
 	font-variant-numeric: tabular-nums;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 }
-.dg-row-why {
-	font-size: 11px;
+
+.pipeline-why {
 	color: var(--muted);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+	font-size: 11px;
+}
+
+.pipeline-row {
+	cursor: pointer;
+}
+
+.pipeline-row:hover,
+.pipeline-row:focus-visible {
+	background: var(--panel);
+	outline: none;
+}
+
+/* A package folded across several images: the same row, quieter, and
+ * not itself clickable. */
+.pipeline-sub {
+	opacity: 0.75;
+}
+
+.pipeline-sub .pipeline-name {
+	font-weight: 400;
+	padding-left: var(--s3);
 }
 
 /* The pipeline itself. Equal columns so a stage lines up down the whole
@@ -3144,42 +3176,18 @@ pre {
 .stage-cancelled { background: var(--muted); }
 .stage-not-implemented { background: transparent; border: 1px dotted var(--border); }
 
-.dg-chip {
-	display: inline-block;
-	padding: 0 var(--s2);
-	border: 1px solid var(--border);
-	border-radius: var(--r-pill);
-	font-size: 11px;
-	color: var(--muted);
-	font-variant-numeric: tabular-nums;
-}
 
 /* Denser than the rows above it, and BELOW them: "where is this" is the
    question the page exists for, and 21 drift entries at four lines each
    pushed every pipeline row under the fold. */
-.dg-drift {
-	margin-bottom: var(--s4);
-	font-size: 12px;
-	display: grid;
-	grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-	gap: var(--s2);
-}
-.dg-drift-row {
-	padding: var(--s1) var(--s2);
-	border: 1px solid var(--border);
-	border-left: 3px solid var(--paused);
-	border-radius: var(--r-control);
-}
-.dg-drift-name { font-weight: 600; }
-.dg-drift-line { color: var(--muted); overflow-wrap: anywhere; }
 
-.dg-drawer {
+.detail-panel {
 	margin-top: var(--s4);
 	border: 1px solid var(--border);
 	border-radius: var(--r-panel);
 	background: var(--panel);
 }
-.dg-drawer-head {
+.detail-panel-head {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
@@ -3187,27 +3195,11 @@ pre {
 	padding: var(--s2) var(--s3);
 	border-bottom: 1px solid var(--border);
 }
-.dg-drawer-body { padding: var(--s3); font-size: 12px; display: flex; flex-direction: column; gap: var(--s1); }
-.dg-drawer-actions { margin-top: var(--s3); }
+.detail-panel-body { padding: var(--s3); font-size: 12px; display: flex; flex-direction: column; gap: var(--s1); }
+.detail-panel-actions { margin-top: var(--s3); }
 
 /* ADR-0272: the run history. Scrolls on its own so a package with a
  * hundred runs cannot push the build log off the drawer. */
-.dg-runs {
-	max-height: 220px;
-	overflow: auto;
-	margin-top: var(--s1);
-	border: 1px solid var(--border);
-	border-radius: var(--r-control);
-}
-.dg-run {
-	padding: var(--s1) var(--s2);
-	font-size: 11px;
-	line-height: 1.45;
-	border-bottom: 1px solid var(--border);
-	overflow-wrap: anywhere;
-}
-.dg-run:last-child { border-bottom: 0; }
-.dg-run-bad { color: var(--error); }
 
 .legend-key {
 	display: inline-block;

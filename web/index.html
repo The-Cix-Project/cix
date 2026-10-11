@@ -2067,14 +2067,14 @@
 			     this". Replaces lanes-of-boxes, which drew kinds as columns and
 			     left the pipeline as a word inside a box. -->
 			<div class="list-toolbar">
-				<input type="search" id="dg-search"
+				<input type="search" id="pipeline-search"
 				       placeholder="Find a package, image or deployment&hellip;"
 				       aria-label="Filter rows by name">
 				<label>
-					<input type="checkbox" id="dg-view-all">
+					<input type="checkbox" id="pipeline-view-all">
 					View all
 				</label>
-				<span id="dg-count" class="count"></span>
+				<span id="pipeline-count" class="count"></span>
 			</div>
 
 			<div id="delivery-graph" class="delivery-graph"></div>
@@ -2092,7 +2092,7 @@
 			     across images. The per-package row folds its images and so cannot
 			     show this, and it is the thing an operator can act on. -->
 			<h3 class="section-label">Version drift across images</h3>
-			<div id="dg-drift" class="dg-drift"></div>
+			<div id="pipeline-drift"></div>
 
 			<h3 class="section-label">Where packages stand</h3>
 			<div id="pipeline-flow" class="pipeline-flow"></div>
@@ -2101,12 +2101,12 @@
 
 			<!-- Detail for one row: why it is where it is, every image it is
 			     installed into, and the real build log. -->
-			<div id="dg-drawer" class="dg-drawer" hidden>
-				<div class="dg-drawer-head">
-					<strong id="dg-drawer-title"></strong>
-					<button type="button" id="dg-drawer-close" class="btn-small">Close</button>
+			<div id="detail-panel" class="detail-panel" hidden>
+				<div class="detail-panel-head">
+					<strong id="detail-panel-title"></strong>
+					<button type="button" id="detail-panel-close" class="btn-small">Close</button>
 				</div>
-				<div id="dg-drawer-body" class="dg-drawer-body"></div>
+				<div id="detail-panel-body" class="detail-panel-body"></div>
 			</div>
 			</div>
 <div class="tab-panel" data-tab="pipeline-errors" hidden>

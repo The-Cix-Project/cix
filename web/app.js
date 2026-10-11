@@ -15552,26 +15552,28 @@ function dgCells(kind, stages, row) {
 }
 
 function dgRow(kind, stages, row, opts) {
-	const el = document.createElement("div");
+	const el = document.createElement("tr");
+	const sub = !!(opts && opts.sub);
 
-	el.className = "dg-row" + (opts && opts.sub ? " dg-row-sub" : "");
-	el.tabIndex = 0;
+	el.className = sub ? "pipeline-sub" : "pipeline-row";
+	if (!sub)
+		el.tabIndex = 0;
 
-	const name = document.createElement("div");
-	name.className = "dg-row-name";
+	const name = document.createElement("td");
+	name.className = "pipeline-name";
 	name.textContent = (opts && opts.label) || row.name;
 	el.appendChild(name);
 
-	const ver = document.createElement("div");
-	ver.className = "dg-row-ver";
+	const ver = document.createElement("td");
+	ver.className = "pipeline-ver";
 	ver.textContent = row.version || row.resolved_version || "";
 	ver.title = ver.textContent;
 	el.appendChild(ver);
 
-	el.appendChild(dgCells(kind, stages, row));
+	el.appendChild(document.createElement("td")).appendChild(dgCells(kind, stages, row));
 
-	const why = document.createElement("div");
-	why.className = "dg-row-why";
+	const why = document.createElement("td");
+	why.className = "pipeline-why";
 	/* The reason belongs on the row, not behind a click: a page that
 	 * makes you open something to find out what is wrong has only moved
 	 * the problem. */
@@ -15591,20 +15593,39 @@ function dgRow(kind, stages, row, opts) {
 	return el;
 }
 
+/*
+ * A REAL TABLE (#598).
+ *
+ * Each section was a stack of `<div class="dg-row">`, every one its own
+ * four-column CSS grid repeating the same template -- which is a table
+ * emulated, and it lined up only because every row re-declared the
+ * identical `grid-template-columns`. Nothing announced a column to a
+ * screen reader, and seven private classes existed to say what `<tr>`,
+ * `<td>` and `<th>` already mean.
+ *
+ * The stage track stays ONE cell rather than becoming one `<td>` per
+ * stage: the marks are a composite mark read left to right, and table
+ * cell padding between them would turn a progress bar into eight
+ * boxes.
+ */
 function dgSection(kind, label, stages, rows, frag) {
 	const sec = document.createElement("div");
-	sec.className = "dg-section";
+	const table = document.createElement("table");
+	const thead = document.createElement("thead");
+	const hdr = document.createElement("tr");
+	const body = document.createElement("tbody");
+	const hc = document.createElement("div");
 
-	const head = document.createElement("div");
+	sec.className = "pipeline-section";
+
+	const head = document.createElement("p");
 	head.className = "section-label";
 	head.textContent = label + " (" + rows.length + ")";
 	sec.appendChild(head);
 
-	const hdr = document.createElement("div");
-	hdr.className = "dg-row dg-row-header";
-	hdr.appendChild(document.createElement("div")).className = "dg-row-name";
-	hdr.appendChild(document.createElement("div")).className = "dg-row-ver";
-	const hc = document.createElement("div");
+	table.className = "pipeline-table";
+	hdr.appendChild(document.createElement("th")).textContent = "Name";
+	hdr.appendChild(document.createElement("th")).textContent = "Version";
 	hc.className = "stage-track";
 	for (const st of stages) {
 		const c = document.createElement("div");
@@ -15615,12 +15636,15 @@ function dgSection(kind, label, stages, rows, frag) {
 		c.title = st;
 		hc.appendChild(c);
 	}
-	hdr.appendChild(hc);
-	hdr.appendChild(document.createElement("div")).className = "dg-row-why";
-	sec.appendChild(hdr);
+	hdr.appendChild(document.createElement("th")).appendChild(hc);
+	hdr.appendChild(document.createElement("th")).textContent = "Why";
+	thead.appendChild(hdr);
+	table.appendChild(thead);
+	table.appendChild(body);
+	sec.appendChild(table);
 
 	for (const r of rows) {
-		sec.appendChild(dgRow(kind, stages, r, null));
+		body.appendChild(dgRow(kind, stages, r, null));
 		/*
 		 * A package is not in one place -- it is installed into N
 		 * images, each with its own position, and the row above is a
@@ -15630,7 +15654,7 @@ function dgSection(kind, label, stages, rows, frag) {
 		 */
 		if (kind === "package" && Array.isArray(r.images) && r.images.length > 1)
 			for (const im of r.images)
-				sec.appendChild(
+				body.appendChild(
 					dgRow(kind, stages, Object.assign({}, im, { upstream: r.upstream }), {
 						sub: true,
 						label: "↳ in " + im.image,
@@ -15651,7 +15675,7 @@ function renderDeliveryGraph(data) {
 		return;
 	}
 
-	const q = (document.getElementById("dg-search") || {}).value || "";
+	const q = (document.getElementById("pipeline-search") || {}).value || "";
 	/*
 	 * The control is "View all", and it is OFF by default -- so the
 	 * page opens showing only what needs attention, and seeing
@@ -15665,7 +15689,7 @@ function renderDeliveryGraph(data) {
 	 * checkbox, where reading the label tells you what you get by
 	 * ticking it and leaves you to infer the rest.
 	 */
-	const viewAll = !!(document.getElementById("dg-view-all") || {}).checked;
+	const viewAll = !!(document.getElementById("pipeline-view-all") || {}).checked;
 	const problemsOnly = !viewAll;
 	const needle = q.trim().toLowerCase();
 	const stagesFor = {};
@@ -15726,7 +15750,7 @@ function renderDeliveryGraph(data) {
 		root.appendChild(frag);
 	}
 
-	const count = document.getElementById("dg-count");
+	const count = document.getElementById("pipeline-count");
 	if (count) {
 		const probs =
 			(data.blocked || 0) + (data.failed || 0) + (data.cancelled || 0);
@@ -15747,7 +15771,7 @@ function renderDeliveryGraph(data) {
  * operator can act on.
  */
 function renderDrift(drift) {
-	const root = document.getElementById("dg-drift");
+	const root = document.getElementById("pipeline-drift");
 
 	if (!root)
 		return;
@@ -15756,16 +15780,34 @@ function renderDrift(drift) {
 		root.textContent = "Every package is at one version everywhere.";
 		return;
 	}
+	/*
+	 * A TABLE, like the rest of this page (#598).
+	 *
+	 * This was a responsive grid of little bordered cards, four
+	 * private classes deep, saying one thing per card: a package and
+	 * the versions of it in use. That is one row per package with a
+	 * cell listing where each version is -- which is what every other
+	 * list in this dashboard is, and it loses nothing but the cards.
+	 */
+	const table = document.createElement("table");
+	const thead = document.createElement("tr");
+	const body = document.createElement("tbody");
+
+	thead.appendChild(document.createElement("th")).textContent = "Package";
+	thead.appendChild(document.createElement("th")).textContent = "Versions in use";
+	table.appendChild(document.createElement("thead")).appendChild(thead);
+	table.appendChild(body);
+
 	for (const d of drift) {
-		const box = document.createElement("div");
-		box.className = "dg-drift-row";
-
-		const name = document.createElement("div");
-		name.className = "dg-drift-name";
-		name.textContent = d.name + " — " + d.versions + " versions";
-		box.appendChild(name);
-
+		const tr = document.createElement("tr");
+		const name = document.createElement("td");
+		const where = document.createElement("td");
 		const byVersion = new Map();
+
+		name.textContent = d.name;
+		name.title = d.versions + " versions";
+		tr.appendChild(name);
+
 		for (const i of d.installs || []) {
 			if (!byVersion.has(i.version))
 				byVersion.set(i.version, []);
@@ -15773,16 +15815,21 @@ function renderDrift(drift) {
 		}
 		for (const [v, images] of byVersion) {
 			const line = document.createElement("div");
-			line.className = "dg-drift-line";
 			const chip = document.createElement("span");
-			chip.className = "dg-chip";
+
+			/* The badge is the widget for "a value the daemon
+			 * reported", and a version is one. `dg-chip` was an
+			 * outlined pill doing the same job. */
+			chip.className = statusBadge("unknown");
 			chip.textContent = v;
 			line.appendChild(chip);
 			line.appendChild(document.createTextNode(" " + images.join(", ")));
-			box.appendChild(line);
+			where.appendChild(line);
 		}
-		root.appendChild(box);
+		tr.appendChild(where);
+		body.appendChild(tr);
 	}
+	root.appendChild(table);
 }
 
 /*
@@ -15795,9 +15842,9 @@ function renderDrift(drift) {
  * simply never asked for them.
  */
 async function openPipelineDrawer(kind, row) {
-	const drawer = document.getElementById("dg-drawer");
-	const title = document.getElementById("dg-drawer-title");
-	const body = document.getElementById("dg-drawer-body");
+	const drawer = document.getElementById("detail-panel");
+	const title = document.getElementById("detail-panel-title");
+	const body = document.getElementById("detail-panel-body");
 
 	if (!drawer || !body)
 		return;
@@ -15841,7 +15888,7 @@ async function openPipelineDrawer(kind, row) {
 		const bar = document.createElement("div");
 		const cancel = document.createElement("button");
 
-		bar.className = "dg-drawer-actions";
+		bar.className = "detail-panel-actions";
 		cancel.type = "button";
 		cancel.className = "button-small";
 		cancel.textContent = "Cancel the in-flight build";
@@ -15874,7 +15921,7 @@ async function openPipelineDrawer(kind, row) {
 	hh.textContent = "History";
 	body.appendChild(hh);
 	const runsBox = document.createElement("div");
-	runsBox.className = "dg-runs";
+	runsBox.className = "log-output";
 	runsBox.textContent = "loading…";
 	body.appendChild(runsBox);
 
@@ -15899,14 +15946,31 @@ async function openPipelineDrawer(kind, row) {
 					? " (" + run.stages.map((s) => s.stage + " " + boDuration(s.seconds)).join(", ") + ")"
 					: "";
 
-				el.className = "dg-run" + (bad ? " dg-run-bad" : "");
+				/*
+				 * A LOG ENTRY, because that is what a list of
+				 * timestamped outcomes is (#598). `dg-run` was
+				 * `.log-entry` and `dg-runs` was `.log-output`; the
+				 * one thing that did not transfer was `dg-run-bad`,
+				 * which coloured the whole line, where
+				 * `.log-entry-error` colours a `.log-entry-status`
+				 * child -- so the status becomes its own span, which
+				 * is better anyway: the red belongs on the word that
+				 * failed, not on the timestamp beside it.
+				 */
+				const status = document.createElement("span");
+
+				el.className = "log-entry" + (bad ? " log-entry-error" : "");
+				status.className = "log-entry-status";
+				status.textContent = bad ? run.stage + "/" + run.status : "ok";
 				/* The image is named on every line: a run is a
 				 * (package, image) pair, and a history that omits the
 				 * image reads as one stream of contradictory outcomes. */
-				el.textContent = when + " · " + (run.image || "-") + " · " +
-					(bad ? run.stage + "/" + run.status : "ok") +
+				el.appendChild(document.createTextNode(
+					when + " · " + (run.image || "-") + " · "));
+				el.appendChild(status);
+				el.appendChild(document.createTextNode(
 					" · " + secs + "s" + split + " · " + (run.trigger || "-") +
-					(run.error ? " — " + run.error : "");
+					(run.error ? " — " + run.error : "")));
 				runsBox.appendChild(el);
 			}
 		}
@@ -15952,9 +16016,9 @@ async function openPipelineDrawer(kind, row) {
  * round trip per keystroke would make typing feel broken.
  */
 function wirePipelineControls() {
-	const search = document.getElementById("dg-search");
-	const only = document.getElementById("dg-view-all");
-	const close = document.getElementById("dg-drawer-close");
+	const search = document.getElementById("pipeline-search");
+	const only = document.getElementById("pipeline-view-all");
+	const close = document.getElementById("detail-panel-close");
 	const rerender = () => {
 		if (cache.pipeline)
 			renderDeliveryGraph(cache.pipeline);
@@ -15971,7 +16035,7 @@ function wirePipelineControls() {
 	if (close && !close.dataset.wired) {
 		close.dataset.wired = "1";
 		close.addEventListener("click", () => {
-			document.getElementById("dg-drawer").hidden = true;
+			document.getElementById("detail-panel").hidden = true;
 		});
 	}
 }

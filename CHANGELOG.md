@@ -6,6 +6,34 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### `dg-*`: the last 19 were a table and a panel, and now there are none (#598)
+
+The half of the collapse that was not a rename, and both turned out to be a widget the dashboard
+genuinely lacked rather than a judgement call.
+
+**The row grid was a table drawn with divs.** `dg-row` was a four-column `grid-template-columns`,
+`dg-row-header` was another div wearing the same grid, and `dg-name`/`dg-ver`/`dg-why`/`dg-lane` were
+its cells. So the page had a header row and **no `<th>` anywhere** — which is why, once it became a
+real `<table class="pipeline-table">` with a `<thead>`, it gained NAME / VERSION / WHY column headings
+it had never had. Seven classes became four `.pipeline-*` rules plus `table-layout: fixed`, and the
+drift list and the runs box went the same way: drift is a `<table>`, its chip is `statusBadge()`, and
+the runs box is `.log-output` with `.log-entry`/`.log-entry-error` rows, so a failed run is red because
+the log vocabulary already says so.
+
+**The drawer is the detail panel**, and it is promoted to a vocabulary row rather than folded into the
+modal. The modal was the obvious home and it is the wrong one: the panel sits beside the grid
+deliberately, so an operator can compare two rows, and a modal covers the thing being compared. No
+existing class did this, which is what makes it a vocabulary row and not a re-invention — the same call
+`switch-*` and the stage mark got.
+
+**`dg-` is now zero classes in `style.css` and zero in `app.js`.** What carries the prefix is four
+element ids on that page's own controls (`pipeline-search` and friends are renamed too) and the
+comments recording what each class used to be, kept because "it was `.list-toolbar` with a different
+gap" is the finding and the class is gone.
+
+Verified the same way as the first half: the orphan gate reports zero, and the page renders from the
+box's own bytes with stub data before and after.
+
 ### `dg-*`: 48 classes to 19, and what was actually in them (#598)
 
 The Pipeline page's private namespace — the last filed violation of `web-ux-guidelines.md`, and story 6
@@ -33,7 +61,8 @@ class gate stays at zero orphans.
 **What remains is 19 classes and they are not renames.** The row grid (`dg-row*`, `stage-track`'s
 container) is a table drawn with divs and wants a composition; the detail panel (`dg-drawer*`) is a
 one-page invention that is either the modal or a vocabulary row, and that is a judgement rather than a
-sweep. Stated here rather than left as a number someone has to rediscover.
+sweep. Stated here rather than left as a number someone has to rediscover. **Both were done in the
+entry above**, which is why this paragraph names them rather than ending in a count.
 
 ### A class that styles nothing and selects nothing is dead, and four were (#598)
 
