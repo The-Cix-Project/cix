@@ -774,6 +774,20 @@ would therefore print a bare integer. Those cells keep calling `formatInstant()`
 they belong to is a named schema. Do not read the gap as permission to skip the format: the contract is
 where the fact belongs either way, and promoting the schema is what makes it usable.
 
+### An inline object the dashboard renders gets promoted to a named schema
+
+The same limit, stated as the rule it implies. `Dhcp.static`'s items were an inline `type: object` with
+three properties, and the dashboard's reservations table therefore had to be told their types by hand --
+which it was, by being handed a schema name (`DhcpReservation`) that did not exist. Nothing failed: a
+missing schema means every column takes its type from nothing, which is indistinguishable from correct for
+a string column and wrong for every boolean, array and instant. `test_web_tree` refuses an unresolvable
+schema name now, and it found four more the same way, all of them shipped (`DnsServer`, `LdapServer` and
+`NtpServer` are each `*Binding`).
+
+So: **if a surface renders an object, that object is a named schema here.** `DhcpReservation` is promoted
+out of `Dhcp.static.items` and `$ref`'d back into it, which changes nothing on the wire and gives the three
+properties somewhere to carry their own descriptions.
+
 ### A property's `title` is the operator's label, and its description's first sentence is the hint
 
 Two standard JSON Schema keywords doing the two jobs a form needs, so neither is an extension:

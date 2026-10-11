@@ -17882,15 +17882,26 @@ components:
         static:
           type: array
           items:
-            type: object
-            properties:
-              mac:
-                type: string
-              ip:
-                type: string
-              hostname:
-                type: string
-                nullable: true
+            $ref: "#/components/schemas/DhcpReservation"
+    DhcpReservation:
+      type: object
+      description: >
+        One fixed address, handed to one MAC. Promoted out of
+        Dhcp.static's inline items so the dashboard can render it:
+        apigen emits CIX_API.FIELDS per NAMED schema, so an inline
+        object's properties reach no generated client, and the table
+        showing them had to be told their types by hand.
+      properties:
+        mac:
+          type: string
+          description: The client's hardware address, lower-case and colon-separated.
+        ip:
+          type: string
+          description: The address this MAC is always given.
+        hostname:
+          type: string
+          nullable: true
+          description: The name to answer for it, or null to serve the address alone.
     DhcpServer:
       type: object
       properties:

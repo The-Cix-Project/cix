@@ -845,6 +845,20 @@ function tableCell(schema, row, col) {
 
 	if (typeof col === "object" && col.cls !== undefined)
 		cell.className = col.cls;
+	/*
+	 * `title` -- the hover, for a cell whose full value does not fit a
+	 * dense row. Five hand-written cells had one and three were the
+	 * identical `stateCell.title = pkg.error` (#101's rule: the state
+	 * and its kind sit in the cell, the message is the hover, so the
+	 * table stays readable). An empty string sets no attribute, so a
+	 * row with nothing to add gets no empty tooltip.
+	 */
+	if (typeof col === "object" && col.title !== undefined) {
+		const t = col.title(row);
+
+		if (t)
+			cell.title = t;
+	}
 	if (typeof col === "object" && col.actions !== undefined) {
 		for (const el of col.actions(row) || [])
 			cell.appendChild(el);
@@ -901,6 +915,9 @@ function tableCell(schema, row, col) {
  * existing class and never a rule: a screen that invents styling is
  * the defect the four-layer rule describes, and the class-orphan gate
  * would refuse a name nothing defines anyway.
+ *
+ * Any of them may also carry `title: (row) => "..."`, the hover for a
+ * cell whose whole value will not fit a dense row.
  *
  * That last form is the narrow escape hatch and is meant to stay
  * narrow: it exists for a cell with NO single field behind it -- a

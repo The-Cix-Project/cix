@@ -8599,7 +8599,7 @@ async function removeDnsRecord(name) {
 
 /* Generated (#592). */
 function renderDnsServers(servers) {
-	renderTable(document.getElementById("dns-servers"), "DnsServer", servers, [
+	renderTable(document.getElementById("dns-servers"), "DnsServerBinding", servers, [
 		"container",
 		{ field: "hosts_path", label: "Hosts path" },
 		{ label: "", actions: (s) => [unregisterButton("deleteDnsServer",
@@ -8629,7 +8629,7 @@ async function removeDnsServer(container) {
  * contract describes neither column; the cells are still one code
  * path with one empty state. */
 function renderLdapServers(servers) {
-	renderTable(document.getElementById("ldap-servers"), "LdapServer", servers, [
+	renderTable(document.getElementById("ldap-servers"), "LdapServerBinding", servers, [
 		"container",
 		{ field: "config_path", label: "Config path" },
 		{ label: "", actions: (s) => [unregisterButton("deleteLdapServer",
@@ -10431,7 +10431,7 @@ document.getElementById("ntp-config-form").addEventListener("submit", async (eve
  * does not have to wait for it.
  */
 function renderNtpServers(servers) {
-	renderTable(document.getElementById("ntp-servers"), "NtpServer", servers, [
+	renderTable(document.getElementById("ntp-servers"), "NtpServerBinding", servers, [
 		"container",
 		{ label: "", actions: (s) => [unregisterButton("deleteNtpServer",
 		    () => removeNtpServer(s.container))] },
@@ -10808,70 +10808,49 @@ async function removePkiCert(name) {
  * (Recipe + Installed tabs together already), the one place that
  * shows a given name's full picture -- no separate detail page per
  * list, matching this project's own single-source-of-truth posture. */
+/*
+ * Generated (#592), and the first caller of the `title` modifier.
+ *
+ * Issue #101's rule is what needs it: a package that could not be
+ * REACHED and one that failed to BUILD both read "failed", and they
+ * call for opposite responses -- retry the first, fix the second. So
+ * the kind sits next to the state in the cell and the message is the
+ * hover, which keeps the table readable. Three tables do that with the
+ * same two lines, which is why it is a column form and not a cell this
+ * one builds by hand.
+ *
+ * The repaint guard is the renderer's now: #432's reason for it (a
+ * rebuild on every tick costs the reader their scroll position) is
+ * exactly why renderTable has one, and it keys on `op` so this caller
+ * no longer names a cache slot or composes its own signature.
+ */
 function renderPackagesList() {
-	const body = document.getElementById("packages-body");
+	renderTable(document.getElementById("packages"), "PkgEntry", cache.pkgList, [
+		{ field: "name", link: (p) => "#packages/" + encodeURIComponent(p.name) },
+		"image",
+		"version",
+		{ label: "State",
+		  text: (p) => (p.stage
+			? p.state + " (" + p.stage + "/" + p.status + ")"
+			: p.state),
+		  title: (p) => p.error },
+		{ label: "", actions: (p) => {
+			if (p.state !== "installed")
+				return [];
 
-	/* #432: an unchanged table is left alone. Blanking and rebuilding
-	 * it on every tick costs the reader their scroll position. */
-	if (unchangedAndRendered(body, "packages",
-	    listSignature(cache.pkgList, "listPkg", "installed packages",
-	        "Nothing installed yet")))
-		return;
-	body.textContent = "";
-	if (cache.pkgList.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+			const rm = document.createElement("button");
 
-		cell.colSpan = 5;
-		cell.className = "empty";
-		cell.textContent = emptyStateText("listPkg", "installed packages",
-		    "Nothing installed yet");
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const pkg of cache.pkgList) {
-		const row = document.createElement("tr");
-
-		const nameCell = document.createElement("td");
-		nameCell.appendChild(treeLink("#packages/" + encodeURIComponent(pkg.name), pkg.name, ""));
-		row.appendChild(nameCell);
-
-		const imageCell = document.createElement("td");
-		imageCell.textContent = pkg.image;
-		row.appendChild(imageCell);
-
-		const versionCell = document.createElement("td");
-		versionCell.textContent = pkg.version;
-		row.appendChild(versionCell);
-
-		const stateCell = document.createElement("td");
-		/* Issue #101: a package that could not be REACHED and one that
-		 * failed to BUILD both read "failed", and they call for
-		 * opposite responses -- retry the first, fix the second. The
-		 * kind sits next to the state; the message is the hover, so the
-		 * table stays readable. */
-		stateCell.textContent = pkg.stage ? pkg.state + " (" + pkg.stage + "/" + pkg.status + ")"
-		                                          : pkg.state;
-		if (pkg.error)
-			stateCell.title = pkg.error;
-		row.appendChild(stateCell);
-
-		const actionCell = document.createElement("td");
-		if (pkg.state === "installed") {
-			const rmButton = document.createElement("button");
-
-			rmButton.textContent = "Remove";
-			gateAction(rmButton, "deletePkg");
-			rmButton.className = "button-danger";
-			rmButton.addEventListener("click", () => removePkg(pkg.name, pkg.image));
-			actionCell.appendChild(rmButton);
-		}
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
+			rm.textContent = "Remove";
+			rm.className = "button-danger";
+			gateAction(rm, "deletePkg");
+			rm.addEventListener("click", () => removePkg(p.name, p.image));
+			return [rm];
+		} },
+	], {
+		op: "listPkg",
+		what: "installed packages",
+		empty: "Nothing installed yet",
+	});
 }
 
 /*
@@ -10902,7 +10881,6 @@ function renderPackagesList() {
  * there.
  */
 function renderRecipesList() {
-	const body = document.getElementById("recipes-body");
 	const filter = document.getElementById("recipes-pkg-search").value.trim().toLowerCase();
 
 	const groups = new Map();
@@ -10917,52 +10895,42 @@ function renderRecipesList() {
 
 	const names = [...groups.keys()].filter((n) => n.toLowerCase().includes(filter));
 
-	/* #432: the signature is the filtered NAMES plus the recipe rows --
-	 * the names alone would miss a new version published for a name
-	 * already listed, which is exactly what this table exists to show. */
-	if (unchangedAndRendered(body, "recipes", { names: names, rows: cache.pkgRecipes }))
-		return;
-	body.textContent = "";
-	if (names.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+	/*
+	 * ONE ROW PER NAME, carrying that name's newest version -- the
+	 * grouping and the filter stay here, because they are this
+	 * screen's judgement and not the contract's: `GET /pkg/recipes`
+	 * returns every version as its own entry (ADR-0107) and the
+	 * renderer renders rows it is given.
+	 *
+	 * `extra` is the filter, so a search that narrows to the same
+	 * number of rows still repaints; the guard compares data, and two
+	 * different filters can select identical-looking lists.
+	 */
+	const rows = names.map((n) => groups.get(n)[0]);
 
-		cell.colSpan = 4;
-		cell.className = "empty";
-		cell.textContent = cache.pkgRecipes.length === 0 ? emptyStateText("listPkgRecipes", "recipes", "No recipes") : "No match";
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
+	renderTable(document.getElementById("recipes"), "PkgRecipe", rows, [
+		{ field: "name", link: (r) => "#packages/" + encodeURIComponent(r.name) },
+		"version",
+		"depends",
+		{ label: "", actions: (r) => {
+			const rm = document.createElement("button");
 
-	for (const name of names) {
-		const latest = groups.get(name)[0];
-		const row = document.createElement("tr");
-
-		const nameCell = document.createElement("td");
-		nameCell.appendChild(treeLink("#packages/" + encodeURIComponent(name), name, ""));
-		row.appendChild(nameCell);
-
-		const versionCell = document.createElement("td");
-		versionCell.textContent = latest.version;
-		row.appendChild(versionCell);
-
-		const dependsCell = document.createElement("td");
-		dependsCell.textContent = latest.depends || "-";
-		row.appendChild(dependsCell);
-
-		const actionCell = document.createElement("td");
-		const rmButton = document.createElement("button");
-
-		rmButton.textContent = "Delete";
-		gateAction(rmButton, "deletePkgRecipe");
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removePkgRecipe(latest.name, latest.version));
-		actionCell.appendChild(rmButton);
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
+			rm.textContent = "Delete";
+			rm.className = "button-danger";
+			gateAction(rm, "deletePkgRecipe");
+			rm.addEventListener("click", () => removePkgRecipe(r.name, r.version));
+			return [rm];
+		} },
+	], {
+		op: "listPkgRecipes",
+		what: "recipes",
+		/* A filter that matches nothing is not an empty host: the read
+		 * succeeded and there are recipes, just not these. The other
+		 * three states still come from listState(), so a refused read
+		 * says so even with a filter typed. */
+		empty: cache.pkgRecipes.length > 0 ? "No match" : "No recipes",
+		extra: filter,
+	});
 }
 
 /* name is null on the landing list, set on a specific package's own

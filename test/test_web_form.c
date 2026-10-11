@@ -722,6 +722,22 @@ int main(void)
 		       "    .map((r) => r.children[1].children[0].textContent).join(\",\");\n"
 		       "})()",
 		       "Remove mgmt,Remove svc");
+		/* `title` -- the hover, and the EMPTY case is the one worth
+		 * asserting: three tables set it from `pkg.error`, which is
+		 * null for every row that is fine, and an attribute set to ""
+		 * is still an attribute. */
+		expect(ctx, "a title is set only where there is one",
+		       "(() => {\n"
+		       "  const t = document.createElement(\"table\");\n"
+		       "  renderTable(t, \"Network\", [{ name: \"a\", subnet: \"1\" },\n"
+		       "                              { name: \"b\", subnet: \"2\" }],\n"
+		       "    [{ field: \"name\", title: (r) => (r.name === \"a\" ? \"why\" : \"\") }],\n"
+		       "    { op: \"listNetworks\", what: \"networks\", empty: \"none\" });\n"
+		       "  return t.tBodies[0].children\n"
+		       "    .map((r) => r.children[0].title === undefined\n"
+		       "      ? \"unset\" : JSON.stringify(r.children[0].title)).join(\",\");\n"
+		       "})()",
+		       "\"why\",unset");
 		expect(ctx, "a refused list never says there are none",
 		       "(() => {\n"
 		       "  const t = document.createElement(\"table\");\n"
