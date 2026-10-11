@@ -149,7 +149,12 @@ Four rules, because three of the widgets above are data marks and a chart gone w
 
 **What is checked:** no element may extend past the viewport unless an ancestor scrolls horizontally on purpose, at any supported width. That is a browser measurement, not a reading — `getBoundingClientRect().right` against `innerWidth`, walking up for a scrolling ancestor — and it is the check to run after any layout change.
 
-**Still the owner's: the narrowest width this dashboard supports.** An operator's console is not a phone, so "works on a phone" may legitimately not be a goal. What is measured rather than decided: twenty views are clean at 500px and above, which is the floor headless Chromium allows here, so nothing below that has been tested. Until it is named, treat 500px as the floor the gate holds and do not design for less.
+**Two tiers, because reading and writing are different jobs.**
+
+- **Reading state is supported at 360px and up.** Health, Containers, Pipeline and the log panel are what an operator opens when they are paged, and they open it on a phone. This is not a courtesy: the product bar in `CLAUDE.md` is that the dashboard *"shows the true state at every moment, including across a restart, a lapsed session, a refused read and a deploy"*, and the moments that matter most are the ones nobody is at a desk for.
+- **Creating and editing is supported at 720px and up**, and below that works wherever the generated form fits — which is most of them, because a generated form is a single column of full-width controls and that is already the phone layout. It is not *promised* there: `createContainer` is 45 fields, and a few pages (PKI reset, the installer) are deliberately deskbound.
+
+**Measured, 2026-10-11, in a 360px and a 390px viewport** (an iframe of that width, so the media queries evaluate against it): no element overflows on any of five read-tier views, the document does not scroll sideways, the tree hides and its disclosure button appears. **An earlier draft of this section said the floor was 500px; that was headless Chromium's minimum WINDOW width, not a property of the dashboard** — a tool limit written down as a fact, which is the mistake this project's own notes keep having to correct.
 
 ## Reference implementations
 

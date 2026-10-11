@@ -2910,6 +2910,22 @@ pre {
 		display: block;
 		overflow-x: auto;
 	}
+	/*
+	 * The toast is `top: 1rem; right: 1rem; max-width: 24rem`, which
+	 * on a desktop sits clear in a corner and at 390px is almost the
+	 * whole width -- so it covered the header, and the header is where
+	 * the tree-disclosure button lives. A transient message hiding the
+	 * only way to navigate is the wrong trade at any width; at the
+	 * bottom it covers the log panel instead, which is the right thing
+	 * to interrupt, and it is where a thumb already is.
+	 */
+	.status {
+		top: auto;
+		bottom: 1rem;
+		left: 1rem;
+		right: 1rem;
+		max-width: none;
+	}
 }
 
 @media (max-width: 720px) {

@@ -6,6 +6,38 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Reading state is supported on a phone; writing is not promised there (#600)
+
+The open question in the entry below — *the narrowest width this dashboard supports* — is answered,
+and the answer is two tiers rather than one number, because reading and writing are different jobs.
+
+**Reading state is supported at 360px and up.** Health, Containers, Pipeline and the log panel are
+what an operator opens when they are paged, and they open it on a phone. That is not a courtesy:
+`CLAUDE.md`'s product bar is that the dashboard *"shows the true state at every moment, including
+across a restart, a lapsed session, a refused read and a deploy"*, and the moments that matter most
+are the ones nobody is at a desk for. Dropping phone support would have turned an accident of one
+breakpoint into a decision to be worse, which is the opposite of the bar-raising maxim.
+
+**Creating and editing is supported at 720px and up**, and below that works wherever the generated
+form fits — which is most of them, since a generated form is already a single column of full-width
+controls. It is not promised: `createContainer` is 45 fields and a few pages are deliberately
+deskbound.
+
+**The 500px floor in the previous entry was wrong, and wrong in an instructive way.** It was headless
+Chromium's minimum *window* width, written down as a property of the dashboard. Measured properly —
+the page in a 360px and a 390px iframe, so its media queries evaluate against that width — **nothing
+overflows on any read-tier view, the document does not scroll sideways, and the tree hides with its
+disclosure button showing.** A tool limit reported as a fact is the exact mistake this project's own
+environment notes keep having to correct, and it survived a release because nothing asked whether
+500 was the dashboard's number or Chromium's.
+
+**One real phone defect, found by looking at the render rather than the measurements.** The toast is
+`top: 1rem; right: 1rem; max-width: 24rem`, which is a corner on a desktop and nearly the full width
+at 390px — so it covered the header, and the header is where the tree-disclosure button lives. A
+transient message hiding the only way to navigate is the wrong trade at any width. Below the
+breakpoint it is a full-width bar at the bottom, over the log panel, which is the right thing to
+interrupt and where a thumb already is.
+
 ### A table that does not fit scrolls, and the width rules are written down (#600)
 
 `web-ux-guidelines.md` had a *Responsiveness* section whose entire content was that responsiveness
