@@ -37,9 +37,24 @@ helper and five more strings said `Loading…`; the board says `Reading…`, and
 words for one state is the drift this document exists to stop.
 
 `getSystemRoutes` is the first panel converted, because it is the one that reproduced the lie.
-**41 hand-written empty sentences still bypass `emptyStateText`**, and that number is the work left —
-though a good share of them are sub-collections of an already-loaded object, which are honest as they
-are.
+**The sweep that followed took the hand-written empty sentences from 41 to 22**, and the 22 are the
+ones that should stay: a container's `interfaces`, `env`, `files` and granted devices; an image's
+manifest entries, version history and installed packages; the containers on a network — every one a
+field of an object that was already read, plus a handful of single-value panels that are not lists at
+all. Ten that *were* their own read now go through `emptyStateText`: processes, schedules, loader
+entries, installed packages, persisted sysctls, loaded modules, module options, snapshots, server
+health and the pipeline's blocked-or-failed list.
+
+**Four of those sit behind the repaint guard and so take `listSignature()`** — schedules, packages,
+sysctls and modules — because without it each would paint its first state and keep it.
+
+Measured by visiting eleven views in Chromium with no backend, before and after: **two lists claimed
+"none" where nothing had been asked, and now none do** ("No routes." and "No disks found"). Thirty-one
+cells say `Reading…`, and no page throws. The disks one was never touched by hand — it already routed
+through `emptyStateText`, which is the argument for putting the decision in one function.
+
+`test_web_tree` now refuses the spelling `Loading` on any non-comment line of `index.html`, `app.js`
+and `style.css`, the same instrument that holds `dg-` retired.
 
 ### Two generated renderers have no callers, and the guidelines said they did (#592)
 

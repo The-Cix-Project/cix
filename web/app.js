@@ -4812,7 +4812,8 @@ function renderProcessesTable(procs) {
 
 	tbody.textContent = "";
 	if (!procs || procs.length === 0) {
-		tbody.innerHTML = '<tr><td colspan="7" class="empty">No processes.</td></tr>';
+		simpleTableRows(tbody, [], 7,
+		    emptyStateText("listSystemProcesses", "processes", "No processes."));
 		return;
 	}
 	for (const p of procs) {
@@ -9460,7 +9461,9 @@ async function refreshSchedules() {
 		const rows = data.schedules || [];
 
 		/* #432: an unchanged schedule table is left alone. */
-		if (unchangedAndRendered(body, "schedules", rows))
+		if (unchangedAndRendered(body, "schedules",
+		    listSignature(rows, "listSchedules", "schedules",
+		        "Nothing is scheduled.")))
 			return;
 		body.textContent = "";
 		if (rows.length === 0) {
@@ -9469,7 +9472,8 @@ async function refreshSchedules() {
 
 			td.colSpan = 7;
 			td.className = "empty";
-			td.textContent = "Nothing is scheduled.";
+			td.textContent = emptyStateText("listSchedules", "schedules",
+			    "Nothing is scheduled.");
 			tr.appendChild(td);
 			body.appendChild(tr);
 			return;
@@ -10053,7 +10057,8 @@ function renderEspEntries(data) {
 
 		cell.colSpan = 5;
 		cell.className = "empty";
-		cell.textContent = "No loader entries";
+		cell.textContent = emptyStateText("getEsp", "loader entries",
+		    "No loader entries");
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -11046,7 +11051,9 @@ function renderPackagesList() {
 
 	/* #432: an unchanged table is left alone. Blanking and rebuilding
 	 * it on every tick costs the reader their scroll position. */
-	if (unchangedAndRendered(body, "packages", cache.pkgList))
+	if (unchangedAndRendered(body, "packages",
+	    listSignature(cache.pkgList, "listPkg", "installed packages",
+	        "Nothing installed yet")))
 		return;
 	body.textContent = "";
 	if (cache.pkgList.length === 0) {
@@ -11055,7 +11062,8 @@ function renderPackagesList() {
 
 		cell.colSpan = 5;
 		cell.className = "empty";
-		cell.textContent = "Nothing installed yet";
+		cell.textContent = emptyStateText("listPkg", "installed packages",
+		    "Nothing installed yet");
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -13652,11 +13660,15 @@ function renderSysctlList() {
 
 	/* #432: an unchanged table is left alone. Blanking and rebuilding
 	 * it on every tick costs the reader their scroll position. */
-	if (unchangedAndRendered(tbody, "sysctl", cache.sysctls))
+	if (unchangedAndRendered(tbody, "sysctl",
+	    listSignature(cache.sysctls, "listSystemSysctl", "persisted sysctls",
+	        "No sysctls persisted.")))
 		return;
 	tbody.textContent = "";
 	if (cache.sysctls.length === 0) {
-		tbody.innerHTML = '<tr><td colspan="3" class="empty">No sysctls persisted.</td></tr>';
+		simpleTableRows(tbody, [], 3,
+		    emptyStateText("listSystemSysctl", "persisted sysctls",
+		        "No sysctls persisted."));
 		return;
 	}
 	for (const s of cache.sysctls) {
@@ -13860,11 +13872,14 @@ function renderKmodList() {
 
 	/* #432: an unchanged table is left alone. Blanking and rebuilding
 	 * it on every tick costs the reader their scroll position. */
-	if (unchangedAndRendered(tbody, "kmod", cache.kmodModules))
+	if (unchangedAndRendered(tbody, "kmod",
+	    listSignature(cache.kmodModules, "listKmod", "loaded modules",
+	        "No modules loaded.")))
 		return;
 	tbody.textContent = "";
 	if (cache.kmodModules.length === 0) {
-		tbody.innerHTML = '<tr><td colspan="5" class="empty">No modules loaded.</td></tr>';
+		simpleTableRows(tbody, [], 5,
+		    emptyStateText("listKmod", "loaded modules", "No modules loaded."));
 	} else {
 		for (const m of cache.kmodModules) {
 			const row = document.createElement("tr");
@@ -13897,7 +13912,9 @@ function renderKmodList() {
 
 	configBody.textContent = "";
 	if (cache.kmodConfig.length === 0) {
-		configBody.innerHTML = '<tr><td colspan="4" class="empty">No kmod config persisted.</td></tr>';
+		simpleTableRows(configBody, [], 4,
+		    emptyStateText("listKmodConfig", "persisted module options",
+		        "No kmod config persisted."));
 		return;
 	}
 	for (const c of cache.kmodConfig) {
@@ -14391,7 +14408,8 @@ async function renderVolumeBackups(volumeName, fresh) {
 
 		cell.colSpan = 2;
 		cell.className = "empty";
-		cell.textContent = "No snapshots yet";
+		cell.textContent = emptyStateText("getVolumeBackups", "snapshots",
+		    "No snapshots yet");
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -14866,7 +14884,8 @@ async function refreshServerHealth() {
 
 		cell.colSpan = 8;
 		cell.className = "empty";
-		cell.textContent = "No registered servers are being health-tracked yet";
+		cell.textContent = emptyStateText("getServerHealth", "server health",
+		    "No registered servers are being health-tracked yet");
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
@@ -16078,7 +16097,8 @@ async function refreshPipeline() {
 
 		td.colSpan = 6;
 		td.className = "hint";
-		td.textContent = "Nothing is blocked or failed.";
+		td.textContent = emptyStateText("getPipeline", "the pipeline",
+		    "Nothing is blocked or failed.");
 		tr.appendChild(td);
 		tbody.appendChild(tr);
 	}

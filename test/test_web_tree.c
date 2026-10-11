@@ -773,6 +773,62 @@ next:
 	}
 
 	/*
+	 * A LIST THAT IS READING SAYS "Reading", ONCE (#592).
+	 *
+	 * The Primitives board names three states and spells the first one
+	 * `Reading…`. Before this, 43 static cells in index.html, the
+	 * `showLoadingIfEmpty` helper and five more strings said
+	 * `Loading…` -- two words for one state, which is the drift the
+	 * vocabulary exists to stop, and the board picked the other one.
+	 *
+	 * Textual and blunt, like the `dg-` gate: a design system with two
+	 * spellings has no rule, and prose did not hold `dg-` either.
+	 * Comments are exempt, because several of them record what a panel
+	 * USED to say while explaining a bug that is fixed.
+	 */
+	{
+		struct { const char *name; const char *text; } lf[] = {
+			{ "web/index.html", html },
+			{ "web/app.js", app },
+			{ "web/style.css", css },
+		};
+		size_t li;
+
+		for (li = 0; li < sizeof(lf) / sizeof(lf[0]); li++) {
+			const char *p = lf[li].text;
+			const char *base = p;
+			int offenders = 0;
+
+			while ((p = strstr(p, "Loading")) != NULL) {
+				const char *line = p;
+				int commented = 0;
+
+				while (line > base && line[-1] != '\n')
+					line--;
+				while (*line == ' ' || *line == '\t')
+					line++;
+				if (line[0] == '*' ||
+				    (line[0] == '/' && (line[1] == '*' || line[1] == '/')) ||
+				    (line[0] == '<' && line[1] == '!' && line[2] == '-'))
+					commented = 1;
+				if (!commented)
+					offenders++;
+				p += 1;
+			}
+			if (offenders > 0) {
+				char n[16];
+
+				snprintf(n, sizeof(n), "%d", offenders);
+				fail("%s says \"Loading\" on %s non-comment line(s) -- the "
+				     "Primitives board spells a list's first state "
+				     "\"Reading\", and two words for one state is the drift "
+				     "the vocabulary exists to stop",
+				     lf[li].name, n);
+			}
+		}
+	}
+
+	/*
 	 * A HAND-WRITTEN `pattern` IS A PATTERN TOO (#596).
 	 *
 	 * `test_apigen` refuses a bare `-]` in an EMITTED pattern, because
