@@ -598,6 +598,31 @@ int main(void)
 		       "a, b");
 
 		/*
+		 * `format: unix-seconds` -- 28 properties of this contract,
+		 * and the thing that made twenty hand-rolled
+		 * `new Date(x * 1000)` call sites unnecessary.
+		 *
+		 * The rendered string is the ENGINE'S locale and cannot be
+		 * asserted literally, so the two facts asserted are the two
+		 * that are ours: the year reaches the output, and ZERO IS
+		 * ABSENT. The second is the one that matters -- `blocked_until`
+		 * is 0 for a source that is not blocked, which every reader
+		 * before this rendered as 1970 unless it remembered its own
+		 * `&&`, and two of them printed a bare time so the 1970 would
+		 * not even have shown.
+		 */
+		expect(ctx, "an instant carries its year",
+		       "fieldText({ type: \"integer\", format: \"unix-seconds\" }, 1791735843)\n"
+		       "  .includes(\"2026\") ? \"2026\" : \"no year\"",
+		       "2026");
+		expect(ctx, "zero is absent, because no instant is 1970",
+		       "fieldText({ type: \"integer\", format: \"unix-seconds\" }, 0)", "—");
+		expect(ctx, "and so is a null instant",
+		       "fieldText({ type: \"integer\", format: \"unix-seconds\" }, null)", "—");
+		expect(ctx, "an integer that is NOT an instant still prints zero",
+		       "fieldText({ type: \"integer\" }, 0)", "0");
+
+		/*
 		 * A pattern must survive YAML, apigen and the JS writer and
 		 * still be the regex the contract meant (#596).
 		 *

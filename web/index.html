@@ -1210,15 +1210,6 @@
 					starts the count again. 0 makes every login good for exactly one request.</p>
 				<h3>Active sessions</h3>
 				<table id="hostauth-sessions">
-					<thead>
-						<tr>
-							<th>Username</th>
-							<th>From</th>
-							<th>Logged in</th>
-							<th>Expires in</th>
-							<th></th>
-						</tr>
-					</thead>
 					<tbody id="hostauth-sessions-body">
 						<tr><td colspan="5" class="empty">Reading&hellip;</td></tr>
 					</tbody>
@@ -1527,16 +1518,6 @@
 				<p class="hint">The threshold, window and block also govern failed <em>authentication</em> (#547): wrong login passwords and app passwords that do not verify, counted per address apart from failed handshakes. Past the threshold, that address's logins get 429 for the block duration on both listeners, before any password is checked. Only a successful login clears it; loopback is exempt.</p>
 				<h3>Currently tracked</h3>
 				<table id="tls-throttle-status">
-					<thead>
-						<tr>
-							<th>IP</th>
-							<th>Failed handshakes</th>
-							<th>Blocked</th>
-							<th>Blocked until</th>
-							<th>Failed logins</th>
-							<th>Logins blocked until</th>
-						</tr>
-					</thead>
 					<tbody id="tls-throttle-status-body">
 						<tr><td colspan="6" class="empty">Reading&hellip;</td></tr>
 					</tbody>

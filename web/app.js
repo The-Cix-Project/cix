@@ -5693,7 +5693,7 @@ function renderLeaseRows(tbody, leases, key) {
 		{ field: "ip", label: "Address" },
 		"hostname",
 		{ label: "Expires", text: (l) =>
-		    new Date(l.expires_at * 1000).toLocaleString() },
+		    formatInstant(l.expires_at) },
 		"server",
 	], {
 		op: "getDhcpLeases",
@@ -6590,7 +6590,7 @@ function renderImageDetailVersions(name, data) {
 		row.appendChild(versionCell);
 
 		const createdCell = document.createElement("td");
-		createdCell.textContent = v.created_at ? new Date(v.created_at * 1000).toLocaleString() : "-";
+		createdCell.textContent = formatInstant(v.created_at);
 		row.appendChild(createdCell);
 
 		const statusCell = document.createElement("td");
@@ -8926,7 +8926,7 @@ async function refreshBuildLogs() {
 			const view = document.createElement("button");
 
 			for (const text of [l.file, formatBytes(l.size_bytes),
-			                    new Date(l.modified_at * 1000).toLocaleString()]) {
+			                    formatInstant(l.modified_at)]) {
 				const c = document.createElement("td");
 
 				c.textContent = text;
@@ -9404,7 +9404,7 @@ async function refreshSchedules() {
 				/* "has not run" and "ran and failed" are different
 				 * facts, which is why last_ok is nullable -- say which
 				 * one this is rather than collapsing them. */
-				last.textContent = new Date(s.last_run_at * 1000).toLocaleString();
+				last.textContent = formatInstant(s.last_run_at);
 				if (s.last_ok === false) {
 					/*
 					 * A BADGE, which is the widget for "a value the
@@ -9432,8 +9432,7 @@ async function refreshSchedules() {
 
 			/* Null when disabled: a disabled job has no next run, and
 			 * inventing one would be a time nothing will happen at. */
-			next.textContent = s.next_run_at
-			    ? new Date(s.next_run_at * 1000).toLocaleString() : "—";
+			next.textContent = formatInstant(s.next_run_at);
 			tr.appendChild(next);
 
 			const actions = document.createElement("td");
@@ -9656,7 +9655,7 @@ async function refreshStalls() {
 		for (const s of stalls) {
 			const tr = document.createElement("tr");
 			const cells = [
-				new Date(s.ts * 1000).toLocaleString(),
+				formatInstant(s.ts),
 				s.event,
 				s.seconds + "s",
 				s.state,
@@ -9712,7 +9711,7 @@ function renderKernelPolicy(data) {
 	grid.appendChild(fieldBlock("Release data",
 	                             data.releases_fetched_at === null
 	                                 ? "never fetched"
-	                                 : "fetched " + new Date(data.releases_fetched_at * 1000).toLocaleString()));
+	                                 : "fetched " + formatInstant(data.releases_fetched_at)));
 	if (data.refreshing)
 		grid.appendChild(fieldBlock("Refresh", "running now"));
 	if (data.last_refresh_error !== null)
@@ -10601,57 +10600,34 @@ document.getElementById("ttf-form").addEventListener("submit", async (event) => 
 	}
 });
 
+/*
+ * Generated (#592), and every one of its six columns is a plain field,
+ * which it could not have been before `format: unix-seconds`.
+ *
+ * Both "blocked until" cells were guarded by hand -- `e.blocked &&
+ * e.blocked_until ? ... : ""` -- because the daemon reports 0 for a
+ * source that is not blocked, and 0 as a date is 1970. That rule is
+ * the format's now (`formatInstant` treats 0 as absent), so the cells
+ * say nothing at all, and they also gained the DATE: both printed
+ * `toLocaleTimeString()`, which showed 09:04 for a block that lifts
+ * tomorrow morning.
+ */
 function renderTlsThrottleStatus(entries) {
-	const body = document.getElementById("tls-throttle-status-body");
-
-	body.textContent = "";
-	if (entries.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 6;
-		cell.className = "empty";
-		cell.textContent = emptyStateText("getSystemTlsThrottleStatus", "throttled sources", "No sources currently tracked");
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const e of entries) {
-		const row = document.createElement("tr");
-
-		const ipCell = document.createElement("td");
-		ipCell.textContent = e.ip;
-		row.appendChild(ipCell);
-
-		const failCell = document.createElement("td");
-		failCell.textContent = e.fail_count;
-		row.appendChild(failCell);
-
-		const blockedCell = document.createElement("td");
-		blockedCell.textContent = e.blocked ? "yes" : "no";
-		row.appendChild(blockedCell);
-
-		const untilCell = document.createElement("td");
-		untilCell.textContent = e.blocked && e.blocked_until
-			? new Date(e.blocked_until * 1000).toLocaleTimeString()
-			: "";
-		row.appendChild(untilCell);
-
+	renderTable(document.getElementById("tls-throttle-status"),
+	    "TlsThrottleStatusEntry", entries, [
+		{ field: "ip", label: "IP" },
+		{ field: "fail_count", label: "Failed handshakes" },
+		"blocked",
+		{ field: "blocked_until", label: "Blocked until" },
 		/* #547: the authentication class -- failed logins and app
-		 * passwords from this address, and its block. */
-		const authFailCell = document.createElement("td");
-		authFailCell.textContent = e.auth_fail_count || 0;
-		row.appendChild(authFailCell);
-
-		const authUntilCell = document.createElement("td");
-		authUntilCell.textContent = e.auth_blocked_until
-			? new Date(e.auth_blocked_until * 1000).toLocaleTimeString()
-			: "";
-		row.appendChild(authUntilCell);
-
-		body.appendChild(row);
-	}
+		 * passwords from this address, and its own block. */
+		{ field: "auth_fail_count", label: "Failed logins" },
+		{ field: "auth_blocked_until", label: "Logins blocked until" },
+	], {
+		op: "getSystemTlsThrottleStatus",
+		what: "throttled sources",
+		empty: "No sources currently tracked",
+	});
 }
 
 async function refreshTlsThrottleStatus() {
@@ -11222,7 +11198,7 @@ function renderPackageDetailVersions(name, allVersions) {
 		row.appendChild(changelogCell);
 
 		const createdCell = document.createElement("td");
-		createdCell.textContent = v.created_at ? new Date(v.created_at * 1000).toLocaleString() : "-";
+		createdCell.textContent = formatInstant(v.created_at);
 		row.appendChild(createdCell);
 
 		const actionCell = document.createElement("td");
@@ -12166,73 +12142,65 @@ async function refreshHostauthSessions() {
 
 		renderHostauthSessions(data.sessions || []);
 	} catch (e) {
-		/* As refreshLdapUsers(): the panel says why, never "No active
-		 * sessions", which is a claim nothing was asked about. */
-		renderHostauthSessions([], refusalText(e, "active sessions"));
+		/* The panel says why, never "No active sessions", which is a
+		 * claim nothing was asked about -- but it no longer says it
+		 * from here. apiRequest() has already recorded this failure
+		 * against `listHostauthSessions`, and renderTable reads it
+		 * through listState(), so passing refusalText() in as the
+		 * empty sentence was a second copy of the same decision --
+		 * and it covered only the refused state, never "Reading…". */
+		renderHostauthSessions([]);
 	}
 }
 
-function renderHostauthSessions(sessions, emptyText = "No active sessions") {
-	const body = document.getElementById("hostauth-sessions-body");
-
-	body.textContent = "";
-	if (sessions.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 5;
-		cell.className = "empty";
-		cell.textContent = emptyText;
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const s of sessions) {
-		const row = document.createElement("tr");
-
-		const nameCell = document.createElement("td");
-		nameCell.textContent = s.username;
-		row.appendChild(nameCell);
-
-		/* Where and when it logged in, both recorded at login and never
-		 * moved by use -- so a token used from elsewhere still shows
-		 * where it was issued. */
-		const fromCell = document.createElement("td");
-		fromCell.textContent = s.source_ip || "-";
-		row.appendChild(fromCell);
-
-		const atCell = document.createElement("td");
-		atCell.textContent = s.logged_in_at ? new Date(s.logged_in_at * 1000).toLocaleString() : "-";
-		row.appendChild(atCell);
-
-		const expiresCell = document.createElement("td");
-		expiresCell.textContent =
+/*
+ * Generated (#592). `source_ip` and `logged_in_at` are plain fields:
+ * both are recorded at login and never moved by use, so a token
+ * carried to another machine still shows where it was issued, and the
+ * contract says each is null when unknown -- which "—" now states
+ * where the hand-written cell said "-".
+ *
+ * `expires_in_seconds` keeps the `text` hatch, and this is the case
+ * the hatch is for even though it reads one field: null does not mean
+ * "unknown" here, it means EVERY TOKEN IS SINGLE-USE, which is a
+ * sentence about how this host is configured and not a missing value.
+ * A duration has no contract format and should not borrow the
+ * instant's -- `expires_in_seconds` is a count, not a moment.
+ */
+function renderHostauthSessions(sessions) {
+	renderTable(document.getElementById("hostauth-sessions"), "HostauthSession",
+	    sessions, [
+		"username",
+		{ field: "source_ip", label: "From" },
+		{ field: "logged_in_at", label: "Logged in" },
+		{ label: "Expires in", text: (s) =>
 			s.expires_in_seconds === null || s.expires_in_seconds === undefined
 				? "single-use (no idle timeout configured)"
-				: s.expires_in_seconds + "s";
-		row.appendChild(expiresCell);
+				: s.expires_in_seconds + "s" },
+		{ label: "", actions: (s) => {
+			const revoke = document.createElement("button");
 
-		const actionCell = document.createElement("td");
-		const revokeButton = document.createElement("button");
-
-		revokeButton.textContent = "Log out everywhere";
-		gateAction(revokeButton, "revokeHostauthSessions");
-		revokeButton.className = "button-danger";
-		revokeButton.addEventListener("click", async () => {
-			try {
-				await apiRequest("DELETE", CIX_API.revokeHostauthSessions(s.username));
-				clearStatus();
-				await refreshHostauthSessions();
-			} catch (e) {
-				showStatus("Failed to revoke sessions for " + s.username + ": " + e.message, true);
-			}
-		});
-		actionCell.appendChild(revokeButton);
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
+			revoke.textContent = "Log out everywhere";
+			revoke.className = "button-danger";
+			gateAction(revoke, "revokeHostauthSessions");
+			revoke.addEventListener("click", async () => {
+				try {
+					await apiRequest("DELETE",
+					    CIX_API.revokeHostauthSessions(s.username));
+					clearStatus();
+					await refreshHostauthSessions();
+				} catch (e) {
+					showStatus("Failed to revoke sessions for " +
+					    s.username + ": " + e.message, true);
+				}
+			});
+			return [revoke];
+		} },
+	], {
+		op: "listHostauthSessions",
+		what: "active sessions",
+		empty: "No active sessions",
+	});
 }
 
 /* ---------- ADR-0317 (#544): group permissions ---------- */
@@ -14394,7 +14362,7 @@ async function renderVolumeDetail(name) {
 		)
 	);
 	fields.appendChild(
-		fieldBlock("Created", v.created_at ? new Date(v.created_at * 1000).toLocaleString() : "-")
+		fieldBlock("Created", formatInstant(v.created_at))
 	);
 	fields.appendChild(
 		fieldBlock("Owner",
@@ -14573,7 +14541,7 @@ async function refreshVolumes() {
 	}
 	for (const v of vols) {
 		const row = document.createElement("tr");
-		const created = v.created_at ? new Date(v.created_at * 1000).toLocaleString() : "-";
+		const created = formatInstant(v.created_at);
 
 		const users = mountedBy[v.name] || [];
 
@@ -15123,7 +15091,7 @@ function renderBackupConfig() {
 			"Snapshots: " +
 			s.state +
 			(s.last_attempt_unixtime
-				? " (last attempt " + new Date(s.last_attempt_unixtime * 1000).toLocaleString() + ")"
+				? " (last attempt " + formatInstant(s.last_attempt_unixtime) + ")"
 				: "") +
 			(s.state === "failed" && s.error ? " -- " + s.error : "");
 	}
@@ -15718,7 +15686,7 @@ async function openPipelineDrawer(kind, row) {
 			for (const run of runs) {
 				const el = document.createElement("div");
 				const bad = run.status && run.status !== "ok";
-				const when = run.ended_at ? new Date(run.ended_at * 1000).toLocaleString() : "";
+				const when = formatInstant(run.ended_at);
 				const secs = run.duration_seconds || 0;
 				/* #424: where the time went, stage by stage. A run from
 				 * before stage times were kept has stages: null and shows

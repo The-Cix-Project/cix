@@ -721,6 +721,35 @@ function simpleTableRows(bodyEl, columns, colCount, emptyText, emptyCls) {
  */
 const FIELD_ABSENT = "—";
 
+/*
+ * AN INSTANT, IN THE READER'S OWN LOCAL TIME.
+ *
+ * `format: unix-seconds` is what makes a bare integer a moment rather
+ * than a count, and this is the one place that turns it into words.
+ * There were twenty copies of `new Date(x * 1000).toLocale*String()`
+ * before it, each free to disagree about whether to show the date --
+ * and two of them did, printing a bare time for a block that may lift
+ * tomorrow.
+ *
+ * ZERO IS ABSENT. No instant this daemon reports is legitimately
+ * 1970-01-01, and two properties say so outright: `blocked_until` is
+ * *"0 if it is not currently blocked"*. A hand-written cell guarded
+ * that with its own `&&`, which a renderer reading the format cannot
+ * do, so the rule belongs here rather than in each caller.
+ *
+ * The format is COINED and not borrowed, which is worth recording:
+ * OpenAPI has no standard format for an epoch integer, and the
+ * pattern everyone recommends is `format: int64` plus a description
+ * saying "Unix seconds" -- which is exactly the shape a renderer
+ * cannot read. So the spelling is the phrase this contract's own prose
+ * already used eleven times.
+ */
+function formatInstant(seconds) {
+	if (seconds === undefined || seconds === null || seconds === 0)
+		return FIELD_ABSENT;
+	return new Date(seconds * 1000).toLocaleString();
+}
+
 function fieldText(f, value) {
 	const type = f !== undefined ? f.type : "string";
 	let v = value;
@@ -729,6 +758,8 @@ function fieldText(f, value) {
 		v = f.fallback;
 	if (v === undefined || v === null)
 		return FIELD_ABSENT;
+	if (f !== undefined && f.format === "unix-seconds")
+		return formatInstant(v);
 	if (type === "boolean")
 		return v ? "yes" : "no";
 	if (type === "array") {

@@ -738,6 +738,42 @@ a generated `type: string` would otherwise be a plain text input showing the pas
 other way: that field is a generated app password in a *response*, shown once so an operator can copy it,
 and obscuring it would defeat the only reason it is returned.
 
+### An integer that is a moment is marked `format: unix-seconds`
+
+Thirty-six response properties carry it -- every `*_at`, `*_until` and `*_unixtime`, plus `created`,
+`at` and `last_attempt`. It changes nothing on the wire: the value is the same integer of Unix seconds it
+always was. What it changes is that the fact is now **machine-readable**, so the dashboard renders a
+moment from the contract instead of from its own arithmetic -- there were twenty separate
+`new Date(x * 1000)` call sites before it, and two of them printed a bare clock time for a block that may
+lift tomorrow.
+
+**Zero means absent.** No instant this daemon reports is legitimately 1970-01-01, and two properties say
+so outright (`blocked_until` is *"0 if it is not currently blocked"*). A reader of this format must render
+`0` and `null` the same way, as absent; the dashboard's `formatInstant()` is the one place that decides it.
+
+**It is coined, not borrowed**, which is the one thing worth knowing before copying it elsewhere. OpenAPI
+has no standard format for an epoch integer, and the pattern usually recommended is `format: int64` plus a
+description saying "Unix seconds" -- which is precisely the shape no generated client can act on. The
+spelling is therefore the phrase this contract's own prose already used. Two properties that previously
+carried `format: int64` were changed to it: an instant is implicitly 64-bit, and OpenAPI allows one format.
+
+A `type: string` property with `format: date-time` is unaffected and stays as it is -- an RFC 3339 string
+is already self-describing. `test_apigen` refuses an **integer** whose name ends `_at`, `_until` or
+`_unixtime` and whose block declares no format, because a convention nothing checks is one the next
+property quietly skips. Note what that gate relies on and the renderer must not: a gate may read a
+property's name, a renderer may only read its contract.
+
+Durations are a separate question and deliberately unanswered: `expires_in_seconds`, `window_seconds` and
+sixteen others are counts rather than moments, they have no format, and they must not borrow this one.
+
+**Twelve of the thirty-six are declared but not yet reachable**, and this is a real limit rather than an
+oversight. apigen emits `CIX_API.FIELDS` per *named* component schema, so a property of an inline nested
+object -- a schedule's `next_run_at` and `last_run_at`, a run's `ended_at`, a file's `modified_at`, a
+measurement's `measured_at` -- carries the format in this document and does not reach the renderer, which
+would therefore print a bare integer. Those cells keep calling `formatInstant()` by hand until the object
+they belong to is a named schema. Do not read the gap as permission to skip the format: the contract is
+where the fact belongs either way, and promoting the schema is what makes it usable.
+
 ### A property's `title` is the operator's label, and its description's first sentence is the hint
 
 Two standard JSON Schema keywords doing the two jobs a form needs, so neither is an extension:

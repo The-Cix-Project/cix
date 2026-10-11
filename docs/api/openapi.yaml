@@ -12074,6 +12074,7 @@ paths:
                           type: integer
                         modified_at:
                           type: integer
+                          format: unix-seconds
                         name:
                           type: string
                           nullable: true
@@ -14366,6 +14367,7 @@ paths:
                       exclusive bytes are attributed on a different rule.
                   measured_at:
                     type: integer
+                    format: unix-seconds
                     description: Unix time the measurement completed. The number is a snapshot, not a live figure.
         "404":
           description: No such volume.
@@ -15593,9 +15595,13 @@ components:
             services). null before the first probe.
         last_check_at:
           type: integer
+          format: unix-seconds
+          description: When this server was last probed; null before the first probe.
           nullable: true
         last_ok_at:
           type: integer
+          format: unix-seconds
+          description: When this server last answered; null if it never has.
           nullable: true
         consecutive_failures:
           type: integer
@@ -16858,6 +16864,7 @@ components:
             crash-consistent snapshot.
         last_backup_at:
           type: integer
+          format: unix-seconds
           description: Unix time of the last scheduled snapshot, 0 if never.
         snapshots:
           type: array
@@ -16877,6 +16884,7 @@ components:
           properties:
             last_attempt_at:
               type: integer
+              format: unix-seconds
               nullable: true
             last_attempt_ok:
               type: boolean
@@ -17405,7 +17413,8 @@ components:
           type: string
         created:
           type: integer
-          description: Unix seconds
+          format: unix-seconds
+          description: When this app password was created.
 
     AppPasswordCreated:
       type: object
@@ -17415,7 +17424,8 @@ components:
           type: string
         created:
           type: integer
-          description: Unix seconds
+          format: unix-seconds
+          description: When this app password was created.
         password:
           type: string
           description: The secret, shown in this response only
@@ -17479,8 +17489,8 @@ components:
           description: Null when idle_timeout_seconds is 0 (every token single-use -- no meaningful "expires in" applies).
         logged_in_at:
           type: integer
-          format: int64
-          description: When this session was issued by POST /login, in Unix seconds. Fixed for the session's life; using the session renews expires_in_seconds, never this.
+          format: unix-seconds
+          description: When this session was issued by POST /login. Fixed for the session's life; using the session renews expires_in_seconds, never this.
         source_ip:
           type: string
           nullable: true
@@ -17737,6 +17747,7 @@ components:
           nullable: true
         releases_fetched_at:
           type: integer
+          format: unix-seconds
           nullable: true
           description: Unix time of the last successful refresh; null if never.
         refreshing:
@@ -17908,6 +17919,8 @@ components:
           description: Null when the client offered no name.
         expires_at:
           type: integer
+          format: unix-seconds
+          description: When this lease expires.
     BootConsole:
       type: object
       properties:
@@ -17935,6 +17948,7 @@ components:
                 type: string
         loader_entries_updated:
           type: integer
+          format: unix-seconds
           description: PUT only -- how many entries were rewritten.
         applies:
           type: string
@@ -18141,9 +18155,11 @@ components:
                 no syntax here for anyone to mistype.
             next_run_at:
               type: [integer, "null"]
+              format: unix-seconds
               description: Null when the job is disabled -- a disabled job has no next run.
             last_run_at:
               type: [integer, "null"]
+              format: unix-seconds
             last_ok:
               type: [boolean, "null"]
               description: >
@@ -18299,9 +18315,11 @@ components:
                 enum: [request, rolling]
               started_at:
                 type: integer
+                format: unix-seconds
                 description: Unix time the run opened -- when the job began, not when its build did.
               ended_at:
                 type: integer
+                format: unix-seconds
                 description: Unix time the outcome became final.
               duration_seconds:
                 type: integer
@@ -18325,6 +18343,8 @@ components:
                       enum: [fetch, build, install]
                     started_at:
                       type: integer
+                      format: unix-seconds
+                      description: When this stage started.
                     seconds:
                       type: integer
               stage:
@@ -18385,6 +18405,8 @@ components:
                 description: The username that approved it (ADR-0271).
               at:
                 type: integer
+                format: unix-seconds
+                description: When the approval was given.
 
     PipelineConfig:
       type: object
@@ -18574,6 +18596,7 @@ components:
             opposite directions across release lines.
         upstream_fetched_at:
           type: [integer, "null"]
+          format: unix-seconds
           description: >
             Unix time this kind's release data was last fetched; null if
             it never has been. A row resolved from old data is still a
@@ -18931,6 +18954,7 @@ components:
                     and it is a lie a caller cannot detect.
                 measured_at:
                   type: integer
+                  format: unix-seconds
                   nullable: true
                   description: >
                     Unix time the `bytes` figure was READ, or `null`
@@ -19660,6 +19684,7 @@ components:
           enum: [never, ok, failed]
         last_attempt_unixtime:
           type: integer
+          format: unix-seconds
           description: Present once state is "ok" or "failed" (omitted when "never").
         error:
           type: string
@@ -19828,7 +19853,7 @@ components:
           description: The version hash, as used in current_version and IMAGES_DIR/<name>/<version>/.
         created_at:
           type: integer
-          format: int64
+          format: unix-seconds
           description: Unix timestamp (seconds) this version was produced.
 
     ImageManifestEntry:
@@ -20369,6 +20394,7 @@ components:
             entry is never amended to add a second.
         at:
           type: integer
+          format: unix-seconds
           description: >
             Unix seconds when this repository finished taking both
             uploads. Not when the publish was requested: an entry is
@@ -20698,6 +20724,7 @@ components:
           description: The IPv4 address the last successful sync used. Null unless state is ok.
         last_sync_unixtime:
           type: integer
+          format: unix-seconds
           nullable: true
           description: Null unless state is ok.
 
@@ -20966,6 +20993,7 @@ components:
             from there (`parse_cbs_recipe()`).
         created_at:
           type: integer
+          format: unix-seconds
           description: >
             Unix epoch seconds this recipe version's file was first published
             (ADR-0108) -- real filesystem mtime, accurate because a published
@@ -21255,6 +21283,7 @@ components:
                 description: Size of the armored key
               added_at:
                 type: integer
+                format: unix-seconds
                 description: Unix seconds
               source:
                 type: string
@@ -21288,10 +21317,12 @@ components:
                 type: string
                 description: The image version it failed on
               reason:
+                description: Why the version was marked bad
                 type: string
               at:
                 type: integer
-                description: Unix seconds
+                format: unix-seconds
+                description: When the rollback happened.
     TrustedOrigins:
       type: object
       required: [origins]
@@ -21330,8 +21361,12 @@ components:
           description: Why the commit, or the publish after it, did not happen; "" when it did.
         started_at:
           type: integer
+          format: unix-seconds
+          description: When the commit was started.
         finished_at:
           type: integer
+          format: unix-seconds
+          description: When the commit, and the publish after it, finished.
 
     PkgSyncStatus:
       type: object
@@ -21342,6 +21377,7 @@ components:
           enum: [never, running, success, failed]
         last_attempt:
           type: integer
+          format: unix-seconds
           nullable: true
           description: Unix epoch seconds the most recent sync was started; null if one has never run.
         added:
@@ -21721,13 +21757,15 @@ components:
           type: boolean
         blocked_until:
           type: integer
-          description: Unix seconds the block lifts at, or 0 if not currently blocked.
+          format: unix-seconds
+          description: When the block lifts, or 0 if it is not currently blocked.
         auth_fail_count:
           type: integer
           description: Failed authentications (#547) counted within the current window.
         auth_blocked_until:
           type: integer
-          description: Unix seconds this source's authentication block lifts at, or 0.
+          format: unix-seconds
+          description: When this source's authentication block lifts, or 0 if it is not blocked.
 
     PkgCancelRequest:
       type: object
@@ -21938,6 +21976,7 @@ components:
             anyone having to pattern-match an error string.
         run_started_at:
           type: integer
+          format: unix-seconds
           nullable: true
           description: >
             Unix epoch seconds at which this entry's current job
@@ -21952,6 +21991,7 @@ components:
             happened on the box.
         build_started_at:
           type: integer
+          format: unix-seconds
           nullable: true
           description: >
             Unix epoch seconds at which COMPILATION began -- distinct
@@ -21971,6 +22011,7 @@ components:
             when no run is open.
         install_started_at:
           type: integer
+          format: unix-seconds
           nullable: true
           description: >
             Unix epoch seconds at which the INSTALL stage began -- a
@@ -21978,6 +22019,7 @@ components:
             `null` until then, and whenever no run is open.
         stage_started_at:
           type: integer
+          format: unix-seconds
           nullable: true
           description: >
             When `current_stage` began (#424): `install_started_at`

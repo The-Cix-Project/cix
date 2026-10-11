@@ -177,12 +177,106 @@ static void check_scalars_are_quoted(void)
 	fclose(f);
 }
 
+/*
+ * AN INSTANT DECLARES ITSELF, so a reader does not have to recognise
+ * the name.
+ *
+ * `format: unix-seconds` on 36 integer properties is what lets the
+ * dashboard render a moment from the contract instead of from twenty
+ * hand-rolled `new Date(x * 1000)` call sites. The convention is only
+ * worth having if the NEXT instant carries it too, and nothing fails
+ * when a convention is merely forgotten -- so a property whose name
+ * says it is a moment must say so in its format.
+ *
+ * Checked on the NAME, which is the one signal available: `_at`,
+ * `_until` and `_unixtime`. That is Stripe's convention too (the `_at`
+ * suffix is documented there as meaning a Unix timestamp), and it is
+ * exactly the signal this change exists to stop relying on -- a gate
+ * may read a name, a renderer may not.
+ *
+ * A STRING property is skipped rather than refused: `created_at` with
+ * `format: date-time` is an RFC 3339 string and perfectly correct.
+ * This is about integers pretending to be plain numbers.
+ */
+static void check_instants_declare_their_format(void)
+{
+	FILE *f = fopen("docs/api/openapi.yaml", "r");
+	char line[4096];
+	char name[256] = "";
+	int lineno = 0, name_line = 0;
+	int want = 0, checked = 0;
+
+	if (f == NULL) {
+		fail("could not open the spec to check its instants");
+		return;
+	}
+	while (fgets(line, sizeof(line), f) != NULL) {
+		const char *p = line;
+		size_t n;
+
+		lineno++;
+		while (*p == ' ' || *p == '\t')
+			p++;
+		/*
+		 * The format may sit anywhere in the property's own block --
+		 * `description` legitimately comes first in places -- so what
+		 * ends the search is the NEXT property, not the next line.
+		 */
+		if (want && strncmp(p, "format:", 7) == 0) {
+			if (strstr(p, "unix-seconds") == NULL)
+				fail("openapi.yaml:%d: %s is an integer instant declaring "
+				     "format: %.40s -- an instant is format: unix-seconds, "
+				     "which is what lets the dashboard render it from the "
+				     "contract rather than from its own new Date(x * 1000)",
+				     name_line, name, p + 8);
+			checked++;
+			want = 0;
+			continue;
+		}
+		/* `  <name>:` with nothing after the colon opens a property. */
+		n = strcspn(p, ":");
+		if (p[n] == ':' && (p[n + 1] == '\n' || p[n + 1] == '\0') && n > 0 &&
+		    n + 1 < sizeof(name)) {
+			if (want) {
+				fail("openapi.yaml:%d: %s is an integer whose name says it is a "
+				     "moment, and its block declares no format -- add "
+				     "`format: unix-seconds`, or the dashboard renders it as a "
+				     "bare number",
+				     name_line, name);
+				want = 0;
+			}
+			memcpy(name, p, n);
+			name[n] = '\0';
+			name_line = lineno;
+			continue;
+		}
+		if (strncmp(p, "type: integer", 13) == 0 ||
+		    strncmp(p, "type: [integer", 14) == 0) {
+			size_t ln = strlen(name);
+
+			if ((ln > 3 && strcmp(name + ln - 3, "_at") == 0) ||
+			    (ln > 6 && strcmp(name + ln - 6, "_until") == 0) ||
+			    (ln > 9 && strcmp(name + ln - 9, "_unixtime") == 0))
+				want = 1;
+		}
+	}
+	if (want)
+		fail("openapi.yaml:%d: %s is an integer instant at the end of the file with no "
+		     "format declared", name_line, name);
+	fclose(f);
+	if (checked < 15)
+		fail("only %d integer instants were checked for format: unix-seconds -- the "
+		     "contract has 28, so this gate is not reading what it thinks it is",
+		     checked);
+}
+
 int main(void)
 {
 	char out[65536];
 	int status;
 
 	check_scalars_are_quoted();
+	check_instants_declare_their_format();
 
 	/*
 	 * 1. The real spec. Not a smoke test: the number is cross-checked
