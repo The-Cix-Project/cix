@@ -6,6 +6,33 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A class that styles nothing and selects nothing is dead, and four were (#598)
+
+The gate story 6 needs before the refactor it measures, written first so "done" is a number rather than
+a feeling: **every class `web/app.js` sets must either be defined in `web/style.css` or be used as a
+selector somewhere in `app.js`.** Both are real jobs — `file-row-path` is never styled and is read back
+by `row.querySelector(".file-row-path")` when the container form is submitted — and a class that does
+neither is dead.
+
+It found six, four of which are product defects rather than tidiness, because **an element wearing a
+class with no rule renders as a bare one**:
+
+- a volume's **Delete** button wore `danger`, which this stylesheet has never defined — so a
+  destructive action carried no danger styling at all, the same defect found on Factory Reset's button
+  an hour earlier and from the same cause;
+- the pipeline's "Cancel the in-flight build" wore `btn-small`, where the vocabulary's class is
+  `button-small`;
+- container service start/stop/restart wore `secondary`, undefined — they are compact buttons, which is
+  what the vocabulary says for a control in a dense row;
+- a schedule's failed last run wore `cell-error`, undefined, so **"ran and failed" was marked by
+  nothing**. It is a `badge badge-error` now, which is the widget for a value the daemon reported.
+
+A dynamically composed name (`"log-entry-" + entry.kind`) is checked as its prefix: some member of the
+family must exist, which catches a whole family going missing without pretending to know what the
+runtime will append.
+
+Measured before and after: 80 classes set from JS, six orphans, now zero.
+
 ### The nine-tab page is three pages, and Factory Reset is an action (#592)
 
 The second and third defects of the accepted IA board, and with them the rest of it.

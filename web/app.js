@@ -3674,7 +3674,7 @@ function renderServicesTable(c) {
 			const b = document.createElement("button");
 
 			b.type = "button";
-			b.className = "secondary";
+			b.className = "button-small";
 			b.textContent = action;
 			b.disabled = c.status !== "running";
 			gateAction(b, action === "start" ? "startContainerService"
@@ -9436,10 +9436,23 @@ async function refreshSchedules() {
 				/* "has not run" and "ran and failed" are different
 				 * facts, which is why last_ok is nullable -- say which
 				 * one this is rather than collapsing them. */
-				last.textContent = new Date(s.last_run_at * 1000).toLocaleString() +
-				                   (s.last_ok === false ? " — failed" : "");
+				last.textContent = new Date(s.last_run_at * 1000).toLocaleString();
 				if (s.last_ok === false) {
-					last.className = "cell-error";
+					/*
+					 * A BADGE, which is the widget for "a value the
+					 * daemon reported" -- this used to append the word
+					 * "failed" to the timestamp and set `cell-error`
+					 * on the cell, a class web/style.css has never
+					 * defined, so a failed run was marked by nothing
+					 * at all. Found by the gate below in test_web_tree
+					 * (#598).
+					 */
+					const mark = document.createElement("span");
+
+					mark.className = statusBadge("error");
+					mark.textContent = "failed";
+					last.appendChild(document.createTextNode(" "));
+					last.appendChild(mark);
 					last.title = s.last_reason || "";
 				}
 			} else {
@@ -14783,7 +14796,7 @@ async function refreshVolumes() {
 		const del = document.createElement("button");
 
 		del.type = "button";
-		del.className = "danger";
+		del.className = "button-danger button-small";
 		del.textContent = "Delete";
 		gateAction(del, "deleteVolume");
 		del.addEventListener("click", async () => {
@@ -15830,7 +15843,7 @@ async function openPipelineDrawer(kind, row) {
 
 		bar.className = "dg-drawer-actions";
 		cancel.type = "button";
-		cancel.className = "btn-small";
+		cancel.className = "button-small";
 		cancel.textContent = "Cancel the in-flight build";
 		gateAction(cancel, "pkgCancel");
 		cancel.addEventListener("click", async () => {

@@ -59,6 +59,32 @@ static char *slurp(const char *path)
 	return buf;
 }
 
+/*
+ * Does `hay` mention `.name` as a WHOLE class?
+ *
+ * Whole, because `.badge` must not be satisfied by `.badge-ok`: a
+ * trailing identifier character means this is a different, longer
+ * name. Used against the stylesheet (does it style anything?) and
+ * against app.js itself (does it select anything?).
+ */
+static int mentions_class(const char *hay, const char *name)
+{
+	char needle[128];
+	size_t n;
+	const char *hit;
+
+	snprintf(needle, sizeof(needle), ".%s", name);
+	n = strlen(needle);
+	for (hit = strstr(hay, needle); hit != NULL; hit = strstr(hit + 1, needle)) {
+		char after = hit[n];
+
+		if (!((after >= 'a' && after <= 'z') || (after >= 'A' && after <= 'Z') ||
+		      (after >= '0' && after <= '9') || after == '-' || after == '_'))
+			return 1;
+	}
+	return 0;
+}
+
 /* The view id CATEGORY_VIEWS maps `hash` to, or NULL. */
 static int route_target(const char *app, const char *hash, char *out, size_t out_size)
 {
@@ -123,6 +149,7 @@ int main(void)
 {
 	char *app = slurp("web/app.js");
 	char *html = slurp("web/index.html");
+	char *css = slurp("web/style.css");
 	const char *p = app;
 	const char *tree = strstr(app, "const topLevel = [");
 	int checked = 0, tabbed_checked = 0;
@@ -133,6 +160,10 @@ int main(void)
 	printf("test_web_tree\n");
 	if (tree == NULL) {
 		fprintf(stderr, "FAIL: no topLevel tree found in web/app.js\n");
+		return 1;
+	}
+	if (css == NULL || html == NULL) {
+		fprintf(stderr, "FAIL: could not read web/style.css or web/index.html\n");
 		return 1;
 	}
 
@@ -672,6 +703,82 @@ int main(void)
 		     "the dashboard locks behind, and without them a lapsed session has "
 		     "nowhere to be stated%s%s",
 		     "", "");
+
+	/*
+	 * EVERY CLASS app.js SETS MUST BE DEFINED IN style.css (#598).
+	 *
+	 * The guidelines' complaint about `dg-*` is not that it is ugly;
+	 * it is that **a class with no rule has nothing saying when it is
+	 * wrong**. The sharper version of the same problem is a class with
+	 * no rule AT ALL, and this dashboard had six: a volume's Delete
+	 * button wore `danger`, the pipeline's cancel wore `btn-small`,
+	 * container service actions wore `secondary`, a failed run's cell
+	 * wore `cell-error`, and three file-row inputs wore classes that
+	 * were never written. Each looked styled in the source and
+	 * rendered as a bare element -- the Delete button among them, so
+	 * the vocabulary's own "destructive actions are red" rule was
+	 * silently not applied to one.
+	 *
+	 * A dynamically composed name (`"log-entry-" + entry.kind`) is
+	 * checked as its PREFIX: at least one class in the stylesheet must
+	 * start with it. That catches a whole family going missing without
+	 * pretending to know what the runtime will append.
+	 */
+	{
+		const char *p2 = app;
+		int orphans = 0;
+		char first[96] = "";
+
+		while ((p2 = strstr(p2, "className = \"")) != NULL) {
+			char names[256];
+			size_t n = 0;
+			char *tok;
+
+			p2 += strlen("className = \"");
+			while (*p2 != '"' && *p2 != '\n' && n + 1 < sizeof(names))
+				names[n++] = *p2++;
+			names[n] = '\0';
+			for (tok = strtok(names, " "); tok != NULL; tok = strtok(NULL, " ")) {
+				size_t tl = strlen(tok);
+
+				if (tl == 0)
+					continue;
+				if (tok[tl - 1] == '-') {
+					/* A dynamically composed name -- `"log-entry-" +
+					 * entry.kind`. Checked as a prefix: some member of
+					 * the family must exist, which catches the whole
+					 * family going missing without pretending to know
+					 * what the runtime will append. */
+					char needle[128];
+
+					snprintf(needle, sizeof(needle), ".%s", tok);
+					if (strstr(css, needle) != NULL)
+						continue;
+				} else if (mentions_class(css, tok) || mentions_class(app, tok)) {
+					/*
+					 * Styles something, or SELECTS something. Both are
+					 * real jobs: `file-row-path` is never styled and is
+					 * read back by `row.querySelector(".file-row-path")`
+					 * when the form is submitted. A class that does
+					 * neither is the dead one.
+					 */
+					continue;
+				}
+				if (orphans++ == 0)
+					snprintf(first, sizeof(first), "%s", tok);
+			}
+		}
+		if (orphans > 0) {
+			char n[32];
+
+			snprintf(n, sizeof(n), "%d", orphans);
+			fail("web/app.js sets %s class(es) that web/style.css never defines, the "
+			     "first being \"%s\" -- an element wearing a class with no rule renders "
+			     "as a bare one, which is how a Delete button came to carry no danger "
+			     "styling at all",
+			     n, first);
+		}
+	}
 	if (g_failures > 0) {
 		printf("test_web_tree: %d failure(s)\n", g_failures);
 		return 1;
