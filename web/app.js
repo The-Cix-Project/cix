@@ -6863,12 +6863,18 @@ function deviceRow(d, mappedName) {
 		btn.type = "button";
 		btn.textContent = "Name…";
 		gateAction(btn, "createDeviceMap");
-		btn.addEventListener("click", () => {
-			document.getElementById("dmf-name").value = "";
-			document.getElementById("dmf-kind").value = "exact";
-			document.getElementById("dmf-selector").value = d.id;
-			openModal("devicemap-form", "Name a device");
-		});
+		/* The selector and kind are facts about the row that was
+		 * clicked, so they arrive as `values` -- a draft the operator
+		 * may still edit, which is right here: naming a USB device
+		 * "exact" pins it to this port, and switching to vendor/model
+		 * is a reasonable second thought. `fixed` would be wrong,
+		 * because nothing about this device is the request's key. */
+		btn.addEventListener("click", () =>
+			openForm("createDeviceMap", {
+				title: "Name a device",
+				submit: "Create mapping",
+				values: { kind: "exact", selector: d.id },
+			}));
 		actionCell.appendChild(btn);
 	}
 	row.appendChild(actionCell);
@@ -13127,27 +13133,6 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 	}
 });
 
-document.getElementById("devicemap-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const body = {
-		name: document.getElementById("dmf-name").value.trim(),
-		kind: document.getElementById("dmf-kind").value,
-		selector: document.getElementById("dmf-selector").value.trim(),
-	};
-
-	try {
-		await apiRequest("POST", CIX_API.createDeviceMap(), body);
-		clearStatus();
-		document.getElementById("devicemap-form").reset();
-		closeModal();
-		await refreshDeviceMaps();
-		renderTree();
-	} catch (e) {
-		showStatus("Failed to create device mapping: " + e.message, true);
-	}
-});
-
 document.getElementById("nd-attach-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
@@ -14823,40 +14808,6 @@ document.getElementById("vd-owner-form").addEventListener("submit", (event) => {
 	applyVolumeOwner(false);
 });
 document.getElementById("vd-owner-root").addEventListener("click", () => applyVolumeOwner(true));
-
-document.getElementById("volume-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	const body = { name: document.getElementById("vf-name").value.trim() };
-	const disk = document.getElementById("vf-disk").value.trim();
-
-	if (disk !== "")
-		body.disk = disk;
-	{
-		/* Issue #102: both or neither -- a volume owned by one user and
-		 * an unrelated group is almost always a typo, and the daemon
-		 * refuses it, so say so here rather than sending it. */
-		const uid = document.getElementById("vf-owner-uid").value.trim();
-		const gid = document.getElementById("vf-owner-gid").value.trim();
-
-		if ((uid === "") !== (gid === "")) {
-			showStatus("Give both an owner uid and gid, or neither.", true);
-			return;
-		}
-		if (uid !== "") {
-			body.owner_uid = parseInt(uid, 10);
-			body.owner_gid = parseInt(gid, 10);
-		}
-	}
-	try {
-		await apiRequest("POST", CIX_API.createVolume(), body);
-		clearStatus();
-		document.getElementById("volume-form").reset();
-		closeModal();
-		await refreshVolumes();
-	} catch (e) {
-		showStatus("Failed to create volume: " + e.message, true);
-	}
-});
 
 async function refreshServerHealth() {
 	const body = document.getElementById("server-health-body");

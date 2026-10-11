@@ -6,6 +6,42 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Two more forms generated, and what an enum's values look like to an operator (#596)
+
+`createDeviceMap` and `createVolume`, by the same route `createNetwork` took: the menu item already
+named the operation, so it needed `data-modal="generated-form"` and a `data-submit`, after which the
+modal markup and the submit handler are deletions.
+
+**Both schemas gained what the hand-written form had and the contract did not.**
+`DeviceMapCreateRequest.name` described its charset in prose and carried **no `pattern`** — the markup
+had one. A conversion would have lost the constraint, so the pattern moved into the contract, where
+`test_apigen` gates its spelling. `VolumeCreateRequest.name` is the other direction: the contract had
+a pattern all along and the hand-written form never carried it, so the generated Name field is
+*stricter* than what it replaces, which is the whole of ADR-0338's argument in one field.
+
+**The form-level paragraphs went into the fields they were about**, which is the rule the guidelines
+already state: the volume form's note about root ownership is `owner_uid`'s description now, and the
+device form's note about selectors is `selector`'s. Both read as one line of hint under the control
+they belong to, and the CLI and the API docs get them too.
+
+**`kind` renders as a real `<select>`** because the schema has an `enum` — and it shows `exact` and
+`vendor_model`, the values the API uses, where the hand-written form showed "Exact device (pinned to
+this bus location)". That is a loss of prettiness and a gain in truth: those labels were a second
+vocabulary for the same two values, visible nowhere else, and the contract has no place to put them.
+The explanation belongs in the hint instead, so `kind`'s first sentence was rewritten to describe the
+*choice* ("Pin one device at its current bus location, or follow any device with the same vendor and
+product id") rather than to define one of the two options and run to two lines.
+
+**And the second entry point became `values`.** The Devices tab's "Name…" button pre-filled three
+inputs by id and opened the modal; it passes `values: { kind: "exact", selector: d.id }` now — a
+draft the operator may still edit, which is right, because naming a USB device "exact" pins it to the
+port it is in today and changing one's mind about that is reasonable. `fixed` would have been wrong:
+nothing about the clicked row is the request's key.
+
+Verified by clicking each real menu item in Chromium: three titles, three authored submit words,
+field names from the contract's `title`, `Kind` as a `<select>`, and every patterned input compiling
+under the `v` flag and refusing `has space`.
+
 ### Nine hand-written patterns validated nothing, and the first form conversion (#596)
 
 Classifying #596's forms before converting any of them, which turned up a live defect and a

@@ -137,7 +137,7 @@
 		<div class="menu-dropdown">
 			<button type="button" class="menu-dropdown-toggle" data-menu="storage">Storage</button>
 			<ul class="menu-dropdown-menu" data-menu="storage" hidden>
-				<li><button type="button" data-modal="volume-form" data-op="createVolume" data-title="Create volume">New Volume</button></li>
+				<li><button type="button" data-modal="generated-form" data-op="createVolume" data-title="Create volume" data-submit="Create volume">New Volume</button></li>
 				<li><button type="button" data-modal="diskrole-form" data-op="createStorageRole" data-title="Assign disk role">Assign Disk Role</button></li>
 			</ul>
 		</div>
@@ -215,7 +215,7 @@
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">Devices</button>
 					<ul class="menu-submenu-menu" hidden>
-						<li><button type="button" data-modal="devicemap-form" data-op="createDeviceMap" data-title="Name a device">Name a Device Mapping</button></li>
+						<li><button type="button" data-modal="generated-form" data-op="createDeviceMap" data-title="Name a device" data-submit="Create mapping">Name a Device Mapping</button></li>
 						<li><button type="button" data-modal="kmod-load-form" data-op="postKmodLoad" data-title="Load a kernel module">Load Module</button></li>
 						<li><button type="button" data-modal="kmodconfig-set-form" data-op="putKmodConfig" data-title="Configure a kernel module">Configure Module</button></li>
 					</ul>
@@ -3313,33 +3313,6 @@
 				</form>
 			</div>
 
-			<div id="modal-volume-form" hidden>
-				<form id="volume-form">
-					<label>
-						Name
-						<input type="text" id="vf-name" placeholder="home" required>
-					</label>
-					<label>
-						Disk (optional)
-						<input type="text" id="vf-disk" placeholder="(default OS-disk placement)">
-					</label>
-					<label>
-						Owner uid (optional)
-						<input type="number" id="vf-owner-uid" min="0" placeholder="root">
-					</label>
-					<label>
-						Owner gid (optional)
-						<input type="number" id="vf-owner-gid" min="0" placeholder="root">
-					</label>
-					<p class="hint">
-						A volume is created owned by root (issue #102). A workload that does not run
-						as root cannot write to it until someone says otherwise &mdash; for a home
-						directory, that is the LDAP account's own uid/gid.
-					</p>
-					<button type="submit">Create volume</button>
-				</form>
-			</div>
-
 			<div id="modal-schedule-form" hidden>
 				<form id="schedule-form">
 					<label>
@@ -3468,28 +3441,6 @@
 						<input type="text" id="rf-gateway" placeholder="172.30.1.1">
 					</label>
 					<button type="submit">Add route</button>
-				</form>
-			</div>
-
-			<div id="modal-devicemap-form" hidden>
-				<form id="devicemap-form">
-					<label>
-						Name
-						<input type="text" id="dmf-name" pattern="[A-Za-z0-9_\-]+" required>
-					</label>
-					<label>
-						Kind
-						<select id="dmf-kind">
-							<option value="exact">Exact device (pinned to this bus location)</option>
-							<option value="vendor_model">Vendor/model (follows the device across ports)</option>
-						</select>
-					</label>
-					<label class="wide">
-						Selector
-						<input type="text" id="dmf-selector" required>
-					</label>
-					<p class="hint" id="dmf-selector-hint">A device id from the Devices tabs below (exact), or "vendor_id:product_id" (vendor/model).</p>
-					<button type="submit">Create mapping</button>
 				</form>
 			</div>
 

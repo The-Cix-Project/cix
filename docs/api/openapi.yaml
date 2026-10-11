@@ -16891,21 +16891,28 @@ components:
       properties:
         name:
           type: string
+          title: Name
           pattern: '^[A-Za-z0-9_][A-Za-z0-9_\-]*$'
+          description: What this volume is called wherever it is mounted.
         disk:
           type: string
-          description: Optional disk-role name; omitted means default OS-disk placement.
+          title: Disk
+          description: A disk-role name. Omitted means the default OS-disk placement.
         owner_uid:
           type: integer
+          title: Owner uid
           description: >
-            Issue #102: who owns the volume's own directory, applied at
-            creation -- the one moment its contents are certainly empty.
-            owner_uid and owner_gid must be given together; a volume
-            owned by one user and an unrelated group is almost always a
-            typo. Omitted means root, which is what a volume has always
-            been and what a non-root workload cannot write to.
+            Who owns the volume's own directory, applied at creation --
+            the one moment its contents are certainly empty (#102).
+            Omitted means root, which is what a volume has always been
+            and what a non-root workload cannot write to; for a home
+            directory that is the LDAP account's own uid. owner_uid and
+            owner_gid must be given together, because a volume owned by
+            one user and an unrelated group is almost always a typo.
         owner_gid:
           type: integer
+          title: Owner gid
+          description: The owning group, given together with owner_uid.
 
     NetworkAttachmentRequest:
       type: object
@@ -18996,25 +19003,31 @@ components:
       properties:
         name:
           type: string
-          description: Same charset as a container/network/package name ([A-Za-z0-9_-]) -- never contains ':', so it can never collide with a real Device.id.
+          title: Name
+          pattern: '^[A-Za-z0-9_\-]+$'
+          description: What a container's own definition calls this device. Never contains ':', so it can never collide with a real Device.id.
         kind:
           type: string
+          title: Kind
           enum: [exact, vendor_model]
           description: >
-            "exact" pins to one specific device's own stable id (a fixed
-            bus location -- e.g. a specific PCI slot, or one exact USB
-            device by serial). "vendor_model" matches by vendor:product
-            ID regardless of port -- follows a USB device that moves
-            around, and can resolve to more than one currently-present
-            device if several identical ones are plugged in (all are
-            granted, the same group-expansion behavior GPU passthrough,
-            ADR-0028, already established).
+            Pin one device at its current bus location, or follow any
+            device with the same vendor and product id. "exact" names
+            one specific device's own stable id -- a fixed PCI slot, or
+            one USB device by serial. "vendor_model" matches by
+            vendor:product regardless of port, so it follows a USB
+            device that moves around, and can resolve to more than one
+            currently-present device if several identical ones are
+            plugged in (all are granted, the same group-expansion
+            behaviour GPU passthrough, ADR-0028, already established).
         selector:
           type: string
+          title: Selector
           description: >
-            For "exact": a Device.id verbatim, copied from GET /devices.
-            For "vendor_model": "<vendor_id>:<product_id>" (e.g.
-            "1058:2630"), matching Device.vendor_id/product_id.
+            A device id from the Devices tab for "exact", or
+            "vendor_id:product_id" for "vendor/model". The first is a
+            Device.id verbatim, copied from GET /devices; the second
+            (e.g. "1058:2630") matches Device.vendor_id/product_id.
 
     DeviceMap:
       type: object
