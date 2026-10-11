@@ -6,6 +6,57 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Two generated renderers have no callers, and the guidelines said they did (#592)
+
+Found while scoping the Primitives board's three list states. `renderTableRows` and
+`renderDetailRows` are built in `web/form.js`, asserted by `test_web_form` against the real `Network`
+schema — and **called from nowhere**: `grep -c renderTableRows web/app.js` is `0`, same for
+`renderDetailRows`. Every table and every detail page is still hand-written.
+
+**ROADMAP Part 273 was honest about this when they shipped** — *"They have no callers yet, which is
+stated rather than implied away"*, with the reason measured (a table is not three text cells; 31 of
+the 62 need more than the renderer offers). `web-ux-guidelines.md` then described them as current
+practice for a release: the vocabulary table named them as the widget, the four-layer section said
+"a screen calls … `renderTableRows` … `renderDetailRows`", and one sentence made a specific factual
+claim about a table that does not use it — *"the `networks` table shows 4 of `Network`'s 7 fields"*.
+All three now say what is true, with the measurement and the date.
+
+**This is the same shape as `createNetwork` having a generated form nothing opened** (#596, two
+releases ago): a mechanism built, gated, documented and unwired, where the document is what the next
+reader believes instead of checking. Two in one epic is a pattern rather than an accident, and the
+cheap guard is the one that caught both — **ask what calls it**, not whether it exists and passes its
+test.
+
+### The three list states, measured before building anything (#592)
+
+The Primitives board says *"Loading is not empty. Showing 'none' while a fetch is in flight is a lie,
+and it is where much of today's bad experience lives."* Four things were measured before writing a
+line, and two of them changed the scope.
+
+**The lie is real and reproduces.** Driving the dashboard in Chromium with no backend and navigating
+to Networks the way a person does, `routes-body` renders **"No routes."** — a claim that the host was
+asked and has none, when nothing was answered.
+
+**But it is narrower than feared, because a failed refresh does not clear a cache.** `refreshRoutes`
+catches and leaves `cache.routes` at whatever was last shown; `refreshNetworks` and
+`refreshContainers` throw and `runRefreshers` catches. So a list that has loaded never collapses to
+"No X" when the host later goes away — the defect is confined to the window **before the first
+successful read**, where 24 list caches start as `[]` and one render paints that as "none".
+
+**And "every list has three states" is not quite true.** Six of `simpleTableRows`' fourteen call
+sites render a sub-collection of an already-loaded object — a container's `interfaces`, `networks`,
+`consoles`, `env`, `files`, sysctls. Those were never separately read: if you have the container you
+have them, so their only honest states are empty and not-empty. **A list that is a field of a loaded
+object has one state, not three**, and giving it a loading state would be inventing a fetch that
+never happens.
+
+**The other two states already exist and are good.** `refusalText(e, what)` distinguishes 401 ("Log
+in to see networks"), 403 (names the missing permission) and a real failure, and its own comment
+already states the board's anti-swap rule: *"Never 'no <things>': nothing was read, so that would be
+a claim about the host that was never checked."* 27 panels route their empty state through
+`emptyStateText`, which consults it. So what is missing is exactly one state — loading — in exactly
+the lists that are their own read.
+
 ### Three more generated forms, and a validation rule the daemon never told anyone (#596)
 
 `addDhcpReservation`, `pkgBootstrap` and `pkgInstall`. Six of the twenty modals are generated now.
