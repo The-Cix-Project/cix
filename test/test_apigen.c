@@ -437,6 +437,44 @@ int main(void)
 	               "      operationId: badWord\n"
 	               "      x-cix-permission: Things:Read\n",
 	               "is not a permission");
+
+	/*
+	 * A property written as a YAML FLOW MAPPING. Valid YAML, and apigen
+	 * reads a property's keys one per line below its name, so
+	 * `count: {type: integer}` used to be recorded as a field with no
+	 * type -- which every consumer then read as a string. Fifteen of
+	 * the contract's properties were written that way, all in the
+	 * service schemas, and Service's `restarts` and `pid` reached the
+	 * dashboard as strings while `on_exit` lost its enum (2026-10-16).
+	 * Refused now, at both depths: the property itself, and an array's
+	 * `items`.
+	 *
+	 * The real spec passing above is this pair's positive control, and
+	 * a pointed one: it still carries `example:` blocks written in flow
+	 * form (`ready: {tcp_port: 22}`), which are VALUES rather than
+	 * property definitions and must stay legal.
+	 */
+#define FLOW_SPEC(props)                                                       \
+	VOCAB                                                                  \
+	"paths:\n"                                                             \
+	"  /thing:\n"                                                          \
+	"    get:\n"                                                           \
+	"      operationId: getThing\n"                                        \
+	"      x-cix-permission: public\n"                                     \
+	"components:\n"                                                        \
+	"  schemas:\n"                                                         \
+	"    Thing:\n"                                                         \
+	"      type: object\n"                                                 \
+	"      properties:\n" props
+	expect_refusal("a property written as a flow mapping",
+	               FLOW_SPEC("        count: {type: integer}\n"),
+	               "flow mapping");
+	expect_refusal("an array whose items are a flow mapping",
+	               FLOW_SPEC("        tags:\n"
+	                         "          type: array\n"
+	                         "          items: {type: string}\n"),
+	               "flow mapping");
+#undef FLOW_SPEC
 #undef VOCAB
 
 	/*

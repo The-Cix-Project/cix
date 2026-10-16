@@ -774,6 +774,19 @@ would therefore print a bare integer. Those cells keep calling `formatInstant()`
 they belong to is a named schema. Do not read the gap as permission to skip the format: the contract is
 where the fact belongs either way, and promoting the schema is what makes it usable.
 
+### A property is written in block form, never as a flow mapping
+
+`restarts: {type: integer}` is valid YAML and apigen refuses it. apigen reads a property's `type`,
+`enum`, `items` and the rest one key per line below the property's name; a flow mapping puts them all
+on the name's own line, where nothing looked, so until 2026-10-16 such a property was recorded with no
+type at all and every generated consumer read it as a string. Fifteen were written that way, all in the
+service schemas: `Service.pid`, `restarts`, `restart_delay_seconds` and `stop_timeout_seconds` reached
+the dashboard as strings, `on_exit` and `type` lost their enums (a generated form would have offered
+free text), and `cmd` and `after` lost their item type. They are block form now, and apigen refuses the
+flow form for a property and for an array's `items` -- refusal rather than a smarter parser, because a
+generator that silently mis-reads is the failure every other check in apigen exists to prevent. An
+`example:` value may still be written in flow form: it is data, not a property definition.
+
 ### An inline object the dashboard renders gets promoted to a named schema
 
 The same limit, stated as the rule it implies. `Dhcp.static`'s items were an inline `type: object` with
@@ -786,7 +799,8 @@ schema name now, and it found four more the same way, all of them shipped (`DnsS
 
 So: **if a surface renders an object, that object is a named schema here.** `DhcpReservation` is promoted
 out of `Dhcp.static.items` and `$ref`'d back into it, which changes nothing on the wire and gives the three
-properties somewhere to carry their own descriptions.
+properties somewhere to carry their own descriptions. `ContainerConsole` is promoted out of
+`Container.consoles` the same way, for the container page's consoles table.
 
 ### A property's `title` is the operator's label, and its description's first sentence is the hint
 

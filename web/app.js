@@ -1691,6 +1691,40 @@ function containerStatusKind(status) {
 	}
 }
 
+/*
+ * A SERVICE's seven states, mapped to the same four kinds -- and the
+ * one word both vocabularies share means opposite things, which is why
+ * this is its own function rather than containerStatusKind() reused.
+ *
+ * For a container, "exited" is the fault. For a service it is a
+ * FINISHED ONESHOT, or a service whose declared on_exit is stop: the
+ * contract's own definition is *"exited and not restarting (a finished
+ * oneshot, or on_exit stop)"*. Measured on 192.168.15.95, 2026-10-16:
+ * `jump`'s `mkdirs` and `waitkey` are both oneshots reporting
+ * `"state":"exited"` with `last_exit` status 0 -- they did their job --
+ * so colouring "exited" red would put two alarms on a healthy
+ * container. The service fault is "failed": it *"cannot run"*.
+ *
+ * The three states that are on their way somewhere -- pending (waiting
+ * for its `after` set), starting (running, probe not passed) and
+ * restart-wait (respawning after its delay) -- are amber, as a paused
+ * container is: not wrong, not settled.
+ */
+function serviceStateKind(state) {
+	switch (state) {
+	case "running":
+		return "ok";
+	case "pending":
+	case "starting":
+	case "restart-wait":
+		return "paused";
+	case "failed":
+		return "error";
+	default:
+		return "unknown"; /* "exited" and "stopped": settled, not a fault */
+	}
+}
+
 function pipelineStatusKind(status) {
 	switch (status) {
 	case "ok":
@@ -3712,7 +3746,7 @@ function summarizeServices(c) {
 
 function formatServiceExit(s) {
 	if (!s.last_exit)
-		return "-";
+		return FIELD_ABSENT;
 	if (s.last_exit.kind === "exited")
 		return "exit " + s.last_exit.status;
 	return s.last_exit.kind + " by signal " + s.last_exit.signal;
@@ -3735,35 +3769,36 @@ async function containerServiceAction(name, service, action) {
 
 /* The services panel: declaration and live state per row, with the
  * three operations the API offers on one service. */
+/*
+ * Generated (#592). It reads `Service` correctly only since the same
+ * change: ten of its properties and two arrays' `items` were written as
+ * YAML flow mappings, which apigen recorded with no type, so `pid` and
+ * `restarts` reached the dashboard as strings and `type` and `on_exit`
+ * without their enums. They are block form now and apigen refuses the
+ * flow form.
+ *
+ * `state` is a badge, through serviceStateKind() -- whose comment says
+ * why a service's "exited" is not a container's. `pid` and `restarts`
+ * are plain fields: null renders "—" and 0 renders "0", which is what
+ * the hand-written `s.pid ? ... : "-"` and `s.restarts || 0` did by
+ * hand. Last exit and Command stay derived -- one is an object, the
+ * other is argv, joined by spaces where the schema's join is ", ".
+ *
+ * The empty row also gains the `empty` class it never had, so a
+ * container with no services no longer renders that sentence as an
+ * unstyled data cell.
+ */
 function renderServicesTable(c) {
-	const tbody = document.querySelector("#cd-config-services tbody");
-	const svcs = Array.isArray(c.services) ? c.services : [];
-
-	tbody.textContent = "";
-	if (svcs.length === 0) {
-		const tr = document.createElement("tr");
-		const td = document.createElement("td");
-
-		td.colSpan = 8;
-		td.textContent = "This container declares no service.";
-		tr.appendChild(td);
-		tbody.appendChild(tr);
-		return;
-	}
-	for (const s of svcs) {
-		const tr = document.createElement("tr");
-		const cells = [s.name, s.type || "daemon", s.state || "?", s.pid ? String(s.pid) : "-",
-		               String(s.restarts || 0), formatServiceExit(s), (s.cmd || []).join(" ")];
-
-		for (const text of cells) {
-			const td = document.createElement("td");
-
-			td.textContent = text;
-			tr.appendChild(td);
-		}
-		const actions = document.createElement("td");
-
-		for (const action of ["start", "stop", "restart"]) {
+	renderTable(document.querySelector("#cd-config-services"), "Service",
+	    Array.isArray(c.services) ? c.services : [], [
+		{ field: "name", label: "Service" },
+		"type",
+		{ field: "state", badge: (st) => serviceStateKind(st) },
+		{ field: "pid", label: "PID" },
+		"restarts",
+		{ label: "Last exit", text: (s) => formatServiceExit(s) },
+		{ label: "Command", text: (s) => (s.cmd || []).join(" ") },
+		{ label: "", actions: (s) => ["start", "stop", "restart"].map((action) => {
 			const b = document.createElement("button");
 
 			b.type = "button";
@@ -3774,11 +3809,19 @@ function renderServicesTable(c) {
 			              : action === "stop" ? "stopContainerService"
 			              : "restartContainerService");
 			b.addEventListener("click", () => containerServiceAction(c.name, s.name, action));
-			actions.appendChild(b);
-		}
-		tr.appendChild(actions);
-		tbody.appendChild(tr);
-	}
+			return b;
+		}) },
+	], {
+		op: null,
+		key: "container-detail-services",
+		/* The buttons are enabled by the CONTAINER's status, which
+		 * is not in these rows -- so it has to be in the compared
+		 * signature, or a container that stops while its services do
+		 * not change keeps live-looking buttons that cannot work. */
+		extra: c.name + "/" + c.status,
+		what: "services",
+		empty: "This container declares no service.",
+	});
 }
 
 
@@ -5285,50 +5328,53 @@ function renderContainerDetail(name) {
 	 * Links back to Devices when the granted id has a real "exact" name
 	 * mapping ("vendor_model" isn't shown here either, same "only exact
 	 * pins to one row" convention renderDevices() already established). */
+	/*
+	 * Generated (#592), both with `op: null`: each is a field of the
+	 * container already in hand, so each has one state. Both also gain
+	 * the header row they never had -- these were bare <tbody>s.
+	 *
+	 * A device links to the Devices page only when it has an exact name
+	 * mapping, and its text then carries the name -- `link` returning
+	 * nothing renders plain text, so an unmapped device is not a link
+	 * to nowhere.
+	 */
 	{
-		const devicesBody = document.querySelector("#cd-devices tbody");
-		const devices = c.devices || [];
 		const mappedNames = exactMappedNames();
 
-		devicesBody.textContent = "";
-		if (devices.length === 0) {
-			const row = document.createElement("tr");
-			const cell = document.createElement("td");
-
-			cell.colSpan = 2;
-			cell.className = "empty";
-			cell.textContent = "No devices granted";
-			row.appendChild(cell);
-			devicesBody.appendChild(row);
-		} else {
-			for (const d of devices) {
-				const row = document.createElement("tr");
-				const idCell = document.createElement("td");
-				const pathCell = document.createElement("td");
-
-				if (mappedNames[d.id])
-					idCell.appendChild(treeLink("#devices", d.id + " (" + mappedNames[d.id] + ")", ""));
-				else
-					idCell.textContent = d.id;
-				pathCell.textContent = d.dev_path;
-				row.appendChild(idCell);
-				row.appendChild(pathCell);
-				devicesBody.appendChild(row);
-			}
-		}
+		renderTable(document.querySelector("#cd-devices"), "ContainerDeviceAttachment",
+		    c.devices || [], [
+			{ label: "Device",
+			  text: (d) => (mappedNames[d.id] ? d.id + " (" + mappedNames[d.id] + ")" : d.id),
+			  link: (d) => (mappedNames[d.id] ? "#devices" : null) },
+			{ field: "dev_path", label: "Path" },
+		], {
+			op: null,
+			key: "container-detail-devices",
+			extra: c.name,
+			what: "devices",
+			empty: "No devices granted",
+		});
 	}
+	/* A list of names, with no schema behind its rows -- one state, and
+	 * nothing for a renderer to derive, so the primitive is right. */
 	simpleTableRows(
 		document.querySelector("#cd-interfaces tbody"),
 		(c.interfaces || []).map((ifname) => [ifname]),
 		1,
 		"No host interfaces attached"
 	);
-	simpleTableRows(
-		document.querySelector("#cd-networks tbody"),
-		(c.networks || []).map((n) => [n.name, n.ip]),
-		2,
-		"Not attached to any network"
-	);
+	renderTable(document.querySelector("#cd-networks"), "ContainerNetworkAttachment",
+	    c.networks || [], [
+		{ field: "name", label: "Network",
+		  link: (n) => "#networks/" + encodeURIComponent(n.name) },
+		{ field: "ip", label: "Address" },
+	], {
+		op: null,
+		key: "container-detail-networks",
+		extra: c.name,
+		what: "networks",
+		empty: "Not attached to any network",
+	});
 
 	/* Volumes (issue #88). Deliberately shows the volume NAME as a link
 	 * rather than the resolved host path: the name is the thing an
@@ -5406,15 +5452,23 @@ function renderContainerDetail(name) {
 
 		renderServicesTable(c);
 
-		/* Its own table, like env/sysctls/files: fieldBlock renders with
-		 * textContent, so a newline-joined list would collapse to one
-		 * run-on line in HTML. */
-		simpleTableRows(
-			document.querySelector("#cd-config-consoles tbody"),
-			(c.consoles || []).map((x) => [x.name, (x.cmd || []).join(" ")]),
-			2,
-			"This container declares no console."
-		);
+		/* Its own table, because fieldBlock renders with textContent and
+		 * a newline-joined list would collapse to one run-on line.
+		 * Generated (#592) from `ContainerConsole`, promoted out of
+		 * Container.consoles' inline items for exactly this. `cmd` is
+		 * derived because it is argv: the schema's string-array join is
+		 * ", ", and a command line is joined by spaces. */
+		renderTable(document.querySelector("#cd-config-consoles"), "ContainerConsole",
+		    c.consoles || [], [
+			{ field: "name", label: "Console" },
+			{ label: "Runs", text: (x) => (x.cmd || []).join(" ") },
+		], {
+			op: null,
+			key: "container-detail-consoles",
+			extra: c.name,
+			what: "consoles",
+			empty: "This container declares no console.",
+		});
 	}
 
 	/* Options -- lifecycle/behavior configuration. */

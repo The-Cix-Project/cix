@@ -761,6 +761,22 @@ int main(void)
 		       "  }).join(\",\");\n"
 		       "})()",
 		       "badge badge-ok/current,bare");
+		/* A link only where there is somewhere to go. A granted device
+		 * links to its name mapping when it has one; without one the
+		 * cell is plain text, never an <a> to nowhere. */
+		expect(ctx, "a link that has nowhere to go is plain text",
+		       "(() => {\n"
+		       "  const t = document.createElement(\"table\");\n"
+		       "  renderTable(t, \"Network\", [{ name: \"a\" }, { name: \"b\" }],\n"
+		       "    [{ field: \"name\", link: (r) => (r.name === \"a\" ? \"#x\" : null) }],\n"
+		       "    { op: \"listNetworks\", what: \"networks\", empty: \"none\" });\n"
+		       "  return t.tBodies[0].children.map((r) => {\n"
+		       "    const c = r.children[0];\n"
+		       "    return c.children.length > 0 ? \"a:\" + c.children[0].href\n"
+		       "                                 : \"text:\" + c.textContent;\n"
+		       "  }).join(\",\");\n"
+		       "})()",
+		       "a:#x,text:b");
 		expect(ctx, "a title is set only where there is one",
 		       "(() => {\n"
 		       "  const t = document.createElement(\"table\");\n"

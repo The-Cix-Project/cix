@@ -16683,9 +16683,14 @@ components:
     ServiceCommandResult:
       type: object
       properties:
-        name: {type: string, description: The container.}
-        service: {type: string}
-        action: {type: string, enum: [start, stop, restart]}
+        name:
+          type: string
+          description: The container.
+        service:
+          type: string
+        action:
+          type: string
+          enum: [start, stop, restart]
 
     Service:
       type: object
@@ -16694,25 +16699,39 @@ components:
         (ADR-0260). The declaration fields are as sent to cix-init;
         the state fields are live.
       properties:
-        name: {type: string}
-        type: {type: string, enum: [daemon, oneshot]}
+        name:
+          type: string
+        type:
+          type: string
+          enum: [daemon, oneshot]
         cmd:
           type: array
-          items: {type: string}
+          items:
+            type: string
         after:
           type: array
-          items: {type: string}
+          items:
+            type: string
           description: In cix-init's own (topological) order.
         ready_probe:
           type: object
           nullable: true
           description: The declared probe (tcp_port | socket | command, plus timeout_seconds), or null.
-        on_exit: {type: string, enum: [restart, stop, fail-container]}
-        restart_delay_seconds: {type: integer}
-        stop_signal: {type: string}
-        stop_timeout_seconds: {type: integer}
-        uid: {type: integer, nullable: true}
-        gid: {type: integer, nullable: true}
+        on_exit:
+          type: string
+          enum: [restart, stop, fail-container]
+        restart_delay_seconds:
+          type: integer
+        stop_signal:
+          type: string
+        stop_timeout_seconds:
+          type: integer
+        uid:
+          type: integer
+          nullable: true
+        gid:
+          type: integer
+          nullable: true
         state:
           type: string
           enum: [pending, starting, running, exited, restart-wait, stopped, failed]
@@ -16726,8 +16745,11 @@ components:
             replays the declaration. failed: cannot run (a failed
             oneshot, a dependency that can never be ready, or fork()
             failing).
-        pid: {type: integer, nullable: true}
-        restarts: {type: integer}
+        pid:
+          type: integer
+          nullable: true
+        restarts:
+          type: integer
         last_exit:
           type: object
           nullable: true
@@ -16736,6 +16758,23 @@ components:
           type: object
           nullable: true
           description: "{reason: probe-timeout|oneshot-status|spawn|dependency, detail}."
+
+    ContainerConsole:
+      type: object
+      description: >
+        One console a container declares (issue #248). Promoted out of
+        Container.consoles' inline items so the dashboard can render it
+        from the schema: apigen emits fields per named schema, so an
+        inline object's properties reach no generated client.
+      properties:
+        name:
+          type: string
+          description: The name an attach selects with the `console` query parameter.
+        cmd:
+          type: array
+          items:
+            type: string
+          description: What the console runs, as argv.
 
     ContainerVolumeMount:
       type: object
@@ -17075,14 +17114,7 @@ components:
             container offers no console, and a client should say so
             rather than presenting a control that cannot work.
           items:
-            type: object
-            properties:
-              name:
-                type: string
-              cmd:
-                type: array
-                items:
-                  type: string
+            $ref: "#/components/schemas/ContainerConsole"
         pid:
           type: integer
           description: PID in the daemon's own PID namespace. Meaningless once status is exited.

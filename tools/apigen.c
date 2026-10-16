@@ -975,6 +975,30 @@ static int schema_body_line(struct schema_reader *r, const char *spec, int linen
 		else {
 			size_t used = strlen(s->props);
 
+			/*
+			 * A PROPERTY WRITTEN AS A YAML FLOW MAPPING is refused,
+			 * not read. `restarts: {type: integer}` is valid YAML,
+			 * but this parser reads a property's keys one per line
+			 * at base+2, and a flow mapping puts them on the name's
+			 * own line where nothing looks -- so the field was
+			 * recorded with no type, and every consumer read it as
+			 * a string. Measured 2026-10-16: Service's `pid`,
+			 * `restarts`, `restart_delay_seconds` and
+			 * `stop_timeout_seconds` reached the dashboard as
+			 * strings, and `on_exit` and `type` lost their enums,
+			 * which a generated form would have rendered as free
+			 * text. Refused like every other construct this file
+			 * cannot read, because a generator that silently
+			 * mis-reads is confidently wrong about its own subject.
+			 */
+			if (value_of(line)[0] == '{')
+				die_at(spec, lineno,
+				       "property %s.%s is written as a flow mapping (%s) -- "
+				       "write its keys one per line below its name; apigen reads a "
+				       "property's type, enum and items from there, so a flow "
+				       "mapping is a property with no type",
+				       s->comp, r->prop, value_of(line));
+
 			if (used + strlen(r->prop) + 2 >= sizeof(s->props))
 				die_at(spec, 0,
 				       "schema %s declares more properties than this tool can "
@@ -1024,6 +1048,16 @@ static int schema_body_line(struct schema_reader *r, const char *spec, int linen
 
 		snprintf(v, sizeof(v), "%s", value_of(line));
 		strip_eol(v);
+
+		/* The same refusal one level down: an array's item type is
+		 * read from the `type:` line BELOW `items:`, so `items:
+		 * {type: string}` records an array of nothing in particular --
+		 * which is how Service's `cmd` and `after` lost theirs. */
+		if (strcmp(key, "items") == 0 && v[0] == '{')
+			die_at(spec, lineno,
+			       "property %s.%s writes its items as a flow mapping (%s) -- "
+			       "write `items:` with `type:` (or `$ref:`) on the line below",
+			       s->comp, r->prop, v);
 
 		if (strcmp(key, "type") == 0) {
 			char tname[APIGEN_ENUM_ITEM_MAX] = "";

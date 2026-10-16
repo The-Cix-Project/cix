@@ -6,6 +6,32 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### apigen refuses a property it cannot read, and the container page's tables are generated (#592)
+
+**Fifteen properties were invisible to the generator.** apigen reads a property's `type`, `enum` and
+`items` one key per line below its name, and fifteen in the service schemas were written as YAML flow
+mappings -- `restarts: {type: integer}` -- which put them all on the name's own line, where nothing
+looked. They were recorded with no type, so every generated consumer read them as strings:
+`Service.pid`, `restarts`, `restart_delay_seconds` and `stop_timeout_seconds` reached the dashboard as
+strings, `on_exit` and `type` lost their enums (a generated form would have offered free text), and
+`cmd` and `after` lost their item type. Found by converting the services table and comparing the
+generated fields with what 192.168.15.95 returns for `jump`, which sends integers. They are block form
+now, and **apigen refuses the flow form** for a property and for an array's `items`, with
+`test_apigen` cases for both; `example:` values may still be flow form, since they are data.
+
+The container page's devices, networks, consoles and services tables are generated, the first three
+gaining the header rows they never had. Services' `state` is a badge through `serviceStateKind()`,
+which is deliberately not `containerStatusKind()`: for a container "exited" is the fault, for a
+service it is *"a finished oneshot, or on_exit stop"* -- `jump`'s `mkdirs` and `waitkey` both report
+it with exit status 0 -- so it is grey, and "failed" is red. The services table's buttons depend on
+the container's status, which is not in its rows, so that status is in the repaint guard's signature
+too. `ContainerConsole` is promoted to a named schema, and a `link` that returns nothing now renders
+plain text, so an unmapped device is not a link to nowhere.
+
+40 of 62 list tables are generated. Of the 22 left, four are plain-string or key/value lists where
+`simpleTableRows` is right, four are hand-written for a reason in their own comment, and fourteen are
+not converted yet.
+
 ### The network page renders from the contract, which was missing its allocation pool (#592)
 
 `renderDetailRows` has its first caller, and getting it there fixed two defects in it that nothing

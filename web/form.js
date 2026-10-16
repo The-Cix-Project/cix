@@ -862,7 +862,15 @@ function tableCell(schema, row, col) {
 	                     : fieldText(schemaField(schema, name), row[name]);
 
 	if (typeof col === "object" && col.link !== undefined) {
-		cell.appendChild(treeLink(col.link(row), text, ""));
+		const href = col.link(row);
+
+		/* A link only where there is somewhere to go: a granted device
+		 * links to its name mapping when it has one, and is plain text
+		 * when it does not, rather than a link to nowhere. */
+		if (href)
+			cell.appendChild(treeLink(href, text, ""));
+		else
+			cell.textContent = text;
 		return cell;
 	}
 	if (typeof col === "object" && col.badge !== undefined) {
