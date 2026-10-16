@@ -11558,83 +11558,64 @@ function setPkgSourceForm(source) {
 	document.getElementById("psf-catalogue-key").value = source ? source.catalogue_key || "" : "";
 }
 
+/*
+ * Generated (#592), and two things it stopped doing.
+ *
+ * THE ROLE WAS AN AMBER BADGE, and amber is "paused" -- the Primitives
+ * board's four colours have a fixed meaning and are never repurposed,
+ * and a source this host may write to is not paused, or a state at all.
+ * It was also built as a bare `"badge " + ...` class string, past
+ * statusBadge(), the one function that turns a kind into a badge. A
+ * write role is a property the contract types as a boolean, so it reads
+ * as one: "Writes: yes". The package repositories table did the same
+ * with "push", and is the same now.
+ *
+ * FOUR FLAGS, FOUR VOCABULARIES. "write"/"read", "trusted"/"no",
+ * "signed"/"unsigned" and "set"/"unset" under one-word headers became
+ * yes/no under headers that ask the question, as every other boolean
+ * on this dashboard reads. `catalogue_key` is a key, not a flag, so its
+ * cell is derived: the question is whether one is set.
+ */
 function renderPkgSourcesTable(sources) {
-	const body = document.getElementById("pkg-sources-body");
+	renderTable(document.getElementById("pkg-sources"), "PkgSource", sources, [
+		"name",
+		{ field: "url", label: "Repository" },
+		{ field: "ref", label: "Ref" },
+		{ field: "write", label: "Writes" },
+		{ field: "trust_keys", label: "Trusts keys" },
+		{ label: "Signed index", text: (s) => (s.catalogue_key ? "yes" : "no") },
+		{ field: "token_set", label: "Token set" },
+		{ label: "", actions: (s) => {
+			const edit = document.createElement("button");
+			const remove = document.createElement("button");
 
-	if (unchangedAndRendered(body, "pkg-sources", sources))
-		return;
-	body.textContent = "";
-	if (sources.length === 0) {
-		simpleTableRows(body, [], 8, emptyStateText("listPkgSources", "recipe sources", "No recipe sources"));
-		return;
-	}
-	for (const s of sources) {
-		const row = document.createElement("tr");
-		const cells = [s.name, s.url, s.ref];
+			edit.type = "button";
+			edit.className = "button-small";
+			edit.textContent = "Edit";
+			edit.addEventListener("click", () => {
+				setPkgSourceForm(s);
+				openModal("pkg-source-form", "Edit source " + s.name);
+			});
+			gateAction(edit, "updatePkgSource");
 
-		for (const text of cells) {
-			const cell = document.createElement("td");
-
-			cell.textContent = text;
-			row.appendChild(cell);
-		}
-
-		const roleCell = document.createElement("td");
-		const role = document.createElement("span");
-
-		role.className = "badge " + (s.write ? "badge-paused" : "badge-unknown");
-		role.textContent = s.write ? "write" : "read";
-		roleCell.appendChild(role);
-		row.appendChild(roleCell);
-
-		const keysCell = document.createElement("td");
-
-		keysCell.textContent = s.trust_keys ? "trusted" : "no";
-		row.appendChild(keysCell);
-
-		const indexCell = document.createElement("td");
-
-		indexCell.textContent = s.catalogue_key ? "signed" : "unsigned";
-		row.appendChild(indexCell);
-
-		const tokenCell = document.createElement("td");
-
-		tokenCell.textContent = s.token_set ? "set" : "unset";
-		row.appendChild(tokenCell);
-
-		const actions = document.createElement("td");
-		const edit = document.createElement("button");
-		const remove = document.createElement("button");
-
-		edit.type = "button";
-		edit.className = "button-small";
-		edit.textContent = "Edit";
-		edit.addEventListener("click", () => {
-			setPkgSourceForm(s);
-			openModal("pkg-source-form", "Edit source " + s.name);
-		});
-		gateAction(edit, "updatePkgSource");
-		actions.appendChild(edit);
-
-		remove.type = "button";
-		remove.className = "button-small button-danger";
-		remove.textContent = "Remove";
-		remove.addEventListener("click", async () => {
-			if (!confirm("Remove recipe source " + s.name + "? Its packages stop syncing, and recipes already published stay."))
-				return;
-			try {
-				await apiRequest("DELETE", CIX_API.deletePkgSource(s.name));
-				showStatus("Removed recipe source " + s.name, false);
-				await refreshPkgSources();
-			} catch (e) {
-				showStatus("Failed to remove " + s.name + ": " + e.message, true);
-			}
-		});
-		gateAction(remove, "deletePkgSource");
-		actions.appendChild(remove);
-		row.appendChild(actions);
-		body.appendChild(row);
-	}
+			remove.type = "button";
+			remove.className = "button-small button-danger";
+			remove.textContent = "Remove";
+			remove.addEventListener("click", async () => {
+				if (!confirm("Remove recipe source " + s.name + "? Its packages stop syncing, and recipes already published stay."))
+					return;
+				try {
+					await apiRequest("DELETE", CIX_API.deletePkgSource(s.name));
+					showStatus("Removed recipe source " + s.name, false);
+					await refreshPkgSources();
+				} catch (e) {
+					showStatus("Failed to remove " + s.name + ": " + e.message, true);
+				}
+			});
+			gateAction(remove, "deletePkgSource");
+			return [edit, remove];
+		} },
+	], { op: "listPkgSources", what: "recipe sources", empty: "No recipe sources" });
 }
 
 function renderPkgSourceHeld(ownership, sources) {
@@ -12413,67 +12394,49 @@ function setPkgRepositoryForm(repo) {
 	document.getElementById("prepo-push").checked = repo ? repo.push === true : false;
 }
 
+/* Generated (#592). "Pushes" is a plain boolean for the reason the
+ * sources table's "Writes" is -- see renderPkgSourcesTable(). */
 function renderPkgRepositoriesTable(repos) {
-	const body = document.getElementById("pkg-repositories-body");
+	renderTable(document.getElementById("pkg-repositories"), "PkgRepository", repos, [
+		"name",
+		{ field: "url", label: "URL" },
+		{ field: "push", label: "Pushes" },
+		{ field: "token_set", label: "Token set" },
+		{ label: "", actions: (r) => {
+			const edit = document.createElement("button");
+			const remove = document.createElement("button");
 
-	if (unchangedAndRendered(body, "pkg-repositories", repos))
-		return;
-	body.textContent = "";
-	if (repos.length === 0) {
-		simpleTableRows(body, [], 5,
-			emptyStateText("listPkgRepositories", "package repositories",
-				"No package repositories -- every package builds from source"));
-		return;
-	}
-	for (const r of repos) {
-		const row = document.createElement("tr");
-		const name = document.createElement("td");
-		const url = document.createElement("td");
-		const pushCell = document.createElement("td");
-		const push = document.createElement("span");
-		const token = document.createElement("td");
-		const actions = document.createElement("td");
-		const edit = document.createElement("button");
-		const remove = document.createElement("button");
+			edit.type = "button";
+			edit.className = "button-small";
+			edit.textContent = "Edit";
+			edit.addEventListener("click", () => {
+				setPkgRepositoryForm(r);
+				openModal("pkg-repository-form", "Edit repository " + r.name);
+			});
+			gateAction(edit, "updatePkgRepository");
 
-		name.textContent = r.name;
-		url.textContent = r.url;
-		push.className = "badge " + (r.push ? "badge-paused" : "badge-unknown");
-		push.textContent = r.push ? "push" : "pull only";
-		pushCell.appendChild(push);
-		token.textContent = r.token_set ? "set" : "unset";
-
-		edit.type = "button";
-		edit.className = "button-small";
-		edit.textContent = "Edit";
-		edit.addEventListener("click", () => {
-			setPkgRepositoryForm(r);
-			openModal("pkg-repository-form", "Edit repository " + r.name);
-		});
-		gateAction(edit, "updatePkgRepository");
-		actions.appendChild(edit);
-
-		remove.type = "button";
-		remove.className = "button-small button-danger";
-		remove.textContent = "Remove";
-		remove.addEventListener("click", async () => {
-			if (!confirm("Remove package repository " + r.name + "? Artifacts already fetched stay in this host's cache."))
-				return;
-			try {
-				await apiRequest("DELETE", CIX_API.deletePkgRepository(r.name));
-				showStatus("Removed package repository " + r.name, false);
-				await refreshPkgRepositories();
-			} catch (e) {
-				showStatus("Failed to remove " + r.name + ": " + e.message, true);
-			}
-		});
-		gateAction(remove, "deletePkgRepository");
-		actions.appendChild(remove);
-
-		for (const cell of [name, url, pushCell, token, actions])
-			row.appendChild(cell);
-		body.appendChild(row);
-	}
+			remove.type = "button";
+			remove.className = "button-small button-danger";
+			remove.textContent = "Remove";
+			remove.addEventListener("click", async () => {
+				if (!confirm("Remove package repository " + r.name + "? Artifacts already fetched stay in this host's cache."))
+					return;
+				try {
+					await apiRequest("DELETE", CIX_API.deletePkgRepository(r.name));
+					showStatus("Removed package repository " + r.name, false);
+					await refreshPkgRepositories();
+				} catch (e) {
+					showStatus("Failed to remove " + r.name + ": " + e.message, true);
+				}
+			});
+			gateAction(remove, "deletePkgRepository");
+			return [edit, remove];
+		} },
+	], {
+		op: "listPkgRepositories",
+		what: "package repositories",
+		empty: "No package repositories -- every package builds from source",
+	});
 }
 
 async function refreshPkgRepositories() {

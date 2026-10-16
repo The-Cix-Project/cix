@@ -872,6 +872,57 @@ next:
 	}
 
 	/*
+	 * A BADGE'S CLASS COMES FROM statusBadge() AND NOWHERE ELSE (#592).
+	 *
+	 * The Primitives board's four badge colours have a fixed meaning and
+	 * are "never repurposed", and the way that rule broke was always the
+	 * same: a cell building its own `"badge " + (x ? "badge-paused" :
+	 * "badge-unknown")`. The recipe sources and package repositories
+	 * tables both did it, both to colour a WRITE role amber -- which is
+	 * "paused" -- for a property that is a boolean and not a state at all.
+	 * statusBadge(kind) is the one place a kind becomes a class, so a
+	 * `"badge ` string anywhere else in app.js is the drift.
+	 *
+	 * Textual, like the `dg-` and "Loading" gates, and for their reason:
+	 * a vocabulary with a second spelling has no rule. Comments are
+	 * exempt, so the conversion's own explanation of what it removed
+	 * can stay.
+	 */
+	{
+		const char *fn = strstr(app, "function statusBadge(");
+		const char *fn_end = fn != NULL ? strstr(fn, "\n}\n") : NULL;
+		const char *p = app;
+		int offenders = 0;
+
+		if (fn == NULL || fn_end == NULL)
+			fail("found no statusBadge() in web/app.js -- the one place a badge "
+			     "kind becomes a class%s%s", "", "");
+		while ((p = strstr(p, "\"badge ")) != NULL) {
+			const char *line = p;
+
+			while (line > app && line[-1] != '\n')
+				line--;
+			while (*line == ' ' || *line == '\t')
+				line++;
+			if (!(line[0] == '*' ||
+			      (line[0] == '/' && (line[1] == '*' || line[1] == '/'))) &&
+			    !(fn != NULL && fn_end != NULL && p > fn && p < fn_end))
+				offenders++;
+			p += 1;
+		}
+		if (offenders > 0) {
+			char n[16];
+
+			snprintf(n, sizeof(n), "%d", offenders);
+			fail("web/app.js builds a badge class outside statusBadge() on %s "
+			     "line(s) -- a cell that names its own badge colour is how a "
+			     "fixed-meaning colour gets repurposed; map the state to a kind "
+			     "and let statusBadge() make the class%s",
+			     n, "");
+		}
+	}
+
+	/*
 	 * A HAND-WRITTEN `pattern` IS A PATTERN TOO (#596).
 	 *
 	 * `test_apigen` refuses a bare `-]` in an EMITTED pattern, because

@@ -21316,14 +21316,7 @@ components:
             Items more than one source offers with no choice made. Each is
             held: a sync merges it from no source until one is chosen.
           items:
-            type: object
-            required: [item, offered_by]
-            properties:
-              item:
-                type: string
-              offered_by:
-                type: string
-                description: The offering sources, ", "-separated.
+            $ref: "#/components/schemas/PkgSourceConflict"
         choices:
           type: array
           items:
@@ -21334,6 +21327,21 @@ components:
                 type: string
               source:
                 type: string
+
+    PkgSourceConflict:
+      type: object
+      description: >
+        One package or key file offered by more than one source with no
+        choice made, so held. Promoted out of PkgSourceOwnership's inline
+        items so the dashboard renders it from the schema.
+      required: [item, offered_by]
+      properties:
+        item:
+          type: string
+          description: The package name or key file that is held.
+        offered_by:
+          type: string
+          description: The offering sources, ", "-separated.
 
     PkgUpstreamKeys:
       type: object
