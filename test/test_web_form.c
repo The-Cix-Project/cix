@@ -655,29 +655,43 @@ int main(void)
 		       "fieldText({ type: \"array\" }, [])", "—");
 
 		/*
-		 * renderTableRows over the real Network schema, with the four
-		 * columns the hand-written table actually shows -- the authored
-		 * part -- and every cell's text derived.
+		 * Every cell's text derived from its field's type, over the real
+		 * Network schema: a string, an integer, an empty string, a
+		 * boolean and an empty array, each the way fieldText decides.
+		 *
+		 * These two assertions belonged to `renderTableRows`, the
+		 * text-only renderer `renderTable` superseded; it had no caller
+		 * left and was deleted (#592), and what it was asserted to do is
+		 * kept here against the function that does it now.
 		 */
 		expect(ctx, "a table's cells come from the schema's own types",
 		       "(() => {\n"
-		       "  const b = document.createElement(\"tbody\");\n"
-		       "  renderTableRows(b, \"Network\",\n"
+		       "  const t = document.createElement(\"table\");\n"
+		       "  renderTable(t, \"Network\",\n"
 		       "    [{ name: \"mgmt\", subnet: \"10.0.0.0\", prefix_len: 24,\n"
 		       "       address: \"\", management: true, interfaces: [] }],\n"
 		       "    [\"name\", \"subnet\", \"prefix_len\", \"address\", \"management\",\n"
-		       "     \"interfaces\"], \"none\");\n"
-		       "  return b.children[0].children.map((c) => c.textContent).join(\"|\");\n"
+		       "     \"interfaces\"],\n"
+		       "    { op: \"listNetworks\", what: \"networks\", empty: \"none\" });\n"
+		       "  return t.tBodies[0].children[0].children.map((c) => c.textContent)\n"
+		       "    .join(\"|\");\n"
 		       "})()",
 		       "mgmt|10.0.0.0|24|—|yes|—");
 		expect(ctx, "an empty table says so once, across the right span",
 		       "(() => {\n"
-		       "  const b = document.createElement(\"tbody\");\n"
-		       "  renderTableRows(b, \"Network\", [], [\"name\", \"subnet\"], \"No networks\");\n"
-		       "  const cell = b.children[0].children[0];\n"
+		       "  const t = document.createElement(\"table\");\n"
+		       "  renderTable(t, \"Network\", [], [\"name\", \"subnet\"],\n"
+		       "    { op: \"listNetworks\", what: \"networks\", empty: \"No networks\" });\n"
+		       "  const cell = t.tBodies[0].children[0].children[0];\n"
 		       "  return cell.textContent + \"/\" + cell.colSpan + \"/\" + cell.className;\n"
 		       "})()",
 		       "No networks/2/empty");
+		/* `op: null`'s one-state behaviour is NOT asserted here, and
+		 * deliberately: it lives in app.js's listState(), which this
+		 * test does not load, so an assertion would exercise only the
+		 * stub above and pass whatever app.js did. It was measured in
+		 * Chromium against the real function instead, and
+		 * test_web_tree refuses a renderTable call that states no op. */
 
 		/*
 		 * renderTable: the composition (#592 story 3). The header
@@ -791,8 +805,14 @@ int main(void)
 
 		/* renderDetailRows: schema order, every field, read-only
 		 * included -- a detail page is where "the daemon reports this
-		 * and you cannot set it" belongs. */
-		expect(ctx, "a detail page shows every field in schema order",
+		 * and you cannot set it" belongs.
+		 *
+		 * The LABELS are the contract's titles. This assertion used to
+		 * expect "Prefix len" and "Management", which was the defect
+		 * written down as the requirement: renderDetailRows passed
+		 * `fieldLabel(f.name)`, a bare string, so no title could ever
+		 * reach a detail row, and the test agreed with it. */
+		expect(ctx, "a detail page shows every field in schema order, titled",
 		       "(() => {\n"
 		       "  const b = document.createElement(\"tbody\");\n"
 		       "  renderDetailRows(b, \"Network\",\n"
@@ -800,7 +820,28 @@ int main(void)
 		       "      has_address: false, address: \"\", management: true });\n"
 		       "  return b.children.map((r) => r.children[0].textContent).join(\",\");\n"
 		       "})()",
-		       "Name,Subnet,Prefix len,Has address,Address,Management,Interfaces");
+		       "Name,Subnet,Prefix length,Has address,Address,Management network,"
+		       "Pool start,Pool end,Interfaces");
+		/* `omit` is what a page normally wants -- it names what the
+		 * page shows elsewhere and leaves every other field, including
+		 * the next one the contract gains, appearing by default. And an
+		 * array of $ref objects carries no `items`, so its rendering is
+		 * decided on the values: counted, never "[object Object]". */
+		expect(ctx, "omit drops a field, and an object array is counted",
+		       "(() => {\n"
+		       "  const b = document.createElement(\"tbody\");\n"
+		       "  renderDetailRows(b, \"Network\",\n"
+		       "    { name: \"mgmt\", subnet: \"10.0.0.0\", prefix_len: 24,\n"
+		       "      has_address: true, address: \"10.0.0.1\", management: false,\n"
+		       "      alloc_start_host: 101, alloc_end_host: null,\n"
+		       "      interfaces: [{ ifname: \"eth0\", vlan_id: 0 },\n"
+		       "                   { ifname: \"eth1\", vlan_id: 20 }] },\n"
+		       "    { omit: [\"subnet\"] });\n"
+		       "  return b.children.map((r) => r.children[0].textContent + \"=\" +\n"
+		       "    r.children[1].textContent).join(\",\");\n"
+		       "})()",
+		       "Name=mgmt,Prefix length=24,Has address=yes,Address=10.0.0.1,"
+		       "Management network=no,Pool start=101,Pool end=—,Interfaces=2");
 
 		/*
 		 * ---- the multi-line control, and the two ways a field asks

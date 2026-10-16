@@ -6,6 +6,75 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The network page renders from the contract, which was missing its allocation pool (#592)
+
+`renderDetailRows` has its first caller, and getting it there fixed two defects in it that nothing
+had exercised: it passed `fieldLabel(f.name)`, a bare string, so no contract `title` could ever reach
+a detail row -- and `test_web_form` had asserted "Prefix len", the defect written down as the
+requirement; and an array of `$ref` objects, which apigen records with no `items`, joined into
+`[object Object]`. A detail page now uses titles, counts an object array, and takes `{ omit }` --
+what the page shows elsewhere -- rather than an allow-list that would hide the next field the
+contract gains.
+
+**The contract had never declared the pool.** Checking the page's schema against what 192.168.15.95
+returns found `alloc_start_host` and `alloc_end_host` on every network: the auto-allocation window #137
+exists for, set by `PUT /networks/{name}` and reported back on every read, and absent from the
+`Network` schema, so a page generated from the contract would have silently left out the one fact a
+bridged LAN most needs. Both are declared, titled and `required` (the daemon emits them
+unconditionally, so `test_apishape` now holds it to that), and `docs/api/README.md`'s example response
+-- which was short of the real shape anyway -- is corrected.
+
+**A list that is a field of an object already in hand has one state.** Given no `op`, `renderTable`
+fell through to "Reading…" forever, which is the guidelines' own warning about inventing a fetch.
+`op: null` is that case, with a `key` for the repaint guard; `test_web_tree` requires every call to
+state an op, string or null, and refuses a null one without a key. Its bracket-balancing scan also
+skips strings and comments now, so a `(` inside a label can no longer walk it into the next statement.
+
+The page's three tables are generated with it -- its containers (status is a badge now, where it was
+a bare word), its interfaces and its routes, the last two gaining the header row they never had. The
+system routes list shares the routes columns, and `appendRouteRow` is gone. `renderTableRows`, the
+text-only renderer `renderTable` superseded, had no caller left and is deleted; its two assertions
+moved to the function that does the work.
+
+### Thirty-one generated tables, and the five wrong names a gate found (#592)
+
+Packages, recipes, both recipe catalogues, an image's manifest, version history, recipe catalogue
+and packages, a package's versions and installations, DNS records, LDAP users and groups, networks,
+certificates, sysctls, loader entries, throttle status, sessions, a disk's partitions and the
+containers list all render through `renderTable` now. The conversions are where the defects were:
+
+- **Five wrong schema names, four of them live in 0.2.57-502.** A name `CIX_API.FIELDS` does not
+  define gives every column its type from nothing, which looks right for a string and is wrong for
+  every boolean, array and instant. `test_web_tree` resolves each table's schema and `op` against the
+  generated contract; `DnsServer`, `LdapServer` and `NtpServer` were each `*Binding`, and
+  `DhcpReservation` became real by being promoted out of `Dhcp.static`'s inline items.
+- **A refusal was muted.** Loading and empty are muted on the Primitives board and a refusal is full
+  `--text`, because it names the permission that would lift it. `listState()` returns the kind beside
+  the sentence.
+- **A Remove button was gated on the wrong permission** -- `deletePkgRecipe`, while calling
+  `removePkg` -- so a session could be shown an enabled control that 403s, or a disabled one it was
+  allowed to use.
+- **A mark is a badge.** "current" and "rolling candidate" were bare `<strong>`s; `text` now composes
+  with `badge`, so a derived marker uses the vocabulary's widget, and an empty one renders nothing.
+- **A hover is a column form** (`title`), because five hand-written cells set one and three were the
+  identical `pkg.error`.
+
+Two tables stay hand-written on purpose and say why: `renderDisks` patches per-tick I/O counters into
+existing cells instead of rebuilding, and device maps renders a cell of N links. Two panels that
+handed `refusalText()` to their own renderer stopped -- it was a second copy of a decision
+`listState()` already makes, and one that could only ever produce the refused state.
+
+### An instant is a contract fact (#592)
+
+`format: unix-seconds` on 36 integer properties, replacing twenty `new Date(x * 1000)` call sites.
+Two printed a bare clock for a throttle block that may lift tomorrow; every one had to guard `0` by
+hand or render 1970, and `formatInstant()` now treats 0 and null alike as absent. The spelling is
+coined -- OpenAPI has no format for an epoch integer, and the usual `int64` plus a prose "Unix
+seconds" is exactly what a renderer cannot read -- so it is the phrase this contract's prose already
+used. `test_apigen` refuses an integer named `_at`, `_until` or `_unixtime` that declares no format;
+writing it found eight the hand-made list had missed. Four clocks stay hand-rolled and each says why:
+a dense log, a line labelled UTC, and a pipeline stage's "started" beside a live counter.
+
 ### The DHCP page loses its private table helper (#592)
 
 Four more tables generated — DHCP servers, ranges, reservations and leases — and with them

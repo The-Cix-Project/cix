@@ -19743,7 +19743,7 @@ components:
 
     Network:
       type: object
-      required: [name, subnet, prefix_len, has_address, address, management]
+      required: [name, subnet, prefix_len, has_address, address, management, alloc_start_host, alloc_end_host]
       properties:
         name:
           type: string
@@ -19751,6 +19751,7 @@ components:
           type: string
         prefix_len:
           type: integer
+          title: Prefix length
         has_address:
           type: boolean
           description: Whether this network has a host-owned address at all.
@@ -19760,6 +19761,7 @@ components:
           description: The host-owned address, or null when has_address is false.
         management:
           type: boolean
+          title: Management network
           description: >
             Whether this is the network cixd's off-box management
             address lives in (ADR-0287). DERIVED, not stored: true iff
@@ -19772,6 +19774,28 @@ components:
             address are refused (409) -- reset the management address
             first (DELETE /system/management-address) or move it to
             another network (PUT /system/management-address).
+        alloc_start_host:
+          type: integer
+          nullable: true
+          title: Pool start
+          description: >
+            The lowest host part auto-allocation may hand out -- the
+            address's offset within the subnet, so 101 on a /24 is the
+            .101 address -- or null when the window has no lower bound.
+            Set as a dotted address by PUT /networks/{name}'s
+            alloc_start; reported back as the host part, which is what
+            the daemon stores (issue #137).
+        alloc_end_host:
+          type: integer
+          nullable: true
+          title: Pool end
+          description: >
+            The highest host part auto-allocation may hand out, or null
+            for no upper bound. With BOTH bounds null, a network with a
+            real interface attached refuses auto-allocation outright
+            rather than drawing from the bottom of a subnet shared with
+            equipment this platform cannot see (issue #137); a network
+            with none allocates from the whole usable range.
         interfaces:
           type: array
           items:

@@ -895,8 +895,18 @@ POST /v1/networks
 Response (`201`):
 
 ```json
-{"name": "internal", "subnet": "172.31.0.0", "prefix_len": 24, "address": "172.31.0.1"}
+{"name": "internal", "subnet": "172.31.0.0", "prefix_len": 24, "has_address": true,
+ "management": false, "alloc_start_host": null, "alloc_end_host": null,
+ "address": "172.31.0.1", "interfaces": []}
 ```
+
+`alloc_start_host` and `alloc_end_host` report the auto-allocation pool (issue #137) as **host parts** --
+the offset within the subnet, so `101` on a /24 is `.101` -- while `PUT /networks/{name}` sets it with
+dotted addresses (`alloc_start`, `alloc_end`), because a host part is what the daemon stores. Null means
+that bound is open. The daemon always returned both and the schema did not declare either until the
+dashboard's network page began rendering from the schema, which is the case for keeping response schemas
+complete in one sentence: a surface generated from the contract shows exactly what the contract says, so a
+field missing from it is a field missing from the page.
 
 Creating a network creates its bridge immediately via rtnetlink and persists the definition to `/var/lib/cix/state/networks.json` (ADR-0141) — unlike containers (safe to be in-memory-only, since they die with the daemon), a bridge outlives this process, so the daemon reloads and recreates every persisted network's bridge idempotently at startup.
 

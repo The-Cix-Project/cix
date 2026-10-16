@@ -2445,6 +2445,81 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 279 (done): a list says which of its states it is in, the dashboard has a phone tier, and twenty-one tables render from the contract (#592 epic, #596, #600, 0.2.57-497 through -503)
+
+Seven releases, one theme: the dashboard stops restating what the contract already says, and the
+places where it had been restating it wrongly turn up as it does.
+
+**497: three more generated forms, and validation rules that lived only in C.** `addDhcpReservation`,
+`pkgBootstrap` and `pkgInstall`, making six of twenty modals generated. The reservation's request body
+had no patterns at all, so a generated form would have been three bare text boxes; the rules were read
+out of `dhcp.c` (`mac_is_valid()`, `hostname_is_valid()`) and written into the contract, and the
+daemon's own 400, its comment and `network-services.md` were corrected in the same change because all
+three said "letters" for a loop that accepts `a`-`z` only.
+
+**498: a list says which of four states it is in.** The data is `[]` in all four -- not read yet,
+refused, failed, and answered with none -- and the dashboard had said "No things" for every one of
+them. `emptyStateText()` decides from `failedReads` (which now records any failed GET, a transport
+failure included, where it had recorded 401/403 only) and `answeredReads`; 27 panels became honest
+at once because they already routed their empty sentence through that one function. Driving the four
+outcomes in a browser found the second half: the repaint guard compares DATA, so all four printed
+whichever sentence painted first, and `listSignature()` now carries the sentence for an empty list.
+Measured across eleven views with no backend, before and after: two lists had claimed "none" where
+nothing was asked, and none do. `test_web_tree` refuses the spelling "Loading".
+
+**499 and 500: a phone is a read tier.** Below 720px a table scrolls horizontally rather than putting
+its right-hand columns where no gesture reaches -- measured across twenty views, exactly one did, by
+22px. Then the open question was answered as two tiers: reading is supported from 360px, because the
+moments an operator is paged are the ones nobody is at a desk for, and writing from 720px. The first
+version recorded a 500px floor, which was headless Chromium's minimum *window* width written down as
+a property of the dashboard; re-measured in 360px and 390px iframes so the media queries evaluated
+against that width, nothing on a read-tier view overflows. The toast, top-right and nearly full
+width at 390px, was covering the tree's disclosure button, and is a bottom bar there now.
+
+**501 through 503: tables render from the contract.** `renderTable(tableEl, schema, rows, columns,
+state)` owns a table's header, its four states and its repaint guard; a column is authored (which
+fields, in what order, a link, a badge, a cell of buttons) and every cell's text is derived through
+`fieldText()`, so a boolean reads the same everywhere. Twenty-one tables across the three releases.
+The conversions were where the defects surfaced, which is the argument for doing them:
+
+- An **exited** container rendered a grey badge in the containers list while the tree showed it red
+  (501). `containerStatusKind()` is the one map now; ADR-0045's "exited is the state worth flagging"
+  had been true in one surface and not the other.
+- **A refusal was muted.** The Primitives board colours loading and empty muted and a refusal at full
+  `--text`, because a refusal names the permission that would lift it; all three had rendered as one
+  bare `td.empty` (502). `listState()` returns the kind beside the sentence, and `td.empty-refused`
+  is the one class it adds.
+- **An instant is a contract fact** (503). `format: unix-seconds` on 36 integer properties replaced
+  twenty hand-rolled `new Date(x * 1000)` call sites, two of which printed a bare clock for a
+  throttle block that may lift tomorrow and all of which had to guard `0` by hand or render 1970.
+  `formatInstant()` treats 0 as absent. OpenAPI has no standard format for an epoch integer, so the
+  spelling is the phrase this contract's own prose already used. `test_apigen` refuses an integer
+  named `_at`, `_until` or `_unixtime` that declares none, and writing that gate found eight the
+  hand-made list had missed, four of them fields converted code was reading.
+- **A wrong schema name renders silently wrong** (503). `CIX_API.FIELDS` for a name that does not
+  exist is undefined, so every column takes its type from nothing -- correct-looking for a string,
+  wrong for every boolean, array and instant. `test_web_tree` now resolves every schema and `op` a
+  table is given, and found five wrong ones on its first run, **four of them live in 502**
+  (`DnsServer`, `LdapServer` and `NtpServer` are each `*Binding`, and `DhcpReservation` did not exist
+  until it was promoted out of `Dhcp.static`'s inline items into a named schema).
+
+Verified from the box's own bytes at each release, since a render of the repository's files is not
+evidence of what the host serves: 501 booted on slot `b`, 502 on `a`, 503 on `b`, each with health ok
+and 12/12 containers running, and `app.js` fetched from 192.168.15.95 carried 4, 14 and then 21
+`renderTable(` calls respectively, with 503's schema names resolving against its own contract. Each
+release's own hostbuild selftest passed with zero `FAIL:` lines, including `test_web_tree`,
+`test_web_form` and `test_apigen`. Every converted table was driven in Chromium against the
+repository's markup and stylesheet before it was committed. 499 and 500 never booted on their own:
+the box went from 498 to 501, which carried them.
+
+**What is left, measured on 2026-10-16 in the repository** -- which is ahead of 503 by fourteen more
+generated tables and the first generated detail page, none of them released yet: of 62 list tables,
+36 are generated and 26 hand-written, ten of them on the container detail page; of 14 key-value
+tables, one is generated. Two stay hand-written for stated reasons -- `renderDisks` patches per-tick counters into
+existing cells rather than rebuilding, because its I/O counters advance on an idle host and a rebuild
+costs the reader their scroll position every tick; and device maps renders a cell of N links, a form
+nothing else needs.
+
 ## Part 278 (done): nine hand-written patterns validated nothing, and the first three generated forms (#592 epic, #596, ADR-0338, 0.2.57-495 and -496)
 
 Story 4 of #592, begun by classifying all of it before converting any of it -- which is what found

@@ -1019,6 +1019,18 @@ const answeredReads = new Set();
  * body colour differs, and only for refused.
  */
 function listState(opId, what, normalText) {
+	/*
+	 * `null` -- deliberately null, never merely absent -- is a list
+	 * that is a FIELD OF AN ALREADY-LOADED OBJECT: a network's
+	 * `interfaces`, a container's `env`. The guidelines' List state row
+	 * says it plainly: such a list has one state, not four, because it
+	 * was never separately read, and a loading state would invent a
+	 * fetch that never happens. Without this branch a table given no
+	 * operation fell through to "Reading…" and stayed there.
+	 */
+	if (opId === null)
+		return { kind: "empty", text: normalText };
+
 	const failure = failedReads.get(opId);
 
 	if (failure)
@@ -6045,86 +6057,73 @@ function renderNetworkDetail(name) {
 
 	startNetPortsPolling(n.name);
 	refreshNetworkDhcp(n.name);
-	fields.textContent = "";
-	fields.appendChild(fieldBlock("Subnet", n.subnet));
-	fields.appendChild(fieldBlock("Prefix length", String(n.prefix_len)));
-	fields.appendChild(fieldBlock("Address", n.has_address ? n.address : "(none -- pure L2)"));
+
+	/*
+	 * GENERATED, and `renderDetailRows`' first caller (#592 story 3,
+	 * the half that had none). Schema order, every field, labelled by
+	 * the contract's titles -- so this page now shows what it never
+	 * did: whether this is the management network, and the
+	 * auto-allocation pool that #137 exists to let an operator set on a
+	 * bridged LAN. The daemon had always returned the pool; the
+	 * contract had never declared it, which is why a page built from
+	 * the contract was the thing that found the gap.
+	 *
+	 * `interfaces` is omitted because it has its own tab below, and
+	 * nothing else is: the page names this network nowhere else in its
+	 * own content, so `name` stays.
+	 *
+	 * What is lost is the "(none -- pure L2)" gloss on a missing
+	 * address. "Has address: no" now states the same fact, in the
+	 * vocabulary every other boolean on this dashboard uses.
+	 */
+	renderDetailRows(fields, "Network", n, { omit: ["interfaces"] });
 
 	/* Containers on this network -- the reverse of what a container's
 	 * own Hardware tab already shows (network name + IP, from its own
-	 * `networks[]`). Purely a client-side cross-reference against the
-	 * already-cached container list; no dedicated API field for it
-	 * exists or is needed (GET /networks/{name} has no per-container
-	 * view of its own -- see #804's own investigation). */
-	const containersBody = document.querySelector("#nd-containers tbody");
-	const attachedContainers = cache.containers
-		.map((c) => ({ container: c, attachment: (c.networks || []).find((att) => att.name === n.name) }))
-		.filter((x) => x.attachment !== undefined);
+	 * `networks[]`). A client-side cross-reference against the cached
+	 * container list; GET /networks/{name} has no per-container view of
+	 * its own and needs none (#804). Generated (#592): the status is a
+	 * badge now, as it is in the containers list itself, where it was a
+	 * bare word here. */
+	const attachment = (c) => (c.networks || []).find((att) => att.name === n.name);
 
-	containersBody.textContent = "";
-	if (attachedContainers.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+	renderTable(document.querySelector("#nd-containers"), "Container",
+	    cache.containers.filter((c) => attachment(c) !== undefined), [
+		{ field: "name", label: "Container",
+		  link: (c) => "#containers/" + encodeURIComponent(c.name) },
+		{ label: "IP", text: (c) => attachment(c).ip },
+		{ field: "status", badge: (s) => containerStatusKind(s) },
+	], {
+		op: "listContainers",
+		key: "network-detail-containers",
+		extra: n.name,
+		what: "containers",
+		empty: "No containers on this network",
+	});
 
-		cell.colSpan = 3;
-		cell.className = "empty";
-		cell.textContent = "No containers on this network";
-		row.appendChild(cell);
-		containersBody.appendChild(row);
-	} else {
-		for (const { container: c, attachment: att } of attachedContainers) {
-			const row = document.createElement("tr");
-			const nameCell = document.createElement("td");
-			const ipCell = document.createElement("td");
-			const statusCell = document.createElement("td");
+	/* A field of the network already in hand, so it has one state: it
+	 * was never separately read (`op: null`). It also gains the header
+	 * row it never had -- this table was a bare <tbody>. */
+	renderTable(document.querySelector("#nd-interfaces"), "NetworkAttachedInterface",
+	    n.interfaces || [], [
+		{ field: "ifname", label: "Interface" },
+		{ label: "VLAN", text: (att) => (att.vlan_id ? "VLAN " + att.vlan_id : "untagged") },
+		{ label: "", actions: (att) => {
+			const rm = document.createElement("button");
 
-			nameCell.appendChild(treeLink("#containers/" + encodeURIComponent(c.name), c.name, ""));
-			ipCell.textContent = att.ip;
-			statusCell.textContent = c.status;
-			row.appendChild(nameCell);
-			row.appendChild(ipCell);
-			row.appendChild(statusCell);
-			containersBody.appendChild(row);
-		}
-	}
-
-	const ifBody = document.querySelector("#nd-interfaces tbody");
-
-	ifBody.textContent = "";
-	const attached = n.interfaces || [];
-
-	if (attached.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 3;
-		cell.className = "empty";
-		cell.textContent = "No interfaces attached";
-		row.appendChild(cell);
-		ifBody.appendChild(row);
-	} else {
-		for (const att of attached) {
-			const row = document.createElement("tr");
-			const ifCell = document.createElement("td");
-
-			ifCell.textContent = att.ifname;
-			row.appendChild(ifCell);
-			const vlanCell = document.createElement("td");
-
-			vlanCell.textContent = att.vlan_id ? "VLAN " + att.vlan_id : "untagged";
-			row.appendChild(vlanCell);
-			const actionCell = document.createElement("td");
-			const rmButton = document.createElement("button");
-
-			rmButton.textContent = "Detach";
-			gateAction(rmButton, "detachNetworkInterface");
-			rmButton.className = "button-danger button-small";
-			rmButton.addEventListener("click", () => detachInterface(n.name, att.ifname));
-			actionCell.appendChild(rmButton);
-			row.appendChild(actionCell);
-			ifBody.appendChild(row);
-		}
-	}
+			rm.textContent = "Detach";
+			rm.className = "button-danger button-small";
+			gateAction(rm, "detachNetworkInterface");
+			rm.addEventListener("click", () => detachInterface(n.name, att.ifname));
+			return [rm];
+		} },
+	], {
+		op: null,
+		key: "network-detail-interfaces",
+		extra: n.name,
+		what: "interfaces",
+		empty: "No interfaces attached",
+	});
 
 	const select = document.getElementById("nd-attach-ifname");
 
@@ -6139,16 +6138,17 @@ function renderNetworkDetail(name) {
 		select.appendChild(opt);
 	}
 
-	const routeBody = document.querySelector("#nd-routes tbody");
-	const netRoutes = cache.routes.filter((r) => r.interface === n.name);
-
-	routeBody.textContent = "";
-	if (netRoutes.length === 0) {
-		routeBody.innerHTML = '<tr><td colspan="4" class="empty">No routes on this network</td></tr>';
-	} else {
-		for (const route of netRoutes)
-			appendRouteRow(routeBody, route);
-	}
+	/* The box's routing table, filtered to this network's bridge, with
+	 * the same columns as the full list -- and, like the interfaces
+	 * table above, the header row it never had. */
+	renderTable(document.querySelector("#nd-routes"), "KernelRoute",
+	    cache.routes.filter((r) => r.interface === n.name), routeColumns(), {
+		op: "getSystemRoutes",
+		key: "network-detail-routes",
+		extra: n.name,
+		what: "routes",
+		empty: "No routes on this network",
+	});
 
 	document.getElementById("nd-remove").onclick = () => removeNetwork(n.name);
 }
@@ -13156,29 +13156,34 @@ async function refreshRoutes() {
 /* Renders one route row into tbody, with Remove wired to DELETE
  * /v1/system/routes -- shared by the full table (renderRoutesList())
  * and the per-network filtered sub-table (renderNetworkDetail()). */
-function appendRouteRow(tbody, route) {
-	const row = document.createElement("tr");
-	const dest = document.createElement("td");
-	const gw = document.createElement("td");
-	const iface = document.createElement("td");
-	const actionCell = document.createElement("td");
-	const rmButton = document.createElement("button");
+/*
+ * A kernel route, as columns -- the box's routing table and a
+ * network's own routes tab are the same rows filtered differently, so
+ * they share one definition rather than one row-builder each table
+ * appends through (which is what `appendRouteRow` was, #592).
+ *
+ * Destination joins two fields (`dest` and `prefix`), and "default"
+ * stays itself rather than "default/0", which is the one route an
+ * operator looks for by name. Gateway and interface are plain fields:
+ * the hand-written cell tested them against null and printed "-", and
+ * `fieldText` already says "—" for null.
+ */
+function routeColumns() {
+	return [
+		{ label: "Destination", text: (r) => (r.dest === "default"
+			? "default" : r.dest + "/" + r.prefix) },
+		"gateway",
+		"interface",
+		{ label: "", actions: (r) => {
+			const rm = document.createElement("button");
 
-	dest.textContent = route.dest === "default" ? "default" : route.dest + "/" + route.prefix;
-	gw.textContent = route.gateway !== null ? route.gateway : "-";
-	iface.textContent = route.interface !== null ? route.interface : "-";
-	row.appendChild(dest);
-	row.appendChild(gw);
-	row.appendChild(iface);
-
-	rmButton.textContent = "Remove";
-	gateAction(rmButton, "deleteSystemRoute");
-	rmButton.className = "button-danger";
-	rmButton.addEventListener("click", () => removeRoute(route));
-	actionCell.appendChild(rmButton);
-	row.appendChild(actionCell);
-
-	tbody.appendChild(row);
+			rm.textContent = "Remove";
+			rm.className = "button-danger";
+			gateAction(rm, "deleteSystemRoute");
+			rm.addEventListener("click", () => removeRoute(r));
+			return [rm];
+		} },
+	];
 }
 
 async function removeRoute(route) {
@@ -13194,26 +13199,14 @@ async function removeRoute(route) {
 	}
 }
 
+/* Generated (#592). This table is its own read, and was the one that
+ * reproduced the Primitives board's lie -- "No routes." in a browser
+ * with no backend, where nothing had been asked -- so its four states
+ * are the renderer's now rather than a guard and an empty row of its
+ * own. */
 function renderRoutesList() {
-	const tbody = document.getElementById("routes-body");
-
-	/* #432: an unchanged table is left alone. Blanking and rebuilding
-	 * it on every tick costs the reader their scroll position. */
-	if (unchangedAndRendered(tbody, "routes",
-	    listSignature(cache.routes, "getSystemRoutes", "routes", "No routes.")))
-		return;
-	tbody.textContent = "";
-	if (cache.routes.length === 0) {
-		/* Through emptyStateText, because this table is its own read:
-		 * it was the one that reproduced the Primitives board's lie,
-		 * rendering "No routes." in a browser with no backend, where
-		 * nothing had been asked (#592). */
-		simpleTableRows(tbody, [], 4,
-		    emptyStateText("getSystemRoutes", "routes", "No routes."));
-		return;
-	}
-	for (const route of cache.routes)
-		appendRouteRow(tbody, route);
+	renderTable(document.getElementById("routes"), "KernelRoute", cache.routes,
+	    routeColumns(), { op: "getSystemRoutes", what: "routes", empty: "No routes." });
 }
 
 /* ---------- sysctl (ADR-0160) ---------- */

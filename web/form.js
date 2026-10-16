@@ -765,6 +765,16 @@ function fieldText(f, value) {
 	if (type === "array") {
 		if (!Array.isArray(v) || v.length === 0)
 			return FIELD_ABSENT;
+		/*
+		 * An array of OBJECTS is counted, never joined -- joining one
+		 * prints "[object Object], [object Object]". Decided on the
+		 * values rather than on `items`, because apigen records an
+		 * item type only for an inline scalar: an array of `$ref`
+		 * objects (a network's `interfaces`) carries no `items` at all,
+		 * so the schema cannot tell this branch which case it is in.
+		 */
+		if (v.some((e) => e !== null && typeof e === "object"))
+			return String(v.length);
 		return v.join(", ");
 	}
 	if (type === "object")
@@ -781,33 +791,6 @@ function schemaField(schema, name) {
 	if (fields === undefined)
 		return undefined;
 	return fields.find((f) => f.name === name);
-}
-
-/*
- * A list table's rows, from the schema and an AUTHORED column list.
- *
- * Which columns a table shows and in what order is judgement -- the
- * `networks` table shows 4 of `Network`'s 7 fields, because
- * `has_address` is a flag the Address cell renders from and `management`
- * and `interfaces` are not what that page is for. So `columns` is the
- * authored part, as field names or `{ field, label }` pairs, and
- * everything else is derived: the cell's text comes from the field's own
- * type, through fieldText(), so a boolean reads the same here as it does
- * on a detail page.
- *
- * The header is `renderTable`'s job, not this function's -- see below.
- * This builds the body only, and is what `renderTable` calls once it
- * has decided the three non-text cell forms.
- */
-function renderTableRows(bodyEl, schema, rows, columns, emptyText) {
-	const cells = rows.map((row) =>
-		columns.map((col) => {
-			const name = typeof col === "string" ? col : col.field;
-
-			return fieldText(schemaField(schema, name), row[name]);
-		}));
-
-	simpleTableRows(bodyEl, cells, columns.length, emptyText);
 }
 
 /* A column's heading: authored if it says so, else the field's own
@@ -910,9 +893,10 @@ function tableCell(schema, row, col) {
  * link/badge/action cells -- which is why, measured on 2026-10-11, it
  * had **zero callers** after a release: only five of some thirty hand
  * written tables are pure text, so a renderer that could not express a
- * button fitted almost none of them.
+ * button fitted almost none of them. It was deleted on 2026-10-16,
+ * still with no caller, once this function had thirty-five.
  *
- * `columns` is the authored part, and takes four forms:
+ * `columns` is the authored part, and takes these forms:
  *
  *   "name"                                  text, header from the schema
  *   { field, label }                        text, authored header
@@ -958,6 +942,15 @@ function tableCell(schema, row, col) {
  * them. `extra` goes into the compared signature, `key` names the
  * cache slot. Omit both and the op is the whole of each, which is
  * right for a table that shows one list once.
+ *
+ * `op: null` is a list that was never separately read -- a field of
+ * an object the page already holds, like a network's `interfaces`.
+ * It has ONE state, the authored sentence, and no loading or refused
+ * one, because there is no read of its own to be pending or refused.
+ * Such a table must name its `key`, since there is no op to key the
+ * repaint guard on; test_web_tree refuses one that does not, and
+ * refuses a call that states no `op` at all, so the choice between
+ * the two is always written down.
  */
 function renderTable(tableEl, schema, rows, columns, state) {
 	const data = rows || [];
@@ -1020,14 +1013,30 @@ function renderTable(tableEl, schema, rows, columns, state) {
  * A read-only field is shown (unlike a form, which omits it): "the
  * daemon reports this and you cannot set it" is exactly what a detail
  * page is for.
+ *
+ * `opts` is `{ only, omit }`, and `omit` is the one a page normally
+ * wants. `only` is an allow-list, which is exactly the property the
+ * paragraph above exists to avoid: a field added to the contract
+ * later is silently absent. `omit` names what this page shows
+ * ELSEWHERE -- the name that is already its heading, a list that has
+ * its own table below -- and leaves every other field, including the
+ * next one, appearing by default.
+ *
+ * The label is the FIELD's, so the contract's `title` is used. Until
+ * this had a caller it passed `fieldLabel(f.name)`, a bare string, and
+ * a title could never have reached a detail page.
  */
-function renderDetailRows(bodyEl, schema, obj, only) {
+function renderDetailRows(bodyEl, schema, obj, opts) {
 	const fields = CIX_API.FIELDS[schema] || [];
+	const only = opts && Array.isArray(opts.only) ? opts.only : null;
+	const omit = opts && Array.isArray(opts.omit) ? opts.omit : [];
 
 	bodyEl.textContent = "";
 	for (const f of fields) {
-		if (Array.isArray(only) && !only.includes(f.name))
+		if (only !== null && !only.includes(f.name))
 			continue;
-		bodyEl.appendChild(fieldBlock(fieldLabel(f.name), fieldText(f, obj[f.name])));
+		if (omit.includes(f.name))
+			continue;
+		bodyEl.appendChild(fieldBlock(fieldLabel(f), fieldText(f, obj[f.name])));
 	}
 }

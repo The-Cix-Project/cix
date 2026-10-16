@@ -86,6 +86,44 @@ static int mentions_class(const char *hay, const char *name)
 	return 0;
 }
 
+/*
+ * If `q` opens a JS string, template literal or comment, the first
+ * character after it; otherwise `q` unchanged.
+ *
+ * For the renderTable scans below, which balance brackets to find
+ * where a call ends: a `(` inside "started (fetch/failed)" or inside a
+ * comment would otherwise shift the depth, so the scan would run past
+ * the call's own closing paren and read a LATER statement's `op:` as
+ * this table's. Escapes are honoured; a template's `${...}` is skipped
+ * whole, which is right here because no argument this gate reads ever
+ * sits inside one.
+ */
+static const char *skip_js_literal(const char *q)
+{
+	if (q[0] == '/' && q[1] == '*') {
+		const char *e = strstr(q + 2, "*/");
+
+		return e != NULL ? e + 2 : q + strlen(q);
+	}
+	if (q[0] == '/' && q[1] == '/') {
+		const char *e = strchr(q, '\n');
+
+		return e != NULL ? e : q + strlen(q);
+	}
+	if (*q == '"' || *q == '\'' || *q == '`') {
+		char close = *q;
+
+		q++;
+		while (*q != '\0' && *q != close) {
+			if (*q == '\\' && q[1] != '\0')
+				q++;
+			q++;
+		}
+		return *q == close ? q + 1 : q;
+	}
+	return q;
+}
+
 /* The view id CATEGORY_VIEWS maps `hash` to, or NULL. */
 static int route_target(const char *app, const char *hash, char *out, size_t out_size)
 {
@@ -962,8 +1000,16 @@ next:
 			size_t n = 0;
 
 			p2 += strlen("renderTable(");
-			/* Argument one ends at the first comma at depth 0. */
+			/* Argument one ends at the first comma at depth 0 --
+			 * outside any string, so `querySelector("a, b")` cannot
+			 * end it early. */
 			while (*p2 != '\0' && !(depth == 0 && *p2 == ',')) {
+				const char *after = skip_js_literal(p2);
+
+				if (after != p2) {
+					p2 = after;
+					continue;
+				}
 				if (*p2 == '(' || *p2 == '[' || *p2 == '{')
 					depth++;
 				else if (*p2 == ')' || *p2 == ']' || *p2 == '}')
@@ -989,6 +1035,11 @@ next:
 			while (*p2 != '"' && *p2 != '\n' && n + 1 < sizeof(schema))
 				schema[n++] = *p2++;
 			schema[n] = '\0';
+			/* Past the schema's own closing quote: the op scan below
+			 * skips string literals, and would otherwise take this
+			 * quote for an opening one. */
+			if (*p2 == '"')
+				p2++;
 			checked_schemas++;
 			{
 				char needle[128];
@@ -1018,14 +1069,27 @@ next:
 			 */
 			{
 				int d = 0;
+				int stated_op = 0, null_op = 0, has_key = 0;
 				const char *q = p2;
 
 				while (*q != '\0' && d >= 0) {
+					const char *after = skip_js_literal(q);
+
+					if (after != q) {
+						q = after;
+						continue;
+					}
 					if (*q == '(' || *q == '[' || *q == '{')
 						d++;
 					else if (*q == ')' || *q == ']' || *q == '}')
 						d--;
-					else if (strncmp(q, "op: \"", 5) == 0) {
+					else if (strncmp(q, "op: null", 8) == 0) {
+						stated_op = null_op = 1;
+						q += 8;
+						continue;
+					} else if (strncmp(q, "key: ", 5) == 0) {
+						has_key = 1;
+					} else if (strncmp(q, "op: \"", 5) == 0) {
 						char op[96];
 						size_t m = 0;
 						char needle[128];
@@ -1034,6 +1098,9 @@ next:
 						while (*q != '"' && *q != '\n' && m + 1 < sizeof(op))
 							op[m++] = *q++;
 						op[m] = '\0';
+						if (*q == '"')
+							q++;
+						stated_op = 1;
 						checked_ops++;
 						snprintf(needle, sizeof(needle), "\n\t%s_SHAPE:", op);
 						if (strstr(api, needle) == NULL)
@@ -1047,6 +1114,27 @@ next:
 					}
 					q++;
 				}
+				/*
+				 * Every call STATES its op, string or null. An absent
+				 * one is the trap `op: null` exists to close: listState
+				 * looks up undefined, finds no answered read, and the
+				 * table says "Reading…" for as long as the page is open.
+				 */
+				if (!stated_op)
+					fail("the renderTable() call for schema \"%s\" states no op -- "
+					     "name the operation that reads its list, or write "
+					     "`op: null` for a list that is a field of an object "
+					     "the page already holds%s",
+					     schema, "");
+				/* And a null op has nothing to key the repaint guard
+				 * on, so two such tables would share one cache slot
+				 * and each would suppress the other's repaint. */
+				if (null_op && !has_key)
+					fail("the renderTable() call for schema \"%s\" has `op: null` and "
+					     "no `key:` -- with no operation to key its repaint guard "
+					     "on, it would share a cache slot with every other such "
+					     "table%s",
+					     schema, "");
 			}
 		}
 		if (checked_ops < 10) {
