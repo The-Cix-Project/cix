@@ -1042,17 +1042,6 @@
 				<p class="hint">Every real process on the box (ADR-0131) -- a direct <code>/proc</code> scan, each one correlated to a container (if any) by its own real host ppid chain. A snapshot, not a live feed -- press Refresh for a fresh one. Kill is a real, immediate SIGKILL; refuses pid 1 and this daemon's own pid.</p>
 				<button type="button" id="proc-refresh">Refresh</button>
 				<table id="processes">
-					<thead>
-						<tr>
-							<th>PID</th>
-							<th>PPID</th>
-							<th>UID</th>
-							<th>GID</th>
-							<th>Container</th>
-							<th>Command</th>
-							<th></th>
-						</tr>
-					</thead>
 					<tbody id="processes-body">
 						<tr><td colspan="7" class="empty">Reading&hellip;</td></tr>
 					</tbody>
@@ -1477,9 +1466,6 @@
 					quiet, so a stall names the thing that did not come back.
 				</p>
 				<table id="stalls">
-					<thead>
-						<tr><th>When</th><th>Event</th><th>Quiet for</th><th>State</th><th>wchan</th><th>Activity</th></tr>
-					</thead>
 					<tbody id="stalls-body">
 						<tr><td colspan="6" class="empty">Reading&hellip;</td></tr>
 					</tbody>
@@ -1500,17 +1486,6 @@
 				<button type="button" id="schedule-add">Add schedule&hellip;</button>
 			</div>
 			<table id="schedules-table">
-				<thead>
-					<tr>
-						<th>Name</th>
-						<th>Action</th>
-						<th>When</th>
-						<th>Enabled</th>
-						<th>Last run</th>
-						<th>Next run</th>
-						<th></th>
-					</tr>
-				</thead>
 				<tbody id="schedules-body">
 					<tr><td colspan="7" class="empty">Reading&hellip;</td></tr>
 				</tbody>
@@ -2584,7 +2559,6 @@
 						recipe nobody has applied &mdash; is harmless but worth knowing.</p>
 					<p class="hint" id="sw-summary"></p>
 					<table id="sw-table">
-						<thead><tr><th>Name</th><th>Kind</th><th>Recipe</th><th>Installed</th></tr></thead>
 						<tbody id="sw-body"></tbody>
 					</table>
 				</div>
@@ -2724,7 +2698,6 @@
 				<button type="button" id="vd-backup-now">Back up now</button>
 			</form>
 			<table id="vd-snapshots">
-				<thead><tr><th>Snapshot</th><th></th></tr></thead>
 				<tbody id="vd-snapshots-body"></tbody>
 			</table>
 			<p class="hint">Snapshots go to the disk carrying the <code>backup</code> role, configured

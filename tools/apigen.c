@@ -658,6 +658,15 @@ struct comp_schema {
 		char items[APIGEN_ID_MAX];
 	} arr[APIGEN_MAX_ARRAY_PROPS];
 	int n_arr;
+	/*
+	 * `allOf: [ {$ref: X}, {type: object, properties: ...} ]` -- the one
+	 * composition this contract uses, eight times, always in exactly
+	 * that shape. `allof_ref` is X; resolve_allof() puts X's fields,
+	 * required names, properties and array props IN FRONT of this
+	 * schema's own once every schema has been read.
+	 */
+	int allof;
+	char allof_ref[APIGEN_ID_MAX];
 };
 
 static struct comp_schema g_comp_schemas[APIGEN_MAX_COMP_SCHEMAS];
@@ -1258,10 +1267,126 @@ static void load_component_schemas(const char *spec)
 		}
 		if (cur < 0)
 			continue;
+		/*
+		 * `allOf` (#592). Until this was read, the eight schemas that
+		 * compose another -- Schedule, the three pipeline rows,
+		 * PkiCertIssued and the three recipe details -- emitted NO
+		 * fields at all, because their own properties sit four columns
+		 * deeper than a plain schema's, under a list item. So the
+		 * dashboard could render none of them from the contract, and
+		 * Schedule's `next_run_at` and `last_run_at`, which carry
+		 * `format: unix-seconds`, never reached the renderer.
+		 *
+		 * Read in exactly the one shape this contract uses -- a `$ref`
+		 * member, then an inline object member -- and every other
+		 * member refused, as everything else apigen cannot read is.
+		 */
+		if (ind == 6 && key_at(line, 6, key, sizeof(key)) && strcmp(key, "allOf") == 0) {
+			g_comp_schemas[cur].allof = 1;
+			schema_reader_init(&rd, 12, cur);
+			continue;
+		}
+		if (g_comp_schemas[cur].allof && ind == 8) {
+			const char *t = line + 8;
+
+			if (strncmp(t, "- $ref:", 7) == 0) {
+				const char *q = strstr(t, "#/components/schemas/");
+				size_t n = 0;
+
+				if (q == NULL)
+					die_at(spec, lineno,
+					       "schema %s: an allOf $ref that does not name a "
+					       "component schema", g_comp_schemas[cur].comp);
+				if (g_comp_schemas[cur].allof_ref[0] != '\0')
+					die_at(spec, lineno,
+					       "schema %s: allOf names a second $ref -- apigen merges "
+					       "exactly one", g_comp_schemas[cur].comp);
+				q += strlen("#/components/schemas/");
+				while (q[n] != '"' && q[n] != '\'' && q[n] != '\0' && q[n] != '\n' &&
+				       n + 1 < sizeof(g_comp_schemas[cur].allof_ref)) {
+					g_comp_schemas[cur].allof_ref[n] = q[n];
+					n++;
+				}
+				g_comp_schemas[cur].allof_ref[n] = '\0';
+				continue;
+			}
+			if (strncmp(t, "- type: object", 14) == 0)
+				continue;
+			die_at(spec, lineno,
+			       "schema %s: an allOf member apigen cannot read (%s) -- it reads "
+			       "one `- $ref:` and one `- type: object` with properties",
+			       g_comp_schemas[cur].comp, t);
+		}
 		if (schema_body_line(&rd, spec, lineno, line, ind))
 			continue;
 	}
 	fclose(f);
+}
+
+/*
+ * Fold each allOf schema's referenced schema into it, referenced fields
+ * first. Run once every schema is known, because the `$ref` may name a
+ * schema written later in the file. A reference to a schema that is
+ * itself an allOf is refused rather than half-resolved: none exists,
+ * and resolving in file order would make the answer depend on it.
+ */
+static void resolve_allof(const char *spec)
+{
+	int i;
+
+	for (i = 0; i < g_comp_schema_count; i++) {
+		struct comp_schema *s = &g_comp_schemas[i];
+		const struct comp_schema *b = NULL;
+		static struct schema_field merged[APIGEN_MAX_FIELDS];
+		int j, n = 0;
+		char props[sizeof(s->props)];
+
+		if (!s->allof)
+			continue;
+		if (s->allof_ref[0] == '\0')
+			die_at(spec, s->line, "schema %s: allOf with no $ref member", s->comp);
+		for (j = 0; j < g_comp_schema_count; j++)
+			if (strcmp(g_comp_schemas[j].comp, s->allof_ref) == 0)
+				b = &g_comp_schemas[j];
+		if (b == NULL)
+			die_at(spec, s->line, "schema %s: allOf names %s, which is not a schema",
+			       s->comp, s->allof_ref);
+		if (b->allof)
+			die_at(spec, s->line,
+			       "schema %s: allOf names %s, which is itself an allOf -- apigen "
+			       "merges one level", s->comp, s->allof_ref);
+		if (b->n_field + s->n_field > APIGEN_MAX_FIELDS)
+			die_at(spec, s->line, "schema %s: %d fields once %s is merged in; raise "
+			       "APIGEN_MAX_FIELDS", s->comp, b->n_field + s->n_field, b->comp);
+		for (j = 0; j < b->n_field; j++)
+			merged[n++] = b->field[j];
+		for (j = 0; j < s->n_field; j++)
+			merged[n++] = s->field[j];
+		memcpy(s->field, merged, sizeof(merged[0]) * (size_t)n);
+		s->n_field = n;
+
+		if (b->n_required + s->n_required > APIGEN_MAX_REQUIRED)
+			die_at(spec, s->line, "schema %s: too many required names once %s is "
+			       "merged in", s->comp, b->comp);
+		memmove(s->required[b->n_required], s->required[0],
+		        sizeof(s->required[0]) * (size_t)s->n_required);
+		memcpy(s->required[0], b->required[0],
+		       sizeof(s->required[0]) * (size_t)b->n_required);
+		s->n_required += b->n_required;
+
+		if (strlen(b->props) + strlen(s->props) >= sizeof(props))
+			die_at(spec, s->line, "schema %s: property list too long once %s is "
+			       "merged in", s->comp, b->comp);
+		snprintf(props, sizeof(props), "%s%s", b->props, s->props);
+		memcpy(s->props, props, sizeof(props));
+
+		if (b->n_arr + s->n_arr > APIGEN_MAX_ARRAY_PROPS)
+			die_at(spec, s->line, "schema %s: too many array properties once %s is "
+			       "merged in", s->comp, b->comp);
+		memmove(&s->arr[b->n_arr], &s->arr[0], sizeof(s->arr[0]) * (size_t)s->n_arr);
+		memcpy(&s->arr[0], &b->arr[0], sizeof(s->arr[0]) * (size_t)b->n_arr);
+		s->n_arr += b->n_arr;
+	}
 }
 
 static const struct comp_schema *comp_schema_find(const char *comp)
@@ -2377,6 +2502,9 @@ int main(int argc, char **argv)
 	/* #575: a response schema named by $ref must be known before the
 	 * paths are read, for the same reason -- components: comes after. */
 	load_component_schemas(spec);
+	/* Before anything reads a field list: an allOf schema's fields are
+	 * not complete until its referenced schema has been merged in. */
+	resolve_allof(spec);
 	/* ADR-0317: the words every x-cix-permission is checked against. */
 	load_permission_vocabulary(spec);
 

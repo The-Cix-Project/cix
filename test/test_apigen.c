@@ -275,6 +275,72 @@ static void check_instants_declare_their_format(void)
 		     checked);
 }
 
+/*
+ * AN allOf SCHEMA CARRIES ITS BASE'S FIELDS AND ITS OWN (#592).
+ *
+ * Until apigen read `allOf`, the eight schemas in this contract that
+ * compose another emitted no fields at all -- their own properties sit
+ * four columns deeper than a plain schema's, under a list item -- so
+ * nothing generated could render a schedule, a pipeline row or a
+ * recipe detail. Asserted on the real contract rather than a fixture,
+ * on the schema that motivated it: `Schedule` must carry `action` (from
+ * ScheduleWrite, its base) BEFORE `next_run_at` (its own, an instant),
+ * which is base-first order and both halves present at once.
+ */
+static void check_allof_is_merged(void)
+{
+	char js[256];
+	char out[4096];
+	char extra[320];
+	FILE *f;
+	static char buf[4 * 1024 * 1024];
+	size_t n;
+	const char *s, *e, *a, *nr;
+
+	snprintf(js, sizeof(js), "/tmp/apigen_allof_%d.js", (int)getpid());
+	snprintf(extra, sizeof(extra), "--emit-web %s", js);
+	if (run_apigen("docs/api/openapi.yaml", extra, out, sizeof(out)) != 0) {
+		fail("apigen --emit-web failed for the allOf check: %.200s", out);
+		return;
+	}
+	f = fopen(js, "r");
+	if (f == NULL) {
+		fail("apigen --emit-web wrote nothing for the allOf check");
+		return;
+	}
+	n = fread(buf, 1, sizeof(buf) - 1, f);
+	buf[n] = '\0';
+	fclose(f);
+	unlink(js);
+	s = strstr(buf, "\n\t\tSchedule: [");
+	e = s != NULL ? strstr(s + 1, "\n\t\t]") : NULL;
+	if (s == NULL || e == NULL) {
+		fail("the emitted fields have no Schedule block -- an allOf schema is "
+		     "emitting nothing again");
+		return;
+	}
+	a = strstr(s, "name: \"action\"");
+	nr = strstr(s, "name: \"next_run_at\"");
+	if (a == NULL || a > e)
+		fail("Schedule's fields lack `action`, which comes from its allOf base "
+		     "ScheduleWrite -- the $ref member was not merged");
+	if (nr == NULL || nr > e)
+		fail("Schedule's fields lack `next_run_at`, its own property -- the allOf "
+		     "inline member was not read");
+	if (a != NULL && nr != NULL && a > nr)
+		fail("Schedule lists its own fields before its base's -- an allOf merges "
+		     "the referenced schema first");
+	if (nr != NULL && nr < e) {
+		const char *u = strstr(nr, "unix-seconds");
+		const char *eol = strchr(nr, '\n');
+
+		/* On next_run_at's own line, and NULL counts as missing --
+		 * `strstr() > e` alone would pass when it is absent. */
+		if (u == NULL || (eol != NULL && u > eol))
+			fail("Schedule's next_run_at lost its format: unix-seconds in the merge");
+	}
+}
+
 int main(void)
 {
 	char out[65536];
@@ -282,6 +348,7 @@ int main(void)
 
 	check_scalars_are_quoted();
 	check_instants_declare_their_format();
+	check_allof_is_merged();
 
 	/*
 	 * 1. The real spec. Not a smoke test: the number is cross-checked
@@ -480,6 +547,49 @@ int main(void)
 	                         "          items: {type: string}\n"),
 	               "flow mapping");
 #undef FLOW_SPEC
+
+	/* allOf in any shape but the one apigen merges is refused, not
+	 * half-read: a second $ref, and a member that is neither. */
+#define ALLOF_SPEC(members)                                                    \
+	VOCAB                                                                  \
+	"paths:\n"                                                             \
+	"  /thing:\n"                                                          \
+	"    get:\n"                                                           \
+	"      operationId: getThing\n"                                        \
+	"      x-cix-permission: public\n"                                     \
+	"components:\n"                                                        \
+	"  schemas:\n"                                                         \
+	"    Base:\n"                                                          \
+	"      type: object\n"                                                 \
+	"      properties:\n"                                                  \
+	"        a:\n"                                                         \
+	"          type: string\n"                                             \
+	"    Thing:\n"                                                         \
+	"      allOf:\n" members
+	expect_refusal("an allOf with a second $ref",
+	               ALLOF_SPEC("        - $ref: \"#/components/schemas/Base\"\n"
+	                          "        - $ref: \"#/components/schemas/Base\"\n"),
+	               "second $ref");
+	expect_refusal("an allOf member that is neither a $ref nor an object",
+	               ALLOF_SPEC("        - $ref: \"#/components/schemas/Base\"\n"
+	                          "        - oneOf: []\n"),
+	               "allOf member apigen cannot read");
+	expect_refusal("an allOf naming a schema that does not exist",
+	               ALLOF_SPEC("        - $ref: \"#/components/schemas/Nowhere\"\n"),
+	               "which is not a schema");
+	/* One level only: resolving a chain in file order would make the
+	 * merged field list depend on which schema is written first. */
+	expect_refusal("an allOf whose base is itself an allOf",
+	               ALLOF_SPEC("        - $ref: \"#/components/schemas/Base\"\n"
+	                          "        - type: object\n"
+	                          "          properties:\n"
+	                          "            b:\n"
+	                          "              type: string\n"
+	                          "    Outer:\n"
+	                          "      allOf:\n"
+	                          "        - $ref: \"#/components/schemas/Thing\"\n"),
+	               "itself an allOf");
+#undef ALLOF_SPEC
 #undef VOCAB
 
 	/*

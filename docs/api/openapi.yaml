@@ -3923,73 +3923,7 @@ paths:
                   stalls:
                     type: array
                     items:
-                      type: object
-                      properties:
-                        ts:
-                          type: integer
-                        event:
-                          type: string
-                          enum: [stall, stall-continues, recovered, slow-pass,
-                                 service-stall, service-stall-continues, service-recovered]
-                          description: >
-                            `stall`/`recovered` mean the event loop stopped
-                            turning. `slow-pass` means it turned, slowly.
-                            `service-stall`/`service-recovered` mean something
-                            different and worse: the loop was turning and the
-                            daemon answered nothing (#247). A watchdog process
-                            that cannot itself be wedged asks the health
-                            endpoint every few seconds and records two
-                            consecutive unanswered probes -- the only signal
-                            that sees a daemon which accepts connections and
-                            replies to none, which is the state that has
-                            required a physical reset.
-                        seconds:
-                          type: integer
-                        state:
-                          type: string
-                          description: Process state -- D is uninterruptible sleep, the kind that cannot be killed.
-                        wchan:
-                          type: string
-                          description: Kernel function the daemon was sleeping in; empty means it was running.
-                        activity:
-                          type: string
-                          description: The request being served when the loop went quiet.
-                        children:
-                          type: array
-                          description: >
-                            The daemon's own child processes at the moment of
-                            the record, and what each was doing (#399). A
-                            `wchan` of `do_wait` says the daemon is blocked in
-                            waitpid()/waitid() but not on WHICH child, and that
-                            gap is what made a six-minute wedge on 2026-09-11
-                            take a source-reading exercise to narrow: three
-                            stalls with an identical signature, two of nine
-                            seconds that recovered and one of 366 that did not,
-                            and no record anywhere naming the process being
-                            waited on. The child that is failing to exit is the
-                            answer, and its own `state` says why -- a `D` child
-                            only PENDS the SIGKILL sent to it. An empty array
-                            during a `do_wait` is equally informative: it means
-                            the wait is on a child that has already gone.
-                            Recorded on stall events, not on `slow-pass`, and
-                            capped at twelve entries.
-                          items:
-                            type: object
-                            properties:
-                              pid:
-                                type: integer
-                              comm:
-                                type: string
-                                description: The executable name the kernel reports for this child.
-                              state:
-                                type: string
-                                description: >
-                                  Process state, same alphabet as the daemon's own
-                                  above -- D is the uninterruptible sleep that
-                                  cannot be killed and so cannot be waited out.
-                              wchan:
-                                type: string
-                                description: Kernel function this child is sleeping in.
+                      $ref: "#/components/schemas/Stall"
                   threshold_seconds:
                     type: integer
                   loop:
@@ -13920,24 +13854,7 @@ paths:
                   software:
                     type: array
                     items:
-                      type: object
-                      required: [name, kind, declared, installed]
-                      properties:
-                        name:
-                          type: string
-                        kind:
-                          type: string
-                          enum: [image, package, container]
-                        declared:
-                          type: boolean
-                          description: A recipe for it exists.
-                        installed:
-                          type: boolean
-                          description: >
-                            It actually exists on this host -- an image
-                            that is present, a package installed into at
-                            least one image, or a persisted container
-                            definition.
+                      $ref: "#/components/schemas/SoftwareItem"
 
   /system/factory-reset:
     post:
@@ -16876,10 +16793,7 @@ components:
           type: array
           description: Newest first. The stamp is a sortable UTC timestamp, which is what makes retention a trim rather than a date parse.
           items:
-            type: object
-            properties:
-              stamp:
-                type: string
+            $ref: "#/components/schemas/VolumeSnapshot"
         status:
           type: object
           description: >
@@ -17931,6 +17845,117 @@ components:
           type: integer
           format: unix-seconds
           description: When this lease expires.
+    VolumeSnapshot:
+      type: object
+      description: >
+        One retained snapshot of a volume (issue #96). Promoted out of
+        VolumeBackups.snapshots' inline items so the dashboard renders it
+        from the schema.
+      properties:
+        stamp:
+          type: string
+          description: A sortable UTC timestamp naming the snapshot, as restore and delete take it.
+
+    SoftwareItem:
+      description: >
+        One installed thing and whether a recipe declares it (ADR-0211).
+        Promoted out of GET /software's inline items so the dashboard
+        renders it from the schema, and so its required keys reach the
+        contract-vs-daemon gate (#605).
+      type: object
+      required: [name, kind, declared, installed]
+      properties:
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [image, package, container]
+        declared:
+          type: boolean
+          description: A recipe for it exists.
+        installed:
+          type: boolean
+          description: >
+            It actually exists on this host -- an image
+            that is present, a package installed into at
+            least one image, or a persisted container
+            definition.
+
+    Stall:
+      description: >
+        One record from the stall watchdog (#229, #247). Promoted out of
+        GET /system/stalls' inline items so the dashboard renders it from
+        the schema -- which is also what lets `ts` declare it is an instant.
+      type: object
+      properties:
+        ts:
+          type: integer
+          format: unix-seconds
+          description: When the watchdog made this record.
+        event:
+          type: string
+          enum: [stall, stall-continues, recovered, slow-pass,
+                 service-stall, service-stall-continues, service-recovered]
+          description: >
+            `stall`/`recovered` mean the event loop stopped
+            turning. `slow-pass` means it turned, slowly.
+            `service-stall`/`service-recovered` mean something
+            different and worse: the loop was turning and the
+            daemon answered nothing (#247). A watchdog process
+            that cannot itself be wedged asks the health
+            endpoint every few seconds and records two
+            consecutive unanswered probes -- the only signal
+            that sees a daemon which accepts connections and
+            replies to none, which is the state that has
+            required a physical reset.
+        seconds:
+          type: integer
+        state:
+          type: string
+          description: Process state -- D is uninterruptible sleep, the kind that cannot be killed.
+        wchan:
+          type: string
+          description: Kernel function the daemon was sleeping in; empty means it was running.
+        activity:
+          type: string
+          description: The request being served when the loop went quiet.
+        children:
+          type: array
+          description: >
+            The daemon's own child processes at the moment of
+            the record, and what each was doing (#399). A
+            `wchan` of `do_wait` says the daemon is blocked in
+            waitpid()/waitid() but not on WHICH child, and that
+            gap is what made a six-minute wedge on 2026-09-11
+            take a source-reading exercise to narrow: three
+            stalls with an identical signature, two of nine
+            seconds that recovered and one of 366 that did not,
+            and no record anywhere naming the process being
+            waited on. The child that is failing to exit is the
+            answer, and its own `state` says why -- a `D` child
+            only PENDS the SIGKILL sent to it. An empty array
+            during a `do_wait` is equally informative: it means
+            the wait is on a child that has already gone.
+            Recorded on stall events, not on `slow-pass`, and
+            capped at twelve entries.
+          items:
+            type: object
+            properties:
+              pid:
+                type: integer
+              comm:
+                type: string
+                description: The executable name the kernel reports for this child.
+              state:
+                type: string
+                description: >
+                  Process state, same alphabet as the daemon's own
+                  above -- D is the uninterruptible sleep that
+                  cannot be killed and so cannot be waited out.
+              wchan:
+                type: string
+                description: Kernel function this child is sleeping in.
+
     BuildLogEntry:
       type: object
       description: >
@@ -18195,6 +18220,7 @@ components:
             there is, right after a boot.
         enabled:
           type: boolean
+          default: true
           description: Default true. A job created is a job wanted.
 
     Schedule:

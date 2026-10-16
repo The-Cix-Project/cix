@@ -4820,8 +4820,7 @@ function dataChanged(key, data) {
  *
  * Without the has-rows check the guard has the opposite failure: a
  * panel whose DOM is empty but whose payload matches a previous render
- * would be skipped and stay empty. That is the same distinction
- * showReadingIfEmpty() below already draws, for the same reason.
+ * would be skipped and stay empty.
  *
  * dataChanged() records the signature as a side effect, so this must
  * be called once per render attempt and its answer acted on.
@@ -4865,79 +4864,59 @@ function listSignature(rows, opId, what, normalText) {
 }
 
 /*
- * "Loading" belongs to a panel that has never had content, not to
- * every refresh of one that has. Blanking a populated table before a
- * fetch is what made Processes flash empty twice a second.
+ * "Reading" belongs to a panel that has never had content, not to every
+ * refresh of one that has -- blanking a populated table before a fetch
+ * is what once made Processes flash empty twice a second. That is now
+ * how renderTable behaves by construction: it paints only what a
+ * completed read produced, so nothing here clears the table first.
  */
-function showReadingIfEmpty(tbody, colspan) {
-	if (tbody.querySelector("tr") !== null)
-		return;
-	tbody.innerHTML = '<tr><td colspan="' + colspan +
-	                  '" class="empty">Reading&hellip;</td></tr>';
-}
-
 async function refreshProcesses() {
-	const tbody = document.getElementById("processes-body");
-
-	showReadingIfEmpty(tbody, 7);
 	try {
-		const procs = await apiRequest("GET", CIX_API.listSystemProcesses());
-
-		if (dataChanged("processes", procs))
-			renderProcessesTable(procs);
+		renderProcessesTable(await apiRequest("GET", CIX_API.listSystemProcesses()));
 	} catch (e) {
-		if (tbody.querySelector("tr td.empty") !== null || tbody.querySelector("tr") === null)
-			tbody.innerHTML = '<tr><td colspan="7" class="empty">Failed to load.</td></tr>';
+		/* An empty list, so listState() can say what failed. Not when
+		 * there are rows on screen, though: a transient failure should
+		 * not blank a process list someone is reading, which is the one
+		 * thing the hand-written catch here got right. */
+		const body = document.querySelector("#processes tbody");
+
+		if (body === null || body.querySelector("td:not(.empty)") === null)
+			renderProcessesTable([]);
 	}
 }
 
+/*
+ * Generated (#592), from `HostProcess`. The container column links to
+ * the container a process belongs to and is plain "—" for a host
+ * process -- `link` returning nothing is plain text. The command keeps
+ * its one-line monospace cell, with the whole command as the hover.
+ *
+ * It was the third copy of the list states: showReadingIfEmpty() drew
+ * "Reading…" by innerHTML, and the refresher's catch wrote "Failed to
+ * load." the same way -- a failure with no reason in it, where
+ * refusalText() names the missing permission. Both are listState()'s
+ * now, and the helper had no other caller and is gone.
+ */
 function renderProcessesTable(procs) {
-	const tbody = document.getElementById("processes-body");
+	renderTable(document.getElementById("processes"), "HostProcess", procs || [], [
+		{ field: "pid", label: "PID" },
+		{ field: "ppid", label: "PPID" },
+		{ field: "user_id", label: "UID" },
+		{ field: "group_id", label: "GID" },
+		{ field: "container", label: "Container",
+		  link: (p) => (p.container ? "#containers/" + encodeURIComponent(p.container) : null) },
+		{ field: "command_line", label: "Command", cls: "processes-cmdline",
+		  title: (p) => p.command_line },
+		{ label: "", actions: (p) => {
+			const kill = document.createElement("button");
 
-	tbody.textContent = "";
-	if (!procs || procs.length === 0) {
-		simpleTableRows(tbody, [], 7,
-		    emptyStateText("listSystemProcesses", "processes", "No processes."));
-		return;
-	}
-	for (const p of procs) {
-		const row = document.createElement("tr");
-		const pidCell = document.createElement("td");
-		const ppidCell = document.createElement("td");
-		const uidCell = document.createElement("td");
-		const gidCell = document.createElement("td");
-		const containerCell = document.createElement("td");
-		const cmdCell = document.createElement("td");
-		const actionCell = document.createElement("td");
-		const killButton = document.createElement("button");
-
-		pidCell.textContent = p.pid;
-		ppidCell.textContent = p.ppid;
-		uidCell.textContent = p.user_id;
-		gidCell.textContent = p.group_id;
-		if (p.container) {
-			const link = document.createElement("a");
-
-			link.href = "#containers/" + encodeURIComponent(p.container);
-			link.textContent = p.container;
-			containerCell.appendChild(link);
-		} else {
-			containerCell.textContent = "-";
-		}
-		cmdCell.textContent = p.command_line;
-		cmdCell.className = "processes-cmdline";
-		/* The cell shows one line; the whole command is still here. */
-		cmdCell.title = p.command_line;
-
-		killButton.textContent = "Kill";
-		gateAction(killButton, "killSystemProcess");
-		killButton.className = "button-danger button-small";
-		killButton.addEventListener("click", () => killProcess(p.pid, p.command_line));
-		actionCell.appendChild(killButton);
-
-		row.append(pidCell, ppidCell, uidCell, gidCell, containerCell, cmdCell, actionCell);
-		tbody.appendChild(row);
-	}
+			kill.textContent = "Kill";
+			kill.className = "button-danger button-small";
+			gateAction(kill, "killSystemProcess");
+			kill.addEventListener("click", () => killProcess(p.pid, p.command_line));
+			return [kill];
+		} },
+	], { op: "listSystemProcesses", what: "processes", empty: "No processes." });
 }
 
 async function killProcess(pid, cmdline) {
@@ -9284,86 +9263,52 @@ function scheduleWhenText(s) {
 }
 
 async function refreshSchedules() {
-	const body = document.getElementById("schedules-body");
-
-	if (body === null)
-		return;
 	try {
 		const data = await apiRequest("GET", CIX_API.listSchedules());
-		const rows = data.schedules || [];
 
-		/* #432: an unchanged schedule table is left alone. */
-		if (unchangedAndRendered(body, "schedules",
-		    listSignature(rows, "listSchedules", "schedules",
-		        "Nothing is scheduled.")))
-			return;
-		body.textContent = "";
-		if (rows.length === 0) {
-			const tr = document.createElement("tr");
-			const td = document.createElement("td");
+		renderSchedules(data.schedules || []);
+	} catch (e) {
+		/* listState() has the failure and says why, where this catch
+		 * used to write its own "Could not load schedules: <message>". */
+		renderSchedules([]);
+	}
+}
 
-			td.colSpan = 7;
-			td.className = "empty";
-			td.textContent = emptyStateText("listSchedules", "schedules",
-			    "Nothing is scheduled.");
-			tr.appendChild(td);
-			body.appendChild(tr);
-			return;
-		}
-		for (const s of rows) {
-			const tr = document.createElement("tr");
-
-			for (const text of [s.name, s.action, scheduleWhenText(s)]) {
-				const td = document.createElement("td");
-
-				td.textContent = text;
-				tr.appendChild(td);
-			}
-
-			const en = document.createElement("td");
-
-			en.textContent = s.enabled === false ? "no" : "yes";
-			tr.appendChild(en);
-
-			const last = document.createElement("td");
-
-			if (s.last_run_at) {
-				/* "has not run" and "ran and failed" are different
-				 * facts, which is why last_ok is nullable -- say which
-				 * one this is rather than collapsing them. */
-				last.textContent = formatInstant(s.last_run_at);
-				if (s.last_ok === false) {
-					/*
-					 * A BADGE, which is the widget for "a value the
-					 * daemon reported" -- this used to append the word
-					 * "failed" to the timestamp and set `cell-error`
-					 * on the cell, a class web/style.css has never
-					 * defined, so a failed run was marked by nothing
-					 * at all. Found by the gate below in test_web_tree
-					 * (#598).
-					 */
-					const mark = document.createElement("span");
-
-					mark.className = statusBadge("error");
-					mark.textContent = "failed";
-					last.appendChild(document.createTextNode(" "));
-					last.appendChild(mark);
-					last.title = s.last_reason || "";
-				}
-			} else {
-				last.textContent = "never";
-			}
-			tr.appendChild(last);
-
-			const next = document.createElement("td");
-
-			/* Null when disabled: a disabled job has no next run, and
-			 * inventing one would be a time nothing will happen at. */
-			next.textContent = formatInstant(s.next_run_at);
-			tr.appendChild(next);
-
-			const actions = document.createElement("td");
+/*
+ * Generated (#592), from `Schedule` -- which apigen could not read
+ * until the same change taught it `allOf`, so its own `next_run_at`
+ * and `last_run_at`, both instants, never reached a renderer. Next run
+ * is a plain field now; it is null when a job is disabled, because a
+ * disabled job has no next run and inventing one would be a time
+ * nothing will happen at.
+ *
+ * "Enabled" is a plain field too: the contract now SAYS `default: true`
+ * rather than only describing it, so an absent value renders "yes" from
+ * the schema instead of from a hand-written `s.enabled === false`.
+ *
+ * The last run's RESULT is its own column. It used to be a badge
+ * appended inside the time cell; "has not run" and "ran and failed" are
+ * different facts, which is why `last_ok` is nullable, and a column of
+ * its own says which without a reader having to parse one cell for two.
+ * A failure is an error badge with the daemon's reason as its hover; a
+ * success is the ordinary word, so its badge kind is null.
+ */
+function renderSchedules(rows) {
+	renderTable(document.getElementById("schedules-table"), "Schedule", rows, [
+		"name",
+		"action",
+		{ label: "When", text: (s) => scheduleWhenText(s) },
+		"enabled",
+		{ label: "Last run", text: (s) => (s.last_run_at ? formatInstant(s.last_run_at) : "never") },
+		{ label: "Result",
+		  text: (s) => (s.last_ok === false ? "failed" : s.last_ok === true ? "ok" : ""),
+		  badge: (t) => (t === "failed" ? "error" : null),
+		  title: (s) => (s.last_ok === false ? s.last_reason || "" : "") },
+		{ field: "next_run_at", label: "Next run" },
+		{ label: "", actions: (s) => {
 			const run = document.createElement("button");
+			const toggle = document.createElement("button");
+			const del = document.createElement("button");
 
 			run.type = "button";
 			run.textContent = "Run now";
@@ -9377,9 +9322,6 @@ async function refreshSchedules() {
 				}
 				refreshSchedules();
 			});
-			actions.appendChild(run);
-
-			const toggle = document.createElement("button");
 
 			toggle.type = "button";
 			toggle.textContent = s.enabled === false ? "Enable" : "Disable";
@@ -9399,9 +9341,6 @@ async function refreshSchedules() {
 				}
 				refreshSchedules();
 			});
-			actions.appendChild(toggle);
-
-			const del = document.createElement("button");
 
 			del.type = "button";
 			del.className = "button-danger";
@@ -9417,21 +9356,9 @@ async function refreshSchedules() {
 				}
 				refreshSchedules();
 			});
-			actions.appendChild(del);
-			tr.appendChild(actions);
-			body.appendChild(tr);
-		}
-	} catch (e) {
-		body.textContent = "";
-		const tr = document.createElement("tr");
-		const td = document.createElement("td");
-
-		td.colSpan = 7;
-		td.className = "empty";
-		td.textContent = "Could not load schedules: " + e.message;
-		tr.appendChild(td);
-		body.appendChild(tr);
-	}
+			return [run, toggle, del];
+		} },
+	], { op: "listSchedules", what: "schedules", empty: "Nothing is scheduled." });
 }
 
 /*
@@ -9555,52 +9482,41 @@ document.getElementById("iso-publish").addEventListener("click", async () => {
 });
 
 async function refreshStalls() {
-	const body = document.getElementById("stalls-body");
-
 	try {
 		const data = await apiRequest("GET", CIX_API.getStalls());
-		const stalls = data.stalls || [];
 
-		/* #432: an unchanged panel is left alone -- rebuilding it on every
-		 * tick collapses the page and costs the reader their place. */
-		if (unchangedAndRendered(body, "stalls", stalls))
-			return;
-		body.textContent = "";
-		if (stalls.length === 0) {
-			const tr = document.createElement("tr");
-			const td = document.createElement("td");
-
-			td.colSpan = 6;
-			td.className = "empty";
-			/* Nothing recorded is the good case, and worth saying so
-			 * rather than leaving a blank table that reads as broken. */
-			td.textContent = "None recorded — the loop has not gone quiet";
-			tr.appendChild(td);
-			body.appendChild(tr);
-			return;
-		}
-		for (const s of stalls) {
-			const tr = document.createElement("tr");
-			const cells = [
-				formatInstant(s.ts),
-				s.event,
-				s.seconds + "s",
-				s.state,
-				s.wchan || "(running)",
-				s.activity || "(idle)",
-			];
-
-			for (const text of cells) {
-				const td = document.createElement("td");
-
-				td.textContent = text;
-				tr.appendChild(td);
-			}
-			body.appendChild(tr);
-		}
+		renderStalls(data.stalls || []);
 	} catch (e) {
-		/* Best-effort, same as every other panel here. */
+		/* listState() has the failure; see refreshBuildLogs(). */
+		renderStalls([]);
 	}
+}
+
+/*
+ * Generated (#592), from `Stall`, promoted out of GET /system/stalls'
+ * inline items -- which is also what let `ts` say it is an instant, so
+ * the cell no longer formats it by hand.
+ *
+ * `wchan` and `activity` stay derived because their empty value is a
+ * STATEMENT, not an absence: the contract says an empty `wchan` "means
+ * it was running", and an empty activity means no request was being
+ * served. "—" would say "unknown" about both, which is wrong. The empty
+ * sentence is the good case, worth saying rather than leaving a blank
+ * table that reads as broken.
+ */
+function renderStalls(stalls) {
+	renderTable(document.getElementById("stalls"), "Stall", stalls, [
+		{ field: "ts", label: "When" },
+		"event",
+		{ label: "Quiet for", text: (s) => s.seconds + "s" },
+		"state",
+		{ label: "wchan", text: (s) => s.wchan || "(running)" },
+		{ label: "Activity", text: (s) => s.activity || "(idle)" },
+	], {
+		op: "getStalls",
+		what: "stall records",
+		empty: "None recorded — the loop has not gone quiet",
+	});
 }
 
 /* ---------- Kernel Line (issue #65) ---------- */
@@ -13646,8 +13562,28 @@ async function deleteVolumeByName(name) {
  * joined here -- two clients each implementing this join across four
  * endpoints is how they drift from each other.
  */
+/*
+ * Generated (#592), from `SoftwareItem` -- promoted out of
+ * GET /software's inline items, which also put its required keys in
+ * front of the contract-vs-daemon gate (#605).
+ *
+ * The Recipe column flags the one state that is a problem rather than
+ * information, and only that one: no recipe means it cannot be rebuilt
+ * from source control, an error badge with that sentence as its hover;
+ * a recipe is the ordinary "yes", so its badge kind is null.
+ */
+function renderSoftwareReconcile(list) {
+	renderTable(document.getElementById("sw-table"), "SoftwareItem", list, [
+		"name",
+		"kind",
+		{ label: "Recipe", text: (i) => (i.declared ? "yes" : "none"),
+		  badge: (t, i) => (i.declared ? null : "error"),
+		  title: (i) => (i.declared ? "" : "Cannot be rebuilt from source control") },
+		"installed",
+	], { op: "listSoftware", what: "installed software", empty: "Nothing to reconcile" });
+}
+
 async function refreshSoftwareReconcile() {
-	const body = document.getElementById("sw-body");
 	const summary = document.getElementById("sw-summary");
 	let list;
 
@@ -13657,54 +13593,15 @@ async function refreshSoftwareReconcile() {
 		list = data.software || [];
 	} catch (e) {
 		summary.textContent = "Could not read: " + e.message;
+		/* And the table says why too, through listState(), where it used
+		 * to keep whatever it last painted. */
+		renderSoftwareReconcile([]);
 		return;
 	}
-	/* #432: the summary line is computed from the same list, so one
-	 * signature covers both halves of this panel. */
-	if (unchangedAndRendered(body, "software-reconcile", list))
-		return;
-	body.textContent = "";
-	let drift = 0;
+	renderSoftwareReconcile(list);
 
-	for (const item of list) {
-		const row = document.createElement("tr");
-		const recipeCell = document.createElement("td");
-		const instCell = document.createElement("td");
+	const drift = list.filter((item) => !item.declared).length;
 
-		for (const text of [item.name, item.kind]) {
-			const td = document.createElement("td");
-
-			td.textContent = text;
-			row.appendChild(td);
-		}
-		if (item.declared) {
-			recipeCell.textContent = "yes";
-		} else {
-			/* The one state that is a problem rather than information:
-			 * flagged, not just left blank. */
-			const badge = document.createElement("span");
-
-			badge.className = statusBadge("error");
-			badge.textContent = "none";
-			badge.title = "Cannot be rebuilt from source control";
-			recipeCell.appendChild(badge);
-			drift++;
-		}
-		instCell.textContent = item.installed ? "yes" : "no";
-		row.appendChild(recipeCell);
-		row.appendChild(instCell);
-		body.appendChild(row);
-	}
-	if (list.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 4;
-		cell.className = "empty";
-		cell.textContent = "Nothing to reconcile";
-		row.appendChild(cell);
-		body.appendChild(row);
-	}
 	summary.textContent =
 		drift === 0
 			? "Everything installed has a recipe."
@@ -13890,7 +13787,6 @@ function rememberVolumeBackupSummary(volumeName, data) {
  */
 async function renderVolumeBackups(volumeName, fresh) {
     const note = document.getElementById("vd-backup-note");
-	const body = document.getElementById("vd-snapshots-body");
 	let data;
 
 	try {
@@ -13938,55 +13834,53 @@ async function renderVolumeBackups(volumeName, fresh) {
 		    ? "Backed up on the shared schedule, keeping the newest " + data.retain + "."
 		    : "Not backed up. Opt in below — copying workload data is never assumed.";
 
-	body.textContent = "";
-	const snaps = data.snapshots || [];
+	/*
+	 * Generated (#592), from `VolumeSnapshot`, promoted out of
+	 * VolumeBackups.snapshots' inline items for this table.
+	 *
+	 * Delete is red now. Restore was, and Delete was a plain button
+	 * beside it, while both are irreversible -- the Primitives board's
+	 * rule is that destructive actions are red, go last and confirm, and
+	 * this was the one that had the confirm without the colour.
+	 */
+	renderTable(document.getElementById("vd-snapshots"), "VolumeSnapshot",
+	    data.snapshots || [], [
+		{ field: "stamp", label: "Snapshot" },
+		{ label: "", actions: (snap) => {
+			const restore = document.createElement("button");
+			const del = document.createElement("button");
 
-	if (snaps.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+			restore.type = "button";
+			restore.className = "button-danger button-small";
+			restore.textContent = "Restore";
+			gateAction(restore, "restoreVolume");
+			restore.addEventListener("click", () => restoreVolumeSnapshot(volumeName, snap.stamp));
 
-		cell.colSpan = 2;
-		cell.className = "empty";
-		cell.textContent = emptyStateText("getVolumeBackups", "snapshots",
-		    "No snapshots yet");
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-	for (const snap of snaps) {
-		const row = document.createElement("tr");
-		const nameCell = document.createElement("td");
-		const actions = document.createElement("td");
-		const restore = document.createElement("button");
-		const del = document.createElement("button");
-
-		nameCell.textContent = snap.stamp;
-		restore.type = "button";
-		restore.className = "button-danger button-small";
-		restore.textContent = "Restore";
-		gateAction(restore, "restoreVolume");
-		restore.addEventListener("click", () => restoreVolumeSnapshot(volumeName, snap.stamp));
-		del.type = "button";
-		del.className = "button-small";
-		del.textContent = "Delete";
-		gateAction(del, "deleteVolumeSnapshot");
-		del.addEventListener("click", async () => {
-			if (!confirm("Delete snapshot " + snap.stamp + "?"))
-				return;
-			try {
-				await apiRequest("DELETE", CIX_API.deleteVolumeSnapshot(volumeName, snap.stamp));
-				clearStatus();
-				await renderVolumeBackups(volumeName, 1);
-			} catch (e) {
-				showStatus("Failed to delete snapshot: " + e.message, true);
-			}
-		});
-		actions.appendChild(restore);
-		actions.appendChild(del);
-		row.appendChild(nameCell);
-		row.appendChild(actions);
-		body.appendChild(row);
-	}
+			del.type = "button";
+			del.className = "button-danger button-small";
+			del.textContent = "Delete";
+			gateAction(del, "deleteVolumeSnapshot");
+			del.addEventListener("click", async () => {
+				if (!confirm("Delete snapshot " + snap.stamp + "?"))
+					return;
+				try {
+					await apiRequest("DELETE",
+					    CIX_API.deleteVolumeSnapshot(volumeName, snap.stamp));
+					clearStatus();
+					await renderVolumeBackups(volumeName, 1);
+				} catch (e) {
+					showStatus("Failed to delete snapshot: " + e.message, true);
+				}
+			});
+			return [restore, del];
+		} },
+	], {
+		op: "getVolumeBackups",
+		key: "volume-detail-snapshots",
+		extra: volumeName,
+		what: "snapshots",
+		empty: "No snapshots yet",
+	});
 }
 
 /* Restoring replaces everything in the volume, so it asks for the

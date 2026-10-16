@@ -6,6 +6,38 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### apigen reads `allOf`, and five more tables (#592)
+
+**Eight schemas generated no fields at all.** `Schedule`, the three pipeline rows, `PkiCertIssued` and
+the three recipe details each compose another schema with `allOf`, whose own properties sit four columns
+deeper than a plain schema's, under a list item -- so apigen read nothing from any of them. Nothing
+generated could render a schedule or a pipeline row, `Schedule.next_run_at` and `last_run_at` never
+reached a renderer despite carrying `format: unix-seconds`, and `test_apishape` checked none of the
+pipeline's item keys. apigen now merges the one shape this contract uses -- a `$ref` member then an inline
+object -- base first, and refuses every other shape with a `test_apigen` case for each. The keys the
+merge newly asks the gate to check were measured on the box's real `GET /v1/pipeline` first: every one is
+present.
+
+Schedules, processes, stall records, software reconciliation and a volume's snapshots render through
+`renderTable` now -- 51 calls. On the way:
+
+- A schedule's result is **its own column**, where a red badge used to be appended inside the time cell;
+  "has not run" and "ran and failed" are different facts. And `ScheduleWrite.enabled` now *says*
+  `default: true` instead of only describing it, so an absent value renders "yes" from the contract.
+- Processes carried **a third copy of the list states**: its own `showReadingIfEmpty()` and a catch that
+  wrote "Failed to load." with no reason in it. Both are `listState()`'s now; the helper is deleted.
+- A stall record's `ts` **says it is an instant** -- possible once `Stall` was promoted to a named schema
+  -- and `wchan`/`activity` stay derived, because their empty value is a statement ("running", "idle")
+  and "—" would say "unknown" about both.
+- Software with no recipe is **an error badge; a recipe is the plain word**, which needed a badge kind of
+  `null` to mean "no badge".
+- A snapshot's Delete is **red**: Restore was, and Delete was a plain button beside it although both are
+  irreversible.
+
+`Stall`, `SoftwareItem` (whose required keys now reach the shape gate, one more off #605) and
+`VolumeSnapshot` are promoted to named schemas. 28 of the contract's 36 instants reach the renderer, up
+from 24.
+
 ### Eight more tables, and a count the instant sweep had marked as a time (#592)
 
 Recipe sources, package repositories, held source conflicts, loaded kernel modules and their

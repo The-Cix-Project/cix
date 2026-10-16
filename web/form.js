@@ -882,7 +882,18 @@ function tableCell(schema, row, col) {
 		 * leaves the rest alone. */
 		if (text === "")
 			return cell;
-		span.className = statusBadge(col.badge(derived ? text : row[name], row));
+		{
+			const kind = col.badge(derived ? text : row[name], row);
+
+			/* A null kind is plain text: a badge that marks only the
+			 * one row that is a problem -- software with no recipe --
+			 * and leaves "yes" as the ordinary word it is. */
+			if (kind === null) {
+				cell.textContent = text;
+				return cell;
+			}
+			span.className = statusBadge(kind);
+		}
 		span.textContent = text;
 		cell.appendChild(span);
 		return cell;

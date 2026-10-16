@@ -740,8 +740,8 @@ and obscuring it would defeat the only reason it is returned.
 
 ### An integer that is a moment is marked `format: unix-seconds`
 
-Thirty-five response properties carry it -- every `*_at`, `*_until` and `*_unixtime`, plus `created`,
-`at` and `last_attempt`. It changes nothing on the wire: the value is the same integer of Unix seconds it
+Thirty-six response properties carry it -- every `*_at`, `*_until` and `*_unixtime`, plus `created`,
+`at`, `last_attempt` and a stall record's `ts`. It changes nothing on the wire: the value is the same integer of Unix seconds it
 always was. What it changes is that the fact is now **machine-readable**, so the dashboard renders a
 moment from the contract instead of from its own arithmetic -- there were twenty separate
 `new Date(x * 1000)` call sites before it, and two of them printed a bare clock time for a block that may
@@ -766,13 +766,15 @@ property's name, a renderer may only read its contract.
 Durations are a separate question and deliberately unanswered: `expires_in_seconds`, `window_seconds` and
 sixteen others are counts rather than moments, they have no format, and they must not borrow this one.
 
-**Twelve of the thirty-five are declared but not yet reachable**, and this is a real limit rather than an
-oversight. apigen emits `CIX_API.FIELDS` per *named* component schema, so a property of an inline nested
-object -- a schedule's `next_run_at` and `last_run_at`, a run's `ended_at`, a file's `modified_at`, a
+**Eight of the thirty-six are declared but not yet reachable** (measured 2026-10-17: 28 reach
+`CIX_API.FIELDS`), and this is a real limit rather than an oversight. apigen emits `CIX_API.FIELDS` per
+*named* component schema, so a property of an inline nested object -- a pipeline run's `ended_at`, a
 measurement's `measured_at` -- carries the format in this document and does not reach the renderer, which
 would therefore print a bare integer. Those cells keep calling `formatInstant()` by hand until the object
 they belong to is a named schema. Do not read the gap as permission to skip the format: the contract is
-where the fact belongs either way, and promoting the schema is what makes it usable.
+where the fact belongs either way, and promoting the schema is what makes it usable. A schedule's
+`next_run_at` and `last_run_at` were on this list until apigen learned to read `allOf`, below; a file's
+`modified_at` until `BuildLogEntry` was named.
 
 ### A property is written in block form, never as a flow mapping
 
@@ -786,6 +788,21 @@ free text), and `cmd` and `after` lost their item type. They are block form now,
 flow form for a property and for an array's `items` -- refusal rather than a smarter parser, because a
 generator that silently mis-reads is the failure every other check in apigen exists to prevent. An
 `example:` value may still be written in flow form: it is data, not a property definition.
+
+### `allOf` is merged, in the one shape this contract uses
+
+Eight schemas compose another: `Schedule` is `ScheduleWrite` plus what a schedule reports about itself,
+the three pipeline rows are `PipelinePosition` plus their own fields, `PkiCertIssued` is `PkiCert` plus
+the key, and the three recipe details are their recipe plus its content. Until 2026-10-17 apigen read
+none of them -- an `allOf`'s own properties sit four columns deeper than a plain schema's, under a list
+item -- so all eight generated no fields, nothing could render them from the contract, and
+`test_apishape` checked none of the pipeline's item keys. apigen now merges them: the referenced schema's
+fields, required names and array properties first, then the schema's own.
+
+It reads exactly the shape used here, `allOf: [ {$ref: X}, {type: object, properties: ...} ]`, and
+refuses a second `$ref`, any other kind of member, a `$ref` naming no schema, and an `allOf` whose base
+is itself an `allOf` -- each with a `test_apigen` case. A refusal rather than a general implementation,
+because a composition apigen half-understood would generate a plausible field list that is wrong.
 
 ### An inline object the dashboard renders gets promoted to a named schema
 
