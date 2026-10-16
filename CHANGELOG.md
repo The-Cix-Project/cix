@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container's packages tab is generated (#592)
+
+`#cd-packages` renders through `renderTable` from `ImageVersionPackage`, promoted out of
+`GET /images/{name}/versions/{version}/manifest`'s inline items for it. The table is hidden unless a
+manifest was read, because the status line above it already explains each case with none -- no image,
+no recorded version, a version older than per-version manifests -- more exactly than a list state can.
+The pipeline's `dgSection()` now says why it alone stays hand-written: it draws a stage track, not a
+list. That makes 53 generated tables (52 calls); the nine hand-written ones left are each a stated exception in
+[web-ux-guidelines.md](docs/guides/web-ux-guidelines.md).
+
 ### apigen reads `allOf`, and five more tables (#592)
 
 **Eight schemas generated no fields at all.** `Schedule`, the three pipeline rows, `PkiCertIssued` and

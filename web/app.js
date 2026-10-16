@@ -5133,12 +5133,20 @@ async function loadContainerRecipe(name) {
  */
 async function loadContainerPackages(name) {
 	const statusEl = document.getElementById("cd-packages-status");
-	const tbody = document.querySelector("#cd-packages tbody");
+	const table = document.getElementById("cd-packages");
 	const c = cache.containers.find((x) => x.name === name);
 
-	if (statusEl === null || tbody === null)
+	if (statusEl === null || table === null)
 		return;
-	tbody.textContent = "";
+	/*
+	 * The status line above the table explains every case in which
+	 * there is no manifest to show, and it explains each more exactly
+	 * than a list's four states can -- no image, no recorded version, a
+	 * version produced before per-version manifests existed. So the
+	 * table appears only when a manifest was read, and is hidden rather
+	 * than left as a header over nothing in every other case.
+	 */
+	table.hidden = true;
 	if (!c || !c.image) {
 		statusEl.textContent = "This container has no image.";
 		return;
@@ -5164,31 +5172,22 @@ async function loadContainerPackages(name) {
 		 * was in flight; its answer must not overwrite that one's. */
 		if (currentContainerDetailName !== name)
 			return;
-		const rows = Array.isArray(d.manifest) ? d.manifest : [];
-
 		statusEl.textContent = "Installed into image " + c.image + " at version "
 			+ c.image_version + " \u2014 the version this container is pinned to and runs from.";
-		if (rows.length === 0) {
-			const tr = document.createElement("tr");
-			const td = document.createElement("td");
-
-			td.colSpan = 2;
-			td.textContent = "This image version holds no packages.";
-			tr.appendChild(td);
-			tbody.appendChild(tr);
-			return;
-		}
-		rows.forEach((r) => {
-			const tr = document.createElement("tr");
-
-			[r.package, r.version].forEach((v) => {
-				const td = document.createElement("td");
-
-				td.textContent = v === undefined || v === null ? "-" : String(v);
-				tr.appendChild(td);
-			});
-			tbody.appendChild(tr);
+		/* Generated (#592), from `ImageVersionPackage`, promoted out of
+		 * this endpoint's inline items for it. */
+		renderTable(table, "ImageVersionPackage",
+		    Array.isArray(d.manifest) ? d.manifest : [], [
+			"package",
+			"version",
+		], {
+			op: "getImageVersionManifest",
+			key: "container-detail-packages",
+			extra: c.image + "@" + c.image_version,
+			what: "this image version's packages",
+			empty: "This image version holds no packages.",
 		});
+		table.hidden = false;
 	} catch (err) {
 		if (currentContainerDetailName !== name)
 			return;
@@ -15000,6 +14999,17 @@ function dgRow(kind, stages, row, opts) {
  * stage: the marks are a composite mark read left to right, and table
  * cell padding between them would turn a progress bar into eight
  * boxes.
+ *
+ * HAND-WRITTEN ON PURPOSE (#592), the one table on this page that is.
+ * Every other list here renders through renderTable; this one is a
+ * visualisation rather than a list -- a stage track drawn across one
+ * header cell, a position per stage in each row, and a package's
+ * per-image positions folded beneath it as sub-rows, one table built per
+ * kind. Expressing that would need renderer forms nothing else uses, and
+ * a form with one caller is a private widget wearing the renderer's
+ * name. Its rows' FIELDS are the contract's since apigen read `allOf`
+ * (PipelinePackage and its siblings were empty before), and test_apishape
+ * checks them.
  */
 function dgSection(kind, label, stages, rows, frag) {
 	const sec = document.createElement("div");

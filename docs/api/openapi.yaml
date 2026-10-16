@@ -7288,12 +7288,7 @@ paths:
                   manifest:
                     type: array
                     items:
-                      type: object
-                      properties:
-                        package:
-                          type: string
-                        version:
-                          type: string
+                      $ref: "#/components/schemas/ImageVersionPackage"
         "404":
           description: >
             No such image, or no snapshot recorded for this version. A version
@@ -17845,6 +17840,20 @@ components:
           type: integer
           format: unix-seconds
           description: When this lease expires.
+
+    ImageVersionPackage:
+      type: object
+      description: >
+        One package as it was installed into a recorded image version --
+        the set that version's identity is derived from. Promoted out of
+        GET /images/{name}/versions/{version}/manifest's inline items so
+        the dashboard renders it from the schema.
+      properties:
+        package:
+          type: string
+        version:
+          type: string
+
     VolumeSnapshot:
       type: object
       description: >
