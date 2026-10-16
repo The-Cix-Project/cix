@@ -2327,8 +2327,8 @@ const CATEGORY_VIEWS = {
 	"pkg-recipes": "view-catalogue",
 	"image-recipes": "view-catalogue",
 	"container-recipes": "view-catalogue",
-	pipeline: "view-pipeline",
-	"pipeline-errors": "view-pipeline",
+	pipeline: "view-integration",
+	"pipeline-errors": "view-integration",
 	"site": "view-configuration",
 	"daemon-config": "view-control-plane",
 	"host-swap": "view-configuration",
@@ -3268,15 +3268,13 @@ function renderTree() {
 		},
 		{
 			/*
-			 * The pipeline is a group because its children are its
-			 * STAGES, not instances of a thing -- the one place in this
-			 * tree where a child is a subject rather than something
-			 * that exists on the box. That is deliberate: an operator
-			 * asking "where did this stop?" is asking about the stage,
-			 * so the stages are what the tree should offer.
-			 *
-			 * Selectable like every other group: clicking Software
-			 * opens its own overview.
+			 * Software is a group because its children are its
+			 * STAGES, not instances of a thing. All three groups are
+			 * like that -- Software, Services and Host each hold
+			 * subjects, while Containers, Networks and Storage hold the
+			 * things that exist on the box. That is deliberate: an
+			 * operator asking "where did this stop?" is asking about the
+			 * stage, so the stages are what the tree should offer.
 			 *
 			 * #323, from the owner. It was briefly "Materializer",
 			 * named for what it DOES rather than for what it holds,
@@ -3300,14 +3298,19 @@ function renderTree() {
 			 * board). It was "pipeline", so clicking the word
 			 * "Software" landed on the build pipeline -- one of the
 			 * subjects underneath it, wearing the group's name. The
-			 * pipeline is reachable as what it is, a Build tab.
+			 * pipeline is reachable as what it is, a Build tab -- and
+			 * since 2026-10-17 that is true: the commit that removed the
+			 * hash wrote this sentence without adding the tab, so the
+			 * stage board was reachable only by typing #pipeline for a
+			 * week. Build lands on it now, and test_web_tree fails any
+			 * view nothing reaches.
 			 */
 			label: "Software",
 			group: true,
 			icon: "software",
 			children: [
 				{ label: "Catalogue", hash: "pkg-recipes", icon: "recipes" },
-				{ label: "Build", hash: "build-overview", icon: "packages" },
+				{ label: "Build", hash: "pipeline", icon: "packages" },
 				{ label: "Deployment", hash: "update", icon: "update" },
 			],
 		},
@@ -3320,8 +3323,11 @@ function renderTree() {
 			 * that: an operator clicking "Services" got a page about
 			 * none of the six things underneath, and the fix is not
 			 * to pick a better destination but to have none -- the
-			 * group expands, and Health takes its place among the
-			 * children it was always a sibling of.
+			 * group expands, and Server Health takes its place among the
+			 * children it was always a sibling of. It was labelled
+			 * plain "Health" for a week, which is also Host's child for
+			 * a different page; test_web_tree now refuses a tree label
+			 * used twice.
 			 */
 			label: "Services",
 			group: true,
@@ -3337,7 +3343,7 @@ function renderTree() {
 				{ label: "NTP", hash: "ntp-config", icon: "ntp" },
 				{ label: "DHCP", hash: "dhcp-servers", icon: "dhcp" },
 				{ label: "Syslog", hash: "syslog-targets", icon: "syslog" },
-				{ label: "Health", hash: "server-health", icon: "system" },
+				{ label: "Server Health", hash: "server-health", icon: "system" },
 			],
 		},
 		{

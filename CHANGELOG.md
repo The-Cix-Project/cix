@@ -6,6 +6,26 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The build pipeline is reachable again, and the tree says one word per place (#592)
+
+**The Pipeline stage board had no way in for a week.** `dcae8e14` stopped the Software group being a
+link by removing its hash, `pipeline`, and the tree's comment said the board stayed "reachable as what
+it is, a Build tab". No tab was added, nothing linked to `#pipeline`, and the board rendered for nobody
+until the owner asked where it had gone. Its two panels are now the Build page's first tabs, **Pipeline**
+and **Errors**, the tree's Build lands on Pipeline, and the emptied `view-pipeline` section (with ten
+blank lines where moved tab buttons used to be) is gone. The Build page's old Overview tab is **In
+Flight**, its own heading, so the page does not carry two overviews.
+
+**Services and Host each had a child called "Health"**, for two different pages; Services' is **Server
+Health**, the page's own name. Both defects are gated in `test_web_tree`: a `view-*` section that no tree
+hash, no tab of a reachable page and no `#prefix/` link reaches fails, and so does a tree label used
+twice. The guidelines' IA record, which said every group's stolen page had become a child, is corrected.
+
+**A count in the entry below was wrong.** It said the nine hand-written list tables left were all
+deliberate. Seven more are simply not converted -- server health, the storage page's volumes, four
+device lists and a user's app passwords -- found by listing every `<table>` whose `<thead>` is still in
+`index.html`.
+
 ### A container's packages tab is generated (#592)
 
 `#cd-packages` renders through `renderTable` from `ImageVersionPackage`, promoted out of
@@ -13,7 +33,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 manifest was read, because the status line above it already explains each case with none -- no image,
 no recorded version, a version older than per-version manifests -- more exactly than a list state can.
 The pipeline's `dgSection()` now says why it alone stays hand-written: it draws a stage track, not a
-list. That makes 53 generated tables (52 calls); the nine hand-written ones left are each a stated exception in
+list. That makes 53 generated tables (52 calls); nine more stay hand-written on purpose, each a stated exception in
 [web-ux-guidelines.md](docs/guides/web-ux-guidelines.md).
 
 ### apigen reads `allOf`, and five more tables (#592)

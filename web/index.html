@@ -757,7 +757,6 @@
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="storage">Overview</button>
 				<button type="button" class="tab-button" data-tab="storage-placement">Placement</button>
-				
 				<button type="button" class="tab-button" data-tab="backup">System Backup</button>
 				<button type="button" class="tab-button" data-tab="volume-backup-config">Volume Backups</button>
 				<button type="button" class="tab-button" data-tab="volumes">Volumes</button>
@@ -1834,114 +1833,6 @@
 		     the tab handler only touches its own bar's panels, so the nesting
 		     works.
 		-->
-		<section class="view" id="view-pipeline" hidden>
-			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="pipeline">Overview</button>
-				<button type="button" class="tab-button" data-tab="pipeline-errors">Errors</button>
-				
-				
-				
-				
-				
-				
-				
-				
-				
-				
-			</div>
-<div class="tab-panel" data-tab="pipeline">
-
-			<p class="hint">
-				Everything moving between "upstream released something" and "this host is
-				running it" (ADR-0256, #371). Four kinds, one vocabulary: a
-				<strong>package</strong> is built, an <strong>image</strong> is composed of
-				packages, a <strong>deployment</strong> runs an image, and the
-				<strong>host</strong> boots a root built from all of it. Arrows are real
-				dependencies and are drawn whether or not anything is wrong.
-			</p>
-
-			<!-- #371: one row per thing, stages as columns, filled to where it
-			     stands. The row IS the pipeline; reading a line answers "where is
-			     this". Replaces lanes-of-boxes, which drew kinds as columns and
-			     left the pipeline as a word inside a box. -->
-			<div class="list-toolbar">
-				<input type="search" id="pipeline-search"
-				       placeholder="Find a package, image or deployment&hellip;"
-				       aria-label="Filter rows by name">
-				<label>
-					<input type="checkbox" id="pipeline-view-all">
-					View all
-				</label>
-				<span id="pipeline-count" class="count"></span>
-			</div>
-
-			<div id="delivery-graph" class="delivery-graph"></div>
-
-			<p class="hint" id="delivery-legend">
-				<span class="legend-key legend-done">done</span>
-				<span class="legend-key legend-here">where it is now</span>
-				<span class="legend-key legend-blocked">blocked</span>
-				<span class="legend-key legend-failed">failed</span>
-				<span class="legend-key legend-todo">not reached</span>
-				<span class="legend-key legend-na">does not apply</span>
-			</p>
-
-			<!-- Derived, not stored: packages sitting at more than one version
-			     across images. The per-package row folds its images and so cannot
-			     show this, and it is the thing an operator can act on. -->
-			<h3 class="section-label">Version drift across images</h3>
-			<div id="pipeline-drift"></div>
-
-			<h3 class="section-label">Where packages stand</h3>
-			<div id="pipeline-flow" class="pipeline-flow"></div>
-			<div id="pipeline-deploy" class="pipeline-deploy"></div>
-			<p id="pipeline-summary" class="hint"></p>
-
-			<!-- Detail for one row: why it is where it is, every image it is
-			     installed into, and the real build log. -->
-			<div id="detail-panel" class="detail-panel" hidden>
-				<div class="detail-panel-head">
-					<strong id="detail-panel-title"></strong>
-					<button type="button" id="detail-panel-close" class="btn-small">Close</button>
-				</div>
-				<div id="detail-panel-body" class="detail-panel-body"></div>
-			</div>
-			</div>
-<div class="tab-panel" data-tab="pipeline-errors" hidden>
-			<p class="hint">
-				Every package whose pipeline is not clean, and the stage it stopped
-				at. A package sitting at <code>not-implemented</code> is not a
-				problem &mdash; it means this platform performs that stage by hand,
-				so it is not listed here.
-			</p>
-			<table id="pipeline-table">
-				<thead>
-					<tr>
-						<th>Package</th>
-						<th>Stage</th>
-						<th>Status</th>
-						<th>Resolved</th>
-						<th>Newest recipe</th>
-						<th>Reason</th>
-					</tr>
-				</thead>
-				<tbody id="pipeline-rows"></tbody>
-			</table>
-		</div>
-
-
-
-
-
-
-
-
-
-
-
-
-		</section>
-
 		
 
 		<section class="view" id="view-package-detail" hidden>
@@ -2378,13 +2269,94 @@
 
 		<section class="view" id="view-integration" hidden>
 			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="build-overview">Overview</button>
+				<button type="button" class="tab-button active" data-tab="pipeline">Pipeline</button>
+				<button type="button" class="tab-button" data-tab="pipeline-errors">Errors</button>
+				<button type="button" class="tab-button" data-tab="build-overview">In Flight</button>
 				<button type="button" class="tab-button" data-tab="pkg-build-config">Log</button>
 				<button type="button" class="tab-button" data-tab="packages">Local Packages</button>
 				<button type="button" class="tab-button" data-tab="images">Local Images</button>
 				<button type="button" class="tab-button" data-tab="pkg-cache">Remote Cache</button>
 			</div>
-<div class="tab-panel" data-tab="build-overview">
+<div class="tab-panel" data-tab="pipeline">
+
+			<p class="hint">
+				Everything moving between "upstream released something" and "this host is
+				running it" (ADR-0256, #371). Four kinds, one vocabulary: a
+				<strong>package</strong> is built, an <strong>image</strong> is composed of
+				packages, a <strong>deployment</strong> runs an image, and the
+				<strong>host</strong> boots a root built from all of it. Arrows are real
+				dependencies and are drawn whether or not anything is wrong.
+			</p>
+
+			<!-- #371: one row per thing, stages as columns, filled to where it
+			     stands. The row IS the pipeline; reading a line answers "where is
+			     this". Replaces lanes-of-boxes, which drew kinds as columns and
+			     left the pipeline as a word inside a box. -->
+			<div class="list-toolbar">
+				<input type="search" id="pipeline-search"
+				       placeholder="Find a package, image or deployment&hellip;"
+				       aria-label="Filter rows by name">
+				<label>
+					<input type="checkbox" id="pipeline-view-all">
+					View all
+				</label>
+				<span id="pipeline-count" class="count"></span>
+			</div>
+
+			<div id="delivery-graph" class="delivery-graph"></div>
+
+			<p class="hint" id="delivery-legend">
+				<span class="legend-key legend-done">done</span>
+				<span class="legend-key legend-here">where it is now</span>
+				<span class="legend-key legend-blocked">blocked</span>
+				<span class="legend-key legend-failed">failed</span>
+				<span class="legend-key legend-todo">not reached</span>
+				<span class="legend-key legend-na">does not apply</span>
+			</p>
+
+			<!-- Derived, not stored: packages sitting at more than one version
+			     across images. The per-package row folds its images and so cannot
+			     show this, and it is the thing an operator can act on. -->
+			<h3 class="section-label">Version drift across images</h3>
+			<div id="pipeline-drift"></div>
+
+			<h3 class="section-label">Where packages stand</h3>
+			<div id="pipeline-flow" class="pipeline-flow"></div>
+			<div id="pipeline-deploy" class="pipeline-deploy"></div>
+			<p id="pipeline-summary" class="hint"></p>
+
+			<!-- Detail for one row: why it is where it is, every image it is
+			     installed into, and the real build log. -->
+			<div id="detail-panel" class="detail-panel" hidden>
+				<div class="detail-panel-head">
+					<strong id="detail-panel-title"></strong>
+					<button type="button" id="detail-panel-close" class="btn-small">Close</button>
+				</div>
+				<div id="detail-panel-body" class="detail-panel-body"></div>
+			</div>
+			</div>
+<div class="tab-panel" data-tab="pipeline-errors" hidden>
+			<p class="hint">
+				Every package whose pipeline is not clean, and the stage it stopped
+				at. A package sitting at <code>not-implemented</code> is not a
+				problem &mdash; it means this platform performs that stage by hand,
+				so it is not listed here.
+			</p>
+			<table id="pipeline-table">
+				<thead>
+					<tr>
+						<th>Package</th>
+						<th>Stage</th>
+						<th>Status</th>
+						<th>Resolved</th>
+						<th>Newest recipe</th>
+						<th>Reason</th>
+					</tr>
+				</thead>
+				<tbody id="pipeline-rows"></tbody>
+			</table>
+		</div>
+<div class="tab-panel" data-tab="build-overview" hidden>
 
 			<p class="hint">
 				What the build system is doing right now, which the Log tab beside this one

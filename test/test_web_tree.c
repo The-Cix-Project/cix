@@ -184,6 +184,165 @@ static int section_has_tab(const char *html, const char *view, const char *tab, 
 	return 0;
 }
 
+/* Copy the quoted value starting at `s` (just past its opening quote). */
+static void copy_quoted(const char *s, char *out, size_t out_size)
+{
+	size_t i = 0;
+
+	while (s[i] != '"' && s[i] != '\0' && i + 1 < out_size) {
+		out[i] = s[i];
+		i++;
+	}
+	out[i] = '\0';
+}
+
+#define MAX_VIEWS 64
+
+/*
+ * EVERY PAGE IS REACHABLE (#592).
+ *
+ * The commit that stopped the Software group being a link removed its
+ * hash, "pipeline", and wrote in the tree's own comment that the stage
+ * board was "reachable as what it is, a Build tab". No such tab was
+ * added. For a week the page existed, rendered and refreshed, and
+ * nothing in the dashboard led to it -- measured 2026-10-17, when the
+ * owner asked where it had gone. Every gate in this file passed
+ * throughout, because each checks that a route lands somewhere sound,
+ * and none asked whether anything routes to a given page at all.
+ *
+ * A section is reached when a tree hash routes to it, when a tab on an
+ * already-reached page routes to it, or -- for a detail page -- when
+ * app.js produces a link of its DETAIL_VIEWS prefix (`"#images/` or
+ * `hash: "images/`), which is how an image or a package is opened from
+ * the table that lists it.
+ */
+static void check_every_view_is_reached(const char *app, const char *html, const char *tree)
+{
+	char views[MAX_VIEWS][64];
+	int reached[MAX_VIEWS] = { 0 };
+	int nv = 0, changed = 1;
+	int i, j;
+	const char *tree_end = strstr(tree, "\n\tfor (const item of topLevel)");
+	const char *s;
+
+	for (s = html; (s = strstr(s, "<section class=\"view\" id=\"")) != NULL; s++) {
+		if (nv == MAX_VIEWS) {
+			fail("more than %s view sections -- raise MAX_VIEWS%s", "64", "");
+			return;
+		}
+		copy_quoted(s + strlen("<section class=\"view\" id=\""), views[nv], sizeof(views[nv]));
+		nv++;
+	}
+	if (nv < 20 || tree_end == NULL) {
+		fail("the reachability gate found too few view sections or no end to topLevel -- "
+		     "it is not reading what it thinks it is reading%s%s", "", "");
+		return;
+	}
+
+	/* What routes to a view: a tree hash, or a tab of a reached view. */
+	while (changed) {
+		changed = 0;
+		for (s = tree; (s = strstr(s, "hash: \"")) != NULL && s < tree_end; s++) {
+			char hash[96], view[64];
+
+			copy_quoted(s + strlen("hash: \""), hash, sizeof(hash));
+			if (route_target(app, hash, view, sizeof(view)) != 0)
+				continue;
+			for (i = 0; i < nv; i++)
+				if (!reached[i] && strcmp(views[i], view) == 0)
+					reached[i] = changed = 1;
+		}
+		for (i = 0; i < nv; i++) {
+			char open[128];
+			const char *sec, *next, *bar, *bar_end, *t;
+
+			if (!reached[i])
+				continue;
+			snprintf(open, sizeof(open), "<section class=\"view\" id=\"%s\"", views[i]);
+			sec = strstr(html, open);
+			next = strstr(sec + 1, "<section class=\"view\"");
+			bar = strstr(sec, "class=\"tab-bar\"");
+			if (bar == NULL || (next != NULL && bar > next))
+				continue;
+			bar_end = strstr(bar, "</div>");
+			for (t = bar; (t = strstr(t, "data-tab=\"")) != NULL && t < bar_end; t++) {
+				char tab[96], view[64];
+
+				copy_quoted(t + strlen("data-tab=\""), tab, sizeof(tab));
+				if (route_target(app, tab, view, sizeof(view)) != 0)
+					continue;
+				for (j = 0; j < nv; j++)
+					if (!reached[j] && strcmp(views[j], view) == 0)
+						reached[j] = changed = 1;
+			}
+		}
+	}
+
+	/* What links to a detail page: its DETAIL_VIEWS prefix. */
+	{
+		const char *tbl = strstr(app, "const DETAIL_VIEWS = {");
+		const char *end = tbl != NULL ? strstr(tbl, "\n};") : NULL;
+		int prefixes = 0;
+
+		for (s = tbl; s != NULL && (s = strstr(s, "\n\t")) != NULL && s < end; s++) {
+			char prefix[64], view[64], link[96], tree_link[96];
+			const char *colon = strstr(s, ": \"view-");
+			const char *eol = strchr(s + 1, '\n');
+
+			if (colon == NULL || colon > eol)
+				continue;
+			snprintf(prefix, sizeof(prefix), "%.*s", (int)(colon - (s + 2)), s + 2);
+			copy_quoted(colon + strlen(": \""), view, sizeof(view));
+			prefixes++;
+			snprintf(link, sizeof(link), "\"#%s/", prefix);
+			snprintf(tree_link, sizeof(tree_link), "hash: \"%s/", prefix);
+			if (strstr(app, link) == NULL && strstr(app, tree_link) == NULL)
+				continue;
+			for (i = 0; i < nv; i++)
+				if (strcmp(views[i], view) == 0)
+					reached[i] = 1;
+		}
+		if (prefixes < 4)
+			fail("the reachability gate read only %s DETAIL_VIEWS entries -- it is not "
+			     "reading what it thinks it is reading%s", prefixes == 0 ? "0" : "<4", "");
+	}
+
+	for (i = 0; i < nv; i++)
+		if (!reached[i])
+			fail("page %s is reached by nothing -- no tree hash, no tab on a reached page "
+			     "and no link routes to it, so an operator cannot open it (the Pipeline "
+			     "was this for a week, #592)%s",
+			     views[i], "");
+}
+
+/*
+ * A TREE LABEL NAMES ONE PLACE (#592). Services and Host each held a
+ * child called "Health", for two different pages -- the person reading
+ * the tree is given the same word for two destinations, which is
+ * principle 5 of the guidelines broken by the row that is supposed to
+ * keep it. Only quoted labels are checked: a child built from a live
+ * resource is that resource's own name.
+ */
+static void check_tree_labels_unique(const char *tree)
+{
+	const char *tree_end = strstr(tree, "\n\tfor (const item of topLevel)");
+	char labels[96][64];
+	int n = 0, i;
+	const char *s;
+
+	for (s = tree; (s = strstr(s, "label: \"")) != NULL && s < tree_end && n < 96; s++) {
+		copy_quoted(s + strlen("label: \""), labels[n], sizeof(labels[n]));
+		for (i = 0; i < n; i++)
+			if (strcmp(labels[i], labels[n]) == 0)
+				fail("tree label \"%s\" is used twice -- one word, two destinations%s",
+				     labels[n], "");
+		n++;
+	}
+	if (n < 15)
+		fail("the label gate read fewer than 15 tree labels -- it is not reading what it "
+		     "thinks it is reading%s%s", "", "");
+}
+
 int main(void)
 {
 	char *app = slurp("web/app.js");
@@ -385,6 +544,9 @@ int main(void)
 			fail("no tree group found at all -- this check reads `group: true` out of "
 			     "topLevel, so a rename makes it silently gate nothing%s%s", "", "");
 	}
+
+	check_every_view_is_reached(app, html, tree);
+	check_tree_labels_unique(tree);
 
 	/*
 	 * Every view id app.js reaches for must be a real section.
