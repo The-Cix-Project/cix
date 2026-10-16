@@ -19779,17 +19779,21 @@ components:
       properties:
         name:
           type: string
+          title: Name
         subnet:
           type: string
+          title: Subnet
         prefix_len:
           type: integer
           title: Prefix length
         has_address:
           type: boolean
+          title: Has address
           description: Whether this network has a host-owned address at all.
         address:
           type: string
           nullable: true
+          title: Address
           description: The host-owned address, or null when has_address is false.
         management:
           type: boolean
@@ -19811,9 +19815,9 @@ components:
           nullable: true
           title: Pool start
           description: >
-            The lowest host part auto-allocation may hand out -- the
-            address's offset within the subnet, so 101 on a /24 is the
-            .101 address -- or null when the window has no lower bound.
+            The lowest host part auto-allocation may hand out, or null
+            for no lower bound. A host part is the address's offset
+            within the subnet, so 101 on a /24 is the .101 address.
             Set as a dotted address by PUT /networks/{name}'s
             alloc_start; reported back as the host part, which is what
             the daemon stores (issue #137).
@@ -19830,6 +19834,7 @@ components:
             with none allocates from the whole usable range.
         interfaces:
           type: array
+          title: Interfaces
           items:
             $ref: "#/components/schemas/NetworkAttachedInterface"
 
