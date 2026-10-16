@@ -740,7 +740,7 @@ and obscuring it would defeat the only reason it is returned.
 
 ### An integer that is a moment is marked `format: unix-seconds`
 
-Thirty-six response properties carry it -- every `*_at`, `*_until` and `*_unixtime`, plus `created`,
+Thirty-seven response properties carry it -- every `*_at`, `*_until` and `*_unixtime`, plus `created`,
 `at`, `last_attempt` and a stall record's `ts`. It changes nothing on the wire: the value is the same integer of Unix seconds it
 always was. What it changes is that the fact is now **machine-readable**, so the dashboard renders a
 moment from the contract instead of from its own arithmetic -- there were twenty separate
@@ -766,7 +766,7 @@ property's name, a renderer may only read its contract.
 Durations are a separate question and deliberately unanswered: `expires_in_seconds`, `window_seconds` and
 sixteen others are counts rather than moments, they have no format, and they must not borrow this one.
 
-**Eight of the thirty-six are declared but not yet reachable** (measured 2026-10-17: 28 reach
+**Eight of the thirty-seven are declared but not yet reachable** (measured 2026-10-17: 29 reach
 `CIX_API.FIELDS`), and this is a real limit rather than an oversight. apigen emits `CIX_API.FIELDS` per
 *named* component schema, so a property of an inline nested object -- a pipeline run's `ended_at`, a
 measurement's `measured_at` -- carries the format in this document and does not reach the renderer, which
@@ -1817,8 +1817,11 @@ Cix lets you register redundant backend servers for four subsystems &mdash; LDAP
   {"kind": "ldap", "container": "ldap-1", "state": "healthy", "in_service": true,
    "drained": false, "probe": "tcp:636", "last_check_at": 1787400000,
    "last_ok_at": 1787400000, "consecutive_failures": 0, "last_error": null}
-]}
+ ],
+ "warnings": []}
 ```
+
+- **`warnings`** &mdash; one sentence per subsystem Cix manages state for with nothing registered to serve it: DNS records with no DNS server, LDAP users or groups with no LDAP server (#83). That is a total failure of the subsystem, not one server's state, so it sits beside the list. The daemon always sent it; the contract declared it only on 2026-10-17, which is why no gate had compared it. The PUT below answers `servers` alone.
 
 - **`state`** &mdash; `healthy` / `unhealthy` / `unknown` (registered, not yet probed). One good probe makes a server healthy immediately; it takes several *consecutive* failures to declare it unhealthy, so a single dropped probe never pulls a working server out of service, while recovery is never delayed.
 - **`in_service`** &mdash; the question consumers actually ask. False only when drained or confirmed unhealthy; a never-yet-probed server counts as in service, so switching health tracking on can never black-hole a working deployment during the first sweep.
@@ -1845,7 +1848,7 @@ A failed handshake is a *connect-class* failure, so `POST /login` moves on to th
 
 `PUT /v1/system/server-health/{kind}/{container}` with `{"drained": true|false}` is the operator override for maintenance. Draining is an *intent*, so unlike the observed health state it is persisted across a daemon restart; health itself is re-established by the next probe.
 
-Probing runs on the daemon's own event loop as a **non-blocking** connect &mdash; a blocking probe against an unreachable server would stall the entire control plane, the exact failure [ADR-0180](../adr/0180-async-container-teardown.md) exists to prevent. `cixctl server-health [ls] | drain KIND NAME | undrain KIND NAME` and the dashboard's **System > Monitoring > Server Health** page are the CLI and web surfaces.
+Probing runs on the daemon's own event loop as a **non-blocking** connect &mdash; a blocking probe against an unreachable server would stall the entire control plane, the exact failure [ADR-0180](../adr/0180-async-container-teardown.md) exists to prevent. `cixctl server-health [ls] | drain KIND NAME | undrain KIND NAME` and the dashboard's **Services › Server Health** page are the CLI and web surfaces.
 
 
 ## Container lifecycle: start, stop, pause, unpause

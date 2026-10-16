@@ -568,12 +568,6 @@
 			</div>
 			<div class="tab-panel" id="imgd-panel-containers" data-tab="containers">
 				<table id="imgd-containers">
-					<thead>
-						<tr>
-							<th>Name</th>
-							<th>Status</th>
-						</tr>
-					</thead>
 					<tbody></tbody>
 				</table>
 			</div>
@@ -682,27 +676,24 @@
 				<button type="button" class="tab-button" data-tab="gpu" id="dev-tab-gpu">GPU</button>
 			</div>
 			<div class="tab-panel" id="dev-panel-usb" data-tab="usb">
-				<table>
-					<thead><tr><th>ID</th><th>Description</th><th>Driver</th><th>Assignable</th><th>Name</th><th></th></tr></thead>
-					<tbody id="dev-usb-body"><tr><td colspan="6" class="empty">Reading&hellip;</td></tr></tbody>
+				<table id="dev-usb">
+					<tbody><tr><td colspan="6" class="empty">Reading&hellip;</td></tr></tbody>
 				</table>
 			</div>
 			<div class="tab-panel" id="dev-panel-pci" data-tab="pci" hidden>
-				<table>
-					<thead><tr><th>ID</th><th>Description</th><th>Driver</th><th>Assignable</th><th>Name</th><th></th></tr></thead>
-					<tbody id="dev-pci-body"><tr><td colspan="6" class="empty">Reading&hellip;</td></tr></tbody>
+				<table id="dev-pci">
+					<tbody><tr><td colspan="6" class="empty">Reading&hellip;</td></tr></tbody>
 				</table>
 			</div>
 			<div class="tab-panel" id="dev-panel-net" data-tab="net" hidden>
-				<table>
-					<thead><tr><th>ID</th><th>Description</th><th>Driver</th><th>Assignable</th><th>Name</th><th></th></tr></thead>
-					<tbody id="dev-net-body"><tr><td colspan="6" class="empty">Reading&hellip;</td></tr></tbody>
+				<table id="dev-net">
+					<tbody><tr><td colspan="6" class="empty">Reading&hellip;</td></tr></tbody>
 				</table>
 			</div>
 			<div class="tab-panel" id="dev-panel-gpu" data-tab="gpu" hidden>
-				<table>
-					<thead><tr><th>ID</th><th>Description</th><th>Driver</th><th>Assignable</th><th>Name</th><th></th></tr></thead>
-					<tbody id="dev-gpu-body"><tr><td colspan="6" class="empty">Reading&hellip;</td></tr></tbody>
+				<p class="hint">A GPU is granted to a container by its group id, <code>gpu:N</code>, which grants every node listed with it.</p>
+				<table id="dev-gpu">
+					<tbody><tr><td colspan="6" class="empty">Reading&hellip;</td></tr></tbody>
 				</table>
 			</div>
 			</div>
@@ -903,11 +894,10 @@
 			<div class="view-list">
 				
 				<p class="hint">Persistent storage whose lifetime is <strong>independent of any container</strong>. Everything else a container writes lives in its overlay upper layer, which is destroyed when the container is deleted &mdash; and a container gets recreated by any recipe change, package install or rolling image update. Mount a volume into a container (<code>volumes: [{"name": "home", "path": "/home"}]</code>) and that path survives. Deleting a container never touches its volumes; deleting a <em>volume</em> destroys its data and is refused while any container definition still references it.</p>
-				<table>
-					<thead>
-						<tr><th>Name</th><th>Size</th><th>Mounted by</th><th>Disk</th><th>Host path</th><th>Created</th><th></th></tr>
-					</thead>
-					<tbody id="volumes-body"></tbody>
+				<table id="volumes">
+					<tbody>
+						<tr><td colspan="7" class="empty">Reading&hellip;</td></tr>
+					</tbody>
 				</table>
 			</div>
 			</div>
@@ -1966,11 +1956,10 @@
 			<div class="view-list">
 				<p class="hint">Every registered backend server &mdash; LDAP, DNS, NTP and syslog &mdash; probed on an interval. A server that is drained or has failed its probes is dropped from the configuration handed to clients, so a registered-but-not-serving server can no longer break logins silently. <strong>Drain</strong> takes one out of service deliberately (maintenance); it persists across a daemon restart, while health itself is re-established by the next probe. The <em>Probe</em> column says how the verdict was reached: a <code>tcp:PORT</code> check is a real service check, <code>process</code> only means the container is running.</p>
 				<div id="server-health-warnings" hidden></div>
-				<table>
-					<thead>
-						<tr><th>Kind</th><th>Container</th><th>State</th><th>In service</th><th>Probe</th><th>Failures</th><th>Last error</th><th></th></tr>
-					</thead>
-					<tbody id="server-health-body"></tbody>
+				<table id="server-health">
+					<tbody>
+						<tr><td colspan="8" class="empty">Reading&hellip;</td></tr>
+					</tbody>
 				</table>
 			</div>
 		
@@ -2343,17 +2332,7 @@
 				so it is not listed here.
 			</p>
 			<table id="pipeline-table">
-				<thead>
-					<tr>
-						<th>Package</th>
-						<th>Stage</th>
-						<th>Status</th>
-						<th>Resolved</th>
-						<th>Newest recipe</th>
-						<th>Reason</th>
-					</tr>
-				</thead>
-				<tbody id="pipeline-rows"></tbody>
+				<tbody></tbody>
 			</table>
 		</div>
 <div class="tab-panel" data-tab="build-overview" hidden>
@@ -3221,15 +3200,8 @@
 			     never in a status message, which would put it in a toast. -->
 			<div id="modal-app-passwords-form" hidden>
 				<p class="hint" id="apf-scope"></p>
-				<table>
-					<thead>
-						<tr>
-							<th>Name</th>
-							<th>Created</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="apf-body">
+				<table id="apf-table">
+					<tbody>
 						<tr><td colspan="3" class="empty">Reading&hellip;</td></tr>
 					</tbody>
 				</table>

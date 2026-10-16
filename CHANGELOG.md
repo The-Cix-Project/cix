@@ -6,6 +6,25 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The last eight hand-built list tables are generated, and a written header is gated (#592)
+
+Server health, the storage page's volumes, the four device lists, a user's app passwords and the
+pipeline's Errors list render through `renderTable` now: 58 calls, 61 tables. The GPU list's bold
+group-header rows are a **Group** column, with the "grant the whole id" sentence as the tab's hint.
+`renderTable` gains one column form, `fill: (row, cell)`, for a cell written after its row exists -- a
+volume's measured size. Three read failures that were a toast on every two-second sweep are the
+table's own refused state instead.
+
+**Two contract claims were false.** `GET /system/server-health` has always sent `warnings` and the
+contract never declared it; it is declared and required now, so `test_apishape` checks it. And
+`Volume.created_at` was declared a date-time string while the daemon writes Unix seconds; it is
+`format: unix-seconds` now, the thirty-seventh instant. The README's server-health page path, which
+still named a "System > Monitoring" menu, is corrected.
+
+`test_web_tree` now fails a `<thead>` written in `index.html` on any table but the four stated
+exceptions. A generated table has none, and that listing is what found these eight after a count had
+said there were none left.
+
 ### The build pipeline is reachable again, and the tree says one word per place (#592)
 
 **The Pipeline stage board had no way in for a week.** `dcae8e14` stopped the Software group being a

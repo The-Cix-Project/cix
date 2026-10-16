@@ -1926,11 +1926,24 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [servers, warnings]
                 properties:
                   servers:
                     type: array
                     items:
                       $ref: "#/components/schemas/ServerHealth"
+                  warnings:
+                    type: array
+                    description: >
+                      One sentence per subsystem Cix manages state for with nothing
+                      registered to serve it -- DNS records with no DNS server, LDAP
+                      users or groups with no LDAP server (#83). A total failure of
+                      that subsystem rather than a degraded one, so it is reported
+                      beside the list instead of as any one server's state. Empty
+                      when there is none. The daemon has always sent this; the
+                      contract did not declare it until 2026-10-17.
+                    items:
+                      type: string
 
   /system/server-health/{kind}/{container}:
     put:
@@ -1968,7 +1981,7 @@ paths:
                   type: boolean
       responses:
         "200":
-          description: Updated -- returns the full server list, same shape as GET
+          description: Updated -- returns the full server list, as GET's `servers` (without its `warnings`)
           content:
             application/json:
               schema:
@@ -16844,8 +16857,12 @@ components:
             A kernel-enforced hard limit on this volume's size, or 0 for
             none. Without one a volume can grow until its disk is full.
         created_at:
-          type: string
-          format: date-time
+          type: integer
+          format: unix-seconds
+          description: >
+            When the volume was created. Declared a date-time string until
+            2026-10-17; the daemon has always sent Unix seconds (volume.c
+            writes it with jw_int).
 
     VolumeCreateRequest:
       type: object

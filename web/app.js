@@ -1725,6 +1725,23 @@ function serviceStateKind(state) {
 	}
 }
 
+/*
+ * A registered backend server's probe verdict (`ServerHealth.state`) as
+ * a badge. "unknown" is the contract's "registered but not probed yet",
+ * which is grey rather than amber: nothing is in progress, there is
+ * simply no answer yet.
+ */
+function serverHealthStateKind(state) {
+	switch (state) {
+	case "healthy":
+		return "ok";
+	case "unhealthy":
+		return "error";
+	default:
+		return "unknown";
+	}
+}
+
 function pipelineStatusKind(status) {
 	switch (status) {
 	case "ok":
@@ -6734,7 +6751,7 @@ async function refreshDeviceMaps() {
 		renderDevices();
 }
 
-const DEVICE_BUS_BODIES = { usb: "dev-usb-body", pci: "dev-pci-body", net: "dev-net-body", gpu: "dev-gpu-body" };
+const DEVICE_BUS_TABLES = { usb: "dev-usb", pci: "dev-pci", net: "dev-net", gpu: "dev-gpu" };
 
 /* Only "exact" mappings can be shown inline against the one device row
  * they pin to; a "vendor_model" mapping's own resolved_ids can span
@@ -6756,116 +6773,70 @@ function renderDevices() {
 
 	const mappedNames = exactMappedNames();
 
-	for (const bus of Object.keys(DEVICE_BUS_BODIES)) {
-		const tbody = document.getElementById(DEVICE_BUS_BODIES[bus]);
-		const entries = cache.devices.filter((d) => d.bus === bus);
-
-		/* #432: per BUS, since each has its own table. The mapped
-		 * names are an input too -- a row shows whether a device is
-		 * claimed by a mapping, so a new mapping must redraw it. */
-		if (unchangedAndRendered(tbody, "devices-" + bus,
-		                         { entries: entries, mapped: mappedNames }))
-			continue;
-		tbody.textContent = "";
-		if (entries.length === 0) {
-			const row = document.createElement("tr");
-			const cell = document.createElement("td");
-
-			cell.colSpan = 6;
-			cell.className = "empty";
-			cell.textContent = emptyStateText("listDevices", "devices", "No devices discovered on this bus");
-			row.appendChild(cell);
-			tbody.appendChild(row);
-			continue;
-		}
-
-		if (bus === "gpu") {
-			/* Group member nodes (gpu:N:card0, gpu:N:renderD128, ...)
-			 * under their synthesized gpu:N prefix -- mirroring exactly
-			 * what device_find_group() does server-side for a
-			 * container's own devices:["gpu:0"] grant, so this view's
-			 * grouping matches what attaching the group id actually
-			 * grants. */
-			const groups = {};
-
-			for (const d of entries) {
-				const parts = d.id.split(":");
-				const groupId = parts[0] + ":" + parts[1];
-
-				if (!groups[groupId])
-					groups[groupId] = [];
-				groups[groupId].push(d);
-			}
-			for (const groupId of Object.keys(groups).sort()) {
-				const groupRow = document.createElement("tr");
-				const groupCell = document.createElement("td");
-
-				groupCell.colSpan = 6;
-				groupCell.textContent = groupId + " (grant this whole id to a container)";
-				groupCell.style.fontWeight = "600";
-				groupRow.appendChild(groupCell);
-				tbody.appendChild(groupRow);
-				for (const d of groups[groupId])
-					tbody.appendChild(deviceRow(d, mappedNames[d.id]));
-			}
-		} else {
-			for (const d of entries)
-				tbody.appendChild(deviceRow(d, mappedNames[d.id]));
-		}
-	}
+	for (const bus of Object.keys(DEVICE_BUS_TABLES))
+		renderDeviceBus(bus, mappedNames);
 }
 
-function deviceRow(d, mappedName) {
-	const row = document.createElement("tr");
-	const idCell = document.createElement("td");
+/*
+ * Generated (#592), from `Device`, one table per bus.
+ *
+ * A GPU is several device nodes (gpu:N:card0, gpu:N:renderD128, ...)
+ * granted together by their gpu:N prefix -- exactly what
+ * device_find_group() does server-side for a container's
+ * devices:["gpu:0"] grant. The GPU table used to say so with a bold
+ * header row above each group; it says it with a Group column now,
+ * rows sorted so a group's nodes sit together, and the "grant the whole
+ * id" sentence is the tab's hint. Same information, without a row shape
+ * only this table had.
+ */
+function renderDeviceBus(bus, mappedNames) {
+	const entries = cache.devices.filter((d) => d.bus === bus);
+	const columns = [
+		{ field: "id", label: "ID" },
+		"description",
+		"driver",
+		{ field: "assignable", badge: (v) => (v ? "ok" : "unknown") },
+		{ label: "Name", text: (d) => mappedNames[d.id] || FIELD_ABSENT },
+		{ label: "", actions: (d) => {
+			if (mappedNames[d.id])
+				return [];
 
-	idCell.textContent = d.id;
-	row.appendChild(idCell);
-	const descCell = document.createElement("td");
+			const btn = document.createElement("button");
 
-	descCell.textContent = d.description || "-";
-	row.appendChild(descCell);
-	const driverCell = document.createElement("td");
+			btn.type = "button";
+			btn.textContent = "Name…";
+			gateAction(btn, "createDeviceMap");
+			/* The selector and kind are facts about the row that was
+			 * clicked, so they arrive as `values` -- a draft the
+			 * operator may still edit, which is right here: naming a
+			 * USB device "exact" pins it to this port, and switching
+			 * to vendor/model is a reasonable second thought. `fixed`
+			 * would be wrong, because nothing about this device is the
+			 * request's key. */
+			btn.addEventListener("click", () =>
+				openForm("createDeviceMap", {
+					title: "Name a device",
+					submit: "Create mapping",
+					values: { kind: "exact", selector: d.id },
+				}));
+			return [btn];
+		} },
+	];
 
-	driverCell.textContent = d.driver || "-";
-	row.appendChild(driverCell);
-	const assignableCell = document.createElement("td");
-	const badge = document.createElement("span");
-
-	badge.className = statusBadge(d.assignable ? "ok" : "unknown");
-	badge.textContent = d.assignable ? "yes" : "no";
-	assignableCell.appendChild(badge);
-	row.appendChild(assignableCell);
-
-	const nameCell = document.createElement("td");
-
-	nameCell.textContent = mappedName || "-";
-	row.appendChild(nameCell);
-
-	const actionCell = document.createElement("td");
-
-	if (!mappedName) {
-		const btn = document.createElement("button");
-
-		btn.type = "button";
-		btn.textContent = "Name…";
-		gateAction(btn, "createDeviceMap");
-		/* The selector and kind are facts about the row that was
-		 * clicked, so they arrive as `values` -- a draft the operator
-		 * may still edit, which is right here: naming a USB device
-		 * "exact" pins it to this port, and switching to vendor/model
-		 * is a reasonable second thought. `fixed` would be wrong,
-		 * because nothing about this device is the request's key. */
-		btn.addEventListener("click", () =>
-			openForm("createDeviceMap", {
-				title: "Name a device",
-				submit: "Create mapping",
-				values: { kind: "exact", selector: d.id },
-			}));
-		actionCell.appendChild(btn);
+	if (bus === "gpu") {
+		entries.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+		columns.unshift({ label: "Group", text: (d) => d.id.split(":").slice(0, 2).join(":") });
 	}
-	row.appendChild(actionCell);
-	return row;
+	renderTable(document.getElementById(DEVICE_BUS_TABLES[bus]), "Device", entries, columns, {
+		op: "listDevices",
+		key: "devices-" + bus,
+		/* #432: a row shows whether a mapping claims the device, so a
+		 * new mapping must redraw it although the devices did not
+		 * change. */
+		extra: entries.map((d) => mappedNames[d.id] || "").join("\n"),
+		what: "devices",
+		empty: "No devices discovered on this bus",
+	});
 }
 
 /* Every container currently holding a device whose id is among
@@ -12119,53 +12090,71 @@ function openAppPasswords(scope) {
 async function refreshAppPasswords() {
 	const scope = appPasswordScope;
 	const ops = appPasswordOps(scope);
-	const body = document.getElementById("apf-body");
-	let list;
+	let list = [];
 
 	try {
 		const data = await apiRequest("GET", ops.list());
 
 		list = data.app_passwords || [];
 	} catch (e) {
-		simpleTableRows(body, [], 3, refusalText(e, "these app passwords"));
-		return;
+		/* listState() has the failure, keyed on the op below. */
 	}
 	if (appPasswordScope !== scope)
 		return; /* the modal moved on while this was in flight */
-	body.textContent = "";
-	if (list.length === 0) {
-		simpleTableRows(body, [], 3, "No app passwords");
-		return;
-	}
-	for (const ap of list) {
-		const row = document.createElement("tr");
-		const nameCell = document.createElement("td");
-		const createdCell = document.createElement("td");
-		const actionCell = document.createElement("td");
-		const revokeButton = document.createElement("button");
+	renderAppPasswords(scope, list);
+}
 
-		nameCell.textContent = ap.name;
-		createdCell.textContent = formatInstant(ap.created);
-		revokeButton.textContent = "Revoke";
-		revokeButton.className = "button-small button-danger";
-		gateAction(revokeButton, ops.removeOp);
-		revokeButton.addEventListener("click", async () => {
-			if (!confirm("Revoke app password \"" + ap.name + "\"? Anything using it is refused from its next request."))
-				return;
-			try {
-				await apiRequest("DELETE", ops.remove(ap.name));
-				showStatus("Revoked app password " + ap.name);
-				await refreshAppPasswords();
-			} catch (e) {
-				showStatus("Failed to revoke app password " + ap.name + ": " + e.message, true);
-			}
+/*
+ * Generated (#592), from `AppPassword`. Two calls rather than one
+ * because the list is read by a different operation for your own
+ * account and for another user's, and the refused/loading states are
+ * keyed on the op -- which test_web_tree requires to be written as a
+ * literal, so that a typo in it cannot pass.
+ */
+function renderAppPasswords(scope, list) {
+	const ops = appPasswordOps(scope);
+	const table = document.getElementById("apf-table");
+	const columns = [
+		"name",
+		{ field: "created", label: "Created" },
+		{ label: "", actions: (ap) => {
+			const revokeButton = document.createElement("button");
+
+			revokeButton.type = "button";
+			revokeButton.textContent = "Revoke";
+			revokeButton.className = "button-small button-danger";
+			gateAction(revokeButton, ops.removeOp);
+			revokeButton.addEventListener("click", async () => {
+				if (!confirm("Revoke app password \"" + ap.name + "\"? Anything using it is refused from its next request."))
+					return;
+				try {
+					await apiRequest("DELETE", ops.remove(ap.name));
+					showStatus("Revoked app password " + ap.name);
+					await refreshAppPasswords();
+				} catch (e) {
+					showStatus("Failed to revoke app password " + ap.name + ": " + e.message, true);
+				}
+			});
+			return [revokeButton];
+		} },
+	];
+
+	if (scope.own)
+		renderTable(table, "AppPassword", list, columns, {
+			op: "listOwnAppPasswords",
+			key: "app-passwords",
+			extra: "own",
+			what: "these app passwords",
+			empty: "No app passwords",
 		});
-		actionCell.appendChild(revokeButton);
-		row.appendChild(nameCell);
-		row.appendChild(createdCell);
-		row.appendChild(actionCell);
-		body.appendChild(row);
-	}
+	else
+		renderTable(table, "AppPassword", list, columns, {
+			op: "listLdapUserAppPasswords",
+			key: "app-passwords",
+			extra: "user:" + scope.user,
+			what: "these app passwords",
+			empty: "No app passwords",
+		});
 }
 
 document.getElementById("app-passwords-form").addEventListener("submit", async (event) => {
@@ -14143,7 +14132,6 @@ async function refreshVolumeCache() {
 }
 
 async function refreshVolumes() {
-	const body = document.getElementById("volumes-body");
 	let vols = [];
 	let containers = [];
 	try {
@@ -14162,8 +14150,8 @@ async function refreshVolumes() {
 		const cdata = await apiRequest("GET", CIX_API.listContainers());
 		containers = cdata.containers || [];
 	} catch (e) {
-		showStatus("Failed to read volumes: " + e.message, true);
-		return;
+		/* listState() has the failure; see refreshBuildLogs(). It
+		 * used to be a toast, repeated on every sweep. */
 	}
 	const mountedBy = {};
 	for (const c of containers) {
@@ -14173,78 +14161,59 @@ async function refreshVolumes() {
 			mountedBy[v.name].push(c.name + " at " + v.path + (v.read_only ? " (ro)" : ""));
 		}
 	}
+	renderVolumesList(vols, mountedBy);
+}
 
-	if (!dataChanged("volumes", { vols: vols, mountedBy: mountedBy }))
-		return;
-	body.textContent = "";
-	if (vols.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+/*
+ * Generated (#592), from `Volume`. Three cells stay authored, each for
+ * a stated reason: Size is measured per row after the row exists
+ * (`fill`, since measuring is a tree walk the list does not carry),
+ * Mounted by is the cross-reference above, and Disk's null is a
+ * statement -- the default disk -- rather than an absence, so "—"
+ * would be wrong.
+ */
+function renderVolumesList(vols, mountedBy) {
+	renderTable(document.getElementById("volumes"), "Volume", vols, [
+		{ field: "name", link: (v) => "#volumes/" + encodeURIComponent(v.name) },
+		{ label: "Size", fill: (v, cell) => fillVolumeUsageCell(v.name, cell) },
+		/* "unused" is deliberately not an error state -- a volume
+		 * outliving every container that used it is the whole point,
+		 * and is exactly when its data is most at risk of being deleted
+		 * by someone who assumes it is dead weight. */
+		{ label: "Mounted by", text: (v) => (mountedBy[v.name] || []).join(", ")
+		                                    || "not currently mounted" },
+		{ label: "Disk", text: (v) => v.disk || "(default)" },
+		"host_path",
+		{ field: "created_at", label: "Created" },
+		{ label: "", actions: (v) => {
+			const del = document.createElement("button");
 
-		cell.colSpan = 7;
-		cell.className = "empty";
-		cell.textContent = emptyStateText("listVolumes", "volumes", "No volumes");
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-	for (const v of vols) {
-		const row = document.createElement("tr");
-		const created = formatInstant(v.created_at);
-
-		const users = mountedBy[v.name] || [];
-
-		{
-			const td = document.createElement("td");
-
-			td.appendChild(treeLink("#volumes/" + encodeURIComponent(v.name), v.name, ""));
-			row.appendChild(td);
-		}
-		{
-			/* Filled after the row is on screen: measuring is a tree
-			 * walk, so it is asked for per row rather than carried by
-			 * the volume list every render. */
-			const td = document.createElement("td");
-
-			fillVolumeUsageCell(v.name, td);
-			row.appendChild(td);
-		}
-		for (const text of [
-			/* "unused" is deliberately not an error state -- a volume
-			 * outliving every container that used it is the whole
-			 * point, and is exactly when its data is most at risk of
-			 * being deleted by someone who assumes it is dead weight. */
-			users.length > 0 ? users.join(", ") : "not currently mounted",
-			v.disk || "(default)",
-			v.host_path || "-",
-			created,
-		]) {
-			const td = document.createElement("td");
-			td.textContent = text;
-			row.appendChild(td);
-		}
-		const actions = document.createElement("td");
-		const del = document.createElement("button");
-
-		del.type = "button";
-		del.className = "button-danger button-small";
-		del.textContent = "Delete";
-		gateAction(del, "deleteVolume");
-		del.addEventListener("click", async () => {
-			if (!confirm("Delete volume \"" + v.name + "\"? This permanently destroys its data."))
-				return;
-			try {
-				await apiRequest("DELETE", CIX_API.deleteVolume(v.name));
-				clearStatus();
-				await refreshVolumes();
-			} catch (e) {
-				showStatus("Failed to delete volume: " + e.message, true);
-			}
-		});
-		actions.appendChild(del);
-		row.appendChild(actions);
-		body.appendChild(row);
-	}
+			del.type = "button";
+			del.className = "button-danger button-small";
+			del.textContent = "Delete";
+			gateAction(del, "deleteVolume");
+			del.addEventListener("click", async () => {
+				if (!confirm("Delete volume \"" + v.name + "\"? This permanently destroys its data."))
+					return;
+				try {
+					await apiRequest("DELETE", CIX_API.deleteVolume(v.name));
+					clearStatus();
+					await refreshVolumes();
+				} catch (e) {
+					showStatus("Failed to delete volume: " + e.message, true);
+				}
+			});
+			return [del];
+		} },
+	], {
+		op: "listVolumes",
+		key: "storage-volumes",
+		/* Who mounts each volume comes from listContainers, not from
+		 * these rows, so it is part of what is compared. */
+		extra: JSON.stringify(mountedBy),
+		what: "volumes",
+		empty: "No volumes",
+	});
 }
 
 
@@ -14284,7 +14253,6 @@ document.getElementById("vd-owner-form").addEventListener("submit", (event) => {
 document.getElementById("vd-owner-root").addEventListener("click", () => applyVolumeOwner(true));
 
 async function refreshServerHealth() {
-	const body = document.getElementById("server-health-body");
 	let servers = [];
 	let warnings = [];
 
@@ -14293,83 +14261,70 @@ async function refreshServerHealth() {
 		servers = data.servers || [];
 		warnings = data.warnings || [];
 	} catch (e) {
-		showStatus("Failed to read server health: " + e.message, true);
-		return;
+		/* listState() has the failure; see refreshBuildLogs(). It
+		 * used to be a toast, repeated on every two-second sweep. */
 	}
-
-	/* Identical every two seconds is the normal case for a health
-	 * table, and rebuilding it then is pure churn. */
-	if (!dataChanged("server-health", { servers: servers, warnings: warnings }))
-		return;
-	body.textContent = "";
 
 	/* Issue #83: a warning here means Cix is managing state with nowhere
 	   to deliver it -- a silent, total failure of that subsystem, not a
 	   degradation. Shown above the table because it is more urgent than
 	   any individual server's state. */
-	const warnBox = document.getElementById("server-health-warnings");
-	warnBox.textContent = "";
-	warnBox.hidden = warnings.length === 0;
-	for (const wmsg of warnings) {
-		const p = document.createElement("p");
-		p.className = "warning";
-		p.textContent = wmsg;
-		warnBox.appendChild(p);
-	}
-	if (servers.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+	if (dataChanged("server-health-warnings", warnings)) {
+		const warnBox = document.getElementById("server-health-warnings");
 
-		cell.colSpan = 8;
-		cell.className = "empty";
-		cell.textContent = emptyStateText("getServerHealth", "server health",
-		    "No registered servers are being health-tracked yet");
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-	for (const s of servers) {
-		const row = document.createElement("tr");
-		const cells = [
-			s.kind,
-			s.container,
-			s.state,
-			s.in_service ? "yes" : "no",
-			s.probe || "-",
-			String(s.consecutive_failures || 0),
-			s.last_error || "",
-		];
-
-		for (const text of cells) {
-			const td = document.createElement("td");
-			td.textContent = text;
-			row.appendChild(td);
+		warnBox.textContent = "";
+		warnBox.hidden = warnings.length === 0;
+		for (const wmsg of warnings) {
+			const p = document.createElement("p");
+			p.className = "warning";
+			p.textContent = wmsg;
+			warnBox.appendChild(p);
 		}
-
-		/* Drain/undrain -- the operator override, distinct from what the
-		   probe says. Labelled by the action it performs, not the state
-		   it is in, so the button never reads as a status. */
-		const actionCell = document.createElement("td");
-		const btn = document.createElement("button");
-
-		btn.type = "button";
-		btn.textContent = s.drained ? "Undrain" : "Drain";
-		gateAction(btn, "setServerHealthDrain");
-		btn.addEventListener("click", async () => {
-			try {
-				await apiRequest("PUT", CIX_API.setServerHealthDrain(s.kind, s.container),
-					{ drained: !s.drained }
-				);
-				clearStatus();
-				await refreshServerHealth();
-			} catch (e) {
-				showStatus("Failed to change drain state: " + e.message, true);
-			}
-		});
-		actionCell.appendChild(btn);
-		row.appendChild(actionCell);
-		body.appendChild(row);
 	}
+	renderServerHealth(servers);
+}
+
+/*
+ * Generated (#592), from `ServerHealth`. Probe and failures keep their
+ * own headers because the field names say how they are computed rather
+ * than what a reader is looking at.
+ */
+function renderServerHealth(servers) {
+	renderTable(document.getElementById("server-health"), "ServerHealth", servers, [
+		"kind",
+		"container",
+		{ field: "state", badge: (st) => serverHealthStateKind(st) },
+		"in_service",
+		"probe",
+		{ field: "consecutive_failures", label: "Failures" },
+		"last_error",
+		/* Drain/undrain -- the operator override, distinct from what
+		 * the probe says. Labelled by the action it performs, not the
+		 * state it is in, so the button never reads as a status. */
+		{ label: "", actions: (s) => {
+			const btn = document.createElement("button");
+
+			btn.type = "button";
+			btn.textContent = s.drained ? "Undrain" : "Drain";
+			gateAction(btn, "setServerHealthDrain");
+			btn.addEventListener("click", async () => {
+				try {
+					await apiRequest("PUT", CIX_API.setServerHealthDrain(s.kind, s.container),
+						{ drained: !s.drained }
+					);
+					clearStatus();
+					await refreshServerHealth();
+				} catch (e) {
+					showStatus("Failed to change drain state: " + e.message, true);
+				}
+			});
+			return [btn];
+		} },
+	], {
+		op: "getServerHealth",
+		what: "server health",
+		empty: "No registered servers are being health-tracked yet",
+	});
 }
 
 document.getElementById("kmsg-form").addEventListener("submit", (event) => {
@@ -15511,46 +15466,23 @@ async function refreshPipeline() {
 		deploy.appendChild(text);
 	}
 
-	const tbody = document.getElementById("pipeline-rows");
-	const packages = data.packages || [];
-	let shown = 0;
-
-	tbody.textContent = "";
-	for (const p of packages) {
-		if (p.status === "ok" || p.status === "not-implemented")
-			continue;
-		shown++;
-		const tr = document.createElement("tr");
-		const cells = [p.name, p.stage, null, p.resolved_version || "-",
-		               p.newest_recipe_version || "-", p.reason];
-
-		for (let i = 0; i < cells.length; i++) {
-			const td = document.createElement("td");
-
-			if (i === 2) {
-				const badge = document.createElement("span");
-
-				badge.className = statusBadge(pipelineStatusKind(p.status));
-				badge.textContent = p.status;
-				td.appendChild(badge);
-			} else {
-				td.textContent = cells[i];
-			}
-			tr.appendChild(td);
-		}
-		tbody.appendChild(tr);
-	}
-	if (shown === 0) {
-		const tr = document.createElement("tr");
-		const td = document.createElement("td");
-
-		td.colSpan = 6;
-		td.className = "hint";
-		td.textContent = emptyStateText("getPipeline", "the pipeline",
-		    "Nothing is blocked or failed.");
-		tr.appendChild(td);
-		tbody.appendChild(tr);
-	}
+	/* The Errors tab. Generated (#592), from `PipelinePackage`: every
+	 * package whose pipeline is not clean. `not-implemented` is not a
+	 * problem -- this platform performs that stage by hand -- so it is
+	 * left out with `ok`. */
+	renderTable(document.getElementById("pipeline-table"), "PipelinePackage",
+	    (data.packages || []).filter((p) => p.status !== "ok" && p.status !== "not-implemented"), [
+		{ field: "name", label: "Package" },
+		"stage",
+		{ field: "status", badge: (st) => pipelineStatusKind(st) },
+		{ field: "resolved_version", label: "Resolved" },
+		{ field: "newest_recipe_version", label: "Newest recipe" },
+		"reason",
+	], {
+		op: "getPipeline",
+		what: "the pipeline",
+		empty: "Nothing is blocked or failed.",
+	});
 	document.getElementById("pipeline-summary").textContent =
 	    data.total + " package(s): " + data.ok + " ok, " + data.blocked + " blocked, " +
 	    data.failed + " failed, " + data.cancelled + " cancelled, " + data.not_implemented +

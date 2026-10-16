@@ -848,6 +848,21 @@ function tableCell(schema, row, col) {
 		return cell;
 	}
 	/*
+	 * `fill` -- a cell whose content is fetched after its row exists.
+	 * A volume's measured size is a tree walk, asked for per row
+	 * rather than carried by the list, so the cell is handed over
+	 * empty and the caller writes into it when the answer comes.
+	 * Added on 2026-10-17 for the storage page's volumes. A
+	 * container's volumes table fills its backups cell the same way
+	 * and still stays hand-written, for a different reason: it is
+	 * re-read on every two-second sweep so that cell stays live, and
+	 * this renderer's repaint guard exists to stop exactly that.
+	 */
+	if (typeof col === "object" && col.fill !== undefined) {
+		col.fill(row, cell);
+		return cell;
+	}
+	/*
 	 * WHERE THE STRING COMES FROM is one decision, and what wraps it
 	 * is another -- so `text` no longer returns early. A derived
 	 * string can wear a badge or be a link, which it could not before:
@@ -923,6 +938,7 @@ function tableCell(schema, row, col) {
  *   { field, badge: (value, row) => kind }  text inside a status badge
  *   { label, actions: (row) => [el, ...] }  authored controls, no field
  *   { label, text: (row) => "..." }         a cell that is not one field
+ *   { label, fill: (row, cell) => {} }      a cell filled after it exists
  *
  * `text` COMPOSES with `link` and `badge`, because where a string
  * comes from and what wraps it are two separate decisions. `{ label,

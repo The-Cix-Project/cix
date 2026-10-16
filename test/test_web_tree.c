@@ -343,6 +343,55 @@ static void check_tree_labels_unique(const char *tree)
 		     "thinks it is reading%s%s", "", "");
 }
 
+/*
+ * A HEADER WRITTEN IN MARKUP IS A TABLE NOT YET GENERATED (#592).
+ *
+ * renderTable() builds a list table's <thead> from the schema, so a
+ * generated table carries none in index.html. A literal one is either
+ * a table that was never converted or one of the shapes the guidelines
+ * name as staying hand-written, each with its reason in a comment
+ * beside its renderer. On 2026-10-17 a count said every convertible
+ * table was done, and listing the literal headers found eight that
+ * were not; this makes that listing the gate. A new exception is a
+ * line here AND a reason in web-ux-guidelines.md, in the same change.
+ */
+static void check_literal_theads_are_exceptions(const char *html)
+{
+	static const char *const exceptions[] = {
+		"cd-volumes",           /* re-read every sweep, so its fill cell stays live */
+		"devicemaps-table",     /* a cell of N links */
+		"storage",              /* patches live counters into existing cells */
+		"hostauth-permissions", /* rows are an object's entries */
+		NULL,
+	};
+	const char *s;
+	int found = 0;
+
+	for (s = html; (s = strstr(s, "<thead")) != NULL; s++) {
+		const char *t = s;
+		char id[64] = "";
+		int ok = 0, i;
+
+		/* The enclosing <table ...>: the nearest one before it. */
+		while (t > html && strncmp(t, "<table", 6) != 0)
+			t--;
+		if (strncmp(t, "<table id=\"", 11) == 0)
+			copy_quoted(t + 11, id, sizeof(id));
+		found++;
+		for (i = 0; exceptions[i] != NULL; i++)
+			if (strcmp(id, exceptions[i]) == 0)
+				ok = 1;
+		if (!ok)
+			fail("table \"%s\" has a <thead> written in index.html -- a generated table "
+			     "has none, so this one is either not converted to renderTable() yet or "
+			     "a new exception that needs its reason in web-ux-guidelines.md%s",
+			     id[0] != '\0' ? id : "(no id)", "");
+	}
+	if (found == 0)
+		fail("no literal <thead> at all -- the four stated exceptions each have one, so "
+		     "this gate is not reading what it thinks it is%s%s", "", "");
+}
+
 int main(void)
 {
 	char *app = slurp("web/app.js");
@@ -547,6 +596,7 @@ int main(void)
 
 	check_every_view_is_reached(app, html, tree);
 	check_tree_labels_unique(tree);
+	check_literal_theads_are_exceptions(html);
 
 	/*
 	 * Every view id app.js reaches for must be a real section.
