@@ -6,6 +6,31 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Eight more tables, and a count the instant sweep had marked as a time (#592)
+
+Recipe sources, package repositories, held source conflicts, loaded kernel modules and their
+persisted options, boot loader entries and build logs render through `renderTable` now -- 46 calls.
+Three inline response items became named schemas so they could (`PkgSourceConflict`,
+`BootLoaderEntry`, `BuildLogEntry`), which by itself put a conflict's required keys in front of the
+contract-vs-daemon gate for the first time; every other inline item with a `required` list is still
+unchecked, filed as #605.
+
+**A write role is not a colour.** The sources and repositories tables coloured "write" and "push"
+amber -- the Primitives board's "paused", one of four colours that are never repurposed -- and built
+the class by hand past `statusBadge()`. Both are plain booleans now, and `test_web_tree` refuses a
+`"badge ` class string in `app.js` outside that one function.
+
+**Four refreshers stopped writing their own refusal.** Their `catch` branches either rendered
+`refusalText()` through `simpleTableRows` -- a second copy of a decision `listState()` already makes
+-- or did nothing, which left a table that failed its first read saying "Reading…" for as long as
+the page was open. Each renders an empty list now and the renderer says why.
+
+**And a correction to the instant sweep.** `BootConsole.loader_entries_updated` is *"how many entries
+were rewritten"* -- a count -- and had been given `format: unix-seconds` because it went on the list
+by name rather than by reading it. The dashboard reads it as a count, so nothing on screen was wrong,
+but the contract said a 3 was a moment in 1970. It is unmarked, the instant count is 35, and the two
+`at` fields that were also listed by name were checked against the daemon: both are `time(NULL)`.
+
 ### apigen refuses a property it cannot read, and the container page's tables are generated (#592)
 
 **Fifteen properties were invisible to the generator.** apigen reads a property's `type`, `enum` and

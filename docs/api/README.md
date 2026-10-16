@@ -740,7 +740,7 @@ and obscuring it would defeat the only reason it is returned.
 
 ### An integer that is a moment is marked `format: unix-seconds`
 
-Thirty-six response properties carry it -- every `*_at`, `*_until` and `*_unixtime`, plus `created`,
+Thirty-five response properties carry it -- every `*_at`, `*_until` and `*_unixtime`, plus `created`,
 `at` and `last_attempt`. It changes nothing on the wire: the value is the same integer of Unix seconds it
 always was. What it changes is that the fact is now **machine-readable**, so the dashboard renders a
 moment from the contract instead of from its own arithmetic -- there were twenty separate
@@ -766,7 +766,7 @@ property's name, a renderer may only read its contract.
 Durations are a separate question and deliberately unanswered: `expires_in_seconds`, `window_seconds` and
 sixteen others are counts rather than moments, they have no format, and they must not borrow this one.
 
-**Twelve of the thirty-six are declared but not yet reachable**, and this is a real limit rather than an
+**Twelve of the thirty-five are declared but not yet reachable**, and this is a real limit rather than an
 oversight. apigen emits `CIX_API.FIELDS` per *named* component schema, so a property of an inline nested
 object -- a schedule's `next_run_at` and `last_run_at`, a run's `ended_at`, a file's `modified_at`, a
 measurement's `measured_at` -- carries the format in this document and does not reach the renderer, which

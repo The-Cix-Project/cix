@@ -12066,40 +12066,7 @@ paths:
                   logs:
                     type: array
                     items:
-                      type: object
-                      properties:
-                        file:
-                          type: string
-                        size_bytes:
-                          type: integer
-                        modified_at:
-                          type: integer
-                          format: unix-seconds
-                        name:
-                          type: string
-                          nullable: true
-                          description: >
-                            The package this log belongs to (#550), from what
-                            the daemon recorded when it wrote it: the live job
-                            for a build in flight, else the run record naming
-                            this file. Never parsed from the filename, where
-                            one package's name can begin another's ("cix-"
-                            also matches "cix-tests-..."). `null` when neither
-                            accounts for the file.
-                        version:
-                          type: string
-                          nullable: true
-                          description: >
-                            The version that run built -- for a build in
-                            flight, the one being built, not the one it
-                            replaces. `null` exactly when `name` is.
-                        image:
-                          type: string
-                          nullable: true
-                          description: The image that run was for. `null` exactly when `name` is.
-                        in_flight:
-                          type: boolean
-                          description: The build writing this log is still running.
+                      $ref: "#/components/schemas/BuildLogEntry"
 
   /pkg/build-logs/{file}:
     get:
@@ -17964,6 +17931,60 @@ components:
           type: integer
           format: unix-seconds
           description: When this lease expires.
+    BuildLogEntry:
+      type: object
+      description: >
+        One retained build log (issue #57). Promoted out of
+        GET /pkg/build-logs' inline items so the dashboard renders it
+        from the schema.
+      properties:
+        file:
+          type: string
+        size_bytes:
+          type: integer
+        modified_at:
+          type: integer
+          format: unix-seconds
+        name:
+          type: string
+          nullable: true
+          description: >
+            The package this log belongs to (#550), from what
+            the daemon recorded when it wrote it: the live job
+            for a build in flight, else the run record naming
+            this file. Never parsed from the filename, where
+            one package's name can begin another's ("cix-"
+            also matches "cix-tests-..."). `null` when neither
+            accounts for the file.
+        version:
+          type: string
+          nullable: true
+          description: >
+            The version that run built -- for a build in
+            flight, the one being built, not the one it
+            replaces. `null` exactly when `name` is.
+        image:
+          type: string
+          nullable: true
+          description: The image that run was for. `null` exactly when `name` is.
+        in_flight:
+          type: boolean
+          description: The build writing this log is still running.
+
+    BootLoaderEntry:
+      type: object
+      description: >
+        One boot loader entry on the ESP, with the kernel options line it
+        currently carries. Promoted out of BootConsole.loader_entries'
+        inline items so the dashboard renders it from the schema.
+      properties:
+        entry:
+          type: string
+          description: The entry's file name on the ESP.
+        options:
+          type: string
+          description: The kernel command line the entry boots with.
+
     BootConsole:
       type: object
       properties:
@@ -17983,15 +18004,9 @@ components:
           type: array
           description: The options line each entry on the ESP currently carries.
           items:
-            type: object
-            properties:
-              entry:
-                type: string
-              options:
-                type: string
+            $ref: "#/components/schemas/BootLoaderEntry"
         loader_entries_updated:
           type: integer
-          format: unix-seconds
           description: PUT only -- how many entries were rewritten.
         applies:
           type: string

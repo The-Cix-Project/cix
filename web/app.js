@@ -8835,53 +8835,42 @@ async function removeLdapUser(name) {
 /* ---------- Build logs (issue #57) ---------- */
 
 async function refreshBuildLogs() {
-	const body = document.getElementById("build-logs-body");
-
 	try {
 		const data = await apiRequest("GET", CIX_API.listBuildLogs());
-		const logs = data.logs || [];
 
-		/* #432: a log list changes when a build writes one, which is
-		 * rare next to the refresh tick -- so in practice this table
-		 * stops being rebuilt at all, and the log you just opened
-		 * stops taking your scroll position with it. */
-		if (unchangedAndRendered(body, "build-logs", logs))
-			return;
-		body.textContent = "";
-		if (logs.length === 0) {
-			const tr = document.createElement("tr");
-			const td = document.createElement("td");
+		renderBuildLogs(data.logs || []);
+	} catch (e) {
+		/* listState() has the failure; an empty list lets it say so,
+		 * where this best-effort catch used to leave whatever was last
+		 * painted -- "Reading…", on a first failure, forever. */
+		renderBuildLogs([]);
+	}
+}
 
-			td.colSpan = 4;
-			td.className = "empty";
-			td.textContent = emptyStateText("listBuildLogs", "build logs", "No builds recorded yet");
-			tr.appendChild(td);
-			body.appendChild(tr);
-			return;
-		}
-		for (const l of logs) {
-			const tr = document.createElement("tr");
+/*
+ * Generated (#592), from `BuildLogEntry`, promoted out of
+ * GET /pkg/build-logs' inline items for this table. `modified_at`
+ * needs no formatting here any more: the schema says it is an instant.
+ *
+ * #432's reason for this table's guard still holds and is now
+ * renderTable's: a log list changes when a build writes one, which is
+ * rare next to the refresh tick, so in practice the table stops being
+ * rebuilt and the log you just opened stops taking your scroll position.
+ */
+function renderBuildLogs(logs) {
+	renderTable(document.getElementById("build-logs"), "BuildLogEntry", logs, [
+		{ field: "file", label: "Log" },
+		{ label: "Size", text: (l) => formatBytes(l.size_bytes) },
+		{ field: "modified_at", label: "Finished" },
+		{ label: "", actions: (l) => {
 			const view = document.createElement("button");
 
-			for (const text of [l.file, formatBytes(l.size_bytes),
-			                    formatInstant(l.modified_at)]) {
-				const c = document.createElement("td");
-
-				c.textContent = text;
-				tr.appendChild(c);
-			}
 			view.textContent = "View";
 			view.className = "button-small";
 			view.addEventListener("click", () => showBuildLog(l.file));
-			const td = document.createElement("td");
-
-			td.appendChild(view);
-			tr.appendChild(td);
-			body.appendChild(tr);
-		}
-	} catch (e) {
-		/* Best-effort, same as every other panel here. */
-	}
+			return [view];
+		} },
+	], { op: "listBuildLogs", what: "build logs", empty: "No builds recorded yet" });
 }
 
 /* ---------- #433: the build-log window ----------
@@ -9704,49 +9693,40 @@ async function refreshBootConsole() {
 		const data = await apiRequest("GET", CIX_API.getBootConsole());
 		const cfg = data.config || {};
 		const grid = document.getElementById("bcf-effect");
-		const body = document.getElementById("boot-entries-body");
 
 		if (!bootConsoleDirty) {
 			document.getElementById("bcf-consoles").value = (cfg.consoles || []).join(" ");
 			document.getElementById("bcf-extra").value = cfg.extra || "";
 		}
 		/* #432: an unchanged panel is left alone -- rebuilding it on every
-		 * tick collapses the page and costs the reader their place. */
-		if (unchangedAndRendered(body, "boot-console", data))
-			return;
-		grid.textContent = "";
-		grid.appendChild(fieldBlock("Rendered", cfg.rendered || "(none)"));
-
-		body.textContent = "";
-		const entries = data.loader_entries || [];
-
-		if (entries.length === 0) {
-			const tr = document.createElement("tr");
-			const td = document.createElement("td");
-
-			td.colSpan = 2;
-			td.className = "empty";
-			/* Not an error: a dev daemon has no ESP, and saying so beats
-			 * an empty table that looks like something failed. */
-			td.textContent = "No loader entries visible from here — this is not an installed host";
-			tr.appendChild(td);
-			body.appendChild(tr);
-			return;
+		 * tick collapses the page and costs the reader their place. The
+		 * table below has its own guard now, in renderTable. */
+		if (!unchangedAndRendered(grid, "boot-console-effect", cfg.rendered)) {
+			grid.textContent = "";
+			grid.appendChild(fieldBlock("Rendered", cfg.rendered || FIELD_ABSENT));
 		}
-		for (const e of entries) {
-			const tr = document.createElement("tr");
-
-			for (const text of [e.entry, e.options]) {
-				const td = document.createElement("td");
-
-				td.textContent = text;
-				tr.appendChild(td);
-			}
-			body.appendChild(tr);
-		}
+		renderBootEntries(data.loader_entries || []);
 	} catch (e) {
-		/* Best-effort, same as every other panel here. */
+		/* The read failed, which listState() now knows -- so the table
+		 * says why instead of keeping the "Reading…" it was born with,
+		 * which is what this best-effort catch used to leave on a first
+		 * failure, indefinitely. */
+		renderBootEntries([]);
 	}
+}
+
+/* Generated (#592), from `BootLoaderEntry`. The empty sentence is not
+ * an error: a dev daemon has no ESP, and saying so beats an empty table
+ * that looks like something failed. */
+function renderBootEntries(entries) {
+	renderTable(document.getElementById("boot-entries"), "BootLoaderEntry", entries, [
+		{ field: "entry", label: "Loader entry" },
+		{ field: "options", label: "Options" },
+	], {
+		op: "getBootConsole",
+		what: "loader entries",
+		empty: "No loader entries visible from here — this is not an installed host",
+	});
 }
 
 for (const id of ["bcf-consoles", "bcf-extra"]) {
@@ -11618,49 +11598,43 @@ function renderPkgSourcesTable(sources) {
 	], { op: "listPkgSources", what: "recipe sources", empty: "No recipe sources" });
 }
 
-function renderPkgSourceHeld(ownership, sources) {
-	const body = document.getElementById("pkg-source-held-body");
+/* Generated (#592), from `PkgSourceConflict` -- promoted out of
+ * PkgSourceOwnership's inline items for this table, which is also what
+ * finally put a conflict's required keys in front of the
+ * contract-vs-daemon gate (#605). */
+function renderPkgSourceHeld(ownership) {
+	renderTable(document.getElementById("pkg-source-held"), "PkgSourceConflict",
+	    ownership.conflicts, [
+		{ field: "item", label: "Item" },
+		{ field: "offered_by", label: "Offered by" },
+		{ label: "", actions: (c) => {
+			const choose = document.createElement("button");
 
-	if (unchangedAndRendered(body, "pkg-source-held", ownership))
-		return;
-	body.textContent = "";
-	if (ownership.conflicts.length === 0) {
-		simpleTableRows(body, [], 3, emptyStateText("getPkgSourceOwnership", "source ownership", "Nothing is held"));
-		return;
-	}
-	for (const c of ownership.conflicts) {
-		const row = document.createElement("tr");
-		const item = document.createElement("td");
-		const by = document.createElement("td");
-		const actions = document.createElement("td");
-		const choose = document.createElement("button");
+			choose.type = "button";
+			choose.className = "button-small";
+			choose.textContent = "Choose source";
+			choose.addEventListener("click", () => {
+				const select = document.getElementById("psof-source");
 
-		item.textContent = c.item;
-		by.textContent = c.offered_by;
-		choose.type = "button";
-		choose.className = "button-small";
-		choose.textContent = "Choose source";
-		choose.addEventListener("click", () => {
-			const select = document.getElementById("psof-source");
+				select.textContent = "";
+				for (const name of c.offered_by.split(", ")) {
+					const opt = document.createElement("option");
 
-			select.textContent = "";
-			for (const name of c.offered_by.split(", ")) {
-				const opt = document.createElement("option");
-
-				opt.value = name;
-				opt.textContent = name;
-				select.appendChild(opt);
-			}
-			document.getElementById("psof-item").value = c.item;
-			openModal("pkg-source-own-form", "Choose the source of " + c.item);
-		});
-		gateAction(choose, "setPkgSourceOwnership");
-		actions.appendChild(choose);
-		row.appendChild(item);
-		row.appendChild(by);
-		row.appendChild(actions);
-		body.appendChild(row);
-	}
+					opt.value = name;
+					opt.textContent = name;
+					select.appendChild(opt);
+				}
+				document.getElementById("psof-item").value = c.item;
+				openModal("pkg-source-own-form", "Choose the source of " + c.item);
+			});
+			gateAction(choose, "setPkgSourceOwnership");
+			return [choose];
+		} },
+	], {
+		op: "getPkgSourceOwnership",
+		what: "source ownership",
+		empty: "Nothing is held",
+	});
 }
 
 /* ADR-0324: the recipe form's source choices, from the same list the
@@ -11690,14 +11664,20 @@ async function refreshPkgSources() {
 		fillRecipeSourceSelect(data.sources);
 		renderPkgSourcesTable(data.sources);
 	} catch (e) {
-		simpleTableRows(document.getElementById("pkg-sources-body"), [], 8, refusalText(e, "recipe sources"));
+		/* apiRequest() has recorded this failure against the op, and
+		 * renderTable's listState() turns it into the refusal sentence,
+		 * so an empty list is all either table needs here. Both used to
+		 * write the sentence themselves through simpleTableRows -- a
+		 * second copy of the decision, and one that skipped the
+		 * renderer's guard. */
+		renderPkgSourcesTable([]);
 	}
 	try {
 		const ownership = await apiRequest("GET", CIX_API.getPkgSourceOwnership());
 
-		renderPkgSourceHeld(ownership, cache.pkgSources || []);
+		renderPkgSourceHeld(ownership);
 	} catch (e) {
-		simpleTableRows(document.getElementById("pkg-source-held-body"), [], 3, refusalText(e, "source ownership"));
+		renderPkgSourceHeld({ conflicts: [] });
 	}
 }
 
@@ -12446,8 +12426,8 @@ async function refreshPkgRepositories() {
 		cache.pkgRepositories = data.repositories;
 		renderPkgRepositoriesTable(data.repositories);
 	} catch (e) {
-		simpleTableRows(document.getElementById("pkg-repositories-body"), [], 5,
-			refusalText(e, "package repositories"));
+		/* listState() already has this failure; see refreshPkgSources(). */
+		renderPkgRepositoriesTable([]);
 	}
 }
 
@@ -13454,80 +13434,52 @@ async function removeKmodConfig(name) {
 	}
 }
 
+/*
+ * Generated (#592), both tables. The loaded list's "Used by" is the
+ * count with the users beside it -- two fields, so derived -- and the
+ * config's options are an object of `name=value` pairs, which is also
+ * derived; an empty one says "—" where it said "(none)".
+ */
 function renderKmodList() {
-	const tbody = document.getElementById("kmod-body");
+	renderTable(document.getElementById("kmod-table"), "KmodEntry", cache.kmodModules, [
+		"name",
+		"size",
+		{ label: "Used by", text: (m) => m.used_by_count +
+			(m.used_by && m.used_by.length > 0 ? " [" + m.used_by.join(",") + "]" : "") },
+		"state",
+		{ label: "", actions: (m) => {
+			const unload = document.createElement("button");
 
-	/* #432: an unchanged table is left alone. Blanking and rebuilding
-	 * it on every tick costs the reader their scroll position. */
-	if (unchangedAndRendered(tbody, "kmod",
-	    listSignature(cache.kmodModules, "listKmod", "loaded modules",
-	        "No modules loaded.")))
-		return;
-	tbody.textContent = "";
-	if (cache.kmodModules.length === 0) {
-		simpleTableRows(tbody, [], 5,
-		    emptyStateText("listKmod", "loaded modules", "No modules loaded."));
-	} else {
-		for (const m of cache.kmodModules) {
-			const row = document.createElement("tr");
-			const name = document.createElement("td");
-			const size = document.createElement("td");
-			const usedBy = document.createElement("td");
-			const state = document.createElement("td");
-			const actionCell = document.createElement("td");
-			const unloadButton = document.createElement("button");
+			unload.textContent = "Unload";
+			unload.className = "button-danger";
+			gateAction(unload, "deleteKmod");
+			unload.addEventListener("click", () => unloadKmod(m.name));
+			return [unload];
+		} },
+	], { op: "listKmod", what: "loaded modules", empty: "No modules loaded." });
 
-			name.textContent = m.name;
-			size.textContent = m.size;
-			usedBy.textContent = m.used_by_count + (m.used_by && m.used_by.length > 0 ? " [" + m.used_by.join(",") + "]" : "");
-			state.textContent = m.state;
-			unloadButton.textContent = "Unload";
-			gateAction(unloadButton, "deleteKmod");
-			unloadButton.className = "button-danger";
-			unloadButton.addEventListener("click", () => unloadKmod(m.name));
-			actionCell.appendChild(unloadButton);
-			row.appendChild(name);
-			row.appendChild(size);
-			row.appendChild(usedBy);
-			row.appendChild(state);
-			row.appendChild(actionCell);
-			tbody.appendChild(row);
-		}
-	}
-
-	const configBody = document.getElementById("kmodconfig-body");
-
-	configBody.textContent = "";
-	if (cache.kmodConfig.length === 0) {
-		simpleTableRows(configBody, [], 4,
-		    emptyStateText("listKmodConfig", "persisted module options",
-		        "No kmod config persisted."));
-		return;
-	}
-	for (const c of cache.kmodConfig) {
-		const row = document.createElement("tr");
-		const name = document.createElement("td");
-		const options = document.createElement("td");
-		const autoload = document.createElement("td");
-		const actionCell = document.createElement("td");
-		const rmButton = document.createElement("button");
-
-		name.textContent = c.name;
-		options.textContent = c.default_options && Object.keys(c.default_options).length > 0
+	renderTable(document.getElementById("kmodconfig-table"), "KmodConfigEntry",
+	    cache.kmodConfig, [
+		"name",
+		{ label: "Default options", text: (c) => (c.default_options &&
+			Object.keys(c.default_options).length > 0
 			? Object.entries(c.default_options).map(([k, v]) => k + "=" + v).join(" ")
-			: "(none)";
-		autoload.textContent = c.autoload ? "yes" : "no";
-		rmButton.textContent = "Remove";
-		gateAction(rmButton, "deleteKmodConfig");
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removeKmodConfig(c.name));
-		actionCell.appendChild(rmButton);
-		row.appendChild(name);
-		row.appendChild(options);
-		row.appendChild(autoload);
-		row.appendChild(actionCell);
-		configBody.appendChild(row);
-	}
+			: FIELD_ABSENT) },
+		"autoload",
+		{ label: "", actions: (c) => {
+			const rm = document.createElement("button");
+
+			rm.textContent = "Remove";
+			rm.className = "button-danger";
+			gateAction(rm, "deleteKmodConfig");
+			rm.addEventListener("click", () => removeKmodConfig(c.name));
+			return [rm];
+		} },
+	], {
+		op: "listKmodConfig",
+		what: "persisted module options",
+		empty: "No kmod config persisted.",
+	});
 }
 
 document.getElementById("kmod-load-form").addEventListener("submit", async (event) => {

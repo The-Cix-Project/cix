@@ -181,7 +181,7 @@ static void check_scalars_are_quoted(void)
  * AN INSTANT DECLARES ITSELF, so a reader does not have to recognise
  * the name.
  *
- * `format: unix-seconds` on 36 integer properties is what lets the
+ * `format: unix-seconds` on 35 integer properties is what lets the
  * dashboard render a moment from the contract instead of from twenty
  * hand-rolled `new Date(x * 1000)` call sites. The convention is only
  * worth having if the NEXT instant carries it too, and nothing fails
@@ -265,8 +265,13 @@ static void check_instants_declare_their_format(void)
 		     "format declared", name_line, name);
 	fclose(f);
 	if (checked < 15)
+		/* The floor is 15 against 29 such properties, measured
+		 * 2026-10-16 -- about half, so a contract that legitimately
+		 * shrinks does not trip it and a reader that silently matches
+		 * nothing does. */
 		fail("only %d integer instants were checked for format: unix-seconds -- the "
-		     "contract has 28, so this gate is not reading what it thinks it is",
+		     "floor is 15 and the contract has about twice that named _at, _until "
+		     "or _unixtime, so this gate is not reading what it thinks it is",
 		     checked);
 }
 
