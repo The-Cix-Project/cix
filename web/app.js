@@ -14445,7 +14445,10 @@ function boDrawStats(container) {
 		maxY: Math.max(100, ...cpu),
 		formatY: (v) => v.toFixed(0) + "%",
 	});
-	drawChart(fig.querySelector(".bo-mem"), [{ values: h.map((s) => s.memCurrent), color: seriesColor(2) }], {
+	/* series-1 like every single-series chart here: series-2 is the
+	 * caption colour in dark mode, and a lone line needs no identity
+	 * colour (#601). */
+	drawChart(fig.querySelector(".bo-mem"), [{ values: h.map((s) => s.memCurrent), color: seriesColor(1) }], {
 		times: h.map((s) => s.t),
 		formatY: formatBytes,
 	});
