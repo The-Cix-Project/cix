@@ -11781,6 +11781,7 @@ paths:
         stages are exactly the ones worth seeing are empty.
       operationId: getPipeline
       x-cix-read: state
+      x-cix-composed-of: [listPkg, listImages, getEsp, listDeployments, listContainers, getSourceCatalogue]
       x-cix-permission: packages:read
       x-cix-expose: [cli, web]
       responses:

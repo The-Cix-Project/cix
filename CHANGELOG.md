@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A view is announced with its inputs: `x-cix-composed-of` (ADR-0339, #599)
+
+The first live run of the box's self-check (0.2.57-526) caught `getPipeline` changing unannounced. The
+pipeline is a view joined at read time from packages, images, the ESP, deployments, containers and the
+source catalogue, and those inputs were announced while the view was not.
+
+- **The declaration:** a view now lists its inputs in the contract, and announcing any input announces
+  the view. `apigen` refuses a view built from itself or from another view, and `test_events_drift`
+  proves the propagation.
+- **Boot confirmation:** confirming the booted ESP entry, which the daemon does by itself minutes after
+  boot, now announces the ESP and boot reads.
+
 ### The status bar shows its version and uptime together, and after a restart
 
 Reported by the owner: the bottom-left corner (build, slot, uptime, load) appeared late and incomplete.

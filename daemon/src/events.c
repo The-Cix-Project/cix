@@ -44,13 +44,25 @@ const char *events_epoch(void)
 	return g_epoch;
 }
 
-void events_announce(int slot)
+static void bump(int slot)
 {
-	if (slot < 0 || slot >= EVENTS_READ_COUNT)
-		return;
 	g_generation[slot]++;
 	if (g_listener != NULL)
 		g_listener(slot);
+}
+
+void events_announce(int slot)
+{
+	int i;
+
+	if (slot < 0 || slot >= EVENTS_READ_COUNT)
+		return;
+	bump(slot);
+	/* A view joined from this read changed with it (x-cix-composed-of).
+	 * One level: apigen refuses a view built from a view. */
+	for (i = 0; i < EVENTS_COMPOSED_COUNT; i++)
+		if (g_events_composed[i].component == slot)
+			bump(g_events_composed[i].view);
 }
 
 int events_announce_change(const char *op_id)

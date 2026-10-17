@@ -171,6 +171,17 @@ Recorded as each step lands, where the implementation is narrower than or depart
   can change any read, so they declare `x-cix-invalidates: [*]`, which announces every read. `apigen`
   accepts `*` only standing alone. 524's run had failed without naming the read; the test now prints
   the daemon's `events` log lines when drift is found, which is how 525 named it.
+- **The first live check caught a view** (0.2.57-526 on 192.168.15.95). `cixctl events verify`
+  compared 84 state reads in 0.44 s and named one: `getPipeline`, a read-time join (ADR-0256) whose
+  inputs were announced while the view itself was not. Some of those inputs are daemon-made changes:
+  containers becoming ready after boot, and the booted ESP entry being confirmed minutes later. Two
+  changes answer it:
+  - **`x-cix-composed-of`** declares a view's inputs once, and announcing any input announces the
+    view. One level only, and gated by `apigen`.
+  - **`confirm_boot()`** now announces `getEsp` and `getSystemBoot`.
+
+  `getConfig`, made `derived` the step before, is the same kind of view and could take this mechanism
+  instead, which would make Running Config live. It is left `derived` for now.
 - **The drift decision is pure and tested without a daemon.** `events_hash_body()` and
   `events_observe()` live in `events.c`, and `test_events_drift` drives them through the case no daemon
   test can produce cleanly: a state change with no announcement.

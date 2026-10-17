@@ -648,6 +648,37 @@ int main(void)
 	               "      x-cix-invalidates: [tailThing]\n"
 	               "      x-cix-permission: public\n",
 	               "a stream read");
+	expect_refusal("a view composed of itself",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: getThing\n"
+	               "      x-cix-read: state\n"
+	               "      x-cix-composed-of: [getThing]\n"
+	               "      x-cix-permission: public\n",
+	               "composed of itself");
+	expect_refusal("a view composed of a view",
+	               VOCAB
+	               "paths:\n"
+	               "  /a:\n"
+	               "    get:\n"
+	               "      operationId: getA\n"
+	               "      x-cix-read: state\n"
+	               "      x-cix-permission: public\n"
+	               "  /b:\n"
+	               "    get:\n"
+	               "      operationId: getB\n"
+	               "      x-cix-read: state\n"
+	               "      x-cix-composed-of: [getA]\n"
+	               "      x-cix-permission: public\n"
+	               "  /c:\n"
+	               "    get:\n"
+	               "      operationId: getC\n"
+	               "      x-cix-read: state\n"
+	               "      x-cix-composed-of: [getB]\n"
+	               "      x-cix-permission: public\n",
+	               "itself a view");
 	expect_refusal("an invalidation list mixing * with names",
 	               VOCAB
 	               "paths:\n"

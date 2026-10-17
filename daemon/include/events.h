@@ -39,6 +39,13 @@ struct events_read {
 	int self_readable;           /* no path parameter: the daemon can run it itself */
 };
 
+/* A view and one read it is joined from (x-cix-composed-of): announcing
+ * the component announces the view. */
+struct events_composed {
+	int view;
+	int component;
+};
+
 /* One change, and the slots it makes stale (n == 0 for an explicit []). */
 struct events_change {
 	const char *op_id;

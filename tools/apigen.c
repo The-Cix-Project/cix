@@ -206,6 +206,14 @@ struct api_op {
 	char invalidates[APIGEN_INVALIDATES_MAX];
 	int invalidates_set;
 	char volatile_fields[APIGEN_EXPOSE_MAX];
+	/*
+	 * ADR-0339: a VIEW joined at read time from other reads (the
+	 * pipeline joins packages, images, the ESP, deployments, containers
+	 * and the source catalogue). Announcing any of these announces the
+	 * view too, so the view is declared once here rather than added to
+	 * every change and every daemon site that touches one of its inputs.
+	 */
+	char composed_of[APIGEN_INVALIDATES_MAX];
 };
 
 /*
@@ -2355,6 +2363,35 @@ static void check_read_annotations(const char *spec)
 			       "%s %s: x-cix-sample-period goes with x-cix-read: sample, and only "
 			       "with it",
 			       o->method, o->path);
+		/* A view: a state read, joined from announced reads that are not
+		 * themselves views -- one level, so there is no cycle to reason
+		 * about and an announcement reaches its views in one step. */
+		for (p = o->composed_of; *p != '\0';) {
+			const char *comma = strchr(p, ',');
+			size_t n = comma != NULL ? (size_t)(comma - p) : strlen(p);
+			const struct api_op *t = op_by_id(p, n);
+
+			if (strcmp(o->read_kind, "state") != 0)
+				die_at(spec, o->line,
+				       "%s %s: x-cix-composed-of declares a view, which is a state read",
+				       o->method, o->path);
+			if (t == NULL || strcmp(t->method, "GET") != 0 ||
+			    (strcmp(t->read_kind, "state") != 0 && strcmp(t->read_kind, "sample") != 0 &&
+			     strcmp(t->read_kind, "session") != 0))
+				die_at(spec, o->line,
+				       "%s %s is composed of \"%.*s\", which is not an announced read",
+				       o->method, o->path, (int)n, p);
+			if (t == o)
+				die_at(spec, o->line, "%s %s cannot be composed of itself", o->method,
+				       o->path);
+			if (t->composed_of[0] != '\0')
+				die_at(spec, o->line,
+				       "%s %s is composed of \"%.*s\", which is itself a view -- one level only",
+				       o->method, o->path, (int)n, p);
+			p += n;
+			if (*p == ',')
+				p++;
+		}
 		if (o->volatile_fields[0] != '\0' && strcmp(o->read_kind, "state") != 0)
 			die_at(spec, o->line,
 			       "%s %s: x-cix-volatile-fields only applies to a state read -- it names "
@@ -2518,6 +2555,31 @@ static void emit_events_table(const char *out_path, const char *spec)
 		n_changes++;
 	}
 	fprintf(o, "};\n\n#define EVENTS_CHANGE_COUNT %d\n", n_changes);
+
+	/* ADR-0339: (view, component) pairs from x-cix-composed-of. A
+	 * trailing sentinel keeps the array non-empty when no view exists;
+	 * EVENTS_COMPOSED_COUNT does not count it. */
+	{
+		int n_pairs = 0;
+
+		fprintf(o, "\nstatic const struct events_composed g_events_composed[] = {\n");
+		for (i = 0; i < g_op_count; i++) {
+			const char *p = g_ops[i].composed_of;
+
+			while (*p != '\0') {
+				const char *comma = strchr(p, ',');
+				size_t n = comma != NULL ? (size_t)(comma - p) : strlen(p);
+
+				fprintf(o, "\t{ %d, %d }, /* %s <- %.*s */\n", announced_slot(&g_ops[i]),
+				        announced_slot(op_by_id(p, n)), g_ops[i].op_id, (int)n, p);
+				n_pairs++;
+				p += n;
+				if (*p == ',')
+					p++;
+			}
+		}
+		fprintf(o, "\t{ -1, -1 },\n};\n\n#define EVENTS_COMPOSED_COUNT %d\n", n_pairs);
+	}
 	fclose(o);
 }
 
@@ -3309,6 +3371,9 @@ int main(int argc, char **argv)
 				flow_list_compact(g_ops[cur_op].invalidates, sizeof(g_ops[cur_op].invalidates),
 				                  value_of(line), spec, lineno, "x-cix-invalidates");
 				g_ops[cur_op].invalidates_set = 1;
+			} else if (strcmp(key, "x-cix-composed-of") == 0) {
+				flow_list_compact(g_ops[cur_op].composed_of, sizeof(g_ops[cur_op].composed_of),
+				                  value_of(line), spec, lineno, "x-cix-composed-of");
 			} else if (strcmp(key, "x-cix-volatile-fields") == 0) {
 				flow_list_compact(g_ops[cur_op].volatile_fields,
 				                  sizeof(g_ops[cur_op].volatile_fields), value_of(line), spec,

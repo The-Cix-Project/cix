@@ -2664,6 +2664,11 @@ static int confirm_boot(const char *slot)
 		perror("confirm_boot rename");
 		return -1;
 	}
+	/* ADR-0339: the booted entry is confirmed some minutes after boot,
+	 * by the daemon and no API call -- the ESP and boot reads show it,
+	 * and the pipeline's deploy stage through getEsp (composed-of). */
+	events_announce(EV_getEsp);
+	events_announce(EV_getSystemBoot);
 	return 0;
 }
 

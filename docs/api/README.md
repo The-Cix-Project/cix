@@ -946,6 +946,11 @@ Authorization: Basic base64("agent-1:3f9c...")
   - `stream`: a running tail or series (logs, stats, the console).
   - `derived`: a computation run on request (`pkg/verify`, `system/backup`).
 - **Every other operation says which reads it makes stale** with `x-cix-invalidates`, a list of `operationId`s. A change no read shows, such as a reboot, says `[]` rather than leaving the key out. A bulk change that can alter any read there is, applying a whole config document (`applyConfig`) or restoring a backup (`postSystemRestore`), says `[*]`. A list of everything would be wrong the day a read is added. Only state, sample and session reads may be named, because a stream is subscribed to and a derived read is computed on request.
+- **`x-cix-composed-of`** declares a view: a state read the daemon joins at read time from other reads.
+  `getPipeline` joins packages, images, the ESP, deployments, containers and the source catalogue.
+  Announcing any input announces the view, so the view is declared once rather than added to every
+  change and daemon site that touches an input. One level only: `apigen` refuses a view built from a
+  view.
 - **`x-cix-volatile-fields`** names a field of a state read that moves on its own, such as a session's `expires_in_seconds`, which the box's own drift check leaves out of its comparison.
 
 **What a client sees** (0.2.57-520):

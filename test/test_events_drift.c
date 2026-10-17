@@ -74,6 +74,18 @@ int main(void)
 	check(events_observe(EV_getHealth, 2) == 0 && events_generation(EV_getHealth) == gen + 1,
 	      "a sample that did not change is not announced");
 
+	/* A view (x-cix-composed-of): announcing a read it is joined from
+	 * announces the view, so its answer changing is not drift. The
+	 * first live check on 192.168.15.95 caught getPipeline drifting for
+	 * want of exactly this. */
+	gen = events_generation(EV_getPipeline);
+	events_announce(EV_listContainers);
+	check(events_generation(EV_getPipeline) == gen + 1,
+	      "announcing a view's component announces the view");
+	events_announce(EV_getSystemSite);
+	check(events_generation(EV_getPipeline) == gen + 1,
+	      "announcing a read the view is not built from leaves the view alone");
+
 	c = events_check_counts();
 	check(c.checked == 4 && c.drift == 1, "the counts are what was observed: 4 compared, 1 drift");
 
