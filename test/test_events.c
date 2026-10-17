@@ -227,7 +227,7 @@ int main(void)
 	}
 
 	/* 5. A refused change raises nothing: nothing changed. */
-	status = put_site(&client, "{\"instance_name\":\"\"}", change_gen, sizeof(change_gen));
+	status = put_site(&client, "{", change_gen, sizeof(change_gen));
 	if (status < 400 || status >= 500) {
 		char detail[32];
 

@@ -5018,6 +5018,7 @@ static void handle_uevent_event(struct conn *cc)
 	char buf[2048];
 	ssize_t n;
 	int is_add = 0, is_remove = 0, is_usb = 0, is_whole_device = 0;
+	int is_hardware = 0; /* ADR-0339: a subsystem the device and storage reads list */
 	size_t off;
 
 	n = recv(cc->fd, buf, sizeof(buf) - 1, 0);
@@ -5034,6 +5035,8 @@ static void handle_uevent_event(struct conn *cc)
 			is_remove = strcmp(line + 7, "remove") == 0;
 		} else if (strncmp(line, "SUBSYSTEM=", 10) == 0) {
 			is_usb = strcmp(line + 10, "usb") == 0;
+			is_hardware = is_usb || strcmp(line + 10, "block") == 0 ||
+			              strcmp(line + 10, "pci") == 0 || strcmp(line + 10, "scsi") == 0;
 		} else if (strncmp(line, "DEVPATH=", 8) == 0) {
 			const char *base = strrchr(line + 8, '/');
 
@@ -5043,10 +5046,13 @@ static void handle_uevent_event(struct conn *cc)
 		off += line_len + 1;
 	}
 
-	/* ADR-0339: any device arriving or leaving -- a disk, a partition, a
-	 * USB stick -- changes what the device and storage reads show, with
-	 * no API call for dispatch() to announce. */
-	if (is_add || is_remove) {
+	/* ADR-0339: a device arriving or leaving -- a disk, a partition, a
+	 * USB stick, a PCI function -- changes what the device and storage
+	 * reads show, with no API call for dispatch() to announce. Only the
+	 * subsystems those reads list: every container start adds a veth
+	 * (SUBSYSTEM=net), and announcing that would re-read devices and
+	 * storage on every container lifecycle event. */
+	if ((is_add || is_remove) && is_hardware) {
 		events_announce(EV_listDevices);
 		events_announce(EV_listStorage);
 	}
