@@ -879,7 +879,11 @@ int main(void)
 		char buf[4096];
 		FILE *f;
 		int count = -1, defines = 0, read_rows = 0, change_rows = 0, change_count = -1;
-		int out_of_range = 0;
+		int out_of_range = 0, stream_rows = 0, stream_count = -1;
+		/* Which array a row belongs to: the changes and the subscribable
+		 * streams have the same row shape, so a row is counted by where
+		 * it sits rather than by how it looks. */
+		int in_streams = 0;
 
 		snprintf(slots_path, sizeof(slots_path), "/tmp/apigen_evslots_%d.h", (int)getpid());
 		snprintf(table_path, sizeof(table_path), "/tmp/apigen_evtable_%d.h", (int)getpid());
@@ -901,12 +905,18 @@ int main(void)
 		f = fopen(table_path, "r");
 		if (f != NULL) {
 			while (fgets(buf, sizeof(buf), f) != NULL) {
+				if (strstr(buf, "g_events_streams[]") != NULL)
+					in_streams = 1;
 				if (strstr(buf, ", EVENTS_READ_") != NULL)
 					read_rows++;
+				else if (strncmp(buf, "\t{ \"", 4) == 0 && in_streams)
+					stream_rows++;
 				else if (strncmp(buf, "\t{ \"", 4) == 0)
 					change_rows++;
 				else if (strncmp(buf, "#define EVENTS_CHANGE_COUNT ", 28) == 0)
 					change_count = atoi(buf + 28);
+				else if (strncmp(buf, "#define EVENTS_STREAM_COUNT ", 28) == 0)
+					stream_count = atoi(buf + 28);
 				else if (strncmp(buf, "static const unsigned short ev_inv_", 35) == 0) {
 					const char *p = strchr(buf, '{');
 
@@ -936,6 +946,10 @@ int main(void)
 			fail("the events table declares %d changes and has %d change rows; both should "
 			     "be 199, one per non-GET operation (ADR-0339)",
 			     change_count, change_rows);
+		if (stream_count != 7 || stream_rows != stream_count)
+			fail("the events table declares %d subscribable reads and has %d stream rows; "
+			     "both should be 7, the stream reads with a period (ADR-0339 phase 2)",
+			     stream_count, stream_rows);
 		if (out_of_range > 0)
 			fail("%d invalidation slot(s) in the events table fall outside the generation "
 			     "vector%s",
