@@ -1670,7 +1670,7 @@ paths:
         The DNS record is also reconciled once at daemon startup, so it exists without
         needing a PUT after every restart.
       operationId: putSystemSite
-      x-cix-invalidates: [getSystemSite]
+      x-cix-invalidates: [getSystemSite, listDnsRecords, getDnsRecord, listPkiCerts, getPkiCert]
       x-cix-permission: config:write
       x-cix-expose: [cli, web]
       requestBody:
@@ -9407,7 +9407,7 @@ paths:
         this install's own "host" leaf (ADR-0050) if site config is already set --
         best-effort, never fails this request.
       operationId: createPkiCa
-      x-cix-invalidates: [getPkiCa]
+      x-cix-invalidates: [getPkiCa, listPkiCerts, getPkiCert]
       x-cix-permission: pki:write
       x-cix-expose: [cli, web]
       requestBody:
@@ -9482,7 +9482,7 @@ paths:
         "host" leaf (ADR-0050) so it's signed by the intermediate too -- best-effort,
         never fails this request.
       operationId: createPkiIntermediate
-      x-cix-invalidates: [getPkiIntermediate]
+      x-cix-invalidates: [getPkiIntermediate, listPkiCerts, getPkiCert]
       x-cix-permission: pki:write
       x-cix-expose: [cli, web]
       requestBody:
@@ -9744,7 +9744,7 @@ paths:
         certs delivered from the previous store are not restaged --
         recreate them (or reboot) to have the restored certs staged in.
       operationId: importPki
-      x-cix-invalidates: [getPkiCa, getPkiIntermediate, listPkiCerts]
+      x-cix-invalidates: [getPkiCa, getPkiIntermediate, listPkiCerts, getPkiCert]
       x-cix-permission: pki:write
       x-cix-expose: [cli]
       requestBody:

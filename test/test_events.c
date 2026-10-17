@@ -522,8 +522,22 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "GET", "/v1/events/status", NULL, &r) != 0 || r.json == NULL ||
 	    json_object_get(r.json, "drift") == NULL ||
-	    json_as_number(json_object_get(r.json, "drift")) != 0)
-		fail("events/status reports zero drift", "");
+	    json_as_number(json_object_get(r.json, "drift")) != 0) {
+		struct cix_response lr;
+
+		fail("events/status reports zero drift -- the rolling check found some during the run",
+		     "");
+		/* The daemon names each drifted read in its log store, which
+		 * this test's data directory takes with it on exit -- so read
+		 * it now, or a failure here says only that something drifted
+		 * (logstore_write() never reaches stderr). */
+		memset(&lr, 0, sizeof(lr));
+		if (cix_client_request(&client, "GET", "/v1/system/logs?source=events&tail=20", NULL,
+		                       &lr) == 0 &&
+		    lr.body != NULL)
+			fprintf(stderr, "      events log: %s\n", lr.body);
+		cix_response_free(&lr);
+	}
 	cix_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0)
