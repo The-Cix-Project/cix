@@ -216,6 +216,12 @@ Recorded as each step lands, where the implementation is narrower than or depart
 
   A drift found later is also announced (`events_observe()`), as well as counted and logged. A page is
   not left stale for longer than one check, while the log still names the missing site for fixing.
+
+  **An eleventh, on 532** (21:48:09Z): `listContainers` changed because a capturing container's
+  `captured_output` tail grew, as `cr-1`'s keepalived wrote after boot. It was rare because the
+  tail is bounded and stops growing when full. 535 declares the field volatile in the list and
+  announces `getContainer` on each append, since the container's own page shows that tail. #607's
+  clock restarted from 535.
 - **Phase 2, release A: subscriptions** (0.2.57-531).
   - **A stream read is subscribable when it declares `x-cix-sample-period`.** The period is its sampling
     cadence, so the 2 s the dashboard polled at moved into the contract. `apigen` accepts the key on a
