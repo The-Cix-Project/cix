@@ -35727,7 +35727,7 @@ static int cixd_main(int argc, char **argv)
 			/* #608: timed, and named by kind -- read now, since a
 			 * handler may free cc. */
 			handled_kind = cc->kind;
-			handler_started = stallwatch_now_millis();
+			handler_started = stallwatch_handler_start();
 			if (cc->kind == CONN_LISTENER || cc->kind == CONN_LISTENER_TLS)
 				accept_loop(cc);
 			else if (cc->kind == CONN_CONTAINER)

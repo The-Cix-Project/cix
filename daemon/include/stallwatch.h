@@ -85,10 +85,10 @@ void stallwatch_activity_clear(void);
  * to its slowest handler, named by the request it served when one named
  * itself and otherwise by `kind`, the event's connection kind -- so a
  * pass spent in a child's completion or a timer says which, where it
- * used to say "". stallwatch_now_millis() is the clock it is measured
- * on, for the start.
+ * used to say "". stallwatch_handler_start() begins one handler's timing
+ * and returns its start, on the clock stallwatch_handler_done() reads.
  */
-long long stallwatch_now_millis(void);
+long long stallwatch_handler_start(void);
 void stallwatch_handler_done(const char *kind, long long started_millis);
 /* #303: read the current in-flight activity (into shared memory), for the
  * crash handler's trace. NULL if the watchdog never started; a caller must

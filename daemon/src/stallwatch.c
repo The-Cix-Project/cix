@@ -141,6 +141,14 @@ struct stall_shared {
 	volatile long long pass_slowest_handler_millis;
 	char pass_slowest_handler[STALL_ACTIVITY_MAX];
 	/*
+	 * What the handler now running named itself, if anything: set by
+	 * stallwatch_activity() and kept until the next handler starts. Not
+	 * `activity`, which the request path clears as soon as dispatch()
+	 * returns -- inside the handler, before the loop can read it -- so
+	 * the first version of #608 named every request "event client".
+	 */
+	char handler_activity[STALL_ACTIVITY_MAX];
+	/*
 	 * Where the watchdog should ask the daemon whether it is actually
 	 * SERVING (#247).
 	 *
@@ -1095,8 +1103,10 @@ void stallwatch_heartbeat(void)
 	g_shared->pass_slowest_handler[0] = '\0';
 }
 
-long long stallwatch_now_millis(void)
+long long stallwatch_handler_start(void)
 {
+	if (g_shared != NULL)
+		g_shared->handler_activity[0] = '\0';
 	return monotonic_millis();
 }
 
@@ -1110,12 +1120,11 @@ void stallwatch_handler_done(const char *kind, long long started_millis)
 	if (took <= g_shared->pass_slowest_handler_millis)
 		return;
 	g_shared->pass_slowest_handler_millis = took;
-	/* A request names itself (activity is still set until the loop
-	 * clears it after this call); anything else is named by the kind
-	 * of event it handled. */
-	if (g_shared->activity[0] != '\0')
+	/* A handler that served a request is named by it; anything else by
+	 * the kind of event it handled. */
+	if (g_shared->handler_activity[0] != '\0')
 		snprintf(g_shared->pass_slowest_handler, STALL_ACTIVITY_MAX, "%s (%lld ms)",
-		         g_shared->activity, took);
+		         g_shared->handler_activity, took);
 	else
 		snprintf(g_shared->pass_slowest_handler, STALL_ACTIVITY_MAX, "event %s (%lld ms)", kind,
 		         took);
@@ -1137,6 +1146,8 @@ void stallwatch_activity(const char *what)
 	/* Survives activity_clear(), so the pass can still be attributed
 	 * when it is booked at the end (#229). */
 	snprintf(g_shared->pass_activity, STALL_ACTIVITY_MAX, "%s", what);
+	/* And so can the handler, when the loop times it (#608). */
+	snprintf(g_shared->handler_activity, STALL_ACTIVITY_MAX, "%s", what);
 }
 
 /*

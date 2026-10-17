@@ -23,6 +23,11 @@ log tail, and each append announces `getContainer`, so the container's own page 
 - **The fix:** the loop now times each event's handler, and a pass is attributed to its slowest one.
   That is named by its request when it served one (`GET /v1/... (1249 ms)`), and otherwise by the
   connection kind of the event it handled (`event pkg-buildenv (4870 ms)`).
+- **534's first version named every request `event client`.** The request path clears the activity
+  label as soon as `dispatch()` returns, inside the handler and before the loop could read it. On
+  534 it recorded three 0.8–2.0 s passes that way, 30 s apart after the reboot. Their cause is not
+  established; the likeliest reading is logins, whose bcrypt check runs in the loop, but nothing
+  measured that. 536 keeps a per-handler label that survives the clear.
 - **The names** are a designated table beside the kind enum, and `test_stallwatch` fails a kind
   added without one.
 
