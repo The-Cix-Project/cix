@@ -6,6 +6,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A disk's allocation chart colours by class, from tokens; styling leaves app.js (#592)
+
+The disk page's allocation chart cycled eight `hsl()` hues computed in `app.js`, defined for neither
+theme. The brand guidelines rule that out in as many words: *"use semantic accents to distinguish
+resource classes or state, never random series colouring."* A segment's colour now says what class of
+space it is -- an operator's partition (or a filesystem's used space) in `--series-1`, a protected OS
+partition in `--series-2`, free space in `--muted` at reduced opacity -- set by class in `style.css`,
+and the legend's label says which one. A thin gap separates neighbours, since two partitions of one
+class are one colour. The resize handles' page-wide cursor is a body class instead of `body.style`.
+
+Of the 25 inline style writes `app.js` had, the 19 left are geometry only: a panel's height, a menu's
+or a floating window's position, a bar's width, a tree row's indent -- values measured or computed at
+run time, which a stylesheet cannot hold.
+
 ### A path builder called with the wrong number of arguments fails a gate (#592)
 
 The recipe-version bug fixed in 0.2.57-510 was a call passing two arguments to a builder that takes

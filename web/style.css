@@ -916,6 +916,16 @@ main {
 	opacity: 0.5;
 }
 
+/* While a resize handle is dragged, the whole page wears its cursor and
+ * selects no text -- set by app.js as a class, where it used to write
+ * body.style directly (#592). */
+body.resizing-col,
+body.resizing-row {
+	user-select: none;
+}
+body.resizing-col { cursor: col-resize; }
+body.resizing-row { cursor: row-resize; }
+
 .resize-handle-v {
 	top: 0;
 	right: -3px;
@@ -2714,6 +2724,23 @@ body.console-popout #content-scroll {
 	border-radius: 2px;
 	flex: 0 0 auto;
 }
+
+/*
+ * A segment's colour says what CLASS of space it is, never which one --
+ * the legend's label says that. The brand guidelines: "use semantic
+ * accents to distinguish resource classes or state, never random series
+ * colouring." The chart used to cycle eight hsl() hues computed in
+ * app.js, defined for neither theme (#592). Three classes, all tokens:
+ * an operator's partition (or a filesystem's used space), a protected
+ * OS partition -- nickel, the "cannot be touched" neutral -- and free
+ * space, the muted ink at reduced opacity.
+ */
+.alloc-seg-part { stroke: var(--series-1); }
+.alloc-seg-os { stroke: var(--series-2); }
+.alloc-seg-free { stroke: var(--muted); opacity: 0.35; }
+.alloc-swatch-part { background: var(--series-1); }
+.alloc-swatch-os { background: var(--series-2); }
+.alloc-swatch-free { background: var(--muted); opacity: 0.35; }
 
 /*
  * "Numbers in monitoring tables should use tabular figures where

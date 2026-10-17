@@ -222,8 +222,7 @@ function makeResizable(handle, opts) {
 			return;
 		dragging = false;
 		handle.classList.remove("dragging");
-		document.body.style.cursor = "";
-		document.body.style.userSelect = "";
+		document.body.classList.remove("resizing-col", "resizing-row");
 		document.removeEventListener("mousemove", onMove);
 		document.removeEventListener("mouseup", onUp);
 		try {
@@ -239,8 +238,9 @@ function makeResizable(handle, opts) {
 		startPos = axis === "x" ? event.clientX : event.clientY;
 		startSize = lastSize;
 		handle.classList.add("dragging");
-		document.body.style.cursor = axis === "x" ? "col-resize" : "row-resize";
-		document.body.style.userSelect = "none";
+		/* The cursor and the no-select for the whole page while the drag
+		 * lasts -- a class, so what it looks like is the stylesheet's. */
+		document.body.classList.add(axis === "x" ? "resizing-col" : "resizing-row");
 		document.addEventListener("mousemove", onMove);
 		document.addEventListener("mouseup", onUp);
 	});
@@ -8013,10 +8013,8 @@ function renderDiskAllocationChart(d, parts) {
 	const R = 54;
 	const C = 2 * Math.PI * R;
 	const SVG_NS = "http://www.w3.org/2000/svg";
-	/* Distinct hues, with protected partitions deliberately desaturated
-	 * so "cannot be touched" reads at a glance rather than needing the
-	 * legend. */
-	const hues = [200, 160, 40, 280, 340, 100, 20, 240];
+	/* Each segment's `kind` -- part, os or free -- is a class in
+	 * style.css; the colour is a token there, defined for both themes. */
 	let allocated = 0;
 	const segments = [];
 
@@ -8028,7 +8026,7 @@ function renderDiskAllocationChart(d, parts) {
 			segments.push({
 				label: "used",
 				bytes: used,
-				color: "hsl(200,58%,52%)",
+				kind: "part",
 				note: d.fs_type || "",
 			});
 		}
@@ -8036,9 +8034,8 @@ function renderDiskAllocationChart(d, parts) {
 			segments.push({
 				label: "free",
 				bytes: avail,
-				color: "var(--muted, #888)",
+				kind: "free",
 				note: "available",
-				isFree: true,
 			});
 		}
 		/*
@@ -8056,21 +8053,19 @@ function renderDiskAllocationChart(d, parts) {
 			segments.push({
 				label: "filesystem overhead",
 				bytes: overhead,
-				color: "var(--muted, #888)",
+				kind: "free",
 				note: "metadata and reserved blocks",
-				isFree: true,
 			});
 		}
 	} else {
-		parts.forEach((p, i) => {
+		parts.forEach((p) => {
 			const bytes = p.size_bytes || 0;
 
 			allocated += bytes;
 			segments.push({
 				label: p.name,
 				bytes: bytes,
-				color: p.protected ? "hsl(" + hues[i % hues.length] + ",12%,55%)"
-				                   : "hsl(" + hues[i % hues.length] + ",58%,52%)",
+				kind: p.protected ? "os" : "part",
 				note: p.protected ? "protected" : p.part_label || "",
 			});
 		});
@@ -8080,9 +8075,8 @@ function renderDiskAllocationChart(d, parts) {
 			segments.push({
 				label: "unallocated",
 				bytes: free,
-				color: "var(--muted, #888)",
+				kind: "free",
 				note: "available",
-				isFree: true,
 			});
 		}
 	}
@@ -8100,24 +8094,27 @@ function renderDiskAllocationChart(d, parts) {
 	svg.setAttribute("aria-label", (wholeDisk ? "Filesystem usage for " : "Partition allocation for ") + d.name);
 
 	let offset = 0;
+	/* A thin gap between neighbouring segments: two partitions of the
+	 * same class are one colour now, and without it they would read as
+	 * one partition. */
+	const gap = segments.length > 1 ? 1.5 : 0;
 
 	for (const seg of segments) {
 		const circle = document.createElementNS(SVG_NS, "circle");
 		const len = (seg.bytes / d.size_bytes) * C;
+		const drawn = Math.max(0, len - Math.min(gap, len / 2));
 
 		circle.setAttribute("cx", "70");
 		circle.setAttribute("cy", "70");
 		circle.setAttribute("r", String(R));
 		circle.setAttribute("fill", "none");
-		circle.setAttribute("stroke", seg.color);
+		circle.setAttribute("class", "alloc-seg-" + seg.kind);
 		circle.setAttribute("stroke-width", "18");
-		circle.setAttribute("stroke-dasharray", len + " " + (C - len));
+		circle.setAttribute("stroke-dasharray", drawn + " " + (C - drawn));
 		circle.setAttribute("stroke-dashoffset", String(-offset));
 		/* Start at twelve o'clock; the default is three, which reads
 		 * as an arbitrary rotation rather than a whole. */
 		circle.setAttribute("transform", "rotate(-90 70 70)");
-		if (seg.isFree)
-			circle.setAttribute("opacity", "0.35");
 		svg.appendChild(circle);
 		offset += len;
 	}
@@ -8132,10 +8129,7 @@ function renderDiskAllocationChart(d, parts) {
 		const swatch = document.createElement("span");
 		const pct = d.size_bytes > 0 ? (seg.bytes / d.size_bytes) * 100 : 0;
 
-		swatch.className = "alloc-swatch";
-		swatch.style.background = seg.color;
-		if (seg.isFree)
-			swatch.style.opacity = "0.35";
+		swatch.className = "alloc-swatch alloc-swatch-" + seg.kind;
 		li.appendChild(swatch);
 		li.appendChild(
 			document.createTextNode(
