@@ -2473,6 +2473,12 @@ and one flaw: a page's explanatory hint sat flush on the first label. 517 spaces
 .generated-form`): its selftest passed, it booted on slot `a` with 12/12 running, the box serves the
 rule, and the Configuration > Name tab, rendered from the box's stylesheet, shows the gap.
 
+**518: a reload no longer signs the operator out.** The owner reported it. The cause was older than
+this part: since d566f879 the dashboard's storage helpers called themselves, so nothing was ever
+stored (CHANGELOG). 518's selftest passed, including `test_web_tree`'s new storage-helper check.
+It booted on slot `b` with 12/12 running. In Chromium with a persistent profile, the box's served
+`app.js` stored a token in one launch, and the next launch read it at load.
+
 ## Part 282 (done): New Container renders from the contract, so every create form does (#592 epic, 0.2.57-513 and -514)
 
 The last hand-built create form -- 195 lines of markup and a 199-line submit handler that parsed

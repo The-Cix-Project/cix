@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A reload keeps the operator signed in: the dashboard stores its session again (0.2.57-518)
+
+Since d566f879 (2026-09-13) the dashboard's three storage helpers called themselves instead of
+`localStorage`. The sweep that routed every storage call through them also rewrote their own bodies.
+Each call recursed until the stack overflowed, and the guard's `catch` swallowed the error, so
+nothing was ever stored. Every reload signed the operator out, and the last view, the tree width,
+the log height and collapsed sections were forgotten too. `test_web_tree` now refuses a storage
+helper whose body does not reach `localStorage`.
+
 ### The page forms render from the contract too; four stay hand-built, each for a reason (#592)
 
 Forty-three forms on the dashboard's pages -- every settings form, every page action (stage an update,
