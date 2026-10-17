@@ -68,6 +68,8 @@ A menu covering a branch that has children of its own holds **submenus that open
 | | Daemon | Add Route, Set Sysctl |
 | | Devices | Name a Device Mapping, Load Module, Configure Module |
 
+Every one of these forms is drawn from the API contract, so a field reads the same in the form, in `cixctl` and in [the API reference](../api/README.md), and what the daemon would refuse the form refuses first ([ADR-0338](../adr/0338-the-dashboard-renders-from-the-contract.md)). Where the box holds the answer, the field is a choice of what exists rather than a text box: New Container's image, the networks its attachments join and the devices it may take are read from the host when the form opens. New Container is the long one, in sections; a service, a network attachment, a route, a device, a file, a volume and a console are each a row you add, with Add and Remove. A command is typed one argument per line. **User namespace** offers *Host default* as well as on and off, because leaving it to the host is its own choice — on a fresh host it is on.
+
 A submenu opens on hover, on click (so it works by touch and by keyboard), and closes when the pointer leaves the item it belongs to; opening one closes its siblings. One that would run off the right edge of the window flips to the left of its parent instead.
 
 The bar is 42px tall and its dropdown panels line up with the trigger's own label rather than its box -- both paddings are read from the live computed style, so the words agree even if either padding changes in CSS. The mark sits at its own size with the topics starting right after it.

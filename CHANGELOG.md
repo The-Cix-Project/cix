@@ -6,6 +6,31 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### New Container renders from the contract: every create form is generated (#592)
+
+The last hand-built create form, 195 lines of markup and a 199-line submit handler, is a generated form
+in nine authored sections. What it took:
+
+- **apigen emits `of: "<Schema>"`** on a field that holds a named schema -- a property that is a
+  `$ref`, an array whose items are one, or an items `oneOf` with one `$ref` member -- and refuses a
+  `oneOf` naming two. Three properties written as a bare `$ref` (`ScheduleWrite.schedule`,
+  `Pressure.some` and `.full`) had been emitted as strings until now. `APIGEN_MAX_FIELDS` is 64,
+  since the request reached 47 of 48.
+- **The form draws groups and rows**: a service, a network attachment, a route, a device, a file, a
+  volume and a console are each a row of its schema's fields, with Add and Remove, and a DNS or LDAP
+  server role is a group. The body is a walk that builds each nested object or array. An optional
+  group's fields are asked for only once the group is used.
+- **`x-cix-ui: lines`** for an argv, one argument per line, and **`x-cix-ui: tristate`** for `userns`,
+  whose absence means the host's default (on): an unticked box would have sent `false`. A select's
+  blank names the contract's default, and an empty input shows it as a placeholder.
+- **The contract**: `ldap_client` and `ldap_allow_groups` are declared (the daemon always read them;
+  only the operation's prose said so), every field is titled with a one-sentence hint, the request's
+  inline console shape references `ContainerConsole`, and `ServiceReady`, `DeviceGrantRequest`,
+  `DnsServerRole` and `LdapServerRole` are named. No byte on the wire changes.
+
+The hand-built form required a disk quota; the contract and the daemon do not, so neither does the
+form.
+
 ### Nine more create forms render from the contract; one is left (#592)
 
 Set Sysctl, Load Module, Configure Module, New Range (DHCP), Assign Disk Role, New/Update Recipe, New

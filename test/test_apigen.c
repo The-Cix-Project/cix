@@ -493,6 +493,41 @@ int main(void)
 	               "            type: string\n",
 	               "not the declared parameter");
 
+	/*
+	 * 5c. A list whose items are a `oneOf` naming TWO schemas (#592).
+	 * A form draws a list's rows from the one schema its items name;
+	 * with two, which row to draw would be a guess.
+	 */
+	expect_refusal("an items oneOf naming two schemas",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: getThing\n"
+	               "      x-cix-permission: public\n"
+	               "components:\n"
+	               "  schemas:\n"
+	               "    A:\n"
+	               "      type: object\n"
+	               "      properties:\n"
+	               "        x:\n"
+	               "          type: string\n"
+	               "    B:\n"
+	               "      type: object\n"
+	               "      properties:\n"
+	               "        y:\n"
+	               "          type: string\n"
+	               "    Holder:\n"
+	               "      type: object\n"
+	               "      properties:\n"
+	               "        list:\n"
+	               "          type: array\n"
+	               "          items:\n"
+	               "            oneOf:\n"
+	               "              - $ref: \"#/components/schemas/A\"\n"
+	               "              - $ref: \"#/components/schemas/B\"\n",
+	               "second $ref");
+
 	/* 6. An empty paths section. Emitting an empty table would unroute
 	 * the entire API, and a build that succeeds while doing so is worse
 	 * than one that stops. */

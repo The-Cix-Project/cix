@@ -15581,6 +15581,7 @@ components:
       required: [name, image, services]
       properties:
         name:
+          title: Name
           type: string
           pattern: '^[A-Za-z0-9_\-]+$'
           description: >
@@ -15588,6 +15589,7 @@ components:
             name under /var/lib/cix/containers/, so it is restricted to
             [A-Za-z0-9_-].
         image:
+          title: Image
           type: string
           description: >
             Name of a pre-existing, pre-populated image whose rootfs lives
@@ -15595,6 +15597,7 @@ components:
             This daemon never creates image content itself -- only 400s if
             it's missing.
         services:
+          title: Services
           type: array
           minItems: 1
           maxItems: 16
@@ -15612,8 +15615,8 @@ components:
             the `after` graph allows; a cycle or an unknown `after`
             name is a 400 naming the service.
         dns_server:
-          type: object
-          required: [hosts_path]
+          $ref: "#/components/schemas/DnsServerRole"
+          title: DNS server
           description: >
             Declares this container a DNS server and registers it as one
             (#301). A DNS server is two pieces of state -- the container,
@@ -15625,42 +15628,34 @@ components:
             documented recovery path used to produce a running dnsmasq
             that served nothing, with no error anywhere. Equivalent to a
             POST /v1/dns/servers after creation.
-          properties:
-            hosts_path:
-              type: string
-              description: >
-                Absolute path, as the container's own filesystem sees
-                it, that the daemon writes the record set into and
-                rewrites on every record change. The same field
-                POST /v1/dns/servers takes.
         ntp_server:
           type: boolean
+          title: NTP server
           description: >
             Declares this container an NTP server and registers it as
             one, equivalent to POST /v1/ntp/servers after creation. Same
             reasoning as dns_server above.
         syslog_target:
           type: boolean
+          title: Syslog target
           description: >
             Declares this container a syslog forward target and registers
             it as one, equivalent to POST /v1/syslog/targets after
             creation. Same reasoning as dns_server above.
         ldap_server:
-          type: object
-          required: [config_path]
+          $ref: "#/components/schemas/LdapServerRole"
+          title: LDAP server
           description: >
             Declares this container an LDAP server and registers it as
             one, equivalent to POST /v1/ldap/servers after creation. Same
             reasoning as dns_server above.
-          properties:
-            config_path:
-              type: string
-              description: Absolute path, as the container sees it, of the config the daemon maintains.
         memory_max:
+          title: Memory limit (bytes)
           type: integer
           format: int64
           description: cgroup v2 memory.max in bytes. Omit for no limit.
         memory_swap_max:
+          title: Swap limit (bytes)
           type: integer
           format: int64
           minimum: 0
@@ -15674,10 +15669,12 @@ components:
             from the real cgroup: 0 stays 0, and null means no limit --
             the two are opposite settings and never collapse.
         pids_max:
+          title: Process limit
           type: integer
           format: int64
           description: cgroup v2 pids.max. Omit for no limit.
         cpu_max:
+          title: CPU limit
           type: string
           description: >
             Raw cgroup v2 cpu.max value, "<quota> <period>" in
@@ -15687,6 +15684,7 @@ components:
             convention as memory_max's bytes and pids_max's raw count.
             Omit for no limit.
         cpuset_cpus:
+          title: CPUs
           type: string
           description: >
             Raw cgroup v2 cpuset.cpus range-list value (e.g. "0-1,3"),
@@ -15695,6 +15693,7 @@ components:
             pass-through convention as cpu_max. Omit for no
             restriction (every online CPU).
         disk_quota_bytes:
+          title: Disk quota (bytes)
           type: integer
           format: int64
           description: >
@@ -15716,6 +15715,7 @@ components:
             container creation fails with a clear error rather than
             silently not enforcing the limit. Omit for no limit.
         disk:
+          title: Disk
           type: string
           description: >
             Bare kernel name (e.g. "sdb", no "/dev/" prefix -- disk.h's
@@ -15729,11 +15729,13 @@ components:
             makes the role (assignable since Phase B) actually
             connect to anything. Omit for the default placement.
         dns_servers:
+          title: DNS servers
           type: array
           items:
             type: string
           maxItems: 3
           description: >
+            Nameservers staged as this container's /etc/resolv.conf, at most three; with none it resolves no names at all.
             IPv4 nameserver addresses (ADR-0143) to stage as a real
             /etc/resolv.conf inside this container's own overlay,
             before its process ever starts -- the same "written
@@ -15761,6 +15763,7 @@ components:
             recomputed on every replay, so adding a DNS server later
             reaches containers created before it existed.
         networks:
+          title: Networks
           type: array
           items:
             oneOf:
@@ -15784,6 +15787,7 @@ components:
             default route; any further entries only get their own
             subnet's connected route (no default route of their own).
         ksm:
+          title: Share identical memory (KSM)
           type: boolean
           default: false
           description: >
@@ -15802,6 +15806,7 @@ components:
             merging is an optimisation, and refusing to start would
             trade a working container for it.
         ip_forward:
+          title: IP forwarding
           type: boolean
           default: false
           description: >
@@ -15810,6 +15815,7 @@ components:
             as a router between them. Per-netns; never affects the
             host or other containers.
         routes:
+          title: Static routes
           type: array
           items:
             $ref: "#/components/schemas/RouteSpec"
@@ -15822,9 +15828,11 @@ components:
             well-formed IPv4, prefix_len 0-32) -- whether via is
             actually reachable is the caller's responsibility.
         procfuse:
+          title: Container-scoped /proc
           type: boolean
           default: true
           description: >
+            This container's /proc reports its own cgroup's limits rather than the host's.
             Issue #336 / ADR-0262 -- whether this container's
             /proc/meminfo, cpuinfo, stat, uptime, loadavg and swaps
             report ITS OWN cgroup's limits rather than the host's.
@@ -15862,8 +15870,30 @@ components:
             Not a security boundary. A process can still reach the
             host's real figures by other paths; this makes tools size
             themselves correctly, it does not hide the host.
-        userns:
+        ldap_client:
           type: boolean
+          default: false
+          title: LDAP login
+          description: >
+            Log in with directory accounts: the daemon stages
+            nsswitch.conf and nslcd.conf from its own LDAP config
+            (issue #66). It was described only in this operation's
+            prose until #592, so nothing generated from this schema
+            offered it.
+        ldap_allow_groups:
+          type: array
+          items:
+            type: string
+          title: LDAP login groups
+          description: >
+            With ldap_client, only members of these LDAP groups may log
+            in (issue #76); empty means any directory account. Each must
+            already exist, and it is refused without ldap_client, since
+            there is nothing to restrict.
+        userns:
+          title: User namespace
+          type: boolean
+          x-cix-ui: tristate
           description: >
             Whether this container runs in its own user namespace, its
             root mapped onto a dedicated host subordinate-ID range
@@ -15880,6 +15910,7 @@ components:
             mode is decided once, at creation, and reported back as the
             container object's own userns field.
         consoles:
+          title: Consoles
           type: array
           maxItems: 4
           description: >
@@ -15915,39 +15946,18 @@ components:
             the declaration, which is the point: the set is meant to be
             fungible, not fixed at image-build time.
           items:
-            type: object
-            required: [name, cmd]
-            additionalProperties: false
-            properties:
-              name:
-                type: string
-                minLength: 1
-                maxLength: 31
-                pattern: '^[A-Za-z0-9][A-Za-z0-9_\-]*$'
-                description: >
-                  How this console is selected and displayed. Unique
-                  within the container.
-              cmd:
-                type: array
-                minItems: 1
-                maxItems: 8
-                items:
-                  type: string
-                  maxLength: 127
-                description: >
-                  Real argv, exec'd directly by path inside the
-                  running container's namespaces -- no shell, so no
-                  quoting, globbing or word splitting. argv[0] is a
-                  path, not a bare name to resolve.
+            $ref: "#/components/schemas/ContainerConsole"
           example:
             - name: shell
               cmd: ["/usr/bin/bash", "-l"]
             - name: logs
               cmd: ["/usr/bin/tail", "-F", "/var/log/messages"]
         capture_output:
+          title: Capture output
           type: boolean
           default: false
           description: >
+            Keep this container's stdout and stderr, the first thing to read when it dies at startup.
             If true, captures this container's own stdout/stderr into
             a bounded in-memory buffer (4096 bytes, oldest bytes kept,
             newest dropped past the cap), readable back afterward via
@@ -15966,9 +15976,11 @@ components:
             false: capturing costs one pipe and one small buffer per
             container, worth paying only when actually needed.
         dns_register:
+          title: Register in DNS
           type: boolean
           default: false
           description: >
+            Create a DNS record named after this container, pointing at its primary network's address.
             If true, automatically creates a DNS record (see POST
             /dns/records) named after this container, pointing at its
             primary network's IP, as part of container creation --
@@ -15981,9 +15993,11 @@ components:
             set to this container's name, and it is automatically
             removed when the container is deleted.
         pki_issue:
+          title: Issue a TLS certificate
           type: boolean
           default: false
           description: >
+            Issue a TLS certificate named after this container and write it into the container.
             If true, automatically issues a leaf TLS certificate (see POST
             /pki/certs) named after this container (CN and sole SAN) and
             delivers it into the container's own filesystem as part of
@@ -16011,6 +16025,7 @@ components:
             identity and cannot be given one now fails to create (500)
             rather than starting without it.
         pki_cert:
+          title: Certificate name
           type: string
           description: >
             Name of an ALREADY-EXISTING certificate (see POST /pki/certs) to
@@ -16040,21 +16055,26 @@ components:
             fails to create (500) rather than starting without it. See
             ADR-0280.
         pki_cert_dir:
+          title: Certificate directory
           type: string
           default: "/etc/cix-tls"
           description: >
+            Where inside the container the certificate and its key are written.
             Destination directory inside the container (its own filesystem
             view) that the cert (tls.crt) and key (tls.key, chmod 0600)
             are written into when pki_issue or pki_cert is set. Ignored
             otherwise.
         pki_days:
+          title: Certificate lifetime (days)
           type: integer
           default: 365
           description: Validity period in days for the pki_issue certificate. Ignored otherwise.
         ldap_provision:
+          title: Provision an LDAP account
           type: boolean
           default: false
           description: >
+            Create an LDAP service account for this container and write its secret into the container.
             If true, automatically creates an LDAP service/bind account
             (see POST /ldap/users) for the container itself -- NOT a
             human login account, those are created directly via POST
@@ -16073,12 +16093,14 @@ components:
             container's name, and it is automatically removed when the
             container is deleted.
         ldap_user:
+          title: LDAP username
           type: string
           description: >
             LDAP username for the ldap_provision service account.
             Defaults to the container's own name. Ignored unless
             ldap_provision is true.
         ldap_group:
+          title: LDAP group
           type: string
           description: >
             Name of an existing LDAP group (see POST /ldap/groups) the
@@ -16086,81 +16108,28 @@ components:
             Required when ldap_provision is true (400 if omitted or the
             group doesn't exist).
         ldap_uid:
+          title: LDAP uid
           type: integer
           description: >
             uidnumber for the ldap_provision service account. Defaults to
             an auto-allocated uid. Ignored unless ldap_provision is true.
         ldap_secret_dir:
+          title: LDAP secret directory
           type: string
           default: "/etc/cix-ldap"
           description: >
+            Where inside the container the LDAP account's secret is written.
             Destination directory inside the container (its own
             filesystem view) that the delivered secret (bind.secret,
             chmod 0600) is written into when ldap_provision is true.
             Ignored otherwise.
         devices:
+          title: Devices
           type: array
           items:
             oneOf:
               - type: string
-              - type: object
-                required: [id]
-                properties:
-                  id:
-                    type: string
-                  shared:
-                    type: boolean
-                    default: false
-                    description: >
-                      Issue #356 -- this grant does not require exclusive
-                      use of the device. A device already held by a
-                      running container is refused with 409 unless BOTH
-                      grants set it: this one, and every existing
-                      holder's.
-
-
-                      The symmetry is the point. If only the newcomer had
-                      to opt in, a container that asked for a device
-                      without saying "shared" would silently lose
-                      exclusive use because someone else asked nicely,
-                      which is a speed bump rather than a protection.
-
-
-                      Default false, the safe reading of silence. Before
-                      this existed nothing refused a second grant at all
-                      -- both containers received their own
-                      BPF_CGROUP_DEVICE rule for the same major/minor,
-                      which is ordinary multi-tenant compute for a GPU
-                      and data corruption for a serial adapter or a raw
-                      disk. Sharing is now a decision made in writing.
-
-
-                      Checked per RESOLVED device rather than per entry:
-                      one entry can expand into several (a vendor_model
-                      mapping matching two identical drives, or a gpu:N
-                      group), and one contended member refuses that
-                      device rather than letting the rest through
-                      silently.
-
-
-                      Says nothing about defined-but-stopped containers.
-                      They hold nothing -- no cgroup, no BPF program --
-                      so refusing on their behalf would refuse a grant
-                      that is genuinely free right now.
-                  optional:
-                    type: boolean
-                    default: false
-                    description: >
-                      ADR-0161 Phase B -- if true, an id that doesn't
-                      currently resolve to a present, assignable device
-                      does NOT fail creation: the container is created
-                      without that grant, and id is remembered (GET's
-                      own "pending_devices" field echoes it) for later
-                      automatic hotplug attachment, or a manual
-                      POST .../devices call. false (the default) keeps
-                      the pre-existing behavior exactly -- an
-                      unresolvable id is a 400, same as the bare-string
-                      form always was.
+              - $ref: "#/components/schemas/DeviceGrantRequest"
           maxItems: 16
           description: >
             ids (see GET /devices) of host PCI/USB/GPU devices to grant
@@ -16203,6 +16172,7 @@ components:
             is unplugged) is a 400, same as an unknown/unassignable
             raw id -- it is not silently reinterpreted as a literal id.
         interfaces:
+          title: Host interfaces
           type: array
           items:
             type: string
@@ -16221,6 +16191,7 @@ components:
             Set once at creation; not modifiable on an already-running
             container.
         cap_add:
+          title: Extra capabilities
           type: array
           items:
             type: string
@@ -16240,11 +16211,13 @@ components:
             first place, is a 400. Set once at creation; not modifiable
             on an already-running container, same as interfaces above.
         files:
+          title: Files
           type: array
           items:
             $ref: "#/components/schemas/ConfigFile"
           maxItems: 16
           description: >
+            Files written into this container before its services start.
             Config files (or scripts -- see cmd) to write into this
             container's own filesystem before its process ever starts,
             so multiple containers built from the same image can each
@@ -16262,6 +16235,7 @@ components:
             on every future boot/crash-restart alongside everything
             else "restart" persists, for free -- no separate mechanism.
         sysctls:
+          title: Sysctls
           type: object
           additionalProperties:
             type: string
@@ -16280,6 +16254,7 @@ components:
             write primitive from inside a container, not a per-container
             knob. See ADR-0030.
         env:
+          title: Environment
           type: object
           additionalProperties:
             type: string
@@ -16300,6 +16275,7 @@ components:
             `{{SECRET:KEY}}` substitution, a build-time text fill-in with
             no runtime presence at all).
         restart:
+          title: Restart policy
           type: string
           enum: [always, on-failure, unless-stopped, no]
           default: "no"
@@ -16345,6 +16321,7 @@ components:
             endpoint's own description, and POST .../stop for stopping
             without losing it.
         restart_delay_seconds:
+          title: Restart delay (seconds)
           type: integer
           minimum: 1
           maximum: 300
@@ -16362,9 +16339,11 @@ components:
             already applies one doubling (consecutive_failures goes 0 ->
             1 on that first exit, same as any subsequent one).
         follow_rolling:
+          title: Follow the rolling image
           type: boolean
           default: false
           description: >
+            Restart onto a newer image version whenever this container's rolling image advances.
             Opt-in (ADR-0124): whenever this container's own image is
             rolling and its current_version advances, this container's own
             pinned image_version is patched to match and the container is
@@ -16377,10 +16356,12 @@ components:
             error), same as restart_delay_seconds above, when restart is
             "no" -- meaningless without a persisted definition to replay.
         follow_rolling_jitter_seconds:
+          title: Rolling jitter (seconds)
           type: integer
           minimum: 0
           maximum: 3600
           description: >
+            The longest random delay before a follow-rolling restart, overriding the daemon's own.
             Optional per-container override of the daemon-wide jitter
             window (GET/PUT /system/rolling-config's own
             jitter_window_seconds) used when this container's own
@@ -16393,11 +16374,13 @@ components:
             itself when restart is "no" or follow_rolling is false --
             meaningless without both.
         depends_on:
+          title: Depends on
           type: array
           items:
             type: string
           maxItems: 16
           description: >
+            Containers that must be running and ready before this one starts.
             Other persisted (any restart policy other than "no")
             container names that must be started -- and READY, which
             since ADR-0260 is derived from the dependency's own
@@ -16410,6 +16393,7 @@ components:
             definition, or one that participates in a cycle, is skipped
             at boot (logged, not fatal to the rest of startup).
         volumes:
+          title: Volumes
           type: array
           maxItems: 8
           items:
@@ -16499,21 +16483,26 @@ components:
       required: [path, content]
       properties:
         path:
+          title: Path
           type: string
           description: >
             Absolute container-relative path (e.g. "/etc/bird.conf").
             No "." or ".." component (400 otherwise).
         content:
+          title: Content
           type: string
+          x-cix-ui: textarea
           description: >
             Written verbatim. Bounded per file (a generous 64KiB) on top
             of the 1MiB whole-request-body limit that already applies
             regardless.
         mode:
+          title: Mode
           type: string
           default: "0644"
           description: Octal permission string, e.g. "0755" for a script.
         owner:
+          title: Owner uid
           type: integer
           description: >
             (ADR-0144) Numeric uid this file lands owned as. Staged
@@ -16524,6 +16513,7 @@ components:
             daemon's own real euid), the same default every file had
             before this field existed.
         group:
+          title: Group gid
           type: integer
           description: Numeric gid, same real semantics as owner above. Omitted means root's own real egid.
 
@@ -16538,12 +16528,14 @@ components:
         reads, never one it decides.
       properties:
         name:
+          title: Name
           type: string
           minLength: 1
           maxLength: 31
           pattern: '^[A-Za-z0-9_\-]+$'
           description: Unique within the container. Names the service everywhere -- reports, output attribution, the service endpoints.
         type:
+          title: Type
           type: string
           enum: [daemon, oneshot]
           default: daemon
@@ -16552,13 +16544,16 @@ components:
             completion and must exit 0 -- it is how setup work such as
             `ssh-keygen -A` happens without a shell script in the image.
         cmd:
+          title: Command
           type: array
           minItems: 1
           maxItems: 32
           items:
             type: string
+          x-cix-ui: lines
           description: Real argv, exec'd by cix-init inside the container -- no shell, no quoting. cmd[0] is a path.
         after:
+          title: After
           type: array
           maxItems: 16
           items:
@@ -16569,7 +16564,8 @@ components:
             a oneshot that exited 0. Names declared in the same list,
             in any order; cix-init receives them topologically sorted.
         ready:
-          type: object
+          $ref: "#/components/schemas/ServiceReady"
+          title: Readiness probe
           description: >
             How cix-init knows this service is ready. Exactly one of
             tcp_port, socket (a connect to a unix socket path) or
@@ -16590,24 +16586,8 @@ components:
             timeout_seconds the failure is reported and the service is
             treated as ready so dependents proceed -- the same
             behaviour the container-level check had one layer up.
-          properties:
-            tcp_port:
-              type: integer
-              minimum: 1
-              maximum: 65535
-            socket:
-              type: string
-              description: Absolute path.
-            command:
-              type: array
-              items:
-                type: string
-            timeout_seconds:
-              type: integer
-              minimum: 1
-              maximum: 300
-              default: 30
         on_exit:
+          title: On exit
           type: string
           enum: [restart, stop, fail-container]
           description: >
@@ -16619,26 +16599,31 @@ components:
             on. A failing daemon with restart restarts alone -- no
             cascade into its dependents.
         restart_delay_seconds:
+          title: Restart delay (seconds)
           type: integer
           minimum: 1
           maximum: 300
           default: 2
           description: Declared, never computed -- the wait before a restart.
         stop_signal:
+          title: Stop signal
           type: string
           enum: [SIGTERM, SIGINT, SIGHUP, SIGQUIT, SIGUSR1, SIGUSR2, SIGKILL]
           default: SIGTERM
           description: Sent first at shutdown or an operator stop; SIGKILL follows after stop_timeout_seconds.
         stop_timeout_seconds:
+          title: Stop timeout (seconds)
           type: integer
           minimum: 1
           maximum: 300
           default: 10
         uid:
+          title: uid
           type: integer
           minimum: 0
           description: Run as this uid (and probe as it). Omitted means the container's root.
         gid:
+          title: gid
           type: integer
           minimum: 0
       example:
@@ -16646,6 +16631,129 @@ components:
         cmd: ["/usr/sbin/sshd", "-D", "-e"]
         after: [hostkeys, nslcd]
         ready: {tcp_port: 22}
+
+    ServiceReady:
+      type: object
+      description: >
+        A service's readiness probe -- see ServiceDeclaration.ready. Named
+        rather than inline so a form can render its fields (#592).
+      properties:
+        tcp_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          title: TCP port
+          description: Ready once a connect to this port on one of the container's addresses succeeds.
+        socket:
+          type: string
+          title: Unix socket
+          description: Ready once a connect to this absolute socket path succeeds.
+        command:
+          type: array
+          items:
+            type: string
+          x-cix-ui: lines
+          title: Probe command
+          description: Ready once this argv exits 0.
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          maximum: 300
+          default: 30
+          title: Probe timeout (seconds)
+          description: How long the probe may fail before the service is treated as ready anyway.
+
+    DeviceGrantRequest:
+      type: object
+      required: [id]
+      description: >
+        One device a container is granted at creation -- the object form
+        of a ContainerCreateRequest.devices entry, which may also be the
+        bare id. Named rather than inline so a form can render it (#592).
+      properties:
+        id:
+          type: string
+          title: Device
+          description: A device id from GET /devices, a GPU group such as gpu:0, or a device mapping's name.
+        shared:
+          type: boolean
+          default: false
+          title: Shared
+          description: >
+            This grant does not require exclusive use of the device
+            (issue #356). A device already held by a running container
+            is refused with 409 unless BOTH grants set it: this one, and
+            every existing holder's.
+
+
+            The symmetry is the point. If only the newcomer had to opt
+            in, a container that asked for a device without saying
+            "shared" would silently lose exclusive use because someone
+            else asked nicely, which is a speed bump rather than a
+            protection.
+
+
+            Default false, the safe reading of silence. Before this
+            existed nothing refused a second grant at all -- both
+            containers received their own BPF_CGROUP_DEVICE rule for the
+            same major/minor, which is ordinary multi-tenant compute for
+            a GPU and data corruption for a serial adapter or a raw disk.
+            Sharing is now a decision made in writing.
+
+
+            Checked per RESOLVED device rather than per entry: one entry
+            can expand into several (a vendor_model mapping matching two
+            identical drives, or a gpu:N group), and one contended member
+            refuses that device rather than letting the rest through
+            silently.
+
+
+            Says nothing about defined-but-stopped containers. They hold
+            nothing -- no cgroup, no BPF program -- so refusing on their
+            behalf would refuse a grant that is genuinely free right now.
+        optional:
+          type: boolean
+          default: false
+          title: Optional
+          description: >
+            An id that does not resolve to a present, assignable device
+            does not fail creation (ADR-0161 Phase B). The container is
+            created without that grant, and id is remembered (GET's own
+            "pending_devices" field echoes it) for later automatic
+            hotplug attachment, or a manual POST .../devices call. false
+            (the default) keeps the original behaviour exactly -- an
+            unresolvable id is a 400, same as the bare-string form always
+            was.
+
+    DnsServerRole:
+      type: object
+      required: [hosts_path]
+      description: >
+        ContainerCreateRequest.dns_server -- what declaring a container a
+        DNS server needs. Named rather than inline so a form can render
+        it (#592).
+      properties:
+        hosts_path:
+          type: string
+          title: Hosts file
+          description: >
+            Absolute path, as the container's own filesystem sees it,
+            that the daemon writes the record set into and rewrites on
+            every record change. The same field POST /v1/dns/servers
+            takes.
+
+    LdapServerRole:
+      type: object
+      required: [config_path]
+      description: >
+        ContainerCreateRequest.ldap_server -- what declaring a container
+        an LDAP server needs. Named rather than inline so a form can
+        render it (#592).
+      properties:
+        config_path:
+          type: string
+          title: Config file
+          description: Absolute path, as the container sees it, of the config the daemon maintains.
 
     ServiceCommandResult:
       type: object
@@ -16728,29 +16836,49 @@ components:
 
     ContainerConsole:
       type: object
+      required: [name, cmd]
+      additionalProperties: false
       description: >
         One console a container declares (issue #248). Promoted out of
         Container.consoles' inline items so the dashboard can render it
         from the schema: apigen emits fields per named schema, so an
-        inline object's properties reach no generated client.
+        inline object's properties reach no generated client. The
+        request's own `consoles` items were a second, inline copy of the
+        same shape carrying the constraints; they reference this one now
+        and the constraints live here (#592).
       properties:
         name:
           type: string
-          description: The name an attach selects with the `console` query parameter.
+          minLength: 1
+          maxLength: 31
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_\-]*$'
+          title: Name
+          description: The name an attach selects with the `console` query parameter, unique within the container.
         cmd:
           type: array
+          minItems: 1
+          maxItems: 8
           items:
             type: string
-          description: What the console runs, as argv.
+            maxLength: 127
+          x-cix-ui: lines
+          title: Command
+          description: >
+            What the console runs, as argv. It is
+            exec'd directly by path inside the running container's
+            namespaces -- no shell, so no quoting, globbing or word
+            splitting. argv[0] is a path, not a bare name to resolve.
 
     ContainerVolumeMount:
       type: object
       required: [name, path]
       properties:
         name:
+          title: Volume
           type: string
           description: Name of an existing volume (see POST /volumes). Must already exist -- 400 otherwise.
         path:
+          title: Mount path
           type: string
           description: >
             Absolute path inside the container to mount it at. Created
@@ -16758,6 +16886,7 @@ components:
             mounted somewhere a minimal rootfs has no concept of (a
             /home that does not exist yet, say). No ".." components.
         read_only:
+          title: Read-only
           type: boolean
           default: false
           description: >
@@ -16973,9 +17102,11 @@ components:
       required: [name]
       properties:
         name:
+          title: Network
           type: string
           description: Name of an existing network (see POST /networks).
         ip:
+          title: Address
           type: string
           description: >
             An explicit, operator-chosen IPv4 address on this network
@@ -16984,6 +17115,7 @@ components:
             or network address, and not already assigned to a running
             container.
         ifname:
+          title: Interface name
           type: string
           maxLength: 15
           description: >
@@ -16997,6 +17129,7 @@ components:
             attachments on the same container may not share a name --
             400 at create, 409 on a live attach.
         container_bridge:
+          title: Container bridge
           type: string
           maxLength: 15
           description: >
@@ -17032,13 +17165,16 @@ components:
       required: [dest, prefix_len, via]
       properties:
         dest:
+          title: Destination
           type: string
           description: Destination network address (dotted-quad).
         prefix_len:
+          title: Prefix length
           type: integer
           minimum: 0
           maximum: 32
         via:
+          title: Gateway
           type: string
           description: Gateway IPv4 address (dotted-quad). Required -- v1 has no on-link/direct route support.
 

@@ -819,6 +819,16 @@ out of `Dhcp.static.items` and `$ref`'d back into it, which changes nothing on t
 properties somewhere to carry their own descriptions. `ContainerConsole` is promoted out of
 `Container.consoles` the same way, for the container page's consoles table.
 
+The create form drew the rest (#592). `ContainerCreateRequest.consoles` carried a second, inline copy of
+`ContainerConsole` with the constraints on it; it references the one schema now and the constraints live
+there. A service's `ready` probe is `ServiceReady`, a `devices` entry's object form is
+`DeviceGrantRequest` (a bare id is still shorthand for it), and the two role declarations are
+`DnsServerRole` and `LdapServerRole`. None of this changes a byte on the wire. What did change is that
+`ldap_client` and `ldap_allow_groups`, which the daemon has always read, were described only in the
+operation's prose and declared nowhere in the schema -- so nothing generated from it offered them.
+They are declared now. apigen emits `of: "<Schema>"` on a field that holds one of these, and the
+dashboard draws it as a group of that schema's fields, or as rows of them, instead of a JSON box.
+
 ### A property's `title` is the operator's label, and its description's first sentence is the hint
 
 Two standard JSON Schema keywords doing the two jobs a form needs, so neither is an extension:
@@ -2475,7 +2485,7 @@ Three rules, all enforced at creation time so a mistake is a `400` rather than a
 
 Omitting the field stages no `pam_authz_search` at all, which is the pre-existing behaviour: any valid account may log in. That absence is deliberate — a filter written to allow everyone is a filter that can be got wrong.
 
-`cixctl container run ... --ldap-client --ldap-allow-group=jumpusers --ldap-allow-group=admins` is the CLI form; the web dashboard's container form carries it as a comma-separated field under the LDAP login checkbox.
+`cixctl container run ... --ldap-client --ldap-allow-group=jumpusers --ldap-allow-group=admins` is the CLI form; the web dashboard's New Container form carries it as a comma-separated field beside the LDAP login checkbox, in its LDAP section.
 
 ### Automatic provisioning: `ldap_provision`
 

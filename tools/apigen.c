@@ -62,8 +62,13 @@
  * is a hard error naming the schema rather than a silent truncation,
  * for the same reason the props buffer already is: a field this tool
  * drops is a field the UI will not render, which is invisible.
+ *
+ * Fields raised 48 -> 64 on 2026-10-17 (#592): ContainerCreateRequest
+ * reached 47 once `ldap_client` and `ldap_allow_groups`, which the
+ * daemon had always read, were declared -- one short of the cap, so
+ * the next property anyone added to it would have stopped generation.
  */
-#define APIGEN_MAX_FIELDS 48
+#define APIGEN_MAX_FIELDS 64
 #define APIGEN_TYPE_MAX 16
 #define APIGEN_FORMAT_MAX 24
 #define APIGEN_NUMLIT_MAX 24
@@ -613,6 +618,13 @@ struct schema_field {
 	 */
 	char ui[APIGEN_TYPE_MAX];
 	/*
+	 * #592: the named schema this field holds -- an object written as a
+	 * `$ref`, or an array whose items are one (directly, or as the one
+	 * `$ref` member of a `oneOf`). A form renders that schema's fields
+	 * as a group, or as a repeated row, rather than as a JSON box.
+	 */
+	char of[APIGEN_ID_MAX];
+	/*
 	 * `title` -- JSON Schema's own short name for the property, and
 	 * the operator's LABEL (#596, the Generated and Primitives boards
 	 * of the owner's UI canvas).
@@ -1042,6 +1054,9 @@ struct schema_reader {
 	/* #592: the current property opened `additionalProperties:` as a
 	 * block, so the `type:` below it is the type of the map's VALUES. */
 	int prop_is_map;
+	/* #592: the current array property's `items:` opened a `oneOf`,
+	 * whose `- $ref:` member names the schema of its rows. */
+	int items_oneof;
 	/*
 	 * Inside a folded `description: >`: the indent its key sat at, the
 	 * arena offset being built, and whether a blank line is owed as a
@@ -1133,6 +1148,7 @@ static int schema_body_line(struct schema_reader *r, const char *spec, int linen
 	if (ind == r->base) {
 		r->prop_is_array = 0;
 		r->prop_is_map = 0;
+		r->items_oneof = 0;
 		if (!key_at(line, r->base, r->prop, sizeof(r->prop)))
 			r->prop[0] = '\0';
 		else {
@@ -1265,6 +1281,19 @@ static int schema_body_line(struct schema_reader *r, const char *spec, int linen
 		 * is a closed object and not a map.
 		 */
 		r->prop_is_map = strcmp(key, "additionalProperties") == 0 && v[0] == '\0';
+		/*
+		 * #592: a property that IS a named schema. Until this was read
+		 * such a property recorded no type at all and was emitted as a
+		 * string -- ScheduleWrite.schedule and Pressure.some/full among
+		 * them -- which a renderer dispatching on type would have
+		 * drawn as a text box.
+		 */
+		if (strcmp(key, "$ref") == 0) {
+			ref_tail(v, fl->of, sizeof(fl->of));
+			if (fl->type[0] == '\0')
+				snprintf(fl->type, sizeof(fl->type), "object");
+			return 1;
+		}
 		if (strcmp(key, "format") == 0)
 			snprintf(fl->format, sizeof(fl->format), "%s", v);
 		else if (strcmp(key, "pattern") == 0)
@@ -1315,10 +1344,18 @@ static int schema_body_line(struct schema_reader *r, const char *spec, int linen
 			 * missing x-cix-permission already exists to prevent.
 			 * Generation is when a contract typo is cheap.
 			 */
-			if (strcmp(v, "textarea") != 0)
+			/*
+			 * #592 added two: `lines`, an array of strings typed one
+			 * per line, for an argv -- a comma list cannot carry
+			 * `-o a,b`; and `tristate`, a boolean whose ABSENCE means
+			 * a platform default the form cannot know (`userns`), so
+			 * an unticked box must not send false.
+			 */
+			if (strcmp(v, "textarea") != 0 && strcmp(v, "lines") != 0 &&
+			    strcmp(v, "tristate") != 0)
 				die_at(spec, lineno,
 				       "x-cix-ui: %s names no control the dashboard "
-				       "builds; the set is { textarea }", v);
+				       "builds; the set is { textarea, lines, tristate }", v);
 			snprintf(fl->ui, sizeof(fl->ui), "%s", v);
 		}
 		else if (strcmp(key, "description") == 0) {
@@ -1358,12 +1395,39 @@ static int schema_body_line(struct schema_reader *r, const char *spec, int linen
 		ref_tail(value_of(line), items, sizeof(items));
 		if (items[0] == '\0')
 			return 1;
+		/* #592: and on the field, so a form draws its rows. */
+		if (s->n_field > 0)
+			snprintf(s->field[s->n_field - 1].of, sizeof(s->field[0].of), "%s", items);
+		r->prop_is_array = 0;
 		if (s->n_arr >= APIGEN_MAX_ARRAY_PROPS)
 			return 1;
 		a = s->n_arr++;
 		snprintf(s->arr[a].prop, sizeof(s->arr[a].prop), "%s", r->prop);
 		snprintf(s->arr[a].items, sizeof(s->arr[a].items), "%s", items);
-		r->prop_is_array = 0;
+		return 1;
+	}
+	/*
+	 * #592: `items: oneOf: [- type: string, - $ref: X]` -- the shape of
+	 * `networks` and `devices`, where a bare name is shorthand for the
+	 * object. The `$ref` member is the row a form draws, and it sends
+	 * the object form, which the daemon takes for both. Two `$ref`
+	 * members are refused rather than one picked: which row to draw
+	 * would then be a guess.
+	 */
+	if (ind == r->base + 4 && r->prop_is_array &&
+	    key_at(line, r->base + 4, key, sizeof(key)) && strcmp(key, "oneOf") == 0) {
+		r->items_oneof = 1;
+		return 1;
+	}
+	if (ind == r->base + 6 && r->items_oneof && s->n_field > 0 &&
+	    strncmp(line + ind, "- $ref:", 7) == 0) {
+		struct schema_field *fl = &s->field[s->n_field - 1];
+
+		if (fl->of[0] != '\0')
+			die_at(spec, lineno,
+			       "property %s.%s: its items' oneOf names a second $ref -- a form "
+			       "can draw one kind of row", s->comp, r->prop);
+		ref_tail(line + ind + 7, fl->of, sizeof(fl->of));
 		return 1;
 	}
 	return 0;
@@ -2338,6 +2402,9 @@ static void emit_web(const char *out_path, const char *spec)
 				fprintf(o, ", ui: ");
 				emit_js_string(o, fl->ui);
 			}
+			/* #592: the schema of a group or of each row. */
+			if (fl->of[0] != '\0')
+				fprintf(o, ", of: \"%s\"", fl->of);
 			/*
 			 * DESCRIPTION LAST, DELIBERATELY, and gated as an invariant
 			 * in test_apigen.
@@ -3210,6 +3277,23 @@ int main(int argc, char **argv)
 			       "properties do not include it -- nothing could satisfy this, so it is "
 			       "a contract that contradicts itself",
 			       g_ops[i].op_id, g_ops[i].resp_required[q]);
+		}
+	}
+	/*
+	 * #592: every `of` names a schema this tool read. A form draws a
+	 * group or a row from it, and one naming nothing would draw an
+	 * empty box the operator could not fill.
+	 */
+	for (i = 0; i < g_comp_schema_count; i++) {
+		int f;
+
+		for (f = 0; f < g_comp_schemas[i].n_field; f++) {
+			const char *of = g_comp_schemas[i].field[f].of;
+
+			if (of[0] != '\0' && comp_schema_find(of) == NULL)
+				die_at(spec, g_comp_schemas[i].line,
+				       "%s.%s refers to schema %s, which does not exist",
+				       g_comp_schemas[i].comp, g_comp_schemas[i].field[f].name, of);
 		}
 	}
 	for (i = 0; i < g_comp_schema_count; i++) {

@@ -202,8 +202,10 @@ static const char *const DOM_SHIM =
     "  createTextNode(t) { return { tag: \"#text\", textContent: t, dataset: {}, children: [] }; },\n"
     "  createElement(tag) {\n"
     "    const el = {\n"
-    "      tag: tag, dataset: {}, children: [],\n"
+    "      tag: tag, dataset: {}, children: [], value: \"\",\n"
     "      appendChild(c) { this.children.push(c); },\n"
+    /* A list's Remove button takes its row out this way (#592). */
+    "      removeChild(c) { this.children.splice(this.children.indexOf(c), 1); },\n"
     /* A listener is recorded, never fired: the one form.js adds is a
      * file picker's, and no test here has a file to give it. */
     "      listeners: {},\n"
@@ -954,7 +956,7 @@ int main(void)
 		       "  }\n"
 		       "  return Object.keys(seen).sort().join(\",\");\n"
 		       "})()",
-		       "textarea");
+		       "lines,textarea,tristate");
 
 		/*
 		 * A free-form object round-trips: shown as indented JSON,
@@ -1310,6 +1312,147 @@ int main(void)
 		       "  catch (e) { return e.message; }\n"
 		       "})()",
 		       "Options: a is given twice");
+		/*
+		 * ---- a form with groups, rows and sections (#592) ----
+		 *
+		 * New Container, the last hand-built create form: forty-seven
+		 * fields, eight of them arrays of objects and two objects. The
+		 * contract names each shape (`of`), and the form draws the
+		 * shape's own fields -- a service as a row of name, command,
+		 * readiness probe -- rather than a JSON box per field.
+		 *
+		 * `findEl` walks the shim depth-first, so each case can name a
+		 * control by its field without spelling out the tree.
+		 */
+		expect(ctx, "the test's own finder loads",
+		       "globalThis.findEl = (n, pred) => {\n"
+		       "  for (const c of n.children || []) {\n"
+		       "    if (pred(c)) return c;\n"
+		       "    const r = findEl(c, pred);\n"
+		       "    if (r !== null) return r;\n"
+		       "  }\n"
+		       "  return null;\n"
+		       "}; \"ok\"",
+		       "ok");
+		expect(ctx, "the contract names the schema of a list's rows and of a group",
+		       "[\"services\", \"networks\", \"devices\", \"consoles\", \"dns_server\"].map((n) =>\n"
+		       "  CIX_API.FIELDS.ContainerCreateRequest.find((f) => f.name === n).of).join(\",\")",
+		       "ServiceDeclaration,NetworkAttachmentRequest,DeviceGrantRequest,"
+		       "ContainerConsole,DnsServerRole");
+		expect(ctx, "a form with sections draws them, in order, and the rest under Other",
+		       "(() => {\n"
+		       "  openForm(\"createContainer\", { title: \"T\", submit: \"Create\",\n"
+		       "    sections: [{ title: \"Identity\", fields: [\"name\", \"image\", \"services\"] }] });\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  return form.children.filter((c) => c.tag === \"fieldset\")\n"
+		       "    .map((s) => s.children[0].textContent).join(\",\");\n"
+		       "})()",
+		       "Identity,Other");
+		/* `services` is required and at least one, so its list opens
+		 * with a row -- and a row's own required fields ARE required,
+		 * because a row exists only because someone added it. */
+		expect(ctx, "a required list opens with one row whose fields are required",
+		       "(() => {\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  const list = findEl(form, (c) => c.dataset && c.dataset.list === \"services\");\n"
+		       "  const rows = findEl(list, (c) => c.dataset && c.dataset.rows !== undefined);\n"
+		       "  const nm = findEl(rows, (c) => c.dataset && c.dataset.field === \"name\");\n"
+		       "  return rows.children.length + \"/\" + nm.required;\n"
+		       "})()",
+		       "1/true");
+		/* An argv is one argument per line: `-o a,b` survives, where a
+		 * comma list would have split it in two. */
+		expect(ctx, "a row is collected as an object, its argv one argument per line",
+		       "(() => {\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  const row = findEl(form, (c) => c.dataset && c.dataset.item !== undefined);\n"
+		       /* Depth-first, so the container's own name and image
+		        * are found before anything inside a service row. */
+		       "  findEl(form, (c) => c.dataset && c.dataset.field === \"name\").value = \"web\";\n"
+		       "  findEl(form, (c) => c.dataset && c.dataset.field === \"image\").value = \"base\";\n"
+		       "  findEl(row, (c) => c.dataset && c.dataset.field === \"name\").value = \"sshd\";\n"
+		       "  findEl(row, (c) => c.dataset && c.dataset.field === \"cmd\").value =\n"
+		       "    \"/usr/sbin/sshd\\n-D\\n\\n-o\\nA=a,b\";\n"
+		       "  const b = generatedFormBody(form);\n"
+		       "  return b.name + \" \" + b.image + \" \" + JSON.stringify(b.services.map((s) =>\n"
+		       "    [s.name, s.cmd, s.ready]));\n"
+		       "})()",
+		       "web base [[\"sshd\",[\"/usr/sbin/sshd\",\"-D\",\"-o\",\"A=a,b\"],null]]");
+		/* `[... , null]` is an absent ready probe: an optional group
+		 * left empty is not sent at all. */
+		expect(ctx, "an optional group's inputs are never browser-required",
+		       "(() => {\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  const g = findEl(form, (c) => c.dataset && c.dataset.group === \"dns_server\");\n"
+		       "  const hp = findEl(g, (c) => c.dataset && c.dataset.field === \"hosts_path\");\n"
+		       "  return String(hp.required) + \" \" +\n"
+		       "    String(generatedFormBody(form).dns_server);\n"
+		       "})()",
+		       "false undefined");
+		expect(ctx, "and once one is filled it is sent as its own object",
+		       "(() => {\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  const g = findEl(form, (c) => c.dataset && c.dataset.group === \"dns_server\");\n"
+		       "  findEl(g, (c) => c.dataset && c.dataset.field === \"hosts_path\").value =\n"
+		       "    \"/etc/hosts.d/cix\";\n"
+		       "  return JSON.stringify(generatedFormBody(form).dns_server);\n"
+		       "})()",
+		       "{\"hosts_path\":\"/etc/hosts.d/cix\"}");
+		/* `userns` absent means the HOST's default, which is ON: an
+		 * unticked box sending false would switch isolation off for
+		 * every container made here. */
+		expect(ctx, "a tristate boolean sends nothing until it is chosen",
+		       "(() => {\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  const u = findEl(form, (c) => c.dataset && c.dataset.field === \"userns\");\n"
+		       "  const before = String(generatedFormBody(form).userns);\n"
+		       "  u.value = \"false\";\n"
+		       "  return u.tag + \" \" + before + \" \" + String(generatedFormBody(form).userns);\n"
+		       "})()",
+		       "select undefined false");
+		expect(ctx, "a list's Remove takes the row out, and a required list then refuses",
+		       "(() => {\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  const list = findEl(form, (c) => c.dataset && c.dataset.list === \"services\");\n"
+		       "  const rows = findEl(list, (c) => c.dataset && c.dataset.rows !== undefined);\n"
+		       "  const rm = rows.children[0].children.find((c) => c.tag === \"button\");\n"
+		       "  rm.listeners.click();\n"
+		       "  try { generatedFormBody(form); return rows.children.length + \" accepted\"; }\n"
+		       "  catch (e) { return rows.children.length + \" \" + e.message; }\n"
+		       "})()",
+		       "0 Services needs at least one");
+		/* Choices reach a row by a dotted key: the networks a row may
+		 * join, read from the box, not typed. */
+		expect(ctx, "a row's choices arrive by a dotted key",
+		       "(() => {\n"
+		       "  openForm(\"createContainer\", { title: \"T\",\n"
+		       "    choices: { \"networks.name\": [{ value: \"lan\" }, { value: \"dmz\" }] } });\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  const list = findEl(form, (c) => c.dataset && c.dataset.list === \"networks\");\n"
+		       "  const add = list.children.find((c) => c.tag === \"button\");\n"
+		       "  add.listeners.click();\n"
+		       "  const sel = findEl(list, (c) => c.dataset && c.dataset.field === \"name\");\n"
+		       "  return sel.tag + \"/\" + sel.options.map((o) => o.value).join(\",\");\n"
+		       "})()",
+		       "select/lan,dmz");
+		/* A group whose schema has a required field, once anything in
+		 * it is filled, refuses to be sent without that field --
+		 * checked by the collector, since the browser was told
+		 * nothing is required in an optional group. */
+		expect(ctx, "a group sent without its own required field is refused, naming both",
+		       "(() => {\n"
+		       "  CIX_API.FIELDS.TestPair = [\n"
+		       "    { name: \"path\", type: \"string\", required: true, title: \"Path\" },\n"
+		       "    { name: \"mode\", type: \"string\", required: false, title: \"Mode\" }];\n"
+		       "  const box = document.createElement(\"form\");\n"
+		       "  buildFields(box, [{ name: \"pair\", type: \"object\", required: false,\n"
+		       "    title: \"Pair\", of: \"TestPair\" }],\n"
+		       "    { values: {}, fixed: {}, choices: {}, secrets: {}, optional: false });\n"
+		       "  findEl(box, (c) => c.dataset && c.dataset.field === \"mode\").value = \"0644\";\n"
+		       "  try { generatedFormBody(box); return \"accepted\"; }\n"
+		       "  catch (e) { return e.message; }\n"
+		       "})()",
+		       "Pair: Path is required");
 		expect(ctx, "and a stored map is shown the same way it is typed",
 		       "(() => {\n"
 		       "  const f = CIX_API.FIELDS.putKmodConfigRequest.find(\n"

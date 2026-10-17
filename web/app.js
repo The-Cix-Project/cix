@@ -703,6 +703,8 @@ window.addEventListener("scroll", repositionOpenMenu, true);
  *   choices  what really exists to pick from, read from the box when
  *            the form opens -- the disks with no role, the networks
  *            with no range, the recipe sources
+ *   sections the layout of a long form, which is authored -- only New
+ *            Container has one
  *   before   a question about what is about to be sent, as the edit
  *            buttons on those pages ask it
  *   after    more than refreshing the page: issuing a certificate has
@@ -713,6 +715,11 @@ window.addEventListener("scroll", repositionOpenMenu, true);
  * and the page cannot drift apart.
  */
 const GENERATED_FORM_HOOKS = {
+	createContainer: {
+		choices: containerCreateChoices,
+		sections: containerFormSections,
+		after: afterContainerCreate,
+	},
 	createPkiCert: { after: showIssuedCert },
 	createStorageRole: { choices: diskRoleChoices, after: refreshDiskRoles },
 	setDhcpNetwork: { choices: () => dhcpRangeChoices(true), after: afterDhcpRangeSave },
@@ -754,6 +761,7 @@ for (const item of document.querySelectorAll(".menu-bar button[data-modal]")) {
 				title: item.dataset.title,
 				submit: item.dataset.submit,
 				choices: choices,
+				sections: hooks.sections !== undefined ? hooks.sections() : undefined,
 				before: hooks.before,
 				after: hooks.after,
 			});
@@ -3794,68 +3802,6 @@ async function unpauseContainer(name) {
  * <th> and not a styled <td>, because that is what these are: the
  * label is the header for its row. Screen readers announce it as one.
  */
-/*
- * ADR-0260: services. The create form takes one service per line,
- *   NAME=/path args | after=a,b | ready=tcp:22 | type=oneshot | on-exit=stop
- * -- the same shape cixctl's --service=/--after=/--ready=/--on-exit=
- * flags take, so an operator learns one notation. Returns the array
- * for the request body, or null after showing what was wrong.
- */
-function parseServicesText(text) {
-	const out = [];
-	const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
-
-	for (const line of lines) {
-		const parts = line.split("|").map((p) => p.trim());
-		const eq = parts[0].indexOf("=");
-
-		if (eq <= 0) {
-			showStatus("Service line needs NAME=/path args: " + line, true);
-			return null;
-		}
-		const svc = {
-			name: parts[0].slice(0, eq).trim(),
-			cmd: parts[0].slice(eq + 1).trim().split(/\s+/).filter((s) => s.length > 0),
-		};
-		if (svc.cmd.length === 0 || svc.cmd[0][0] !== "/") {
-			showStatus("Service " + svc.name + " needs an absolute program path", true);
-			return null;
-		}
-		for (const attr of parts.slice(1)) {
-			const aeq = attr.indexOf("=");
-			const key = aeq > 0 ? attr.slice(0, aeq).trim() : attr;
-			const val = aeq > 0 ? attr.slice(aeq + 1).trim() : "";
-
-			if (key === "after") {
-				svc.after = val.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
-			} else if (key === "type") {
-				svc.type = val;
-			} else if (key === "on-exit") {
-				svc.on_exit = val;
-			} else if (key === "ready") {
-				if (val.startsWith("tcp:"))
-					svc.ready = { tcp_port: parseInt(val.slice(4), 10) };
-				else if (val.startsWith("socket:"))
-					svc.ready = { socket: val.slice(7) };
-				else if (val.startsWith("command:"))
-					svc.ready = { command: val.slice(8).split(/\s+/).filter((s) => s.length > 0) };
-				else {
-					showStatus("Service " + svc.name + ": ready wants tcp:PORT, socket:/path or command:/path", true);
-					return null;
-				}
-			} else {
-				showStatus("Service " + svc.name + ": unknown attribute '" + key + "'", true);
-				return null;
-			}
-		}
-		out.push(svc);
-	}
-	if (out.length === 0) {
-		showStatus("A container declares at least one service", true);
-		return null;
-	}
-	return out;
-}
 
 function summarizeServices(c) {
 	const svcs = Array.isArray(c.services) ? c.services : [];
@@ -6856,7 +6802,6 @@ async function refreshDevices() {
 	cache.devices = data.devices;
 	if (onPageOf("devices"))
 		renderDevices();
-	populateContainerFormDeviceLists();
 }
 
 async function refreshDeviceMaps() {
@@ -12474,317 +12419,101 @@ async function refreshPkgRepositories() {
 	}
 }
 
-/* ---------- Container create form: devices/interfaces pickers ---------- */
+/* ---------- New Container: a generated form (#592) ---------- */
 
-function populateContainerFormDeviceLists() {
-	const deviceSelect = document.getElementById("f-devices");
-	const ifaceSelect = document.getElementById("f-interfaces");
-	const prevDevices = new Set(Array.from(deviceSelect.selectedOptions).map((o) => o.value));
-	const prevIfaces = new Set(Array.from(ifaceSelect.selectedOptions).map((o) => o.value));
-
-	deviceSelect.textContent = "";
-	ifaceSelect.textContent = "";
-
-	const assignable = cache.devices.filter((d) => d.assignable);
-
-	/* GPU member ids collapse to their gpu:N group prefix -- granting
-	 * a container "gpu:0" is what actually works (device_find_group()),
-	 * granting "gpu:0:card0" alone is not the intended unit. */
-	const seenGpuGroups = new Set();
+/*
+ * What a new container may name, read from the box when the form opens:
+ * its image, the networks its attachments join, the containers it may
+ * start after, the devices and host interfaces it may take and the
+ * volumes it may mount. Read fresh, because the header menu opens this
+ * from any page, including one that has read none of them.
+ *
+ * A device is offered as what can be granted: an assignable one, and a
+ * GPU as its whole group (`gpu:0`), since one of its nodes alone is not
+ * the intended unit (device_find_group()). A network interface is a
+ * device on the `net` bus, offered by its bare kernel name, which is
+ * what `interfaces` takes. A dependency must be a container with a
+ * restart policy, which is what the contract asks of one.
+ */
+async function containerCreateChoices() {
+	const [images, nets, containers, devices, volumes] = await Promise.all([
+		apiRequest("GET", CIX_API.listImages()),
+		apiRequest("GET", CIX_API.listNetworks()),
+		apiRequest("GET", CIX_API.listContainers()),
+		apiRequest("GET", CIX_API.listDevices()),
+		apiRequest("GET", CIX_API.listVolumes()),
+	]);
+	const assignable = (devices.devices || []).filter((d) => d.assignable);
+	const grants = [];
+	const gpuGroups = {};
 
 	for (const d of assignable) {
-		if (d.bus === "net") {
-			const opt = document.createElement("option");
+		if (d.bus === "net")
+			continue;
+		if (d.bus === "gpu") {
+			const group = d.id.split(":").slice(0, 2).join(":");
 
-			opt.value = d.id;
-			opt.textContent = d.id + (d.description ? " (" + d.description + ")" : "");
-			if (prevIfaces.has(opt.value))
-				opt.selected = true;
-			ifaceSelect.appendChild(opt);
+			if (gpuGroups[group])
+				continue;
+			gpuGroups[group] = true;
+			grants.push({ value: group, label: group + " (whole GPU group)" });
 			continue;
 		}
-
-		let value = d.id;
-		let label = d.id + (d.description ? " (" + d.description + ")" : "");
-
-		if (d.bus === "gpu") {
-			const parts = d.id.split(":");
-			const groupId = parts[0] + ":" + parts[1];
-
-			if (seenGpuGroups.has(groupId))
-				continue;
-			seenGpuGroups.add(groupId);
-			value = groupId;
-			label = groupId + " (whole GPU group)";
-		}
-
-		const opt = document.createElement("option");
-
-		opt.value = value;
-		opt.textContent = label;
-		if (prevDevices.has(value))
-			opt.selected = true;
-		deviceSelect.appendChild(opt);
+		grants.push({ value: d.id, label: d.id + (d.description ? " (" + d.description + ")" : "") });
 	}
+	return {
+		image: (images.images || []).map((i) => ({ value: i.name })),
+		"networks.name": (nets.networks || []).map((n) => ({ value: n.name })),
+		depends_on: (containers.containers || [])
+			.filter((c) => c.restart && c.restart !== "no")
+			.map((c) => ({ value: c.name })),
+		"devices.id": grants,
+		interfaces: assignable
+			.filter((d) => d.bus === "net")
+			.map((d) => ({
+				value: d.id.replace(/^net:/, ""),
+				label: d.id.replace(/^net:/, "") + (d.description ? " (" + d.description + ")" : ""),
+			})),
+		"volumes.name": (volumes.volumes || []).map((v) => ({ value: v.name })),
+	};
 }
 
-let fileRowCount = 0;
-
-function addFileRow() {
-	const container = document.getElementById("f-files-rows");
-	const rowId = "file-row-" + fileRowCount++;
-	const row = document.createElement("div");
-
-	row.className = "file-row";
-	row.id = rowId;
-
-	const pathLabel = document.createElement("label");
-
-	pathLabel.textContent = "Container path";
-	const pathInput = document.createElement("input");
-
-	pathInput.type = "text";
-	pathInput.placeholder = "/etc/app/config.toml";
-	pathInput.className = "file-row-path";
-	pathLabel.appendChild(pathInput);
-	row.appendChild(pathLabel);
-
-	const fileLabel = document.createElement("label");
-
-	fileLabel.textContent = "Local file";
-	const fileInput = document.createElement("input");
-
-	fileInput.type = "file";
-	fileInput.className = "file-row-file";
-	fileLabel.appendChild(fileInput);
-	row.appendChild(fileLabel);
-
-	const modeLabel = document.createElement("label");
-
-	modeLabel.textContent = "Mode (optional)";
-	const modeInput = document.createElement("input");
-
-	modeInput.type = "text";
-	modeInput.placeholder = "0644";
-	modeInput.className = "file-row-mode";
-	modeLabel.appendChild(modeInput);
-	row.appendChild(modeLabel);
-
-	const rmButton = document.createElement("button");
-
-	rmButton.type = "button";
-	rmButton.textContent = "Remove";
-	/* Neutral, not danger: it takes a row out of a form that has not
-	 * been submitted, so nothing anywhere is destroyed (#592). */
-	rmButton.className = "button-small";
-	rmButton.addEventListener("click", () => row.remove());
-	row.appendChild(rmButton);
-
-	container.appendChild(row);
+/*
+ * The New Container form's layout, which ADR-0338 leaves to a person:
+ * forty-seven fields, grouped as the hand-built form grouped them. What
+ * belongs to running something comes first; a field no section names
+ * still appears, under "Other", so a property added to the contract is
+ * offered rather than waiting to be placed here.
+ *
+ * A function rather than a constant because GENERATED_FORM_HOOKS, near
+ * the top of this file, names it while the file is still loading, and
+ * a `const` declared down here does not exist yet at that point.
+ */
+function containerFormSections() {
+	return [
+		{ title: "Identity", fields: ["name", "image", "services"] },
+		{ title: "Resources", fields: ["memory_max", "memory_swap_max", "pids_max", "cpu_max",
+		                               "cpuset_cpus", "disk_quota_bytes", "disk", "ksm"] },
+		{ title: "Networking", fields: ["networks", "routes", "dns_servers", "dns_register",
+		                                "ip_forward", "sysctls", "interfaces"] },
+		{ title: "Devices and access", fields: ["devices", "cap_add", "userns", "procfuse",
+		                                        "consoles", "capture_output"] },
+		{ title: "Files and storage", fields: ["files", "volumes", "env"] },
+		{ title: "Lifecycle", fields: ["restart", "restart_delay_seconds", "follow_rolling",
+		                               "follow_rolling_jitter_seconds", "depends_on"] },
+		{ title: "Service roles", fields: ["dns_server", "ldap_server", "ntp_server", "syslog_target"] },
+		{ title: "TLS", fields: ["pki_issue", "pki_cert", "pki_cert_dir", "pki_days"] },
+		{ title: "LDAP", fields: ["ldap_client", "ldap_allow_groups", "ldap_provision", "ldap_user",
+		                          "ldap_group", "ldap_uid", "ldap_secret_dir"] },
+	];
 }
 
-document.getElementById("f-files-add").addEventListener("click", addFileRow);
+async function afterContainerCreate() {
+	await refreshContainers();
+	renderTree();
+}
 
 /* ---------- form submit handlers ---------- */
-
-document.getElementById("run-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const name = document.getElementById("f-name").value.trim();
-	const image = document.getElementById("f-image").value.trim();
-	const servicesText = document.getElementById("f-services").value;
-	const memoryMaxText = document.getElementById("f-memory-max").value.trim();
-	const memorySwapMaxText = document.getElementById("f-memory-swap-max").value.trim();
-	const pidsMaxText = document.getElementById("f-pids-max").value.trim();
-	const cpuMaxText = document.getElementById("f-cpu-max").value.trim();
-	const cpusetText = document.getElementById("f-cpuset").value.trim();
-	const diskQuotaText = document.getElementById("f-disk-quota").value.trim();
-	const network = document.getElementById("f-network").value.trim();
-	const ipForward = document.getElementById("f-ip-forward").checked;
-	const dnsRegister = document.getElementById("f-dns-register").checked;
-	/* Issue #77 surface parity -- REST-only until now. */
-	const userns = document.getElementById("f-userns").checked;
-	const ldapClient = document.getElementById("f-ldap-client").checked;
-	const ldapAllowGroupsText = document.getElementById("f-ldap-allow-groups").value.trim();
-	const captureOutput = document.getElementById("f-capture-output").checked;
-	const routesText = document.getElementById("f-routes").value.trim();
-	const dnsServersText = document.getElementById("f-dns-servers").value.trim();
-	const devices = Array.from(document.getElementById("f-devices").selectedOptions).map((o) => o.value);
-	const interfaces = Array.from(document.getElementById("f-interfaces").selectedOptions).map((o) => o.value.replace(/^net:/, ""));
-	const restart = document.getElementById("f-restart").value;
-	const restartDelayText = document.getElementById("f-restart-delay").value.trim();
-	const followRolling = document.getElementById("f-follow-rolling").checked;
-	const followRollingJitterText = document.getElementById("f-follow-rolling-jitter").value.trim();
-	const dependsOnText = document.getElementById("f-depends-on").value.trim();
-	const sysctlsText = document.getElementById("f-sysctls").value.trim();
-	const envText = document.getElementById("f-env").value.trim();
-	const pkiIssue = document.getElementById("f-pki-issue").checked;
-	const pkiCertDir = document.getElementById("f-pki-cert-dir").value.trim();
-	const pkiDaysText = document.getElementById("f-pki-days").value.trim();
-	const ldapProvision = document.getElementById("f-ldap-provision").checked;
-	const ldapGroup = document.getElementById("f-ldap-group").value.trim();
-	const ldapUser = document.getElementById("f-ldap-user").value.trim();
-	const ldapUidText = document.getElementById("f-ldap-uid").value.trim();
-	const ldapSecretDir = document.getElementById("f-ldap-secret-dir").value.trim();
-
-	const services = parseServicesText(servicesText);
-	if (services === null)
-		return;
-	const body = {
-		name: name,
-		image: image,
-		services: services,
-	};
-	if (memoryMaxText !== "")
-		body.memory_max = parseInt(memoryMaxText, 10);
-	/* Blank is unset, and 0 is a real setting -- so this is a check for
-	 * an empty field, never for a falsy number. */
-	if (memorySwapMaxText !== "")
-		body.memory_swap_max = parseInt(memorySwapMaxText, 10);
-	if (pidsMaxText !== "")
-		body.pids_max = parseInt(pidsMaxText, 10);
-	if (cpuMaxText !== "")
-		body.cpu_max = cpuMaxText;
-	if (cpusetText !== "")
-		body.cpuset_cpus = cpusetText;
-	if (diskQuotaText !== "")
-		body.disk_quota_bytes = parseInt(diskQuotaText, 10);
-	if (network !== "") {
-		body.networks = network
-			.split(",")
-			.map((s) => s.trim())
-			.filter((s) => s.length > 0)
-			.map((entry) => {
-				const colon = entry.indexOf(":");
-
-				return colon < 0 ? entry : { name: entry.slice(0, colon), ip: entry.slice(colon + 1) };
-			});
-	}
-	if (ipForward)
-		body.ip_forward = true;
-	if (dnsRegister)
-		body.dns_register = true;
-	if (userns)
-		body.userns = true;
-	if (ldapClient)
-		body.ldap_client = true;
-	if (ldapAllowGroupsText !== "") {
-		body.ldap_allow_groups = ldapAllowGroupsText
-			.split(",")
-			.map((s) => s.trim())
-			.filter((s) => s.length > 0);
-	}
-	if (captureOutput)
-		body.capture_output = true;
-	if (routesText !== "") {
-		body.routes = routesText
-			.split(",")
-			.map((s) => s.trim())
-			.filter((s) => s.length > 0)
-			.map((entry) => {
-				const slashIdx = entry.indexOf("/");
-				const colonIdx = entry.indexOf(":", slashIdx + 1);
-
-				return {
-					dest: entry.slice(0, slashIdx),
-					prefix_len: parseInt(entry.slice(slashIdx + 1, colonIdx), 10),
-					via: entry.slice(colonIdx + 1),
-				};
-			});
-	}
-	if (dnsServersText !== "") {
-		body.dns_servers = dnsServersText
-			.split(",")
-			.map((s) => s.trim())
-			.filter((s) => s.length > 0);
-	}
-	if (devices.length > 0)
-		body.devices = devices;
-	if (interfaces.length > 0)
-		body.interfaces = interfaces;
-	if (restart !== "no")
-		body.restart = restart;
-	if (restartDelayText !== "")
-		body.restart_delay_seconds = parseInt(restartDelayText, 10);
-	if (followRolling)
-		body.follow_rolling = true;
-	if (followRollingJitterText !== "")
-		body.follow_rolling_jitter_seconds = parseInt(followRollingJitterText, 10);
-	if (dependsOnText !== "") {
-		body.depends_on = dependsOnText
-			.split(",")
-			.map((s) => s.trim())
-			.filter((s) => s.length > 0);
-	}
-	if (sysctlsText !== "") {
-		body.sysctls = {};
-		for (const pair of sysctlsText.split(";").map((s) => s.trim()).filter((s) => s.length > 0)) {
-			const eq = pair.indexOf("=");
-
-			if (eq > 0)
-				body.sysctls[pair.slice(0, eq)] = pair.slice(eq + 1);
-		}
-	}
-	if (envText !== "") {
-		body.env = {};
-		for (const pair of envText.split(";").map((s) => s.trim()).filter((s) => s.length > 0)) {
-			const eq = pair.indexOf("=");
-
-			if (eq > 0)
-				body.env[pair.slice(0, eq)] = pair.slice(eq + 1);
-		}
-	}
-	if (pkiIssue) {
-		body.pki_issue = true;
-		if (pkiCertDir !== "")
-			body.pki_cert_dir = pkiCertDir;
-		if (pkiDaysText !== "")
-			body.pki_days = parseInt(pkiDaysText, 10);
-	}
-	if (ldapProvision) {
-		body.ldap_provision = true;
-		if (ldapGroup !== "")
-			body.ldap_group = ldapGroup;
-		if (ldapUser !== "")
-			body.ldap_user = ldapUser;
-		if (ldapUidText !== "")
-			body.ldap_uid = parseInt(ldapUidText, 10);
-		if (ldapSecretDir !== "")
-			body.ldap_secret_dir = ldapSecretDir;
-	}
-
-	try {
-		const fileRows = document.querySelectorAll("#f-files-rows .file-row");
-
-		if (fileRows.length > 0) {
-			body.files = [];
-			for (const row of fileRows) {
-				const path = row.querySelector(".file-row-path").value.trim();
-				const fileInput = row.querySelector(".file-row-file");
-				const mode = row.querySelector(".file-row-mode").value.trim();
-
-				if (path === "" || fileInput.files.length === 0)
-					continue;
-				const content = await readFileAsText(fileInput.files[0]);
-				const entry = { path: path, content: content };
-
-				if (mode !== "")
-					entry.mode = mode;
-				body.files.push(entry);
-			}
-		}
-
-		await apiRequest("POST", CIX_API.createContainer(), body);
-		clearStatus();
-		document.getElementById("run-form").reset();
-		document.getElementById("f-files-rows").textContent = "";
-		closeModal();
-		await refreshContainers();
-		renderTree();
-	} catch (e) {
-		showStatus("Failed to create container: " + e.message, true);
-	}
-});
 
 document.getElementById("nd-attach-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
