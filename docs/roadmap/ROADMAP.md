@@ -2445,6 +2445,36 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 282 (done): New Container renders from the contract, so every create form does (#592 epic, 0.2.57-513 and -514)
+
+The last hand-built create form -- 195 lines of markup and a 199-line submit handler that parsed
+`NAME=/path args | after=... | ready=tcp:22` lines -- is a generated form in nine authored sections.
+`apigen` emits `of` on a field that holds a named schema (a `$ref` property, `$ref` items, or the one
+`$ref` member of an items `oneOf`), and the renderer draws it as a group or as rows with Add and Remove,
+collecting the body by a walk that builds each nested object or array. `x-cix-ui` gained `lines` (an
+argv, one argument per line) and `tristate` (`userns`, whose absence means the host's default). The
+contract declared `ldap_client` and `ldap_allow_groups` -- read by the daemon all along, declared only in
+the operation's prose -- titled every field, and named `ServiceReady`, `DeviceGrantRequest`,
+`DnsServerRole` and `LdapServerRole`; no byte on the wire changed. The form no longer requires a disk
+quota, which neither the contract nor the daemon does.
+
+**513 failed its own selftest, correctly twice and once unexplained.** `test_web_tree` refused the
+section class for having no CSS rule. `test_apigen` reported four request schemas missing from
+`FIELDS`; they were present, but the check held FIELDS names in a list capped at 256 and silently
+dropped the rest, and 512's 132 path-parameter schemas had already taken FIELDS past that. The cap is
+1024 and reaching it now fails. The third, `test_pkg`'s concurrent-chains case failing to compose a
+build environment, touches nothing 513 changed, passed in the seven releases before and in 514, and
+has no established cause; it is cix#606, `needs-verify`.
+
+**Verified on 192.168.15.95.** 514's hostbuild log shows `test_apigen`, `test_web_tree`, `test_web_form`
+and `test_pkg` PASS and `SELFTEST: PASS`; it booted on slot `a`, health ok, 12/12 running. Then the
+whole path, end to end, from the box's own served files: rendered in Chromium, the New Container form
+showed its nine sections, was filled as an operator would -- two services, the second after the first
+with a readiness probe, a network row, a console and a file -- passed the browser's own validation,
+and produced a body that, POSTed unchanged to `/v1/containers`, answered 201. The container came up
+`userns: true` (the host default, as the tristate leaves it), `prep:exited,main:running`; its declared
+console attached, and the staged file read back from inside it. The scratch container was then removed.
+
 ## Part 281 (done): every destructive action asks, and 25 of the 26 create forms render from the contract (#592 epic, 0.2.57-509 through -512)
 
 Four releases that finished the forms half of the UX plan, after an audit for defects an operator
