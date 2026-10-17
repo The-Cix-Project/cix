@@ -33,9 +33,18 @@
  * degrades to "no stored value" and the dashboard works, minus the
  * conveniences that persistence buys.
  */
+/*
+ * Each helper calls localStorage, never itself. From d566f879
+ * (2026-09-13) until 0.2.57-518 all three called themselves -- the
+ * sweep that replaced every localStorage call with these helpers reached
+ * their own bodies too -- so each recursed until the stack overflowed,
+ * the catch below swallowed the RangeError, and the dashboard stored
+ * nothing: every reload signed the operator out. test_web_tree now
+ * refuses a helper that does not reach localStorage.
+ */
 function storageGet(key) {
 	try {
-		return storageGet(key);
+		return window.localStorage.getItem(key);
 	} catch (e) {
 		return null;
 	}
@@ -43,7 +52,7 @@ function storageGet(key) {
 
 function storageSet(key, value) {
 	try {
-		storageSet(key, value);
+		window.localStorage.setItem(key, value);
 		return true;
 	} catch (e) {
 		return false;
@@ -52,7 +61,7 @@ function storageSet(key, value) {
 
 function storageRemove(key) {
 	try {
-		storageRemove(key);
+		window.localStorage.removeItem(key);
 	} catch (e) {
 		/* Nothing stored means nothing to remove. */
 	}

@@ -407,6 +407,39 @@ static void check_literal_theads_are_exceptions(const char *html)
  * `function`, `async function`, or a top-level `document.getElementById`
  * listener, whose element id stands for its name.
  */
+/*
+ * The three storage helpers are the only way app.js touches
+ * localStorage, so each must reach it. From d566f879 until 0.2.57-518
+ * all three called THEMSELVES -- a sweep replacing every localStorage
+ * call reached their own bodies -- and the catch around each swallowed
+ * the stack overflow, so nothing was ever stored and every reload
+ * signed the operator out. Nothing failed; it only stopped working.
+ * The body is read up to the helper's first closing brace at column 0.
+ */
+static void check_storage_helpers(const char *app)
+{
+	static const char *const helpers[][2] = {
+		{ "function storageGet(key) {", "localStorage.getItem(key)" },
+		{ "function storageSet(key, value) {", "localStorage.setItem(key, value)" },
+		{ "function storageRemove(key) {", "localStorage.removeItem(key)" },
+	};
+	size_t i;
+
+	for (i = 0; i < sizeof(helpers) / sizeof(helpers[0]); i++) {
+		const char *start = strstr(app, helpers[i][0]);
+		const char *end = start == NULL ? NULL : strstr(start, "\n}");
+		const char *call = start == NULL ? NULL : strstr(start, helpers[i][1]);
+
+		if (start == NULL || end == NULL) {
+			fail("web/app.js has no `%s`%s", helpers[i][0], "");
+			continue;
+		}
+		if (call == NULL || call > end)
+			fail("`%s` does not call %s -- a storage helper that never "
+			     "reaches localStorage stores nothing", helpers[i][0], helpers[i][1]);
+	}
+}
+
 static void check_deletes_confirm(const char *app)
 {
 	static const char *const exempt[] = {
@@ -742,6 +775,7 @@ int main(void)
 	check_tree_labels_unique(tree);
 	check_literal_theads_are_exceptions(html);
 	check_deletes_confirm(app);
+	check_storage_helpers(app);
 	{
 		int calls = 0;
 
