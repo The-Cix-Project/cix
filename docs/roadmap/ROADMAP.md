@@ -2445,7 +2445,7 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
-## Part 284 (in progress): the box says what changed (ADR-0339, #599, 0.2.57-519 to -529)
+## Part 284 (in progress): the box says what changed (ADR-0339, #599, 0.2.57-519 to -532)
 
 The owner accepted ADR-0339 on 2026-10-17 after four reviews raised it from "push some events" to a
 design in which nothing displayed is polled once signed in and the daemon proves it announced. This part
@@ -2570,8 +2570,41 @@ changed with no announcement. Each was fixed where it changes:
 - **What follows:** #607's 24-hour clock restarted from this boot. Its condition is on the log store,
   which survives a reboot, so a release inside the window does not reset it.
 
-Next: phase 2, which moves the log panel and the stats pages onto subscriptions, and #607's rollout once
-its clock runs out.
+**531 and 532, phase 2 release A: subscriptions.**
+- **What is subscribable:** a `stream` read that declares `x-cix-sample-period`, subscribed on the same
+  socket as the announcements. Seven are: host and container stats, processes, network ports, stalls,
+  the log tail and the kernel log.
+- **How a sample is made:** the daemon runs the read in-process once per distinct path per period,
+  for every subscriber at once, and sends it only when it changed. Each subscription holds one
+  replaceable sample.
+- **What is refused:** reads that are not subscribable, unknown query parameters, reads the session
+  may not perform, and a ninth subscription. A withdrawn grant ends the subscriptions it allowed.
+- **The dashboard's live reads** (`startLiveRead()`) are pushed while the stream is live and polled
+  while it is not.
+- **The live tick** stopped re-running page renderers that fetch. That was why 528 still polled Health
+  at 122 requests a minute.
+- **531 failed one gate:** `test_apigen` counted the new stream table as changes. 532 counts rows by
+  the array they sit in.
+
+**Verified on 192.168.15.95 (532).**
+- **The gate:** `test_events` (data flow, one run shared by two subscribers, every refusal, the cap),
+  `test_web_form` (subscribe on open, replay on reconnect, drop on 4401), `test_apigen` and the rest,
+  then `SELFTEST: PASS`.
+- **The box:** it booted on slot `b` with 12/12 running.
+- **All seven reads:** subscribed at once with `cixctl events --follow --subscribe=...`, all seven
+  answered `subscribed` and delivered. Stats, stalls, ports and container stats re-sent each period;
+  logs and the kernel log sent once, being unchanged.
+- **A large sample:** a 2000-entry log tail arrived as one 258,476-byte frame, which exercises the
+  64-bit frame length and cixctl's 1 MiB receive.
+- **Authorization:** a scratch user granted only `containers:read` was refused `getSystemStats` and
+  received `jump`'s stats. When the grant was withdrawn mid-stream, the daemon ended that
+  subscription.
+- **The page,** in Chromium against the box's files: an idle signed-in minute is 2 requests on
+  Containers, Health, Logs, Kernel log, Stalls and Build, against 528's 32 on Containers and 122 on
+  Health. With the stream down, the live reads fall back to 2 s polls.
+
+Next: release B, per-refresher reads, so a change re-runs only the refreshers that read it; and #607's
+rollout once its clock runs out.
 
 ## Part 283 (done): the page forms render from the contract (#592 epic, 0.2.57-515 and -516)
 

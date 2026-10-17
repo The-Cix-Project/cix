@@ -246,7 +246,13 @@ Recorded as each step lands, where the implementation is narrower than or depart
   - **Per-subscription authorization is checked on the box with `cixctl events --follow
     --subscribe=PATH`, not in `test_events`,** because that daemon runs ungated. The same command is
     how a stream read's samples are watched from a terminal, so cixctl's receive cap rose to the
-    daemon's 1 MiB send cap.
+    daemon's 1 MiB send cap. On 0.2.57-532 (192.168.15.95, 2026-10-17), a scratch user in a group
+    granting only `authenticated` and `containers:read` was refused `getSystemStats` at subscribe
+    ("this session may not perform getSystemStats"). It received four samples of `jump`'s stats,
+    and when `containers:read` was withdrawn mid-stream the daemon ended that subscription ("this
+    session may no longer perform getContainerStats"). The scratch user and group were then
+    removed. 531's build failed one gate, `test_apigen`, which counted the new stream table's rows
+    as changes; 532 counts rows by their array.
 - **The drift decision is pure and tested without a daemon.** `events_hash_body()` and
   `events_observe()` live in `events.c`, and `test_events_drift` drives them through the case no daemon
   test can produce cleanly: a state change with no announcement.
