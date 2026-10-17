@@ -3861,6 +3861,14 @@ pre {
 	gap: var(--s4);
 }
 
+/* A page's explanation sits above its form, and `.hint` carries no
+ * bottom margin -- the hand-built forms' grid gap used to supply it, so
+ * the generated ones put the first label flush under the prose
+ * (Configuration > Name, seen in Chromium on 0.2.57-516). */
+.hint + .generated-form {
+	margin-top: var(--s4);
+}
+
 .generated-form label {
 	gap: 0.375rem;
 }

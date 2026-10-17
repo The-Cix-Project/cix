@@ -2445,6 +2445,33 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 283 (done): the page forms render from the contract (#592 epic, 0.2.57-515 and -516)
+
+Forty-three forms on the dashboard's pages are generated: every settings form, every page action and
+five modals. A page binds its form with `syncForm()` from its own refresh, which rebuilds it only when
+the fields it writes change on the box, and never while the operator holds the focus or has typed.
+Four stay hand-built, each for a stated reason (the login shell, System restore, a container's sysctl
+map, the kernel log's tail length). Converting them fixed six defects on live pages, listed in
+CHANGELOG. A review before the build found two more: `syncForm()` compared the whole GET, so a field
+that changes on every read would have rebuilt the form on every poll; and `PUT
+/v1/volumes/{name}/owner` read one `null` beside a number as id 0, which the new owner form sends
+when one id is left empty. That is a 400 now, gated in `test_volume`.
+
+**515 failed its own selftest, correctly.** `test_web_form` refused an untouched optional group being
+sent, and a group missing its required field being accepted. The conversion recorded a field's
+contract `required` in `dataset.required`, and `buildFields()` cleared only the browser attribute
+inside an optional group. 516 clears both.
+
+**Verified on 192.168.15.95.** 516's hostbuild log shows `test_web_form` and `test_volume` PASS and
+`SELFTEST: PASS`; it booted on slot `b`, health ok, 12/12 running. In Chromium, from the box's own
+served files and its real reads of the rolling, site and package-build config, the dashboard's own
+refreshers bound the three forms with the box's values (2 GiB shown as a size). A second read
+differing only in `memory_max_effective` rebuilt nothing. Submitting the rolling-config form
+unchanged showed "Rolling-restart config saved" and sent exactly the values read; that body, PUT to
+the box, answered 200 and read back identical. The screenshots showed one column with head rows,
+and one flaw: a page's explanatory hint sat flush on the first label. The spacing rule for it is
+committed for the next release.
+
 ## Part 282 (done): New Container renders from the contract, so every create form does (#592 epic, 0.2.57-513 and -514)
 
 The last hand-built create form -- 195 lines of markup and a 199-line submit handler that parsed
