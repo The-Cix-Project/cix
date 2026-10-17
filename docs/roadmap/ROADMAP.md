@@ -2445,6 +2445,56 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 280 (done): every list table that can be generated is, and the dashboard can no longer hide a page (#592 epic, 0.2.57-504 through -508)
+
+Five releases that finished the table work Part 279 began -- and, in the middle of it, the owner
+asking where the build pipeline had gone, which is the more important half of this part.
+
+**504 through 506: thirty more `renderTable` calls (21 at 503, 51 at 506), and the contract defects they surfaced.** The container,
+network, image, package, catalogue, schedule, process, stall, software, snapshot, kernel-module,
+boot-entry and build-log tables moved onto `renderTable`. 504's own selftest failed, correctly: the
+gate that refuses a schema titling some fields and not others caught `Network`, and 505 titled all of
+them. Along the way apigen learned to refuse a property written in YAML flow form (it had been
+silently reading nothing from it), and in 506 to read `allOf` -- eight schemas that compose another,
+`Schedule` and the three pipeline row types among them, had generated **no fields at all**, so
+nothing could render them from the contract and the shape gate had checked none of the pipeline's
+item keys.
+
+**507: the build pipeline had been unreachable for a week.** `dcae8e14` (2026-10-10) stopped the
+Software group being a link by removing its hash, `pipeline`, and wrote in the tree's own comment that
+the stage board stayed "reachable as what it is, a Build tab". No tab was added and nothing linked to
+`#pipeline`; the page rendered for nobody until the owner asked where it was. Every gate had passed
+throughout, because each checked that a route lands somewhere sound and none asked whether anything
+routes to a page at all. The board is the Build page's first two tabs now (Pipeline, Errors), the
+tree's Build lands on it, and the Build page's old Overview is In Flight. The same commit had given
+Services and Host their stolen pages back as children both called "Health"; Services' is Server
+Health. `test_web_tree` now fails a page nothing reaches and a tree label used twice.
+
+**508: the last eight hand-built lists.** A count had said none were left. Listing every `<table>`
+whose `<thead>` is still written in `index.html` -- a generated table has none -- found eight: server
+health, the storage page's volumes, the four device lists, app passwords and the pipeline's Errors
+list. That listing is now a gate: a literal header on anything but the four stated exceptions fails
+`test_web_tree`. Two contract claims those conversions exposed were false: `GET /system/server-health`
+always sent `warnings` and never declared it, and `Volume.created_at` was declared a date-time string
+while `volume.c` writes Unix seconds. `renderTable` gained `fill: (row, cell)` for a cell written after
+its row exists. And converting the volumes list briefly introduced a guess shown as fact -- with the
+containers read refused, every volume would have read "not currently mounted" -- caught in review
+before release; Mounted by is "—" when it is not known.
+
+**Where the tables stand.** 58 `renderTable` calls render 61 tables. Nine list tables stay
+hand-written on purpose: four string or key/value lists with no schema behind their rows, and five
+shapes each with its reason in a comment (the pipeline's stage board, device maps' cells of links,
+disks' live counters, a container's volumes re-read every sweep, host-auth permissions keyed by
+group). Key-value pages are the next story: 79 `fieldBlock` rows against one `renderDetailRows` page.
+
+**Verified on 192.168.15.95 at each release.** 505 booted on slot `a` and 506 on `b`, each with
+health ok and 12/12 containers running, serving 39 and then 51 `renderTable(` calls. 507 booted on
+`a`; its served markup and `app.js` carried the Pipeline tab and the tree's `#pipeline` link, and the
+box's own served files, rendered in Chromium, opened the Pipeline tab when the tree's Build entry was
+clicked. 508 booted on `b` with health ok and 12/12 running, serving 58 calls and exactly four literal
+`<thead>`s; its hostbuild log shows `test_web_tree PASS` -- the reachability, unique-label and
+written-header gates running against the release's own tree -- and `SELFTEST: PASS`.
+
 ## Part 279 (done): a list says which of its states it is in, the dashboard has a phone tier, and twenty-one tables render from the contract (#592 epic, #596, #600, 0.2.57-497 through -503)
 
 Seven releases, one theme: the dashboard stops restating what the contract already says, and the
