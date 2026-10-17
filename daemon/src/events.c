@@ -11,6 +11,12 @@
 
 static uint64_t g_generation[EVENTS_READ_COUNT];
 static char g_epoch[17];
+static void (*g_listener)(int slot);
+
+void events_set_listener(void (*fn)(int slot))
+{
+	g_listener = fn;
+}
 
 void events_init(void)
 {
@@ -42,6 +48,8 @@ void events_announce(int slot)
 	if (slot < 0 || slot >= EVENTS_READ_COUNT)
 		return;
 	g_generation[slot]++;
+	if (g_listener != NULL)
+		g_listener(slot);
 }
 
 int events_announce_change(const char *op_id)
@@ -80,4 +88,11 @@ const char *events_op_id(int slot)
 	if (slot < 0 || slot >= EVENTS_READ_COUNT)
 		return NULL;
 	return g_events_reads[slot].op_id;
+}
+
+const char *events_permission(int slot)
+{
+	if (slot < 0 || slot >= EVENTS_READ_COUNT)
+		return NULL;
+	return g_events_reads[slot].permission;
 }

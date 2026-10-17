@@ -1258,6 +1258,8 @@ enum conn_kind {
 	CONN_PKG_BUILD_LOG_WS,  /* GET /v1/pkg/build/log -- live-tail of the in-flight build's own
 	                          * output pipe (task #676), a one-way relay of CONN_PKG_BUILD_OUTPUT's
 	                          * existing capture, not an exec/PTY session like CONN_CONSOLE_WS */
+	CONN_EVENTS_WS,         /* GET /v1/events -- ADR-0339: which reads changed, pushed */
+	CONN_EVENTS_TIMER,      /* ADR-0339: the events stream's heartbeat, every 10 s */
 	CONN_KMSG,              /* /dev/kmsg -- feeds real kernel dmesg lines into the consolidated log store */
 	CONN_UEVENT,            /* NETLINK_KOBJECT_UEVENT multicast socket (ADR-0161 Phase C) -- real
 	                          * kernel hotplug add/remove events, modeled on CONN_KMSG's own async
@@ -1373,6 +1375,19 @@ struct conn {
 	size_t out_sent;
 	time_t out_progress_at;
 	struct conn *out_next;                  /* g_out_pending list linkage */
+	/*
+	 * CONN_EVENTS_WS only (ADR-0339). `ev_pending` is the set of reads
+	 * announced since this stream's last frame -- a SET, not a queue:
+	 * a read that changed ten times is stale once, so it cannot grow
+	 * however slowly the peer reads. `ev_allowed` is the reads this
+	 * session may hear, decided once at the upgrade and again when a
+	 * grant changes. `ev_token` is the session, kept so each heartbeat
+	 * can ask whether it still stands.
+	 */
+	unsigned char ev_pending[(EVENTS_READ_COUNT + 7) / 8];
+	unsigned char ev_allowed[(EVENTS_READ_COUNT + 7) / 8];
+	char ev_token[HOSTAUTH_TOKEN_LEN + 1];
+	struct conn *ev_next;                   /* g_events_conns list linkage */
 };
 
 /*
@@ -28326,6 +28341,13 @@ static void op_pkgBuildLog(const struct api_ctx *ctx)
 	respond_error(ctx->fd, 400, "Bad Request", "this endpoint requires Upgrade: websocket");
 }
 
+/* ADR-0339: the event stream is a WebSocket upgrade, owned by
+ * try_events_upgrade() before dispatch() -- the same arrangement. */
+static void op_getEvents(const struct api_ctx *ctx)
+{
+	respond_error(ctx->fd, 400, "Bad Request", "this endpoint requires Upgrade: websocket");
+}
+
 /* -- system ----------------------------------------------------- */
 
 static void op_revokeHostauthSessions(const struct api_ctx *ctx)
@@ -30900,6 +30922,8 @@ static void client_conn_finish(struct conn *cc)
  * to one still sitting in the batch about to be dispatched would be a
  * use-after-free.
  */
+static void events_ws_teardown(struct conn *cc);
+
 static void conn_out_sweep(void)
 {
 	struct conn *cc = g_out_pending;
@@ -30909,14 +30933,460 @@ static void conn_out_sweep(void)
 		struct conn *next = cc->out_next;
 
 		if (now - cc->out_progress_at >= CONN_OUT_DEADLINE_SECONDS) {
-			logstore_write("cixd", "warn",
-			               "dropping a client that stopped reading its response "
-			               "after %zu of %zu bytes",
-			               cc->out_sent, cc->out_len);
-			client_conn_teardown(cc);
+			/* ADR-0339: an event stream rides the same buffer and the
+			 * same deadline; its peer has stopped reading too, and it
+			 * reconnects and re-reads what it holds when it returns. */
+			if (cc->kind == CONN_EVENTS_WS) {
+				logstore_write("cixd", "warn",
+				               "dropping an event stream that stopped reading after %zu of "
+				               "%zu bytes",
+				               cc->out_sent, cc->out_len);
+				events_ws_teardown(cc);
+			} else {
+				logstore_write("cixd", "warn",
+				               "dropping a client that stopped reading its response "
+				               "after %zu of %zu bytes",
+				               cc->out_sent, cc->out_len);
+				client_conn_teardown(cc);
+			}
 		}
 		cc = next;
 	}
+}
+
+/* ---------- ADR-0339 (#599): the event stream, GET /v1/events ----------
+ *
+ * Each open stream is told which reads changed, as a set: an
+ * announcement marks a read pending on every stream, and at the end of
+ * each pass of the event loop a stream with anything pending gets one
+ * frame naming those reads with their new generations -- but only the
+ * reads its session may perform. A frame is never started while the
+ * previous one is still leaving: the pending set grows meanwhile and
+ * goes out whole, so a slow peer costs at most one frame of buffer, and
+ * one that stops reading altogether is dropped by conn_out_sweep() like
+ * any other connection that will not take its bytes.
+ */
+#define EVENTS_HEARTBEAT_SECONDS 10
+
+static struct conn *g_events_conns;
+static int g_events_dirty;       /* some stream has a read pending */
+static int g_events_masks_stale; /* a grant may have changed: recompute every mask */
+static struct conn g_events_timer_conn = { .fd = -1 };
+
+static int ev_bit(const unsigned char *bits, int slot)
+{
+	return (bits[slot / 8] >> (slot % 8)) & 1;
+}
+
+static void ev_set(unsigned char *bits, int slot)
+{
+	bits[slot / 8] |= (unsigned char)(1u << (slot % 8));
+}
+
+/*
+ * The reads this stream's session may perform, decided by the same
+ * decision authorize_route() makes for a request (ADR-0317), through
+ * the variant that does not spend a single-use token.
+ */
+static void events_ws_compute_mask(struct conn *cc)
+{
+	int slot;
+
+	memset(cc->ev_allowed, 0, sizeof(cc->ev_allowed));
+	for (slot = 0; slot < EVENTS_READ_COUNT; slot++)
+		if (hostauth_authorize_peek(cc->ev_token, events_permission(slot)) == HOSTAUTH_AUTHZ_OK)
+			ev_set(cc->ev_allowed, slot);
+}
+
+/*
+ * events.c calls this after every announcement. It only marks: frames
+ * are built at the end of the loop pass (events_ws_flush_all()), so a
+ * burst of changes in one pass is one frame, and nothing is written to
+ * a socket while a request is still being answered. A change to
+ * `whoami` is a change to some session's grants, so every mask is
+ * recomputed before the next frame (#548's rule, applied here).
+ */
+static void events_ws_listener(int slot)
+{
+	struct conn *cc;
+
+	if (slot == EV_getWhoami)
+		g_events_masks_stale = 1;
+	for (cc = g_events_conns; cc != NULL; cc = cc->ev_next)
+		ev_set(cc->ev_pending, slot);
+	if (g_events_conns != NULL)
+		g_events_dirty = 1;
+}
+
+static int events_ws_any_pending(const struct conn *cc)
+{
+	size_t i;
+
+	for (i = 0; i < sizeof(cc->ev_pending); i++)
+		if (cc->ev_pending[i] != 0)
+			return 1;
+	return 0;
+}
+
+/* Appends `len` bytes of one frame (header and payload) to cc's out
+ * buffer. 0, or -1 when memory is short. */
+static int events_ws_append(struct conn *cc, const unsigned char *hdr, size_t hlen,
+                            const void *payload, size_t len)
+{
+	char *grown = realloc(cc->out_buf, cc->out_len + hlen + len);
+
+	if (grown == NULL)
+		return -1;
+	cc->out_buf = grown;
+	memcpy(cc->out_buf + cc->out_len, hdr, hlen);
+	memcpy(cc->out_buf + cc->out_len + hlen, payload, len);
+	cc->out_len += hlen + len;
+	return 0;
+}
+
+/*
+ * Queues one frame naming the reads this session may hear: every one
+ * of them when `full` (the first frame, and each heartbeat), otherwise
+ * those pending. Clears the pending set either way -- a read pending
+ * that this session may not hear is simply dropped. Returns 0 (with
+ * nothing queued when nothing was pending), or -1 on failure.
+ */
+static int events_ws_queue_frame(struct conn *cc, int full)
+{
+	struct json_writer w;
+	unsigned char hdr[4];
+	size_t hlen;
+	int slot, named = 0, r;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "epoch");
+	jw_str(&w, events_epoch());
+	jw_key(&w, "gen");
+	jw_obj_open(&w);
+	for (slot = 0; slot < EVENTS_READ_COUNT; slot++) {
+		if (!ev_bit(cc->ev_allowed, slot))
+			continue;
+		if (!full && !ev_bit(cc->ev_pending, slot))
+			continue;
+		jw_key(&w, events_op_id(slot));
+		jw_int(&w, (long long)events_generation(slot));
+		named++;
+	}
+	jw_obj_close(&w);
+	jw_obj_close(&w);
+	memset(cc->ev_pending, 0, sizeof(cc->ev_pending));
+	if (!full && named == 0) {
+		jw_free(&w);
+		return 0;
+	}
+	hlen = ws_frame_header(WS_OPCODE_TEXT, w.len, hdr);
+	r = hlen == 0 ? -1 : events_ws_append(cc, hdr, hlen, w.buf, w.len);
+	jw_free(&w);
+	return r;
+}
+
+/*
+ * Pushes cc's queued bytes as far as the socket takes them. Returns 0
+ * while the stream lives, or -1 after tearing it down -- the caller
+ * must not touch cc again. Anything left waits for EPOLLOUT, with cc on
+ * g_out_pending so the write deadline applies.
+ */
+static int events_ws_write(struct conn *cc)
+{
+	struct cix_epoll_event ev;
+	int dr;
+
+	if (cc->out_sent >= cc->out_len)
+		return 0;
+	cc->out_progress_at = time(NULL);
+	dr = conn_out_drain(cc);
+	if (dr < 0) {
+		events_ws_teardown(cc);
+		return -1;
+	}
+	memset(&ev, 0, sizeof(ev));
+	ev.data.ptr = cc;
+	conn_out_unlink(cc);
+	if (dr == 1) {
+		cc->out_len = 0;
+		cc->out_sent = 0;
+		ev.events = EPOLLIN;
+	} else {
+		ev.events = EPOLLIN | EPOLLOUT;
+		cc->out_next = g_out_pending;
+		g_out_pending = cc;
+	}
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_MOD, cc->fd, &ev) != 0) {
+		events_ws_teardown(cc);
+		return -1;
+	}
+	return 0;
+}
+
+/* Sends what is pending on cc, unless a frame is still leaving. */
+static int events_ws_flush(struct conn *cc)
+{
+	if (cc->out_sent < cc->out_len || !events_ws_any_pending(cc))
+		return 0;
+	if (events_ws_queue_frame(cc, 0) != 0) {
+		events_ws_teardown(cc);
+		return -1;
+	}
+	return events_ws_write(cc);
+}
+
+/* End of each event-loop pass: recompute masks if a grant changed, then
+ * one frame per stream with anything pending. */
+static void events_ws_flush_all(void)
+{
+	struct conn *cc, *next;
+
+	if (g_events_masks_stale) {
+		g_events_masks_stale = 0;
+		for (cc = g_events_conns; cc != NULL; cc = cc->ev_next)
+			events_ws_compute_mask(cc);
+	}
+	if (!g_events_dirty)
+		return;
+	g_events_dirty = 0;
+	for (cc = g_events_conns; cc != NULL; cc = next) {
+		next = cc->ev_next;
+		events_ws_flush(cc);
+	}
+}
+
+static void events_ws_teardown(struct conn *cc)
+{
+	struct conn **pp;
+
+	for (pp = &g_events_conns; *pp != NULL; pp = &(*pp)->ev_next) {
+		if (*pp == cc) {
+			*pp = cc->ev_next;
+			break;
+		}
+	}
+	conn_out_unlink(cc);
+	free(cc->out_buf);
+	cc->out_buf = NULL;
+	ws_conn_free(&cc->ws);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	if (cc->ssl != NULL) {
+		tls_unregister(cc->fd);
+		SSL_free(cc->ssl);
+	}
+	close_client_socket(cc->fd);
+	free(cc);
+}
+
+/*
+ * The peer's side: a stream carries nothing a client needs to say, so
+ * this answers a ping, ends on a close frame or EOF, and otherwise
+ * drains; and it carries on writing whatever is queued when the socket
+ * becomes writable.
+ */
+static void handle_events_ws_event(struct conn *cc, uint32_t evmask)
+{
+	unsigned char buf[512];
+	struct ws_frame frame;
+	ssize_t n;
+	int pr;
+
+	if (cc->out_sent < cc->out_len) {
+		if (events_ws_write(cc) != 0)
+			return;
+		/* That frame is out: anything that piled up behind it goes. */
+		if (cc->out_sent >= cc->out_len && events_ws_flush(cc) != 0)
+			return;
+	}
+	if ((evmask & (EPOLLIN | EPOLLHUP | EPOLLERR)) == 0)
+		return;
+	for (;;) {
+		n = tls_read(cc->fd, buf, sizeof(buf));
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			return;
+		if (n <= 0 || ws_conn_feed(&cc->ws, buf, (size_t)n) != 0)
+			break;
+		for (;;) {
+			pr = ws_conn_try_parse(&cc->ws, &frame);
+			if (pr == 0)
+				break;
+			if (pr < 0 || frame.opcode == WS_OPCODE_CLOSE)
+				goto gone;
+			if (frame.opcode == WS_OPCODE_PING) {
+				unsigned char hdr[4];
+				size_t hlen = ws_frame_header(WS_OPCODE_PONG, frame.payload_len, hdr);
+
+				if (hlen == 0 ||
+				    events_ws_append(cc, hdr, hlen, frame.payload, frame.payload_len) != 0)
+					goto gone;
+				ws_conn_consume(&cc->ws, frame.frame_len);
+				if (events_ws_write(cc) != 0)
+					return;
+				continue;
+			}
+			ws_conn_consume(&cc->ws, frame.frame_len);
+		}
+		if (cc->ssl == NULL || SSL_pending(cc->ssl) <= 0)
+			return;
+	}
+gone:
+	events_ws_teardown(cc);
+}
+
+/*
+ * Every 10 s: whether each stream's session still stands, and if so the
+ * whole vector it may hear -- which is also how a client notices a frame
+ * it never got, and how it knows the stream is alive. A session that has
+ * ended -- expired, logged out, revoked -- gets close code 4401, best
+ * effort, and the stream ends.
+ */
+static void handle_events_timer_event(struct conn *tc)
+{
+	struct conn *cc, *next;
+	uint64_t expirations;
+
+	if (read(tc->fd, &expirations, sizeof(expirations)) < 0 && errno != EAGAIN)
+		perror("read (events timerfd)");
+	for (cc = g_events_conns; cc != NULL; cc = next) {
+		next = cc->ev_next;
+		if (hostauth_authorize_peek(cc->ev_token, "authenticated") != HOSTAUTH_AUTHZ_OK) {
+			static const unsigned char close_4401[] = { 0x88, 0x02, 0x11, 0x31 };
+
+			if (cc->out_sent >= cc->out_len)
+				(void)tls_write_some(cc->fd, close_4401, sizeof(close_4401));
+			events_ws_teardown(cc);
+			continue;
+		}
+		/* A frame still leaving means the peer is behind: this beat is
+		 * skipped rather than queued behind it. */
+		if (cc->out_sent < cc->out_len)
+			continue;
+		if (events_ws_queue_frame(cc, 1) != 0) {
+			events_ws_teardown(cc);
+			continue;
+		}
+		events_ws_write(cc);
+	}
+}
+
+static void start_events_timer(void)
+{
+	struct cix_epoll_event ev;
+	struct itimerspec its;
+	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+
+	events_set_listener(events_ws_listener);
+	if (fd < 0) {
+		perror("timerfd_create (events)");
+		return;
+	}
+	g_events_timer_conn.kind = CONN_EVENTS_TIMER;
+	g_events_timer_conn.fd = fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = &g_events_timer_conn;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+		close(fd);
+		g_events_timer_conn.fd = -1;
+		return;
+	}
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = EVENTS_HEARTBEAT_SECONDS;
+	its.it_interval.tv_sec = EVENTS_HEARTBEAT_SECONDS;
+	if (timerfd_settime(fd, 0, &its, NULL) != 0)
+		perror("timerfd_settime (events)");
+}
+
+/*
+ * GET /v1/events -- the upgrade, answered before dispatch() like the
+ * console and the build log, so it authorizes itself as its route
+ * (CLAUDE.md's named trap: the console was unauthenticated on every
+ * release before 0.2.57-392 for want of exactly this call).
+ */
+static enum console_route_result try_events_upgrade(struct conn *cc, const struct http_request *req)
+{
+	char upgrade_val[32], connection_val[64], ws_key[64], ws_version[8];
+	char accept_val[64], response[512], token_hdr[HOSTAUTH_TOKEN_LEN + 32];
+	size_t qlen;
+	int rlen;
+
+	qlen = strcspn(req->path, "?");
+	if (strcmp(req->method, "GET") != 0 || qlen != strlen("/v1/events") ||
+	    strncmp(req->path, "/v1/events", qlen) != 0)
+		return CONSOLE_NOT_MATCHED;
+	if (!authorize_upgrade_route(cc->fd, req))
+		return CONSOLE_FAILED;
+	if (http_find_header(req->headers, req->headers_len, "Upgrade", upgrade_val,
+	                     sizeof(upgrade_val)) < 0 ||
+	    strcasecmp(upgrade_val, "websocket") != 0) {
+		respond_error(cc->fd, 400, "Bad Request", "this endpoint requires Upgrade: websocket");
+		return CONSOLE_FAILED;
+	}
+	if (http_find_header(req->headers, req->headers_len, "Connection", connection_val,
+	                     sizeof(connection_val)) < 0 ||
+	    strcasestr(connection_val, "upgrade") == NULL) {
+		respond_error(cc->fd, 400, "Bad Request", "this endpoint requires Connection: Upgrade");
+		return CONSOLE_FAILED;
+	}
+	if (http_find_header(req->headers, req->headers_len, "Sec-WebSocket-Key", ws_key,
+	                     sizeof(ws_key)) < 0) {
+		respond_error(cc->fd, 400, "Bad Request", "missing Sec-WebSocket-Key");
+		return CONSOLE_FAILED;
+	}
+	if (http_find_header(req->headers, req->headers_len, "Sec-WebSocket-Version", ws_version,
+	                     sizeof(ws_version)) < 0 ||
+	    strcmp(ws_version, "13") != 0) {
+		respond_error(cc->fd, 400, "Bad Request", "requires Sec-WebSocket-Version: 13");
+		return CONSOLE_FAILED;
+	}
+	if (ws_compute_accept(ws_key, accept_val, sizeof(accept_val)) != 0) {
+		respond_error(cc->fd, 500, "Internal Server Error", "failed to compute websocket accept");
+		return CONSOLE_FAILED;
+	}
+	rlen = snprintf(response, sizeof(response),
+	                "HTTP/1.1 101 Switching Protocols\r\n"
+	                "Upgrade: websocket\r\n"
+	                "Connection: Upgrade\r\n"
+	                "Sec-WebSocket-Accept: %s\r\n%s"
+	                "\r\n",
+	                accept_val, ws_selected_protocol(req));
+	if (rlen < 0 || (size_t)rlen >= sizeof(response)) {
+		respond_error(cc->fd, 500, "Internal Server Error", "failed to build handshake response");
+		return CONSOLE_FAILED;
+	}
+	http_set_blocking(cc->fd);
+	if (tls_write_all(cc->fd, response, (size_t)rlen) != 0)
+		return CONSOLE_FAILED;
+
+	/* From here cc IS the stream: the HTTP request state goes, as in
+	 * try_pkg_build_log_upgrade(), and nothing below returns FAILED. */
+	http_conn_free(&cc->http);
+	free(cc->out_buf);
+	cc->out_buf = NULL;
+	cc->out_len = 0;
+	cc->out_sent = 0;
+	cc->kind = CONN_EVENTS_WS;
+	ws_conn_init(&cc->ws);
+	memset(cc->ev_pending, 0, sizeof(cc->ev_pending));
+	cc->ev_token[0] = '\0';
+	if (http_find_header(req->headers, req->headers_len, "Authorization", token_hdr,
+	                     sizeof(token_hdr)) >= 0)
+		snprintf(cc->ev_token, sizeof(cc->ev_token), "%s",
+		         strncmp(token_hdr, "Bearer ", 7) == 0 ? token_hdr + 7 : token_hdr);
+	else
+		(void)ws_protocol_bearer(req, cc->ev_token, sizeof(cc->ev_token));
+	events_ws_compute_mask(cc);
+	cc->ev_next = g_events_conns;
+	g_events_conns = cc;
+	http_set_nonblocking(cc->fd);
+	/* The first frame is the whole vector, so a client can compare at
+	 * once rather than waiting for the first heartbeat. */
+	if (events_ws_queue_frame(cc, 1) != 0)
+		events_ws_teardown(cc);
+	else
+		(void)events_ws_write(cc);
+	return CONSOLE_HANDLED;
 }
 
 /*
@@ -31082,6 +31552,12 @@ static void handle_client_event(struct conn *cc)
 			if (cr == CONSOLE_HANDLED) {
 				g_response_conn = NULL;
 				return; /* cc repurposed into CONN_PKG_BUILD_LOG_WS -- must not be touched again */
+			}
+			if (cr == CONSOLE_NOT_MATCHED)
+				cr = try_events_upgrade(cc, &req);
+			if (cr == CONSOLE_HANDLED) {
+				g_response_conn = NULL;
+				return; /* cc repurposed into CONN_EVENTS_WS (ADR-0339) -- must not be touched again */
 			}
 			if (cr == CONSOLE_NOT_MATCHED) {
 				dispatch(cc->fd, &req);
@@ -34226,6 +34702,7 @@ static int cixd_main(int argc, char **argv)
 	start_ntp_periodic_timer(); /* same g_epfd/best-effort posture, task #751 */
 	start_build_stall_timer();  /* reports an in-flight build that has gone quiet */
 	start_scheduler_timer();    /* ADR-0257 -- no-op until a schedule exists */
+	start_events_timer();       /* ADR-0339 -- the event stream's heartbeat and listener */
 	start_serverhealth_timer(); /* issue #81 -- probes every registered server on an interval */
 	fflush(stdout);
 
@@ -34498,6 +34975,10 @@ static int cixd_main(int argc, char **argv)
 				handle_helper_event(cc);
 			else if (cc->kind == CONN_PKG_BUILD_LOG_WS)
 				handle_pkg_build_log_ws_event(cc);
+			else if (cc->kind == CONN_EVENTS_WS)
+				handle_events_ws_event(cc, events[j].events);
+			else if (cc->kind == CONN_EVENTS_TIMER)
+				handle_events_timer_event(cc);
 			else if (cc->kind == CONN_KMSG)
 				handle_kmsg_event(cc);
 			else if (cc->kind == CONN_UEVENT)
@@ -34529,6 +35010,9 @@ static int cixd_main(int argc, char **argv)
 		 * one still sitting unhandled in events[] would then be read
 		 * as freed memory (#237).
 		 */
+		/* ADR-0339: what this pass announced goes out as one frame per
+		 * stream -- after the batch for the same reason. */
+		events_ws_flush_all();
 		conn_out_sweep();
 
 		drain_pending_free();

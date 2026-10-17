@@ -509,6 +509,8 @@ static const char USAGE_TEXT[] =
 	        "               separate watchdog, with the kernel function it slept in (#100)\n"
 	        "  events status  -- the box's boot epoch and the generation of every read it\n"
 	        "               announces when it changes (ADR-0339)\n"
+	        "  events --follow  -- those announcements live, one JSON frame per line, until\n"
+	        "               the daemon ends the stream\n"
 	        "  control-plane-reservation show\n"
 	        "  control-plane-reservation set [--enabled | --disabled] [--cpu-percent=N]\n"
 	        "               [--memory-bytes=N]  -- how much of the machine is held back for\n"
@@ -8400,8 +8402,11 @@ static int cmd_events(const struct cix_client *c, int json_mode, int argc, char 
 	struct cix_response r;
 	const char *sub = argc > 0 ? argv[0] : "status";
 
+	/* ADR-0339: the stream itself, one frame per line. */
+	if (strcmp(sub, "--follow") == 0)
+		return cix_events_follow_run(c) == 0 ? 0 : 1;
 	if (strcmp(sub, "status") != 0) {
-		fprintf(stderr, "cixctl: events takes: status\n");
+		fprintf(stderr, "cixctl: events takes: status, or --follow\n");
 		return 2;
 	}
 	if (cix_client_request(c, CIX_API_getEventsStatus_METHOD, CIX_API_getEventsStatus, NULL,

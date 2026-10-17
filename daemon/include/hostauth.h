@@ -372,6 +372,15 @@ enum hostauth_authz {
 enum hostauth_authz hostauth_authorize(const char *token, const char *permission);
 
 /*
+ * ADR-0339: hostauth_authorize()'s decision, through
+ * hostauth_peek_token() -- so asking never spends a single-use token.
+ * For a question the daemon asks on a session's behalf without a
+ * request in hand: which announced reads an event stream may hear, and
+ * whether its session is still valid at each heartbeat.
+ */
+enum hostauth_authz hostauth_authorize_peek(const char *token, const char *permission);
+
+/*
  * ADR-0317 section 8 (#543): hostauth_authorize() for a request that
  * presented an app password (HTTP Basic) instead of a session. username
  * is the user the app password verified as (ldap_app_password_check()),

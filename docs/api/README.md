@@ -14,6 +14,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/config/diff` | What a configuration document would change, changing nothing |
 | POST | `/login` | Authenticate, get a session token (ADR-0144) -- `public`, needs no session |
 | POST | `/logout` | Invalidate the current session (idempotent, `public`) |
+| GET | `/events` | The box's announcements, live, as a WebSocket: which reads changed, never their content, filtered to what the session may read (ADR-0339) -- `authenticated`, the session rides as the `cix.bearer.<token>` subprotocol |
 | GET | `/events/status` | The box's boot epoch and the generation of every read it announces when it changes (ADR-0339) -- `authenticated`, `derived` because it changes on every announcement |
 | GET | `/whoami` | Is the caller's own bearer token currently authenticated, and its permissions -- `public`, never consumes a single-use session (ADR-0164) |
 | GET, POST | `/whoami/app-passwords` | The same, for the session's own user -- needs a login session, not an app password (#543) |
@@ -953,7 +954,20 @@ Authorization: Basic base64("agent-1:3f9c...")
 - **The daemon's own changes raise generations too**, from the code that makes them: a container starting or exiting, a service reported by `cix-init`, a package job changing state, an assembly, a hotplug event, a scheduled run, a storage migration.
 - **`GET /events/status`** (`authenticated`, `cixctl events status`) returns the epoch and every announced read's generation.
 
-The stream that pushes these to a client is the next step of ADR-0339.
+**`GET /events`** (0.2.57-521) pushes them:
+
+- **The frame:** a WebSocket of JSON text frames, `{"epoch": "...", "gen": {"<operationId>": n, ...}}`.
+- **What a frame names:** the first frame and a heartbeat every 10 s carry every read the session may
+  perform; a frame between them names only what changed since the last one.
+- **What a session hears:** a read the session may not perform is never named. Each stream's permission
+  mask comes from the same decision `authorize_route()` makes, recomputed when a grant changes.
+- **When the session ends** (expired, logged out or revoked), the next heartbeat closes the stream with
+  code 4401.
+- **A slow reader:** a stream holds the reads changed since its last frame as a set, so it cannot
+  overflow. One that stops reading is dropped after 30 s, like any connection that will not take its
+  bytes.
+
+`cixctl events --follow` prints the frames, one per line.
 
 The lists were seeded from the path: a change marks a read stale when one path root is a segment-prefix of the other. Cross-resource effects were then added by hand: a package install changes images, a container changes networks and volumes, and a group change changes `whoami`. Marking too much costs one extra read. Marking too little is what the box's drift check reports, and what the events test fails on, so a missing name is a bug to fix in the contract.
 

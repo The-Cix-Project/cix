@@ -505,7 +505,7 @@ static int set_raw_mode(int fd, struct termios *saved)
  * Returns 0 to keep going, -1 when the session is over: a malformed
  * frame, a close frame, or stdout gone.
  */
-static int drain_frames(struct client_ws_buf *inbuf)
+static int drain_frames(struct client_ws_buf *inbuf, int line_per_frame)
 {
 	for (;;) {
 		int opcode;
@@ -519,6 +519,10 @@ static int drain_frames(struct client_ws_buf *inbuf)
 			return -1;
 		if (opcode == 0x1 || opcode == 0x2) {
 			if (cix_write_all(STDOUT_FILENO, payload, payload_len) != 0)
+				return -1;
+			/* ADR-0339: an event stream's frames are whole JSON
+			 * documents, one per line; a console's are a byte stream. */
+			if (line_per_frame && cix_write_all(STDOUT_FILENO, "\n", 1) != 0)
 				return -1;
 		} else if (opcode == 0x8) {
 			consume(inbuf, frame_len);
@@ -542,7 +546,7 @@ static void relay(int ws_fd, struct client_ws_buf *inbuf_seed)
 	 * after the next read is the same hang by another route -- when the
 	 * first frame was the only one coming, the next read never returns.
 	 */
-	if (inbuf.len > 0 && drain_frames(&inbuf) != 0)
+	if (inbuf.len > 0 && drain_frames(&inbuf, 0) != 0)
 		return;
 
 	fds[0].fd = STDIN_FILENO;
@@ -596,7 +600,7 @@ static void relay(int ws_fd, struct client_ws_buf *inbuf_seed)
 			memcpy(inbuf.buf + inbuf.len, iobuf, (size_t)n);
 			inbuf.len += (size_t)n;
 
-			if (drain_frames(&inbuf) != 0)
+			if (drain_frames(&inbuf, 0) != 0)
 				return;
 		}
 	}
@@ -717,7 +721,7 @@ int cix_pkg_build_log_run(const struct cix_client *c, const char *name, const ch
 	/* #331: seeded by the handshake, and drained before the first read
 	 * for the same reason relay() does -- the first log lines routinely
 	 * arrive in the same segment as the 101. */
-	if (inbuf.len > 0 && drain_frames(&inbuf) != 0)
+	if (inbuf.len > 0 && drain_frames(&inbuf, 0) != 0)
 		goto done;
 	for (;;) {
 		ssize_t n = read(fd, iobuf, sizeof(iobuf));
@@ -729,12 +733,46 @@ int cix_pkg_build_log_run(const struct cix_client *c, const char *name, const ch
 		memcpy(inbuf.buf + inbuf.len, iobuf, (size_t)n);
 		inbuf.len += (size_t)n;
 
-		if (drain_frames(&inbuf) != 0)
+		if (drain_frames(&inbuf, 0) != 0)
 			goto done;
 	}
 
 done:
 	printf("\n--- build log stream ended ---\n");
+	close(fd);
+	return 0;
+}
+
+/*
+ * ADR-0339: `cixctl events --follow` -- the box's announcements, one
+ * JSON frame per line, until the daemon closes the stream (a restart,
+ * or close code 4401 when the session ends) or the reader stops.
+ */
+int cix_events_follow_run(const struct cix_client *c)
+{
+	int fd;
+	struct client_ws_buf inbuf;
+	unsigned char iobuf[4096];
+
+	fd = do_ws_handshake(c, "events", CIX_API_getEvents, &inbuf);
+	if (fd < 0)
+		return -1;
+	if (inbuf.len > 0 && drain_frames(&inbuf, 1) != 0)
+		goto done;
+	for (;;) {
+		ssize_t n = read(fd, iobuf, sizeof(iobuf));
+
+		if (n <= 0)
+			break;
+		if (inbuf.len + (size_t)n > sizeof(inbuf.buf))
+			break;
+		memcpy(inbuf.buf + inbuf.len, iobuf, (size_t)n);
+		inbuf.len += (size_t)n;
+		if (drain_frames(&inbuf, 1) != 0)
+			goto done;
+	}
+done:
+	fprintf(stderr, "--- event stream ended ---\n");
 	close(fd);
 	return 0;
 }

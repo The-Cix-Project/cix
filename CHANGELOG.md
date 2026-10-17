@@ -6,6 +6,25 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The box pushes what changed: `GET /v1/events` (ADR-0339 step three, #599)
+
+A WebSocket on which the box names the reads that changed, at their new generations.
+
+- **Frames:** the first frame and a heartbeat every 10 s carry every read the session may perform; a
+  frame between them names only what changed.
+- **Never content, and only what the session may read:** a frame carries generations, never content.
+  Each stream's mask is the session decision `authorize_route()` makes, now shared with a non-consuming
+  `hostauth_authorize_peek()` so asking 124 times cannot spend a single-use token. The mask is
+  recomputed when a change invalidates `whoami`.
+- **When the session ends**, the next heartbeat closes the stream with 4401.
+- **A slow reader:** a stream holds its pending reads as a set and starts no frame while one is
+  leaving, so a slow reader costs one frame. One that stops reading is dropped by the existing 30 s
+  write deadline.
+- **`cixctl events --follow`** prints the stream.
+- **`test_events`** opens a stream through the shared reader (`test_ws.c`). It checks the first frame, a
+  pushed change, ping and pong, a 300-change flood with a second stream that never reads (the daemon
+  stays responsive and the reading stream converges to the last generation), and a heartbeat.
+
 ### The box counts every change to what it shows (ADR-0339 step two, #599)
 
 Each read the box announces (124 of them) now has a generation counter under a random boot epoch.

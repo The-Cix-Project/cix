@@ -1183,7 +1183,13 @@ int hostauth_peek_token(const char *token, char *out_username, size_t out_userna
 	return 1;
 }
 
-enum hostauth_authz hostauth_authorize(const char *token, const char *permission)
+/*
+ * The one session decision (ADR-0317), shared by the two entry points
+ * below so they cannot disagree: they differ only in how the token is
+ * looked up. `lookup` is hostauth_check_token() or hostauth_peek_token().
+ */
+static enum hostauth_authz authorize_session(const char *token, const char *permission,
+                                             int (*lookup)(const char *, char *, size_t))
 {
 	char username[HOSTAUTH_USERNAME_MAX];
 
@@ -1191,12 +1197,30 @@ enum hostauth_authz hostauth_authorize(const char *token, const char *permission
 		return HOSTAUTH_AUTHZ_FORBIDDEN;
 	if (strcmp(permission, "public") == 0 || !hostauth_gating_active())
 		return HOSTAUTH_AUTHZ_OK;
-	if (!hostauth_check_token(token, username, sizeof(username)))
+	if (!lookup(token, username, sizeof(username)))
 		return HOSTAUTH_AUTHZ_NO_SESSION;
 	if (strcmp(permission, "authenticated") == 0 ||
 	    hostauth_user_has_permission(username, permission))
 		return HOSTAUTH_AUTHZ_OK;
 	return HOSTAUTH_AUTHZ_FORBIDDEN;
+}
+
+enum hostauth_authz hostauth_authorize(const char *token, const char *permission)
+{
+	return authorize_session(token, permission, hostauth_check_token);
+}
+
+/*
+ * ADR-0339: the same decision, without spending the token. The events
+ * stream asks it for every announced read when a stream opens, and
+ * again at every heartbeat; under a single-use config
+ * (idle_timeout_seconds: 0) hostauth_check_token() consumes the token
+ * it checks, so asking through it would sign the operator out on the
+ * first question.
+ */
+enum hostauth_authz hostauth_authorize_peek(const char *token, const char *permission)
+{
+	return authorize_session(token, permission, hostauth_peek_token);
 }
 
 /*

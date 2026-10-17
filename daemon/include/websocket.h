@@ -42,6 +42,14 @@ enum ws_opcode {
 int ws_write_frame(int fd, enum ws_opcode opcode, const void *payload, size_t len);
 
 /*
+ * The header ws_write_frame() sends, built into out instead -- for a
+ * caller that queues whole frames in a buffer and drains it as the
+ * socket allows (ADR-0339's event stream). Returns the header's length
+ * (2 or 4), or 0 when len exceeds WS_MAX_FRAME_PAYLOAD.
+ */
+size_t ws_frame_header(enum ws_opcode opcode, size_t len, unsigned char out[4]);
+
+/*
  * Incremental client-frame parser -- client frames are always masked
  * (RFC 6455 5.1) and, like HTTP requests (see struct http_conn,
  * daemon/include/http.h), can arrive split across many read()s. Unlike

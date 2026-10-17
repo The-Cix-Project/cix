@@ -18,13 +18,19 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_ws.h"
 
+#include <arpa/inet.h>
 #include <limits.h>
+#include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -125,6 +131,112 @@ static int split_generation(const char *gen, char *epoch, size_t epoch_size,
 	epoch[dot - gen] = '\0';
 	*n = strtoull(dot + 1, &end, 10);
 	return end != dot + 1 && *end == '\0' ? 0 : -1;
+}
+
+/*
+ * Opens GET /v1/events as a WebSocket, through the shared reader
+ * (test_ws.c, #524) so the bytes that ride in with the 101 -- here
+ * always the first frame -- are the front of the stream rather than
+ * lost. Returns the fd, or -1 having said why.
+ */
+static int open_events(struct ws_reader *r, int timeout_seconds)
+{
+	struct sockaddr_in addr;
+	struct timeval tv;
+	char resp[2048];
+	const char *end = NULL;
+	size_t got = 0;
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	static const char req[] =
+	        "GET /v1/events HTTP/1.1\r\n"
+	        "Host: 127.0.0.1\r\n"
+	        "Upgrade: websocket\r\n"
+	        "Connection: Upgrade\r\n"
+	        "Sec-WebSocket-Key: " TEST_WS_KEY "\r\n"
+	        "Sec-WebSocket-Version: 13\r\n"
+	        "\r\n";
+
+	if (fd < 0)
+		return -1;
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(TEST_PORT);
+	inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+	tv.tv_sec = timeout_seconds;
+	tv.tv_usec = 0;
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+	    write(fd, req, sizeof(req) - 1) != (ssize_t)(sizeof(req) - 1)) {
+		close(fd);
+		fail("the event stream accepts a connection", "");
+		return -1;
+	}
+	while (got < sizeof(resp) - 1 && end == NULL) {
+		ssize_t n = read(fd, resp + got, sizeof(resp) - 1 - got);
+
+		if (n <= 0)
+			break;
+		got += (size_t)n;
+		resp[got] = '\0';
+		end = strstr(resp, "\r\n\r\n");
+	}
+	if (end == NULL || strncmp(resp, "HTTP/1.1 101", 12) != 0 ||
+	    strstr(resp, TEST_WS_ACCEPT) == NULL) {
+		close(fd);
+		fail("GET /v1/events upgrades to a WebSocket", "");
+		return -1;
+	}
+	if (ws_reader_adopt_handshake(r, fd, resp, got, end) != 0) {
+		close(fd);
+		fail("the handshake's leftover fits the reader", "");
+		return -1;
+	}
+	return fd;
+}
+
+/*
+ * The next text frame, parsed. Returns the JSON (caller frees) or NULL
+ * having said why; a pong is returned as NULL with *pong set.
+ */
+static struct json_value *next_event(struct ws_reader *r, const char *what, int *pong)
+{
+	static unsigned char buf[70000];
+	size_t len = 0;
+	int opcode = 0;
+	struct json_value *v;
+
+	if (pong != NULL)
+		*pong = 0;
+	if (ws_recv_frame(r, &opcode, buf, sizeof(buf) - 1, &len) != 0) {
+		fail(what, ws_stop_str(r));
+		return NULL;
+	}
+	if (opcode == 0xA && pong != NULL) {
+		*pong = 1;
+		return NULL;
+	}
+	buf[len] = '\0';
+	v = opcode == 0x1 ? json_parse((const char *)buf, len) : NULL;
+	if (v == NULL)
+		fail(what, "the frame is not a JSON text frame");
+	return v;
+}
+
+/* A frame's generation for one read, or -1 when the frame does not name it. */
+static long long frame_gen(const struct json_value *v, const char *op)
+{
+	const struct json_value *gen = json_object_get(v, "gen");
+	const struct json_value *g = gen != NULL ? json_object_get(gen, op) : NULL;
+
+	return g != NULL ? (long long)json_as_number(g) : -1;
+}
+
+/* How many reads a frame names. */
+static size_t frame_count(const struct json_value *v)
+{
+	const struct json_value *gen = json_object_get(v, "gen");
+
+	return gen != NULL && gen->type == JSON_OBJECT ? gen->u.object.count : 0;
 }
 
 /* PUT /v1/system/site with body; returns the status. */
@@ -238,6 +350,141 @@ int main(void)
 	                    "the read after a refusal answers") == 0 &&
 	    (split_generation(gen3, epoch1, sizeof(epoch1), &n3) != 0 || n3 != n2))
 		fail("a refused change raises nothing", gen3);
+
+	/* 6. The stream: the first frame is the whole vector, under the
+	 *    epoch the header carries. */
+	{
+		struct ws_reader r, idle;
+		struct json_value *v;
+		const struct json_value *ep;
+		int fd, idle_fd, pong = 0, i, frames;
+		long long g;
+		char body[160];
+		struct timespec t0, t1;
+
+		fd = open_events(&r, 5);
+		v = fd >= 0 ? next_event(&r, "the stream's first frame arrives", NULL) : NULL;
+		if (v != NULL) {
+			ep = json_object_get(v, "epoch");
+			if (ep == NULL || ep->type != JSON_STRING || strcmp(ep->u.string, epoch0) != 0)
+				fail("the stream carries the epoch the header carries", epoch0);
+			if (frame_gen(v, "getSystemSite") != (long long)n3)
+				fail("the first frame names getSystemSite at its current generation", gen3);
+			if (frame_count(v) < 100)
+				fail("the first frame is the whole vector", "it names fewer than 100 reads");
+			if (frame_gen(v, "getSystemStats") != -1)
+				fail("a stream read is never announced", "getSystemStats is in the frame");
+			json_free(v);
+		}
+
+		/* 7. A change is pushed: the next frame names the read it
+		 *    invalidated, at its new generation, and nothing unrelated. */
+		if (fd >= 0) {
+			status = put_site(&client,
+			                  "{\"instance_name\":\"evtest2\",\"site_name\":\"lab\","
+			                  "\"domain_suffix\":\"internal\"}",
+			                  change_gen, sizeof(change_gen));
+			if (status != 200)
+				fail("a second site change is accepted", "");
+			/* A heartbeat (every 10 s, naming every read) may land
+			 * first; it is skipped by its size, and the change frame
+			 * is the first one that is not whole. */
+			for (frames = 0; frames < 3; frames++) {
+				v = next_event(&r, "a change is pushed as a frame", NULL);
+				if (v == NULL || frame_count(v) < 100)
+					break;
+				json_free(v);
+				v = NULL;
+			}
+			if (v != NULL) {
+				if (frame_gen(v, "getSystemSite") != (long long)n3 + 1)
+					fail("the pushed frame names getSystemSite at its new generation", "");
+				if (frame_gen(v, "listNetworks") != -1)
+					fail("a pushed frame names only what changed", "listNetworks is in it");
+				json_free(v);
+			} else {
+				fail("a change frame arrives", "");
+			}
+
+			/* 8. A ping is answered -- possibly after a heartbeat. */
+			if (ws_send_frame(fd, 0x9, "hi", 2) != 0) {
+				fail("a ping can be sent", "");
+			} else {
+				for (frames = 0; frames < 3 && !pong; frames++) {
+					v = next_event(&r, "a ping is answered", &pong);
+					if (v == NULL && !pong)
+						break;
+					json_free(v);
+				}
+				if (!pong)
+					fail("a ping is answered with a pong", "");
+			}
+		}
+
+		/*
+		 * 9. A stream that never reads cannot stall the daemon, and the
+		 *    reading one still converges: its set coalesces, so however
+		 *    many changes land, a few frames bring it to the last one.
+		 */
+		idle_fd = open_events(&idle, 5);
+		for (i = 0; i < 300 && fd >= 0; i++) {
+			snprintf(body, sizeof(body),
+			         "{\"instance_name\":\"evflood%d\",\"site_name\":\"lab\","
+			         "\"domain_suffix\":\"internal\"}",
+			         i);
+			if (put_site(&client, body, change_gen, sizeof(change_gen)) != 200) {
+				fail("the flood's changes are accepted", "");
+				break;
+			}
+		}
+		clock_gettime(CLOCK_MONOTONIC, &t0);
+		{
+			struct cix_response hr;
+
+			memset(&hr, 0, sizeof(hr));
+			if (cix_client_request(&client, "GET", "/v1/health", NULL, &hr) != 0 ||
+			    hr.status != 200)
+				fail("the daemon answers while a stream is not reading", "");
+			cix_response_free(&hr);
+		}
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		if (t1.tv_sec - t0.tv_sec > 2)
+			fail("a stream that does not read does not slow the daemon", "health took > 2 s");
+		if (fd >= 0) {
+			g = -1;
+			for (frames = 0; frames < 50 && g != (long long)n3 + 1 + 300; frames++) {
+				v = next_event(&r, "the reading stream converges after the flood", NULL);
+				if (v == NULL)
+					break;
+				if (frame_gen(v, "getSystemSite") >= 0)
+					g = frame_gen(v, "getSystemSite");
+				json_free(v);
+			}
+			if (g != (long long)n3 + 1 + 300)
+				fail("the reading stream reaches the last generation, coalesced", "");
+		}
+
+		/* 10. A heartbeat: with nothing changing, the whole vector
+		 *     arrives again within the 10 s period. */
+		if (fd >= 0) {
+			struct timeval tv = { 15, 0 };
+
+			setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+			for (frames = 0; frames < 3; frames++) {
+				v = next_event(&r, "a heartbeat arrives within 15 s", NULL);
+				if (v == NULL || frame_count(v) >= 100)
+					break;
+				json_free(v);
+				v = NULL;
+			}
+			if (v == NULL)
+				fail("a heartbeat carries the whole vector", "");
+			json_free(v);
+			close(fd);
+		}
+		if (idle_fd >= 0)
+			close(idle_fd);
+	}
 
 	if (stop_daemon(daemon_pid) != 0)
 		fail("the daemon exits cleanly", "");

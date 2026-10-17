@@ -135,6 +135,27 @@ A timer cannot make staleness and load better at once. **The box owns every fact
   - Two reserved: one for the non-blocking writer, which has no precedent here, and one for what the first drift run on .95 finds. False drift there is a misclassified read or a missing announcement, and each is fixed rather than suppressed.
   - Phase 2 is priced separately.
 
+## Implementation notes
+
+Recorded as each step lands, where the implementation is narrower than or departs from the text above.
+
+- **Session end is checked at every heartbeat, not by a timer per stream** (step three, 0.2.57-521).
+  Each heartbeat asks the session decision again and closes the stream with 4401 when it no longer
+  stands. That covers revocation and logout as well as expiry, needs no bookkeeping per stream, and
+  notices an ended session within 10 s.
+- **The masks and the heartbeat ask without spending the token.** `hostauth_authorize()`'s decision
+  became one function shared by a consuming entry point and a peeking one
+  (`hostauth_authorize_peek()`). Under a single-use config the consuming check spends the token it
+  checks, so asking it 124 times at a stream's upgrade would have signed the operator out at once.
+- **An app password cannot open a stream.** The operation is `authenticated`, and `authenticated`
+  means a session (ADR-0317), so `cixctl events --follow` needs `cixctl login` first.
+- **A grant change is detected through the contract.** A change whose `x-cix-invalidates` names
+  `getWhoami` marks every stream's mask for recomputation before the next frame, so the set of
+  grant-changing operations is the contract's, not a hand-kept list.
+- **Hotplug announces only hardware subsystems** (`block`, `usb`, `pci`, `scsi`; step two). Every
+  container start adds a veth (`SUBSYSTEM=net`), and announcing it would have re-read the device and
+  storage reads on every container lifecycle event.
+
 ## Alternatives considered
 
 - **Poll less often.** It cuts the load and makes staleness worse, and staleness is the product defect.

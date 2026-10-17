@@ -330,6 +330,53 @@ paths:
         "204":
           description: Session invalidated (or was already gone)
 
+  /events:
+    get:
+      summary: The box's announcements, live, as a WebSocket (ADR-0339)
+      description: >
+        A WebSocket (RFC 6455) on which the box says which reads have
+        changed, so a client re-reads them instead of asking every few
+        seconds. Each message is one JSON text frame,
+        `{"epoch": "<16 hex>", "gen": {"<operationId>": <generation>, ...}}`,
+        naming the announced reads (`x-cix-read` state, sample or
+        session) whose generation moved, and their new values.
+        The first frame after the upgrade carries every read this
+        session may perform, and so does a heartbeat every 10 seconds;
+        between them a frame carries only what changed. A read is never
+        named to a session that may not perform it: what each stream
+        may hear is decided once, at the upgrade, by the same decision
+        `authorize_route()` makes, and again whenever the session's
+        grants change.
+        No frame carries content. A client re-reads a named read
+        through its ordinary GET, which is gated as always, and keeps
+        the `X-Cix-Generation` that answer carries. An `epoch` other
+        than the one it holds means the daemon restarted: every
+        generation it holds is void and everything is re-read. A
+        session that ends while the stream is open -- expired, logged
+        out or revoked -- closes it with code 4401, checked at every
+        heartbeat.
+        A browser cannot set an Authorization header on a WebSocket,
+        so the session rides as the `cix.bearer.<token>` subprotocol,
+        as it does for the console (#541).
+      operationId: getEvents
+      x-cix-read: stream
+      x-cix-permission: authenticated
+      x-cix-expose: [cli]
+      responses:
+        "101":
+          description: Switching Protocols -- the connection now carries the announcements described above.
+        "400":
+          description: Missing or invalid Upgrade, Connection, Sec-WebSocket-Key or Sec-WebSocket-Version header.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: No session, or one that has ended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /events/status:
     get:
       summary: The box's announcement state -- its boot epoch and every announced read's generation (ADR-0339)

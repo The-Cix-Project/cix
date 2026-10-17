@@ -357,6 +357,11 @@ static const char *const n_routes_rm_flags[] = {
 	NULL
 };
 
+static const char *const n_events_flags[] = {
+	"--follow",
+	NULL
+};
+
 static const struct cli_node n_events_subs[] = {
 	{ "status", NULL, NULL },
 	{ NULL, NULL, NULL },
@@ -1584,7 +1589,7 @@ static const struct cli_node CLI_TREE[] = {
 	{ "esp", n_esp_flags, n_esp_subs },
 	{ "boot-console", n_boot_console_flags, n_boot_console_subs },
 	{ "stalls", NULL, NULL },
-	{ "events", NULL, n_events_subs },
+	{ "events", n_events_flags, n_events_subs },
 	{ "assembly", NULL, n_assembly_subs },
 	{ "hostauth-config", NULL, n_hostauth_config_subs },
 	{ "hostauth-sessions", NULL, n_hostauth_sessions_subs },

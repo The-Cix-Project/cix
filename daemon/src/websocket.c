@@ -45,30 +45,34 @@ int ws_compute_accept(const char *client_key, char *out, size_t out_size)
 	return 0;
 }
 
-int ws_write_frame(int fd, enum ws_opcode opcode, const void *payload, size_t len)
+size_t ws_frame_header(enum ws_opcode opcode, size_t len, unsigned char out[4])
 {
-	unsigned char header[4];
-	size_t hlen;
-
 	if (len > WS_MAX_FRAME_PAYLOAD)
-		return -1;
+		return 0;
 
 	/* FIN=1, RSV1-3=0, no extensions negotiated. Servers MUST NOT mask
 	 * their own frames (RFC 6455 5.1). len is capped at
 	 * WS_MAX_FRAME_PAYLOAD (64KiB), so the 16-bit extended-length form
 	 * always suffices -- the 64-bit form is never needed for anything
 	 * this daemon itself sends. */
-	header[0] = (unsigned char)(0x80 | (opcode & 0x0f));
+	out[0] = (unsigned char)(0x80 | (opcode & 0x0f));
 	if (len < 126) {
-		header[1] = (unsigned char)len;
-		hlen = 2;
-	} else {
-		header[1] = 126;
-		header[2] = (unsigned char)((len >> 8) & 0xff);
-		header[3] = (unsigned char)(len & 0xff);
-		hlen = 4;
+		out[1] = (unsigned char)len;
+		return 2;
 	}
+	out[1] = 126;
+	out[2] = (unsigned char)((len >> 8) & 0xff);
+	out[3] = (unsigned char)(len & 0xff);
+	return 4;
+}
 
+int ws_write_frame(int fd, enum ws_opcode opcode, const void *payload, size_t len)
+{
+	unsigned char header[4];
+	size_t hlen = ws_frame_header(opcode, len, header);
+
+	if (hlen == 0)
+		return -1;
 	if (tls_write_all(fd, header, hlen) != 0)
 		return -1;
 	if (len > 0 && tls_write_all(fd, payload, len) != 0)

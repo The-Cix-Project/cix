@@ -68,4 +68,14 @@ uint64_t events_generation(int slot);
 /* A slot's operationId, or NULL out of range. */
 const char *events_op_id(int slot);
 
+/* A slot's x-cix-permission -- what a session must hold to hear it. */
+const char *events_permission(int slot);
+
+/*
+ * Called with the slot after every announcement, so the stream in
+ * main.c can mark it pending on each connection that may hear it. One
+ * listener; NULL removes it.
+ */
+void events_set_listener(void (*fn)(int slot));
+
 #endif

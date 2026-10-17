@@ -843,8 +843,8 @@ $(BUILD)/test_tls_throttle: test/test_tls_throttle.c test/test_image_fixture.c $
 
 # ADR-0339 (#599): generations on announced reads, announcements on
 # successful changes, none on refused ones -- over plain HTTP.
-$(BUILD)/test_events: test/test_events.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
-	$(CC) $(CLIENT_CFLAGS) test/test_events.c test/test_image_fixture.c $(CLIENT_SRCS) -o $@
+$(BUILD)/test_events: test/test_events.c test/test_ws.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+	$(CC) $(CLIENT_CFLAGS) test/test_events.c test/test_ws.c test/test_image_fixture.c $(CLIENT_SRCS) -o $@
 
 $(BUILD)/test_https_chain: test/test_https_chain.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) test/test_https_chain.c test/test_image_fixture.c $(CLIENT_SRCS) -o $@
