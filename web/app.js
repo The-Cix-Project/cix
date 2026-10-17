@@ -1186,21 +1186,22 @@ async function refreshSessionPermissions() {
 		sessionAuthenticated = !!(me && me.authenticated);
 		if (sessionAuthenticated)
 			sessionEverAuthenticated = true;
-		/* A session just began: sweep on the next tick rather than up
-		 * to SWEEP_INTERVAL_MS later, so the page fills in at once.
-		 *
-		 * The status bar too. Its version is fetched once per page load
-		 * and its uptimes once a minute, and since ADR-0317 both reads
-		 * need a login -- so a page that loaded before its login showed
-		 * no version until cixd next restarted, and no uptime for up to
-		 * a minute after logging in. */
-		if (sessionAuthenticated && !wasAuthenticated) {
-			lastSweepAt = 0;
-			refreshStatusVersion();
-			refreshStatusMeta();
-		}
+		/* The grants first: everything below asks sessionMay(), which
+		 * reads them. Fetching before this line is how the status bar
+		 * lost its version after every daemon restart -- both reads
+		 * were refused locally for want of a permission the session
+		 * held, and nothing asked again (seen in Chromium against the
+		 * box's own 0.2.57-523 files, 2026-10-17). */
 		sessionPermissions = new Set((me && me.permissions) || []);
 		sessionChecked = true;
+		/* A session just began: sweep on the next tick rather than up
+		 * to SWEEP_INTERVAL_MS later, so the page fills in at once --
+		 * and the status bar now, since both of its reads need a login
+		 * (ADR-0317). */
+		if (sessionAuthenticated && !wasAuthenticated) {
+			lastSweepAt = 0;
+			refreshStatusBar();
+		}
 	} catch (e) {
 		/* Unanswered: keep what is known rather than sign someone out
 		 * on a transport error. */
@@ -2177,10 +2178,10 @@ async function refreshHealth() {
 		noteHostGating(health && health.auth_gating_active);
 
 		/* Back after an absence: the daemon may have restarted into a
-		 * different build, so re-ask rather than keep showing the one
-		 * that was running before it went away. */
+		 * different build with a fresh uptime, so re-ask rather than keep
+		 * showing what was true before it went away. */
 		if (consecutiveHealthFailures > 0)
-			refreshStatusVersion();
+			refreshStatusBar();
 		consecutiveHealthFailures = 0;
 		statusLeds.className = "status-leds led-state-ok";
 		statusLeds.title = "Daemon reachable — " + ms + "ms";
@@ -2322,61 +2323,54 @@ function renderStatusMeta() {
 }
 
 /*
- * The running build never changes under a daemon that stays up, so
- * this is fetched once at load and again only after the daemon has
- * been away -- a restart is the one thing that can change the answer,
- * and it is exactly what the LEDs going red and back already detect.
- */
-async function refreshStatusVersion() {
-	try {
-		const b = await apiRequest("GET", CIX_API.getSystemBoot());
-
-		statusVersion = { version: b.build_version || "unknown", slot: b.slot || null };
-		if (loadedVersion === null)
-			loadedVersion = statusVersion.version;
-		statusMeta.title = "Cix " + statusVersion.version +
-		                   ", built " + (b.build_time || "unknown") +
-		                   (statusVersion.slot !== null ? ", running from slot " + statusVersion.slot : "") +
-		                   " on kernel " + (b.kernel_version || "unknown");
-		renderStatusMeta();
-	} catch (e) {
-		/* Unreachable is already said by the LEDs; the last known
-		 * version stays put rather than blanking, since it is still
-		 * the last true thing anyone told us. */
-	}
-}
-
-/*
- * Host uptime, this daemon's own uptime, and load average, along the
- * left of the status bar. The two uptimes are separate on purpose:
+ * The status bar's facts: the running build and slot, host and daemon
+ * uptime, and load average. The two uptimes are separate on purpose:
  * they diverge after a control-plane restart that was not a reboot,
  * and "the box has been up for days but cixd restarted four minutes
  * ago" is exactly the thing worth noticing.
  *
- * Its own slow interval rather than the 2s poll -- nothing here moves
- * fast enough to be worth a request every two seconds, and the poll
- * loop is already the busiest thing this page does.
+ * Fetched together and shown together: the bar is either the whole
+ * truth from one moment or the last whole truth it had, never half of
+ * one. It used to be two fetchers on two schedules, so after a daemon
+ * restart it could show an uptime with no version for a minute, or a
+ * version beside an uptime still counting from before the reboot.
+ * Asked when a session begins, when the daemon comes back after being
+ * away, and once a minute for the load average.
  */
-async function refreshStatusMeta() {
-	try {
-		const s = await apiRequest("GET", CIX_API.getSystemStats());
-		const up = s.uptime || {};
-		const load = s.load || {};
+async function refreshStatusBar() {
+	let b, s;
 
-		statusMetaBase = {
-			fetchedAt: Date.now(),
-			host: up.host_seconds || 0,
-			daemon: up.daemon_seconds || 0,
-			load1: load.load1 || 0,
-			load5: load.load5 || 0,
-			load15: load.load15 || 0,
-		};
-		renderStatusMeta();
+	try {
+		[b, s] = await Promise.all([
+			apiRequest("GET", CIX_API.getSystemBoot()),
+			apiRequest("GET", CIX_API.getSystemStats()),
+		]);
 	} catch (e) {
-		/* Unreachable is already said by the LEDs going red -- saying it
-		 * twice in two places adds nothing, so the last known values
-		 * simply stand. */
+		/* Unreachable is already said by the LEDs, and a refused read
+		 * is retried when the session begins. The last whole state
+		 * stands rather than blanking, since it is still the last true
+		 * thing anyone told us. */
+		return;
 	}
+	const up = s.uptime || {};
+	const load = s.load || {};
+
+	statusVersion = { version: b.build_version || "unknown", slot: b.slot || null };
+	if (loadedVersion === null)
+		loadedVersion = statusVersion.version;
+	statusMeta.title = "Cix " + statusVersion.version +
+	                   ", built " + (b.build_time || "unknown") +
+	                   (statusVersion.slot !== null ? ", running from slot " + statusVersion.slot : "") +
+	                   " on kernel " + (b.kernel_version || "unknown");
+	statusMetaBase = {
+		fetchedAt: Date.now(),
+		host: up.host_seconds || 0,
+		daemon: up.daemon_seconds || 0,
+		load1: load.load1 || 0,
+		load5: load.load5 || 0,
+		load15: load.load15 || 0,
+	};
+	renderStatusMeta();
 }
 
 /* ---------- routing ---------- */
@@ -14905,10 +14899,9 @@ document.addEventListener("visibilitychange", () => {
  * each time, and one request a minute is the price of it. Skipped
  * entirely while the tab is hidden.
  */
-refreshStatusVersion();
-refreshStatusMeta();
+refreshStatusBar();
 setInterval(renderStatusMeta, 1000);
 setInterval(() => {
 	if (!document.hidden)
-		refreshStatusMeta();
+		refreshStatusBar();
 }, 60000);

@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The status bar shows its version and uptime together, and after a restart
+
+Reported by the owner: the bottom-left corner (build, slot, uptime, load) appeared late and incomplete.
+Reproduced in Chromium against the box's own 0.2.57-523 files, with `fetch` answered from reads captured
+from the box: a page loaded while the daemon was restarting showed nothing for a minute, and then an
+uptime with no version, for good.
+
+- **The cause:** when a session began, the dashboard fetched the bar before storing the session's
+  permissions, so its own pre-check refused both reads, and nothing asked for the version again. A
+  normal load hid this, because the requests made at load go out before the page knows the host is
+  gated.
+- **The fix:** the permissions are stored first. The bar's two reads are now one atomic refresh, shown
+  together or not at all, run when a session begins, when the daemon comes back, and once a minute.
+- **Verified with the same probe:** the full bar appears 160 ms after the session check, where before
+  the version never arrived.
+
 ### The box checks its own announcements (ADR-0339 step four, #599)
 
 The daemon re-runs its own reads in-process, through the response sink, and hashes each answer without
