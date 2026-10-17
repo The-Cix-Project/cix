@@ -2685,6 +2685,7 @@ function renderCurrentView() {
 			stopNetPortsPolling();
 		stopLiveRead("kmsg");
 		stopLiveRead("stalls");
+		boSyncStats(new Set());
 		renderContainerDetail(route.name);
 	} else {
 		/* Navigating away from a container's own detail view (or to a
@@ -2752,6 +2753,10 @@ function renderCurrentView() {
 			startStallsLive();
 		else
 			stopLiveRead("stalls");
+		/* #431: the build cards' charts hold a read per build; the page
+		 * starts them as it draws its cards, and they end with it. */
+		if (!onPageOf("build-overview"))
+			boSyncStats(new Set());
 		if (onPageOf("devices"))
 			renderDevices();
 		if (onPageOf("storage"))
@@ -14363,6 +14368,134 @@ function boBytes(n) {
 	return (v < 10 ? v.toFixed(1) : Math.round(v)) + " " + units[i];
 }
 
+/*
+ * #431: a build card carries its build container's CPU and memory as two
+ * small charts, so an operator can see what a build is doing to the box
+ * while it does it.
+ *
+ * The samples are the container's stats read, subscribed on the event
+ * stream (startLiveRead(), ADR-0339 phase 2) for as long as the card is
+ * on screen -- one subscription per build in flight, polled instead
+ * while the stream is down or once a stream holds its 8. There is no
+ * history anywhere but here, so a chart starts empty and fills as you
+ * watch, and the card says so rather than looking broken. It is kept
+ * across the card being redrawn, which happens on every announcement
+ * the overview reads.
+ *
+ * The arithmetic is the container Stats tab's: CPU is the difference of
+ * the cumulative usage_usec over wall time, 1 core = 100%; memory.current
+ * plots directly and memory.peak is a figure, never a series. A build
+ * may use more than one core, so the CPU scale grows past 100% rather
+ * than clipping at it.
+ */
+const BO_STATS_HISTORY_MAX = 90; /* three minutes at the 2 s sample period */
+const boStatsHistory = new Map(); /* build container -> samples */
+const boStatsLive = new Set();    /* build containers whose live read the page holds */
+
+function boStatsId(container) {
+	return "bstats-" + container.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 25);
+}
+
+function boIngestStats(container, stats) {
+	let h = boStatsHistory.get(container);
+
+	if (!stats || !stats.cpu || !stats.memory)
+		return;
+	if (h === undefined) {
+		h = [];
+		boStatsHistory.set(container, h);
+	}
+	h.push({
+		t: Date.now(),
+		cpuUsageUsec: stats.cpu.usage_usec,
+		memCurrent: stats.memory.current,
+		memPeak: stats.memory.peak,
+	});
+	if (h.length > BO_STATS_HISTORY_MAX)
+		h.shift();
+	boDrawStats(container);
+}
+
+function boDrawStats(container) {
+	const fig = document.querySelector('.bo-stats[data-container="' + CSS.escape(container) + '"]');
+	const h = boStatsHistory.get(container) || [];
+
+	if (fig === null)
+		return;
+	const cpuLabel = fig.querySelector(".bo-cpu-label");
+	const memLabel = fig.querySelector(".bo-mem-label");
+
+	if (h.length < 2) {
+		cpuLabel.textContent = "CPU -- filling in as you watch";
+		memLabel.textContent = h.length === 1
+			? "Memory " + formatBytes(h[0].memCurrent) + " (peak " + formatBytes(h[0].memPeak) + ")"
+			: "Memory -- filling in as you watch";
+		return;
+	}
+	const cpu = [];
+
+	for (let i = 1; i < h.length; i++) {
+		const dUsec = h[i].cpuUsageUsec - h[i - 1].cpuUsageUsec;
+		const dMs = h[i].t - h[i - 1].t;
+
+		cpu.push(dMs > 0 ? Math.max(0, (dUsec / 1000 / dMs) * 100) : 0);
+	}
+	drawChart(fig.querySelector(".bo-cpu"), [{ values: cpu, color: seriesColor(1) }], {
+		times: h.slice(1).map((s) => s.t),
+		maxY: Math.max(100, ...cpu),
+		formatY: (v) => v.toFixed(0) + "%",
+	});
+	drawChart(fig.querySelector(".bo-mem"), [{ values: h.map((s) => s.memCurrent), color: seriesColor(2) }], {
+		times: h.map((s) => s.t),
+		formatY: formatBytes,
+	});
+	const last = h[h.length - 1];
+
+	cpuLabel.textContent = "CPU " + cpu[cpu.length - 1].toFixed(0) + "% (1 core = 100%)";
+	memLabel.textContent = "Memory " + formatBytes(last.memCurrent) + " (peak " + formatBytes(last.memPeak) + ")";
+}
+
+/* The two charts' place on a card; drawn from history at once, so a
+ * redraw of the card keeps what it has watched. */
+function boStatsFigure(container) {
+	const fig = document.createElement("div");
+	const add = (canvasClass, labelClass) => {
+		const canvas = document.createElement("canvas");
+		const label = document.createElement("p");
+
+		canvas.className = canvasClass;
+		canvas.width = 420;
+		canvas.height = 130;
+		label.className = "hint " + labelClass;
+		fig.appendChild(canvas);
+		fig.appendChild(label);
+	};
+
+	fig.className = "bo-stats";
+	fig.dataset.container = container;
+	add("bo-cpu", "bo-cpu-label");
+	add("bo-mem", "bo-mem-label");
+	return fig;
+}
+
+/* Holds a live read for exactly the build containers in `wanted`, and
+ * forgets the history of any that left. */
+function boSyncStats(wanted) {
+	for (const c of boStatsLive) {
+		if (!wanted.has(c)) {
+			stopLiveRead(boStatsId(c));
+			boStatsLive.delete(c);
+			boStatsHistory.delete(c);
+		}
+	}
+	for (const c of wanted) {
+		if (!boStatsLive.has(c)) {
+			boStatsLive.add(c);
+			startLiveRead(boStatsId(c), CIX_API.getContainerStats(c), (s) => boIngestStats(c, s));
+		}
+	}
+}
+
 async function refreshBuildOverview() {
 	const cap = document.getElementById("bo-capacity");
 	const list = document.getElementById("bo-builds");
@@ -14416,12 +14549,16 @@ async function refreshBuildOverview() {
 		list.appendChild(idle);
 		if (hint)
 			hint.hidden = true;
+		boSyncStats(new Set());
 		return;
 	}
 	if (hint)
 		hint.hidden = false;
 
+	const statsWanted = new Set(); /* #431: the build containers this page charts */
+
 	for (const key of names) {
+		let statsContainer = null;
 		const at = key.lastIndexOf("@");
 		const name = at < 0 ? key : key.slice(0, at);
 		const image = at < 0 ? "" : key.slice(at + 1);
@@ -14513,6 +14650,10 @@ async function refreshBuildOverview() {
 			add("hostbuild", e.is_hostbuild ? "yes" : "no");
 			if (e.stage)
 				add("stage", e.stage);
+			/* #431: charted while it builds -- the container exists only
+			 * then (build_container is null outside BUILDING). */
+			if (e.state === "building" && e.build_container)
+				statsContainer = e.build_container;
 		} catch (err) {
 			add("state", "could not read this job");
 			add("why", err && err.message ? err.message : String(err));
@@ -14526,7 +14667,19 @@ async function refreshBuildOverview() {
 			}
 		});
 		list.appendChild(card);
+		if (statsContainer !== null) {
+			const note = document.createElement("p");
+
+			note.className = "hint";
+			note.textContent = "Sampled every 2 s while this page is open; the history is this " +
+			    "page's own and starts when you arrive.";
+			card.appendChild(boStatsFigure(statsContainer));
+			card.appendChild(note);
+			statsWanted.add(statsContainer);
+			boDrawStats(statsContainer);
+		}
 	}
+	boSyncStats(statsWanted);
 }
 
 const VIEW_REFRESHERS = {

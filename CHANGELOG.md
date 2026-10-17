@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A build's card charts its CPU and memory while it runs (#431)
+
+- **Each in-flight build card** on Software > In Flight now carries two small charts of its build
+  container: CPU, where 1 core = 100% and the scale grows past 100 for a build using more than one
+  core, and memory, with `current` as the series and `peak` as a figure.
+- **The samples** are the container's stats read, subscribed on the event stream while the card is
+  on screen, and polled instead while the stream is down.
+- **History** exists only on the page. A chart starts empty and fills as you watch, the card says
+  so, and what it has watched survives the card being redrawn.
+- **Checked** in Chromium with a build in flight: the CPU line reads exactly the rate the samples
+  imply, and memory climbs with its peak labelled.
+
 ### A container's captured output is announced to its own page (ADR-0339, #607)
 
 The drift check found an eleventh unannounced read on 532: `listContainers` changed at 21:48:09Z
