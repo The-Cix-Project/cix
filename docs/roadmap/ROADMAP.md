@@ -2469,8 +2469,9 @@ refreshers bound the three forms with the box's values (2 GiB shown as a size). 
 differing only in `memory_max_effective` rebuilt nothing. Submitting the rolling-config form
 unchanged showed "Rolling-restart config saved" and sent exactly the values read; that body, PUT to
 the box, answered 200 and read back identical. The screenshots showed one column with head rows,
-and one flaw: a page's explanatory hint sat flush on the first label. The spacing rule for it is
-committed for the next release.
+and one flaw: a page's explanatory hint sat flush on the first label. 517 spaces it (`.hint +
+.generated-form`): its selftest passed, it booted on slot `a` with 12/12 running, the box serves the
+rule, and the Configuration > Name tab, rendered from the box's stylesheet, shows the gap.
 
 ## Part 282 (done): New Container renders from the contract, so every create form does (#592 epic, 0.2.57-513 and -514)
 
