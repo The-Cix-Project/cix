@@ -1038,6 +1038,11 @@ const OP_INDEX = (() => {
 	return list;
 })();
 
+/* ADR-0339 phase 2, release B (see runRefreshersInner()): each
+ * refresher's reads, and the set the running one's requests go into. */
+const REFRESHER_READS = new Map(); /* refresher -> Set of operationIds it has read */
+let recordingReads = null;
+
 function opForRequest(method, path) {
 	const segs = path.split("?")[0].split("/");
 
@@ -1967,6 +1972,9 @@ async function apiRequest(method, path, body, timeoutMs) {
 	 */
 	const reqOp = opForRequest(method === "HEAD" ? "GET" : method, path);
 
+	/* Release B: the running refresher reads this (refused or not). */
+	if (recordingReads !== null && method === "GET" && reqOp !== undefined)
+		recordingReads.add(reqOp);
 	if (reqOp !== undefined && !sessionMay(reqOp)) {
 		const err = new Error(sessionAuthenticated
 			? "permission \"" + permissionFor(reqOp) + "\" is required for " + reqOp +
@@ -2727,39 +2735,23 @@ function renderCurrentView() {
 			renderProcessesList();
 		if (onPageOf("syslog-targets"))
 			renderSyslogTargetsList();
-		if (onPageOf("tls-throttle"))
-			refreshTlsThrottleStatus();
-		if (onPageOf("control-plane-reservation"))
-			refreshControlPlaneReservation();
-		if (onPageOf("boot-console"))
-			refreshBootConsole();
-		if (onPageOf("esp"))
-			refreshEsp();
-		if (onPageOf("signing-keys")) {
-			refreshSigningKeys();
-			refreshReleaseKey();
-		}
-		if (onPageOf("kernel-policy"))
-			refreshKernelPolicy();
-		if (onPageOf("logs"))
-			renderLogsList();
+		/*
+		 * ADR-0339 release B: a page's own READS are refreshers
+		 * (VIEW_REFRESHERS), run on arrival and then only when the box
+		 * announces something they read. They used to be called from
+		 * here, which runs on every change whatever moved -- a site
+		 * change re-read the build-log list. What stays here renders
+		 * from what is already read.
+		 */
 		/* Streams, never announced: live while their page is open. */
 		if (onPageOf("kmsg"))
 			startKmsgLive();
 		else
 			stopLiveRead("kmsg");
-		if (onPageOf("server-health"))
-			refreshServerHealth();
 		if (onPageOf("stalls"))
 			startStallsLive();
 		else
 			stopLiveRead("stalls");
-		if (onPageOf("schedules"))
-			refreshSchedules();
-		if (onPageOf("running-config"))
-			refreshRunningConfig();
-		if (onPageOf("volume-backup-config"))
-			refreshVolumeBackupConfig();
 		if (onPageOf("devices"))
 			renderDevices();
 		if (onPageOf("storage"))
@@ -2768,12 +2760,6 @@ function renderCurrentView() {
 			renderAllStoragePlacements();
 		if (onPageOf("backup"))
 			renderBackupConfig();
-		if (onPageOf("hostauth-permissions"))
-			refreshHostauthPermissions();
-		if (onPageOf("hostauth-sessions")) {
-			refreshHostauthConfig();
-			refreshHostauthSessions();
-		}
 
 		/*
 		 * A name in the address means a DETAIL page, which is a
@@ -2800,14 +2786,9 @@ function renderCurrentView() {
 			renderContainerRecipesTable();
 		}
 		if (onPageOf("pkg-build-config")) {
-			refreshBuildLogs();
 			renderPackagesView(null);
 			renderImages(cache.images);
 		}
-		if (onPageOf("update"))
-			refreshSoftwareReconcile();
-		if (onPageOf("iso"))
-			refreshIso();
 	}
 
 	/*
@@ -2826,12 +2807,12 @@ function renderCurrentView() {
 window.addEventListener("hashchange", () => {
 	renderCurrentView();
 	ensureActiveCategoryExpanded();
-	/* ADR-0339: with the stream live nothing sweeps every page any more,
-	 * so the page arrived at reads what it shows, once. A change while
-	 * it is open is the stream's to report. */
-	if (eventStream.isLive())
-		runRefreshers(refreshersForView(CATEGORY_VIEWS[parseHash().category]))
-			.then(renderCurrentView);
+	/* ADR-0339: the page arrived at reads what it shows, once, live or
+	 * not -- its reads are refreshers now (release B), so nothing else
+	 * would read them before the next change or the next 5 s poll. A
+	 * change while it is open is the stream's to report. */
+	runRefreshers(refreshersForView(CATEGORY_VIEWS[parseHash().category]))
+		.then(renderCurrentView);
 });
 
 /* ---------- tree ---------- */
@@ -12395,10 +12376,6 @@ async function refreshLogsConfig() {
 	}
 }
 
-function renderLogsList() {
-	refreshLogsConfig();
-}
-
 /*
  * Issue #77 surface parity: GET /v1/system/kmsg (the kernel ring buffer)
  * had no web surface at all. Rendered as plain text rather than a table --
@@ -14565,8 +14542,8 @@ const VIEW_REFRESHERS = {
 	"pkg-repo": [refreshPkgSources, refreshPkgSyncStatus],
 	"pkg-cache": [refreshPkgCacheConfig, refreshPkgCacheStatus, refreshPkgRepositories],
 	"build-overview": [refreshBuildOverview],
-	"pkg-build-config": [refreshPkgBuildConfig],
-	update: [refreshImages, refreshPkgList],
+	"pkg-build-config": [refreshPkgBuildConfig, refreshBuildLogs],
+	update: [refreshImages, refreshPkgList, refreshSoftwareReconcile],
 	devices: [refreshDevices, refreshDeviceMaps, refreshKmod, refreshKmodConfig],
 	"dns-records": [refreshDnsRecords, refreshDnsServers, refreshDnsForwarders],
 	"dns-servers": [refreshDnsRecords, refreshDnsServers, refreshDnsForwarders],
@@ -14597,6 +14574,20 @@ const VIEW_REFRESHERS = {
 	schedules: [refreshSchedules, refreshScheduleActions],
 	iso: [refreshIso],
 	volumes: [refreshVolumeCache],
+	/* ADR-0339 release B: these were called from renderCurrentView(),
+	 * which ran them on every change; as refreshers they run on arrival
+	 * and when something they read moves. */
+	"control-plane-reservation": [refreshControlPlaneReservation],
+	"boot-console": [refreshBootConsole],
+	esp: [refreshEsp],
+	"signing-keys": [refreshSigningKeys, refreshReleaseKey],
+	"kernel-policy": [refreshKernelPolicy],
+	logs: [refreshLogsConfig],
+	"server-health": [refreshServerHealth],
+	"running-config": [refreshRunningConfig],
+	"volume-backup-config": [refreshVolumeBackupConfig],
+	"hostauth-permissions": [refreshHostauthPermissions],
+	"hostauth-sessions": [refreshHostauthConfig, refreshHostauthSessions],
 };
 
 const ALL_REFRESHERS = [
@@ -14629,16 +14620,52 @@ async function runRefreshers(list) {
 	}
 }
 
+/*
+ * ADR-0339 phase 2, release B: what each refresher reads, learned from
+ * its own requests rather than declared. apiRequest() adds every GET's
+ * operation to `recordingReads` while a refresher runs, so the set is
+ * the refresher's code itself and cannot drift from it the way a
+ * hand-kept list of ~60 would. It only grows: a read made once is
+ * remembered, so a change to it always reaches the refresher. A
+ * request from elsewhere landing during a refresher's await is recorded
+ * too, which costs a spare refresh and never a missed one.
+ * (REFRESHER_READS and recordingReads are declared beside
+ * opForRequest(), above apiRequest(), which writes them.)
+ */
 async function runRefreshersInner(list) {
 	for (const fn of list) {
+		let reads = REFRESHER_READS.get(fn);
+
+		if (reads === undefined) {
+			reads = new Set();
+			REFRESHER_READS.set(fn, reads);
+		}
+		recordingReads = reads;
 		try {
 			await fn();
 		} catch (e) {
 			/* One endpoint failing must not stop the rest: a single
 			 * unhappy subsystem should cost its own panel, not the
 			 * whole dashboard's freshness. */
+		} finally {
+			recordingReads = null;
 		}
 	}
+}
+
+/* The refreshers in `list` that read something in `ops` -- and any whose
+ * reads are not known yet, because it has not run. */
+function refreshersReading(list, ops) {
+	return list.filter((fn) => {
+		const reads = REFRESHER_READS.get(fn);
+
+		if (reads === undefined || reads.size === 0)
+			return true;
+		for (const op of reads)
+			if (ops.has(op))
+				return true;
+		return false;
+	});
 }
 
 /*
@@ -14746,6 +14773,9 @@ async function poll() {
 		 * longer than a sweep. One public, unaudited request. */
 		await refreshSessionPermissions();
 		await runRefreshers(ALL_REFRESHERS);
+		/* The current page's own reads too: several are refreshers only
+		 * of their page (release B), and the first poll is a sweep. */
+		await runRefreshers(refreshersForView(CATEGORY_VIEWS[route.category]));
 	} else {
 		await runRefreshers(CORE_REFRESHERS);
 		await runRefreshers(refreshersForView(CATEGORY_VIEWS[route.category]));
@@ -14952,8 +14982,10 @@ async function runEventRefresh() {
 			await refreshHealth();
 		if (ops.has("getSystemBoot"))
 			refreshStatusBar();
-		await runRefreshers(CORE_REFRESHERS);
-		await runRefreshers(refreshersForView(CATEGORY_VIEWS[parseHash().category]));
+		/* Release B: only the refreshers that read what moved. */
+		await runRefreshers(refreshersReading(CORE_REFRESHERS, ops));
+		await runRefreshers(refreshersReading(refreshersForView(CATEGORY_VIEWS[parseHash().category]),
+		                                      ops));
 		renderTree();
 		renderCurrentView();
 	} finally {

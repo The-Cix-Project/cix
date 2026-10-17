@@ -253,6 +253,25 @@ Recorded as each step lands, where the implementation is narrower than or depart
     session may no longer perform getContainerStats"). The scratch user and group were then
     removed. 531's build failed one gate, `test_apigen`, which counted the new stream table's rows
     as changes; 532 counts rows by their array.
+- **Phase 2, release B: a change re-runs only what reads it** (0.2.57-533).
+  - **What a refresher reads is learned, not declared.** Point 10 says each refresher declares its
+    reads. Instead, `apiRequest()` records every GET's operation into the refresher running at the
+    time, so the set is the refresher's own code and cannot drift from it, as a hand-kept list of
+    about 60 would. The set only grows. A refresher not yet run, or with nothing recorded, always
+    runs. A request from elsewhere that lands during a refresher's await is recorded too, which
+    costs a spare refresh and never a missed one.
+  - **A page's own reads moved out of `renderCurrentView()` into `VIEW_REFRESHERS`**, one-to-one by
+    route: ESP, signing keys, kernel policy, the log store's configuration, server health, running
+    configuration, volume backup configuration, the two identity pages, control-plane reservation,
+    boot console, build logs and the software reconcile. Called from the renderer they ran on every
+    change, so a site change re-read the build-log list. Three were already refreshers and were
+    running twice. Navigating and the first sweep now run the page's refreshers whether or not the
+    stream is live.
+  - **Measured** in Chromium against the box's files, with a fake stream sending a `getSystemSite`
+    change and then a `listContainers` change. On Containers, Build, Logs, ESP and Signing keys the
+    site change costs 0 requests, where 531 sent 5 on Containers and 1 more on each page with its
+    own reads. The containers change costs exactly 1 (`/v1/containers`). Each page still reads its
+    own data on arrival, and an idle minute stays at 2.
 - **The drift decision is pure and tested without a daemon.** `events_hash_body()` and
   `events_observe()` live in `events.c`, and `test_events_drift` drives them through the case no daemon
   test can produce cleanly: a state change with no announcement.

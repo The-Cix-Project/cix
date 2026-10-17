@@ -6,6 +6,21 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A change re-runs only the refreshers that read it (ADR-0339 phase 2, release B, #599)
+
+- **What each refresher reads** is learned from its own requests: `apiRequest()` records each GET's
+  operation into whichever refresher is running. On an announcement, only the refreshers that read a
+  read that moved run again, plus any not yet run.
+- **A page's own reads** moved out of `renderCurrentView()`, where they ran on every change, into
+  that page's refreshers: ESP, signing keys, kernel policy, the log store's configuration, server
+  health, running configuration, volume backup configuration, the identity pages, control-plane
+  reservation, boot console, build logs and software reconcile. Navigating and the first sweep run
+  them whether or not the stream is live.
+- **Measured** in Chromium against the box's files, on Containers, Build, Logs, ESP and Signing keys:
+  a site change costs 0 requests (531: 5 on Containers, and 1 more on each page with its own reads),
+  and a container change costs 1. Each page still reads its own data on arrival, and an idle minute
+  stays at 2.
+
 ### Live reads are pushed: the log panel and the stats pages subscribe on the event stream (ADR-0339 phase 2, #599)
 
 - **Subscriptions:** a `stream` read that declares `x-cix-sample-period` can be subscribed to on
