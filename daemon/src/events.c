@@ -60,6 +60,12 @@ int events_announce_change(const char *op_id)
 	for (i = 0; i < EVENTS_CHANGE_COUNT; i++) {
 		if (strcmp(g_events_changes[i].op_id, op_id) != 0)
 			continue;
+		/* `x-cix-invalidates: [*]` -- a bulk change: every read. */
+		if (g_events_changes[i].n < 0) {
+			for (j = 0; j < EVENTS_READ_COUNT; j++)
+				events_announce(j);
+			return EVENTS_READ_COUNT;
+		}
 		for (j = 0; j < g_events_changes[i].n; j++)
 			events_announce(g_events_changes[i].slots[j]);
 		return g_events_changes[i].n;

@@ -648,6 +648,19 @@ int main(void)
 	               "      x-cix-invalidates: [tailThing]\n"
 	               "      x-cix-permission: public\n",
 	               "a stream read");
+	expect_refusal("an invalidation list mixing * with names",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: getThing\n"
+	               "      x-cix-read: state\n"
+	               "      x-cix-permission: public\n"
+	               "    put:\n"
+	               "      operationId: putThing\n"
+	               "      x-cix-invalidates: [*, getThing]\n"
+	               "      x-cix-permission: public\n",
+	               "stands alone");
 	expect_refusal("an invalidation list with an empty entry",
 	               VOCAB
 	               "paths:\n"
@@ -817,7 +830,7 @@ int main(void)
 		 * vector and a missing change row would announce nothing --
 		 * both silently. Counted here against the contract itself:
 		 * one slot per announced read (144 reads, less 10 streams and
-		 * 10 derived reads, is 124), one row per change (199).
+		 * 11 derived reads, is 123), one row per change (199).
 		 */
 		char slots_path[256], table_path[256];
 		char buf[4096];
@@ -872,9 +885,9 @@ int main(void)
 		}
 		unlink(slots_path);
 		unlink(table_path);
-		if (count != 124 || defines != count || read_rows != count)
+		if (count != 123 || defines != count || read_rows != count)
 			fail("the events slots say %d reads, define %d EV_ constants and the table has "
-			     "%d read rows; all three should be 124 (ADR-0339)",
+			     "%d read rows; all three should be 123 (ADR-0339)",
 			     count, defines, read_rows);
 		if (change_count != 199 || change_rows != change_count)
 			fail("the events table declares %d changes and has %d change rows; both should "

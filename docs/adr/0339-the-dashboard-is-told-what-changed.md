@@ -164,6 +164,13 @@ Recorded as each step lands, where the implementation is narrower than or depart
   under #607, once `cixctl events status` on 192.168.15.95 has shown zero drift for 24 hours at rest.
   That is a measured condition rather than a promise, and it keeps one missing announcement from
   landing as forty failing tests.
+- **The check's first catch was a misdeclared read** (step four's first build, 0.2.57-525).
+  `test_events` reported drift on `getConfig` after a site change. `GET /v1/config` is, in its own
+  description, *"a VIEW, derived fresh on every call"* over 33 sections, so it was declared `state` by
+  mistake and is `derived`. The two bulk changes that listed it, `applyConfig` and `postSystemRestore`,
+  can change any read, so they declare `x-cix-invalidates: [*]`, which announces every read. `apigen`
+  accepts `*` only standing alone. 524's run had failed without naming the read; the test now prints
+  the daemon's `events` log lines when drift is found, which is how 525 named it.
 - **The drift decision is pure and tested without a daemon.** `events_hash_body()` and
   `events_observe()` live in `events.c`, and `test_events_drift` drives them through the case no daemon
   test can produce cleanly: a state change with no announcement.

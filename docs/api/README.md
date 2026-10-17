@@ -945,7 +945,7 @@ Authorization: Basic base64("agent-1:3f9c...")
   - `session`: answers per session (`whoami`).
   - `stream`: a running tail or series (logs, stats, the console).
   - `derived`: a computation run on request (`pkg/verify`, `system/backup`).
-- **Every other operation says which reads it makes stale** with `x-cix-invalidates`, a list of `operationId`s. A change no read shows, such as a reboot, says `[]` rather than leaving the key out. Only state, sample and session reads may be named, because a stream is subscribed to and a derived read is computed on request.
+- **Every other operation says which reads it makes stale** with `x-cix-invalidates`, a list of `operationId`s. A change no read shows, such as a reboot, says `[]` rather than leaving the key out. A bulk change that can alter any read there is, applying a whole config document (`applyConfig`) or restoring a backup (`postSystemRestore`), says `[*]`. A list of everything would be wrong the day a read is added. Only state, sample and session reads may be named, because a stream is subscribed to and a derived read is computed on request.
 - **`x-cix-volatile-fields`** names a field of a state read that moves on its own, such as a session's `expires_in_seconds`, which the box's own drift check leaves out of its comparison.
 
 **What a client sees** (0.2.57-520):

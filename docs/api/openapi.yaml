@@ -115,7 +115,7 @@ paths:
         same document its own way. Text is never parsed back, so its
         format is deliberately not a contract.
       operationId: getConfig
-      x-cix-read: state
+      x-cix-read: derived
       x-cix-permission: config:read
       x-cix-expose: [cli, web]
       responses:
@@ -165,7 +165,7 @@ paths:
         apply them, so an apply can still fail partway. The response
         reports per section what was applied and where it stopped.
       operationId: applyConfig
-      x-cix-invalidates: [getConfig]
+      x-cix-invalidates: [*]
       x-cix-permission: config:write
       x-cix-expose: [cli]
       requestBody:
@@ -1470,7 +1470,7 @@ paths:
         ready, the same "write, don't reboot, caller decides when to
         cut over" shape /system/update already established (ADR-0031).
       operationId: postSystemRestore
-      x-cix-invalidates: [getConfig]
+      x-cix-invalidates: [*]
       x-cix-permission: system:write
       x-cix-expose: [cli, web]
       requestBody:

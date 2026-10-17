@@ -2360,6 +2360,16 @@ static void check_read_annotations(const char *spec)
 			       "%s %s: x-cix-volatile-fields only applies to a state read -- it names "
 			       "what the drift check leaves out of the hash",
 			       o->method, o->path);
+		/* `[*]`: a bulk change -- applying a whole config document,
+		 * restoring a backup -- that can change any read there is.
+		 * Spelled out rather than listed, because a list of everything
+		 * is a list that is wrong the day a read is added. Alone only. */
+		if (strcmp(o->invalidates, "*") == 0)
+			continue;
+		if (strchr(o->invalidates, '*') != NULL)
+			die_at(spec, o->line,
+			       "%s %s: x-cix-invalidates `*` means every read, and stands alone",
+			       o->method, o->path);
 		/* Each name an announced read: a stream is subscribed to and a
 		 * derived read is computed on request, so neither is ever
 		 * made stale. */
@@ -2471,7 +2481,7 @@ static void emit_events_table(const char *out_path, const char *spec)
 	for (i = 0; i < g_op_count; i++) {
 		const char *p = g_ops[i].invalidates;
 
-		if (!g_ops[i].invalidates_set || *p == '\0')
+		if (!g_ops[i].invalidates_set || *p == '\0' || strcmp(p, "*") == 0)
 			continue;
 		fprintf(o, "static const unsigned short ev_inv_%s[] = { ", g_ops[i].op_id);
 		while (*p != '\0') {
@@ -2492,6 +2502,12 @@ static void emit_events_table(const char *out_path, const char *spec)
 
 		if (!g_ops[i].invalidates_set)
 			continue;
+		/* `[*]`: every read, as n = -1 (events_announce_change()). */
+		if (strcmp(p, "*") == 0) {
+			fprintf(o, "\t{ \"%s\", NULL, -1 },\n", g_ops[i].op_id);
+			n_changes++;
+			continue;
+		}
 		if (*p != '\0')
 			for (n = 1; *p != '\0'; p++)
 				n += *p == ',';
