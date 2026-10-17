@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A path builder called with the wrong number of arguments fails a gate (#592)
+
+The recipe-version bug fixed in 0.2.57-510 was a call passing two arguments to a builder that takes
+one, with the second appended as a literal `?version=%s`. JavaScript drops an extra argument and
+passes `undefined` for a missing one, both silently. `test_web_tree` now counts the arguments of every
+`CIX_API.<op>(...)` call in `app.js` and `form.js` -- 260 -- against the path parameters the operation
+declares. Run against the code before that fix it reports exactly the two calls that were broken;
+against today's it reports none.
+
 ### Issue Certificate is a generated form; the ten hand-built forms left are named (#592)
 
 The header menu's **Issue Certificate** renders from `PkiCertCreateRequest`, which gains titles and the

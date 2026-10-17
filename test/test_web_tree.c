@@ -465,6 +465,77 @@ static void check_deletes_confirm(const char *app)
 		     "thinks it is reading%s", deletes == 0 ? "0" : "<30", "");
 }
 
+/*
+ * A PATH BUILDER IS CALLED WITH ITS OWN NUMBER OF ARGUMENTS (#592).
+ *
+ * `CIX_API.<op>(...)` takes exactly the operation's path parameters, in
+ * contract order. The 2026-08-31 conversion to generated paths
+ * (34b5647d) called `getPkgRecipe(name, version)` and
+ * `deletePkgRecipe(name, version)` -- one parameter each -- and
+ * appended a literal "?version=%s" for the second, so for seven weeks
+ * the dashboard asked the box for a recipe version called "%s" and got
+ * 404. JavaScript ignores an extra argument and passes `undefined` for a
+ * missing one, silently, so the only place this can be caught is here.
+ * The count is read from `<op>_SHAPE.params`, which apigen emits.
+ */
+static void check_api_call_arity(const char *path, const char *src, const char *api, int *calls)
+{
+	const char *p;
+
+	for (p = src; (p = strstr(p, "CIX_API.")) != NULL; p++) {
+		const char *q = p + 8;
+		char op[96], needle[128];
+		size_t n = 0;
+		const char *shape, *pp;
+		int depth = 1, commas = 0, empty = 1, want;
+
+		while ((isalnum((unsigned char)*q) || *q == '_') && n + 1 < sizeof(op))
+			op[n++] = *q++;
+		op[n] = '\0';
+		if (*q != '(' || n == 0)
+			continue;
+		snprintf(needle, sizeof(needle), "\n\t%s_SHAPE: {", op);
+		shape = strstr(api, needle);
+		if (shape == NULL)
+			continue; /* not a path builder -- FIELDS, a helper */
+		pp = strstr(shape, "params: ");
+		if (pp == NULL || pp > strchr(shape + 1, '\n'))
+			continue;
+		want = atoi(pp + 8);
+		for (q++; *q != '\0' && depth > 0; ) {
+			const char *after = skip_js_literal(q);
+
+			if (after != q) {
+				empty = 0;
+				q = after;
+				continue;
+			}
+			if (*q == '(' || *q == '[' || *q == '{')
+				depth++;
+			else if (*q == ')' || *q == ']' || *q == '}')
+				depth--;
+			else if (*q == ',' && depth == 1)
+				commas++;
+			else if (!isspace((unsigned char)*q))
+				empty = 0;
+			if (depth > 0)
+				q++;
+		}
+		(*calls)++;
+		if ((empty ? 0 : commas + 1) != want) {
+			char got[16], need[16], what[160];
+
+			snprintf(got, sizeof(got), "%d", empty ? 0 : commas + 1);
+			snprintf(need, sizeof(need), "%d", want);
+			snprintf(what, sizeof(what), "%s: CIX_API.%s() called with %s argument(s)", path,
+			         op, got);
+			fail("%s, but the operation has %s path parameter(s) -- an extra argument is "
+			     "dropped and a missing one is `undefined`, both silently",
+			     what, need);
+		}
+	}
+}
+
 int main(void)
 {
 	char *app = slurp("web/app.js");
@@ -671,6 +742,16 @@ int main(void)
 	check_tree_labels_unique(tree);
 	check_literal_theads_are_exceptions(html);
 	check_deletes_confirm(app);
+	{
+		int calls = 0;
+
+		check_api_call_arity("web/app.js", app, api, &calls);
+		check_api_call_arity("web/form.js", form, api, &calls);
+		/* 260 measured on 2026-10-17. */
+		if (calls < 200)
+			fail("checked only %s CIX_API path-builder calls -- the arity gate is not "
+			     "reading what it thinks it is reading%s", calls == 0 ? "0" : "<200", "");
+	}
 
 	/*
 	 * Every view id app.js reaches for must be a real section.
