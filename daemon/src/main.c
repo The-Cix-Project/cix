@@ -8944,6 +8944,13 @@ static void container_output_line(struct conn *cc, const char *line)
 			e->captured_output_len += take;
 			e->captured_output[e->captured_output_len++] = '\n';
 			e->captured_output[e->captured_output_len] = '\0';
+			/* ADR-0339: the container's own page shows this tail, so
+			 * it is told; the list declares the field volatile, since
+			 * nothing listing containers needs a live log tail. Found
+			 * by the self-check on 192.168.15.95 (0.2.57-532): one
+			 * listContainers drift as cr-1's keepalived wrote after
+			 * boot. */
+			events_announce(EV_getContainer);
 		}
 	}
 }

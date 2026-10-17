@@ -6051,6 +6051,7 @@ paths:
         would then exist twice, in two languages, free to drift.
       operationId: listContainers
       x-cix-read: state
+      x-cix-volatile-fields: [captured_output]
       x-cix-permission: containers:read
       x-cix-expose: [cli, web]
       parameters:

@@ -2445,7 +2445,7 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
-## Part 284 (in progress): the box says what changed (ADR-0339, #599, 0.2.57-519 to -532)
+## Part 284: the box says what changed (ADR-0339, #599, 0.2.57-519 to -534)
 
 The owner accepted ADR-0339 on 2026-10-17 after four reviews raised it from "push some events" to a
 design in which nothing displayed is polled once signed in and the daemon proves it announced. This part
@@ -2603,8 +2603,32 @@ changed with no announcement. Each was fixed where it changes:
   Containers, Health, Logs, Kernel log, Stalls and Build, against 528's 32 on Containers and 122 on
   Health. With the stream down, the live reads fall back to 2 s polls.
 
-Next: release B, per-refresher reads, so a change re-runs only the refreshers that read it; and #607's
-rollout once its clock runs out.
+**534, phase 2 release B: a change re-runs only what reads it.**
+- **What a refresher reads** is learned from its own requests: `apiRequest()` records each GET's
+  operation into the refresher running at the time. An announcement re-runs only the refreshers whose
+  reads moved, plus any not yet run.
+- **A page's own reads** moved out of `renderCurrentView()`, where they ran on every change, into
+  that page's refreshers.
+- **Measured** in Chromium against 534's own files on Containers, Build, Logs, ESP and Signing keys:
+  - a site change costs 0 requests (531: 5 on Containers, plus one more on each page with its own
+    reads);
+  - a container change costs 1 (`/v1/containers`);
+  - each page still reads its own data on arrival.
+- **Not shipped: 533.** It built and passed, but my reboot interrupted its self-assembly; the
+  `update` before it had refused, and the refusal was hidden by a pipe. 534 carries the same change.
+
+**Verified on 192.168.15.95 (534).**
+- **The gate:** `SELFTEST: PASS`, `test_stallwatch` included (#608's kind-name gate).
+- **The box:** it booted on slot `a` with 12/12 running, and it serves release B's `app.js`.
+- **Drift: one in the window, and it is the eleventh read.** At 21:48:09Z on 532,
+  `listContainers` changed unannounced. Its `captured_output` is an append-only tail of a capturing
+  container's lines, and `cr-1`'s keepalived wrote one after boot. 535 declares the field volatile in
+  the list and announces `getContainer` on each append, so the container's own page is told. #607's
+  clock restarts from 535's boot.
+
+With that, ADR-0339 is implemented. Signed in, the dashboard asks for nothing it is not told has
+changed, and the daemon checks that it told. What remains is #607, putting the zero-drift assertion in
+every daemon-linked test, once 24 hours pass from 535's boot with none logged.
 
 ## Part 283 (done): the page forms render from the contract (#592 epic, 0.2.57-515 and -516)
 

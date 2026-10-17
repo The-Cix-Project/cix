@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container's captured output is announced to its own page (ADR-0339, #607)
+
+The drift check found an eleventh unannounced read on 532: `listContainers` changed at 21:48:09Z
+because a capturing container (`cr-1`'s keepalived) appended a line to its `captured_output` tail.
+The field is declared volatile in `listContainers`, since nothing listing containers needs a live
+log tail, and each append announces `getContainer`, so the container's own page is told. #607's
+24-hour clock restarts from this release.
+
 ### A slow pass names the event that took it (#608)
 
 - **The gap:** `GET /v1/system/stalls` attributed a slow event-loop pass to whatever request last named

@@ -951,7 +951,7 @@ Authorization: Basic base64("agent-1:3f9c...")
   and `getPkgDrift` joins packages and recipes. Announcing any input announces the view, so the view is declared once rather than added to every
   change and daemon site that touches an input. One level only: `apigen` refuses a view built from a
   view.
-- **`x-cix-volatile-fields`** names a field of a state read that moves with the clock rather than with a change: a session's `expires_in_seconds`, a build environment's `idle_seconds`, a log's `size_bytes` and `modified_at` while it is written, and a job's `stage_seconds`, `run_seconds` and `last_output_seconds_ago`. The box's own drift check leaves these out of its comparison. A change of state that follows from the clock, such as a session expiring, is not volatile: the daemon makes it, and announces it, at the moment it is due.
+- **`x-cix-volatile-fields`** names a field of a state read that moves with the clock rather than with a change: a session's `expires_in_seconds`, a build environment's `idle_seconds`, a log's `size_bytes` and `modified_at` while it is written, and a job's `stage_seconds`, `run_seconds` and `last_output_seconds_ago`. One more is volatile in one read only: a container's `captured_output` tail in `listContainers`. Its own `getContainer` is announced on every line appended. The box's own drift check leaves these out of its comparison. A change of state that follows from the clock, such as a session expiring, is not volatile: the daemon makes it, and announces it, at the moment it is due.
 
 **What a client sees** (0.2.57-520):
 
