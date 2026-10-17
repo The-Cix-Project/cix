@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-17. Issue [#599](https://git.home.arpa/itdlabs/cix/issues/599). Adds three operations and three extensions to the contract, so it is the owner's decision ([ADR-0317](0317-permissions-are-declared-by-the-api-contract.md) declares their permissions; [ADR-0338](0338-the-dashboard-renders-from-the-contract.md) is what the dashboard's renderers already are, and is unchanged; [ADR-0070](0070-consolidated-log-store.md) is where drift is reported). Nothing below is implemented.
+Accepted, 2026-10-17, with the owner's adjustments over four reviews. Issue [#599](https://git.home.arpa/itdlabs/cix/issues/599). Adds three operations and three extensions to the contract, so it is the owner's decision ([ADR-0317](0317-permissions-are-declared-by-the-api-contract.md) declares their permissions; [ADR-0338](0338-the-dashboard-renders-from-the-contract.md) is what the dashboard's renderers already are, and is unchanged; [ADR-0070](0070-consolidated-log-store.md) is where drift is reported). Nothing below is implemented.
 
 ## Context
 

@@ -6,6 +6,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Every read says what kind it is, and every change what it makes stale (ADR-0339, #599)
+
+The first step of ADR-0339 (the box tells the dashboard what changed instead of being asked). The contract
+gains:
+
+- **`x-cix-read` on all 142 reads**: state 110, sample 12 (with `x-cix-sample-period`), session 2, stream 9
+  and derived 9.
+- **`x-cix-invalidates` on all 198 changes**, eight of them an explicit `[]`.
+- **`x-cix-volatile-fields`** on the sessions list's countdown.
+
+`apigen` refuses a read without a kind, a change without a list, and a list naming anything but a state,
+sample or session read. Seven new `test_apigen` refusals cover each rule, and the shapes in `web/api.js`
+carry `read`, `samplePeriod` and `invalidates`. No endpoint and no runtime behaviour changes yet.
+
 ### A reload keeps the operator signed in: the dashboard stores its session again (0.2.57-518)
 
 Since d566f879 (2026-09-13) the dashboard's three storage helpers called themselves instead of

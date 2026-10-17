@@ -932,6 +932,21 @@ Authorization: Basic base64("agent-1:3f9c...")
 - **Audited by name**: a request made with one is logged as `user (app-password NAME)`.
 - `GET /whoami` describes a *session*, so it answers `authenticated: false` to a request carrying only an app password.
 
+### What a read is, and what a change makes stale (`x-cix-read`, `x-cix-invalidates`)
+
+[ADR-0339](../adr/0339-the-dashboard-is-told-what-changed.md) has the box tell its clients what changed instead of being asked every few seconds. The contract states the two facts that makes possible, on every operation, and `apigen` refuses one without them, as it refuses one with no `x-cix-permission`:
+
+- **Every GET says what kind of read it is** with `x-cix-read`:
+  - `state`: changes only when something changes it, and most reads are this.
+  - `sample`: moves by itself, and carries `x-cix-sample-period` in seconds. Examples are health, NTP status, TLS-throttle counters, DHCP leases and, until its counters move to a read of their own, storage.
+  - `session`: answers per session (`whoami`).
+  - `stream`: a running tail or series (logs, stats, the console).
+  - `derived`: a computation run on request (`pkg/verify`, `system/backup`).
+- **Every other operation says which reads it makes stale** with `x-cix-invalidates`, a list of `operationId`s. A change no read shows, such as a reboot, says `[]` rather than leaving the key out. Only state, sample and session reads may be named, because a stream is subscribed to and a derived read is computed on request.
+- **`x-cix-volatile-fields`** names a field of a state read that moves on its own, such as a session's `expires_in_seconds`, which the box's own drift check leaves out of its comparison.
+
+The lists were seeded from the path: a change marks a read stale when one path root is a segment-prefix of the other. Cross-resource effects were then added by hand: a package install changes images, a container changes networks and volumes, and a group change changes `whoami`. Marking too much costs one extra read. Marking too little is what the box's drift check reports, and what the events test fails on, so a missing name is a bug to fix in the contract.
+
 ## Creating a network
 
 ```

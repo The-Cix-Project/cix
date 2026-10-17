@@ -575,6 +575,86 @@ int main(void)
 	               "      operationId: noVocabulary\n"
 	               "      x-cix-permission: public\n",
 	               "no x-cix-permissions");
+	/*
+	 * ADR-0339 (#599): every read states its kind and every change the
+	 * reads it makes stale. The events stream announces from these, so
+	 * a gap is a page that stays stale with nothing saying so -- a
+	 * build failure, as a missing permission is. The real spec passing
+	 * above is the positive control: all 142 reads and 198 changes.
+	 */
+	expect_refusal("a read with no x-cix-read",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: getThing\n"
+	               "      x-cix-permission: public\n",
+	               "has no x-cix-read");
+	expect_refusal("a read of an unknown kind",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: getThing\n"
+	               "      x-cix-read: live\n"
+	               "      x-cix-permission: public\n",
+	               "must be state, sample");
+	expect_refusal("a sample with no period",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: getThing\n"
+	               "      x-cix-read: sample\n"
+	               "      x-cix-permission: public\n",
+	               "x-cix-sample-period goes with");
+	expect_refusal("a change with no x-cix-invalidates",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: getThing\n"
+	               "      x-cix-read: state\n"
+	               "      x-cix-permission: public\n"
+	               "    put:\n"
+	               "      operationId: putThing\n"
+	               "      x-cix-permission: public\n",
+	               "has no x-cix-invalidates");
+	expect_refusal("a change invalidating a read that does not exist",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    put:\n"
+	               "      operationId: putThing\n"
+	               "      x-cix-invalidates: [getNothing]\n"
+	               "      x-cix-permission: public\n",
+	               "not a GET operation");
+	expect_refusal("a change invalidating a stream",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: tailThing\n"
+	               "      x-cix-read: stream\n"
+	               "      x-cix-permission: public\n"
+	               "    put:\n"
+	               "      operationId: putThing\n"
+	               "      x-cix-invalidates: [tailThing]\n"
+	               "      x-cix-permission: public\n",
+	               "a stream read");
+	expect_refusal("an invalidation list with an empty entry",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: getThing\n"
+	               "      x-cix-read: state\n"
+	               "      x-cix-permission: public\n"
+	               "    put:\n"
+	               "      operationId: putThing\n"
+	               "      x-cix-invalidates: [getThing, , getThing]\n"
+	               "      x-cix-permission: public\n",
+	               "empty entry");
 	expect_refusal("a malformed vocabulary word",
 	               "x-cix-permissions:\n  - Things:Read\n"
 	               "paths:\n"

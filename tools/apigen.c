@@ -39,6 +39,10 @@
 #define APIGEN_PATH_MAX 256
 #define APIGEN_ID_MAX 128
 #define APIGEN_EXPOSE_MAX 64
+/* ADR-0339: the longest x-cix-invalidates list, as "a,b,c". The widest
+ * in the contract when it was introduced named 25 reads, about 600
+ * bytes; reaching this limit fails the build rather than truncating. */
+#define APIGEN_INVALIDATES_MAX 2048
 #define APIGEN_MAX_QUERY 12
 #define APIGEN_QNAME_MAX 48
 /* A property's `title`: the operator's label, so a few words. Longer
@@ -184,6 +188,24 @@ struct api_op {
 	 * DELETE must win over the method's implication, so "unset" and
 	 * "set to false" cannot be the same value. */
 	int destructive_set;
+	/*
+	 * ADR-0339 (#599): what kind of read a GET is, and what a change
+	 * makes stale. Every GET states `x-cix-read` and every other
+	 * method states `x-cix-invalidates`; a missing one fails the
+	 * build, exactly as a missing x-cix-permission does, because the
+	 * events stream announces from these and a gap would be a page
+	 * that stays stale with nothing saying so.
+	 *
+	 * `invalidates` is the flow list's contents with whitespace
+	 * removed, "a,b,c"; an explicit `[]` sets invalidates_set with an
+	 * empty list -- a change no read shows, such as a reboot, says so
+	 * rather than omitting the key.
+	 */
+	char read_kind[12];
+	int sample_period;
+	char invalidates[APIGEN_INVALIDATES_MAX];
+	int invalidates_set;
+	char volatile_fields[APIGEN_EXPOSE_MAX];
 };
 
 /*
@@ -301,6 +323,42 @@ static void strip_eol(char *s)
 
 	while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r' || s[n - 1] == ' '))
 		s[--n] = '\0';
+}
+
+/*
+ * ADR-0339: a one-line YAML flow list, `[a, b, c]`, into "a,b,c" with
+ * its whitespace removed. Anything that is not exactly one bracketed
+ * line is refused rather than read as far as it goes, and so is a list
+ * too long for `out` -- a truncated invalidation list would silently
+ * announce less than the contract says.
+ */
+static void flow_list_compact(char *out, size_t out_size, const char *value, const char *spec,
+                              int lineno, const char *key)
+{
+	char v[4096];
+	size_t len;
+	size_t n = 0;
+	const char *r;
+
+	snprintf(v, sizeof(v), "%s", value);
+	strip_eol(v);
+	len = strlen(v);
+	if (len < 2 || v[0] != '[' || v[len - 1] != ']')
+		die_at(spec, lineno, "%s takes a one-line flow list, [a, b], not \"%s\"", key, v);
+	for (r = v + 1; r < v + len - 1; r++) {
+		if (*r == ' ' || *r == '\t')
+			continue;
+		if (*r == '[' || *r == ']')
+			die_at(spec, lineno, "%s takes a flat list of names, not a nested one", key);
+		if (n + 1 >= out_size)
+			die_at(spec, lineno, "%s is longer than apigen can hold (%zu bytes) -- raise the "
+			                     "limit rather than truncating it",
+			       key, out_size - 1);
+		out[n++] = *r;
+	}
+	out[n] = '\0';
+	if (n > 0 && (out[0] == ',' || out[n - 1] == ',' || strstr(out, ",,") != NULL))
+		die_at(spec, lineno, "%s has an empty entry", key);
 }
 
 static int bracket_depth(const char *s)
@@ -2238,6 +2296,95 @@ static void emit_js_literal(FILE *o, const char *raw)
 	emit_js_string(o, raw);
 }
 
+/* ADR-0339: the operation a name in x-cix-invalidates refers to. */
+static const struct api_op *op_by_id(const char *id, size_t id_len)
+{
+	int i;
+
+	for (i = 0; i < g_op_count; i++)
+		if (strlen(g_ops[i].op_id) == id_len && strncmp(g_ops[i].op_id, id, id_len) == 0)
+			return &g_ops[i];
+	return NULL;
+}
+
+/*
+ * ADR-0339 (#599): every GET says what kind of read it is, and every
+ * change says which reads it makes stale -- the two facts the events
+ * stream announces from. A missing one is a build failure, as a
+ * missing x-cix-permission is (ADR-0317): a default would make "this
+ * change announces nothing" representable without anyone deciding it.
+ *
+ * Run after every other check, so a spec that is malformed in some
+ * other way is refused for THAT, and test_apigen's fixtures for the
+ * older rules keep failing for the reason each was written for.
+ */
+static void check_read_annotations(const char *spec)
+{
+	int i;
+
+	for (i = 0; i < g_op_count; i++) {
+		const struct api_op *o = &g_ops[i];
+		int is_get = strcmp(o->method, "GET") == 0;
+		const char *p;
+
+		if (is_get) {
+			if (o->read_kind[0] == '\0')
+				die_at(spec, o->line,
+				       "%s %s has no x-cix-read -- every read must say whether it is "
+				       "state, sample, session, stream or derived (ADR-0339)",
+				       o->method, o->path);
+			if (o->invalidates_set)
+				die_at(spec, o->line,
+				       "%s %s is a read and declares x-cix-invalidates -- only a change "
+				       "makes a read stale",
+				       o->method, o->path);
+		} else {
+			if (o->read_kind[0] != '\0')
+				die_at(spec, o->line,
+				       "%s %s is not a GET and declares x-cix-read -- it is a change, "
+				       "and states x-cix-invalidates instead",
+				       o->method, o->path);
+			if (!o->invalidates_set)
+				die_at(spec, o->line,
+				       "%s %s has no x-cix-invalidates -- every change must name the reads "
+				       "it makes stale, or [] for none (ADR-0339)",
+				       o->method, o->path);
+		}
+		if ((strcmp(o->read_kind, "sample") == 0) != (o->sample_period > 0))
+			die_at(spec, o->line,
+			       "%s %s: x-cix-sample-period goes with x-cix-read: sample, and only "
+			       "with it",
+			       o->method, o->path);
+		if (o->volatile_fields[0] != '\0' && strcmp(o->read_kind, "state") != 0)
+			die_at(spec, o->line,
+			       "%s %s: x-cix-volatile-fields only applies to a state read -- it names "
+			       "what the drift check leaves out of the hash",
+			       o->method, o->path);
+		/* Each name an announced read: a stream is subscribed to and a
+		 * derived read is computed on request, so neither is ever
+		 * made stale. */
+		for (p = o->invalidates; *p != '\0';) {
+			const char *comma = strchr(p, ',');
+			size_t n = comma != NULL ? (size_t)(comma - p) : strlen(p);
+			const struct api_op *t = op_by_id(p, n);
+
+			if (t == NULL || strcmp(t->method, "GET") != 0)
+				die_at(spec, o->line,
+				       "%s %s invalidates \"%.*s\", which is not a GET operation",
+				       o->method, o->path, (int)n, p);
+			if (strcmp(t->read_kind, "state") != 0 && strcmp(t->read_kind, "sample") != 0 &&
+			    strcmp(t->read_kind, "session") != 0)
+				die_at(spec, o->line,
+				       "%s %s invalidates \"%.*s\", a %s read -- only state, sample and "
+				       "session reads are announced",
+				       o->method, o->path, (int)n, p, t->read_kind);
+			p += n;
+			if (*p == ',')
+				p++;
+		}
+	}
+}
+
 static void emit_web(const char *out_path, const char *spec)
 {
 	FILE *o = fopen(out_path, "w");
@@ -2304,11 +2451,38 @@ static void emit_web(const char *out_path, const char *spec)
 		emit_js_name(o, g_ops[i].req_schema);
 		fprintf(o, ", response: ");
 		emit_js_name(o, g_ops[i].resp_schema);
-		fprintf(o, ", destructive: %s },\n",
+		fprintf(o, ", destructive: %s",
 		        (g_ops[i].destructive_set ? g_ops[i].destructive
 		                                  : strcmp(g_ops[i].method, "DELETE") == 0)
 		            ? "true"
 		            : "false");
+		/* ADR-0339: a read's kind (and a sample's period), or the reads
+		 * a change makes stale -- what the events client compares an
+		 * announcement against. */
+		if (g_ops[i].read_kind[0] != '\0')
+			fprintf(o, ", read: \"%s\"", g_ops[i].read_kind);
+		else
+			fprintf(o, ", read: null");
+		if (g_ops[i].sample_period > 0)
+			fprintf(o, ", samplePeriod: %d", g_ops[i].sample_period);
+		if (g_ops[i].invalidates_set) {
+			const char *p = g_ops[i].invalidates;
+
+			fprintf(o, ", invalidates: [");
+			while (*p != '\0') {
+				const char *comma = strchr(p, ',');
+				size_t n = comma != NULL ? (size_t)(comma - p) : strlen(p);
+
+				fprintf(o, "%s\"%.*s\"", p == g_ops[i].invalidates ? "" : ", ", (int)n, p);
+				p += n;
+				if (*p == ',')
+					p++;
+			}
+			fprintf(o, "]");
+		} else {
+			fprintf(o, ", invalidates: null");
+		}
+		fprintf(o, " },\n");
 	}
 	/*
 	 * ADR-0338: the schemas' own fields, in schema order.
@@ -2955,6 +3129,47 @@ int main(int argc, char **argv)
 					*w = '\0';
 				}
 				snprintf(g_ops[cur_op].expose, sizeof(g_ops[cur_op].expose), "%s", v);
+			} else if (strcmp(key, "x-cix-read") == 0) {
+				char v[16];
+
+				/* ADR-0339: the five kinds, and nothing else. */
+				snprintf(v, sizeof(v), "%s", value_of(line));
+				strip_eol(v);
+				if (g_ops[cur_op].read_kind[0] != '\0')
+					die_at(spec, lineno, "%s %s declares x-cix-read twice",
+					       g_ops[cur_op].method, g_ops[cur_op].path);
+				if (strcmp(v, "state") != 0 && strcmp(v, "sample") != 0 &&
+				    strcmp(v, "session") != 0 && strcmp(v, "stream") != 0 &&
+				    strcmp(v, "derived") != 0)
+					die_at(spec, lineno,
+					       "x-cix-read must be state, sample, session, stream or derived, "
+					       "not \"%s\" (ADR-0339)",
+					       v);
+				snprintf(g_ops[cur_op].read_kind, sizeof(g_ops[cur_op].read_kind), "%s", v);
+			} else if (strcmp(key, "x-cix-sample-period") == 0) {
+				char v[16];
+				char *end;
+				long p;
+
+				snprintf(v, sizeof(v), "%s", value_of(line));
+				strip_eol(v);
+				p = strtol(v, &end, 10);
+				if (end == v || *end != '\0' || p < 1 || p > 3600)
+					die_at(spec, lineno,
+					       "x-cix-sample-period is whole seconds from 1 to 3600, not \"%s\"",
+					       v);
+				g_ops[cur_op].sample_period = (int)p;
+			} else if (strcmp(key, "x-cix-invalidates") == 0) {
+				if (g_ops[cur_op].invalidates_set)
+					die_at(spec, lineno, "%s %s declares x-cix-invalidates twice",
+					       g_ops[cur_op].method, g_ops[cur_op].path);
+				flow_list_compact(g_ops[cur_op].invalidates, sizeof(g_ops[cur_op].invalidates),
+				                  value_of(line), spec, lineno, "x-cix-invalidates");
+				g_ops[cur_op].invalidates_set = 1;
+			} else if (strcmp(key, "x-cix-volatile-fields") == 0) {
+				flow_list_compact(g_ops[cur_op].volatile_fields,
+				                  sizeof(g_ops[cur_op].volatile_fields), value_of(line), spec,
+				                  lineno, "x-cix-volatile-fields");
 			}
 			continue;
 		}
@@ -3344,6 +3559,7 @@ int main(int argc, char **argv)
 				       g_ops[j].op_id, g_ops[i].line);
 		}
 	}
+	check_read_annotations(spec);
 
 	if (emit_path != NULL)
 		emit_routes(emit_path, spec);
