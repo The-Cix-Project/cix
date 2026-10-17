@@ -1024,6 +1024,296 @@ static void check_architecture_components(void)
 	free(doc);
 }
 
+/*
+ * EVERY DASHBOARD PATH A DOCUMENT NAMES EXISTS (#592).
+ *
+ * The guides tell an operator where to click -- "**Host > Identity >
+ * Sessions**" -- and on 2026-10-17 ten of the 53 such paths in them
+ * named pages the dashboard no longer had: the Host page had been split
+ * into Health, Identity and Configuration a week earlier, and the guide
+ * still said Host > Sessions, Host > Stats, Host > Swap. Nothing failed,
+ * because nothing compared the two.
+ *
+ * A path is bold or italic text starting with a top-level tree label.
+ * It resolves against the tree and the tab bars, or against the header
+ * menu bar:
+ *
+ *   Group > Child [> Tab]     a group's child, then a tab on its page
+ *   Page > Tab                Containers/Networks/Storage, then a tab
+ *   Menu > Submenu > Item     the header menu bar, for an action
+ *
+ * Only present-tense documents are scanned. CHANGELOG, ROADMAP and the
+ * ADRs record paths as they were, which is their job.
+ */
+#define NAV_MAX 64
+
+struct nav_node {
+	char label[64];
+	char hash[64];
+	int parent;
+};
+
+static int nav_parse_tree(const char *app, struct nav_node *nodes)
+{
+	const char *p = strstr(app, "const topLevel = [");
+	const char *end = p != NULL ? strstr(p, "\n\tfor (const item of topLevel)") : NULL;
+	int n = 0, top = -1;
+
+	if (p == NULL || end == NULL)
+		return 0;
+	while ((p = strchr(p, '\n')) != NULL && p < end && n < NAV_MAX) {
+		const char *q;
+
+		p++;
+		if (strncmp(p, "\t\t\tlabel: \"", 11) == 0) {
+			sscanf(p + 11, "%63[^\"]", nodes[n].label);
+			nodes[n].hash[0] = '\0';
+			nodes[n].parent = -1;
+			top = n++;
+		} else if (strncmp(p, "\t\t\thash: \"", 10) == 0 && top >= 0 &&
+		           nodes[top].hash[0] == '\0') {
+			sscanf(p + 10, "%63[^\"]", nodes[top].hash);
+		} else if (strncmp(p, "\t\t\t\t{ label: \"", 14) == 0 && top >= 0) {
+			sscanf(p + 14, "%63[^\"]", nodes[n].label);
+			nodes[n].hash[0] = '\0';
+			q = strstr(p, "hash: \"");
+			if (q != NULL && q < strchr(p, '\n'))
+				sscanf(q + 7, "%63[^\"]", nodes[n].hash);
+			nodes[n].parent = top;
+			n++;
+		}
+	}
+	return n;
+}
+
+/* The view CATEGORY_VIEWS maps `hash` to, or 0 if none. */
+static int nav_view_for(const char *app, const char *hash, char *out, size_t out_size)
+{
+	const char *tbl = strstr(app, "const CATEGORY_VIEWS = {");
+	const char *end = tbl != NULL ? strstr(tbl, "\n};") : NULL;
+	char needle[128];
+	const char *p;
+
+	if (tbl == NULL || hash[0] == '\0')
+		return 0;
+	snprintf(needle, sizeof(needle), "\"%s\": \"view-", hash);
+	p = strstr(tbl, needle);
+	if (p == NULL || p > end) {
+		snprintf(needle, sizeof(needle), "\n\t%s: \"view-", hash);
+		p = strstr(tbl, needle);
+		if (p == NULL || p > end)
+			return 0;
+	}
+	p = strstr(p, "\"view-") + 1;
+	snprintf(out, out_size, "%.*s", (int)strcspn(p, "\""), p);
+	return 1;
+}
+
+/* Button text between `start` and `stop` equal to `label`, with the one
+ * entity the markup uses (&amp;) decoded. */
+static int nav_has_button(const char *start, const char *stop, const char *label)
+{
+	const char *b;
+
+	for (b = start; (b = strstr(b, "<button")) != NULL && (stop == NULL || b < stop); b++) {
+		const char *t = strchr(b, '>');
+		char text[96];
+		size_t i = 0;
+
+		if (t == NULL)
+			return 0;
+		for (t++; *t != '<' && *t != '\0' && i + 1 < sizeof(text); t++) {
+			if (strncmp(t, "&amp;", 5) == 0) {
+				text[i++] = '&';
+				t += 4;
+			} else {
+				text[i++] = *t;
+			}
+		}
+		text[i] = '\0';
+		if (strcmp(text, label) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static int nav_view_has_tab(const char *html, const char *view, const char *tab)
+{
+	char open[128];
+	const char *s, *bar, *bar_end, *next;
+
+	snprintf(open, sizeof(open), "<section class=\"view\" id=\"%s\"", view);
+	s = strstr(html, open);
+	if (s == NULL)
+		return 0;
+	next = strstr(s + 1, "<section class=\"view\"");
+	bar = strstr(s, "class=\"tab-bar\"");
+	if (bar == NULL || (next != NULL && bar > next))
+		return 0;
+	bar_end = strstr(bar, "</div>");
+	return nav_has_button(bar, bar_end, tab);
+}
+
+/* Menu > [Submenu >] Item in the header menu bar. */
+static int nav_menu_has(const char *html, char seg[][64], int nseg)
+{
+	char needle[96];
+	const char *m, *m_end, *sub, *sub_end;
+
+	snprintf(needle, sizeof(needle), "\">%s</button>", seg[0]);
+	for (m = html; (m = strstr(m, "class=\"menu-dropdown-toggle")) != NULL; m++) {
+		const char *close = strstr(m, needle);
+		const char *eol = strchr(m, '\n');
+
+		if (close != NULL && eol != NULL && close < eol)
+			break;
+	}
+	if (m == NULL)
+		return 0;
+	m_end = strstr(m + 1, "class=\"menu-dropdown-toggle");
+	/* The last menu has no next toggle; its own list ends it, so an
+	 * item search never runs on into the page body. */
+	if (m_end == NULL)
+		m_end = strstr(m, "\n\t\t\t</ul>");
+	if (nseg == 2)
+		return nav_has_button(m, m_end, seg[1]);
+	snprintf(needle, sizeof(needle), "aria-expanded=\"false\">%s</button>", seg[1]);
+	sub = strstr(m, needle);
+	if (sub == NULL || (m_end != NULL && sub > m_end))
+		return 0;
+	sub_end = strstr(sub + 1, "class=\"menu-submenu-toggle");
+	if (sub_end == NULL || (m_end != NULL && sub_end > m_end))
+		sub_end = m_end;
+	return nav_has_button(sub + strlen(needle), sub_end, seg[2]);
+}
+
+static int nav_resolves(const char *app, const char *html, struct nav_node *nodes, int n,
+                        char seg[][64], int nseg)
+{
+	char view[64];
+	int top = -1, i;
+
+	for (i = 0; i < n; i++)
+		if (nodes[i].parent == -1 && strcmp(nodes[i].label, seg[0]) == 0)
+			top = i;
+	if (top >= 0) {
+		int child = -1;
+
+		for (i = 0; i < n; i++)
+			if (nodes[i].parent == top && strcmp(nodes[i].label, seg[1]) == 0)
+				child = i;
+		if (child >= 0) {
+			if (nseg == 2)
+				return 1;
+			if (nseg == 3 && nav_view_for(app, nodes[child].hash, view, sizeof(view)) &&
+			    nav_view_has_tab(html, view, seg[2]))
+				return 1;
+		} else if (nseg == 2 && nav_view_for(app, nodes[top].hash, view, sizeof(view)) &&
+		           nav_view_has_tab(html, view, seg[1])) {
+			return 1;
+		}
+	}
+	return nseg <= 3 && nav_menu_has(html, seg, nseg);
+}
+
+static void check_dashboard_paths_in(const char *path, const char *app, const char *html,
+                                     struct nav_node *nodes, int n, int *checked)
+{
+	static const char *const tops[] = { "Containers", "Networks", "Storage",
+		                            "Software",   "Services", "Host" };
+	char *text = slurp(path);
+	const char *p;
+	size_t t;
+
+	if (text == NULL)
+		return;
+	for (t = 0; t < sizeof(tops) / sizeof(tops[0]); t++) {
+		size_t tl = strlen(tops[t]);
+
+		for (p = text; (p = strstr(p, tops[t])) != NULL; p += tl) {
+			char seg[4][64];
+			int nseg = 0;
+			const char *q = p;
+
+			if (p == text || p[-1] != '*')
+				continue;
+			if (strncmp(p + tl, " > ", 3) != 0 && strncmp(p + tl, " \xe2\x80\xba ", 5) != 0)
+				continue;
+			while (nseg < 4) {
+				size_t len = 0;
+
+				while (q[len] != '\0' && q[len] != '*' && q[len] != '\n' &&
+				       strncmp(q + len, " > ", 3) != 0 &&
+				       strncmp(q + len, " \xe2\x80\xba ", 5) != 0)
+					len++;
+				snprintf(seg[nseg++], sizeof(seg[0]), "%.*s", (int)len, q);
+				q += len;
+				if (strncmp(q, " > ", 3) == 0)
+					q += 3;
+				else if (strncmp(q, " \xe2\x80\xba ", 5) == 0)
+					q += 5;
+				else
+					break;
+			}
+			if (*q != '*')
+				continue; /* not a whole emphasised path */
+			(*checked)++;
+			if (nseg > 3 || !nav_resolves(app, html, nodes, n, seg, nseg)) {
+				char whole[256];
+
+				snprintf(whole, sizeof(whole), "%.*s", (int)(q - p), p);
+				fail("%s names the dashboard path \"%s\", which the dashboard does not have "
+				     "-- no tree entry and tab, and no header menu item, of those names",
+				     path, whole);
+			}
+		}
+	}
+	free(text);
+}
+
+static void check_dashboard_paths(void)
+{
+	char *app = slurp("web/app.js");
+	char *html = slurp("web/index.html");
+	struct nav_node nodes[NAV_MAX];
+	int n, checked = 0;
+	DIR *d;
+	struct dirent *de;
+
+	if (app == NULL || html == NULL) {
+		fail("could not read web/app.js or web/index.html to resolve dashboard paths");
+		free(app);
+		free(html);
+		return;
+	}
+	n = nav_parse_tree(app, nodes);
+	if (n < 15)
+		fail("read only %d tree entries out of web/app.js's topLevel -- the dashboard-path "
+		     "gate is not reading what it thinks it is", n);
+	check_dashboard_paths_in("README.md", app, html, nodes, n, &checked);
+	check_dashboard_paths_in("docs/api/README.md", app, html, nodes, n, &checked);
+	d = opendir("docs/guides");
+	if (d != NULL) {
+		while ((de = readdir(d)) != NULL) {
+			char path[512];
+			size_t l = strlen(de->d_name);
+
+			if (l < 4 || strcmp(de->d_name + l - 3, ".md") != 0)
+				continue;
+			snprintf(path, sizeof(path), "docs/guides/%s", de->d_name);
+			check_dashboard_paths_in(path, app, html, nodes, n, &checked);
+		}
+		closedir(d);
+	}
+	/* 53 measured on 2026-10-17; the floor says the scan is reading
+	 * paths at all, not how many there should be. */
+	if (checked < 30)
+		fail("checked only %d dashboard paths in the guides -- the scan is not reading "
+		     "what it thinks it is", checked);
+	free(app);
+	free(html);
+}
+
 int main(void)
 {
 	check_adr_index();
@@ -1034,6 +1324,7 @@ int main(void)
 	check_api_endpoint_index();
 	check_doc_links();
 	check_architecture_components();
+	check_dashboard_paths();
 
 	if (g_failures > 0) {
 		printf("DOCINDEX RESULT: FAIL (%d)\n", g_failures);

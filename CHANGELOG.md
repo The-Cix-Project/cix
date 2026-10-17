@@ -6,6 +6,19 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The guides name only dashboard paths that exist, and a gate holds them to it (#592)
+
+Ten of the 53 dashboard paths in the guides named pages the dashboard no longer had. The Host page had
+been split into Health, Identity and Configuration a week earlier, and `web-dashboard.md` still said
+Host > Sessions, Stats, Processes, Log Store, Name, Swap, Running Config and Factory Reset, Host >
+Kernel > Kernel Log, and Software > Overview for the stage board. Each now names where the thing is.
+The board's entry and the Errors list beside it were described twice and are one entry each.
+
+`test_docindex` now resolves every bold or italic path that starts with a top-level tree label --
+in the guides, `docs/api/README.md` and `README.md` -- against the tree and the tab bars, or against
+the header menu bar for an action (Host > Identity > Grant Permissions). A path naming nothing fails.
+CHANGELOG, ROADMAP and the ADRs are not scanned: recording paths as they were is their job.
+
 ### LDAP the service is under Services again; the tree has a written rule (#592)
 
 The accepted IA board had moved all of LDAP to Host › Identity, which left Services holding DNS, NTP
