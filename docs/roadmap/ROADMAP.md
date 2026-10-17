@@ -2477,8 +2477,33 @@ operation without its annotation, and seven `test_apigen` cases pin each refusal
   same body back answered 200 and the next read said `.1`. A malformed PUT answered 400 and the read
   still said `.1`. The stats read, a stream, carried no header.
 
-Next: the WebSocket stream itself (`GET /v1/events`, per-session masks, the heartbeat), then the
-daemon's drift check and sample loop, then the dashboard.
+**523, the stream.** `GET /v1/events` is a WebSocket that names the reads that changed, at their new
+generations, and never their content.
+- **What a frame carries:** the first frame and a 10 s heartbeat carry everything the session may read;
+  between them a frame names what changed.
+- **What a session may hear:** each stream's mask is the session decision `authorize_route()` makes,
+  through a new non-consuming `hostauth_authorize_peek()`, and it is recomputed when a change invalidates
+  `whoami`.
+- **When the session ends:** the heartbeat closes the stream with 4401.
+- **A slow reader:** pending reads are a set, so a slow reader costs one frame. That is by construction;
+  no gate measures it yet, because loopback never refuses a frame.
+- **`cixctl events --follow`** prints the stream.
+
+521 and 522 each failed their selftest on `test_timebounds`, against a whole-second latency bound in the
+new `test_events`. The second fix was still spelled the way that textual gate refuses, because I had not
+read how it matches. 523 goes through `elapsed_ms()`.
+
+**Verified on 192.168.15.95.**
+- **The gate:** 523's log shows `test_events` and `test_timebounds` PASS and `SELFTEST: PASS`.
+- **The box:** it booted on slot `b` with 12/12 running.
+- **The live stream:** `cixctl events --follow` for 25 s, with the site config put back after 3 s, printed
+  four frames under one epoch. The first named all 124 reads with `getSystemSite` at 0. The second named
+  exactly one, `getSystemSite` at 1. The third and fourth were heartbeats about 10 s apart, each naming
+  all 124.
+- **Unauthenticated upgrade:** refused with 401.
+- **The daemon log:** no stream was dropped.
+
+Next: the daemon's drift check and sample loop, then the dashboard moving from polling to the stream.
 
 ## Part 283 (done): the page forms render from the contract (#592 epic, 0.2.57-515 and -516)
 
