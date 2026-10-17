@@ -2854,6 +2854,30 @@ pre {
 		display: inline-flex;
 	}
 	/*
+	 * The menu bar takes a row of its own, under the controls. On one
+	 * row it was left whatever the header's right side did not use --
+	 * 32px of a 360px phone (measured in Chromium, 2026-10-17, #600), so
+	 * it showed the mark and a sliver of "Containers" and nothing a
+	 * finger could reach. It is still one row that scrolls sideways, as
+	 * at every width; only its share of the width changes. Two rows
+	 * below the breakpoint and one above is a height that depends on
+	 * the tier, never on the exact width, which is what wrapping the
+	 * menus themselves used to get wrong.
+	 */
+	header {
+		flex-wrap: wrap;
+		row-gap: 0;
+	}
+	.header-right {
+		margin-left: auto;
+		min-height: var(--h-menubar);
+	}
+	.menu-bar {
+		order: 2;
+		flex: 1 0 100%;
+		min-height: var(--h-menubar);
+	}
+	/*
 	 * Content first. The tree is the first element in source order, so
 	 * left visible it occupies the whole first screen and the page
 	 * looks empty until you scroll past all of it. Disclosed by the

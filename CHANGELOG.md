@@ -6,6 +6,19 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The menu bar gets its own row on a phone, and the width rules are complete (#600)
+
+- **The defect:** at 360px the header's menu bar shared a row with the controls and got the 32px they
+  left. It showed the mark and a sliver of "Containers", and no menu was reachable. Below the breakpoint
+  it now takes a full row under the controls. It is still one sideways-scrolling row, so the header is
+  one row on a desktop and two on a phone, and the height never depends on the exact width. Measured in
+  Chromium against the box's own files, the Containers menu opens under its toggle.
+- **The guideline** no longer says one of #600's four questions is open: all four are answered. It also
+  states the login screen's 60rem breakpoint as the session shell's own. It is derived from the form's
+  width, not a second step in the dashboard's scale.
+- **Re-measured:** ten read-tier views at 360px and 390px each, with the stream down so the status bar
+  carries its longest text. All 20 are clean, with no overflow and no sideways document scroll.
+
 ### Every change the daemon makes by itself is announced: the drift the self-check found (ADR-0339, #599, #607)
 
 On 0.2.57-528 the daemon's check of its own announcements named ten reads that changed with nothing
