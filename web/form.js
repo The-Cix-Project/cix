@@ -460,8 +460,14 @@ function generatedFormBody(form) {
 		 * field, which is omitted so that it keeps (#592). Without
 		 * this an edit form could never clear anything: the recipe
 		 * source's catalogue key is "" to remove, and the hand-built
-		 * form sent it on every save to make that possible. */
-		if (el.dataset.initial === "1" && fieldIsEmpty(el)) {
+		 * form sent it on every save to make that possible.
+		 *
+		 * NOT for a number, which has no empty value to send: "" for
+		 * an integer reaches the daemon's json_as_number() as 0, so an
+		 * emptied lease would be stored as a lease of 0 seconds. An
+		 * emptied number is omitted, and keeps. */
+		if (el.dataset.initial === "1" && fieldIsEmpty(el) &&
+		    type !== "integer" && type !== "number") {
 			body[name] = type === "array" ? [] : type === "object" ? {} : "";
 			continue;
 		}

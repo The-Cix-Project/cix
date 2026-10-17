@@ -1615,9 +1615,10 @@ form label.checkbox input[type="checkbox"] {
 
 /*
  * A multiple select shows its choices as a list, so the one control
- * height above would show ONE of them and a scrollbar -- which is how
- * the hand-built DHCP form's four-row server list rendered. Its own
- * `size` decides the height, as a textarea's `rows` does (#592).
+ * height above, which `form select` gives it too, leaves room for ONE
+ * of them -- read from this file, not measured on the old hand-built
+ * DHCP form. Its own `size` decides the height, as a textarea's `rows`
+ * does (#592).
  */
 form select[multiple] {
 	height: auto;

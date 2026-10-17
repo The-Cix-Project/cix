@@ -103,11 +103,9 @@ const cache = {
 	pkgList: [],
 	imageRecipes: [],
 	containerRecipes: [],
-	pkgSources: null,
 	pkgSyncStatus: null,
 	pkgCacheConfig: null,
 	pkgCacheStatus: null,
-	pkgRepositories: null,
 	siteConfig: null,
 	daemonConfig: null,
 	swap: null,
@@ -11734,7 +11732,6 @@ async function refreshPkgSources() {
 	try {
 		const data = await apiRequest("GET", CIX_API.listPkgSources());
 
-		cache.pkgSources = data.sources;
 		renderPkgSourcesTable(data.sources);
 	} catch (e) {
 		/* apiRequest() has recorded this failure against the op, and
@@ -12470,7 +12467,6 @@ async function refreshPkgRepositories() {
 	try {
 		const data = await apiRequest("GET", CIX_API.listPkgRepositories());
 
-		cache.pkgRepositories = data.repositories;
 		renderPkgRepositoriesTable(data.repositories);
 	} catch (e) {
 		/* listState() already has this failure; see refreshPkgSources(). */

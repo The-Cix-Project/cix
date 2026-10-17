@@ -1263,6 +1263,20 @@ int main(void)
 		       "  return String(form.querySelectorAll(\"[data-clear-for]\").length);\n"
 		       "})()",
 		       "0");
+		/* A number has no empty value: "" would reach the daemon as 0,
+		 * a lease of 0 seconds. Emptied, it is omitted and keeps. */
+		expect(ctx, "but an emptied number is omitted, not sent as \"\"",
+		       "(() => {\n"
+		       "  openForm(\"setDhcpNetwork\", { title: \"T\", args: [\"lan\"],\n"
+		       "    values: { lease_seconds: 3600 }, choices: { servers: [] } });\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  const el = form.children.find((l) => l.children[1] &&\n"
+		       "    l.children[1].dataset.field === \"lease_seconds\").children[1];\n"
+		       "  el.value = \"\";\n"
+		       "  return String(Object.prototype.hasOwnProperty.call(\n"
+		       "    generatedFormBody(form), \"lease_seconds\"));\n"
+		       "})()",
+		       "false");
 
 		/*
 		 * ---- a map of strings is KEY=VALUE lines (#592) ----
