@@ -2445,6 +2445,41 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 284 (in progress): the box says what changed (ADR-0339, #599, 0.2.57-519 and -520)
+
+The owner accepted ADR-0339 on 2026-10-17 after four reviews raised it from "push some events" to a
+design in which nothing displayed is polled once signed in and the daemon proves it announced. This part
+records the first two of its steps.
+
+**519, the contract.** Every read declares `x-cix-read`: 110 state, 12 sample (with a period), 2
+session, 9 stream and 9 derived. Every change declares `x-cix-invalidates`: 198 lists, seeded from the
+path with cross-resource effects added by hand, eight of them an explicit `[]`. `apigen` refuses an
+operation without its annotation, and seven `test_apigen` cases pin each refusal.
+
+**520, the counters.**
+- **Slots:** each of the 124 announced reads has a generation counter under a random boot epoch. Its
+  slot is an `EV_<operationId>` constant generated from the contract, so a misspelt announcement fails
+  the build.
+- **API changes:** `dispatch()` raises a change's list when it answers 2xx, and never on a refusal.
+- **The daemon's own changes:** these raise their reads where they happen. A source scan,
+  `test_announce`, refuses a state assignment that bypasses its announcing setter.
+- **What clients see:** every answer to an announced read carries `X-Cix-Generation`, and
+  `GET /v1/events/status` and `cixctl events status` list them all.
+
+**Verified on 192.168.15.95.**
+- **The gate:** 520 compiled on its first build, and its log shows `test_events`, `test_announce`,
+  `test_apigen`, `test_apishape`, `test_docindex`, `test_clitree` and `test_api_surfaces` PASS, then
+  `SELFTEST: PASS`. The one failure after it, `test_console_exec`, is outside the gate and identical in
+  519's log.
+- **The box:** it booted on slot `a` with 12/12 running, and right after boot `listContainers` already
+  stood at 27, from container restore and service reports.
+- **The live round trip:** a site read answered `X-Cix-Generation: 423fa5a9aa045ad6.0`. Putting the
+  same body back answered 200 and the next read said `.1`. A malformed PUT answered 400 and the read
+  still said `.1`. The stats read, a stream, carried no header.
+
+Next: the WebSocket stream itself (`GET /v1/events`, per-session masks, the heartbeat), then the
+daemon's drift check and sample loop, then the dashboard.
+
 ## Part 283 (done): the page forms render from the contract (#592 epic, 0.2.57-515 and -516)
 
 Forty-three forms on the dashboard's pages are generated: every settings form, every page action and
