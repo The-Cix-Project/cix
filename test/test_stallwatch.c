@@ -143,6 +143,64 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
+/*
+ * #608: a slow pass with no request is named by the kind of event that
+ * took it, from g_conn_kind_names[] in main.c. A kind added to the enum
+ * without a name would be reported as "unnamed" -- so every enumerator
+ * must have its designated row. Read from the source, test_announce's
+ * way, because the table is static to main.c.
+ */
+static int check_conn_kind_names(void)
+{
+	static char text[2 * 1024 * 1024];
+	char kinds[96][64];
+	int n = 0, i, missing = 0, in_enum = 0;
+	size_t len;
+	FILE *f = fopen("daemon/src/main.c", "r");
+	char line[512];
+
+	if (f == NULL) {
+		fprintf(stderr, "FAIL: cannot open daemon/src/main.c\n");
+		return 0;
+	}
+	while (fgets(line, sizeof(line), f) != NULL) {
+		if (strncmp(line, "enum conn_kind {", 16) == 0) {
+			in_enum = 1;
+			continue;
+		}
+		if (in_enum && strncmp(line, "};", 2) == 0)
+			break;
+		if (in_enum && strncmp(line, "\tCONN_", 6) == 0 && n < 96) {
+			size_t k = strspn(line + 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_");
+
+			if (k < sizeof(kinds[0]) && strncmp(line + 1, "CONN_KIND_COUNT", 15) != 0) {
+				memcpy(kinds[n], line + 1, k);
+				kinds[n][k] = '\0';
+				n++;
+			}
+		}
+	}
+	rewind(f);
+	len = fread(text, 1, sizeof(text) - 1, f);
+	text[len] = '\0';
+	fclose(f);
+	for (i = 0; i < n; i++) {
+		char want[96];
+
+		snprintf(want, sizeof(want), "\t[%s] = \"", kinds[i]);
+		if (strstr(text, want) == NULL) {
+			fprintf(stderr, "FAIL: %s has no name in g_conn_kind_names[] (#608)\n", kinds[i]);
+			missing++;
+		}
+	}
+	if (n < 40) {
+		fprintf(stderr, "FAIL: read %d connection kinds from enum conn_kind; expected over 40 "
+		                "-- the scan is not testing anything\n", n);
+		return 0;
+	}
+	return missing == 0;
+}
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -150,6 +208,8 @@ int main(void)
 	struct cix_response r;
 	int ok = 1;
 
+	if (!check_conn_kind_names())
+		ok = 0;
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
 

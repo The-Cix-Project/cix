@@ -130,6 +130,17 @@ struct stall_shared {
 	 */
 	char pass_activity[STALL_ACTIVITY_MAX];
 	/*
+	 * #608: the handler that took the longest this pass, and how long.
+	 * pass_activity names only what NAMED itself -- a request -- and
+	 * the last one to do so, so a pass spent in a child's completion
+	 * or a timer read as "" (every hourly 4-5 s stall on 192.168.15.95,
+	 * measured 2026-10-17), and a slow completion followed by a quick
+	 * request would have been blamed on the request. The slowest
+	 * handler is what took the time, whoever it was.
+	 */
+	volatile long long pass_slowest_handler_millis;
+	char pass_slowest_handler[STALL_ACTIVITY_MAX];
+	/*
 	 * Where the watchdog should ask the daemon whether it is actually
 	 * SERVING (#247).
 	 *
@@ -1023,6 +1034,7 @@ int stallwatch_start(const char *records_path)
 void stallwatch_pass_end(void)
 {
 	long long work;
+	const char *what;
 
 	if (g_shared == NULL || g_shared->pass_started_millis == 0)
 		return;
@@ -1031,6 +1043,11 @@ void stallwatch_pass_end(void)
 	if (work < 0)
 		return;
 	g_shared->pass_last_work_millis = work;
+	/* #608: what took the time -- the slowest handler, named by its
+	 * request when it served one -- rather than whatever named itself
+	 * last. */
+	what = g_shared->pass_slowest_handler[0] != '\0' ? g_shared->pass_slowest_handler
+	                                                 : g_shared->pass_activity;
 
 	/*
 	 * The high-water mark tracks EVERY pass, not only slow ones.
@@ -1053,8 +1070,7 @@ void stallwatch_pass_end(void)
 		/* What it was doing, if anything named itself. Copied at the
 		 * moment of the worst pass rather than read later, when it
 		 * would have moved on. */
-		snprintf(g_shared->pass_worst_activity, STALL_ACTIVITY_MAX, "%s",
-		         g_shared->pass_activity);
+		snprintf(g_shared->pass_worst_activity, STALL_ACTIVITY_MAX, "%s", what);
 	}
 	if (work >= SLOW_PASS_MILLIS) {
 		g_shared->slow_pass_count++;
@@ -1062,8 +1078,7 @@ void stallwatch_pass_end(void)
 		 * record is about. */
 		if (work > g_shared->slow_window_worst_millis) {
 			g_shared->slow_window_worst_millis = work;
-			snprintf(g_shared->slow_window_worst_activity, STALL_ACTIVITY_MAX, "%s",
-			         g_shared->pass_activity);
+			snprintf(g_shared->slow_window_worst_activity, STALL_ACTIVITY_MAX, "%s", what);
 		}
 	}
 }
@@ -1076,6 +1091,34 @@ void stallwatch_heartbeat(void)
 	g_shared->heartbeat_seq++;
 	g_shared->pass_started_millis = monotonic_millis();
 	g_shared->pass_activity[0] = '\0';
+	g_shared->pass_slowest_handler_millis = 0;
+	g_shared->pass_slowest_handler[0] = '\0';
+}
+
+long long stallwatch_now_millis(void)
+{
+	return monotonic_millis();
+}
+
+void stallwatch_handler_done(const char *kind, long long started_millis)
+{
+	long long took;
+
+	if (g_shared == NULL || kind == NULL)
+		return;
+	took = monotonic_millis() - started_millis;
+	if (took <= g_shared->pass_slowest_handler_millis)
+		return;
+	g_shared->pass_slowest_handler_millis = took;
+	/* A request names itself (activity is still set until the loop
+	 * clears it after this call); anything else is named by the kind
+	 * of event it handled. */
+	if (g_shared->activity[0] != '\0')
+		snprintf(g_shared->pass_slowest_handler, STALL_ACTIVITY_MAX, "%s (%lld ms)",
+		         g_shared->activity, took);
+	else
+		snprintf(g_shared->pass_slowest_handler, STALL_ACTIVITY_MAX, "event %s (%lld ms)", kind,
+		         took);
 }
 
 void stallwatch_activity(const char *what)

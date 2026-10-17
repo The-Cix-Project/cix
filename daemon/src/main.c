@@ -1273,8 +1273,78 @@ enum conn_kind {
 	 * immediately rather than dispatching on any of their other,
 	 * already-invalid fields.
 	 */
-	CONN_DEAD
+	CONN_DEAD,
+	CONN_KIND_COUNT /* not a kind: how many there are */
 };
+
+/*
+ * #608: each kind's name, for naming the event that took a slow pass's
+ * time when no request did. Designated, so a name sits beside its kind
+ * however the enum is reordered; test_stallwatch fails a kind added
+ * above without one, and the size check fails one appended after
+ * CONN_DEAD.
+ */
+static const char *const g_conn_kind_names[CONN_KIND_COUNT] = {
+	[CONN_LISTENER] = "listener",
+	[CONN_LISTENER_TLS] = "listener-tls",
+	[CONN_CLIENT] = "client",
+	[CONN_CONTAINER] = "container",
+	[CONN_PKG_FETCH] = "pkg-fetch",
+	[CONN_PKG_BUILDENV] = "pkg-buildenv",
+	[CONN_PKG_UNPACK] = "pkg-unpack",
+	[CONN_PKG_BUILD_OUTPUT] = "pkg-build-output",
+	[CONN_CONTAINER_INIT] = "container-init",
+	[CONN_STOP_ESCALATE_TIMER] = "stop-escalate-timer",
+	[CONN_CONTAINER_OUTPUT] = "container-output",
+	[CONN_BOOTROOT_ASSEMBLE] = "bootroot-assemble",
+	[CONN_ISO_OUTPUT] = "iso-output",
+	[CONN_BOOTROOT_OUTPUT] = "bootroot-output",
+	[CONN_ISO_ASSEMBLE] = "iso-assemble",
+	[CONN_ARTIFACT_EXPORT] = "artifact-export",
+	[CONN_ARTIFACT_PUSH] = "artifact-push",
+	[CONN_ISO_PUBLISH] = "iso-publish",
+	[CONN_BOOTSTRAP_FETCH] = "bootstrap-fetch",
+	[CONN_KERNEL_RELEASES_FETCH] = "kernel-releases-fetch",
+	[CONN_PKG_SYNC_FETCH] = "pkg-sync-fetch",
+	[CONN_DISK_FORMAT] = "disk-format",
+	[CONN_STORAGE_MIGRATE] = "storage-migrate",
+	[CONN_CONTAINER_STORAGE_MIGRATE] = "container-storage-migrate",
+	[CONN_PING] = "ping",
+	[CONN_PING_TIMER] = "ping-timer",
+	[CONN_NTP_PERIODIC_TIMER] = "ntp-periodic-timer",
+	[CONN_BUILD_STALL_TIMER] = "build-stall-timer",
+	[CONN_BOOT_CONFIRM_TIMER] = "boot-confirm-timer",
+	[CONN_SCHEDULER_TIMER] = "scheduler-timer",
+	[CONN_NTP_SYNC] = "ntp-sync",
+	[CONN_NTP_SYNC_TIMER] = "ntp-sync-timer",
+	[CONN_SERVERHEALTH_TIMER] = "serverhealth-timer",
+	[CONN_SERVERHEALTH_PROBE] = "serverhealth-probe",
+	[CONN_RESTART_TIMER] = "restart-timer",
+	[CONN_ROLL_WATCH_TIMER] = "roll-watch-timer",
+	[CONN_ROLLING_RESTART_TIMER] = "rolling-restart-timer",
+	[CONN_BIND_IP_CLEANUP] = "bind-ip-cleanup",
+	[CONN_CONSOLE_SHELL] = "console-shell",
+	[CONN_CONSOLE_RESPAWN_TIMER] = "console-respawn-timer",
+	[CONN_CONSOLE_WS] = "console-ws",
+	[CONN_CONSOLE_PTY] = "console-pty",
+	[CONN_HELPER] = "helper",
+	[CONN_CONSOLE_EXEC_REAP] = "console-exec-reap",
+	[CONN_PKG_BUILD_LOG_WS] = "pkg-build-log-ws",
+	[CONN_EVENTS_WS] = "events-ws",
+	[CONN_EVENTS_TIMER] = "events-timer",
+	[CONN_EVENTS_CHECK_TIMER] = "events-check-timer",
+	[CONN_SESSION_EXPIRY_TIMER] = "session-expiry-timer",
+	[CONN_KMSG] = "kmsg",
+	[CONN_UEVENT] = "uevent",
+	[CONN_DEAD] = "dead",
+};
+
+static const char *conn_kind_name(enum conn_kind kind)
+{
+	return (unsigned)kind < CONN_KIND_COUNT && g_conn_kind_names[kind] != NULL
+	           ? g_conn_kind_names[kind]
+	           : "unnamed";
+}
 
 struct conn {
 	enum conn_kind kind;
@@ -35605,6 +35675,8 @@ static int cixd_main(int argc, char **argv)
 		int n = cix_epoll_wait(g_epfd, events, MAX_EVENTS, 1000);
 		int j;
 		struct conn *cc;
+		enum conn_kind handled_kind;
+		long long handler_started;
 
 		stallwatch_heartbeat();
 
@@ -35645,6 +35717,10 @@ static int cixd_main(int argc, char **argv)
 			cc = events[j].data.ptr;
 			if (cc->kind == CONN_DEAD)
 				continue; /* torn down earlier in this same batch -- see g_pending_free's own comment */
+			/* #608: timed, and named by kind -- read now, since a
+			 * handler may free cc. */
+			handled_kind = cc->kind;
+			handler_started = stallwatch_now_millis();
 			if (cc->kind == CONN_LISTENER || cc->kind == CONN_LISTENER_TLS)
 				accept_loop(cc);
 			else if (cc->kind == CONN_CONTAINER)
@@ -35771,6 +35847,7 @@ static int cixd_main(int argc, char **argv)
 			 * A handler that never returns never reaches this, which is
 			 * exactly the case the field exists for.
 			 */
+			stallwatch_handler_done(conn_kind_name(handled_kind), handler_started);
 			stallwatch_activity_clear();
 		}
 

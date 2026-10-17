@@ -79,6 +79,17 @@ void stallwatch_write_loop_json(struct json_writer *w);
  */
 void stallwatch_activity(const char *what);
 void stallwatch_activity_clear(void);
+
+/*
+ * #608: one event's handler, timed by the loop. The pass is attributed
+ * to its slowest handler, named by the request it served when one named
+ * itself and otherwise by `kind`, the event's connection kind -- so a
+ * pass spent in a child's completion or a timer says which, where it
+ * used to say "". stallwatch_now_millis() is the clock it is measured
+ * on, for the start.
+ */
+long long stallwatch_now_millis(void);
+void stallwatch_handler_done(const char *kind, long long started_millis);
 /* #303: read the current in-flight activity (into shared memory), for the
  * crash handler's trace. NULL if the watchdog never started; a caller must
  * bound its read to STALL_ACTIVITY_MAX (a torn write may leave it

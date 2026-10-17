@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A slow pass names the event that took it (#608)
+
+- **The gap:** `GET /v1/system/stalls` attributed a slow event-loop pass to whatever request last named
+  itself, so a pass spent in a child's completion or a timer read as `""`. Every hourly 4–5 s stall on
+  192.168.15.95 did. A slow completion followed by a quick request would have been blamed on the
+  request.
+- **The fix:** the loop now times each event's handler, and a pass is attributed to its slowest one.
+  That is named by its request when it served one (`GET /v1/... (1249 ms)`), and otherwise by the
+  connection kind of the event it handled (`event pkg-buildenv (4870 ms)`).
+- **The names** are a designated table beside the kind enum, and `test_stallwatch` fails a kind
+  added without one.
+
 ### A change re-runs only the refreshers that read it (ADR-0339 phase 2, release B, #599)
 
 - **What each refresher reads** is learned from its own requests: `apiRequest()` records each GET's
