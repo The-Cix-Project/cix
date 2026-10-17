@@ -3579,10 +3579,22 @@ async function refreshContainers() {
 	renderContainers(cache.containers);
 }
 
+/*
+ * The one remove for a container, an image and a package each: the
+ * list's button, the detail page's and the tree's right-click menu all
+ * call these. They deleted on the first click, with no confirm and no
+ * word on success, until 2026-10-17 -- the guidelines' four-part rule
+ * for a destructive action, broken by the three most destructive
+ * actions in the dashboard. The confirm lives here, once, so no surface
+ * can skip it; each question says what the contract says goes.
+ */
 async function removeContainer(name) {
+	if (!confirm("Remove container \"" + name + "\"? It is stopped and deleted with its own "
+	             + "files. Volumes it mounts are kept."))
+		return;
 	try {
 		await apiRequest("DELETE", CIX_API.deleteContainer(name));
-		clearStatus();
+		showStatus("Removed container " + name);
 		if (onPageOf("containers") && parseHash().name === name)
 			location.hash = "#containers";
 		await refreshContainers();
@@ -5605,6 +5617,8 @@ async function refreshNetworks() {
 }
 
 async function removeNetwork(name) {
+	if (!confirm("Remove network \"" + name + "\" and its bridge?"))
+		return;
 	try {
 		await apiRequest("DELETE", CIX_API.deleteNetwork(name));
 		clearStatus();
@@ -5648,7 +5662,9 @@ function renderDhcpServers(servers) {
 		{ field: "running", label: "Running", badge: (v) => (v ? "ok" : "unknown") },
 		{ field: "resolves_leases", label: "Resolves leases" },
 		{ label: "", actions: (srv) => [dhcpActionButton("Unregister",
-		    "unregisterDhcpServer", null, async () => {
+		    "unregisterDhcpServer",
+		    "Unregister DHCP server " + srv.container + "? It is dropped from every range that "
+		    + "named it, and a range left with no server stops serving.", async () => {
 			await apiRequest("DELETE", CIX_API.unregisterDhcpServer(srv.container));
 			showStatus("Unregistered -- any range that named it has been re-split.", false);
 			refreshDhcp();
@@ -5670,7 +5686,9 @@ function dhcpActionButton(text, opId, confirmText, run) {
 	const b = document.createElement("button");
 
 	b.type = "button";
-	b.className = "button-small";
+	/* A button that asks first is a destructive one, and wears the
+	 * danger style the guidelines give every destructive action. */
+	b.className = confirmText !== null ? "button-danger button-small" : "button-small";
 	b.textContent = text;
 	gateAction(b, opId);
 	b.addEventListener("click", async () => {
@@ -5735,7 +5753,8 @@ function renderDhcpStatic(entries) {
 		{ field: "ip", label: "Address" },
 		"hostname",
 		{ label: "", actions: (e) => [dhcpActionButton("Remove",
-		    "deleteDhcpReservation", null, async () => {
+		    "deleteDhcpReservation",
+		    "Remove the reservation of " + e.ip + " for " + e.mac + "?", async () => {
 			await apiRequest("DELETE", CIX_API.deleteDhcpReservation(e.mac));
 			showStatus("Reservation removed.", false);
 			refreshDhcp();
@@ -6239,6 +6258,9 @@ async function attachInterface(networkName, ifname, vlanId) {
 }
 
 async function detachInterface(networkName, ifname) {
+	if (!confirm("Detach \"" + ifname + "\" from network \"" + networkName + "\"? An interface is "
+	             + "released from the bridge; a VLAN sub-interface is deleted."))
+		return;
 	try {
 		await apiRequest("DELETE", CIX_API.detachNetworkInterface(networkName, ifname));
 		clearStatus();
@@ -6346,9 +6368,12 @@ async function runImageGc(dryRun) {
 }
 
 async function removeImage(name) {
+	if (!confirm("Remove image \"" + name + "\" and its whole root filesystem? The host refuses "
+	             + "while a running container or an installed package still uses it."))
+		return;
 	try {
 		await apiRequest("DELETE", CIX_API.deleteImage(name));
-		clearStatus();
+		showStatus("Removed image " + name);
 		if (onPageOf("images") && parseHash().name === name)
 			location.hash = "#images";
 		await refreshImages();
@@ -6476,14 +6501,8 @@ function renderImageRecipeTab(name) {
 		});
 	};
 	document.getElementById("imgd-remove-recipe").onclick = async () => {
-		try {
-			await apiRequest("DELETE", CIX_API.deleteImageRecipe(name));
-			clearStatus();
-			imageRecipeContentCache = { name: null, content: null };
+		if (await removeImageRecipe(name))
 			renderImageRecipeTab(name);
-		} catch (e) {
-			showStatus("Failed to remove image recipe for " + name + ": " + e.message, true);
-		}
 	};
 	document.getElementById("imgd-apply-recipe").onclick = async () => {
 		try {
@@ -6554,10 +6573,12 @@ function renderImageDetailManifest(name, data) {
 			rm.className = "button-danger";
 			gateAction(rm, "unsetImageManifestEntry");
 			rm.addEventListener("click", async () => {
+				if (!confirm("Remove " + e.package + " from image " + name + "'s manifest?"))
+					return;
 				try {
 					await apiRequest("DELETE",
 					    CIX_API.unsetImageManifestEntry(name, e.package));
-					clearStatus();
+					showStatus("Removed " + e.package + " from " + name + "'s manifest");
 					refreshImageDetailVersioning(name);
 				} catch (err) {
 					showStatus("Failed to remove manifest entry: " +
@@ -6934,6 +6955,9 @@ function renderDeviceMapsTable() {
 }
 
 async function removeDeviceMap(name) {
+	if (!confirm("Remove device mapping \"" + name + "\"? Containers already granted it keep "
+	             + "their devices."))
+		return;
 	try {
 		await apiRequest("DELETE", CIX_API.deleteDeviceMap(name));
 		clearStatus();
@@ -8542,6 +8566,8 @@ async function refreshDnsRecords() {
 }
 
 async function removeDnsRecord(name) {
+	if (!confirm("Remove DNS record \"" + name + "\"?"))
+		return;
 	try {
 		await apiRequest("DELETE", CIX_API.deleteDnsRecord(name));
 		clearStatus();
@@ -8558,7 +8584,7 @@ function renderDnsServers(servers) {
 	renderTable(document.getElementById("dns-servers"), "DnsServerBinding", servers, [
 		"container",
 		{ field: "hosts_path", label: "Hosts path" },
-		{ label: "", actions: (s) => [unregisterButton("deleteDnsServer",
+		{ label: "", actions: (s) => [unregisterButton("deleteDnsServer", "DNS server " + s.container,
 		    () => removeDnsServer(s.container))] },
 	], { op: "listDnsServers", what: "DNS servers", empty: "No DNS server bindings" });
 }
@@ -8588,7 +8614,7 @@ function renderLdapServers(servers) {
 	renderTable(document.getElementById("ldap-servers"), "LdapServerBinding", servers, [
 		"container",
 		{ field: "config_path", label: "Config path" },
-		{ label: "", actions: (s) => [unregisterButton("deleteLdapServer",
+		{ label: "", actions: (s) => [unregisterButton("deleteLdapServer", "LDAP server " + s.container,
 		    () => removeLdapServer(s.container))] },
 	], { op: "listLdapServers", what: "LDAP servers", empty: "No LDAP server bindings" });
 }
@@ -8652,6 +8678,9 @@ async function refreshLdapGroups() {
 }
 
 async function removeLdapGroup(name) {
+	if (!confirm("Delete LDAP group \"" + name + "\" from the directory and every registered "
+	             + "server?"))
+		return;
 	try {
 		await apiRequest("DELETE", CIX_API.deleteLdapGroup(name));
 		clearStatus();
@@ -8790,6 +8819,9 @@ async function refreshLdapUsers() {
 }
 
 async function removeLdapUser(name) {
+	if (!confirm("Delete LDAP user \"" + name + "\" from the directory and every registered "
+	             + "server?"))
+		return;
 	try {
 		await apiRequest("DELETE", CIX_API.deleteLdapUser(name));
 		clearStatus();
@@ -9894,6 +9926,10 @@ async function installSigningKeys() {
 }
 
 async function clearSigningKeys() {
+	if (!confirm("Erase this host's Secure Boot signing key pair? All three files are deleted, "
+	             + "and this host cannot sign installer media again until a pair is installed. "
+	             + "If no copy exists elsewhere, the pair is gone."))
+		return;
 	try {
 		await apiRequest("DELETE", CIX_API.deleteSystemSigningKeys());
 		clearStatus();
@@ -9977,6 +10013,10 @@ async function installReleaseKey() {
 }
 
 async function clearReleaseKey() {
+	if (!confirm("Erase this host's release-signing key? Published signatures stay verifiable, "
+	             + "but this host cannot sign another release. If no copy exists elsewhere, the "
+	             + "key is gone."))
+		return;
 	try {
 		await apiRequest("DELETE", CIX_API.deleteSystemReleaseKey());
 		clearStatus();
@@ -10072,6 +10112,9 @@ async function refreshBootNext() {
 }
 
 async function removeEspEntry(name) {
+	if (!confirm("Remove boot entry \"" + name + "\" from the ESP? The host refuses to remove the "
+	             + "last entry for the slot it is running from."))
+		return;
 	try {
 		await apiRequest("DELETE", CIX_API.deleteEspEntry(name));
 		clearStatus();
@@ -10306,20 +10349,26 @@ document.getElementById("ntp-config-form").addEventListener("submit", async (eve
 function renderNtpServers(servers) {
 	renderTable(document.getElementById("ntp-servers"), "NtpServerBinding", servers, [
 		"container",
-		{ label: "", actions: (s) => [unregisterButton("deleteNtpServer",
+		{ label: "", actions: (s) => [unregisterButton("deleteNtpServer", "NTP server " + s.container,
 		    () => removeNtpServer(s.container))] },
 	], { op: "listNtpServers", what: "NTP servers", empty: "No NTP server bindings" });
 }
 
-/* The Unregister control these registration lists share, so the three
- * of them do not each build the same gated danger button. */
-function unregisterButton(opId, onClick) {
+/* The Unregister control these registration lists share, so the four
+ * of them do not each build the same gated danger button -- and the one
+ * place its confirm lives. `what` names the binding ("DNS server
+ * dns-1"); every unregister operation's contract says it does not touch
+ * the container itself, so the question says so. */
+function unregisterButton(opId, what, onClick) {
 	const b = document.createElement("button");
 
 	b.textContent = "Unregister";
 	b.className = "button-danger button-small";
 	gateAction(b, opId);
-	b.addEventListener("click", onClick);
+	b.addEventListener("click", () => {
+		if (confirm("Unregister " + what + "? The container itself is not touched."))
+			onClick();
+	});
 	return b;
 }
 
@@ -10346,7 +10395,7 @@ async function removeNtpServer(container) {
 function renderSyslogTargets(targets) {
 	renderTable(document.getElementById("syslog-targets"), "SyslogTarget", targets, [
 		"container",
-		{ label: "", actions: (t) => [unregisterButton("deleteSyslogTarget",
+		{ label: "", actions: (t) => [unregisterButton("deleteSyslogTarget", "syslog target " + t.container,
 		    () => removeSyslogTarget(t.container))] },
 	], {
 		op: "listSyslogTargets",
@@ -10664,6 +10713,8 @@ async function refreshPkiCerts() {
 }
 
 async function removePkiCert(name) {
+	if (!confirm("Remove certificate \"" + name + "\"? Its key and certificate files are deleted."))
+		return;
 	try {
 		await apiRequest("DELETE", CIX_API.deletePkiCert(name));
 		clearStatus();
@@ -11022,7 +11073,8 @@ async function viewPkgRecipeVersion(name, version) {
 
 	try {
 		content = (
-			await apiRequest("GET", CIX_API.getPkgRecipe(name, version) + "?version=%s")
+			await apiRequest("GET", CIX_API.getPkgRecipe(name)
+			                 + "?version=" + encodeURIComponent(version))
 		).content;
 	} catch (e) {
 		showStatus("Failed to load recipe content for " + name + "@" + version + ": " + e.message, true);
@@ -11096,10 +11148,43 @@ async function refreshPkgRecipes() {
  * the old version-less call silently deleted every stored version of
  * name, a real data-loss footgun once the recipe list started showing
  * one row per version. */
-async function removePkgRecipe(name, version) {
+/*
+ * The query used to be a literal "?version=%s" -- left by the
+ * 2026-08-31 conversion to generated paths (34b5647d), which turned
+ * `"?version=" + encodeURIComponent(version)` into a printf placeholder
+ * nothing fills. The box answers that 404 "no such recipe" (measured
+ * 2026-10-17), so removing or viewing one recipe version from the
+ * dashboard failed for seven weeks.
+ */
+/*
+ * An image's recipe is removed from two places -- the catalogue's list
+ * and the image's own Recipe tab -- and each had its own copy of this,
+ * neither asking first. One copy now, which asks; the caller redraws
+ * whatever it shows. Resolves true when the recipe went.
+ */
+async function removeImageRecipe(name) {
+	if (!confirm("Delete the image recipe for " + name + "? The image and anything installed "
+	             + "through it are not affected."))
+		return false;
 	try {
-		await apiRequest("DELETE", CIX_API.deletePkgRecipe(name, version) + "?version=%s");
-		clearStatus();
+		await apiRequest("DELETE", CIX_API.deleteImageRecipe(name));
+		showStatus("Deleted the image recipe for " + name);
+		imageRecipeContentCache = { name: null, content: null };
+		return true;
+	} catch (e) {
+		showStatus("Failed to remove the image recipe for " + name + ": " + e.message, true);
+		return false;
+	}
+}
+
+async function removePkgRecipe(name, version) {
+	if (!confirm("Remove recipe " + name + "@" + version + "? Anything already installed from it "
+	             + "stays installed."))
+		return;
+	try {
+		await apiRequest("DELETE", CIX_API.deletePkgRecipe(name)
+		                 + "?version=" + encodeURIComponent(version));
+		showStatus("Removed recipe " + name + "@" + version);
 		await refreshPkgRecipes();
 		renderTree();
 	} catch (e) {
@@ -11186,15 +11271,8 @@ function renderImageRecipesTable() {
 			rm.className = "button-danger";
 			gateAction(rm, "deleteImageRecipe");
 			rm.addEventListener("click", async () => {
-				try {
-					await apiRequest("DELETE", CIX_API.deleteImageRecipe(r.name));
-					clearStatus();
-					imageRecipeContentCache = { name: null, content: null };
+				if (await removeImageRecipe(r.name))
 					await refreshImageRecipesList();
-				} catch (e) {
-					showStatus("Failed to remove image recipe for " + r.name +
-					    ": " + e.message, true);
-				}
 			});
 			return [apply, edit, rm];
 		} },
@@ -11261,9 +11339,12 @@ function renderContainerRecipesTable() {
 			rm.className = "button-danger";
 			gateAction(rm, "deleteDeployment");
 			rm.addEventListener("click", async () => {
+				if (!confirm("Delete the container recipe for " + r.name + "? A container already "
+				             + "created from it is not affected."))
+					return;
 				try {
 					await apiRequest("DELETE", CIX_API.deleteDeployment(r.name));
-					clearStatus();
+					showStatus("Deleted the container recipe for " + r.name);
 					containerRecipeContentCache = { name: null, content: null };
 					await refreshContainerRecipesList();
 				} catch (e) {
@@ -11408,9 +11489,12 @@ async function cancelPkgBuild(name, image) {
 async function removePkg(name, image) {
 	const key = image && image !== "base" ? name + "@" + image : name;
 
+	if (!confirm("Remove package \"" + name + "\" from image \"" + (image || "base") + "\"? Any "
+	             + "files it installed leave the image, as a new image version."))
+		return;
 	try {
 		await apiRequest("DELETE", CIX_API.deletePkg(key));
-		clearStatus();
+		showStatus("Removed package " + key);
 		await refreshPkgList();
 		renderTree();
 	} catch (e) {
@@ -11893,10 +11977,13 @@ function renderHostauthSessions(sessions) {
 			revoke.className = "button-danger";
 			gateAction(revoke, "revokeHostauthSessions");
 			revoke.addEventListener("click", async () => {
+				if (!confirm("Log " + s.username + " out of every session? Each must log in "
+				             + "again."))
+					return;
 				try {
 					await apiRequest("DELETE",
 					    CIX_API.revokeHostauthSessions(s.username));
-					clearStatus();
+					showStatus("Logged " + s.username + " out everywhere");
 					await refreshHostauthSessions();
 				} catch (e) {
 					showStatus("Failed to revoke sessions for " +
@@ -12496,7 +12583,9 @@ function addFileRow() {
 
 	rmButton.type = "button";
 	rmButton.textContent = "Remove";
-	rmButton.className = "button-danger button-small";
+	/* Neutral, not danger: it takes a row out of a form that has not
+	 * been submitted, so nothing anywhere is destroyed (#592). */
+	rmButton.className = "button-small";
 	rmButton.addEventListener("click", () => row.remove());
 	row.appendChild(rmButton);
 
@@ -13109,6 +13198,10 @@ function routeColumns() {
 
 async function removeRoute(route) {
 	const body = route.dest === "default" ? {} : { dest: route.dest, prefix: route.prefix };
+	const which = route.dest === "default" ? "the default route" : route.dest + "/" + route.prefix;
+
+	if (!confirm("Remove " + which + " from the host's routing table?"))
+		return;
 
 	try {
 		await apiRequest("DELETE", CIX_API.deleteSystemRoute(), body);
@@ -13150,6 +13243,8 @@ function formatSysctlValue(value) {
 }
 
 async function removeSysctl(key) {
+	if (!confirm("Stop reapplying " + key + " at boot? Its live value is left as it is."))
+		return;
 	try {
 		await apiRequest("DELETE", CIX_API.deleteSystemSysctl(key));
 		clearStatus();
@@ -13337,6 +13432,9 @@ async function refreshKmodConfig() {
 }
 
 async function unloadKmod(name) {
+	if (!confirm("Unload kernel module \"" + name + "\" now? Modules only it was using are "
+	             + "unloaded too."))
+		return;
 	try {
 		await apiRequest("DELETE", CIX_API.deleteKmod(name));
 		clearStatus();
@@ -13348,6 +13446,9 @@ async function unloadKmod(name) {
 }
 
 async function removeKmodConfig(name) {
+	if (!confirm("Clear the saved options and autoload for \"" + name + "\"? Whether it is "
+	             + "loaded now does not change."))
+		return;
 	try {
 		await apiRequest("DELETE", CIX_API.deleteKmodConfig(name));
 		clearStatus();

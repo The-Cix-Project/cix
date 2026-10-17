@@ -6,6 +6,27 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Every destructive action asks first, and removing one recipe version works again (#592)
+
+**28 destructive actions ran on the first click.** The guidelines require a destructive action to be
+confirmed with a question naming its target, and removing a container, an image or a package --
+from its list, its page and the tree's right-click menu alike -- asked nothing, nor did deleting an
+LDAP user or group, a boot entry, a certificate, a network, a DNS record, a route, a recipe,
+unregistering any of the five server kinds, unloading a kernel module, logging a user out
+everywhere, or erasing the Secure Boot signing pair or the release-signing key. Each now asks, in the
+one helper every surface calls, with a question saying what the contract says is lost and what is
+kept; each reports success instead of silently clearing the status line. An image recipe had two
+copies of its delete, one per surface; there is one now. A form-row Remove that changes nothing on
+the server lost its danger styling.
+
+**Removing or viewing one recipe version had failed for seven weeks.** The 2026-08-31 move to
+generated API paths (`34b5647d`) turned `"?version=" + encodeURIComponent(version)` into the literal
+`"?version=%s"`, which the box answers `404 no such recipe` (measured). Both calls send the version
+again.
+
+`test_web_tree` fails a `DELETE` with no `confirm(` before it in its function, unless the function
+is listed with the reason it is not destructive (a storage role, the next-boot choice, swap).
+
 ### The guides name only dashboard paths that exist, and a gate holds them to it (#592)
 
 Ten of the 53 dashboard paths in the guides named pages the dashboard no longer had. The Host page had

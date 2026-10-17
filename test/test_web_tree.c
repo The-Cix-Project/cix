@@ -392,6 +392,79 @@ static void check_literal_theads_are_exceptions(const char *html)
 		     "this gate is not reading what it thinks it is%s%s", "", "");
 }
 
+/*
+ * A DELETE ASKS FIRST (#592, web-ux-guidelines' four-part rule for a
+ * destructive action).
+ *
+ * On 2026-10-17 removing a container, an image, a package, an LDAP user,
+ * a certificate, a boot entry or the release-signing key -- 28 actions
+ * in all -- happened on the first click. The rule had been written down
+ * for months and nothing checked it. Every `apiRequest("DELETE"` in
+ * app.js must now have a `confirm(` before it in the same function, or
+ * its function is below with the reason it needs none.
+ *
+ * "The same function" is the nearest line before it that starts one:
+ * `function`, `async function`, or a top-level `document.getElementById`
+ * listener, whose element id stands for its name.
+ */
+static void check_deletes_confirm(const char *app)
+{
+	static const char *const exempt[] = {
+		/* Confirmed by the shared button that calls them. */
+		"removeDnsServer", "removeLdapServer", "removeNtpServer",
+		"removeSyslogTarget",                                 /* unregisterButton() */
+		"renderDhcpServers", "renderDhcpRanges", "renderDhcpStatic", /* dhcpActionButton() */
+		/* Destroy nothing, so are not destructive actions at all. */
+		"removeDiskRole",  /* unassigns a role; diskActionEligibility marks it neutral */
+		"clearBootNext",   /* disarms a one-shot boot choice; normal selection resumes */
+		"swap-disable",    /* turns swap off; the Enable beside it turns it back on */
+		NULL,
+	};
+	const char *d;
+	int deletes = 0;
+
+	for (d = app; (d = strstr(d, "apiRequest(\"DELETE\"")) != NULL; d++) {
+		const char *s = d, *ls;
+		char name[96] = "?";
+		int asked = 0, i, ok = 0;
+
+		deletes++;
+		/* Back to the start of the enclosing function or listener. */
+		while (s > app) {
+			ls = s;
+			while (ls > app && ls[-1] != '\n')
+				ls--;
+			if (strncmp(ls, "function ", 9) == 0 || strncmp(ls, "async function ", 15) == 0) {
+				const char *nm = strstr(ls, "function ") + 9;
+
+				snprintf(name, sizeof(name), "%.*s", (int)strcspn(nm, "("), nm);
+				break;
+			}
+			if (strncmp(ls, "document.getElementById(\"", 25) == 0) {
+				copy_quoted(ls + 25, name, sizeof(name));
+				break;
+			}
+			s = ls - 1;
+		}
+		{
+			const char *c = strstr(s, "confirm(");
+
+			asked = c != NULL && c < d;
+		}
+		for (i = 0; exempt[i] != NULL; i++)
+			if (strcmp(name, exempt[i]) == 0)
+				ok = 1;
+		if (!asked && !ok)
+			fail("%s sends a DELETE without asking first -- a destructive action is "
+			     "confirmed with a question naming its target (web-ux-guidelines), or "
+			     "it is listed in check_deletes_confirm() with the reason it is not one%s",
+			     name, "");
+	}
+	if (deletes < 30)
+		fail("found only %s DELETE calls in app.js -- this gate is not reading what it "
+		     "thinks it is reading%s", deletes == 0 ? "0" : "<30", "");
+}
+
 int main(void)
 {
 	char *app = slurp("web/app.js");
@@ -597,6 +670,7 @@ int main(void)
 	check_every_view_is_reached(app, html, tree);
 	check_tree_labels_unique(tree);
 	check_literal_theads_are_exceptions(html);
+	check_deletes_confirm(app);
 
 	/*
 	 * Every view id app.js reaches for must be a real section.
