@@ -21014,11 +21014,16 @@ components:
       properties:
         name:
           type: string
+          title: Hostname
+          format: hostname
+          pattern: '^[A-Za-z0-9\-]{1,63}(\.[A-Za-z0-9\-]{1,63})*$'
+          maxLength: 253
           description: >
             Hostname (same RFC 1035 rules as DnsRecord.name) -- becomes the leaf
             certificate's CN, and this endpoint's REST identifier.
         sans:
           type: array
+          title: Subject alternative names
           items:
             type: string
           minItems: 1
@@ -21028,6 +21033,7 @@ components:
             a cert always carries at least its own name as a SAN.
         days:
           type: integer
+          title: Validity (days)
           default: 365
           description: Validity period in days.
 

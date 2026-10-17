@@ -6,6 +6,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Issue Certificate is a generated form; the ten hand-built forms left are named (#592)
+
+The header menu's **Issue Certificate** renders from `PkiCertCreateRequest`, which gains titles and the
+`format: hostname`, pattern and length that `DnsRecord.name` carries -- the same rule `pki.c` already
+enforces with `dns_name_is_valid()`, so a typo is refused before it is sent. Its response is the only
+time a leaf key exists anywhere but the host, and a generated form closes on success, so an `after`
+hook opens the certificate and key in a modal of their own that stays until it is closed. Menu entries
+get such a hook from `GENERATED_FORM_HOOKS`, one map.
+
+The guidelines now list the ten create forms still built by hand, each with the capability the
+generated form lacks: a path parameter as a field (four forms), a select filled from a live list
+(two), a secret kept, replaced or cleared (two), a file read into a textarea, a field required unless
+another is set, and New Container's scale.
+
 ### A container's page and its right-click menu decide its actions in one place (#592)
 
 They decided separately and had drifted: the page showed **Start** only for a stopped container, so

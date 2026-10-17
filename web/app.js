@@ -692,6 +692,17 @@ function repositionOpenMenu() {
 window.addEventListener("resize", repositionOpenMenu);
 window.addEventListener("scroll", repositionOpenMenu, true);
 
+/*
+ * What a header-menu generated form does once it succeeds, where that
+ * is more than refreshing the page (#592). Authored, per operation, and
+ * the one place it is said: issuing a certificate has to SHOW its
+ * response, because that response is the only time its key exists
+ * anywhere but the host.
+ */
+const GENERATED_FORM_HOOKS = {
+	createPkiCert: { after: showIssuedCert },
+};
+
 /* Create-action items (data-modal, shared across every topical menu
  * above) all open the same modal shell the old single +Create
  * dropdown already used -- only where they live changed. */
@@ -701,10 +712,13 @@ for (const item of document.querySelectorAll(".menu-bar button[data-modal]")) {
 	 * index.html -- the only per-entry difference is the three authored
 	 * words on its button, which `data-submit` carries. */
 	if (item.dataset.modal === "generated-form") {
+		const hooks = GENERATED_FORM_HOOKS[item.dataset.op] || {};
+
 		item.addEventListener("click", () =>
 			openForm(item.dataset.op, {
 				title: item.dataset.title,
 				submit: item.dataset.submit,
+				after: hooks.after,
 			}));
 		continue;
 	}
@@ -12974,63 +12988,37 @@ document.getElementById("pki-reset-form").addEventListener("submit", async (even
 	}
 });
 
-document.getElementById("pki-cert-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
+/*
+ * After a certificate is issued (createPkiCert, a generated form): the
+ * response is the ONLY place its leaf key is ever returned, so it is
+ * shown once, in a modal of its own that stays until the operator
+ * closes it. The generated form closes on success; this opens straight
+ * after it. Built with textContent, never innerHTML -- cert_pem and
+ * key_pem are PEM text, not markup.
+ */
+async function showIssuedCert(body, issued) {
+	const panel = document.getElementById("pki-cert-issued");
+	const heading = document.createElement("h3");
+	const certLabel = document.createElement("div");
+	const certPre = document.createElement("pre");
+	const keyLabel = document.createElement("div");
+	const keyPre = document.createElement("pre");
 
-	const name = document.getElementById("pf-name").value.trim();
-	const sansText = document.getElementById("pf-sans").value.trim();
-	const daysText = document.getElementById("pf-days").value.trim();
-	const body = { name: name };
-
-	if (sansText !== "") {
-		body.sans = sansText
-			.split(",")
-			.map((s) => s.trim())
-			.filter((s) => s.length > 0);
-	}
-	if (daysText !== "")
-		body.days = parseInt(daysText, 10);
-
-	try {
-		const issued = await apiRequest("POST", CIX_API.createPkiCert(), body);
-		clearStatus();
-		document.getElementById("pki-cert-form").reset();
-		await refreshPkiCerts();
-
-		/* The response is the ONLY place key_pem is ever returned --
-		 * shown once here, built with textContent (never innerHTML)
-		 * since cert_pem/key_pem are PEM text, not markup. */
-		const pkiCertIssued = document.getElementById("pki-cert-issued");
-
-		pkiCertIssued.textContent = "";
-		const heading = document.createElement("h3");
-
-		heading.textContent = "Issued " + issued.name + " -- copy the private key now, it won't be shown again";
-		pkiCertIssued.appendChild(heading);
-
-		const certLabel = document.createElement("div");
-
-		certLabel.textContent = "Certificate:";
-		pkiCertIssued.appendChild(certLabel);
-		const certPre = document.createElement("pre");
-
-		certPre.textContent = issued.cert_pem;
-		pkiCertIssued.appendChild(certPre);
-
-		const keyLabel = document.createElement("div");
-
-		keyLabel.textContent = "Private key:";
-		pkiCertIssued.appendChild(keyLabel);
-		const keyPre = document.createElement("pre");
-
-		keyPre.textContent = issued.key_pem;
-		pkiCertIssued.appendChild(keyPre);
-
-		pkiCertIssued.hidden = false;
-	} catch (e) {
-		showStatus("Failed to issue certificate: " + e.message, true);
-	}
-});
+	panel.textContent = "";
+	heading.textContent = "Copy the private key now -- it is not shown again";
+	certLabel.textContent = "Certificate:";
+	certPre.textContent = issued.cert_pem;
+	keyLabel.textContent = "Private key:";
+	keyPre.textContent = issued.key_pem;
+	panel.appendChild(heading);
+	panel.appendChild(certLabel);
+	panel.appendChild(certPre);
+	panel.appendChild(keyLabel);
+	panel.appendChild(keyPre);
+	openModal("pki-cert-issued", "Issued " + issued.name);
+	showStatus("Issued certificate " + issued.name);
+	await refreshPkiCerts();
+}
 
 document.getElementById("pkg-recipe-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
@@ -13104,8 +13092,6 @@ async function refreshSiteConfig() {
 			document.getElementById("sitef-site-name").value = site.site_name;
 			document.getElementById("sitef-domain-suffix").value = site.domain_suffix;
 		}
-		document.getElementById("pf-name").placeholder = suggestedFqdn("svc") || "svc.internal";
-
 		const label = document.getElementById("tree-instance-label");
 
 		/* The host's real name, not just its bare label -- which box
@@ -13144,15 +13130,6 @@ function qualifyHostname(input) {
 			input.value = fqdn;
 	});
 }
-
-/* The one hostname field still written by hand. `pki-cert-form` keeps
- * its own submit because the response is the only place a leaf key is
- * ever returned and the modal has to STAY OPEN to show it once -- a
- * generated form closes on success. So this id stays wired until that
- * question has an answer, and `PkiCertCreateRequest.name` deliberately
- * does NOT carry `format: hostname` yet, because nothing would read
- * it. */
-qualifyHostname(document.getElementById("pf-name"));
 
 document.getElementById("sitef-instance-name").addEventListener("input", () => {
 	siteConfigDirty = true;

@@ -123,6 +123,19 @@ Those three signatures are longer than the shorthand this line carried while the
 
 **`openForm`'s own vocabulary, and why `fixed` is not a flag on `values`.** `title`, `submit`, `after` and `failed` are the authored words and the authored consequence. `args` are the operation's path parameters. The other two carry *facts about the resource*, and they are two because they mean two different things: **`values`** is a draft the operator may edit, **`fixed`** identifies the thing being edited and is rendered read-only — and is still **sent**, because the operation needs it. An upsert keyed by a body field (`addImageRecipe`, `addDeployment`) is one operation for a create and for an edit; on an edit, typing over its key would not rename anything, it would quietly address a different resource. That is a different concept from the contract's own `readOnly`, which means the daemon reports a field and never accepts it — those are not rendered at all. A control whose value is not the operator's to change wears `form input[readonly]`'s recessed surface and keeps full-strength text, because its value is content and not a label.
 
+**A header-menu entry is a generated form when it says `data-modal="generated-form"`**, and the only authored things it carries are its title and button words. When success has to do more than refresh the page, the operation's entry in `GENERATED_FORM_HOOKS` (in `app.js`) supplies the `after` — the one place that is said. Issuing a certificate is the first: its response is the only time the leaf key exists anywhere but the host, so `after` opens it in a modal of its own that stays until the operator closes it.
+
+**What is still hand-built, and exactly why** (measured 2026-10-17: of the menu's create forms, 16 are generated and 10 are not). Each of the ten needs something the generated form cannot yet do, and a capability is built when it has a second caller, never for one:
+
+| Missing capability | Forms that need it |
+|---|---|
+| A **path parameter** as a field (the operation's key is in its URL) | Set Sysctl, Load Module, Configure Module, New/Edit DHCP Range |
+| A **select filled from a live list** (the box's real disks, its networks) | Assign Disk Role, New/Edit DHCP Range |
+| A **secret that is kept, replaced or cleared** (an empty field must not wipe it) | New Recipe Source, New Package Repository |
+| A **file read into a textarea** | New/Update Recipe |
+| A field **required unless another is set** — which the contract cannot state, so the client check stays | Add Route |
+| **Scale**: forty-odd fields with nested objects | New Container |
+
 **A form-level paragraph is a smell; put the prose on the field.** Every hand-written form carried a `<p class="hint">` beneath it, and a generated form has nowhere for one: each field's own `description` is its hint. That is the right pressure rather than a gap to fill — those paragraphs were nearly always *about one field* (an image recipe's JSON shape, what an unmatched `{{SECRET:KEY}}` token does), and moving each into that field's `description` puts it where the CLI and the API docs get it too. When something is genuinely about the operation as a whole, the authored `title` says it.
 
 **One value reads one way everywhere**, which is `fieldText(f, value)`'s whole job and the measurable half of "not cohesive". Counted in `app.js` before it existed: a boolean read `yes`/`no` 16 times, `enabled`/`disabled` 4 and `true`/`false` once, while an absent value read `-` 67 times, `none` 41, `unknown` 12, `unset` 4 and an em dash 3. Now the field decides, with one subtlety the hand-written code had right: an absent boolean whose schema declares a `default` is not unknown.

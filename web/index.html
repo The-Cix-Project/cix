@@ -160,7 +160,7 @@
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">PKI</button>
 					<ul class="menu-submenu-menu" hidden>
-						<li><button type="button" data-modal="pki-cert-form" data-op="createPkiCert" data-title="Issue certificate">Issue Certificate</button></li>
+						<li><button type="button" data-modal="generated-form" data-op="createPkiCert" data-title="Issue certificate" data-submit="Issue">Issue Certificate</button></li>
 					</ul>
 				</li>
 				<li class="menu-submenu">
@@ -3237,23 +3237,12 @@
 				</div>
 			</div>
 
-			<div id="modal-pki-cert-form" hidden>
-				<form id="pki-cert-form">
-					<label>
-						Name
-						<input type="text" id="pf-name" placeholder="svc.internal" required>
-					</label>
-					<label class="wide">
-						SANs
-						<input type="text" id="pf-sans" placeholder="(defaults to name), or comma-separated: svc.internal,svc">
-					</label>
-					<label>
-						Days
-						<input type="number" id="pf-days" min="1" placeholder="365">
-					</label>
-					<button type="submit">Issue</button>
-				</form>
-				<div id="pki-cert-issued" class="pki-cert-issued" hidden></div>
+			<!-- What an issued certificate's ONE response carries: its leaf
+			     key, which is returned nowhere else, ever. The form itself is
+			     generated (createPkiCert) and closes on success, so the result
+			     opens here, and stays until the operator closes it. -->
+			<div id="modal-pki-cert-issued" hidden>
+				<div id="pki-cert-issued" class="pki-cert-issued"></div>
 			</div>
 
 			<div id="modal-pkg-recipe-form" hidden>
