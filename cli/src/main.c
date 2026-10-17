@@ -509,6 +509,8 @@ static const char USAGE_TEXT[] =
 	        "               separate watchdog, with the kernel function it slept in (#100)\n"
 	        "  events status  -- the box's boot epoch and the generation of every read it\n"
 	        "               announces when it changes (ADR-0339)\n"
+	        "  events verify  -- check now whether anything changed that the box did not\n"
+	        "               announce (ADR-0339)\n"
 	        "  events --follow  -- those announcements live, one JSON frame per line, until\n"
 	        "               the daemon ends the stream\n"
 	        "  control-plane-reservation show\n"
@@ -8390,11 +8392,38 @@ static void fmt_events_status(const struct json_value *v)
 	size_t i;
 
 	printf("epoch: %s\n", ep != NULL && ep->type == JSON_STRING ? ep->u.string : "?");
+	printf("checked: %lld  drift: %lld  unreadable: %lld\n",
+	       (long long)json_as_number(json_object_get(v, "checked")),
+	       (long long)json_as_number(json_object_get(v, "drift")),
+	       (long long)json_as_number(json_object_get(v, "unreadable")));
 	if (gens == NULL || gens->type != JSON_OBJECT)
 		return;
 	for (i = 0; i < gens->u.object.count; i++)
 		printf("  %-40s %lld\n", gens->u.object.keys[i],
 		       (long long)json_as_number(gens->u.object.values[i]));
+}
+
+static void fmt_events_list(const struct json_value *v, const char *key, const char *label)
+{
+	const struct json_value *a = json_object_get(v, key);
+	size_t i;
+
+	if (a == NULL || a->type != JSON_ARRAY || a->u.array.count == 0) {
+		printf("%s: none\n", label);
+		return;
+	}
+	printf("%s:\n", label);
+	for (i = 0; i < a->u.array.count; i++)
+		if (a->u.array.items[i]->type == JSON_STRING)
+			printf("  %s\n", a->u.array.items[i]->u.string);
+}
+
+static void fmt_events_verify(const struct json_value *v)
+{
+	printf("checked: %lld state reads\n",
+	       (long long)json_as_number(json_object_get(v, "checked")));
+	fmt_events_list(v, "drift", "changed without an announcement");
+	fmt_events_list(v, "unreadable", "could not be run by the daemon");
 }
 
 static int cmd_events(const struct cix_client *c, int json_mode, int argc, char **argv)
@@ -8405,8 +8434,17 @@ static int cmd_events(const struct cix_client *c, int json_mode, int argc, char 
 	/* ADR-0339: the stream itself, one frame per line. */
 	if (argc > 0 && strcmp(argv[0], "--follow") == 0)
 		return cix_events_follow_run(c) == 0 ? 0 : 1;
+	/* ADR-0339 point 7: has anything changed that the box did not say? */
+	if (strcmp(sub, "verify") == 0) {
+		if (cix_client_request(c, CIX_API_verifyEvents_METHOD, CIX_API_verifyEvents, NULL,
+		                       &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_events_verify);
+	}
 	if (strcmp(sub, "status") != 0) {
-		fprintf(stderr, "cixctl: events takes: status, or --follow\n");
+		fprintf(stderr, "cixctl: events takes: status, verify, or --follow\n");
 		return 2;
 	}
 	if (cix_client_request(c, CIX_API_getEventsStatus_METHOD, CIX_API_getEventsStatus, NULL,

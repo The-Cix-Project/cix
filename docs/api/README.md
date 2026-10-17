@@ -16,6 +16,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/logout` | Invalidate the current session (idempotent, `public`) |
 | GET | `/events` | The box's announcements, live, as a WebSocket: which reads changed, never their content, filtered to what the session may read (ADR-0339) -- `authenticated`, the session rides as the `cix.bearer.<token>` subprotocol |
 | GET | `/events/status` | The box's boot epoch and the generation of every read it announces when it changes (ADR-0339) -- `authenticated`, `derived` because it changes on every announcement |
+| POST | `/events/verify` | Check every announcement now: re-run each parameterless announced read in-process and list any whose answer changed while its generation did not -- drift, a change nothing announced (ADR-0339) -- `system:write` |
 | GET | `/whoami` | Is the caller's own bearer token currently authenticated, and its permissions -- `public`, never consumes a single-use session (ADR-0164) |
 | GET, POST | `/whoami/app-passwords` | The same, for the session's own user -- needs a login session, not an app password (#543) |
 | DELETE | `/whoami/app-passwords/{app}` | Revoke one of your own |
@@ -968,6 +969,19 @@ Authorization: Basic base64("agent-1:3f9c...")
   bytes.
 
 `cixctl events --follow` prints the frames, one per line.
+
+**The box checks its own announcements** (0.2.57-524):
+
+- **The rolling check:** every second the daemon re-runs any sample whose period has come round, and
+  every third second one state read, round-robin, so the whole set takes about five minutes. Each is
+  run in-process, and the answer is hashed without its `x-cix-volatile-fields`.
+- **Samples:** a sample whose answer changed is announced. That is how health, NTP status and the other
+  samples reach a client without anyone asking.
+- **Drift:** a state read whose answer changed while its generation did not is logged with source
+  `events` and counted on `GET /events/status`. Something changed what it shows and nothing announced
+  it.
+- **On demand:** `POST /events/verify` (`cixctl events verify`) runs the whole check now and lists what
+  it found.
 
 The lists were seeded from the path: a change marks a read stale when one path root is a segment-prefix of the other. Cross-resource effects were then added by hand: a package install changes images, a container changes networks and volumes, and a group change changes `whoami`. Marking too much costs one extra read. Marking too little is what the box's drift check reports, and what the events test fails on, so a missing name is a bug to fix in the contract.
 

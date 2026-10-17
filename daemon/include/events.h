@@ -32,8 +32,11 @@ enum events_read_kind {
 struct events_read {
 	const char *op_id;
 	enum events_read_kind kind;
-	int sample_period;      /* seconds; 0 unless kind is SAMPLE */
-	const char *permission; /* its x-cix-permission */
+	int sample_period;           /* seconds; 0 unless kind is SAMPLE */
+	const char *permission;      /* its x-cix-permission */
+	const char *volatile_fields; /* "a,b": left out of the drift hash; "" for none */
+	const char *path;            /* its path, "/v1/..." */
+	int self_readable;           /* no path parameter: the daemon can run it itself */
 };
 
 /* One change, and the slots it makes stale (n == 0 for an explicit []). */
@@ -77,5 +80,36 @@ const char *events_permission(int slot);
  * listener; NULL removes it.
  */
 void events_set_listener(void (*fn)(int slot));
+
+/* A slot's table row, or NULL out of range. */
+const struct events_read *events_read_at(int slot);
+
+/*
+ * ADR-0339 point 7: the daemon checks its own announcements.
+ *
+ * events_hash_body() hashes an answer's body -- canonically, as parsed
+ * JSON, leaving out every key named in `volatile_fields` ("a,b") at any
+ * depth -- so a field that moves on its own does not read as a change.
+ * A body that is not JSON is hashed as bytes.
+ *
+ * events_observe() records what a read answered now. For a sample it
+ * announces the read when the answer changed -- that is how a sample is
+ * announced at all. For a state read it returns 1 when the answer
+ * changed while its generation did not: a change nothing announced,
+ * which is drift. The first observation of a read is its baseline and
+ * is never drift. Returns 0 otherwise.
+ */
+uint64_t events_hash_body(const char *body, size_t len, const char *volatile_fields);
+int events_observe(int slot, uint64_t hash);
+
+/* Counts since start, for GET /v1/events/status. */
+struct events_check_counts {
+	unsigned long checked;    /* state reads compared */
+	unsigned long drift;      /* of which changed with no announcement */
+	unsigned long unreadable; /* reads whose last self-read produced no 200 */
+};
+/* Records whether a read could be run by the daemon itself, last time. */
+void events_mark_readable(int slot, int readable);
+struct events_check_counts events_check_counts(void);
 
 #endif

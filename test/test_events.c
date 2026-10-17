@@ -495,6 +495,37 @@ int main(void)
 			close(idle_fd);
 	}
 
+	/*
+	 * 11. The daemon's own check (ADR-0339 point 7): after everything
+	 *     this test changed, nothing changed that was not announced.
+	 *     The baseline was taken at daemon start, so this compares the
+	 *     whole run.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/events/verify", NULL, &r) != 0 ||
+	    r.status != 200 || r.json == NULL) {
+		fail("POST /v1/events/verify answers 200 with JSON", "");
+	} else {
+		const struct json_value *drift = json_object_get(r.json, "drift");
+		const struct json_value *checked = json_object_get(r.json, "checked");
+
+		if (drift == NULL || drift->type != JSON_ARRAY)
+			fail("verify lists its drift", "");
+		else if (drift->u.array.count != 0)
+			fail("nothing this test did went unannounced",
+			     drift->u.array.items[0]->type == JSON_STRING ? drift->u.array.items[0]->u.string
+			                                                   : "?");
+		if (checked == NULL || json_as_number(checked) < 50)
+			fail("verify compared the state reads", "fewer than 50");
+	}
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET", "/v1/events/status", NULL, &r) != 0 || r.json == NULL ||
+	    json_object_get(r.json, "drift") == NULL ||
+	    json_as_number(json_object_get(r.json, "drift")) != 0)
+		fail("events/status reports zero drift", "");
+	cix_response_free(&r);
+
 	if (stop_daemon(daemon_pid) != 0)
 		fail("the daemon exits cleanly", "");
 	test_data_dir_cleanup(g_data_dir);

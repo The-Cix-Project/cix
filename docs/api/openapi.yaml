@@ -412,6 +412,63 @@ paths:
                     additionalProperties:
                       type: integer
                     description: Each announced read's operationId and its current generation.
+                  checked:
+                    type: integer
+                    description: How many times the daemon has compared a state read with its previous answer since it started.
+                  drift:
+                    type: integer
+                    description: >
+                      Of those, how many found the answer changed while its
+                      generation had not -- a change nothing announced. Each
+                      is also logged with source `events`. Zero is the
+                      expected value; anything else is a missing
+                      announcement or a read declared with the wrong kind.
+                  unreadable:
+                    type: integer
+                    description: How many announced reads the daemon could not run itself last time it tried (no 200).
+  /events/verify:
+    post:
+      summary: Check every announcement now -- has anything changed that the box did not say (ADR-0339)
+      description: >
+        The daemon re-runs each announced read that takes no path
+        parameter, in-process, and compares the answer with the one it
+        recorded before, leaving out any `x-cix-volatile-fields`. A
+        state read whose answer changed while its generation did not is
+        drift: something changed what it shows and nothing announced
+        it. A sample whose answer changed is announced, which is how a
+        sample is announced at all.
+        The same check runs continuously, one read every few seconds,
+        and a full pass runs at daemon start as the baseline. This asks
+        for a full pass now and answers when it is done, so a test can
+        assert that nothing it did went unannounced. A pass takes about
+        half a second on 192.168.15.95 (measured 2026-10-17: 104
+        parameterless reads, 0.4 s together over HTTP).
+      operationId: verifyEvents
+      x-cix-invalidates: []
+      x-cix-permission: system:write
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: The pass's findings
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [checked, drift, unreadable]
+                properties:
+                  checked:
+                    type: integer
+                    description: State reads compared in this pass.
+                  drift:
+                    type: array
+                    items:
+                      type: string
+                    description: The operationIds that changed with no announcement in this pass.
+                  unreadable:
+                    type: array
+                    items:
+                      type: string
+                    description: The operationIds the daemon could not run itself in this pass.
   /whoami:
     get:
       summary: Is the caller's own bearer token currently authenticated (ADR-0164)

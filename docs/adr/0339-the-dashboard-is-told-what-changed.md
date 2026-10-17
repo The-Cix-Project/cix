@@ -152,6 +152,21 @@ Recorded as each step lands, where the implementation is narrower than or depart
 - **A grant change is detected through the contract.** A change whose `x-cix-invalidates` names
   `getWhoami` marks every stream's mask for recomputation before the next frame, so the set of
   grant-changing operations is the contract's, not a hand-kept list.
+- **`POST /v1/events/verify` answers 200 with its findings, not 202** (step four, 0.2.57-524). A full
+  pass is about half a second, so it runs synchronously. The caller, usually a test, gets a deterministic
+  `{"checked": n, "drift": [...], "unreadable": [...]}` instead of having to read the log store. It is
+  `system:write`, because each call costs the loop that half second.
+- **Checked against the box before shipping:** the 86 parameterless state reads were hashed over HTTP
+  5 minutes apart at rest. Only `listHostauthSessions` differed, in its `expires_in_seconds`, which is
+  declared volatile and left out of the daemon's hash. So the classification needed no change before
+  the check could report.
+- **The at-exit assertion is in `test_events` only, for now.** It rolls out to every daemon-linked test
+  under #607, once `cixctl events status` on 192.168.15.95 has shown zero drift for 24 hours at rest.
+  That is a measured condition rather than a promise, and it keeps one missing announcement from
+  landing as forty failing tests.
+- **The drift decision is pure and tested without a daemon.** `events_hash_body()` and
+  `events_observe()` live in `events.c`, and `test_events_drift` drives them through the case no daemon
+  test can produce cleanly: a state change with no announcement.
 - **Hotplug announces only hardware subsystems** (`block`, `usb`, `pci`, `scsi`; step two). Every
   container start adds a veth (`SUBSYSTEM=net`), and announcing it would have re-read the device and
   storage reads on every container lifecycle event.

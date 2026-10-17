@@ -2458,11 +2458,14 @@ static void emit_events_table(const char *out_path, const char *spec)
 
 		if (!is_announced_read(&g_ops[i]))
 			continue;
-		fprintf(o, "\t{ \"%s\", %s, %d, \"%s\" },\n", g_ops[i].op_id,
+		/* A read with no path parameter is one the daemon can run
+		 * itself, to verify or sample it; the path is what it asks. */
+		fprintf(o, "\t{ \"%s\", %s, %d, \"%s\", \"%s\", \"/v1%s\", %d },\n", g_ops[i].op_id,
 		        strcmp(k, "state") == 0    ? "EVENTS_READ_STATE"
 		        : strcmp(k, "sample") == 0 ? "EVENTS_READ_SAMPLE"
 		                                   : "EVENTS_READ_SESSION",
-		        g_ops[i].sample_period, g_ops[i].permission);
+		        g_ops[i].sample_period, g_ops[i].permission, g_ops[i].volatile_fields,
+		        g_ops[i].path, strchr(g_ops[i].path, '{') == NULL);
 	}
 	fprintf(o, "};\n\n");
 	for (i = 0; i < g_op_count; i++) {

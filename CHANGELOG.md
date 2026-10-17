@@ -6,6 +6,27 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The box checks its own announcements (ADR-0339 step four, #599)
+
+The daemon re-runs its own reads in-process, through the response sink, and hashes each answer without
+its `x-cix-volatile-fields`.
+
+- **Samples are announced by the box:** health, server health, NTP status, TLS-throttle counters,
+  storage, KSM, zswap, swap, kernel modules and the clock are re-read on their declared periods and
+  announced when they change, so no client polls them.
+- **State reads are checked for drift:** one every 3 s, round-robin, against a baseline taken at start.
+  An answer that changed while its generation did not is logged with source `events` and counted on
+  `GET /v1/events/status`.
+- **On demand:** `POST /v1/events/verify` (`cixctl events verify`) runs the whole check now and lists
+  what it found.
+- **Measured before shipping:** the 86 parameterless state reads were hashed 5 minutes apart at rest on
+  .95, and only the sessions list's declared-volatile countdown differed.
+- **Gates:**
+  - `test_events_drift`, without a daemon, proves the check catches a change with no announcement and
+    ignores a volatile field.
+  - `test_events` asserts zero drift after everything it changed.
+  - The same assertion in every daemon-linked test is #607, gated on 24 h of zero drift on the box.
+
 ### The box pushes what changed: `GET /v1/events` (ADR-0339 step three, #599)
 
 A WebSocket on which the box names the reads that changed, at their new generations.

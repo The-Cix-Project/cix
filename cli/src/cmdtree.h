@@ -363,6 +363,7 @@ static const char *const n_events_flags[] = {
 };
 
 static const struct cli_node n_events_subs[] = {
+	{ "verify", NULL, NULL },
 	{ "status", NULL, NULL },
 	{ NULL, NULL, NULL },
 };

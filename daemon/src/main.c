@@ -1260,6 +1260,7 @@ enum conn_kind {
 	                          * existing capture, not an exec/PTY session like CONN_CONSOLE_WS */
 	CONN_EVENTS_WS,         /* GET /v1/events -- ADR-0339: which reads changed, pushed */
 	CONN_EVENTS_TIMER,      /* ADR-0339: the events stream's heartbeat, every 10 s */
+	CONN_EVENTS_CHECK_TIMER, /* ADR-0339: samples due and one state read checked, every 1 s */
 	CONN_KMSG,              /* /dev/kmsg -- feeds real kernel dmesg lines into the consolidated log store */
 	CONN_UEVENT,            /* NETLINK_KOBJECT_UEVENT multicast socket (ADR-0161 Phase C) -- real
 	                          * kernel hotplug add/remove events, modeled on CONN_KMSG's own async
@@ -25873,6 +25874,33 @@ static void op_getEventsStatus(const struct api_ctx *ctx)
 		jw_int(&w, (long long)events_generation(slot));
 	}
 	jw_obj_close(&w);
+	{
+		struct events_check_counts c = events_check_counts();
+
+		jw_key(&w, "checked");
+		jw_int(&w, (long long)c.checked);
+		jw_key(&w, "drift");
+		jw_int(&w, (long long)c.drift);
+		jw_key(&w, "unreadable");
+		jw_int(&w, (long long)c.unreadable);
+	}
+	jw_obj_close(&w);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void events_full_pass(struct json_writer *w);
+
+/* POST /v1/events/verify -- ADR-0339: a full check now. The pass runs
+ * first and this request's own answer is written after it, so the
+ * status dispatch() reads back is this answer's, not a self-read's. */
+static void op_verifyEvents(const struct api_ctx *ctx)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	events_full_pass(&w);
 	jw_obj_close(&w);
 	respond_json(ctx->fd, 200, "OK", &w);
 	jw_free(&w);
@@ -31389,6 +31417,222 @@ static enum console_route_result try_events_upgrade(struct conn *cc, const struc
 	return CONSOLE_HANDLED;
 }
 
+/* ---------- ADR-0339 point 7: the daemon checks its own announcements ----------
+ *
+ * The daemon re-runs an announced read's own handler, in-process, and
+ * hashes the answer (events.c decides what that means). The handler
+ * writes through the response sink exactly as it does for a client; a
+ * sentinel connection with fd -1 is installed as g_response_conn, so
+ * client_response_sink() buffers the answer instead of sending it.
+ * Nothing about the handler knows it is not answering a request.
+ */
+static struct conn g_self_read_conn;
+
+#define EVENTS_CHECK_TICK_SECONDS 1
+#define EVENTS_CHECK_STATE_EVERY  3 /* ticks per state read: ~95 reads in ~5 min */
+
+static struct conn g_events_check_conn = { .fd = -1 };
+static unsigned long g_events_check_ticks;
+static int g_events_check_cursor;
+
+/*
+ * Runs one announced read's handler into memory and hashes its 200
+ * body. Returns 0 with *out_hash set, or -1 when the read takes a path
+ * parameter or did not answer 200 -- unreadable, never drift.
+ *
+ * Restores g_response_conn and the generation-header slot on the way
+ * out: POST /v1/events/verify runs this inside a request, whose own
+ * response must still reach its own client.
+ */
+static int events_self_read(int slot, uint64_t *out_hash)
+{
+	const struct events_read *rd = events_read_at(slot);
+	struct conn *saved_conn = g_response_conn;
+	int saved_slot = g_events_response_slot;
+	char params[APIROUTE_MAX_PARAMS][APIROUTE_PARAM_MAX];
+	struct http_request req;
+	struct api_ctx ctx;
+	const char *body = NULL;
+	size_t body_len = 0;
+	int idx, status;
+
+	if (rd == NULL || !rd->self_readable)
+		return -1;
+	idx = api_route_match(g_api_routes, (int)(sizeof(g_api_routes) / sizeof(g_api_routes[0])),
+	                      "GET", rd->path, params);
+	if (idx < 0)
+		return -1;
+
+	memset(&req, 0, sizeof(req));
+	snprintf(req.method, sizeof(req.method), "GET");
+	snprintf(req.path, sizeof(req.path), "%s", rd->path);
+	req.headers = (char *)"";
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.fd = -1;
+	ctx.req = &req;
+	ctx.user = "";
+	ctx.peer_ip = "";
+
+	free(g_self_read_conn.out_buf);
+	g_self_read_conn.out_buf = NULL;
+	g_self_read_conn.out_len = 0;
+	g_self_read_conn.out_sent = 0;
+	g_self_read_conn.fd = -1;
+	g_self_read_conn.kind = CONN_CLIENT;
+
+	g_response_conn = &g_self_read_conn;
+	g_events_response_slot = -1;
+	http_reset_last_status();
+	g_api_routes[idx].fn(&ctx);
+	status = http_last_status();
+	g_response_conn = saved_conn;
+	g_events_response_slot = saved_slot;
+
+	if (status == 200 && g_self_read_conn.out_buf != NULL) {
+		const char *end = memmem(g_self_read_conn.out_buf, g_self_read_conn.out_len,
+		                         "\r\n\r\n", 4);
+
+		if (end != NULL) {
+			body = end + 4;
+			body_len = g_self_read_conn.out_len - (size_t)(body - g_self_read_conn.out_buf);
+		}
+	}
+	if (body == NULL) {
+		free(g_self_read_conn.out_buf);
+		g_self_read_conn.out_buf = NULL;
+		return -1;
+	}
+	*out_hash = events_hash_body(body, body_len, rd->volatile_fields);
+	free(g_self_read_conn.out_buf);
+	g_self_read_conn.out_buf = NULL;
+	return 0;
+}
+
+/*
+ * One read: run it, record it, and say so if it drifted. Returns 1 on
+ * drift, 0 otherwise, -1 when unreadable.
+ */
+static int events_check_slot(int slot)
+{
+	uint64_t hash;
+	int drift;
+
+	if (events_self_read(slot, &hash) != 0) {
+		events_mark_readable(slot, 0);
+		return -1;
+	}
+	events_mark_readable(slot, 1);
+	drift = events_observe(slot, hash);
+	if (drift)
+		logstore_write("events", "warn",
+		               "%s changed without an announcement (ADR-0339) -- a missing "
+		               "announcement, or a read declared with the wrong x-cix-read",
+		               events_op_id(slot));
+	return drift;
+}
+
+/*
+ * Every state and sample read the daemon can run itself, once. At start
+ * this is the baseline; from POST /v1/events/verify it is the check,
+ * with what it found written into `w` when w is not NULL.
+ */
+static void events_full_pass(struct json_writer *w)
+{
+	int unreadable[EVENTS_READ_COUNT];
+	int slot, r, i, n_unreadable = 0;
+	long checked = 0;
+
+	if (w != NULL) {
+		jw_key(w, "drift");
+		jw_arr_open(w);
+	}
+	for (slot = 0; slot < EVENTS_READ_COUNT; slot++) {
+		const struct events_read *rd = events_read_at(slot);
+
+		if (rd->kind == EVENTS_READ_SESSION || !rd->self_readable)
+			continue;
+		r = events_check_slot(slot);
+		if (r < 0)
+			unreadable[n_unreadable++] = slot;
+		else if (rd->kind == EVENTS_READ_STATE)
+			checked++;
+		if (r == 1 && w != NULL)
+			jw_str(w, rd->op_id);
+	}
+	if (w == NULL)
+		return;
+	jw_arr_close(w);
+	jw_key(w, "unreadable");
+	jw_arr_open(w);
+	for (i = 0; i < n_unreadable; i++)
+		jw_str(w, events_op_id(unreadable[i]));
+	jw_arr_close(w);
+	jw_key(w, "checked");
+	jw_int(w, checked);
+}
+
+/*
+ * Every second: each sample whose period has come round, and one state
+ * read every EVENTS_CHECK_STATE_EVERY ticks, round-robin -- about five
+ * minutes for the whole set, so the check never costs the loop more
+ * than one handler at a time.
+ */
+static void handle_events_check_timer_event(struct conn *tc)
+{
+	uint64_t expirations;
+	int slot, n;
+
+	if (read(tc->fd, &expirations, sizeof(expirations)) < 0 && errno != EAGAIN)
+		perror("read (events check timerfd)");
+	g_events_check_ticks++;
+	for (slot = 0; slot < EVENTS_READ_COUNT; slot++) {
+		const struct events_read *rd = events_read_at(slot);
+
+		if (rd->kind == EVENTS_READ_SAMPLE && rd->self_readable && rd->sample_period > 0 &&
+		    g_events_check_ticks % (unsigned long)rd->sample_period == 0)
+			(void)events_check_slot(slot);
+	}
+	if (g_events_check_ticks % EVENTS_CHECK_STATE_EVERY != 0)
+		return;
+	for (n = 0; n < EVENTS_READ_COUNT; n++) {
+		const struct events_read *rd;
+
+		g_events_check_cursor = (g_events_check_cursor + 1) % EVENTS_READ_COUNT;
+		rd = events_read_at(g_events_check_cursor);
+		if (rd->kind == EVENTS_READ_STATE && rd->self_readable) {
+			(void)events_check_slot(g_events_check_cursor);
+			return;
+		}
+	}
+}
+
+static void start_events_check_timer(void)
+{
+	struct cix_epoll_event ev;
+	struct itimerspec its;
+	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+
+	if (fd < 0) {
+		perror("timerfd_create (events check)");
+		return;
+	}
+	g_events_check_conn.kind = CONN_EVENTS_CHECK_TIMER;
+	g_events_check_conn.fd = fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = &g_events_check_conn;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+		close(fd);
+		g_events_check_conn.fd = -1;
+		return;
+	}
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = EVENTS_CHECK_TICK_SECONDS;
+	its.it_interval.tv_sec = EVENTS_CHECK_TICK_SECONDS;
+	if (timerfd_settime(fd, 0, &its, NULL) != 0)
+		perror("timerfd_settime (events check)");
+}
+
 /*
  * Drives cc's still-in-progress TLS handshake one step (Part 0.5) --
  * called instead of an ordinary HTTP read whenever cc->ssl != NULL and
@@ -34827,6 +35071,12 @@ static int cixd_main(int argc, char **argv)
 	http_set_response_sink(client_response_sink);
 	/* ADR-0339: X-Cix-Generation on every answer to an announced read. */
 	http_set_header_hook(events_generation_header);
+	/* ADR-0339 point 7: the baseline every later check compares with --
+	 * here, after containers are restored and before anything is served,
+	 * so a check made at any moment afterwards has something to compare
+	 * against. About half a second, once. Then the rolling check. */
+	events_full_pass(NULL);
+	start_events_check_timer();
 
 	while (!g_stop) {
 		struct cix_epoll_event events[MAX_EVENTS];
@@ -34977,6 +35227,8 @@ static int cixd_main(int argc, char **argv)
 				handle_pkg_build_log_ws_event(cc);
 			else if (cc->kind == CONN_EVENTS_WS)
 				handle_events_ws_event(cc, events[j].events);
+			else if (cc->kind == CONN_EVENTS_CHECK_TIMER)
+				handle_events_check_timer_event(cc);
 			else if (cc->kind == CONN_EVENTS_TIMER)
 				handle_events_timer_event(cc);
 			else if (cc->kind == CONN_KMSG)

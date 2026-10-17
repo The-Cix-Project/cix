@@ -398,12 +398,14 @@ int main(void)
 	 *     generation of every read it announces.
 	 * 342 as of ADR-0339 step three: GET /events, the WebSocket that
 	 *     carries those generations live.
+	 * 343 as of ADR-0339 step four: POST /events/verify, the daemon's check
+	 *     of its own announcements, on demand.
 	 */
 	status = run_apigen("docs/api/openapi.yaml", NULL, out, sizeof(out));
 	if (status != 0)
 		fail("apigen rejected the real spec: %.300s", out);
-	else if (atoi(out) != 342)
-		fail("apigen found %d operations in the real spec, expected 342 -- if the spec "
+	else if (atoi(out) != 343)
+		fail("apigen found %d operations in the real spec, expected 343 -- if the spec "
 		     "genuinely changed, update this number deliberately; a silently different "
 		     "count is how a lost route hides",
 		     atoi(out));
@@ -584,7 +586,7 @@ int main(void)
 	 * reads it makes stale. The events stream announces from these, so
 	 * a gap is a page that stays stale with nothing saying so -- a
 	 * build failure, as a missing permission is. The real spec passing
-	 * above is the positive control: all 144 reads and 198 changes.
+	 * above is the positive control: all 144 reads and 199 changes.
 	 */
 	expect_refusal("a read with no x-cix-read",
 	               VOCAB
@@ -800,9 +802,9 @@ int main(void)
 			}
 			fclose(f);
 			unlink(routes_path);
-			if (rows != 342 || with_permission != rows)
+			if (rows != 343 || with_permission != rows)
 				fail("the generated route table has %d rows and %d carry a permission; "
-				     "expected 342 and 342 (ADR-0317)",
+				     "expected 343 and 343 (ADR-0317)",
 				     rows, with_permission);
 		}
 	}
@@ -815,7 +817,7 @@ int main(void)
 		 * vector and a missing change row would announce nothing --
 		 * both silently. Counted here against the contract itself:
 		 * one slot per announced read (144 reads, less 10 streams and
-		 * 10 derived reads, is 124), one row per change (198).
+		 * 10 derived reads, is 124), one row per change (199).
 		 */
 		char slots_path[256], table_path[256];
 		char buf[4096];
@@ -874,9 +876,9 @@ int main(void)
 			fail("the events slots say %d reads, define %d EV_ constants and the table has "
 			     "%d read rows; all three should be 124 (ADR-0339)",
 			     count, defines, read_rows);
-		if (change_count != 198 || change_rows != change_count)
+		if (change_count != 199 || change_rows != change_count)
 			fail("the events table declares %d changes and has %d change rows; both should "
-			     "be 198, one per non-GET operation (ADR-0339)",
+			     "be 199, one per non-GET operation (ADR-0339)",
 			     change_count, change_rows);
 		if (out_of_range > 0)
 			fail("%d invalidation slot(s) in the events table fall outside the generation "
@@ -977,10 +979,10 @@ int main(void)
 			fclose(f);
 			unlink(hdr_path);
 		}
-		if (defines != 342)
-			fail("CLI header has %d path defines, expected one per operation (342)", defines);
-		if (methods != 342)
-			fail("CLI header has %d method defines, expected one per operation (342)", methods);
+		if (defines != 343)
+			fail("CLI header has %d path defines, expected one per operation (343)", defines);
+		if (methods != 343)
+			fail("CLI header has %d method defines, expected one per operation (343)", methods);
 		if (braces != 0)
 			fail("%d CLI path define(s) still contain '{' -- a parameter was not converted "
 			     "to %%s and would put a literal brace in the URL",
@@ -1307,8 +1309,8 @@ int main(void)
 			fclose(f);
 			unlink(js_path);
 		}
-		if (shapes != 342)
-			fail("web api.js has %d _SHAPE entries, expected one per operation (342)",
+		if (shapes != 343)
+			fail("web api.js has %d _SHAPE entries, expected one per operation (343)",
 			     shapes);
 		if (!saw_fields)
 			fail("web api.js has no FIELDS table -- the renderers have nothing to render "
@@ -1534,7 +1536,7 @@ int main(void)
 			     "APIGEN_TEST_MAX_REQ", "");
 		if (n_names == 0)
 			fail("no operation in api.js names a request schema -- 124 of the "
-			     "contract's 342 carry a requestBody, so this is a reader that "
+			     "contract's 343 carry a requestBody, so this is a reader that "
 			     "resolved none of them");
 		if (dangling > 0)
 			fail("%d operation(s) name a request schema with no FIELDS entry, the first "
