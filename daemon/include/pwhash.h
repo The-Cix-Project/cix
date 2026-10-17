@@ -33,7 +33,11 @@
  * Not runtime-autocalibrated (unlike OpenBSD libc's own bcrypt()
  * classic interface, deliberately dropped from the vendored copy) --
  * a fixed, known, documented cost is preferable to a value that could
- * silently drift between two logins on hardware of different speeds. */
+ * silently drift between two logins on hardware of different speeds.
+ * OPEN (#609): on 192.168.15.95, 2026-10-17, a whole POST /v1/login held
+ * the event loop for 375 ms, and older records show 929 and 941 ms.
+ * bcrypt's share of those is not separated, so the "under 200ms" above
+ * is unconfirmed on that host rather than known to be wrong. */
 #define PWHASH_BCRYPT_COST 12
 
 /*
