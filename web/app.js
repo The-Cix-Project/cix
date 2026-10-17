@@ -1710,6 +1710,36 @@ function containerStatusKind(status) {
  * restart-wait (respawning after its delay) -- are amber, as a paused
  * container is: not wrong, not settled.
  */
+/*
+ * Which lifecycle actions a container offers in a given status -- the
+ * one decision the container page's buttons and the tree's right-click
+ * menu both render from, as diskActionEligibility() is for a disk.
+ *
+ * They decided separately until 2026-10-17, and had drifted: the page
+ * showed Start only for "stopped", so an exited container could not be
+ * started from its own page, and showed Stop for everything else,
+ * exited included, where it does nothing.
+ *
+ * ADR-0181 (issue #73/#77): a container is no longer just
+ * running/paused/stopped. Since every container is persisted, one that
+ * exits on its own is RETAINED as "exited" (with its real exit code)
+ * rather than disappearing -- and it is startable again, just like a
+ * "stopped" one. "stopping"/"deleting" are transient teardown states
+ * with nothing useful to offer.
+ *   Start -> anything not currently alive (stopped OR exited).
+ *   Stop  -> only something actually alive; stopping an already-dead
+ *            container is a no-op that reads like a broken button.
+ * Remove is not here: it applies in every status.
+ */
+function containerActionEligibility(status) {
+	return {
+		start: status === "stopped" || status === "exited",
+		pause: status === "running",
+		unpause: status === "paused",
+		stop: status === "running" || status === "paused",
+	};
+}
+
 function serviceStateKind(state) {
 	switch (state) {
 	case "running":
@@ -5575,10 +5605,14 @@ function renderContainerDetail(name) {
 	/* Only the action(s) valid for c.status are shown -- e.g. "Pause" on
 	 * an already-stopped container isn't just a no-op, it's a 404 (see
 	 * ADR-0045), so it's hidden rather than left clickable-but-broken. */
-	document.getElementById("cd-start").hidden = c.status !== "stopped";
-	document.getElementById("cd-pause").hidden = c.status !== "running";
-	document.getElementById("cd-unpause").hidden = c.status !== "paused";
-	document.getElementById("cd-stop").hidden = c.status === "stopped";
+	{
+		const e = containerActionEligibility(c.status);
+
+		document.getElementById("cd-start").hidden = !e.start;
+		document.getElementById("cd-pause").hidden = !e.pause;
+		document.getElementById("cd-unpause").hidden = !e.unpause;
+		document.getElementById("cd-stop").hidden = !e.stop;
+	}
 }
 
 /* ---------- Networks ---------- */
@@ -16189,24 +16223,12 @@ function contextMenuItemsFor(category, name) {
 			{ label: "Open console", danger: false, op: "consoleContainer", action: () => { location.hash = "#containers/" + encodeURIComponent(name); } },
 		];
 
-		/*
-		 * ADR-0181 (issue #73/#77): a container is no longer just
-		 * running/paused/stopped. Since every container is persisted, one
-		 * that exits on its own is RETAINED as "exited" (with its real exit
-		 * code) rather than disappearing -- and it is startable again, just
-		 * like a "stopped" one. "stopping"/"deleting" are transient
-		 * teardown states with nothing useful to offer.
-		 * Start  -> anything not currently alive (stopped OR exited).
-		 * Stop   -> only something actually alive; stopping an already-dead
-		 *           container is a no-op that reads like a broken button.
-		 */
-		const alive = status === "running" || status === "paused";
-		const revivable = status === "stopped" || status === "exited";
+		const e = containerActionEligibility(status);
 
-		if (revivable) items.push({ label: "Start", danger: false, op: "startContainer", action: () => startContainer(name) });
-		if (status === "running") items.push({ label: "Pause", danger: false, op: "pauseContainer", action: () => pauseContainer(name) });
-		if (status === "paused") items.push({ label: "Unpause", danger: false, op: "unpauseContainer", action: () => unpauseContainer(name) });
-		if (alive) items.push({ label: "Stop", danger: false, op: "stopContainer", action: () => stopContainer(name) });
+		if (e.start) items.push({ label: "Start", danger: false, op: "startContainer", action: () => startContainer(name) });
+		if (e.pause) items.push({ label: "Pause", danger: false, op: "pauseContainer", action: () => pauseContainer(name) });
+		if (e.unpause) items.push({ label: "Unpause", danger: false, op: "unpauseContainer", action: () => unpauseContainer(name) });
+		if (e.stop) items.push({ label: "Stop", danger: false, op: "stopContainer", action: () => stopContainer(name) });
 		items.push({ label: "Remove", danger: true, op: "deleteContainer", action: () => removeContainer(name) });
 		return items;
 	}

@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container's page and its right-click menu decide its actions in one place (#592)
+
+They decided separately and had drifted: the page showed **Start** only for a stopped container, so
+an exited one -- which ADR-0181 keeps, startable -- could not be started from its own page, and it
+showed **Stop** for an exited container too, where it does nothing. `containerActionEligibility()`
+decides Start, Pause, Unpause and Stop for both, as `diskActionEligibility()` does for a disk. Checked
+in Chromium for exited, running, paused and stopped: the page and the menu offer the same actions.
+
 ### Every destructive action asks first, and removing one recipe version works again (#592)
 
 **28 destructive actions ran on the first click.** The guidelines require a destructive action to be
