@@ -239,6 +239,12 @@ static size_t frame_count(const struct json_value *v)
 	return gen != NULL && gen->type == JSON_OBJECT ? gen->u.object.count : 0;
 }
 
+/* Elapsed milliseconds, so a bound is not on whole seconds (#309). */
+static long elapsed_ms(const struct timespec *t0, const struct timespec *t1)
+{
+	return (t1->tv_sec - t0->tv_sec) * 1000L + (t1->tv_nsec - t0->tv_nsec) / 1000000L;
+}
+
 /* PUT /v1/system/site with body; returns the status. */
 static int put_site(const struct cix_client *c, const char *body, char *gen, size_t gen_size)
 {
@@ -451,7 +457,7 @@ int main(void)
 			cix_response_free(&hr);
 		}
 		clock_gettime(CLOCK_MONOTONIC, &t1);
-		if ((t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L > 2000L)
+		if (elapsed_ms(&t0, &t1) > 2000L)
 			fail("a stream that does not read does not slow the daemon", "health took > 2000 ms");
 		if (fd >= 0) {
 			g = -1;
