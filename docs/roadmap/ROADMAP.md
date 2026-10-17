@@ -2445,11 +2445,11 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
-## Part 284 (in progress): the box says what changed (ADR-0339, #599, 0.2.57-519 and -520)
+## Part 284 (in progress): the box says what changed (ADR-0339, #599, 0.2.57-519 to -529)
 
 The owner accepted ADR-0339 on 2026-10-17 after four reviews raised it from "push some events" to a
 design in which nothing displayed is polled once signed in and the daemon proves it announced. This part
-records the first two of its steps.
+records its five steps as they landed.
 
 **519, the contract.** Every read declares `x-cix-read`: 110 state, 12 sample (with a period), 2
 session, 9 stream and 9 derived. Every change declares `x-cix-invalidates`: 198 lists, seeded from the
@@ -2534,7 +2534,44 @@ read how it matches. 523 goes through `elapsed_ms()`.
 The same release fixes the status bar the owner reported: version, slot, uptime and load are fetched
 together after the session's grants, so they appear together, including after a restart.
 
-Next: the dashboard moving from polling to the stream.
+**528, the dashboard on the stream.**
+- **Once signed in,** the dashboard holds `GET /v1/events` open. A change re-reads the tree and the
+  current page within about 150 ms, a heartbeat costs no request, and navigating reads the page arrived
+  at once.
+- **If the stream drops,** the status bar says "Live updates lost — reconnecting", the old polling resumes,
+  and it reconnects with backoff. Only close code 4401 signs the operator out.
+- **`web/events.js`** holds the client logic with no DOM, and `test_web_form` drives it with a fake socket
+  and clock.
+- **Measured** in Chromium with the box's own files and four frames the box sent, replayed:
+  - An idle minute is 32 requests against 181 before. 30 of them are the log panel, which is phase 2.
+  - A 1006 close shows the lost indicator, and the operator stays signed in.
+
+**529, every change the daemon makes by itself.** In 528's first hour the self-check named ten reads that
+changed with no announcement. Each was fixed where it changes:
+- **Build slots:** 34 hand-written slot releases became `chain_release()`, with `test_announce` refusing a
+  direct clear.
+- **The rest of the package side:**
+  - build memory and build-environment claims;
+  - log open and close;
+  - recipe-store writes, with the sync's helper-side merge announced by the daemon on completion;
+  - the artifact cache, the sync state and its write-back queue;
+  - the kernel refresh, discovery and bad-version marks.
+- **Clock-derived fields** are declared volatile, and `getPkgDrift` is a view.
+- **Sessions end by a timer that announces,** not by a reader's clock.
+- **Drift found later is announced as well as logged.**
+
+**Verified on 192.168.15.95 (529).**
+- **The gate:** `test_announce`, `test_events_drift` and `test_events` PASS, then `SELFTEST: PASS`.
+- **The box:** it booted on slot `b` at 18:53Z with 12/12 running.
+- **Ten minutes later:** `checked: 200  drift: 0`.
+- **At 20:17Z:** `checked: 1736  drift: 0`, a full `verify` flagging none, and no `events` drift line since
+  boot. The window covered two hibr builds and two discovery runs, the activities four of the ten findings
+  came from.
+- **What follows:** #607's 24-hour clock restarted from this boot. Its condition is on the log store,
+  which survives a reboot, so a release inside the window does not reset it.
+
+Next: phase 2, which moves the log panel and the stats pages onto subscriptions, and #607's rollout once
+its clock runs out.
 
 ## Part 283 (done): the page forms render from the contract (#592 epic, 0.2.57-515 and -516)
 
