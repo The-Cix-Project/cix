@@ -21,9 +21,13 @@
 #include <string.h>
 #include <unistd.h>
 
-/* The most request schemas this check will hold; the contract names 121
- * today (41 components plus 80 synthesized from inline bodies, #603). */
-#define APIGEN_TEST_MAX_REQ 256
+/* The most FIELDS schemas (and request names) this check will hold. It
+ * was 256 while the contract had 121 request schemas (41 components
+ * plus 80 synthesized from inline bodies, #603) -- but the list it
+ * caps is EVERY FIELDS block, and 0.2.57-512's 132 synthesized `<op>Args`
+ * schemas took it past 256 and 513's four more were then cut off and read
+ * as missing. 392 on 2026-10-17, so 1024; and reaching it now fails. */
+#define APIGEN_TEST_MAX_REQ 1024
 
 static int failures;
 
@@ -1292,7 +1296,7 @@ int main(void)
 		char names[APIGEN_TEST_MAX_REQ][96];
 		char have[APIGEN_TEST_MAX_REQ][96];
 		FILE *f;
-		int n_names = 0, n_have = 0, i, dangling = 0;
+		int n_names = 0, n_have = 0, i, dangling = 0, overflow = 0;
 		char first[96] = "";
 
 		snprintf(js_path, sizeof(js_path), "/tmp/apigen_req_%d.js", (int)getpid());
@@ -1315,7 +1319,9 @@ int main(void)
 
 				if (strncmp(buf, "\t\t", 2) == 0 && buf[2] != '\t' &&
 				    strstr(buf, ": [") != NULL) {
-					if (n_have < APIGEN_TEST_MAX_REQ) {
+					if (n_have >= APIGEN_TEST_MAX_REQ) {
+						overflow = 1;
+					} else {
 						size_t k = 0;
 
 						while (buf[2 + k] != ':' && buf[2 + k] != '\0' &&
@@ -1333,7 +1339,9 @@ int main(void)
 				if (r == NULL)
 					continue;
 				r += 12;
-				if (n_names < APIGEN_TEST_MAX_REQ) {
+				if (n_names >= APIGEN_TEST_MAX_REQ) {
+					overflow = 1;
+				} else {
 					size_t k = 0;
 
 					while (r[k] != '"' && r[k] != '\0' &&
@@ -1356,6 +1364,13 @@ int main(void)
 			fclose(f);
 			unlink(js_path);
 		}
+		/* A full list is a refusal, never a truncation: dropping the
+		 * names past the cap is what reported four real request
+		 * schemas as dangling in the 0.2.57-513 gate (#592). */
+		if (overflow)
+			fail("api.js has more FIELDS schemas or request names than %s holds; "
+			     "raise it rather than check a prefix of them%s",
+			     "APIGEN_TEST_MAX_REQ", "");
 		if (n_names == 0)
 			fail("no operation in api.js names a request schema -- 124 of the "
 			     "contract's 340 carry a requestBody, so this is a reader that "

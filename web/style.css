@@ -3869,6 +3869,13 @@ pre {
 	gap: var(--s4);
 }
 
+/* A section's legend is what the operator scans a long form by, so it
+ * reads as a heading rather than as one more field label. */
+#generated-form fieldset.form-section > legend {
+	font-weight: 600;
+	color: var(--text);
+}
+
 #generated-form fieldset.field-group {
 	gap: var(--s3);
 	padding: var(--s3);
