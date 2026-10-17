@@ -14134,6 +14134,10 @@ async function refreshVolumeCache() {
 async function refreshVolumes() {
 	let vols = [];
 	let containers = [];
+	/* Whether the second read answered. Without it, a refused
+	 * listContainers after a good listVolumes would mark every volume
+	 * "not currently mounted" -- a guess shown as a fact. */
+	let containersRead = false;
 	try {
 		const data = await apiRequest("GET", CIX_API.listVolumes());
 		vols = data.volumes || [];
@@ -14149,6 +14153,7 @@ async function refreshVolumes() {
 		 */
 		const cdata = await apiRequest("GET", CIX_API.listContainers());
 		containers = cdata.containers || [];
+		containersRead = true;
 	} catch (e) {
 		/* listState() has the failure; see refreshBuildLogs(). It
 		 * used to be a toast, repeated on every sweep. */
@@ -14161,7 +14166,7 @@ async function refreshVolumes() {
 			mountedBy[v.name].push(c.name + " at " + v.path + (v.read_only ? " (ro)" : ""));
 		}
 	}
-	renderVolumesList(vols, mountedBy);
+	renderVolumesList(vols, containersRead ? mountedBy : null);
 }
 
 /*
@@ -14180,8 +14185,11 @@ function renderVolumesList(vols, mountedBy) {
 		 * outliving every container that used it is the whole point,
 		 * and is exactly when its data is most at risk of being deleted
 		 * by someone who assumes it is dead weight. */
-		{ label: "Mounted by", text: (v) => (mountedBy[v.name] || []).join(", ")
-		                                    || "not currently mounted" },
+		/* null mountedBy: the containers were not read, so who mounts
+		 * a volume is unknown -- "—", never "not currently mounted". */
+		{ label: "Mounted by", text: (v) => mountedBy === null ? FIELD_ABSENT
+		                                    : (mountedBy[v.name] || []).join(", ")
+		                                      || "not currently mounted" },
 		{ label: "Disk", text: (v) => v.disk || "(default)" },
 		"host_path",
 		{ field: "created_at", label: "Created" },
@@ -15410,7 +15418,10 @@ async function refreshPipeline() {
 	try {
 		data = await apiRequest("GET", CIX_API.getPipeline());
 	} catch (e) {
-		return; /* best-effort, same as every other refresher here */
+		/* The stage board keeps its last picture; the Errors list
+		 * says the read failed, since that is its own refused state. */
+		renderPipelineErrors([]);
+		return;
 	}
 	cache.pipeline = data;
 	wirePipelineControls();
@@ -15466,12 +15477,22 @@ async function refreshPipeline() {
 		deploy.appendChild(text);
 	}
 
-	/* The Errors tab. Generated (#592), from `PipelinePackage`: every
-	 * package whose pipeline is not clean. `not-implemented` is not a
-	 * problem -- this platform performs that stage by hand -- so it is
-	 * left out with `ok`. */
+	renderPipelineErrors(data.packages || []);
+	document.getElementById("pipeline-summary").textContent =
+	    data.total + " package(s): " + data.ok + " ok, " + data.blocked + " blocked, " +
+	    data.failed + " failed, " + data.cancelled + " cancelled, " + data.not_implemented +
+	    " performed by hand";
+}
+
+/*
+ * The Errors tab. Generated (#592), from `PipelinePackage`: every
+ * package whose pipeline is not clean. `not-implemented` is not a
+ * problem -- this platform performs that stage by hand -- so it is
+ * left out with `ok`.
+ */
+function renderPipelineErrors(packages) {
 	renderTable(document.getElementById("pipeline-table"), "PipelinePackage",
-	    (data.packages || []).filter((p) => p.status !== "ok" && p.status !== "not-implemented"), [
+	    packages.filter((p) => p.status !== "ok" && p.status !== "not-implemented"), [
 		{ field: "name", label: "Package" },
 		"stage",
 		{ field: "status", badge: (st) => pipelineStatusKind(st) },
@@ -15483,13 +15504,9 @@ async function refreshPipeline() {
 		what: "the pipeline",
 		empty: "Nothing is blocked or failed.",
 	});
-	document.getElementById("pipeline-summary").textContent =
-	    data.total + " package(s): " + data.ok + " ok, " + data.blocked + " blocked, " +
-	    data.failed + " failed, " + data.cancelled + " cancelled, " + data.not_implemented +
-	    " performed by hand";
 }
 
-/* ---------- Software > Build > Overview (#407) ---------- */
+/* ---------- Software > Build > In Flight (#407) ---------- */
 
 /*
  * What the build system is doing right now.

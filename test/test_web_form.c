@@ -789,6 +789,24 @@ int main(void)
 		       "      ? \"unset\" : JSON.stringify(r.children[0].title)).join(\",\");\n"
 		       "})()",
 		       "\"why\",unset");
+		/* `fill` hands over the cell that is IN the table, empty, so a
+		 * caller writing into it after renderTable() has returned --
+		 * when a measurement arrives -- writes the visible cell, not a
+		 * detached copy. Written here after the call to prove exactly
+		 * that. */
+		expect(ctx, "a fill cell is the table's own and is written later",
+		       "(() => {\n"
+		       "  const t = document.createElement(\"table\");\n"
+		       "  const later = [];\n"
+		       "  renderTable(t, \"Network\", [{ name: \"a\" }, { name: \"b\" }],\n"
+		       "    [\"name\", { label: \"Size\", fill: (r, cell) => later.push([r.name, cell]) }],\n"
+		       "    { op: \"listNetworks\", what: \"networks\", empty: \"none\" });\n"
+		       "  const before = t.tBodies[0].children.map((r) => r.children[1].textContent).join(\",\");\n"
+		       "  later.forEach(([n, cell]) => { cell.textContent = \"size(\" + n + \")\"; });\n"
+		       "  return before + \"|\" + t.tBodies[0].children\n"
+		       "    .map((r) => r.children[1].textContent).join(\",\");\n"
+		       "})()",
+		       ",|size(a),size(b)");
 		expect(ctx, "a refused list never says there are none",
 		       "(() => {\n"
 		       "  const t = document.createElement(\"table\");\n"
