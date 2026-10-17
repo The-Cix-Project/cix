@@ -2503,7 +2503,38 @@ read how it matches. 523 goes through `elapsed_ms()`.
 - **Unauthenticated upgrade:** refused with 401.
 - **The daemon log:** no stream was dropped.
 
-Next: the daemon's drift check and sample loop, then the dashboard moving from polling to the stream.
+**524 to 527, the box checks its own announcements.**
+- **The check:** the daemon re-runs its own reads in-process, through the response sink, and hashes
+  them without their volatile fields.
+- **Samples** are announced when they change.
+- **State reads** are checked one every 3 s against a boot baseline, and one that changed with no
+  announcement is logged and counted.
+- **`POST /v1/events/verify`** runs it on demand.
+- **The rehearsal:** before shipping, 86 state reads hashed 5 minutes apart at rest on .95 differed
+  only in a declared-volatile field.
+
+**It found three real defects in four releases:**
+- **524:** `test_events` found drift and could not say where. The test now prints the daemon's `events`
+  log.
+- **525:** it named `getConfig`, a view declared `state` by mistake. It is `derived`, and the two bulk
+  changes declare `[*]`.
+- **526 on the box:** the first live `cixctl events verify` (84 reads, 0.44 s) named `getPipeline`, a
+  read-time join whose inputs were announced while it was not. Hence `x-cix-composed-of` (527), and
+  boot confirmation announcing the ESP.
+
+**Verified on 192.168.15.95 (527).**
+- **The gate:** `test_events_drift`, `test_events` and `test_apigen` PASS, then `SELFTEST: PASS`.
+- **The box:** it booted on slot `b` with 12/12 running.
+- **Six minutes later:** `events status` read `checked: 116  drift: 0`, and a full `verify` compared 84
+  more and flagged none. The one unreadable read is `getPkiIntermediate`, since this box has no
+  intermediate CA.
+- **What follows:** #607, the same assertion in every daemon-linked test, waits on 24 hours of zero
+  drift from that boot.
+
+The same release fixes the status bar the owner reported: version, slot, uptime and load are fetched
+together after the session's grants, so they appear together, including after a restart.
+
+Next: the dashboard moving from polling to the stream.
 
 ## Part 283 (done): the page forms render from the contract (#592 epic, 0.2.57-515 and -516)
 
