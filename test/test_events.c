@@ -451,8 +451,8 @@ int main(void)
 			cix_response_free(&hr);
 		}
 		clock_gettime(CLOCK_MONOTONIC, &t1);
-		if (t1.tv_sec - t0.tv_sec > 2)
-			fail("a stream that does not read does not slow the daemon", "health took > 2 s");
+		if ((t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L > 2000L)
+			fail("a stream that does not read does not slow the daemon", "health took > 2000 ms");
 		if (fd >= 0) {
 			g = -1;
 			for (frames = 0; frames < 1000 && g != (long long)n3 + 1 + 100; frames++) {
