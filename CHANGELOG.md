@@ -33,6 +33,12 @@ Converting them found six defects on live pages, now fixed:
 - **The LDAP config PUT refused a change to one allocation floor.** It now keeps the other.
 - **An LDAP client field could not be cleared** by sending back the `null` that GET reports. JSON `null`
   now clears it, as `""` does.
+- **A volume's owner PUT read one `null` beside a number as id 0**, so a form with one id left empty
+  would have made root the owner. That is a `400` now.
+
+A page form also stays put while one of its fields has the focus, and its "has this changed" check reads
+only the fields it writes. Before, a field that changes on every read would have rebuilt the form on
+every poll.
 
 `LdapConfig` marks its three report-only fields `readOnly` and declares the write-only `bind_password`,
 which the PUT always read. A second `description` key on `effective_client_uri` had silently replaced its

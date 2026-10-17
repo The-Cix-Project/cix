@@ -487,6 +487,14 @@ void handle_volume_owner_put(int fd, const char *name, const char *body, size_t 
 	if (ju->type == JSON_NULL && jg->type == JSON_NULL) {
 		uid = -1;
 		gid = -1;
+	} else if (ju->type != JSON_NUMBER || jg->type != JSON_NUMBER) {
+		/* One null beside a number used to read the null as 0 -- the
+		 * dashboard's owner form, with one id left empty, would have
+		 * made root the owning uid without saying so. */
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "uid and gid must both be numbers, or both null to hand the volume back to root");
+		return;
 	} else {
 		uid = (int)json_as_number(ju);
 		gid = (int)json_as_number(jg);

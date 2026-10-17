@@ -626,6 +626,13 @@ int main(void)
 	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
+	check(cix_client_request(&client, "PUT", "/v1/volumes/ownedvol/owner",
+	                         "{\"uid\":null,\"gid\":5}", &r) == 0 &&
+	          r.status == 400,
+	      "one null beside a number is refused, not read as uid 0");
+	cix_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
 	check(cix_client_request(&client, "PUT", "/v1/volumes/nosuchvol/owner", "{\"uid\":1,\"gid\":1}",
 	                         &r) == 0 &&
 	          r.status == 404,

@@ -3409,7 +3409,7 @@ A volume is a directory this daemon creates as **root**, and until now nothing c
 
 - **Both ids together.** `owner_uid` without `owner_gid` is a `400`: a volume owned by one user and an unrelated group is almost always a typo. On the `PUT`, pass the value a field already has to leave it alone.
 - **`recursive` defaults to false**, and is the caller's explicit choice. A volume that has been in use holds files whose ownership someone may have set deliberately, and rewriting all of them because the top-level owner changed is a quiet kind of data loss.
-- **Null uid and gid hands it back to root**, and really `chown`s it there rather than leaving whoever owned it last still owning it.
+- **Null uid and gid hands it back to root**, and really `chown`s it there rather than leaving whoever owned it last still owning it. One null beside a number is a `400`, never read as uid or gid 0.
 - **`owner_uid` is null, not 0, when nobody has said.** 0 is a real uid, and a field that cannot tell "deliberately root" from "unsaid" is one that gets read wrong eventually.
 - The ids are the numeric ones **the container sees**, which for every container without a user namespace are the host's own ids too.
 

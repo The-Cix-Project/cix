@@ -937,16 +937,40 @@ function openForm(opId, opts) {
 function syncForm(form, opId, opts) {
 	const options = opts || {};
 	const c = form._cix;
-	const sig = JSON.stringify([opId, options.args || [], options.values || {},
-	                            options.fixed || {}, options.choices || {}]);
+	const sameTarget = c !== undefined && c.opId === opId &&
+		JSON.stringify(c.args) === JSON.stringify(options.args || []);
 
-	if (c !== undefined && c.sig === sig)
+	if (c !== undefined && c.sig === formSignature(opId, options))
 		return;
-	if (c !== undefined && c.opId === opId &&
-	    JSON.stringify(c.args) === JSON.stringify(options.args || []) &&
-	    form.dataset.dirty === "1")
+	/* The operator's: typed into, or simply holding the focus -- a
+	 * select dropped open has not changed yet, and rebuilding it would
+	 * close it under the pointer. */
+	if (sameTarget && (form.dataset.dirty === "1" ||
+	    (typeof document.activeElement === "object" && document.activeElement !== null &&
+	     typeof form.contains === "function" && form.contains(document.activeElement))))
 		return;
 	bindForm(form, opId, options);
+}
+
+/*
+ * What a form shows, as one string, for syncForm()'s "has anything
+ * changed" -- built from the operation's own WRITABLE fields only. A
+ * GET response carries more than the form shows (an effective value, a
+ * status, a derived flag), and some of it changes on every read; signing
+ * the whole response would rebuild the form on every poll, which is the
+ * thing syncForm() exists to stop.
+ */
+function formSignature(opId, options) {
+	const shape = CIX_API[opId + "_SHAPE"];
+	const fields = shape && shape.request ? CIX_API.FIELDS[shape.request] || [] : [];
+	const values = options.values || {};
+	const shown = {};
+
+	for (const f of fields)
+		if (!f.readOnly && Object.prototype.hasOwnProperty.call(values, f.name))
+			shown[f.name] = values[f.name];
+	return JSON.stringify([opId, options.args || [], shown, options.fixed || {},
+	                       options.choices || {}]);
 }
 
 /*
@@ -992,7 +1016,7 @@ function bindForm(form, opId, opts) {
 		 * after an action (`clear`), whose fields mean nothing once
 		 * the action has run. */
 		opts: options,
-		sig: JSON.stringify([opId, given, options.values || {}, options.fixed || {}, choices]),
+		sig: formSignature(opId, options),
 	};
 	/* Typing marks the form as the operator's, so a poll leaves it be
 	 * (syncForm()). Bound once per element: a form is rebuilt in place,

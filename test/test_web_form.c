@@ -956,7 +956,7 @@ int main(void)
 		       "  }\n"
 		       "  return Object.keys(seen).sort().join(\",\");\n"
 		       "})()",
-		       "lines,textarea,tristate");
+		       "bytes,lines,textarea,tristate");
 
 		/*
 		 * A free-form object round-trips: shown as indented JSON,
@@ -1495,6 +1495,21 @@ int main(void)
 		       "    c.dataset.field === \"jitter_window_seconds\").value;\n"
 		       "})()",
 		       "900");
+		/* A GET carries more than the form shows, and some of it moves
+		 * on every read; only the fields the form writes may decide a
+		 * rebuild, or every poll rebuilds every page form. */
+		expect(ctx, "a read whose only change is a field the form does not show rebuilds nothing",
+		       "(() => {\n"
+		       "  const first = pageForm.children[0];\n"
+		       "  syncForm(pageForm, \"putSystemRollingConfig\", {\n"
+		       "    values: { jitter_window_seconds: 900, rollback_window_seconds: 600,\n"
+		       "              last_checked: 1 } });\n"
+		       "  syncForm(pageForm, \"putSystemRollingConfig\", {\n"
+		       "    values: { jitter_window_seconds: 900, rollback_window_seconds: 600,\n"
+		       "              last_checked: 2 } });\n"
+		       "  return String(pageForm.children[0] === first);\n"
+		       "})()",
+		       "true");
 		/* A nullable field the contract requires: its empty value is
 		 * null -- "the default placement" -- which "" never was (the
 		 * daemon refuses ""). */

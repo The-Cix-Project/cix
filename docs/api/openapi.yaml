@@ -14120,7 +14120,7 @@ paths:
         deliberate statement about the pair; pass the value it already
         has to leave one alone. Both null hands the volume back to root,
         and really chowns it there rather than leaving whoever owned it
-        last still owning it.
+        last still owning it. One null beside a number is a 400.
 
         `recursive` defaults to false and is the caller's explicit
         choice. A volume that has been in use holds files whose
