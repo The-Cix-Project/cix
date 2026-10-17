@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-17. Issue [#599](https://git.home.arpa/itdlabs/cix/issues/599). Adds one operation and two extensions to the contract, so it is the owner's decision ([ADR-0317](0317-permissions-are-declared-by-the-api-contract.md) declares the operation's permission; [ADR-0338](0338-the-dashboard-renders-from-the-contract.md) is what the dashboard's renderers already are, and is unchanged; [ADR-0070](0070-consolidated-log-store.md) is where drift is reported). Nothing below is implemented.
+Proposed, 2026-10-17. Issue [#599](https://git.home.arpa/itdlabs/cix/issues/599). Adds three operations and three extensions to the contract, so it is the owner's decision ([ADR-0317](0317-permissions-are-declared-by-the-api-contract.md) declares their permissions; [ADR-0338](0338-the-dashboard-renders-from-the-contract.md) is what the dashboard's renderers already are, and is unchanged; [ADR-0070](0070-consolidated-log-store.md) is where drift is reported). Nothing below is implemented.
 
 ## Context
 
@@ -26,23 +26,30 @@ A timer cannot make staleness and load better at once. **The box owns every fact
 
 ### Every read says what kind it is
 
-1. **Every GET operation declares `x-cix-read`, and `apigen` refuses one without it**, exactly as it refuses one with no `x-cix-permission` (#539). There are three kinds:
-   - **`state`**: the answer changes only when something changes it, an API call or a daemon event. A state read is announced when it changes (point 3) and verified by the daemon (point 7). Most of the contract is this.
-   - **`sample: <seconds>`**: the answer moves by itself, and the daemon re-reads it on that period and announces when it changed (point 6). Health, `server-health`, `ntp/status`, `tls-throttle/status` and `dhcp/leases` are samples.
-   - **`derived`**: a computation run on request, never displayed as live state, never announced and never verified. `pkg/verify` and `system/backup` are this.
+1. **Every GET operation declares `x-cix-read`, and `apigen` refuses one without it**, exactly as it refuses one with no `x-cix-permission` (#539). There are five kinds, and each says what the stream and the drift check do with it:
 
-   Logs, kmsg, stats, processes and stalls are **streams**: they are read through the log reader and the phase-2 subscriptions (point 10), never by invalidation. The clock is read once and ticked locally (point 6). **`/v1/storage` is declared `sample` until its live counters move to a read of their own**, and that split is a ticket filed with this ADR, because a state read that embeds a sample can be neither announced nor verified honestly. `hostauth/sessions` is `state` with its `last_seen` field excluded from the verification hash, and the ADR that implements this names that exclusion in the contract (`x-cix-volatile-fields`) rather than in code.
+   | Kind | The answer | Announced | Drift-checked | Examples |
+   |---|---|---|---|---|
+   | `state` | changes only when something changes it | yes, from the change (point 4) | yes (point 7) | most of the contract |
+   | `sample: <seconds>` | moves by itself | yes, when the daemon's periodic re-read differs (point 6) | no, it is the check | health, `server-health`, `ntp/status`, `tls-throttle/status`, `dhcp/leases` |
+   | `session` | differs per session | yes, when that session's grants change (point 5) | no, the check has no session | `whoami`, `whoami/app-passwords` |
+   | `stream` | is a running tail or series | never; read by subscription (point 10) | no | `logs`, `kmsg`, `stats`, `processes`, `stalls`, `pkg/build/log` |
+   | `derived` | is a computation run on request | never | no | `pkg/verify` (8.2 s), `system/backup` (15.9 MB) |
+
+   The clock is a `sample` the client ticks locally (point 6). **`/v1/storage` is declared `sample` until its live counters move to a read of their own**, a split filed as a ticket with this ADR, because a state read that embeds a sample can be neither announced nor verified honestly. `hostauth/sessions` is `state` with its `last_seen` field named in `x-cix-volatile-fields`, which the drift hash leaves out. That exclusion is declared in the contract rather than coded.
 
 2. **Every mutating operation declares `x-cix-invalidates`** (198 of the contract's 340), listing the `operationId`s of the state reads whose answers it can change. Deriving it from the path cannot work. `POST /v1/pkg/install` derives to `/v1/pkg/install`, which no GET answers, while what it changes is `listPkg` now and `listImages` once the image moves. `apigen` seeds the list from the path where the path is right, refuses a mutating operation without one, and refuses a name that is not a `state` read.
 
 ### The primitive: a generation per read
 
-3. **The daemon keeps one monotonic generation counter per state and sample read** (`gen[op]`, at most 142 integers), and one announce primitive that increments the counters it is given. Everything else derives from it:
-   - **An invalidation frame** is `{"gen": {"listContainers": 418}}`, and several coalesce into one frame.
-   - **The heartbeat**, every 10 s, carries the whole vector, which is about 600 bytes.
-   - **Every GET response carries `X-Cix-Generation: <gen[op]>`**, so a client knows which generation its copy is.
-   - **Reconnect is a vector compare.** The client re-reads only the reads whose generation moved while it was away. A daemon restart starts every counter again, every generation then differs, and a full re-read follows with no special case. There is no sequence number, no replay buffer and no "events sent while away are lost".
-   - **A lost frame is noticed within 10 s at no cost.** A heartbeat generation newer than the client's copy, with no invalidation seen for it, triggers that one re-read and a drift report (point 7), without a single extra request.
+3. **The daemon keeps one monotonic generation counter per announced read** (`gen[op]`, at most 142 integers), under a **boot epoch**: a random 64-bit value chosen at daemon start. One announce primitive increments the counters it is given. Everything else derives from them:
+   - **An invalidation frame** is `{"epoch": "9f2c...", "gen": {"listContainers": 418}}`, and several coalesce into one frame.
+   - **The first frame on a new stream is the whole vector**, masked by point 5. The heartbeat, every 10 s, carries it again, at about 600 bytes.
+   - **Every GET response carries `X-Cix-Generation: <epoch>.<gen>`**, so a client knows exactly which generation its copy is.
+   - **The client's one rule:** re-read a read only when the announced generation is newer than the one in its last response's header, and keep the header's value after reading. A second change that lands while a re-read is in flight then costs exactly one more read, never a duplicate and never a miss.
+   - **An epoch that differs from the client's is a full re-read.** Without the epoch, a client holding `listContainers: 3` that reconnects after a restart during which three changes happened would see 3 again and re-read nothing. That would be a stale page with every indicator green, on the path this design most needs to be right. Counters restart with the daemon; the epoch says so.
+   - **Reconnect within one epoch is a vector compare.** The client re-reads only what moved while it was away. There is no sequence number, no replay buffer and no "events sent while away are lost".
+   - **A lost frame is noticed within 10 s at no cost.** A heartbeat generation newer than the client's copy, with no invalidation seen for it, triggers that one re-read without an extra request.
 
 4. **The announce primitive is called from two places, both enumerated.**
    - **Every change made through the API**, from one place: after `dispatch()` answers 2xx to a non-GET, it announces that route's `x-cix-invalidates`. That covers the dashboard, cixctl, other tabs and other operators.
@@ -61,10 +68,10 @@ A timer cannot make staleness and load better at once. **The box owns every fact
    - **Why a WebSocket:** `EventSource` cannot set a header, and the dashboard authenticates with a bearer token, carried as the `cix.bearer.<token>` subprotocol as the console and build log already do (`web/app.js:4202`, #541).
    - **Authorization at the upgrade:** it is answered before `dispatch()`, so its handler calls `authorize_upgrade_route()` itself. That is the trap CLAUDE.md names, the console's before 0.2.57-392. The operation is `x-cix-permission: authenticated`.
    - **No data:** the stream carries generations, never content and never an instance name. Clients re-read through `apiRequest()`, gated as today.
-   - **What a session may learn is decided once, by the one enforcement point.** Even "`listContainers` changed" tells a session without `containers:read` that container activity is happening. So at the upgrade the daemon computes `allowed[op]` by running `authorize_route()` against each read's own GET route, once per read. It recomputes the mask when the session's grants change (#548). A stream never receives a generation for a read its session may not perform. There is no per-message check and no new logic: one precomputed mask from the existing function. A change to groups or permissions announces `whoami`, so `applySessionEligibility()` re-gates the page at once.
+   - **What a session may learn is decided once, by the one enforcement point.** Even "`listContainers` changed" tells a session without `containers:read` that container activity is happening. So at the upgrade the daemon computes `allowed[op]` for each read. It uses the decision `authorize_route()` itself makes (`main.c:28775`), `hostauth_authorize(bearer, route->permission)`, without the refusal `authorize_route()` writes to a request's fd. The implementing change factors that decision out so both call one function; a copy of the check would be the parallel implementation the RBAC section forbids. The mask is recomputed when the session's grants change (#548), and that recomputation also drops any phase-2 subscription the session may no longer make. A stream never receives a generation for a read its session may not perform. There is no per-message check and no new logic: one precomputed mask from the existing function. A change to groups or permissions announces `whoami`, so `applySessionEligibility()` re-gates the page at once.
    - **Bounded by construction.** Each stream holds a pending set of the reads whose generation moved, a bitmap of at most 142 bits, not a queue. When the socket is writable (`EPOLLOUT`) the daemon sends one coalesced frame and clears the set. A stale read is stale once however many times it changed, so the set cannot overflow, a slow tab costs a few bytes rather than a growing buffer, and there is no "close on full" path and no reconnect storm. This is the daemon's first non-blocking WebSocket writer; `build_log_ws_broadcast()` writes blocking and caps viewers at four (`PKG_BUILD_LOG_WS_MAX`), and neither property carries over. The gate goes in `test_slow_client`.
    - **Session expiry is enforced on the open stream.** A timer per stream closes it with code 4401 at the session's expiry, because an open socket makes no requests that would notice.
-   - **`cixctl events [--follow]`** prints the stream. Every capability has a CLI surface (API-First), and this one is also the instrument for checking announcements on a real box.
+   - **`cixctl events [--follow]`** prints the stream, and `cixctl events verify` runs the drift check (point 7). Every capability has a CLI surface (API-First), and this one is also the instrument for checking announcements on a real box.
 
 ### Nothing displayed is polled once signed in
 
@@ -78,11 +85,13 @@ A timer cannot make staleness and load better at once. **The box owns every fact
 ### The daemon verifies what it announced
 
 7. **The drift check runs in the daemon, once for every client, into the one log store.**
-   - **How it reads:** every `state` read is re-run into memory through the response sink, bypassing authorization because it is the daemon reading itself. Its body, less any `x-cix-volatile-fields`, is hashed and compared with the previous hash. Reads are spread across 5 minutes, one per event-loop turn, because the measured cost of the whole set (about 0.4 s) would otherwise stall the single-threaded loop at once.
-   - **What it reports:** a changed hash with an unmoved generation is a missed announcement. The daemon writes `"<operationId> changed without an announcement"` to the log store with source `events`, so cixctl, the dashboard and `GET /v1/system/logs` all see it. It also counts it in a `drift` field on `GET /v1/health`.
+   - **How it reads:** every `state` read is re-run into memory through the response sink, bypassing authorization because it is the daemon reading itself. The handler is given a sentinel fd that the sink recognises and captures. The one fd operation on that path before the sink, `http_set_blocking()` in `respond_json()`, returns -1 on a bad fd and its result is ignored (`daemon/src/http.c`, read 2026-10-17), so the sentinel is tolerated. The body, less any `x-cix-volatile-fields`, is hashed and compared with the previous hash. Reads are spread across 5 minutes, one per event-loop turn, because the measured cost of the whole set (about 0.4 s) would otherwise stall the single-threaded loop at once.
+   - **What it reports:** a changed hash with an unmoved generation is a missed announcement. The daemon writes `"<operationId> changed without an announcement"` to the log store with source `events`, so cixctl, the dashboard and `GET /v1/system/logs` all see it. It also counts it on `GET /v1/events/status` (`authenticated`). A defect count is not given to anyone who can reach the public health endpoint.
+   - **It can be asked for.** `POST /v1/events/verify` runs a full pass immediately and answers 202; its findings go to the log store and the count. `cixctl events verify` is that call. It is how an operator checks a box, and how a test runs the final pass.
    - **Why the daemon and not the browser:** deciding that the system's truth drifted is daemon logic (API-First), it should happen once rather than per tab, and the finding belongs in ADR-0070's store rather than one browser's panel.
    - **What it cannot see:** parameterized reads (`getContainer`, `getStorageFreeSpace`) are not enumerated, since there is no instance list to walk. Their collection reads are, and a changed instance changes its collection.
-   - **It makes every test an events test.** Every daemon-linked test asserts at exit that the drift counter is zero, after a final drift pass over every state read. Every existing test that changes anything then also proves that the change was announced, with no new fixtures. That is the exhaustiveness a representative test set cannot give.
+   - **It makes every test an events test.** Every daemon-linked test, before it stops its daemon, calls `POST /v1/events/verify` and asserts that `GET /v1/events/status` reports zero drift. Every existing test that changes anything then also proves that the change was announced, with no new fixtures. That is the exhaustiveness a representative test set cannot give.
+   - **A test that changes state behind the daemon's back declares it.** Writing a state file or deleting a bridge directly will rightly be reported as drift, because the daemon was not told. Such a test names the reads it expects to drift and why, in the test, and asserts exactly those. The assertion is never weakened to make it pass.
 
 ### Gates
 
@@ -108,13 +117,13 @@ A timer cannot make staleness and load better at once. **The box owns every fact
 
 ## Consequences
 
-- **Contract:** one operation (`GET /v1/events`), `x-cix-read` on all 142 GETs, `x-cix-invalidates` on all 198 mutations, and `x-cix-volatile-fields` where a state read carries a field it does not own. `apigen` gates all three, and the README is updated in the same change. Filed with this ADR: the split of `/v1/storage`'s counters from its state.
+- **Contract:** three operations (`GET /v1/events`, `GET /v1/events/status` and `POST /v1/events/verify`, all `authenticated`), `x-cix-read` on all 142 GETs, `x-cix-invalidates` on all 198 mutations, and `x-cix-volatile-fields` where a state read carries a field it does not own. `apigen` gates all three, and the README is updated in the same change. Filed with this ADR: the split of `/v1/storage`'s counters from its state.
 - **Daemon:**
   - **The core:** the generation vector, the announce primitive and the announcing sites, with `pkg_job_set_state()`.
   - **The stream:** the non-blocking stream with its pending sets and permission masks, and the session timer.
   - **The loop:** the sample loop and the drift check, both running handlers through the existing response sink.
-  - **Reporting:** the `drift` health field.
-- **cixctl:** `events [--follow]`.
+  - **Reporting:** the drift count on `GET /v1/events/status`, and `POST /v1/events/verify`.
+- **cixctl:** `events [--follow]` and `events verify`.
 - **Dashboard:** every timer goes except signed-out health and the phase-2 stats timers; the stream, the vector compare, the truth states and the local clock arrive.
 - **Load, by arithmetic, re-measured on the box once built** with the same Chromium harness that produced the 181: signed in and idle, **zero requests a minute** from the dashboard. The daemon's own self-reads are about 104 a 5-minute cycle plus the samples, all in memory, with no socket and no TLS. Latency goes from up to 30 s to one debounce.
 - **Cost, priced from the measurements above: eight build cycles is the floor.**
