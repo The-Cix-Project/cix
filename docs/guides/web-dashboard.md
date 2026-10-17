@@ -31,7 +31,7 @@ The header's `Log in` button opens a modal for username/password; on success the
 
 **On a gated host with no session**, a *Log in to see this host* banner stands at the top and the background refresh pauses -- every read would be refused, and asking thirty times a minute would only fill the host's audit log. It resumes as soon as you log in. **What your session may do** decides what the dashboard offers ([ADR-0317](../adr/0317-permissions-are-declared-by-the-api-contract.md), #544): a header *New ...* entry, a Remove, or a console your groups do not grant is shown **disabled**, and hovering it names the permission it needs. A list panel whose read is refused says whether you need to log in or which permission your groups lack, instead of an empty list; every action button and right-click menu item your groups do not grant is disabled the same way (#548).
 
-**Host > Permissions** lists what each group grants. *Services > LDAP > Grant Permissions* opens a form with one checkbox per permission the API declares; a row's *Edit* opens the same form for that group, and *Remove* clears it (confirmed first). The host refuses a change that would leave nobody holding `identity:write`, and the status bar shows its reason.
+**Host > Identity > Permissions** lists what each group grants. The header menu's *Host > Identity > Grant Permissions* opens a form with one checkbox per permission the API declares; a row's *Edit* opens the same form for that group, and *Remove* clears it (confirmed first). The host refuses a change that would leave nobody holding `identity:write`, and the status bar shows its reason.
 
 **App passwords** -- machine credentials a script sends as HTTP Basic -- are managed from the *App passwords* button on a user's row in the LDAP users table, or for your own account from *My App Passwords* in the Cix menu (shown while you are logged in; managing your own needs a login session, not an app password). A new one's secret appears once, in a field in that dialog you can copy from; it is never shown again, and it is cleared from the page when the dialog closes.
 
@@ -242,7 +242,8 @@ Six tabs: **Summary** (the default), **Hardware**, **Options**, **Configuration*
 - **Software > Deployment > Installer ISO** -- assembles installer media server-side (ADR-0064), carrying a package seed of every recipe this host has plus the artifacts a fresh box needs to reach name resolution (ADR-0229). An empty form builds shippable media: the installer asks for the disk and network on the console.
 - **Services > DNS > Forwarders** -- where the registered DNS servers send queries they are not authoritative for, applied live to every server at once (ADR-0203). Blank means no upstream recursion.
 - **Services > DNS > Servers** -- the registered DNS containers, and **Provision**, which creates the replicas from their recipe, registers them and points the host resolver at them in one re-runnable call (ADR-0205).
-- **Services > LDAP > Config** -- the floor for automatic UID/GID allocation, which affects future allocations only, and what `ldap_client` containers are currently handed.
+- **Services > LDAP > Servers** -- the registered directory servers (glauth containers). Users and groups are not here: they are who can log in, so they are on **Host > Identity**.
+- **Services > LDAP > Directory** -- the floor for automatic UID/GID allocation, which affects future allocations only, and what `ldap_client` containers are currently handed.
 - **Services > NTP > Config** -- upstream NTP servers the host clock syncs against, tried after any registered NTP server container (ADR-0110).
 
 ## What's deliberately not here

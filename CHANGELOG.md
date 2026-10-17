@@ -6,6 +6,24 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### LDAP the service is under Services again; the tree has a written rule (#592)
+
+The accepted IA board had moved all of LDAP to Host › Identity, which left Services holding DNS, NTP
+and DHCP but not the directory server -- one heading losing an item the others kept. Split with the
+owner's agreement: **Services › LDAP** is a page of its own (`view-ldap`) with the registered servers
+and the Directory settings (the UID/GID floor and what `ldap_client` containers are handed), and
+**Host › Identity** keeps sessions, permissions, users and groups. The header menu follows the tree:
+Register Server stays under Services › LDAP, and New User, New Group and Grant Permissions are under a
+new Host › Identity submenu.
+
+A container's **Image** field links to the image's page. An image is a Software subject with no tree
+leaf -- 23 images on .95, about eight of them what containers run, the rest build machinery, probes
+and internal ones -- so the container that runs it is the way in, and this was plain text.
+
+The guidelines' Tree row now states the rule the tree follows: Containers, Networks and Storage list
+one leaf per real resource; Software, Services and Host list one leaf per page; a subject sits in the
+group whose name describes it, and a label is used once.
+
 ### The last eight hand-built list tables are generated, and a written header is gated (#592)
 
 Server health, the storage page's volumes, the four device lists, a user's app passwords and the

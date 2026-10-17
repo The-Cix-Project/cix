@@ -2322,10 +2322,10 @@ const CATEGORY_VIEWS = {
 	"dns-records": "view-dns-records",
 	"dns-servers": "view-dns-records",
 	"dns-forwarders": "view-dns-records",
-	"ldap-servers": "view-identity",
+	"ldap-servers": "view-ldap",
 	"ldap-groups": "view-identity",
 	"ldap-users": "view-identity",
-	"ldap-config": "view-identity",
+	"ldap-config": "view-ldap",
 	"ntp-config": "view-ntp-config",
 	"ntp-servers": "view-ntp-config",
 	"ntp-time": "view-ntp-config",
@@ -3352,11 +3352,15 @@ function renderTree() {
 			children: [
 				{ label: "PKI", hash: "pki-ca", icon: "pki" },
 				{ label: "DNS", hash: "dns-records", icon: "dns" },
-				/* LDAP is gone from here: it is Host > Identity now
-				 * (the board's call A). It is still a service you
-				 * run -- and it is also the only place a user
-				 * exists, which is the fact an operator is following
-				 * when they go looking for one. */
+				/* LDAP the SERVICE: its servers and how containers
+				 * are handed them. The board's call A had moved all
+				 * of LDAP to Host > Identity; on 2026-10-17 the owner
+				 * agreed to split it, because a group that holds DNS,
+				 * NTP and DHCP and not the directory server reads as
+				 * an item removed from one heading and not the
+				 * others. Who exists in the directory -- users and
+				 * groups -- stays on Identity. */
+				{ label: "LDAP", hash: "ldap-servers", icon: "ldap" },
 				{ label: "NTP", hash: "ntp-config", icon: "ntp" },
 				{ label: "DHCP", hash: "dhcp-servers", icon: "dhcp" },
 				{ label: "Syslog", hash: "syslog-targets", icon: "syslog" },
@@ -5281,7 +5285,17 @@ function renderContainerDetail(name) {
 	/* Summary -- identity/runtime status only. */
 	fields.textContent = "";
 	fields.appendChild(fieldBlock("Status", c.status));
-	fields.appendChild(fieldBlock("Image", c.image));
+	/* The image links to its own page (#592): an image is a Software
+	 * subject with no tree leaf of its own, so the container that runs
+	 * it is the natural way in, and this was plain text. */
+	{
+		const imageRow = fieldBlock("Image", c.image ? "" : "-");
+
+		if (c.image)
+			imageRow.lastChild.appendChild(
+			    treeLink("#images/" + encodeURIComponent(c.image), c.image, ""));
+		fields.appendChild(imageRow);
+	}
 	fields.appendChild(fieldBlock("PID", c.pid === null || c.pid === undefined ? "-" : String(c.pid)));
 	/*
 	 * Issue #78/#77: exit_status alone is ambiguous -- a container killed by
@@ -15855,7 +15869,7 @@ const VIEW_REFRESHERS = {
 	"dns-records": [refreshDnsRecords, refreshDnsServers, refreshDnsForwarders],
 	"dns-servers": [refreshDnsRecords, refreshDnsServers, refreshDnsForwarders],
 	"dns-forwarders": [refreshDnsRecords, refreshDnsServers, refreshDnsForwarders],
-	"ldap-servers": [refreshLdapServers, refreshLdapGroups, refreshLdapUsers, refreshLdapConfig],
+	"ldap-servers": [refreshLdapServers, refreshLdapConfig],
 	"ldap-groups": [refreshLdapGroups, refreshLdapUsers],
 	"ldap-users": [refreshLdapUsers, refreshLdapGroups],
 	"ldap-config": [refreshLdapConfig, refreshLdapServers],

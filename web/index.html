@@ -173,9 +173,6 @@
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">LDAP</button>
 					<ul class="menu-submenu-menu" hidden>
-						<li><button type="button" data-modal="generated-form" data-op="createLdapUser" data-title="Create LDAP user" data-submit="Create">New User</button></li>
-						<li><button type="button" data-modal="generated-form" data-op="createLdapGroup" data-title="Create LDAP group" data-submit="Create">New Group</button></li>
-						<li><button type="button" id="menu-grant-permissions" data-op="putHostauthGroupPermissions">Grant Permissions</button></li>
 						<li><button type="button" data-modal="generated-form" data-op="createLdapServer" data-title="Register LDAP server" data-submit="Register">Register Server</button></li>
 					</ul>
 				</li>
@@ -205,6 +202,14 @@
 		<div class="menu-dropdown">
 			<button type="button" class="menu-dropdown-toggle" data-menu="system">Host</button>
 			<ul class="menu-dropdown-menu" data-menu="system" hidden>
+				<li class="menu-submenu">
+					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">Identity</button>
+					<ul class="menu-submenu-menu" hidden>
+						<li><button type="button" data-modal="generated-form" data-op="createLdapUser" data-title="Create LDAP user" data-submit="Create">New User</button></li>
+						<li><button type="button" data-modal="generated-form" data-op="createLdapGroup" data-title="Create LDAP group" data-submit="Create">New Group</button></li>
+						<li><button type="button" id="menu-grant-permissions" data-op="putHostauthGroupPermissions">Grant Permissions</button></li>
+					</ul>
+				</li>
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">Daemon</button>
 					<ul class="menu-submenu-menu" hidden>
@@ -1077,6 +1082,11 @@
 		     about. LDAP is still a service you run; it is also the only
 		     place a user exists, and that second fact is the one an
 		     operator is following when they come here.
+
+		     Split on 2026-10-17, with the owner's agreement: the
+		     directory's SERVERS and its delivery settings went back to
+		     Services > LDAP (view-ldap), because they are the service
+		     you run. Who exists -- users, groups -- stays here.
 		-->
 		<section class="view" id="view-identity" hidden>
 			<div class="tab-bar">
@@ -1084,8 +1094,6 @@
 				<button type="button" class="tab-button" data-tab="hostauth-permissions">Permissions</button>
 				<button type="button" class="tab-button" data-tab="ldap-users">Users</button>
 				<button type="button" class="tab-button" data-tab="ldap-groups">Groups</button>
-				<button type="button" class="tab-button" data-tab="ldap-servers">Servers</button>
-				<button type="button" class="tab-button" data-tab="ldap-config">Directory</button>
 			</div>
 <div class="tab-panel" data-tab="hostauth-sessions">
 			<div class="view-list">
@@ -1152,7 +1160,17 @@
 				</table>
 			</div>
 		</div>
-			<div class="tab-panel" data-tab="ldap-servers" hidden>
+		</section>
+
+		<!-- The LDAP directory as a SERVICE (#592): the servers this host runs
+		     and how containers are handed them. Who exists in the directory --
+		     users, groups, sessions, permissions -- is Host > Identity. -->
+		<section class="view" id="view-ldap" hidden>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="ldap-servers">Servers</button>
+				<button type="button" class="tab-button" data-tab="ldap-config">Directory</button>
+			</div>
+			<div class="tab-panel" data-tab="ldap-servers">
 			<div class="view-list">
 				<h2>LDAP Servers</h2>
 				<table id="ldap-servers">
