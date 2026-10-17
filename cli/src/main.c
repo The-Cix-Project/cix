@@ -8403,7 +8403,7 @@ static int cmd_events(const struct cix_client *c, int json_mode, int argc, char 
 	const char *sub = argc > 0 ? argv[0] : "status";
 
 	/* ADR-0339: the stream itself, one frame per line. */
-	if (strcmp(sub, "--follow") == 0)
+	if (argc > 0 && strcmp(argv[0], "--follow") == 0)
 		return cix_events_follow_run(c) == 0 ? 0 : 1;
 	if (strcmp(sub, "status") != 0) {
 		fprintf(stderr, "cixctl: events takes: status, or --follow\n");

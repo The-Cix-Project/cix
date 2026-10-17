@@ -22,7 +22,7 @@ A WebSocket on which the box names the reads that changed, at their new generati
   write deadline.
 - **`cixctl events --follow`** prints the stream.
 - **`test_events`** opens a stream through the shared reader (`test_ws.c`). It checks the first frame, a
-  pushed change, ping and pong, a 300-change flood with a second stream that never reads (the daemon
+  pushed change, ping and pong, a 100-change flood with a second stream that never reads (the daemon
   stays responsive and the reading stream converges to the last generation), and a heartbeat.
 
 ### The box counts every change to what it shows (ADR-0339 step two, #599)

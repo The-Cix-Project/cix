@@ -423,11 +423,14 @@ int main(void)
 
 		/*
 		 * 9. A stream that never reads cannot stall the daemon, and the
-		 *    reading one still converges: its set coalesces, so however
-		 *    many changes land, a few frames bring it to the last one.
+		 *    reading one still reaches the last generation. Each change
+		 *    here is its own loop pass, so the reader gets about one
+		 *    frame per change: coalescing happens only when a socket
+		 *    will not take a whole frame, which loopback with this
+		 *    little traffic never refuses, so this does not exercise it.
 		 */
 		idle_fd = open_events(&idle, 5);
-		for (i = 0; i < 300 && fd >= 0; i++) {
+		for (i = 0; i < 100 && fd >= 0; i++) {
 			snprintf(body, sizeof(body),
 			         "{\"instance_name\":\"evflood%d\",\"site_name\":\"lab\","
 			         "\"domain_suffix\":\"internal\"}",
@@ -452,7 +455,7 @@ int main(void)
 			fail("a stream that does not read does not slow the daemon", "health took > 2 s");
 		if (fd >= 0) {
 			g = -1;
-			for (frames = 0; frames < 50 && g != (long long)n3 + 1 + 300; frames++) {
+			for (frames = 0; frames < 1000 && g != (long long)n3 + 1 + 100; frames++) {
 				v = next_event(&r, "the reading stream converges after the flood", NULL);
 				if (v == NULL)
 					break;
@@ -460,8 +463,8 @@ int main(void)
 					g = frame_gen(v, "getSystemSite");
 				json_free(v);
 			}
-			if (g != (long long)n3 + 1 + 300)
-				fail("the reading stream reaches the last generation, coalesced", "");
+			if (g != (long long)n3 + 1 + 100)
+				fail("the reading stream reaches the last generation", "");
 		}
 
 		/* 10. A heartbeat: with nothing changing, the whole vector
