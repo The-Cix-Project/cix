@@ -12,6 +12,32 @@
 #include <stdio.h>
 #include <string.h>
 
+/*
+ * A DESTINATION WITH NO PREFIX IS REFUSED, NOT IGNORED (#592).
+ *
+ * Prefix 0 is the default route, and the kernel has no use for a
+ * destination there, so this endpoint used to drop `dest` without a
+ * word. That turned a forgotten prefix into the most consequential
+ * route a host has: `{"dest":"172.40.0.0","gateway":"172.30.1.1"}`
+ * was handled as an add of the DEFAULT route via that gateway (read
+ * from this file's own code on 2026-10-17, not measured on a host) --
+ * and on DELETE, the same body removed the default route. The
+ * dashboard's hand-built form guarded against it with a
+ * client-side check, which protected the dashboard and nothing else;
+ * the rule belongs here, where cixctl and every script get it too.
+ *
+ * `0.0.0.0` stays accepted with prefix 0, because it IS the default
+ * route's destination and saying so explicitly is not a mistake.
+ */
+#define ROUTE_DEST_NEEDS_PREFIX \
+	"dest names a network, so it needs a prefix of 1-32; send neither dest nor prefix " \
+	"for the default route"
+
+static int route_dest_is_ignored(const char *dest_str, int prefix_len)
+{
+	return prefix_len == 0 && dest_str != NULL && strcmp(dest_str, "0.0.0.0") != 0;
+}
+
 /* GET /v1/system/routes (ADR-0066): the box's own real kernel IPv4
  * routing table -- see network_write_routes_json()'s own comment for
  * why this exists (no SSH/general shell, the daemon is the only way
@@ -37,7 +63,9 @@ void handle_route_list(int fd)
  * the host's own kernel routing table via rtnl_route_add_ipv4() --
  * the write-side counterpart to handle_route_list() above. dest/
  * prefix are optional together (omitted or prefix 0 means the
- * default route, matching rtnl_route_add_ipv4()'s own convention);
+ * default route, matching rtnl_route_add_ipv4()'s own convention,
+ * and a dest given without a prefix is refused -- see
+ * route_dest_is_ignored());
  * gateway is optional (omitted means a direct/on-link route). Scoped
  * to exactly what that primitive supports -- no RTA_OIF/interface
  * binding, no route replace semantics beyond what NLM_F_CREATE
@@ -74,6 +102,12 @@ void handle_route_add(int fd, const char *body, size_t body_len)
 		if (root != NULL)
 			json_free(root);
 		respond_error(fd, 400, "Bad Request", "prefix must be in [0, 32]");
+		return;
+	}
+	if (route_dest_is_ignored(dest_str, prefix_len)) {
+		if (root != NULL)
+			json_free(root);
+		respond_error(fd, 400, "Bad Request", ROUTE_DEST_NEEDS_PREFIX);
 		return;
 	}
 	if (prefix_len > 0) {
@@ -148,6 +182,12 @@ void handle_route_del(int fd, const char *body, size_t body_len)
 		if (root != NULL)
 			json_free(root);
 		respond_error(fd, 400, "Bad Request", "prefix must be in [0, 32]");
+		return;
+	}
+	if (route_dest_is_ignored(dest_str, prefix_len)) {
+		if (root != NULL)
+			json_free(root);
+		respond_error(fd, 400, "Bad Request", ROUTE_DEST_NEEDS_PREFIX);
 		return;
 	}
 	if (prefix_len > 0) {

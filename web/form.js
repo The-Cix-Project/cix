@@ -143,6 +143,10 @@ function constraintText(f) {
 	 */
 	if (parts.length === 0 && f.format !== undefined && FORMAT_WORD[f.format] !== undefined)
 		parts.push(FORMAT_WORD[f.format]);
+	/* A map's shape is the one thing about it the operator must know
+	 * before typing, and nothing else in the form says it. */
+	if (parts.length === 0 && isStringMap(f))
+		parts.push("KEY=VALUE per line");
 	return parts.join(" · ");
 }
 
@@ -215,8 +219,46 @@ function fieldHint(f) {
  * a comma-separated text input, the convention the hand-written
  * container form already used for `dns_servers`.
  */
-function fieldControl(f) {
+function fieldControl(f, choices) {
 	let el;
+
+	/*
+	 * CHOICES FROM THE BOX FIRST (#592): a select of the things that
+	 * really exist -- the host's disks, its networks, its registered
+	 * DHCP servers -- where the contract can only say "a string".
+	 *
+	 * Authored at the call site, not derived, because WHICH list and
+	 * how it is filtered is the page's judgement: a disk already given a
+	 * role is not a candidate for another, and the contract has no way
+	 * to say so. What is derived is the control: an array field's
+	 * choices are a multiple select, because an array is the contract
+	 * saying "any number of these".
+	 *
+	 * An empty list is a select offering nothing rather than a free
+	 * text input, since a value the page could not find is one the
+	 * daemon would refuse -- and a required one then cannot submit,
+	 * which is the truth about it.
+	 */
+	if (Array.isArray(choices)) {
+		el = document.createElement("select");
+		if (f.type === "array") {
+			el.multiple = true;
+			el.size = Math.min(Math.max(choices.length, 2), 6);
+		} else if (!f.required || choices.length === 0) {
+			const blank = document.createElement("option");
+
+			blank.value = "";
+			blank.textContent = choices.length === 0 ? "None available" : "—";
+			el.appendChild(blank);
+		}
+		for (const c of choices) {
+			const o = document.createElement("option");
+
+			o.value = c.value;
+			o.textContent = c.label !== undefined ? c.label : c.value;
+			el.appendChild(o);
+		}
+	}
 
 	/*
 	 * `ui` FIRST, because it is the contract overriding a derivation
@@ -243,7 +285,22 @@ function fieldControl(f) {
 	 * 16), a JSON object field holds a handful of keys (they used 3
 	 * and 6). `resize: vertical` means neither is a ceiling.
 	 */
-	if (f.ui === "textarea" || f.type === "object") {
+	if (Array.isArray(choices)) {
+		/* Built above; the shared tail below still applies. */
+	} else if (isStringMap(f)) {
+		/*
+		 * A MAP OF STRINGS (#592) -- `additionalProperties: {type:
+		 * string}`, which apigen records as `items: "string"` on an
+		 * object. KEY=VALUE, one per line, which is how every one of
+		 * them is written outside a form: modprobe options, an
+		 * environment, sysctls. JSON was correct and nobody types
+		 * `{"debug": "1"}` to load a module.
+		 */
+		el = document.createElement("textarea");
+		el.rows = 4;
+		el.spellcheck = false;
+		el.placeholder = "KEY=VALUE";
+	} else if (f.ui === "textarea" || f.type === "object") {
 		el = document.createElement("textarea");
 		el.rows = f.type === "object" ? 6 : 12;
 		el.spellcheck = false;
@@ -317,11 +374,53 @@ function fieldControl(f) {
 	 * put in no secondary group at all. Found by rendering the real
 	 * form and printing the body it collects, not by reading.
 	 */
-	if (f.type === "array" && f.items !== undefined)
+	if ((f.type === "array" || f.type === "object") && f.items !== undefined)
 		el.dataset.fitems = f.items;
+	/* A multiple select's `required` means "at least one", which an
+	 * array the contract marks required does mean -- but an optional
+	 * one must be submittable with nothing chosen. */
 	if (f.required && f.type !== "boolean")
 		el.required = true;
 	return el;
+}
+
+/* An object whose values the contract types as strings: a map, not a
+ * document. */
+function isStringMap(f) {
+	return f.type === "object" && f.items === "string";
+}
+
+/*
+ * KEY=VALUE lines into the object they mean, and back.
+ *
+ * Split at the FIRST `=`, because a value may itself contain one (a
+ * kernel command-line fragment, a base64 secret's padding) and a key
+ * never does. A line with no `=`, or the same key twice, is refused
+ * rather than guessed at: the first is a typo, and the second would
+ * silently drop one of the two values the operator wrote.
+ */
+function parseStringMap(label, text) {
+	const out = {};
+
+	for (const raw of text.split("\n")) {
+		const line = raw.trim();
+		const eq = line.indexOf("=");
+		let key;
+
+		if (line === "")
+			continue;
+		if (eq <= 0)
+			throw new Error(label + ": \"" + line + "\" is not KEY=VALUE");
+		key = line.slice(0, eq).trim();
+		if (Object.prototype.hasOwnProperty.call(out, key))
+			throw new Error(label + ": " + key + " is given twice");
+		out[key] = line.slice(eq + 1).trim();
+	}
+	return out;
+}
+
+function stringMapText(map) {
+	return Object.keys(map).map((k) => k + "=" + map[k]).join("\n");
 }
 
 /*
@@ -335,19 +434,59 @@ function fieldControl(f) {
  */
 function generatedFormBody(form) {
 	const body = {};
+	const cleared = {};
+
+	/* A kept secret's "Clear" box (#592): checked, the secret is sent
+	 * as "" -- the one way to say "remove it" when an empty field
+	 * already means "keep it". */
+	for (const box of form.querySelectorAll("[data-clear-for]"))
+		if (box.checked)
+			cleared[box.dataset.clearFor] = true;
 
 	for (const el of form.querySelectorAll("[data-field]")) {
 		const name = el.dataset.field;
 		const type = el.dataset.ftype;
 
+		if (cleared[name]) {
+			body[name] = "";
+			continue;
+		}
 		if (type === "boolean") {
 			body[name] = el.checked;
+			continue;
+		}
+		/* A field the form opened HOLDING a value, now emptied, is a
+		 * request to clear it -- the opposite of an untouched empty
+		 * field, which is omitted so that it keeps (#592). Without
+		 * this an edit form could never clear anything: the recipe
+		 * source's catalogue key is "" to remove, and the hand-built
+		 * form sent it on every save to make that possible. */
+		if (el.dataset.initial === "1" && fieldIsEmpty(el)) {
+			body[name] = type === "array" ? [] : type === "object" ? {} : "";
+			continue;
+		}
+		if (el.multiple) {
+			const picked = Array.from(el.selectedOptions).map((o) => o.value);
+
+			if (picked.length > 0 || el.required)
+				body[name] = picked;
+			continue;
+		}
+		if (type === "object" && el.dataset.fitems === "string") {
+			if (el.value.trim() === "") {
+				if (el.required)
+					throw new Error(fieldLabel(name) + " is required");
+				continue;
+			}
+			body[name] = parseStringMap(fieldLabel(name), el.value);
 			continue;
 		}
 		/*
 		 * A free-form object -- `additionalProperties`, so the
 		 * contract names no fields to render -- is typed as JSON and
-		 * parsed here. `secrets` on applyDeployment is the first.
+		 * parsed here. A schedule's `params` is one. `secrets` on
+		 * applyDeployment was the first, until apigen read its
+		 * values' type and it became the map of strings above (#592).
 		 *
 		 * It THROWS rather than reporting, because the one submit
 		 * listener already calls this inside its own try/catch and
@@ -407,9 +546,30 @@ function generatedFormBody(form) {
 	return body;
 }
 
-/* The two things a submit needs that are not in the form: what to
- * refresh afterwards and what to say if it fails. Authored per call
- * site, held here because the one submit listener reads them. */
+function fieldIsEmpty(el) {
+	if (el.multiple)
+		return el.selectedOptions.length === 0;
+	return el.value.trim() === "";
+}
+
+/*
+ * The operation's path arguments: the ones the call site supplied, with
+ * every one it did not supply read from the field the form rendered for
+ * it (#592). In the contract's order, which is the route function's.
+ */
+function generatedFormArgs(form) {
+	const args = JSON.parse(form.dataset.args || "[]");
+
+	for (const el of form.querySelectorAll("[data-arg]"))
+		args[Number(el.dataset.arg)] = el.value.trim();
+	return args;
+}
+
+/* The three things a submit needs that are not in the form: what to ask
+ * before sending, what to refresh afterwards and what to say if it
+ * fails. Authored per call site, held here because the one submit
+ * listener reads them. */
+let generatedFormBefore = null;
 let generatedFormAfter = null;
 let generatedFormFailed = "";
 
@@ -446,8 +606,24 @@ function setFieldValue(el, f, v) {
 		el.checked = v === true;
 		return;
 	}
+	/* Remembered, so that emptying it later reads as "clear" rather
+	 * than as "leave alone" (generatedFormBody()). */
+	if (!(Array.isArray(v) && v.length === 0) && v !== "" &&
+	    !(typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0))
+		el.dataset.initial = "1";
+	if (el.multiple) {
+		const want = Array.isArray(v) ? v.map(String) : [String(v)];
+
+		for (const o of el.options)
+			o.selected = want.indexOf(o.value) !== -1;
+		return;
+	}
 	if (f.type === "array") {
 		el.value = Array.isArray(v) ? v.join(", ") : String(v);
+		return;
+	}
+	if (isStringMap(f) && typeof v === "object") {
+		el.value = stringMapText(v);
 		return;
 	}
 	if (f.type === "object") {
@@ -465,11 +641,17 @@ function setFieldValue(el, f, v) {
  *
  * opts.title    the modal's heading                (authored)
  * opts.submit   the words on the button            (authored)
- * opts.args     the operation's path parameters, in contract order
+ * opts.args     the operation's path parameters, in contract order;
+ *               one not given is asked for, as a field of its own
+ * opts.before   (body) => bool: a question before sending (authored)
  * opts.after    what to refresh once it succeeds   (authored)
  * opts.failed   what to say if it does not         (authored)
  * opts.values   starting values, by field name -- a draft to edit
  * opts.fixed    values that IDENTIFY the resource, so not editable
+ * opts.choices  { field: [{ value, label }] } -- what really exists to
+ *               pick from, read from the box by the call site
+ * opts.secrets  { field: true } -- a secret the resource already holds,
+ *               so the form can keep, replace or remove it
  *
  * `values` and `fixed` are two different facts and not one with a flag.
  * An upsert keyed by a body field -- addImageRecipe, addDeployment --
@@ -486,6 +668,10 @@ function openForm(opId, opts) {
 	const options = opts || {};
 	const form = document.getElementById("generated-form");
 	const fields = shape && shape.request ? CIX_API.FIELDS[shape.request] || [] : [];
+	const argFields = shape && shape.args ? CIX_API.FIELDS[shape.args] || [] : [];
+	const given = options.args || [];
+	const choices = options.choices || {};
+	const secrets = options.secrets || {};
 	const button = document.createElement("button");
 	const allowed = sessionMay(opId);
 
@@ -504,74 +690,39 @@ function openForm(opId, opts) {
 	form.dataset.opId = opId;
 	form.dataset.args = JSON.stringify(options.args || []);
 	generatedFormAfter = options.after || refreshVisibleView;
+	generatedFormBefore = options.before || null;
 	generatedFormFailed = options.failed || ("Failed to " + (options.submit || "submit"));
 
+	/*
+	 * The path parameters the call site did not supply, FIRST, because
+	 * they name the thing the rest of the form describes -- the sysctl
+	 * key before its value, the module before its options (#592). One
+	 * the call site did supply is not shown: an edit opened on a
+	 * resource already says which in its title, and every edit form
+	 * before this one worked that way.
+	 */
+	argFields.forEach((f, i) => {
+		let control;
+
+		if (given[i] !== undefined && given[i] !== null)
+			return;
+		control = fieldControl(f, choices[f.name]);
+		delete control.dataset.field;
+		control.dataset.arg = String(i);
+		form.appendChild(fieldRow(f, control));
+	});
+
 	for (const f of fields) {
-		const label = document.createElement("label");
 		const values = options.values || {};
 		const fixed = options.fixed || {};
 		let control;
-		let head;
-		let name;
-		let rule;
-		let req;
+		let label;
 
 		/* A field the daemon only ever reports is not a field anyone
 		 * fills in. */
 		if (f.readOnly)
 			continue;
-		/*
-		 * The label ROW, which the Generated board specifies as three
-		 * things on one line: the operator's word, whether the field
-		 * is required, and the constraint in monospace on the right.
-		 *
-		 * All three are facts the schema already states and that the
-		 * dashboard used to keep to itself -- a required field looked
-		 * exactly like an optional one, and the 174 constraints were
-		 * enforced invisibly by the input until it refused to submit.
-		 */
-		head = document.createElement("span");
-		head.className = "field-head";
-		name = document.createElement("span");
-		name.className = "field-name";
-		name.textContent = fieldLabel(f);
-		head.appendChild(name);
-		/* Both words, as the board draws them. Marking only the
-		 * exception was the tidier instinct and it is wrong here: an
-		 * unmarked field reads as "nobody said", and a form an
-		 * operator is meeting for the first time should not make them
-		 * infer which of the two it is. */
-		req = document.createElement("span");
-		req.className = f.required ? "field-req" : "field-opt";
-		req.textContent = f.required ? "required" : "optional";
-		head.appendChild(req);
-		rule = constraintText(f);
-		if (rule !== "") {
-			const chip = document.createElement("span");
-
-			chip.className = "field-rule";
-			chip.textContent = rule;
-			head.appendChild(chip);
-		}
-		label.appendChild(head);
-		/*
-		 * A boolean uses the dashboard's own checkbox layout -- name
-		 * beside a real-sized box, not above a full-width one. Without
-		 * the class, the global `form input` rule (width: 100%,
-		 * height: 2.25rem, which exists so text fields line up) makes
-		 * a checkbox a large grey square. Rendering pkgInstall is what
-		 * showed it; `form label.checkbox input[type="checkbox"]`
-		 * already existed for the hand-written forms.
-		 */
-		if (f.type === "boolean")
-			label.className = "checkbox";
-		/*
-		 * No `.wide` here any more: the generated form is one column,
-		 * so every field already spans it. The class stays in the
-		 * stylesheet for the hand-written forms, which are still
-		 * grids.
-		 */
-		control = fieldControl(f);
+		control = fieldControl(f, choices[f.name]);
 		/* `readOnly` is right for every `fixed` field there is or is
 		 * likely to be -- a key is a name, so a text input. It is
 		 * inert on a `<select>`, so a fixed enum would show as
@@ -584,54 +735,40 @@ function openForm(opId, opts) {
 		} else {
 			setFieldValue(control, f, values[f.name]);
 		}
-		label.appendChild(control);
+		label = fieldRow(f, control, f.ui === "textarea" ? fileLoader(control) : null);
 		/*
-		 * The hint goes INSIDE the label, not beside it.
-		 *
-		 * A dashboard form is a grid -- `repeat(auto-fit, minmax(15rem,
-		 * 1fr))` -- so a hint appended to the form is its own grid
-		 * item and lands in the NEXT COLUMN, reading as a peer of the
-		 * field rather than as its explanation. Rendering the real
-		 * modal is what showed it: the syslog field sat in column one
-		 * with its own description beside it in column two.
-		 *
-		 * The hand-written forms had the same shape, so this is not a
-		 * regression -- but they carried 185 hints between them while
-		 * the contract has a description for 583 fields, so what was
-		 * an oddity on a few forms would have become the norm on every
-		 * one. Inside the label, `form label`'s own flex column stacks
-		 * name, control and hint as one cell.
+		 * A SECRET THE RESOURCE ALREADY HOLDS (#592) can be kept,
+		 * replaced or removed, and an empty field can only mean one of
+		 * those: keep, because the operator was never shown it. So the
+		 * other two need a control each -- typing replaces, and this
+		 * box removes. Only where the call site says the secret is set
+		 * (`secrets`), since a box to clear nothing is a question with
+		 * no meaning.
 		 */
-		if (f.description !== undefined) {
-			const hint = document.createElement("p");
+		if (f.format === "password" && secrets[f.name]) {
+			const clear = document.createElement("label");
+			const box = document.createElement("input");
 
-			/*
-			 * CLAMPED, with the whole thing on hover.
-			 *
-			 * The contract's descriptions are reference documentation
-			 * -- 331 characters on average and up to 2,064 -- because
-			 * that is the right length for the document they were
-			 * written in. Rendered verbatim, a four-field form becomes
-			 * a wall of prose taller than the modal: pkgInstall's four
-			 * fields produced four paragraphs and pushed its own
-			 * submit button off the bottom.
-			 *
-			 * Clamping is a DISPLAY decision and keeps the contract
-			 * the source -- nothing is truncated in api.js, nothing is
-			 * summarised, and `title` carries the full text. That is
-			 * the difference between this and a first-sentence
-			 * heuristic in the generator, which would have thrown the
-			 * rest away for every reader.
-			 */
-			hint.className = "hint";
-			hint.textContent = fieldHint(f);
-			/* The whole thing on hover, so nothing is lost -- the
-			 * contract stays the source and this is a display
-			 * decision, the same split the clamp was reaching for and
-			 * getting wrong. */
-			hint.title = f.description;
-			label.appendChild(hint);
+			control.placeholder = "Set — leave empty to keep it";
+			clear.className = "checkbox";
+			box.type = "checkbox";
+			box.dataset.clearFor = f.name;
+			clear.appendChild(box);
+			clear.appendChild(document.createTextNode("Remove the stored " +
+			                                          fieldLabel(f).toLowerCase()));
+			form.appendChild(label);
+			form.appendChild(clear);
+			continue;
 		}
+		/*
+		 * A DOCUMENT FIELD CAN BE READ FROM A FILE (#592). A recipe is
+		 * a file on someone's disk far more often than it is typed, and
+		 * both hand-built recipe forms offered this. Derived from the
+		 * field being a document -- `x-cix-ui: textarea` -- so every
+		 * such field has it, and it fills the textarea rather than
+		 * replacing it: the operator sees what will be sent, and can
+		 * still edit it.
+		 */
 		form.appendChild(label);
 	}
 	button.type = "submit";
@@ -645,6 +782,131 @@ function openForm(opId, opts) {
 	if (!allowed)
 		button.title = sessionRefusal(opId);
 	form.appendChild(button);
+}
+
+/*
+ * A DOCUMENT FIELD CAN BE READ FROM A FILE (#592). A recipe is a file
+ * on someone's disk far more often than it is typed, and both
+ * hand-built recipe forms offered this. Derived from the field being a
+ * document -- `x-cix-ui: textarea` -- so every such field has it, and
+ * it FILLS the textarea rather than replacing it: the operator sees
+ * what will be sent, and can still edit it.
+ */
+function fileLoader(textarea) {
+	const file = document.createElement("input");
+
+	file.type = "file";
+	file.className = "field-file";
+	file.addEventListener("change", async () => {
+		if (file.files.length > 0)
+			textarea.value = await file.files[0].text();
+	});
+	return file;
+}
+
+/*
+ * One field as the Generated board draws it: a head row, the control,
+ * one sentence of hint -- all inside one label (#592 made it its own
+ * function, because a path parameter is drawn exactly like a body
+ * field and is not a body field). `extra`, when given, sits directly
+ * under the control: the file picker that fills a document field.
+ */
+function fieldRow(f, control, extra) {
+	const label = document.createElement("label");
+	let head;
+	let name;
+	let rule;
+	let req;
+
+	/*
+	 * The label ROW, which the Generated board specifies as three
+	 * things on one line: the operator's word, whether the field is
+	 * required, and the constraint in monospace on the right.
+	 *
+	 * All three are facts the schema already states and that the
+	 * dashboard used to keep to itself -- a required field looked
+	 * exactly like an optional one, and the 174 constraints were
+	 * enforced invisibly by the input until it refused to submit.
+	 */
+	head = document.createElement("span");
+	head.className = "field-head";
+	name = document.createElement("span");
+	name.className = "field-name";
+	name.textContent = fieldLabel(f);
+	head.appendChild(name);
+	/* Both words, as the board draws them. Marking only the exception
+	 * was the tidier instinct and it is wrong here: an unmarked field
+	 * reads as "nobody said", and a form an operator is meeting for the
+	 * first time should not make them infer which of the two it is. */
+	req = document.createElement("span");
+	req.className = f.required ? "field-req" : "field-opt";
+	req.textContent = f.required ? "required" : "optional";
+	head.appendChild(req);
+	rule = constraintText(f);
+	if (rule !== "") {
+		const chip = document.createElement("span");
+
+		chip.className = "field-rule";
+		chip.textContent = rule;
+		head.appendChild(chip);
+	}
+	label.appendChild(head);
+	/*
+	 * A boolean uses the dashboard's own checkbox layout -- name beside
+	 * a real-sized box, not above a full-width one. Without the class,
+	 * the global `form input` rule (width: 100%, height: 2.25rem, which
+	 * exists so text fields line up) makes a checkbox a large grey
+	 * square. Rendering pkgInstall is what showed it; `form
+	 * label.checkbox input[type="checkbox"]` already existed for the
+	 * hand-written forms.
+	 *
+	 * No `.wide` here any more: the generated form is one column, so
+	 * every field already spans it.
+	 */
+	if (f.type === "boolean")
+		label.className = "checkbox";
+	label.appendChild(control);
+	if (extra !== undefined && extra !== null)
+		label.appendChild(extra);
+	/*
+	 * The hint goes INSIDE the label, not beside it.
+	 *
+	 * A dashboard form is a grid -- `repeat(auto-fit, minmax(15rem,
+	 * 1fr))` -- so a hint appended to the form is its own grid item and
+	 * lands in the NEXT COLUMN, reading as a peer of the field rather
+	 * than as its explanation. Rendering the real modal is what showed
+	 * it: the syslog field sat in column one with its own description
+	 * beside it in column two.
+	 *
+	 * The hand-written forms had the same shape, so this is not a
+	 * regression -- but they carried 185 hints between them while the
+	 * contract has a description for 583 fields, so what was an oddity
+	 * on a few forms would have become the norm on every one. Inside
+	 * the label, `form label`'s own flex column stacks name, control
+	 * and hint as one cell.
+	 */
+	if (f.description !== undefined) {
+		const hint = document.createElement("p");
+
+		/*
+		 * ONE SENTENCE, with the whole thing on hover.
+		 *
+		 * The contract's descriptions are reference documentation -- 331
+		 * characters on average and up to 2,064 -- because that is the
+		 * right length for the document they were written in. Rendered
+		 * verbatim, a four-field form becomes a wall of prose taller
+		 * than the modal: pkgInstall's four fields produced four
+		 * paragraphs and pushed its own submit button off the bottom.
+		 * fieldHint() takes the first sentence, and `title` carries the
+		 * full text, so nothing is truncated in api.js and the contract
+		 * stays the source.
+		 */
+		hint.className = "hint";
+		hint.textContent = fieldHint(f);
+		hint.title = f.description;
+		label.appendChild(hint);
+	}
+	return label;
 }
 
 /*

@@ -458,6 +458,41 @@ int main(void)
 	               "      operationId: x\n",
 	               "not a path");
 
+	/*
+	 * 5b. A path parameter must be the declared one, in the path's own
+	 * order (#592). A form now asks for each one the caller does not
+	 * supply and puts it in the URL by position, so an undeclared
+	 * parameter would be a field nobody described and a swapped pair
+	 * would put one value where the other belongs.
+	 */
+	expect_refusal("an undeclared path parameter",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing/{name}:\n"
+	               "    get:\n"
+	               "      operationId: getThing\n"
+	               "      x-cix-permission: public\n",
+	               "not the declared parameter");
+	expect_refusal("path parameters declared out of the path's order",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing/{a}/{b}:\n"
+	               "    get:\n"
+	               "      operationId: getThing\n"
+	               "      x-cix-permission: public\n"
+	               "      parameters:\n"
+	               "        - name: b\n"
+	               "          in: path\n"
+	               "          required: true\n"
+	               "          schema:\n"
+	               "            type: string\n"
+	               "        - name: a\n"
+	               "          in: path\n"
+	               "          required: true\n"
+	               "          schema:\n"
+	               "            type: string\n",
+	               "not the declared parameter");
+
 	/* 6. An empty paths section. Emitting an empty table would unroute
 	 * the entire API, and a build that succeeds while doing so is worse
 	 * than one that stops. */

@@ -204,6 +204,28 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	/* 5b. A dest with no prefix is refused on both sides (#592). It
+	 * used to be dropped, which added -- or on DELETE removed -- the
+	 * DEFAULT route instead of the one named. Refused before rtnetlink
+	 * is opened, so nothing about the kernel's table can change. */
+	memset(&r, 0, sizeof(r));
+	if (ok && (cix_client_request(&client, "POST", "/v1/system/routes",
+	                              "{\"dest\":\"" TEST_DEST "\",\"gateway\":\"" TEST_GATEWAY "\"}",
+	                              &r) != 0 ||
+	           r.status != 400)) {
+		fprintf(stderr, "FAIL: dest without prefix POST expected 400, got %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	if (ok && (cix_client_request(&client, "DELETE", "/v1/system/routes",
+	                              "{\"dest\":\"" TEST_DEST "\"}", &r) != 0 ||
+	           r.status != 400)) {
+		fprintf(stderr, "FAIL: dest without prefix DELETE expected 400, got %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
 	/* 6. Delete it via DELETE, expect 204. */
 	memset(&r, 0, sizeof(r));
 	if (ok && (cix_client_request(&client, "DELETE", "/v1/system/routes",

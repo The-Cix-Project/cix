@@ -476,7 +476,7 @@ document.getElementById("generated-form").addEventListener("submit", async (even
 	const form = event.target;
 	const opId = form.dataset.opId;
 	const shape = CIX_API[opId + "_SHAPE"];
-	const args = JSON.parse(form.dataset.args || "[]");
+	const args = generatedFormArgs(form);
 	let body;
 	let result;
 
@@ -492,6 +492,12 @@ document.getElementById("generated-form").addEventListener("submit", async (even
 		 * itself and leave the modal open with the text still in it,
 		 * exactly like a 400 would. */
 		body = generatedFormBody(form);
+		/* The authored question, asked about what is actually about
+		 * to be sent (#592): letting a source write to its forge is
+		 * confirmed only when this save turns it on. Declining leaves
+		 * the modal open with everything still in it. */
+		if (generatedFormBefore !== null && !(await generatedFormBefore(body)))
+			return;
 		result = await apiRequest(shape.method, CIX_API[opId](...args), body);
 		clearStatus();
 		closeModal();
@@ -693,14 +699,31 @@ window.addEventListener("resize", repositionOpenMenu);
 window.addEventListener("scroll", repositionOpenMenu, true);
 
 /*
- * What a header-menu generated form does once it succeeds, where that
- * is more than refreshing the page (#592). Authored, per operation, and
- * the one place it is said: issuing a certificate has to SHOW its
- * response, because that response is the only time its key exists
- * anywhere but the host.
+ * What a header-menu generated form needs beyond its contract (#592),
+ * authored per operation, in the one place it is said:
+ *
+ *   choices  what really exists to pick from, read from the box when
+ *            the form opens -- the disks with no role, the networks
+ *            with no range, the recipe sources
+ *   before   a question about what is about to be sent, as the edit
+ *            buttons on those pages ask it
+ *   after    more than refreshing the page: issuing a certificate has
+ *            to SHOW its response, because that response is the only
+ *            time its key exists anywhere but the host
+ *
+ * Each is the same function the page's own button uses, so the menu
+ * and the page cannot drift apart.
  */
 const GENERATED_FORM_HOOKS = {
 	createPkiCert: { after: showIssuedCert },
+	createStorageRole: { choices: diskRoleChoices, after: refreshDiskRoles },
+	setDhcpNetwork: { choices: () => dhcpRangeChoices(true), after: afterDhcpRangeSave },
+	addPkgRecipe: { choices: recipeSourceChoices, after: afterPkgRecipeSave },
+	addPkgSource: { before: (body) => confirmPkgSourceTrust(body, null), after: refreshPkgSources },
+	addPkgRepository: {
+		before: (body) => confirmPkgRepositoryPush(body, null),
+		after: refreshPkgRepositories,
+	},
 };
 
 /* Create-action items (data-modal, shared across every topical menu
@@ -714,12 +737,29 @@ for (const item of document.querySelectorAll(".menu-bar button[data-modal]")) {
 	if (item.dataset.modal === "generated-form") {
 		const hooks = GENERATED_FORM_HOOKS[item.dataset.op] || {};
 
-		item.addEventListener("click", () =>
+		item.addEventListener("click", async () => {
+			let choices;
+
+			/* A list that could not be read opens NO form: a select of
+			 * nothing would read as "there are none", which is the one
+			 * thing nobody measured. */
+			if (hooks.choices !== undefined) {
+				try {
+					choices = await hooks.choices();
+				} catch (e) {
+					showStatus("Could not read what " + item.dataset.title.toLowerCase() +
+					           " can choose from: " + e.message, true);
+					return;
+				}
+			}
 			openForm(item.dataset.op, {
 				title: item.dataset.title,
 				submit: item.dataset.submit,
+				choices: choices,
+				before: hooks.before,
 				after: hooks.after,
-			}));
+			});
+		});
 		continue;
 	}
 	item.addEventListener("click", () => openModal(item.dataset.modal, item.dataset.title));
@@ -5770,7 +5810,7 @@ function renderDhcpRanges(networks) {
 		        "–" + s.range_end).join(", ")) },
 		{ label: "", actions: (n) => [
 			dhcpActionButton("Edit", "setDhcpNetwork", null,
-			    async () => openDhcpRangeModal(n.network)),
+			    async () => editDhcpRange(n.network)),
 			/*
 			 * Remove deletes the configuration outright, which is not
 			 * what unticking "Serve DHCP" does -- that disables it and
@@ -5886,68 +5926,62 @@ async function refreshNetworkDhcp(name) {
 
 /* ---- Creating things: from the Services menu, never from the page ---- */
 
-function openDhcpRangeModal(network) {
-	const netSelect = document.getElementById("drf-network");
-	const srvSelect = document.getElementById("drf-servers");
-	const cfg = dhcpCache.networks.find((n) => n.network === network);
+/*
+ * What a DHCP range may name, read from the box when the form opens
+ * (#592): networks, and only REGISTERED DHCP servers, because only they
+ * can serve one -- offering anything else would offer a choice the
+ * daemon refuses. `newOnly` keeps to networks with no range yet, which
+ * is what the menu's New Range is for; an existing range is edited from
+ * its own row, where the form opens holding what it has.
+ */
+async function dhcpRangeChoices(newOnly) {
+	const [nets, all, servers] = await Promise.all([
+		apiRequest("GET", CIX_API.listNetworks()),
+		apiRequest("GET", CIX_API.getDhcp()),
+		apiRequest("GET", CIX_API.getDhcpServers()),
+	]);
+	const configured = (all.networks || []).map((n) => n.network);
 
-	netSelect.textContent = "";
-	for (const n of cache.networks || []) {
-		const opt = document.createElement("option");
-
-		opt.value = n.name;
-		opt.textContent = n.name;
-		netSelect.appendChild(opt);
-	}
-	if (network !== undefined && network !== null)
-		netSelect.value = network;
-
-	/* Only registered DHCP servers, because only they can serve one.
-	 * Offering anything else would offer a choice the daemon refuses. */
-	srvSelect.textContent = "";
-	for (const srv of dhcpCache.servers) {
-		const opt = document.createElement("option");
-
-		opt.value = srv.container;
-		opt.textContent = srv.container + (srv.resolves_leases ? "" : " (leases will not resolve)");
-		opt.selected = cfg !== undefined && (cfg.servers || []).indexOf(srv.container) !== -1;
-		srvSelect.appendChild(opt);
-	}
-	document.getElementById("drf-enabled").checked = cfg !== undefined && cfg.enabled;
-	document.getElementById("drf-start").value = cfg === undefined ? "" : cfg.range_start || "";
-	document.getElementById("drf-end").value = cfg === undefined ? "" : cfg.range_end || "";
-	document.getElementById("drf-lease").value = cfg === undefined ? 3600 : cfg.lease_seconds;
-	document.getElementById("drf-router").value = cfg === undefined ? "" : cfg.router || "";
-	openModal("dhcp-range-form", "DHCP range");
+	return {
+		network: (nets.networks || [])
+			.filter((n) => !newOnly || configured.indexOf(n.name) === -1)
+			.map((n) => ({ value: n.name })),
+		servers: (servers.servers || []).map((s) => ({
+			value: s.container,
+			label: s.container + (s.resolves_leases ? "" : " (leases will not resolve)"),
+		})),
+	};
 }
 
-document.getElementById("dhcp-range-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	const network = document.getElementById("drf-network").value;
-	const router = document.getElementById("drf-router").value.trim();
-	const body = {
-		enabled: document.getElementById("drf-enabled").checked,
-		range_start: document.getElementById("drf-start").value.trim(),
-		range_end: document.getElementById("drf-end").value.trim(),
-		lease_seconds: parseInt(document.getElementById("drf-lease").value, 10),
-		servers: Array.from(document.getElementById("drf-servers").selectedOptions).map((o) => o.value),
-	};
+/* Said every time rather than only when a range really changed: the
+ * daemon decides that, and promising "no restart" from here would be
+ * this page guessing at it. */
+async function afterDhcpRangeSave() {
+	showStatus("Range saved — if it changed, the servers serving it are being restarted.",
+	           false);
+	await refreshDhcp();
+}
 
-	if (router !== "")
-		body.router = router;
+async function editDhcpRange(network) {
+	const cfg = dhcpCache.networks.find((n) => n.network === network);
+	let choices;
+
 	try {
-		await apiRequest("PUT", CIX_API.setDhcpNetwork(network), body);
-		closeModal();
-		/* Said every time rather than only when a range really changed:
-		 * the daemon decides that, and promising "no restart" from here
-		 * would be this page guessing at it. */
-		showStatus("Range saved — if it changed, the servers serving it are being restarted.",
-		           false);
-		refreshDhcp();
+		choices = await dhcpRangeChoices(false);
 	} catch (e) {
-		showStatus("Failed to save the range: " + e.message, true);
+		showStatus("Could not read the DHCP servers: " + e.message, true);
+		return;
 	}
-});
+	openForm("setDhcpNetwork", {
+		title: "DHCP range for " + network,
+		submit: "Save",
+		args: [network],
+		values: cfg || {},
+		choices: { servers: choices.servers },
+		after: afterDhcpRangeSave,
+		failed: "Failed to save the range for " + network,
+	});
+}
 
 
 /*
@@ -6479,7 +6513,7 @@ function renderImageDetail(name) {
 	renderImageRecipeTab(name);
 
 	document.getElementById("imgd-remove").onclick = () => removeImage(name);
-	document.getElementById("imgd-add-recipe").onclick = () => openModal("pkg-recipe-form", "Add or update a recipe");
+	document.getElementById("imgd-add-recipe").onclick = () => openPkgRecipeForm("Add or update a recipe");
 }
 
 /* ---- ADR-0123: image recipe tab (declarative package-list definition) ---- */
@@ -7024,12 +7058,6 @@ async function refreshDisks() {
 	cache.storage = data.storage;
 	if (onPageOf("storage"))
 		renderDisks();
-	/* Keeps the "Disks > Assign Disk Role" modal's own disk select current
-	 * even when opened from the header dropdown rather than a specific
-	 * disk row's own "Assign role…" shortcut (which sets a value
-	 * afterward, same populate-then-select order populateContainerForm
-	 * DeviceLists()/refreshDevices() already establishes). */
-	populateDiskRoleSelect();
 }
 
 async function refreshDiskRoles() {
@@ -7038,7 +7066,6 @@ async function refreshDiskRoles() {
 	cache.storageRoles = data.storage_roles;
 	if (onPageOf("storage"))
 		renderDisks();
-	populateDiskRoleSelect();
 }
 
 function storageRoleFor(diskName) {
@@ -7581,12 +7608,7 @@ function diskRow(d) {
 		assignBtn.type = "button";
 		assignBtn.textContent = "Assign role…";
 		gateAction(assignBtn, "createStorageRole");
-		assignBtn.addEventListener("click", () => {
-			populateDiskRoleSelect(true);
-			document.getElementById("drf-disk-name").value = d.name;
-			document.getElementById("drf-role").value = "container-storage";
-			openModal("diskrole-form", "Assign disk role");
-		});
+		assignBtn.addEventListener("click", () => openAssignRole(d.name));
 		actionCell.appendChild(assignBtn);
 	} else if (formatStatus && formatStatus.state === "running") {
 		actionCell.appendChild(document.createTextNode("(formatting…)"));
@@ -7957,11 +7979,25 @@ function renderDiskRoleTab(d, role) {
 	}
 }
 
-function openAssignRole(name) {
-	populateDiskRoleSelect(true);
-	document.getElementById("drf-disk-name").value = name;
-	document.getElementById("drf-role").value = "container-storage";
-	openModal("diskrole-form", "Assign disk role");
+async function openAssignRole(name) {
+	let choices;
+
+	try {
+		choices = await diskRoleChoices();
+	} catch (e) {
+		showStatus("Could not read the disks: " + e.message, true);
+		return;
+	}
+	openForm("createStorageRole", {
+		title: "Assign a role to " + name,
+		submit: "Assign role",
+		values: { disk_name: name, role: "container-storage" },
+		choices: choices,
+		/* The roles, wherever the form was opened from: the tree's
+		 * right-click menu reads them too, on every page. */
+		after: refreshDiskRoles,
+		failed: "Failed to assign a role to " + name,
+	});
 }
 
 /*
@@ -8441,48 +8477,24 @@ document.getElementById("dd-add-partition-form").addEventListener("submit", asyn
 });
 
 /*
- * `force` is for the paths that OPEN the dialog: they populate and then
- * select a value, so they need the options rebuilt now. The poll path
- * passes nothing and rebuilds only when the disks or their roles
- * actually changed -- repopulating a <select> under someone who is
- * using it throws away what they had chosen.
+ * The disks a role can go to, read from the box when the form opens
+ * (#592): not part of the OS layout, and holding no role already. Read
+ * fresh rather than from the page's cache, because the header menu
+ * opens this from any page, including one that has never read a disk.
  */
-function populateDiskRoleSelect(force) {
-	const select = document.getElementById("drf-disk-name");
+async function diskRoleChoices() {
+	const [storage, roles] = await Promise.all([
+		apiRequest("GET", CIX_API.listStorage()),
+		apiRequest("GET", CIX_API.listStorageRoles()),
+	]);
+	const assigned = (roles.storage_roles || []).map((r) => r.disk_name);
 
-	if (!force && !dataChanged("diskrole-options",
-	                           { storage: cache.storage, roles: cache.storageRoles }))
-		return;
-	select.textContent = "";
-	for (const d of cache.storage) {
-		if (d.protected || storageRoleFor(d.name) !== null)
-			continue;
-		const opt = document.createElement("option");
-
-		opt.value = d.name;
-		opt.textContent = d.name + (d.model ? " (" + d.model + ")" : "");
-		select.appendChild(opt);
-	}
+	return {
+		disk_name: (storage.storage || [])
+			.filter((d) => !d.protected && assigned.indexOf(d.name) === -1)
+			.map((d) => ({ value: d.name, label: d.name + (d.model ? " (" + d.model + ")" : "") })),
+	};
 }
-
-document.getElementById("diskrole-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const diskName = document.getElementById("drf-disk-name").value;
-	const role = document.getElementById("drf-role").value;
-
-	if (diskName === "")
-		return;
-	try {
-		await apiRequest("POST", CIX_API.createStorageRole(), { disk_name: diskName, role: role });
-		clearStatus();
-		document.getElementById("diskrole-form").reset();
-		closeModal();
-		await refreshDiskRoles();
-	} catch (e) {
-		showStatus("Failed to assign role to " + diskName + ": " + e.message, true);
-	}
-});
 
 async function removeDiskRole(diskName) {
 	try {
@@ -11031,10 +11043,8 @@ function renderPackageDetail(name) {
 				return;
 			}
 		}
-		openModal("pkg-recipe-form", recipe ? "Edit recipe" : "Add recipe");
-		document.getElementById("rf-name").value = name;
-		document.getElementById("rf-file").value = "";
-		document.getElementById("rf-content").value = content;
+		openPkgRecipeForm(recipe ? "Edit recipe " + name : "Add a recipe for " + name,
+		                  name, content);
 	};
 	removeBtn.onclick = () => removePkgRecipe(name, recipe.version);
 
@@ -11122,10 +11132,50 @@ async function viewPkgRecipeVersion(name, version) {
 		showStatus("Failed to load recipe content for " + name + "@" + version + ": " + e.message, true);
 		return;
 	}
-	openModal("pkg-recipe-form", name + "@" + version);
-	document.getElementById("rf-name").value = name;
-	document.getElementById("rf-file").value = "";
-	document.getElementById("rf-content").value = content;
+	openPkgRecipeForm(name + "@" + version, name, content);
+}
+
+/* The recipe source a new package may be published to, read from the
+ * box when the form opens (ADR-0324). The blank choice lets the host
+ * decide: the package's owner, or the only source. */
+async function recipeSourceChoices() {
+	const data = await apiRequest("GET", CIX_API.listPkgSources());
+
+	return { source: (data.sources || []).map((s) => ({ value: s.name })) };
+}
+
+/*
+ * The one recipe form (#592), for the four places that publish one: the
+ * header menu, the Recipes page, an image's page and a package's own.
+ * Opened on a package, its name is FIXED -- an edit publishes a new
+ * version of that package, and typing over the name would publish a
+ * different package rather than rename this one.
+ */
+async function openPkgRecipeForm(title, name, content) {
+	let choices;
+
+	try {
+		choices = await recipeSourceChoices();
+	} catch (e) {
+		showStatus("Could not read the recipe sources: " + e.message, true);
+		return;
+	}
+	openForm("addPkgRecipe", {
+		title: title,
+		submit: "Publish",
+		fixed: name ? { name: name } : {},
+		values: content ? { content: content } : {},
+		choices: choices,
+		after: afterPkgRecipeSave,
+		failed: "Failed to publish the recipe",
+	});
+}
+
+async function afterPkgRecipeSave(body) {
+	if (pkgRecipeContentCache.name === body.name)
+		pkgRecipeContentCache = { name: null, content: null };
+	await refreshPkgRecipes();
+	renderTree();
 }
 
 /*
@@ -11408,7 +11458,7 @@ document.getElementById("recipes-pkg-search").addEventListener("input", renderRe
 document.getElementById("recipes-image-search").addEventListener("input", renderImageRecipesTable);
 document.getElementById("recipes-container-search").addEventListener("input", renderContainerRecipesTable);
 
-document.getElementById("recipes-pkg-add").addEventListener("click", () => openModal("pkg-recipe-form", "Add recipe"));
+document.getElementById("recipes-pkg-add").addEventListener("click", () => openPkgRecipeForm("Add a recipe"));
 document.getElementById("recipes-image-add").addEventListener("click", () => {
 	openForm("addImageRecipe", {
 		title: "Add image recipe",
@@ -11548,26 +11598,40 @@ async function removePkg(name, image) {
 
 /*
  * ADR-0324: recipe sources, and what is held because more than one
- * source offers it. One list table per resource; add and edit are one
- * modal form, which this variable says the mode of.
+ * source offers it. One list table per resource; add and edit are the
+ * contract's two operations, each a generated form (#592).
+ *
+ * Committing to a source is a deploy to every host that follows it,
+ * and trusting its keys lets it vouch for packages (ADR-0323/0324), so
+ * turning either ON is confirmed -- and only turning it on: a save that
+ * leaves an already-trusted source trusted asks nothing. `prior` is the
+ * source as it stood, or null for a new one.
  */
-let pkgSourceEditing = null;
+function confirmPkgSourceTrust(body, prior) {
+	const url = body.url || (prior ? prior.url : "");
 
-function setPkgSourceForm(source) {
-	pkgSourceEditing = source ? source.name : null;
-	document.getElementById("psf-name").value = source ? source.name : "";
-	document.getElementById("psf-name").disabled = source !== null;
-	document.getElementById("psf-url").value = source ? source.url : "";
-	document.getElementById("psf-kind").value = source ? source.kind : "gitea";
-	document.getElementById("psf-ref").value = source ? source.ref : "";
-	document.getElementById("psf-token").value = "";
-	document.getElementById("psf-token").placeholder =
-		source && source.token_set ? "(unchanged, a token is set)" : "(none)";
-	document.getElementById("psf-clear-token").checked = false;
-	document.getElementById("psf-clear-token").disabled = !(source && source.token_set);
-	document.getElementById("psf-write").checked = source ? source.write === true : false;
-	document.getElementById("psf-trust-keys").checked = source ? source.trust_keys === true : false;
-	document.getElementById("psf-catalogue-key").value = source ? source.catalogue_key || "" : "";
+	if (body.write && !(prior && prior.write) &&
+	    !confirm("Let this host commit the recipes it writes to " + url +
+	             "? Every host that syncs from it will pick them up."))
+		return false;
+	if (body.trust_keys && !(prior && prior.trust_keys) &&
+	    !confirm("Trust the signing keys " + url +
+	             " carries? Packages signed by them will be accepted as genuine."))
+		return false;
+	return true;
+}
+
+function editPkgSource(source) {
+	openForm("updatePkgSource", {
+		title: "Edit source " + source.name,
+		submit: "Save",
+		args: [source.name],
+		values: source,
+		secrets: { token: source.token_set === true },
+		before: (body) => confirmPkgSourceTrust(body, source),
+		after: refreshPkgSources,
+		failed: "Failed to save the recipe source " + source.name,
+	});
 }
 
 /*
@@ -11604,10 +11668,7 @@ function renderPkgSourcesTable(sources) {
 			edit.type = "button";
 			edit.className = "button-small";
 			edit.textContent = "Edit";
-			edit.addEventListener("click", () => {
-				setPkgSourceForm(s);
-				openModal("pkg-source-form", "Edit source " + s.name);
-			});
+			edit.addEventListener("click", () => editPkgSource(s));
 			gateAction(edit, "updatePkgSource");
 
 			remove.type = "button";
@@ -11669,31 +11730,11 @@ function renderPkgSourceHeld(ownership) {
 	});
 }
 
-/* ADR-0324: the recipe form's source choices, from the same list the
- * Sources table renders -- never a second fetch. "" lets the host
- * decide: the package's owner, or the only source. */
-function fillRecipeSourceSelect(sources) {
-	const select = document.getElementById("rf-source");
-	const keep = select.value;
-
-	while (select.options.length > 1)
-		select.remove(1);
-	for (const s of sources) {
-		const opt = document.createElement("option");
-
-		opt.value = s.name;
-		opt.textContent = s.name;
-		select.appendChild(opt);
-	}
-	select.value = sources.some((s) => s.name === keep) ? keep : "";
-}
-
 async function refreshPkgSources() {
 	try {
 		const data = await apiRequest("GET", CIX_API.listPkgSources());
 
 		cache.pkgSources = data.sources;
-		fillRecipeSourceSelect(data.sources);
 		renderPkgSourcesTable(data.sources);
 	} catch (e) {
 		/* apiRequest() has recorded this failure against the op, and
@@ -11713,58 +11754,6 @@ async function refreshPkgSources() {
 	}
 }
 
-/* The header's "New Recipe Source" opens the same form, in add mode. */
-document.querySelector('.menu-bar button[data-modal="pkg-source-form"]')
-	.addEventListener("click", () => setPkgSourceForm(null));
-
-document.getElementById("pkg-source-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const editing = pkgSourceEditing;
-	const before = editing ? (cache.pkgSources || []).find((s) => s.name === editing) : null;
-	const body = {
-		url: document.getElementById("psf-url").value.trim(),
-		kind: document.getElementById("psf-kind").value,
-		write: document.getElementById("psf-write").checked,
-		trust_keys: document.getElementById("psf-trust-keys").checked,
-		catalogue_key: document.getElementById("psf-catalogue-key").value.trim() === "" ? "" :
-			document.getElementById("psf-catalogue-key").value.trim() + "\n",
-	};
-	const ref = document.getElementById("psf-ref").value.trim();
-	const token = document.getElementById("psf-token").value;
-
-	if (ref !== "")
-		body.ref = ref;
-	if (document.getElementById("psf-clear-token").checked)
-		body.token = "";
-	else if (token !== "")
-		body.token = token;
-
-	/* ADR-0323/0324: committing to a source is a deploy to every host
-	 * that follows it, and trusting its keys lets it vouch for packages;
-	 * turning either on is confirmed. */
-	if (body.write && !(before && before.write) &&
-	    !confirm("Let this host commit the recipes it writes to " + body.url + "? Every host that syncs from it will pick them up."))
-		return;
-	if (body.trust_keys && !(before && before.trust_keys) &&
-	    !confirm("Trust the signing keys " + body.url + " carries? Packages signed by them will be accepted as genuine."))
-		return;
-
-	try {
-		if (editing) {
-			await apiRequest("PUT", CIX_API.updatePkgSource(editing), body);
-			showStatus("Updated recipe source " + editing, false);
-		} else {
-			body.name = document.getElementById("psf-name").value.trim();
-			await apiRequest("POST", CIX_API.addPkgSource(), body);
-			showStatus("Added recipe source " + body.name, false);
-		}
-		closeModal();
-		await refreshPkgSources();
-	} catch (e) {
-		showStatus("Failed to save the recipe source: " + e.message, true);
-	}
-});
 
 document.getElementById("pkg-source-own-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
@@ -12412,19 +12401,27 @@ document.getElementById("pbc-form").addEventListener("submit", async (event) => 
 
 /* ---------- Package repositories (ADR-0324 step B) ---------- */
 
-let pkgRepositoryEditing = null;
+/* #129: publishing is outward-facing, so turning it on is confirmed --
+ * and only turning it on. `prior` is the repository as it stood, or
+ * null for a new one. */
+function confirmPkgRepositoryPush(body, prior) {
+	const url = body.url || (prior ? prior.url : "");
 
-function setPkgRepositoryForm(repo) {
-	pkgRepositoryEditing = repo ? repo.name : null;
-	document.getElementById("prepo-name").value = repo ? repo.name : "";
-	document.getElementById("prepo-name").disabled = repo !== null;
-	document.getElementById("prepo-url").value = repo ? repo.url : "";
-	document.getElementById("prepo-token").value = "";
-	document.getElementById("prepo-token").placeholder =
-		repo && repo.token_set ? "(unchanged, a token is set)" : "(none)";
-	document.getElementById("prepo-clear-token").checked = false;
-	document.getElementById("prepo-clear-token").disabled = !(repo && repo.token_set);
-	document.getElementById("prepo-push").checked = repo ? repo.push === true : false;
+	return !(body.push && !(prior && prior.push)) ||
+		confirm("Publish every package this host builds to " + url + "?");
+}
+
+function editPkgRepository(repo) {
+	openForm("updatePkgRepository", {
+		title: "Edit repository " + repo.name,
+		submit: "Save",
+		args: [repo.name],
+		values: repo,
+		secrets: { token: repo.token_set === true },
+		before: (body) => confirmPkgRepositoryPush(body, repo),
+		after: refreshPkgRepositories,
+		failed: "Failed to save the package repository " + repo.name,
+	});
 }
 
 /* Generated (#592). "Pushes" is a plain boolean for the reason the
@@ -12442,10 +12439,7 @@ function renderPkgRepositoriesTable(repos) {
 			edit.type = "button";
 			edit.className = "button-small";
 			edit.textContent = "Edit";
-			edit.addEventListener("click", () => {
-				setPkgRepositoryForm(r);
-				openModal("pkg-repository-form", "Edit repository " + r.name);
-			});
+			edit.addEventListener("click", () => editPkgRepository(r));
 			gateAction(edit, "updatePkgRepository");
 
 			remove.type = "button";
@@ -12483,47 +12477,6 @@ async function refreshPkgRepositories() {
 		renderPkgRepositoriesTable([]);
 	}
 }
-
-/* The header's "New Package Repository" opens the same form, in add mode. */
-document.querySelector('.menu-bar button[data-modal="pkg-repository-form"]')
-	.addEventListener("click", () => setPkgRepositoryForm(null));
-
-document.getElementById("pkg-repository-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const editing = pkgRepositoryEditing;
-	const before = editing ? (cache.pkgRepositories || []).find((r) => r.name === editing) : null;
-	const body = {
-		url: document.getElementById("prepo-url").value.trim(),
-		push: document.getElementById("prepo-push").checked,
-	};
-	const token = document.getElementById("prepo-token").value;
-
-	if (document.getElementById("prepo-clear-token").checked)
-		body.token = "";
-	else if (token !== "")
-		body.token = token;
-
-	/* #129: publishing is outward-facing, so turning it on is confirmed. */
-	if (body.push && !(before && before.push) &&
-	    !confirm("Publish every package this host builds to " + body.url + "?"))
-		return;
-
-	try {
-		if (editing) {
-			await apiRequest("PUT", CIX_API.updatePkgRepository(editing), body);
-			showStatus("Updated package repository " + editing, false);
-		} else {
-			body.name = document.getElementById("prepo-name").value.trim();
-			await apiRequest("POST", CIX_API.addPkgRepository(), body);
-			showStatus("Added package repository " + body.name, false);
-		}
-		closeModal();
-		await refreshPkgRepositories();
-	} catch (e) {
-		showStatus("Failed to save the package repository: " + e.message, true);
-	}
-});
 
 /* ---------- Container create form: devices/interfaces pickers ---------- */
 
@@ -12850,50 +12803,6 @@ document.getElementById("nd-attach-form").addEventListener("submit", async (even
 	document.getElementById("nd-attach-form").reset();
 });
 
-async function addRoute(isDefault, dest, prefix, gateway) {
-	try {
-		const body = {};
-
-		if (!isDefault) {
-			body.dest = dest;
-			body.prefix = prefix;
-		}
-		if (gateway)
-			body.gateway = gateway;
-		await apiRequest("POST", CIX_API.postSystemRoute(), body);
-		clearStatus();
-		await refreshRoutes();
-		renderCurrentView();
-	} catch (e) {
-		showStatus("Failed to add route: " + e.message, true);
-	}
-}
-
-document.getElementById("rf-default").addEventListener("change", (event) => {
-	const disabled = event.target.checked;
-
-	document.getElementById("rf-dest").disabled = disabled;
-	document.getElementById("rf-prefix").disabled = disabled;
-});
-
-document.getElementById("route-add-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const isDefault = document.getElementById("rf-default").checked;
-	const dest = document.getElementById("rf-dest").value.trim();
-	const prefixText = document.getElementById("rf-prefix").value.trim();
-	const gateway = document.getElementById("rf-gateway").value.trim();
-
-	if (!isDefault && (dest === "" || prefixText === "")) {
-		showStatus("Destination and prefix are required unless Default route is checked.", true);
-		return;
-	}
-	await addRoute(isDefault, dest, prefixText !== "" ? parseInt(prefixText, 10) : undefined, gateway);
-	document.getElementById("route-add-form").reset();
-	document.getElementById("rf-dest").disabled = false;
-	document.getElementById("rf-prefix").disabled = false;
-	closeModal();
-});
 
 
 
@@ -13013,37 +12922,6 @@ async function showIssuedCert(body, issued) {
 	showStatus("Issued certificate " + issued.name);
 	await refreshPkiCerts();
 }
-
-document.getElementById("pkg-recipe-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const name = document.getElementById("rf-name").value.trim();
-	const fileInput = document.getElementById("rf-file");
-	const contentField = document.getElementById("rf-content");
-
-	if (fileInput.files.length === 0 && contentField.value.trim() === "")
-		return;
-
-	try {
-		const content = fileInput.files.length > 0 ? await readFileAsText(fileInput.files[0]) : contentField.value;
-
-		const source = document.getElementById("rf-source").value;
-		const body = { name: name, content: content };
-
-		if (source !== "")
-			body.source = source;
-		await apiRequest("POST", CIX_API.addPkgRecipe(), body);
-		clearStatus();
-		document.getElementById("pkg-recipe-form").reset();
-		closeModal();
-		if (pkgRecipeContentCache.name === name)
-			pkgRecipeContentCache = { name: null, content: null };
-		await refreshPkgRecipes();
-		renderTree();
-	} catch (e) {
-		showStatus("Failed to add recipe " + name + ": " + e.message, true);
-	}
-});
 
 document.getElementById("pkg-update-all").addEventListener("click", async () => {
 	try {
@@ -13284,26 +13162,6 @@ function renderSysctlList() {
 	});
 }
 
-/* Parses the web form's own single "KEY=VALUE,KEY=VALUE" text field
- * into the {key: value} object shape both /kmod POST (load options)
- * and /kmod-config PUT (default_options) expect -- the web analog of
- * cixctl's repeatable --option=KEY=VALUE. Empty input -> {} (no
- * options), matching "omit means fall back to persisted defaults". */
-function parseKeyValueList(text) {
-	const result = {};
-	const trimmed = text.trim();
-
-	if (trimmed === "")
-		return result;
-	for (const pair of trimmed.split(",")) {
-		const eq = pair.indexOf("=");
-
-		if (eq > 0)
-			result[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
-	}
-	return result;
-}
-
 /* The action list is a closed registry (ADR-0257) -- populated from the
  * daemon, never typed, because a free-text command field on a
  * shell-less host is a shell-exec endpoint. */
@@ -13388,31 +13246,6 @@ document.getElementById("schedule-form").addEventListener("submit", async (event
 	}
 });
 
-document.getElementById("sysctl-set-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const key = document.getElementById("sf-key").value.trim();
-	const rawValues = document.getElementById("sf-value").value.split(",").map((v) => v.trim()).filter((v) => v !== "");
-	const persist = document.getElementById("sf-persist").checked;
-
-	if (key === "" || rawValues.length === 0)
-		return;
-	try {
-		const body = { value: rawValues.length === 1 ? rawValues[0] : rawValues };
-
-		if (!persist)
-			body.persist = false;
-		await apiRequest("PUT", CIX_API.putSystemSysctl(key), body);
-		clearStatus();
-		document.getElementById("sysctl-set-form").reset();
-		document.getElementById("sf-persist").checked = true;
-		closeModal();
-		await refreshSysctl();
-		renderCurrentView();
-	} catch (e) {
-		showStatus("Failed to set sysctl: " + e.message, true);
-	}
-});
 
 /* ---------- kernel modules (ADR-0159 Phase A) ---------- */
 
@@ -13511,51 +13344,6 @@ function renderKmodList() {
 		empty: "No kmod config persisted.",
 	});
 }
-
-document.getElementById("kmod-load-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const name = document.getElementById("klf-name").value.trim();
-
-	if (name === "")
-		return;
-	try {
-		const options = parseKeyValueList(document.getElementById("klf-options").value);
-
-		await apiRequest("POST", CIX_API.postKmodLoad(name), { options: options });
-		clearStatus();
-		document.getElementById("kmod-load-form").reset();
-		closeModal();
-		await refreshKmod();
-		renderCurrentView();
-	} catch (e) {
-		showStatus("Failed to load " + name + ": " + e.message, true);
-	}
-});
-
-document.getElementById("kmcf-set-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const name = document.getElementById("kmcf-name").value.trim();
-
-	if (name === "")
-		return;
-	try {
-		const body = {
-			default_options: parseKeyValueList(document.getElementById("kmcf-options").value),
-			autoload: document.getElementById("kmcf-autoload").checked,
-		};
-
-		await apiRequest("PUT", CIX_API.putKmodConfig(name), body);
-		clearStatus();
-		document.getElementById("kmcf-set-form").reset();
-		closeModal();
-		await refreshKmodConfig();
-		renderCurrentView();
-	} catch (e) {
-		showStatus("Failed to configure " + name + ": " + e.message, true);
-	}
-});
 
 document.getElementById("kmod-build-form").addEventListener("submit", async (event) => {
 	event.preventDefault();

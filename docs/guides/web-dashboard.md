@@ -48,7 +48,7 @@ asserted by `test_web_tree`.
 
 The Software branch's URL hash is still `#pipeline`, so older bookmarks keep working.
 
-The two surfaces answer different questions ([ADR-0184](../adr/0184-dashboard-navigation-one-vocabulary.md)) -- **the tree is where you go to look at something, the menu bar is where you go to make one** -- and the rule tying them together is that whatever branch a thing lives under is the menu that creates it. A new volume is created from **Storage**, because that is where volumes appear in the tree (under the device actually holding them). An LDAP user is created from **Services**, under an `LDAP` heading matching that branch's own leaf.
+The two surfaces answer different questions ([ADR-0184](../adr/0184-dashboard-navigation-one-vocabulary.md)) -- **the tree is where you go to look at something, the menu bar is where you go to make one** -- and the rule tying them together is that whatever branch a thing lives under is the menu that creates it. A new volume is created from **Storage**, because that is where volumes appear in the tree (under the device actually holding them). A user is created from **Host**, under an `Identity` heading matching that branch's own leaf.
 
 A menu covering a branch that has children of its own holds **submenus that open on hover**, one per child, in that branch's order — so Services is six things you point at rather than a flat list of every record type under six headings.
 
@@ -57,14 +57,15 @@ A menu covering a branch that has children of its own holds **submenus that open
 | Containers | -- | New Container |
 | Networks | -- | New Network |
 | Storage | -- | New Volume, Assign Disk Role |
-| Software | -- | New Image, Install Package, New/Update Recipe, Bootstrap Build Image |
+| Software | -- | New Image, Install Package, New/Update Recipe, New Recipe Source, New Package Repository, Bootstrap Build Image |
 | Services | PKI | Issue Certificate |
 | | DNS | New Record, Register Server |
-| | LDAP | New User, New Group, Register Server |
-| | DHCP | Register Server, New/Edit Range, Reserve an Address |
+| | LDAP | Register Server |
 | | NTP | Register Server |
+| | DHCP | Register Server, New Range, Reserve an Address |
 | | Syslog | Register Target |
-| Host | Daemon | Add Route, Set Sysctl |
+| Host | Identity | New User, New Group, Grant Permissions |
+| | Daemon | Add Route, Set Sysctl |
 | | Devices | Name a Device Mapping, Load Module, Configure Module |
 
 A submenu opens on hover, on click (so it works by touch and by keyboard), and closes when the pointer leaves the item it belongs to; opening one closes its siblings. One that would run off the right edge of the window flips to the left of its parent instead.

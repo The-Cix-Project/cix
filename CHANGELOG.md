@@ -6,6 +6,35 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Nine more create forms render from the contract; one is left (#592)
+
+Set Sysctl, Load Module, Configure Module, New Range (DHCP), Assign Disk Role, New/Update Recipe, New
+Recipe Source, New Package Repository and Add Route are generated forms now, and so are the edit
+buttons for a DHCP range, a recipe source and a package repository. Of the header menu's 26 create
+forms, 25 are generated; New Container is the one left, because forty-five fields with eight arrays of
+objects need sections and a repeater rather than eight JSON boxes. What the generated form needed:
+
+- **A path parameter is a field.** `apigen` reads each path parameter's schema and description into
+  a synthesized `<operationId>Args` schema that `<op>_SHAPE.args` names, for all 132 operations that
+  have one, and refuses a declaration that does not match the path's own order. `openForm` asks for
+  one the caller does not supply, first, and puts it in the URL.
+- **Choices read from the box**: the disks with no role, the networks with no range, the registered
+  DHCP servers, the recipe sources. An array field's choices are a multiple select, read whole.
+- **A stored secret can be kept, replaced or removed**, and **a field opened holding a value and
+  emptied is sent as cleared**, which is how a recipe source's catalogue key is removed.
+- **A map of strings is KEY=VALUE lines**: apigen records `additionalProperties`' type, so modprobe
+  options and a deployment's secrets stop being typed as JSON.
+- **A document field can be filled from a file**, and a `before` hook asks the question the source
+  and repository forms asked before turning on commit, key trust or publishing.
+
+Four rules moved out of the dashboard, where only one client had them. The daemon refuses a route
+`dest` with no prefix -- it used to drop the `dest` and act on the default route instead, so
+`{"dest":"172.40.0.0","gateway":"172.30.1.1"}` tried to add a default route through that gateway, and
+the same body on `DELETE` removed the host's default route. A catalogue key is stored ending in exactly one newline, which the hand-built form used to add.
+`"router": ""` removes a DHCP range's router as `"0.0.0.0"` does, where it used to keep the old one and
+answer 200. And a lease's bounds and default are in the contract rather than in `index.html`. A
+multiple select is no longer drawn one row tall.
+
 ### A disk's allocation chart colours by class, from tokens; styling leaves app.js (#592)
 
 The disk page's allocation chart cycled eight `hsl()` hues computed in `app.js`, defined for neither

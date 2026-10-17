@@ -2552,8 +2552,10 @@ paths:
         - name: key
           in: path
           required: true
+          description: The dotted sysctl key, e.g. net.ipv4.ip_forward.
           schema:
             type: string
+            title: Key
       requestBody:
         required: true
         content:
@@ -2563,7 +2565,8 @@ paths:
               required: [value]
               properties:
                 value:
-                  description: A plain string, or an array of strings for a tuple-shaped key (joined with a single space before writing).
+                  title: Value
+                  description: The value to write; a tuple-shaped key takes its values separated by single spaces. An array of strings is accepted too, and is joined with a single space before writing.
                   oneOf:
                     - type: string
                     - type: array
@@ -2572,7 +2575,8 @@ paths:
                 persist:
                   type: boolean
                   default: true
-                  description: false for a one-shot change that is not remembered for the next boot.
+                  title: Persist across reboots
+                  description: Off for a one-shot change that is not remembered for the next boot.
       responses:
         "200":
           description: Written; the real post-write value read back
@@ -2699,8 +2703,10 @@ paths:
         - name: name
           in: path
           required: true
+          description: The kernel module, as modprobe names it, e.g. e1000e.
           schema:
             type: string
+            title: Module
       requestBody:
         required: false
         content:
@@ -2712,7 +2718,8 @@ paths:
                   type: object
                   additionalProperties:
                     type: string
-                  description: modprobe-style key=value module parameters.
+                  title: Options
+                  description: modprobe-style module parameters. With none given, the module's persisted default options are used, if it has any.
       responses:
         "200":
           description: Loaded; the options actually used
@@ -2835,8 +2842,10 @@ paths:
         - name: name
           in: path
           required: true
+          description: The kernel module, as modprobe names it, e.g. e1000e.
           schema:
             type: string
+            title: Module
       requestBody:
         required: true
         content:
@@ -2848,8 +2857,12 @@ paths:
                   type: object
                   additionalProperties:
                     type: string
+                  title: Default options
+                  description: The parameters this module is loaded with whenever a load names none of its own.
                 autoload:
                   type: boolean
+                  title: Load at boot
+                  description: Load this module on every boot.
       responses:
         "200":
           description: Updated entry
@@ -3308,8 +3321,10 @@ paths:
         - name: network
           in: path
           required: true
+          description: The network whose addresses are handed out.
           schema:
             type: string
+            title: Network
       requestBody:
         required: true
         content:
@@ -3319,20 +3334,34 @@ paths:
               properties:
                 enabled:
                   type: boolean
+                  title: Serve DHCP on this network
+                  description: Off keeps the range and stops handing it out.
                 range_start:
                   type: string
+                  format: ipv4
+                  title: Range start
+                  description: The first address handed out, inside the network's subnet.
                 range_end:
                   type: string
+                  format: ipv4
+                  title: Range end
+                  description: The last address handed out, inside the network's subnet.
                 lease_seconds:
                   type: integer
+                  minimum: 60
+                  maximum: 2592000
+                  default: 3600
+                  title: Lease (seconds)
+                  description: How long a lease lasts, from a minute to 30 days.
                 router:
                   type: string
+                  title: Router
                   description: >
                     The default route handed to clients on this network.
                     This PUT is a partial update over whatever is already
                     stored, so omitting it KEEPS the current value rather
-                    than clearing it; pass "0.0.0.0" to say explicitly
-                    that there is none, or simply never set one.
+                    than clearing it; pass "" or "0.0.0.0" to say
+                    explicitly that there is none, or simply never set one.
 
 
                     A network with no router is rendered as an explicit
@@ -3345,6 +3374,7 @@ paths:
                   type: array
                   items:
                     type: string
+                  title: Servers
                   description: >
                     Which registered DHCP servers serve this network's
                     range. The range is split into one disjoint slice
@@ -9624,18 +9654,25 @@ paths:
               properties:
                 name:
                   type: string
+                  pattern: '^[A-Za-z0-9_\-]+$'
+                  title: Name
+                  description: The package's name, as its recipe's package block declares it.
                 content:
                   type: string
+                  x-cix-ui: textarea
+                  title: Recipe
                   description: >
-                    The full text of the recipe: a CPDL document (ADR-0305) -- a single
+                    The full text of the recipe: a CPDL document (ADR-0305), published as a
+                    new version -- a published version is never replaced (ADR-0107). A single
                     package block declaring version, release, format, sources and requires,
                     with up to five phases. Validated with `cbs explain --json` before
                     anything is stored. Shell recipes do not exist (cix#569); the `format`
                     request field that once chose between them is gone.
                 source:
                   type: string
+                  title: Source
                   description: >
-                    ADR-0324: the recipe source this package belongs to. A package a source
+                    The recipe source this package belongs to (ADR-0324). A package a source
                     already owns stays with it, and naming a different one is 409. A package no
                     source owns yet (new, or published here before its source's next sync) takes
                     the named source, or the only source when the host has exactly one, and
@@ -9810,29 +9847,40 @@ paths:
               properties:
                 name:
                   type: string
-                  description: "[a-z0-9][a-z0-9._-]*, under 64 characters"
+                  pattern: '^[a-z0-9][a-z0-9._\-]{0,62}$'
+                  title: Name
+                  description: The name this host knows the source by.
                 url:
                   type: string
-                  description: <scheme>://<host>/<owner>/<repo>
+                  title: Repository URL
+                  description: The git repository, as <scheme>://<host>/<owner>/<repo>.
                 kind:
                   type: string
                   enum: [gitea, github, gitlab]
+                  title: Kind
+                  description: The forge that hosts it.
                 ref:
                   type: string
-                  description: Branch or tag to sync; main when omitted
+                  title: Ref
+                  description: The branch or tag to sync; main when omitted.
                 token:
                   type: string
                   format: password
-                  description: Write-only
+                  title: Token
+                  description: The forge token this host reads (and, with write, commits) with. Write-only.
                 write:
                   type: boolean
-                  description: This host may commit recipes it writes to this source (ADR-0323). gitea only.
+                  title: Commit recipes here
+                  description: This host may commit the recipes it writes to this source (ADR-0323); gitea only. Every host that syncs from it picks them up.
                 trust_keys:
                   type: boolean
+                  title: Trust its signing keys
+                  description: The signing keys this source carries are trusted for artifacts. Off by default.
                 catalogue_key:
                   type: string
-                  description: A minisign public key the source's index must verify against; "" clears it (ADR-0324 step C).
-                  description: Signing keys this source carries are trusted for artifacts. Off by default.
+                  x-cix-ui: textarea
+                  title: Catalogue key
+                  description: A minisign public key the source's signed index must verify against; empty means it syncs unsigned (ADR-0324 step C).
       responses:
         "201":
           description: Added; the whole list
@@ -9876,21 +9924,35 @@ paths:
               properties:
                 url:
                   type: string
+                  title: Repository URL
+                  description: The git repository, as <scheme>://<host>/<owner>/<repo>.
                 kind:
                   type: string
                   enum: [gitea, github, gitlab]
+                  title: Kind
+                  description: The forge that hosts it.
                 ref:
                   type: string
+                  title: Ref
+                  description: The branch or tag to sync; an empty one keeps the current ref.
                 token:
                   type: string
                   format: password
+                  title: Token
+                  description: A new forge token; "" removes the stored one, and omitting it keeps it. Write-only.
                 write:
                   type: boolean
+                  title: Commit recipes here
+                  description: This host may commit the recipes it writes to this source (ADR-0323); gitea only. Every host that syncs from it picks them up.
                 trust_keys:
                   type: boolean
+                  title: Trust its signing keys
+                  description: The signing keys this source carries are trusted for artifacts.
                 catalogue_key:
                   type: string
-                  description: A minisign public key the source's index must verify against; "" clears it (ADR-0324 step C).
+                  x-cix-ui: textarea
+                  title: Catalogue key
+                  description: A minisign public key the source's signed index must verify against; "" clears it, so the source syncs unsigned (ADR-0324 step C).
       responses:
         "200":
           description: Updated; the whole list
@@ -10778,18 +10840,25 @@ paths:
               properties:
                 name:
                   type: string
-                  description: "[a-z0-9][a-z0-9._-]*, as a recipe source's name."
+                  pattern: '^[a-z0-9][a-z0-9._\-]{0,62}$'
+                  title: Name
+                  description: The name this host knows the repository by, spelled as a recipe source's name is.
                 url:
                   type: string
+                  title: URL
                   description: >
-                    A plain HTTP(S) location, never a git forge: artifacts are
-                    fetched at <url>/<name>-<version>-<arch>.cixpkg.
+                    A plain HTTP(S) location, never a git forge. Artifacts are
+                    fetched at <url>/<name>-<version>-<arch>.cixpkg and accepted
+                    only when they verify.
                 token:
                   type: string
                   format: password
-                  description: Write-only. Sent as an Authorization Bearer header.
+                  title: Token
+                  description: Sent as an Authorization Bearer header; needed to publish. Write-only.
                 push:
                   type: boolean
+                  title: Publish here
+                  description: Publish this host's fresh builds to this repository, which needs a token.
       responses:
         "201":
           description: Added; the whole list
@@ -10833,11 +10902,17 @@ paths:
               properties:
                 url:
                   type: string
+                  title: URL
+                  description: A plain HTTP(S) location, never a git forge.
                 token:
                   type: string
                   format: password
+                  title: Token
+                  description: A new token; "" removes the stored one, and omitting it keeps it. Write-only.
                 push:
                   type: boolean
+                  title: Publish here
+                  description: Publish this host's fresh builds to this repository, which needs a token.
       responses:
         "200":
           description: Updated; the whole list
@@ -19573,9 +19648,13 @@ components:
       properties:
         disk_name:
           type: string
+          title: Disk
+          description: A disk or partition with no role yet, and not part of the OS layout.
         role:
           type: string
           enum: [container-storage, backup, rebuildable-storage, log-storage, swap]
+          title: Role
+          description: What the disk is for. Assigning a role never touches what is on it; formatting is a separate action on the disk's own page.
 
     StorageFormatRequest:
       type: object
@@ -20950,20 +21029,28 @@ components:
         Shared body shape for POST/DELETE /system/routes (ADR-0067
         Part 3). Every field is optional; an empty body identifies the
         default route (prefix 0, no gateway) -- the same convention
-        rtnl_route_add_ipv4() itself uses.
+        rtnl_route_add_ipv4() itself uses. A dest with no prefix (or
+        prefix 0) is refused with 400 unless it is 0.0.0.0: it used to
+        be ignored, which turned a forgotten prefix into the default
+        route (#592).
       properties:
         dest:
           type: string
-          description: Destination network address (dotted-quad). Required when prefix is given and nonzero; ignored otherwise.
+          format: ipv4
+          title: Destination
+          description: The destination network's address, given with its prefix; leave both empty for the default route.
         prefix:
           type: integer
           minimum: 0
           maximum: 32
-          description: Destination prefix length. Omitted or 0 means the default route (dest is then ignored).
+          title: Prefix length
+          description: The destination's prefix length; empty (or 0) is the default route, which takes no destination.
         gateway:
           type: string
           nullable: true
-          description: Next-hop IPv4 address. Omitted means a direct/on-link route with no gateway.
+          format: ipv4
+          title: Gateway
+          description: The next hop's IPv4 address. Omitted means a direct, on-link route.
 
     PkiCaCreateRequest:
       type: object

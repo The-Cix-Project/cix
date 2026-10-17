@@ -1613,6 +1613,27 @@ form label.checkbox input[type="checkbox"] {
 	height: auto;
 }
 
+/*
+ * A multiple select shows its choices as a list, so the one control
+ * height above would show ONE of them and a scrollbar -- which is how
+ * the hand-built DHCP form's four-row server list rendered. Its own
+ * `size` decides the height, as a textarea's `rows` does (#592).
+ */
+form select[multiple] {
+	height: auto;
+	padding: var(--s1);
+}
+
+/* The picker that fills a document field from a file (#592): a line of
+ * its own under the textarea, not a second bordered control. */
+form input.field-file {
+	height: auto;
+	padding: var(--s1) 0;
+	border: none;
+	background: none;
+	font-size: var(--t-small);
+}
+
 .file-row {
 	display: flex;
 	flex-wrap: wrap;

@@ -168,6 +168,12 @@ struct api_op {
 	 * DELETE implies it so the common case needs no annotation.
 	 */
 	char req_schema[APIGEN_ID_MAX];
+	/*
+	 * #592: the path parameters as a schema of their own, synthesized
+	 * as `<operationId>Args` -- named for `openForm`'s `args`, which is
+	 * what they are to a form. Empty for an operation with none.
+	 */
+	char args_schema[APIGEN_ID_MAX];
 	int destructive;
 	/* Whether x-cix-destructive was stated. An explicit `false` on a
 	 * DELETE must win over the method's implication, so "unset" and
@@ -186,6 +192,11 @@ struct comp_param {
 	char comp[APIGEN_ID_MAX];      /* the components/parameters key */
 	char name[APIGEN_QNAME_MAX];   /* its own "name:" */
 	int is_query;                  /* its "in:" is query */
+	/* #592: its "in:" is path, and the reader is inside its `schema:`.
+	 * The field itself is g_comp_param_field[], beside struct
+	 * schema_field, which is declared further down. */
+	int is_path;
+	int in_schema;
 };
 
 static struct comp_param g_comp_params[APIGEN_MAX_COMP_PARAMS];
@@ -442,6 +453,10 @@ static char *read_spec_line(char *buf, size_t cap, FILE *f, const char *spec, in
  * small passes over a file this tool already reads once are cheaper
  * than one reader that has to know where it is.
  */
+static void comp_param_field_reset(int cur);
+static void comp_param_field_line(int cur, int ind, const char *text, const char *spec,
+                                  int lineno);
+
 static void load_component_params(const char *spec)
 {
 	FILE *f = fopen(spec, "r");
@@ -485,6 +500,7 @@ static void load_component_params(const char *spec)
 			cur = g_comp_param_count++;
 			memset(&g_comp_params[cur], 0, sizeof(g_comp_params[cur]));
 			snprintf(g_comp_params[cur].comp, sizeof(g_comp_params[cur].comp), "%s", key);
+			comp_param_field_reset(cur);
 			continue;
 		}
 		if (ind == 6 && cur >= 0 && key_at(line, 6, key, sizeof(key))) {
@@ -497,6 +513,9 @@ static void load_component_params(const char *spec)
 			else if (strcmp(key, "in") == 0 && strcmp(v, "query") == 0)
 				g_comp_params[cur].is_query = 1;
 		}
+		/* #592: and the same keys, with its schema's at 8, as a field. */
+		if ((ind == 6 || ind == 8) && cur >= 0)
+			comp_param_field_line(cur, ind, line + ind, spec, lineno);
 	}
 	fclose(f);
 }
@@ -747,6 +766,137 @@ static void ref_tail(const char *text, char *out, size_t out_size)
 }
 
 /*
+ * ONE PARAMETER'S OWN KEYS, AS A FIELD (#592).
+ *
+ * A path parameter is part of a request exactly as a body field is:
+ * `PUT /v1/system/sysctl/{key}` cannot be sent without a key, and an
+ * operator setting a sysctl has to type one. Until this was read the
+ * route table took only each parameter's NAME, so the dashboard knew
+ * the key existed and nothing about it -- which is why every create
+ * form whose key lives in its URL was hand-built (four of the ten left
+ * on 2026-10-17: Set Sysctl, Load Module, Configure Module, DHCP Range).
+ *
+ * `pb` is the indent of the parameter's own keys: 10 for one written
+ * under an operation (its first key shares the `- ` line at 8), 6 for a
+ * components/parameters entry. The keys of its `schema:` sit at pb+2
+ * and are the keywords a property carries, read into the same struct,
+ * so a renderer cannot tell a path field from a body field -- which is
+ * the point.
+ *
+ * `*where` says what the lines at pb+2 belong to, because two
+ * different things sit there: the keywords of `schema:` (1), and the
+ * continuation lines of a folded `description: >` (2), which are prose
+ * and must never be read as keywords. Blank lines never reach here
+ * (is_ignorable() drops them first), so a folded description's
+ * paragraphs join with a space -- harmless for a hint, which is its
+ * first sentence.
+ */
+static void param_field_key(struct schema_field *fl, int *where, int *is_path, int ind,
+                            int pb, const char *text, const char *spec, int lineno)
+{
+	char k[APIGEN_QNAME_MAX];
+	char v[1024];
+	const char *colon = strchr(text, ':');
+	size_t kl;
+
+	if (ind == pb + 2 && *where == 2) {
+		snprintf(v, sizeof(v), "%s", text);
+		strip_eol(v);
+		desc_append(spec, lineno, fl->desc, " ", v);
+		return;
+	}
+	if (colon == NULL)
+		return;
+	kl = (size_t)(colon - text);
+	if (kl == 0 || kl + 1 >= sizeof(k))
+		return;
+	memcpy(k, text, kl);
+	k[kl] = '\0';
+	snprintf(v, sizeof(v), "%s", value_of(colon));
+	strip_eol(v);
+
+	if (ind == pb) {
+		*where = strcmp(k, "schema") == 0 ? 1 : 0;
+		if (strcmp(k, "name") == 0)
+			snprintf(fl->name, sizeof(fl->name), "%s", v);
+		else if (strcmp(k, "in") == 0)
+			*is_path = strcmp(v, "path") == 0;
+		else if (strcmp(k, "description") == 0) {
+			fl->desc = desc_begin();
+			/* Reserve its terminator now, as schema_body_line() does,
+			 * so an empty block cannot share an offset with the next
+			 * description begun. */
+			if (strcmp(v, ">") == 0 || strcmp(v, ">-") == 0) {
+				*where = 2;
+				g_desc_used = fl->desc + 1;
+			} else
+				desc_append(spec, lineno, fl->desc, "", v);
+		}
+		return;
+	}
+	if (ind != pb + 2 || *where != 1)
+		return;
+	if (strcmp(k, "type") == 0)
+		snprintf(fl->type, sizeof(fl->type), "%s", v);
+	else if (strcmp(k, "format") == 0)
+		snprintf(fl->format, sizeof(fl->format), "%s", v);
+	else if (strcmp(k, "pattern") == 0)
+		snprintf(fl->pattern, sizeof(fl->pattern), "%s", v);
+	else if (strcmp(k, "enum") == 0)
+		snprintf(fl->enum_list, sizeof(fl->enum_list), "%s", v);
+	else if (strcmp(k, "minimum") == 0)
+		snprintf(fl->minimum, sizeof(fl->minimum), "%s", v);
+	else if (strcmp(k, "maximum") == 0)
+		snprintf(fl->maximum, sizeof(fl->maximum), "%s", v);
+	else if (strcmp(k, "maxLength") == 0)
+		snprintf(fl->max_length, sizeof(fl->max_length), "%s", v);
+	else if (strcmp(k, "title") == 0) {
+		if (strlen(v) >= APIGEN_LABEL_MAX)
+			die_at(spec, lineno,
+			       "title \"%s\" is %d characters; a label is a few words "
+			       "and the explanation belongs in description", v, (int)strlen(v));
+		snprintf(fl->title, sizeof(fl->title), "%s", v);
+	}
+}
+
+/*
+ * Where those fields are kept: one per components/parameters entry,
+ * and per operation the path parameters it declares, in declaration
+ * order -- which the emitter checks against the path template's own.
+ * Four is twice the most any operation has (measured 2026-10-17).
+ */
+#define APIGEN_MAX_PATH_PARAMS 4
+
+static struct schema_field g_comp_param_field[APIGEN_MAX_COMP_PARAMS];
+static struct schema_field g_path_field[APIGEN_MAX_OPS][APIGEN_MAX_PATH_PARAMS];
+static int g_n_path_field[APIGEN_MAX_OPS];
+
+static void comp_param_field_reset(int cur)
+{
+	memset(&g_comp_param_field[cur], 0, sizeof(g_comp_param_field[cur]));
+	g_comp_param_field[cur].desc = -1;
+}
+
+static void comp_param_field_line(int cur, int ind, const char *text, const char *spec,
+                                  int lineno)
+{
+	param_field_key(&g_comp_param_field[cur], &g_comp_params[cur].in_schema,
+	                &g_comp_params[cur].is_path, ind, 6, text, spec, lineno);
+}
+
+/* One more declared path parameter of operation `op`. */
+static void op_add_path_field(int op, const struct schema_field *fl, const char *spec,
+                              int lineno)
+{
+	if (fl->name[0] == '\0')
+		return;
+	if (g_n_path_field[op] >= APIGEN_MAX_PATH_PARAMS)
+		die_at(spec, lineno, "more than %d path parameters on one operation",
+		       APIGEN_MAX_PATH_PARAMS);
+	g_path_field[op][g_n_path_field[op]++] = *fl;
+}
+
+/*
  * `required: [a, b, c]` into out[], returning the number of names the
  * list CONTAINS -- which may exceed `max`, since only the first `max`
  * are written and dropping the rest silently is the caller's refusal to
@@ -889,6 +1039,9 @@ struct schema_reader {
 	int in_props;
 	char prop[APIGEN_QNAME_MAX];
 	int prop_is_array;
+	/* #592: the current property opened `additionalProperties:` as a
+	 * block, so the `type:` below it is the type of the map's VALUES. */
+	int prop_is_map;
 	/*
 	 * Inside a folded `description: >`: the indent its key sat at, the
 	 * arena offset being built, and whether a blank line is owed as a
@@ -979,6 +1132,7 @@ static int schema_body_line(struct schema_reader *r, const char *spec, int linen
 		return 1;
 	if (ind == r->base) {
 		r->prop_is_array = 0;
+		r->prop_is_map = 0;
 		if (!key_at(line, r->base, r->prop, sizeof(r->prop)))
 			r->prop[0] = '\0';
 		else {
@@ -1100,6 +1254,17 @@ static int schema_body_line(struct schema_reader *r, const char *spec, int linen
 		}
 		if (fl == NULL)
 			return 1;
+		/*
+		 * #592: `additionalProperties:` opening a block is a MAP, and
+		 * its values' type is read into `items` -- the same slot an
+		 * array's item type uses, because it is the same fact about a
+		 * collection: what each member is. A map of strings
+		 * (`modprobe` options, a container's env and sysctls, a
+		 * deployment's secrets) is then a KEY=VALUE list to a form
+		 * rather than JSON. `additionalProperties: false` on one line
+		 * is a closed object and not a map.
+		 */
+		r->prop_is_map = strcmp(key, "additionalProperties") == 0 && v[0] == '\0';
 		if (strcmp(key, "format") == 0)
 			snprintf(fl->format, sizeof(fl->format), "%s", v);
 		else if (strcmp(key, "pattern") == 0)
@@ -1172,7 +1337,7 @@ static int schema_body_line(struct schema_reader *r, const char *spec, int linen
 		}
 		return 1;
 	}
-	if (ind == r->base + 4 && r->prop_is_array && s->n_field > 0 &&
+	if (ind == r->base + 4 && (r->prop_is_array || r->prop_is_map) && s->n_field > 0 &&
 	    key_at(line, r->base + 4, key, sizeof(key)) && strcmp(key, "type") == 0) {
 		struct schema_field *fl = &s->field[s->n_field - 1];
 		char v[APIGEN_TYPE_MAX];
@@ -1491,6 +1656,12 @@ static void op_add_query(int op, const char *name, const char *spec, int lineno)
  */
 static char g_item_name[APIGEN_QNAME_MAX];
 static int g_item_is_query;
+/* #592: the same entry as a field, for when it turns out to be a path
+ * parameter -- which, like a query one, is only known once `in:` has
+ * been read. */
+static struct schema_field g_item_field;
+static int g_item_is_path;
+static int g_item_in_schema;
 static int g_in_params;
 
 /* Where the response-shape reader is: inside an operation's `responses:`,
@@ -1532,8 +1703,14 @@ static void param_item_flush(int op, const char *spec, int lineno)
 {
 	if (g_item_is_query)
 		op_add_query(op, g_item_name, spec, lineno);
+	if (g_item_is_path && op >= 0)
+		op_add_path_field(op, &g_item_field, spec, lineno);
 	g_item_name[0] = '\0';
 	g_item_is_query = 0;
+	memset(&g_item_field, 0, sizeof(g_item_field));
+	g_item_field.desc = -1;
+	g_item_is_path = 0;
+	g_item_in_schema = 0;
 }
 
 /*
@@ -1561,6 +1738,8 @@ static void param_ref_resolve(int op, const char *text, const char *spec, int li
 		if (strcmp(g_comp_params[i].comp, comp) == 0) {
 			if (g_comp_params[i].is_query)
 				op_add_query(op, g_comp_params[i].name, spec, lineno);
+			if (g_comp_params[i].is_path)
+				op_add_path_field(op, &g_comp_param_field[i], spec, lineno);
 			return;
 		}
 }
@@ -2042,8 +2221,12 @@ static void emit_web(const char *out_path, const char *spec)
 		 * the contract says so rather than because someone remembered.
 		 */
 		fprintf(o, "\t%s_SHAPE: { method: \"%s\", path: \"/v1%s\", permission: \"%s\", "
-		           "params: %d, request: ",
+		           "params: %d, args: ",
 		        g_ops[i].op_id, g_ops[i].method, g_ops[i].path, g_ops[i].permission, np);
+		/* #592: the path parameters' own fields, so a form can ask for
+		 * a key that lives in the URL as it asks for one in the body. */
+		emit_js_name(o, g_ops[i].args_schema);
+		fprintf(o, ", request: ");
 		emit_js_name(o, g_ops[i].req_schema);
 		fprintf(o, ", response: ");
 		emit_js_name(o, g_ops[i].resp_schema);
@@ -2819,7 +3002,7 @@ int main(int argc, char **argv)
 		 * schema, description and required are the contract's
 		 * business and not this tool's.
 		 */
-		if (g_in_params && cur_op >= 0 && (ind == 8 || ind == 10)) {
+		if (g_in_params && cur_op >= 0 && (ind == 8 || ind == 10 || ind == 12)) {
 			const char *text = line + ind;
 
 			if (ind == 8) {
@@ -2834,6 +3017,12 @@ int main(int argc, char **argv)
 					continue;
 				}
 			}
+			/* #592: the entry as a field too. The `- ` line's key is
+			 * one of the entry's own, so it counts as indent 10. */
+			param_field_key(&g_item_field, &g_item_in_schema, &g_item_is_path,
+			                ind == 8 ? 10 : ind, 10, text, spec, lineno);
+			if (ind == 12)
+				continue;
 			{
 				char k[APIGEN_QNAME_MAX];
 				const char *colon = strchr(text, ':');
@@ -2895,6 +3084,82 @@ int main(int argc, char **argv)
 			s = comp_schema_find(g_ops[i].req_schema);
 			if (s != NULL && s->n_field == 0)
 				g_ops[i].req_schema[0] = '\0';
+		}
+	}
+
+	/*
+	 * #592: each operation's path parameters, as the schema `args`
+	 * names -- in the TEMPLATE's order, which is the order the route
+	 * function takes them, so a form can pass them straight through.
+	 *
+	 * A declaration that does not match the template is refused rather
+	 * than reordered. All 132 operations with path parameters declare
+	 * them in template order (measured 2026-10-17), so this costs
+	 * nothing today and keeps a field from ever filling another's
+	 * place in a URL. An undeclared template parameter is refused for
+	 * the same reason: it would be a form field nobody described.
+	 */
+	{
+		int i;
+
+		for (i = 0; i < g_op_count; i++) {
+			struct comp_schema *s;
+			char name[APIGEN_ID_MAX];
+			const char *c;
+			int n = 0, s_idx;
+
+			for (c = g_ops[i].path; *c != '\0'; c++) {
+				char seg[APIGEN_QNAME_MAX];
+				size_t k = 0;
+
+				if (*c != '{')
+					continue;
+				c++;
+				while (*c != '}' && *c != '\0' && k + 1 < sizeof(seg))
+					seg[k++] = *c++;
+				seg[k] = '\0';
+				if (n >= g_n_path_field[i] || strcmp(g_path_field[i][n].name, seg) != 0)
+					die_at(spec, g_ops[i].line,
+					       "%s: path parameter {%s} is not the declared parameter in "
+					       "that position -- declare every path parameter, in the "
+					       "order the path names them", g_ops[i].op_id, seg);
+				n++;
+			}
+			if (n != g_n_path_field[i])
+				die_at(spec, g_ops[i].line,
+				       "%s declares %d path parameters and its path names %d",
+				       g_ops[i].op_id, g_n_path_field[i], n);
+			if (n == 0)
+				continue;
+			snprintf(name, sizeof(name), "%sArgs", g_ops[i].op_id);
+			if (comp_schema_find(name) != NULL)
+				die_at(spec, g_ops[i].line,
+				       "%s's path parameters would be synthesized as \"%s\", which is "
+				       "already a component schema -- give one of them another name",
+				       g_ops[i].op_id, name);
+			if (g_comp_schema_count >= APIGEN_MAX_COMP_SCHEMAS)
+				die_at(spec, g_ops[i].line, "more than %d component schemas",
+				       APIGEN_MAX_COMP_SCHEMAS);
+			s_idx = g_comp_schema_count++;
+			s = &g_comp_schemas[s_idx];
+			memset(s, 0, sizeof(*s));
+			snprintf(s->comp, sizeof(s->comp), "%s", name);
+			s->line = g_ops[i].line;
+			for (n = 0; n < g_n_path_field[i]; n++) {
+				s->field[n] = g_path_field[i][n];
+				/* A path segment is always a string on the wire, and
+				 * always present: OpenAPI requires `required: true`
+				 * of every path parameter. */
+				if (s->field[n].type[0] == '\0')
+					snprintf(s->field[n].type, sizeof(s->field[n].type), "string");
+				snprintf(s->required[n], sizeof(s->required[n]), "%s",
+				         s->field[n].name);
+				snprintf(s->props + strlen(s->props), sizeof(s->props) - strlen(s->props),
+				         "%s,", s->field[n].name);
+			}
+			s->n_field = g_n_path_field[i];
+			s->n_required = g_n_path_field[i];
+			snprintf(g_ops[i].args_schema, sizeof(g_ops[i].args_schema), "%s", name);
 		}
 	}
 

@@ -138,7 +138,7 @@
 			<button type="button" class="menu-dropdown-toggle" data-menu="storage">Storage</button>
 			<ul class="menu-dropdown-menu" data-menu="storage" hidden>
 				<li><button type="button" data-modal="generated-form" data-op="createVolume" data-title="Create volume" data-submit="Create volume">New Volume</button></li>
-				<li><button type="button" data-modal="diskrole-form" data-op="createStorageRole" data-title="Assign disk role">Assign Disk Role</button></li>
+				<li><button type="button" data-modal="generated-form" data-op="createStorageRole" data-title="Assign disk role" data-submit="Assign role">Assign Disk Role</button></li>
 			</ul>
 		</div>
 
@@ -147,9 +147,9 @@
 			<ul class="menu-dropdown-menu" data-menu="pipeline" hidden>
 				<li><button type="button" data-modal="generated-form" data-op="createImage" data-title="Create image" data-submit="Create">New Image</button></li>
 				<li><button type="button" data-modal="generated-form" data-op="pkgInstall" data-title="Install a package" data-submit="Install">Install Package</button></li>
-				<li><button type="button" data-modal="pkg-recipe-form" data-op="addPkgRecipe" data-title="Add or update a recipe">New/Update Recipe</button></li>
-				<li><button type="button" data-modal="pkg-source-form" data-op="addPkgSource" data-title="New recipe source">New Recipe Source</button></li>
-				<li><button type="button" data-modal="pkg-repository-form" data-op="addPkgRepository" data-title="New package repository">New Package Repository</button></li>
+				<li><button type="button" data-modal="generated-form" data-op="addPkgRecipe" data-title="Add or update a recipe" data-submit="Publish">New/Update Recipe</button></li>
+				<li><button type="button" data-modal="generated-form" data-op="addPkgSource" data-title="New recipe source" data-submit="Add source">New Recipe Source</button></li>
+				<li><button type="button" data-modal="generated-form" data-op="addPkgRepository" data-title="New package repository" data-submit="Add repository">New Package Repository</button></li>
 				<li><button type="button" data-modal="generated-form" data-op="pkgBootstrap" data-title="Bootstrap build image" data-submit="Bootstrap">Bootstrap Build Image</button></li>
 			</ul>
 		</div>
@@ -186,7 +186,7 @@
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">DHCP</button>
 					<ul class="menu-submenu-menu" hidden>
 						<li><button type="button" data-modal="generated-form" data-op="registerDhcpServer" data-title="Register DHCP server" data-submit="Register">Register Server</button></li>
-						<li><button type="button" data-modal="dhcp-range-form" data-op="setDhcpNetwork" data-title="DHCP range">New/Edit Range</button></li>
+						<li><button type="button" data-modal="generated-form" data-op="setDhcpNetwork" data-title="New DHCP range" data-submit="Save range">New Range</button></li>
 						<li><button type="button" data-modal="generated-form" data-op="addDhcpReservation" data-title="Reserve an address" data-submit="Reserve">Reserve an Address</button></li>
 					</ul>
 				</li>
@@ -213,16 +213,16 @@
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">Daemon</button>
 					<ul class="menu-submenu-menu" hidden>
-						<li><button type="button" data-modal="route-add-form" data-op="postSystemRoute" data-title="Add route">Add Route</button></li>
-						<li><button type="button" data-modal="sysctl-set-form" data-op="putSystemSysctl" data-title="Set a sysctl">Set Sysctl</button></li>
+						<li><button type="button" data-modal="generated-form" data-op="postSystemRoute" data-title="Add route" data-submit="Add route">Add Route</button></li>
+						<li><button type="button" data-modal="generated-form" data-op="putSystemSysctl" data-title="Set a sysctl" data-submit="Set">Set Sysctl</button></li>
 					</ul>
 				</li>
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">Devices</button>
 					<ul class="menu-submenu-menu" hidden>
 						<li><button type="button" data-modal="generated-form" data-op="createDeviceMap" data-title="Name a device" data-submit="Create mapping">Name a Device Mapping</button></li>
-						<li><button type="button" data-modal="kmod-load-form" data-op="postKmodLoad" data-title="Load a kernel module">Load Module</button></li>
-						<li><button type="button" data-modal="kmodconfig-set-form" data-op="putKmodConfig" data-title="Configure a kernel module">Configure Module</button></li>
+						<li><button type="button" data-modal="generated-form" data-op="postKmodLoad" data-title="Load a kernel module" data-submit="Load">Load Module</button></li>
+						<li><button type="button" data-modal="generated-form" data-op="putKmodConfig" data-title="Configure a kernel module" data-submit="Save">Configure Module</button></li>
 					</ul>
 				</li>
 			</ul>
@@ -3044,139 +3044,6 @@
 				</form>
 			</div>
 
-			<div id="modal-sysctl-set-form" hidden>
-				<form id="sysctl-set-form">
-					<label>
-						Key
-						<input type="text" id="sf-key" placeholder="net.ipv4.ip_forward" required>
-					</label>
-					<label class="wide">
-						Value(s) (comma-separated for a tuple key)
-						<input type="text" id="sf-value" placeholder="1" required>
-					</label>
-					<label class="checkbox">
-						<input type="checkbox" id="sf-persist" checked>
-						Persist (re-apply on every boot)
-					</label>
-					<button type="submit">Set</button>
-				</form>
-			</div>
-
-			<div id="modal-kmod-load-form" hidden>
-				<form id="kmod-load-form">
-					<label>
-						Module name
-						<input type="text" id="klf-name" placeholder="e1000e" required>
-					</label>
-					<label class="wide">
-						Options (KEY=VALUE, comma-separated -- optional)
-						<input type="text" id="klf-options" placeholder="debug=1">
-					</label>
-					<p class="hint">No options given falls back to this module's own persisted default_options, if any.</p>
-					<button type="submit">Load</button>
-				</form>
-			</div>
-
-			<div id="modal-kmodconfig-set-form" hidden>
-				<form id="kmcf-set-form">
-					<label>
-						Module name
-						<input type="text" id="kmcf-name" placeholder="e1000e" required>
-					</label>
-					<label class="wide">
-						Default options (KEY=VALUE, comma-separated -- optional)
-						<input type="text" id="kmcf-options" placeholder="debug=1">
-					</label>
-					<label class="checkbox">
-						<input type="checkbox" id="kmcf-autoload">
-						Autoload at boot
-					</label>
-					<button type="submit">Save</button>
-				</form>
-			</div>
-
-			<div id="modal-route-add-form" hidden>
-				<form id="route-add-form">
-					<label class="checkbox">
-						<input type="checkbox" id="rf-default">
-						Default route
-					</label>
-					<label>
-						Destination
-						<input type="text" id="rf-dest" placeholder="172.40.0.0">
-					</label>
-					<label>
-						Prefix
-						<input type="number" id="rf-prefix" min="0" max="32" placeholder="24">
-					</label>
-					<label>
-						Gateway (optional)
-						<input type="text" id="rf-gateway" placeholder="172.30.1.1">
-					</label>
-					<button type="submit">Add route</button>
-				</form>
-			</div>
-
-			<div id="modal-diskrole-form" hidden>
-				<form id="diskrole-form">
-					<label>
-						Disk
-						<select id="drf-disk-name" required></select>
-					</label>
-					<label>
-						Role
-						<select id="drf-role">
-							<option value="container-storage">container-storage</option>
-							<option value="backup">backup</option>
-							<option value="rebuildable-storage">rebuildable-storage</option>
-							<option value="log-storage">log-storage</option>
-						</select>
-					</label>
-					<p class="hint">Assigning a role never touches the disk's own content -- formatting (destructive) is a separate action, available per-disk on the Disks page once a role is assigned.</p>
-					<button type="submit">Assign role</button>
-				</form>
-			</div>
-
-
-
-			<div id="modal-dhcp-range-form" hidden>
-				<form id="dhcp-range-form">
-					<label>
-						Network
-						<select id="drf-network"></select>
-					</label>
-					<label class="checkbox">
-						<input type="checkbox" id="drf-enabled">
-						Serve DHCP on this network
-					</label>
-					<label>
-						Range start
-						<input type="text" id="drf-start" placeholder="172.30.7.100">
-					</label>
-					<label>
-						Range end
-						<input type="text" id="drf-end" placeholder="172.30.7.200">
-					</label>
-					<label>
-						Lease seconds
-						<input type="number" id="drf-lease" min="60" max="2592000" value="3600">
-					</label>
-					<label>
-						Router to advertise (optional)
-						<input type="text" id="drf-router" placeholder="(none)">
-					</label>
-					<label class="wide">
-						Servers (select one or more &mdash; the range is split between them)
-						<select id="drf-servers" multiple size="4"></select>
-					</label>
-					<button type="submit">Save</button>
-				</form>
-			</div>
-
-
-
-
-
 			<!-- #447: set one net.* sysctl on an existing container, live when
 			     it is running (PUT /v1/containers/{name}/sysctls). -->
 			<div id="modal-container-sysctl-form" hidden>
@@ -3243,111 +3110,6 @@
 			     opens here, and stays until the operator closes it. -->
 			<div id="modal-pki-cert-issued" hidden>
 				<div id="pki-cert-issued" class="pki-cert-issued"></div>
-			</div>
-
-			<div id="modal-pkg-recipe-form" hidden>
-				<form id="pkg-recipe-form">
-					<label>
-						Name
-						<input type="text" id="rf-name" pattern="[A-Za-z0-9_\-]+" required>
-					</label>
-					<label class="wide">
-						Recipe file (leave blank to paste/edit content below instead)
-						<input type="file" id="rf-file">
-					</label>
-					<label class="wide">
-						Content
-						<textarea id="rf-content" rows="16" spellcheck="false"></textarea>
-					</label>
-					<label>
-						Source
-						<select id="rf-source">
-							<option value="">Its owning source, or the only one</option>
-						</select>
-					</label>
-					<button type="submit">Add / update</button>
-				</form>
-				<p class="hint">Publishes a new version -- a published version is never replaced (ADR-0107). A
-					new package goes to the source named here (ADR-0324). No ISO
-					rebuild or reinstall needed (ADR-0040).</p>
-			</div>
-
-			<div id="modal-pkg-source-form" hidden>
-				<form id="pkg-source-form">
-					<label>
-						Name
-						<input type="text" id="psf-name" pattern="[a-z0-9][a-z0-9._\-]*" required>
-					</label>
-					<label class="wide">
-						Repository URL
-						<input type="text" id="psf-url" placeholder="https://git.example.com/org/recipes" required>
-					</label>
-					<label>
-						Kind
-						<select id="psf-kind">
-							<option value="gitea">gitea</option>
-							<option value="github">github</option>
-							<option value="gitlab">gitlab</option>
-						</select>
-					</label>
-					<label>
-						Ref (branch/tag)
-						<input type="text" id="psf-ref" placeholder="main">
-					</label>
-					<label>
-						Token (blank = unchanged)
-						<input type="password" id="psf-token" placeholder="(none)">
-					</label>
-					<label class="checkbox">
-						<input type="checkbox" id="psf-clear-token">
-						Clear token
-					</label>
-					<label class="checkbox">
-						<input type="checkbox" id="psf-write">
-						This host may commit recipes it writes here (gitea only)
-					</label>
-					<label class="checkbox">
-						<input type="checkbox" id="psf-trust-keys">
-						Trust the signing keys this source carries
-					</label>
-					<label class="wide">
-						Catalogue key (the source's signed index must verify against it; empty = unsigned)
-						<textarea id="psf-catalogue-key" rows="3" spellcheck="false" placeholder="untrusted comment: ...&#10;RW..."></textarea>
-					</label>
-					<button type="submit">Save</button>
-				</form>
-				<p class="hint">ADR-0324: a source is read unless this host may commit to it, and supplies
-					recipes but no signing keys unless it is trusted for keys. A package two sources offer
-					is held until one is chosen for it.</p>
-			</div>
-
-			<div id="modal-pkg-repository-form" hidden>
-				<form id="pkg-repository-form">
-					<label>
-						Name
-						<input type="text" id="prepo-name" pattern="[a-z0-9][a-z0-9._\-]*" required>
-					</label>
-					<label class="wide">
-						URL
-						<input type="text" id="prepo-url" placeholder="https://cache.example.com" required>
-					</label>
-					<label>
-						Token (blank = unchanged)
-						<input type="password" id="prepo-token" placeholder="(none)">
-					</label>
-					<label class="checkbox">
-						<input type="checkbox" id="prepo-clear-token">
-						Clear token
-					</label>
-					<label class="checkbox">
-						<input type="checkbox" id="prepo-push">
-						Publish this host's fresh builds here (needs a token)
-					</label>
-					<button type="submit">Save</button>
-				</form>
-				<p class="hint">ADR-0324: a plain HTTP(S) artifact server, never a git forge. Artifacts
-					are fetched at &lt;url&gt;/&lt;name&gt;-&lt;version&gt;-&lt;arch&gt;.cixpkg and accepted
-					only when they verify.</p>
 			</div>
 
 			<div id="modal-pkg-source-own-form" hidden>

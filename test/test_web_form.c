@@ -197,15 +197,32 @@ static const char *const DOM_SHIM =
     "    return this._byId[id];\n"
     "  },\n"
     "  querySelector() { return null; },\n"
+    /* A text node has no dataset and no children of its own, and the
+     * walk below reads both, so it carries empty ones. */
+    "  createTextNode(t) { return { tag: \"#text\", textContent: t, dataset: {}, children: [] }; },\n"
     "  createElement(tag) {\n"
     "    const el = {\n"
     "      tag: tag, dataset: {}, children: [],\n"
     "      appendChild(c) { this.children.push(c); },\n"
+    /* A listener is recorded, never fired: the one form.js adds is a
+     * file picker's, and no test here has a file to give it. */
+    "      listeners: {},\n"
+    "      addEventListener(type, fn) { this.listeners[type] = fn; },\n"
+    /* What a <select> answers, computed from its <option> children as
+     * the real one is -- so `selected` set on an option is what the
+     * body collector reads back, which is the property under test. */
+    "      get options() { return this.children.filter((c) => c.tag === \"option\"); },\n"
+    "      get selectedOptions() { return this.options.filter((c) => c.selected); },\n"
     "      querySelectorAll(sel) {\n"
     "        const out = [];\n"
+    /* Every `[data-x]` selector form.js uses, by the dataset key the
+     * real DOM maps it to: data-clear-for is dataset.clearFor. */
+    "        const m = /^\\[data-([a-z-]+)\\]$/.exec(sel);\n"
+    "        const key = m === null ? null :\n"
+    "          m[1].replace(/-([a-z])/g, (s, ch) => ch.toUpperCase());\n"
     "        const walk = (n) => {\n"
     "          for (const c of n.children) {\n"
-    "            if (sel === \"[data-field]\" && c.dataset.field !== undefined)\n"
+    "            if (key !== null && c.dataset[key] !== undefined)\n"
     "              out.push(c);\n"
     "            if (sel === \"td\" && c.tag === \"td\")\n"
     "              out.push(c);\n"
@@ -900,9 +917,16 @@ int main(void)
 		       "(f) => f.name === \"content\")).rows)",
 		       "12");
 		expect(ctx, "an object field is a textarea with no annotation at all",
-		       "fieldControl(CIX_API.FIELDS.applyDeploymentRequest.find("
-		       "(f) => f.name === \"secrets\")).tag",
+		       "fieldControl(CIX_API.FIELDS.ScheduleWrite.find("
+		       "(f) => f.name === \"params\")).tag",
 		       "textarea");
+		/* ...and a MAP of strings is one too, read as KEY=VALUE rather
+		 * than JSON (#592): a deployment's secrets were typed as a JSON
+		 * object until apigen read `additionalProperties`' type. */
+		expect(ctx, "a deployment's secrets are a map of strings, not JSON",
+		       "String(isStringMap(CIX_API.FIELDS.applyDeploymentRequest.find("
+		       "(f) => f.name === \"secrets\")))",
+		       "true");
 		expect(ctx, "the contract still asks for one, in one place",
 		       "String(CIX_API.FIELDS.addImageRecipeRequest.find("
 		       "(f) => f.name === \"content\").ui)",
@@ -940,19 +964,19 @@ int main(void)
 		 */
 		expect(ctx, "an object field is shown as JSON and read back as an object",
 		       "(() => {\n"
-		       "  const f = CIX_API.FIELDS.applyDeploymentRequest.find(\n"
-		       "    (x) => x.name === \"secrets\");\n"
+		       "  const f = CIX_API.FIELDS.ScheduleWrite.find(\n"
+		       "    (x) => x.name === \"params\");\n"
 		       "  const el = fieldControl(f);\n"
 		       "  const form = document.createElement(\"form\");\n"
 		       "  setFieldValue(el, f, { KEY: \"real\" });\n"
 		       "  form.appendChild(el);\n"
 		       "  return JSON.stringify(generatedFormBody(form));\n"
 		       "})()",
-		       "{\"secrets\":{\"KEY\":\"real\"}}");
+		       "{\"params\":{\"KEY\":\"real\"}}");
 		expect(ctx, "an untouched optional object field sends nothing",
 		       "(() => {\n"
-		       "  const f = CIX_API.FIELDS.applyDeploymentRequest.find(\n"
-		       "    (x) => x.name === \"secrets\");\n"
+		       "  const f = CIX_API.FIELDS.ScheduleWrite.find(\n"
+		       "    (x) => x.name === \"params\");\n"
 		       "  const el = fieldControl(f);\n"
 		       "  const form = document.createElement(\"form\");\n"
 		       "  el.value = \"\\n  \";\n"
@@ -969,20 +993,20 @@ int main(void)
 		 */
 		expect(ctx, "invalid JSON is refused, naming the field",
 		       "(() => {\n"
-		       "  const f = CIX_API.FIELDS.applyDeploymentRequest.find(\n"
-		       "    (x) => x.name === \"secrets\");\n"
+		       "  const f = CIX_API.FIELDS.ScheduleWrite.find(\n"
+		       "    (x) => x.name === \"params\");\n"
 		       "  const el = fieldControl(f);\n"
 		       "  const form = document.createElement(\"form\");\n"
 		       "  el.value = \"{oops\";\n"
 		       "  form.appendChild(el);\n"
 		       "  try { generatedFormBody(form); return \"accepted\"; }\n"
-		       "  catch (e) { return e.message.slice(0, 27); }\n"
+		       "  catch (e) { return e.message.slice(0, 26); }\n"
 		       "})()",
-		       "Secrets must be valid JSON:");
+		       "Params must be valid JSON:");
 		expect(ctx, "and so is a bare value that is not an object",
 		       "(() => {\n"
-		       "  const f = CIX_API.FIELDS.applyDeploymentRequest.find(\n"
-		       "    (x) => x.name === \"secrets\");\n"
+		       "  const f = CIX_API.FIELDS.ScheduleWrite.find(\n"
+		       "    (x) => x.name === \"params\");\n"
 		       "  const el = fieldControl(f);\n"
 		       "  const form = document.createElement(\"form\");\n"
 		       "  el.value = \"7\";\n"
@@ -990,7 +1014,7 @@ int main(void)
 		       "  try { generatedFormBody(form); return \"accepted\"; }\n"
 		       "  catch (e) { return e.message; }\n"
 		       "})()",
-		       "Secrets must be a JSON object, not a bare value");
+		       "Params must be a JSON object, not a bare value");
 
 		/*
 		 * ---- `fixed`: the key of an upsert, shown and not editable ----
@@ -1096,6 +1120,191 @@ int main(void)
 		       "    form.children[1].children[1].tag;\n"
 		       "})()",
 		       "-/textarea");
+		/* ...and that a document field can be filled from a file
+		 * (#592): the picker sits directly under the textarea, and is
+		 * no field of the body. */
+		expect(ctx, "a document field carries a file picker under it",
+		       "(() => {\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  const c = form.children[1].children;\n"
+		       "  return c[2].tag + \"/\" + c[2].type + \"/\" + c[2].className + \"/\" +\n"
+		       "    String(c[2].dataset.field);\n"
+		       "})()",
+		       "input/file/field-file/undefined");
+
+		/*
+		 * ---- path parameters as fields (#592) ----
+		 *
+		 * putSystemSysctl's key lives in its URL, which is why Set
+		 * Sysctl was hand-built: openForm could only take a path
+		 * parameter from its caller. Now one the caller does not give
+		 * is asked for, FIRST, as a field of its own that the body
+		 * never carries.
+		 */
+		expect(ctx, "an operation's path parameter is asked for, first",
+		       "(() => {\n"
+		       "  openForm(\"putSystemSysctl\", { title: \"T\", submit: \"Set\" });\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  const key = form.children[0].children[1];\n"
+		       "  return form.children.length + \"/\" + key.dataset.arg + \"/\" +\n"
+		       "    String(key.dataset.field) + \"/\" + key.required;\n"
+		       "})()",
+		       "4/0/undefined/true");
+		expect(ctx, "and goes into the URL, not the body",
+		       "(() => {\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  form.children[0].children[1].value = \" net.ipv4.ip_forward \";\n"
+		       "  form.children[1].children[1].value = \"1\";\n"
+		       "  return JSON.stringify(generatedFormArgs(form)) + \" \" +\n"
+		       "    JSON.stringify(generatedFormBody(form));\n"
+		       "})()",
+		       "[\"net.ipv4.ip_forward\"] {\"value\":\"1\",\"persist\":true}");
+		expect(ctx, "while one the call site gives is not shown at all",
+		       "(() => {\n"
+		       "  openForm(\"putSystemSysctl\", { title: \"T\", submit: \"Set\",\n"
+		       "    args: [\"vm.swappiness\"] });\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  return form.children.length + \" \" + JSON.stringify(generatedFormArgs(form));\n"
+		       "})()",
+		       "3 [\"vm.swappiness\"]");
+
+		/*
+		 * ---- choices read from the box (#592) ----
+		 *
+		 * A DHCP range's servers are an ARRAY, so their choices are a
+		 * multiple select -- and a multiple select's `.value` is only
+		 * its FIRST selection, which is why the body reads
+		 * selectedOptions. Without that the range would have been
+		 * served by one of the two servers the operator picked.
+		 */
+		expect(ctx, "an array's choices are a multiple select, read whole",
+		       "(() => {\n"
+		       "  openForm(\"setDhcpNetwork\", { title: \"T\", args: [\"lan\"],\n"
+		       "    choices: { servers: [{ value: \"dhcp-1\" }, { value: \"dhcp-2\" },\n"
+		       "                         { value: \"dhcp-3\" }] },\n"
+		       "    values: { servers: [\"dhcp-1\", \"dhcp-3\"] } });\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  const sel = form.children.find((l) => l.children[1] &&\n"
+		       "    l.children[1].dataset.field === \"servers\").children[1];\n"
+		       "  return sel.tag + \"/\" + sel.multiple + \" \" +\n"
+		       "    JSON.stringify(generatedFormBody(form).servers);\n"
+		       "})()",
+		       "select/true [\"dhcp-1\",\"dhcp-3\"]");
+		expect(ctx, "and an optional one with nothing picked, never touched, is omitted",
+		       "(() => {\n"
+		       "  openForm(\"setDhcpNetwork\", { title: \"T\", args: [\"lan\"],\n"
+		       "    choices: { servers: [{ value: \"dhcp-1\" }] } });\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  return String(generatedFormBody(form).servers);\n"
+		       "})()",
+		       "undefined");
+		/* A path parameter takes choices exactly as a body field does:
+		 * the menu's New Range picks its network from the box. */
+		expect(ctx, "a path parameter's choices are a select of what exists",
+		       "(() => {\n"
+		       "  openForm(\"setDhcpNetwork\", { title: \"T\",\n"
+		       "    choices: { network: [{ value: \"lan\" }, { value: \"dmz\" }] } });\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  const sel = form.children[0].children[1];\n"
+		       "  sel.value = \"dmz\";\n"
+		       "  return sel.tag + \"/\" + sel.options.length + \" \" +\n"
+		       "    JSON.stringify(generatedFormArgs(form));\n"
+		       "})()",
+		       "select/2 [\"dmz\"]");
+		expect(ctx, "and an empty list says so rather than offering a text box",
+		       "(() => {\n"
+		       "  const el = fieldControl({ name: \"disk_name\", type: \"string\",\n"
+		       "    required: true }, []);\n"
+		       "  return el.tag + \"/\" + el.options.length + \"/\" + el.options[0].textContent;\n"
+		       "})()",
+		       "select/1/None available");
+
+		/*
+		 * ---- an edit can clear, and a secret can be kept (#592) ----
+		 *
+		 * An empty field means "leave it alone", so an edit form could
+		 * never clear anything -- the recipe source's catalogue key is
+		 * removed by sending "", and the hand-built form sent it on
+		 * every save for that reason. A field opened HOLDING a value
+		 * and emptied is therefore sent as "", and an untouched empty
+		 * one is still omitted.
+		 */
+		expect(ctx, "a field opened with a value and emptied is sent as cleared",
+		       "(() => {\n"
+		       "  openForm(\"updatePkgSource\", { title: \"T\", args: [\"lan\"],\n"
+		       "    values: { url: \"https://x/o/r\", kind: \"gitea\", ref: \"\",\n"
+		       "      catalogue_key: \"untrusted comment: k\\nRWQ1\\n\" },\n"
+		       "    secrets: { token: true } });\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  const ck = form.children.find((l) => l.children[1] &&\n"
+		       "    l.children[1].dataset.field === \"catalogue_key\").children[1];\n"
+		       "  ck.value = \"\";\n"
+		       "  const b = generatedFormBody(form);\n"
+		       "  return JSON.stringify([b.catalogue_key, b.ref, b.token]);\n"
+		       "})()",
+		       "[\"\",null,null]");
+		/* `[... , null, null]` is JSON.stringify's rendering of two
+		 * undefineds: the empty ref was never set, and a kept secret
+		 * is not sent. The "Remove" box is what sends "". */
+		expect(ctx, "and a stored secret is removed only by its own box",
+		       "(() => {\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  const box = form.children.find((l) => l.children[0] &&\n"
+		       "    l.children[0].dataset.clearFor === \"token\").children[0];\n"
+		       "  box.checked = true;\n"
+		       "  return JSON.stringify(generatedFormBody(form).token);\n"
+		       "})()",
+		       "\"\"");
+		expect(ctx, "with no box at all when the resource holds no secret",
+		       "(() => {\n"
+		       "  openForm(\"updatePkgSource\", { title: \"T\", args: [\"lan\"],\n"
+		       "    values: { url: \"https://x/o/r\" }, secrets: { token: false } });\n"
+		       "  const form = document.getElementById(\"generated-form\");\n"
+		       "  return String(form.querySelectorAll(\"[data-clear-for]\").length);\n"
+		       "})()",
+		       "0");
+
+		/*
+		 * ---- a map of strings is KEY=VALUE lines (#592) ----
+		 *
+		 * `additionalProperties: {type: string}` -- modprobe options --
+		 * which apigen records as `items: "string"` on an object. Split
+		 * at the FIRST `=`, because a value may contain one; a line with
+		 * none, or a key given twice, is refused rather than guessed.
+		 */
+		expect(ctx, "a map of strings is read from KEY=VALUE lines",
+		       "(() => {\n"
+		       "  const f = CIX_API.FIELDS.putKmodConfigRequest.find(\n"
+		       "    (x) => x.name === \"default_options\");\n"
+		       "  const el = fieldControl(f);\n"
+		       "  const form = document.createElement(\"form\");\n"
+		       "  el.value = \"debug=1\\n\\n  opts = a=b \\n\";\n"
+		       "  form.appendChild(el);\n"
+		       "  return el.tag + \" \" + constraintText(f) + \" \" +\n"
+		       "    JSON.stringify(generatedFormBody(form));\n"
+		       "})()",
+		       "textarea KEY=VALUE per line {\"default_options\":{\"debug\":\"1\",\"opts\":\"a=b\"}}");
+		expect(ctx, "and a line that is not KEY=VALUE is refused",
+		       "(() => {\n"
+		       "  try { parseStringMap(\"Options\", \"debug\"); return \"accepted\"; }\n"
+		       "  catch (e) { return e.message; }\n"
+		       "})()",
+		       "Options: \"debug\" is not KEY=VALUE");
+		expect(ctx, "as is a key given twice",
+		       "(() => {\n"
+		       "  try { parseStringMap(\"Options\", \"a=1\\na=2\"); return \"accepted\"; }\n"
+		       "  catch (e) { return e.message; }\n"
+		       "})()",
+		       "Options: a is given twice");
+		expect(ctx, "and a stored map is shown the same way it is typed",
+		       "(() => {\n"
+		       "  const f = CIX_API.FIELDS.putKmodConfigRequest.find(\n"
+		       "    (x) => x.name === \"default_options\");\n"
+		       "  const el = fieldControl(f);\n"
+		       "  setFieldValue(el, f, { debug: \"1\", mode: \"x=y\" });\n"
+		       "  return el.value;\n"
+		       "})()",
+		       "debug=1\nmode=x=y");
 	}
 
 	JS_FreeContext(ctx);

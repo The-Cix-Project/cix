@@ -78,6 +78,31 @@ int pkgsource_kind_can_write(const char *kind)
 	return kind != NULL && strcmp(kind, "gitea") == 0;
 }
 
+/*
+ * A catalogue key ends in exactly one newline, whoever sent it (#592).
+ *
+ * It is a minisign public key FILE -- a comment line, then the key --
+ * staged to disk for every verification, and a file's last line ends in
+ * a newline. The dashboard's hand-built form used to trim what was
+ * pasted and add one, so the daemon only ever saw that shape from it;
+ * a key read from a file by cixctl arrives with one already, and a key
+ * pasted into a generated form arrives with none or several. The rule
+ * lives here, once, rather than in each client. Trailing whitespace
+ * only: the comment line is the operator's and is kept as written.
+ */
+static void catalogue_key_normalise(char *key, size_t size)
+{
+	size_t n = strlen(key);
+
+	while (n > 0 && (key[n - 1] == '\n' || key[n - 1] == '\r' || key[n - 1] == ' ' ||
+	                 key[n - 1] == '\t'))
+		key[--n] = '\0';
+	if (n > 0 && n + 1 < size) {
+		key[n] = '\n';
+		key[n + 1] = '\0';
+	}
+}
+
 static enum pkgsource_error validate(const struct pkg_source *s, char *err, size_t err_size)
 {
 	if (!name_is_valid(s->name)) {
@@ -382,6 +407,7 @@ enum pkgsource_error pkgsource_add(const struct pkg_source *s, char *err, size_t
 	enum pkgsource_error e;
 
 	err[0] = '\0';
+	catalogue_key_normalise(copy.catalogue_key, sizeof(copy.catalogue_key));
 	if (copy.ref[0] == '\0')
 		snprintf(copy.ref, sizeof(copy.ref), "%s", PKG_SOURCE_DEFAULT_REF);
 	e = validate(&copy, err, err_size);
@@ -918,6 +944,7 @@ enum pkgsource_error pkgsource_set_catalogue_key(const char *name, const char *k
 {
 	int i = index_of(name);
 	char before[PKG_SOURCE_CATALOGUE_KEY_MAX], path[PATH_MAX];
+	char norm[PKG_SOURCE_CATALOGUE_KEY_MAX];
 
 	err[0] = '\0';
 	if (i < 0) {
@@ -926,6 +953,13 @@ enum pkgsource_error pkgsource_set_catalogue_key(const char *name, const char *k
 	}
 	if (key == NULL)
 		key = "";
+	/* An oversized key is left as it is, for the check below to refuse
+	 * rather than for a copy to truncate. */
+	if (strlen(key) < sizeof(norm)) {
+		snprintf(norm, sizeof(norm), "%s", key);
+		catalogue_key_normalise(norm, sizeof(norm));
+		key = norm;
+	}
 	if (strlen(key) >= sizeof(g_sources[i].catalogue_key) ||
 	    (key[0] != '\0' && !looks_like_minisign_public(key))) {
 		snprintf(err, err_size,

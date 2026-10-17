@@ -23833,7 +23833,12 @@ static void handle_network_dhcp_put(int fd, const char *network, const char *bod
 	if (s != NULL && inet_pton(AF_INET, s, &addr) == 1)
 		cfg.range_end_be = addr.s_addr;
 	s = json_as_string(json_object_get(root, "router"));
-	if (s != NULL && inet_pton(AF_INET, s, &addr) == 1)
+	/* "" is "no router", the same as 0.0.0.0 (#592): it is what an
+	 * emptied field sends, and keeping the old router in answer to it
+	 * would be a 200 for a change that was not made. */
+	if (s != NULL && s[0] == '\0')
+		cfg.router_be = 0;
+	else if (s != NULL && inet_pton(AF_INET, s, &addr) == 1)
 		cfg.router_be = addr.s_addr;
 	if (json_object_get(root, "lease_seconds") != NULL)
 		cfg.lease_seconds = (int)json_as_number(json_object_get(root, "lease_seconds"));

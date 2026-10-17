@@ -319,6 +319,21 @@ static void test_catalogue_key(void)
 	              PKGSOURCE_OK &&
 	          pkgsource_catalogue_time(PKG_SOURCE_DEFAULT_NAME) == 0,
 	      "a different key starts fresh, so rotation cannot strand a host");
+	/* #592: a key pasted with no newline, or with trailing blanks, is
+	 * stored as the file it is -- one trailing newline -- so it compares
+	 * equal to the same key sent from a file and keeps its time. */
+	check(pkgsource_catalogue_time_set(PKG_SOURCE_DEFAULT_NAME, 1790000001LL) == 0 &&
+	          pkgsource_set_catalogue_key(PKG_SOURCE_DEFAULT_NAME,
+	                                      "untrusted comment: cix catalogue signing key\nRWQ2222",
+	                                      err, sizeof(err)) == PKGSOURCE_OK &&
+	          strcmp(pkgsource_find(PKG_SOURCE_DEFAULT_NAME)->catalogue_key, key2) == 0 &&
+	          pkgsource_catalogue_time(PKG_SOURCE_DEFAULT_NAME) == 1790000001LL,
+	      "a key with no trailing newline is the same key");
+	check(pkgsource_set_catalogue_key(PKG_SOURCE_DEFAULT_NAME,
+	                                  "untrusted comment: cix catalogue signing key\nRWQ2222\n\n  ",
+	                                  err, sizeof(err)) == PKGSOURCE_OK &&
+	          strcmp(pkgsource_find(PKG_SOURCE_DEFAULT_NAME)->catalogue_key, key2) == 0,
+	      "trailing blank lines and spaces are not part of a key");
 	check(pkgsource_set_catalogue_key(PKG_SOURCE_DEFAULT_NAME, "", err, sizeof(err)) ==
 	              PKGSOURCE_OK &&
 	          pkgsource_find(PKG_SOURCE_DEFAULT_NAME)->catalogue_key[0] == '\0',
