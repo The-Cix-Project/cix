@@ -1124,8 +1124,15 @@ function buildFields(container, fields, ctx) {
 			continue;
 		}
 		control = fieldControl(f, ctx.choices[f.name]);
-		if (ctx.optional)
+		/* Both marks, not only the attribute: `dataset.required` is
+		 * what makes the collector send an empty field, and an empty
+		 * field sent from an untouched optional group makes that group
+		 * look filled in. collectGroup() asks for its required fields
+		 * itself, once the group is in use. */
+		if (ctx.optional) {
 			control.required = false;
+			delete control.dataset.required;
+		}
 		/* `readOnly` is right for every `fixed` field there is or is
 		 * likely to be -- a key is a name, so a text input. It is inert
 		 * on a `<select>`, so a fixed enum would show as editable; that
