@@ -323,6 +323,22 @@ static void pkg_announce_jobs(void)
 	events_announce(EV_listSoftware);
 }
 
+/*
+ * ADR-0339: the recipe store changed -- a publish, a refresh from git,
+ * an approval written in, a removal -- whoever asked for it. A sync and
+ * the rolling author write recipes with no API call in front of them,
+ * and every package entry's available_version reads the store, as does
+ * the source catalogue; getPkgDrift is declared a view of these.
+ */
+static void pkg_announce_recipes(void)
+{
+	events_announce(EV_listPkgRecipes);
+	events_announce(EV_getPkgRecipe);
+	events_announce(EV_listPkg);
+	events_announce(EV_getPkg);
+	events_announce(EV_getSourceCatalogue);
+}
+
 static void pkg_job_set_state(struct pkg_entry *e, enum pkg_state s)
 {
 	e->state = s;
@@ -971,6 +987,42 @@ static int build_job_can_still_report(const struct pkg_entry *e)
 	return g_build_container_live_fn(e->build_container_name);
 }
 
+/*
+ * ADR-0339: the one way a chain slot is given back. A slot is a running
+ * job as the build configuration reports it (active_jobs and their
+ * names) and the claim that keeps a build environment in use, and the
+ * daemon frees slots by itself on every completion and failure path --
+ * thirty-four of them, each clearing the name by hand until the self-
+ * check on 192.168.15.95 found getSystemPkgBuildConfig and
+ * listBuildEnvironments changing unannounced (0.2.57-528).
+ * test_announce refuses a direct clear anywhere else.
+ */
+static void chain_release(int chain_idx)
+{
+	g_chains[chain_idx].name[0] = '\0';
+	g_chains[chain_idx].dep_queue_count = 0;
+	events_announce(EV_getSystemPkgBuildConfig);
+	events_announce(EV_listBuildEnvironments);
+}
+
+/* The build environment a slot's build runs against ("" for none):
+ * listBuildEnvironments' in_use reads it, so it changes only here. */
+static void chain_set_buildenv(int chain_idx, const char *env_image)
+{
+	snprintf(g_chains[chain_idx].buildenv_image, sizeof(g_chains[chain_idx].buildenv_image), "%s",
+	         env_image);
+	events_announce(EV_listBuildEnvironments);
+}
+
+/* And the claim: setting the name is what marks a slot busy, so it is
+ * the last thing a claim does, and it is announced the same way. */
+static void chain_claim(int chain_idx, const char *name)
+{
+	snprintf(g_chains[chain_idx].name, sizeof(g_chains[chain_idx].name), "%s", name);
+	events_announce(EV_getSystemPkgBuildConfig);
+	events_announce(EV_listBuildEnvironments);
+}
+
 static void chain_reap_stale(void)
 {
 	int i;
@@ -1036,8 +1088,7 @@ static void chain_reap_stale(void)
 		}
 		logstore_write("cixd", "warn", "pkg: reclaimed build slot %d, held by %s@%s %s", i,
 		                g_chains[i].name, g_chains[i].image, why);
-		g_chains[i].name[0] = '\0';
-		g_chains[i].dep_queue_count = 0;
+		chain_release(i);
 	}
 }
 
@@ -1070,8 +1121,7 @@ static void chain_release_if_job_over(int chain_idx, const struct pkg_entry *e)
 {
 	if (e != NULL && (e->state == PKG_STATE_FETCHING || e->state == PKG_STATE_BUILDING))
 		return;
-	g_chains[chain_idx].name[0] = '\0';
-	g_chains[chain_idx].dep_queue_count = 0;
+	chain_release(chain_idx);
 }
 
 /* Finds a free chain slot (name[0] == '\0'). Returns its index, or -1
@@ -3524,6 +3574,9 @@ void pkg_upstream_refresh_done(int exit_status, void *unused)
 {
 	(void)unused;
 	g_upstream_refresh_running = 0;
+	/* ADR-0339: the helper rewrote the tag listings and notes the
+	 * catalogue is computed from, with no API call in front of it. */
+	events_announce(EV_getSourceCatalogue);
 	if (exit_status == 0)
 		logstore_write("cixd", "info", "pkg: discovery run finished (ADR-0323)");
 	else if (exit_status > 0)
@@ -8554,6 +8607,7 @@ static enum pkg_error recipe_cbs_refresh(const char *name, const char *version,
 		unlink(staging_path);
 		return recipe_persist_failed("move the refreshed recipe into place");
 	}
+	pkg_announce_recipes();
 	if (keep)
 		approve_cbs_artifact(recipe_path, name, version, stored_sha);
 	logstore_write("cixd", "info", "pkg: recipe %s@%s refreshed from git (%s); nothing rebuilds",
@@ -8935,6 +8989,7 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 		unlink(staging_path);
 		return PKG_ERR_PERSIST_FAILED;
 	}
+	pkg_announce_recipes();
 	queue_rolling_rebuilds_for(parsed.name, parsed.version);
 	return PKG_OK;
 }
@@ -9025,6 +9080,7 @@ enum pkg_error pkg_recipe_delete(const char *name, const char *version)
 		}
 		if (unlink(recipe_path) != 0 || rmdir(version_dir) != 0)
 			return recipe_persist_failed("remove the recipe version");
+		pkg_announce_recipes();
 		/* Leave name_dir itself if other versions remain -- rmdir()
 		 * on a non-empty directory harmlessly fails and is ignored. */
 		rmdir(name_dir);
@@ -9059,6 +9115,7 @@ enum pkg_error pkg_recipe_delete(const char *name, const char *version)
 		closedir(d);
 		if (!found)
 			return PKG_ERR_NOT_FOUND;
+		pkg_announce_recipes();
 		if (rmdir(name_dir) != 0)
 			return recipe_persist_failed("remove the recipe directory");
 		return PKG_OK;
@@ -9881,7 +9938,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 		return PKG_ERR_SPAWN_FAILED;
 	}
 
-	strncpy(g_chains[chain_idx].name, name, sizeof(g_chains[chain_idx].name) - 1);
+	chain_claim(chain_idx, name);
 	g_chains[chain_idx].fetch_pid = pid; /* #239: so a cancel can reach it */
 	*out_pid = pid;
 	*out_pidfd = pidfd;
@@ -10624,8 +10681,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		if (build_memory_admit(recipe.build_memory, refused, sizeof(refused)) != 0) {
 			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD, "%s", refused);
 			logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
-			g_chains[chain_idx].name[0] = '\0';
-			g_chains[chain_idx].dep_queue_count = 0;
+			chain_release(chain_idx);
 			return 0;
 		}
 	}
@@ -10708,8 +10764,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 			         "the declared build tool list has no room for the cbs engine");
 			logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
-			g_chains[chain_idx].name[0] = '\0';
-			g_chains[chain_idx].dep_queue_count = 0;
+			chain_release(chain_idx);
 			return 0;
 		}
 
@@ -10718,8 +10773,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		if (envr < 0) {
 			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD, "%s", env_err);
 			logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
-			g_chains[chain_idx].name[0] = '\0';
-			g_chains[chain_idx].dep_queue_count = 0;
+			chain_release(chain_idx);
 			return 0;
 		}
 		if (envr == 1) {
@@ -10729,8 +10783,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			 * re-entered by pkg_buildenv_completed() when the child
 			 * exits, and takes the fast path on that second call.
 			 */
-			snprintf(g_chains[chain_idx].buildenv_image,
-			         sizeof(g_chains[chain_idx].buildenv_image), "%s", env_image);
+			chain_set_buildenv(chain_idx, env_image);
 			return 2;
 		}
 		{
@@ -10744,8 +10797,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		}
 		/* Torn down when this build finishes -- see
 		 * buildenv_release() at pkg_build_completed(). */
-		snprintf(g_chains[chain_idx].buildenv_image, sizeof(g_chains[chain_idx].buildenv_image),
-		         "%s", env_image);
+		chain_set_buildenv(chain_idx, env_image);
 	} else {
 		/*
 		 * Issue #168: there is no fallback. A recipe that does not
@@ -10774,8 +10826,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		         "%s's recipe",
 		         e->name);
 		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
+		chain_release(chain_idx);
 		return 0;
 	}
 	snprintf(e->build_upperdir, sizeof(e->build_upperdir), "%s/upper", container_base);
@@ -10907,8 +10958,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 					         "the cached artifact is a .cixpkg and this host has no %s to "
 					         "read it with",
 					         PKG_CBS_BIN);
-					g_chains[chain_idx].name[0] = '\0';
-					g_chains[chain_idx].dep_queue_count = 0;
+					chain_release(chain_idx);
 					return 0;
 				} else {
 					if (cixpkg_unpack_start(cached, dest_dir, out_compose_pid,
@@ -10994,8 +11044,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				else
 					pkg_fail(e, is_final_upgrade, prep_stage,
 					         "could not prepare the build container (%s failed)", prep_step);
-				g_chains[chain_idx].name[0] = '\0';
-				g_chains[chain_idx].dep_queue_count = 0;
+				chain_release(chain_idx);
 				return 0;
 			}
 		}
@@ -11044,8 +11093,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			                e->name, g_chains[chain_idx].image, strerror(errno));
 			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 			         "could not prepare the build container (create cbs workspace failed)");
-			g_chains[chain_idx].name[0] = '\0';
-			g_chains[chain_idx].dep_queue_count = 0;
+			chain_release(chain_idx);
 			return 0;
 		}
 		snprintf(cbs_cache_dir, sizeof(cbs_cache_dir), "%s/%s", e->build_upperdir,
@@ -11056,8 +11104,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			                e->name, g_chains[chain_idx].image, strerror(errno));
 			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 			         "could not prepare the build container (create cbs cache failed)");
-			g_chains[chain_idx].name[0] = '\0';
-			g_chains[chain_idx].dep_queue_count = 0;
+			chain_release(chain_idx);
 			return 0;
 		}
 		for (i = 0; i < recipe.source_count; i++) {
@@ -11073,8 +11120,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 				         "could not prepare the build container (stage source %d for cbs failed)",
 				         i);
-				g_chains[chain_idx].name[0] = '\0';
-				g_chains[chain_idx].dep_queue_count = 0;
+				chain_release(chain_idx);
 				return 0;
 			}
 		}
@@ -11135,8 +11181,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		                e->name, g_chains[chain_idx].image, strerror(errno));
 		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 		         "could not prepare the build container (write kmod-extra.config failed)");
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
+		chain_release(chain_idx);
 		return 0;
 	}
 
@@ -11260,8 +11305,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			         "fetch cancelled by operator");
 			logstore_write("cixd", "info", "pkg %s@%s: fetch cancelled by operator", e->name,
 			               e->image);
-			g_chains[chain_idx].name[0] = '\0';
-			g_chains[chain_idx].dep_queue_count = 0;
+			chain_release(chain_idx);
 			return 0;
 		}
 
@@ -11284,16 +11328,14 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 				         "fetch failed (curl exit status %d)%s", exit_status, disk);
 		}
 		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
+		chain_release(chain_idx);
 		return 0;
 	}
 
 	if (fetched_recipe_path(chain_idx, e->name, recipe_path, sizeof(recipe_path)) != 0 ||
 	    parse_recipe(recipe_path, &recipe) != 0) {
 		pkg_fail(e, is_final_upgrade, PIPELINE_AUTHOR, "recipe became unreadable mid-install");
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
+		chain_release(chain_idx);
 		return 0;
 	}
 
@@ -11373,8 +11415,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 				         "source %d was never written to %s -- no bytes arrived, so this is a "
 				         "fetch failure and not a checksum one",
 				         i, src_path);
-				g_chains[chain_idx].name[0] = '\0';
-				g_chains[chain_idx].dep_queue_count = 0;
+				chain_release(chain_idx);
 				return 0;
 			}
 			/* Cleared first: a failed capture leaves sha_out untouched,
@@ -11422,8 +11463,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 				         "%.12s... -- path and url: GET /v1/system/logs?source=cixd",
 				         i, (long long)sst.st_size,
 				         sha_out[0] != '\0' ? sha_out : "(unreadable)", recipe.sha256[i]);
-				g_chains[chain_idx].name[0] = '\0';
-				g_chains[chain_idx].dep_queue_count = 0;
+				chain_release(chain_idx);
 				return 0;
 			}
 		}
@@ -11452,8 +11492,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		logstore_write("cixd", "info",
 		               "pkg %s@%s: cancelled before its build container was spawned",
 		               e->name, e->image);
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
+		chain_release(chain_idx);
 		return 0;
 	}
 
@@ -11527,12 +11566,11 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 		 * left, or every later attempt re-forks against it forever. */
 		if (g_chains[chain_idx].buildenv_image[0] != '\0')
 			buildenv_compose_failed_cleanup(g_chains[chain_idx].buildenv_image);
-		g_chains[chain_idx].buildenv_image[0] = '\0';
+		chain_set_buildenv(chain_idx, "");
 		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 		         "could not compose a build environment from the declared tools");
 		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
+		chain_release(chain_idx);
 		return 0;
 	}
 
@@ -11541,8 +11579,7 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 		         "the recipe became unreadable while its build environment was composed");
 		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
+		chain_release(chain_idx);
 		return 0;
 	}
 
@@ -11608,8 +11645,7 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
 			         "unpacking the cached artifact failed (cbs extract exited %d)",
 			         exit_status);
 		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
+		chain_release(chain_idx);
 		return 0;
 	}
 
@@ -11618,8 +11654,7 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
 		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 		         "the recipe became unreadable while its artifact was unpacked");
 		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
+		chain_release(chain_idx);
 		return 0;
 	}
 
@@ -11678,7 +11713,7 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
  * PKG_ERR_BUSY if that specific slot has since been reclaimed by a
  * different job (chain_alloc() scans from 0, and this slot went idle
  * the moment the original build failed -- see pkg_build_completed()'s
- * own "g_chains[chain_idx].name[0] = '\0';" -- so a same-slot reuse by
+ * own chain_release() -- so a same-slot reuse by
  * an unrelated job in between is a real, if narrow, possibility, not
  * just theoretical); the caller can retry once whatever currently holds
  * it finishes, same as any other busy condition.
@@ -11851,7 +11886,7 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	 * driven, but keeping the same ordering discipline every other
 	 * *_start() function already follows costs nothing and avoids a
 	 * silent trap for a future refactor). */
-	snprintf(g_chains[chain_idx].name, sizeof(g_chains[chain_idx].name), "%s", name);
+	chain_claim(chain_idx, name);
 
 	*out_chain_idx = chain_idx;
 	/* Resume path (ADR-0177): the recipe is not re-parsed here, and a
@@ -11872,8 +11907,7 @@ void pkg_build_spawn_failed(int chain_idx)
 
 		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD, "could not start the build container");
 	}
-	g_chains[chain_idx].name[0] = '\0';
-	g_chains[chain_idx].dep_queue_count = 0;
+	chain_release(chain_idx);
 	/*
 	 * registry_create() never spawned a container, so no epoll
 	 * registration for its build_output_rd exists anywhere to drive
@@ -13009,6 +13043,10 @@ static void pkg_build_log_open(struct pkg_entry *e, const char *version)
 	}
 	if (e->build_log_fd < 0)
 		e->build_log_path[0] = '\0';
+	/* ADR-0339: a log created, and older ones pruned. Its growth while
+	 * the build writes is declared volatile (size_bytes, modified_at),
+	 * so the close below is what tells a client the final size. */
+	events_announce(EV_listBuildLogs);
 }
 
 static void pkg_build_log_close(struct pkg_entry *e)
@@ -13016,6 +13054,7 @@ static void pkg_build_log_close(struct pkg_entry *e)
 	if (e->build_log_fd >= 0) {
 		close(e->build_log_fd);
 		e->build_log_fd = -1;
+		events_announce(EV_listBuildLogs);
 	}
 }
 
@@ -13680,7 +13719,7 @@ static void buildenv_release(int chain_idx)
 	if (g_chains[chain_idx].buildenv_image[0] == '\0')
 		return;
 	snprintf(image, sizeof(image), "%s", g_chains[chain_idx].buildenv_image);
-	g_chains[chain_idx].buildenv_image[0] = '\0';
+	chain_set_buildenv(chain_idx, "");
 
 	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
 		if (i == chain_idx)
@@ -13896,6 +13935,7 @@ static void install_keep_prev_version(struct pkg_entry *e, int is_upgrade,
 		return;
 	snprintf(e->version, sizeof(e->version), "%s", prev_version);
 	snprintf(e->depends, sizeof(e->depends), "%s", prev_depends != NULL ? prev_depends : "");
+	pkg_announce_jobs(); /* ADR-0339: the entry's version moved back */
 }
 
 /*
@@ -13994,8 +14034,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 
 		if (chain_entry == NULL ||
 		    strcmp(chain_entry->build_container_name, container_name) == 0) {
-			g_chains[chain_idx].name[0] = '\0';
-			g_chains[chain_idx].dep_queue_count = 0;
+			chain_release(chain_idx);
 		}
 		return 0;
 	}
@@ -14052,8 +14091,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * dependency abandons it: whatever asked for this cannot
 		 * complete now.
 		 */
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
+		chain_release(chain_idx);
 		return 0;
 	} else if (exit_status != 0) {
 		/*
@@ -14258,8 +14296,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			         e->kept_build_container, e->kept_build_container);
 		}
 
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0; /* abort the rest of the chain -- a failed dependency
+		chain_release(chain_idx); /* abort the rest of the chain -- a failed dependency
 		                        * means the top-level install can't complete either */
 		return 0;
 	}
@@ -14304,8 +14341,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		         "build environment is missing '%s' (%d missing command(s) reported) -- "
 		         "declare it in the recipe's requires { build }",
 		         e->missing_tool, e->missing_tool_count);
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
+		chain_release(chain_idx);
 		return 0;
 	}
 
@@ -14400,8 +14436,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		logstore_write("cixd", "error", "pkg install: %s@%s: %s", e->name, e->version, msg);
 		pkg_fail(e, is_upgrade, PIPELINE_INSTALL, msg);
 		install_keep_prev_version(e, is_upgrade, prev_version, prev_depends);
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
+		chain_release(chain_idx);
 		g_chains[chain_idx].is_hostbuild = 0;
 		return 0;
 	}
@@ -14452,8 +14487,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		    merge_tree(dest_dir, artifact_dir, "", e, 1) != 0) {
 			pkg_fail(e, is_upgrade, PIPELINE_INSTALL, "failed to harvest the built artifact");
 			install_keep_prev_version(e, is_upgrade, prev_version, prev_depends);
-			g_chains[chain_idx].name[0] = '\0';
-			g_chains[chain_idx].dep_queue_count = 0;
+			chain_release(chain_idx);
 			g_chains[chain_idx].is_hostbuild = 0;
 			return 0;
 		}
@@ -14497,8 +14531,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		                          sizeof(refused)) != 0) {
 			pkg_fail(e, is_upgrade, PIPELINE_INSTALL, refused);
 			install_keep_prev_version(e, is_upgrade, prev_version, prev_depends);
-			g_chains[chain_idx].name[0] = '\0';
-			g_chains[chain_idx].dep_queue_count = 0;
+			chain_release(chain_idx);
 			return 0;
 		}
 
@@ -14510,8 +14543,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			logstore_write("cixd", "error", "pkg install: %s: %s", e->name, refused);
 			pkg_fail(e, is_upgrade, PIPELINE_INSTALL, refused);
 			install_keep_prev_version(e, is_upgrade, prev_version, prev_depends);
-			g_chains[chain_idx].name[0] = '\0';
-			g_chains[chain_idx].dep_queue_count = 0;
+			chain_release(chain_idx);
 			return 0;
 		}
 
@@ -14534,8 +14566,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			 * file list before merging, so a failure part-way leaves it
 			 * describing neither version. */
 			pkg_fail(e, 0, PIPELINE_INSTALL, msg);
-			g_chains[chain_idx].name[0] = '\0';
-			g_chains[chain_idx].dep_queue_count = 0;
+			chain_release(chain_idx);
 			return 0;
 		}
 
@@ -14571,8 +14602,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 				 * current version. An entry claiming INSTALLED here is the
 				 * split this check exists to catch. */
 				pkg_fail(e, 0, PIPELINE_INSTALL, "%s", msg);
-				g_chains[chain_idx].name[0] = '\0';
-				g_chains[chain_idx].dep_queue_count = 0;
+				chain_release(chain_idx);
 				return 0;
 			}
 		}
@@ -14789,8 +14819,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		               perr == PKG_ERR_FULL ? "the package table is full" : "pkg_error", (int)perr);
 	}
 
-	g_chains[chain_idx].name[0] = '\0';
-	g_chains[chain_idx].dep_queue_count = 0;
+	chain_release(chain_idx);
 	return 0;
 }
 
@@ -15002,6 +15031,8 @@ int pkg_rename_image(const char *old_image, const char *new_image)
 		snprintf(g_packages[i].image, sizeof(g_packages[i].image), "%s", new_image);
 		moved++;
 	}
+	if (moved > 0)
+		pkg_announce_jobs(); /* ADR-0339: every moved entry names a new image */
 	if (moved > 0 && save_state() != 0)
 		return -1;
 	return moved;
@@ -15253,6 +15284,16 @@ enum pkg_error pkg_delete(const char *name, const char *image)
 static pid_t g_sync_pid = -1;
 enum sync_state { SYNC_NEVER = 0, SYNC_RUNNING, SYNC_SUCCESS, SYNC_FAILED };
 static enum sync_state g_sync_last_state = SYNC_NEVER;
+
+/* ADR-0339: a sync's state changes only here, announced -- the 6-hourly
+ * schedule starts one with no API call in front of it, and every sync
+ * ends by itself. Its counts and per-source results are set in the same
+ * synchronous step, so no read can fall between them and this. */
+static void sync_set_state(enum sync_state s)
+{
+	g_sync_last_state = s;
+	events_announce(EV_getPkgSyncStatus);
+}
 static time_t g_sync_last_attempt;
 static int g_sync_last_added;
 static int g_sync_last_skipped;
@@ -16061,6 +16102,7 @@ static void writeback_enqueue(const char *name, const char *version, const char 
 	snprintf(g_wb_queue[g_wb_count].source, sizeof(g_wb_queue[0].source), "%s", source);
 	snprintf(g_wb_queue[g_wb_count].path, sizeof(g_wb_queue[0].path), "%s", path);
 	g_wb_count++;
+	events_announce(EV_getPkgSyncStatus); /* ADR-0339: its writeback.pending */
 }
 
 /* The source a host may write this package's approval back to, or NULL. */
@@ -16149,6 +16191,7 @@ int pkg_approval_writeback_ready(void)
 			break;
 	g_wb.batch = i;
 	g_wb.running = 1;
+	events_announce(EV_getPkgSyncStatus);
 	return 1;
 }
 
@@ -16158,6 +16201,7 @@ void pkg_approval_writeback_abort(const char *why)
 	g_wb.batch = 0;
 	g_wb.last_at = time(NULL);
 	snprintf(g_wb.error, sizeof(g_wb.error), "%s", why);
+	events_announce(EV_getPkgSyncStatus);
 	logstore_write("cixd", "error", "pkg: approval write-back: %s", why);
 }
 
@@ -16360,6 +16404,7 @@ void pkg_approval_writeback_done(int exit_status, void *unused)
 	g_wb_count -= g_wb.batch;
 	g_wb.batch = 0;
 	g_wb.running = 0;
+	events_announce(EV_getPkgSyncStatus);
 }
 
 void pkg_approval_writeback_write_json(struct json_writer *w)
@@ -16570,7 +16615,7 @@ enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd)
 	}
 
 	g_sync_pid = pid;
-	g_sync_last_state = SYNC_RUNNING;
+	sync_set_state(SYNC_RUNNING);
 	g_sync_last_attempt = time(NULL);
 	g_sync_last_error[0] = '\0';
 	*out_pid = pid;
@@ -17548,6 +17593,7 @@ int pkg_sync_fetch_done(int exit_status)
 
 	g_sync_pid = -1;
 	g_sync_result_count = count;
+	events_announce(EV_getPkgSyncStatus); /* the fetch ended; its per-source results are in */
 	for (i = 0; i < count; i++) {
 		struct sync_source_result *r = &g_sync_results[i];
 		char tarball_path[PATH_MAX], err_path[PATH_MAX];
@@ -17570,7 +17616,7 @@ int pkg_sync_fetch_done(int exit_status)
 		unlink(err_path);
 	}
 	if (fetched == 0) {
-		g_sync_last_state = SYNC_FAILED;
+		sync_set_state(SYNC_FAILED);
 		snprintf(g_sync_last_error, sizeof(g_sync_last_error), "%s",
 		         count > 0 ? g_sync_results[0].error : "no source is configured");
 		return 0;
@@ -17603,8 +17649,23 @@ void pkg_sync_completed(int rc)
 	/* What the merge found to write back (ADR-0324); kept even if it failed later. */
 	writeback_take_sync_list();
 
+	/*
+	 * ADR-0339: the merge ran in the helper, so its writes to the
+	 * recipe stores -- and the offers each source makes, and any key a
+	 * source supplied (ADR-0326) -- were announced in a process with no
+	 * listeners. Said here, in the daemon, on either outcome: a merge
+	 * that failed part way may still have written.
+	 */
+	pkg_announce_recipes();
+	events_announce(EV_listImageRecipes);
+	events_announce(EV_getImageRecipe);
+	events_announce(EV_listDeployments);
+	events_announce(EV_getDeployment);
+	events_announce(EV_getPkgSourceOwnership);
+	events_announce(EV_listPkgUpstreamKeys);
+
 	if (rc != 0) {
-		g_sync_last_state = SYNC_FAILED;
+		sync_set_state(SYNC_FAILED);
 		snprintf(g_sync_last_error, sizeof(g_sync_last_error), "%s",
 		         rc == -1 ? "could not create extraction directory"
 		                  : "archive extraction or recipe merge failed");
@@ -17661,7 +17722,7 @@ void pkg_sync_completed(int rc)
 			               "(ADR-0324)",
 			               g_sync_results[i].name, g_sync_results[i].divergent);
 	}
-	g_sync_last_state = SYNC_SUCCESS;
+	sync_set_state(SYNC_SUCCESS);
 	g_sync_last_error[0] = '\0';
 	if (unfetched > 0)
 		snprintf(g_sync_last_error, sizeof(g_sync_last_error),
@@ -17994,6 +18055,19 @@ static long long cache_scan(void)
  * simply never cached (the caller checks this itself before calling)
  * rather than evicting everything else to make room for one oversized
  * entry. */
+/*
+ * ADR-0339: the artifact cache's contents changed -- an artifact stored,
+ * one evicted to make room, the cache cleared. The daemon stores after
+ * its own fetches, builds and exports, so no API call precedes most of
+ * these; every package entry's artifact_cached reads the cache too.
+ */
+void pkg_announce_cache(void)
+{
+	events_announce(EV_getPkgCache);
+	events_announce(EV_listPkg);
+	events_announce(EV_getPkg);
+}
+
 static void cache_evict_lru_until_fits(long long incoming_size)
 {
 	long long total = cache_scan();
@@ -18068,6 +18142,7 @@ static void pkg_cache_save_from_file(const char *name, const char *version, cons
 		else
 			unlink(src_path);
 	}
+	pkg_announce_cache();
 }
 
 /*
@@ -18162,6 +18237,7 @@ void pkg_cache_clear(void)
 		unlink(path);
 	}
 	closedir(d);
+	pkg_announce_cache();
 }
 
 /* ---- ADR-0157 Phase 3: operator-configured concurrent-build limit ----
@@ -18426,6 +18502,7 @@ static void pkg_build_memory_note_start(int chain_idx, long long need)
 	g_chains[chain_idx].build_running = 1;
 	if (need > g_build_memory_raised) {
 		g_build_memory_raised = need;
+		events_announce(EV_getSystemPkgBuildConfig); /* ADR-0339: memory_max_effective */
 		if (need > g_build_memory_max && g_build_memory_max != 0)
 			logstore_write("cixd", "info",
 			               "pkg %s: build budget raised to %lld bytes for its declared "
@@ -18456,6 +18533,7 @@ static void pkg_build_memory_note_end(int chain_idx)
 			return;
 	raised = g_build_memory_raised;
 	g_build_memory_raised = 0;
+	events_announce(EV_getSystemPkgBuildConfig); /* ADR-0339: memory_max_effective */
 	/* A need at or under memory_max raised nothing, so there is
 	 * nothing to put back. */
 	if (g_build_memory_max == 0 || raised <= g_build_memory_max)
@@ -20127,6 +20205,7 @@ static void approve_cbs_artifact(const char *recipe_path, const char *name, cons
 	 */
 	if (rename(candidate_path, recipe_path) != 0)
 		goto done;
+	pkg_announce_recipes();
 	if (persist_atomic_write(explain_path, new_json, new_len) != 0) {
 		logstore_write("cixd", "error",
 		               "pkg: %s@%s: approval written to the recipe but its explain.json could "
@@ -20699,6 +20778,9 @@ enum pkg_error image_recipe_add(const char *name, const char *content)
 		unlink(staging_path);
 		return PKG_ERR_PERSIST_FAILED;
 	}
+	/* ADR-0339: a sync writes these with no API call in front of it. */
+	events_announce(EV_listImageRecipes);
+	events_announce(EV_getImageRecipe);
 	/*
 	 * ADR-0320: under `recipe: follow` the recipe drives the image, so
 	 * a changed one is applied as it arrives -- by the 6-hourly sync or
@@ -20889,6 +20971,9 @@ enum pkg_error container_recipe_add(const char *name, const char *content)
 		unlink(staging_path);
 		return PKG_ERR_PERSIST_FAILED;
 	}
+	/* ADR-0339: a sync writes these with no API call in front of it. */
+	events_announce(EV_listDeployments);
+	events_announce(EV_getDeployment);
 	return PKG_OK;
 }
 

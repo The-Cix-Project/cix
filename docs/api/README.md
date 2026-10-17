@@ -947,11 +947,11 @@ Authorization: Basic base64("agent-1:3f9c...")
   - `derived`: a computation run on request (`pkg/verify`, `system/backup`).
 - **Every other operation says which reads it makes stale** with `x-cix-invalidates`, a list of `operationId`s. A change no read shows, such as a reboot, says `[]` rather than leaving the key out. A bulk change that can alter any read there is, applying a whole config document (`applyConfig`) or restoring a backup (`postSystemRestore`), says `[*]`. A list of everything would be wrong the day a read is added. Only state, sample and session reads may be named, because a stream is subscribed to and a derived read is computed on request.
 - **`x-cix-composed-of`** declares a view: a state read the daemon joins at read time from other reads.
-  `getPipeline` joins packages, images, the ESP, deployments, containers and the source catalogue.
-  Announcing any input announces the view, so the view is declared once rather than added to every
+  `getPipeline` joins packages, images, the ESP, deployments, containers and the source catalogue,
+  and `getPkgDrift` joins packages and recipes. Announcing any input announces the view, so the view is declared once rather than added to every
   change and daemon site that touches an input. One level only: `apigen` refuses a view built from a
   view.
-- **`x-cix-volatile-fields`** names a field of a state read that moves on its own, such as a session's `expires_in_seconds`, which the box's own drift check leaves out of its comparison.
+- **`x-cix-volatile-fields`** names a field of a state read that moves with the clock rather than with a change: a session's `expires_in_seconds`, a build environment's `idle_seconds`, a log's `size_bytes` and `modified_at` while it is written, and a job's `stage_seconds`, `run_seconds` and `last_output_seconds_ago`. The box's own drift check leaves these out of its comparison. A change of state that follows from the clock, such as a session expiring, is not volatile: the daemon makes it, and announces it, at the moment it is due.
 
 **What a client sees** (0.2.57-520):
 

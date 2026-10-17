@@ -5900,6 +5900,7 @@ paths:
         constant service is not mistaken for one that is abandoned.
       operationId: listBuildEnvironments
       x-cix-read: state
+      x-cix-volatile-fields: [idle_seconds]
       x-cix-permission: packages:read
       x-cix-expose: [cli]
       responses:
@@ -10789,6 +10790,7 @@ paths:
         operator sees how much is outstanding before, during and after.
       operationId: getPkgDrift
       x-cix-read: state
+      x-cix-composed-of: [listPkg, listPkgRecipes]
       x-cix-permission: packages:read
       x-cix-expose: [cli, web]
       responses:
@@ -12556,6 +12558,7 @@ paths:
         reading.
       operationId: listBuildLogs
       x-cix-read: state
+      x-cix-volatile-fields: [size_bytes, modified_at]
       x-cix-permission: packages:read
       x-cix-expose: [cli, web]
       responses:
@@ -13150,6 +13153,7 @@ paths:
       summary: List every known package (installed or in-flight) with its current state
       operationId: listPkg
       x-cix-read: state
+      x-cix-volatile-fields: [stage_seconds, run_seconds, last_output_seconds_ago]
       x-cix-permission: packages:read
       x-cix-expose: [cli, web]
       responses:
@@ -13171,6 +13175,7 @@ paths:
       summary: Inspect one package's current state (fetching/building/installed/failed)
       operationId: getPkg
       x-cix-read: state
+      x-cix-volatile-fields: [stage_seconds, run_seconds, last_output_seconds_ago]
       x-cix-permission: packages:read
       # web since #407: Software > Build > Overview fans out over
       # active_job_names to show one card per in-flight build, and this

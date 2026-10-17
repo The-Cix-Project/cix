@@ -336,6 +336,23 @@ int hostauth_peek_token(const char *token, char *out_username, size_t out_userna
  * doc comment for why revocation is per-username, not per-session. */
 void hostauth_write_sessions_json(struct json_writer *w);
 
+/*
+ * ADR-0339: a session ends by the clock as well as by request, and an
+ * expiry changes listHostauthSessions like a logout does, so it is
+ * made by code rather than by a reader's clock filter. The soonest
+ * expiry of a live session, or 0 when none can expire (none live, or
+ * idle_timeout_seconds == 0, where a session ends by being used). The
+ * daemon arms a timer for it and calls hostauth_reap_expired() when it
+ * fires, which drops every session past its expiry, saves and
+ * announces. Returns how many it dropped.
+ */
+long long hostauth_next_expiry(void);
+int hostauth_reap_expired(void);
+/* Called whenever an expiry sooner than the one armed may have
+ * appeared -- a login, or an idle-timeout change. A slide only ever
+ * moves an expiry later, so it does not call. */
+void hostauth_set_expiry_listener(void (*fn)(void));
+
 /* Revokes every active session for username ("log this account out
  * everywhere"). Returns the count actually revoked (0 if none were
  * active). */

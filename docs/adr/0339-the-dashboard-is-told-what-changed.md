@@ -194,6 +194,28 @@ Recorded as each step lands, where the implementation is narrower than or depart
     replayed. A heartbeat costs zero requests, a change frame one refresh of six reads, and an idle
     minute 32 requests against the 181 of the Context: 30 are the log panel's 2 s poll and 2 the status
     bar.
+- **The first hour on 528 found ten reads changing unannounced**, and each was fixed where it changes
+  (0.2.57-529). They came in four kinds:
+  - **Clock-derived fields, declared volatile:** `idle_seconds` in `listBuildEnvironments`, a log's
+    `size_bytes` and `modified_at` while it is written, and a package job's `stage_seconds`,
+    `run_seconds` and `last_output_seconds_ago`. A log's final size is announced when it closes.
+  - **A view, declared:** `getPkgDrift` is composed of `listPkg` and `listPkgRecipes`.
+  - **Daemon-made changes with no setter:**
+    - the 34 hand-written chain-slot releases became `chain_release()` (gated by `test_announce`);
+    - recipe-store writes announce, and a sync announces in the daemon on completion, because its
+      merge ran in a helper whose own announcements reach no listener;
+    - the artifact cache's stores, evictions and clears;
+    - a sync's state and its write-back queue;
+    - the kernel release refresh at start and end, and a discovery run's end;
+    - the build-memory raise and its return;
+    - bad-version marks.
+  - **An expiry made by a reader's clock:** a session left `listHostauthSessions` when the reader saw
+    its `expires_at` pass, which no code did. A session now ends by code: a timer armed at the soonest
+    expiry runs `hostauth_reap_expired()`, which drops, saves and announces, and the reader lists every
+    live entry.
+
+  A drift found later is also announced (`events_observe()`), as well as counted and logged. A page is
+  not left stale for longer than one check, while the log still names the missing site for fixing.
 - **The drift decision is pure and tested without a daemon.** `events_hash_body()` and
   `events_observe()` live in `events.c`, and `test_events_drift` drives them through the case no daemon
   test can produce cleanly: a state change with no announcement.

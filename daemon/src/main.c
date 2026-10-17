@@ -1261,6 +1261,7 @@ enum conn_kind {
 	CONN_EVENTS_WS,         /* GET /v1/events -- ADR-0339: which reads changed, pushed */
 	CONN_EVENTS_TIMER,      /* ADR-0339: the events stream's heartbeat, every 10 s */
 	CONN_EVENTS_CHECK_TIMER, /* ADR-0339: samples due and one state read checked, every 1 s */
+	CONN_SESSION_EXPIRY_TIMER, /* ADR-0339: armed at the soonest session expiry, which it reaps */
 	CONN_KMSG,              /* /dev/kmsg -- feeds real kernel dmesg lines into the consolidated log store */
 	CONN_UEVENT,            /* NETLINK_KOBJECT_UEVENT multicast socket (ADR-0161 Phase C) -- real
 	                          * kernel hotplug add/remove events, modeled on CONN_KMSG's own async
@@ -5499,6 +5500,7 @@ static int g_boot_confirm_attempts;
 #define BOOT_CONFIRM_MAX_ATTEMPTS 12
 
 static struct conn g_build_stall_conn;  /* permanent -- registered once at startup */
+static struct conn g_session_expiry_conn = { .fd = -1 }; /* permanent; ADR-0339 */
 
 static void ntp_job_teardown(void)
 {
@@ -6074,6 +6076,63 @@ static void handle_build_stall_timer_event(struct conn *cc)
 	pkg_check_build_stalls();
 	check_teardown_stalls();   /* issue #119 */
 	arm_build_stall_timer();
+}
+
+/*
+ * ADR-0339: a session expires at a moment the daemon knows in advance,
+ * so it is ended by code at that moment (hostauth_reap_expired(), which
+ * announces) rather than by listHostauthSessions' reader consulting the
+ * clock -- the self-check found that list changing with no announcement
+ * on 192.168.15.95 (0.2.57-528, three times in its first hour). The
+ * timer is absolute, on CLOCK_REALTIME because expires_at is wall time.
+ * A slide only ever moves an expiry later, so a timer that fires early
+ * reaps nothing and re-arms; hostauth calls back when a login or an
+ * idle-timeout change may have made a sooner one.
+ */
+static void arm_session_expiry_timer(void)
+{
+	struct itimerspec its;
+	long long at = hostauth_next_expiry();
+
+	if (g_session_expiry_conn.fd < 0)
+		return;
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = (time_t)at; /* 0 disarms: nothing can expire */
+	if (timerfd_settime(g_session_expiry_conn.fd, TFD_TIMER_ABSTIME, &its, NULL) != 0)
+		perror("timerfd_settime (session expiry)");
+}
+
+static void handle_session_expiry_timer_event(struct conn *cc)
+{
+	uint64_t expirations;
+
+	if (read(cc->fd, &expirations, sizeof(expirations)) < 0 && errno != EAGAIN)
+		perror("read (session expiry timerfd)");
+	hostauth_reap_expired();
+	arm_session_expiry_timer();
+}
+
+static void start_session_expiry_timer(void)
+{
+	struct cix_epoll_event ev;
+	int fd = timerfd_create(CLOCK_REALTIME, TFD_NONBLOCK | TFD_CLOEXEC);
+
+	if (fd < 0) {
+		perror("timerfd_create (session expiry)");
+		return;
+	}
+	g_session_expiry_conn.kind = CONN_SESSION_EXPIRY_TIMER;
+	g_session_expiry_conn.fd = fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = &g_session_expiry_conn;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+		close(fd);
+		g_session_expiry_conn.fd = -1;
+		return;
+	}
+	hostauth_set_expiry_listener(arm_session_expiry_timer);
+	arm_session_expiry_timer();
 }
 
 /*
@@ -10206,6 +10265,10 @@ static void handle_artifact_export_event(struct conn *cc)
 		close(g_artifact_export_errfd);
 		g_artifact_export_errfd = -1;
 	}
+	/* ADR-0339: the export ended by itself, and on success its
+	 * artifact is in the cache. */
+	events_announce(EV_getPkgArtifactExport);
+	pkg_announce_cache();
 	close(cc->fd);
 	free(cc);
 }
@@ -21714,12 +21777,32 @@ static void handle_pkg_trusted_origins_put(int fd, const char *body, size_t body
 
 static int bad_mark_superseded(const char *package, const char *version);
 
+/*
+ * ADR-0339: the bad-version marks change through these, which announce.
+ * A mark set by a failed roll, or lifted by an operator or by a newer
+ * recipe superseding it, changes the source catalogue's answer as well
+ * as the list. Supersession is applied when the marks are next
+ * consulted, so a prune can happen inside a read; it announces like any
+ * other change, and the read's own answer is already the pruned one.
+ */
+static void bad_marks_changed(void)
+{
+	events_announce(EV_listPkgBadVersions);
+	events_announce(EV_getSourceCatalogue);
+}
+
+static void bad_marks_prune(void)
+{
+	if (pkgbad_prune(bad_mark_superseded) > 0)
+		bad_marks_changed();
+}
+
 /* GET /v1/pkg/bad-versions (ADR-0323 answer 4) */
 static void handle_pkg_bad_versions_get(int fd)
 {
 	struct json_writer w;
 
-	pkgbad_prune(bad_mark_superseded);
+	bad_marks_prune();
 	jw_init(&w);
 	pkgbad_write_json(&w);
 	respond_json(fd, 200, "OK", &w);
@@ -21740,6 +21823,7 @@ static void handle_pkg_bad_version_delete(int fd, const char *name, const char *
 		respond_error(fd, 500, "Internal Server Error", "the bad-versions list could not be saved");
 		return;
 	}
+	bad_marks_changed();
 	logstore_write("cixd", "info", "pkg: bad-version mark %s@%s cleared; rolling may try it again",
 	               name, version);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
@@ -22665,6 +22749,7 @@ static int kernel_releases_fetch_start(char *err_msg, size_t err_msg_size)
 	register_kernel_releases_pidfd(pid, pidfd);
 	g_kernel_releases_fetching = 1;
 	g_kernel_releases_error[0] = '\0';
+	events_announce(EV_getKernelPolicy); /* ADR-0339: refreshing, and the error cleared */
 	return 0;
 }
 
@@ -22735,6 +22820,10 @@ static void kernel_releases_fetch_finish(struct conn *cc)
 static void handle_kernel_releases_fetch_event(struct conn *cc)
 {
 	kernel_releases_fetch_finish(cc);
+	/* ADR-0339: the refresh ended by itself, on every path: the policy's
+	 * fetch state and answer, and the kernel's line in the catalogue. */
+	events_announce(EV_getKernelPolicy);
+	events_announce(EV_getSourceCatalogue);
 	if (g_discover_after_kernel) {
 		g_discover_after_kernel = 0;
 		discover_helper_start();
@@ -32404,7 +32493,7 @@ static int image_version_blocked(const char *image, const char *version, char *w
 
 	if (pkgbad_count() == 0)
 		return 0;
-	pkgbad_prune(bad_mark_superseded);
+	bad_marks_prune();
 	snprintf(mark, sizeof(mark), "%s%s", ROLL_IMAGE_MARK, image);
 	if (pkgbad_is_bad(mark, version)) {
 		snprintf(why, why_size, "image %s version %.12s itself", image, version);
@@ -32464,6 +32553,7 @@ static void mark_failed_roll(const char *container, const char *image, const cha
 		               "image version itself is marked bad -- %s (ADR-0323)",
 		               container, image, from, to, reason);
 	}
+	bad_marks_changed();
 }
 
 /*
@@ -34950,6 +35040,7 @@ static int cixd_main(int argc, char **argv)
 	start_uevent_watch(); /* ADR-0161 Phase C -- same g_epfd/best-effort posture as start_kmsg_watch() */
 	start_ntp_periodic_timer(); /* same g_epfd/best-effort posture, task #751 */
 	start_build_stall_timer();  /* reports an in-flight build that has gone quiet */
+	start_session_expiry_timer(); /* ADR-0339: a session expires by code, announced */
 	start_scheduler_timer();    /* ADR-0257 -- no-op until a schedule exists */
 	start_events_timer();       /* ADR-0339 -- the event stream's heartbeat and listener */
 	start_serverhealth_timer(); /* issue #81 -- probes every registered server on an interval */
@@ -35234,6 +35325,8 @@ static int cixd_main(int argc, char **argv)
 				handle_events_ws_event(cc, events[j].events);
 			else if (cc->kind == CONN_EVENTS_CHECK_TIMER)
 				handle_events_check_timer_event(cc);
+			else if (cc->kind == CONN_SESSION_EXPIRY_TIMER)
+				handle_session_expiry_timer_event(cc);
 			else if (cc->kind == CONN_EVENTS_TIMER)
 				handle_events_timer_event(cc);
 			else if (cc->kind == CONN_KMSG)

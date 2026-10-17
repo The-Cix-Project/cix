@@ -1707,6 +1707,9 @@ void pkg_cache_write_json_status(struct json_writer *w);
 /* Removes every cached artifact -- an explicit operator reset; nothing
  * else in this module ever calls this itself. */
 void pkg_cache_clear(void);
+/* ADR-0339: announces a change to the artifact cache's contents, for a
+ * writer outside pkg.c (an artifact export lands there directly). */
+void pkg_announce_cache(void);
 
 /* ---- ADR-0157 Phase 3: operator-configured concurrent-build limit ---- */
 

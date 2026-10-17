@@ -6,6 +6,30 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Every change the daemon makes by itself is announced: the drift the self-check found (ADR-0339, #599, #607)
+
+On 0.2.57-528 the daemon's check of its own announcements named ten reads that changed with nothing
+saying so. Each is fixed where it changes, not silenced.
+
+- **Build slots:** 34 hand-written releases of a chain slot are one `chain_release()`, and claims are one
+  `chain_claim()`, both announcing the build configuration and the build environments. `test_announce`
+  refuses a direct clear.
+- **The rest of the build and package side:**
+  - the build-memory raise and its return, and a build environment's claim;
+  - a build log opening and closing;
+  - recipe-store writes, including the sync's merge, announced in the daemon when the sync completes,
+    since the merge itself runs in a helper;
+  - artifact-cache stores, evictions and clears, and an artifact export ending;
+  - the sync's state and its write-back queue;
+  - the kernel release refresh, a discovery run ending, and bad-version marks.
+- **Clock-derived fields** are declared `x-cix-volatile-fields`: build-environment idle time, a log's size
+  while it is written, and a job's elapsed-time counters.
+- **`getPkgDrift`** is declared a view of `listPkg` and `listPkgRecipes`.
+- **Sessions end by code.** A timer armed at the soonest expiry reaps expired sessions and announces.
+  Before, a session vanished from the list when the reader's clock passed it, and nothing said so.
+- **Drift found later is announced as well as logged**, so a page is never stale for longer than one
+  check.
+
 ### The dashboard is told what changed: live updates (ADR-0339 step five, #599)
 
 Once signed in, the dashboard holds `GET /v1/events` open.

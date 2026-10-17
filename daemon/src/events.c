@@ -225,6 +225,10 @@ int events_observe(int slot, uint64_t hash)
 		if (g_seen_hash[slot] != hash && g_seen_gen[slot] == g_generation[slot]) {
 			g_counts.drift++;
 			drift = 1;
+			/* Reported AND announced: the defect is counted and
+			 * logged for someone to fix, and meanwhile no page stays
+			 * stale past this check because a site forgot to say. */
+			events_announce(slot);
 		}
 	}
 	g_seen[slot] = 1;

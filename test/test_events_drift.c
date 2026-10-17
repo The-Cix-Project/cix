@@ -61,8 +61,11 @@ int main(void)
 	check(events_observe(EV_getSystemSite, 100) == 0, "an unchanged read is not drift");
 	events_announce(EV_getSystemSite);
 	check(events_observe(EV_getSystemSite, 200) == 0, "an announced change is not drift");
+	gen = events_generation(EV_getSystemSite);
 	check(events_observe(EV_getSystemSite, 300) == 1,
 	      "a change with no announcement IS drift -- the case the check exists for");
+	check(events_generation(EV_getSystemSite) == gen + 1,
+	      "drift is also announced, so no page stays stale past the check");
 	check(events_observe(EV_getSystemSite, 300) == 0, "drift is reported once, not every pass");
 
 	/* A sample: observing it change is what announces it. */

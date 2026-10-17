@@ -7,6 +7,7 @@
 #include "namecheck.h"
 #include "connthrottle.h"
 #include "pkicrypto.h"
+#include "events.h"
 
 /* ADR-0317: the contract's permission vocabulary (apigen --emit-permissions). */
 #include "generated/permissions.h"
@@ -282,6 +283,20 @@ static void save_sessions(void)
 	}
 	jw_free(&w);
 }
+
+/*
+ * ADR-0339: the one way a session leaves the table, so every departure
+ * -- a logout, a revoke, a single-use token being spent, an expiry --
+ * is announced. Saving stays with the caller, which may drop several
+ * before writing once.
+ */
+static void drop_session(int i)
+{
+	memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
+	events_announce(EV_listHostauthSessions);
+}
+
+static void expiry_may_be_sooner(void);
 
 /* Slides slot i's idle window, writing the file only when it has moved enough. */
 static void slide_session(int i, time_t now)
@@ -677,6 +692,8 @@ enum hostauth_config_error hostauth_set_config(const char *const *admin_groups, 
 		g_perm_group_count = old_group_count;
 		return HOSTAUTH_CONFIG_ERR_PERSIST_FAILED;
 	}
+	if (g_config.idle_timeout_seconds != old.idle_timeout_seconds)
+		expiry_may_be_sooner();
 	return HOSTAUTH_CONFIG_OK;
 }
 
@@ -994,12 +1011,13 @@ enum hostauth_login_result hostauth_login(const char *username, const char *pass
 	if (!authenticated)
 		return HOSTAUTH_LOGIN_INVALID_CREDENTIALS;
 
-	/* Reap expired sessions opportunistically while looking for a free
-	 * slot -- no separate timer/sweep needed for a table this small. */
+	/* Expired sessions are normally gone already (hostauth_reap_expired()
+	 * runs at each expiry); one whose timer has not fired yet is reaped
+	 * here rather than holding a slot a login needs. */
 	for (i = 0; i < HOSTAUTH_SESSION_MAX; i++) {
 		if (g_sessions[i].in_use && g_config.idle_timeout_seconds > 0 &&
 		    g_sessions[i].expires_at <= now)
-			g_sessions[i].in_use = 0;
+			drop_session(i);
 		if (!g_sessions[i].in_use && slot < 0)
 			slot = i;
 	}
@@ -1020,6 +1038,8 @@ enum hostauth_login_result hostauth_login(const char *username, const char *pass
 	         source_ip != NULL ? source_ip : "");
 	g_sessions[slot].in_use = 1;
 	save_sessions();
+	events_announce(EV_listHostauthSessions);
+	expiry_may_be_sooner();
 
 	*out_expires_in_seconds = g_config.idle_timeout_seconds > 0 ? g_config.idle_timeout_seconds : 0;
 	return HOSTAUTH_LOGIN_OK;
@@ -1031,7 +1051,7 @@ void hostauth_logout(const char *token)
 
 	if (i < 0)
 		return;
-	memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
+	drop_session(i);
 	save_sessions();
 }
 
@@ -1041,12 +1061,13 @@ void hostauth_logout(const char *token)
  * -- every currently active session, real admin visibility into a
  * table that previously had none at all (no endpoint, no CLI, no web
  * panel). The raw token is never included, before or after issuance --
- * only hostauth_login()'s own one-time response ever carries it. An
- * expired-but-not-yet-reaped entry (idle_timeout_seconds > 0, past its
- * own expires_at) is skipped -- it would report a negative
- * expires_in_seconds otherwise, and it's not really "active" by the
- * same definition hostauth_check_token()'s own opportunistic reaping
- * already uses. idle_timeout_seconds == 0 sessions (single-use,
+ * only hostauth_login()'s own one-time response ever carries it. Every
+ * live entry is listed: an expiry is a change hostauth_reap_expired()
+ * makes and announces (ADR-0339), not one this reader makes by
+ * consulting the clock, which is what let the list change with no
+ * announcement. An entry in the moment between its expiry and the
+ * reap reports 0 rather than a negative number. idle_timeout_seconds
+ * == 0 sessions (single-use,
  * consumed on next check) report null -- there is no meaningful
  * "expires in" for a session that's valid for exactly one more
  * request, whenever that happens to be.
@@ -1060,15 +1081,13 @@ void hostauth_write_sessions_json(struct json_writer *w)
 	for (i = 0; i < HOSTAUTH_SESSION_MAX; i++) {
 		if (!g_sessions[i].in_use)
 			continue;
-		if (g_config.idle_timeout_seconds > 0 && g_sessions[i].expires_at <= now)
-			continue;
 
 		jw_obj_open(w);
 		jw_key(w, "username");
 		jw_str(w, g_sessions[i].username);
 		jw_key(w, "expires_in_seconds");
 		if (g_config.idle_timeout_seconds > 0)
-			jw_int(w, (long long)(g_sessions[i].expires_at - now));
+			jw_int(w, g_sessions[i].expires_at > now ? (long long)(g_sessions[i].expires_at - now) : 0);
 		else
 			jw_null(w);
 		jw_key(w, "logged_in_at");
@@ -1081,6 +1100,51 @@ void hostauth_write_sessions_json(struct json_writer *w)
 		jw_obj_close(w);
 	}
 	jw_arr_close(w);
+}
+
+static void (*g_expiry_listener)(void);
+
+void hostauth_set_expiry_listener(void (*fn)(void))
+{
+	g_expiry_listener = fn;
+}
+
+static void expiry_may_be_sooner(void)
+{
+	if (g_expiry_listener != NULL)
+		g_expiry_listener();
+}
+
+long long hostauth_next_expiry(void)
+{
+	long long soonest = 0;
+	int i;
+
+	if (g_config.idle_timeout_seconds <= 0)
+		return 0;
+	for (i = 0; i < HOSTAUTH_SESSION_MAX; i++)
+		if (g_sessions[i].in_use &&
+		    (soonest == 0 || (long long)g_sessions[i].expires_at < soonest))
+			soonest = (long long)g_sessions[i].expires_at;
+	return soonest;
+}
+
+int hostauth_reap_expired(void)
+{
+	time_t now = time(NULL);
+	int i, dropped = 0;
+
+	if (g_config.idle_timeout_seconds <= 0)
+		return 0;
+	for (i = 0; i < HOSTAUTH_SESSION_MAX; i++) {
+		if (g_sessions[i].in_use && g_sessions[i].expires_at <= now) {
+			drop_session(i);
+			dropped++;
+		}
+	}
+	if (dropped > 0)
+		save_sessions();
+	return dropped;
 }
 
 /*
@@ -1100,7 +1164,7 @@ int hostauth_revoke_sessions_for_user(const char *username)
 		return 0;
 	for (i = 0; i < HOSTAUTH_SESSION_MAX; i++) {
 		if (g_sessions[i].in_use && strcmp(g_sessions[i].username, username) == 0) {
-			memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
+			drop_session(i);
 			revoked++;
 		}
 	}
@@ -1121,12 +1185,13 @@ int hostauth_check_token(const char *token, char *out_username, size_t out_usern
 		 * the documented "0 means every write re-authenticates"
 		 * contract -- a token is never valid for a second request. */
 		snprintf(out_username, out_username_size, "%s", g_sessions[i].username);
-		memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
+		drop_session(i);
 		save_sessions();
 		return 1;
 	}
 	if (g_sessions[i].expires_at <= now) {
-		memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
+		drop_session(i);
+		save_sessions();
 		return 0;
 	}
 	slide_session(i, now); /* sliding window */

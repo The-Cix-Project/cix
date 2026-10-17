@@ -11,8 +11,8 @@
  * page silently stale. So this reads the source and refuses one.
  *
  * Text, not syntax, in the test_naming pattern: an assignment is a line
- * outside a comment that assigns `state` or `running` (`x->state = `,
- * not `==`). The allowed lines are the announcing setters' own bodies,
+ * outside a comment that assigns `state`, `running` or a chain slot's
+ * `name[0]` (`x->state = `, not `==`). The allowed lines are the announcing setters' own bodies,
  * each named below with the reason it is allowed.
  */
 #include <stdio.h>
@@ -131,11 +131,22 @@ int main(void)
 		"job->state = s;",
 		NULL,
 	};
+	/*
+	 * pkg.c's chain slots: a slot given back is a running job ending, as
+	 * getSystemPkgBuildConfig and listBuildEnvironments report it, so it
+	 * is cleared only in chain_release(). Thirty-four call sites cleared
+	 * it by hand until 0.2.57-529, which is why this gate exists.
+	 */
+	static const char *const chain_allowed[] = {
+		"g_chains[chain_idx].name[0] = '\\0';",
+		NULL,
+	};
 
 	printf("test_announce\n");
 	check_file("daemon/src/pkg.c", "state", pkg_allowed, NULL);
 	check_file("daemon/src/storagemigrate.c", "state", migrate_allowed, NULL);
 	check_file("daemon/src/containerstoragemigrate.c", "state", migrate_allowed, NULL);
+	check_file("daemon/src/pkg.c", "name[0]", chain_allowed, NULL);
 	/* registry.c: a container's running state, announced on the spot. */
 	check_file("daemon/src/registry.c", "running", NULL, "registry_announce();");
 	if (g_failures != 0) {
