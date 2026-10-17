@@ -1635,6 +1635,17 @@ form input.field-file {
 	font-size: var(--t-small);
 }
 
+/* The page's own actions beside a generated settings form -- Snapshot
+ * now, Disable, Reset -- which are not the form's submit and so live
+ * outside it, where rebuilding the form cannot take them with it
+ * (#592). */
+.form-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--s2);
+	margin-top: var(--s2);
+}
+
 .hint {
 	margin: 0.5rem 0 0;
 	font-size: 0.85rem;
@@ -3552,7 +3563,7 @@ pre {
  * it across a wide modal -- which is how every hand-written form in
  * this dashboard already looks.
  */
-#generated-form > button {
+.generated-form > button {
 	/* `align-self`, not `justify-self`: the form became a single flex
 	 * column when it was built to the design canvas, and `grid-column`
 	 * / `justify-self` are both inert on a flex item -- a rule that
@@ -3810,11 +3821,11 @@ pre {
  * the row wrap and giving the hint the full basis keeps the control on
  * one line and the explanation under it.
  */
-#generated-form label.checkbox {
+.generated-form label.checkbox {
 	flex-wrap: wrap;
 }
 
-#generated-form label.checkbox > .hint {
+.generated-form label.checkbox > .hint {
 	flex-basis: 100%;
 }
 
@@ -3838,7 +3849,7 @@ pre {
  *   - The input sits on `--bg`, RECESSED into the panel rather than
  *     level with it. Both boards draw `#0A0D0F` inputs on `#151A1E`.
  */
-#generated-form {
+.generated-form {
 	display: flex;
 	flex-direction: column;
 	/* STRETCH, overriding the global `form { align-items: start }`,
@@ -3850,7 +3861,7 @@ pre {
 	gap: var(--s4);
 }
 
-#generated-form label {
+.generated-form label {
 	gap: 0.375rem;
 }
 
@@ -3863,7 +3874,7 @@ pre {
  * a list is set off by a rule down its left edge, so where one service
  * ends and the next begins is visible without a second box.
  */
-#generated-form fieldset {
+.generated-form fieldset {
 	display: flex;
 	flex-direction: column;
 	gap: var(--s4);
@@ -3871,28 +3882,40 @@ pre {
 
 /* A section's legend is what the operator scans a long form by, so it
  * reads as a heading rather than as one more field label. */
-#generated-form fieldset.form-section > legend {
+.generated-form fieldset.form-section > legend {
 	font-weight: 600;
 	color: var(--text);
 }
 
-#generated-form fieldset.field-group {
+.generated-form fieldset.field-group {
 	gap: var(--s3);
 	padding: var(--s3);
 }
 
-#generated-form fieldset.field-group > legend {
+.generated-form fieldset.field-group > legend {
 	text-transform: none;
 	letter-spacing: normal;
 }
 
-#generated-form .field-rows {
+/* A size and its unit on one line: the number takes the room, the unit
+ * is as wide as its longest word. */
+.generated-form .field-size {
+	display: flex;
+	gap: var(--s2);
+}
+
+.generated-form .field-size > select.field-unit {
+	width: auto;
+	flex: 0 0 auto;
+}
+
+.generated-form .field-rows {
 	display: flex;
 	flex-direction: column;
 	gap: var(--s3);
 }
 
-#generated-form .field-item {
+.generated-form .field-item {
 	display: flex;
 	flex-direction: column;
 	gap: var(--s3);
@@ -3900,21 +3923,21 @@ pre {
 	border-left: 2px solid var(--border);
 }
 
-#generated-form .field-item > button,
-#generated-form fieldset.field-group > button {
+.generated-form .field-item > button,
+.generated-form fieldset.field-group > button {
 	align-self: flex-start;
 }
 
 /* The board's hint is 12px and sits directly under its control; the
  * shared `.hint` carries a top margin for the standalone case. */
-#generated-form .hint {
+.generated-form .hint {
 	margin: 0;
 	font-size: 0.75rem;
 }
 
-#generated-form input,
-#generated-form select,
-#generated-form textarea {
+.generated-form input,
+.generated-form select,
+.generated-form textarea {
 	background: var(--bg);
 }
 
@@ -3970,6 +3993,6 @@ pre {
  * tick 600px away from the words it answers. A boolean never carries a
  * constraint chip, so nothing needs the space.
  */
-#generated-form label.checkbox .field-head {
+.generated-form label.checkbox .field-head {
 	flex-grow: 0;
 }

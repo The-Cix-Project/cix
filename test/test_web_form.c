@@ -1453,6 +1453,105 @@ int main(void)
 		       "  catch (e) { return e.message; }\n"
 		       "})()",
 		       "Pair: Path is required");
+		/*
+		 * ---- forms on pages (#592) ----
+		 *
+		 * The settings forms a page keeps on screen. Each hand-built
+		 * one carried its own "dirty" flag for one rule -- a poll must
+		 * not rebuild a form under someone typing -- and that rule is
+		 * syncForm()'s now, for all of them.
+		 */
+		expect(ctx, "a page form is bound once and left alone while unchanged",
+		       "(() => {\n"
+		       "  globalThis.pageForm = document.createElement(\"form\");\n"
+		       "  syncForm(pageForm, \"putSystemRollingConfig\", {\n"
+		       "    values: { jitter_window_seconds: 300, rollback_window_seconds: 600 } });\n"
+		       "  const first = pageForm.children[0];\n"
+		       "  syncForm(pageForm, \"putSystemRollingConfig\", {\n"
+		       "    values: { jitter_window_seconds: 300, rollback_window_seconds: 600 } });\n"
+		       "  return String(pageForm.children[0] === first) + \" \" +\n"
+		       "    pageForm.className + \" \" +\n"
+		       "    pageForm.children.find((c) => c.tag === \"button\").dataset.op;\n"
+		       "})()",
+		       "true generated-form putSystemRollingConfig");
+		expect(ctx, "a form being typed in is not rebuilt by a poll with new values",
+		       "(() => {\n"
+		       "  const el = findEl(pageForm, (c) => c.dataset &&\n"
+		       "    c.dataset.field === \"jitter_window_seconds\");\n"
+		       "  el.value = \"45\";\n"
+		       "  pageForm.dataset.dirty = \"1\";\n"
+		       "  syncForm(pageForm, \"putSystemRollingConfig\", {\n"
+		       "    values: { jitter_window_seconds: 900, rollback_window_seconds: 600 } });\n"
+		       "  return findEl(pageForm, (c) => c.dataset &&\n"
+		       "    c.dataset.field === \"jitter_window_seconds\").value;\n"
+		       "})()",
+		       "45");
+		expect(ctx, "and once saved, the next read refills it",
+		       "(() => {\n"
+		       "  pageForm.dataset.dirty = \"\";\n"
+		       "  syncForm(pageForm, \"putSystemRollingConfig\", {\n"
+		       "    values: { jitter_window_seconds: 900, rollback_window_seconds: 600 } });\n"
+		       "  return findEl(pageForm, (c) => c.dataset &&\n"
+		       "    c.dataset.field === \"jitter_window_seconds\").value;\n"
+		       "})()",
+		       "900");
+		/* A nullable field the contract requires: its empty value is
+		 * null -- "the default placement" -- which "" never was (the
+		 * daemon refuses ""). */
+		expect(ctx, "an empty nullable required field is sent as null",
+		       "(() => {\n"
+		       "  const box = document.createElement(\"form\");\n"
+		       "  syncForm(box, \"migrateLogStorage\", {});\n"
+		       "  const el = findEl(box, (c) => c.dataset && c.dataset.field === \"disk\");\n"
+		       "  return String(el.required === true) + \" \" + JSON.stringify(generatedFormBody(box));\n"
+		       "})()",
+		       "false {\"disk\":null}");
+		/* A required ARRAY may be empty: the key must be sent, and
+		 * forwarders cleared is "authoritative-only", a setting. */
+		expect(ctx, "a required array emptied is sent as an empty list",
+		       "(() => {\n"
+		       "  const box = document.createElement(\"form\");\n"
+		       "  syncForm(box, \"setDnsForwarders\", { values: { forwarders: [\"1.1.1.1\"] } });\n"
+		       "  const el = findEl(box, (c) => c.dataset && c.dataset.field === \"forwarders\");\n"
+		       "  el.value = \"\";\n"
+		       "  return String(el.required === true) + \" \" + JSON.stringify(generatedFormBody(box));\n"
+		       "})()",
+		       "false {\"forwarders\":[]}");
+		/* `x-cix-ui: bytes`: shown in the largest whole unit, typed in
+		 * any, sent in bytes. */
+		expect(ctx, "a size is shown in its largest whole unit and sent in bytes",
+		       "(() => {\n"
+		       "  const box = document.createElement(\"form\");\n"
+		       "  syncForm(box, \"setVolumeQuota\", { args: [\"v1\"],\n"
+		       "    values: { quota_bytes: 3 * 1024 * 1024 * 1024 } });\n"
+		       "  const el = findEl(box, (c) => c.dataset && c.dataset.field === \"quota_bytes\");\n"
+		       "  const shown = el.value + \" \" + el._cixUnit.value;\n"
+		       "  el.value = \"1.5\";\n"
+		       "  return shown + \" \" + JSON.stringify(generatedFormBody(box));\n"
+		       "})()",
+		       "3 1073741824 {\"quota_bytes\":1610612736}");
+		/* Changed-only: a partial update whose daemon treats a value
+		 * echoed back as a change -- LDAP's listener settings -- gets
+		 * only what the operator touched. */
+		expect(ctx, "a changed-only form sends what changed and nothing else",
+		       "(() => {\n"
+		       "  const box = document.createElement(\"form\");\n"
+		       "  syncForm(box, \"updateLdapConfig\", { changedOnly: true,\n"
+		       "    values: { start_uid: 10000, start_gid: 10000, server_tls: true,\n"
+		       "              server_tls_port: 636, client_uri: null } });\n"
+		       "  findEl(box, (c) => c.dataset && c.dataset.field === \"start_uid\").value = \"20000\";\n"
+		       "  return JSON.stringify(generatedFormBody(box));\n"
+		       "})()",
+		       "{\"start_uid\":20000}");
+		expect(ctx, "and the fields the daemon only reports are not offered at all",
+		       "(() => {\n"
+		       "  const box = document.createElement(\"form\");\n"
+		       "  syncForm(box, \"updateLdapConfig\", {});\n"
+		       "  return [\"bind_password_set\", \"listeners_managed\", \"effective_client_uri\",\n"
+		       "    \"bind_password\"].map((n) =>\n"
+		       "    String(findEl(box, (c) => c.dataset && c.dataset.field === n) !== null)).join(\",\");\n"
+		       "})()",
+		       "false,false,false,true");
 		expect(ctx, "and a stored map is shown the same way it is typed",
 		       "(() => {\n"
 		       "  const f = CIX_API.FIELDS.putKmodConfigRequest.find(\n"

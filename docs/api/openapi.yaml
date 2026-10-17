@@ -517,32 +517,38 @@ paths:
               required: [admin_groups, idle_timeout_seconds]
               properties:
                 admin_groups:
+                  title: Admin groups
                   type: array
                   maxItems: 8
                   items:
                     type: string
                   description: LDAP group names whose members may perform mutating requests.
                 idle_timeout_seconds:
+                  title: Idle timeout (seconds)
                   type: integer
                   minimum: 0
                   description: Sliding idle window for a session token; 0 means every token is single-use (no session reuse at all).
                 ldap_enabled:
+                  title: Authenticate against LDAP
                   type: boolean
                   default: false
                   description: When true, POST /login tries a live LDAP bind against ldap_servers first (see that endpoint's own description).
                 ldap_servers:
+                  title: LDAP servers
                   type: array
                   maxItems: 3
                   items:
                     type: string
                   description: Host or IP of each configured glauth server, tried in order. Required (at least one) when ldap_enabled is true.
                 ldap_port:
+                  title: LDAP port
                   type: integer
                   minimum: 1
                   maximum: 65535
                   default: 3893
                   description: Shared port every entry in ldap_servers is queried on (glauth's own real default is 3893).
                 ldap_tls:
+                  title: LDAP over TLS
                   type: boolean
                   default: false
                   description: >
@@ -557,6 +563,7 @@ paths:
                     ldap_enabled is true and no root CA is bootstrapped --
                     there would be nothing to verify against.
                 ldap_base_dn:
+                  title: LDAP base DN
                   type: string
                   description: >
                     e.g. "dc=glauth,dc=com" -- required, non-empty, when
@@ -1132,20 +1139,24 @@ paths:
               type: object
               properties:
                 image_path:
+                  title: Image path
                   type: string
                   description: Local filesystem path to a squashfs image (checked via its own on-disk magic). Mutually exclusive with image_url.
                 image_url:
+                  title: Image URL
                   type: string
                   description: >
                     URL the daemon fetches the squashfs from itself, instead of
                     requiring it to already be on disk. Requires image_sha256.
                 image_sha256:
+                  title: Image SHA-256
                   type: string
                   description: >
                     Lowercase hex SHA-256 of the image at image_url. Mandatory
                     whenever image_url is used -- an unverified image is never
                     written to a boot slot.
                 kernel_path:
+                  title: Kernel path
                   type: string
                   description: >
                     Local filesystem path to a bzImage kernel (checked via its own
@@ -2234,9 +2245,13 @@ paths:
               required: [key, cert]
               properties:
                 key:
+                  title: Private key
+                  x-cix-ui: textarea
                   type: string
                   description: The signing private key, PEM ("-----BEGIN ... PRIVATE KEY-----").
                 cert:
+                  title: Certificate
+                  x-cix-ui: textarea
                   type: string
                   description: The matching certificate, PEM ("-----BEGIN CERTIFICATE-----"). The DER .cer is derived from it.
       responses:
@@ -2336,6 +2351,8 @@ paths:
               required: [key]
               properties:
                 key:
+                  title: Private key
+                  x-cix-ui: textarea
                   type: string
                   description: >
                     The Ed25519 private key, PEM ("-----BEGIN PRIVATE
@@ -3726,10 +3743,12 @@ paths:
               required: [size_mb]
               properties:
                 size_mb:
+                  title: Size (MB)
                   type: integer
                   minimum: 64
                   maximum: 1048576
                 disk:
+                  title: Disk
                   type: string
                   nullable: true
                   description: >
@@ -3898,16 +3917,22 @@ paths:
               minProperties: 1
               properties:
                 max_concurrent_jobs:
+                  title: Concurrent builds
                   type: integer
                   minimum: 1
                   maximum: 10
                 memory_max:
+                  title: Build memory
+                  x-cix-ui: bytes
                   type: integer
                   minimum: 0
                 memory_max_ceiling:
+                  title: Build memory ceiling
+                  x-cix-ui: bytes
                   type: integer
                   minimum: 0
                 cpu_max:
+                  title: Build CPU (cpu.max)
                   type: string
                   nullable: true
       responses:
@@ -4241,12 +4266,14 @@ paths:
               type: object
               properties:
                 default:
+                  title: Default entry
                   type: string
                   description: >
                     A systemd-boot glob pattern (e.g. "cix-*"), matched
                     against both the entry filename and the filename with
                     .conf stripped, exactly as the bootloader matches it.
                 timeout:
+                  title: Menu timeout (seconds)
                   type: integer
                   description: Menu timeout in seconds, 0-3600.
       responses:
@@ -4467,15 +4494,18 @@ paths:
               type: object
               properties:
                 path:
+                  title: Path on the host
                   type: string
                   description: >
                     A file already on this host, e.g. the cix-boot.efi
                     a "cix" hostbuild just produced
                     (/var/lib/cix/rebuildable/artifacts/cix/cix-boot.efi).
                 url:
+                  title: URL
                   type: string
                   description: Fetched by the daemon instead of `path`. Requires `sha256`.
                 sha256:
+                  title: SHA-256
                   type: string
                   description: Required with `url`; 64 hex characters.
       responses:
@@ -4566,10 +4596,13 @@ paths:
               type: object
               properties:
                 consoles:
+                  title: Consoles
+                  x-cix-ui: lines
                   type: array
                   items:
                     type: string
                 extra:
+                  title: Extra kernel arguments
                   type: string
       responses:
         "200":
@@ -4647,10 +4680,14 @@ paths:
               type: object
               properties:
                 enabled:
+                  title: Reserve for the control plane
                   type: boolean
                 cpu_percent:
+                  title: CPU (percent)
                   type: integer
                 memory_bytes:
+                  title: Memory
+                  x-cix-ui: bytes
                   type: integer
       responses:
         "200":
@@ -4905,6 +4942,7 @@ paths:
               required: [unixtime]
               properties:
                 unixtime:
+                  title: Unix time
                   type: integer
                   minimum: 0
       responses:
@@ -8913,8 +8951,9 @@ paths:
         Set the start_uid/start_gid floor, the client login settings, and
         (#419) which listeners each registered glauth serves. Every group
         of fields is independently optional -- an absent field is left
-        unchanged, never reset -- but start_uid and start_gid come as a
-        pair and must both be > 0 when either is given.
+        unchanged, never reset. start_uid and start_gid must each be > 0
+        when given; one given alone keeps the other (#592 -- they were a
+        both-or-neither pair, which refused a change to just one).
 
 
         The server_* fields are rendered straight into each registered,
@@ -9392,6 +9431,7 @@ paths:
       operationId: resetPki
       x-cix-permission: pki:write
       x-cix-expose: [cli, web]
+      x-cix-destructive: true
       requestBody:
         required: false
         content:
@@ -10302,6 +10342,8 @@ paths:
               required: [max_bytes]
               properties:
                 max_bytes:
+                  title: Cache size cap
+                  x-cix-ui: bytes
                   type: integer
                   description: Must be > 0.
       responses:
@@ -13977,6 +14019,7 @@ paths:
       operationId: factoryReset
       x-cix-permission: system:write
       x-cix-expose: [cli, web]
+      x-cix-destructive: true
       requestBody:
         required: true
         content:
@@ -14105,10 +14148,13 @@ paths:
               required: [uid, gid]
               properties:
                 uid:
+                  title: Owner uid
                   type: [integer, "null"]
                 gid:
+                  title: Owner gid
                   type: [integer, "null"]
                 recursive:
+                  title: Apply to everything inside
                   type: boolean
       responses:
         "200":
@@ -14190,6 +14236,8 @@ paths:
               required: [quota_bytes]
               properties:
                 quota_bytes:
+                  title: Size limit
+                  x-cix-ui: bytes
                   type: integer
                   minimum: 0
                   description: The limit in bytes. 0 removes it.
@@ -15650,11 +15698,13 @@ components:
             one, equivalent to POST /v1/ldap/servers after creation. Same
             reasoning as dns_server above.
         memory_max:
+          x-cix-ui: bytes
           title: Memory limit (bytes)
           type: integer
           format: int64
           description: cgroup v2 memory.max in bytes. Omit for no limit.
         memory_swap_max:
+          x-cix-ui: bytes
           title: Swap limit (bytes)
           type: integer
           format: int64
@@ -15693,6 +15743,7 @@ components:
             pass-through convention as cpu_max. Omit for no
             restriction (every online CPU).
         disk_quota_bytes:
+          x-cix-ui: bytes
           title: Disk quota (bytes)
           type: integer
           format: int64
@@ -18389,39 +18440,67 @@ components:
         a wrong value is out of range.
       properties:
         every:
-          type: object
+          $ref: "#/components/schemas/ScheduleEvery"
+          title: Every
           description: >
-            A fixed period, anchored on the last run rather than on a
+            A fixed period; its fields add together, from 10 seconds to a
+            year. It is anchored on the last run rather than on a
             fixed epoch -- an epoch-anchored period fires the instant
             the daemon starts whenever the box has been down longer
             than one period, turning every reboot into a burst of work.
             The fields add together; the total must be 10 seconds to a
             year.
-          properties:
-            seconds:
-              type: integer
-            minutes:
-              type: integer
-            hours:
-              type: integer
-            days:
-              type: integer
         daily:
-          type: object
-          required: [at]
-          properties:
-            at:
-              type: string
-              description: '"HH:MM", local time. 02:00 means 02:00 where the machine is.'
+          $ref: "#/components/schemas/ScheduleDaily"
+          title: Daily
+          description: Once a day, at a local time.
         weekly:
-          type: object
-          required: [on, at]
-          properties:
-            on:
-              type: string
-              enum: [sun, mon, tue, wed, thu, fri, sat]
-            at:
-              type: string
+          $ref: "#/components/schemas/ScheduleWeekly"
+          title: Weekly
+          description: Once a week, on a day, at a local time.
+
+    ScheduleEvery:
+      type: object
+      description: >
+        ScheduleSpec.every -- named rather than inline so a form can render
+        its fields (#592).
+      properties:
+        seconds:
+          type: integer
+          title: Seconds
+        minutes:
+          type: integer
+          title: Minutes
+        hours:
+          type: integer
+          title: Hours
+        days:
+          type: integer
+          title: Days
+
+    ScheduleDaily:
+      type: object
+      required: [at]
+      description: ScheduleSpec.daily, named so a form can render it (#592).
+      properties:
+        at:
+          type: string
+          title: At
+          description: '"HH:MM", local time. 02:00 means 02:00 where the machine is.'
+
+    ScheduleWeekly:
+      type: object
+      required: [on, at]
+      description: ScheduleSpec.weekly, named so a form can render it (#592).
+      properties:
+        on:
+          type: string
+          enum: [sun, mon, tue, wed, thu, fri, sat]
+          title: "On"
+        at:
+          type: string
+          title: At
+          description: '"HH:MM", local time.'
 
     ScheduleWrite:
       type: object
@@ -18429,25 +18508,32 @@ components:
       properties:
         action:
           type: string
+          title: Action
           description: One of GET /schedule-actions. Never free text.
         params:
           type: object
+          title: Parameters
           description: >
             Handed to the action unread -- the action is the only thing
             that knows their shape, and the scheduler deliberately does
             not learn it.
         schedule:
           $ref: "#/components/schemas/ScheduleSpec"
+          title: When
+          description: Exactly one of every, daily or weekly.
         window_minutes:
           type: integer
+          title: Window (minutes)
           description: >
-            0 (default) means the job fires and is done. Above zero, an
+            How long after its fire time a queue-draining action may keep
+            starting work. 0 (default) means the job fires and is done. Above zero, an
             action that drains a queue may keep STARTING work for this
             long after the fire time -- which is what an update window
             is. A schedule fires an instant; a window is an interval,
             and modelling it as two jobs (open, close) would put a state
             machine in the operator's hands.
         catch_up:
+          title: Catch up after downtime
           type: boolean
           description: >
             Whether a wall-clock job whose time passed while the daemon
@@ -18456,6 +18542,7 @@ components:
             would start heavy work at the least predictable moment
             there is, right after a boot.
         enabled:
+          title: Enabled
           type: boolean
           default: true
           description: Default true. A job created is a job wanted.
@@ -18466,8 +18553,10 @@ components:
         - type: object
           properties:
             name:
+              title: Name
               type: string
             describes:
+              title: Describes
               type: string
               description: >
                 A rendered, human-readable form ("daily at 02:00 for
@@ -18475,19 +18564,23 @@ components:
                 ONLY -- nothing parses it back, which is why there is
                 no syntax here for anyone to mistype.
             next_run_at:
+              title: Next run
               type: [integer, "null"]
               format: unix-seconds
               description: Null when the job is disabled -- a disabled job has no next run.
             last_run_at:
+              title: Last run
               type: [integer, "null"]
               format: unix-seconds
             last_ok:
+              title: Last run succeeded
               type: [boolean, "null"]
               description: >
                 Null before the first run. "It has not run" and "it ran
                 and failed" are different facts and a boolean alone
                 cannot hold both.
             last_reason:
+              title: Last result
               type: string
 
     PipelinePosition:
@@ -19861,6 +19954,7 @@ components:
       required: [name]
       properties:
         name:
+          title: Partition name
           type: string
           description: >
             The new partition's GPT name attribute -- purely cosmetic;
@@ -19868,6 +19962,7 @@ components:
             device name (e.g. "sdb2"), never by this. Same charset/length
             rules as every other simple resource name in this API.
         size_mib:
+          title: Size (MiB)
           type: integer
           description: >
             The new partition's size in MiB. Omitted or 0 means "consume
@@ -20140,9 +20235,11 @@ components:
       required: [ifname]
       properties:
         ifname:
+          title: Interface
           type: string
           description: A currently assignable "net:<ifname>" device (see GET /devices).
         vlan_id:
+          title: VLAN id
           type: integer
           minimum: 0
           maximum: 4094
@@ -20337,13 +20434,17 @@ components:
         recipe's own content -- resolved at recipe render time exactly
         like {{SECRET:KEY}}, so recipes carry no copied values and no
         per-apply secret; an LDAP server move is one PUT here. On PUT,
-        each client field is individually optional (absent = unchanged,
-        "" = clear), and start_uid/start_gid stay both-or-neither. The
+        every field is individually optional: absent is unchanged, and a
+        client field given "" or null is cleared (null since #592, so the
+        value GET reports for an unset field is one PUT accepts back).
+        start_uid and start_gid are each optional too since #592 -- one
+        alone keeps the other -- and both are required in a response. The
         bind credential is write-only: stored in the daemon's root-only
         state (the PKI-private-key posture), never echoed --
         bind_password_set reports only whether one exists.
       properties:
         client_uri:
+          title: Client URI
           type: string
           nullable: true
           description: >
@@ -20359,15 +20460,32 @@ components:
             {{LDAP:URI}} recipe token resolve to -- one derivation, not
             one per consumer (#327).
         base_dn:
+          title: Base DN
           type: string
           nullable: true
         bind_dn:
+          title: Bind DN
           type: string
           nullable: true
         bind_password_set:
+          title: Bind password set
           type: boolean
+          readOnly: true
+          description: Whether a bind password is stored; the password itself is never returned.
+        bind_password:
+          title: Bind password
+          type: string
+          format: password
+          description: >
+            The bind credential, write-only: accepted by PUT and never
+            returned (bind_password_set says whether one is stored).
+            Omitted keeps it; "" or null clears it. Declared here so a
+            generated form can set it -- the PUT has always read it, and
+            only this schema's prose said so (#592).
         listeners_managed:
+          title: Listeners managed
           type: boolean
+          readOnly: true
           description: >
             Whether an operator has ever set the server_* fields. False
             means the daemon has NEVER written `[ldap]`/`[ldaps]` into a
@@ -20381,6 +20499,7 @@ components:
             happens to match". One PUT carrying any server_* field flips
             it to true permanently.
         client_tls:
+          title: Clients use TLS
           type: boolean
           default: false
           description: >
@@ -20407,6 +20526,7 @@ components:
             server_plaintext has disabled -- handing every client a URI
             nothing answers is not a configuration this accepts.
         server_plaintext:
+          title: Serve plaintext LDAP
           type: boolean
           default: true
           description: >
@@ -20418,12 +20538,14 @@ components:
             The daemon owns these values now, on the same terms ADR-0148
             established for baseDN.
         server_plaintext_port:
+          title: Plaintext port
           type: integer
           minimum: 1
           maximum: 65535
           default: 3893
           description: Rendered as `[ldap] listen = "0.0.0.0:<port>"`. glauth's own default is 3893.
         server_tls:
+          title: Serve LDAPS
           type: boolean
           default: false
           description: >
@@ -20434,6 +20556,7 @@ components:
             serve TLS without one, which is worse than the setting not
             applying.
         server_tls_port:
+          title: LDAPS port
           type: integer
           minimum: 1
           maximum: 65535
@@ -20446,10 +20569,12 @@ components:
             client_tls_port that used to exist was a second source of
             truth for the same number (#419).
         effective_client_uri:
+          title: Effective client URI
           type: [string, "null"]
+          readOnly: true
           description: >
-            What ldap_client containers are actually handed right now,
-            after derivation from registered servers and after health
+            What ldap_client containers are actually handed right now.
+            That is after derivation from registered servers and after health
             filtering -- a different question from client_uri, which is
             only what was configured. Drained or confirmed-unhealthy
             registered servers are dropped from BOTH the derived list
@@ -20461,13 +20586,14 @@ components:
             would leave nothing, the unfiltered list stands: handing a
             client a server that might be down beats handing it none.
             null when neither source yields anything.
-          description: Read-only. PUT accepts a write-only bind_password string instead.
         start_uid:
+          title: First uid
           type: integer
           minimum: 1
           default: 10000
           description: Floor ldap_uid_alloc() scans upward from when POST /ldap/users omits uidnumber.
         start_gid:
+          title: First gid
           type: integer
           minimum: 1
           default: 10000
@@ -20863,18 +20989,23 @@ components:
         prompted address, for a fleet of identical machines.
       properties:
         disk:
+          title: Disk
           type: string
           description: Target block device, e.g. "/dev/sda".
         ip:
+          title: Address
           type: string
           description: Static management IP to assign at install time.
         prefix:
+          title: Prefix length
           type: string
           description: CIDR prefix length for ip, e.g. "24".
         gateway:
+          title: Gateway
           type: string
           description: Upstream default-route address (distinct from a network's own address -- see ADR-0058).
         interface:
+          title: Interface
           type: string
           description: Physical NIC name to attach to the "management" network, e.g. "eth0".
 
@@ -20977,14 +21108,18 @@ components:
         the listener ports and HTTP/HTTPS exposure.
       properties:
         port:
+          title: HTTP port
           type: integer
           minimum: 1
           maximum: 65535
         http_enabled:
+          title: Serve HTTP
           type: boolean
         https_enabled:
+          title: Serve HTTPS
           type: boolean
         https_port:
+          title: HTTPS port
           type: integer
           minimum: 1
           maximum: 65535
@@ -21020,10 +21155,13 @@ components:
         full config regardless of which field(s) were actually given.
       properties:
         max_bytes:
+          title: Size cap
+          x-cix-ui: bytes
           type: integer
           minimum: 1048576
           maximum: 107374182400
         min_level:
+          title: Minimum level
           type: string
           enum: [emerg, alert, crit, err, error, warning, warn, notice, info, debug]
           description: >

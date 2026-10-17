@@ -6,6 +6,38 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The page forms render from the contract too; four stay hand-built, each for a reason (#592)
+
+Forty-three forms on the dashboard's pages -- every settings form, every page action (stage an update,
+build an ISO, add a partition, migrate storage, factory reset) and five modals (schedules, group
+permissions, app passwords, a package's source, container recipes) -- are generated now. A page binds
+its form with `syncForm()` from its own refresh: built once, rebuilt when the values read change, never
+while the operator is typing, which retires fifteen per-form "dirty" flags and guards the two forms that
+had none (the log size cap and the management address were overwritten by every poll). The four left
+are the login shell, System restore (its body is a backup file), a container's sysctl (a map keyed by
+the sysctl) and the kernel log's tail length (a query parameter on a read).
+
+The renderer gained `nullable` (`null` for an empty field that must be sent or held a value; apigen now
+reads OpenAPI 3.0's `nullable: true`), `changedOnly` for a partial update that must send only what
+changed, a byte-size control (`x-cix-ui: bytes`), required arrays that may be empty, trimmed single-line
+text, and a `before` that replaces the generic destructive confirmation instead of adding a second.
+`factoryReset` and `resetPki` are `x-cix-destructive` in the contract.
+
+Converting them found six defects on live pages, now fixed:
+
+- **Build kernel modules dropped every symbol typed.** It sent `symbols`; the daemon reads
+  `config_symbols`.
+- **Enable swap moved swap back to the default path every time.** It never sent the disk.
+- **The volume quota changed on re-save** when it was not a whole number of GiB, because the form rounded.
+- **A network's attach choice was lost on every render.** The form refilled its select each time.
+- **The LDAP config PUT refused a change to one allocation floor.** It now keeps the other.
+- **An LDAP client field could not be cleared** by sending back the `null` that GET reports. JSON `null`
+  now clears it, as `""` does.
+
+`LdapConfig` marks its three report-only fields `readOnly` and declares the write-only `bind_password`,
+which the PUT always read. A second `description` key on `effective_client_uri` had silently replaced its
+real one, since YAML keeps the last of two.
+
 ### New Container renders from the contract: every create form is generated (#592)
 
 The last hand-built create form, 195 lines of markup and a 199-line submit handler, is a generated form

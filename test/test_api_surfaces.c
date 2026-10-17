@@ -336,6 +336,23 @@ static void check_declared_exposure(void)
 			snprintf(want_open, sizeof(want_open), "openForm(\"%s\"", op_id);
 			has_web = strstr(web, want_open) != NULL;
 		}
+		/*
+		 * And a form bound to an element on a page (#592) --
+		 * `bindForm(el, "<opId>"` or `syncForm(el, "<opId>"` -- or one
+		 * whose operation a page holds as data, `migrateOp: "<opId>"`
+		 * for the storage placements and `createOp: "<opId>"` for app
+		 * passwords. Each names its operation as a quoted string beside
+		 * a key or after the element; the quoted name is exact, since no
+		 * longer identifier can sit between the quotes.
+		 */
+		if (!has_web) {
+			char want_bound[176];
+
+			snprintf(want_bound, sizeof(want_bound), ", \"%s\"", op_id);
+			has_web = strstr(web, want_bound) != NULL;
+			snprintf(want_bound, sizeof(want_bound), "Op: \"%s\"", op_id);
+			has_web = has_web || strstr(web, want_bound) != NULL;
+		}
 
 		if (decl_cli && !has_cli) {
 			fprintf(stderr,

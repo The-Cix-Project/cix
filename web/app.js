@@ -420,13 +420,9 @@ function closeModal() {
 	for (const panel of modalOverlay.querySelectorAll(".modal-body > div"))
 		panel.hidden = true;
 
-	/* Edit-mode state (tasks #749/#750) is scoped to a single modal
-	 * session -- always reset back to "create" on close, regardless of
-	 * how it closed (submit, X button, Escape, outside click). */
-	/* #544: the permissions form's edit state, and a new app password's
-	 * secret -- which must not stay in the page once its modal is shut. */
-	permissionsEditGroup = null;
-	document.getElementById("pf-group").readOnly = false;
+	/* #544: a new app password's secret, which must not stay in the
+	 * page once its modal is shut, whichever way it closed (submit, X,
+	 * Escape, outside click). */
 	appPasswordScope = null;
 	document.getElementById("apf-secret-value").value = "";
 	document.getElementById("apf-secret").hidden = true;
@@ -470,35 +466,63 @@ function openModal(formId, title) {
  * because `openModal()` begins by calling `closeModal()` and the
  * fields were being built before it.
  */
-document.getElementById("generated-form").addEventListener("submit", async (event) => {
-	const form = event.target;
-	const opId = form.dataset.opId;
-	const shape = CIX_API[opId + "_SHAPE"];
+/*
+ * ONE submit for every generated form, wherever it is mounted (#592):
+ * the modal's, and every settings form on a page. Delegated from the
+ * document because a page's forms are bound as its data arrives, and a
+ * listener per bind would multiply with every rebuild. A form without
+ * `_cix` is hand-built and keeps its own listener.
+ */
+document.addEventListener("submit", (event) => {
+	if (event.target._cix === undefined)
+		return;
+	event.preventDefault();
+	submitForm(event.target);
+});
+
+async function submitForm(form) {
+	const c = form._cix;
+	const shape = CIX_API[c.opId + "_SHAPE"];
 	const args = generatedFormArgs(form);
 	let body;
 	let result;
 
-	event.preventDefault();
 	/* A destructive operation confirms, because the contract says it is
-	 * destructive -- not because whoever wrote this screen remembered. */
-	if (shape.destructive && !window.confirm("This cannot be undone. Continue?"))
+	 * destructive -- not because whoever wrote this screen remembered.
+	 * An authored `before` asks INSTEAD, never as well: it can say what
+	 * is about to be destroyed, and two dialogs for one click teach
+	 * people to click through both. */
+	if (shape.destructive && c.before === null &&
+	    !window.confirm("This cannot be undone. Continue?"))
 		return;
 	try {
 		/* Read BEFORE the request, and inside the try: collecting the
 		 * body can refuse it -- a free-form object field is typed as
 		 * JSON and parsed here, so a mistyped brace must report
-		 * itself and leave the modal open with the text still in it,
+		 * itself and leave the form open with the text still in it,
 		 * exactly like a 400 would. */
 		body = generatedFormBody(form);
 		/* The authored question, asked about what is actually about
 		 * to be sent (#592): letting a source write to its forge is
 		 * confirmed only when this save turns it on. Declining leaves
-		 * the modal open with everything still in it. */
-		if (generatedFormBefore !== null && !(await generatedFormBefore(body)))
+		 * the form open with everything still in it. */
+		if (c.before !== null && !(await c.before(body)))
 			return;
-		result = await apiRequest(shape.method, CIX_API[opId](...args), body);
+		result = await apiRequest(shape.method, CIX_API[c.opId](...args), body);
 		clearStatus();
-		closeModal();
+		/* Saved: what is on screen is the box's again, so the next
+		 * read may refill it (syncForm()). */
+		form.dataset.dirty = "";
+		/* The modal closes, which says it worked. A form on a page
+		 * stays where it is, so it has to say so in words -- a Save
+		 * that changes nothing visible reads as a Save that did
+		 * nothing. */
+		if (form.id === "generated-form")
+			closeModal();
+		else
+			showStatus(c.saved || "Saved", false);
+		if (c.opts.clear === true)
+			bindForm(form, c.opId, c.opts);
 		/*
 		 * The body, because an `after` often needs the name of the
 		 * thing just written and on a create nobody knew it until it
@@ -508,22 +532,14 @@ document.getElementById("generated-form").addEventListener("submit", async (even
 		 * an image build (ADR-0270), and the hand-written form
 		 * reported "created" for both.
 		 */
-		if (generatedFormAfter !== null)
-			await generatedFormAfter(body, result);
+		if (c.after !== null)
+			await c.after(body, result);
 	} catch (e) {
-		showStatus(generatedFormFailed + ": " + e.message, true);
+		showStatus(c.failed + ": " + e.message, true);
 	}
-});
+}
 
-document.getElementById("signing-keys-form").addEventListener("submit", (event) => {
-	event.preventDefault();
-	installSigningKeys();
-});
 document.getElementById("signing-keys-clear").addEventListener("click", clearSigningKeys);
-document.getElementById("release-key-form").addEventListener("submit", (event) => {
-	event.preventDefault();
-	installReleaseKey();
-});
 document.getElementById("release-key-clear").addEventListener("click", clearReleaseKey);
 document.getElementById("images-gc-preview").addEventListener("click", () => runImageGc(true));
 document.getElementById("images-gc").addEventListener("click", () => runImageGc(false));
@@ -6239,18 +6255,23 @@ function renderNetworkDetail(name) {
 		empty: "No interfaces attached",
 	});
 
-	const select = document.getElementById("nd-attach-ifname");
-
-	select.textContent = "";
-	const assignableNets = cache.devices.filter((d) => d.bus === "net" && d.assignable);
-
-	for (const d of assignableNets) {
-		const opt = document.createElement("option");
-
-		opt.value = d.id.replace(/^net:/, "");
-		opt.textContent = opt.value;
-		select.appendChild(opt);
-	}
+	/* The host interfaces free to attach, by bare kernel name. Rebuilt
+	 * only when they change and never while one is being chosen -- the
+	 * hand-built select was refilled on every render and lost a choice
+	 * the operator had just made (#592). */
+	syncForm(document.getElementById("nd-attach-form"), "attachNetworkInterface", {
+		args: [n.name],
+		choices: { ifname: cache.devices
+			.filter((d) => d.bus === "net" && d.assignable)
+			.map((d) => ({ value: d.id.replace(/^net:/, "") })) },
+		submit: "Attach", saved: "Interface attached", clear: true,
+		failed: "Failed to attach the interface to " + n.name,
+		after: async () => {
+			await refreshNetworks();
+			await refreshDevices();
+			renderCurrentView();
+		},
+	});
 
 	/* The box's routing table, filtered to this network's bridge, with
 	 * the same columns as the full list -- and, like the interfaces
@@ -6265,22 +6286,6 @@ function renderNetworkDetail(name) {
 	});
 
 	document.getElementById("nd-remove").onclick = () => removeNetwork(n.name);
-}
-
-async function attachInterface(networkName, ifname, vlanId) {
-	try {
-		const body = { ifname: ifname };
-
-		if (vlanId)
-			body.vlan_id = vlanId;
-		await apiRequest("POST", CIX_API.attachNetworkInterface(networkName), body);
-		clearStatus();
-		await refreshNetworks();
-		await refreshDevices();
-		renderCurrentView();
-	} catch (e) {
-		showStatus("Failed to attach " + ifname + " to " + networkName + ": " + e.message, true);
-	}
 }
 
 async function detachInterface(networkName, ifname) {
@@ -6621,27 +6626,13 @@ function renderImageDetailManifest(name, data) {
 		empty: "No manifest entries -- this image has no declared package intent",
 	});
 
-	const form = document.getElementById("imgd-manifest-form");
-
-	form.onsubmit = async (ev) => {
-		ev.preventDefault();
-		const pkg = document.getElementById("imgd-manifest-package").value.trim();
-		const mode = document.getElementById("imgd-manifest-mode").value;
-		const version = document.getElementById("imgd-manifest-version").value.trim();
-
-		try {
-			await apiRequest("POST", CIX_API.setImageManifestEntry(name), {
-				package: pkg,
-				mode: mode,
-				version: version,
-			});
-			clearStatus();
-			form.reset();
-			refreshImageDetailVersioning(name);
-		} catch (e) {
-			showStatus("Failed to set manifest entry: " + e.message, true);
-		}
-	};
+	/* An action rather than a setting: bound to this image, cleared
+	 * once the entry is set (#592). */
+	syncForm(document.getElementById("imgd-manifest-form"), "setImageManifestEntry", {
+		args: [name], submit: "Set entry", saved: "Manifest entry set",
+		failed: "Failed to set manifest entry", clear: true,
+		after: () => refreshImageDetailVersioning(name),
+	});
 }
 
 /* Full immutable version history (ADR-0107/0108) -- newest first,
@@ -7057,16 +7048,16 @@ async function refreshDiskFormatStatuses() {
  * a plain string: it is a disk-role name sent in a body, not a path.
  */
 const STORAGE_KINDS = {
-	logs: { showPath: CIX_API.getLogStorage, migratePath: CIX_API.migrateLogStorage,
+	logs: { showPath: CIX_API.getLogStorage, migrateOp: "migrateLogStorage",
 	        migrateStatusPath: CIX_API.getLogStorageMigrateStatus,
 	        cacheKey: "logStorage", statusCacheKey: "logStorageMigrate",
-	        currentId: "ls-current", statusId: "ls-migrate-status", selectId: "ls-target-disk",
+	        currentId: "ls-current", statusId: "ls-migrate-status",
 	        formId: "ls-migrate-form", label: "Log storage", role: "log-storage" },
 	rebuildable: { showPath: CIX_API.getRebuildableStorage,
 	               migrateStatusPath: CIX_API.getRebuildableStorageMigrateStatus,
-	               migratePath: CIX_API.migrateRebuildableStorage, cacheKey: "rebuildableStorage",
+	               migrateOp: "migrateRebuildableStorage", cacheKey: "rebuildableStorage",
 	               statusCacheKey: "rebuildableStorageMigrate", currentId: "rs-current",
-	               statusId: "rs-migrate-status", selectId: "rs-target-disk", formId: "rs-migrate-form",
+	               statusId: "rs-migrate-status", formId: "rs-migrate-form",
 	               label: "Rebuildable storage", role: "rebuildable-storage" },
 };
 
@@ -7098,29 +7089,20 @@ function renderStoragePlacement(kind) {
 
 	current.textContent = k.label + ": " + (cache[k.cacheKey].disk || "default OS-disk placement");
 
-	const select = document.getElementById(k.selectId);
-	const prevValue = select.value;
-
-	select.textContent = "";
-	{
-		const opt = document.createElement("option");
-
-		opt.value = "";
-		opt.textContent = "(default OS-disk placement)";
-		select.appendChild(opt);
-	}
-	for (const d of cache.storage) {
-		const role = storageRoleFor(d.name);
-
-		if (d.protected || role === null || role.role !== k.role)
-			continue;
-		const opt = document.createElement("option");
-
-		opt.value = d.name;
-		opt.textContent = d.name + (d.model ? " (" + d.model + ")" : "");
-		select.appendChild(opt);
-	}
-	select.value = prevValue;
+	/* The disks carrying this kind's role; the blank sends null, the
+	 * default OS-disk placement -- "" is refused (#592: the form now
+	 * knows the field is nullable). */
+	syncForm(document.getElementById(k.formId), k.migrateOp, {
+		choices: { disk: (cache.storage || [])
+			.filter((d) => { const r = storageRoleFor(d.name); return !d.protected && r !== null && r.role === k.role; })
+			.map((d) => ({ value: d.name, label: d.name + (d.model ? " (" + d.model + ")" : "") })) },
+		submit: "Migrate", failed: "Failed to start " + k.label.toLowerCase() + " migration",
+		saved: k.label + " migration started",
+		after: (body, result) => {
+			cache[k.statusCacheKey] = result;
+			renderStoragePlacement(kind);
+		},
+	});
 
 	const statusP = document.getElementById(k.statusId);
 	const m = cache[k.statusCacheKey];
@@ -7142,25 +7124,6 @@ function renderAllStoragePlacements() {
 	renderStoragePlacement("rebuildable");
 }
 
-for (const kind of Object.keys(STORAGE_KINDS)) {
-	const k = STORAGE_KINDS[kind];
-
-	document.getElementById(k.formId).addEventListener("submit", async (event) => {
-		event.preventDefault();
-
-		const disk = document.getElementById(k.selectId).value;
-
-		try {
-			cache[k.statusCacheKey] = await apiRequest("POST", k.migratePath(), {
-				disk: disk === "" ? null : disk,
-			});
-			clearStatus();
-			renderStoragePlacement(kind);
-		} catch (e) {
-			showStatus("Failed to start " + k.label.toLowerCase() + " migration: " + e.message, true);
-		}
-	});
-}
 
 /*
  * ADR-0142 Section 4: one container's own overlay-storage placement --
@@ -7191,29 +7154,20 @@ function renderContainerStorage(name) {
 		return;
 	current.textContent = "Storage: " + (c.disk || "default OS-disk placement");
 
-	const select = document.getElementById("cd-storage-target-disk");
-	const prevValue = select.value;
-
-	select.textContent = "";
-	{
-		const opt = document.createElement("option");
-
-		opt.value = "";
-		opt.textContent = "(default OS-disk placement)";
-		select.appendChild(opt);
-	}
-	for (const d of cache.storage) {
-		const role = storageRoleFor(d.name);
-
-		if (d.protected || role === null || role.role !== "container-storage")
-			continue;
-		const opt = document.createElement("option");
-
-		opt.value = d.name;
-		opt.textContent = d.name + (d.model ? " (" + d.model + ")" : "");
-		select.appendChild(opt);
-	}
-	select.value = prevValue;
+	/* Disks with the container-storage role; the blank sends null, the
+	 * default OS-disk placement. */
+	syncForm(document.getElementById("cd-storage-migrate-form"), "migrateContainerStorage", {
+		args: [name],
+		choices: { disk: (cache.storage || [])
+			.filter((d) => { const r = storageRoleFor(d.name); return !d.protected && r !== null && r.role === "container-storage"; })
+			.map((d) => ({ value: d.name, label: d.name + (d.model ? " (" + d.model + ")" : "") })) },
+		submit: "Migrate", saved: "Storage migration started",
+		failed: "Failed to start storage migration for " + name,
+		after: (body, result) => {
+			cache.containerStorageMigrate = result;
+			renderContainerStorage(name);
+		},
+	});
 
 	const statusP = document.getElementById("cd-storage-migrate-status");
 	const m = cache.containerStorageMigrate;
@@ -7230,24 +7184,6 @@ function renderContainerStorage(name) {
 	}
 }
 
-document.getElementById("cd-storage-migrate-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	if (currentContainerDetailName === null)
-		return;
-
-	const name = currentContainerDetailName;
-	const disk = document.getElementById("cd-storage-target-disk").value;
-
-	try {
-		cache.containerStorageMigrate = await apiRequest("POST", CIX_API.migrateContainerStorage(name),
-			{ disk: disk === "" ? null : disk }
-		);
-		clearStatus();
-		renderContainerStorage(name);
-	} catch (e) {
-		showStatus("Failed to start storage migration for " + name + ": " + e.message, true);
-	}
-});
 
 /*
  * Whole disks only. Partitions used to be listed here as peers of the
@@ -7665,6 +7601,16 @@ function renderDiskDetail(name) {
 	renderDiskRoleTab(d, role);
 	if (!d.is_partition) {
 		renderDiskPartitions(d, parts);
+		/* Bound to THIS disk: its path argument is the page's (#592). */
+		syncForm(document.getElementById("dd-add-partition-form"), "addStoragePartition", {
+			args: [d.name], submit: "Add partition", saved: "Partition added",
+			failed: "Failed to add partition", clear: true,
+			after: async () => {
+				await refreshDisks();
+				renderDiskDetail(d.name);
+				renderTree();
+			},
+		});
 		refreshDiskFreeSpace(d);
 	}
 }
@@ -8313,7 +8259,10 @@ let diskFreeSpace = {};
 
 async function refreshDiskFreeSpace(d) {
 	const note = document.getElementById("dd-free-space");
-	const sizeInput = document.getElementById("dd-part-size");
+	/* The generated form's size field; the bound below is this disk's
+	 * largest free gap, which the contract cannot know. */
+	const sizeInput = document.querySelector('#dd-add-partition-form [data-field="size_mib"]') ||
+		document.createElement("input");
 
 	/*
 	 * The OS disk is NOT skipped. #140 made appending into its free
@@ -8378,44 +8327,6 @@ document.getElementById("dd-write-table").addEventListener("click", async () => 
 		renderTree();
 	} catch (e) {
 		showStatus("Failed to write partition table: " + e.message, true);
-	}
-});
-
-document.getElementById("dd-add-partition-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	const name = currentDiskDetailName;
-
-	if (name === null)
-		return;
-	const partName = document.getElementById("dd-part-name").value.trim();
-	const sizeText = document.getElementById("dd-part-size").value.trim();
-	const body = { name: partName };
-
-	if (sizeText !== "")
-		body.size_mib = parseInt(sizeText, 10);
-
-	/* Catch a too-large size here rather than letting it come back as
-	 * an sfdisk rejection -- the daemon still checks, this just says so
-	 * before the round trip. */
-	const fs = diskFreeSpace[name];
-
-	if (fs && fs.has_partition_table && body.size_mib) {
-		const largestMib = Math.floor(fs.largest_free_bytes / (1024 * 1024));
-
-		if (body.size_mib > largestMib) {
-			showStatus("That is larger than the biggest free gap on this disk (" + largestMib + " MiB).", true);
-			return;
-		}
-	}
-	try {
-		await apiRequest("POST", CIX_API.addStoragePartition(name), body);
-		clearStatus();
-		document.getElementById("dd-add-partition-form").reset();
-		await refreshDisks();
-		renderDiskDetail(name);
-		renderTree();
-	} catch (e) {
-		showStatus("Failed to add partition: " + e.message, true);
 	}
 });
 
@@ -9389,6 +9300,7 @@ function renderSchedules(rows) {
  */
 async function refreshIso() {
 	const box = document.getElementById("iso-status");
+	let isoBuildButton;
 
 	if (box === null)
 		return;
@@ -9419,7 +9331,12 @@ async function refreshIso() {
 		    (s.published_name ? " — " + s.published_name : "") +
 		    (s.publish_error ? " — " + s.publish_error : "")));
 
-		document.getElementById("iso-build").disabled = s.state === "building";
+		/* The generated form's own submit (#592): disabled while a build
+		 * runs, and otherwise by the session gate alone, which this must
+		 * not override in the other direction. */
+		isoBuildButton = document.querySelector("#iso-form button[type=submit]");
+		if (isoBuildButton !== null)
+			isoBuildButton.disabled = s.state === "building" || !sessionMay("postSystemIso");
 		document.getElementById("iso-publish").disabled = s.state !== "ready";
 		/*
 		 * #428: what this host has PUBLISHED, read from its own
@@ -9464,31 +9381,6 @@ async function refreshIso() {
 		/* Best-effort, same as every other panel here. */
 	}
 }
-
-document.getElementById("iso-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const body = {};
-
-	/* Every field is optional and independent -- an omitted one is
-	 * simply not passed, and the installer asks on the console. Sending
-	 * "" would be claiming an answer nobody gave. */
-	for (const [field, id] of [["disk", "isof-disk"], ["ip", "isof-ip"],
-	                           ["prefix", "isof-prefix"], ["gateway", "isof-gateway"],
-	                           ["interface", "isof-interface"]]) {
-		const v = document.getElementById(id).value.trim();
-
-		if (v !== "")
-			body[field] = v;
-	}
-	try {
-		await apiRequest("POST", CIX_API.postSystemIso(), body);
-		showStatus("Building installer media\u2026", false);
-	} catch (e) {
-		showStatus("Could not start the ISO build: " + e.message, true);
-	}
-	refreshIso();
-});
 
 document.getElementById("iso-publish").addEventListener("click", async () => {
 	try {
@@ -9540,13 +9432,17 @@ function renderStalls(stalls) {
 
 /* ---------- Kernel Line (issue #65) ---------- */
 
-let kernelPolicyDirty = false;
-
 function renderKernelPolicy(data) {
 	const grid = document.getElementById("kpf-status");
 
-	if (!kernelPolicyDirty)
-		document.getElementById("kpf-channel").value = data.channel || "pinned";
+	syncForm(document.getElementById("kpf-form"), "setKernelPolicy", {
+		values: { channel: data.channel || "pinned" }, submit: "Save",
+		failed: "Failed to set kernel channel",
+		after: (body, res) => {
+			showStatus("Kernel channel set to " + res.channel + ".", false);
+			renderKernelPolicy(res);
+		},
+	});
 
 	grid.textContent = "";
 	grid.appendChild(fieldBlock("Running", data.running_version +
@@ -9588,25 +9484,6 @@ async function refreshKernelPolicy() {
 	}
 }
 
-document.getElementById("kpf-channel").addEventListener("change", () => {
-	kernelPolicyDirty = true;
-});
-
-document.getElementById("kpf-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	try {
-		const res = await apiRequest("PUT", CIX_API.setKernelPolicy(), {
-			channel: document.getElementById("kpf-channel").value,
-		});
-
-		kernelPolicyDirty = false;
-		showStatus("Kernel channel set to " + res.channel + ".", false);
-		renderKernelPolicy(res);
-	} catch (e) {
-		showStatus("Failed to set kernel channel: " + e.message, true);
-	}
-});
-
 document.getElementById("kpf-refresh").addEventListener("click", async () => {
 	try {
 		renderKernelPolicy(await apiRequest("POST", CIX_API.refreshKernelPolicy(), {}));
@@ -9621,18 +9498,23 @@ document.getElementById("kpf-refresh").addEventListener("click", async () => {
 
 /* ---------- Boot Console (issue #24) ---------- */
 
-let bootConsoleDirty = false;
-
 async function refreshBootConsole() {
 	try {
 		const data = await apiRequest("GET", CIX_API.getBootConsole());
 		const cfg = data.config || {};
 		const grid = document.getElementById("bcf-effect");
 
-		if (!bootConsoleDirty) {
-			document.getElementById("bcf-consoles").value = (cfg.consoles || []).join(" ");
-			document.getElementById("bcf-extra").value = cfg.extra || "";
-		}
+		/* One console per line: a console carries commas of its own
+		 * (`ttyS0,115200n8`), so a comma list could not hold one. */
+		syncForm(document.getElementById("bcf-form"), "setBootConsole", {
+			values: { consoles: cfg.consoles || [], extra: cfg.extra || "" },
+			submit: "Save", failed: "Could not save the boot console",
+			after: async (body, res) => {
+				showStatus("Boot console saved — " + (res.loader_entries_updated || 0) +
+				           " loader entry/entries rewritten; takes effect at the next boot.", false);
+				await refreshBootConsole();
+			},
+		});
 		/* #432: an unchanged panel is left alone -- rebuilding it on every
 		 * tick collapses the page and costs the reader their place. The
 		 * table below has its own guard now, in renderTable. */
@@ -9664,45 +9546,18 @@ function renderBootEntries(entries) {
 	});
 }
 
-for (const id of ["bcf-consoles", "bcf-extra"]) {
-	document.getElementById(id).addEventListener("input", () => {
-		bootConsoleDirty = true;
-	});
-}
-
-document.getElementById("bcf-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	const consoles = document.getElementById("bcf-consoles").value.trim();
-
-	try {
-		const res = await apiRequest("PUT", CIX_API.setBootConsole(), {
-			consoles: consoles === "" ? [] : consoles.split(/\s+/),
-			extra: document.getElementById("bcf-extra").value.trim(),
-		});
-
-		bootConsoleDirty = false;
-		showStatus("Boot console saved — " + (res.loader_entries_updated || 0) +
-		           " loader entry/entries rewritten; takes effect at the next boot.", false);
-		await refreshBootConsole();
-	} catch (e) {
-		showStatus("Could not save the boot console: " + e.message, true);
-	}
-});
-
 /* ---------- Control Plane Reservation (issue #86) ---------- */
-
-let cprDirty = false;
 
 async function refreshControlPlaneReservation() {
 	try {
 		const c = await apiRequest("GET", CIX_API.getControlPlaneReservation());
 		const grid = document.getElementById("cpr-effect");
 
-		if (!cprDirty) {
-			document.getElementById("cpr-enabled").checked = !!c.enabled;
-			document.getElementById("cpr-cpu-percent").value = c.cpu_percent;
-			document.getElementById("cpr-memory-bytes").value = c.memory_bytes;
-		}
+		syncForm(document.getElementById("cpr-form"), "setControlPlaneReservation", {
+			values: c, submit: "Save",
+			saved: "Control plane reservation saved — the workload ceiling is in effect now.",
+			failed: "Could not save reservation", after: refreshControlPlaneReservation,
+		});
 		/* #432: an unchanged panel is left alone -- rebuilding it on every
 		 * tick collapses the page and costs the reader their place. */
 		if (unchangedAndRendered(grid, "control-plane-reservation", c))
@@ -9722,31 +9577,8 @@ async function refreshControlPlaneReservation() {
 	}
 }
 
-for (const id of ["cpr-enabled", "cpr-cpu-percent", "cpr-memory-bytes"]) {
-	document.getElementById(id).addEventListener("input", () => {
-		cprDirty = true;
-	});
-}
-
-document.getElementById("cpr-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	try {
-		await apiRequest("PUT", CIX_API.setControlPlaneReservation(), {
-			enabled: document.getElementById("cpr-enabled").checked,
-			cpu_percent: parseInt(document.getElementById("cpr-cpu-percent").value, 10),
-			memory_bytes: parseInt(document.getElementById("cpr-memory-bytes").value, 10),
-		});
-		cprDirty = false;
-		showStatus("Control plane reservation saved — the workload ceiling is in effect now.", false);
-		await refreshControlPlaneReservation();
-	} catch (e) {
-		showStatus("Could not save reservation: " + e.message, true);
-	}
-});
-
 /* ---------- LDAP Config: start_uid/start_gid auto-allocation floor (task #748) ---------- */
 
-let ldapConfigDirty = false;
 
 async function refreshLdapConfig() {
 	try {
@@ -9762,46 +9594,29 @@ async function refreshLdapConfig() {
 			grid.appendChild(fieldBlock("Effective (what clients get)",
 			                            config.effective_client_uri || "(none)"));
 		}
-		if (!ldapConfigDirty) {
-			document.getElementById("lcf-start-uid").value = config.start_uid;
-			document.getElementById("lcf-start-gid").value = config.start_gid;
-		}
+		/*
+		 * The whole LDAP config, not only the allocation floors the
+		 * hand-built form offered (#592) -- and CHANGED-ONLY, because
+		 * this PUT is not idempotent for every value: echoing the
+		 * server_* listener fields back unchanged would take the
+		 * listeners into the daemon's management for good and rewrite
+		 * every registered server's config. What the operator did not
+		 * touch is not sent.
+		 */
+		syncForm(document.getElementById("ldap-config-form"), "updateLdapConfig", {
+			values: config, secrets: { bind_password: config.bind_password_set === true },
+			changedOnly: true, submit: "Save", saved: "LDAP config saved",
+			failed: "Failed to save LDAP config", after: refreshLdapConfig,
+		});
 	} catch (e) {
 		/* Best-effort -- the form just stays at whatever was last shown. */
 	}
 }
 
-document.getElementById("lcf-start-uid").addEventListener("input", () => {
-	ldapConfigDirty = true;
-});
-document.getElementById("lcf-start-gid").addEventListener("input", () => {
-	ldapConfigDirty = true;
-});
-
-document.getElementById("ldap-config-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const body = {
-		start_uid: parseInt(document.getElementById("lcf-start-uid").value, 10),
-		start_gid: parseInt(document.getElementById("lcf-start-gid").value, 10),
-	};
-
-	try {
-		await apiRequest("PUT", CIX_API.updateLdapConfig(), body);
-		clearStatus();
-		showStatus("LDAP config saved", false);
-		ldapConfigDirty = false;
-		await refreshLdapConfig();
-	} catch (e) {
-		showStatus("Failed to save LDAP config: " + e.message, true);
-	}
-});
-
 /* ---------- NTP (tasks #751-755) ---------- */
 
 /* ---- ESP: loader config and boot entries (ADR-0202, issue #128) ---- */
 
-let espDirty = false;
 
 /* Generated (#592). `is_running_slot` is a badge rather than a bare
  * "yes": it is the one row an operator must not delete, and the
@@ -9895,33 +9710,6 @@ async function refreshSigningKeys() {
 	}
 }
 
-async function installSigningKeys() {
-	const key = document.getElementById("signing-key-pem").value.trim();
-	const cert = document.getElementById("signing-cert-pem").value.trim();
-
-	if (key === "" || cert === "") {
-		clearStatus();
-		showStatus("Paste both the private key and the certificate.", true);
-		return;
-	}
-	try {
-		await apiRequest("PUT", CIX_API.putSystemSigningKeys(), { key: key, cert: cert });
-		clearStatus();
-		showStatus("Signing key pair installed.", false);
-		/*
-		 * Cleared on success only. A rejected paste stays in the boxes
-		 * so a correctable mistake -- the wrong half of a pair, most
-		 * likely -- does not have to be pasted again from scratch.
-		 */
-		document.getElementById("signing-key-pem").value = "";
-		document.getElementById("signing-cert-pem").value = "";
-		await refreshSigningKeys();
-	} catch (e) {
-		clearStatus();
-		showStatus(e.message, true);
-	}
-}
-
 async function clearSigningKeys() {
 	if (!confirm("Erase this host's Secure Boot signing key pair? All three files are deleted, "
 	             + "and this host cannot sign installer media again until a pair is installed. "
@@ -9988,27 +9776,6 @@ async function refreshReleaseKey() {
 	}
 }
 
-async function installReleaseKey() {
-	const key = document.getElementById("release-key-pem").value.trim();
-
-	if (key === "") {
-		clearStatus();
-		showStatus("Paste an Ed25519 private key.", true);
-		return;
-	}
-	try {
-		await apiRequest("PUT", CIX_API.putSystemReleaseKey(), { key: key });
-		clearStatus();
-		showStatus("Release key installed.", false);
-		/* Cleared on success only -- same reasoning as the pair above. */
-		document.getElementById("release-key-pem").value = "";
-		await refreshReleaseKey();
-	} catch (e) {
-		clearStatus();
-		showStatus(e.message, true);
-	}
-}
-
 async function clearReleaseKey() {
 	if (!confirm("Erase this host's release-signing key? Published signatures stay verifiable, "
 	             + "but this host cannot sign another release. If no copy exists elsewhere, the "
@@ -10056,11 +9823,14 @@ async function refreshEsp() {
 			p.textContent = label + ": " + value;
 			box.appendChild(p);
 		}
-		if (!espDirty) {
-			document.getElementById("esp-default").value = data.default || "";
-			document.getElementById("esp-timeout").value =
-			    data.timeout === null || data.timeout === undefined ? "" : data.timeout;
-		}
+		/* A pattern matching no entry comes back 409 -- that guard is
+		 * the whole point of the endpoint, and the failure line says it
+		 * as the daemon put it. */
+		syncForm(document.getElementById("esp-loader-form"), "putEsp", {
+			values: { default: data.default, timeout: data.timeout }, submit: "Save",
+			saved: "Loader configuration saved", failed: "Failed to save loader config",
+			after: refreshEsp,
+		});
 		renderEspEntries(data);
 		await refreshBootNext();
 		await refreshBootManager();
@@ -10126,36 +9896,6 @@ document.getElementById("esp-boot-next-a").addEventListener("click", () => setBo
 document.getElementById("esp-boot-next-b").addEventListener("click", () => setBootNext("b"));
 document.getElementById("esp-boot-next-clear").addEventListener("click", clearBootNext);
 
-for (const id of ["esp-default", "esp-timeout"])
-	document.getElementById(id).addEventListener("input", () => {
-		espDirty = true;
-	});
-
-document.getElementById("esp-loader-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const pattern = document.getElementById("esp-default").value.trim();
-	const timeoutRaw = document.getElementById("esp-timeout").value.trim();
-	const payload = {};
-
-	if (pattern !== "")
-		payload.default = pattern;
-	if (timeoutRaw !== "")
-		payload.timeout = Number(timeoutRaw);
-
-	try {
-		await apiRequest("PUT", CIX_API.putEsp(), payload);
-		clearStatus();
-		showStatus("Loader configuration saved", false);
-		espDirty = false;
-		await refreshEsp();
-	} catch (e) {
-		/* A pattern matching no entry comes back 409 -- that guard is
-		 * the whole point of the endpoint, so surface it as-is rather
-		 * than a generic failure. */
-		showStatus("Failed to save loader config: " + e.message, true);
-	}
-});
 
 /*
  * The ESP's own \EFI\BOOT\BOOTX64.EFI (#467/#468, ADR-0290). Unlike
@@ -10189,32 +9929,6 @@ async function refreshBootManager() {
 	}
 }
 
-document.getElementById("boot-manager-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const path = document.getElementById("boot-manager-path").value.trim();
-
-	if (path === "") {
-		showStatus("Give a path to install from", true);
-		return;
-	}
-	if (!confirm("Install " + path + " as this host's boot manager?\n\n" +
-	             "This is the one file both A/B slots share -- there is no per-slot " +
-	             "fallback if it is wrong. It does not reboot; you choose when to.")) {
-		return;
-	}
-
-	try {
-		const r = await apiRequest("POST", CIX_API.setBootManager(), { path: path });
-
-		clearStatus();
-		showStatus("Boot manager installed (" + r.size + " bytes, sha256 " +
-		           r.sha256.slice(0, 16) + "…) -- reboot separately to exercise it", false);
-		await refreshBootManager();
-	} catch (e) {
-		showStatus("Failed to install boot manager: " + e.message, true);
-	}
-});
 
 /* ---- DNS provisioning: one call, per-replica results (ADR-0205) ---- */
 
@@ -10256,82 +9970,43 @@ document.getElementById("dns-provision-btn").addEventListener("click", async () 
 
 /* ---- DNS Forwarders: where the DNS servers recurse to (#134, ADR-0203) ---- */
 
-let dnsForwardersDirty = false;
-
 async function refreshDnsForwarders() {
 	try {
 		const config = await apiRequest("GET", CIX_API.getDnsForwarders());
 
 		cache.dnsForwarders = config.forwarders;
-		if (!dnsForwardersDirty)
-			document.getElementById("dnsf-servers").value = config.forwarders.join(", ");
+		syncForm(document.getElementById("dns-forwarders-form"), "setDnsForwarders", {
+			values: config, submit: "Save", failed: "Failed to save forwarders",
+			/* Empty is a legitimate setting, not a no-op, so say which
+			 * happened rather than a generic "saved". */
+			after: async (body) => {
+				showStatus((body.forwarders || []).length === 0
+				                   ? "Forwarders cleared -- DNS is authoritative-only"
+				                   : "Forwarders saved and applied to every registered server",
+				           false);
+				await refreshDnsForwarders();
+			},
+		});
 	} catch (e) {
 		/* Best-effort -- the form just stays at whatever was last shown. */
 	}
 }
 
-document.getElementById("dnsf-servers").addEventListener("input", () => {
-	dnsForwardersDirty = true;
-});
-
-document.getElementById("dns-forwarders-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const raw = document.getElementById("dnsf-servers").value.trim();
-	const forwarders = raw === "" ? [] : raw.split(/[\s,]+/).filter((s) => s.length > 0);
-
-	try {
-		await apiRequest("PUT", CIX_API.setDnsForwarders(), { forwarders: forwarders });
-		clearStatus();
-		/* Empty is a legitimate setting, not a no-op, so say which
-		 * happened rather than a generic "saved". */
-		showStatus(forwarders.length === 0
-		                   ? "Forwarders cleared -- DNS is authoritative-only"
-		                   : "Forwarders saved and applied to every registered server",
-		           false);
-		dnsForwardersDirty = false;
-		await refreshDnsForwarders();
-	} catch (e) {
-		showStatus("Failed to save forwarders: " + e.message, true);
-	}
-});
-
 /* ---- NTP Config: upstream server address list ---- */
-
-let ntpConfigDirty = false;
 
 async function refreshNtpConfig() {
 	try {
 		const config = await apiRequest("GET", CIX_API.getSystemNtp());
 
 		cache.ntpConfig = config;
-		if (!ntpConfigDirty)
-			document.getElementById("ncf-servers").value = config.upstream.join(", ");
+		syncForm(document.getElementById("ntp-config-form"), "putSystemNtp", {
+			values: config, submit: "Save", saved: "NTP config saved",
+			failed: "Failed to save NTP config", after: refreshNtpConfig,
+		});
 	} catch (e) {
 		/* Best-effort -- the form just stays at whatever was last shown. */
 	}
 }
-
-document.getElementById("ncf-servers").addEventListener("input", () => {
-	ntpConfigDirty = true;
-});
-
-document.getElementById("ntp-config-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const raw = document.getElementById("ncf-servers").value.trim();
-	const servers = raw === "" ? [] : raw.split(/[\s,]+/).filter((s) => s.length > 0);
-
-	try {
-		await apiRequest("PUT", CIX_API.putSystemNtp(), { upstream: servers });
-		clearStatus();
-		showStatus("NTP config saved", false);
-		ntpConfigDirty = false;
-		await refreshNtpConfig();
-	} catch (e) {
-		showStatus("Failed to save NTP config: " + e.message, true);
-	}
-});
 
 /* ---- NTP Servers: registered container time sources ---- */
 
@@ -10425,50 +10100,19 @@ async function removeSyslogTarget(container) {
 /* ---- TLS Throttle: per-source-IP HTTPS-handshake-failure throttling
  * (ADR-0134) ---- */
 
-let tlsThrottleConfigDirty = false;
-
 async function refreshTlsThrottleConfig() {
 	try {
 		const config = await apiRequest("GET", CIX_API.getSystemTlsThrottle());
 
 		cache.tlsThrottleConfig = config;
-		if (!tlsThrottleConfigDirty) {
-			document.getElementById("ttf-enabled").checked = config.enabled;
-			document.getElementById("ttf-threshold").value = config.threshold;
-			document.getElementById("ttf-window").value = config.window_seconds;
-			document.getElementById("ttf-block").value = config.block_seconds;
-			document.getElementById("ttf-log-interval").value = config.log_interval_seconds;
-		}
+		syncForm(document.getElementById("ttf-form"), "putSystemTlsThrottle", {
+			values: config, submit: "Save", saved: "TLS throttle config saved",
+			failed: "Failed to save TLS throttle config", after: refreshTlsThrottleConfig,
+		});
 	} catch (e) {
 		/* Best-effort -- the form just stays at whatever was last shown. */
 	}
 }
-
-for (const id of ["ttf-enabled", "ttf-threshold", "ttf-window", "ttf-block", "ttf-log-interval"]) {
-	document.getElementById(id).addEventListener("input", () => {
-		tlsThrottleConfigDirty = true;
-	});
-}
-
-document.getElementById("ttf-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	try {
-		await apiRequest("PUT", CIX_API.putSystemTlsThrottle(), {
-			enabled: document.getElementById("ttf-enabled").checked,
-			threshold: parseInt(document.getElementById("ttf-threshold").value, 10),
-			window_seconds: parseInt(document.getElementById("ttf-window").value, 10),
-			block_seconds: parseInt(document.getElementById("ttf-block").value, 10),
-			log_interval_seconds: parseInt(document.getElementById("ttf-log-interval").value, 10),
-		});
-		clearStatus();
-		showStatus("TLS throttle config saved", false);
-		tlsThrottleConfigDirty = false;
-		await refreshTlsThrottleConfig();
-	} catch (e) {
-		showStatus("Failed to save TLS throttle config: " + e.message, true);
-	}
-});
 
 /*
  * Generated (#592), and every one of its six columns is a plain field,
@@ -10565,24 +10209,15 @@ async function refreshNtpTime() {
 	} catch (e) {
 		box.textContent = "Failed to load host time: " + e.message;
 	}
+	/* The time to set, offered as THIS browser's clock and refreshed on
+	 * every read until the operator types (#592) -- the hand-built form
+	 * used the browser's clock for a blank field, invisibly; here it is
+	 * on screen, and is what Save sends. */
+	syncForm(document.getElementById("ntp-time-form"), "putSystemTime", {
+		values: { unixtime: Math.floor(Date.now() / 1000) }, submit: "Set host clock",
+		saved: "Host clock set", failed: "Failed to set host clock", after: refreshNtpTime,
+	});
 }
-
-document.getElementById("ntp-time-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const raw = document.getElementById("ntf-unixtime").value.trim();
-	const unixtime = raw === "" ? Math.floor(Date.now() / 1000) : parseInt(raw, 10);
-
-	try {
-		await apiRequest("PUT", CIX_API.putSystemTime(), { unixtime: unixtime });
-		clearStatus();
-		showStatus("Host clock set", false);
-		document.getElementById("ntp-time-form").reset();
-		await refreshNtpTime();
-	} catch (e) {
-		showStatus("Failed to set host clock: " + e.message, true);
-	}
-});
 
 /* ---------- PKI ---------- */
 
@@ -11365,9 +11000,7 @@ function renderContainerRecipesTable() {
 				} catch (e) {
 					/* Shouldn't happen for a name the list just returned. */
 				}
-				openModal("container-recipe-form", "Edit container recipe");
-				document.getElementById("crf-name").value = r.name;
-				document.getElementById("crf-content").value = content;
+				openContainerRecipeForm("Edit container recipe " + r.name, r.name, content);
 			});
 
 			rm.textContent = "Delete";
@@ -11410,31 +11043,28 @@ document.getElementById("recipes-image-add").addEventListener("click", () => {
 		failed: "Failed to add the image recipe",
 	});
 });
-document.getElementById("recipes-container-add").addEventListener("click", () => openModal("container-recipe-form", "Add container recipe"));
+/*
+ * The container recipe form (#592): one generated form for adding a
+ * recipe and for editing one. On an edit the name is FIXED -- it is also
+ * the container the recipe creates, so typing over it would write a
+ * different recipe rather than rename this one. The content field is a
+ * document, so it can be filled from a file.
+ */
+function openContainerRecipeForm(title, name, content) {
+	openForm("addDeployment", {
+		title: title, submit: "Save",
+		fixed: name ? { name: name } : {},
+		values: content ? { content: content } : {},
+		failed: "Failed to save the container recipe",
+		after: async () => {
+			containerRecipeContentCache = { name: null, content: null };
+			await refreshContainerRecipesList();
+		},
+	});
+}
 
-document.getElementById("container-recipe-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const name = document.getElementById("crf-name").value.trim();
-	const fileInput = document.getElementById("crf-file");
-	const contentField = document.getElementById("crf-content");
-
-	if (fileInput.files.length === 0 && contentField.value.trim() === "")
-		return;
-
-	try {
-		const content = fileInput.files.length > 0 ? await readFileAsText(fileInput.files[0]) : contentField.value;
-
-		await apiRequest("POST", CIX_API.addDeployment(), { name: name, content: content });
-		clearStatus();
-		document.getElementById("container-recipe-form").reset();
-		closeModal();
-		containerRecipeContentCache = { name: null, content: null };
-		await refreshContainerRecipesList();
-	} catch (e) {
-		showStatus("Failed to save container recipe " + name + ": " + e.message, true);
-	}
-});
+document.getElementById("recipes-container-add").addEventListener("click",
+	() => openContainerRecipeForm("Add container recipe"));
 
 /*
  * Which of an apply's two successes happened, said out loud.
@@ -11649,20 +11279,18 @@ function renderPkgSourceHeld(ownership) {
 			choose.type = "button";
 			choose.className = "button-small";
 			choose.textContent = "Choose source";
-			choose.addEventListener("click", () => {
-				const select = document.getElementById("psof-source");
-
-				select.textContent = "";
-				for (const name of c.offered_by.split(", ")) {
-					const opt = document.createElement("option");
-
-					opt.value = name;
-					opt.textContent = name;
-					select.appendChild(opt);
-				}
-				document.getElementById("psof-item").value = c.item;
-				openModal("pkg-source-own-form", "Choose the source of " + c.item);
-			});
+			/* Generated (#592): the item is fixed, and the sources to
+			 * choose from are the ones this row says offer it. */
+			choose.addEventListener("click", () => openForm("setPkgSourceOwnership", {
+				title: "Choose the source of " + c.item, submit: "Choose",
+				fixed: { item: c.item },
+				choices: { source: c.offered_by.split(", ").map((s) => ({ value: s })) },
+				failed: "Failed to choose the source of " + c.item,
+				after: async (body) => {
+					showStatus(c.item + " now comes from " + body.source, false);
+					await refreshPkgSources();
+				},
+			}));
 			gateAction(choose, "setPkgSourceOwnership");
 			return [choose];
 		} },
@@ -11696,22 +11324,6 @@ async function refreshPkgSources() {
 	}
 }
 
-
-document.getElementById("pkg-source-own-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const item = document.getElementById("psof-item").value;
-	const source = document.getElementById("psof-source").value;
-
-	try {
-		await apiRequest("PUT", CIX_API.setPkgSourceOwnership(), { item: item, source: source });
-		showStatus(item + " now comes from " + source, false);
-		closeModal();
-		await refreshPkgSources();
-	} catch (e) {
-		showStatus("Failed to choose the source of " + item + ": " + e.message, true);
-	}
-});
 
 async function refreshPkgSyncStatus() {
 	const box = document.getElementById("pkg-sync-status-box");
@@ -11752,39 +11364,19 @@ document.getElementById("pkg-sync-now").addEventListener("click", async () => {
 
 /* ---- Package cache + artifact server config (ADR-0122) ---- */
 
-let pkgCacheConfigDirty = false;
-
 async function refreshPkgCacheConfig() {
 	try {
 		const config = await apiRequest("GET", CIX_API.getPkgCacheConfig());
 
 		cache.pkgCacheConfig = config;
-		if (!pkgCacheConfigDirty)
-			document.getElementById("pcc-max-bytes").value = config.max_bytes;
+		syncForm(document.getElementById("pcc-form"), "putPkgCacheConfig", {
+			values: config, submit: "Save", saved: "Cache config saved",
+			failed: "Failed to save cache config", after: refreshPkgCacheConfig,
+		});
 	} catch (e) {
 		/* Best-effort -- the form just stays at whatever was last shown. */
 	}
 }
-
-document.getElementById("pcc-max-bytes").addEventListener("input", () => {
-	pkgCacheConfigDirty = true;
-});
-
-document.getElementById("pcc-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	try {
-		await apiRequest("PUT", CIX_API.putPkgCacheConfig(), {
-			max_bytes: parseInt(document.getElementById("pcc-max-bytes").value, 10),
-		});
-		clearStatus();
-		showStatus("Cache config saved", false);
-		pkgCacheConfigDirty = false;
-		await refreshPkgCacheConfig();
-	} catch (e) {
-		showStatus("Failed to save cache config: " + e.message, true);
-	}
-});
 
 async function refreshPkgCacheStatus() {
 	const box = document.getElementById("pkg-cache-status-box");
@@ -11825,7 +11417,6 @@ document.getElementById("pkg-cache-clear").addEventListener("click", async () =>
 
 /* ---- Rolling-restart jitter config (Part 5, ADR-0124) ---- */
 
-let rollingConfigDirty = false;
 
 /* ---- ADR-0152: hostauth session listing/revoke -- real admin
  * visibility into a table that previously had none (no endpoint, no
@@ -11847,60 +11438,38 @@ let rollingConfigDirty = false;
  * the ones the PUT reads (api_hostauth.c); gating_active is computed
  * and not one of them.
  */
-let hostauthConfigDirty = false;
-
 async function refreshHostauthConfig() {
 	try {
 		const c = await apiRequest("GET", CIX_API.getHostauthConfig());
 
-		if (!hostauthConfigDirty)
-			document.getElementById("hatf-idle").value = c.idle_timeout_seconds;
+		/*
+		 * The whole host-auth config (#592), where the hand-built form
+		 * offered only the idle timeout and copied the rest from a
+		 * fresh read on every save -- because this PUT REPLACES the
+		 * config, and an omitted LDAP setting falls back to off. The
+		 * generated form sends every field, prefilled from the read, so
+		 * a save changes what was changed and keeps the rest.
+		 */
+		syncForm(document.getElementById("hostauth-timeout-form"), "putHostauthConfig", {
+			values: c, submit: "Save", failed: "Failed to save host authentication",
+			/* 0 is legitimate but changes how this page itself works:
+			 * every token is spent by its first request, so each action
+			 * needs a new login. Worth one question before it lands. */
+			before: (body) => body.idle_timeout_seconds !== 0 ||
+				confirm("With an idle timeout of 0, every login is good for exactly one " +
+				        "request, including this dashboard's. Set it anyway?"),
+			after: async (body) => {
+				showStatus("Host authentication saved; sessions now idle out after " +
+				           body.idle_timeout_seconds + "s", false);
+				await refreshHostauthConfig();
+				await refreshHostauthSessions();
+			},
+		});
 	} catch (e) {
-		/* A refused read leaves the field as it was; the Save button
+		/* A refused read leaves the form as it was; the Save button
 		 * already carries the session's reason when it cannot act. */
 	}
 }
-
-document.getElementById("hatf-idle").addEventListener("input", () => {
-	hostauthConfigDirty = true;
-});
-
-document.getElementById("hostauth-timeout-form").addEventListener("submit", async (event) => {
-	const seconds = Number(document.getElementById("hatf-idle").value);
-
-	event.preventDefault();
-	if (!Number.isInteger(seconds) || seconds < 0) {
-		showStatus("The idle timeout must be a whole number of seconds, 0 or more", true);
-		return;
-	}
-	/* 0 is legitimate but changes how this page itself works: every
-	 * token is spent by its first request, so each action needs a new
-	 * login. Worth one specific question before it takes effect. */
-	if (seconds === 0 &&
-	    !confirm("With an idle timeout of 0, every login is good for exactly one request, " +
-	             "including this dashboard's. Set it anyway?"))
-		return;
-	try {
-		const c = await apiRequest("GET", CIX_API.getHostauthConfig());
-
-		await apiRequest("PUT", CIX_API.putHostauthConfig(), {
-			admin_groups: c.admin_groups,
-			idle_timeout_seconds: seconds,
-			ldap_enabled: c.ldap_enabled,
-			ldap_servers: c.ldap_servers,
-			ldap_port: c.ldap_port,
-			ldap_tls: c.ldap_tls,
-			ldap_base_dn: c.ldap_base_dn,
-		});
-		hostauthConfigDirty = false;
-		clearStatus();
-		showStatus("Session idle timeout set to " + seconds + "s", false);
-		await refreshHostauthConfig();
-		await refreshHostauthSessions();
-	} catch (e) {
-		showStatus("Failed to set the session idle timeout: " + e.message, true);
-	}
-});
 
 async function refreshHostauthSessions() {
 	try {
@@ -12051,67 +11620,36 @@ function renderHostauthPermissions(data, emptyText = "No group holds any permiss
  * existing one from its row's Edit. The checkboxes are the vocabulary
  * the daemon returned -- the contract's list, never one kept here.
  */
-let permissionsEditGroup = null;
-
 async function openPermissionsForm(group) {
-	openModal("permissions-form", group === null ? "Grant permissions" : "Permissions of " + group);
-	permissionsEditGroup = group;
-
-	const groupInput = document.getElementById("pf-group");
-	const choices = document.getElementById("pf-choices");
-
-	groupInput.value = group === null ? "" : group;
-	groupInput.readOnly = group !== null;
-	document.getElementById("pf-submit").textContent = group === null ? "Grant" : "Save";
-	choices.textContent = "Reading…";
 	try {
 		if (cache.hostauthPermissions === null || cache.hostauthPermissions === undefined)
 			cache.hostauthPermissions = await apiRequest("GET", CIX_API.getHostauthPermissions());
 	} catch (e) {
-		choices.textContent = refusalText(e, "the permission vocabulary");
+		showStatus(refusalText(e, "the permission vocabulary"), true);
 		return;
 	}
-
-	const held = new Set(group !== null ? cache.hostauthPermissions.groups[group] || [] : []);
-
-	choices.textContent = "";
-	for (const word of cache.hostauthPermissions.vocabulary || []) {
-		const label = document.createElement("label");
-		const box = document.createElement("input");
-
-		label.className = "checkbox";
-		box.type = "checkbox";
-		box.value = word;
-		box.checked = held.has(word);
-		label.appendChild(box);
-		label.appendChild(document.createTextNode(" " + word));
-		choices.appendChild(label);
-	}
+	/* Generated (#592). An existing group is the path argument, so it
+	 * is not asked for; a new one is, under the contract's own name
+	 * rule. The choices are the vocabulary the daemon returned. */
+	openForm("putHostauthGroupPermissions", {
+		title: group === null ? "Grant permissions" : "Permissions of " + group,
+		submit: group === null ? "Grant" : "Save",
+		args: group === null ? [] : [group],
+		values: { permissions: group !== null ? cache.hostauthPermissions.groups[group] || [] : [] },
+		choices: { permissions: (cache.hostauthPermissions.vocabulary || []).map((w) => ({ value: w })) },
+		/* A 409 is the daemon refusing to leave nobody holding
+		 * identity:write; its message says so, shown as it is. */
+		failed: "Failed to save the permissions",
+		after: async (body) => {
+			showStatus((body.permissions || []).length === 0 ? "Removed the group's permissions"
+			                                                 : "Saved the group's permissions");
+			await refreshHostauthPermissions();
+			await refreshSessionPermissions();
+		},
+	});
 }
 
 document.getElementById("menu-grant-permissions").addEventListener("click", () => openPermissionsForm(null));
-
-document.getElementById("permissions-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const group = document.getElementById("pf-group").value.trim();
-	const permissions = Array.from(document.querySelectorAll("#pf-choices input[type=checkbox]"))
-		.filter((box) => box.checked)
-		.map((box) => box.value);
-
-	try {
-		await apiRequest("PUT", CIX_API.putHostauthGroupPermissions(group), { permissions: permissions });
-		closeModal();
-		showStatus(permissions.length === 0 ? "Removed the permissions of " + group
-		                                    : "Saved the permissions of " + group);
-		await refreshHostauthPermissions();
-		await refreshSessionPermissions();
-	} catch (e) {
-		/* A 409 is the daemon refusing to leave nobody holding
-		 * identity:write; its message says so, shown as it is. */
-		showStatus("Failed to save the permissions of " + group + ": " + e.message, true);
-	}
-});
 
 /* ---------- ADR-0317 (#544): app passwords ---------- */
 
@@ -12151,13 +11689,23 @@ function openAppPasswords(scope) {
 		: "Machine credentials for " + scope.user + ". Each carries that user's permissions.";
 	document.getElementById("apf-secret").hidden = true;
 	document.getElementById("apf-secret-value").value = "";
-	document.getElementById("app-passwords-form").reset();
 
-	const createButton = document.querySelector("#app-passwords-form button[type=submit]");
-	const ops = appPasswordOps(scope);
-
-	createButton.disabled = !sessionMay(ops.createOp);
-	createButton.title = createButton.disabled ? sessionRefusal(ops.createOp) : "";
+	/* Generated (#592), bound inside this modal rather than the
+	 * generated-form one, because the modal is a list AND a create: it
+	 * stays open after a create, to show the one secret. The operation
+	 * is the scope's -- your own account's, or a named user's. */
+	bindForm(document.getElementById("app-passwords-form"), appPasswordOps(scope).createOp, {
+		args: scope.own ? [] : [scope.user], submit: "Create", clear: true,
+		saved: "Created -- copy it now, it is not shown again",
+		failed: "Failed to create the app password",
+		after: async (body, created) => {
+			/* The secret goes into the modal's own field, where it can
+			 * be copied, and nowhere else -- not a status message. */
+			document.getElementById("apf-secret-value").value = created.password;
+			document.getElementById("apf-secret").hidden = false;
+			await refreshAppPasswords();
+		},
+	});
 	refreshAppPasswords();
 }
 
@@ -12231,27 +11779,6 @@ function renderAppPasswords(scope, list) {
 		});
 }
 
-document.getElementById("app-passwords-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const scope = appPasswordScope;
-	const name = document.getElementById("apf-name").value.trim();
-
-	try {
-		const created = await apiRequest("POST", appPasswordOps(scope).create(), { name: name });
-
-		/* The secret goes into the modal's own field, where it can be
-		 * copied, and nowhere else -- not a status message. */
-		document.getElementById("apf-secret-value").value = created.password;
-		document.getElementById("apf-secret").hidden = false;
-		document.getElementById("app-passwords-form").reset();
-		showStatus("Created app password " + name + " -- copy it now, it is not shown again");
-		await refreshAppPasswords();
-	} catch (e) {
-		showStatus("Failed to create app password " + name + ": " + e.message, true);
-	}
-});
-
 document.getElementById("menu-own-app-passwords").addEventListener("click", () => openAppPasswords({ own: true }));
 
 async function refreshRollingConfig() {
@@ -12259,48 +11786,29 @@ async function refreshRollingConfig() {
 		const config = await apiRequest("GET", CIX_API.getSystemRollingConfig());
 
 		cache.rollingConfig = config;
-		if (!rollingConfigDirty)
-			document.getElementById("rc-jitter-window").value = config.jitter_window_seconds;
+		/* Both settings now: the rollback window was in the contract
+		 * and the GET all along, and the hand-built form never offered
+		 * it (#592). */
+		syncForm(document.getElementById("rc-form"), "putSystemRollingConfig", {
+			values: config, submit: "Save", saved: "Rolling-restart config saved",
+			failed: "Failed to save rolling-restart config", after: refreshRollingConfig,
+		});
 	} catch (e) {
 		/* Best-effort -- the form just stays at whatever was last shown. */
 	}
 }
 
-document.getElementById("rc-jitter-window").addEventListener("input", () => {
-	rollingConfigDirty = true;
-});
-
-document.getElementById("rc-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	try {
-		await apiRequest("PUT", CIX_API.putSystemRollingConfig(), {
-			jitter_window_seconds: parseInt(document.getElementById("rc-jitter-window").value, 10),
-		});
-		clearStatus();
-		showStatus("Rolling-restart config saved", false);
-		rollingConfigDirty = false;
-		await refreshRollingConfig();
-	} catch (e) {
-		showStatus("Failed to save rolling-restart config: " + e.message, true);
-	}
-});
-
 /* ---- ADR-0157 Phase 3: pkg-build concurrency config ---- */
-
-let pkgBuildConfigDirty = false;
 
 async function refreshPkgBuildConfig() {
 	try {
 		const config = await apiRequest("GET", CIX_API.getSystemPkgBuildConfig());
 
 		cache.pkgBuildConfig = config;
-		if (!pkgBuildConfigDirty) {
-			document.getElementById("pbc-max-jobs").value = config.max_concurrent_jobs;
-			document.getElementById("pbc-memory-max").value = config.memory_max;
-			document.getElementById("pbc-memory-max-ceiling").value = config.memory_max_ceiling;
-			document.getElementById("pbc-cpu-max").value = config.cpu_max || "";
-		}
+		syncForm(document.getElementById("pbc-form"), "putSystemPkgBuildConfig", {
+			values: config, submit: "Save", saved: "Package-build config saved",
+			failed: "Failed to save package-build config", after: refreshPkgBuildConfig,
+		});
 		/* cix#558: what the build parent has now, which differs from
 		 * memory_max only while a build that declared more is running. */
 		const effective = Number(config.memory_max_effective) || 0;
@@ -12313,33 +11821,6 @@ async function refreshPkgBuildConfig() {
 		/* Best-effort -- the form just stays at whatever was last shown. */
 	}
 }
-
-for (const id of ["pbc-max-jobs", "pbc-memory-max", "pbc-memory-max-ceiling", "pbc-cpu-max"]) {
-	document.getElementById(id).addEventListener("input", () => {
-		pkgBuildConfigDirty = true;
-	});
-}
-
-document.getElementById("pbc-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	try {
-		const cpuMax = document.getElementById("pbc-cpu-max").value.trim();
-
-		await apiRequest("PUT", CIX_API.putSystemPkgBuildConfig(), {
-			max_concurrent_jobs: parseInt(document.getElementById("pbc-max-jobs").value, 10),
-			memory_max: parseInt(document.getElementById("pbc-memory-max").value, 10),
-			memory_max_ceiling: parseInt(document.getElementById("pbc-memory-max-ceiling").value, 10),
-			cpu_max: cpuMax === "" ? null : cpuMax,
-		});
-		clearStatus();
-		showStatus("Package-build config saved", false);
-		pkgBuildConfigDirty = false;
-		await refreshPkgBuildConfig();
-	} catch (e) {
-		showStatus("Failed to save package-build config: " + e.message, true);
-	}
-});
 
 /* ---------- Package repositories (ADR-0324 step B) ---------- */
 
@@ -12515,106 +11996,11 @@ async function afterContainerCreate() {
 
 /* ---------- form submit handlers ---------- */
 
-document.getElementById("nd-attach-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const route = parseHash();
-	const ifname = document.getElementById("nd-attach-ifname").value;
-	const vlanText = document.getElementById("nd-attach-vlan").value.trim();
-
-	if (route.name === null || ifname === "")
-		return;
-	await attachInterface(route.name, ifname, vlanText !== "" ? parseInt(vlanText, 10) : undefined);
-	document.getElementById("nd-attach-form").reset();
-});
 
 
 
 
 
-
-
-document.getElementById("pki-ca-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const commonName = document.getElementById("caf-common-name").value.trim();
-	const daysText = document.getElementById("caf-days").value.trim();
-	const body = {};
-
-	if (commonName !== "")
-		body.common_name = commonName;
-	if (daysText !== "")
-		body.days = parseInt(daysText, 10);
-
-	try {
-		await apiRequest("POST", CIX_API.createPkiCa(), body);
-		clearStatus();
-		document.getElementById("pki-ca-form").reset();
-		await refreshPkiCa();
-	} catch (e) {
-		showStatus("Failed to bootstrap CA: " + e.message, true);
-	}
-});
-
-document.getElementById("pki-intermediate-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const commonName = document.getElementById("icaf-common-name").value.trim();
-	const daysText = document.getElementById("icaf-days").value.trim();
-	const body = {};
-
-	if (commonName !== "")
-		body.common_name = commonName;
-	if (daysText !== "")
-		body.days = parseInt(daysText, 10);
-
-	try {
-		await apiRequest("POST", CIX_API.createPkiIntermediate(), body);
-		clearStatus();
-		document.getElementById("pki-intermediate-form").reset();
-		await refreshPkiIntermediate();
-	} catch (e) {
-		showStatus("Failed to bootstrap intermediate: " + e.message, true);
-	}
-});
-
-document.getElementById("pki-reset-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	if (!confirm("Wipe and regenerate the entire CA chain? Every previously-issued " +
-	             "certificate stops verifying against the new root the moment this completes."))
-		return;
-
-	const rootCn = document.getElementById("resetf-root-cn").value.trim();
-	const intermediateCn = document.getElementById("resetf-intermediate-cn").value.trim();
-	const body = {};
-
-	if (rootCn !== "")
-		body.root_common_name = rootCn;
-	if (intermediateCn !== "")
-		body.intermediate_common_name = intermediateCn;
-
-	try {
-		const result = await apiRequest("POST", CIX_API.resetPki(), body);
-		clearStatus();
-		document.getElementById("pki-reset-form").reset();
-
-		const resultBox = document.getElementById("pki-reset-result");
-		const reissued = Array.isArray(result.reissued) ? result.reissued : [];
-		const names = reissued.map((c) => c.name).join(", ");
-
-		resultBox.hidden = false;
-		resultBox.textContent = "Reset complete. Root: " + (result.root ? result.root.subject : "?") +
-			(result.intermediate ? " / Intermediate: " + result.intermediate.subject : "") +
-			(reissued.length > 0 ? " / Reissued: " + names : " / No leaves to reissue");
-
-		await refreshPkiCa();
-		await refreshPkiIntermediate();
-		await refreshPkiCerts();
-	} catch (e) {
-		showStatus("Failed to reset CA chain: " + e.message, true);
-	}
-});
 
 /*
  * After a certificate is issued (createPkiCert, a generated form): the
@@ -12662,8 +12048,6 @@ document.getElementById("pkg-update-all").addEventListener("click", async () => 
 
 /* ---------- System ---------- */
 
-let siteConfigDirty = false;
-
 /* Composes this site's own suggested FQDN for a bare label, or null if
  * no site config has loaded yet OR no site_name is set. Convenience
  * only (ADR-0046) -- never required, never validated against. Gated
@@ -12684,11 +12068,10 @@ async function refreshSiteConfig() {
 		const site = await apiRequest("GET", CIX_API.getSystemSite());
 
 		cache.siteConfig = site;
-		if (!siteConfigDirty) {
-			document.getElementById("sitef-instance-name").value = site.instance_name;
-			document.getElementById("sitef-site-name").value = site.site_name;
-			document.getElementById("sitef-domain-suffix").value = site.domain_suffix;
-		}
+		syncForm(document.getElementById("sys-site-form"), "putSystemSite", {
+			values: site, submit: "Save", saved: "Site config saved",
+			failed: "Failed to save site config", after: refreshSiteConfig,
+		});
 		const label = document.getElementById("tree-instance-label");
 
 		/* The host's real name, not just its bare label -- which box
@@ -12728,37 +12111,7 @@ function qualifyHostname(input) {
 	});
 }
 
-document.getElementById("sitef-instance-name").addEventListener("input", () => {
-	siteConfigDirty = true;
-});
-document.getElementById("sitef-site-name").addEventListener("input", () => {
-	siteConfigDirty = true;
-});
-document.getElementById("sitef-domain-suffix").addEventListener("input", () => {
-	siteConfigDirty = true;
-});
 
-document.getElementById("sys-site-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const body = {
-		instance_name: document.getElementById("sitef-instance-name").value.trim(),
-		site_name: document.getElementById("sitef-site-name").value.trim(),
-		domain_suffix: document.getElementById("sitef-domain-suffix").value.trim(),
-	};
-
-	try {
-		await apiRequest("PUT", CIX_API.putSystemSite(), body);
-		clearStatus();
-		showStatus("Site config saved", false);
-		siteConfigDirty = false;
-		await refreshSiteConfig();
-	} catch (e) {
-		showStatus("Failed to save site config: " + e.message, true);
-	}
-});
-
-let daemonConfigDirty = false;
 
 
 async function refreshRoutes() {
@@ -12887,88 +12240,27 @@ function renderSysctlList() {
 	});
 }
 
-/* The action list is a closed registry (ADR-0257) -- populated from the
- * daemon, never typed, because a free-text command field on a
- * shell-less host is a shell-exec endpoint. */
-function fillScheduleActions() {
-	const sel = document.getElementById("schf-action");
-
-	if (sel === null)
-		return;
-	sel.textContent = "";
-	for (const a of scheduleActions) {
-		const opt = document.createElement("option");
-		const name = typeof a === "string" ? a : a.name;
-
-		opt.value = name;
-		/* The field is `summary`, checked against a live
-		 * /schedule-actions rather than guessed. */
-		const summary = typeof a === "string" ? "" : a.summary;
-
-		opt.textContent = summary ? name + " — " + summary : name;
-		sel.appendChild(opt);
-	}
-}
-
-function scheduleKindChanged() {
-	const kind = document.getElementById("schf-kind").value;
-
-	document.getElementById("schf-every-fields").hidden = kind !== "every";
-	document.getElementById("schf-clock-fields").hidden = kind === "every";
-	document.getElementById("schf-weekday-label").hidden = kind !== "weekly";
-}
-
-document.getElementById("schf-kind").addEventListener("change", scheduleKindChanged);
-
+/*
+ * Generated (#592). The action list is a closed registry (ADR-0257) --
+ * populated from the daemon, never typed, because a free-text command
+ * field on a shell-less host is a shell-exec endpoint -- so it is the
+ * action field's choices. "When" is the contract's ScheduleSpec: three
+ * groups, of which the operator fills one; the daemon refuses two rather
+ * than resolving by precedence, and says so.
+ */
 document.getElementById("schedule-add").addEventListener("click", async () => {
 	await refreshScheduleActions();
-	fillScheduleActions();
-	scheduleKindChanged();
-	openModal("schedule-form", "Add schedule");
-});
+	openForm("setSchedule", {
+		title: "Add schedule", submit: "Create",
+		values: { enabled: true },
+		choices: { action: scheduleActions.map((a) => {
+			const name = typeof a === "string" ? a : a.name;
+			const summary = typeof a === "string" ? "" : a.summary;
 
-document.getElementById("schedule-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const name = document.getElementById("schf-name").value.trim();
-	const kind = document.getElementById("schf-kind").value;
-	const at = document.getElementById("schf-at").value;
-	let spec;
-
-	if (name === "")
-		return;
-	/* Exactly one of every/daily/weekly -- the daemon refuses two
-	 * rather than resolving by precedence, so the form sends one. */
-	if (kind === "every") {
-		spec = { every: {
-			days: Number(document.getElementById("schf-days").value) || 0,
-			hours: Number(document.getElementById("schf-hours").value) || 0,
-			minutes: Number(document.getElementById("schf-minutes").value) || 0,
-		} };
-	} else if (kind === "daily") {
-		spec = { daily: { at: at } };
-	} else {
-		/* The field is `on`, a three-letter day name -- not a weekday
-		 * number. Checked against ScheduleSpec rather than guessed. */
-		spec = { weekly: {
-			at: at,
-			on: document.getElementById("schf-weekday").value,
-		} };
-	}
-	try {
-		await apiRequest("PUT", CIX_API.setSchedule(name), {
-			action: document.getElementById("schf-action").value,
-			schedule: spec,
-			catch_up: document.getElementById("schf-catchup").checked,
-			enabled: true,
-		});
-		clearStatus();
-		document.getElementById("schedule-form").reset();
-		closeModal();
-		await refreshSchedules();
-	} catch (e) {
-		showStatus("Failed to create schedule: " + e.message, true);
-	}
+			return { value: name, label: summary ? name + " — " + summary : name };
+		}) },
+		failed: "Failed to create schedule", after: refreshSchedules,
+	});
 });
 
 
@@ -13070,35 +12362,6 @@ function renderKmodList() {
 	});
 }
 
-document.getElementById("kmod-build-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const version = document.getElementById("kbf-version").value.trim();
-	const symbolsText = document.getElementById("kbf-symbols").value.trim();
-	const upgrade = document.getElementById("kbf-upgrade").checked;
-	const statusEl = document.getElementById("kbf-status");
-
-	try {
-		/* No build image to ask for: the build container is composed
-		 * from the kernel recipe's own pkg_build_depends (ADR-0304,
-		 * issue #482), so this form had one required field that the
-		 * endpoint no longer accepts. */
-		const body = {};
-
-		if (version !== "")
-			body.version = version;
-		if (symbolsText !== "")
-			body.symbols = symbolsText.split(",").map((s) => s.trim()).filter((s) => s !== "");
-		if (upgrade)
-			body.upgrade = true;
-		await apiRequest("POST", CIX_API.postKmodBuild(), body);
-		clearStatus();
-		statusEl.textContent = "Build started -- see the log panel below for progress.";
-	} catch (e) {
-		showStatus("Failed to start kernel build: " + e.message, true);
-	}
-});
-
 /* The log browsing table/filter form moved to the always-visible
  * bottom log panel (ADR-0129) -- this page now only shows/edits the
  * server-side store's own size cap. */
@@ -13106,7 +12369,14 @@ async function refreshLogsConfig() {
 	try {
 		const cfg = await apiRequest("GET", CIX_API.getSystemLogsConfig());
 
-		document.getElementById("lcf-max-bytes").value = cfg.max_bytes;
+		/* Guarded now (#592): this ran on every render of the logs page
+		 * and overwrote a size being typed. The form also offers the
+		 * minimum level, which the contract has always had and the
+		 * hand-built form never showed. */
+		syncForm(document.getElementById("logs-config-form"), "putSystemLogsConfig", {
+			values: cfg, submit: "Save", saved: "Log settings saved",
+			failed: "Failed to save the log settings", after: refreshLogsConfig,
+		});
 	} catch (e) {
 		/* Best-effort -- the field just stays at whatever was last shown. */
 	}
@@ -13240,78 +12510,116 @@ async function refreshSoftwareReconcile() {
  * the daemon requires it regardless, and pre-filling it here would turn
  * a guard into a formality.
  */
-document.getElementById("factory-reset-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	const typed = document.getElementById("fr-confirm").value.trim();
+/*
+ * The page forms that act rather than configure (#592): nothing on the
+ * box to prefill them from, so they are bound once, at load, and a
+ * successful submit clears them by rebuilding. Each one's authored
+ * words, question and consequence are here.
+ */
+function bindStaticPageForms() {
+	bindForm(document.getElementById("factory-reset-form"), "factoryReset", {
+		submit: "Factory reset", saved: "Factory reset armed \u2014 the box is rebooting and " +
+		                                 "will come back empty.",
+		failed: "Factory reset refused", clear: true,
+		/* The authored question replaces the contract's generic one:
+		 * it says what is about to be destroyed. */
+		before: (body) => confirm("Factory reset " + body.confirm + "?\n\nThis destroys every " +
+		                          "container, image, network and VOLUME (and all data in them), " +
+		                          "then reboots. It cannot be undone."),
+	});
+	bindForm(document.getElementById("sys-update-form"), "updateSystem", {
+		submit: "Stage update", failed: "Failed to stage update", clear: true,
+		after: (body, result) =>
+			showStatus("Staged to slot " + result.slot + " (" + result.updated.join(", ") + ").",
+			           false),
+	});
+	bindForm(document.getElementById("iso-form"), "postSystemIso", {
+		submit: "Build ISO", saved: "Building installer media\u2026",
+		failed: "Could not start the ISO build", after: refreshIso,
+	});
+	/* `config_symbols`, which the hand-built form sent as `symbols` --
+	 * a key the daemon has never read, so every symbol typed there was
+	 * dropped and the kernel built without it (#592). */
+	bindForm(document.getElementById("kmod-build-form"), "postKmodBuild", {
+		submit: "Build kernel", failed: "Failed to start kernel build",
+		saved: "Build started -- see the log panel below for progress.", clear: true,
+	});
+	bindForm(document.getElementById("pki-ca-form"), "createPkiCa", {
+		submit: "Bootstrap CA", saved: "CA created", failed: "Failed to bootstrap CA",
+		clear: true, after: refreshPkiCa,
+	});
+	bindForm(document.getElementById("pki-intermediate-form"), "createPkiIntermediate", {
+		submit: "Create intermediate", saved: "Intermediate CA created",
+		failed: "Failed to bootstrap intermediate", clear: true, after: refreshPkiIntermediate,
+	});
+	bindForm(document.getElementById("pki-reset-form"), "resetPki", {
+		submit: "Reset CA chain", failed: "Failed to reset CA chain", clear: true,
+		before: () => confirm("Wipe and regenerate the entire CA chain? Every " +
+		                      "previously-issued certificate stops verifying against the new " +
+		                      "root the moment this completes."),
+		after: async (body, result) => {
+			const resultBox = document.getElementById("pki-reset-result");
+			const reissued = Array.isArray(result.reissued) ? result.reissued : [];
 
-	if (
-		!confirm(
-			"Factory reset " +
-				typed +
-				"?\n\nThis destroys every container, image, network and VOLUME (and all data in " +
-				"them), then reboots. It cannot be undone."
-		)
-	)
-		return;
-	try {
-		await apiRequest("POST", CIX_API.factoryReset(), { confirm: typed });
-		showStatus("Factory reset armed \u2014 the box is rebooting and will come back empty.", false);
-	} catch (e) {
-		showStatus("Factory reset refused: " + e.message, true);
-	}
-});
+			resultBox.hidden = false;
+			resultBox.textContent = "Reset complete. Root: " +
+				(result.root ? result.root.subject : "?") +
+				(result.intermediate ? " / Intermediate: " + result.intermediate.subject : "") +
+				(reissued.length > 0 ? " / Reissued: " + reissued.map((c) => c.name).join(", ")
+				                     : " / No leaves to reissue");
+			await refreshPkiCa();
+			await refreshPkiIntermediate();
+			await refreshPkiCerts();
+		},
+	});
+	/* Cleared on success only: a rejected paste stays in the boxes, so a
+	 * correctable mistake -- the wrong half of a pair, most likely -- is
+	 * not pasted again from scratch. */
+	bindForm(document.getElementById("signing-keys-form"), "putSystemSigningKeys", {
+		submit: "Install", saved: "Signing key pair installed.", clear: true,
+		failed: "Could not install the signing key pair", after: refreshSigningKeys,
+	});
+	bindForm(document.getElementById("release-key-form"), "putSystemReleaseKey", {
+		submit: "Install", saved: "Release key installed.", clear: true,
+		failed: "Could not install the release key", after: refreshReleaseKey,
+	});
+	bindForm(document.getElementById("boot-manager-form"), "setBootManager", {
+		submit: "Install", failed: "Failed to install boot manager", clear: true,
+		before: (body) => confirm("Install " + (body.path || body.url) + " as this host's boot " +
+		                          "manager?\n\nThis is the one file both A/B slots share -- there " +
+		                          "is no per-slot fallback if it is wrong. It does not reboot; you " +
+		                          "choose when to."),
+		after: async (body, r) => {
+			showStatus("Boot manager installed (" + r.size + " bytes, sha256 " +
+			           r.sha256.slice(0, 16) + "\u2026) -- reboot separately to exercise it", false);
+			await refreshBootManager();
+		},
+	});
+}
 
 /* ---- Issue #96: volume content snapshots ---- */
 
 async function refreshVolumeBackupConfig() {
-	const select = document.getElementById("vbc-disk");
-
 	try {
 		const cfg = await apiRequest("GET", CIX_API.getVolumeBackupConfig());
 
-		/* Rebuilding this select on every poll discarded whatever the
-		 * operator had picked while they were still picking. */
-		if (!dataChanged("volume-backup-config", { cfg: cfg, disks: cache.storage }))
-			return;
-		select.textContent = "";
-		const none = document.createElement("option");
-
-		none.value = "";
-		none.textContent = "(none)";
-		select.appendChild(none);
 		/* Only disks carrying the backup role: offering any other would
-		 * be offering a choice the daemon is going to refuse. */
-		for (const d of cache.storage) {
-			const role = storageRoleFor(d.name);
-
-			if (!role || role.role !== "backup")
-				continue;
-			const opt = document.createElement("option");
-
-			opt.value = d.name;
-			opt.textContent = d.name + (d.mounted ? " (" + d.mount_path + ")" : " — not mounted");
-			select.appendChild(opt);
-		}
-		select.value = cfg.disk || "";
-		document.getElementById("vbc-enabled").checked = !!cfg.enabled;
+		 * be offering a choice the daemon is going to refuse. Not
+		 * rebuilt while the operator is choosing (syncForm()). This PUT
+		 * replaces the whole config, and the form sends both fields. */
+		syncForm(document.getElementById("vbc-form"), "setVolumeBackupConfig", {
+			values: cfg,
+			choices: { disk: (cache.storage || [])
+				.filter((d) => { const r = storageRoleFor(d.name); return r !== null && r.role === "backup"; })
+				.map((d) => ({ value: d.name,
+				               label: d.name + (d.mounted ? " (" + d.mount_path + ")" : " — not mounted") })) },
+			submit: "Save", saved: "Volume backup config saved", failed: "Failed to save",
+			after: refreshVolumeBackupConfig,
+		});
 	} catch (e) {
 		showStatus("Failed to read the volume backup config: " + e.message, true);
 	}
 }
-
-document.getElementById("vbc-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	try {
-		await apiRequest("PUT", CIX_API.setVolumeBackupConfig(), {
-			disk: document.getElementById("vbc-disk").value,
-			enabled: document.getElementById("vbc-enabled").checked,
-		});
-		clearStatus();
-		await refreshVolumeBackupConfig();
-	} catch (e) {
-		showStatus("Failed to save: " + e.message, true);
-	}
-});
 
 /*
  * One sentence saying where a volume's backups stand, composed in one
@@ -13427,14 +12735,16 @@ async function renderVolumeBackups(volumeName, fresh) {
 	 * summary a container's table shows is refreshed from the same
 	 * answer rather than going stale behind its own 30s window. */
 	rememberVolumeBackupSummary(volumeName, data);
-	/* Same reasoning as the quota input: these are controls the
-	 * operator edits, so they are filled on arrival and then left
-	 * alone rather than rewritten under them on every poll. */
-	if (fresh) {
-		document.getElementById("vd-backup-enabled").checked = !!data.enabled;
-		document.getElementById("vd-backup-retain").value = data.retain;
-		document.getElementById("vd-backup-while-running").value = data.while_running || "refuse";
-	}
+	/* The policy, bound to this volume; not rebuilt while the operator
+	 * is editing it (syncForm()). */
+	syncForm(document.getElementById("vd-backup-form"), "setVolumeBackupPolicy", {
+		args: [volumeName],
+		values: { enabled: !!data.enabled, retain: data.retain,
+		          while_running: data.while_running || "refuse" },
+		submit: "Save policy", saved: "Backup policy saved",
+		failed: "Failed to save the backup policy",
+		after: () => renderVolumeBackups(volumeName, 1),
+	});
 
 	const failed = data.status && data.status.last_error;
 
@@ -13541,25 +12851,6 @@ async function restoreVolumeSnapshot(volumeName, stamp) {
 	}
 }
 
-document.getElementById("vd-backup-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	const name = currentVolumeDetailName;
-
-	if (name === null)
-		return;
-	try {
-		await apiRequest("PUT", CIX_API.setVolumeBackupPolicy(name), {
-			enabled: document.getElementById("vd-backup-enabled").checked,
-			retain: parseInt(document.getElementById("vd-backup-retain").value, 10),
-			while_running: document.getElementById("vd-backup-while-running").value,
-		});
-		clearStatus();
-		await renderVolumeBackups(name, 1);
-	} catch (e) {
-		showStatus("Failed to save the backup policy: " + e.message, true);
-	}
-});
-
 document.getElementById("vd-backup-now").addEventListener("click", async () => {
 	const name = currentVolumeDetailName;
 
@@ -13587,7 +12878,6 @@ let currentVolumeDetailName = null;
 async function renderVolumeDetail(name) {
 	const fields = document.getElementById("vd-fields");
 	const note = document.getElementById("vd-migrate-note");
-	const select = document.getElementById("vd-target-disk");
 
 	/* True only for the first render after arriving here -- see the
 	 * quota input below for why that distinction matters. */
@@ -13642,116 +12932,66 @@ async function renderVolumeDetail(name) {
 		               : "root (0:0)")
 	);
 
-	/* Issue #102: only refilled on arrival, so typing here is not
-	 * overwritten by the poll -- the same reasoning the quota input
-	 * below already documents. */
-	if (volumeDetailFresh) {
-		document.getElementById("vd-owner-uid").value =
-			v.owner_uid !== null && v.owner_uid !== undefined ? v.owner_uid : "";
-		document.getElementById("vd-owner-gid").value =
-			v.owner_gid !== null && v.owner_gid !== undefined ? v.owner_gid : "";
-		document.getElementById("vd-owner-recursive").checked = false;
-	}
+	/* Issue #102's rule -- typing here is never overwritten by the poll
+	 * -- is syncForm()'s now (#592). Both ids empty send null, which is
+	 * root: the "Hand back to root" button was a second way to send the
+	 * same request. */
+	syncForm(document.getElementById("vd-owner-form"), "setVolumeOwner", {
+		args: [name], values: { uid: v.owner_uid, gid: v.owner_gid },
+		submit: "Set owner", saved: "Owner changed", failed: "Could not change the owner",
+		after: () => renderVolumeDetail(name),
+	});
 	document.getElementById("vd-owner-note").textContent =
 		v.owner_uid !== null && v.owner_uid !== undefined
 			? "Owned by " + v.owner_uid + ":" + v.owner_gid + "."
 			: "Owned by root — a workload running as anyone else cannot write to it.";
 
-	/* Only devices that could actually hold it: mounted, and not the
-	 * one it is already on. Offering anything else would be offering a
-	 * choice the daemon is going to refuse. */
-	select.textContent = "";
-	const def = document.createElement("option");
+	/* Only devices that could actually hold it: mounted, and not
+	 * protected. Offering anything else would be offering a choice the
+	 * daemon is going to refuse; the blank is the default OS-disk
+	 * placement. */
+	const targets = (cache.storage || [])
+		.filter((d) => d.mounted && !d.protected)
+		.map((d) => ({ value: d.name, label: d.name + " (" + d.mount_path + ")" }));
 
-	def.value = "";
-	def.textContent = "(default OS-disk placement)";
-	select.appendChild(def);
-	for (const d of cache.storage) {
-		if (!d.mounted || d.protected)
-			continue;
-		const opt = document.createElement("option");
+	syncForm(document.getElementById("vd-migrate-form"), "migrateVolume", {
+		args: [name], values: { disk: v.disk || "" }, choices: { disk: targets },
+		submit: "Move", saved: "Volume moved", failed: "Failed to migrate volume",
+		before: (body) => confirm('Move volume "' + name + '" to ' +
+		                          (body.disk || "the default OS-disk placement") + "?"),
+		after: async () => {
+			await refreshDisks();
+			await renderVolumeDetail(name);
+			renderTree();
+		},
+	});
 
-		opt.value = d.name;
-		opt.textContent = d.name + " (" + d.mount_path + ")";
-		select.appendChild(opt);
-	}
-	select.value = v.disk || "";
-
-	{
-		const q = document.getElementById("vd-quota");
-		const qnote = document.getElementById("vd-quota-note");
-
-		/*
-		 * Only refill the input when this page was just navigated to.
-		 * renderVolumeDetail() also runs on every poll, so writing to it
-		 * unconditionally would overwrite whatever the operator was
-		 * halfway through typing, roughly every two seconds. The note
-		 * below it is display-only and always refreshed.
-		 */
-		if (volumeDetailFresh)
-			q.value = v.quota_bytes > 0 ? Math.round(v.quota_bytes / (1024 * 1024 * 1024)) : 0;
-		qnote.textContent =
-			v.quota_bytes > 0
-				? "Limited to " + formatBytes(v.quota_bytes) + "."
-				: "No limit — this volume can grow until its disk is full.";
-	}
+	/* The size limit, typed with its unit (`x-cix-ui: bytes`) where
+	 * the hand-built form took whole GiB and rounded -- re-saving a
+	 * quota that was not a whole number of GiB changed it (#592). */
+	syncForm(document.getElementById("vd-quota-form"), "setVolumeQuota", {
+		args: [name], values: { quota_bytes: v.quota_bytes || 0 },
+		submit: "Set limit", saved: "Limit saved", failed: "Failed to set the limit",
+		after: () => renderVolumeDetail(name),
+	});
+	document.getElementById("vd-quota-note").textContent =
+		v.quota_bytes > 0
+			? "Limited to " + formatBytes(v.quota_bytes) + "."
+			: "No limit — this volume can grow until its disk is full.";
 
 	renderVolumeBackups(v.name, volumeDetailFresh);
 
 	note.textContent =
 		running.length > 0
 			? "Cannot move it right now: " + running.map((c) => c.name).join(", ") + " is running and has it mounted. Stop it first."
-			: select.options.length === 1
+			: targets.length === 0
 			  ? "No other mounted disk is available to move it to. Give a disk or partition a role and format it first."
 			  : "";
-	document.querySelector("#vd-migrate-form button").disabled = running.length > 0;
+	const move = document.querySelector("#vd-migrate-form button[type=submit]");
+
+	if (move !== null)
+		move.disabled = running.length > 0 || !sessionMay("migrateVolume");
 }
-
-document.getElementById("vd-quota-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	const name = currentVolumeDetailName;
-
-	if (name === null)
-		return;
-	const gib = parseInt(document.getElementById("vd-quota").value, 10);
-
-	if (isNaN(gib) || gib < 0) {
-		showStatus("That is not a valid size.", true);
-		return;
-	}
-	try {
-		await apiRequest("PUT", CIX_API.setVolumeQuota(name), {
-			quota_bytes: gib * 1024 * 1024 * 1024,
-		});
-		clearStatus();
-		await renderVolumeDetail(name);
-	} catch (e) {
-		showStatus("Failed to set the limit: " + e.message, true);
-	}
-});
-
-document.getElementById("vd-migrate-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	const name = currentVolumeDetailName;
-
-	if (name === null)
-		return;
-	const target = document.getElementById("vd-target-disk").value;
-
-	if (!confirm('Move volume "' + name + '" to ' + (target || "the default OS-disk placement") + "?"))
-		return;
-	try {
-		await apiRequest("POST", CIX_API.migrateVolume(name), {
-			disk: target,
-		});
-		clearStatus();
-		await refreshDisks();
-		await renderVolumeDetail(name);
-		renderTree();
-	} catch (e) {
-		showStatus("Failed to migrate volume: " + e.message, true);
-	}
-});
 
 async function refreshVolumeCache() {
 	try {
@@ -13858,40 +13098,6 @@ function renderVolumesList(vols, mountedBy) {
 }
 
 
-/* ---------- volume ownership (issue #102) ---------- */
-
-async function applyVolumeOwner(clear) {
-	const name = currentVolumeDetailName;
-
-	if (!name)
-		return;
-	const uid = document.getElementById("vd-owner-uid").value.trim();
-	const gid = document.getElementById("vd-owner-gid").value.trim();
-
-	if (!clear && (uid === "" || gid === "")) {
-		showStatus("Give both a uid and a gid, or hand it back to root.", true);
-		return;
-	}
-	try {
-		await apiRequest("PUT", CIX_API.setVolumeOwner(name), {
-			uid: clear ? null : parseInt(uid, 10),
-			gid: clear ? null : parseInt(gid, 10),
-			recursive: document.getElementById("vd-owner-recursive").checked,
-		});
-		showStatus(clear ? name + " handed back to root." : name + " now belongs to " + uid + ":" + gid + ".",
-		           false);
-		currentVolumeDetailName = null; /* force a fresh render of the inputs */
-		await renderVolumeDetail(name);
-	} catch (e) {
-		showStatus("Could not change the owner: " + e.message, true);
-	}
-}
-
-document.getElementById("vd-owner-form").addEventListener("submit", (event) => {
-	event.preventDefault();
-	applyVolumeOwner(false);
-});
-document.getElementById("vd-owner-root").addEventListener("click", () => applyVolumeOwner(true));
 
 async function refreshServerHealth() {
 	let servers = [];
@@ -13973,30 +13179,24 @@ document.getElementById("kmsg-form").addEventListener("submit", (event) => {
 	refreshKmsg();
 });
 
-document.getElementById("logs-config-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	try {
-		await apiRequest("PUT", CIX_API.putSystemLogsConfig(), {
-			max_bytes: parseInt(document.getElementById("lcf-max-bytes").value, 10),
-		});
-		clearStatus();
-		showStatus("Log size cap saved", false);
-	} catch (e) {
-		showStatus("Failed to save log size cap: " + e.message, true);
-	}
-});
-
 async function refreshDaemonConfig() {
 	try {
 		const dc = await apiRequest("GET", CIX_API.getDaemonConfig());
 
 		cache.daemonConfig = dc;
-		if (!daemonConfigDirty) {
-			document.getElementById("dcf-port").value = dc.port;
-			document.getElementById("dcf-https-port").value = dc.https_port;
-			document.getElementById("dcf-http-enabled").checked = dc.http_enabled;
-			document.getElementById("dcf-https-enabled").checked = dc.https_enabled;
-		}
+		syncForm(document.getElementById("sys-daemon-config-form"), "putDaemonConfig", {
+			values: dc, submit: "Save", saved: "Daemon config saved",
+			failed: "Failed to save daemon config", after: refreshDaemonConfig,
+			/* This dashboard's fetch() calls are relative to the page's
+			 * own origin, so changing the plain-HTTP port disconnects
+			 * this exact page the moment it takes effect -- confirmed,
+			 * as reboot and shutdown are. Asked only when the port is
+			 * really changing. */
+			before: (body) => body.port === dc.port ||
+				confirm("This changes the port this dashboard is served on -- this page " +
+				        "will lose its connection once it takes effect. You'll need to " +
+				        "reload at the new port. Continue?"),
+		});
 	} catch (e) {
 		/* Best-effort -- the form just stays at whatever was last shown. */
 	}
@@ -14015,84 +13215,30 @@ async function refreshManagementAddress() {
 		cache.managementAddress = ma;
 		if (!ma.configured) {
 			status.textContent = "Loopback-only: cixd answers on 127.0.0.1 and nothing off-box.";
-			document.getElementById("maf-address").value = "";
 		} else if (ma.bind_unavailable) {
 			status.textContent = "Configured " + ma.address + " (network " + ma.network +
 				") but NOT BOUND -- " + ma.bind_unavailable + " is not on this host; 127.0.0.1 only.";
-			document.getElementById("maf-address").value = ma.address;
 		} else {
 			status.textContent = "Bound on " + ma.bound + " (network " + ma.network +
 				"). 127.0.0.1 is always bound too.";
-			document.getElementById("maf-address").value = ma.address;
 		}
+		/* Guarded now, which it was not: the 30-second sweep used to
+		 * overwrite an address being typed (#592). */
+		syncForm(document.getElementById("sys-management-address-form"), "putManagementAddress", {
+			values: ma.configured ? { address: ma.address } : {},
+			submit: "Set", saved: "Management address set",
+			failed: "Failed to set management address", after: refreshManagementAddress,
+			/* Moving the off-box address disconnects this page if it is
+			 * being viewed over that address -- guarded like reboot. */
+			before: () => confirm("This sets the off-box address cixd answers on. If you " +
+			                      "are viewing this dashboard over that address, this page " +
+			                      "will lose its connection and you'll need to reload at the " +
+			                      "new address (127.0.0.1 always works on the box). Continue?"),
+		});
 	} catch (e) {
 		status.textContent = "Could not read the management address.";
 	}
 }
-
-for (const id of ["dcf-port", "dcf-https-port", "dcf-http-enabled", "dcf-https-enabled"]) {
-	document.getElementById(id).addEventListener("input", () => {
-		daemonConfigDirty = true;
-	});
-}
-
-document.getElementById("sys-daemon-config-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const body = {
-		port: parseInt(document.getElementById("dcf-port").value, 10),
-		https_port: parseInt(document.getElementById("dcf-https-port").value, 10),
-		http_enabled: document.getElementById("dcf-http-enabled").checked,
-		https_enabled: document.getElementById("dcf-https-enabled").checked,
-	};
-
-	/* This dashboard's fetch() calls are relative to the page's own
-	 * origin, so changing the plain-HTTP port disconnects this exact
-	 * page the moment it takes effect -- confirmed explicitly, same as
-	 * the reboot/shutdown guard. (Moving the off-box address is the
-	 * management-address form below, which has its own guard.) */
-	const cur = cache.daemonConfig;
-	const reconnectNeeded = cur && body.port !== cur.port;
-
-	if (reconnectNeeded &&
-	    !confirm("This changes the port this dashboard is served on -- this page will lose its " +
-	             "connection once it takes effect. You'll need to reload at the new port. Continue?"))
-		return;
-
-	try {
-		await apiRequest("PUT", CIX_API.putDaemonConfig(), body);
-		clearStatus();
-		showStatus("Daemon config saved", false);
-		daemonConfigDirty = false;
-		await refreshDaemonConfig();
-	} catch (e) {
-		showStatus("Failed to save daemon config: " + e.message, true);
-	}
-});
-
-document.getElementById("sys-management-address-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	const address = document.getElementById("maf-address").value.trim();
-
-	if (!address) {
-		showStatus("Enter an address, or use Reset to go loopback-only", true);
-		return;
-	}
-	/* Moving the off-box address disconnects this page if it is being
-	 * viewed over that address -- guard it like reboot/shutdown. */
-	if (!confirm("This sets the off-box address cixd answers on. If you are viewing this " +
-	             "dashboard over that address, this page will lose its connection and you'll " +
-	             "need to reload at the new address (127.0.0.1 always works on the box). Continue?"))
-		return;
-	try {
-		await apiRequest("PUT", CIX_API.putManagementAddress(), { address: address });
-		clearStatus();
-		showStatus("Management address set", false);
-		await refreshManagementAddress();
-	} catch (e) {
-		showStatus("Failed to set management address: " + e.message, true);
-	}
-});
 
 document.getElementById("maf-reset").addEventListener("click", async () => {
 	if (!confirm("Reset to loopback-only? cixd will stop answering off-box; it stays reachable " +
@@ -14110,29 +13256,18 @@ document.getElementById("maf-reset").addEventListener("click", async () => {
 
 /* ---------- zswap (issue #51) ---------- */
 
-let zswapDirty = false;
-
 function renderZswap(z) {
 	const kernelGrid = document.getElementById("zswap-kernel");
 	const divergence = document.getElementById("zswap-divergence");
-	const select = document.getElementById("zswap-compressor");
 
-	if (!zswapDirty) {
-		document.getElementById("zswap-enabled").checked = !!z.enabled;
-		document.getElementById("zswap-max-pool").value = z.max_pool_percent;
+	syncForm(document.getElementById("zswap-form"), "setZswap", {
+		values: z, submit: "Save", saved: "zswap saved.",
+		failed: "Failed to save zswap", after: refreshZswap,
 		/* Only what this kernel actually has. A compressor it was not
 		 * built with is one it will refuse, and offering it would be
 		 * offering a setting that cannot take. */
-		select.textContent = "";
-		for (const name of z.available_compressors || []) {
-			const opt = document.createElement("option");
-
-			opt.value = name;
-			opt.textContent = name;
-			select.appendChild(opt);
-		}
-		select.value = z.compressor;
-	}
+		choices: { compressor: (z.available_compressors || []).map((n) => ({ value: n })) },
+	});
 
 	kernelGrid.textContent = "";
 	if (!z.supported) {
@@ -14169,28 +13304,6 @@ async function refreshZswap() {
 	}
 }
 
-for (const id of ["zswap-enabled", "zswap-max-pool", "zswap-compressor"]) {
-	document.getElementById(id).addEventListener("change", () => {
-		zswapDirty = true;
-	});
-}
-
-document.getElementById("zswap-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	try {
-		const res = await apiRequest("PUT", CIX_API.setZswap(), {
-			enabled: document.getElementById("zswap-enabled").checked,
-			max_pool_percent: parseInt(document.getElementById("zswap-max-pool").value, 10),
-			compressor: document.getElementById("zswap-compressor").value,
-		});
-
-		zswapDirty = false;
-		showStatus("zswap saved.", false);
-		renderZswap(res);
-	} catch (e) {
-		showStatus("Failed to save zswap: " + e.message, true);
-	}
-});
 
 async function refreshSwap() {
 	try {
@@ -14200,25 +13313,24 @@ async function refreshSwap() {
 		document.getElementById("swap-status").textContent = s.enabled
 			? "Swap: enabled (" + s.size_mb + " MB at " + s.path + ")"
 			: "Swap: disabled";
+		/*
+		 * The disk, which the hand-built form never sent (#592) -- so
+		 * every Enable moved swap back to its default path and dropped
+		 * the placement the page said it kept. The form opens on the
+		 * current disk and size; the choices are the disks given the
+		 * swap role.
+		 */
+		syncForm(document.getElementById("swap-enable-form"), "postSystemSwap", {
+			values: s.enabled ? { size_mb: s.size_mb, disk: s.disk } : { disk: s.disk },
+			choices: { disk: (cache.storageRoles || []).filter((r) => r.role === "swap")
+				.map((r) => ({ value: r.disk_name })) },
+			submit: "Enable", saved: "Swap enabled", failed: "Failed to enable swap",
+			after: refreshSwap,
+		});
 	} catch (e) {
 		/* Best-effort -- the status line just stays at whatever was last shown. */
 	}
 }
-
-document.getElementById("swap-enable-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const sizeMb = parseInt(document.getElementById("swap-size-mb").value, 10);
-
-	try {
-		await apiRequest("POST", CIX_API.postSystemSwap(), { size_mb: sizeMb });
-		clearStatus();
-		showStatus("Swap enabled", false);
-		await refreshSwap();
-	} catch (e) {
-		showStatus("Failed to enable swap: " + e.message, true);
-	}
-});
 
 document.getElementById("swap-disable").addEventListener("click", async () => {
 	try {
@@ -14288,43 +13400,34 @@ async function refreshBackupStatus() {
 		renderBackupConfig();
 }
 
+/* The disks given the backup role, as choices (#592) -- used by both
+ * backup forms, the host's and the volumes'. */
+function backupDiskChoices() {
+	return (cache.storage || [])
+		.filter((d) => {
+			const role = storageRoleFor(d.name);
+
+			return !d.protected && role !== null && role.role === "backup";
+		})
+		.map((d) => ({ value: d.name, label: d.name + (d.model ? " (" + d.model + ")" : "") }));
+}
+
 function renderBackupConfig() {
-	const select = document.getElementById("bc-disk");
-	const prevValue = select.value;
-
 	/*
-	 * #432: this one rebuilds a <select> on every tick, which is worse
-	 * than losing a scroll position -- it also overwrites the enabled
-	 * checkbox, so a toggle made between ticks was reverted before it
-	 * could be saved. All four inputs are in the signature; the roles
-	 * decide which disks are even listed.
+	 * #432 was this form rebuilding its <select> on every tick and
+	 * reverting a toggle made between ticks. syncForm() keeps both
+	 * properties that fix kept: nothing is rebuilt while the operator
+	 * is editing, and nothing at all when the inputs have not changed.
 	 */
-	if (unchangedAndRendered(select, "backup-config", {
-		    storage: cache.storage, roles: cache.storageRoles,
-		    config: cache.backupConfig, status: cache.backupStatus }))
-		return;
-	select.textContent = "";
-	{
-		const opt = document.createElement("option");
-
-		opt.value = "";
-		opt.textContent = "(none -- automatic snapshots disabled)";
-		select.appendChild(opt);
-	}
-	for (const d of cache.storage) {
-		const role = storageRoleFor(d.name);
-
-		if (d.protected || role === null || role.role !== "backup")
-			continue;
-		const opt = document.createElement("option");
-
-		opt.value = d.name;
-		opt.textContent = d.name + (d.model ? " (" + d.model + ")" : "");
-		select.appendChild(opt);
-	}
-	select.value = cache.backupConfig.disk || prevValue;
-
-	document.getElementById("bc-enabled").checked = !!cache.backupConfig.enabled;
+	syncForm(document.getElementById("bc-form"), "putBackupConfig", {
+		values: cache.backupConfig || {}, choices: { disk: backupDiskChoices() },
+		submit: "Save", saved: "Backup config saved",
+		failed: "Failed to save backup config",
+		after: async (body, result) => {
+			cache.backupConfig = result;
+			renderBackupConfig();
+		},
+	});
 
 	const s = cache.backupStatus;
 	const statusP = document.getElementById("bc-status");
@@ -14342,23 +13445,6 @@ function renderBackupConfig() {
 	}
 }
 
-document.getElementById("bc-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const disk = document.getElementById("bc-disk").value;
-	const enabled = document.getElementById("bc-enabled").checked;
-
-	try {
-		cache.backupConfig = await apiRequest("PUT", CIX_API.putBackupConfig(), {
-			disk: disk === "" ? null : disk,
-			enabled: enabled,
-		});
-		clearStatus();
-		renderBackupConfig();
-	} catch (e) {
-		showStatus("Failed to save backup config: " + e.message, true);
-	}
-});
 
 document.getElementById("bc-snapshot-now").addEventListener("click", async () => {
 	try {
@@ -14370,32 +13456,6 @@ document.getElementById("bc-snapshot-now").addEventListener("click", async () =>
 		renderBackupConfig();
 	} catch (e) {
 		showStatus("Failed to trigger snapshot: " + e.message, true);
-	}
-});
-
-document.getElementById("sys-update-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const imagePath = document.getElementById("sys-update-image").value.trim();
-	const kernelPath = document.getElementById("sys-update-kernel").value.trim();
-	const body = {};
-
-	if (imagePath !== "")
-		body.image_path = imagePath;
-	if (kernelPath !== "")
-		body.kernel_path = kernelPath;
-	if (Object.keys(body).length === 0) {
-		showStatus("Give at least an image path or a kernel path.", true);
-		return;
-	}
-
-	try {
-		const result = await apiRequest("POST", CIX_API.updateSystem(), body);
-		clearStatus();
-		showStatus("Staged to slot " + result.slot + " (" + result.updated.join(", ") + ").", false);
-		document.getElementById("sys-update-form").reset();
-	} catch (e) {
-		showStatus("Failed to stage update: " + e.message, true);
 	}
 });
 
@@ -15807,6 +14867,7 @@ document.addEventListener("keydown", (event) => {
 });
 document.addEventListener("scroll", hideContextMenu, true);
 
+bindStaticPageForms();
 restoreLastViewIfNoHash();
 poll().then(ensureActiveCategoryExpanded);
 /*

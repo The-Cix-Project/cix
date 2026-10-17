@@ -246,7 +246,7 @@ function fieldControl(f, choices) {
 		if (f.type === "array") {
 			el.multiple = true;
 			el.size = Math.min(Math.max(choices.length, 2), 6);
-		} else if (!f.required || choices.length === 0) {
+		} else if (!f.required || f.nullable || choices.length === 0) {
 			const blank = document.createElement("option");
 
 			blank.value = "";
@@ -306,6 +306,32 @@ function fieldControl(f, choices) {
 			o.textContent = t;
 			el.appendChild(o);
 		}
+	} else if (f.ui === "bytes") {
+		/*
+		 * A SIZE, typed with its unit (#592). The contract's unit is
+		 * the byte, which is right for the wire and wrong for a person:
+		 * the volume quota form used to take GiB and multiply, and a
+		 * memory limit typed as 1073741824 is a typo waiting to happen.
+		 * The unit is the form's business and never reaches the body --
+		 * the value is sent in bytes, exactly as the contract says.
+		 * The unit select is attached beside the input by buildFields().
+		 */
+		const unit = document.createElement("select");
+
+		el = document.createElement("input");
+		el.type = "number";
+		el.min = "0";
+		el.step = "any";
+		for (const [v, t] of BYTE_UNITS) {
+			const o = document.createElement("option");
+
+			o.value = String(v);
+			o.textContent = t;
+			unit.appendChild(o);
+		}
+		unit.value = String(1024 * 1024 * 1024);
+		unit.className = "field-unit";
+		el._cixUnit = unit;
 	} else if (f.ui === "lines") {
 		/* An argv, one argument per line (#592): a comma list cannot
 		 * carry `-o a,b`, and an argument is the unit the operator
@@ -334,7 +360,7 @@ function fieldControl(f, choices) {
 			el.maxLength = f.maxLength;
 	} else if (Array.isArray(f.options) && f.options.length > 0) {
 		el = document.createElement("select");
-		if (!f.required) {
+		if (!f.required || f.nullable) {
 			const blank = document.createElement("option");
 
 			blank.value = "";
@@ -414,11 +440,36 @@ function fieldControl(f, choices) {
 		el.dataset.fitems = f.items;
 	/* A multiple select's `required` means "at least one", which an
 	 * array the contract marks required does mean -- but an optional
-	 * one must be submittable with nothing chosen. */
-	if (f.required && f.type !== "boolean")
+	 * one must be submittable with nothing chosen.
+	 *
+	 * A NULLABLE field is never browser-required, even when the
+	 * contract requires the key (#592): its empty value is `null`, and
+	 * null is often the point -- a volume's owner left empty is root,
+	 * a storage migration to no disk is "the default placement". The
+	 * browser would refuse the empty field the operator meant. */
+	if (f.nullable)
+		el.dataset.nullable = "1";
+	/* Recorded apart from the attribute, because a nullable required
+	 * field drops the attribute and must still be sent. */
+	if (f.required)
+		el.dataset.required = "1";
+	/* Nor is an ARRAY: a required array is a key that must be sent, not
+	 * a list that may not be empty -- DNS forwarders cleared is a
+	 * setting, "authoritative-only". The collector sends [] for it. */
+	if (f.required && f.type !== "boolean" && f.type !== "array" && !f.nullable)
 		el.required = true;
 	return el;
 }
+
+/* The units a size is typed in, largest first, so a stored size is
+ * shown in the largest unit that divides it exactly. */
+const BYTE_UNITS = [
+	[1024 * 1024 * 1024 * 1024, "TiB"],
+	[1024 * 1024 * 1024, "GiB"],
+	[1024 * 1024, "MiB"],
+	[1024, "KiB"],
+	[1, "bytes"],
+];
 
 /* An object whose values the contract types as strings: a map, not a
  * document. */
@@ -478,7 +529,7 @@ function generatedFormBody(form) {
 	for (const box of form.querySelectorAll("[data-clear-for]"))
 		if (box.checked)
 			cleared[box.dataset.clearFor] = true;
-	collectInto(form, body, cleared);
+	collectInto(form, body, cleared, form._cix !== undefined && form._cix.changedOnly === true);
 	return body;
 }
 
@@ -493,7 +544,7 @@ function generatedFormBody(form) {
  * hands its subtree to the collector for that shape, which builds the
  * nested object or array and puts it under the field's own name.
  */
-function collectInto(container, body, cleared) {
+function collectInto(container, body, cleared, changedOnly) {
 	for (const el of Array.from(container.children)) {
 		if (el.dataset === undefined)
 			continue;
@@ -506,10 +557,20 @@ function collectInto(container, body, cleared) {
 			continue;
 		}
 		if (el.dataset.field !== undefined) {
+			const name = el.dataset.field;
+
 			readField(el, body, cleared);
+			/* A partial update sends what the operator changed and
+			 * nothing else (`changedOnly`, #592): a value sent back
+			 * exactly as it was read is not "unchanged" to every
+			 * daemon -- LDAP's listener settings, echoed back, take the
+			 * listeners into the daemon's management for good. */
+			if (changedOnly && el._cixStart !== undefined &&
+			    JSON.stringify(body[name]) === el._cixStart)
+				delete body[name];
 			continue;
 		}
-		collectInto(el, body, cleared);
+		collectInto(el, body, cleared, changedOnly);
 	}
 }
 
@@ -554,7 +615,7 @@ function collectGroup(fs, body) {
 	const sub = {};
 
 	collectInto(fs, sub, {});
-	if (!Object.keys(sub).some((k) => sub[k] !== false)) {
+	if (!Object.keys(sub).some((k) => sub[k] !== false && sub[k] !== null)) {
 		if (fs.dataset.required === "1")
 			throw new Error(label + " is required");
 		return;
@@ -597,6 +658,16 @@ function readField(el, body, cleared) {
 	 * integer reaches the daemon's json_as_number() as 0, so an emptied
 	 * lease would be stored as a lease of 0 seconds. An emptied number
 	 * is omitted, and keeps. */
+	/* An empty NULLABLE field is `null` when the key must be sent or
+	 * when it held a value the operator removed (#592) -- the migrate
+	 * forms' "default placement", a volume handed back to root -- and
+	 * omitted otherwise, like any untouched field. For a number, null
+	 * is the empty value "" could never be. */
+	if (el.dataset.nullable === "1" && fieldIsEmpty(el)) {
+		if (el.dataset.required === "1" || el.dataset.initial === "1")
+			body[name] = null;
+		return;
+	}
 	if (el.dataset.initial === "1" && fieldIsEmpty(el) &&
 	    type !== "integer" && type !== "number") {
 		body[name] = type === "array" ? [] : type === "object" ? {} : "";
@@ -605,7 +676,7 @@ function readField(el, body, cleared) {
 	if (el.multiple) {
 		const picked = Array.from(el.selectedOptions).map((o) => o.value);
 
-		if (picked.length > 0 || el.required)
+		if (picked.length > 0 || el.dataset.required === "1")
 			body[name] = picked;
 		return;
 	}
@@ -653,10 +724,20 @@ function readField(el, body, cleared) {
 		body[name] = parsed;
 		return;
 	}
-	if (el.value === "" && !el.required)
+	/* `dataset.required`, not the attribute: a required array has no
+	 * attribute (it may be empty) and must still be sent. And a line of
+	 * text is read trimmed -- a space before or after a hostname or an
+	 * address is never what anyone meant, and every hand-built form
+	 * trimmed it; a document (a textarea) and a password are sent as
+	 * typed. */
+	if (textOf(el) === "" && el.dataset.required !== "1")
 		return;
 	if (type === "integer" || type === "number") {
-		body[name] = Number(el.value);
+		/* A size is typed in its unit and sent in bytes, rounded to a
+		 * whole byte: 1.5 GiB is a size, 1.5 bytes is not. */
+		body[name] = el._cixUnit !== undefined
+			? Math.round(Number(el.value) * Number(el._cixUnit.value))
+			: Number(el.value);
 		return;
 	}
 	if (type === "array") {
@@ -678,7 +759,13 @@ function readField(el, body, cleared) {
 			: items;
 		return;
 	}
-	body[name] = el.value;
+	body[name] = textOf(el);
+}
+
+/* A control's text: a single-line text input trimmed, anything else as
+ * it stands. */
+function textOf(el) {
+	return el.type === "text" ? el.value.trim() : el.value;
 }
 
 function fieldIsEmpty(el) {
@@ -699,14 +786,6 @@ function generatedFormArgs(form) {
 		args[Number(el.dataset.arg)] = el.value.trim();
 	return args;
 }
-
-/* The three things a submit needs that are not in the form: what to ask
- * before sending, what to refresh afterwards and what to say if it
- * fails. Authored per call site, held here because the one submit
- * listener reads them. */
-let generatedFormBefore = null;
-let generatedFormAfter = null;
-let generatedFormFailed = "";
 
 /*
  * The default `after`: whatever keeps the view the operator is looking
@@ -757,6 +836,13 @@ function setFieldValue(el, f, v) {
 			o.selected = want.indexOf(o.value) !== -1;
 		return;
 	}
+	if (el._cixUnit !== undefined && typeof v === "number") {
+		const u = BYTE_UNITS.find(([n]) => v >= n && v % n === 0) || [1];
+
+		el._cixUnit.value = String(u[0]);
+		el.value = String(v / u[0]);
+		return;
+	}
 	if (f.type === "array") {
 		el.value = Array.isArray(v) ? v.join(f.ui === "lines" ? "\n" : ", ") : String(v);
 		return;
@@ -794,6 +880,14 @@ function setFieldValue(el, f, v) {
  * opts.sections [{ title, fields: [name, ...] }] -- the layout of a long
  *               form (authored); `choices` reach a list's rows by a
  *               dotted key, "networks.name"
+ * opts.saved    what a form on a page says once it has saved (authored;
+ *               "Saved" otherwise -- a modal says it by closing)
+ * opts.changedOnly  send only the fields the operator changed: for a
+ *               partial update whose daemon treats a value echoed back
+ *               as a change (authored, per operation)
+ * opts.clear    rebuild the form empty after a successful submit -- an
+ *               action on a page (stage an update, add a partition),
+ *               whose typed values are spent once it has run
  *
  * `values` and `fixed` are two different facts and not one with a flag.
  * An upsert keyed by a body field -- addImageRecipe, addDeployment --
@@ -806,9 +900,66 @@ function setFieldValue(el, f, v) {
  * field and never accepts it -- those fields are not rendered at all.
  */
 function openForm(opId, opts) {
+	const options = opts || {};
+
+	if (CIX_API[opId + "_SHAPE"] === undefined) {
+		showStatus("No such operation: " + opId, true);
+		return;
+	}
+	/*
+	 * The modal opens BEFORE the fields are built, and the order is
+	 * load-bearing: openModal() begins by calling closeModal(), which
+	 * empties this form precisely so nothing typed survives a close.
+	 * Building first and opening second would therefore have shown an
+	 * empty form every time.
+	 */
+	openModal("generated-form", options.title || fieldLabel(opId));
+	bindForm(document.getElementById("generated-form"), opId, options);
+}
+
+/*
+ * A FORM ON A PAGE, kept in step with the box (#592).
+ *
+ * A settings form sits on its page for as long as the page is open, and
+ * the page re-reads what it shows on every poll. Every hand-built one
+ * carried its own flag for the same rule -- `siteConfigDirty`,
+ * `daemonConfigDirty`, and the rest: refill from the fresh read unless
+ * the operator has started typing, because a poll that rebuilds a form
+ * under someone's cursor throws away what they typed. That rule lives
+ * here now, once.
+ *
+ * Call it from the page's refresh with the values just read. It builds
+ * the form the first time, rebuilds it when the operation, its path
+ * arguments or the values changed -- unless the operator has typed into
+ * it since -- and otherwise does nothing, so an unchanged poll costs no
+ * DOM at all. A successful save clears the mark (submitForm()).
+ */
+function syncForm(form, opId, opts) {
+	const options = opts || {};
+	const c = form._cix;
+	const sig = JSON.stringify([opId, options.args || [], options.values || {},
+	                            options.fixed || {}, options.choices || {}]);
+
+	if (c !== undefined && c.sig === sig)
+		return;
+	if (c !== undefined && c.opId === opId &&
+	    JSON.stringify(c.args) === JSON.stringify(options.args || []) &&
+	    form.dataset.dirty === "1")
+		return;
+	bindForm(form, opId, options);
+}
+
+/*
+ * Build an operation's form into a <form> element -- the modal's or
+ * one on a page -- and hold what its submit needs ON THE ELEMENT (#592).
+ *
+ * Those three used to be module globals, which was right while there
+ * was one generated form and wrong the moment a page holds several: the
+ * globals would be the last form built, not the one submitted.
+ */
+function bindForm(form, opId, opts) {
 	const shape = CIX_API[opId + "_SHAPE"];
 	const options = opts || {};
-	const form = document.getElementById("generated-form");
 	const fields = shape && shape.request ? CIX_API.FIELDS[shape.request] || [] : [];
 	const argFields = shape && shape.args ? CIX_API.FIELDS[shape.args] || [] : [];
 	const given = options.args || [];
@@ -821,19 +972,36 @@ function openForm(opId, opts) {
 		showStatus("No such operation: " + opId, true);
 		return;
 	}
-	/*
-	 * The modal opens BEFORE the fields are built, and the order is
-	 * load-bearing: openModal() begins by calling closeModal(), which
-	 * empties this form precisely so nothing typed survives a close.
-	 * Building first and opening second would therefore have shown an
-	 * empty form every time.
-	 */
-	openModal("generated-form", options.title || fieldLabel(opId));
+	form.textContent = "";
+	/* The layout's hook: every generated form is one column, wherever
+	 * it is mounted. */
+	if ((" " + (form.className || "") + " ").indexOf(" generated-form ") < 0)
+		form.className = ((form.className || "") + " generated-form").trim();
 	form.dataset.opId = opId;
-	form.dataset.args = JSON.stringify(options.args || []);
-	generatedFormAfter = options.after || refreshVisibleView;
-	generatedFormBefore = options.before || null;
-	generatedFormFailed = options.failed || ("Failed to " + (options.submit || "submit"));
+	form.dataset.args = JSON.stringify(given);
+	form.dataset.dirty = "";
+	form._cix = {
+		opId: opId,
+		args: given,
+		before: options.before || null,
+		after: options.after || refreshVisibleView,
+		failed: options.failed || ("Failed to " + (options.submit || "submit")),
+		saved: options.saved,
+		changedOnly: options.changedOnly === true,
+		/* Kept so a form can be rebuilt as it was bound: empty again
+		 * after an action (`clear`), whose fields mean nothing once
+		 * the action has run. */
+		opts: options,
+		sig: JSON.stringify([opId, given, options.values || {}, options.fixed || {}, choices]),
+	};
+	/* Typing marks the form as the operator's, so a poll leaves it be
+	 * (syncForm()). Bound once per element: a form is rebuilt in place,
+	 * and a second listener per rebuild would leak. */
+	if (!form._cixTyping) {
+		form._cixTyping = true;
+		form.addEventListener("input", () => { form.dataset.dirty = "1"; });
+		form.addEventListener("change", () => { form.dataset.dirty = "1"; });
+	}
 
 	/*
 	 * The path parameters the call site did not supply, FIRST, because
@@ -896,9 +1064,13 @@ function openForm(opId, opts) {
 	button.textContent = options.submit || "Save";
 	if (shape.destructive)
 		button.className = "button-danger";
-	/* web-ux-guidelines: a modal's own submit sets disabled and its
-	 * reason from sessionMay() directly, since it must be re-enabled
-	 * when a later login grants it. */
+	/* web-ux-guidelines: a submit sets disabled and its reason from
+	 * sessionMay() directly. It also carries `data-op`, because a form
+	 * on a page is built once and outlives a login: the session sweep
+	 * (applySessionEligibility()) re-gates every `[data-op]` control,
+	 * and without the attribute a settings form would stay dead after
+	 * the operator logged in on the page. */
+	button.dataset.op = opId;
 	button.disabled = !allowed;
 	if (!allowed)
 		button.title = sessionRefusal(opId);
@@ -942,7 +1114,19 @@ function buildFields(container, fields, ctx) {
 		} else {
 			setFieldValue(control, f, ctx.values[f.name]);
 		}
-		label = fieldRow(f, control, f.ui === "textarea" ? fileLoader(control) : null);
+		/* What the control reads as before anyone touches it, so a
+		 * changed-only form can leave out what nobody changed. */
+		control._cixStart = startValue(control);
+		if (control._cixUnit !== undefined) {
+			const pair = document.createElement("span");
+
+			pair.className = "field-size";
+			pair.appendChild(control);
+			pair.appendChild(control._cixUnit);
+			label = fieldRow(f, pair, null);
+		} else {
+			label = fieldRow(f, control, f.ui === "textarea" ? fileLoader(control) : null);
+		}
 		container.appendChild(label);
 		/*
 		 * A SECRET THE RESOURCE ALREADY HOLDS (#592) can be kept,
@@ -967,6 +1151,23 @@ function buildFields(container, fields, ctx) {
 			container.appendChild(clear);
 		}
 	}
+}
+
+/*
+ * A control's value as the body would carry it, serialized, or "" when
+ * it would carry nothing -- read once at build, compared at submit.
+ * A control whose reading throws (unparseable JSON a resource sent) has
+ * no start, so any value it holds at submit counts as changed.
+ */
+function startValue(control) {
+	const probe = {};
+
+	try {
+		readField(control, probe, {});
+	} catch (e) {
+		return undefined;
+	}
+	return JSON.stringify(probe[control.dataset.field]);
 }
 
 /* The choices for one level down: `"networks.name"` is what the rows

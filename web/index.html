@@ -386,15 +386,7 @@
 				<h3>Storage placement</h3>
 				<p class="hint" id="cd-storage-current">Storage: unknown</p>
 				<p class="hint" id="cd-storage-migrate-status" hidden></p>
-				<form id="cd-storage-migrate-form">
-					<label>
-						Migrate to
-						<select id="cd-storage-target-disk">
-							<option value="">(default OS-disk placement)</option>
-						</select>
-					</label>
-					<button type="submit">Migrate</button>
-				</form>
+				<form id="cd-storage-migrate-form"></form>
 				<p class="hint">Where this container's own overlay storage lives (ADR-0142) -- the target
 					disk must already carry the container-storage role and be currently mounted. Unlike
 					the daemon-wide storage placements on the <a href="#storage">Storage</a> page, this
@@ -522,17 +514,7 @@
 			</div>
 			<div class="tab-panel" data-tab="interfaces" hidden>
 				<table id="nd-interfaces"><tbody></tbody></table>
-				<form id="nd-attach-form">
-					<label class="wide">
-						Interface to attach
-						<select id="nd-attach-ifname"></select>
-					</label>
-					<label>
-						VLAN id (optional)
-						<input type="number" id="nd-attach-vlan" min="1" max="4094">
-					</label>
-					<button type="submit">Attach</button>
-				</form>
+				<form id="nd-attach-form"></form>
 			</div>
 			<div class="tab-panel" data-tab="netdhcp" hidden>
 				<p class="hint">
@@ -599,18 +581,7 @@
 				<table id="imgd-manifest">
 					<tbody></tbody>
 				</table>
-				<form id="imgd-manifest-form">
-					<label>Package <input type="text" id="imgd-manifest-package" required></label>
-					<label>Mode
-						<select id="imgd-manifest-mode">
-							<option value="rolling">rolling</option>
-							<option value="pinned">pinned</option>
-						</select>
-					</label>
-					<label>Version <input type="text" id="imgd-manifest-version" required
-						placeholder="e.g. 8.20.0 (rolling: floor)"></label>
-					<button type="submit">Set entry</button>
-				</form>
+				<form id="imgd-manifest-form"></form>
 			</div>
 			<div class="tab-panel" id="imgd-panel-recipe" data-tab="recipe" hidden>
 				<p class="hint">A declarative package-list definition for this image (ADR-0123) --
@@ -723,22 +694,7 @@
 
 			<h3>Build a kernel with extra modules</h3>
 			<p class="hint">An ordinary <code>pkg hostbuild kernel</code> under the hood, gaining extra <code>=m</code> module symbols merged into the same curated kernel config -- needs a reboot onto the new build (Update page) to actually take effect.</p>
-			<form id="kmod-build-form">
-				<label>
-					Version (optional)
-					<input type="text" id="kbf-version" placeholder="latest">
-				</label>
-				<label class="wide">
-					Extra CONFIG_ symbols (comma-separated)
-					<input type="text" id="kbf-symbols" placeholder="CONFIG_USB_STORAGE,CONFIG_E1000E">
-				</label>
-				<label class="checkbox">
-					<input type="checkbox" id="kbf-upgrade">
-					Upgrade (overwrite currently-published version)
-				</label>
-				<button type="submit">Start build</button>
-			</form>
-			<p id="kbf-status" class="hint"></p>
+			<form id="kmod-build-form"></form>
 			</div>
 		</section>
 
@@ -794,30 +750,14 @@
 				<h3>Log storage placement</h3>
 				<p class="hint" id="ls-current">Log storage: unknown</p>
 				<p class="hint" id="ls-migrate-status" hidden></p>
-				<form id="ls-migrate-form">
-					<label>
-						Migrate to
-						<select id="ls-target-disk">
-							<option value="">(default OS-disk placement)</option>
-						</select>
-					</label>
-					<button type="submit">Migrate</button>
-				</form>
+				<form id="ls-migrate-form"></form>
 				<p class="hint">The consolidated log store (ADR-0141) &mdash; kernel dmesg, this daemon's own
 					diagnostics, the per-request audit trail, every container's stdout/stderr.</p>
 
 				<h3>Rebuildable storage placement</h3>
 				<p class="hint" id="rs-current">Rebuildable storage: unknown</p>
 				<p class="hint" id="rs-migrate-status" hidden></p>
-				<form id="rs-migrate-form">
-					<label>
-						Migrate to
-						<select id="rs-target-disk">
-							<option value="">(default OS-disk placement)</option>
-						</select>
-					</label>
-					<button type="submit">Migrate</button>
-				</form>
+				<form id="rs-migrate-form"></form>
 				<p class="hint">Images, installed packages, build artifacts and staged ISOs (ADR-0141) &mdash;
 					regenerable from recipes and sources, unlike state or logs.</p>
 
@@ -847,24 +787,14 @@
 
 			<h3>Automatic snapshots</h3>
 			<p class="hint" id="bc-status">Snapshots: unknown</p>
-			<form id="bc-form">
-				<label>
-					Disk
-					<select id="bc-disk">
-						<option value="">(none -- automatic snapshots disabled)</option>
-					</select>
-				</label>
-				<label>
-					<input type="checkbox" id="bc-enabled">
-					Enabled
-				</label>
+			<form id="bc-form"></form>
+			<div class="form-actions">
+				<button type="button" id="bc-snapshot-now">Snapshot now</button>
+			</div>
 				<p class="hint">
 					When backups run is a schedule now (ADR-0257) &mdash; see
 					<a href="#schedules">Schedules</a>, action <code>system.backup</code>.
 				</p>
-				<button type="submit">Save</button>
-				<button type="button" id="bc-snapshot-now">Snapshot now</button>
-			</form>
 			<p class="hint">Writes the same bundle above to a disk carrying the <code>backup</code> role
 				(ADR-0141) -- a single, always-current snapshot, not a timestamped history. The target
 				disk is validated when a snapshot actually runs, not when saved here.</p>
@@ -877,22 +807,11 @@
 					on that volume's own page; this is the schedule they share and the disk they go to.
 					One interval rather than one per volume: N timers is N ways for a schedule to be
 					quietly wrong.</p>
-				<form id="vbc-form">
-					<label>
-						<input type="checkbox" id="vbc-enabled"> Run scheduled volume backups
-					</label>
-					<label>
-						Disk
-						<select id="vbc-disk">
-							<option value="">(none)</option>
-						</select>
-					</label>
+				<form id="vbc-form"></form>
 					<p class="hint">
 						When the sweep runs is a schedule now (ADR-0257) &mdash; see
 						<a href="#schedules">Schedules</a>, action <code>volume.backup</code>.
 					</p>
-					<button type="submit">Save</button>
-				</form>
 			</div>
 		</div>
 <div class="tab-panel" data-tab="volumes" hidden>
@@ -941,17 +860,7 @@
 				<div id="dd-part-actions">
 					<h3>Add a partition</h3>
 					<p class="hint" id="dd-free-space">Checking free space&hellip;</p>
-					<form id="dd-add-partition-form">
-						<label>
-							Name
-							<input type="text" id="dd-part-name" placeholder="data1" required>
-						</label>
-						<label>
-							Size (MiB)
-							<input type="number" id="dd-part-size" min="1" placeholder="(rest of disk)">
-						</label>
-						<button type="submit">Add partition</button>
-					</form>
+					<form id="dd-add-partition-form"></form>
 					<div id="dd-table-actions">
 					<h3>Partition table</h3>
 					<p class="hint">Writing a fresh table wipes every partition on this disk and everything
@@ -1047,13 +956,7 @@
 			<div class="view-list">
 				<p class="hint">A consolidated log (ADR-0070/ADR-0126): real kernel dmesg, cixd's own diagnostics, a per-request audit trail, and every container's own stdout/stderr -- all in one place, size-capped with the oldest entries dropped first once the cap is reached. Browse it live in the Log panel at the bottom of every page (source filter includes this browser's own local activity too, kept client-side only) -- this page just configures the store's size cap, not what's logged.</p>
 				<h3>Size cap</h3>
-				<form id="logs-config-form">
-					<label>
-						Max bytes
-						<input type="number" id="lcf-max-bytes" min="1048576" max="107374182400" step="1048576">
-					</label>
-					<button type="submit">Save</button>
-				</form>
+				<form id="logs-config-form"></form>
 				<p class="hint">Enforced at segment granularity (8 rotating segments, oldest dropped whole when a new one is needed), not byte-exact -- a few percent of slop against this cap is expected.</p>
 			</div>
 		
@@ -1102,13 +1005,7 @@
 					carries it. "Log out everywhere" revokes every active session for that user at once
 					(there is no per-session ID to target just one).</p>
 				<h3>Session timeout</h3>
-				<form id="hostauth-timeout-form">
-					<label>
-						Idle timeout (seconds)
-						<input type="number" id="hatf-idle" min="0" step="1" required>
-					</label>
-					<button type="submit" id="hatf-save" data-op="putHostauthConfig">Save</button>
-				</form>
+				<form id="hostauth-timeout-form"></form>
 				<p class="hint">A session ends after this long without a request, and every request
 					starts the count again. 0 makes every login good for exactly one request.</p>
 				<h3>Active sessions</h3>
@@ -1188,17 +1085,7 @@
 				gidnumber/uidnumber. Changing this takes effect for future
 				auto-allocations only -- it never renumbers any existing user or group.
 			</p>
-			<form id="ldap-config-form">
-				<label>
-					Start UID
-					<input type="number" id="lcf-start-uid" min="1" required>
-				</label>
-				<label>
-					Start GID
-					<input type="number" id="lcf-start-gid" min="1" required>
-				</label>
-				<button type="submit">Save</button>
-			</form>
+			<form id="ldap-config-form"></form>
 
 			<h3>Client delivery</h3>
 			<p class="hint">
@@ -1226,21 +1113,7 @@
 				(<code>&lt;name&gt;.&lt;site_name&gt;.&lt;domain_suffix&gt;</code>) when
 				creating a DNS record or issuing a PKI cert -- never enforced.
 			</p>
-			<form id="sys-site-form">
-				<label>
-					Instance name
-					<input type="text" id="sitef-instance-name" placeholder="cix">
-				</label>
-				<label>
-					Site name (optional)
-					<input type="text" id="sitef-site-name" placeholder="lab1">
-				</label>
-				<label>
-					Domain suffix
-					<input type="text" id="sitef-domain-suffix" placeholder="internal">
-				</label>
-				<button type="submit">Save</button>
-			</form>
+			<form id="sys-site-form"></form>
 		</div>
 <div class="tab-panel" data-tab="running-config" hidden>
 			
@@ -1260,14 +1133,10 @@
 <div class="tab-panel" data-tab="host-swap" hidden>
 			<h2>Host Swap</h2>
 			<p class="hint" id="swap-status">Swap: unknown</p>
-			<form id="swap-enable-form">
-				<label>
-					Size (MB)
-					<input type="number" id="swap-size-mb" min="64" max="1048576" value="4096">
-				</label>
-				<button type="submit">Enable</button>
+			<form id="swap-enable-form"></form>
+			<div class="form-actions">
 				<button type="button" id="swap-disable">Disable</button>
-			</form>
+			</div>
 			<p class="hint">A single on-demand swap file (ADR-0069), off by default -- useful for memory-heavy package builds (e.g. Rust/wasm) on a box with limited RAM. File-backed swap performs identically to a partition on SSD/NVMe-backed storage.</p>
 			<h3>Compressed swap cache (zswap)</h3>
 			<p class="hint">
@@ -1277,21 +1146,7 @@
 				default here while the swap file itself is not.
 			</p>
 			<p class="hint" id="zswap-divergence" hidden></p>
-			<form id="zswap-form">
-				<label class="checkbox">
-					<input type="checkbox" id="zswap-enabled">
-					Enabled
-				</label>
-				<label>
-					Max pool (% of RAM)
-					<input type="number" id="zswap-max-pool" min="1" max="100">
-				</label>
-				<label>
-					Compressor
-					<select id="zswap-compressor"></select>
-				</label>
-				<button type="submit">Save</button>
-			</form>
+			<form id="zswap-form"></form>
 			<table class="detail-table"><tbody id="zswap-kernel"></tbody></table>
 		</div>
 			<!--
@@ -1313,18 +1168,7 @@
 					ESP and the install-time config &mdash; so the box comes back exactly as the installer
 					left it rather than as nothing. Disks that carried a role are <em>forgotten</em>, not
 					reformatted: the filesystems on them are left alone.</p>
-				<form id="factory-reset-form">
-					<label>
-						Type this install's instance name to confirm
-						<input type="text" id="fr-confirm" placeholder="instance name" required>
-					</label>
-					<!-- `.button-danger`, the vocabulary's own class. This
-					     carried a bare `class="danger"`, which this
-					     stylesheet does not define at all -- so the single
-					     most destructive control in the dashboard rendered
-					     as an ordinary button. -->
-					<button type="submit" class="button-danger">Factory reset and reboot</button>
-				</form>
+				<form id="factory-reset-form"></form>
 			</div>
 		</section>
 
@@ -1341,36 +1185,14 @@
 				cixd's own listen port and HTTP/HTTPS exposure. Changes apply
 				live -- no restart -- and persist across a reboot.
 			</p>
-			<form id="sys-daemon-config-form">
-				<label>
-					Port
-					<input type="number" id="dcf-port" min="1" max="65535" required>
-				</label>
-				<label>
-					HTTPS port
-					<input type="number" id="dcf-https-port" min="1" max="65535" required>
-				</label>
-				<label class="checkbox">
-					<input type="checkbox" id="dcf-http-enabled">
-					HTTP enabled
-				</label>
-				<label class="checkbox">
-					<input type="checkbox" id="dcf-https-enabled">
-					HTTPS enabled (needs a bootstrapped PKI root CA)
-				</label>
-				<button type="submit">Save</button>
-			</form>
+			<form id="sys-daemon-config-form"></form>
 
 			<h3>Management address</h3>
 			<p class="hint" id="mgmt-addr-status">Reading&hellip;</p>
-			<form id="sys-management-address-form">
-				<label>
-					Off-box address
-					<input type="text" id="maf-address" placeholder="A.B.C.D">
-				</label>
-				<button type="submit">Set</button>
+			<form id="sys-management-address-form"></form>
+			<div class="form-actions">
 				<button type="button" id="maf-reset">Reset to loopback-only</button>
-			</form>
+			</div>
 			<p class="hint">
 				The single address cixd answers on off-box (ADR-0287). The
 				network is <em>derived</em> from it, so the address must fall
@@ -1384,29 +1206,7 @@
 			<div class="view-list">
 				<p class="hint">Per-source-IP throttling for repeated failed HTTPS handshakes (ADR-0134) -- a source that fails enough handshakes within the window is refused outright, on both listeners, until the block expires. Loopback (127.0.0.1) is never throttled, so this daemon's own local admin access can't be locked out by a hostile source sharing the box.</p>
 				<h3>Config</h3>
-				<form id="ttf-form">
-					<label class="checkbox">
-						<input type="checkbox" id="ttf-enabled">
-						Enabled
-					</label>
-					<label>
-						Threshold (failures)
-						<input type="number" id="ttf-threshold" min="1" max="100000">
-					</label>
-					<label>
-						Window (seconds)
-						<input type="number" id="ttf-window" min="1" max="86400">
-					</label>
-					<label>
-						Block duration (seconds)
-						<input type="number" id="ttf-block" min="1" max="604800">
-					</label>
-					<label>
-						Log interval (seconds)
-						<input type="number" id="ttf-log-interval" min="0" max="3600">
-					</label>
-					<button type="submit">Save</button>
-				</form>
+				<form id="ttf-form"></form>
 				<p class="hint">Log interval caps how often a repeatedly-failing source's own log line is written (0 logs every single failure) -- independent of the threshold/block above, since a source can flood the log store long before it ever fails enough to actually be blocked (e.g. a browser retrying against an untrusted cert).</p>
 				<p class="hint">The threshold, window and block also govern failed <em>authentication</em> (#547): wrong login passwords and app passwords that do not verify, counted per address apart from failed handshakes. Past the threshold, that address's logins get 429 for the block duration on both listeners, before any password is checked. Only a successful login clears it; loopback is exempt.</p>
 				<h3>Currently tracked</h3>
@@ -1436,21 +1236,7 @@
 					that stays correct when the box is replaced by a bigger one. The ceiling
 					below is derived from live host totals every time it is applied.
 				</p>
-				<form id="cpr-form">
-					<label class="checkbox">
-						<input type="checkbox" id="cpr-enabled">
-						Enabled
-					</label>
-					<label>
-						Reserved CPU (percent of all cores, 1-50)
-						<input type="number" id="cpr-cpu-percent" min="1" max="50">
-					</label>
-					<label>
-						Reserved memory (bytes)
-						<input type="number" id="cpr-memory-bytes" min="67108864">
-					</label>
-					<button type="submit">Save</button>
-				</form>
+				<form id="cpr-form"></form>
 				<h3>In effect now</h3>
 				<table class="detail-table"><tbody id="cpr-effect"></tbody></table>
 			</div>
@@ -1522,19 +1308,10 @@
 					here; it never moves the pin on its own. <code>pinned</code> is the default and
 					means no version is proposed at all.
 				</p>
-				<form id="kpf-form">
-					<label>
-						Channel
-						<select id="kpf-channel">
-							<option value="pinned">pinned &mdash; stay where the recipe says</option>
-							<option value="longterm">longterm</option>
-							<option value="stable">stable</option>
-							<option value="mainline">mainline</option>
-						</select>
-					</label>
-					<button type="submit">Save</button>
+				<form id="kpf-form"></form>
+				<div class="form-actions">
 					<button type="button" id="kpf-refresh">Refresh from kernel.org</button>
-				</form>
+				</div>
 				<table class="detail-table"><tbody id="kpf-status"></tbody></table>
 			</div>
 		</div>
@@ -1610,13 +1387,7 @@
 				Leaving this blank clears it -- the servers then answer only for this
 				platform's own names, with no upstream recursion at all (ADR-0203).
 			</p>
-			<form id="dns-forwarders-form">
-				<label class="wide">
-					Forwarders (comma or space separated IPv4 addresses, at most 8)
-					<input type="text" id="dnsf-servers" placeholder="1.1.1.1, 8.8.8.8">
-				</label>
-				<button type="submit">Save</button>
-			</form>
+			<form id="dns-forwarders-form"></form>
 		</div>
 		</section>
 
@@ -1681,13 +1452,7 @@
 				Leaving this blank clears it -- the host then relies solely on
 				registered server containers, if any (ADR-0110).
 			</p>
-			<form id="ntp-config-form">
-				<label class="wide">
-					Upstream servers (comma or space separated IPv4 addresses)
-					<input type="text" id="ncf-servers" placeholder="192.168.15.1, 10.0.0.1">
-				</label>
-				<button type="submit">Save</button>
-			</form>
+			<form id="ntp-config-form"></form>
 		</div>
 			<div class="tab-panel" data-tab="ntp-servers" hidden>
 			<div class="view-list">
@@ -1716,13 +1481,7 @@
 				overwrite it again at its next scheduled attempt.
 			</p>
 			<div id="ntp-time-box" class="pki-ca-status"></div>
-			<form id="ntp-time-form">
-				<label class="wide">
-					Set to (unix timestamp, blank = now)
-					<input type="number" id="ntf-unixtime" min="0" placeholder="(current time)">
-				</label>
-				<button type="submit">Set</button>
-			</form>
+			<form id="ntp-time-form"></form>
 		</div>
 		</section>
 
@@ -1755,17 +1514,7 @@
 			<h2>PKI: Root CA</h2>
 			<p class="hint">A browser or OS that doesn't already trust this install's own root CA will refuse HTTPS to this dashboard (and to any other cix endpoint) with a certificate warning -- expected, since it's a private, self-signed CA, not a publicly trusted one. Download the certificate below and trust it once on whatever device you connect from; see "Trusting the CA on your own device" in <code>docs/guides/security.md</code> for the full, platform-by-platform steps (Windows/macOS/Linux/Firefox all differ). Short version: import the downloaded <code>.crt</code> into your OS or browser's own trusted-root store, marked to trust it for identifying websites.</p>
 			<div id="pki-ca-status" class="pki-ca-status"></div>
-			<form id="pki-ca-form">
-				<label>
-					Common name
-					<input type="text" id="caf-common-name" placeholder="Cix Root CA">
-				</label>
-				<label>
-					Days
-					<input type="number" id="caf-days" min="1" placeholder="3650">
-				</label>
-				<button type="submit">Bootstrap CA</button>
-			</form>
+			<form id="pki-ca-form"></form>
 
 			<h2>PKI: Reset CA chain</h2>
 			<p class="hint">
@@ -1776,17 +1525,7 @@
 				empty to default each name to <code>Cix Root/Intermediate CA -
 				&lt;domain_suffix&gt;</code>.
 			</p>
-			<form id="pki-reset-form">
-				<label>
-					Root common name
-					<input type="text" id="resetf-root-cn" placeholder="(default: domain_suffix-based)">
-				</label>
-				<label>
-					Intermediate common name
-					<input type="text" id="resetf-intermediate-cn" placeholder="(default: domain_suffix-based)">
-				</label>
-				<button type="submit" class="button-danger">Reset CA chain</button>
-			</form>
+			<form id="pki-reset-form"></form>
 			<div id="pki-reset-result" class="pki-ca-status" hidden></div>
 		</div>
 			<div class="tab-panel" data-tab="pki-intermediate" hidden>
@@ -1797,17 +1536,7 @@
 				the full chain. Requires the root CA (see Root CA) to already exist.
 			</p>
 			<div id="pki-intermediate-status" class="pki-ca-status"></div>
-			<form id="pki-intermediate-form">
-				<label>
-					Common name
-					<input type="text" id="icaf-common-name" placeholder="Cix Intermediate CA">
-				</label>
-				<label>
-					Days
-					<input type="number" id="icaf-days" min="1" placeholder="1825">
-				</label>
-				<button type="submit">Bootstrap intermediate</button>
-			</form>
+			<form id="pki-intermediate-form"></form>
 		</div>
 			<div class="tab-panel" data-tab="pki-certs" hidden>
 			<div class="view-list">
@@ -2035,17 +1764,7 @@
 					<button type="button" id="esp-boot-next-b">Boot slot B once</button>
 					<button type="button" id="esp-boot-next-clear">Disarm</button>
 				</div>
-				<form id="esp-loader-form">
-					<label class="wide">
-						Default pattern
-						<input type="text" id="esp-default" placeholder="cix-*">
-					</label>
-					<label class="wide">
-						Menu timeout (seconds)
-						<input type="number" id="esp-timeout" min="0" max="600">
-					</label>
-					<button type="submit">Save</button>
-				</form>
+				<form id="esp-loader-form"></form>
 				<table id="esp-entries">
 					<tbody id="esp-entries-body">
 						<tr><td colspan="5" class="empty">Reading&hellip;</td></tr>
@@ -2065,14 +1784,7 @@
 						<tr><td colspan="2" class="empty">Reading&hellip;</td></tr>
 					</tbody>
 				</table>
-				<form id="boot-manager-form">
-					<label class="wide">
-						Path on this host
-						<input type="text" id="boot-manager-path"
-							value="/var/lib/cix/rebuildable/artifacts/cix/cix-boot.efi">
-					</label>
-					<button type="submit" class="button-danger">Install boot manager</button>
-				</form>
+				<form id="boot-manager-form"></form>
 			</div>
 		</div>
 <div class="tab-panel" data-tab="signing-keys" hidden>
@@ -2105,20 +1817,10 @@
 					anything is written: a mismatched pair is refused outright rather than
 					discovered later as an image that signs cleanly and then will not boot.
 				</p>
-				<form id="signing-keys-form">
-					<label class="wide">
-						Private key (PEM)
-						<textarea id="signing-key-pem" rows="8" spellcheck="false"
-							placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
-					</label>
-					<label class="wide">
-						Certificate (PEM)
-						<textarea id="signing-cert-pem" rows="8" spellcheck="false"
-							placeholder="-----BEGIN CERTIFICATE-----"></textarea>
-					</label>
-					<button type="submit">Install key pair</button>
+				<form id="signing-keys-form"></form>
+				<div class="form-actions">
 					<button type="button" id="signing-keys-clear" class="button-danger">Remove from this host</button>
-				</form>
+				</div>
 
 				<h2>Release Signing Key</h2>
 				<p class="hint">
@@ -2146,15 +1848,10 @@
 					key &mdash; the realistic mistake, given the pair sitting right above &mdash;
 					is refused now rather than at signing time on a real release.
 				</p>
-				<form id="release-key-form">
-					<label class="wide">
-						Ed25519 private key (PEM)
-						<textarea id="release-key-pem" rows="5" spellcheck="false"
-							placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
-					</label>
-					<button type="submit">Install release key</button>
+				<form id="release-key-form"></form>
+				<div class="form-actions">
 					<button type="button" id="release-key-clear" class="button-danger">Remove from this host</button>
-				</form>
+				</div>
 			</div>
 			</div>
 <div class="tab-panel" data-tab="boot-console" hidden>
@@ -2173,17 +1870,7 @@
 					<code>root=</code> onward is left exactly as it was: that half of the line decides
 					whether the machine boots at all, and is not editable here.
 				</p>
-				<form id="bcf-form">
-					<label class="wide">
-						Consoles (space separated, in order &mdash; e.g. <code>tty0 ttyS0,115200n8</code>)
-						<input type="text" id="bcf-consoles" placeholder="tty0 ttyS0">
-					</label>
-					<label class="wide">
-						Extra kernel parameters (e.g. <code>nomodeset video=efifb:off</code>)
-						<input type="text" id="bcf-extra" placeholder="">
-					</label>
-					<button type="submit">Save</button>
-				</form>
+				<form id="bcf-form"></form>
 				<h3>In effect</h3>
 				<table class="detail-table"><tbody id="bcf-effect"></tbody></table>
 				<table id="boot-entries">
@@ -2379,25 +2066,7 @@
 			<div class="stats-grid" id="bo-builds"></div>
 			</div>
 <div class="tab-panel" data-tab="pkg-build-config" hidden>
-			<form id="pbc-form">
-				<label>
-					Max concurrent jobs
-					<input type="number" id="pbc-max-jobs" min="1" max="10" value="10">
-				</label>
-				<label>
-					Memory budget for all builds together (bytes, 0 = unlimited)
-					<input type="number" id="pbc-memory-max" min="0" value="2147483648">
-				</label>
-				<label>
-					Most a recipe's declared build memory may raise that to (bytes, 0 = no ceiling)
-					<input type="number" id="pbc-memory-max-ceiling" min="0" value="2147483648">
-				</label>
-				<label class="wide">
-					CPU budget for all builds together (raw cgroup v2 "quota period", empty = unlimited)
-					<input type="text" id="pbc-cpu-max" placeholder="100000 100000">
-				</label>
-				<button type="submit">Save</button>
-			</form>
+			<form id="pbc-form"></form>
 			<p class="hint" id="pbc-memory-effective"></p>
 			<h3>Build logs</h3>
 			<p class="hint">
@@ -2475,13 +2144,7 @@
 			</p>
 			<h3>Cache</h3>
 			<div id="pkg-cache-status-box" class="pki-ca-status"></div>
-			<form id="pcc-form">
-				<label>
-					Max size (bytes)
-					<input type="number" id="pcc-max-bytes" min="0">
-				</label>
-				<button type="submit">Save</button>
-			</form>
+			<form id="pcc-form"></form>
 			<button type="button" id="pkg-cache-clear" class="button-danger">Clear cache</button>
 
 			<h3>Package repositories</h3>
@@ -2504,17 +2167,7 @@
 				<button type="button" class="tab-button" data-tab="iso">Installer ISO</button>
 			</div>
 <div class="tab-panel" data-tab="update">
-			<form id="sys-update-form">
-				<label class="wide">
-					Control-plane image path (optional, local to this daemon's host)
-					<input type="text" id="sys-update-image" placeholder="/path/to/cixd-root.squashfs">
-				</label>
-				<label class="wide">
-					Kernel path (optional, local to this daemon's host)
-					<input type="text" id="sys-update-kernel" placeholder="/path/to/bzImage">
-				</label>
-				<button type="submit">Stage update</button>
-			</form>
+			<form id="sys-update-form"></form>
 			<p class="hint">Writes to the inactive A/B slot. Does not reboot -- reboot separately once
 				ready to cut over.</p>
 		</div>
@@ -2533,13 +2186,7 @@
 				</div>
 			</div>
 <div class="tab-panel" data-tab="rolling-restart" hidden>
-			<form id="rc-form">
-				<label>
-					Jitter window (seconds)
-					<input type="number" id="rc-jitter-window" min="0" max="3600" value="60">
-				</label>
-				<button type="submit">Save</button>
-			</form>
+			<form id="rc-form"></form>
 			<p class="hint">Part 5, ADR-0124: when a rolling image auto-rebuilds, every <code>follow_rolling</code> container on it gets a uniformly-random restart delay up to this window, spreading the restarts out instead of killing them all in the same instant. 0 disables jitter (restart immediately).</p>
 		</div>
 <div class="tab-panel" data-tab="iso" hidden>
@@ -2563,29 +2210,7 @@
 				is meaningful &mdash; a fixed disk with a prompted address, for a fleet of
 				identical machines.
 			</p>
-			<form id="iso-form">
-				<label>
-					Target disk
-					<input type="text" id="isof-disk" placeholder="/dev/sda">
-				</label>
-				<label>
-					Static IP
-					<input type="text" id="isof-ip" placeholder="192.168.15.20">
-				</label>
-				<label>
-					Prefix
-					<input type="text" id="isof-prefix" placeholder="24">
-				</label>
-				<label>
-					Gateway
-					<input type="text" id="isof-gateway" placeholder="192.168.15.1">
-				</label>
-				<label>
-					Interface
-					<input type="text" id="isof-interface" placeholder="eth0">
-				</label>
-				<button type="submit" id="iso-build">Build ISO</button>
-			</form>
+			<form id="iso-form"></form>
 			<h2>Publish</h2>
 			<p class="hint">
 				Pushes the finished ISO and its signature to the artifact cache. An
@@ -2601,22 +2226,7 @@
 			<table class="detail-table"><tbody id="vd-fields"></tbody></table>
 			<h3>Owner</h3>
 			<p class="hint" id="vd-owner-note"></p>
-			<form id="vd-owner-form">
-				<label>
-					uid
-					<input type="number" id="vd-owner-uid" min="0" step="1" style="width:6rem">
-				</label>
-				<label>
-					gid
-					<input type="number" id="vd-owner-gid" min="0" step="1" style="width:6rem">
-				</label>
-				<label class="checkbox">
-					<input type="checkbox" id="vd-owner-recursive">
-					Also rewrite everything already inside it
-				</label>
-				<button type="submit">Apply</button>
-				<button type="button" id="vd-owner-root">Hand back to root</button>
-			</form>
+			<form id="vd-owner-form"></form>
 			<p class="hint">
 				A volume is a directory this daemon creates as <strong>root</strong> (issue #102), so a
 				workload that does not run as root cannot write to its own volume &mdash; found the plain
@@ -2631,13 +2241,7 @@
 
 			<h3>Size limit</h3>
 			<p class="hint" id="vd-quota-note"></p>
-			<form id="vd-quota-form">
-				<label>
-					Limit (GiB, 0 for none)
-					<input type="number" id="vd-quota" min="0" step="1" style="width:7rem">
-				</label>
-				<button type="submit">Apply</button>
-			</form>
+			<form id="vd-quota-form"></form>
 			<p class="hint">A real, kernel-enforced hard limit &mdash; a write past it fails at the
 				filesystem level rather than being noticed afterwards. Without one a volume can grow until
 				the disk it sits on is full, which also makes it an unbounded thing to copy when scheduled
@@ -2647,25 +2251,10 @@
 
 			<h3>Backups</h3>
 			<p class="hint" id="vd-backup-note"></p>
-			<form id="vd-backup-form">
-				<label>
-					<input type="checkbox" id="vd-backup-enabled"> Back this volume up on the schedule
-				</label>
-				<label>
-					Keep
-					<input type="number" id="vd-backup-retain" min="1" max="365" style="width:5rem"> snapshots
-				</label>
-				<label>
-					When a container using it is running
-					<select id="vd-backup-while-running">
-						<option value="refuse">skip the backup</option>
-						<option value="pause">pause it, copy, then resume</option>
-						<option value="allow">copy it live (crash-consistent)</option>
-					</select>
-				</label>
-				<button type="submit">Save</button>
+			<form id="vd-backup-form"></form>
+			<div class="form-actions">
 				<button type="button" id="vd-backup-now">Back up now</button>
-			</form>
+			</div>
 			<table id="vd-snapshots">
 				<tbody id="vd-snapshots-body"></tbody>
 			</table>
@@ -2686,15 +2275,7 @@
 
 			<h3>Move it</h3>
 			<p class="hint" id="vd-migrate-note"></p>
-			<form id="vd-migrate-form">
-				<label>
-					Migrate to
-					<select id="vd-target-disk">
-						<option value="">(default OS-disk placement)</option>
-					</select>
-				</label>
-				<button type="submit">Migrate</button>
-			</form>
+			<form id="vd-migrate-form"></form>
 			<p class="hint">The data is copied to the new location and the volume repointed only
 				once the copy succeeds, so a failure at any point leaves the volume still pointing at
 				data that exists. Refused while a container mounting it is running &mdash; a bind mount
@@ -2772,7 +2353,7 @@
 			     this file would be a second copy of something the contract
 			     already states. -->
 			<div id="modal-generated-form" hidden>
-				<form id="generated-form"></form>
+				<form id="generated-form" class="generated-form"></form>
 			</div>
 			<div id="modal-about-form" hidden>
 				<div class="about-panel">
@@ -2791,64 +2372,6 @@
 				</div>
 			</div>
 
-			<div id="modal-schedule-form" hidden>
-				<form id="schedule-form">
-					<label>
-						Name
-						<input type="text" id="schf-name" placeholder="nightly-backup" required>
-					</label>
-					<label>
-						Action
-						<select id="schf-action" required></select>
-					</label>
-					<label>
-						When
-						<select id="schf-kind">
-							<option value="every">Every (a fixed period)</option>
-							<option value="daily">Daily at a time</option>
-							<option value="weekly">Weekly on a day</option>
-						</select>
-					</label>
-					<div id="schf-every-fields">
-						<label>
-							Days
-							<input type="number" id="schf-days" min="0" value="0">
-						</label>
-						<label>
-							Hours
-							<input type="number" id="schf-hours" min="0" value="1">
-						</label>
-						<label>
-							Minutes
-							<input type="number" id="schf-minutes" min="0" value="0">
-						</label>
-					</div>
-					<div id="schf-clock-fields" hidden>
-						<label>
-							At (HH:MM, this machine's local time)
-							<input type="time" id="schf-at" value="02:00">
-						</label>
-						<label id="schf-weekday-label" hidden>
-							Weekday
-							<select id="schf-weekday">
-								<option value="sun">Sunday</option>
-								<option value="mon">Monday</option>
-								<option value="tue">Tuesday</option>
-								<option value="wed">Wednesday</option>
-								<option value="thu">Thursday</option>
-								<option value="fri">Friday</option>
-								<option value="sat">Saturday</option>
-							</select>
-						</label>
-					</div>
-					<label class="checkbox">
-						<input type="checkbox" id="schf-catchup">
-						Catch up if the daemon was down at the scheduled time
-					</label>
-					<button type="submit">Create</button>
-				</form>
-			</div>
-
 			<!-- #447: set one net.* sysctl on an existing container, live when
 			     it is running (PUT /v1/containers/{name}/sysctls). -->
 			<div id="modal-container-sysctl-form" hidden>
@@ -2865,25 +2388,6 @@
 				</form>
 			</div>
 
-			<!-- ADR-0317 (#544): what one group grants. The choices are built
-			     from the vocabulary GET /v1/system/hostauth/permissions
-			     returns, never from a list kept here. -->
-			<div id="modal-permissions-form" hidden>
-				<form id="permissions-form">
-					<label>
-						Group
-						<input type="text" id="pf-group" pattern="[a-z_][a-z0-9_\-]*" required>
-					</label>
-					<fieldset>
-						<legend>Permissions</legend>
-						<div id="pf-choices"></div>
-					</fieldset>
-					<p class="hint">A user holds every permission of every group they are in. Clearing
-						them all removes the group from the mapping.</p>
-					<button type="submit" id="pf-submit">Grant</button>
-				</form>
-			</div>
-
 			<!-- ADR-0317 (#544): one user's app passwords -- anyone's, from the
 			     LDAP users table, or your own, from the Cix menu. The secret of
 			     a new one is shown here, once, in a field you can copy from;
@@ -2895,13 +2399,7 @@
 						<tr><td colspan="3" class="empty">Reading&hellip;</td></tr>
 					</tbody>
 				</table>
-				<form id="app-passwords-form">
-					<label>
-						New app password
-						<input type="text" id="apf-name" pattern="[A-Za-z0-9._\-]{1,63}" placeholder="a name, e.g. ci" required>
-					</label>
-					<button type="submit">Create</button>
-				</form>
+				<form id="app-passwords-form"></form>
 				<div id="apf-secret" hidden>
 					<p class="hint">Shown this once -- copy it now; the host keeps only a hash. A
 						script sends it as HTTP Basic, <code>USER:PASSWORD</code>, on each request.</p>
@@ -2915,42 +2413,6 @@
 			     opens here, and stays until the operator closes it. -->
 			<div id="modal-pki-cert-issued" hidden>
 				<div id="pki-cert-issued" class="pki-cert-issued"></div>
-			</div>
-
-			<div id="modal-pkg-source-own-form" hidden>
-				<form id="pkg-source-own-form">
-					<label class="wide">
-						Item
-						<input type="text" id="psof-item" readonly>
-					</label>
-					<label>
-						Comes from
-						<select id="psof-source"></select>
-					</label>
-					<button type="submit">Choose</button>
-				</form>
-			</div>
-
-			<div id="modal-container-recipe-form" hidden>
-				<form id="container-recipe-form">
-					<label>
-						Name
-						<input type="text" id="crf-name" pattern="[A-Za-z0-9_\-]+" required>
-					</label>
-					<label class="wide">
-						Recipe file (leave blank to paste/edit content below instead)
-						<input type="file" id="crf-file">
-					</label>
-					<label class="wide">
-						Content -- a real POST /containers body, as JSON
-						<textarea id="crf-content" rows="16" spellcheck="false"
-							placeholder='{"name":"NAME","image":"base","cmd":["/usr/bin/bash"],"restart":"always"}'></textarea>
-					</label>
-					<button type="submit">Add / update</button>
-				</form>
-				<p class="hint">content's own <code>"name"</code> field must equal Name above (ADR-0151) --
-					a mismatch is rejected. May embed <code>{{SECRET:KEY}}</code> tokens inside any staged
-					file's <code>content</code> string; supply real values only when applying.</p>
 			</div>
 
 		</div>

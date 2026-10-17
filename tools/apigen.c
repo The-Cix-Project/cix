@@ -1310,6 +1310,13 @@ static int schema_body_line(struct schema_reader *r, const char *spec, int linen
 			snprintf(fl->default_lit, sizeof(fl->default_lit), "%s", v);
 		else if (strcmp(key, "readOnly") == 0)
 			fl->read_only = strcmp(v, "true") == 0;
+		/* #592: OpenAPI 3.0's own spelling of a nullable field, beside
+		 * the `type: [x, "null"]` form read above. Until this was read,
+		 * the three storage-migrate `disk` fields -- where `null` is
+		 * "the default placement" and "" is refused -- reached a form
+		 * with nothing saying null was a value at all. */
+		else if (strcmp(key, "nullable") == 0)
+			fl->nullable = fl->nullable || strcmp(v, "true") == 0;
 		/*
 		 * `x-cix-ui` -- the sanctioned override, and its first real
 		 * use (ADR-0338, #596).
@@ -1349,13 +1356,16 @@ static int schema_body_line(struct schema_reader *r, const char *spec, int linen
 			 * per line, for an argv -- a comma list cannot carry
 			 * `-o a,b`; and `tristate`, a boolean whose ABSENCE means
 			 * a platform default the form cannot know (`userns`), so
-			 * an unticked box must not send false.
+			 * an unticked box must not send false. And `bytes`: an
+			 * integer that is a size, typed with a unit and sent in
+			 * bytes -- JSON Schema has no unit, so nothing else says
+			 * that 1073741824 is "1 GiB".
 			 */
 			if (strcmp(v, "textarea") != 0 && strcmp(v, "lines") != 0 &&
-			    strcmp(v, "tristate") != 0)
+			    strcmp(v, "tristate") != 0 && strcmp(v, "bytes") != 0)
 				die_at(spec, lineno,
 				       "x-cix-ui: %s names no control the dashboard "
-				       "builds; the set is { textarea, lines, tristate }", v);
+				       "builds; the set is { textarea, lines, tristate, bytes }", v);
 			snprintf(fl->ui, sizeof(fl->ui), "%s", v);
 		}
 		else if (strcmp(key, "description") == 0) {

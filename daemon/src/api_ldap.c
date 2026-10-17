@@ -163,6 +163,25 @@ void handle_ldap_config_get(int fd)
 	jw_free(&w);
 }
 
+/*
+ * A client string field of the PUT: absent is NULL (leave it alone), a
+ * string is itself, and JSON `null` is "" -- clear it (#592). GET reports
+ * an unset field as null, so null meaning "unchanged" made the value
+ * this endpoint reports one it could not be told to return to: a form
+ * that emptied a field sent the null it had been given, and nothing
+ * changed.
+ */
+static const char *string_or_clear(const struct json_value *root, const char *key)
+{
+	const struct json_value *v = json_object_get(root, key);
+
+	if (v == NULL)
+		return NULL;
+	if (v->type == JSON_NULL)
+		return "";
+	return json_as_string(v);
+}
+
 void handle_ldap_config_put(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
@@ -184,10 +203,10 @@ void handle_ldap_config_put(int fd, const char *body, size_t body_len)
 	{
 		const struct json_value *juid = json_object_get(root, "start_uid");
 		const struct json_value *jgid = json_object_get(root, "start_gid");
-		const char *client_uri = json_as_string(json_object_get(root, "client_uri"));
-		const char *base_dn = json_as_string(json_object_get(root, "base_dn"));
-		const char *bind_dn = json_as_string(json_object_get(root, "bind_dn"));
-		const char *bind_password = json_as_string(json_object_get(root, "bind_password"));
+		const char *client_uri = string_or_clear(root, "client_uri");
+		const char *base_dn = string_or_clear(root, "base_dn");
+		const char *bind_dn = string_or_clear(root, "bind_dn");
+		const char *bind_password = string_or_clear(root, "bind_password");
 		const struct json_value *jtls = json_object_get(root, "client_tls");
 		const struct json_value *jsplain = json_object_get(root, "server_plaintext");
 		const struct json_value *jsplainport = json_object_get(root, "server_plaintext_port");
@@ -195,8 +214,13 @@ void handle_ldap_config_put(int fd, const char *body, size_t body_len)
 		const struct json_value *jstlsport = json_object_get(root, "server_tls_port");
 
 		if (juid != NULL || jgid != NULL) {
-			start_uid = (int)json_as_number(juid);
-			start_gid = (int)json_as_number(jgid);
+			/* One floor without the other keeps the other (#592): the
+			 * pair used to be both-or-neither, so a form sending only
+			 * what the operator changed -- or a script raising just the
+			 * uid floor -- was refused for a value nobody meant to
+			 * touch. A floor present and not > 0 is still refused. */
+			start_uid = juid != NULL ? (int)json_as_number(juid) : ldap_config_get()->start_uid;
+			start_gid = jgid != NULL ? (int)json_as_number(jgid) : ldap_config_get()->start_gid;
 			rerr = ldap_config_set(start_uid, start_gid);
 			if (rerr != LDAP_RECORD_OK) {
 				json_free(root);

@@ -869,7 +869,7 @@ break. A schema nobody has started is not judged; one that has started gets held
 
 A generated form derives its control from the field's own facts -- an `enum` is a select, `minimum`/`maximum`
 are a number input's bounds, `format: password` is obscured, `type: boolean` is a checkbox. **`x-cix-ui`
-names a control where no fact in the schema can**, and it has exactly one value today:
+names a control where no fact in the schema can**, and it has four values:
 
 ```yaml
 content:
@@ -879,7 +879,18 @@ content:
 
 `textarea` is for a string that is a **document** -- an image recipe, a container recipe, a config file, a
 PEM block. JSON Schema has no way to distinguish one line of text from twenty, so without this the contract
-describes a recipe exactly as it describes a hostname and a form would render it in a 15rem text box.
+describes a recipe exactly as it describes a hostname and a form would render it in a 15rem text box. The
+other three (#592): **`lines`**, an array of strings typed one per line -- an argv, or a boot console that
+carries commas of its own (`ttyS0,115200n8`), where a comma list cannot hold one item; **`tristate`**, a
+boolean whose absence means a default only the host knows (`userns`), so a form offers "host default"
+rather than sending `false`; and **`bytes`**, an integer that is a size, typed with a unit and sent in
+bytes, because JSON Schema has no unit.
+
+Two more facts a form reads that are standard JSON Schema rather than extensions: **`nullable: true`**,
+whose empty value is `null` (a storage migration to no disk is the default placement, a volume owner left
+empty is root) and which apigen reads in OpenAPI 3.0's spelling as well as `type: [x, "null"]`; and
+**`x-cix-destructive: true`**, which `factoryReset` and `resetPki` carry now, so any client confirms them
+because the contract says so.
 
 Two rules keep it from becoming a second place where the dashboard is designed:
 
@@ -2444,7 +2455,9 @@ PUT /v1/ldap/config
 {"start_uid": 50000, "start_gid": 50000}
 ```
 
-`start_uid`/`start_gid` (task #748) are the floors `ldap_uid_alloc()`/`ldap_gid_alloc()` scan upward from when `POST /v1/ldap/users`/`POST /v1/ldap/groups` omits `uidnumber`/`gidnumber`. A gid counts as taken if a group has it or any user still carries it as a primary or secondary group: membership is by gid, so a new group handed an orphaned gid would silently take its users in, and since ADR-0317 a group carries permissions ([#542](https://git.home.arpa/itdlabs/cix/issues/542)). Both default to `10000` until changed. Setting a new floor takes effect immediately for the *next* auto-allocation only — it never renumbers any user or group that already exists, and both values must be positive integers (`400` otherwise). Persisted to `<data-dir>/ldap_config.json`, survives a daemon restart.
+`start_uid`/`start_gid` (task #748) are the floors `ldap_uid_alloc()`/`ldap_gid_alloc()` scan upward from when `POST /v1/ldap/users`/`POST /v1/ldap/groups` omits `uidnumber`/`gidnumber`. A gid counts as taken if a group has it or any user still carries it as a primary or secondary group: membership is by gid, so a new group handed an orphaned gid would silently take its users in, and since ADR-0317 a group carries permissions ([#542](https://git.home.arpa/itdlabs/cix/issues/542)). Both default to `10000` until changed. Setting a new floor takes effect immediately for the *next* auto-allocation only — it never renumbers any user or group that already exists, and a floor given must be a positive integer (`400` otherwise). Each floor may be sent alone and the other is kept (#592); they used to be both-or-neither, which refused a change to just one. Persisted to `<data-dir>/ldap_config.json`, survives a daemon restart.
+
+The same `PUT` carries the client login settings and the glauth listener settings, every field independently optional. Two details matter to a client that edits the config it read. A client string field given JSON `null` is **cleared**, as `""` is (#592) — `GET` reports an unset field as `null`, and `null` used to mean "unchanged", so the value the endpoint reports was one it could not be told to return to. And the `server_*` listener fields are **not idempotent**: sending any of them, even unchanged, puts the listeners under the daemon's management for good and rewrites every registered server's config, which is why the dashboard sends only the fields an operator changed. `bind_password` is write-only and is now declared in `LdapConfig`; `bind_password_set`, `listeners_managed` and `effective_client_uri` are `readOnly`.
 
 ### Real, live-LDAP SSH login (ADR-0144 task #838)
 
