@@ -9939,7 +9939,7 @@ paths:
                   type: string
                   format: password
                   title: Token
-                  description: A new forge token; "" removes the stored one, and omitting it keeps it. Write-only.
+                  description: A new forge token replaces the stored one, and leaving it out keeps it. Sending "" removes it. Write-only.
                 write:
                   type: boolean
                   title: Commit recipes here
@@ -9952,7 +9952,7 @@ paths:
                   type: string
                   x-cix-ui: textarea
                   title: Catalogue key
-                  description: A minisign public key the source's signed index must verify against; "" clears it, so the source syncs unsigned (ADR-0324 step C).
+                  description: A minisign public key the source's signed index must verify against; with none, the source syncs unsigned. Sending "" clears it (ADR-0324 step C).
       responses:
         "200":
           description: Updated; the whole list
@@ -10908,7 +10908,7 @@ paths:
                   type: string
                   format: password
                   title: Token
-                  description: A new token; "" removes the stored one, and omitting it keeps it. Write-only.
+                  description: A new token replaces the stored one, and leaving it out keeps it. Sending "" removes it. Write-only.
                 push:
                   type: boolean
                   title: Publish here

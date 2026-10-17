@@ -2445,6 +2445,51 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 281 (done): every destructive action asks, and 25 of the 26 create forms render from the contract (#592 epic, 0.2.57-509 through -512)
+
+Four releases that finished the forms half of the UX plan, after an audit for defects an operator
+would hit.
+
+**509 and 510: the audit.** Twenty-eight destructive actions sent their request with no question, and
+the two calls that read or removed one recipe version built the URL wrong -- each passed two arguments
+to a path builder that takes one, so the version was never sent. Every destructive action now confirms
+(`test_web_tree` fails one that does not, with ten stated exemptions), and one function decides a
+container's actions for both its page and its right-click menu, as `diskActionEligibility()` does for a
+disk.
+
+**511: the gates behind it.** `test_web_tree` counts the arguments of every `CIX_API.<op>(...)` call --
+260 at the time -- against the path parameters the operation declares; run against the code before 510
+it reports exactly the two broken calls. Issue Certificate became a generated form, with
+`GENERATED_FORM_HOOKS` supplying the `after` that shows its one-time key, and the disk allocation chart
+coloured by class from theme tokens instead of eight computed hues.
+
+**512: nine more create forms.** Set Sysctl, Load Module, Configure Module, New Range, Assign Disk Role,
+New/Update Recipe, New Recipe Source, New Package Repository and Add Route, plus the edit buttons for a
+DHCP range, a source and a repository. `apigen` now reads every path parameter into a synthesized
+`<op>Args` schema (132 operations) and refuses one declared out of the path's order; it records a map's
+value type, so a map of strings is KEY=VALUE lines. `openForm` asks for an unsupplied path parameter,
+takes choices read from the box, keeps or removes a stored secret, sends an emptied string field as
+cleared and omits an emptied number, fills a document field from a file, and asks an authored `before`
+question. Four rules moved out of the dashboard, where only one client had them: the daemon refuses a
+route `dest` with no prefix (it acted on the default route instead), stores a catalogue key with one
+trailing newline, takes `"router": ""` as no router, and the contract declares a lease's bounds and
+default. The review before release caught an emptied integer being sent as `""`, which the daemon reads
+as 0 -- a lease of 0 seconds; fixed and gated before the build. **New Container is the one form left**:
+forty-five fields, eight of them arrays of objects, need sections and a repeater rather than eight JSON
+boxes.
+
+**Verified on 192.168.15.95.** 509 to 511 each booted with health ok and 12/12 containers running; 511
+on slot `a`, serving `GENERATED_FORM_HOOKS` and the class-coloured chart. 512's hostbuild log shows
+`test_apigen`, `test_web_form`, `test_web_tree`, `test_api_surfaces`, `test_routes` and `test_pkgsource`
+PASS -- the last two carrying the new route refusal and catalogue-key cases -- and `SELFTEST: PASS`. It
+booted on slot `b`, health ok, 12/12 running. Its served `api.js` carries `putSystemSysctlArgs` and its
+`index.html` none of the nine old modals. The box's own served files, rendered in Chromium, built all six
+forms checked -- Set Sysctl, New Range, Edit Source, Add Route, Configure Module, New/Update Recipe --
+with no script error: each path parameter as the first field, the DHCP servers as a multiple select at
+its own height, the remove-token box under the token field and a file picker under the catalogue key.
+That render also showed two hints reading the API's `""` to an operator; reworded in the contract for
+the next release.
+
 ## Part 280 (done): every list table that can be generated is, and the dashboard can no longer hide a page (#592 epic, 0.2.57-504 through -508)
 
 Five releases that finished the table work Part 279 began -- and, in the middle of it, the owner
