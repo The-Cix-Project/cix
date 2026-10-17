@@ -6,6 +6,28 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The dashboard is told what changed: live updates (ADR-0339 step five, #599)
+
+Once signed in, the dashboard holds `GET /v1/events` open.
+
+- **A change** re-reads the tree's data and the current page's within about 150 ms, whoever or whatever
+  made it.
+- **Navigating** reads the page arrived at once.
+- **Heartbeats** keep the LEDs blinking and cost no request.
+- **What stopped:** while live, the 2 s health poll, the 5 s view timer and the 30 s sweep are gone.
+- **If the stream drops**, the status bar says "Live updates lost — reconnecting", the page falls back to
+  its old polling, and it reconnects with backoff. A daemon restart never signs anyone out. Only close
+  code 4401, the session ending, takes the same path as a 401, now one function (`sessionLapsed()`) for
+  both.
+- **The client logic** is `web/events.js`, a state machine with no URL and no DOM. `test_web_form`
+  drives its rules with a fake socket and clock: first frame, heartbeat, one moved read, a late frame, a
+  new epoch, 1006 versus 4401, backoff and 25 s of silence.
+- **Measured** in Chromium with the box's own files and the four frames 0.2.57-523 sent on the box,
+  replayed:
+  - **Requests:** an idle minute is 32 against 181 before. 30 are the log panel, which subscribes in
+    phase 2, and 2 are the status bar.
+  - **The lost state:** the indicator appears on a 1006 close, and the operator stays signed in.
+
 ### A view is announced with its inputs: `x-cix-composed-of` (ADR-0339, #599)
 
 The first live run of the box's self-check (0.2.57-526) caught `getPipeline` changing unannounced. The

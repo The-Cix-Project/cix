@@ -182,6 +182,18 @@ Recorded as each step lands, where the implementation is narrower than or depart
 
   `getConfig`, made `derived` the step before, is the same kind of view and could take this mechanism
   instead, which would make Running Config live. It is left `derived` for now.
+- **Step five: the dashboard on the stream** (0.2.57-528).
+  - **What a change re-reads:** phase 1 is any change re-running the core refreshers and the current
+    page's, debounced 150 ms. Response-header generations are not tracked yet, so a second change landing
+    mid-refresh costs one extra refresh, never a miss.
+  - **What stays on a timer:** the log panel keeps its timer until phase 2, as do the three stats pages.
+    The once-a-minute status-bar refresh stays because load average is a sample.
+  - **When the stream is down,** the page falls back to the polling it had and says "Live updates lost —
+    reconnecting". That fallback is the "page tells the truth" clause, not a regression.
+  - **Measured** in Chromium with the box's own files and the four frames 0.2.57-523 sent on the box,
+    replayed. A heartbeat costs zero requests, a change frame one refresh of six reads, and an idle
+    minute 32 requests against the 181 of the Context: 30 are the log panel's 2 s poll and 2 the status
+    bar.
 - **The drift decision is pure and tested without a daemon.** `events_hash_body()` and
   `events_observe()` live in `events.c`, and `test_events_drift` drives them through the case no daemon
   test can produce cleanly: a state change with no announcement.

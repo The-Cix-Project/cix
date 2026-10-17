@@ -892,6 +892,10 @@ function setAuth(token, username) {
 		storageRemove("cix-auth-username");
 	}
 	updateAuthUi();
+	/* ADR-0339: a stream opened with the old token goes now, not at the
+	 * daemon's next heartbeat; the session check below opens one for the
+	 * new token, if there is one. */
+	stopEventStream();
 	/* #544: what the new session may do (or that there is none). */
 	refreshSessionPermissions();
 }
@@ -1208,6 +1212,8 @@ async function refreshSessionPermissions() {
 		return;
 	}
 	applySessionEligibility();
+	/* ADR-0339: the event stream follows the session it was opened with. */
+	syncEventStream();
 }
 
 /*
@@ -1934,6 +1940,23 @@ function ledBlink(led) {
  */
 const HEALTH_TIMEOUT_MS = 1500;
 
+/*
+ * The box said this session is over: a 401, or the event stream closing
+ * with 4401 (ADR-0339). One place, so the two cannot disagree about what
+ * it means. `tokenStillCurrent` is whether the refused token is the one
+ * held now -- a 401 for a token already replaced by a fresh login must
+ * not sign that new session out.
+ */
+function sessionLapsed(tokenStillCurrent) {
+	if (tokenStillCurrent)
+		setAuth(null, null);
+	if (sessionAuthenticated) {
+		/* #544: the session this page believed in is gone. */
+		sessionAuthenticated = false;
+		applySessionEligibility();
+	}
+}
+
 async function apiRequest(method, path, body, timeoutMs) {
 	/*
 	 * #548: a request this session is known not to be allowed is refused
@@ -2056,13 +2079,8 @@ async function apiRequest(method, path, body, timeoutMs) {
 		 * login out. No modal from here, because a background poll
 		 * never opens one (#490); the person's next action does.
 		 */
-		if (res.status === 401 && path !== CIX_API.postLogin() && sentToken && sentToken === authToken)
-			setAuth(null, null);
-		if (res.status === 401 && path !== CIX_API.postLogin() && sessionAuthenticated) {
-			/* #544: the session this page believed in is gone. */
-			sessionAuthenticated = false;
-			applySessionEligibility();
-		}
+		if (res.status === 401 && path !== CIX_API.postLogin())
+			sessionLapsed(sentToken && sentToken === authToken);
 		throw err;
 	}
 	if (method !== "GET")
@@ -2796,6 +2814,12 @@ function renderCurrentView() {
 window.addEventListener("hashchange", () => {
 	renderCurrentView();
 	ensureActiveCategoryExpanded();
+	/* ADR-0339: with the stream live nothing sweeps every page any more,
+	 * so the page arrived at reads what it shows, once. A change while
+	 * it is open is the stream's to report. */
+	if (eventStream.isLive())
+		runRefreshers(refreshersForView(CATEGORY_VIEWS[parseHash().category]))
+			.then(renderCurrentView);
 });
 
 /* ---------- tree ---------- */
@@ -14659,6 +14683,29 @@ function refreshersForView(view) {
 }
 
 async function poll() {
+	/*
+	 * ADR-0339: while the event stream is live the box says what changed,
+	 * so nothing here asks. Its heartbeat is the liveness signal (the LEDs
+	 * blink on its frames), a change runs the refreshers that need it
+	 * (runEventRefresh()), and navigation reads the page it lands on. What
+	 * stays is request-free re-rendering, for anything drawn relative to
+	 * the clock, and the log panel, a stream with no subscription yet
+	 * (phase 2). When the stream is lost or there is no session, this is
+	 * the polling it always was -- and the status bar says the page is
+	 * not live (renderStreamState()).
+	 */
+	if (eventStream.isLive()) {
+		if (document.hidden)
+			return;
+		try {
+			await pollServerLogs();
+		} catch (e) {
+			/* The log panel is best-effort, as below. */
+		}
+		renderTree();
+		renderCurrentView();
+		return;
+	}
 	await refreshHealth();
 	/* The session shell's own two facts come from that health read and
 	 * from nothing else, so they refresh here -- a locked dashboard
@@ -14714,6 +14761,137 @@ async function poll() {
 	}
 	renderTree();
 	renderCurrentView();
+}
+
+/* ---------- ADR-0339: the event stream ----------
+ *
+ * The box names the reads that changed (web/events.js holds the rules).
+ * Phase 1 of what a change means here: any change re-runs the core
+ * refreshers and the current page's, debounced, so a burst is one
+ * render. Phase 2 narrows that to the refreshers that read what moved.
+ */
+const EVENTS_DEBOUNCE_MS = 150;
+let eventStreamToken;              /* the token the open stream was opened with; undefined = none */
+let eventsChanged = new Set();     /* operationIds named since the last refresh */
+let eventsTimer = null;
+let eventsRefreshing = false;
+let eventsStaleWhileHidden = false;
+const streamStateEl = document.getElementById("status-stream");
+
+const eventStream = createEventStream({
+	makeSocket: () => {
+		const proto = location.protocol === "https:" ? "wss:" : "ws:";
+		/* #541's arrangement, as the console uses it: the session rides
+		 * as a subprotocol, since a browser WebSocket sets no headers. */
+		const wsProtocols = authToken ? ["cix", "cix.bearer." + authToken] : [];
+
+		return new WebSocket(proto + "//" + location.host + CIX_API.getEvents(), wsProtocols);
+	},
+	now: () => Date.now(),
+	setTimer: (fn, ms) => setTimeout(fn, ms),
+	clearTimer: (id) => clearTimeout(id),
+	onFrame: () => ledBlink(ledRx),
+	onChange: (ops) => {
+		for (const op of ops)
+			eventsChanged.add(op);
+		scheduleEventRefresh();
+	},
+	onLive: (live) => {
+		if (live) {
+			statusLeds.className = "status-leds led-state-ok";
+			statusLeds.title = "Live — the box tells this page what changed";
+		}
+		renderStreamState();
+	},
+	/* Close code 4401: the session ended while the stream was open. The
+	 * same consequence as a 401 (sessionLapsed()), and only for this
+	 * code -- a daemon restart closes the stream too, and must never
+	 * sign anyone out. */
+	onSessionEnded: () => {
+		eventStreamToken = undefined;
+		sessionLapsed(true);
+		renderStreamState();
+	},
+});
+
+/* Whether this page should hold a stream: a session, or a host that
+ * needs none. Opened for the token it was opened with, and reopened when
+ * that changes, because what a stream may hear is decided per session. */
+function syncEventStream() {
+	const want = sessionChecked && (sessionAuthenticated || !hostGated);
+
+	if (!want) {
+		stopEventStream();
+		return;
+	}
+	if (eventStreamToken !== (authToken || "")) {
+		eventStream.stop();
+		eventStreamToken = authToken || "";
+		eventStream.start();
+	}
+	renderStreamState();
+}
+
+function stopEventStream() {
+	if (eventStreamToken === undefined)
+		return;
+	eventStream.stop();
+	eventStreamToken = undefined;
+	renderStreamState();
+}
+
+/*
+ * The status bar says whether the page is live. Nothing when it is --
+ * that is the normal state and the LEDs already show the traffic -- and
+ * "Live updates lost — reconnecting" when a stream the page should hold
+ * is not up, so a page that has stopped being current never looks
+ * current. Signed out, the login banner already says why nothing moves.
+ */
+function renderStreamState() {
+	if (streamStateEl === null)
+		return;
+	const lost = eventStreamToken !== undefined && !eventStream.isLive();
+
+	streamStateEl.hidden = !lost;
+	streamStateEl.textContent = lost ? "Live updates lost — reconnecting" : "";
+}
+
+function scheduleEventRefresh() {
+	if (document.hidden) {
+		eventsStaleWhileHidden = true;
+		return;
+	}
+	if (eventsTimer === null)
+		eventsTimer = setTimeout(runEventRefresh, EVENTS_DEBOUNCE_MS);
+}
+
+async function runEventRefresh() {
+	eventsTimer = null;
+	if (eventsRefreshing) {
+		/* One at a time: what arrived meanwhile goes in the next. */
+		scheduleEventRefresh();
+		return;
+	}
+	const ops = eventsChanged;
+
+	eventsChanged = new Set();
+	eventsRefreshing = true;
+	try {
+		if (ops.has("getWhoami"))
+			await refreshSessionPermissions();
+		if (ops.has("getHealth"))
+			await refreshHealth();
+		if (ops.has("getSystemBoot"))
+			refreshStatusBar();
+		await runRefreshers(CORE_REFRESHERS);
+		await runRefreshers(refreshersForView(CATEGORY_VIEWS[parseHash().category]));
+		renderTree();
+		renderCurrentView();
+	} finally {
+		eventsRefreshing = false;
+	}
+	if (eventsChanged.size > 0)
+		scheduleEventRefresh();
 }
 
 /* ---------- tree right-click context menu ---------- */
@@ -14888,6 +15066,15 @@ setInterval(poll, POLL_INTERVAL_MS);
 document.addEventListener("visibilitychange", () => {
 	if (!document.hidden) {
 		lastSweepAt = 0;
+		/* ADR-0339: a hidden tab only noted that something changed; it
+		 * refreshes once now. Its timers were throttled while hidden, so
+		 * the stream's silence is checked here rather than trusted to
+		 * the watchdog. */
+		eventStream.checkSilence();
+		if (eventsStaleWhileHidden) {
+			eventsStaleWhileHidden = false;
+			scheduleEventRefresh();
+		}
 		poll();
 	}
 });

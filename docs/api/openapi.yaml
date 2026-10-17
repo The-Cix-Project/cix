@@ -361,7 +361,7 @@ paths:
       operationId: getEvents
       x-cix-read: stream
       x-cix-permission: authenticated
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       responses:
         "101":
           description: Switching Protocols -- the connection now carries the announcements described above.

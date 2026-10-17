@@ -630,6 +630,20 @@ header {
 	min-width: 0;
 }
 
+/*
+ * ADR-0339: shown only when the page should be live and is not -- "Live
+ * updates lost — reconnecting" -- so a page that stopped being current
+ * never looks current. Amber attention text, the same theme-aware ink a
+ * paused container uses; not the fault red, because the page recovers
+ * by itself.
+ */
+.status-stream {
+	font-size: 0.72rem;
+	color: var(--paused);
+	margin-right: 0.75rem;
+	white-space: nowrap;
+}
+
 .status-leds {
 	display: flex;
 	align-items: center;

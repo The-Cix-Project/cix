@@ -338,7 +338,8 @@ int main(void)
 	JS_FreeValue(ctx, shim);
 	if (shim_bad)
 		fail("the DOM shim itself does not load");
-	else if (run_file(ctx, "web/api.js") == 0 && run_file(ctx, "web/form.js") == 0) {
+	else if (run_file(ctx, "web/api.js") == 0 && run_file(ctx, "web/form.js") == 0 &&
+	         run_file(ctx, "web/events.js") == 0) {
 		/*
 		 * Each assertion names a REAL field of a REAL schema, so the
 		 * contract and the renderer are checked against each other
@@ -1576,6 +1577,87 @@ int main(void)
 		       "  return el.value;\n"
 		       "})()",
 		       "debug=1\nmode=x=y");
+
+		/*
+		 * ---- the event stream's rules (ADR-0339, web/events.js) ----
+		 *
+		 * A fake socket and a fake clock, so every rule is driven
+		 * exactly: what a frame changes, what a close means, and when
+		 * silence counts as lost. The page's side -- what a change
+		 * re-reads -- is app.js and is checked in a browser.
+		 */
+		expect(ctx, "the event stream's harness loads",
+		       "(() => {\n"
+		       "  const t = { now: 0, timers: [], sockets: [], changes: [], ended: 0, frames: 0 };\n"
+		       "  t.stream = createEventStream({\n"
+		       "    makeSocket: () => { const s = { closed: false, close() { this.closed = true; } };\n"
+		       "                        t.sockets.push(s); return s; },\n"
+		       "    now: () => t.now,\n"
+		       "    setTimer: (fn, ms) => { t.timers.push({ fn: fn, at: t.now + ms });\n"
+		       "                            return t.timers.length - 1; },\n"
+		       "    clearTimer: (id) => { if (t.timers[id]) t.timers[id].fn = null; },\n"
+		       "    onChange: (ops) => t.changes.push(ops.slice().sort().join(\",\")),\n"
+		       "    onLive: () => {},\n"
+		       "    onSessionEnded: () => { t.ended++; },\n"
+		       "    onFrame: () => { t.frames++; } });\n"
+		       "  t.advance = (ms) => { t.now += ms;\n"
+		       "    for (let again = true; again; ) { again = false;\n"
+		       "      for (const x of t.timers) if (x.fn && x.at <= t.now) {\n"
+		       "        const f = x.fn; x.fn = null; f(); again = true; } } };\n"
+		       "  t.sock = () => t.sockets[t.sockets.length - 1];\n"
+		       "  t.send = (o) => t.sock().onmessage({ data: JSON.stringify(o) });\n"
+		       "  t.close = (code) => t.sock().onclose({ code: code });\n"
+		       "  globalThis.EV = t;\n"
+		       "  return typeof t.stream.start;\n"
+		       "})()",
+		       "function");
+		expect(ctx, "the first frame changes every read it names",
+		       "(() => { EV.stream.start();\n"
+		       "  EV.send({ epoch: \"e1\", gen: { a: 1, b: 5 } });\n"
+		       "  return EV.changes.join(\"|\") + \" \" + EV.stream.isLive(); })()",
+		       "a,b true");
+		expect(ctx, "a heartbeat at unchanged generations changes nothing",
+		       "(() => { EV.send({ epoch: \"e1\", gen: { a: 1, b: 5 } });\n"
+		       "  return EV.changes.length + \" frames=\" + EV.frames; })()",
+		       "1 frames=2");
+		expect(ctx, "one generation moving changes exactly that read",
+		       "(() => { EV.send({ epoch: \"e1\", gen: { a: 2, b: 5 } });\n"
+		       "  return EV.changes[EV.changes.length - 1]; })()",
+		       "a");
+		expect(ctx, "a lower generation is a late frame, and changes nothing",
+		       "(() => { EV.send({ epoch: \"e1\", gen: { a: 1 } });\n"
+		       "  return String(EV.changes.length); })()",
+		       "2");
+		expect(ctx, "a new epoch -- the daemon restarted -- changes every read again",
+		       "(() => { EV.send({ epoch: \"e2\", gen: { a: 1, b: 1 } });\n"
+		       "  return EV.changes[EV.changes.length - 1]; })()",
+		       "a,b");
+		expect(ctx, "a lost stream (1006) is not a sign-out, and reconnects",
+		       "(() => { EV.close(1006);\n"
+		       "  const before = EV.stream.isLive() + \" ended=\" + EV.ended + \" \" + EV.sockets.length;\n"
+		       "  EV.advance(1000);\n"
+		       "  return before + \" -> \" + EV.sockets.length; })()",
+		       "false ended=0 1 -> 2");
+		expect(ctx, "and backs off: a second loss before any frame waits longer",
+		       "(() => { EV.close(1006);\n"
+		       "  EV.advance(1000); const after1 = EV.sockets.length;\n"
+		       "  EV.advance(1000);\n"
+		       "  return after1 + \" -> \" + EV.sockets.length; })()",
+		       "2 -> 3");
+		expect(ctx, "25 s of silence is a lost stream, whatever the socket says",
+		       "(() => { EV.send({ epoch: \"e2\", gen: { a: 1, b: 1 } });\n"
+		       "  const s = EV.sock();\n"
+		       "  EV.advance(26000);\n"
+		       "  return s.closed + \" \" + EV.stream.isLive(); })()",
+		       "true false");
+		expect(ctx, "close code 4401 ends the session, and does not reconnect",
+		       "(() => { EV.advance(1000);\n"
+		       "  EV.send({ epoch: \"e2\", gen: { a: 1, b: 1 } });\n"
+		       "  EV.close(4401);\n"
+		       "  const n = EV.sockets.length;\n"
+		       "  EV.advance(60000);\n"
+		       "  return EV.ended + \" \" + (EV.sockets.length === n); })()",
+		       "1 true");
 	}
 
 	JS_FreeContext(ctx);
