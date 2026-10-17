@@ -253,22 +253,58 @@ static int http_emit(int fd, const void *buf, size_t n)
  * would have sent, and a client asking "how big is this" is most of
  * why the method exists.
  */
+/*
+ * ADR-0339: the status of the last response written, so dispatch() can
+ * tell whether a change succeeded before announcing it -- a handler
+ * answers through any of several helpers, and every one of them ends
+ * here. 0 until a response is written after the last reset.
+ */
+static int g_last_status;
+
+int http_last_status(void)
+{
+	return g_last_status;
+}
+
+void http_reset_last_status(void)
+{
+	g_last_status = 0;
+}
+
+/*
+ * ADR-0339: header lines appended to every response while set -- the
+ * generation of the read being answered, which is only known to the
+ * caller (main.c sets it around a handler). Asked for at write time,
+ * so the value is the one current when the response leaves.
+ */
+static http_header_hook_fn g_header_hook;
+
+void http_set_header_hook(http_header_hook_fn fn)
+{
+	g_header_hook = fn;
+}
+
 static int write_response(int fd, int status, const char *status_text, const char *content_type,
                            const char *extra_headers, const char *body, size_t body_len,
                            int omit_body)
 {
-	char header[512];
+	char header[768];
+	char hooked[128];
 	int hlen;
 
+	g_last_status = status;
+	hooked[0] = '\0';
+	if (g_header_hook != NULL && g_header_hook(hooked, sizeof(hooked)) < 0)
+		hooked[0] = '\0';
 	hlen = snprintf(header, sizeof(header),
 	                "HTTP/1.1 %d %s\r\n"
 	                "Content-Type: %s\r\n"
 	                "Content-Length: %zu\r\n"
-	                "%s"
+	                "%s%s"
 	                "Connection: close\r\n"
 	                "\r\n",
 	                status, status_text, content_type, body_len,
-	                extra_headers != NULL ? extra_headers : "");
+	                extra_headers != NULL ? extra_headers : "", hooked);
 	if (hlen < 0 || (size_t)hlen >= sizeof(header))
 		return -1;
 

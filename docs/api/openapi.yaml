@@ -330,6 +330,41 @@ paths:
         "204":
           description: Session invalidated (or was already gone)
 
+  /events/status:
+    get:
+      summary: The box's announcement state -- its boot epoch and every announced read's generation (ADR-0339)
+      description: >
+        Each read the box announces (`x-cix-read` state, sample or
+        session) has a generation counter, raised every time the box
+        announces that read changed. `epoch` is a random value chosen
+        at daemon start: counters start again at every start, so a
+        generation means nothing without the epoch it belongs to. A
+        client that holds an `X-Cix-Generation` header from an earlier
+        read compares it with this to learn whether its copy is
+        current.
+        It is `derived` rather than `state` because it changes on every
+        announcement, so announcing it would announce itself.
+      operationId: getEventsStatus
+      x-cix-read: derived
+      x-cix-permission: authenticated
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: The epoch and the generation of every announced read
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [epoch, generations]
+                properties:
+                  epoch:
+                    type: string
+                    description: Sixteen hex digits, chosen at random when the daemon started.
+                  generations:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                    description: Each announced read's operationId and its current generation.
   /whoami:
     get:
       summary: Is the caller's own bearer token currently authenticated (ADR-0164)

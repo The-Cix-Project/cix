@@ -507,6 +507,8 @@ static const char USAGE_TEXT[] =
 	        "  host-stats  -- host-wide load/CPU/memory/disk/network snapshot (ADR-0073)\n"
 	        "  stalls  -- times the daemon's event loop stopped turning, recorded by a\n"
 	        "               separate watchdog, with the kernel function it slept in (#100)\n"
+	        "  events status  -- the box's boot epoch and the generation of every read it\n"
+	        "               announces when it changes (ADR-0339)\n"
 	        "  control-plane-reservation show\n"
 	        "  control-plane-reservation set [--enabled | --disabled] [--cpu-percent=N]\n"
 	        "               [--memory-bytes=N]  -- how much of the machine is held back for\n"
@@ -8371,6 +8373,43 @@ static int cmd_stalls(const struct cix_client *c, int json_mode)
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_stalls);
+}
+
+/*
+ * ADR-0339: cixctl events status -- the box's boot epoch and the
+ * generation of every read it announces. A generation that never moves
+ * while the thing it shows plainly changes is a missing announcement,
+ * and this is how to see it from a terminal.
+ */
+static void fmt_events_status(const struct json_value *v)
+{
+	const struct json_value *ep = json_object_get(v, "epoch");
+	const struct json_value *gens = json_object_get(v, "generations");
+	size_t i;
+
+	printf("epoch: %s\n", ep != NULL && ep->type == JSON_STRING ? ep->u.string : "?");
+	if (gens == NULL || gens->type != JSON_OBJECT)
+		return;
+	for (i = 0; i < gens->u.object.count; i++)
+		printf("  %-40s %lld\n", gens->u.object.keys[i],
+		       (long long)json_as_number(gens->u.object.values[i]));
+}
+
+static int cmd_events(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	const char *sub = argc > 0 ? argv[0] : "status";
+
+	if (strcmp(sub, "status") != 0) {
+		fprintf(stderr, "cixctl: events takes: status\n");
+		return 2;
+	}
+	if (cix_client_request(c, CIX_API_getEventsStatus_METHOD, CIX_API_getEventsStatus, NULL,
+	                       &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_events_status);
 }
 
 
@@ -19137,6 +19176,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_boot_console(client, json_mode, argc, argv);
 	if (strcmp(cmd, "stalls") == 0)
 		return cmd_stalls(client, json_mode);
+	if (strcmp(cmd, "events") == 0)
+		return cmd_events(client, json_mode, argc, argv);
 	if (strcmp(cmd, "assembly") == 0)
 		return cmd_assembly(client, json_mode, argc, argv);
 	if (strcmp(cmd, "hostauth-config") == 0)

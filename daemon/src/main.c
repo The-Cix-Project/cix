@@ -116,6 +116,7 @@
 #include "apiresp.h"
 #include "daemonpaths.h"
 #include "apiroute.h"
+#include "events.h"
 #include "api_config.h"
 #include "config.h"
 #include "websocket.h"
@@ -5042,6 +5043,14 @@ static void handle_uevent_event(struct conn *cc)
 		off += line_len + 1;
 	}
 
+	/* ADR-0339: any device arriving or leaving -- a disk, a partition, a
+	 * USB stick -- changes what the device and storage reads show, with
+	 * no API call for dispatch() to announce. */
+	if (is_add || is_remove) {
+		events_announce(EV_listDevices);
+		events_announce(EV_listStorage);
+	}
+
 	if (!is_usb || !is_whole_device || (!is_add && !is_remove))
 		return;
 
@@ -8088,6 +8097,11 @@ static void handle_container_init_event(struct conn *cc)
 {
 	struct registry_entry *entry = cc->entry;
 
+	/* ADR-0339: cix-init reports a service starting, stopping, becoming
+	 * ready or being reaped -- each a change to what the container
+	 * reads show, made inside the container with no API call. */
+	events_announce(EV_listContainers);
+	events_announce(EV_getContainer);
 	if (container_init_pump(entry, cc->fd)) {
 		cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 		close(cc->fd);
@@ -9626,6 +9640,7 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 	 */
 	g_bootroot_assembly_started++;
 	g_bootroot_assembly_running = 1;
+	events_announce(EV_getSystemAssembly); /* ADR-0339 */
 
 	if (output_pipe[1] >= 0)
 		close(output_pipe[1]);
@@ -9640,6 +9655,7 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 		kill(pid, SIGKILL);
 		waitpid(pid, NULL, 0);
 		g_bootroot_assembly_running = 0;
+		events_announce(EV_getSystemAssembly); /* ADR-0339 */
 		return;
 	}
 	g_bootroot_output.len = 0;
@@ -25818,6 +25834,29 @@ static void op_getWhoami(const struct api_ctx *ctx)
 	handle_whoami(ctx->fd, ctx->req->headers, ctx->req->headers_len);
 }
 
+/* GET /v1/events/status -- ADR-0339: the epoch and every announced
+ * read's generation. */
+static void op_getEventsStatus(const struct api_ctx *ctx)
+{
+	struct json_writer w;
+	int slot;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "epoch");
+	jw_str(&w, events_epoch());
+	jw_key(&w, "generations");
+	jw_obj_open(&w);
+	for (slot = 0; slot < EVENTS_READ_COUNT; slot++) {
+		jw_key(&w, events_op_id(slot));
+		jw_int(&w, (long long)events_generation(slot));
+	}
+	jw_obj_close(&w);
+	jw_obj_close(&w);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 /* GET /v1/system/hostauth-config */
 static void op_getHostauthConfig(const struct api_ctx *ctx)
 {
@@ -28885,6 +28924,31 @@ static int authorize_upgrade_route(int fd, const struct http_request *req)
 	return authorize_route(fd, req, &g_api_routes[idx], 0);
 }
 
+/*
+ * ADR-0339: the announced read whose handler is running, or -1, for
+ * events_generation_header(). Set and cleared around the handler in
+ * dispatch(), the same single-in-flight-request reasoning as
+ * g_response_conn.
+ */
+static int g_events_response_slot = -1;
+
+/*
+ * ADR-0339: "X-Cix-Generation: <epoch>.<generation>" on the answer to an
+ * announced read, so a client knows which generation its copy is. Read
+ * at write time rather than before the handler, so it is the
+ * generation current when the response leaves.
+ */
+static int events_generation_header(char *buf, size_t size)
+{
+	int n;
+
+	if (g_events_response_slot < 0)
+		return -1;
+	n = snprintf(buf, size, "X-Cix-Generation: %s.%llu\r\n", events_epoch(),
+	             (unsigned long long)events_generation(g_events_response_slot));
+	return n > 0 && (size_t)n < size ? 0 : -1;
+}
+
 static void dispatch(int fd, const struct http_request *req)
 {
 	/*
@@ -29023,7 +29087,23 @@ static void dispatch(int fd, const struct http_request *req)
 			ctx.peer_ip = g_req_peer_ip;
 			ctx.p[0] = params[0];
 			ctx.p[1] = params[1];
+			/*
+			 * ADR-0339: an announced read's answer carries its
+			 * generation, and a change that succeeded announces the
+			 * reads its contract says it makes stale. One place, so
+			 * every change made through the API -- by the dashboard,
+			 * cixctl, another tab or another operator -- is announced
+			 * without any handler remembering to.
+			 */
+			http_reset_last_status();
+			g_events_response_slot = strcmp(req->method, "GET") == 0
+			                             ? events_slot_of(g_api_routes[idx].op_id)
+			                             : -1;
 			g_api_routes[idx].fn(&ctx);
+			g_events_response_slot = -1;
+			if (strcmp(req->method, "GET") != 0 && http_last_status() >= 200 &&
+			    http_last_status() < 300)
+				events_announce_change(g_api_routes[idx].op_id);
 			return;
 		}
 	}
@@ -32512,6 +32592,7 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 	 * number at the moment it resolves, whichever way it resolves.
 	 */
 	g_bootroot_assembly_running = 0;
+	events_announce(EV_getSystemAssembly); /* ADR-0339 */
 	if (reaped == cc->pkg_fetch_pid && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
 		g_bootroot_assembly_completed = g_bootroot_assembly_started;
 		/* cix#568: the root just renamed into place says which kernel
@@ -34261,6 +34342,8 @@ static int cixd_main(int argc, char **argv)
 	 * by refusing to read (#237).
 	 */
 	http_set_response_sink(client_response_sink);
+	/* ADR-0339: X-Cix-Generation on every answer to an announced read. */
+	http_set_header_hook(events_generation_header);
 
 	while (!g_stop) {
 		struct cix_epoll_event events[MAX_EVENTS];
@@ -34529,6 +34612,9 @@ int main(int argc, char **argv)
 	/* Record the argv area before anything forks, so procfuse and the
 	 * watchdog can set their own /proc/<pid>/cmdline (#456). */
 	proctitle_init(argc, argv);
+	/* ADR-0339: the boot epoch, before anything can announce -- restoring
+	 * containers at startup goes through registry_create(), which does. */
+	events_init();
 
 	/*
 	 * Character classification is UTF-8, before anything can extract

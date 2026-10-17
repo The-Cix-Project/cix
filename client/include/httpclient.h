@@ -40,6 +40,13 @@ struct cix_response {
 	 * the body.
 	 */
 	long content_length;
+	/*
+	 * ADR-0339: the response's X-Cix-Generation, "<epoch>.<generation>"
+	 * -- which generation of an announced read this answer is. Empty
+	 * when the response carried none (a change, a stream, a derived
+	 * read, or a daemon that predates the header).
+	 */
+	char generation[48];
 	struct json_value *json; /* NULL if the body was empty or not valid JSON (e.g. a 204) */
 };
 

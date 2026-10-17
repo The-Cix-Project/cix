@@ -44,6 +44,9 @@ flowchart LR
     reactor["epoll reactor<br/>hand-rolled HTTP/1.1 + JSON"] --> rbac
     rbac["authorize_route in dispatch<br/>one enforcement point"] --> subsys
     sched["Scheduler<br/>pkg.sync, pkg.discover, system.roll"] --> subsys
+    rbac -- "a change answered 2xx" --> events
+    subsys -- "the daemon's own changes" --> events
+    events["Events -- a generation per read<br/>under a boot epoch"]
 
     subgraph subsys["subsystems"]
         registry["Registry -- lifecycle, restart, readiness"]
@@ -61,6 +64,8 @@ flowchart LR
 Single-threaded, non-blocking `epoll` reactor ([ADR-0007](../adr/0007-hand-rolled-daemon-no-external-libs.md), [ADR-0009](../adr/0009-cloexec-daemon-fds-before-clone3.md)); hand-rolled HTTP/1.1 and JSON, no external libraries. The reactor must not block — [ADR-0247](../adr/0247-the-reactor-does-not-block-and-that-is-the-defence.md) — so work it cannot afford to wait for is forked ([ADR-0278](../adr/0278-the-reactor-forks-work-it-cannot-afford-to-wait-for.md)).
 
 **Authorisation is one point, not many, and it sits behind the reactor rather than in front of it.** The reactor accepts and parses first; every operation then carries an `x-cix-permission` the contract declares, `authorize_route()` inside `dispatch()` enforces it, and **every read needs a login** ([ADR-0317](../adr/0317-permissions-are-declared-by-the-api-contract.md)). A permission check in a handler is the parallel implementation that ADR forbids. The one trap: anything answered *before* `dispatch()` — the console and build-log WebSocket upgrades — must call `authorize_upgrade_route()` itself.
+
+**Events: the box says what changed** ([ADR-0339](../adr/0339-the-dashboard-is-told-what-changed.md)). Every read the contract marks as announced has a generation counter under a random boot epoch. `dispatch()` raises the ones a successful change's `x-cix-invalidates` names, and the subsystems raise them for changes they make by themselves: a container exiting, a build changing state, a migration finishing. Each answer to such a read carries `X-Cix-Generation`, so a client knows which generation it holds.
 
 **The scheduler** runs the platform's own periodic work: `pkg.sync` every 6 hours on a fresh host ([ADR-0316](../adr/0316-a-fresh-host-syncs-recipes-on-a-schedule.md)), hourly `pkg.discover`, and `system.roll` in a nightly 03:00 window that hostbuilds the kernel and cix, assembles, stages and reboots ([ADR-0327](../adr/0327-the-host-follows-its-rolling-packages-in-a-nightly-window.md)).
 

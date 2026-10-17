@@ -229,12 +229,16 @@ static int do_one_request(const struct cix_client *c, const char *method, const 
 	out->body_len = 0;
 	out->content_length = -1;
 	out->content_type[0] = '\0';
+	out->generation[0] = '\0';
 	if (body_start != NULL) {
 		size_t headers_len = (size_t)(body_start - rb.buf);
 		char clen[32];
 
 		find_header_value(rb.buf, headers_len, "Content-Type", out->content_type,
 		                   sizeof(out->content_type));
+		/* ADR-0339: the generation of an announced read's answer. */
+		find_header_value(rb.buf, headers_len, "X-Cix-Generation", out->generation,
+		                  sizeof(out->generation));
 		/*
 		 * Read rather than assumed from body_len, because a HEAD
 		 * response declares a length it does not send (#498).

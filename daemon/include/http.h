@@ -142,6 +142,17 @@ int http_set_nonblocking(int fd);
  * lives on main.c's own `struct conn`, which this layer must not know
  * about.
  */
+/*
+ * ADR-0339: the status of the last response written (0 after a reset
+ * until one is), and a hook that may append header lines -- each
+ * CRLF-terminated, NUL-terminated within `size` -- to every response
+ * while it is set. The hook returns -1 to add nothing.
+ */
+int http_last_status(void);
+void http_reset_last_status(void);
+typedef int (*http_header_hook_fn)(char *buf, size_t size);
+void http_set_header_hook(http_header_hook_fn fn);
+
 typedef int (*http_response_sink_fn)(int fd, const void *buf, size_t n);
 
 void http_set_response_sink(http_response_sink_fn fn);

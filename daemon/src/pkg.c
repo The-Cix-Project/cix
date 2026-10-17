@@ -13,6 +13,7 @@
 #include "ldap.h"
 #include "linux_compat.h"
 #include "logstore.h"
+#include "events.h"
 #include "elfcheck.h"
 #include "namecheck.h"
 #include "cbsrecipe.h"
@@ -301,6 +302,32 @@ struct pkg_entry {
 	 */
 	int cancel_requested;
 };
+
+/*
+ * ADR-0339: the one way a package job's state changes, so every change
+ * is announced -- including the ones the daemon makes by itself, a
+ * build reaching its next stage or failing, which no API call precedes
+ * and dispatch() therefore cannot announce. An install also changes the
+ * image it lands in and the build history, so those reads go with it.
+ * test_announce fails any other assignment to `state` in this file.
+ */
+static void pkg_announce_jobs(void)
+{
+	events_announce(EV_listPkg);
+	events_announce(EV_getPkg);
+	events_announce(EV_listBuildLogs);
+	events_announce(EV_getPipeline);
+	events_announce(EV_getPipelineRuns);
+	events_announce(EV_listImages);
+	events_announce(EV_getImage);
+	events_announce(EV_listSoftware);
+}
+
+static void pkg_job_set_state(struct pkg_entry *e, enum pkg_state s)
+{
+	e->state = s;
+	pkg_announce_jobs();
+}
 
 struct pkg_recipe {
 	char name[PKG_NAME_MAX];
@@ -1683,7 +1710,7 @@ static void pkg_record_outcome(struct pkg_entry *e, int keep_installed,
                                 enum pipeline_stage stage, enum pipeline_status status,
                                 const char *fmt, va_list ap)
 {
-	e->state = keep_installed ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
+	pkg_job_set_state(e, keep_installed ? PKG_STATE_INSTALLED : PKG_STATE_FAILED);
 	e->stage = stage;
 	e->status = status;
 	vsnprintf(e->error, sizeof(e->error), fmt, ap);
@@ -1717,7 +1744,7 @@ static void pkg_record_outcome(struct pkg_entry *e, int keep_installed,
 	 * so no future caller can reopen it.
 	 */
 	if (keep_installed && e->version[0] == '\0') {
-		e->state = PKG_STATE_FAILED;
+		pkg_job_set_state(e, PKG_STATE_FAILED);
 		logstore_write("cixd", "error",
 		               "pkg %s@%s: a failed attempt asked to keep an install this entry "
 		               "cannot name, so there was none to keep -- recorded failed instead "
@@ -5802,7 +5829,7 @@ static int parse_persisted_entry(const struct json_value *item, struct pkg_entry
 	strncpy(slot->version, version, sizeof(slot->version) - 1);
 	if (depends != NULL)
 		strncpy(slot->depends, depends, sizeof(slot->depends) - 1);
-	slot->state = PKG_STATE_INSTALLED;
+	pkg_job_set_state(slot, PKG_STATE_INSTALLED);
 	slot->in_use = 1;
 
 	for (i = 0; i < jfiles->u.array.count; i++) {
@@ -9292,7 +9319,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 		strncpy(e->name, recipe.name, sizeof(e->name) - 1);
 		strncpy(e->image, g_chains[chain_idx].image, sizeof(e->image) - 1);
 	}
-	e->state = PKG_STATE_FETCHING;
+	pkg_job_set_state(e, PKG_STATE_FETCHING);
 	/*
 	 * #326: the recipe is parsed and present RIGHT NOW, so what this
 	 * job is installing is settled here rather than re-read at
@@ -10313,7 +10340,7 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
 		}
 	}
 
-	e->state = PKG_STATE_BUILDING;
+	pkg_job_set_state(e, PKG_STATE_BUILDING);
 	/* The clock a stall is measured against before any output arrives.
 	 * Without this a build that produces NOTHING -- the worst kind to
 	 * be blind to -- would never be reported, because there would be
@@ -12373,7 +12400,7 @@ void pkg_runs_close_open_at_shutdown(void)
 			snprintf(e->error, sizeof(e->error),
 			         "the daemon stopped while this was %s",
 			         e->state == PKG_STATE_FETCHING ? "fetching" : "building");
-		e->state = PKG_STATE_FAILED;
+		pkg_job_set_state(e, PKG_STATE_FAILED);
 		e->status = PIPELINE_FAILED;
 		pkg_run_close(e);
 		closed++;
@@ -14342,7 +14369,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	/* #424: the install stage begins here, where a successful build's
 	 * output starts going into the image. */
 	e->install_started_at = time(NULL);
-	e->state = PKG_STATE_INSTALLED;
+	pkg_job_set_state(e, PKG_STATE_INSTALLED);
 	e->error[0] = '\0';
 	e->status = PIPELINE_OK; /* a success that leaves a failed status set
 	                          * reports an installed package as failed to
@@ -15168,6 +15195,7 @@ enum pkg_error pkg_delete(const char *name, const char *image)
 		}
 		pkg_entry_free_files(e);
 		memset(e, 0, sizeof(*e));
+		pkg_announce_jobs();
 		return save_state() == 0 ? PKG_OK : PKG_ERR_PERSIST_FAILED;
 	}
 
@@ -15205,6 +15233,7 @@ enum pkg_error pkg_delete(const char *name, const char *image)
 
 	saved = *e;
 	memset(e, 0, sizeof(*e));
+	pkg_announce_jobs();
 	ctx.e = &saved;
 
 	if (image_produce_new_version(normalize_image(image), delete_mutate, &ctx, NULL) != 0) {
@@ -15348,6 +15377,14 @@ static struct {
 	time_t finished_at;
 } g_recipe_commit;
 
+/* ADR-0339: the recipe-commit job's state changes only here, announced. */
+static void recipe_commit_set_state(enum recipe_commit_state s)
+{
+	g_recipe_commit.state = s;
+	events_announce(EV_getPkgRecipeCommit);
+	events_announce(EV_listPkgRecipes);
+}
+
 static void recipe_commit_result_path(char *out, size_t out_size)
 {
 	snprintf(out, out_size, "%s/recipe-commit.result", g_pkg_dir);
@@ -15444,7 +15481,7 @@ enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, co
 	snprintf(g_recipe_commit.message, sizeof(g_recipe_commit.message),
 	         "%s@%s: committed by cixd on %s before publishing it (ADR-0323)%s%s", name,
 	         check.version, host, check.changelog[0] != '\0' ? "\n\n" : "", check.changelog);
-	g_recipe_commit.state = RECIPE_COMMIT_RUNNING;
+	recipe_commit_set_state(RECIPE_COMMIT_RUNNING);
 	g_recipe_commit.started_at = time(NULL);
 	return PKG_OK;
 }
@@ -15787,7 +15824,7 @@ enum pkg_error pkg_recipe_revise_start(const char *name, const char *version, co
 /* Called when the helper could not be started, so `done` never runs. */
 void pkg_recipe_commit_abort(const char *why)
 {
-	g_recipe_commit.state = RECIPE_COMMIT_FAILED;
+	recipe_commit_set_state(RECIPE_COMMIT_FAILED);
 	g_recipe_commit.finished_at = time(NULL);
 	snprintf(g_recipe_commit.error, sizeof(g_recipe_commit.error), "%s", why);
 }
@@ -15872,7 +15909,7 @@ void pkg_recipe_commit_done(int exit_status, void *unused)
 		else
 			snprintf(g_recipe_commit.error, sizeof(g_recipe_commit.error), "%s",
 			         "the commit helper failed and said nothing");
-		g_recipe_commit.state = RECIPE_COMMIT_FAILED;
+		recipe_commit_set_state(RECIPE_COMMIT_FAILED);
 		logstore_write("cixd", "error", "pkg recipe commit %s@%s: %s -- nothing published",
 		               g_recipe_commit.name, g_recipe_commit.version, g_recipe_commit.error);
 		free(buf);
@@ -15910,13 +15947,13 @@ void pkg_recipe_commit_done(int exit_status, void *unused)
 		         g_recipe_commit.commit_sha,
 		         pkg_recipe_add_last_error()[0] != '\0' ? pkg_recipe_add_last_error()
 		                                                : "publish refused");
-		g_recipe_commit.state = RECIPE_COMMIT_FAILED;
+		recipe_commit_set_state(RECIPE_COMMIT_FAILED);
 		logstore_write("cixd", "error", "pkg recipe commit %s@%s: %s", g_recipe_commit.name,
 		               g_recipe_commit.version, g_recipe_commit.error);
 		return;
 	}
 	g_recipe_commit.published = 1;
-	g_recipe_commit.state = RECIPE_COMMIT_DONE;
+	recipe_commit_set_state(RECIPE_COMMIT_DONE);
 }
 
 void pkg_recipe_commit_write_json(struct json_writer *w)

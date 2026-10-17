@@ -4,6 +4,7 @@
 #include "internal.h"
 #include "linux_compat.h"
 #include "logstore.h"
+#include "events.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -78,6 +79,20 @@ int registry_list_names(char out_names[][REGISTRY_NAME_MAX], int max)
 			snprintf(out_names[count++], REGISTRY_NAME_MAX, "%s", g_entries[i].name);
 	}
 	return count;
+}
+
+/*
+ * ADR-0339: a container's lifecycle changed, so the reads that show it
+ * are stale. Called wherever this file changes a container's running,
+ * paused or present state -- including from the daemon's own reaper,
+ * where no API call was made and so dispatch() announces nothing.
+ * test_announce fails an assignment to `running` in this file that is
+ * not followed on the next line by a call to this.
+ */
+static void registry_announce(void)
+{
+	events_announce(EV_listContainers);
+	events_announce(EV_getContainer);
 }
 
 enum registry_error registry_create(const char *name, const char *image,
@@ -172,6 +187,7 @@ enum registry_error registry_create(const char *name, const char *image,
 	if (spec->ov.lowerdir != NULL)
 		strncpy(e->lowerdir, spec->ov.lowerdir, sizeof(e->lowerdir) - 1);
 	e->running = 1;
+	registry_announce();
 	e->exit_status = 0;
 	e->term_signal = 0;
 	e->last_exit_reason[0] = '\0';
@@ -406,6 +422,7 @@ static void registry_mark_exited_with(struct registry_entry *entry, int status, 
 		ssize_t diag_len;
 
 		entry->running = 0;
+		registry_announce();
 		entry->exit_status = status;
 		entry->term_signal = sig;
 
@@ -478,6 +495,7 @@ int registry_set_paused(struct registry_entry *e, int freeze)
 	}
 	close(freeze_fd);
 	e->paused = freeze;
+	registry_announce();
 	return 0;
 }
 
@@ -558,6 +576,7 @@ int registry_remove(const char *name)
 	close(e->handle.cgroup_fd);
 	registry_close_init_fds(e);
 	e->in_use = 0;
+	registry_announce();
 	return 0;
 }
 
@@ -590,6 +609,9 @@ int registry_network_attach(struct registry_entry *e, const struct registry_netw
 	}
 	e->nets[e->net_count] = *net;
 	e->net_count++;
+	registry_announce();
+	events_announce(EV_listNetworks);
+	events_announce(EV_getNetwork);
 	return 0;
 }
 
@@ -605,6 +627,9 @@ int registry_network_detach(struct registry_entry *e, const char *network_name,
 		for (; i < e->net_count - 1; i++)
 			e->nets[i] = e->nets[i + 1];
 		e->net_count--;
+		registry_announce();
+		events_announce(EV_listNetworks);
+		events_announce(EV_getNetwork);
 		return 0;
 	}
 	return -1;
@@ -685,6 +710,8 @@ int registry_device_live_attach(struct registry_entry *e, const struct device_sp
 
 	e->devices[e->device_count] = *new_attachment;
 	e->device_count++;
+	registry_announce();
+	events_announce(EV_listDevices);
 	return 0;
 }
 
@@ -749,6 +776,8 @@ int registry_device_live_detach(struct registry_entry *e, const char *id,
 	for (i = idx; i < e->device_count - 1; i++)
 		e->devices[i] = e->devices[i + 1];
 	e->device_count--;
+	registry_announce();
+	events_announce(EV_listDevices);
 	return 0;
 }
 

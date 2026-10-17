@@ -6,6 +6,25 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The box counts every change to what it shows (ADR-0339 step two, #599)
+
+Each read the box announces (124 of them) now has a generation counter under a random boot epoch.
+
+- **Changes through the API:** `dispatch()` raises the generations a change's contract names when the
+  change answers 2xx, and never for a refusal.
+- **The daemon's own changes** raise them from the code that makes them. The covered sites are:
+  - the container registry (start, exit, pause, removal, network and device attachment)
+  - `cix-init`'s service reports and the hotplug listener
+  - a new `pkg_job_set_state()`, which the seven direct package-job state assignments now go through,
+    plus the recipe-commit job, bootroot assembly, scheduled runs and both storage migrations
+- **What clients see:** every answer to an announced read carries `X-Cix-Generation: <epoch>.<n>`, and
+  `GET /v1/events/status` (`cixctl events status`) lists them all.
+
+Three gates cover it. `test_events` (a new daemon selftest) checks the header, the status read, that reading
+announces nothing, that a change announces once, and that a refusal announces nothing. `test_announce` (a
+source scan) fails a state assignment that bypasses its announcing setter. `test_apigen` checks the
+generated slot table against the contract. The stream that pushes generations to a browser is the next step.
+
 ### Every read says what kind it is, and every change what it makes stale (ADR-0339, #599)
 
 The first step of ADR-0339 (the box tells the dashboard what changed instead of being asked). The contract

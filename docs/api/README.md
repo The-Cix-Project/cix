@@ -14,6 +14,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/config/diff` | What a configuration document would change, changing nothing |
 | POST | `/login` | Authenticate, get a session token (ADR-0144) -- `public`, needs no session |
 | POST | `/logout` | Invalidate the current session (idempotent, `public`) |
+| GET | `/events/status` | The box's boot epoch and the generation of every read it announces when it changes (ADR-0339) -- `authenticated`, `derived` because it changes on every announcement |
 | GET | `/whoami` | Is the caller's own bearer token currently authenticated, and its permissions -- `public`, never consumes a single-use session (ADR-0164) |
 | GET, POST | `/whoami/app-passwords` | The same, for the session's own user -- needs a login session, not an app password (#543) |
 | DELETE | `/whoami/app-passwords/{app}` | Revoke one of your own |
@@ -944,6 +945,15 @@ Authorization: Basic base64("agent-1:3f9c...")
   - `derived`: a computation run on request (`pkg/verify`, `system/backup`).
 - **Every other operation says which reads it makes stale** with `x-cix-invalidates`, a list of `operationId`s. A change no read shows, such as a reboot, says `[]` rather than leaving the key out. Only state, sample and session reads may be named, because a stream is subscribed to and a derived read is computed on request.
 - **`x-cix-volatile-fields`** names a field of a state read that moves on its own, such as a session's `expires_in_seconds`, which the box's own drift check leaves out of its comparison.
+
+**What a client sees** (0.2.57-520):
+
+- **`X-Cix-Generation: <epoch>.<n>`** on every answer to a state, sample or session read. The number is that read's generation; the epoch is a random value the daemon chose at start, because counters start again with every daemon.
+- **A change answered 2xx raises the generation** of every read in its `x-cix-invalidates`. A refused change raises nothing.
+- **The daemon's own changes raise generations too**, from the code that makes them: a container starting or exiting, a service reported by `cix-init`, a package job changing state, an assembly, a hotplug event, a scheduled run, a storage migration.
+- **`GET /events/status`** (`authenticated`, `cixctl events status`) returns the epoch and every announced read's generation.
+
+The stream that pushes these to a client is the next step of ADR-0339.
 
 The lists were seeded from the path: a change marks a read stale when one path root is a segment-prefix of the other. Cross-resource effects were then added by hand: a package install changes images, a container changes networks and volumes, and a group change changes `whoami`. Marking too much costs one extra read. Marking too little is what the box's drift check reports, and what the events test fails on, so a missing name is a bug to fix in the contract.
 

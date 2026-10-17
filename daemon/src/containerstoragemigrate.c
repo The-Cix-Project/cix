@@ -3,6 +3,7 @@
 #include "containerdef.h"
 #include "linux_compat.h"
 #include "persist.h"
+#include "events.h"
 #include "treecopy.h"
 
 #include <errno.h>
@@ -37,6 +38,16 @@ struct container_migrate_job {
 };
 
 static struct container_migrate_job g_jobs[CONTAINERDEF_MAX];
+
+/* ADR-0339: a container-storage migration's state changes only here,
+ * announced -- it completes from the event loop, with no API call. */
+static void migrate_job_set_state(struct container_migrate_job *job, enum storagemigrate_state s)
+{
+	job->state = s;
+	events_announce(EV_getContainerStorageMigrateStatus);
+	events_announce(EV_getContainer);
+	events_announce(EV_listContainers);
+}
 
 /*
  * err_fd is 0 from static zero-init, and 0 is stdin -- a real fd. Every
@@ -184,7 +195,7 @@ enum containerstoragemigrate_error containerstoragemigrate_start(const char *con
 	snprintf(job->target_disk, sizeof(job->target_disk), "%s",
 	         target_disk_name != NULL ? target_disk_name : "");
 	job->error[0] = '\0';
-	job->state = STORAGEMIGRATE_STATE_RUNNING;
+	migrate_job_set_state(job, STORAGEMIGRATE_STATE_RUNNING);
 	*out_pid = pid;
 	*out_pidfd = pidfd;
 	return CONTAINERSTORAGEMIGRATE_OK;
@@ -202,11 +213,11 @@ void containerstoragemigrate_completed(const char *container_name, int exit_stat
 			close(job->err_fd);
 			job->err_fd = -1;
 		}
-		job->state = STORAGEMIGRATE_STATE_READY;
+		migrate_job_set_state(job, STORAGEMIGRATE_STATE_READY);
 		job->error[0] = '\0';
 		return;
 	}
-	job->state = STORAGEMIGRATE_STATE_FAILED;
+	migrate_job_set_state(job, STORAGEMIGRATE_STATE_FAILED);
 	if (exit_status == 1) {
 		char why[256];
 		ssize_t n = -1;
@@ -237,7 +248,7 @@ int containerstoragemigrate_finalize(const char *container_name)
 		return -1;
 
 	if (treecopy_recursive(job->source_dir, job->target_dir) != 0) {
-		job->state = STORAGEMIGRATE_STATE_FAILED;
+		migrate_job_set_state(job, STORAGEMIGRATE_STATE_FAILED);
 		snprintf(job->error, sizeof(job->error), "final synchronous copy pass failed: %s",
 		         strerror(errno));
 		return -1;
@@ -272,7 +283,7 @@ void containerstoragemigrate_mark_failed(const char *container_name, const char 
 
 	if (job == NULL)
 		return;
-	job->state = STORAGEMIGRATE_STATE_FAILED;
+	migrate_job_set_state(job, STORAGEMIGRATE_STATE_FAILED);
 	snprintf(job->error, sizeof(job->error), "%s", message);
 }
 

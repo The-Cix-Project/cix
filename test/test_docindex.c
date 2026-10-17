@@ -952,6 +952,7 @@ static void check_architecture_components(void)
 		const char *names;  /* ... then the document must contain this */
 	} components[] = {
 		{ "scheduler.c", "Scheduler" },
+		{ "events.c", "Events" },
 		{ "pkgsource.c", "Recipe sources" },
 		{ "pkgrepo.c", "Package repositories" },
 		{ "catalogue.c", "catalogue" },

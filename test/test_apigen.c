@@ -394,12 +394,14 @@ int main(void)
 	 * 340 as of #428: GET /system/iso/published, the log of installer
 	 *     ISOs this host published -- deliberately its own endpoint and
 	 *     not an array on GET /system/iso (ADR-0272's snapshot/log split).
+	 * 341 as of ADR-0339: GET /events/status, the box's boot epoch and the
+	 *     generation of every read it announces.
 	 */
 	status = run_apigen("docs/api/openapi.yaml", NULL, out, sizeof(out));
 	if (status != 0)
 		fail("apigen rejected the real spec: %.300s", out);
-	else if (atoi(out) != 340)
-		fail("apigen found %d operations in the real spec, expected 340 -- if the spec "
+	else if (atoi(out) != 341)
+		fail("apigen found %d operations in the real spec, expected 341 -- if the spec "
 		     "genuinely changed, update this number deliberately; a silently different "
 		     "count is how a lost route hides",
 		     atoi(out));
@@ -580,7 +582,7 @@ int main(void)
 	 * reads it makes stale. The events stream announces from these, so
 	 * a gap is a page that stays stale with nothing saying so -- a
 	 * build failure, as a missing permission is. The real spec passing
-	 * above is the positive control: all 142 reads and 198 changes.
+	 * above is the positive control: all 143 reads and 198 changes.
 	 */
 	expect_refusal("a read with no x-cix-read",
 	               VOCAB
@@ -796,11 +798,88 @@ int main(void)
 			}
 			fclose(f);
 			unlink(routes_path);
-			if (rows != 340 || with_permission != rows)
+			if (rows != 341 || with_permission != rows)
 				fail("the generated route table has %d rows and %d carry a permission; "
-				     "expected 340 and 340 (ADR-0317)",
+				     "expected 341 and 341 (ADR-0317)",
 				     rows, with_permission);
 		}
+	}
+
+	{
+		/*
+		 * ADR-0339: the generated events headers. The daemon indexes
+		 * its generation vector by these slots and raises them from
+		 * these lists, so a slot out of range would write past the
+		 * vector and a missing change row would announce nothing --
+		 * both silently. Counted here against the contract itself:
+		 * one slot per announced read (143 reads, less 9 streams and
+		 * 10 derived reads, is 124), one row per change (198).
+		 */
+		char slots_path[256], table_path[256];
+		char buf[4096];
+		FILE *f;
+		int count = -1, defines = 0, read_rows = 0, change_rows = 0, change_count = -1;
+		int out_of_range = 0;
+
+		snprintf(slots_path, sizeof(slots_path), "/tmp/apigen_evslots_%d.h", (int)getpid());
+		snprintf(table_path, sizeof(table_path), "/tmp/apigen_evtable_%d.h", (int)getpid());
+		snprintf(buf, sizeof(buf), "--emit-events-slots %s --emit-events-table %s", slots_path,
+		         table_path);
+		status = run_apigen("docs/api/openapi.yaml", buf, out, sizeof(out));
+		if (status != 0)
+			fail("apigen --emit-events-slots/--emit-events-table failed: %.200s", out);
+		f = fopen(slots_path, "r");
+		if (f != NULL) {
+			while (fgets(buf, sizeof(buf), f) != NULL) {
+				if (strncmp(buf, "#define EV_", 11) == 0)
+					defines++;
+				else if (strncmp(buf, "#define EVENTS_READ_COUNT ", 26) == 0)
+					count = atoi(buf + 26);
+			}
+			fclose(f);
+		}
+		f = fopen(table_path, "r");
+		if (f != NULL) {
+			while (fgets(buf, sizeof(buf), f) != NULL) {
+				if (strstr(buf, ", EVENTS_READ_") != NULL)
+					read_rows++;
+				else if (strncmp(buf, "\t{ \"", 4) == 0)
+					change_rows++;
+				else if (strncmp(buf, "#define EVENTS_CHANGE_COUNT ", 28) == 0)
+					change_count = atoi(buf + 28);
+				else if (strncmp(buf, "static const unsigned short ev_inv_", 35) == 0) {
+					const char *p = strchr(buf, '{');
+
+					while (p != NULL && *p != '\0' && *p != '}') {
+						char *end;
+						long v = strtol(p + 1, &end, 10);
+
+						if (end == p + 1) {
+							p++;
+							continue;
+						}
+						if (v < 0 || (count >= 0 && v >= count))
+							out_of_range++;
+						p = end;
+					}
+				}
+			}
+			fclose(f);
+		}
+		unlink(slots_path);
+		unlink(table_path);
+		if (count != 124 || defines != count || read_rows != count)
+			fail("the events slots say %d reads, define %d EV_ constants and the table has "
+			     "%d read rows; all three should be 124 (ADR-0339)",
+			     count, defines, read_rows);
+		if (change_count != 198 || change_rows != change_count)
+			fail("the events table declares %d changes and has %d change rows; both should "
+			     "be 198, one per non-GET operation (ADR-0339)",
+			     change_count, change_rows);
+		if (out_of_range > 0)
+			fail("%d invalidation slot(s) in the events table fall outside the generation "
+			     "vector%s",
+			     out_of_range, "");
 	}
 
 	{
@@ -896,10 +975,10 @@ int main(void)
 			fclose(f);
 			unlink(hdr_path);
 		}
-		if (defines != 340)
-			fail("CLI header has %d path defines, expected one per operation (340)", defines);
-		if (methods != 340)
-			fail("CLI header has %d method defines, expected one per operation (340)", methods);
+		if (defines != 341)
+			fail("CLI header has %d path defines, expected one per operation (341)", defines);
+		if (methods != 341)
+			fail("CLI header has %d method defines, expected one per operation (341)", methods);
 		if (braces != 0)
 			fail("%d CLI path define(s) still contain '{' -- a parameter was not converted "
 			     "to %%s and would put a literal brace in the URL",
@@ -1226,8 +1305,8 @@ int main(void)
 			fclose(f);
 			unlink(js_path);
 		}
-		if (shapes != 340)
-			fail("web api.js has %d _SHAPE entries, expected one per operation (340)",
+		if (shapes != 341)
+			fail("web api.js has %d _SHAPE entries, expected one per operation (341)",
 			     shapes);
 		if (!saw_fields)
 			fail("web api.js has no FIELDS table -- the renderers have nothing to render "
@@ -1453,7 +1532,7 @@ int main(void)
 			     "APIGEN_TEST_MAX_REQ", "");
 		if (n_names == 0)
 			fail("no operation in api.js names a request schema -- 124 of the "
-			     "contract's 340 carry a requestBody, so this is a reader that "
+			     "contract's 341 carry a requestBody, so this is a reader that "
 			     "resolved none of them");
 		if (dangling > 0)
 			fail("%d operation(s) name a request schema with no FIELDS entry, the first "

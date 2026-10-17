@@ -6,6 +6,7 @@
 
 #include "namecheck.h"
 #include "persist.h"
+#include "events.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -681,6 +682,10 @@ static void record_outcome(struct schedule *s, long now, int ok, const char *rea
 	s->last_ok = ok;
 	snprintf(s->last_reason, sizeof(s->last_reason), "%s", reason != NULL ? reason : "");
 	persist_all();
+	/* ADR-0339: a run the scheduler started by itself changes what the
+	 * schedule reads show, and no API call preceded it. */
+	events_announce(EV_listSchedules);
+	events_announce(EV_getSchedule);
 }
 
 /* While an action runs: when its window ends (0 = no window). */

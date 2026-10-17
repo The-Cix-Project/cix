@@ -3,6 +3,7 @@
 #include "diskrole.h"
 #include "linux_compat.h"
 #include "persist.h"
+#include "events.h"
 #include "treecopy.h"
 
 #include <errno.h>
@@ -34,6 +35,17 @@ struct migrate_job {
 };
 
 static struct migrate_job g_jobs[STORAGE_KIND_MIGRATABLE_COUNT];
+
+/* ADR-0339: a migration's state changes only here, announced -- its
+ * completion arrives from the event loop, with no API call before it. */
+static void migrate_job_set_state(struct migrate_job *job, enum storagemigrate_state s)
+{
+	job->state = s;
+	events_announce(EV_getLogStorage);
+	events_announce(EV_getLogStorageMigrateStatus);
+	events_announce(EV_getRebuildableStorage);
+	events_announce(EV_getRebuildableStorageMigrateStatus);
+}
 
 /* err_fd is 0 from static zero-init, which is a real fd (stdin) -- set
  * the sentinel explicitly the first time any job is touched rather than
@@ -159,7 +171,7 @@ enum storagemigrate_error storagemigrate_start(enum storage_kind kind, const cha
 	snprintf(job->target_disk, sizeof(job->target_disk), "%s",
 	         target_disk_name != NULL ? target_disk_name : "");
 	job->error[0] = '\0';
-	job->state = STORAGEMIGRATE_STATE_RUNNING;
+	migrate_job_set_state(job, STORAGEMIGRATE_STATE_RUNNING);
 	*out_pid = pid;
 	*out_pidfd = pidfd;
 	return STORAGEMIGRATE_OK;
@@ -179,11 +191,11 @@ void storagemigrate_completed(enum storage_kind kind, int exit_status)
 			close(job->err_fd);
 			job->err_fd = -1;
 		}
-		job->state = STORAGEMIGRATE_STATE_READY;
+		migrate_job_set_state(job, STORAGEMIGRATE_STATE_READY);
 		job->error[0] = '\0';
 		return;
 	}
-	job->state = STORAGEMIGRATE_STATE_FAILED;
+	migrate_job_set_state(job, STORAGEMIGRATE_STATE_FAILED);
 	if (exit_status == 1) {
 		char why[256];
 		ssize_t n = -1;
@@ -224,7 +236,7 @@ int storagemigrate_finalize(enum storage_kind kind)
 	job = &g_jobs[kind];
 
 	if (treecopy_recursive(job->source_dir, job->target_dir) != 0) {
-		job->state = STORAGEMIGRATE_STATE_FAILED;
+		migrate_job_set_state(job, STORAGEMIGRATE_STATE_FAILED);
 		snprintf(job->error, sizeof(job->error), "final synchronous copy pass failed: %s",
 		         strerror(errno));
 		return -1;
