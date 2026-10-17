@@ -1658,6 +1658,67 @@ int main(void)
 		       "  EV.advance(60000);\n"
 		       "  return EV.ended + \" \" + (EV.sockets.length === n); })()",
 		       "1 true");
+
+		/*
+		 * ---- subscriptions (ADR-0339 phase 2) ----
+		 *
+		 * A second stream whose fake socket records what is sent: a
+		 * subscription waits for the socket to open, is replayed on
+		 * every reconnect, delivers its samples to its own handler and
+		 * not as a change, ends on a refusal, and is dropped with the
+		 * session.
+		 */
+		expect(ctx, "a subscription is sent when the socket opens, not before",
+		       "(() => {\n"
+		       "  const t = { now: 0, timers: [], sockets: [], changes: [], data: [], refused: [] };\n"
+		       "  t.stream = createEventStream({\n"
+		       "    makeSocket: () => { const s = { sent: [], close() {}, send(m) { this.sent.push(m); } };\n"
+		       "                        t.sockets.push(s); return s; },\n"
+		       "    now: () => t.now,\n"
+		       "    setTimer: (fn, ms) => { t.timers.push({ fn: fn, at: t.now + ms });\n"
+		       "                            return t.timers.length - 1; },\n"
+		       "    clearTimer: (id) => { if (t.timers[id]) t.timers[id].fn = null; },\n"
+		       "    onChange: (ops) => t.changes.push(ops.join(\",\")),\n"
+		       "    onLive: () => {}, onSessionEnded: () => {} });\n"
+		       "  t.advance = (ms) => { t.now += ms;\n"
+		       "    for (const x of t.timers) if (x.fn && x.at <= t.now) { const f = x.fn; x.fn = null; f(); } };\n"
+		       "  t.sock = () => t.sockets[t.sockets.length - 1];\n"
+		       "  t.recv = (o) => t.sock().onmessage({ data: JSON.stringify(o) });\n"
+		       "  globalThis.SV = t;\n"
+		       "  t.stream.start();\n"
+		       "  t.stream.subscribe(\"logs\", \"/v1/system/logs?tail=5\", (b) => t.data.push(JSON.stringify(b)),\n"
+		       "                     (r) => t.refused.push(r));\n"
+		       "  const before = t.sock().sent.length;\n"
+		       "  t.sock().onopen();\n"
+		       "  return before + \" \" + t.sock().sent.join(\"\"); })()",
+		       "0 {\"subscribe\":\"logs\",\"path\":\"/v1/system/logs?tail=5\"}");
+		expect(ctx, "a sample reaches its handler and is not a change",
+		       "(() => { SV.recv({ epoch: \"e1\", gen: { a: 1 } });\n"
+		       "  SV.recv({ subscribed: \"logs\" });\n"
+		       "  SV.recv({ data: \"logs\", body: [1, 2] });\n"
+		       "  SV.recv({ data: \"nobody\", body: [] });\n"
+		       "  return SV.data.join(\"|\") + \" changes=\" + SV.changes.join(\"|\"); })()",
+		       "[1,2] changes=a");
+		expect(ctx, "a reconnect replays every subscription",
+		       "(() => { SV.stream.subscribe(\"st\", \"/v1/system/stats\", () => {});\n"
+		       "  SV.sock().onclose({ code: 1006 });\n"
+		       "  SV.advance(1000);\n"
+		       "  SV.sock().onopen();\n"
+		       "  return SV.sockets.length + \" \" + SV.sock().sent.length; })()",
+		       "2 2");
+		expect(ctx, "a refusal ends the subscription and says why",
+		       "(() => { SV.recv({ refused: \"st\", reason: \"this session may not perform getSystemStats\" });\n"
+		       "  return SV.stream.subscribed(\"st\") + \" \" + SV.stream.subscribed(\"logs\"); })()",
+		       "false true");
+		expect(ctx, "an unsubscribe is sent and the subscription forgotten",
+		       "(() => { SV.stream.unsubscribe(\"logs\");\n"
+		       "  return SV.sock().sent[SV.sock().sent.length - 1] + \" \" + SV.stream.subscribed(\"logs\"); })()",
+		       "{\"unsubscribe\":\"logs\"} false");
+		expect(ctx, "the session ending (4401) drops every subscription",
+		       "(() => { SV.stream.subscribe(\"k\", \"/v1/system/kmsg\", () => {});\n"
+		       "  SV.sock().onclose({ code: 4401 });\n"
+		       "  return String(SV.stream.subscribed(\"k\")); })()",
+		       "false");
 	}
 
 	JS_FreeContext(ctx);

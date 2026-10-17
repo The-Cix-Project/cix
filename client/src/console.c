@@ -19,6 +19,11 @@
 #include <unistd.h>
 
 #define WS_MAX_FRAME_PAYLOAD (64 * 1024)
+/* What this client accepts in one frame: the daemon's send cap
+ * (WS_MAX_SEND_PAYLOAD in daemon/include/websocket.h), because a
+ * subscribed read's sample can pass 64 KiB (ADR-0339 phase 2). What it
+ * sends stays under WS_MAX_FRAME_PAYLOAD, the daemon's receive cap. */
+#define WS_MAX_RECV_PAYLOAD (1024 * 1024)
 
 static const char BASE64_ALPHABET[] =
 	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -131,7 +136,7 @@ static int send_masked_frame(int fd, int opcode, const void *payload, size_t len
  * ws_write_frame() guarantees this); tolerant of a masked frame too
  * (unmasks it) purely for robustness, not because one is expected. */
 struct client_ws_buf {
-	unsigned char buf[WS_MAX_FRAME_PAYLOAD + 32];
+	unsigned char buf[WS_MAX_RECV_PAYLOAD + 32];
 	size_t len;
 };
 
@@ -174,7 +179,7 @@ static int try_parse_server_frame(struct client_ws_buf *b, int *opcode,
 		for (i = 0; i < 8; i++)
 			plen = (plen << 8) | (size_t)b->buf[2 + i];
 	}
-	if (plen > WS_MAX_FRAME_PAYLOAD)
+	if (plen > WS_MAX_RECV_PAYLOAD)
 		return -1;
 	if (b->len < header_len + plen)
 		return 0;
@@ -748,15 +753,38 @@ done:
  * JSON frame per line, until the daemon closes the stream (a restart,
  * or close code 4401 when the session ends) or the reader stops.
  */
-int cix_events_follow_run(const struct cix_client *c)
+int cix_events_follow_run(const struct cix_client *c, const char *const *paths, int n_paths)
 {
-	int fd;
-	struct client_ws_buf inbuf;
+	int fd, i;
+	static struct client_ws_buf inbuf; /* 1 MiB: static rather than on the stack */
 	unsigned char iobuf[4096];
 
 	fd = do_ws_handshake(c, "events", CIX_API_getEvents, &inbuf);
 	if (fd < 0)
 		return -1;
+	/* ADR-0339 phase 2: each --subscribe=PATH as one subscription, named
+	 * s1, s2, ... in order, so its samples print as {"data":"s1",...}. */
+	for (i = 0; i < n_paths; i++) {
+		struct json_writer w;
+		char id[16];
+		int sr;
+
+		snprintf(id, sizeof(id), "s%d", i + 1);
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "subscribe");
+		jw_str(&w, id);
+		jw_key(&w, "path");
+		jw_str(&w, paths[i]);
+		jw_obj_close(&w);
+		sr = send_masked_frame(fd, 0x1, w.buf, w.len);
+		jw_free(&w);
+		if (sr != 0) {
+			fprintf(stderr, "cixctl: could not send the subscription to %s\n", paths[i]);
+			close(fd);
+			return -1;
+		}
+	}
 	if (inbuf.len > 0 && drain_frames(&inbuf, 1) != 0)
 		goto done;
 	for (;;) {

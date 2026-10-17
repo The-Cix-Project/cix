@@ -511,8 +511,10 @@ static const char USAGE_TEXT[] =
 	        "               announces when it changes (ADR-0339)\n"
 	        "  events verify  -- check now whether anything changed that the box did not\n"
 	        "               announce (ADR-0339)\n"
-	        "  events --follow  -- those announcements live, one JSON frame per line, until\n"
-	        "               the daemon ends the stream\n"
+	        "  events --follow [--subscribe=PATH ...]  -- those announcements live, one JSON\n"
+	        "               frame per line, until the daemon ends the stream; each\n"
+	        "               --subscribe=PATH (a stats, log or ports read) adds its samples as\n"
+	        "               {\"data\":\"s1\",...} (ADR-0339 phase 2)\n"
 	        "  control-plane-reservation show\n"
 	        "  control-plane-reservation set [--enabled | --disabled] [--cpu-percent=N]\n"
 	        "               [--memory-bytes=N]  -- how much of the machine is held back for\n"
@@ -8396,6 +8398,10 @@ static void fmt_events_status(const struct json_value *v)
 	       (long long)json_as_number(json_object_get(v, "checked")),
 	       (long long)json_as_number(json_object_get(v, "drift")),
 	       (long long)json_as_number(json_object_get(v, "unreadable")));
+	printf("subscriptions: %lld  runs: %lld  frames: %lld\n",
+	       (long long)json_as_number(json_object_get(v, "subscriptions")),
+	       (long long)json_as_number(json_object_get(v, "subscription_runs")),
+	       (long long)json_as_number(json_object_get(v, "subscription_frames")));
 	if (gens == NULL || gens->type != JSON_OBJECT)
 		return;
 	for (i = 0; i < gens->u.object.count; i++)
@@ -8431,9 +8437,27 @@ static int cmd_events(const struct cix_client *c, int json_mode, int argc, char 
 	struct cix_response r;
 	const char *sub = argc > 0 ? argv[0] : "status";
 
-	/* ADR-0339: the stream itself, one frame per line. */
-	if (argc > 0 && strcmp(argv[0], "--follow") == 0)
-		return cix_events_follow_run(c) == 0 ? 0 : 1;
+	/* ADR-0339: the stream itself, one frame per line -- and phase 2's
+	 * subscriptions, one --subscribe=PATH each, so a stream read's
+	 * samples can be watched from a terminal. */
+	if (argc > 0 && strcmp(argv[0], "--follow") == 0) {
+		const char *paths[8];
+		int n = 0, i;
+
+		for (i = 1; i < argc; i++) {
+			if (strncmp(argv[i], "--subscribe=", 12) != 0) {
+				fprintf(stderr, "cixctl: events --follow takes only --subscribe=PATH, not %s\n",
+				        argv[i]);
+				return 2;
+			}
+			if (n == (int)(sizeof(paths) / sizeof(paths[0]))) {
+				fprintf(stderr, "cixctl: a stream holds at most 8 subscriptions\n");
+				return 2;
+			}
+			paths[n++] = argv[i] + 12;
+		}
+		return cix_events_follow_run(c, paths, n) == 0 ? 0 : 1;
+	}
 	/* ADR-0339 point 7: has anything changed that the box did not say? */
 	if (strcmp(sub, "verify") == 0) {
 		if (cix_client_request(c, CIX_API_verifyEvents_METHOD, CIX_API_verifyEvents, NULL,

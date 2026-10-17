@@ -359,6 +359,7 @@ static const char *const n_routes_rm_flags[] = {
 
 static const char *const n_events_flags[] = {
 	"--follow",
+	"--subscribe=",
 	NULL
 };
 

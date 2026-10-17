@@ -239,6 +239,66 @@ static size_t frame_count(const struct json_value *v)
 	return gen != NULL && gen->type == JSON_OBJECT ? gen->u.object.count : 0;
 }
 
+/* The next frame carrying `key`, skipping announcement frames between;
+ * NULL, having said why, when 20 frames pass without one. */
+static struct json_value *next_reply(struct ws_reader *r, const char *key, const char *what)
+{
+	int i;
+
+	for (i = 0; i < 20; i++) {
+		struct json_value *v = next_event(r, what, NULL);
+
+		if (v == NULL)
+			return NULL;
+		if (json_object_get(v, key) != NULL)
+			return v;
+		json_free(v);
+	}
+	fail(what, "20 frames went by without one");
+	return NULL;
+}
+
+/* Sends one subscribe/unsubscribe text frame. */
+static int send_text(int fd, const char *text)
+{
+	return ws_send_frame(fd, 0x1, text, strlen(text));
+}
+
+/* GET /v1/events/status's counter `key`, or -1. */
+static long long status_counter(const struct cix_client *c, const char *key)
+{
+	struct cix_response r;
+	long long n = -1;
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "GET", "/v1/events/status", NULL, &r) == 0 && r.json != NULL &&
+	    json_object_get(r.json, key) != NULL)
+		n = (long long)json_as_number(json_object_get(r.json, key));
+	cix_response_free(&r);
+	return n;
+}
+
+/* A refusal for `id` whose reason contains `want`. */
+static void expect_refused(struct ws_reader *r, int fd, const char *msg, const char *id,
+                           const char *want, const char *what)
+{
+	struct json_value *v;
+	const char *got, *reason;
+
+	if (send_text(fd, msg) != 0) {
+		fail(what, "could not send the subscribe");
+		return;
+	}
+	v = next_reply(r, "refused", what);
+	if (v == NULL)
+		return;
+	got = json_as_string(json_object_get(v, "refused"));
+	reason = json_as_string(json_object_get(v, "reason"));
+	if (got == NULL || strcmp(got, id) != 0 || reason == NULL || strstr(reason, want) == NULL)
+		fail(what, reason != NULL ? reason : "no reason");
+	json_free(v);
+}
+
 /* Elapsed milliseconds, so a bound is not on whole seconds (#309). */
 static long elapsed_ms(const struct timespec *t0, const struct timespec *t1)
 {
@@ -493,6 +553,111 @@ int main(void)
 		}
 		if (idle_fd >= 0)
 			close(idle_fd);
+	}
+
+	/*
+	 * 10b. Subscriptions (ADR-0339 phase 2). A stream read with a period
+	 *      is pushed rather than polled: sampled at once, then sent only
+	 *      when it changes, and one run serves every subscriber to a
+	 *      path. Authorization per subscription needs a gated session,
+	 *      which this daemon does not run; it is verified on the box.
+	 */
+	{
+		struct ws_reader a, b;
+		int fa = open_events(&a, 10);
+		int fb = open_events(&b, 10);
+		struct json_value *v;
+		long long runs0, runs1, frames0, frames1;
+		char msg[160];
+		int i;
+
+		if (fa >= 0 && fb >= 0) {
+			/* At once: the reply, then the first sample. */
+			if (send_text(fa, "{\"subscribe\":\"quiet\","
+			                  "\"path\":\"/v1/system/logs?source=nosuchsource&tail=5\"}") != 0)
+				fail("a subscribe can be sent", "");
+			v = next_reply(&a, "subscribed", "a subscribe is answered");
+			json_free(v);
+			v = next_reply(&a, "data", "the first sample arrives at once");
+			if (v != NULL) {
+				const struct json_value *body = json_object_get(v, "body");
+				const char *id = json_as_string(json_object_get(v, "data"));
+
+				if (id == NULL || strcmp(id, "quiet") != 0 || body == NULL ||
+				    body->type != JSON_ARRAY)
+					fail("a sample names its subscription and carries the read's own answer",
+					     id != NULL ? id : "?");
+				json_free(v);
+			}
+
+			/* Unchanged, nothing more is sent; a read that does not
+			 * answer 200 sends nothing at all. */
+			if (send_text(fa, "{\"subscribe\":\"gone\","
+			                  "\"path\":\"/v1/containers/nosuchcontainer/stats\"}") != 0)
+				fail("a second subscribe can be sent", "");
+			v = next_reply(&a, "subscribed", "a subscribe to a missing container is made");
+			json_free(v);
+			frames0 = status_counter(&client, "subscription_frames");
+			sleep(5);
+			frames1 = status_counter(&client, "subscription_frames");
+			if (frames0 < 0 || frames1 != frames0) {
+				snprintf(msg, sizeof(msg), "%lld then %lld", frames0, frames1);
+				fail("an unchanged answer, or a non-200 one, sends no sample", msg);
+			}
+
+			/* Two streams on one path: one run per period, not two. */
+			if (send_text(fa, "{\"unsubscribe\":\"quiet\"}") != 0 ||
+			    send_text(fa, "{\"unsubscribe\":\"gone\"}") != 0)
+				fail("an unsubscribe can be sent", "");
+			v = next_reply(&a, "unsubscribed", "an unsubscribe is answered");
+			json_free(v);
+			v = next_reply(&a, "unsubscribed", "the second unsubscribe is answered");
+			json_free(v);
+			if (send_text(fa, "{\"subscribe\":\"st\",\"path\":\"/v1/system/stats\"}") != 0 ||
+			    send_text(fb, "{\"subscribe\":\"st\",\"path\":\"/v1/system/stats\"}") != 0)
+				fail("two streams subscribe to one path", "");
+			v = next_reply(&a, "data", "stream A's stats sample arrives");
+			json_free(v);
+			v = next_reply(&b, "data", "stream B's stats sample arrives");
+			json_free(v);
+			if (status_counter(&client, "subscriptions") != 2)
+				fail("events/status counts the two subscriptions", "");
+			runs0 = status_counter(&client, "subscription_runs");
+			sleep(5);
+			runs1 = status_counter(&client, "subscription_runs");
+			/* A 2 s period over 5 s is two or three ticks: shared, that
+			 * is two or three runs; run per subscriber, four to six. */
+			if (runs0 < 0 || runs1 - runs0 < 1 || runs1 - runs0 > 3) {
+				snprintf(msg, sizeof(msg), "%lld runs in 5 s for two subscribers to one path",
+				         runs1 - runs0);
+				fail("one run serves every subscriber to a path", msg);
+			}
+
+			/* What is refused, and why. */
+			expect_refused(&a, fa, "{\"subscribe\":\"site\",\"path\":\"/v1/system/site\"}", "site",
+			               "not subscribable", "a state read is not subscribable");
+			expect_refused(&a, fa,
+			               "{\"subscribe\":\"q\",\"path\":\"/v1/system/logs?nosuchparam=1\"}", "q",
+			               "unknown query parameter", "a query the read does not take is refused");
+			expect_refused(&a, fa, "{\"subscribe\":\"p\",\"path\":\"/etc/passwd\"}", "p",
+			               "/v1/", "a path outside the API is refused");
+			expect_refused(&a, fa, "{\"subscribe\":\"no spaces\",\"path\":\"/v1/system/stats\"}",
+			               "no spaces", "expected", "an id outside its alphabet is refused");
+			for (i = 1; i < 8; i++) {
+				snprintf(msg, sizeof(msg),
+				         "{\"subscribe\":\"cap%d\",\"path\":\"/v1/system/stats\"}", i);
+				if (send_text(fa, msg) != 0)
+					fail("a subscribe can be sent", "");
+				v = next_reply(&a, "subscribed", "subscriptions up to the cap are made");
+				json_free(v);
+			}
+			expect_refused(&a, fa, "{\"subscribe\":\"cap8\",\"path\":\"/v1/system/stats\"}", "cap8",
+			               "already holds 8", "a ninth subscription is refused");
+		}
+		if (fa >= 0)
+			close(fa);
+		if (fb >= 0)
+			close(fb);
 	}
 
 	/*

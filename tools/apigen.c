@@ -2358,10 +2358,16 @@ static void check_read_annotations(const char *spec)
 				       "it makes stale, or [] for none (ADR-0339)",
 				       o->method, o->path);
 		}
-		if ((strcmp(o->read_kind, "sample") == 0) != (o->sample_period > 0))
+		/* A sample must say how often the daemon re-reads it. A stream
+		 * may say how often a subscription to it is sampled, and saying
+		 * so is what makes it subscribable (ADR-0339 phase 2); a stream
+		 * that is a WebSocket of its own does not. Nothing else has a
+		 * period. */
+		if (strcmp(o->read_kind, "sample") == 0 ? o->sample_period <= 0
+		    : strcmp(o->read_kind, "stream") != 0 && o->sample_period > 0)
 			die_at(spec, o->line,
-			       "%s %s: x-cix-sample-period goes with x-cix-read: sample, and only "
-			       "with it",
+			       "%s %s: x-cix-sample-period goes with x-cix-read: sample (required) or "
+			       "stream (to make it subscribable), and with nothing else",
 			       o->method, o->path);
 		/* A view: a state read, joined from announced reads that are not
 		 * themselves views -- one level, so there is no cycle to reason
@@ -2579,6 +2585,22 @@ static void emit_events_table(const char *out_path, const char *spec)
 			}
 		}
 		fprintf(o, "\t{ -1, -1 },\n};\n\n#define EVENTS_COMPOSED_COUNT %d\n", n_pairs);
+	}
+	/* ADR-0339 phase 2: the subscribable reads, a stream read with a
+	 * period, and how often a subscription to each is sampled. The
+	 * sentinel keeps the array non-empty; EVENTS_STREAM_COUNT does not
+	 * count it. */
+	{
+		int n_streams = 0;
+
+		fprintf(o, "\nstatic const struct events_stream g_events_streams[] = {\n");
+		for (i = 0; i < g_op_count; i++) {
+			if (strcmp(g_ops[i].read_kind, "stream") != 0 || g_ops[i].sample_period <= 0)
+				continue;
+			fprintf(o, "\t{ \"%s\", %d },\n", g_ops[i].op_id, g_ops[i].sample_period);
+			n_streams++;
+		}
+		fprintf(o, "\t{ NULL, 0 },\n};\n\n#define EVENTS_STREAM_COUNT %d\n", n_streams);
 	}
 	fclose(o);
 }

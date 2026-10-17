@@ -58,7 +58,8 @@ int cix_console_run(const struct cix_client *c, const char *container_name,
  */
 int cix_pkg_build_log_run(const struct cix_client *c, const char *name, const char *image);
 
-/* ADR-0339: follows GET /v1/events, printing one JSON frame per line. */
-int cix_events_follow_run(const struct cix_client *c);
+/* ADR-0339: follows GET /v1/events, printing one JSON frame per line,
+ * subscribed first to each of `paths` (phase 2), named s1, s2, ... */
+int cix_events_follow_run(const struct cix_client *c, const char *const *paths, int n_paths);
 
 #endif /* CONSOLE_H */

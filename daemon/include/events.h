@@ -46,6 +46,13 @@ struct events_composed {
 	int component;
 };
 
+/* A subscribable read (ADR-0339 phase 2): a stream read with a period,
+ * sampled every `period` seconds for whoever subscribed to it. */
+struct events_stream {
+	const char *op_id;
+	int period;
+};
+
 /* One change, and the slots it makes stale (n == 0 for an explicit []). */
 struct events_change {
 	const char *op_id;
@@ -90,6 +97,10 @@ void events_set_listener(void (*fn)(int slot));
 
 /* A slot's table row, or NULL out of range. */
 const struct events_read *events_read_at(int slot);
+
+/* How often a subscription to op_id is sampled, in seconds, or 0 when
+ * op_id is not a subscribable read (ADR-0339 phase 2). */
+int events_stream_period(const char *op_id);
 
 /*
  * ADR-0339 point 7: the daemon checks its own announcements.

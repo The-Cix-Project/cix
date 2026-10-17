@@ -50,6 +50,17 @@ int ws_write_frame(int fd, enum ws_opcode opcode, const void *payload, size_t le
 size_t ws_frame_header(enum ws_opcode opcode, size_t len, unsigned char out[4]);
 
 /*
+ * As ws_frame_header(), for a payload up to WS_MAX_SEND_PAYLOAD: the
+ * 64-bit length form when the 16-bit one cannot say it. For what the
+ * daemon SENDS, which it sizes itself -- a subscribed read's sample
+ * (ADR-0339 phase 2), where the kernel log's 1024-line tail or a busy
+ * host's process list passes 64 KiB. What it RECEIVES stays capped at
+ * WS_MAX_FRAME_PAYLOAD. Returns 2, 4 or 10, or 0 when len is too large.
+ */
+#define WS_MAX_SEND_PAYLOAD (1024 * 1024)
+size_t ws_frame_header_long(enum ws_opcode opcode, size_t len, unsigned char out[10]);
+
+/*
  * Incremental client-frame parser -- client frames are always masked
  * (RFC 6455 5.1) and, like HTTP requests (see struct http_conn,
  * daemon/include/http.h), can arrive split across many read()s. Unlike

@@ -28,6 +28,11 @@
  *   - Silence for 25 s is a lost stream too: the daemon sends a
  *     heartbeat every 10 s, so 25 s without a frame means it is gone
  *     whatever the socket claims.
+ *   - Subscriptions (phase 2) belong to the socket on the daemon's side
+ *     and to the page on this one: each is sent when the socket opens,
+ *     so a reconnect replays them all, and a session that ends (4401)
+ *     drops them. {"data": id, "body": ...} is a sample of a subscribed
+ *     read; {"refused": id, "reason": ...} ends one.
  */
 const CIX_EVENTS_SILENCE_MS = 25000;
 const CIX_EVENTS_BACKOFF_MS = [1000, 2000, 4000, 8000, 15000];
@@ -54,7 +59,39 @@ function createEventStream(opts) {
 		attempt: 0,
 		reconnectTimer: null,
 		watchdogTimer: null,
+		open: false,
+		subs: {}, /* id -> { path, onData, onRefused } */
 	};
+
+	function send(msg) {
+		if (s.socket === null || !s.open)
+			return;
+		try {
+			s.socket.send(JSON.stringify(msg));
+		} catch (e) {
+			/* the close that follows reports it */
+		}
+	}
+
+	/* A subscription's frame, delivered to the page that holds it. */
+	function deliver(frame) {
+		if (frame.data !== undefined) {
+			const sub = s.subs[frame.data];
+
+			if (sub)
+				sub.onData(frame.body);
+			return true;
+		}
+		if (frame.refused !== undefined) {
+			const sub = s.subs[frame.refused];
+
+			delete s.subs[frame.refused];
+			if (sub && sub.onRefused)
+				sub.onRefused(frame.reason || "");
+			return true;
+		}
+		return frame.subscribed !== undefined || frame.unsubscribed !== undefined;
+	}
 
 	function setLive(live) {
 		if (s.live !== live) {
@@ -129,7 +166,15 @@ function createEventStream(opts) {
 			return;
 		}
 		s.socket = sock;
+		s.open = false;
 		s.lastFrameAt = opts.now();
+		sock.onopen = () => {
+			if (s.socket !== sock)
+				return;
+			s.open = true;
+			for (const id of Object.keys(s.subs))
+				send({ subscribe: id, path: s.subs[id].path });
+		};
 		sock.onmessage = (ev) => {
 			let frame;
 
@@ -145,6 +190,8 @@ function createEventStream(opts) {
 			setLive(true);
 			if (opts.onFrame)
 				opts.onFrame();
+			if (deliver(frame))
+				return;
 			const changed = apply(frame);
 
 			if (changed.length > 0)
@@ -154,9 +201,11 @@ function createEventStream(opts) {
 			if (s.socket !== sock)
 				return;
 			s.socket = null;
+			s.open = false;
 			if (ev && ev.code === 4401) {
 				setLive(false);
 				s.stopped = true;
+				s.subs = {};
 				opts.onSessionEnded();
 				return;
 			}
@@ -186,6 +235,7 @@ function createEventStream(opts) {
 				opts.clearTimer(s.watchdogTimer);
 			s.reconnectTimer = null;
 			s.watchdogTimer = null;
+			s.open = false;
 			if (s.socket !== null) {
 				const sock = s.socket;
 
@@ -212,6 +262,25 @@ function createEventStream(opts) {
 		},
 		isLive() {
 			return s.live;
+		},
+		/*
+		 * A read pushed rather than polled: onData(body) with each sample
+		 * that differs from the last, the first at once. The same id
+		 * again replaces it. Held across reconnects; onRefused(reason)
+		 * when the daemon will not, or no longer will, send it.
+		 */
+		subscribe(id, path, onData, onRefused) {
+			s.subs[id] = { path: path, onData: onData, onRefused: onRefused };
+			send({ subscribe: id, path: path });
+		},
+		unsubscribe(id) {
+			if (s.subs[id] === undefined)
+				return;
+			delete s.subs[id];
+			send({ unsubscribe: id });
+		},
+		subscribed(id) {
+			return s.subs[id] !== undefined;
 		},
 		apply: apply,
 	};

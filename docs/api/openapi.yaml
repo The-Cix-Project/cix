@@ -358,6 +358,31 @@ paths:
         A browser cannot set an Authorization header on a WebSocket,
         so the session rides as the `cix.bearer.<token>` subprotocol,
         as it does for the console (#541).
+
+        **Subscriptions (ADR-0339 phase 2).** A `stream` read that
+        declares `x-cix-sample-period` -- host and container stats,
+        processes, network ports, stalls, the log tail and the kernel
+        log -- can be subscribed to on the same socket rather than
+        polled. The client sends a text frame
+        `{"subscribe": "<id>", "path": "/v1/..."}`, where `id` is its own
+        name for the subscription (1 to 32 letters, digits, `-` or `_`)
+        and `path` is the read's full path with its query, exactly as
+        it would GET it. The daemon answers
+        `{"subscribed": "<id>"}`, or `{"refused": "<id>", "reason": "..."}`
+        when the path names no subscribable read, carries a query
+        parameter the read does not take, names a read this session may
+        not perform, or the stream already holds 8 subscriptions.
+        Thereafter, every period, the daemon runs the read once for all
+        the streams subscribed to that path and sends
+        `{"data": "<id>", "body": <the read's 200 answer>}` to each whose
+        last body differed -- the first sample at once, and nothing
+        while the answer is unchanged. Only the latest sample is ever
+        held for a slow client: an unsent one is replaced, never
+        queued. A sample that does not answer 200 is not sent.
+        `{"unsubscribe": "<id>"}` ends one. A subscription the session's
+        grants no longer allow is ended by the daemon with a `refused`
+        frame. Subscriptions belong to the socket: a client replays
+        them after reconnecting.
       operationId: getEvents
       x-cix-read: stream
       x-cix-permission: authenticated
@@ -426,6 +451,20 @@ paths:
                   unreadable:
                     type: integer
                     description: How many announced reads the daemon could not run itself last time it tried (no 200).
+                  subscriptions:
+                    type: integer
+                    description: Subscriptions held right now, across every open stream (ADR-0339 phase 2).
+                  subscription_runs:
+                    type: integer
+                    description: >
+                      How many times the daemon has run a subscribed read
+                      since it started. One run serves every stream
+                      subscribed to the same path, so this grows with the
+                      number of distinct paths, not with the number of
+                      subscribers.
+                  subscription_frames:
+                    type: integer
+                    description: How many samples it has sent since it started -- only those that differed from the subscriber's previous one.
   /events/verify:
     post:
       summary: Check every announcement now -- has anything changed that the box did not say (ADR-0339)
@@ -2073,6 +2112,7 @@ paths:
         section zeroed rather than failing the whole request.
       operationId: getSystemStats
       x-cix-read: stream
+      x-cix-sample-period: 2
       x-cix-permission: system:read
       x-cix-expose: [cli, web]
       responses:
@@ -2208,6 +2248,7 @@ paths:
         history, call again for a fresh one.
       operationId: listSystemProcesses
       x-cix-read: stream
+      x-cix-sample-period: 2
       x-cix-permission: system:read
       x-cix-expose: [cli, web]
       responses:
@@ -4217,6 +4258,7 @@ paths:
         was diagnosing is not one.
       operationId: getStalls
       x-cix-read: stream
+      x-cix-sample-period: 2
       x-cix-permission: system:read
       x-cix-expose: [cli, web]
       parameters:
@@ -5433,6 +5475,7 @@ paths:
         level from the kernel's own prefix (0 emerg .. 7 debug).
       operationId: getSystemKmsg
       x-cix-read: stream
+      x-cix-sample-period: 2
       x-cix-permission: system:read
       x-cix-expose: [cli, web]
       parameters:
@@ -5493,6 +5536,7 @@ paths:
         store.
       operationId: getSystemLogs
       x-cix-read: stream
+      x-cix-sample-period: 2
       x-cix-permission: system:read
       x-cix-expose: [cli, web]
       parameters:
@@ -7345,6 +7389,7 @@ paths:
         had the privilege to create one). A fact, not a fault.
       operationId: getNetworkPorts
       x-cix-read: stream
+      x-cix-sample-period: 2
       x-cix-permission: networks:read
       x-cix-expose: [cli, web]
       parameters:
@@ -13559,6 +13604,7 @@ paths:
         removed or never-existing name is a 404.
       operationId: getContainerStats
       x-cix-read: stream
+      x-cix-sample-period: 2
       x-cix-permission: containers:read
       x-cix-expose: [cli, web]
       parameters:

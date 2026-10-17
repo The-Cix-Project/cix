@@ -6,6 +6,28 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Live reads are pushed: the log panel and the stats pages subscribe on the event stream (ADR-0339 phase 2, #599)
+
+- **Subscriptions:** a `stream` read that declares `x-cix-sample-period` can be subscribed to on
+  `GET /v1/events`. Seven do: host and container stats, processes, network ports, stalls, the log
+  tail and the kernel log. The daemon samples it every period, once for every stream subscribed to the
+  same path, and sends the answer only when it changed.
+- **What is refused:** a read that is not subscribable, an unknown query parameter, a read the session
+  may not perform, or a ninth subscription. Each refusal says why, and a withdrawn grant ends the
+  subscriptions it allowed.
+- **Samples over 64 KiB** use the WebSocket 64-bit length form, up to 1 MiB.
+- **The dashboard** subscribes the log panel, Host stats, container stats, network ports, Stalls and
+  the kernel log, and polls them only while the stream is down. Its live tick stopped re-running page
+  renderers that fetch.
+- **Measured** in Chromium against the box's files and a fake stream: an idle signed-in minute is 2
+  requests on every page tried, against 528's 32 on Containers and 122 on Health (528's own files,
+  same harness).
+- **Fixed on the way:** on any other tab of the Health page, Host stats was stopped and restarted on
+  every render, which cleared its charts. Opening a container's page now also ends the other pages'
+  live reads.
+- **cixctl:** `events status` shows `subscriptions`, `runs` and `frames`. `events --follow
+  --subscribe=PATH` prints a stream read's samples, and cixctl accepts frames up to the daemon's 1 MiB.
+
 ### The menu bar gets its own row on a phone, and the width rules are complete (#600)
 
 - **The defect:** at 360px the header's menu bar shared a row with the controls and got the 32px they

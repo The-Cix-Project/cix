@@ -1443,9 +1443,10 @@ updateAuthUi();
  * toast below, kept entirely client-side, never sent to the server
  * since it isn't a system component) and the server's own consolidated
  * log store (kernel/cixd/audit/container, GET /v1/system/logs,
- * ADR-0070/ADR-0126) re-read on every poll (pollServerLogs(), called
- * from the main poll() loop). The two are kept apart -- serverLogs is
- * replaced wholesale by each poll, clientLogs is only ever appended to
+ * ADR-0070/ADR-0126), a live read subscribed on the event stream and
+ * polled only while the stream is down (ingestServerLogs(), via
+ * startLiveRead(), ADR-0339 phase 2). The two are kept apart -- serverLogs is
+ * replaced wholesale by each sample, clientLogs is only ever appended to
  * here -- and combined at render time, capped at MAX_LOG_ENTRIES across
  * both (a dedicated Logs page still exists, under System > Server,
  * for browsing/configuring the server's own full history/size cap;
@@ -1694,15 +1695,11 @@ function logLine(method, path, statusText, kind) {
 const LOG_TAIL = MAX_LOG_ENTRIES;
 const LOG_ERROR_LEVELS = new Set(["emerg", "alert", "crit", "err", "error", "warning", "warn"]);
 
-async function pollServerLogs() {
-	let entries;
-
-	try {
-		entries = await apiRequest("GET", CIX_API.getSystemLogs() + "?since=0&tail=" + LOG_TAIL);
-	} catch (e) {
-		return; /* best-effort, matches every other poll()'s own error tolerance */
-	}
-	if (!entries) return;
+/* One sample of the log panel's tail, pushed or polled (startLiveRead(),
+ * started once at load). */
+function ingestServerLogs(entries) {
+	if (!Array.isArray(entries))
+		return;
 
 	setServerLogs(
 	        entries.map((e) => ({
@@ -2673,6 +2670,13 @@ function renderCurrentView() {
 	saveLastView();
 
 	if (route.category === "containers" && route.name !== null) {
+		/* A container's page holds its own live read (its stats); the
+		 * other pages' end here, as they do when leaving them below. */
+		stopHostStatsPolling();
+		if (netPortsName !== null)
+			stopNetPortsPolling();
+		stopLiveRead("kmsg");
+		stopLiveRead("stalls");
 		renderContainerDetail(route.name);
 	} else {
 		/* Navigating away from a container's own detail view (or to a
@@ -2683,7 +2687,10 @@ function renderCurrentView() {
 			closeConsole();
 		if (statsContainerName !== null)
 			stopStatsPolling();
-		if (route.category !== "host-stats")
+		/* The page, not the route: Host stats is one tab of a page,
+		 * and stopping on any other tab's route cleared the charts'
+		 * history and restarted their read on every render. */
+		if (!onPageOf("host-stats"))
 			stopHostStatsPolling();
 		if (route.category === "networks" && route.name !== null)
 			renderNetworkDetail(route.name);
@@ -2736,12 +2743,17 @@ function renderCurrentView() {
 			refreshKernelPolicy();
 		if (onPageOf("logs"))
 			renderLogsList();
+		/* Streams, never announced: live while their page is open. */
 		if (onPageOf("kmsg"))
-			refreshKmsg();
+			startKmsgLive();
+		else
+			stopLiveRead("kmsg");
 		if (onPageOf("server-health"))
 			refreshServerHealth();
 		if (onPageOf("stalls"))
-			refreshStalls();
+			startStallsLive();
+		else
+			stopLiveRead("stalls");
 		if (onPageOf("schedules"))
 			refreshSchedules();
 		if (onPageOf("running-config"))
@@ -4278,8 +4290,7 @@ function openConsole(name) {
 
 const STATS_HISTORY_MAX = 60;
 
-let statsTimer = null;
-let statsContainerName = null;
+let statsContainerName = null; /* the container whose live read the tab holds, or null */
 let statsHistory = [];
 
 /* cpu_max is the raw cgroup v2 "QUOTA PERIOD" pass-through text (see
@@ -4452,10 +4463,8 @@ function drawChart(canvas, series, opts) {
 }
 
 function stopStatsPolling() {
-	if (statsTimer !== null) {
-		clearInterval(statsTimer);
-		statsTimer = null;
-	}
+	if (statsContainerName !== null)
+		stopLiveRead("container-stats");
 	statsContainerName = null;
 	statsHistory = [];
 }
@@ -4589,18 +4598,12 @@ function renderStatsCharts() {
 		memPressureValues[memPressureValues.length - 1].toFixed(1) + "% (some, avg10)";
 }
 
-async function pollStatsOnce(name) {
-	let stats;
-
-	try {
-		stats = await apiRequest("GET", CIX_API.getContainerStats(name));
-	} catch (e) {
-		return; /* container may have just exited/been removed -- the next
-		         * tick (or leaving the tab) resolves it; no need to
-		         * surface a transient error here */
-	}
+/* One sample of GET /v1/containers/{name}/stats, pushed or polled
+ * (startLiveRead()). A container that has just exited sends no sample
+ * (a non-200 is never sent), and leaving the tab resolves it. */
+function ingestContainerStats(name, stats) {
 	if (statsContainerName !== name)
-		return; /* the tab moved on to a different container mid-request */
+		return; /* the tab moved on to a different container */
 
 	const netRx = (stats.networks || []).reduce((sum, n) => sum + n.rx_bytes, 0);
 	const netTx = (stats.networks || []).reduce((sum, n) => sum + n.tx_bytes, 0);
@@ -4644,14 +4647,14 @@ async function pollStatsOnce(name) {
 }
 
 function startStatsPolling(name) {
-	if (statsContainerName === name && statsTimer !== null)
-		return; /* already polling this exact container -- a poll-driven
-		         * re-render of the same detail view must not reset history */
+	if (statsContainerName === name)
+		return; /* already live on this exact container -- a re-render of
+		         * the same detail view must not reset history */
 
 	stopStatsPolling();
 	statsContainerName = name;
-	pollStatsOnce(name);
-	statsTimer = setInterval(() => pollStatsOnce(name), POLL_INTERVAL_MS);
+	startLiveRead("container-stats", CIX_API.getContainerStats(name),
+	              (stats) => ingestContainerStats(name, stats));
 }
 
 /*
@@ -4669,14 +4672,13 @@ function startStatsPolling(name) {
  */
 const HOST_STATS_HISTORY_MAX = 60;
 
-let hostStatsTimer = null;
+let hostStatsLive = false; /* the page holds its live read (ADR-0339 phase 2) */
 let hostStatsHistory = [];
 
 function stopHostStatsPolling() {
-	if (hostStatsTimer !== null) {
-		clearInterval(hostStatsTimer);
-		hostStatsTimer = null;
-	}
+	if (hostStatsLive)
+		stopLiveRead("host-stats");
+	hostStatsLive = false;
 	hostStatsHistory = [];
 }
 
@@ -4831,16 +4833,10 @@ function renderHostStatsCharts() {
 		memPressureValues[memPressureValues.length - 1].toFixed(1) + "% (some, avg10)";
 }
 
-async function pollHostStatsOnce() {
-	let stats;
-
-	try {
-		stats = await apiRequest("GET", CIX_API.getSystemStats());
-	} catch (e) {
-		return; /* transient -- the next tick resolves it */
-	}
-	if (hostStatsTimer === null)
-		return; /* the page moved on before this request resolved */
+/* One sample of GET /v1/system/stats, pushed or polled (startLiveRead()). */
+function ingestHostStats(stats) {
+	if (!hostStatsLive)
+		return; /* the page moved on before this sample arrived */
 
 	const netRx = (stats.networks || []).reduce((sum, n) => sum + n.rx_bytes, 0);
 	const netTx = (stats.networks || []).reduce((sum, n) => sum + n.tx_bytes, 0);
@@ -4871,12 +4867,12 @@ async function pollHostStatsOnce() {
 }
 
 function startHostStatsPolling() {
-	if (hostStatsTimer !== null)
-		return; /* already polling -- a poll-driven re-render of the same
-		         * page must not reset history */
+	if (hostStatsLive)
+		return; /* already live -- a re-render of the same page must not
+		         * reset history */
 
-	pollHostStatsOnce();
-	hostStatsTimer = setInterval(pollHostStatsOnce, POLL_INTERVAL_MS);
+	hostStatsLive = true;
+	startLiveRead("host-stats", CIX_API.getSystemStats(), ingestHostStats);
 }
 
 /*
@@ -5982,15 +5978,12 @@ async function editDhcpRange(network) {
  */
 const NET_PORTS_HISTORY_MAX = 60;
 
-let netPortsTimer = null;
-let netPortsName = null;
+let netPortsName = null; /* the network whose live read the page holds, or null */
 let netPortsHistory = [];
 
 function stopNetPortsPolling() {
-	if (netPortsTimer !== null) {
-		clearInterval(netPortsTimer);
-		netPortsTimer = null;
-	}
+	if (netPortsName !== null)
+		stopLiveRead("net-ports");
 	netPortsName = null;
 	netPortsHistory = [];
 }
@@ -6170,36 +6163,34 @@ function renderNetPorts() {
 			  formatBytes(txValues[txValues.length - 1]) + "/s";
 }
 
-async function pollNetPortsOnce(name) {
-	try {
-		const data = await apiRequest("GET", CIX_API.getNetworkPorts(name));
-		const byIf = {};
+/* One sample of GET /v1/networks/{name}/ports, pushed or polled
+ * (startLiveRead()). A failed read sends nothing, so the last drawn
+ * panel stays put rather than blanking. */
+function ingestNetPorts(name, data) {
+	const byIf = {};
 
-		for (const p of data.ports || [])
-			byIf[p.ifname] = p;
-		netPortsHistory.push({
-			t: Date.now(),
-			bridgePresent: data.bridge_present,
-			ports: data.ports || [],
-			byIf: byIf,
-		});
-		if (netPortsHistory.length > NET_PORTS_HISTORY_MAX)
-			netPortsHistory.shift();
-		renderNetPorts();
-	} catch (e) {
-		/* Best-effort; the last drawn panel stays put rather than
-		 * blanking on one failed poll. */
-	}
+	if (netPortsName !== name)
+		return; /* the page moved on to another network */
+	for (const p of data.ports || [])
+		byIf[p.ifname] = p;
+	netPortsHistory.push({
+		t: Date.now(),
+		bridgePresent: data.bridge_present,
+		ports: data.ports || [],
+		byIf: byIf,
+	});
+	if (netPortsHistory.length > NET_PORTS_HISTORY_MAX)
+		netPortsHistory.shift();
+	renderNetPorts();
 }
 
 function startNetPortsPolling(name) {
-	if (netPortsName === name && netPortsTimer !== null)
-		return; /* a poll-driven re-render of the same network must not
-		         * reset the window it has been building */
+	if (netPortsName === name)
+		return; /* a re-render of the same network must not reset the
+		         * window it has been building */
 	stopNetPortsPolling();
 	netPortsName = name;
-	pollNetPortsOnce(name);
-	netPortsTimer = setInterval(() => pollNetPortsOnce(name), POLL_INTERVAL_MS);
+	startLiveRead("net-ports", CIX_API.getNetworkPorts(name), (data) => ingestNetPorts(name, data));
 }
 
 function renderNetworkDetail(name) {
@@ -9419,15 +9410,10 @@ document.getElementById("iso-publish").addEventListener("click", async () => {
 	refreshIso();
 });
 
-async function refreshStalls() {
-	try {
-		const data = await apiRequest("GET", CIX_API.getStalls());
-
-		renderStalls(data.stalls || []);
-	} catch (e) {
-		/* listState() has the failure; see refreshBuildLogs(). */
-		renderStalls([]);
-	}
+/* Live while its page is open (ADR-0339 phase 2): stalls are a stream,
+ * never announced. */
+function startStallsLive() {
+	startLiveRead("stalls", CIX_API.getStalls(), (data) => renderStalls(data.stalls || []));
 }
 
 /*
@@ -12421,33 +12407,40 @@ function renderLogsList() {
  */
 const KMSG_PRIORITY_NAMES = ["emerg", "alert", "crit", "err", "warn", "notice", "info", "debug"];
 
-async function refreshKmsg() {
+/* The kernel log read the tail field asks for. */
+function kmsgPath() {
+	const tail = parseInt(document.getElementById("kmsg-tail").value, 10);
+
+	return Number.isFinite(tail) && tail > 0 ? CIX_API.getSystemKmsg() + "?tail=" + tail
+	                                         : CIX_API.getSystemKmsg();
+}
+
+/* One sample of the kernel log, pushed or polled (startLiveRead()). */
+function renderKmsg(data) {
 	const out = document.getElementById("kmsg-output");
-	const tailRaw = document.getElementById("kmsg-tail").value;
-	const tail = parseInt(tailRaw, 10);
-	const path = Number.isFinite(tail) && tail > 0 ? CIX_API.getSystemKmsg() + "?tail=" + tail : CIX_API.getSystemKmsg();
+	const entries = data.entries || [];
 
-	out.textContent = "(loading)";
-	try {
-		const data = await apiRequest("GET", path);
-		const entries = data.entries || [];
-
-		if (entries.length === 0) {
-			out.textContent = "(no kernel log entries)";
-			return;
-		}
-		out.textContent = entries
-			.map((e) => {
-				/* ts_usec is the kernel's own monotonic time since boot, not a
-				   wall clock -- shown as seconds, the way dmesg itself does. */
-				const secs = (Number(e.ts_usec) / 1000000).toFixed(6).padStart(14);
-				const prio = KMSG_PRIORITY_NAMES[e.priority] || String(e.priority);
-				return "[" + secs + "] " + prio.padEnd(6) + " " + (e.message || "");
-			})
-			.join("\n");
-	} catch (err) {
-		out.textContent = "(failed to read the kernel log: " + err.message + ")";
+	if (entries.length === 0) {
+		out.textContent = "(no kernel log entries)";
+		return;
 	}
+	out.textContent = entries
+		.map((e) => {
+			/* ts_usec is the kernel's own monotonic time since boot, not a
+			   wall clock -- shown as seconds, the way dmesg itself does. */
+			const secs = (Number(e.ts_usec) / 1000000).toFixed(6).padStart(14);
+			const prio = KMSG_PRIORITY_NAMES[e.priority] || String(e.priority);
+			return "[" + secs + "] " + prio.padEnd(6) + " " + (e.message || "");
+		})
+		.join("\n");
+}
+
+/* Live while its page is open (ADR-0339 phase 2): the kernel log is a
+ * stream, never announced, so arriving at it is not enough. */
+function startKmsgLive() {
+	if (!liveReads.kmsg)
+		document.getElementById("kmsg-output").textContent = "(loading)";
+	startLiveRead("kmsg", kmsgPath(), renderKmsg);
 }
 
 /*
@@ -13203,7 +13196,10 @@ function renderServerHealth(servers) {
 
 document.getElementById("kmsg-form").addEventListener("submit", (event) => {
 	event.preventDefault();
-	refreshKmsg();
+	/* A new tail is a new read: the old subscription ends and this one
+	 * starts with a sample at once. */
+	stopLiveRead("kmsg");
+	startKmsgLive();
 });
 
 async function refreshDaemonConfig() {
@@ -14687,23 +14683,23 @@ async function poll() {
 	 * ADR-0339: while the event stream is live the box says what changed,
 	 * so nothing here asks. Its heartbeat is the liveness signal (the LEDs
 	 * blink on its frames), a change runs the refreshers that need it
-	 * (runEventRefresh()), and navigation reads the page it lands on. What
-	 * stays is request-free re-rendering, for anything drawn relative to
-	 * the clock, and the log panel, a stream with no subscription yet
-	 * (phase 2). When the stream is lost or there is no session, this is
-	 * the polling it always was -- and the status bar says the page is
-	 * not live (renderStreamState()).
+	 * (runEventRefresh()), and navigation reads the page it lands on. The
+	 * log panel and the stats pages are live reads with timers of their
+	 * own (startLiveRead(), phase 2). What stays here is the tree, drawn
+	 * from the cache. NOT renderCurrentView(): several pages' renderers
+	 * fetch (the kernel log, the log store's config, build logs, the
+	 * ISO), so calling it every tick was polling those pages at 2 s while
+	 * the page said it was live -- 60 requests a minute on Health,
+	 * measured in Chromium on 2026-10-17. A page re-renders on arrival,
+	 * on every announced change and from its live reads. When the stream
+	 * is lost or there is no session, this is the polling it always was
+	 * -- and the status bar says the page is not live
+	 * (renderStreamState()).
 	 */
 	if (eventStream.isLive()) {
 		if (document.hidden)
 			return;
-		try {
-			await pollServerLogs();
-		} catch (e) {
-			/* The log panel is best-effort, as below. */
-		}
 		renderTree();
-		renderCurrentView();
 		return;
 	}
 	await refreshHealth();
@@ -14753,11 +14749,6 @@ async function poll() {
 	} else {
 		await runRefreshers(CORE_REFRESHERS);
 		await runRefreshers(refreshersForView(CATEGORY_VIEWS[route.category]));
-	}
-	try {
-		await pollServerLogs();
-	} catch (e) {
-		/* The log panel is best-effort like everything else here. */
 	}
 	renderTree();
 	renderCurrentView();
@@ -14827,6 +14818,7 @@ function syncEventStream() {
 	if (eventStreamToken !== (authToken || "")) {
 		eventStream.stop();
 		eventStreamToken = authToken || "";
+		resubscribeLiveReads();
 		eventStream.start();
 	}
 	renderStreamState();
@@ -14854,6 +14846,83 @@ function renderStreamState() {
 
 	streamStateEl.hidden = !lost;
 	streamStateEl.textContent = lost ? "Live updates lost — reconnecting" : "";
+}
+
+/*
+ * ADR-0339 phase 2: a read the page shows live -- the log panel's tail,
+ * a stats page. Subscribed on the event stream, so the box sends each
+ * sample that differs from the last; while the stream is not live
+ * (reconnecting, signed out on an open host, before the first frame) the
+ * same read is polled on the old cadence instead. Both paths feed the
+ * page's own `onData`, so a pushed sample and a polled one cannot be
+ * drawn differently. One id per page slot: starting it again with
+ * another path (another container) replaces it.
+ */
+const liveReads = {};
+
+function subscribeLiveRead(id, entry) {
+	eventStream.subscribe(id, entry.path, (body) => {
+		if (liveReads[id] === entry)
+			entry.onData(body);
+	}, () => {
+		/* Refused -- not subscribable, or not this session's to read:
+		 * the timer below takes over, and meets the same answer a GET
+		 * would. */
+		entry.refused = true;
+	});
+}
+
+function startLiveRead(id, path, onData) {
+	const prev = liveReads[id];
+
+	if (prev && prev.path === path)
+		return;
+	stopLiveRead(id);
+	const entry = { path: path, onData: onData, timer: null, refused: false };
+
+	liveReads[id] = entry;
+	subscribeLiveRead(id, entry);
+	const tick = async () => {
+		if (eventStream.isLive() && !entry.refused)
+			return;
+		/* The same two quiet states poll() keeps: a hidden tab reads
+		 * nothing but health, and a gated host with no session refuses
+		 * every read (#544). */
+		if (document.hidden || (hostGated && !sessionAuthenticated))
+			return;
+		let body;
+
+		try {
+			body = await apiRequest("GET", path);
+		} catch (e) {
+			return; /* best-effort: the next tick, or the stream, resolves it */
+		}
+		if (liveReads[id] === entry)
+			onData(body);
+	};
+	tick();
+	entry.timer = setInterval(tick, POLL_INTERVAL_MS);
+}
+
+function stopLiveRead(id) {
+	const entry = liveReads[id];
+
+	if (!entry)
+		return;
+	clearInterval(entry.timer);
+	delete liveReads[id];
+	eventStream.unsubscribe(id);
+}
+
+/* A session that ended (4401) took every subscription with it; a new
+ * stream subscribes again to whatever the page still shows. */
+function resubscribeLiveReads() {
+	for (const id of Object.keys(liveReads)) {
+		if (!eventStream.subscribed(id)) {
+			liveReads[id].refused = false;
+			subscribeLiveRead(id, liveReads[id]);
+		}
+	}
 }
 
 function scheduleEventRefresh() {
@@ -15050,6 +15119,9 @@ document.addEventListener("scroll", hideContextMenu, true);
 
 bindStaticPageForms();
 restoreLastViewIfNoHash();
+/* The log panel is on every page, so its live read lasts as long as the
+ * page does (ADR-0339 phase 2). */
+startLiveRead("log-panel", CIX_API.getSystemLogs() + "?since=0&tail=" + LOG_TAIL, ingestServerLogs);
 poll().then(ensureActiveCategoryExpanded);
 /*
  * The loop itself still ticks at POLL_INTERVAL_MS, because that is the

@@ -614,6 +614,18 @@ int main(void)
 	               "      x-cix-read: sample\n"
 	               "      x-cix-permission: public\n",
 	               "x-cix-sample-period goes with");
+	/* A stream may take a period -- that makes it subscribable -- and a
+	 * state read may not: its changes are announced, never sampled. */
+	expect_refusal("a state read with a period",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: getThing\n"
+	               "      x-cix-read: state\n"
+	               "      x-cix-sample-period: 2\n"
+	               "      x-cix-permission: public\n",
+	               "x-cix-sample-period goes with");
 	expect_refusal("a change with no x-cix-invalidates",
 	               VOCAB
 	               "paths:\n"

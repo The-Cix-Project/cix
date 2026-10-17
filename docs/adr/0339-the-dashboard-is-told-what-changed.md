@@ -216,6 +216,37 @@ Recorded as each step lands, where the implementation is narrower than or depart
 
   A drift found later is also announced (`events_observe()`), as well as counted and logged. A page is
   not left stale for longer than one check, while the log still names the missing site for fixing.
+- **Phase 2, release A: subscriptions** (0.2.57-531).
+  - **A stream read is subscribable when it declares `x-cix-sample-period`.** The period is its sampling
+    cadence, so the 2 s the dashboard polled at moved into the contract. `apigen` accepts the key on a
+    `stream` read as well as a `sample`, and emits the subscribable set. The three streams that are
+    WebSockets of their own (the event stream, the console and the build log) declare none.
+  - **The sample is the self-check's in-process read**, generalised to take a query and path
+    parameters as `dispatch()` gives them (`events_run_get()`). Before subscribing, each of the seven
+    handlers was checked for a fork or a blocking call; none has one, and each already ran in the
+    loop on every client poll.
+  - **One run per distinct path per period serves every subscriber**, and `events/status` counts the
+    runs so `test_events` can assert it.
+  - **Samples can pass 64 KiB.** A 1024-line kernel log tail, or a busy host's process list, does. So a
+    data frame uses a new sender-side 64-bit header (`ws_frame_header_long()`, up to 1 MiB). The
+    receive cap stays at 64 KiB.
+  - **The dashboard's live reads are `startLiveRead()`:** subscribed while the stream is live, polled
+    on the old timer while it is not, both feeding one ingest function. The log panel, Host stats,
+    container stats, network ports, Stalls and the kernel log use it. Processes stays
+    fetch-on-demand by its own earlier decision.
+  - **The live poll tick stopped calling `renderCurrentView()`.** Several pages' renderers fetch, so
+    calling it every 2 s was polling Health's kernel log and log configuration while the page said
+    it was live. Stalls and the kernel log, which that call had been refreshing as a side effect,
+    are live reads now: they are streams, so nothing announces them.
+  - **Measured** in Chromium against the box's files and a fake stream. An idle signed-in minute is
+    now 2 requests (the status bar's once-a-minute read) on Containers, Health, Logs, Kernel log,
+    Stalls and Build alike, against 528's 32 on Containers and 122 on Health, measured with 528's
+    own `app.js` and `events.js` in the same harness. With the stream down, the live reads fall
+    back to their 2 s polls.
+  - **Per-subscription authorization is checked on the box with `cixctl events --follow
+    --subscribe=PATH`, not in `test_events`,** because that daemon runs ungated. The same command is
+    how a stream read's samples are watched from a terminal, so cixctl's receive cap rose to the
+    daemon's 1 MiB send cap.
 - **The drift decision is pure and tested without a daemon.** `events_hash_body()` and
   `events_observe()` live in `events.c`, and `test_events_drift` drives them through the case no daemon
   test can produce cleanly: a state change with no announcement.

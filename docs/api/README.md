@@ -975,6 +975,28 @@ Authorization: Basic base64("agent-1:3f9c...")
 
 `cixctl events --follow` prints the frames, one per line.
 
+**Subscriptions on the same socket** (0.2.57-531, ADR-0339 phase 2). A `stream` read that declares
+`x-cix-sample-period` is subscribable: host and container stats, processes, network ports, stalls, the
+log tail and the kernel log.
+
+- **Subscribe:** the client sends `{"subscribe": "<id>", "path": "/v1/..."}`, with the read's full path
+  and query exactly as it would GET it. The answer is `{"subscribed": "<id>"}` or
+  `{"refused": "<id>", "reason": "..."}`.
+- **Why one is refused:**
+  - the path names no subscribable read;
+  - the query has a parameter the read does not take;
+  - the session may not perform that read, which is the same decision `authorize_route()` makes;
+  - the stream already holds 8 subscriptions.
+- **Samples:** `{"data": "<id>", "body": <the read's 200 answer>}`, the first at once and then one per
+  period, sent only when the answer differs from the last one sent. A non-200 answer sends nothing.
+- **Bounded:** each subscription holds only its latest unsent sample, and a newer one replaces it. A
+  sample larger than 1 MiB ends the subscription with a refusal. One handler run per period serves
+  every stream subscribed to the same path; `GET /events/status` counts `subscriptions`,
+  `subscription_runs` and `subscription_frames`.
+- **When a grant is withdrawn,** the subscriptions it allowed end with a refusal.
+  `{"unsubscribe": "<id>"}` ends one, and closing the socket ends them all, so a client replays them
+  after reconnecting.
+
 **The box checks its own announcements** (0.2.57-524):
 
 - **The rolling check:** every second the daemon re-runs any sample whose period has come round, and

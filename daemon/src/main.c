@@ -1390,6 +1390,10 @@ struct conn {
 	unsigned char ev_allowed[(EVENTS_READ_COUNT + 7) / 8];
 	char ev_token[HOSTAUTH_TOKEN_LEN + 1];
 	struct conn *ev_next;                   /* g_events_conns list linkage */
+	/* ADR-0339 phase 2: this stream's subscriptions, EVENTS_SUBS_MAX of
+	 * them, allocated at the first subscribe. Each holds at most one
+	 * unsent sample, so a slow peer costs one body per subscription. */
+	struct events_sub *ev_subs;
 };
 
 /*
@@ -25952,6 +25956,8 @@ static void op_getWhoami(const struct api_ctx *ctx)
 
 /* GET /v1/events/status -- ADR-0339: the epoch and every announced
  * read's generation. */
+static void events_subs_write_status(struct json_writer *w);
+
 static void op_getEventsStatus(const struct api_ctx *ctx)
 {
 	struct json_writer w;
@@ -25978,6 +25984,7 @@ static void op_getEventsStatus(const struct api_ctx *ctx)
 		jw_key(&w, "unreadable");
 		jw_int(&w, (long long)c.unreadable);
 	}
+	events_subs_write_status(&w);
 	jw_obj_close(&w);
 	respond_json(ctx->fd, 200, "OK", &w);
 	jw_free(&w);
@@ -31093,6 +31100,14 @@ static void conn_out_sweep(void)
 static struct conn *g_events_conns;
 static int g_events_dirty;       /* some stream has a read pending */
 static int g_events_masks_stale; /* a grant may have changed: recompute every mask */
+
+/* ADR-0339 phase 2, defined with the self-check below because a
+ * subscription's sample is that same in-process read. */
+static void events_subs_reauthorize(struct conn *cc);
+static int events_subs_any_pending(const struct conn *cc);
+static int events_subs_queue_data(struct conn *cc);
+static void events_subs_free(struct conn *cc);
+static int events_ws_client_message(struct conn *cc, const unsigned char *payload, size_t len);
 static struct conn g_events_timer_conn = { .fd = -1 };
 
 static int ev_bit(const unsigned char *bits, int slot)
@@ -31118,6 +31133,9 @@ static void events_ws_compute_mask(struct conn *cc)
 	for (slot = 0; slot < EVENTS_READ_COUNT; slot++)
 		if (hostauth_authorize_peek(cc->ev_token, events_permission(slot)) == HOSTAUTH_AUTHZ_OK)
 			ev_set(cc->ev_allowed, slot);
+	/* The same decision, for what this stream subscribed to: a grant
+	 * withdrawn ends the subscriptions it allowed (ADR-0339 point 5). */
+	events_subs_reauthorize(cc);
 }
 
 /*
@@ -31246,12 +31264,18 @@ static int events_ws_write(struct conn *cc)
 	return 0;
 }
 
-/* Sends what is pending on cc, unless a frame is still leaving. */
+/* Sends what is pending on cc -- the reads that changed, then each
+ * subscription's latest sample -- unless a frame is still leaving, in
+ * which case it all waits and newer samples replace older ones. */
 static int events_ws_flush(struct conn *cc)
 {
-	if (cc->out_sent < cc->out_len || !events_ws_any_pending(cc))
+	/* Bytes already queued -- a frame still leaving, or a reply to a
+	 * subscribe appended behind it -- go first; the rest waits. */
+	if (cc->out_sent < cc->out_len)
+		return events_ws_write(cc);
+	if (!events_ws_any_pending(cc) && !events_subs_any_pending(cc))
 		return 0;
-	if (events_ws_queue_frame(cc, 0) != 0) {
+	if (events_ws_queue_frame(cc, 0) != 0 || events_subs_queue_data(cc) != 0) {
 		events_ws_teardown(cc);
 		return -1;
 	}
@@ -31268,6 +31292,7 @@ static void events_ws_flush_all(void)
 		g_events_masks_stale = 0;
 		for (cc = g_events_conns; cc != NULL; cc = cc->ev_next)
 			events_ws_compute_mask(cc);
+		g_events_dirty = 1; /* a subscription it ended has a refusal to send */
 	}
 	if (!g_events_dirty)
 		return;
@@ -31291,6 +31316,7 @@ static void events_ws_teardown(struct conn *cc)
 	conn_out_unlink(cc);
 	free(cc->out_buf);
 	cc->out_buf = NULL;
+	events_subs_free(cc);
 	ws_conn_free(&cc->ws);
 	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (cc->ssl != NULL) {
@@ -31302,10 +31328,10 @@ static void events_ws_teardown(struct conn *cc)
 }
 
 /*
- * The peer's side: a stream carries nothing a client needs to say, so
- * this answers a ping, ends on a close frame or EOF, and otherwise
- * drains; and it carries on writing whatever is queued when the socket
- * becomes writable.
+ * The peer's side: a client says only subscribe and unsubscribe
+ * (ADR-0339 phase 2), so this answers those and a ping, ends on a close
+ * frame or EOF, and otherwise drains; and it carries on writing
+ * whatever is queued when the socket becomes writable.
  */
 static void handle_events_ws_event(struct conn *cc, uint32_t evmask)
 {
@@ -31343,6 +31369,16 @@ static void handle_events_ws_event(struct conn *cc, uint32_t evmask)
 				    events_ws_append(cc, hdr, hlen, frame.payload, frame.payload_len) != 0)
 					goto gone;
 				ws_conn_consume(&cc->ws, frame.frame_len);
+				if (events_ws_write(cc) != 0)
+					return;
+				continue;
+			}
+			if (frame.opcode == WS_OPCODE_TEXT) {
+				int r = events_ws_client_message(cc, frame.payload, frame.payload_len);
+
+				ws_conn_consume(&cc->ws, frame.frame_len);
+				if (r != 0)
+					goto gone;
 				if (events_ws_write(cc) != 0)
 					return;
 				continue;
@@ -31530,17 +31566,18 @@ static unsigned long g_events_check_ticks;
 static int g_events_check_cursor;
 
 /*
- * Runs one announced read's handler into memory and hashes its 200
- * body. Returns 0 with *out_hash set, or -1 when the read takes a path
- * parameter or did not answer 200 -- unreadable, never drift.
+ * Runs the GET at `path` -- query and path parameters included, as
+ * dispatch() would -- into memory. Returns 0 with the 200 body in
+ * *out_body (the caller frees it), or -1 when nothing matches or the
+ * answer is not a 200. Authorization is the caller's: this is the
+ * handler alone, as a request would reach it after authorize_route().
  *
  * Restores g_response_conn and the generation-header slot on the way
  * out: POST /v1/events/verify runs this inside a request, whose own
  * response must still reach its own client.
  */
-static int events_self_read(int slot, uint64_t *out_hash)
+static int events_run_get(const char *path, char **out_body, size_t *out_len)
 {
-	const struct events_read *rd = events_read_at(slot);
 	struct conn *saved_conn = g_response_conn;
 	int saved_slot = g_events_response_slot;
 	char params[APIROUTE_MAX_PARAMS][APIROUTE_PARAM_MAX];
@@ -31550,22 +31587,24 @@ static int events_self_read(int slot, uint64_t *out_hash)
 	size_t body_len = 0;
 	int idx, status;
 
-	if (rd == NULL || !rd->self_readable)
-		return -1;
+	*out_body = NULL;
+	*out_len = 0;
 	idx = api_route_match(g_api_routes, (int)(sizeof(g_api_routes) / sizeof(g_api_routes[0])),
-	                      "GET", rd->path, params);
+	                      "GET", path, params);
 	if (idx < 0)
 		return -1;
 
 	memset(&req, 0, sizeof(req));
 	snprintf(req.method, sizeof(req.method), "GET");
-	snprintf(req.path, sizeof(req.path), "%s", rd->path);
+	snprintf(req.path, sizeof(req.path), "%s", path);
 	req.headers = (char *)"";
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.fd = -1;
 	ctx.req = &req;
 	ctx.user = "";
 	ctx.peer_ip = "";
+	ctx.p[0] = params[0];
+	ctx.p[1] = params[1];
 
 	free(g_self_read_conn.out_buf);
 	g_self_read_conn.out_buf = NULL;
@@ -31591,15 +31630,394 @@ static int events_self_read(int slot, uint64_t *out_hash)
 			body_len = g_self_read_conn.out_len - (size_t)(body - g_self_read_conn.out_buf);
 		}
 	}
-	if (body == NULL) {
-		free(g_self_read_conn.out_buf);
-		g_self_read_conn.out_buf = NULL;
-		return -1;
+	if (body != NULL) {
+		*out_body = malloc(body_len + 1);
+		if (*out_body != NULL) {
+			memcpy(*out_body, body, body_len);
+			(*out_body)[body_len] = '\0';
+			*out_len = body_len;
+		}
 	}
-	*out_hash = events_hash_body(body, body_len, rd->volatile_fields);
 	free(g_self_read_conn.out_buf);
 	g_self_read_conn.out_buf = NULL;
+	return *out_body != NULL ? 0 : -1;
+}
+
+/*
+ * Runs one announced read's handler into memory and hashes its 200
+ * body. Returns 0 with *out_hash set, or -1 when the read takes a path
+ * parameter or did not answer 200 -- unreadable, never drift.
+ */
+static int events_self_read(int slot, uint64_t *out_hash)
+{
+	const struct events_read *rd = events_read_at(slot);
+	char *body;
+	size_t body_len;
+
+	if (rd == NULL || !rd->self_readable)
+		return -1;
+	if (events_run_get(rd->path, &body, &body_len) != 0)
+		return -1;
+	*out_hash = events_hash_body(body, body_len, rd->volatile_fields);
+	free(body);
 	return 0;
+}
+
+/* ---------- ADR-0339 phase 2: subscriptions ----------
+ *
+ * A stream read with a period -- stats, processes, ports, stalls, the
+ * log tail -- is subscribed to on the event stream rather than polled.
+ * Every period the daemon runs it once for all the streams subscribed
+ * to the same path (the in-process read the self-check uses), and gives
+ * each stream the answer when it differs from the last one that stream
+ * was given. A subscription holds at most one unsent sample and a newer
+ * one replaces it, so a slow peer costs one body per subscription, the
+ * same bound the pending set gives announcements.
+ *
+ * Authorization is the decision authorize_route() makes, taken at the
+ * subscribe through hostauth_authorize_peek() -- the factored function
+ * the mask already uses -- and taken again whenever a grant changes.
+ */
+#define EVENTS_SUBS_MAX 8
+#define EVENTS_SUB_ID_MAX 33
+/* Bytes a peer has not read when a reply is due: past this it is sending
+ * without reading, and the stream ends rather than buffer for it. Room
+ * for every subscription's largest sample to be draining, plus replies,
+ * so a subscribe made while big samples leave is answered, not fatal. */
+#define EVENTS_REPLY_BACKLOG_MAX ((size_t)EVENTS_SUBS_MAX * WS_MAX_SEND_PAYLOAD + 256 * 1024)
+
+struct events_sub {
+	int in_use;
+	char id[EVENTS_SUB_ID_MAX];
+	char path[HTTP_MAX_PATH];
+	int route;            /* index into g_api_routes */
+	int period;           /* seconds, from the contract */
+	int have_hash;
+	uint64_t last_hash;   /* of the last sample given to this stream */
+	char *pending;        /* the latest sample not yet sent, or NULL */
+	size_t pending_len;
+};
+
+/* Handler runs made for subscriptions since start, and samples sent;
+ * GET /v1/events/status reports both, so sharing one run among every
+ * subscriber to a path is measurable rather than asserted. */
+static unsigned long g_events_sub_runs;
+static unsigned long g_events_sub_frames;
+
+static int events_sub_count(void)
+{
+	const struct conn *cc;
+	int i, n = 0;
+
+	for (cc = g_events_conns; cc != NULL; cc = cc->ev_next)
+		for (i = 0; cc->ev_subs != NULL && i < EVENTS_SUBS_MAX; i++)
+			n += cc->ev_subs[i].in_use;
+	return n;
+}
+
+/* "subscriptions", "subscription_runs", "subscription_frames": the
+ * status read's account of phase 2. */
+static void events_subs_write_status(struct json_writer *w)
+{
+	jw_key(w, "subscriptions");
+	jw_int(w, (long long)events_sub_count());
+	jw_key(w, "subscription_runs");
+	jw_int(w, (long long)g_events_sub_runs);
+	jw_key(w, "subscription_frames");
+	jw_int(w, (long long)g_events_sub_frames);
+}
+
+static void events_sub_clear(struct events_sub *s)
+{
+	free(s->pending);
+	memset(s, 0, sizeof(*s));
+}
+
+static void events_subs_free(struct conn *cc)
+{
+	int i;
+
+	for (i = 0; cc->ev_subs != NULL && i < EVENTS_SUBS_MAX; i++)
+		events_sub_clear(&cc->ev_subs[i]);
+	free(cc->ev_subs);
+	cc->ev_subs = NULL;
+}
+
+/* {"<kind>": "<id>"[, "reason": "..."]}, queued behind whatever is
+ * leaving. 0, or -1 when the peer has stopped reading. */
+static int events_sub_reply(struct conn *cc, const char *kind, const char *id, const char *reason)
+{
+	struct json_writer w;
+	unsigned char hdr[4];
+	size_t hlen;
+	int r;
+
+	if (cc->out_len - cc->out_sent > EVENTS_REPLY_BACKLOG_MAX)
+		return -1;
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, kind);
+	jw_str(&w, id);
+	if (reason != NULL) {
+		jw_key(&w, "reason");
+		jw_str(&w, reason);
+	}
+	jw_obj_close(&w);
+	hlen = ws_frame_header(WS_OPCODE_TEXT, w.len, hdr);
+	r = hlen == 0 ? -1 : events_ws_append(cc, hdr, hlen, w.buf, w.len);
+	jw_free(&w);
+	return r;
+}
+
+/* Gives s this sample if it differs from the last one s was given. */
+static void events_sub_offer(struct events_sub *s, const char *body, size_t len)
+{
+	uint64_t h;
+	char *copy;
+
+	if (body == NULL)
+		return; /* not a 200: nothing is sent, and the next period tries again */
+	h = events_hash_body(body, len, "");
+	if (s->have_hash && h == s->last_hash)
+		return;
+	copy = malloc(len);
+	if (copy == NULL)
+		return;
+	memcpy(copy, body, len);
+	free(s->pending);
+	s->pending = copy;
+	s->pending_len = len;
+	s->last_hash = h;
+	s->have_hash = 1;
+	g_events_dirty = 1;
+}
+
+static int events_sub_id_valid(const char *id)
+{
+	size_t n = id != NULL ? strlen(id) : 0;
+
+	return n >= 1 && n < EVENTS_SUB_ID_MAX &&
+	       strspn(id, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") == n;
+}
+
+/* The subscribe, refused with its reason or made, and sampled at once. */
+static int events_sub_add(struct conn *cc, const char *id, const char *path)
+{
+	char params[APIROUTE_MAX_PARAMS][APIROUTE_PARAM_MAX];
+	char bad[64], why[192];
+	struct events_sub *s = NULL;
+	char *body;
+	size_t body_len;
+	int idx, period, i;
+
+	if (path == NULL || strncmp(path, "/v1/", 4) != 0 || strlen(path) >= HTTP_MAX_PATH)
+		return events_sub_reply(cc, "refused", id, "path must be a /v1/ read path");
+	idx = api_route_match(g_api_routes, (int)(sizeof(g_api_routes) / sizeof(g_api_routes[0])),
+	                      "GET", path, params);
+	if (idx < 0)
+		return events_sub_reply(cc, "refused", id, "no read at that path");
+	period = events_stream_period(g_api_routes[idx].op_id);
+	if (period <= 0) {
+		snprintf(why, sizeof(why),
+		         "%s is not subscribable -- only a stream read with an x-cix-sample-period is",
+		         g_api_routes[idx].op_id);
+		return events_sub_reply(cc, "refused", id, why);
+	}
+	if (api_route_query_unknown(&g_api_routes[idx], path, bad, sizeof(bad)) != 0) {
+		snprintf(why, sizeof(why), "unknown query parameter \"%s\" for %s", bad,
+		         g_api_routes[idx].op_id);
+		return events_sub_reply(cc, "refused", id, why);
+	}
+	if (hostauth_authorize_peek(cc->ev_token, g_api_routes[idx].permission) != HOSTAUTH_AUTHZ_OK) {
+		snprintf(why, sizeof(why), "this session may not perform %s", g_api_routes[idx].op_id);
+		return events_sub_reply(cc, "refused", id, why);
+	}
+	if (cc->ev_subs == NULL) {
+		cc->ev_subs = calloc(EVENTS_SUBS_MAX, sizeof(*cc->ev_subs));
+		if (cc->ev_subs == NULL)
+			return -1;
+	}
+	/* The same id again replaces it: a page that moves to another
+	 * container re-subscribes under its own name. */
+	for (i = 0; i < EVENTS_SUBS_MAX && s == NULL; i++)
+		if (cc->ev_subs[i].in_use && strcmp(cc->ev_subs[i].id, id) == 0)
+			s = &cc->ev_subs[i];
+	for (i = 0; i < EVENTS_SUBS_MAX && s == NULL; i++)
+		if (!cc->ev_subs[i].in_use)
+			s = &cc->ev_subs[i];
+	if (s == NULL)
+		return events_sub_reply(cc, "refused", id, "this stream already holds 8 subscriptions");
+	events_sub_clear(s);
+	s->in_use = 1;
+	snprintf(s->id, sizeof(s->id), "%s", id);
+	snprintf(s->path, sizeof(s->path), "%s", path);
+	s->route = idx;
+	s->period = period;
+	if (events_sub_reply(cc, "subscribed", id, NULL) != 0)
+		return -1;
+	/* The first sample at once, rather than up to a period later. */
+	g_events_sub_runs++;
+	if (events_run_get(path, &body, &body_len) == 0) {
+		events_sub_offer(s, body, body_len);
+		free(body);
+	}
+	return 0;
+}
+
+/*
+ * One text frame from the peer: a subscribe or an unsubscribe. Returns
+ * 0, or -1 when the stream should end (a peer that has stopped reading
+ * its replies, or no memory).
+ */
+static int events_ws_client_message(struct conn *cc, const unsigned char *payload, size_t len)
+{
+	struct json_value *v = json_parse((const char *)payload, len);
+	const char *sub = v != NULL ? json_as_string(json_object_get(v, "subscribe")) : NULL;
+	const char *unsub = v != NULL ? json_as_string(json_object_get(v, "unsubscribe")) : NULL;
+	int r, i;
+
+	if (sub != NULL && events_sub_id_valid(sub)) {
+		r = events_sub_add(cc, sub, json_as_string(json_object_get(v, "path")));
+	} else if (unsub != NULL && events_sub_id_valid(unsub)) {
+		for (i = 0; cc->ev_subs != NULL && i < EVENTS_SUBS_MAX; i++)
+			if (cc->ev_subs[i].in_use && strcmp(cc->ev_subs[i].id, unsub) == 0)
+				events_sub_clear(&cc->ev_subs[i]);
+		r = events_sub_reply(cc, "unsubscribed", unsub, NULL);
+	} else {
+		r = events_sub_reply(cc, "refused", sub != NULL ? sub : unsub != NULL ? unsub : "",
+		                     "expected {\"subscribe\": id, \"path\": path} or {\"unsubscribe\": id}, "
+		                     "with an id of 1 to 32 letters, digits, - or _");
+	}
+	json_free(v);
+	return r;
+}
+
+/* A grant changed: a subscription this session may no longer make ends,
+ * and says so. Only queues; the caller's pass writes. */
+static void events_subs_reauthorize(struct conn *cc)
+{
+	char why[192];
+	int i;
+
+	for (i = 0; cc->ev_subs != NULL && i < EVENTS_SUBS_MAX; i++) {
+		struct events_sub *s = &cc->ev_subs[i];
+
+		if (!s->in_use ||
+		    hostauth_authorize_peek(cc->ev_token, g_api_routes[s->route].permission) ==
+		        HOSTAUTH_AUTHZ_OK)
+			continue;
+		snprintf(why, sizeof(why), "this session may no longer perform %s",
+		         g_api_routes[s->route].op_id);
+		(void)events_sub_reply(cc, "refused", s->id, why);
+		events_sub_clear(s);
+	}
+}
+
+static int events_subs_any_pending(const struct conn *cc)
+{
+	int i;
+
+	for (i = 0; cc->ev_subs != NULL && i < EVENTS_SUBS_MAX; i++)
+		if (cc->ev_subs[i].in_use && cc->ev_subs[i].pending != NULL)
+			return 1;
+	return 0;
+}
+
+/* Each subscription's waiting sample, as {"data": "<id>", "body": ...}.
+ * The body is the read's own JSON, placed as it is. */
+static int events_subs_queue_data(struct conn *cc)
+{
+	int i;
+
+	for (i = 0; cc->ev_subs != NULL && i < EVENTS_SUBS_MAX; i++) {
+		struct events_sub *s = &cc->ev_subs[i];
+		char head[EVENTS_SUB_ID_MAX + 32];
+		unsigned char hdr[10];
+		size_t head_len, total, hlen;
+		char *frame;
+
+		if (!s->in_use || s->pending == NULL)
+			continue;
+		head_len = (size_t)snprintf(head, sizeof(head), "{\"data\":\"%s\",\"body\":", s->id);
+		total = head_len + s->pending_len + 1;
+		hlen = ws_frame_header_long(WS_OPCODE_TEXT, total, hdr);
+		if (hlen == 0) {
+			char why[160];
+
+			snprintf(why, sizeof(why),
+			         "a sample of %zu bytes is larger than a frame carries (%d); "
+			         "subscribe to a narrower read",
+			         s->pending_len, WS_MAX_SEND_PAYLOAD);
+			if (events_sub_reply(cc, "refused", s->id, why) != 0)
+				return -1;
+			events_sub_clear(s);
+			continue;
+		}
+		frame = malloc(total);
+		if (frame == NULL)
+			return -1;
+		memcpy(frame, head, head_len);
+		memcpy(frame + head_len, s->pending, s->pending_len);
+		frame[total - 1] = '}';
+		free(s->pending);
+		s->pending = NULL;
+		s->pending_len = 0;
+		if (events_ws_append(cc, hdr, hlen, frame, total) != 0) {
+			free(frame);
+			return -1;
+		}
+		free(frame);
+		g_events_sub_frames++;
+	}
+	return 0;
+}
+
+/*
+ * Every tick: each subscription whose period is due is sampled, one
+ * handler run per distinct path however many streams asked for it.
+ */
+#define EVENTS_TICK_PATHS 64
+static void events_subs_tick(void)
+{
+	static struct {
+		const char *path;
+		char *body;
+		size_t len;
+	} run[EVENTS_TICK_PATHS];
+	struct conn *cc;
+	int n = 0, i, j;
+
+	for (cc = g_events_conns; cc != NULL; cc = cc->ev_next) {
+		for (i = 0; cc->ev_subs != NULL && i < EVENTS_SUBS_MAX; i++) {
+			struct events_sub *s = &cc->ev_subs[i];
+			char *body = NULL;
+			size_t len = 0;
+
+			if (!s->in_use || g_events_check_ticks % (unsigned long)s->period != 0)
+				continue;
+			for (j = 0; j < n; j++)
+				if (strcmp(run[j].path, s->path) == 0)
+					break;
+			if (j < n) {
+				events_sub_offer(s, run[j].body, run[j].len);
+				continue;
+			}
+			g_events_sub_runs++;
+			if (events_run_get(s->path, &body, &len) != 0)
+				body = NULL;
+			events_sub_offer(s, body, len);
+			if (n < EVENTS_TICK_PATHS) {
+				run[n].path = s->path;
+				run[n].body = body;
+				run[n].len = len;
+				n++;
+			} else {
+				free(body);
+			}
+		}
+	}
+	for (j = 0; j < n; j++)
+		free(run[j].body);
 }
 
 /*
@@ -31679,6 +32097,7 @@ static void handle_events_check_timer_event(struct conn *tc)
 	if (read(tc->fd, &expirations, sizeof(expirations)) < 0 && errno != EAGAIN)
 		perror("read (events check timerfd)");
 	g_events_check_ticks++;
+	events_subs_tick();
 	for (slot = 0; slot < EVENTS_READ_COUNT; slot++) {
 		const struct events_read *rd = events_read_at(slot);
 

@@ -66,6 +66,21 @@ size_t ws_frame_header(enum ws_opcode opcode, size_t len, unsigned char out[4])
 	return 4;
 }
 
+size_t ws_frame_header_long(enum ws_opcode opcode, size_t len, unsigned char out[10])
+{
+	int i;
+
+	if (len > WS_MAX_SEND_PAYLOAD)
+		return 0;
+	if (len <= 0xffff)
+		return ws_frame_header(opcode, len, out);
+	out[0] = (unsigned char)(0x80 | (opcode & 0x0f));
+	out[1] = 127;
+	for (i = 0; i < 8; i++)
+		out[2 + i] = (unsigned char)(((unsigned long long)len >> (56 - 8 * i)) & 0xff);
+	return 10;
+}
+
 int ws_write_frame(int fd, enum ws_opcode opcode, const void *payload, size_t len)
 {
 	unsigned char header[4];

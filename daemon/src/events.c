@@ -116,6 +116,16 @@ const char *events_permission(int slot)
 	return g_events_reads[slot].permission;
 }
 
+int events_stream_period(const char *op_id)
+{
+	int i;
+
+	for (i = 0; op_id != NULL && i < EVENTS_STREAM_COUNT; i++)
+		if (strcmp(g_events_streams[i].op_id, op_id) == 0)
+			return g_events_streams[i].period;
+	return 0;
+}
+
 const struct events_read *events_read_at(int slot)
 {
 	if (slot < 0 || slot >= EVENTS_READ_COUNT)
