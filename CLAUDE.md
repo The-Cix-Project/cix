@@ -282,7 +282,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 **A container never copies its image. Its rootfs is a btrfs snapshot of its image version, kept beside the image store under `REBUILDABLE_DIR`, so a roll is one snapshot ioctl however many containers follow the image** -- [ADR-0341](docs/adr/0341-a-containers-rootfs-is-a-snapshot-on-its-images-filesystem.md), accepted by the owner on 2026-10-18 after asking what the ideal would be for a box with hundreds of containers.
 
 - **The question was whether the copy should exist, not how to schedule it.** The first draft moved a 4–5 s per-roll copy off the event loop (#608). That still costs a full tree per container per roll. Ask that question first of any per-container cost.
-- **`container_rootfs_dir()` is the one place a rootfs path is built.** `disk` and the `container-storage` role place a container's base (state, staged files, volumes), never its rootfs.
+- **`container_rootfs_dir()` is the one place a rootfs path is built.** `disk` and the `container-storage` role place a container's base, never its rootfs. A base holds only an overlay container's `upper`/`work` and the pivot mountpoint: staged files go into the rootfs, the seed marker sits beside it, subordinate ids are in `STATE_DIR` and a volume has its own `disk`. Whether `disk` should stay is #615.
 - **A snapshot cannot cross a filesystem**, and that is the whole cause: images were on `rebuildable-storage` and container bases on the OS disk, so every create on .95 fell back to a copy or to overlay. Never put a container's rootfs anywhere its image cannot be snapshotted to.
 - **The copy stays only where btrfs is absent**, and it goes into a helper child there (#614). Never add a copy to the btrfs path.
 
