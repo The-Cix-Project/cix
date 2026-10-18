@@ -34,10 +34,12 @@
  * classic interface, deliberately dropped from the vendored copy) --
  * a fixed, known, documented cost is preferable to a value that could
  * silently drift between two logins on hardware of different speeds.
- * OPEN (#609): on 192.168.15.95, 2026-10-17, a whole POST /v1/login held
- * the event loop for 375 ms, and older records show 929 and 941 ms.
- * bcrypt's share of those is not separated, so the "under 200ms" above
- * is unconfirmed on that host rather than known to be wrong. */
+ * NOT TRUE on 192.168.15.95 (#609). Measured 2026-10-18: a request
+ * authenticated by a first-use app password took 352 ms end to end, the
+ * same request on the memoized second use 0.6 ms, so one
+ * pwhash_bcrypt_check() at this cost is ~350 ms there -- nearly all of
+ * the 375 ms a whole POST /v1/login held the event loop for the day
+ * before. */
 #define PWHASH_BCRYPT_COST 12
 
 /*
