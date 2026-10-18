@@ -476,6 +476,34 @@ static const char *const g_copy_calls[] = {
 	NULL,
 };
 
+/*
+ * A FIFTH COUNTED SET (ADR-0342, #612): reading the log store. A filtered
+ * read that finds fewer than `tail` matches reads every segment -- 1533
+ * ms of loop time for a regex matching nothing on 192.168.15.95, measured
+ * 2026-10-18, against a store the operator may size to 100 GB. A read
+ * with no filter costs O(tail), because segments are read backwards, and
+ * is the only kind answered on the loop; logread_query_bounded() is what
+ * decides, in the one handler that calls logread_run() directly. Any
+ * other read runs in a helper child, through logread_write_to().
+ */
+static const struct call_budget g_logread_budgets[] = {
+	{ "logstore.c", "logstore_tail_ex(", 1, "the definition, not a call" },
+	{ "logread.c", "logstore_tail_ex(", 1, "logread_run(), its one caller" },
+	{ "logread.c", "logread_run(", 2,
+	  "the definition, and logread_write_to(), which runs only in a helper child" },
+	{ "api_logs.c", "logread_run(", 1,
+	  "handle_logs_get()'s read with no filter, O(tail), after logread_query_bounded()" },
+	{ "logread.c", "logread_write_to(", 1, "the definition, not a call" },
+	{ "main.c", "logread_write_to(", 1, "logread_work(), the helper child of a filtered read" },
+};
+
+static const char *const g_logread_calls[] = {
+	"logstore_tail_ex(",
+	"logread_run(",
+	"logread_write_to(",
+	NULL,
+};
+
 struct call_set {
 	const char *what;
 	const struct call_budget *budgets;
@@ -495,6 +523,11 @@ static const struct call_set g_call_sets[] = {
 	  "Copying or re-owning a tree costs as long as the tree is big, and cixd has one event "
 	  "loop. A container's rootfs is a snapshot of its image (ADR-0341), never a copy; any "
 	  "other tree is copied in a helper_run() child." },
+	{ "log read", g_logread_budgets,
+	  (int)(sizeof(g_logread_budgets) / sizeof(g_logread_budgets[0])), g_logread_calls,
+	  "A filtered log read can read the whole store, which the operator may size to 100 GB, "
+	  "and cixd has one event loop. Ask for it through logread_ask() (ADR-0342), which parks "
+	  "the request and reads in a helper child; only a read with no filter runs here." },
 };
 
 #define CALL_SET_COUNT ((int)(sizeof(g_call_sets) / sizeof(g_call_sets[0])))

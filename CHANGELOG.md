@@ -6,6 +6,34 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A filtered log read no longer holds the event loop (#612, ADR-0342)
+
+- **What changed for an operator:** `cixctl logs --container/--source/--regex/--since` no
+  longer freezes the box while it searches. On 192.168.15.95 a regex matching nothing held
+  the event loop for 1533 ms in a 100 MB store, and the store's cap can be set to 100 GB.
+- **The cause:** each segment was read from its start and every line parsed, so a filter that
+  found fewer matches than `tail` asked for read all eight segments, on the loop.
+- **How:**
+  - **One reader, backwards.** `logstore_tail_ex()` reads each segment from its end, newest
+    line first, and stops once it holds `tail` entries. A read with no filter costs only what
+    it returns, so it stays on the loop. That covers the dashboard's log panel, which the
+    daemon samples itself every 2 s. `since` stays a filter, because the daemon sets the clock
+    and a segment can hold a backward step.
+  - **A filtered read runs in a helper child.** It parks through ADR-0340's record,
+    generalized into one parked-work record with a kind (`struct park`), and runs in a
+    `helper_run()` child. The child writes the JSON into a memfd, and the request is served
+    again from it. At most 2 run and 16 wait; beyond that the answer is 503 with
+    `Retry-After: 1`. A read whose client leaves is killed.
+  - **A filtered log stream is refused** at subscribe, with "a filtered history is a one-shot
+    GET, not a stream".
+- **Gates:** `test_blocking_waits` counts the log-read call sites. `test_logread` compares
+  the backward reader with what it wrote, across a clock step, a 200 KB line, 300 KB of damage
+  and an unterminated last line. `test_logread_live` runs a no-match read over an 80 MB store
+  and asserts that health answers within 50 ms meanwhile, that an abandoned read is killed,
+  and that the 19th concurrent read gets 503.
+- **Contract:** `GET /v1/system/logs` documents its `500` and `503`. `logstore_tail()` had no
+  caller and is gone. Phase 2, summaries per segment so a filter can skip segments, is #616.
+
 ### A container's rootfs is a snapshot of its image, beside the image store (#608, ADR-0341)
 
 - **What changed for an operator:** rolling a container onto a new image no longer stops the

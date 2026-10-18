@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-18. Issue [#612](https://git.home.arpa/itdlabs/cix/issues/612). It changes how `GET /v1/system/logs` is served, adds a documented `503` to it, and refuses one kind of event-stream subscription, so it is the owner's decision. It applies [ADR-0247](0247-the-reactor-does-not-block-and-that-is-the-defence.md) (the loop's blocking budget) and [ADR-0278](0278-the-reactor-forks-work-it-cannot-afford-to-wait-for.md) (`helper_run()`), generalizes [ADR-0340](0340-a-credential-is-checked-off-the-loop-and-the-request-waits-for-it.md)'s parked request rather than adding a second one, and leaves [ADR-0070](0070-consolidated-log-store.md)'s store format and [ADR-0339](0339-the-dashboard-is-told-what-changed.md)'s sampling model unchanged.
+Accepted by the owner, 2026-10-19 ("Yes!"), as proposed the day before. Issue [#612](https://git.home.arpa/itdlabs/cix/issues/612); phase 2 is [#616](https://git.home.arpa/itdlabs/cix/issues/616). It changes how `GET /v1/system/logs` is served, adds a documented `503` to it, and refuses one kind of event-stream subscription, so it is the owner's decision. It applies [ADR-0247](0247-the-reactor-does-not-block-and-that-is-the-defence.md) (the loop's blocking budget) and [ADR-0278](0278-the-reactor-forks-work-it-cannot-afford-to-wait-for.md) (`helper_run()`), generalizes [ADR-0340](0340-a-credential-is-checked-off-the-loop-and-the-request-waits-for-it.md)'s parked request rather than adding a second one, and leaves [ADR-0070](0070-consolidated-log-store.md)'s store format and [ADR-0339](0339-the-dashboard-is-told-what-changed.md)'s sampling model unchanged.
 
 ## Context
 
@@ -29,7 +29,7 @@ Which of reading, parsing and matching dominates the 1533 ms is not measured, an
 
 1. **An unfiltered tail is served on the loop, and costs O(`tail`).** `logstore_tail_ex()` reads each segment backwards from its end in blocks, newest line first. It stops as soon as it holds `tail` entries, and goes on into the previous segment only when the newest one runs out. The result is the same entries, in the same chronological order, as today's reader returns. "Unfiltered" means no `source`, `container`, `level` or `regex`, and `since` absent or 0. This is what keeps the dashboard's in-process sample legal under ADR-0247 at any `max_bytes`, and it needs no new state.
 
-2. **Every other read runs in a `helper_run()` child, always.** There is one rule, with no size heuristic: a query with any filter may have to read the whole store, so it never runs on the loop. `logstore_tail_ex()` is then called from exactly two places: the unfiltered path in item 1, and the child's work function.
+2. **Every other read runs in a `helper_run()` child, always.** There is one rule, with no size heuristic: a query with any filter may have to read the whole store, so it never runs on the loop. Only two paths reach the reader: the unfiltered path in item 1, and the child's work function (see [What implementing it settled](#what-implementing-it-settled) for how that is counted).
 
 3. **`since` is a filter, never a stop condition.** `ts` is `time(NULL)` at write, and this daemon sets the clock (`ntp.c`, and an unsynced clock at boot). So a segment can hold a step backwards, and "the first `ts < since` ends the walk" would silently drop the entries after it.
 
@@ -56,13 +56,22 @@ Which of reading, parsing and matching dominates the 1533 ms is not measured, an
 
 ### Gates
 
-10. **`test_blocking_waits` counts `logstore_tail_ex(` call sites:** one in the unfiltered path and one in the child's work function.
+10. **`test_blocking_waits` counts the call sites** of the reader and of the two paths that reach it.
 11. **The backward reader is checked against the old one.** The test compares their output entry for entry on a wrapped full segment, a tail spanning segments, and each filter with `since`.
 12. **A live test in the shape of `test_hostauth`'s slow-login case.** It fills a large store and keeps a no-match `regex` read in flight. Meanwhile health must answer within 50 ms, a client that leaves must have its child killed, and the read past the queue must get the 503.
 
+## What implementing it settled
+
+- **The reader has one caller.** `logread_run()` (`daemon/src/logread.c`) is the only call to `logstore_tail_ex()`. The handler calls it for a bounded read, and the child reaches it through `logread_write_to()`. `test_blocking_waits` budgets `logstore_tail_ex(` to `logread.c`, `logread_run(` to `api_logs.c` once and `logread.c`, and `logread_write_to(` to `main.c` once. So a new direct read on the loop is a number someone has to raise.
+- **The backward reader serves every query,** filtered or not. There is one reader, not one per path, and the forward one is gone.
+- **`logstore_tail()` is removed.** It had no caller.
+- **The query is parsed once, in `logread_query_parse()`.** The handler and the subscribe check both use it, so what the stream refuses and what the handler sends to a child are the same decision.
+- **The 503 is written in `api_logs.c`, not `logread.c`,** so the reader and its query rules link into `test_logread` without the HTTP layer.
+- **`helper_run_pid()`** is `helper_run()` that reports the child's pid. A log read whose client left is killed through that pid; `helper_run()` itself is unchanged for every other caller.
+
 ## Phase 2, tracked separately
 
-A closed segment gets a summary at rotation: its largest `ts`, the set of sources, and the set of containers. It is stored beside the segment, so a filtered read skips any segment that cannot match. The skip is exact whatever the clock did, because a segment whose largest `ts` is below `since` holds no entry at or after it. That makes `since`, `source` and `container` reads proportional to the segments that can hold an answer. `regex` stays a full scan, because an operator asking for a regex over the store is asking for one. This is a ticket, not part of this decision.
+A closed segment gets a summary at rotation: its largest `ts`, the set of sources, and the set of containers. It is stored beside the segment, so a filtered read skips any segment that cannot match. The skip is exact whatever the clock did, because a segment whose largest `ts` is below `since` holds no entry at or after it. That makes `since`, `source` and `container` reads proportional to the segments that can hold an answer. `regex` stays a full scan, because an operator asking for a regex over the store is asking for one. This is #616, not part of this decision.
 
 ## Consequences
 

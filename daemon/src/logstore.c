@@ -668,34 +668,113 @@ static void emit_write_failure_entry(struct json_writer *w)
 	jw_str(w, msg);
 	jw_obj_close(w);
 }
+
 /*
- * Rotate the first n entries left by k, in place (#450). Three
- * reversals: reverse [0,k), reverse [k,n), reverse [0,n). Used to
- * straighten a wrapped segment ring without a second allocation.
+ * ADR-0342 (#612): a segment is read BACKWARDS, newest line first.
+ *
+ * The reader before this one (#450) read segments newest first but each
+ * one from its start, json_parse()ing every line, and kept the last N in
+ * a ring. So an unfiltered `tail=1` paid for the whole newest segment --
+ * up to max_bytes / 8, which is 12.5 MB at the default and 12.5 GB at
+ * LOGSTORE_MAX_MAX_BYTES -- and the dashboard's log panel is sampled
+ * in-process every 2 s (ADR-0339). Reading from the end makes an
+ * unfiltered tail cost O(limit) whatever the store's size, which is what
+ * lets it stay on the event loop. A filtered read can still have to read
+ * everything, and so runs in a helper child (logread.h).
+ *
+ * The block is a page-cache read size, not a line limit: a line longer
+ * than one block (a 4 KB message can escape to several times that) is
+ * assembled across reads. TAIL_LINE_MAX bounds that assembly, because a
+ * span with no newline in it that long holds no entry this store wrote,
+ * and following it would let a damaged file make one read hold the
+ * whole segment in memory.
  */
-static void reverse_range(struct tail_entry *a, int lo, int hi)
-{
-	while (lo < hi) {
-		struct tail_entry t = a[lo];
+#define TAIL_BLOCK 65536
+#define TAIL_LINE_MAX (256 * 1024)
 
-		a[lo++] = a[hi];
-		a[hi--] = t;
+struct back_reader {
+	int fd;
+	off_t pos;  /* file offset of buf[0] */
+	char *buf;  /* bytes [pos, pos + len) of the file, none returned yet */
+	size_t len;
+	size_t cap;
+};
+
+/* Prepends the block before pos. 0, or -1 on a read error or no memory. */
+static int back_fill(struct back_reader *r)
+{
+	size_t want = r->pos < TAIL_BLOCK ? (size_t)r->pos : TAIL_BLOCK;
+	size_t got = 0;
+
+	if (r->len + want > r->cap) {
+		size_t cap = r->cap != 0 ? r->cap : TAIL_BLOCK;
+		char *nb;
+
+		while (cap < r->len + want)
+			cap *= 2;
+		nb = realloc(r->buf, cap);
+		if (nb == NULL)
+			return -1;
+		r->buf = nb;
+		r->cap = cap;
 	}
+	memmove(r->buf + want, r->buf, r->len);
+	while (got < want) {
+		ssize_t n = pread(r->fd, r->buf + got, want - got, r->pos - (off_t)want + (off_t)got);
+
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			return -1;
+		got += (size_t)n;
+	}
+	r->pos -= (off_t)want;
+	r->len += want;
+	return 0;
 }
 
-static void rotate_left(struct tail_entry *a, int n, int k)
+/*
+ * The newest line not yet returned, without its newline, valid until the
+ * next call. 1 with *line/*n set; 0 when the file's start is reached; -1
+ * on a read error. A trailing line with no newline -- an entry being
+ * written as the segment was opened -- is returned like any other, and
+ * json_parse() refuses it if it is incomplete.
+ */
+static int back_next_line(struct back_reader *r, const char **line, size_t *n)
 {
-	if (n <= 0 || k <= 0 || k >= n)
-		return;
-	reverse_range(a, 0, k - 1);
-	reverse_range(a, k, n - 1);
-	reverse_range(a, 0, n - 1);
-}
+	for (;;) {
+		size_t end, i;
 
-void logstore_tail(const char *source_filter, const char *level_filter, int64_t since,
-                    int limit, struct json_writer *w)
-{
-	logstore_tail_ex(source_filter, level_filter, NULL, NULL, since, limit, w);
+		if (r->len == 0) {
+			if (r->pos == 0)
+				return 0;
+			if (back_fill(r) != 0)
+				return -1;
+			continue;
+		}
+		end = r->len;
+		if (r->buf[end - 1] == '\n')
+			end--; /* this line's own terminator */
+		for (i = end; i > 0 && r->buf[i - 1] != '\n'; i--)
+			;
+		if (i > 0 || r->pos == 0) {
+			*line = r->buf + i;
+			*n = end - i;
+			r->len = i; /* buf[i - 1], if any, terminates the line before */
+			return 1;
+		}
+		if (r->len >= TAIL_LINE_MAX) {
+			/* No entry is this long: what is held is damage, and is
+			 * dropped as one unparseable line. The next block's own
+			 * newline, if it has one, ends the line before it. */
+			*line = r->buf;
+			*n = 0;
+			r->len = 0;
+			return 1;
+		}
+		if (back_fill(r) != 0)
+			return -1;
+	}
 }
 
 void logstore_tail_ex(const char *source_filter, const char *level_filter,
@@ -706,11 +785,9 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 	int seg_count = segment_seq_list(seqs, LOGSTORE_SEGMENT_COUNT + 4);
 	int eff_limit = (limit > 0 && limit <= 5000) ? limit : 1000;
 	struct tail_entry *ring;
-	int ring_head = 0, ring_count = 0;
-	/* Filled from the END backwards, because segments are read newest
-	 * first (#450). out_start is where the held run begins. */
+	/* Filled from the END backwards, because lines arrive newest first.
+	 * out_start is where the held run begins. */
 	int out_start;
-	int need;
 	int i;
 	regex_t re;
 	int have_re = 0;
@@ -718,7 +795,7 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 	if (msg_regex != NULL && msg_regex[0] != '\0') {
 		if (regcomp(&re, msg_regex, REG_EXTENDED | REG_NOSUB | REG_ICASE) != 0) {
 			/* An invalid pattern matches nothing, rather than crashing
-			 * or silently ignoring the filter -- the caller (main.c)
+			 * or silently ignoring the filter -- the caller (logread.c)
 			 * already 400s a malformed regex before ever reaching
 			 * here; this is just defense in depth. */
 			jw_arr_open(w);
@@ -739,58 +816,45 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 		return;
 	}
 	out_start = eff_limit;
-	need = eff_limit;
 
 	/*
-	 * NEWEST SEGMENT FIRST, and stop as soon as the tail is full (#450).
+	 * Newest segment first, newest line first, and stop as soon as the
+	 * tail is full. The first `limit` matches met this way ARE the
+	 * store's last `limit` matches, so filling the result from its end
+	 * leaves it in chronological order with no reordering at all.
 	 *
-	 * This used to walk every segment from the oldest, getline() and
-	 * json_parse() every line in the whole store, and keep the last N
-	 * in a ring. So a `tail=300` paid for the entire log store, every
-	 * time. The dashboard's log panel polls
-	 * GET /v1/system/logs?since=0&tail=300 every two seconds, and cixd
-	 * is one epoll loop, so that walk is a latency floor for every
-	 * other client while it runs.
-	 *
-	 * Measured on 192.168.15.95, 2026-09-13, from the watchdog's own
-	 * slow-pass records: 84 of 116 slow passes -- 72% -- named that one
-	 * request, with a worst pass of 3162ms. (The remainder are
-	 * collateral rather than causes: `GET /v1/health`, which measures
-	 * 1ms on its own, appears in the same list, because the activity
-	 * field names whichever request was in flight when the loop was
-	 * slow.)
-	 *
-	 * Going backwards is what makes an early stop correct: the newest
-	 * segment's last k matches ARE the store's last k matches. Each
-	 * segment is asked only for as many as are still needed, and its
-	 * results land immediately before what is already held, so the
-	 * output stays in chronological order. Older segments are never
-	 * opened once the tail is full -- in the common case that is one
-	 * segment read instead of eight.
-	 *
-	 * A filter that matches little still reads everything, which is
-	 * correct and unavoidable without an index; it is also not the
-	 * case that was hurting anyone.
+	 * `since` is a filter and never a stop condition (ADR-0342 item 3):
+	 * ts is time(NULL) at write and this daemon sets the clock, so a
+	 * segment can hold a step backwards, and ending the walk at the
+	 * first ts below `since` would drop the entries after the step.
 	 */
-	for (i = seg_count - 1; i >= 0 && need > 0; i--) {
+	for (i = seg_count - 1; i >= 0 && out_start > 0; i--) {
 		char path[600];
-		FILE *fp;
-		char *line = NULL;
-		size_t line_cap = 0;
-		ssize_t n;
-		int seg_head = 0, seg_count_matched = 0;
+		struct back_reader r;
+		struct stat st;
+		const char *line;
+		size_t n;
 
 		segment_path(seqs[i], path, sizeof(path));
-		fp = fopen(path, "r");
-		if (fp == NULL)
+		memset(&r, 0, sizeof(r));
+		r.fd = open(path, O_RDONLY | O_CLOEXEC);
+		if (r.fd < 0)
+			continue; /* evicted since it was listed */
+		if (fstat(r.fd, &st) != 0) {
+			close(r.fd);
 			continue;
+		}
+		r.pos = st.st_size;
 
-		while ((n = getline(&line, &line_cap, fp)) > 0) {
-			struct json_value *root = json_parse(line, (size_t)n);
+		while (out_start > 0 && back_next_line(&r, &line, &n) == 1) {
+			struct json_value *root;
 			const char *src, *lvl, *cont, *msg;
 			int64_t ts;
-			int idx;
+			struct tail_entry *e;
 
+			if (n == 0)
+				continue;
+			root = json_parse(line, n);
 			if (root == NULL)
 				continue;
 			ts = (int64_t)json_as_number(json_object_get(root, "ts"));
@@ -809,62 +873,31 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 				continue;
 			}
 
-			/* This segment's own ring, sized to what is still
-			 * needed, living in the still-unused HEAD of the result
-			 * array -- exactly `need` free slots are there by
-			 * construction, so no second allocation. */
-			if (seg_count_matched == need) {
-				idx = seg_head;
-				seg_head = (seg_head + 1) % need;
-			} else {
-				idx = seg_count_matched;
-				seg_count_matched++;
-			}
-			ring[idx].ts = ts;
-			snprintf(ring[idx].source, sizeof(ring[idx].source), "%s", src != NULL ? src : "");
-			snprintf(ring[idx].level, sizeof(ring[idx].level), "%s", lvl != NULL ? lvl : "");
-			snprintf(ring[idx].container, sizeof(ring[idx].container), "%s",
-			         cont != NULL ? cont : "");
-			snprintf(ring[idx].msg, sizeof(ring[idx].msg), "%s", msg != NULL ? msg : "");
+			e = &ring[--out_start];
+			e->ts = ts;
+			snprintf(e->source, sizeof(e->source), "%s", src != NULL ? src : "");
+			snprintf(e->level, sizeof(e->level), "%s", lvl != NULL ? lvl : "");
+			snprintf(e->container, sizeof(e->container), "%s", cont != NULL ? cont : "");
+			snprintf(e->msg, sizeof(e->msg), "%s", msg != NULL ? msg : "");
 			json_free(root);
 		}
-		free(line);
-		fclose(fp);
-
-		/*
-		 * The segment ring only advances seg_head once it is FULL, so
-		 * a partial segment (seg_count_matched < need) is already
-		 * linear at ring[0..m-1] and seg_head is 0. A full one may be
-		 * rotated; straighten it in place with the three-reversal
-		 * trick rather than allocating a second buffer -- at the 5000
-		 * cap a duplicate of this array would be 21MB.
-		 */
-		if (seg_head != 0)
-			rotate_left(ring, need, seg_head);
-		out_start -= seg_count_matched;
-		if (out_start != 0)
-			memmove(&ring[out_start], &ring[0],
-			        (size_t)seg_count_matched * sizeof(*ring));
-		need -= seg_count_matched;
+		free(r.buf);
+		close(r.fd);
 	}
-	ring_count = eff_limit - out_start;
-	ring_head = out_start;
 
 	jw_arr_open(w);
-	for (i = 0; i < ring_count; i++) {
-		int idx = ring_head + i;
-
+	for (i = out_start; i < eff_limit; i++) {
 		jw_obj_open(w);
 		jw_key(w, "ts");
-		jw_int(w, (long long)ring[idx].ts);
+		jw_int(w, (long long)ring[i].ts);
 		jw_key(w, "source");
-		jw_str(w, ring[idx].source);
+		jw_str(w, ring[i].source);
 		jw_key(w, "level");
-		jw_str(w, ring[idx].level);
+		jw_str(w, ring[i].level);
 		jw_key(w, "container");
-		jw_str(w, ring[idx].container);
+		jw_str(w, ring[i].container);
 		jw_key(w, "msg");
-		jw_str(w, ring[idx].msg);
+		jw_str(w, ring[i].msg);
 		jw_obj_close(w);
 	}
 	emit_write_failure_entry(w);

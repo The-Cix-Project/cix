@@ -286,6 +286,16 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **A snapshot cannot cross a filesystem**, and that is the whole cause: images were on `rebuildable-storage` and container bases on the OS disk, so every create on .95 fell back to a copy or to overlay. Never put a container's rootfs anywhere its image cannot be snapshotted to.
 - **The copy stays only where btrfs is absent**, and it goes into a helper child there (#614). Never add a copy to the btrfs path.
 
+## A log read never walks the store on the event loop
+
+**A log read with no filter costs only what it returns and is answered on the loop; a read with any filter runs in a helper child and the request waits for it** -- [ADR-0342](docs/adr/0342-a-log-read-never-walks-the-store-on-the-event-loop.md), accepted by the owner on 2026-10-19. Measured before it on .95: a regex matching nothing held the loop for 1533 ms in a 100 MB store, and `max_bytes` may be 100 GB.
+
+- **The rule is bounded versus unbounded, never fast versus slow.** `logread_query_bounded()` decides: no `source`, `level`, `container` or `regex`, and `since` absent or 0. Everything else may read every segment, whatever it costs today.
+- **`logread_run()` is the one caller of `logstore_tail_ex()`.** It is called by the handler for a bounded read, and by the child through `logread_write_to()`. `test_blocking_waits` counts every site.
+- **One park, not two.** A filtered read parks through ADR-0340's record, which is `struct park` with a kind. A new kind of work that makes a request wait is a new kind there, never a second park.
+- **`since` is a filter, never a stop condition.** The daemon sets the clock, so a segment can hold a backward step.
+- **Only the unfiltered log tail is a stream.** A sample runs in-process, where nothing can be parked, so a filtered log subscription is refused.
+
 ## One way to make an image
 
 **An image is made by `POST /v1/images` (`cixctl image create --name=NAME`) and by nothing else.** `POST /v1/pkg/install` naming an image that does not exist is a 400 naming that fix, and creates nothing (#500) -- the owner's decision of 2026-09-30, chosen over documenting the implicit create an install used to perform, which is how `--image=jump`, a typo for `jumpbox`, became a new image.

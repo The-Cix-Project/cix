@@ -156,7 +156,7 @@ void logstore_replay(const char *held, size_t len);
  * a separate, still-opt-in feature fed from the same underlying pipe).
  * Always writes source="container" and the given container name into
  * its own dedicated "container" field -- a real structured filter for
- * logstore_tail()'s own container_filter, not a substring match against
+ * logstore_tail_ex()'s own container_filter, not a substring match against
  * "msg". level is fixed by the caller (main.c currently always passes
  * "info": stdout and stderr are merged onto one pipe, same as
  * captured_output's own long-standing merge, so there's no real signal
@@ -194,28 +194,28 @@ int64_t logstore_max_bytes(void);
 enum logstore_error logstore_set_min_level(const char *min_level);
 const char *logstore_min_level(void);
 
-/* Writes up to limit most-recent entries (newest last, matching
+/*
+ * Writes up to limit most-recent entries (newest last, matching
  * `tail`'s own convention) matching every given filter (NULL/0 means
  * "no filter" for that field) into w as a JSON array. limit <= 0
- * means LOGSTORE_DEFAULT limit (1000) -- never unbounded, this store
- * has no index and a very large limit means reading whole segments.
- * Equivalent to logstore_tail_ex() with container_filter/msg_regex
- * both NULL -- kept as its own entry point since every pre-existing
- * caller only ever needed source/level/since/limit. */
-void logstore_tail(const char *source_filter, const char *level_filter, int64_t since,
-                    int limit, struct json_writer *w);
-
-/*
- * Added for transparent container-log capture: container_filter
+ * means 1000, and the most is 5000.
+ *
+ * Segments are read backwards (ADR-0342), so a read with no filter
+ * costs O(limit) however large the store is. A filter that matches
+ * little can still read every segment, which is why this is called
+ * only from logread_run() (logread.h), and a filtered read runs only
+ * in a helper child; test_blocking_waits counts the call sites.
+ *
+ * container_filter, added for transparent container-log capture,
  * matches an entry's own "container" field exactly (only ever
  * non-empty on a source="container" entry); msg_regex is a POSIX
  * extended regular expression (REG_ICASE -- case-insensitive, same
  * "least surprise for an operator eyeballing log text" posture grep's
  * own -i default reflects) matched against "msg", NULL/"" meaning no
  * regex filter. A malformed msg_regex matches nothing rather than
- * crashing (main.c's own caller validates and 400s a bad pattern
- * before ever reaching here; this is defense in depth, not the
- * primary validation).
+ * crashing (logread_query_parse() validates and the handler 400s a
+ * bad pattern before ever reaching here; this is defense in depth,
+ * not the primary validation).
  */
 void logstore_tail_ex(const char *source_filter, const char *level_filter,
                        const char *container_filter, const char *msg_regex, int64_t since,

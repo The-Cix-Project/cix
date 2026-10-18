@@ -572,11 +572,16 @@ int main(void)
 		int i;
 
 		if (fa >= 0 && fb >= 0) {
-			/* At once: the reply, then the first sample. */
+			/* At once: the reply, then the first sample. The quiet read
+			 * is the dashboard's own subscription shape, the unfiltered
+			 * log tail (ADR-0342 keeps it on the loop): an idle daemon
+			 * writes nothing in the window below, since the drift check
+			 * logs only a drift. This was a filtered log read until
+			 * ADR-0342, which refuses one -- see the refusals below. */
 			if (send_text(fa, "{\"subscribe\":\"quiet\","
-			                  "\"path\":\"/v1/system/logs?source=nosuchsource&tail=5\"}") != 0)
+			                  "\"path\":\"/v1/system/logs?since=0&tail=1\"}") != 0)
 				fail("a subscribe can be sent", "");
-			v = next_reply(&a, "subscribed", "a subscribe is answered");
+			v = next_reply(&a, "subscribed", "an unfiltered log tail can be subscribed to");
 			json_free(v);
 			v = next_reply(&a, "data", "the first sample arrives at once");
 			if (v != NULL) {
@@ -639,6 +644,15 @@ int main(void)
 			expect_refused(&a, fa,
 			               "{\"subscribe\":\"q\",\"path\":\"/v1/system/logs?nosuchparam=1\"}", "q",
 			               "unknown query parameter", "a query the read does not take is refused");
+			/* ADR-0342 item 4: a sample runs in-process, where a filtered
+			 * read could read the whole store every period. */
+			expect_refused(&a, fa,
+			               "{\"subscribe\":\"fl\","
+			               "\"path\":\"/v1/system/logs?source=nosuchsource&tail=5\"}",
+			               "fl", "one-shot GET", "a filtered log history is not a stream");
+			expect_refused(&a, fa,
+			               "{\"subscribe\":\"fs\",\"path\":\"/v1/system/logs?since=5&tail=5\"}", "fs",
+			               "one-shot GET", "since is a filter, so it is not a stream either");
 			expect_refused(&a, fa, "{\"subscribe\":\"p\",\"path\":\"/etc/passwd\"}", "p",
 			               "/v1/", "a path outside the API is refused");
 			expect_refused(&a, fa, "{\"subscribe\":\"no spaces\",\"path\":\"/v1/system/stats\"}",

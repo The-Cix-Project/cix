@@ -5,20 +5,11 @@
 #include "daemonpaths.h"
 #include "http.h"
 #include "json.h"
+#include "logread.h"
 #include "logstore.h"
 
 #include <stdio.h>
-/*
- * TCC cannot parse glibc's own regexec() prototype: it declares its
- * regmatch_t array parameter with a C99 VLA-in-prototype size that
- * references the next parameter, and TCC's parser rejects it outright.
- * The header has an #ifndef __STDC_NO_VLA__ branch for exactly a
- * compiler without VLA support, and TCC really is one, so saying so is
- * accurate rather than a workaround. Same treatment logstore.c uses.
- */
-#define __STDC_NO_VLA__ 1
-#include <regex.h>
-
+#include <sys/stat.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -111,49 +102,70 @@ void handle_kmsg(int fd, const struct http_request *req)
 	jw_free(&w);
 }
 
+/*
+ * ADR-0342 (#612): a read with no filter is answered here, at O(tail); a
+ * filtered one is asked of the broker, which parks this request while a
+ * helper child reads the store, and serves it again with the result.
+ */
 void handle_logs_get(int fd, const struct http_request *req)
 {
-	char source[LOGSTORE_SOURCE_MAX];
-	char level[LOGSTORE_LEVEL_MAX];
-	char container[LOGSTORE_CONTAINER_MAX];
-	char msg_regex[256];
-	char tail_str[32], since_str[32];
-	const char *source_filter = NULL;
-	const char *level_filter = NULL;
-	const char *container_filter = NULL;
-	const char *regex_filter = NULL;
-	int64_t since = 0;
-	int limit = 0;
+	struct logread_query q;
 	struct json_writer w;
+	struct stat st;
+	char *body;
+	int rfd;
+	size_t got = 0;
 
-	if (url_query_param(req->path, "source", source, sizeof(source)) == 0)
-		source_filter = source;
-	if (url_query_param(req->path, "level", level, sizeof(level)) == 0)
-		level_filter = level;
-	if (url_query_param(req->path, "container", container, sizeof(container)) == 0)
-		container_filter = container;
-	if (url_query_param(req->path, "tail", tail_str, sizeof(tail_str)) == 0)
-		limit = atoi(tail_str);
-	if (url_query_param(req->path, "since", since_str, sizeof(since_str)) == 0)
-		since = (int64_t)atoll(since_str);
-	if (url_query_param(req->path, "regex", msg_regex, sizeof(msg_regex)) == 0) {
-		/* Compile-tested here, not just inside logstore_tail_ex() --
-		 * a malformed pattern is a real client mistake (400), not
-		 * something to silently match zero results for. */
-		regex_t re;
-
-		if (regcomp(&re, msg_regex, REG_EXTENDED | REG_NOSUB | REG_ICASE) != 0) {
-			respond_error(fd, 400, "Bad Request", "invalid regex pattern");
-			return;
-		}
-		regfree(&re);
-		regex_filter = msg_regex;
+	if (logread_query_parse(req->path, &q) != 0) {
+		respond_error(fd, 400, "Bad Request", "invalid regex pattern");
+		return;
+	}
+	if (logread_query_bounded(&q)) {
+		jw_init(&w);
+		logread_run(&q, &w);
+		respond_json(fd, 200, "OK", &w);
+		jw_free(&w);
+		return;
 	}
 
-	jw_init(&w);
-	logstore_tail_ex(source_filter, level_filter, container_filter, regex_filter, since, limit, &w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
+	switch (logread_ask(&q, &rfd)) {
+	case LOGREAD_PARKED:
+		return;
+	case LOGREAD_BUSY:
+		respond_error_hdrs(fd, 503, "Service Unavailable", "Retry-After: 1\r\n",
+		                   "log reads are busy -- try again shortly", 0);
+		return;
+	case LOGREAD_FAILED:
+		respond_error(fd, 500, "Internal Server Error", "the log read ended without a result");
+		return;
+	case LOGREAD_READY:
+		break;
+	}
+
+	/* The child's memory file, written from its start: the whole body. */
+	if (fstat(rfd, &st) != 0 || (body = malloc(st.st_size > 0 ? (size_t)st.st_size : 1)) == NULL) {
+		close(rfd);
+		respond_error(fd, 500, "Internal Server Error", "the log read's result could not be read");
+		return;
+	}
+	while (got < (size_t)st.st_size) {
+		ssize_t n = pread(rfd, body + got, (size_t)st.st_size - got, (off_t)got);
+
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			break;
+		got += (size_t)n;
+	}
+	close(rfd);
+	if (got != (size_t)st.st_size) {
+		free(body);
+		respond_error(fd, 500, "Internal Server Error", "the log read's result could not be read");
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 200, "OK", "application/json", body, got);
+	free(body);
 }
 
 void handle_logs_config_get(int fd)

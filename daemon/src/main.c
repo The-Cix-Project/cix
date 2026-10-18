@@ -23,6 +23,7 @@
 #include "storageplacement.h"
 #include "treecopy.h"
 #include "hostproc.h"
+#include "logread.h"
 #include "logstore.h"
 #include "partlabel.h"
 #include "netconf.h"
@@ -158,6 +159,7 @@
 #include <strings.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/quota.h>
 #include <sys/reboot.h>
@@ -1363,7 +1365,16 @@ enum cred_state {
 	CRED_UNAVAILABLE,
 };
 
-struct cred_park;
+/* ADR-0342: what a filtered log read left on its connection. */
+enum logread_state {
+	LOGREAD_STATE_NONE = 0,
+	LOGREAD_STATE_DONE,        /* logread_fd holds the response body */
+	LOGREAD_STATE_UNAVAILABLE, /* it could not start: the resumed pass answers busy */
+	LOGREAD_STATE_FAILED,      /* it ran and produced nothing */
+	LOGREAD_STATE_TAKEN,       /* the resumed pass took the body */
+};
+
+struct park;
 
 struct conn {
 	enum conn_kind kind;
@@ -1484,10 +1495,14 @@ struct conn {
 	 * unsent sample, so a slow peer costs one body per subscription. */
 	struct events_sub *ev_subs;
 	/*
-	 * CONN_CLIENT only (ADR-0340). cred_park is the credential check this
-	 * request is waiting for, non-NULL exactly while it is parked; the
-	 * record points back here, and client_conn_teardown() breaks that
-	 * link. cred_state is what the check found, bound to cred_bind
+	 * CONN_CLIENT only (ADR-0340, ADR-0342). park is the work this
+	 * request is waiting for -- a credential check or a log read --
+	 * non-NULL exactly while it is parked; the record points back here,
+	 * and client_conn_teardown() breaks that link. logread_state and
+	 * logread_fd are what a finished log read left: the body, in a
+	 * memfd, valid only in LOGREAD_STATE_DONE (a calloc'd conn's 0 is a
+	 * real descriptor, so the state, not the fd, says whether it is
+	 * held). cred_state is what a check found, bound to cred_bind
 	 * (credcheck_bind()) so it can answer for no other credential. A
 	 * connection carries one request, so it is checked at most once.
 	 * req_audited: dispatch() has written this request's audit line, so
@@ -1496,7 +1511,9 @@ struct conn {
 	 * from the helper's result to the resumed pass that stores it, and
 	 * wiped at teardown.
 	 */
-	struct cred_park *cred_park;
+	struct park *park;
+	enum logread_state logread_state;
+	int logread_fd;
 	enum cred_state cred_state;
 	unsigned char cred_bind[CREDCHECK_BIND_LEN];
 	char cred_hash[PWHASH_BCRYPT_LEN + 1];
@@ -30053,8 +30070,13 @@ static int helper_attach(struct conn *hc, pid_t pid, void (*done)(int, void *), 
 	return 0;
 }
 
-static int helper_run(int (*work)(void *), void *work_arg, void (*done)(int, void *), void *ctx,
-                      const char *what)
+/*
+ * helper_run() that also reports the child's pid, for work that may have
+ * to be stopped before it finishes -- a log read whose client has gone
+ * (ADR-0342). *out_pid is set only when 0 is returned.
+ */
+static int helper_run_pid(int (*work)(void *), void *work_arg, void (*done)(int, void *),
+                          void *ctx, const char *what, pid_t *out_pid)
 {
 	struct conn *hc;
 	pid_t pid;
@@ -30086,7 +30108,17 @@ static int helper_run(int (*work)(void *), void *work_arg, void (*done)(int, voi
 		_exit(work(work_arg) == 0 ? 0 : 1);
 	}
 
-	return helper_attach(hc, pid, done, ctx, what);
+	if (helper_attach(hc, pid, done, ctx, what) != 0)
+		return -1;
+	if (out_pid != NULL)
+		*out_pid = pid;
+	return 0;
+}
+
+static int helper_run(int (*work)(void *), void *work_arg, void (*done)(int, void *), void *ctx,
+                      const char *what)
+{
+	return helper_run_pid(work, work_arg, done, ctx, what, NULL);
 }
 
 /*
@@ -31471,97 +31503,160 @@ static void conn_out_unlink(struct conn *cc)
 	}
 }
 
-/* ---------- ADR-0340 (#609): a request waits for its credential check ----------
+/* ---------- ADR-0340 (#609), ADR-0342 (#612): a request waits for work run off the loop ----------
  *
- * credcheck_ask() reaches cred_broker() below for the request being
- * served. If the connection already carries a verdict, that is the
- * answer. Otherwise the request is PARKED: a park record is made, a
- * helper child runs credcheck_work() (or the record waits its turn), the
+ * Two kinds of work make a request wait, and they share one mechanism:
+ *
+ *   - a credential check (ADR-0340): credcheck_ask() reaches
+ *     cred_broker() below for the request being served;
+ *   - a filtered log read (ADR-0342): logread_ask() reaches
+ *     logread_broker().
+ *
+ * If the connection already carries the answer, that is returned.
+ * Otherwise the request is PARKED: a park record is made, a helper child
+ * does the work (or the record waits its turn in its kind's queue), the
  * handler writes nothing, and the read path leaves the connection open
- * (serve_request()). When the check finishes, cred_check_done() attaches
- * the verdict and serves the request again from the start; the same
- * credcheck_ask() then answers from it, and every effect -- the throttle,
- * the audit, the memo, a session -- happens on that pass, once.
+ * (serve_request()). When the work finishes, its done callback attaches
+ * the answer and serves the request again from the start; the same ask
+ * then answers from it, and every effect happens on that pass, once.
  *
  * The record, not the connection, is the helper's context. A connection
- * whose peer leaves is torn down while its check is still running;
- * cred_park_abandon() breaks the link from that side, so the helper's
- * done callback finds cc NULL and does only the bookkeeping that does
- * not need a client.
+ * whose peer leaves is torn down while its work is still running;
+ * park_abandon() breaks the link from that side, so the done callback
+ * finds cc NULL and does only what does not need a client. What "the
+ * client left" means is the kind's: a credential check still finishes
+ * its bookkeeping, and a log read is killed, because a scan nobody will
+ * read must not hold one of its two places.
  */
-struct cred_park {
-	struct conn *cc; /* NULL once the client has gone */
+enum park_kind {
+	PARK_CRED,
+	PARK_LOGREAD,
+	PARK_KINDS
+};
+
+struct park {
+	enum park_kind kind;
+	struct conn *cc;    /* NULL once the client has gone */
+	struct park *next;  /* its queue's wait linkage, while it waits its turn */
+	int running;        /* its helper has been forked */
+	pid_t pid;          /* that helper */
+	/* PARK_CRED */
 	struct credcheck_request rq;
 	unsigned char bind[CREDCHECK_BIND_LEN];
 	char peer_ip[CONNTHROTTLE_IP_MAX];
 	int pipe_rd; /* the helper's result; -1 until it is started */
 	int pipe_wr; /* the child's end, closed in the parent as soon as it is forked */
-	struct cred_park *next; /* g_cred_wait linkage, while it waits its turn */
+	/* PARK_LOGREAD */
+	struct logread_query q;
+	int memfd; /* the child writes the response body here; -1 until it is started */
 };
 
 /*
- * At most g_cred_running_max checks run at once -- half the online CPUs
- * and at least one, read at startup, leaving the loop and the rest of
- * the host the other half -- and at most CRED_WAIT_MAX more wait, in
- * arrival order. Beyond that a request is answered 503 with Retry-After.
+ * One queue per kind, so a login burst and a log scan cannot starve
+ * each other. At most running_max run at once and at most wait_max more
+ * wait, in arrival order; beyond that a request is answered 503 with
+ * Retry-After.
+ *
+ * Credential checks: half the online CPUs and at least one, read at
+ * startup, leaving the loop and the rest of the host the other half,
+ * and 32 waiting. Log reads: 2 and 16 (ADR-0342 item 7) -- a read is
+ * mostly the disk, and two at once already make the page cache work.
  */
+struct park_queue {
+	int running_max;
+	int wait_max;
+	int running;
+	int waiting;
+	struct park *head;
+	struct park *tail;
+};
+
 #define CRED_WAIT_MAX 32
-static int g_cred_running_max = 1;
-static int g_cred_running;
-static int g_cred_waiting;
-static struct cred_park *g_cred_wait_head;
-static struct cred_park *g_cred_wait_tail;
+#define LOGREAD_RUNNING_MAX 2
+#define LOGREAD_WAIT_MAX 16
+static struct park_queue g_park_q[PARK_KINDS] = {
+	[PARK_CRED] = { .running_max = 1, .wait_max = CRED_WAIT_MAX },
+	[PARK_LOGREAD] = { .running_max = LOGREAD_RUNNING_MAX, .wait_max = LOGREAD_WAIT_MAX },
+};
 
 static void serve_request(struct conn *cc);
 static void cred_check_done(int exit_status, void *ctx);
+static void logread_done(int exit_status, void *ctx);
 
-static void cred_park_free(struct cred_park *p)
+static struct park *park_new(enum park_kind kind, struct conn *cc)
+{
+	struct park *p = calloc(1, sizeof(*p));
+
+	if (p == NULL)
+		return NULL;
+	p->kind = kind;
+	p->cc = cc;
+	p->pid = -1;
+	p->pipe_rd = -1;
+	p->pipe_wr = -1;
+	p->memfd = -1;
+	return p;
+}
+
+static void park_free(struct park *p)
 {
 	if (p->pipe_rd >= 0)
 		close(p->pipe_rd);
+	if (p->memfd >= 0)
+		close(p->memfd);
 	explicit_bzero(&p->rq, sizeof(p->rq));
 	free(p);
 }
 
-/*
- * The connection is being torn down. A record still waiting its turn is
- * removed and freed -- a check for a client that has gone would be a
- * fork for nobody, and would hold a place in the queue. A running one
- * keeps its record until the helper finishes; it just loses its client.
- */
-static void cred_park_abandon(struct cred_park *p)
+/* Takes a waiting record out of its queue. */
+static void park_unlink_waiting(struct park *p)
 {
-	struct cred_park **pp;
+	struct park_queue *pq = &g_park_q[p->kind];
+	struct park **pp;
 
-	if (p->pipe_rd >= 0) {
-		p->cc = NULL;
-		return;
-	}
-	for (pp = &g_cred_wait_head; *pp != NULL; pp = &(*pp)->next) {
+	for (pp = &pq->head; *pp != NULL; pp = &(*pp)->next) {
 		if (*pp != p)
 			continue;
 		*pp = p->next;
-		if (g_cred_wait_tail == p) {
-			struct cred_park *t = g_cred_wait_head;
+		if (pq->tail == p) {
+			struct park *t = pq->head;
 
 			while (t != NULL && t->next != NULL)
 				t = t->next;
-			g_cred_wait_tail = t;
+			pq->tail = t;
 		}
-		g_cred_waiting--;
-		break;
+		pq->waiting--;
+		p->next = NULL;
+		return;
 	}
-	cred_park_free(p);
 }
 
 /*
- * The helper child. It reports one fixed-size result -- smaller than
- * PIPE_BUF, so one write, into a pipe nothing else can fill -- and
- * changes nothing the parent will ever read (credcheck.h).
+ * The connection is being torn down. A record still waiting its turn is
+ * removed and freed -- work for a client that has gone would be a fork
+ * for nobody, and would hold a place in the queue. A running one keeps
+ * its record until the helper finishes; it just loses its client, and a
+ * running log read is killed so that it finishes now.
  */
+static void park_abandon(struct park *p)
+{
+	if (p->running) {
+		p->cc = NULL;
+		if (p->kind == PARK_LOGREAD && p->pid > 0)
+			kill(p->pid, SIGKILL);
+		return;
+	}
+	park_unlink_waiting(p);
+	park_free(p);
+}
+
+/* The helper child of a credential check. It reports one fixed-size
+ * result -- smaller than PIPE_BUF, so one write, into a pipe nothing
+ * else can fill -- and changes nothing the parent will ever read
+ * (credcheck.h). */
 static int cred_check_work(void *arg)
 {
-	struct cred_park *p = arg;
+	struct park *p = arg;
 	struct credcheck_result r;
 	const char *b = (const char *)&r;
 	size_t off = 0;
@@ -31580,11 +31675,11 @@ static int cred_check_work(void *arg)
 }
 
 /*
- * Forks the check. The parent's copy of the write end is closed as soon
+ * Forks a check. The parent's copy of the write end is closed as soon
  * as the child exists, so when the child exits the result is all that is
  * left in the pipe and cred_check_done()'s read cannot wait.
  */
-static int cred_check_start(struct cred_park *p)
+static int cred_check_start(struct park *p)
 {
 	int fds[2];
 
@@ -31592,7 +31687,8 @@ static int cred_check_start(struct cred_park *p)
 		return -1;
 	p->pipe_rd = fds[0];
 	p->pipe_wr = fds[1];
-	if (helper_run(cred_check_work, p, cred_check_done, p, "a credential check") != 0) {
+	if (helper_run_pid(cred_check_work, p, cred_check_done, p, "a credential check", &p->pid) !=
+	    0) {
 		close(fds[0]);
 		close(fds[1]);
 		p->pipe_rd = -1;
@@ -31601,37 +31697,118 @@ static int cred_check_start(struct cred_park *p)
 	}
 	close(fds[1]);
 	p->pipe_wr = -1;
-	g_cred_running++;
 	return 0;
 }
 
-/* Starts what was waiting, as far as there is room. */
-static void cred_start_waiting(void)
+/* The helper child of a log read: the whole read, into the memory file
+ * the parent made before the fork. It writes nothing to the log store,
+ * and reads the store's segments as they were at the fork (ADR-0342
+ * item 9). */
+static int logread_work(void *arg)
 {
-	while (g_cred_running < g_cred_running_max && g_cred_wait_head != NULL) {
-		struct cred_park *p = g_cred_wait_head;
+	struct park *p = arg;
+
+	return logread_write_to(&p->q, p->memfd) == 0 ? 0 : 1;
+}
+
+/*
+ * Forks a log read. The result is a memfd rather than a pipe: it can be
+ * 21 MB (5000 entries of up to 4 KB), and a child blocked on a full pipe
+ * that the parent reads only after the exit would never exit. A memfd
+ * has no path and nothing to clean up after a crash, and is freed with
+ * its last descriptor.
+ */
+static int logread_start(struct park *p)
+{
+	p->memfd = memfd_create("cix-logread", MFD_CLOEXEC);
+	if (p->memfd < 0)
+		return -1;
+	if (helper_run_pid(logread_work, p, logread_done, p, "a log read", &p->pid) != 0) {
+		close(p->memfd);
+		p->memfd = -1;
+		return -1;
+	}
+	return 0;
+}
+
+static int park_start(struct park *p)
+{
+	int rc = p->kind == PARK_CRED ? cred_check_start(p) : logread_start(p);
+
+	if (rc == 0) {
+		p->running = 1;
+		g_park_q[p->kind].running++;
+	}
+	return rc;
+}
+
+/* Starts p at once if there is room, or queues it. 0, or -1 when it can
+ * neither start nor wait -- the caller answers busy. */
+static int park_submit(struct park *p)
+{
+	struct park_queue *pq = &g_park_q[p->kind];
+
+	if (pq->running < pq->running_max)
+		return park_start(p);
+	if (pq->waiting >= pq->wait_max)
+		return -1;
+	if (pq->tail != NULL)
+		pq->tail->next = p;
+	else
+		pq->head = p;
+	pq->tail = p;
+	pq->waiting++;
+	return 0;
+}
+
+/* A helper of this kind finished: its place is free. */
+static void park_finished(struct park *p)
+{
+	if (p->running) {
+		p->running = 0;
+		g_park_q[p->kind].running--;
+	}
+}
+
+/*
+ * The work cannot run after all (no fork): the request is answered busy
+ * rather than left waiting for work that will never happen.
+ */
+static void park_unavailable(struct conn *cc, enum park_kind kind)
+{
+	cc->park = NULL;
+	if (kind == PARK_CRED)
+		cc->cred_state = CRED_UNAVAILABLE;
+	else
+		cc->logread_state = LOGREAD_STATE_UNAVAILABLE;
+	serve_request(cc);
+}
+
+/* Starts what was waiting in this kind's queue, as far as there is room. */
+static void park_start_waiting(enum park_kind kind)
+{
+	struct park_queue *pq = &g_park_q[kind];
+
+	while (pq->running < pq->running_max && pq->head != NULL) {
+		struct park *p = pq->head;
 		struct conn *cc = p->cc;
 
-		g_cred_wait_head = p->next;
-		if (g_cred_wait_head == NULL)
-			g_cred_wait_tail = NULL;
-		g_cred_waiting--;
+		pq->head = p->next;
+		if (pq->head == NULL)
+			pq->tail = NULL;
+		pq->waiting--;
 		p->next = NULL;
 		if (cc == NULL) {
-			/* cred_park_abandon() unlinks a waiting record whose client
-			 * left, so this is not reached; a ghost is freed, not forked
-			 * for, if it ever is. */
-			cred_park_free(p);
+			/* park_abandon() unlinks a waiting record whose client
+			 * left, so this is not reached; a ghost is freed, not
+			 * forked for, if it ever is. */
+			park_free(p);
 			continue;
 		}
-		if (cred_check_start(p) == 0)
+		if (park_start(p) == 0)
 			continue;
-		/* Could not fork: the request is answered busy rather than
-		 * left waiting for a check that will never run. */
-		cred_park_free(p);
-		cc->cred_park = NULL;
-		cc->cred_state = CRED_UNAVAILABLE;
-		serve_request(cc);
+		park_free(p);
+		park_unavailable(cc, kind);
 	}
 }
 
@@ -31640,7 +31817,7 @@ static enum credcheck_answer cred_broker(const struct credcheck_request *rq,
 {
 	struct conn *cc = g_response_conn;
 	unsigned char bind[CREDCHECK_BIND_LEN];
-	struct cred_park *p;
+	struct park *p;
 
 	/* Only a client's request can wait: a read answered in-process
 	 * (events_run_get()'s g_self_read_conn, fd -1) has no connection to
@@ -31680,33 +31857,19 @@ static enum credcheck_answer cred_broker(const struct credcheck_request *rq,
 		 * second time. */
 		return CREDCHECK_REFUSED;
 	}
-	if (cc->cred_park != NULL)
-		return CREDCHECK_REFUSED; /* one check per request: it cannot ask twice in a pass */
-	if (g_cred_running >= g_cred_running_max && g_cred_waiting >= CRED_WAIT_MAX)
-		return CREDCHECK_BUSY;
-	p = calloc(1, sizeof(*p));
+	if (cc->park != NULL)
+		return CREDCHECK_REFUSED; /* one park per request: it cannot ask twice in a pass */
+	p = park_new(PARK_CRED, cc);
 	if (p == NULL)
 		return CREDCHECK_BUSY;
-	p->cc = cc;
 	p->rq = *rq;
-	p->pipe_rd = -1;
-	p->pipe_wr = -1;
 	memcpy(p->bind, bind, sizeof(bind));
 	snprintf(p->peer_ip, sizeof(p->peer_ip), "%s", cc->peer_ip);
-	if (g_cred_running < g_cred_running_max) {
-		if (cred_check_start(p) != 0) {
-			cred_park_free(p);
-			return CREDCHECK_BUSY;
-		}
-	} else {
-		if (g_cred_wait_tail != NULL)
-			g_cred_wait_tail->next = p;
-		else
-			g_cred_wait_head = p;
-		g_cred_wait_tail = p;
-		g_cred_waiting++;
+	if (park_submit(p) != 0) {
+		park_free(p);
+		return CREDCHECK_BUSY;
 	}
-	cc->cred_park = p;
+	cc->park = p;
 	return CREDCHECK_PARKED;
 }
 
@@ -31723,12 +31886,12 @@ static enum credcheck_answer cred_broker(const struct credcheck_request *rq,
  */
 static void cred_check_done(int exit_status, void *ctx)
 {
-	struct cred_park *p = ctx;
+	struct park *p = ctx;
 	struct credcheck_result r;
 	size_t got = 0;
 	int verified = 0;
 
-	g_cred_running--;
+	park_finished(p);
 	while (got < sizeof(r)) {
 		ssize_t n = read(p->pipe_rd, (char *)&r + got, sizeof(r) - got);
 
@@ -31757,7 +31920,7 @@ static void cred_check_done(int exit_status, void *ctx)
 	if (p->cc != NULL) {
 		struct conn *cc = p->cc;
 
-		cc->cred_park = NULL;
+		cc->park = NULL;
 		cc->cred_state = verified ? CRED_VERIFIED : CRED_REFUSED;
 		memcpy(cc->cred_bind, p->bind, sizeof(cc->cred_bind));
 		if (verified && (p->rq.kind == CREDCHECK_HASH || p->rq.kind == CREDCHECK_NEW_SECRET)) {
@@ -31765,13 +31928,13 @@ static void cred_check_done(int exit_status, void *ctx)
 			memcpy(cc->cred_secret, r.secret, sizeof(cc->cred_secret));
 		}
 		explicit_bzero(&r, sizeof(r));
-		cred_park_free(p);
+		park_free(p);
 		serve_request(cc);
 	} else if (p->rq.kind == CREDCHECK_HASH || p->rq.kind == CREDCHECK_NEW_SECRET) {
 		/* Nothing to record: making a hash is not an authentication,
 		 * so the throttle does not hear of it, and nothing was stored. */
 		explicit_bzero(&r, sizeof(r));
-		cred_park_free(p);
+		park_free(p);
 	} else {
 		explicit_bzero(&r, sizeof(r));
 		if (verified)
@@ -31783,9 +31946,85 @@ static void cred_check_done(int exit_status, void *ctx)
 			               "%s login %s from %s, after the client had gone -- no session issued",
 			               p->rq.user, verified ? "verified" : "REFUSED (invalid username or password)",
 			               p->peer_ip[0] != '\0' ? p->peer_ip : "-");
-		cred_park_free(p);
+		park_free(p);
 	}
-	cred_start_waiting();
+	park_start_waiting(PARK_CRED);
+}
+
+/*
+ * ADR-0342: a filtered log read for the request being served. A
+ * connection carries one request, and its resumed pass parses the same
+ * bytes, so the result attached to it is the answer to the same query;
+ * unlike a credential verdict it grants nothing, so it needs no bind.
+ */
+static enum logread_answer logread_broker(const struct logread_query *q, int *result_fd)
+{
+	struct conn *cc = g_response_conn;
+	struct park *p;
+
+	/* An in-process read (events_run_get()) has no connection to park.
+	 * The subscribe refuses a filtered log stream, so this is only an
+	 * answer for a read nothing should make. */
+	if (cc == NULL || cc->fd < 0 || cc->kind != CONN_CLIENT)
+		return LOGREAD_BUSY;
+	switch (cc->logread_state) {
+	case LOGREAD_STATE_NONE:
+		break;
+	case LOGREAD_STATE_DONE:
+		*result_fd = cc->logread_fd;
+		cc->logread_fd = -1;
+		cc->logread_state = LOGREAD_STATE_TAKEN;
+		return LOGREAD_READY;
+	case LOGREAD_STATE_UNAVAILABLE:
+		return LOGREAD_BUSY;
+	case LOGREAD_STATE_FAILED:
+	case LOGREAD_STATE_TAKEN:
+	default:
+		return LOGREAD_FAILED;
+	}
+	if (cc->park != NULL)
+		return LOGREAD_BUSY; /* one park per request */
+	p = park_new(PARK_LOGREAD, cc);
+	if (p == NULL)
+		return LOGREAD_BUSY;
+	p->q = *q;
+	if (park_submit(p) != 0) {
+		park_free(p);
+		return LOGREAD_BUSY;
+	}
+	cc->park = p;
+	return LOGREAD_PARKED;
+}
+
+/*
+ * The read finished, or was killed because its client left. The memory
+ * file passes to the connection, and the request is served again; the
+ * handler's same logread_ask() then answers from it.
+ */
+static void logread_done(int exit_status, void *ctx)
+{
+	struct park *p = ctx;
+
+	park_finished(p);
+	if (p->cc != NULL) {
+		struct conn *cc = p->cc;
+
+		cc->park = NULL;
+		if (exit_status == 0) {
+			cc->logread_fd = p->memfd;
+			p->memfd = -1;
+			cc->logread_state = LOGREAD_STATE_DONE;
+		} else {
+			logstore_write("cixd", "error",
+			               "a log read ended without a result (helper exit %d)", exit_status);
+			cc->logread_state = LOGREAD_STATE_FAILED;
+		}
+		park_free(p);
+		serve_request(cc);
+	} else {
+		park_free(p);
+	}
+	park_start_waiting(PARK_LOGREAD);
 }
 
 static void client_conn_teardown(struct conn *cc)
@@ -31802,9 +32041,13 @@ static void client_conn_teardown(struct conn *cc)
 	}
 	close_client_socket(cc->fd);
 	http_conn_free(&cc->http);
-	if (cc->cred_park != NULL) {
-		cred_park_abandon(cc->cred_park);
-		cc->cred_park = NULL;
+	if (cc->park != NULL) {
+		park_abandon(cc->park);
+		cc->park = NULL;
+	}
+	if (cc->logread_state == LOGREAD_STATE_DONE) {
+		close(cc->logread_fd);
+		cc->logread_state = LOGREAD_STATE_TAKEN;
 	}
 	explicit_bzero(cc->cred_secret, sizeof(cc->cred_secret));
 	explicit_bzero(cc->cred_hash, sizeof(cc->cred_hash));
@@ -32657,6 +32900,19 @@ static int events_sub_add(struct conn *cc, const char *id, const char *path)
 		         g_api_routes[idx].op_id);
 		return events_sub_reply(cc, "refused", id, why);
 	}
+	/*
+	 * ADR-0342 item 4: a sample runs in-process, where nothing can be
+	 * parked, so only a log read with no filter -- O(tail) -- can be a
+	 * stream. A filtered one may have to read the whole store every
+	 * period.
+	 */
+	if (strcmp(g_api_routes[idx].op_id, "getSystemLogs") == 0) {
+		struct logread_query lq;
+
+		if (logread_query_parse(path, &lq) != 0 || !logread_query_bounded(&lq))
+			return events_sub_reply(cc, "refused", id,
+			                        "a filtered history is a one-shot GET, not a stream");
+	}
 	if (hostauth_authorize_peek(cc->ev_token, g_api_routes[idx].permission) != HOSTAUTH_AUTHZ_OK) {
 		snprintf(why, sizeof(why), "this session may not perform %s", g_api_routes[idx].op_id);
 		return events_sub_reply(cc, "refused", id, why);
@@ -33022,15 +33278,16 @@ static int client_conn_advance_handshake(struct conn *cc)
 /*
  * One pass over a request that has fully arrived: the WebSocket
  * upgrades, then dispatch(), then the finish. ADR-0340: the read path
- * calls this once, and cred_check_done() calls it again for a request
- * that was parked for a credential check -- one function, so the pass
- * that resumes a request is the same code as the pass that parked it.
+ * calls this once, and a done callback calls it again for a request
+ * that was parked for a credential check or a log read (ADR-0342) --
+ * one function, so the pass that resumes a request is the same code as
+ * the pass that parked it.
  *
  * The request is parsed again from the bytes it arrived as. The parse is
  * a local, so a resumed pass has nothing else to start from, and once
  * the headers are found http_conn_try_parse() only re-points req into
  * cc's buffer. Nothing is ever fed into that buffer while the request is
- * parked (cred_parked_read()), which is what keeps those bytes the
+ * parked (parked_read()), which is what keeps those bytes the
  * request's.
  *
  * Four of the pass's side effects can run before a park and are settled
@@ -33090,11 +33347,12 @@ static void serve_request(struct conn *cc)
 	g_response_conn = NULL;
 
 	/*
-	 * ADR-0340: parked -- by an upgrade (CONSOLE_PARKED) or by dispatch().
-	 * Nothing was written, and the connection stays open, reading only
-	 * to notice its peer leave, until cred_check_done() serves it again.
+	 * ADR-0340, ADR-0342: parked -- by an upgrade (CONSOLE_PARKED) or by
+	 * dispatch(). Nothing was written, and the connection stays open,
+	 * reading only to notice its peer leave, until its work's done
+	 * callback serves it again.
 	 */
-	if (cc->cred_park != NULL)
+	if (cc->park != NULL)
 		return;
 
 	/* CONSOLE_FAILED: an error response (or nothing, if the client was
@@ -33110,19 +33368,19 @@ static void serve_request(struct conn *cc)
  * sends is discarded, exactly as it would be lost when the connection
  * closes after its response; feeding it to cc->http would move the bytes
  * the parked request is served again from. A read of 0 tears the
- * connection down, which abandons the check (cred_park_abandon()).
+ * connection down, which abandons its work (park_abandon()).
  *
  * Bounded per event, so a peer that keeps sending cannot hold the loop:
  * epoll is level-triggered and will say again that there is more.
  */
-#define CRED_PARKED_READS_PER_EVENT 16
+#define PARKED_READS_PER_EVENT 16
 
-static void cred_parked_read(struct conn *cc)
+static void parked_read(struct conn *cc)
 {
 	char buf[4096];
 	int i;
 
-	for (i = 0; i < CRED_PARKED_READS_PER_EVENT; i++) {
+	for (i = 0; i < PARKED_READS_PER_EVENT; i++) {
 		ssize_t n = tls_read(cc->fd, buf, sizeof(buf));
 
 		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
@@ -33168,9 +33426,9 @@ static void handle_client_event(struct conn *cc)
 		return;
 	}
 
-	/* ADR-0340: waiting for its credential check, not for more request. */
-	if (cc->cred_park != NULL) {
-		cred_parked_read(cc);
+	/* ADR-0340, ADR-0342: waiting for its work, not for more request. */
+	if (cc->park != NULL) {
+		parked_read(cc);
 		return;
 	}
 
@@ -36496,9 +36754,11 @@ static int cixd_main(int argc, char **argv)
 	{
 		long cpus = sysconf(_SC_NPROCESSORS_ONLN);
 
-		g_cred_running_max = cpus >= 2 ? (int)(cpus / 2) : 1;
+		g_park_q[PARK_CRED].running_max = cpus >= 2 ? (int)(cpus / 2) : 1;
 	}
 	credcheck_set_broker(cred_broker);
+	/* ADR-0342: a filtered log read runs in a helper child. */
+	logread_set_broker(logread_broker);
 	/* ADR-0339: X-Cix-Generation on every answer to an announced read. */
 	http_set_header_hook(events_generation_header);
 	/* ADR-0339 point 7: the baseline every later check compares with --

@@ -393,7 +393,10 @@ paths:
         `{"subscribed": "<id>"}`, or `{"refused": "<id>", "reason": "..."}`
         when the path names no subscribable read, carries a query
         parameter the read does not take, names a read this session may
-        not perform, or the stream already holds 8 subscriptions.
+        not perform, or the stream already holds 8 subscriptions -- and
+        for a log read with any filter, which may have to read the whole
+        store every period (ADR-0342): only the unfiltered log tail is a
+        stream.
         Thereafter, every period, the daemon runs the read once for all
         the streams subscribed to that path and sends
         `{"data": "<id>", "body": <the read's 200 answer>}` to each whose
@@ -5581,6 +5584,17 @@ paths:
         the same bytes into that one container's own
         GET /containers/{name} tail) in one chronologically-ordered
         store.
+
+
+        ADR-0342: a read with no filter (no `source`, `level`,
+        `container` or `regex`, and `since` absent or 0) reads the store
+        backwards and costs only what it returns, so it is answered at
+        once and may be subscribed to on the event stream. A read with
+        any filter may have to read the whole store, so it runs off the
+        daemon's event loop, at most 2 at a time with up to 16 more
+        waiting their turn: it answers exactly as before, only later,
+        and one arriving beyond that is answered `503`. A filtered
+        read cannot be subscribed to; it is a one-shot request.
       operationId: getSystemLogs
       x-cix-read: stream
       x-cix-sample-period: 2
@@ -5639,6 +5653,31 @@ paths:
                   $ref: "#/components/schemas/LogEntry"
         "400":
           description: Malformed regex pattern
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: >
+            A filtered read ran off the event loop and ended without a
+            result (ADR-0342). The daemon's log names the helper's exit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            No filtered read could start (ADR-0342). A filtered read runs
+            off the daemon's event loop, 2 at a time with up to 16 more
+            waiting their turn; one arriving beyond that is answered at
+            once rather than queued without bound. Retry after the
+            header's interval.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                enum: [1]
+              description: Seconds to wait before retrying.
           content:
             application/json:
               schema:
