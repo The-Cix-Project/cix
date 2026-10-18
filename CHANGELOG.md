@@ -6,6 +6,27 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A password being set is hashed off the event loop too (#610, ADR-0340 phase 2)
+
+- **What changed for an operator:** setting a user's password, and creating an app password, no
+  longer stop the box for the ~350 ms a bcrypt hash costs. The request waits for its hash in a
+  helper process and answers as before.
+- **How:** `credcheck_work()` gained two kinds. `CREDCHECK_HASH` hashes a password a request
+  sets. `CREDCHECK_NEW_SECRET` generates an app password's secret and hashes it, in the child,
+  because a secret made by the handler on its first pass would be gone by the resumed one.
+  `ldap_user_create()`/`ldap_user_update()` take a hash, never a password.
+  `ldap_app_password_create()` became `ldap_app_password_can_add()`, asked before the hash so a
+  404 or 409 costs none, plus `ldap_app_password_add()`, which asks again when it stores.
+- **Contract:** `createLdapUser`, `updateLdapUser`, `createLdapUserAppPassword` and
+  `createOwnAppPassword` document a `503` with `Retry-After: 1`. A password is at most 511 bytes;
+  a longer one is a `400`, where before any length was accepted. The create summary also stops
+  claiming SHA-256, which has been false since ADR-0144.
+- **Still on the loop, and recorded rather than hidden:** a container's `ldap_provision` secret,
+  hashed at every start, and the service bind account's secret. Neither has a request to park
+  (#611). `test_blocking_waits` budgets each at one call site.
+- **Gate:** `test_hostauth` changes a password through `PUT` while logins are slow, then checks
+  that the old password fails and the new one works.
+
 ### A credential is checked off the event loop, and the request waits for it (#609, ADR-0340)
 
 - **What changed for an operator:** a login, or the first request signed with a given app

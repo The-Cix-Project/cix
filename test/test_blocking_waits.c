@@ -421,10 +421,24 @@ static const struct cred_budget g_cred_budgets[] = {
 	{ "pwhash.c", "pwhash_bcrypt_check(", 1, "the definition, not a call" },
 	{ "pwhash.c", "pwhash_bcrypt_new(", 1, "the definition, not a call" },
 	{ "ldapclient.c", "ldapclient_bind(", 1, "the definition, not a call" },
-	/* Phase 2 (#610) moves these two the same way and lowers this to 0. */
-	{ "ldap.c", "pwhash_bcrypt_new(", 2,
-	  "a user's password set, and an app password created -- each ~350 ms on the loop "
-	  "until #610" },
+	/*
+	 * Phase 2 (#610) moved every request path off the loop: a password set
+	 * through the API and an app password created are made here, in the
+	 * helper child. 2 -> 0 in ldap.c, where those two used to be made.
+	 */
+	{ "credcheck.c", "pwhash_bcrypt_new(", 1,
+	  "a password being set, and an app password's secret, in the helper child" },
+	/*
+	 * The two that remain on the loop have no request to park -- #611
+	 * records both, and what would remove them. They are budgeted so a
+	 * third is a number someone has to raise.
+	 */
+	{ "ldap.c", "pwhash_bcrypt_new(", 1,
+	  "the service bind account's secret, when it is (re)provisioned -- ~350 ms on the loop "
+	  "(#611)" },
+	{ "main.c", "pwhash_bcrypt_new(", 1,
+	  "a container's ldap_provision secret, at every start -- ~350 ms on the loop, and the "
+	  "secret must reach the container before its services start (#611)" },
 };
 
 #define CRED_BUDGET_COUNT ((int)(sizeof(g_cred_budgets) / sizeof(g_cred_budgets[0])))

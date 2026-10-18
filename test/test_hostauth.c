@@ -1150,6 +1150,41 @@ static int test_credcheck_off_loop(void)
 		ok = 0;
 	}
 
+	/* 2b. #610: a password SET through the API is hashed off the loop too,
+	 * and the hash made on one pass is the one stored on the next. The
+	 * old password stops working and the new one works -- which a hash
+	 * made for one string and stored for another could not do. */
+	{
+		char tok[128] = "";
+
+		if (!login_as(&c, "ccadmin", "slow but right", tok, sizeof(tok))) {
+			fprintf(stderr, "FAIL: #610 login before the password change\n");
+			ok = 0;
+		}
+		ok &= expect_status(&c, tok, "PUT", "/v1/ldap/users/ccadmin",
+		                    "{\"name\":\"ccadmin\",\"uidnumber\":7610,\"primarygroup\":7601,"
+		                    "\"password\":\"slow and new\"}",
+		                    200, "#610 PUT a new password");
+		fd = login_send("ccadmin", "slow but right");
+		st = fd >= 0 ? response_read(fd, resp, sizeof(resp)) : -1;
+		if (fd >= 0)
+			close(fd);
+		if (st != 401) {
+			fprintf(stderr, "FAIL: #610 the old password after a change expected 401, got %d\n",
+			        st);
+			ok = 0;
+		}
+		fd = login_send("ccadmin", "slow and new");
+		st = fd >= 0 ? response_read(fd, resp, sizeof(resp)) : -1;
+		if (fd >= 0)
+			close(fd);
+		if (st != 200) {
+			fprintf(stderr, "FAIL: #610 the new password after a change expected 200, got %d\n",
+			        st);
+			ok = 0;
+		}
+	}
+
 	/* 3. Beyond K running and Q waiting, 503 with Retry-After -- not 429,
 	 * which says something about the caller, and not a wait. */
 	if (running_max + CC_WAIT_MAX >= CC_SOCKETS_MAX) {
@@ -1158,7 +1193,7 @@ static int test_credcheck_off_loop(void)
 		       (int)cpus);
 	} else {
 		for (i = 0; i < running_max + CC_WAIT_MAX; i++) {
-			fds[nfds] = login_send("ccadmin", "slow but right");
+			fds[nfds] = login_send("ccadmin", "slow and new");
 			if (fds[nfds] >= 0)
 				nfds++;
 		}
@@ -1170,7 +1205,7 @@ static int test_credcheck_off_loop(void)
 			        h);
 			ok = 0;
 		}
-		fd = login_send("ccadmin", "slow but right");
+		fd = login_send("ccadmin", "slow and new");
 		st = fd >= 0 ? response_read(fd, resp, sizeof(resp)) : -1;
 		if (fd >= 0)
 			close(fd);
@@ -1186,7 +1221,7 @@ static int test_credcheck_off_loop(void)
 		/* The waiting checks were abandoned with their clients; the
 		 * running ones finish within one timeout. A login then waits at
 		 * most for those and for its own. */
-		fd = login_send("ccadmin", "slow but right");
+		fd = login_send("ccadmin", "slow and new");
 		st = fd >= 0 ? response_read(fd, resp, sizeof(resp)) : -1;
 		if (fd >= 0)
 			close(fd);

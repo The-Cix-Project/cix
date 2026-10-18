@@ -297,8 +297,11 @@ struct ldap_user *ldap_user_find(const char *name);
  * the allocator's active collision check before committing a
  * subordinate range. */
 int ldap_user_uidnumber_in_range(long long lo, long long hi);
-/* password == NULL: leave passbcrypt unset (create) or unchanged
- * (update). password == "" is treated the same as NULL -- an empty
+/* passbcrypt is an already-made bcrypt hash, never a password: making one
+ * costs ~350 ms, so a request makes it off the event loop first
+ * (credcheck_hash(), ADR-0340 phase 2, #610). NULL leaves passbcrypt unset
+ * (create) or unchanged
+ * (update), and "" is treated the same as NULL -- an empty
  * credential is never written. owner_container: task #727's own
  * field (see struct ldap_user's own comment) -- every caller outside
  * the auto-provisioning hook in main.c passes NULL. can_search
@@ -315,7 +318,7 @@ enum ldap_record_error ldap_user_create(const char *name, int uidnumber, int pri
                                          const int *secondary_groups, int secondary_group_count,
                                          const char *givenname, const char *sn, const char *mail,
                                          const char *loginshell, const char *homedirectory,
-                                         const char *password, int disabled,
+                                         const char *passbcrypt, int disabled,
                                          const char *owner_container, int can_search,
                                          const char *ssh_public_key, struct ldap_user **out);
 /* new_name (ADR-0147): NULL or equal to name means no rename, the
@@ -333,7 +336,7 @@ enum ldap_record_error ldap_user_update(const char *name, const char *new_name, 
                                          int primarygroup, const int *secondary_groups,
                                          int secondary_group_count, const char *givenname,
                                          const char *sn, const char *mail, const char *loginshell,
-                                         const char *homedirectory, const char *password, int disabled,
+                                         const char *homedirectory, const char *passbcrypt, int disabled,
                                          const char *ssh_public_key, int can_search,
                                          struct ldap_user **out);
 enum ldap_record_error ldap_user_delete(const char *name);
@@ -354,13 +357,19 @@ int ldap_user_is_in_group(const char *user_name, const char *group_name);
 /*
  * ADR-0317 section 8 (#543): app passwords.
  *
- * create: generates the secret (ldap_generate_secret(), 128 random
- * bits as hex), stores only its bcrypt hash, persists, re-renders
- * glauth, and returns the secret in out_secret -- the only time it
- * exists outside the caller's hands. NOT_FOUND for no such user,
- * INVALID_NAME for an app name that is not [A-Za-z0-9._-]{1,63},
- * DUPLICATE for a name the user already has, FULL at
- * LDAP_APP_PASSWORDS_MAX.
+ * can_add: whether user may be given an app password called app_name.
+ * NOT_FOUND for no such user, INVALID_NAME for an app name that is not
+ * [A-Za-z0-9._-]{1,63}, DUPLICATE for a name the user already has, FULL
+ * at LDAP_APP_PASSWORDS_MAX. Asked before the secret is made, so a
+ * refusal costs no hash.
+ *
+ * add: stores an app password whose secret and bcrypt hash were already
+ * made -- by credcheck_new_secret(), off the event loop (ADR-0340 phase
+ * 2, #610), since a hash costs ~350 ms. Asks can_add again (the record
+ * can change while the hash is made), then persists and re-renders
+ * glauth. Only the hash is ever stored; the caller hands the secret to
+ * the client, the only time it exists outside its hands.
+ * INVALID_FIELD for anything that is not a PWHASH_BCRYPT_LEN hash.
  *
  * delete: removes it from the record and from glauth's rendered config.
  * The API checks the record on every request, so the next request
@@ -387,9 +396,9 @@ enum ldap_app_answer {
 	LDAP_APP_VERIFIED,
 	LDAP_APP_UNKNOWN,
 };
-enum ldap_record_error ldap_app_password_create(const char *user_name, const char *app_name,
-                                                char out_secret[LDAP_PROVISION_SECRET_LEN + 1],
-                                                long long *out_created);
+enum ldap_record_error ldap_app_password_can_add(const char *user_name, const char *app_name);
+enum ldap_record_error ldap_app_password_add(const char *user_name, const char *app_name,
+                                             const char *passbcrypt, long long *out_created);
 enum ldap_record_error ldap_app_password_delete(const char *user_name, const char *app_name);
 int ldap_app_passwords_write_json(const char *user_name, struct json_writer *w);
 enum ldap_app_answer ldap_app_password_lookup(const char *user_name, const char *secret,
@@ -569,7 +578,8 @@ int ldap_gid_alloc(void);
 /* Fills out with a fresh, random provisioning secret (32 lowercase
  * hex chars, from /dev/urandom) for task #727's auto-provisioning
  * hook. Never persisted in plaintext anywhere -- the caller hashes it
- * via ldap_user_create()'s own password param and delivers the
+ * (pwhash_bcrypt_new(), on the loop until #611), passes the hash to
+ * ldap_user_create(), and delivers the
  * plaintext directly into the freshly-created container's filesystem
  * in the same request, the same "generate once, deliver once, only
  * the hash survives" shape pki_cert_deliver() already established for

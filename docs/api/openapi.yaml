@@ -656,6 +656,22 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            The secret's hash could not be made yet (ADR-0340): a hash is made
+            off the event loop, at most half the host's CPUs at a time with
+            32 more waiting, and this request arrived beyond that. Nothing was
+            created. Retry after the header's interval.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                enum: [1]
+              description: Seconds to wait before retrying.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /whoami/app-passwords/{app}:
     delete:
       summary: Revoke one of the caller's own app passwords (ADR-0317 section 8)
@@ -9089,10 +9105,11 @@ paths:
     post:
       summary: >
         Create an LDAP user. Same durable-record-store + write-through model
-        as groups. password, if given, is hashed with SHA-256 (glauth's own
-        "passsha256" config field, via cixd's already-linked OpenSSL
-        libcrypto) -- never stored or echoed in plaintext, and never
-        returned by any GET (only a has_password boolean is).
+        as groups. password, if given, is hashed with bcrypt (ADR-0144;
+        glauth's own "passbcrypt" field) -- never stored or echoed in
+        plaintext, and never returned by any GET (only a has_password
+        boolean is). The hash costs about 350 ms, so it is made off the
+        daemon's event loop and the request waits for it (ADR-0340, #610).
       operationId: createLdapUser
       x-cix-invalidates: [listLdapUsers, getLdapUser, listLdapUserAppPasswords, getWhoami]
       x-cix-permission: identity:write
@@ -9111,13 +9128,31 @@ paths:
               schema:
                 $ref: "#/components/schemas/LdapUser"
         "400":
-          description: Invalid name/uidnumber, or primarygroup doesn't name an existing group
+          description: >
+            Invalid name/uidnumber, primarygroup doesn't name an existing group,
+            or a password of 512 bytes or more
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
           description: A user with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            The password could not be hashed yet (ADR-0340): a hash is made
+            off the event loop, at most half the host's CPUs at a time with
+            32 more waiting, and this request arrived beyond that. Nothing was
+            changed. Retry after the header's interval.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                enum: [1]
+              description: Seconds to wait before retrying.
           content:
             application/json:
               schema:
@@ -9191,7 +9226,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/LdapUser"
         "400":
-          description: Invalid uidnumber, invalid new name, or primarygroup doesn't name an existing group
+          description: >
+            Invalid uidnumber, invalid new name, primarygroup doesn't name an
+            existing group, or a password of 512 bytes or more
           content:
             application/json:
               schema:
@@ -9208,6 +9245,22 @@ paths:
             admin user and the request would disable it or remove it from every admin
             group, turning off write authentication for the whole API (#370). Add
             another admin first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            A new password could not be hashed yet (ADR-0340): a hash is made
+            off the event loop, at most half the host's CPUs at a time with
+            32 more waiting, and this request arrived beyond that. Nothing was
+            changed. Retry after the header's interval.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                enum: [1]
+              description: Seconds to wait before retrying.
           content:
             application/json:
               schema:
@@ -9328,6 +9381,22 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: The user already has an app password of that name, or has 8
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            The secret's hash could not be made yet (ADR-0340): a hash is made
+            off the event loop, at most half the host's CPUs at a time with
+            32 more waiting, and this request arrived beyond that. Nothing was
+            created. Retry after the header's interval.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                enum: [1]
+              description: Seconds to wait before retrying.
           content:
             application/json:
               schema:
@@ -21255,6 +21324,7 @@ components:
           type: string
           title: Password
           format: password
+          maxLength: 511
           description: >
             Leave empty when editing to keep the existing password.
             Sent as plaintext and hashed server-side with bcrypt

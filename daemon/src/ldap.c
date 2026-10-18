@@ -318,17 +318,6 @@ int ldap_groupname_is_valid(const char *name)
 	return ldap_username_is_valid(name);
 }
 
-/* ADR-0144: real bcrypt hashing (daemon/include/pwhash.h) -- see
- * struct ldap_user's own doc comment in ldap.h for why this replaced
- * the original unsalted-SHA256 passsha256 field. Failure (only
- * possible from a too-small output buffer, which out's own fixed
- * PWHASH_BCRYPT_LEN+1 size here never triggers) leaves out untouched;
- * callers already only invoke this when a real password was given. */
-static void hash_password(const char *password, char out[PWHASH_BCRYPT_LEN + 1])
-{
-	pwhash_bcrypt_new(password, out, PWHASH_BCRYPT_LEN + 1);
-}
-
 /*
  * Persisted-state serialization for users -- deliberately distinct
  * from ldap_user_write_json_one() (the public REST-response writer,
@@ -1987,7 +1976,7 @@ static void fill_user_fields(struct ldap_user *u, int uidnumber, int primarygrou
                               const int *secondary_groups, int secondary_group_count,
                               const char *givenname, const char *sn, const char *mail,
                               const char *loginshell, const char *homedirectory,
-                              const char *password, int disabled, const char *ssh_public_key)
+                              const char *passbcrypt, int disabled, const char *ssh_public_key)
 {
 	u->uidnumber = uidnumber;
 	u->primarygroup = primarygroup;
@@ -2011,8 +2000,8 @@ static void fill_user_fields(struct ldap_user *u, int uidnumber, int primarygrou
 	memset(u->homedirectory, 0, sizeof(u->homedirectory));
 	if (homedirectory != NULL)
 		strncpy(u->homedirectory, homedirectory, sizeof(u->homedirectory) - 1);
-	if (password != NULL && password[0] != '\0')
-		hash_password(password, u->passbcrypt);
+	if (passbcrypt != NULL && passbcrypt[0] != '\0')
+		snprintf(u->passbcrypt, sizeof(u->passbcrypt), "%s", passbcrypt);
 	u->disabled = disabled ? 1 : 0;
 	memset(u->ssh_public_key, 0, sizeof(u->ssh_public_key));
 	if (ssh_public_key != NULL)
@@ -2023,7 +2012,7 @@ enum ldap_record_error ldap_user_create(const char *name, int uidnumber, int pri
                                          const int *secondary_groups, int secondary_group_count,
                                          const char *givenname, const char *sn, const char *mail,
                                          const char *loginshell, const char *homedirectory,
-                                         const char *password, int disabled,
+                                         const char *passbcrypt, int disabled,
                                          const char *owner_container, int can_search,
                                          const char *ssh_public_key, struct ldap_user **out)
 {
@@ -2052,7 +2041,7 @@ enum ldap_record_error ldap_user_create(const char *name, int uidnumber, int pri
 	memset(u, 0, sizeof(*u));
 	strncpy(u->name, name, sizeof(u->name) - 1);
 	fill_user_fields(u, uidnumber, primarygroup, secondary_groups, secondary_group_count, givenname,
-	                  sn, mail, loginshell, homedirectory, password, disabled, ssh_public_key);
+	                  sn, mail, loginshell, homedirectory, passbcrypt, disabled, ssh_public_key);
 	if (owner_container != NULL)
 		strncpy(u->owner_container, owner_container, sizeof(u->owner_container) - 1);
 	u->can_search = can_search ? 1 : 0;
@@ -2071,7 +2060,7 @@ enum ldap_record_error ldap_user_update(const char *name, const char *new_name, 
                                          int primarygroup, const int *secondary_groups,
                                          int secondary_group_count, const char *givenname,
                                          const char *sn, const char *mail, const char *loginshell,
-                                         const char *homedirectory, const char *password, int disabled,
+                                         const char *homedirectory, const char *passbcrypt, int disabled,
                                          const char *ssh_public_key, int can_search,
                                          struct ldap_user **out)
 {
@@ -2092,11 +2081,11 @@ enum ldap_record_error ldap_user_update(const char *name, const char *new_name, 
 			return LDAP_RECORD_ERR_DUPLICATE;
 	}
 
-	/* password == NULL means "keep the existing hash" -- fill_user_
-	 * fields() only overwrites passbcrypt when password is non-NULL
+	/* passbcrypt == NULL means "keep the existing hash" -- fill_user_
+	 * fields() only overwrites the stored hash when passbcrypt is non-NULL
 	 * and non-empty, so u->passbcrypt is left untouched otherwise. */
 	fill_user_fields(u, uidnumber, primarygroup, secondary_groups, secondary_group_count, givenname,
-	                  sn, mail, loginshell, homedirectory, password, disabled, ssh_public_key);
+	                  sn, mail, loginshell, homedirectory, passbcrypt, disabled, ssh_public_key);
 	/* ADR-0144 task #838: can_search, like every other PUT field, is
 	 * full-field-replacement -- an operator managing a real bind/
 	 * service account's search grant through this same endpoint
@@ -2183,13 +2172,9 @@ static int app_name_is_valid(const char *s)
 	return 1;
 }
 
-enum ldap_record_error ldap_app_password_create(const char *user_name, const char *app_name,
-                                                char out_secret[LDAP_PROVISION_SECRET_LEN + 1],
-                                                long long *out_created)
+enum ldap_record_error ldap_app_password_can_add(const char *user_name, const char *app_name)
 {
-	struct ldap_user *u = ldap_user_find(user_name);
-	struct ldap_app_password *ap;
-	char secret[LDAP_PROVISION_SECRET_LEN + 1];
+	const struct ldap_user *u = ldap_user_find(user_name);
 	int i;
 
 	if (u == NULL)
@@ -2202,15 +2187,24 @@ enum ldap_record_error ldap_app_password_create(const char *user_name, const cha
 	}
 	if (u->app_password_count >= LDAP_APP_PASSWORDS_MAX)
 		return LDAP_RECORD_ERR_FULL;
-	if (ldap_generate_secret(secret) != 0)
-		return LDAP_RECORD_ERR_PERSIST_FAILED;
+	return LDAP_RECORD_OK;
+}
+
+enum ldap_record_error ldap_app_password_add(const char *user_name, const char *app_name,
+                                             const char *passbcrypt, long long *out_created)
+{
+	struct ldap_user *u = ldap_user_find(user_name);
+	struct ldap_app_password *ap;
+	enum ldap_record_error err = ldap_app_password_can_add(user_name, app_name);
+
+	if (err != LDAP_RECORD_OK)
+		return err;
+	if (passbcrypt == NULL || strlen(passbcrypt) != PWHASH_BCRYPT_LEN)
+		return LDAP_RECORD_ERR_INVALID_FIELD;
 
 	ap = &u->app_passwords[u->app_password_count];
 	memset(ap, 0, sizeof(*ap));
-	if (pwhash_bcrypt_new(secret, ap->passbcrypt, sizeof(ap->passbcrypt)) != 0) {
-		memset(ap, 0, sizeof(*ap));
-		return LDAP_RECORD_ERR_PERSIST_FAILED;
-	}
+	snprintf(ap->passbcrypt, sizeof(ap->passbcrypt), "%s", passbcrypt);
 	snprintf(ap->name, sizeof(ap->name), "%s", app_name);
 	ap->created = (long long)time(NULL);
 	u->app_password_count++;
@@ -2220,7 +2214,6 @@ enum ldap_record_error ldap_app_password_create(const char *user_name, const cha
 		return LDAP_RECORD_ERR_PERSIST_FAILED;
 	}
 	ldap_record_sync_all();
-	memcpy(out_secret, secret, sizeof(secret));
 	if (out_created != NULL)
 		*out_created = ap->created;
 	return LDAP_RECORD_OK;
@@ -2554,6 +2547,7 @@ void ldap_ensure_service_bind_account(void)
 	struct ldap_user *u;
 	struct ldap_group *g;
 	char secret[LDAP_PROVISION_SECRET_LEN + 1];
+	char hash[PWHASH_BCRYPT_LEN + 1];
 	char dn[sizeof(g_config.bind_dn)];
 
 	/* LDAP not configured yet (no canonical base DN) -- nothing to bind
@@ -2604,18 +2598,24 @@ void ldap_ensure_service_bind_account(void)
 	g = ldap_group_find(LDAP_SERVICE_BIND_GROUP);
 	if (g == NULL && ldap_group_create(LDAP_SERVICE_BIND_GROUP, ldap_gid_alloc(), &g) != LDAP_RECORD_OK)
 		return;
-	if (g == NULL || ldap_generate_secret(secret) != 0)
+	/*
+	 * Hashed here, on the event loop -- ~350 ms (pwhash.h) -- because
+	 * nothing waits on this that could be parked (ADR-0340 covers the
+	 * request paths). #611 records it, and what would remove it.
+	 */
+	if (g == NULL || ldap_generate_secret(secret) != 0 ||
+	    pwhash_bcrypt_new(secret, hash, sizeof(hash)) != 0)
 		return;
 
 	if (u == NULL) {
 		if (ldap_user_create(LDAP_SERVICE_BIND_USER, ldap_uid_alloc(), g->gidnumber, NULL, 0,
 		                     "Service", "nslcd", NULL, "/usr/bin/nologin", "/nonexistent",
-		                     secret, 0, NULL, 1, NULL, &u) != LDAP_RECORD_OK || u == NULL)
+		                     hash, 0, NULL, 1, NULL, &u) != LDAP_RECORD_OK || u == NULL)
 			return;
 	} else {
 		if (ldap_user_update(LDAP_SERVICE_BIND_USER, NULL, u->uidnumber, u->primarygroup,
 		                     u->secondary_groups, u->secondary_group_count, u->givenname, u->sn,
-		                     u->mail, u->loginshell, u->homedirectory, secret, u->disabled,
+		                     u->mail, u->loginshell, u->homedirectory, hash, u->disabled,
 		                     u->ssh_public_key, 1, &u) != LDAP_RECORD_OK || u == NULL)
 			return;
 		g = ldap_group_find_by_gid(u->primarygroup);

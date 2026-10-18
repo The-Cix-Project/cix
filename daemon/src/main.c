@@ -1488,11 +1488,16 @@ struct conn {
 	 * (credcheck_bind()) so it can answer for no other credential. A
 	 * connection carries one request, so it is checked at most once.
 	 * req_audited: dispatch() has written this request's audit line, so
-	 * the pass that resumes it does not write a second.
+	 * the pass that resumes it does not write a second. cred_hash and
+	 * cred_secret (#610): what a verified HASH or NEW_SECRET made, held
+	 * from the helper's result to the resumed pass that stores it, and
+	 * wiped at teardown.
 	 */
 	struct cred_park *cred_park;
 	enum cred_state cred_state;
 	unsigned char cred_bind[CREDCHECK_BIND_LEN];
+	char cred_hash[PWHASH_BCRYPT_LEN + 1];
+	char cred_secret[LDAP_PROVISION_SECRET_LEN + 1];
 	int req_audited;
 };
 
@@ -16653,6 +16658,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		const char *ldap_user_name = ldap_user_buf[0] != '\0' ? ldap_user_buf : entry->name;
 		int uid = ldap_uid != 0 ? ldap_uid : ldap_uid_alloc();
 		char secret[LDAP_PROVISION_SECRET_LEN + 1];
+		char hash[PWHASH_BCRYPT_LEN + 1];
 		struct ldap_user *u = NULL;
 		enum ldap_record_error lerr = LDAP_RECORD_ERR_NOT_FOUND;
 
@@ -16661,13 +16667,18 @@ static int create_container_from_body(const char *body, size_t body_len,
 			        "%s: ldap_provision requested but the container name isn't a valid "
 			        "LDAP username -- pass ldap_user= explicitly\n",
 			        entry->name);
-		} else if (g == NULL || ldap_generate_secret(secret) != 0) {
-			fprintf(stderr, "%s: ldap_provision requested but the group vanished or "
-			                "/dev/urandom couldn't be read\n",
+		} else if (g == NULL || ldap_generate_secret(secret) != 0 ||
+		           /* On the loop, ~350 ms (pwhash.h): this create path has
+		            * no request to park, and the secret must reach the
+		            * container before its services start. #611. */
+		           pwhash_bcrypt_new(secret, hash, sizeof(hash)) != 0) {
+			fprintf(stderr, "%s: ldap_provision requested but the group vanished, "
+			                "/dev/urandom couldn't be read, or the secret could not be "
+			                "hashed\n",
 			        entry->name);
 		} else {
 			lerr = ldap_user_create(ldap_user_name, uid, g->gidnumber, NULL, 0, NULL, NULL, NULL,
-			                         NULL, NULL, secret, 0, entry->name, 1, NULL, &u);
+			                         NULL, NULL, hash, 0, entry->name, 1, NULL, &u);
 			if (lerr == LDAP_RECORD_ERR_DUPLICATE) {
 				/* Respawn under restart-always: the account already
 				 * exists (from this container's own first start) --
@@ -16678,7 +16689,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 					lerr = ldap_user_update(ldap_user_name, NULL, uid, g->gidnumber,
 					                         u->secondary_groups, u->secondary_group_count,
 					                         u->givenname, u->sn, u->mail, u->loginshell,
-					                         u->homedirectory, secret, u->disabled,
+					                         u->homedirectory, hash, u->disabled,
 					                         u->ssh_public_key, u->can_search, &u);
 			}
 			if (lerr != LDAP_RECORD_OK || u == NULL) {
@@ -31326,7 +31337,8 @@ static void cred_start_waiting(void)
 	}
 }
 
-static enum credcheck_answer cred_broker(const struct credcheck_request *rq)
+static enum credcheck_answer cred_broker(const struct credcheck_request *rq,
+                                         struct credcheck_out *out)
 {
 	struct conn *cc = g_response_conn;
 	unsigned char bind[CREDCHECK_BIND_LEN];
@@ -31345,14 +31357,24 @@ static enum credcheck_answer cred_broker(const struct credcheck_request *rq)
 		return CREDCHECK_BUSY;
 	case CRED_VERIFIED:
 		/*
-		 * Only for the credential it was found for, and only a login: a
-		 * verified app password is in the memo, which the caller asks
-		 * first, so an app password reaching here means the record
-		 * changed while its check ran.
+		 * Only for the request it was found for -- the bind covers the
+		 * kind, so a match is the same kind too. Never an app password:
+		 * a verified one is in the memo, which the caller asks first, so
+		 * an app password reaching here means the record changed while
+		 * its check ran. A HASH or NEW_SECRET hands back what it made
+		 * (#610), which leaves the connection with it.
 		 */
-		if (rq->kind == CREDCHECK_LOGIN && CRYPTO_memcmp(bind, cc->cred_bind, sizeof(bind)) == 0)
-			return CREDCHECK_VERIFIED;
-		return CREDCHECK_REFUSED;
+		if (CRYPTO_memcmp(bind, cc->cred_bind, sizeof(bind)) != 0 ||
+		    rq->kind == CREDCHECK_APP_PASSWORD)
+			return CREDCHECK_REFUSED;
+		if (rq->kind != CREDCHECK_LOGIN) {
+			if (out == NULL)
+				return CREDCHECK_REFUSED;
+			memcpy(out->hash, cc->cred_hash, sizeof(out->hash));
+			memcpy(out->secret, cc->cred_secret, sizeof(out->secret));
+			explicit_bzero(cc->cred_secret, sizeof(cc->cred_secret));
+		}
+		return CREDCHECK_VERIFIED;
 	case CRED_REFUSED:
 	default:
 		/* Refused, or checked for some other credential: a connection
@@ -31393,11 +31415,13 @@ static enum credcheck_answer cred_broker(const struct credcheck_request *rq)
 /*
  * The check finished. The parent's half of credcheck.h's split: write
  * what the child logged, memoize a verified app password, and serve the
- * request again with the verdict attached. When the client has gone
- * there is nobody to serve, so the bookkeeping the resumed pass would
- * have done happens here instead: a failure still counts against its
- * address, a success still clears it, a login is still audited, and no
- * session is issued.
+ * request again with the verdict attached -- and, for a hash being made
+ * (#610), the hash and any secret, which the resumed pass stores. When
+ * the client has gone there is nobody to serve, so the bookkeeping the
+ * resumed pass would have done happens here instead: a failure still
+ * counts against its address, a success still clears it, a login is
+ * still audited, and no session is issued. A hash whose client left is
+ * simply dropped: nothing was stored, and nothing authenticated.
  */
 static void cred_check_done(int exit_status, void *ctx)
 {
@@ -31420,24 +31444,38 @@ static void cred_check_done(int exit_status, void *ctx)
 		logstore_replay(r.held, sizeof(r.held));
 		verified = r.verified;
 		if (verified && p->rq.kind == CREDCHECK_APP_PASSWORD)
-			ldap_app_password_memoize(r.app_hash, p->rq.secret);
+			ldap_app_password_memoize(r.hash, p->rq.secret);
 	} else {
 		logstore_write("hostauth", "error",
-		               "a credential check for %s ended without a result (helper exit %d) -- "
+		               "a credential %s for %s ended without a result (helper exit %d) -- "
 		               "refused",
-		               p->rq.user, exit_status);
+		               p->rq.kind == CREDCHECK_HASH || p->rq.kind == CREDCHECK_NEW_SECRET
+		                   ? "hash"
+		                   : "check",
+		               p->rq.user[0] != '\0' ? p->rq.user : "a password being set", exit_status);
 	}
-	explicit_bzero(&r, sizeof(r));
 
+	/* r is wiped on every branch below, after what it carries is taken. */
 	if (p->cc != NULL) {
 		struct conn *cc = p->cc;
 
 		cc->cred_park = NULL;
 		cc->cred_state = verified ? CRED_VERIFIED : CRED_REFUSED;
 		memcpy(cc->cred_bind, p->bind, sizeof(cc->cred_bind));
+		if (verified && (p->rq.kind == CREDCHECK_HASH || p->rq.kind == CREDCHECK_NEW_SECRET)) {
+			memcpy(cc->cred_hash, r.hash, sizeof(cc->cred_hash));
+			memcpy(cc->cred_secret, r.secret, sizeof(cc->cred_secret));
+		}
+		explicit_bzero(&r, sizeof(r));
 		cred_park_free(p);
 		serve_request(cc);
+	} else if (p->rq.kind == CREDCHECK_HASH || p->rq.kind == CREDCHECK_NEW_SECRET) {
+		/* Nothing to record: making a hash is not an authentication,
+		 * so the throttle does not hear of it, and nothing was stored. */
+		explicit_bzero(&r, sizeof(r));
+		cred_park_free(p);
 	} else {
+		explicit_bzero(&r, sizeof(r));
 		if (verified)
 			connthrottle_record_auth_success(p->peer_ip);
 		else
@@ -31470,6 +31508,8 @@ static void client_conn_teardown(struct conn *cc)
 		cred_park_abandon(cc->cred_park);
 		cc->cred_park = NULL;
 	}
+	explicit_bzero(cc->cred_secret, sizeof(cc->cred_secret));
+	explicit_bzero(cc->cred_hash, sizeof(cc->cred_hash));
 	/*
 	 * Deferred, never freed here (ADR-0340). A parked request is finished
 	 * from a helper's done callback -- a DIFFERENT event in the batch --

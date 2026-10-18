@@ -3,6 +3,7 @@
 
 #include "apiresp.h"
 #include "apiroute.h"
+#include "credcheck.h"
 #include "daemonpaths.h"
 #include "http.h"
 #include "json.h"
@@ -553,6 +554,48 @@ static void parse_ldap_user_body(const struct json_value *root, const char **nam
 	*can_search = (jcan_search != NULL && jcan_search->type == JSON_BOOL && jcan_search->u.boolean);
 }
 
+/*
+ * ADR-0340 phase 2 (#610): the hash for a password a request sets, made
+ * off the event loop -- one costs ~350 ms (pwhash.h). The first pass
+ * through a handler parks here; the request is served again from the
+ * start when the hash is made, and this then hands it back. So the
+ * handler must reach this call before anything with an effect, and do
+ * everything with one after it.
+ *
+ * PW_NONE: the request sets no password. PW_HASHED: out holds the hash.
+ * PW_RETURN: the handler returns now -- either a response is written, or
+ * the request is parked and must write nothing.
+ */
+enum pw_hash_step {
+	PW_NONE,
+	PW_HASHED,
+	PW_RETURN,
+};
+
+static enum pw_hash_step hash_request_password(int fd, const char *password,
+                                               char out[PWHASH_BCRYPT_LEN + 1])
+{
+	if (password == NULL || password[0] == '\0')
+		return PW_NONE;
+	if (strlen(password) >= CREDCHECK_SECRET_MAX) {
+		respond_error(fd, 400, "Bad Request", "password must be at most 511 bytes");
+		return PW_RETURN;
+	}
+	switch (credcheck_hash(password, out)) {
+	case CREDCHECK_VERIFIED:
+		return PW_HASHED;
+	case CREDCHECK_PARKED:
+		return PW_RETURN;
+	case CREDCHECK_BUSY:
+		credcheck_respond_busy(fd, 0);
+		return PW_RETURN;
+	case CREDCHECK_REFUSED:
+	default:
+		respond_error(fd, 500, "Internal Server Error", "the password could not be hashed");
+		return PW_RETURN;
+	}
+}
+
 void handle_ldap_user_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
@@ -561,6 +604,8 @@ void handle_ldap_user_create(int fd, const char *body, size_t body_len)
 	int uidnumber, has_uidnumber, primarygroup, disabled, can_search;
 	int secondary_groups[LDAP_USER_MAX_SECONDARY_GROUPS], secondary_group_count;
 	struct ldap_user *u;
+	char hash[PWHASH_BCRYPT_LEN + 1];
+	enum pw_hash_step step;
 	enum ldap_record_error rerr;
 	struct json_writer w;
 
@@ -595,9 +640,16 @@ void handle_ldap_user_create(int fd, const char *body, size_t body_len)
 	 * daemon itself auto-provisions and tears down with a specific
 	 * container, not an operator-created one.
 	 */
+	step = hash_request_password(fd, password, hash);
+	if (step == PW_RETURN) {
+		json_free(root);
+		return;
+	}
 	rerr = ldap_user_create(name, uidnumber, primarygroup, secondary_groups, secondary_group_count,
-	                         givenname, sn, mail, loginshell, homedirectory, password, disabled, NULL,
-	                         can_search, ssh_public_key, &u);
+	                         givenname, sn, mail, loginshell, homedirectory,
+	                         step == PW_HASHED ? hash : NULL, disabled, NULL, can_search,
+	                         ssh_public_key, &u);
+	explicit_bzero(hash, sizeof(hash));
 	json_free(root); /* u points into ldap.c's own record store, not root -- safe past here */
 	if (rerr != LDAP_RECORD_OK) {
 		respond_ldap_record_error(fd, rerr);
@@ -618,6 +670,8 @@ void handle_ldap_user_update(int fd, const char *name, const char *body, size_t 
 	int uidnumber, has_uidnumber, primarygroup, disabled, can_search;
 	int secondary_groups[LDAP_USER_MAX_SECONDARY_GROUPS], secondary_group_count;
 	struct ldap_user *u;
+	char hash[PWHASH_BCRYPT_LEN + 1];
+	enum pw_hash_step step;
 	enum ldap_record_error rerr;
 	struct json_writer w;
 
@@ -661,9 +715,16 @@ void handle_ldap_user_update(int fd, const char *name, const char *body, size_t 
 		return;
 	}
 
+	step = hash_request_password(fd, password, hash);
+	if (step == PW_RETURN) {
+		json_free(root);
+		return;
+	}
 	rerr = ldap_user_update(name, body_name, uidnumber, primarygroup, secondary_groups,
 	                         secondary_group_count, givenname, sn, mail, loginshell, homedirectory,
-	                         password, disabled, ssh_public_key, can_search, &u);
+	                         step == PW_HASHED ? hash : NULL, disabled, ssh_public_key, can_search,
+	                         &u);
+	explicit_bzero(hash, sizeof(hash));
 	json_free(root);
 	if (rerr != LDAP_RECORD_OK) {
 		respond_ldap_record_error(fd, rerr);
@@ -755,10 +816,43 @@ void handle_ldap_app_passwords_list(int fd, const char *user)
 	jw_free(&w);
 }
 
+/* The answer to each refusal ldap_app_password_can_add() and _add() give. */
+static void respond_app_password_refusal(int fd, enum ldap_record_error rerr)
+{
+	switch (rerr) {
+	case LDAP_RECORD_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such LDAP user");
+		return;
+	case LDAP_RECORD_ERR_INVALID_NAME:
+		respond_error(fd, 400, "Bad Request",
+		              "name must be an app password name: [A-Za-z0-9._-]{1,63}");
+		return;
+	case LDAP_RECORD_ERR_DUPLICATE:
+		respond_error(fd, 409, "Conflict", "this user already has an app password of that name");
+		return;
+	case LDAP_RECORD_ERR_FULL:
+		respond_error(fd, 409, "Conflict",
+		              "this user already has 8 app passwords, the most one may hold -- revoke one "
+		              "first");
+		return;
+	default:
+		respond_error(fd, 500, "Internal Server Error", "failed to persist the app password");
+		return;
+	}
+}
+
+/*
+ * ADR-0340 phase 2 (#610): the secret and its hash are made off the event
+ * loop, by credcheck_new_secret(). Every refusal is decided before that
+ * -- so a 404 or 409 never costs a hash -- and decided again by
+ * ldap_app_password_add() on the pass that stores it, since the record
+ * can change while the hash is made.
+ */
 void handle_ldap_app_password_create(int fd, const char *user, const char *body, size_t body_len)
 {
 	struct json_value *root = json_parse(body, body_len);
 	char secret[LDAP_PROVISION_SECRET_LEN + 1];
+	char hash[PWHASH_BCRYPT_LEN + 1];
 	char app[LDAP_APP_PASSWORD_NAME_MAX];
 	long long created = 0;
 	enum ldap_record_error rerr;
@@ -779,27 +873,30 @@ void handle_ldap_app_password_create(int fd, const char *user, const char *body,
 	snprintf(app, sizeof(app), "%s", name);
 	json_free(root);
 
-	rerr = ldap_app_password_create(user, app, secret, &created);
-	switch (rerr) {
-	case LDAP_RECORD_OK:
+	rerr = ldap_app_password_can_add(user, app);
+	if (rerr != LDAP_RECORD_OK) {
+		respond_app_password_refusal(fd, rerr);
+		return;
+	}
+	switch (credcheck_new_secret(user, app, secret, hash)) {
+	case CREDCHECK_VERIFIED:
 		break;
-	case LDAP_RECORD_ERR_NOT_FOUND:
-		respond_error(fd, 404, "Not Found", "no such LDAP user");
+	case CREDCHECK_PARKED:
+		return; /* served again when the secret is made */
+	case CREDCHECK_BUSY:
+		credcheck_respond_busy(fd, 0);
 		return;
-	case LDAP_RECORD_ERR_INVALID_NAME:
-		respond_error(fd, 400, "Bad Request",
-		              "name must be an app password name: [A-Za-z0-9._-]{1,63}");
-		return;
-	case LDAP_RECORD_ERR_DUPLICATE:
-		respond_error(fd, 409, "Conflict", "this user already has an app password of that name");
-		return;
-	case LDAP_RECORD_ERR_FULL:
-		respond_error(fd, 409, "Conflict",
-		              "this user already has 8 app passwords, the most one may hold -- revoke one "
-		              "first");
-		return;
+	case CREDCHECK_REFUSED:
 	default:
-		respond_error(fd, 500, "Internal Server Error", "failed to persist the app password");
+		respond_error(fd, 500, "Internal Server Error",
+		              "the app password's secret could not be made");
+		return;
+	}
+	rerr = ldap_app_password_add(user, app, hash, &created);
+	explicit_bzero(hash, sizeof(hash));
+	if (rerr != LDAP_RECORD_OK) {
+		explicit_bzero(secret, sizeof(secret));
+		respond_app_password_refusal(fd, rerr);
 		return;
 	}
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted by the owner, 2026-10-18 ("accepted, go ahead with phase 1"), as proposed the same day. Issue [#609](https://git.home.arpa/itdlabs/cix/issues/609). It changes the request pipeline, which is hard to reverse, and adds one documented response to `POST /v1/login`, so it is the owner's decision. It applies [ADR-0247](0247-the-reactor-does-not-block-and-that-is-the-defence.md) (the loop's blocking budget) and [ADR-0278](0278-the-reactor-forks-work-it-cannot-afford-to-wait-for.md) (`helper_run()`, the one place to add an offload), and leaves [ADR-0144](0144-host-authentication-and-real-ldap.md) (bcrypt, sessions) and [ADR-0317](0317-permissions-are-declared-by-the-api-contract.md) section 8 (app passwords on the user) unchanged. Phase 1 (items 1 to 8 and 10) is implemented; phase 2 (item 9) is [#610](https://git.home.arpa/itdlabs/cix/issues/610). Implementing phase 1 settled three points the text below left open, recorded under [What implementing it settled](#what-implementing-it-settled).
+Accepted by the owner, 2026-10-18 ("accepted, go ahead with phase 1"; then "go ahead with phase 2"), as proposed the same day. Issue [#609](https://git.home.arpa/itdlabs/cix/issues/609). It changes the request pipeline, which is hard to reverse, and adds one documented response to `POST /v1/login`, so it is the owner's decision. It applies [ADR-0247](0247-the-reactor-does-not-block-and-that-is-the-defence.md) (the loop's blocking budget) and [ADR-0278](0278-the-reactor-forks-work-it-cannot-afford-to-wait-for.md) (`helper_run()`, the one place to add an offload), and leaves [ADR-0144](0144-host-authentication-and-real-ldap.md) (bcrypt, sessions) and [ADR-0317](0317-permissions-are-declared-by-the-api-contract.md) section 8 (app passwords on the user) unchanged. Phase 1 (items 1 to 8 and 10) shipped in 0.2.57-538; phase 2 (item 9, [#610](https://git.home.arpa/itdlabs/cix/issues/610)) is implemented for every request path, and two paths with no request to park remain on the loop ([#611](https://git.home.arpa/itdlabs/cix/issues/611)). Implementing phase 1 settled three points the text below left open, recorded under [What implementing it settled](#what-implementing-it-settled).
 
 ## Context
 
@@ -88,9 +88,14 @@ Today the loop serialises every check, which accidentally rate-limits the whole 
 
 9. **Making a hash moves off the loop too.** `pwhash_bcrypt_new()` runs inline at `ldap.c:329` (a user's password set) and `ldap.c:2219` (an app password created). It costs the same as a check. The same park takes it: the child writes the 60-byte hash over the pipe, and on resume the handler commits the write with that hash. It is a second phase only because it is a separate set of handlers. It is tracked as [#610](https://git.home.arpa/itdlabs/cix/issues/610).
 
+   Implementing it settled three points:
+   - **More callers than the two sites.** `ldap.c:329` was reached by four callers, not one. The two REST handlers park as this item says. The other two have no request to park: container `ldap_provision`, at every start, and the service bind account. They hash inline at their own call sites, and [#611](https://git.home.arpa/itdlabs/cix/issues/611) records them. `ldap_user_create()` and `ldap_user_update()` now take a hash, never a password.
+   - **The child makes an app password's secret.** The secret has to survive the park, and one made by the handler on its first pass would be gone by the second. So the child generates the secret as well as hashing it (`credcheck_new_secret()`). Every refusal is decided before that, by `ldap_app_password_can_add()`, so a 404 or 409 costs no hash, and decided again when the result is stored.
+   - **A hash is not an authentication.** When its client has gone, the done callback records nothing with the throttle.
+
 ### Gates
 
-10. **`test_blocking_waits` gains a third counted set.** It counts the call sites of `pwhash_bcrypt_check(`, `ldapclient_bind(` and `pwhash_bcrypt_new(`. Each budget is zero outside `credcheck.c`, except `pwhash_bcrypt_new(` in `ldap.c`, budgeted at its two sites until phase 2 lowers it to zero. A new inline check is then a number someone has to raise in a diff.
+10. **`test_blocking_waits` gains a third counted set.** It counts the call sites of `pwhash_bcrypt_check(`, `ldapclient_bind(` and `pwhash_bcrypt_new(`. Each budget is zero outside `credcheck.c`, except `pwhash_bcrypt_new(` in `ldap.c`, budgeted at its two sites until phase 2 lowers it to zero. A new inline check is then a number someone has to raise in a diff. (Phase 2 lowered `ldap.c` from 2 to 1, not to 0. The one left, and one in `main.c`, are the two paths item 9 found with no request to park, each budgeted at 1 and naming #611.)
 
     `test_hostauth` adds what a static scan cannot see:
     - `GET /v1/health` answers while a login's check is in flight;

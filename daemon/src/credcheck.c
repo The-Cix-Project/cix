@@ -124,32 +124,50 @@ static int check_app_password(const char *user, const char *secret, struct credc
 		if (!pwhash_bcrypt_check(secret, ap->passbcrypt))
 			continue;
 		snprintf(out->app_name, sizeof(out->app_name), "%s", ap->name);
-		snprintf(out->app_hash, sizeof(out->app_hash), "%s", ap->passbcrypt);
+		snprintf(out->hash, sizeof(out->hash), "%s", ap->passbcrypt);
 		return 1;
 	}
 	return 0;
+}
+
+/* #610: a hash for a password being set, or for a secret made here. */
+static int make_hash(const char *secret, struct credcheck_result *out)
+{
+	return pwhash_bcrypt_new(secret, out->hash, sizeof(out->hash)) == 0;
 }
 
 void credcheck_work(const struct credcheck_request *rq, struct credcheck_result *out)
 {
 	memset(out, 0, sizeof(*out));
 	logstore_hold(out->held, sizeof(out->held));
-	if (rq->kind == CREDCHECK_LOGIN)
+	switch (rq->kind) {
+	case CREDCHECK_LOGIN:
 		out->verified = check_login(rq->user, rq->secret);
-	else
+		break;
+	case CREDCHECK_APP_PASSWORD:
 		out->verified = check_app_password(rq->user, rq->secret, out);
+		break;
+	case CREDCHECK_HASH:
+		out->verified = rq->secret[0] != '\0' && make_hash(rq->secret, out);
+		break;
+	case CREDCHECK_NEW_SECRET:
+		out->verified = ldap_generate_secret(out->secret) == 0 && make_hash(out->secret, out);
+		break;
+	}
 }
 
 void credcheck_bind(const struct credcheck_request *rq, unsigned char out[CREDCHECK_BIND_LEN])
 {
-	unsigned char buf[1 + sizeof(rq->user) + sizeof(rq->secret)];
-	size_t ulen = strlen(rq->user) + 1; /* the NUL separates the user from the secret */
-	size_t slen = strlen(rq->secret);
+	unsigned char buf[1 + sizeof(rq->user) + sizeof(rq->secret) + sizeof(rq->name)];
+	size_t ulen = strlen(rq->user) + 1;   /* each NUL separates one field from the next */
+	size_t slen = strlen(rq->secret) + 1;
+	size_t nlen = strlen(rq->name);
 
 	buf[0] = (unsigned char)rq->kind;
 	memcpy(buf + 1, rq->user, ulen);
 	memcpy(buf + 1 + ulen, rq->secret, slen);
-	SHA256(buf, 1 + ulen + slen, out);
+	memcpy(buf + 1 + ulen + slen, rq->name, nlen);
+	SHA256(buf, 1 + ulen + slen + nlen, out);
 	explicit_bzero(buf, sizeof(buf));
 }
 
@@ -160,13 +178,15 @@ void credcheck_set_broker(credcheck_broker_fn fn)
 	g_broker = fn;
 }
 
-enum credcheck_answer credcheck_ask(enum credcheck_kind kind, const char *user, const char *secret)
+/* The one way to the broker: every field bounded, the copy wiped after. */
+static enum credcheck_answer ask(enum credcheck_kind kind, const char *user, const char *secret,
+                                 const char *name, struct credcheck_out *out)
 {
 	struct credcheck_request rq;
 	enum credcheck_answer a;
 
-	if (user == NULL || secret == NULL || strlen(user) >= sizeof(rq.user) ||
-	    strlen(secret) >= sizeof(rq.secret))
+	if (user == NULL || secret == NULL || name == NULL || strlen(user) >= sizeof(rq.user) ||
+	    strlen(secret) >= sizeof(rq.secret) || strlen(name) >= sizeof(rq.name))
 		return CREDCHECK_REFUSED;
 	if (g_broker == NULL)
 		return CREDCHECK_BUSY;
@@ -174,8 +194,44 @@ enum credcheck_answer credcheck_ask(enum credcheck_kind kind, const char *user, 
 	rq.kind = kind;
 	snprintf(rq.user, sizeof(rq.user), "%s", user);
 	snprintf(rq.secret, sizeof(rq.secret), "%s", secret);
-	a = g_broker(&rq);
+	snprintf(rq.name, sizeof(rq.name), "%s", name);
+	a = g_broker(&rq, out);
 	explicit_bzero(rq.secret, sizeof(rq.secret));
+	return a;
+}
+
+enum credcheck_answer credcheck_ask(enum credcheck_kind kind, const char *user, const char *secret)
+{
+	return ask(kind, user, secret, "", NULL);
+}
+
+enum credcheck_answer credcheck_hash(const char *password, char out_hash[PWHASH_BCRYPT_LEN + 1])
+{
+	struct credcheck_out out;
+	enum credcheck_answer a;
+
+	memset(&out, 0, sizeof(out));
+	a = ask(CREDCHECK_HASH, "", password, "", &out);
+	if (a == CREDCHECK_VERIFIED)
+		memcpy(out_hash, out.hash, sizeof(out.hash));
+	explicit_bzero(&out, sizeof(out));
+	return a;
+}
+
+enum credcheck_answer credcheck_new_secret(const char *user, const char *app,
+                                           char out_secret[LDAP_PROVISION_SECRET_LEN + 1],
+                                           char out_hash[PWHASH_BCRYPT_LEN + 1])
+{
+	struct credcheck_out out;
+	enum credcheck_answer a;
+
+	memset(&out, 0, sizeof(out));
+	a = ask(CREDCHECK_NEW_SECRET, user, "", app, &out);
+	if (a == CREDCHECK_VERIFIED) {
+		memcpy(out_secret, out.secret, sizeof(out.secret));
+		memcpy(out_hash, out.hash, sizeof(out.hash));
+	}
+	explicit_bzero(&out, sizeof(out));
 	return a;
 }
 
