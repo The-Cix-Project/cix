@@ -48,6 +48,15 @@ void respond_error(int fd, int status, const char *status_text, const char *msg)
 void respond_error_head(int fd, int status, const char *status_text, const char *msg);
 
 /*
+ * The same refusal plus header lines of its own (ADR-0340: the 503 a busy
+ * credential check answers carries Retry-After), for a request that was
+ * a HEAD when is_head is set. extra_headers is CRLF-terminated and built
+ * from fixed formats, never from request input -- http.h's rule for it.
+ */
+void respond_error_hdrs(int fd, int status, const char *status_text, const char *extra_headers,
+                        const char *msg, int is_head);
+
+/*
  * The reason phrase for a status this daemon actually returns.
  *
  * Deliberately not a complete table: it exists for the handlers that

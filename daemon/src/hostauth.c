@@ -1,6 +1,5 @@
 #include "hostauth.h"
 #include "ldap.h"
-#include "ldapclient.h"
 #include "persist.h"
 #include "pki.h"
 #include "logstore.h"
@@ -21,9 +20,10 @@
 #include <time.h>
 #include <unistd.h>
 
-/* Bounds one hostauth_login() call's worth of live-LDAP work (connect +
- * bind, per configured server) -- long enough for a real LAN round trip,
- * short enough that a down server doesn't stall a login request. */
+/* Bounds one login's live-LDAP work (connect + bind, per configured
+ * server) -- long enough for a real LAN round trip, short enough that a
+ * down server does not hold a login for long. Since ADR-0340 the wait is
+ * in a helper child, so it holds that login and nothing else. */
 #define HOSTAUTH_LDAP_TIMEOUT_MS 3000
 
 struct hostauth_config {
@@ -172,7 +172,7 @@ struct hostauth_session {
 	char token_hash[65]; /* sha256 of the token, hex -- the token itself is never kept (#562) */
 	char username[HOSTAUTH_USERNAME_MAX];
 	time_t expires_at; /* meaningless (never consulted) when idle_timeout_seconds == 0 */
-	time_t logged_in_at;                     /* when hostauth_login() issued it */
+	time_t logged_in_at;                     /* when hostauth_issue_session() issued it */
 	char source_ip[HOSTAUTH_SOURCE_IP_MAX]; /* the client that logged in; "" if unknown */
 	time_t saved_expires_at; /* expires_at as last written to the sessions file */
 	int in_use;
@@ -921,95 +921,30 @@ static int build_login_bind_dn(const char *username, char *out_dn, size_t out_dn
 	return 0;
 }
 
-/* Tries every configured LDAP server in order for one login attempt.
- * *out_answered is set to 1 iff some server gave an authoritative
- * bind-succeeded or bind-explicitly-rejected answer (in which case the
- * return value IS that answer); left at 0 (return value meaningless)
- * if every server was unreachable/erroring, or none are configured. */
-static int try_ldap_login(const char *username, const char *password, int *out_answered)
+int hostauth_ldap_plan(const char *username, struct hostauth_ldap_plan *out)
 {
-	char dn[HOSTAUTH_USERNAME_MAX + HOSTAUTH_GROUP_NAME_MAX + HOSTAUTH_LDAP_BASE_DN_MAX + 8];
-	char *ca_pem = NULL;
-	size_t ca_pem_len = 0;
-	int authenticated = 0;
 	int i;
 
-	*out_answered = 0;
-	if (build_login_bind_dn(username, dn, sizeof(dn)) != 0)
+	memset(out, 0, sizeof(*out));
+	if (!g_config.ldap_enabled ||
+	    build_login_bind_dn(username, out->bind_dn, sizeof(out->bind_dn)) != 0)
 		return 0;
-
-	/*
-	 * #416: the trust chain is read ONCE per login, not once per
-	 * server -- and here rather than at startup, because the CA can
-	 * change under a running daemon (pki_ca_reset(), an intermediate
-	 * bootstrap, ADR-0281's import) and a stale anchor fails as a
-	 * refused connection against a perfectly correct certificate. A
-	 * login is rare enough (this module's own comment says so about
-	 * connection pooling) that the read costs nothing worth saving.
-	 *
-	 * No chain while ldap_tls is on means this function does NOT bind
-	 * at all: it returns with *out_answered still 0, which is the
-	 * established "no server gave a usable answer" outcome, so
-	 * hostauth_login() falls back to the local user records. It
-	 * deliberately does not fall back to a plaintext bind -- that
-	 * would send the credential in clear on the strength of a
-	 * configuration that asked for the opposite. hostauth_set_config()
-	 * already refuses this combination; a CA reset under an
-	 * already-saved config is how it can still be reached.
-	 */
-	if (g_config.ldap_tls &&
-	    (pki_trust_bundle_pem(&ca_pem, &ca_pem_len) != PKI_OK || ca_pem == NULL)) {
-		logstore_write("hostauth", "error",
-		                "ldap_tls is on but no CA trust chain is available -- not binding at "
-		                "all rather than binding in clear; bootstrap the CA, or set "
-		                "ldap_tls false if this directory really is plaintext");
-		free(ca_pem);
-		return 0;
-	}
-
-	for (i = 0; i < g_config.ldap_server_count; i++) {
-		int result_code = -1;
-		enum ldapclient_error err =
-		    ldapclient_bind(g_config.ldap_servers[i], g_config.ldap_port, dn, password,
-		                     HOSTAUTH_LDAP_TIMEOUT_MS, ca_pem, ca_pem_len, &result_code);
-
-		if (err == LDAPCLIENT_OK) {
-			*out_answered = 1;
-			authenticated = 1;
-			break;
-		}
-		if (err == LDAPCLIENT_ERR_LDAP_RESULT) {
-			/* a real, well-formed rejection (invalidCredentials or
-			 * similar) from a directory that IS reachable -- this is
-			 * authoritative, not "try the next server" */
-			*out_answered = 1;
-			break;
-		}
-		/* LDAPCLIENT_ERR_CONNECT/PROTOCOL: this server didn't give a
-		 * usable answer at all -- fall through and try the next one */
-	}
-	free(ca_pem);
-	return authenticated;
+	for (i = 0; i < g_config.ldap_server_count && i < HOSTAUTH_LDAP_MAX_SERVERS; i++)
+		snprintf(out->servers[i], sizeof(out->servers[i]), "%s", g_config.ldap_servers[i]);
+	out->server_count = i;
+	out->port = g_config.ldap_port;
+	out->tls = g_config.ldap_tls;
+	out->timeout_ms = HOSTAUTH_LDAP_TIMEOUT_MS;
+	return 1;
 }
 
-enum hostauth_login_result hostauth_login(const char *username, const char *password,
-                                           char out_token[HOSTAUTH_TOKEN_LEN + 1],
-                                           int *out_expires_in_seconds, const char *source_ip)
+enum hostauth_login_result hostauth_issue_session(const char *username,
+                                                   char out_token[HOSTAUTH_TOKEN_LEN + 1],
+                                                   int *out_expires_in_seconds,
+                                                   const char *source_ip)
 {
 	int i, slot = -1;
 	time_t now = time(NULL);
-	int authenticated;
-
-	if (g_config.ldap_enabled) {
-		int answered = 0;
-		int ldap_result = try_ldap_login(username, password, &answered);
-
-		authenticated = answered ? ldap_result : ldap_user_check_password(username, password);
-	} else {
-		authenticated = ldap_user_check_password(username, password);
-	}
-	if (!authenticated)
-		return HOSTAUTH_LOGIN_INVALID_CREDENTIALS;
 
 	/* Expired sessions are normally gone already (hostauth_reap_expired()
 	 * runs at each expiry); one whose timer has not fired yet is reaped
@@ -1061,7 +996,7 @@ void hostauth_logout(const char *token)
  * -- every currently active session, real admin visibility into a
  * table that previously had none at all (no endpoint, no CLI, no web
  * panel). The raw token is never included, before or after issuance --
- * only hostauth_login()'s own one-time response ever carries it. Every
+ * only hostauth_issue_session()'s one-time login response carries it. Every
  * live entry is listed: an expiry is a change hostauth_reap_expired()
  * makes and announces (ADR-0339), not one this reader makes by
  * consulting the clock, which is what let the list change with no

@@ -2,10 +2,10 @@
  * ADR-0144 end-to-end test: host authentication foundation --
  * POST /v1/login, POST /v1/logout, GET/PUT /v1/system/hostauth-config,
  * and the write-gating check every mutating request goes through in
- * dispatch(). Covers the local backend (ldap_user_check_password()/
+ * dispatch(). Covers the local backend (credcheck_work()'s bcrypt check/
  * ldap_user_is_in_group()) in full, plus the live-LDAP backend's own
  * config validation and its unreachable-server-falls-back-to-local
- * path (daemon/src/hostauth.c's try_ldap_client()). A real successful
+ * path (daemon/src/credcheck.c's try_ldap()). A real successful
  * bind against a genuinely running glauth server is NOT exercised here
  * -- this project doesn't build/vendor a glauth binary as part of its
  * own toolchain (it's a separate Go project, only ever run as a
@@ -962,6 +962,249 @@ static int test_auth_throttle(void)
 out:
 	if (pid > 0 && stop_daemon(pid) != 0)
 		ok = 0;
+	test_data_dir_cleanup(dir);
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", saved_data_dir);
+	return ok;
+}
+
+/*
+ * ADR-0340 (#609): a credential is checked off the event loop, and the
+ * request waits for it.
+ *
+ * A login is made slow on purpose rather than raced: LDAP is enabled
+ * against a listener that accepts connections and never answers, so
+ * every login waits out HOSTAUTH_LDAP_TIMEOUT_MS (3 s) before it falls
+ * back to the local record. Before ADR-0340 the loop waited with it, and
+ * GET /v1/health answered three seconds late; now it must answer at once.
+ * Everything here connects from 127.0.0.1, which #547's throttle exempts,
+ * so no answer below is a 429.
+ */
+#define CC_BLACKHOLE_PORT 18190
+#define CC_WAIT_MAX 32 /* CRED_WAIT_MAX in main.c */
+#define CC_SOCKETS_MAX 256
+
+static double now_seconds(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+/* Sends a login and returns the connected socket, unread. */
+static int login_send(const char *user, const char *password)
+{
+	struct sockaddr_in sa;
+	struct timeval tv = { 30, 0 };
+	char req[512], body[256];
+	int fd, n;
+
+	fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (fd < 0)
+		return -1;
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons(TEST_PORT);
+	sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+		close(fd);
+		return -1;
+	}
+	snprintf(body, sizeof(body), "{\"username\":\"%s\",\"password\":\"%s\"}", user, password);
+	n = snprintf(req, sizeof(req),
+	             "POST /v1/login HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+	             "Content-Length: %zu\r\nConnection: close\r\n\r\n%s",
+	             strlen(body), body);
+	if (n < 0 || (size_t)n >= sizeof(req) || write(fd, req, (size_t)n) != n) {
+		close(fd);
+		return -1;
+	}
+	return fd;
+}
+
+/* Reads a response to EOF; its status, with the whole response in resp. */
+static int response_read(int fd, char *resp, size_t resp_size)
+{
+	size_t got = 0;
+	int status = -1;
+
+	while (got < resp_size - 1) {
+		ssize_t r = read(fd, resp + got, resp_size - 1 - got);
+
+		if (r <= 0)
+			break;
+		got += (size_t)r;
+	}
+	resp[got] = '\0';
+	if (sscanf(resp, "HTTP/1.1 %d", &status) != 1)
+		return -1;
+	return status;
+}
+
+/* GET /v1/health's round trip in seconds, or -1 if it did not answer 200. */
+static double health_seconds(const struct cix_client *c)
+{
+	struct cix_response r;
+	double t0 = now_seconds(), t;
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "GET", "/v1/health", NULL, &r) != 0 || r.status != 200) {
+		cix_response_free(&r);
+		return -1;
+	}
+	t = now_seconds() - t0;
+	cix_response_free(&r);
+	return t;
+}
+
+static int test_credcheck_off_loop(void)
+{
+	char saved_data_dir[PATH_MAX], dir[PATH_MAX], resp[8192];
+	struct cix_client c;
+	struct sockaddr_in sa;
+	int fds[CC_SOCKETS_MAX];
+	int nfds = 0, hole = -1, one = 1, ok = 1, st, fd, i;
+	long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+	int running_max = cpus >= 2 ? (int)(cpus / 2) : 1; /* g_cred_running_max's own formula */
+	double h;
+	pid_t pid = -1;
+
+	snprintf(saved_data_dir, sizeof(saved_data_dir), "%s", g_data_dir);
+	if (test_data_dir_create(dir, sizeof(dir)) != 0)
+		return 0;
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", dir);
+
+	/* The directory that never answers: connections queue in its
+	 * backlog, nothing accepts them, and each bind times out. */
+	hole = socket(AF_INET, SOCK_STREAM, 0);
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons(CC_BLACKHOLE_PORT);
+	sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (hole < 0 || setsockopt(hole, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) != 0 ||
+	    bind(hole, (struct sockaddr *)&sa, sizeof(sa)) != 0 || listen(hole, 512) != 0) {
+		fprintf(stderr, "FAIL: ADR-0340 could not open the silent LDAP listener on %d\n",
+		        CC_BLACKHOLE_PORT);
+		ok = 0;
+		goto out;
+	}
+
+	cix_client_init(&c, "127.0.0.1", TEST_PORT);
+	pid = start_daemon();
+	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+		fprintf(stderr, "FAIL: ADR-0340 daemon never accepted connections\n");
+		ok = 0;
+		goto out;
+	}
+	ok &= expect_status(&c, NULL, "PUT", "/v1/system/hostauth-config",
+	                    "{\"admin_groups\":[\"ccadmins\"],\"idle_timeout_seconds\":900,"
+	                    "\"ldap_enabled\":true,\"ldap_servers\":[\"127.0.0.1\"],"
+	                    "\"ldap_port\":18190,\"ldap_base_dn\":\"dc=glauth,dc=com\"}",
+	                    200, "configure LDAP against a server that never answers");
+	ok &= expect_status(&c, NULL, "POST", "/v1/ldap/groups",
+	                    "{\"name\":\"ccadmins\",\"gidnumber\":7601}", 201, "create ccadmins");
+	ok &= expect_status(&c, NULL, "POST", "/v1/ldap/users",
+	                    "{\"name\":\"ccadmin\",\"uidnumber\":7610,\"primarygroup\":7601,"
+	                    "\"password\":\"slow but right\"}",
+	                    201, "create ccadmin");
+
+	/* 1. The loop answers while a login's check is in flight. */
+	fd = login_send("ccadmin", "slow but right");
+	usleep(300000);
+	h = health_seconds(&c);
+	if (h < 0 || h > 1.0) {
+		fprintf(stderr, "FAIL: ADR-0340 GET /v1/health took %.3f s while a login was being "
+		                "checked -- the check is holding the event loop\n",
+		        h);
+		ok = 0;
+	}
+	st = fd >= 0 ? response_read(fd, resp, sizeof(resp)) : -1;
+	if (fd >= 0)
+		close(fd);
+	if (st != 200 || strstr(resp, "\"token\"") == NULL) {
+		fprintf(stderr, "FAIL: ADR-0340 the parked login expected 200 with a token, got %d\n",
+		        st);
+		ok = 0;
+	}
+
+	/* 2. A client that leaves mid-check costs nothing: the daemon goes on
+	 * serving, and the next login succeeds. */
+	fd = login_send("ccadmin", "slow but right");
+	usleep(300000);
+	if (fd >= 0)
+		close(fd);
+	if (health_seconds(&c) < 0) {
+		fprintf(stderr, "FAIL: ADR-0340 the daemon stopped answering after a client left "
+		                "mid-check\n");
+		ok = 0;
+	}
+	fd = login_send("ccadmin", "slow but right");
+	st = fd >= 0 ? response_read(fd, resp, sizeof(resp)) : -1;
+	if (fd >= 0)
+		close(fd);
+	if (st != 200) {
+		fprintf(stderr, "FAIL: ADR-0340 a login after a client left mid-check expected 200, "
+		                "got %d\n",
+		        st);
+		ok = 0;
+	}
+
+	/* 3. Beyond K running and Q waiting, 503 with Retry-After -- not 429,
+	 * which says something about the caller, and not a wait. */
+	if (running_max + CC_WAIT_MAX >= CC_SOCKETS_MAX) {
+		printf("  ADR-0340: %d CPUs is more parallel checks than this test opens sockets for; "
+		       "the 503 case is not run\n",
+		       (int)cpus);
+	} else {
+		for (i = 0; i < running_max + CC_WAIT_MAX; i++) {
+			fds[nfds] = login_send("ccadmin", "slow but right");
+			if (fds[nfds] >= 0)
+				nfds++;
+		}
+		usleep(500000);
+		h = health_seconds(&c);
+		if (h < 0 || h > 1.0) {
+			fprintf(stderr, "FAIL: ADR-0340 GET /v1/health took %.3f s with the check queue "
+			                "full\n",
+			        h);
+			ok = 0;
+		}
+		fd = login_send("ccadmin", "slow but right");
+		st = fd >= 0 ? response_read(fd, resp, sizeof(resp)) : -1;
+		if (fd >= 0)
+			close(fd);
+		if (st != 503 || strstr(resp, "Retry-After: 1\r\n") == NULL) {
+			fprintf(stderr, "FAIL: ADR-0340 a login beyond %d running and %d waiting checks "
+			                "expected 503 with Retry-After: 1, got %d (%.300s)\n",
+			        running_max, CC_WAIT_MAX, st, resp);
+			ok = 0;
+		}
+		for (i = 0; i < nfds; i++)
+			close(fds[i]);
+		nfds = 0;
+		/* The waiting checks were abandoned with their clients; the
+		 * running ones finish within one timeout. A login then waits at
+		 * most for those and for its own. */
+		fd = login_send("ccadmin", "slow but right");
+		st = fd >= 0 ? response_read(fd, resp, sizeof(resp)) : -1;
+		if (fd >= 0)
+			close(fd);
+		if (st != 200) {
+			fprintf(stderr, "FAIL: ADR-0340 a login after the queue emptied expected 200, got "
+			                "%d\n",
+			        st);
+			ok = 0;
+		}
+	}
+
+out:
+	for (i = 0; i < nfds; i++)
+		close(fds[i]);
+	if (pid > 0 && stop_daemon(pid) != 0)
+		ok = 0;
+	if (hole >= 0)
+		close(hole);
 	test_data_dir_cleanup(dir);
 	snprintf(g_data_dir, sizeof(g_data_dir), "%s", saved_data_dir);
 	return ok;
@@ -2006,7 +2249,7 @@ int main(void)
 		/*
 		 * 13e. Login as root_admin with the CORRECT local password.
 		 * ldap_enabled is true but the one configured server is
-		 * unreachable (nothing listens on 18189) -- hostauth_login()
+		 * unreachable (nothing listens on 18189) -- the login's check
 		 * must fall back to the local backend rather than failing the
 		 * login outright. A real token comes back, usable for a write.
 		 */
@@ -2360,6 +2603,8 @@ int main(void)
 	if (!test_standard_groups())
 		ok = 0;
 	if (!test_auth_throttle())
+		ok = 0;
+	if (!test_credcheck_off_loop())
 		ok = 0;
 	printf(ok ? "HOSTAUTH RESULT: PASS\n" : "HOSTAUTH RESULT: FAIL\n");
 	return ok ? 0 : 1;

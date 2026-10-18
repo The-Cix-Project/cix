@@ -2160,15 +2160,6 @@ int ldap_user_is_in_group(const char *user_name, const char *group_name)
 	return 0;
 }
 
-int ldap_user_check_password(const char *user_name, const char *password)
-{
-	struct ldap_user *u = ldap_user_find(user_name);
-
-	if (u == NULL || u->disabled || u->passbcrypt[0] == '\0' || password == NULL)
-		return 0;
-	return pwhash_bcrypt_check(password, u->passbcrypt);
-}
-
 /*
  * ---- ADR-0317 section 8 (#543): app passwords ----
  */
@@ -2286,14 +2277,18 @@ int ldap_app_passwords_write_json(const char *user_name, struct json_writer *w)
 }
 
 /*
- * The memo ldap_app_password_check() consults before paying for bcrypt:
- * a stored hash, and the SHA-256 of the one secret that verified against
+ * The memo ldap_app_password_lookup() consults instead of bcrypt: a
+ * stored hash, and the SHA-256 of the one secret that verified against
  * it. Only a verified pair is ever written, so a hit answers both ways --
  * the same digest matches, any other digest cannot, since only one
  * secret was ever generated for that hash. Memory only, replaced in
  * rotation when full; reached only through a hash the user's record
  * still holds, so a deleted app password's entry is simply never looked
  * at again.
+ *
+ * ADR-0340: the comparison a memo miss needs is not made here. It costs
+ * ~350 ms (pwhash.h), so it runs in credcheck_work(), in a helper child,
+ * and the parent writes the verified pair with ldap_app_password_memoize().
  */
 #define APP_MEMO_MAX 64
 
@@ -2314,36 +2309,48 @@ static int app_memo_find(const char *hash)
 	return -1;
 }
 
-int ldap_app_password_check(const char *user_name, const char *secret, char *out_app,
-                            size_t out_app_size)
+int ldap_app_password_memoized(const char *hash)
+{
+	return hash != NULL && app_memo_find(hash) >= 0;
+}
+
+void ldap_app_password_memoize(const char *hash, const char *secret)
+{
+	int m;
+
+	if (hash == NULL || hash[0] == '\0' || secret == NULL || app_memo_find(hash) >= 0)
+		return;
+	m = g_app_memo_next;
+	g_app_memo_next = (g_app_memo_next + 1) % APP_MEMO_MAX;
+	snprintf(g_app_memo[m].hash, sizeof(g_app_memo[m].hash), "%s", hash);
+	SHA256((const unsigned char *)secret, strlen(secret), g_app_memo[m].digest);
+}
+
+enum ldap_app_answer ldap_app_password_lookup(const char *user_name, const char *secret,
+                                              char *out_app, size_t out_app_size)
 {
 	const struct ldap_user *u = ldap_user_find(user_name);
 	unsigned char digest[SHA256_DIGEST_LENGTH];
-	int i;
+	int i, unknown = 0;
 
 	if (u == NULL || u->disabled || secret == NULL || secret[0] == '\0')
-		return 0;
+		return LDAP_APP_REFUSED;
 	SHA256((const unsigned char *)secret, strlen(secret), digest);
 	for (i = 0; i < u->app_password_count; i++) {
 		const struct ldap_app_password *ap = &u->app_passwords[i];
 		int m = app_memo_find(ap->passbcrypt);
 
-		if (m >= 0) {
-			if (CRYPTO_memcmp(g_app_memo[m].digest, digest, sizeof(digest)) != 0)
-				continue;
-		} else {
-			if (!pwhash_bcrypt_check(secret, ap->passbcrypt))
-				continue;
-			m = g_app_memo_next;
-			g_app_memo_next = (g_app_memo_next + 1) % APP_MEMO_MAX;
-			snprintf(g_app_memo[m].hash, sizeof(g_app_memo[m].hash), "%s", ap->passbcrypt);
-			memcpy(g_app_memo[m].digest, digest, sizeof(digest));
+		if (m < 0) {
+			unknown = 1;
+			continue;
 		}
+		if (CRYPTO_memcmp(g_app_memo[m].digest, digest, sizeof(digest)) != 0)
+			continue;
 		if (out_app != NULL && out_app_size > 0)
 			snprintf(out_app, out_app_size, "%s", ap->name);
-		return 1;
+		return LDAP_APP_VERIFIED;
 	}
-	return 0;
+	return unknown ? LDAP_APP_UNKNOWN : LDAP_APP_REFUSED;
 }
 
 int ldap_user_for_each(int (*fn)(const char *name, void *ctx), void *ctx)

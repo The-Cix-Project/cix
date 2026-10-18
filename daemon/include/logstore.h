@@ -128,6 +128,25 @@ void logstore_write(const char *source, const char *level, const char *fmt, ...)
 	__attribute__((format(printf, 3, 4)));
 
 /*
+ * ADR-0340: a forked child that must not write the store itself.
+ *
+ * A helper child (ADR-0278) inherits the store's open segment, but not
+ * the parent's accounting of it: a line it writes lands in the file
+ * while the parent's size and rotation state never hear of it. So a
+ * child that calls code which logs -- a credential check reaches
+ * ldapclient's TLS diagnostics -- calls logstore_hold() first, and every
+ * entry from then on goes into buf instead of the store. The child sends
+ * buf to the parent, which writes it with logstore_replay(), in order,
+ * with each entry's own source and level.
+ *
+ * Entries are kept whole or not at all: one that does not fit is
+ * dropped and counted, and the replay says how many. buf must stay valid
+ * until the child exits, which for a helper is the rest of its life.
+ */
+void logstore_hold(char *buf, size_t size);
+void logstore_replay(const char *held, size_t len);
+
+/*
  * Transparent container-log capture (added alongside kernel/cixd/
  * audit): every container's stdout/stderr is always piped and drained
  * (main.c's handle_container_output_event(), unconditional since this

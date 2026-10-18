@@ -18,15 +18,15 @@
  *
  * This module owns sessions and the admin-group/idle-timeout/LDAP-
  * backend config; it does NOT own credential verification itself --
- * that's ldap_user_check_password() (daemon/src/ldap.c, ADR-0144's
- * own data-model part, the local in-process backend) and
- * ldapclient_bind() (daemon/src/ldapclient.c, a live LDAP bind against
- * a real running glauth server, tried first when ldap_enabled). One
- * directory (Cix's own persisted ldap_user/ldap_group records --
- * glauth is just a rendered, running view of that same data), two
- * interchangeable ways to ask it "is this password right": hostauth_
- * login() itself decides which one answered authoritatively, see its
- * own doc comment below.
+ * that is credcheck_work() (daemon/src/credcheck.c, ADR-0340), which
+ * runs in a helper child off the event loop and tries a live LDAP bind
+ * against a real running glauth server first when ldap_enabled, then
+ * this daemon's own persisted bcrypt record. One directory (Cix's own
+ * ldap_user/ldap_group records -- glauth is just a rendered, running
+ * view of that same data), two interchangeable ways to ask it "is this
+ * password right"; hostauth_ldap_plan() below is what the check reads of
+ * this module's configuration, and hostauth_issue_session() is what a
+ * verified login comes back for.
  *
  * Sessions survive a daemon restart (#562, ADR-0325): the table is
  * saved beside the config as sha256(token) per session, never the
@@ -266,34 +266,42 @@ enum hostauth_login_result {
 };
 
 /*
- * Verifies username/password, trying the live LDAP backend first when
- * ldap_enabled: builds the confirmed-working short-form bind DN
- * ("cn=<username>,ou=<primary-group-name>,<ldap_base_dn>", from this
- * daemon's own local ldap_user/ldap_group records -- never from a
- * search) and attempts a real ldapclient_bind() against each
- * configured server in order. The first server to answer
- * authoritatively (bind succeeded, or explicitly rejected the
- * credentials) decides the outcome -- an unreachable/erroring server
- * is skipped in favor of the next one, never treated as "wrong
- * password". Only when EVERY configured server was unreachable (or
- * LDAP is disabled, or no local user/group record exists yet to build
- * a DN from) does this fall back to the local, in-process check
- * (ldap_user_check_password(), no network call) -- the same
- * underlying passbcrypt data either way, so this fallback changes
- * availability, never which password is actually correct.
+ * ADR-0340: what a login's LDAP attempt needs, copied out of this
+ * module's configuration so credcheck_work() can make the attempt in a
+ * helper child, off the event loop.
  *
- * On success, issues a real session token into out_token
- * (HOSTAUTH_TOKEN_LEN + 1 bytes) and reports its idle-timeout-based
- * initial expiry in *out_expires_in_seconds (-1 means "never expires
- * on idle," i.e. idle_timeout_seconds == 0 is handled the other way:
+ * The bind DN is the confirmed-working short form ("cn=<username>,
+ * ou=<primary-group-name>,<ldap_base_dn>"), built from this daemon's own
+ * local ldap_user/ldap_group records -- never from a search. Returns 1
+ * with *out filled when the attempt should be made; 0 when ldap_enabled
+ * is off or no local user/group record exists yet to build a DN from,
+ * in which case a login is checked against the local record alone.
+ */
+struct hostauth_ldap_plan {
+	char servers[HOSTAUTH_LDAP_MAX_SERVERS][HOSTAUTH_LDAP_HOST_MAX];
+	int server_count;
+	int port;
+	int tls;
+	int timeout_ms; /* per server, connect + bind */
+	char bind_dn[HOSTAUTH_USERNAME_MAX + HOSTAUTH_GROUP_NAME_MAX + HOSTAUTH_LDAP_BASE_DN_MAX + 8];
+};
+int hostauth_ldap_plan(const char *username, struct hostauth_ldap_plan *out);
+
+/*
+ * Issues a session for a user whose credential has already been
+ * verified -- by credcheck_work() (ADR-0340), which is the only place a
+ * password is checked. Writes a real session token into out_token
+ * (HOSTAUTH_TOKEN_LEN + 1 bytes) and its idle-timeout-based initial
+ * expiry into *out_expires_in_seconds (0 when idle_timeout_seconds is 0:
  * see hostauth_check_token()'s own doc comment).
  *
  * source_ip is the address of the client making the login request, as
  * the connection saw it; the session keeps it, with the login time, for
  * GET /system/hostauth/sessions. NULL or "" records it as unknown. */
-enum hostauth_login_result hostauth_login(const char *username, const char *password,
-                                           char out_token[HOSTAUTH_TOKEN_LEN + 1],
-                                           int *out_expires_in_seconds, const char *source_ip);
+enum hostauth_login_result hostauth_issue_session(const char *username,
+                                                   char out_token[HOSTAUTH_TOKEN_LEN + 1],
+                                                   int *out_expires_in_seconds,
+                                                   const char *source_ip);
 
 /* No-op if token doesn't name a live session (logout is always
  * idempotent from the caller's point of view). */
@@ -400,7 +408,8 @@ enum hostauth_authz hostauth_authorize_peek(const char *token, const char *permi
 /*
  * ADR-0317 section 8 (#543): hostauth_authorize() for a request that
  * presented an app password (HTTP Basic) instead of a session. username
- * is the user the app password verified as (ldap_app_password_check()),
+ * is the user the app password verified as (ldap_app_password_lookup(),
+ * or credcheck_work() on a memo miss),
  * or NULL when it did not verify -- NO_SESSION, a 401, like any missing
  * credential. The permissions are exactly the user's, with one
  * exception: `authenticated` is refused. It means "any valid session",

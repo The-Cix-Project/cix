@@ -351,13 +351,6 @@ void ldap_user_write_json_list(struct json_writer *w);
  * caller, same fail-closed posture every other auth check here has). */
 int ldap_user_is_in_group(const char *user_name, const char *group_name);
 
-/* Local, in-process credential check against this daemon's own
- * already-persisted user record -- real bcrypt verification
- * (pwhash_bcrypt_check()), no network call. Returns 1 if name exists,
- * is not disabled, and password matches; 0 otherwise (again, never
- * distinguishing "no such user" from "wrong password"). */
-int ldap_user_check_password(const char *user_name, const char *password);
-
 /*
  * ADR-0317 section 8 (#543): app passwords.
  *
@@ -376,22 +369,33 @@ int ldap_user_check_password(const char *user_name, const char *password);
  * write_json: [{"name": ..., "created": ...}] for user, never a hash;
  * -1 for no such user.
  *
- * check: 1 when secret is one of user's app passwords and user exists
- * and is not disabled, with the matching app password's name in
- * out_app; 0 otherwise. The main password is never compared -- it is
- * not accepted per request. A bcrypt comparison costs ~400 ms on
- * 192.168.15.95, so a verified (stored hash, SHA-256 of the secret)
- * pair is memoized in memory: the memo is only ever consulted through
- * a hash the record still holds, so deleting an app password ends it
- * at once, and a memo miss simply pays for bcrypt again.
+ * lookup answers from memory only, never with a bcrypt comparison
+ * (ADR-0340): VERIFIED, with the app password's name in out_app, when
+ * the secret is one the memo has seen verify against one of the user's
+ * hashes; REFUSED when the user does not exist, is disabled, or every
+ * one of its hashes is memoized against a different secret; UNKNOWN
+ * when some hash has no memo entry, so only a comparison can answer.
+ * The main password is never compared -- it is not accepted per
+ * request. The memo is only ever consulted through a hash the record
+ * still holds, so deleting an app password ends it at once.
+ *
+ * memoized: whether a hash has a memo entry, which is what lets the
+ * comparison skip it. memoize: records a pair a comparison verified.
  */
+enum ldap_app_answer {
+	LDAP_APP_REFUSED = 0,
+	LDAP_APP_VERIFIED,
+	LDAP_APP_UNKNOWN,
+};
 enum ldap_record_error ldap_app_password_create(const char *user_name, const char *app_name,
                                                 char out_secret[LDAP_PROVISION_SECRET_LEN + 1],
                                                 long long *out_created);
 enum ldap_record_error ldap_app_password_delete(const char *user_name, const char *app_name);
 int ldap_app_passwords_write_json(const char *user_name, struct json_writer *w);
-int ldap_app_password_check(const char *user_name, const char *secret, char *out_app,
-                            size_t out_app_size);
+enum ldap_app_answer ldap_app_password_lookup(const char *user_name, const char *secret,
+                                              char *out_app, size_t out_app_size);
+int ldap_app_password_memoized(const char *hash);
+void ldap_app_password_memoize(const char *hash, const char *secret);
 
 /*
  * Calls fn(name, ctx) for every currently-defined user's own name, in

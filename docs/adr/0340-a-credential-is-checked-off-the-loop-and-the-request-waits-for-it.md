@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-18. Issue [#609](https://git.home.arpa/itdlabs/cix/issues/609). It changes the request pipeline, which is hard to reverse, and adds one documented response to `POST /v1/login`, so it is the owner's decision. It applies [ADR-0247](0247-the-reactor-does-not-block-and-that-is-the-defence.md) (the loop's blocking budget) and [ADR-0278](0278-the-reactor-forks-work-it-cannot-afford-to-wait-for.md) (`helper_run()`, the one place to add an offload), and leaves [ADR-0144](0144-host-authentication-and-real-ldap.md) (bcrypt, sessions) and [ADR-0317](0317-permissions-are-declared-by-the-api-contract.md) section 8 (app passwords on the user) unchanged. Nothing below is implemented.
+Accepted by the owner, 2026-10-18 ("accepted, go ahead with phase 1"), as proposed the same day. Issue [#609](https://git.home.arpa/itdlabs/cix/issues/609). It changes the request pipeline, which is hard to reverse, and adds one documented response to `POST /v1/login`, so it is the owner's decision. It applies [ADR-0247](0247-the-reactor-does-not-block-and-that-is-the-defence.md) (the loop's blocking budget) and [ADR-0278](0278-the-reactor-forks-work-it-cannot-afford-to-wait-for.md) (`helper_run()`, the one place to add an offload), and leaves [ADR-0144](0144-host-authentication-and-real-ldap.md) (bcrypt, sessions) and [ADR-0317](0317-permissions-are-declared-by-the-api-contract.md) section 8 (app passwords on the user) unchanged. Phase 1 (items 1 to 8 and 10) is implemented; phase 2 (item 9) is [#610](https://git.home.arpa/itdlabs/cix/issues/610). Implementing phase 1 settled three points the text below left open, recorded under [What implementing it settled](#what-implementing-it-settled).
 
 ## Context
 
@@ -28,12 +28,12 @@ Today the loop serialises every check, which accidentally rate-limits the whole 
 
    It is started with `helper_run()`, so it is the ADR-0278 primitive and not a second one. **`pwhash_bcrypt_check()` and `ldapclient_bind()` are called from nowhere else.**
 
-2. **The child changes nothing and logs nothing.** It reads the user records and configuration it inherited at the fork. It reports one fixed-size result over a pipe, the way `container_disk_measure` does:
+2. **The child changes nothing and writes nothing to the log store.** It reads the user records and configuration it inherited at the fork. It reports one fixed-size result over a pipe, the way `container_disk_measure` does:
    - the verdict;
-   - which path answered (an LDAP server, the local record, or an app password, with that app password's name);
-   - a code per LDAP server tried, so that the "no CA chain, not binding at all" refusal and each unreachable server can still be logged.
+   - for an app password, which one verified and its stored hash, for the parent's memo;
+   - what it would have logged, held. The "no CA chain, not binding at all" refusal and each server's TLS failure still reach the log, written by the parent. See [What implementing it settled](#what-implementing-it-settled).
 
-   An exit status is not enough, because the parent has to log what happened and an exit status has only one bit. The child does not call `logstore_write()`. `try_ldap_login()` does today, and in a forked child that would be a second writer to the pid-1 daemon's log store, the silent split `helper_run()`'s own comment warns about.
+   An exit status is not enough, because the parent has to log what happened and an exit status has only one bit. The child never writes the store itself: `try_ldap_login()` did, and in a forked child that would be a second writer to the pid-1 daemon's log store, the silent split `helper_run()`'s own comment warns about.
 
 3. **The parent does everything that has an effect.** When the helper finishes, the parent:
    - logs what the child reported;
@@ -96,6 +96,19 @@ Today the loop serialises every check, which accidentally rate-limits the whole 
     - `GET /v1/health` answers while a login's check is in flight;
     - a client that disconnects mid-check leaves the daemon serving, and the next login succeeds;
     - a login beyond Q is answered 503.
+
+### What implementing it settled
+
+These refine items 2, 3 and 6. None changes what was decided.
+
+- **The child's log lines are held, not encoded (item 2).** The LDAP client logs each TLS failure with OpenSSL's own text, and a code per server would have lost that text. So the child calls `logstore_hold()`, which puts every entry it would have written into the result it sends over the pipe, and the parent writes them with `logstore_replay()`, each with its own source and level. The child still writes nothing to the store itself.
+- **The resumed pass does the throttle bookkeeping, and the done callback does it only when the client has gone (item 3).** The resumed pass runs inside the done callback, so the parent still does it. Doing it in the handler, where it always was, keeps one rule for both cases: a failure is recorded after `connthrottle_auth_blocked()` has already run on that pass. So the third wrong password in a row still answers 401 and not 429, as `test_auth_throttle` requires. When the client has gone, the callback records the failure or the success itself, and audits a login by name with "after the client had gone -- no session issued".
+- **A torn-down connection is freed after the batch (item 6).** A parked request is finished from a helper's done callback, which is a different event in the same epoll batch, so its own connection can still be waiting later in that batch. `client_conn_teardown()` now marks the connection `CONN_DEAD` and queues the free, as `console_session_teardown()` already did.
+
+Two further points:
+
+- **A connection is checked at most once.** A verdict that does not match the credential presented fails closed, so a request can never park twice.
+- **A check that cannot be forked answers 503.** It is never run inline, because inline is the defect this ADR removes.
 
 ## Consequences
 

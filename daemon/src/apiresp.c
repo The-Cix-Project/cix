@@ -53,6 +53,22 @@ void respond_error_head(int fd, int status, const char *status_text, const char 
 	jw_free(&w);
 }
 
+void respond_error_hdrs(int fd, int status, const char *status_text, const char *extra_headers,
+                        const char *msg, int is_head)
+{
+	struct json_writer w;
+
+	error_envelope(&w, msg);
+	http_set_blocking(fd);
+	if (is_head)
+		http_write_response_head(fd, status, status_text, "application/json", extra_headers,
+		                         w.len);
+	else
+		http_write_response_hdrs(fd, status, status_text, "application/json", extra_headers,
+		                         w.buf, w.len);
+	jw_free(&w);
+}
+
 const char *http_status_text(int status)
 {
 	switch (status) {

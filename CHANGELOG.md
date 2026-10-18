@@ -6,6 +6,32 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A credential is checked off the event loop, and the request waits for it (#609, ADR-0340)
+
+- **What changed for an operator:** a login, or the first request signed with a given app
+  password, no longer stops the box. Until now cixd waited for the bcrypt comparison (~350 ms
+  on .95), or for every LDAP server's timeout, before it served anything else.
+- **`credcheck_work()`** (new, `daemon/src/credcheck.c`) is the one place a credential is
+  compared. It runs in a `helper_run()` child, and reports its verdict over a pipe. What it
+  would have logged is held in that result (`logstore_hold()`) and written by the parent.
+  `hostauth_login()` is gone: the check is `credcheck_work()`, and the session is
+  `hostauth_issue_session()`. `ldap_app_password_check()` became a memo-only lookup with a third
+  answer, UNKNOWN.
+- **The request is parked and served again from the start** (`serve_request()`) when the check
+  finishes. The verdict is bound to the credential's SHA-256 and fails closed if anything else
+  asks. A parked connection reads only to notice its peer leave. A torn-down client connection is
+  now freed after the batch, because a resumed one can be finished from another event in it.
+- **Contract:** `POST /v1/login`, and any request signed with an app password, can answer
+  `503` with `Retry-After: 1` when half the CPUs are already checking and 32 more wait.
+  Everything else is unchanged, and no client changes.
+- **Gates:** `test_blocking_waits` counts `pwhash_bcrypt_check(`, `ldapclient_bind(` and
+  `pwhash_bcrypt_new(` in every daemon source file, zero outside their budgets. `test_hostauth`
+  makes logins slow on purpose with an LDAP server that never answers, and checks three things:
+  - `GET /v1/health` answers within a second while a login is being checked;
+  - a client that leaves mid-check costs nothing;
+  - the login beyond the queue gets the 503.
+- **Phase 2**, hashing when a password is set, is #610.
+
 ### ADR-0340 proposed: a credential is checked off the event loop (#609, #610)
 
 - **Measured on .95:** one bcrypt check at cost 12 takes about 350 ms. A request signed with a

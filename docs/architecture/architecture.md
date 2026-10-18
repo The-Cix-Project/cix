@@ -42,6 +42,8 @@ Every capability either surface offers **exists as a REST endpoint first** — t
 flowchart LR
     req(["a request on any surface"]) --> reactor
     reactor["epoll reactor<br/>hand-rolled HTTP/1.1 + JSON"] --> rbac
+    rbac -- "a password to check:<br/>the request parks" --> credcheck
+    credcheck["Credential checks -- bcrypt, LDAP bind<br/>in helper children, K at a time"] -- "verdict: served again" --> rbac
     rbac["authorize_route in dispatch<br/>one enforcement point"] --> subsys
     sched["Scheduler<br/>pkg.sync, pkg.discover, system.roll"] --> subsys
     rbac -- "a change answered 2xx" --> events
@@ -62,7 +64,7 @@ flowchart LR
     end
 ```
 
-Single-threaded, non-blocking `epoll` reactor ([ADR-0007](../adr/0007-hand-rolled-daemon-no-external-libs.md), [ADR-0009](../adr/0009-cloexec-daemon-fds-before-clone3.md)); hand-rolled HTTP/1.1 and JSON, no external libraries. The reactor must not block — [ADR-0247](../adr/0247-the-reactor-does-not-block-and-that-is-the-defence.md) — so work it cannot afford to wait for is forked ([ADR-0278](../adr/0278-the-reactor-forks-work-it-cannot-afford-to-wait-for.md)).
+Single-threaded, non-blocking `epoll` reactor ([ADR-0007](../adr/0007-hand-rolled-daemon-no-external-libs.md), [ADR-0009](../adr/0009-cloexec-daemon-fds-before-clone3.md)); hand-rolled HTTP/1.1 and JSON, no external libraries. The reactor must not block — [ADR-0247](../adr/0247-the-reactor-does-not-block-and-that-is-the-defence.md) — so work it cannot afford to wait for is forked ([ADR-0278](../adr/0278-the-reactor-forks-work-it-cannot-afford-to-wait-for.md)). Checking a password is the most expensive thing a request does, so it is forked too, and the request waits for its verdict without holding the loop ([ADR-0340](../adr/0340-a-credential-is-checked-off-the-loop-and-the-request-waits-for-it.md)).
 
 **Authorisation is one point, not many, and it sits behind the reactor rather than in front of it.** The reactor accepts and parses first; every operation then carries an `x-cix-permission` the contract declares, `authorize_route()` inside `dispatch()` enforces it, and **every read needs a login** ([ADR-0317](../adr/0317-permissions-are-declared-by-the-api-contract.md)). A permission check in a handler is the parallel implementation that ADR forbids. The one trap: anything answered *before* `dispatch()` — the console and build-log WebSocket upgrades — must call `authorize_upgrade_route()` itself.
 

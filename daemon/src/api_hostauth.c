@@ -3,6 +3,7 @@
 
 #include "apiresp.h"
 #include "connthrottle.h"
+#include "credcheck.h"
 #include "daemonpaths.h"
 #include "http.h"
 #include "json.h"
@@ -14,11 +15,15 @@
 
 /*
  * ADR-0144: POST /v1/login -- the one endpoint that always works
- * regardless of write-gating (dispatch() exempts this exact path, see
- * its own comment). Real bcrypt verification via hostauth_login()
- * (which itself calls ldap_user_check_password()) -- no LDAP bind in
- * this part of the ADR yet, that's a later part's own addition to
- * this same function's internals, not a new endpoint.
+ * regardless of write-gating (its x-cix-permission is public).
+ *
+ * ADR-0340: the password is checked off the event loop. The first pass
+ * through here asks credcheck_ask(), which parks the request and starts
+ * the check; nothing is written and the handler returns. When the check
+ * finishes the request is served again from the start, and this time the
+ * same call returns the verdict -- so everything below it, the audit
+ * lines, the throttle and the session, runs exactly once, on that second
+ * pass, in the order it always has.
  */
 void handle_login(int fd, const char *peer_ip, const char *body, size_t body_len)
 {
@@ -27,15 +32,18 @@ void handle_login(int fd, const char *peer_ip, const char *body, size_t body_len
 	char token[HOSTAUTH_TOKEN_LEN + 1];
 	char who[HOSTAUTH_USERNAME_MAX];
 	int expires_in_seconds;
+	enum credcheck_answer verdict;
 	enum hostauth_login_result lerr;
 
 	/*
 	 * #547: asked BEFORE the password is checked, because checking it is
-	 * the expensive part -- a bcrypt comparison, ~400 ms on
-	 * 192.168.15.95 on the single event loop. A source over the failure
-	 * threshold is answered at once with 429, whatever it sends, even
-	 * the right password: the block is per address, so a legitimate
-	 * user behind the same address waits it out too.
+	 * the expensive part -- a bcrypt comparison, ~350 ms on
+	 * 192.168.15.95 (pwhash.h). A source over the failure threshold is
+	 * answered at once with 429, whatever it sends, even the right
+	 * password: the block is per address, so a legitimate user behind
+	 * the same address waits it out too. Asked again on the resumed
+	 * pass, with no effect of its own: the failure this login may yet be
+	 * counted as is recorded below, after this.
 	 */
 	{
 		int wait = connthrottle_auth_blocked(peer_ip);
@@ -75,9 +83,15 @@ void handle_login(int fd, const char *peer_ip, const char *body, size_t body_len
 	 */
 	snprintf(who, sizeof(who), "%s", username);
 
-	lerr = hostauth_login(username, password, token, &expires_in_seconds, peer_ip);
+	verdict = credcheck_ask(CREDCHECK_LOGIN, username, password);
 	json_free(root);
-	if (lerr == HOSTAUTH_LOGIN_INVALID_CREDENTIALS) {
+	if (verdict == CREDCHECK_PARKED)
+		return; /* served again when the check finishes */
+	if (verdict == CREDCHECK_BUSY) {
+		credcheck_respond_busy(fd, 0);
+		return;
+	}
+	if (verdict == CREDCHECK_REFUSED) {
 		/*
 		 * Audited by NAME, which the generic audit line at dispatch
 		 * cannot do: a login is the one request that has no token yet,
@@ -92,6 +106,8 @@ void handle_login(int fd, const char *peer_ip, const char *body, size_t body_len
 		respond_error(fd, 401, "Unauthorized", "invalid username or password");
 		return;
 	}
+
+	lerr = hostauth_issue_session(who, token, &expires_in_seconds, peer_ip);
 	if (lerr == HOSTAUTH_LOGIN_TABLE_FULL) {
 		respond_error(fd, 500, "Internal Server Error",
 		              "too many active sessions -- try again shortly");

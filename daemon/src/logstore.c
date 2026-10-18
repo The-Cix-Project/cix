@@ -378,6 +378,93 @@ void logstore_kmsg_readable(void)
 	}
 }
 
+/*
+ * ADR-0340: logstore_hold()'s buffer, in a forked child. The first four
+ * bytes count the entries that did not fit; after them, each held entry
+ * is its source, level, container and message, each NUL-terminated.
+ */
+#define HOLD_HEADER_BYTES 4
+static char *g_hold_buf;
+static size_t g_hold_size;
+static size_t g_hold_len;
+
+void logstore_hold(char *buf, size_t size)
+{
+	g_hold_buf = NULL;
+	if (buf == NULL || size <= HOLD_HEADER_BYTES)
+		return;
+	memset(buf, 0, size); /* an empty source after the last entry is what ends a replay */
+	g_hold_buf = buf;
+	g_hold_size = size;
+	g_hold_len = HOLD_HEADER_BYTES;
+}
+
+static void hold_entry(const char *src, const char *lvl, const char *cont, const char *msg)
+{
+	const char *parts[4];
+	size_t need = 0;
+	int i;
+
+	parts[0] = src;
+	parts[1] = lvl;
+	parts[2] = cont;
+	parts[3] = msg;
+	for (i = 0; i < 4; i++)
+		need += strlen(parts[i]) + 1;
+	if (need > g_hold_size - g_hold_len) {
+		uint32_t dropped;
+
+		memcpy(&dropped, g_hold_buf, sizeof(dropped));
+		dropped++;
+		memcpy(g_hold_buf, &dropped, sizeof(dropped));
+		return;
+	}
+	for (i = 0; i < 4; i++) {
+		size_t n = strlen(parts[i]) + 1;
+
+		memcpy(g_hold_buf + g_hold_len, parts[i], n);
+		g_hold_len += n;
+	}
+}
+
+static void write_entry(const char *source, const char *level, const char *container,
+                         const char *msg);
+
+void logstore_replay(const char *held, size_t len)
+{
+	uint32_t dropped;
+	size_t off = HOLD_HEADER_BYTES;
+
+	if (held == NULL || len < HOLD_HEADER_BYTES)
+		return;
+	memcpy(&dropped, held, sizeof(dropped));
+	/* An entry's source is never empty (write_entry() defaults it to
+	 * "cixd"), so an empty one is the unused rest of the buffer. */
+	while (off < len && held[off] != '\0') {
+		const char *parts[4];
+		int i;
+
+		for (i = 0; i < 4; i++) {
+			const char *end = memchr(held + off, '\0', len - off);
+
+			if (end == NULL)
+				return; /* a torn record: what came before it is written, nothing after */
+			parts[i] = held + off;
+			off = (size_t)(end - held) + 1;
+			if (off >= len && i < 3)
+				return;
+		}
+		write_entry(parts[0], parts[1], parts[2], parts[3]);
+	}
+	if (dropped > 0) {
+		char msg[96];
+
+		snprintf(msg, sizeof(msg), "a helper's held log was full -- %u more entr%s dropped",
+		         (unsigned)dropped, dropped == 1 ? "y was" : "ies were");
+		write_entry("cixd", "warn", NULL, msg);
+	}
+}
+
 /* Shared by logstore_write()/logstore_write_container() -- container
  * is "" for every non-container entry (this store's own established
  * convention: empty string means N/A, no jw_null() used anywhere else
@@ -398,6 +485,10 @@ static void write_entry(const char *source, const char *level, const char *conta
 
 	snprintf(src, sizeof(src), "%s", source != NULL ? source : "cixd");
 	snprintf(cont, sizeof(cont), "%s", container != NULL ? container : "");
+	if (g_hold_buf != NULL) {
+		hold_entry(src, lvl, cont, msg);
+		return;
+	}
 
 	jw_init(&w);
 	jw_obj_open(&w);

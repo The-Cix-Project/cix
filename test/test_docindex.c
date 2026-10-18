@@ -967,6 +967,7 @@ static void check_architecture_components(void)
 		{ "volume.c", "volume" },
 		{ "logstore.c", "Logs" },
 		{ "hostauth.c", "authorize_route" },
+		{ "credcheck.c", "Credential checks" },
 		{ "procfuse.c", "procfuse" },
 		{ "esp.c", "ESP" },
 	};

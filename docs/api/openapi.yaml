@@ -247,9 +247,12 @@ paths:
         username/password against this platform's own LDAP user store
         -- a live LDAP bind against a configured `glauth` server first
         when `PUT /system/hostauth-config`'s own `ldap_enabled` is set
-        (falling back to a local, in-process bcrypt check if every
-        configured server is unreachable), or the local check alone
-        when LDAP is disabled. `expires_in_seconds` is `null` when
+        (falling back to the local bcrypt record if every configured
+        server is unreachable), or the local check alone when LDAP is
+        disabled. The check runs off the daemon's event loop (ADR-0340),
+        so a slow one holds this request and no other; the request
+        waits for it and answers in the same round trip.
+        `expires_in_seconds` is `null` when
         `idle_timeout_seconds` is configured as `0` -- the returned
         token is then single-use, consumed by the very next request
         that presents it, matching that configuration's own documented
@@ -305,6 +308,25 @@ paths:
             the throttle's `threshold` within `window_seconds`, logins from
             it are refused for `block_seconds` before any password is
             checked -- the right one included. The message says how long.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            No credential check could start (ADR-0340). A password is
+            checked off the daemon's event loop, at most half the host's
+            CPUs at a time with up to 32 more waiting their turn; a login
+            arriving beyond that is answered at once rather than queued
+            without bound. It says the box is busy, nothing about the
+            caller, and does not count as a failed authentication -- unlike
+            `429`. Retry after the header's interval.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                enum: [1]
+              description: Seconds to wait before retrying.
           content:
             application/json:
               schema:
@@ -23283,7 +23305,13 @@ components:
         holds that permission through one of their groups
         (`GET/PUT /system/hostauth/permissions`). No valid session is
         `401`; a session without the permission is `403` with
-        `{"error": ..., "permission": "<word>"}`. Gating only activates
+        `{"error": ..., "permission": "<word>"}`. An app password
+        presented as HTTP Basic (ADR-0317 section 8) is checked the same
+        way, and the first time a given one is presented it needs a
+        bcrypt comparison, made off the event loop (ADR-0340): the request
+        waits for it and then answers as it otherwise would, or, if no
+        check could start, `503` with `Retry-After: 1` -- on any
+        operation, since any operation accepts Basic. Gating only activates
         once at least one enabled user holds `identity:write`
         (`hostauth_gating_active()`) -- a fresh install can never lock
         itself out of its own API, and every operation in this

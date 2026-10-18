@@ -43,6 +43,7 @@
  * walk takes. The call sites are counted here so a fourth is a
  * deliberate act rather than an accident.
  */
+#include <dirent.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -388,9 +389,147 @@ static int check_walk_budgets(void)
 	return failures;
 }
 
+/*
+ * A THIRD COUNTED SET (ADR-0340, #609): checking a credential.
+ *
+ * One bcrypt comparison at PWHASH_BCRYPT_COST was measured at ~350 ms on
+ * 192.168.15.95 on 2026-10-18, and a login with LDAP enabled can wait out
+ * three servers' timeouts before it. Both used to run on the loop, so
+ * every request on the box waited behind every login. ADR-0340 moved the
+ * comparison and the bind into credcheck_work(), which runs only in a
+ * helper child -- and a prose rule that they stay there would not hold,
+ * so they are counted.
+ *
+ * Unlike the two sets above this one scans EVERY daemon source file,
+ * because the failure it guards is a new file growing a call: a budget
+ * table that lists only the files that have one cannot see that. A file
+ * not named below is budgeted at zero. Comment lines are skipped, so
+ * prose about these functions moves no number.
+ */
+struct cred_budget {
+	const char *file; /* basename under daemon/src/ */
+	const char *call;
+	int allowed;
+	const char *why;
+};
+
+static const struct cred_budget g_cred_budgets[] = {
+	{ "credcheck.c", "pwhash_bcrypt_check(", 2,
+	  "the local password and the app passwords, in credcheck_work(), which runs in a "
+	  "helper child" },
+	{ "credcheck.c", "ldapclient_bind(", 1, "a login's LDAP attempt, in the same helper child" },
+	{ "pwhash.c", "pwhash_bcrypt_check(", 1, "the definition, not a call" },
+	{ "pwhash.c", "pwhash_bcrypt_new(", 1, "the definition, not a call" },
+	{ "ldapclient.c", "ldapclient_bind(", 1, "the definition, not a call" },
+	/* Phase 2 (#610) moves these two the same way and lowers this to 0. */
+	{ "ldap.c", "pwhash_bcrypt_new(", 2,
+	  "a user's password set, and an app password created -- each ~350 ms on the loop "
+	  "until #610" },
+};
+
+#define CRED_BUDGET_COUNT ((int)(sizeof(g_cred_budgets) / sizeof(g_cred_budgets[0])))
+
+static const char *const g_cred_calls[] = {
+	"pwhash_bcrypt_check(",
+	"ldapclient_bind(",
+	"pwhash_bcrypt_new(",
+};
+
+static int cred_allowed(const char *file, const char *call)
+{
+	int i;
+
+	for (i = 0; i < CRED_BUDGET_COUNT; i++) {
+		if (strcmp(g_cred_budgets[i].file, file) == 0 && strcmp(g_cred_budgets[i].call, call) == 0)
+			return i;
+	}
+	return -1;
+}
+
+static int count_calls(const char *path, const char *call)
+{
+	char line[4096];
+	FILE *f = fopen(path, "r");
+	int n = 0;
+
+	if (f == NULL)
+		return -1;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		if (!is_comment(line) && strstr(line, call) != NULL)
+			n++;
+	}
+	fclose(f);
+	return n;
+}
+
+static int check_cred_budgets(int *out_files)
+{
+	DIR *d = opendir("daemon/src");
+	struct dirent *de;
+	int failures = 0, seen[CRED_BUDGET_COUNT];
+	int i;
+
+	*out_files = 0;
+	memset(seen, 0, sizeof(seen));
+	if (d == NULL) {
+		fprintf(stderr, "FAIL: cannot list daemon/src\n");
+		return 1;
+	}
+	while ((de = readdir(d)) != NULL) {
+		size_t len = strlen(de->d_name);
+		char path[512];
+		size_t c;
+
+		if (len < 3 || strcmp(de->d_name + len - 2, ".c") != 0)
+			continue;
+		snprintf(path, sizeof(path), "daemon/src/%s", de->d_name);
+		(*out_files)++;
+		for (c = 0; c < sizeof(g_cred_calls) / sizeof(g_cred_calls[0]); c++) {
+			int n = count_calls(path, g_cred_calls[c]);
+			int b = cred_allowed(de->d_name, g_cred_calls[c]);
+			int allowed = b >= 0 ? g_cred_budgets[b].allowed : 0;
+
+			if (b >= 0)
+				seen[b] = 1;
+			if (n < 0) {
+				fprintf(stderr, "FAIL: cannot read %s\n", path);
+				failures++;
+				continue;
+			}
+			if (n == allowed)
+				continue;
+			failures++;
+			if (n > allowed)
+				fprintf(stderr,
+				        "FAIL: %s has %d lines calling %s, budget is %d.\n"
+				        "      Checking a credential costs ~350 ms of bcrypt, or up to three "
+				        "LDAP timeouts, and cixd has one event loop. Make the check through "
+				        "credcheck_ask() (ADR-0340), which parks the request and runs it in a "
+				        "helper child, rather than calling it here.%s%s\n",
+				        path, n, g_cred_calls[c], allowed, b >= 0 ? "\n      Budgeted: " : "",
+				        b >= 0 ? g_cred_budgets[b].why : "");
+			else
+				fprintf(stderr,
+				        "FAIL: %s has %d lines calling %s, budget is %d -- fewer than "
+				        "expected. Lower the budget in this same commit to lock it in.\n",
+				        path, n, g_cred_calls[c], allowed);
+		}
+	}
+	closedir(d);
+	for (i = 0; i < CRED_BUDGET_COUNT; i++) {
+		if (!seen[i]) {
+			fprintf(stderr, "FAIL: credential budget names daemon/src/%s, which does not exist -- "
+			                "remove the row with the file\n",
+			        g_cred_budgets[i].file);
+			failures++;
+		}
+	}
+	return failures;
+}
+
 int main(void)
 {
-	int i, ok = 1, total = 0;
+	int i, ok = 1, total = 0, cred_files = 0;
 
 	for (i = 0; i < BUDGET_COUNT; i++) {
 		int found = 0;
@@ -438,11 +577,14 @@ int main(void)
 
 	if (check_walk_budgets() != 0)
 		ok = 0;
+	if (check_cred_budgets(&cred_files) != 0)
+		ok = 0;
 
 	if (!ok)
 		return 1;
 	printf("test_blocking_waits: %d blocking waits across %d files, all within budget; "
-	       "%d files counted for unbounded tree walks\n",
-	       total, BUDGET_COUNT, WALK_BUDGET_COUNT);
+	       "%d files counted for unbounded tree walks; %d daemon sources counted for "
+	       "credential checks\n",
+	       total, BUDGET_COUNT, WALK_BUDGET_COUNT, cred_files);
 	return 0;
 }

@@ -19,6 +19,7 @@
 #include "containerstoragemigrate.h"
 #include "backupconfig.h"
 #include "hostauth.h"
+#include "credcheck.h"
 #include "storageplacement.h"
 #include "treecopy.h"
 #include "hostproc.h"
@@ -1346,6 +1347,21 @@ static const char *conn_kind_name(enum conn_kind kind)
 	           : "unnamed";
 }
 
+/*
+ * ADR-0340: what a request's credential check found. UNCHECKED is zero,
+ * so a freshly calloc()'d connection has had none. UNAVAILABLE: the check
+ * could not be started once the request had been queued for it, so the
+ * request is answered busy.
+ */
+enum cred_state {
+	CRED_UNCHECKED = 0,
+	CRED_REFUSED,
+	CRED_VERIFIED,
+	CRED_UNAVAILABLE,
+};
+
+struct cred_park;
+
 struct conn {
 	enum conn_kind kind;
 	int fd;
@@ -1464,6 +1480,20 @@ struct conn {
 	 * them, allocated at the first subscribe. Each holds at most one
 	 * unsent sample, so a slow peer costs one body per subscription. */
 	struct events_sub *ev_subs;
+	/*
+	 * CONN_CLIENT only (ADR-0340). cred_park is the credential check this
+	 * request is waiting for, non-NULL exactly while it is parked; the
+	 * record points back here, and client_conn_teardown() breaks that
+	 * link. cred_state is what the check found, bound to cred_bind
+	 * (credcheck_bind()) so it can answer for no other credential. A
+	 * connection carries one request, so it is checked at most once.
+	 * req_audited: dispatch() has written this request's audit line, so
+	 * the pass that resumes it does not write a second.
+	 */
+	struct cred_park *cred_park;
+	enum cred_state cred_state;
+	unsigned char cred_bind[CREDCHECK_BIND_LEN];
+	int req_audited;
 };
 
 /*
@@ -28770,6 +28800,20 @@ static void op_createStoragePartitionTable(const struct api_ctx *ctx)
 }
 
 /*
+ * The conn whose request is being served right now, or NULL. Set only
+ * around the code that can write a response, so client_response_sink()
+ * can tell "this response belongs to the in-flight request" from any other
+ * write to any other fd (a WebSocket frame, an exec stream), which
+ * must keep going straight out as it always did.
+ *
+ * A single pointer is exact here because the daemon is single-threaded
+ * and serves one request at a time; it is cleared on every path out of
+ * the request block so it can never name a connection that has since
+ * been freed or repurposed.
+ */
+static struct conn *g_response_conn;
+
+/*
  * Who is making the request currently being dispatched, "" when nobody
  * is authenticated.
  *
@@ -28799,8 +28843,9 @@ static char g_req_peer_ip[CONNTHROTTLE_IP_MAX];
  * password (HTTP Basic), and if it verified, its name. 0: no Basic
  * credential; 1: verified, g_req_user is its user; -1: presented and
  * refused; -2: not checked, because its source is over the #547
- * authentication-failure threshold. Reset with g_req_user by
- * resolve_request_identity().
+ * authentication-failure threshold; -3: not checked, because no
+ * credential check could be started (ADR-0340), answered 503. Reset with
+ * g_req_user by resolve_request_identity().
  */
 static int g_req_basic;
 static char g_req_app[LDAP_APP_PASSWORD_NAME_MAX];
@@ -28810,7 +28855,7 @@ static char g_req_app[LDAP_APP_PASSWORD_NAME_MAX];
  * needs to know who is asking: the audit line, authorize_route(), and
  * the WebSocket upgrades that are answered before dispatch() (which
  * call it themselves, through authorize_upgrade_route()). Called once
- * per request, so an app password is verified once and a single-use
+ * per pass, so an app password is verified once and a single-use
  * session is only peeked at here -- the consuming check stays in
  * hostauth_authorize().
  *
@@ -28819,8 +28864,15 @@ static char g_req_app[LDAP_APP_PASSWORD_NAME_MAX];
  * colon (a username cannot contain one; a secret is hex), checked
  * against the user's app passwords only -- the main password is never
  * compared, so it is refused per request as ADR-0317 section 8 says.
+ *
+ * ADR-0340: an app password the memo cannot answer needs a bcrypt
+ * comparison, which is never made here. Returns 0 when the request has
+ * been PARKED for one -- the caller writes nothing and returns, and the
+ * request is served again from the start when the check finishes, with
+ * the same call then answering from the memo or from the verdict the
+ * connection carries. 1 otherwise, with the identity resolved.
  */
-static void resolve_request_identity(const struct http_request *req)
+static int resolve_request_identity(const struct http_request *req)
 {
 	char hdr[512];
 
@@ -28828,7 +28880,7 @@ static void resolve_request_identity(const struct http_request *req)
 	g_req_app[0] = '\0';
 	g_req_basic = 0;
 	if (http_find_header(req->headers, req->headers_len, "Authorization", hdr, sizeof(hdr)) < 0)
-		return;
+		return 1;
 	if (strncmp(hdr, "Basic ", 6) == 0) {
 		unsigned char raw[384];
 		char *colon = NULL;
@@ -28842,7 +28894,7 @@ static void resolve_request_identity(const struct http_request *req)
 		 */
 		if (connthrottle_auth_blocked(g_req_peer_ip) > 0) {
 			g_req_basic = -2;
-			return;
+			return 1;
 		}
 		g_req_basic = -1;
 		n = base64_decode(hdr + 6, raw, sizeof(raw) - 1);
@@ -28852,9 +28904,33 @@ static void resolve_request_identity(const struct http_request *req)
 				colon = strchr((char *)raw, ':');
 		}
 		if (colon != NULL) {
+			enum ldap_app_answer a;
+
 			*colon = '\0';
-			if (ldap_app_password_check((const char *)raw, colon + 1, g_req_app,
-			                            sizeof(g_req_app))) {
+			a = ldap_app_password_lookup((const char *)raw, colon + 1, g_req_app,
+			                             sizeof(g_req_app));
+			if (a == LDAP_APP_UNKNOWN) {
+				enum credcheck_answer v =
+				    credcheck_ask(CREDCHECK_APP_PASSWORD, (const char *)raw, colon + 1);
+
+				if (v == CREDCHECK_PARKED || v == CREDCHECK_BUSY) {
+					/* Neither is an authentication result, so neither
+					 * reaches the throttle below: a parked request is
+					 * counted on the pass that resumes it, once. */
+					explicit_bzero(raw, sizeof(raw));
+					g_req_basic = v == CREDCHECK_BUSY ? -3 : 0;
+					return v == CREDCHECK_BUSY;
+				}
+				/*
+				 * The broker never verifies an app password itself: one
+				 * that verified is in the memo, which the lookup above
+				 * has just consulted. So any other answer here is a
+				 * refusal -- including a check that verified a hash the
+				 * user's record no longer holds.
+				 */
+				a = LDAP_APP_REFUSED;
+			}
+			if (a == LDAP_APP_VERIFIED) {
 				snprintf(g_req_user, sizeof(g_req_user), "%s", (const char *)raw);
 				g_req_basic = 1;
 			}
@@ -28866,7 +28942,7 @@ static void resolve_request_identity(const struct http_request *req)
 		else
 			hostauth_note_auth_failure(g_req_peer_ip);
 		explicit_bzero(raw, sizeof(raw));
-		return;
+		return 1;
 	}
 	{
 		const char *bearer = strncmp(hdr, "Bearer ", 7) == 0 ? hdr + 7 : hdr;
@@ -28879,6 +28955,7 @@ static void resolve_request_identity(const struct http_request *req)
 			 * that polled a build to completion. */
 			hostauth_touch_token(bearer);
 	}
+	return 1;
 }
 
 /*
@@ -29071,6 +29148,12 @@ static int authorize_route(int fd, const struct http_request *req, const struct 
 		authz = hostauth_authorize(bearer, route->permission);
 	}
 
+	/* ADR-0340: an app password nothing could check is answered busy.
+	 * Not audited and not counted: it says nothing about the caller. */
+	if (authz == HOSTAUTH_AUTHZ_NO_SESSION && g_req_basic == -3) {
+		credcheck_respond_busy(fd, is_head);
+		return 0;
+	}
 	/* #547: a throttled app password is refused as such, not as a
 	 * missing session -- "log in first" would be the wrong advice from
 	 * an address that is blocked for that too. */
@@ -29138,6 +29221,11 @@ static int authorize_route(int fd, const struct http_request *req, const struct 
  * the session rather than 401. Each handler calls this once it has
  * recognised its own path, so the same route row and the same rule
  * decide, and dispatch() cannot check the same token a second time.
+ *
+ * 1: the upgrade may proceed. 0: refused, and the response is written.
+ * -1 (ADR-0340): parked for a credential check -- nothing is written and
+ * the caller must leave cc exactly as it arrived, because the whole
+ * request is served again from the start when the check finishes.
  */
 static int authorize_upgrade_route(int fd, const struct http_request *req)
 {
@@ -29147,7 +29235,8 @@ static int authorize_upgrade_route(int fd, const struct http_request *req)
 
 	/* Upgrades never reach dispatch(), where every other request's
 	 * credential is read -- so read it here, once (#543). */
-	resolve_request_identity(req);
+	if (!resolve_request_identity(req))
+		return -1;
 
 	if (idx < 0) {
 		/* A handler recognised a path the contract does not declare:
@@ -29248,10 +29337,25 @@ static void dispatch(int fd, const struct http_request *req)
 	 * first and checking after is one consume, in the right place;
 	 * checking twice would burn a single-use token on a log line.
 	 */
-	resolve_request_identity(req);
+	if (!resolve_request_identity(req))
+		return; /* ADR-0340: parked; served again from the start when its check finishes */
 
-	if (strcmp(req->method, "GET") != 0)
+	/*
+	 * ADR-0340: once per request, on the first pass that reaches this
+	 * line. A login parks AFTER it -- in its handler -- so it is audited
+	 * on arrival and not again when it resumes. A first-use app password
+	 * parks BEFORE it, in resolve_request_identity(), so it is audited on
+	 * the pass that resumes it, naming the app password through
+	 * audit_who(). The mark records "audited" rather than "resumed": a
+	 * mark meaning "a resumed pass, skip it" would lose every first-use
+	 * Basic mutation from the trail.
+	 */
+	if (strcmp(req->method, "GET") != 0 &&
+	    (g_response_conn == NULL || !g_response_conn->req_audited)) {
+		if (g_response_conn != NULL)
+			g_response_conn->req_audited = 1;
 		logstore_write("audit", "info", "%s %s %s", audit_who(), req->method, req->path);
+	}
 
 	/*
 	 * ADR-0218: every API operation dispatches through the one table
@@ -29406,7 +29510,8 @@ static void dispatch(int fd, const struct http_request *req)
 enum console_route_result {
 	CONSOLE_NOT_MATCHED,   /* not this route -- caller falls through to dispatch() as normal */
 	CONSOLE_FAILED,        /* matched, but failed before cc was repurposed -- caller does its normal teardown on cc */
-	CONSOLE_HANDLED        /* fully handled here (success, or already torn down via console_session_teardown()) -- caller must not touch cc again */
+	CONSOLE_HANDLED,       /* fully handled here (success, or already torn down via console_session_teardown()) -- caller must not touch cc again */
+	CONSOLE_PARKED         /* ADR-0340: matched, and waiting for a credential check -- nothing written, cc untouched; serve_request() runs the whole request again when it finishes */
 };
 
 /*
@@ -29987,8 +30092,14 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	 * teardown on cc) is correct throughout this section. */
 
 	/* #541: authorized as its route, before anything else is looked at. */
-	if (!authorize_upgrade_route(cc->fd, req))
+	switch (authorize_upgrade_route(cc->fd, req)) {
+	case -1:
+		return CONSOLE_PARKED;
+	case 0:
 		return CONSOLE_FAILED;
+	default:
+		break;
+	}
 
 	if (http_find_header(req->headers, req->headers_len, "Upgrade", upgrade_val, sizeof(upgrade_val)) < 0 ||
 	    strcasecmp(upgrade_val, "websocket") != 0) {
@@ -30362,8 +30473,14 @@ static enum console_route_result try_pkg_build_log_upgrade(struct conn *cc, cons
 		return CONSOLE_NOT_MATCHED;
 
 	/* #541: authorized as its route, before anything else is looked at. */
-	if (!authorize_upgrade_route(cc->fd, req))
+	switch (authorize_upgrade_route(cc->fd, req)) {
+	case -1:
+		return CONSOLE_PARKED;
+	case 0:
 		return CONSOLE_FAILED;
+	default:
+		break;
+	}
 
 	if (http_find_header(req->headers, req->headers_len, "Upgrade", upgrade_val, sizeof(upgrade_val)) < 0 ||
 	    strcasecmp(upgrade_val, "websocket") != 0) {
@@ -30988,20 +31105,6 @@ static void log_tls_error(const char *context, const char *peer_ip, int should_l
 /* Client conns with unsent response bytes, for the write-deadline sweep. */
 static struct conn *g_out_pending;
 
-/*
- * The conn whose request is being served right now, or NULL. Set only
- * around the code that can write a response, so the sink below can
- * tell "this response belongs to the in-flight request" from any other
- * write to any other fd (a WebSocket frame, an exec stream), which
- * must keep going straight out as it always did.
- *
- * A single pointer is exact here because the daemon is single-threaded
- * and serves one request at a time; it is cleared on every path out of
- * the request block so it can never name a connection that has since
- * been freed or repurposed.
- */
-static struct conn *g_response_conn;
-
 static int client_response_sink(int fd, const void *buf, size_t n)
 {
 	struct conn *cc = g_response_conn;
@@ -31059,6 +31162,296 @@ static void conn_out_unlink(struct conn *cc)
 	}
 }
 
+/* ---------- ADR-0340 (#609): a request waits for its credential check ----------
+ *
+ * credcheck_ask() reaches cred_broker() below for the request being
+ * served. If the connection already carries a verdict, that is the
+ * answer. Otherwise the request is PARKED: a park record is made, a
+ * helper child runs credcheck_work() (or the record waits its turn), the
+ * handler writes nothing, and the read path leaves the connection open
+ * (serve_request()). When the check finishes, cred_check_done() attaches
+ * the verdict and serves the request again from the start; the same
+ * credcheck_ask() then answers from it, and every effect -- the throttle,
+ * the audit, the memo, a session -- happens on that pass, once.
+ *
+ * The record, not the connection, is the helper's context. A connection
+ * whose peer leaves is torn down while its check is still running;
+ * cred_park_abandon() breaks the link from that side, so the helper's
+ * done callback finds cc NULL and does only the bookkeeping that does
+ * not need a client.
+ */
+struct cred_park {
+	struct conn *cc; /* NULL once the client has gone */
+	struct credcheck_request rq;
+	unsigned char bind[CREDCHECK_BIND_LEN];
+	char peer_ip[CONNTHROTTLE_IP_MAX];
+	int pipe_rd; /* the helper's result; -1 until it is started */
+	int pipe_wr; /* the child's end, closed in the parent as soon as it is forked */
+	struct cred_park *next; /* g_cred_wait linkage, while it waits its turn */
+};
+
+/*
+ * At most g_cred_running_max checks run at once -- half the online CPUs
+ * and at least one, read at startup, leaving the loop and the rest of
+ * the host the other half -- and at most CRED_WAIT_MAX more wait, in
+ * arrival order. Beyond that a request is answered 503 with Retry-After.
+ */
+#define CRED_WAIT_MAX 32
+static int g_cred_running_max = 1;
+static int g_cred_running;
+static int g_cred_waiting;
+static struct cred_park *g_cred_wait_head;
+static struct cred_park *g_cred_wait_tail;
+
+static void serve_request(struct conn *cc);
+static void cred_check_done(int exit_status, void *ctx);
+
+static void cred_park_free(struct cred_park *p)
+{
+	if (p->pipe_rd >= 0)
+		close(p->pipe_rd);
+	explicit_bzero(&p->rq, sizeof(p->rq));
+	free(p);
+}
+
+/*
+ * The connection is being torn down. A record still waiting its turn is
+ * removed and freed -- a check for a client that has gone would be a
+ * fork for nobody, and would hold a place in the queue. A running one
+ * keeps its record until the helper finishes; it just loses its client.
+ */
+static void cred_park_abandon(struct cred_park *p)
+{
+	struct cred_park **pp;
+
+	if (p->pipe_rd >= 0) {
+		p->cc = NULL;
+		return;
+	}
+	for (pp = &g_cred_wait_head; *pp != NULL; pp = &(*pp)->next) {
+		if (*pp != p)
+			continue;
+		*pp = p->next;
+		if (g_cred_wait_tail == p) {
+			struct cred_park *t = g_cred_wait_head;
+
+			while (t != NULL && t->next != NULL)
+				t = t->next;
+			g_cred_wait_tail = t;
+		}
+		g_cred_waiting--;
+		break;
+	}
+	cred_park_free(p);
+}
+
+/*
+ * The helper child. It reports one fixed-size result -- smaller than
+ * PIPE_BUF, so one write, into a pipe nothing else can fill -- and
+ * changes nothing the parent will ever read (credcheck.h).
+ */
+static int cred_check_work(void *arg)
+{
+	struct cred_park *p = arg;
+	struct credcheck_result r;
+	const char *b = (const char *)&r;
+	size_t off = 0;
+
+	credcheck_work(&p->rq, &r);
+	while (off < sizeof(r)) {
+		ssize_t n = write(p->pipe_wr, b + off, sizeof(r) - off);
+
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			return 1;
+		off += (size_t)n;
+	}
+	return 0;
+}
+
+/*
+ * Forks the check. The parent's copy of the write end is closed as soon
+ * as the child exists, so when the child exits the result is all that is
+ * left in the pipe and cred_check_done()'s read cannot wait.
+ */
+static int cred_check_start(struct cred_park *p)
+{
+	int fds[2];
+
+	if (pipe2(fds, O_CLOEXEC) != 0)
+		return -1;
+	p->pipe_rd = fds[0];
+	p->pipe_wr = fds[1];
+	if (helper_run(cred_check_work, p, cred_check_done, p, "a credential check") != 0) {
+		close(fds[0]);
+		close(fds[1]);
+		p->pipe_rd = -1;
+		p->pipe_wr = -1;
+		return -1;
+	}
+	close(fds[1]);
+	p->pipe_wr = -1;
+	g_cred_running++;
+	return 0;
+}
+
+/* Starts what was waiting, as far as there is room. */
+static void cred_start_waiting(void)
+{
+	while (g_cred_running < g_cred_running_max && g_cred_wait_head != NULL) {
+		struct cred_park *p = g_cred_wait_head;
+		struct conn *cc = p->cc;
+
+		g_cred_wait_head = p->next;
+		if (g_cred_wait_head == NULL)
+			g_cred_wait_tail = NULL;
+		g_cred_waiting--;
+		p->next = NULL;
+		if (cc == NULL) {
+			/* cred_park_abandon() unlinks a waiting record whose client
+			 * left, so this is not reached; a ghost is freed, not forked
+			 * for, if it ever is. */
+			cred_park_free(p);
+			continue;
+		}
+		if (cred_check_start(p) == 0)
+			continue;
+		/* Could not fork: the request is answered busy rather than
+		 * left waiting for a check that will never run. */
+		cred_park_free(p);
+		cc->cred_park = NULL;
+		cc->cred_state = CRED_UNAVAILABLE;
+		serve_request(cc);
+	}
+}
+
+static enum credcheck_answer cred_broker(const struct credcheck_request *rq)
+{
+	struct conn *cc = g_response_conn;
+	unsigned char bind[CREDCHECK_BIND_LEN];
+	struct cred_park *p;
+
+	/* Only a client's request can wait: a read answered in-process
+	 * (events_run_get()'s g_self_read_conn, fd -1) has no connection to
+	 * park, and carries no credential to reach here with anyway. */
+	if (cc == NULL || cc->fd < 0 || cc->kind != CONN_CLIENT)
+		return CREDCHECK_BUSY;
+	credcheck_bind(rq, bind);
+	switch (cc->cred_state) {
+	case CRED_UNCHECKED:
+		break;
+	case CRED_UNAVAILABLE:
+		return CREDCHECK_BUSY;
+	case CRED_VERIFIED:
+		/*
+		 * Only for the credential it was found for, and only a login: a
+		 * verified app password is in the memo, which the caller asks
+		 * first, so an app password reaching here means the record
+		 * changed while its check ran.
+		 */
+		if (rq->kind == CREDCHECK_LOGIN && CRYPTO_memcmp(bind, cc->cred_bind, sizeof(bind)) == 0)
+			return CREDCHECK_VERIFIED;
+		return CREDCHECK_REFUSED;
+	case CRED_REFUSED:
+	default:
+		/* Refused, or checked for some other credential: a connection
+		 * is checked once, so this fails closed rather than parking a
+		 * second time. */
+		return CREDCHECK_REFUSED;
+	}
+	if (cc->cred_park != NULL)
+		return CREDCHECK_REFUSED; /* one check per request: it cannot ask twice in a pass */
+	if (g_cred_running >= g_cred_running_max && g_cred_waiting >= CRED_WAIT_MAX)
+		return CREDCHECK_BUSY;
+	p = calloc(1, sizeof(*p));
+	if (p == NULL)
+		return CREDCHECK_BUSY;
+	p->cc = cc;
+	p->rq = *rq;
+	p->pipe_rd = -1;
+	p->pipe_wr = -1;
+	memcpy(p->bind, bind, sizeof(bind));
+	snprintf(p->peer_ip, sizeof(p->peer_ip), "%s", cc->peer_ip);
+	if (g_cred_running < g_cred_running_max) {
+		if (cred_check_start(p) != 0) {
+			cred_park_free(p);
+			return CREDCHECK_BUSY;
+		}
+	} else {
+		if (g_cred_wait_tail != NULL)
+			g_cred_wait_tail->next = p;
+		else
+			g_cred_wait_head = p;
+		g_cred_wait_tail = p;
+		g_cred_waiting++;
+	}
+	cc->cred_park = p;
+	return CREDCHECK_PARKED;
+}
+
+/*
+ * The check finished. The parent's half of credcheck.h's split: write
+ * what the child logged, memoize a verified app password, and serve the
+ * request again with the verdict attached. When the client has gone
+ * there is nobody to serve, so the bookkeeping the resumed pass would
+ * have done happens here instead: a failure still counts against its
+ * address, a success still clears it, a login is still audited, and no
+ * session is issued.
+ */
+static void cred_check_done(int exit_status, void *ctx)
+{
+	struct cred_park *p = ctx;
+	struct credcheck_result r;
+	size_t got = 0;
+	int verified = 0;
+
+	g_cred_running--;
+	while (got < sizeof(r)) {
+		ssize_t n = read(p->pipe_rd, (char *)&r + got, sizeof(r) - got);
+
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			break;
+		got += (size_t)n;
+	}
+	if (got == sizeof(r)) {
+		logstore_replay(r.held, sizeof(r.held));
+		verified = r.verified;
+		if (verified && p->rq.kind == CREDCHECK_APP_PASSWORD)
+			ldap_app_password_memoize(r.app_hash, p->rq.secret);
+	} else {
+		logstore_write("hostauth", "error",
+		               "a credential check for %s ended without a result (helper exit %d) -- "
+		               "refused",
+		               p->rq.user, exit_status);
+	}
+	explicit_bzero(&r, sizeof(r));
+
+	if (p->cc != NULL) {
+		struct conn *cc = p->cc;
+
+		cc->cred_park = NULL;
+		cc->cred_state = verified ? CRED_VERIFIED : CRED_REFUSED;
+		memcpy(cc->cred_bind, p->bind, sizeof(cc->cred_bind));
+		cred_park_free(p);
+		serve_request(cc);
+	} else {
+		if (verified)
+			connthrottle_record_auth_success(p->peer_ip);
+		else
+			hostauth_note_auth_failure(p->peer_ip);
+		if (p->rq.kind == CREDCHECK_LOGIN)
+			logstore_write("audit", verified ? "info" : "warn",
+			               "%s login %s from %s, after the client had gone -- no session issued",
+			               p->rq.user, verified ? "verified" : "REFUSED (invalid username or password)",
+			               p->peer_ip[0] != '\0' ? p->peer_ip : "-");
+		cred_park_free(p);
+	}
+	cred_start_waiting();
+}
+
 static void client_conn_teardown(struct conn *cc)
 {
 	conn_out_unlink(cc);
@@ -31073,7 +31466,22 @@ static void client_conn_teardown(struct conn *cc)
 	}
 	close_client_socket(cc->fd);
 	http_conn_free(&cc->http);
-	free(cc);
+	if (cc->cred_park != NULL) {
+		cred_park_abandon(cc->cred_park);
+		cc->cred_park = NULL;
+	}
+	/*
+	 * Deferred, never freed here (ADR-0340). A parked request is finished
+	 * from a helper's done callback -- a DIFFERENT event in the batch --
+	 * and its own connection can be sitting later in that same batch,
+	 * readable because the peer just closed. Freed now, that event would
+	 * read freed memory; CONN_DEAD makes the loop skip it, and
+	 * drain_pending_free() frees it once the batch is done. The same
+	 * arrangement console_session_teardown() has always needed for a
+	 * session's two fds.
+	 */
+	cc->kind = CONN_DEAD;
+	queue_conn_free(cc);
 }
 
 /*
@@ -31550,8 +31958,14 @@ static enum console_route_result try_events_upgrade(struct conn *cc, const struc
 	if (strcmp(req->method, "GET") != 0 || qlen != strlen("/v1/events") ||
 	    strncmp(req->path, "/v1/events", qlen) != 0)
 		return CONSOLE_NOT_MATCHED;
-	if (!authorize_upgrade_route(cc->fd, req))
+	switch (authorize_upgrade_route(cc->fd, req)) {
+	case -1:
+		return CONSOLE_PARKED;
+	case 0:
 		return CONSOLE_FAILED;
+	default:
+		break;
+	}
 	if (http_find_header(req->headers, req->headers_len, "Upgrade", upgrade_val,
 	                     sizeof(upgrade_val)) < 0 ||
 	    strcasecmp(upgrade_val, "websocket") != 0) {
@@ -32267,6 +32681,121 @@ static int client_conn_advance_handshake(struct conn *cc)
 	return -1;
 }
 
+/*
+ * One pass over a request that has fully arrived: the WebSocket
+ * upgrades, then dispatch(), then the finish. ADR-0340: the read path
+ * calls this once, and cred_check_done() calls it again for a request
+ * that was parked for a credential check -- one function, so the pass
+ * that resumes a request is the same code as the pass that parked it.
+ *
+ * The request is parsed again from the bytes it arrived as. The parse is
+ * a local, so a resumed pass has nothing else to start from, and once
+ * the headers are found http_conn_try_parse() only re-points req into
+ * cc's buffer. Nothing is ever fed into that buffer while the request is
+ * parked (cred_parked_read()), which is what keeps those bytes the
+ * request's.
+ *
+ * Four of the pass's side effects can run before a park and are settled
+ * where they happen: dispatch()'s audit line (req_audited), the #547
+ * throttle note (left to the resumed pass, resolve_request_identity()),
+ * the stall activity (set by dispatch() and cleared below, on every
+ * pass), and connthrottle_auth_blocked() and the JSON parse, which have
+ * no effect and simply run again.
+ */
+static void serve_request(struct conn *cc)
+{
+	struct http_request req;
+	enum console_route_result cr;
+
+	if (http_conn_try_parse(&cc->http, &req) != 1) {
+		/* Unreachable for a resumed request -- it parsed once and its
+		 * bytes have not changed -- so a failure is torn down, not
+		 * guessed at. */
+		client_conn_teardown(cc);
+		return;
+	}
+
+	/*
+	 * From here until the connection is finished, any response written
+	 * for this fd is buffered rather than pushed into a socket that may
+	 * not be draining (#237). Cleared on every path out, including the
+	 * ones that hand cc over to become a WebSocket conn -- a stale
+	 * pointer there would silently swallow frames meant for the wire.
+	 */
+	g_response_conn = cc;
+	snprintf(g_req_peer_ip, sizeof(g_req_peer_ip), "%s", cc->peer_ip);
+
+	cr = try_console_upgrade(cc, &req);
+	if (cr == CONSOLE_HANDLED) {
+		g_response_conn = NULL;
+		return; /* cc repurposed into CONN_CONSOLE_WS (or already torn down) -- must not be touched again */
+	}
+	if (cr == CONSOLE_NOT_MATCHED)
+		cr = try_pkg_build_log_upgrade(cc, &req);
+	if (cr == CONSOLE_HANDLED) {
+		g_response_conn = NULL;
+		return; /* cc repurposed into CONN_PKG_BUILD_LOG_WS -- must not be touched again */
+	}
+	if (cr == CONSOLE_NOT_MATCHED)
+		cr = try_events_upgrade(cc, &req);
+	if (cr == CONSOLE_HANDLED) {
+		g_response_conn = NULL;
+		return; /* cc repurposed into CONN_EVENTS_WS (ADR-0339) -- must not be touched again */
+	}
+	if (cr == CONSOLE_NOT_MATCHED) {
+		dispatch(cc->fd, &req);
+		/* Cleared only on the way out: anything still set when the loop
+		 * goes quiet is, by construction, the request that did not come
+		 * back (issue #100). */
+		stallwatch_activity_clear();
+	}
+	g_response_conn = NULL;
+
+	/*
+	 * ADR-0340: parked -- by an upgrade (CONSOLE_PARKED) or by dispatch().
+	 * Nothing was written, and the connection stays open, reading only
+	 * to notice its peer leave, until cred_check_done() serves it again.
+	 */
+	if (cc->cred_park != NULL)
+		return;
+
+	/* CONSOLE_FAILED: an error response (or nothing, if the client was
+	 * already gone) was already written by whichever upgrade attempt
+	 * failed -- cc still needs the same finish every other handled
+	 * request gets. */
+	client_conn_finish(cc);
+}
+
+/*
+ * ADR-0340: a parked connection is read only to notice that its peer has
+ * gone. One request per connection is the protocol, so anything else it
+ * sends is discarded, exactly as it would be lost when the connection
+ * closes after its response; feeding it to cc->http would move the bytes
+ * the parked request is served again from. A read of 0 tears the
+ * connection down, which abandons the check (cred_park_abandon()).
+ *
+ * Bounded per event, so a peer that keeps sending cannot hold the loop:
+ * epoll is level-triggered and will say again that there is more.
+ */
+#define CRED_PARKED_READS_PER_EVENT 16
+
+static void cred_parked_read(struct conn *cc)
+{
+	char buf[4096];
+	int i;
+
+	for (i = 0; i < CRED_PARKED_READS_PER_EVENT; i++) {
+		ssize_t n = tls_read(cc->fd, buf, sizeof(buf));
+
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			return;
+		if (n <= 0) {
+			client_conn_teardown(cc);
+			return;
+		}
+	}
+}
+
 static void handle_client_event(struct conn *cc)
 {
 	char buf[4096];
@@ -32298,6 +32827,12 @@ static void handle_client_event(struct conn *cc)
 			               cc->out_sent, cc->out_len, strerror(errno));
 		if (dr != 0)
 			client_conn_teardown(cc);
+		return;
+	}
+
+	/* ADR-0340: waiting for its credential check, not for more request. */
+	if (cc->cred_park != NULL) {
+		cred_parked_read(cc);
 		return;
 	}
 
@@ -32353,59 +32888,17 @@ static void handle_client_event(struct conn *cc)
 			return;
 		}
 		if (pr == 1) {
-			enum console_route_result cr;
-
 			/* A complete, well-formed HTTP request was actually
 			 * received -- real evidence this source isn't currently
 			 * misbehaving, on whichever listener it arrived on, so it
 			 * resets the same failure count a bad TLS handshake would
 			 * have raised (ADR-0134). Deliberately independent of what
 			 * this specific request dispatches to (even a 404 still
-			 * proves the client speaks HTTP correctly). */
+			 * proves the client speaks HTTP correctly). Once, here, not
+			 * in serve_request(), which a parked request passes through
+			 * twice. */
 			connthrottle_record_success(cc->peer_ip);
-
-			/*
-			 * From here until the connection is finished, any response
-			 * written for this fd is buffered rather than pushed into
-			 * a socket that may not be draining (#237). Cleared on
-			 * every path out, including the two that hand cc over to
-			 * become a WebSocket conn -- a stale pointer there would
-			 * silently swallow frames meant for the wire.
-			 */
-			g_response_conn = cc;
-			snprintf(g_req_peer_ip, sizeof(g_req_peer_ip), "%s", cc->peer_ip);
-
-			cr = try_console_upgrade(cc, &req);
-
-			if (cr == CONSOLE_HANDLED) {
-				g_response_conn = NULL;
-				return; /* cc repurposed into CONN_CONSOLE_WS (or already torn down) -- must not be touched again */
-			}
-			if (cr == CONSOLE_NOT_MATCHED)
-				cr = try_pkg_build_log_upgrade(cc, &req);
-			if (cr == CONSOLE_HANDLED) {
-				g_response_conn = NULL;
-				return; /* cc repurposed into CONN_PKG_BUILD_LOG_WS -- must not be touched again */
-			}
-			if (cr == CONSOLE_NOT_MATCHED)
-				cr = try_events_upgrade(cc, &req);
-			if (cr == CONSOLE_HANDLED) {
-				g_response_conn = NULL;
-				return; /* cc repurposed into CONN_EVENTS_WS (ADR-0339) -- must not be touched again */
-			}
-			if (cr == CONSOLE_NOT_MATCHED) {
-				dispatch(cc->fd, &req);
-				/* Cleared only on the way out: anything still set when
-				 * the loop goes quiet is, by construction, the request
-				 * that did not come back (issue #100). */
-				stallwatch_activity_clear();
-			}
-			/* CONSOLE_FAILED: an error response (or nothing, if the
-			 * client was already gone) was already written by
-			 * whichever upgrade attempt failed -- cc still needs the
-			 * same finish every other handled request gets. */
-			g_response_conn = NULL;
-			client_conn_finish(cc);
+			serve_request(cc);
 			return;
 		}
 		/* pr == 0: request incomplete so far. A plain-fd connection
@@ -35661,6 +36154,17 @@ static int cixd_main(int argc, char **argv)
 	 * by refusing to read (#237).
 	 */
 	http_set_response_sink(client_response_sink);
+	/*
+	 * ADR-0340: credentials are checked off the loop, at most half the
+	 * online CPUs at a time and at least one. Read here rather than
+	 * asserted, because no core count is the same on every host.
+	 */
+	{
+		long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+
+		g_cred_running_max = cpus >= 2 ? (int)(cpus / 2) : 1;
+	}
+	credcheck_set_broker(cred_broker);
 	/* ADR-0339: X-Cix-Generation on every answer to an announced read. */
 	http_set_header_hook(events_generation_header);
 	/* ADR-0339 point 7: the baseline every later check compares with --
