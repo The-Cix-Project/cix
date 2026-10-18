@@ -2445,7 +2445,7 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
-## Part 285: a credential is checked off the event loop (ADR-0340, #609, 0.2.57-538)
+## Part 285: a credential is checked and hashed off the event loop (ADR-0340, #609, #610, 0.2.57-538 and -539)
 
 The owner accepted ADR-0340 on 2026-10-18. Before it, a login held cixd's one event loop for the
 whole of its bcrypt check, about 350 ms on .95, and for every LDAP server's timeout before that.
@@ -2486,7 +2486,32 @@ The stall record named `POST /v1/login` as a pass's slowest handler eight times,
 - **Not measured live:** the 503, which needs K + 32 slow checks at once. Only the test covers
   it.
 
-Phase 2, hashing when a password is set, is #610.
+**Phase 2, 0.2.57-539 (#610): a password being set is hashed off the loop too.** The owner said
+"go ahead with phase 2" the same day. Setting a user's password and creating an app password each
+made a ~350 ms bcrypt hash on the loop. They now go through the same park:
+- **Two new kinds:** `CREDCHECK_HASH` hashes a password a request sets. `CREDCHECK_NEW_SECRET`
+  generates an app password's secret in the child and hashes it, so the secret survives the park.
+- **Signatures:** `ldap_user_create()` and `ldap_user_update()` take a hash, never a password.
+- **Still on the loop:** two internal paths with no request to park, recorded as #611 and budgeted
+  at one call site each.
+
+**Verified.**
+- **The gate:** `probe-cix-compile@0.2.57-543` (commit `fff783b4`) built and passed the release
+  selftest on its first build. That includes the new `test_hostauth` case, a password changed
+  through `PUT` while logins are slow, then the old one refused and the new one accepted.
+- **The box:** 0.2.57-539 hostbuilt, self-assembled and booted on slot `b`. Measured on
+  192.168.15.95, 2026-10-18, against a throwaway user `adr0340-check`, deleted afterwards (204,
+  then 404):
+  - **Create with a password:** `POST /v1/ldap/users` answered 201 in 0.41 s, while health sent
+    100 ms in answered in 0.75 ms. That password then logged in, 200.
+  - **Change the password:** `PUT` answered 200 in 0.37 s, with health in 0.77 ms. Then the old
+    password answered 401 and the new one 200.
+  - **App password:** `POST /v1/whoami/app-passwords` answered 201 in 0.36 s with a 32-character
+    secret. Its first use answered 200 in 0.37 s and its second in 2.5 ms. After it was revoked,
+    401.
+  - **Stall record:** no slow pass since the boot, with a worst pass of 71 ms. The newest record,
+    from 09:00:46Z before the boot, is the hourly `event container` stall of #608.
+
 
 ## Part 284: the box says what changed (ADR-0339, #599, 0.2.57-519 to -534)
 
