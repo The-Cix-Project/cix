@@ -3431,6 +3431,15 @@ paths:
         confirmed, not assumed, to cache nothing but plain path strings
         with no persistently-open file handle of its own, so the
         finalize step is a straightforward repoint of each.
+
+
+        Container rootfs are left behind (ADR-0341). Each is a btrfs
+        snapshot of its image version, kept here so that it can be one,
+        and a copy would be neither a snapshot nor something a container
+        should resume on. A running container keeps running on its old
+        tree; at its next start it is seeded again from its image at the
+        new location, which loses what it wrote outside its volumes --
+        the same thing a move of its image pin does.
       operationId: migrateRebuildableStorage
       x-cix-invalidates: [getRebuildableStorage, getRebuildableStorageMigrateStatus]
       x-cix-permission: storage:write
@@ -13756,24 +13765,14 @@ paths:
         with a 400 rather than accepted and left half-done.
 
 
-        Both storage layouts migrate. An overlay container's `upper`
-        and `work` are copied as ordinary trees; a snapshot container
-        (ADR-0207) has neither, and its whole state is one btrfs
-        subvolume, which is reproduced as a real subvolume on the target
-        rather than as a plain directory (ADR-0234). Snapshot containers
-        were refused outright before that, because copying a subvolume
-        into an ordinary directory looks like it worked and leaves
-        something that can never be snapshotted or quota-limited again.
-
-
-        One cost is worth knowing before moving a large container:
-        **extent sharing does not cross filesystems.** On its original
-        disk a snapshot container shares almost every extent with its
-        image and costs only its own changes; migrated to another disk
-        it occupies its full size, because the target has no subvolume
-        with common lineage to share against. Nothing is lost and
-        nothing is silently degraded -- but a 4 GB container that
-        "takes 80 MB" on one disk really does take 4 GB on the next.
+        What moves is the container's base, never its rootfs. A
+        snapshot container's rootfs (ADR-0207) is a btrfs snapshot of
+        its image version, kept beside the image store so that it can
+        be one (ADR-0341), and it stays there, still sharing extents
+        with its image. An overlay container's `upper` and `work` live
+        in the base and are copied as ordinary trees. On a btrfs host
+        every container is a snapshot container, so the base holds
+        little more than the mountpoint the container pivots onto.
 
 
         Unlike the daemon-wide storage kinds, this is not purely
@@ -16407,14 +16406,17 @@ components:
           description: >
             Bare kernel name (e.g. "sdb", no "/dev/" prefix -- disk.h's
             own naming, see GET /disks) of a real, currently-mounted
-            disk this container's own overlay storage (upperdir/
-            workdir/merged) should live on, in place of the default
-            OS-disk containers directory (task #638, ADR-0102). The
-            disk must already carry the "container-storage" role
-            (POST /storage-roles) -- 400 if it doesn't exist, isn't
-            mounted, or lacks that role; this is the one thing that
-            makes the role (assignable since Phase B) actually
-            connect to anything. Omit for the default placement.
+            disk this container's base should live on, in place of the
+            default OS-disk containers directory (task #638, ADR-0102).
+            The base holds an overlay container's upperdir and workdir
+            and the mountpoint a container pivots onto. It does NOT
+            hold the rootfs: that is a snapshot of the container's image
+            version, kept beside the image store on rebuildable storage
+            whatever this says (ADR-0341), because a snapshot cannot
+            cross a filesystem. The disk must already carry the
+            "container-storage" role (POST /storage-roles) -- 400 if it
+            doesn't exist, isn't mounted, or lacks that role. Omit for
+            the default placement.
         dns_servers:
           title: DNS servers
           type: array

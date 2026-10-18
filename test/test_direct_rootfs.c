@@ -276,12 +276,16 @@ int main(void)
 		cix_response_free(&cr);
 	}
 	{
-		char base[PATH_MAX];
+		char base[PATH_MAX], rootfs[PATH_MAX];
 
 		snprintf(base, sizeof(base), "%s/containers/dt", g_data_dir);
-		CHECK(path_exists("%s%s", base, "/rootfs/bin/daemon_child"),
+		/* ADR-0341: beside the image store, not under the base. */
+		snprintf(rootfs, sizeof(rootfs), "%s/rebuildable/rootfs/dt", g_data_dir);
+		CHECK(path_exists("%s%s", rootfs, "/bin/daemon_child"),
 		      "the rootfs copy should carry the image's own binary");
-		CHECK(path_exists("%s%s", base, "/rootfs/etc/seed.conf"),
+		CHECK(!path_exists("%s%s", base, "/rootfs"),
+		      "no rootfs may be seeded under the container's base (ADR-0341)");
+		CHECK(path_exists("%s%s", rootfs, "/etc/seed.conf"),
 		      "files[] must be staged into the ROOTFS -- a file staged into a dead "
 		      "upperdir is the exact integration bug this asserts against");
 		CHECK(!path_exists("%s%s", base, "/upper"),
@@ -341,10 +345,10 @@ int main(void)
 	                  "under-the-tmpfs\n") == 0,
 	      "a write under the container's own tmpfs must be readable from inside it");
 	{
-		char shadow_base[PATH_MAX];
+		char shadow_rootfs[PATH_MAX];
 
-		snprintf(shadow_base, sizeof(shadow_base), "%s/containers/dt", g_data_dir);
-		CHECK(!path_exists("%s%s", shadow_base, "/rootfs/run/shadowed.conf"),
+		snprintf(shadow_rootfs, sizeof(shadow_rootfs), "%s/rebuildable/rootfs/dt", g_data_dir);
+		CHECK(!path_exists("%s%s", shadow_rootfs, "/run/shadowed.conf"),
 		      "a write under a tmpfs must not land in the host-side rootfs beneath it");
 	}
 
@@ -491,13 +495,13 @@ int main(void)
 	 * coverage of this.
 	 */
 	{
-		char base[PATH_MAX], marker[PATH_MAX], seeded[128];
+		char rootfs[PATH_MAX], marker[PATH_MAX], seeded[128];
 		FILE *mf;
 		int i;
 		size_t n = 0;
 
-		snprintf(base, sizeof(base), "%s/containers/dt", g_data_dir);
-		snprintf(marker, sizeof(marker), "%s/rootfs.version", base);
+		snprintf(rootfs, sizeof(rootfs), "%s/rebuildable/rootfs/dt", g_data_dir);
+		snprintf(marker, sizeof(marker), "%s.version", rootfs);
 
 		mf = fopen(marker, "r");
 		if (mf != NULL) {
@@ -507,7 +511,7 @@ int main(void)
 		seeded[n] = '\0';
 		CHECK(n > 0, "a seeded rootfs must record the image version it came from -- without "
 		             "that file nothing can tell a current tree from a stale one");
-		CHECK(path_exists("%s%s", base, "/rootfs/etc/state.conf"),
+		CHECK(path_exists("%s%s", rootfs, "/etc/state.conf"),
 		      "the live write should still be on disk before the pin is moved");
 
 		memset(&r, 0, sizeof(r));
@@ -551,13 +555,13 @@ int main(void)
 		}
 		CHECK(i < 50, "start after the pin move never succeeded");
 
-		CHECK(!path_exists("%s%s", base, "/rootfs/etc/state.conf"),
+		CHECK(!path_exists("%s%s", rootfs, "/etc/state.conf"),
 		      "a rootfs seeded from a DIFFERENT image version must be rebuilt, so the write "
 		      "it carried is gone -- this failing means the container came back on its old "
 		      "tree and follow_rolling is inert again (#401)");
-		CHECK(path_exists("%s%s", base, "/rootfs/bin/daemon_child"),
+		CHECK(path_exists("%s%s", rootfs, "/bin/daemon_child"),
 		      "the rebuilt rootfs must carry the image's own binary");
-		CHECK(path_exists("%s%s", base, "/rootfs/etc/seed.conf"),
+		CHECK(path_exists("%s%s", rootfs, "/etc/seed.conf"),
 		      "files[] must be staged again into the rebuilt rootfs");
 
 		n = 0;
@@ -631,7 +635,7 @@ int main(void)
 		char p2[PATH_MAX];
 		struct stat pst;
 
-		snprintf(p2, sizeof(p2), "%s/containers/dt2/rootfs/etc/cold.conf", g_data_dir);
+		snprintf(p2, sizeof(p2), "%s/rebuildable/rootfs/dt2/etc/cold.conf", g_data_dir);
 		CHECK(stat(p2, &pst) == 0,
 		      "the exited-container write must land in the ROOTFS, not a dead upperdir");
 	}
@@ -653,6 +657,8 @@ int main(void)
 		for (i = 0; i < 50 && stat(base, &st) == 0; i++)
 			usleep(100000);
 		CHECK(stat(base, &st) != 0, "the container base should be gone after delete");
+		snprintf(base, sizeof(base), "%s/rebuildable/rootfs/dt", g_data_dir);
+		CHECK(stat(base, &st) != 0, "the container's rootfs should be gone after delete");
 	}
 
 	/*

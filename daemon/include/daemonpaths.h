@@ -27,13 +27,21 @@
  * These are set once during startup and read-only afterwards. Nothing
  * outside main.c writes one.
  */
-/* The root all 66 below are derived from: --data-dir, or its compiled
+/* The root all 71 below are derived from: --data-dir, or its compiled
  * default. */
 extern char g_base_dir[PATH_MAX];
 
 extern char STATE_DIR[PATH_MAX];
 extern char REBUILDABLE_DIR[PATH_MAX];
 extern char IMAGES_DIR[PATH_MAX];
+/*
+ * ADR-0341: every container's rootfs, one directory each, beside the
+ * image store so each can be a snapshot of its image version. Under
+ * REBUILDABLE_DIR, so it is on the images' filesystem wherever that is
+ * mounted; a rebuildable-storage move leaves it out (storagemigrate.c).
+ */
+#define REBUILDABLE_ROOTFS_SUBDIR "rootfs"
+extern char CONTAINER_ROOTFS_DIR[PATH_MAX];
 extern char CONTAINERS_DIR[PATH_MAX];
 extern char NETWORKS_STATE_PATH[PATH_MAX];
 extern char DNS_RECORDS_STATE_PATH[PATH_MAX];

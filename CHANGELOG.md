@@ -6,6 +6,32 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container's rootfs is a snapshot of its image, beside the image store (#608, ADR-0341)
+
+- **What changed for an operator:** rolling a container onto a new image no longer stops the
+  box. On 192.168.15.95 every hourly roll of `jump` held the event loop 4–5 s, because the
+  container's whole image was copied and chowned inline. A roll is now one btrfs snapshot,
+  however many containers follow the image.
+- **The cause:** images live on rebuildable storage and container bases on the OS disk, and a
+  snapshot cannot cross a filesystem. Every userns create on .95 fell back to a full copy, and
+  every non-userns one to overlay. ADR-0207's snapshot model ran for no container there.
+- **How:** a container's rootfs is `CONTAINER_ROOTFS_DIR/<name>` (`REBUILDABLE_DIR/rootfs`),
+  built only by `container_rootfs_dir()`, with its seed marker beside it as `<name>.version`.
+  A tree that stops being storage (an old rootfs at a pin move, a deleted container's base, a
+  pre-ADR-0341 tree) is renamed into a `.discard` directory on its own filesystem and deleted by
+  helper children, at most two at a time. A later start finishes what an earlier one did not.
+- **Cut-over:** at its first start on this release, each container is seeded once at the new
+  location and its old tree is set aside. That is one re-seed, as at any pin move: what a
+  container wrote outside its volumes is lost. Booting the previous release afterwards works,
+  because it finds no rootfs and seeds by its old copy.
+- **Contract:** `disk` on `POST /v1/containers` places the container's base, not its rootfs.
+  A container-storage move copies the base only; a rebuildable-storage move leaves container
+  rootfs behind, and each container is seeded again at its next start. ADR-0234 is superseded.
+  Whether `disk` and the `container-storage` role should stay is #615.
+- **Still copying, and counted:** a userns seed where rebuildable storage is not btrfs, on the
+  loop until #614. `test_blocking_waits` has a fourth counted set, for `cix_tree_copy(` and
+  `chown_tree(`.
+
 ### A password being set is hashed off the event loop too (#610, ADR-0340 phase 2)
 
 - **What changed for an operator:** setting a user's password, and creating an app password, no

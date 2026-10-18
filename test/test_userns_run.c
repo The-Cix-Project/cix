@@ -326,7 +326,7 @@ static int run_presentation(int idmap, const char *label)
 		char vp[PATH_MAX];
 		struct stat vst;
 
-		snprintf(vp, sizeof(vp), "%s/containers/runprobe/rootfs/vol", g_data_dir);
+		snprintf(vp, sizeof(vp), "%s/rebuildable/rootfs/runprobe/vol", g_data_dir);
 		if (stat(vp, &vst) != 0) {
 			check(0, "the container's rootfs still carries its volume mount point");
 		} else {

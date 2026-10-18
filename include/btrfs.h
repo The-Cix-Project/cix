@@ -74,22 +74,6 @@ int cix_btrfs_is_subvolume(const char *path);
 int cix_btrfs_snapshot_or_copy(const char *src, const char *dst);
 
 /*
- * Remove `path`. If it is a btrfs subvolume, BTRFS_IOC_SNAP_DESTROY;
- * otherwise a recursive unlink. An already-absent `path` is success.
- *
- * Returns 0 on success, -1 with errno set otherwise.
- */
-/*
- * Reproduces a subvolume at dst when it cannot be a snapshot of src,
- * i.e. when the two are on different filesystems. Copies in full --
- * sharing does not cross filesystems -- but the result IS a subvolume,
- * which a plain directory copy would not be. Used by cross-disk
- * container storage migration; container creation deliberately does
- * NOT use it (see cix_btrfs_snapshot_or_copy()).
- */
-int cix_btrfs_subvol_copy(const char *src, const char *dst);
-
-/*
  * A plain recursive copy of the tree at src to dst, on any filesystem,
  * as `cp -a` would make it: each entry's owner, exact mode (setuid and
  * sticky bits included, whatever the umask) and timestamps, symlinks
@@ -103,6 +87,12 @@ int cix_btrfs_subvol_copy(const char *src, const char *dst);
  */
 int cix_tree_copy(const char *src, const char *dst);
 
+/*
+ * Remove `path`. If it is a btrfs subvolume, BTRFS_IOC_SNAP_DESTROY;
+ * otherwise a recursive unlink. An already-absent `path` is success.
+ *
+ * Returns 0 on success, -1 with errno set otherwise.
+ */
 int cix_btrfs_subvol_delete_or_rmtree(const char *path);
 
 /*

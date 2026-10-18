@@ -238,7 +238,7 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0231](0231-attached-disks-do-not-mount-inside-the-data-directory.md) | Attached disks mount at /mnt/cix on a tmpfs, not inside the data directory | Accepted |
 | [0232](0232-state-lives-on-the-config-partition.md) | State lives on the config partition; the state-storage role is retired | Accepted |
 | [0233](0233-setgroups-stays-permitted-in-a-root-created-userns.md) | setgroups stays permitted in a root-created user namespace | Accepted |
-| [0234](0234-snapshot-containers-migrate-across-disks.md) | Snapshot containers migrate across disks, at the cost of extent sharing | Accepted |
+| [0234](0234-snapshot-containers-migrate-across-disks.md) | Snapshot containers migrate across disks, at the cost of extent sharing | Superseded by [ADR-0341](0341-a-containers-rootfs-is-a-snapshot-on-its-images-filesystem.md): the rootfs no longer moves |
 | [0235](0235-build-capacity-is-derived-from-state.md) | Build capacity is derived from package state, not from a field someone has to clear | Accepted |
 | [0236](0236-a-disk-is-identified-by-its-filesystem-uuid.md) | A disk is identified by its filesystem UUID, not by its kernel name | Accepted |
 | [0237](0237-a-missing-placement-disk-degrades-rather-than-refusing-to-boot.md) | A missing placement disk degrades the daemon, it does not stop it | Accepted |

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted by the owner, 2026-10-18 ("Yes!"), as proposed the same day. Issue [#608](https://git.home.arpa/itdlabs/cix/issues/608). Phase 1 is the placement (decisions 1–3, 5 and 6), which is the whole fix on a btrfs host. Phase 2 is decision 4's copy into a helper child on a non-btrfs host ([#614](https://git.home.arpa/itdlabs/cix/issues/614)): it needs a create that can be unfinished, through every caller of `create_container_from_body()`, and no Cix host measured so far is non-btrfs.
+Accepted by the owner, 2026-10-18 ("Yes!"), as proposed the same day. Issue [#608](https://git.home.arpa/itdlabs/cix/issues/608). Phase 1 is the placement (decisions 1–3, 5 and 6), which is the whole fix on a btrfs host. Phase 2 is decision 4's copy into a helper child on a non-btrfs host ([#614](https://git.home.arpa/itdlabs/cix/issues/614)): it needs a create that can be unfinished, through every caller of `create_container_from_body()`, and no Cix host measured so far is non-btrfs. It supersedes [ADR-0234](0234-snapshot-containers-migrate-across-disks.md) in its central point, since the rootfs no longer moves with a container's base.
 
 The first draft of this ADR moved the copy off the event loop. The owner then asked what the ideal would be on a box with hundreds of containers. At that scale, a roll of one image followed by 100 containers would be 100 full copies and 100 full trees, every time. The question is whether the copy should exist at all, not how to schedule it, so the draft was replaced before any decision on it. It is the ADR-0332 → ADR-0333 lesson again.
 
@@ -39,7 +39,15 @@ So every create falls back to something:
 
    This is what ADR-0277 already says a rootfs is: derived from its image, disposable at every pin move, with anything that must outlive an image version kept on a volume. A derived tree is rebuildable state, and it belongs with the rest of the rebuildable state.
 
-2. **What stays where it is.** The container's base under `CONTAINERS_DIR` keeps everything that is not derived from the image: its seed marker, its staged identity files, its subordinate-id record and its volumes. `disk: NAME` and the `container-storage` role go on deciding where those live. **This is the contract change the owner decides:** today `disk` also places the rootfs, and under this ADR it does not.
+2. **What stays where it is.** The container's base under `CONTAINERS_DIR` keeps what is not derived from the image, and `disk: NAME` and the `container-storage` role go on deciding where the base lives. **This is the contract change the owner decided:** today `disk` also places the rootfs, and under this ADR it does not.
+
+   *Corrected while implementing, 2026-10-18.* This item first listed the base's contents as the seed marker, staged identity files, the subordinate-id record and volumes. Reading the code shows otherwise:
+   - the seed marker moved with the rootfs (`<rootfs>.version`);
+   - staged files are written into the rootfs;
+   - the subordinate-id record is in `STATE_DIR` (`subid.json`);
+   - a volume has its own `disk`.
+
+   So a base holds an overlay container's `upper` and `work`, plus the mountpoint the container pivots onto. On a btrfs host every container is a snapshot container, and there `disk` places almost nothing. Whether `disk` and the `container-storage` role should then exist at all is a question for the owner, recorded in [#615](https://git.home.arpa/itdlabs/cix/issues/615).
 
 3. **The rootfs quota is the snapshot's exclusive qgroup limit**, as `disk_quota_bytes` already is on the snapshot path. That limit now measures what it should: the container's divergence from its image.
 
@@ -52,6 +60,16 @@ So every create falls back to something:
    **Rollback is safe.** Booting the previous release finds no `<base>/rootfs`, so it seeds by its old copy. That works, at its old cost on the loop.
 
 6. **The silence is fixed too.** The userns branch's EXDEV fallback logs nothing, while the non-userns one logs at every create. Any fallback that remains logs, and so does the false comment in `src/btrfs.c`, which says the create path "falls back to the overlay rootfs, which ... costs nothing" — true of one branch only. And `test_blocking_waits` budgets `cix_tree_copy(` and `chown_tree(` per file, so a copy cannot drift back onto the loop.
+
+## What implementing it settled
+
+- **Discarding has two trash locations, never one inside a base.** Each tree goes into a `.discard` directory on its own filesystem, since a rename cannot cross one: `CONTAINER_ROOTFS_DIR/.discard` for a rootfs, and the container root's `.discard` for anything in a base. Keeping the trash out of the base is what lets a delete set the whole base aside. A delete costs the loop two renames, where it used to `persist_remove_tree()` a base that could hold a copied rootfs.
+- **Deletes are queued, at most two at a time.** A roll of one image followed by a hundred containers sets a hundred trees aside in one pass. A hundred children deleting at once would be a fork storm and a disk storm for work that nothing waits on.
+- **An interrupted delete is finished by a later start.** Each entry's name begins with the daemon's start time. Startup sweeps `CONTAINER_ROOTFS_DIR` and `CONTAINERS_DIR`, and every create sweeps its own container root, which is how a container disk other than the default gets swept. A sweep renames a stale entry into the current start's name before queueing it, so no second sweep can queue it again.
+- **A rootfs with no seed marker is seeded again.** ADR-0277 adopted such a tree, because trees older than the marker existed. At the new location nothing is older than the marker, so a missing one means its write failed, and seeding again costs one snapshot.
+- **Both storage moves leave the rootfs alone.** A rebuildable-storage move skips `rootfs/`, so a container is seeded again from its image at its next start. A container-storage move copies the base and skips a pre-ADR-0341 `rootfs` and `.discard`. [ADR-0234](0234-snapshot-containers-migrate-across-disks.md)'s copy of the rootfs as a full subvolume is superseded, and `cix_btrfs_subvol_copy()`, which it alone used, is removed.
+- **A direct-mode container's quota follows the rootfs's filesystem.** The general quota block chose between a qgroup and a project quota by asking whether the base was btrfs. That is now the wrong filesystem.
+- **A seed that would copy says so.** A snapshot is possible only when the image version is itself a subvolume. If it is not, `cix_btrfs_snapshot_or_copy()` copies, correctly, on the loop, and the create logs that, as it logs a userns seed that copies after a failed snapshot.
 
 ## Open, tracked
 

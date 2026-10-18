@@ -69,7 +69,16 @@ static int copy_file_preserve_mode(const char *src, const char *dst)
 	return rc;
 }
 
-static int treecopy_walk(const char *src_root, const char *dst_root, const char *relpath)
+static int is_skipped(const char *name, const char *const *skip)
+{
+	for (; skip != NULL && *skip != NULL; skip++)
+		if (strcmp(name, *skip) == 0)
+			return 1;
+	return 0;
+}
+
+static int treecopy_walk(const char *src_root, const char *dst_root, const char *relpath,
+                         const char *const *skip_top)
 {
 	char src_dir[PATH_MAX];
 	DIR *d;
@@ -113,6 +122,8 @@ static int treecopy_walk(const char *src_root, const char *dst_root, const char 
 
 		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
 			continue;
+		if (relpath[0] == '\0' && is_skipped(de->d_name, skip_top))
+			continue;
 		snprintf(child_rel, sizeof(child_rel), "%s%s%s", relpath, relpath[0] ? "/" : "", de->d_name);
 		snprintf(src_path, sizeof(src_path), "%s/%s", src_dir, de->d_name);
 		snprintf(dst_path, sizeof(dst_path), "%s/%s", dst_root, child_rel);
@@ -129,7 +140,7 @@ static int treecopy_walk(const char *src_root, const char *dst_root, const char 
 				closedir(d);
 				return -1;
 			}
-			if (treecopy_walk(src_root, dst_root, child_rel) != 0) {
+			if (treecopy_walk(src_root, dst_root, child_rel, NULL) != 0) {
 				closedir(d);
 				return -1;
 			}
@@ -233,6 +244,12 @@ static int mkdir_p(const char *path)
 
 int treecopy_recursive(const char *src_root, const char *dst_root)
 {
+	return treecopy_recursive_except(src_root, dst_root, NULL);
+}
+
+int treecopy_recursive_except(const char *src_root, const char *dst_root,
+                              const char *const *skip_top)
+{
 	/*
 	 * Create the destination ROOT, not just the subdirectories inside
 	 * it. treecopy_walk() mkdirs each directory it finds under the
@@ -251,5 +268,5 @@ int treecopy_recursive(const char *src_root, const char *dst_root)
 		treecopy_fail("create destination root", dst_root);
 		return -1;
 	}
-	return treecopy_walk(src_root, dst_root, "");
+	return treecopy_walk(src_root, dst_root, "", skip_top);
 }

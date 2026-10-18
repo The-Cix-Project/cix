@@ -270,6 +270,7 @@ static char g_disks_dir[PATH_MAX] = "";
 char STATE_DIR[PATH_MAX];
 char REBUILDABLE_DIR[PATH_MAX];
 char IMAGES_DIR[PATH_MAX];
+char CONTAINER_ROOTFS_DIR[PATH_MAX]; /* ADR-0341, see daemonpaths.h */
 char CONTAINERS_DIR[PATH_MAX];
 char NETWORKS_STATE_PATH[PATH_MAX];
 char DNS_RECORDS_STATE_PATH[PATH_MAX];
@@ -531,6 +532,8 @@ static void compute_state_dir_relative_paths(void)
 static void compute_rebuildable_dir_relative_paths(void)
 {
 	snprintf(IMAGES_DIR, sizeof(IMAGES_DIR), "%s/images", REBUILDABLE_DIR);
+	snprintf(CONTAINER_ROOTFS_DIR, sizeof(CONTAINER_ROOTFS_DIR), "%s/%s", REBUILDABLE_DIR,
+	         REBUILDABLE_ROOTFS_SUBDIR);
 	snprintf(PKG_DIR, sizeof(PKG_DIR), "%s/pkg", REBUILDABLE_DIR);
 	snprintf(PKG_INSTALLED_STATE_PATH, sizeof(PKG_INSTALLED_STATE_PATH), "%s/pkg_installed.json", PKG_DIR);
 	snprintf(PKG_RECIPES_DIR, sizeof(PKG_RECIPES_DIR), "%s/recipes", PKG_DIR);
@@ -9368,12 +9371,27 @@ static int g_test_direct_rootfs;
 static int g_test_userns_idmap;
 
 /*
+ * ADR-0341: where a container's rootfs is, and the one place that path
+ * is built. Beside the image store, on the images' filesystem, so that
+ * it can be a snapshot of its image version -- never under the
+ * container's base, whose disk (`disk`, the container-storage role) is
+ * chosen for the container's state and volumes and need not be the
+ * images' filesystem at all. That mismatch is what made every create
+ * on .95 copy or fall back to overlay (#608).
+ */
+static void container_rootfs_dir(const char *name, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/%s", CONTAINER_ROOTFS_DIR, name);
+}
+
+/*
  * Where a stopped container's writable tree lives (ADR-0207 phase 2):
- * `<base>/rootfs` for a direct-rootfs container (its snapshot/copy is
- * the whole filesystem), `<base>/upper` for a classic overlay one. The
- * on-disk presence of rootfs IS the storage-mode marker -- no side
- * state to drift, the filesystem is the one source of truth, and a
- * container keeps its mode across restarts automatically.
+ * its rootfs (container_rootfs_dir()) for a direct-rootfs container,
+ * whose snapshot is the whole filesystem, and `<base>/upper` for a
+ * classic overlay one. The on-disk presence of the rootfs IS the
+ * storage-mode marker -- no side state to drift, the filesystem is the
+ * one source of truth, and a container keeps its mode across restarts
+ * automatically.
  */
 void container_writable_path(const char *container_root, const char *name,
                                      const char *rel_path, char *out, size_t out_size)
@@ -9381,7 +9399,7 @@ void container_writable_path(const char *container_root, const char *name,
 	struct stat wst;
 	char wbase[PATH_MAX];
 
-	snprintf(wbase, sizeof(wbase), "%s/%s/rootfs", container_root, name);
+	container_rootfs_dir(name, wbase, sizeof(wbase));
 	if (!(stat(wbase, &wst) == 0 && S_ISDIR(wst.st_mode)))
 		snprintf(wbase, sizeof(wbase), "%s/%s/upper", container_root, name);
 	snprintf(out, out_size, "%s%s", wbase, rel_path);
@@ -9397,8 +9415,8 @@ void container_root_for(const char *disk_name, char *out, size_t out_size);
  * write. An overlay container's root is assembled by the kernel inside
  * the container's own mount namespace, so the only coherent way in
  * from the host is /proc/<pid>/root -- writing into the upperdir of a
- * live overlay is not supported. A container with <base>/rootfs pivots
- * onto that directory itself (ADR-0207's btrfs snapshot) or onto an
+ * live overlay is not supported. A container with a rootfs
+ * (container_rootfs_dir()) pivots onto that directory itself (ADR-0207's btrfs snapshot) or onto an
  * id-mapped bind of it (ADR-0179's userns presentation), and in both
  * of those the host-side directory IS the container's tree.
  *
@@ -9432,13 +9450,12 @@ void container_root_for(const char *disk_name, char *out, size_t out_size);
  * Returns 0 and fills out with the host-side root, or -1 when this
  * container has no such tree.
  */
-static int container_direct_rootfs(const char *container_root, const char *name, char *out,
-                                    size_t out_size)
+static int container_direct_rootfs(const char *name, char *out, size_t out_size)
 {
 	struct stat st;
 	char base[PATH_MAX];
 
-	snprintf(base, sizeof(base), "%s/%s/rootfs", container_root, name);
+	container_rootfs_dir(name, base, sizeof(base));
 	if (stat(base, &st) != 0 || !S_ISDIR(st.st_mode))
 		return -1;
 	snprintf(out, out_size, "%s", base);
@@ -13691,22 +13708,22 @@ static void workload_cgroup_path(const char *name, char *out, size_t out_size)
  * So the rootfs needs to say what it was made from. One line, in a
  * file beside it rather than inside it: inside would be visible to
  * the container and would travel with a snapshot of it, and both are
- * wrong for a fact about provenance.
+ * wrong for a fact about provenance. ADR-0341 moved the rootfs, and the
+ * marker moved with it: `<rootfs>.version`, so the two are always on
+ * the same filesystem and leave together.
  */
-#define ROOTFS_SEED_MARKER_REL "rootfs.version"
-
-static void rootfs_seed_version_path(const char *container_base, char *out, size_t out_size)
+static void rootfs_seed_version_path(const char *rootfs, char *out, size_t out_size)
 {
-	snprintf(out, out_size, "%s/%s", container_base, ROOTFS_SEED_MARKER_REL);
+	snprintf(out, out_size, "%s.version", rootfs);
 }
 
-static int rootfs_seed_version_read(const char *container_base, char *out, size_t out_size)
+static int rootfs_seed_version_read(const char *rootfs, char *out, size_t out_size)
 {
 	char path[PATH_MAX];
 	char *buf = NULL;
 	size_t len = 0;
 
-	rootfs_seed_version_path(container_base, path, sizeof(path));
+	rootfs_seed_version_path(rootfs, path, sizeof(path));
 	if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)
 		return -1;
 	while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r'))
@@ -13721,44 +13738,36 @@ static int rootfs_seed_version_read(const char *container_base, char *out, size_
 	return 0;
 }
 
-static int rootfs_seed_version_write(const char *container_base, const char *version)
+static int rootfs_seed_version_write(const char *rootfs, const char *version)
 {
 	char path[PATH_MAX];
 
-	rootfs_seed_version_path(container_base, path, sizeof(path));
+	rootfs_seed_version_path(rootfs, path, sizeof(path));
 	return persist_atomic_write(path, version, strlen(version));
 }
 
 /*
- * 1 when an existing <base>/rootfs was seeded from a different image
- * version than `want`, i.e. the caller must discard it and seed again.
- * 0 means keep what is there.
+ * 1 when an existing rootfs was seeded from a different image version
+ * than `want`, or carries no record of which one it was seeded from,
+ * i.e. the caller must discard it and seed again. 0 means keep what is
+ * there.
  *
- * A rootfs with no marker predates the marker, and its real origin
- * cannot be recovered. It is ADOPTED at the version it is pinned to
- * rather than rebuilt: a silent mass re-seed of every container on the
- * first boot after this lands would be a far worse surprise than one
- * more cycle of a staleness that already exists. A container that had
- * already drifted stays drifted until its image version next moves, at
- * which point it rebuilds correctly like any other. From the adoption
- * on, the marker is real and every later change is caught.
+ * No record means the marker write after a seed failed, since every
+ * seed at this location writes one (ADR-0341). Seeding again costs one
+ * snapshot, and it is the only answer that cannot leave a container on
+ * a tree of unknown origin. ADR-0277's "adopt a tree that predates the
+ * marker" rule went with the old location: nothing here predates it.
  */
-static int rootfs_needs_reseed(const char *name, const char *container_base, const char *want)
+static int rootfs_needs_reseed(const char *name, const char *rootfs, const char *want)
 {
 	char seeded[IMAGE_VERSION_MAX];
 
-	if (rootfs_seed_version_read(container_base, seeded, sizeof(seeded)) != 0) {
-		if (rootfs_seed_version_write(container_base, want) != 0)
-			logstore_write("cixd", "warn",
-			                "%s: could not record which image version its rootfs was seeded "
-			                "from (%s) -- it will be adopted again on the next start",
-			                name, strerror(errno));
-		else
-			logstore_write("cixd", "info",
-			                "%s: adopted its existing rootfs as image version %s -- it "
-			                "predates the seed marker, so its real origin is unknown",
-			                name, want);
-		return 0;
+	if (rootfs_seed_version_read(rootfs, seeded, sizeof(seeded)) != 0) {
+		logstore_write("cixd", "warn",
+		                "%s: rootfs has no record of the image version it was seeded from -- "
+		                "seeding it again from %s",
+		                name, want);
+		return 1;
 	}
 	if (strcmp(seeded, want) == 0)
 		return 0;
@@ -13767,6 +13776,244 @@ static int rootfs_needs_reseed(const char *name, const char *container_base, con
 	                "pinned to %s -- rebuilding it from the new version",
 	                name, seeded, want);
 	return 1;
+}
+
+/*
+ * ADR-0341: a tree that has stopped being a container's storage -- a
+ * rootfs at a pin move, an old release's tree at the cut-over, a whole
+ * base at a delete -- is set aside and deleted by a helper child, never
+ * on the loop.
+ *
+ * Setting aside is a rename into a `.discard` directory on the tree's
+ * own filesystem (rootfs_discard()): O(1), since a rename cannot cross
+ * a filesystem anyway. The delete is not, and it is what must not run
+ * here. An rmtree costs as
+ * much as the copy that made the tree -- the copies on .95 made the
+ * loop wait 4-5 s per roll (#608) -- and even a subvolume delete waits
+ * on qgroup accounting, whose cost at scale is #613's question.
+ *
+ * Each entry's name starts with this daemon's start time, so a later
+ * start can tell what an earlier one never finished from what this one
+ * is deleting now (rootfs_discard_sweep()).
+ */
+#define ROOTFS_DISCARD_DIR ".discard"
+
+/*
+ * At most this many deletes run at once; the rest wait in order. A
+ * roll of one image followed by a hundred containers sets a hundred
+ * trees aside in one pass, and a hundred children deleting at once
+ * would be a fork storm and a disk storm both, for work nothing waits
+ * on.
+ */
+#define ROOTFS_DISCARD_MAX_RUNNING 2
+
+struct rootfs_discard_job {
+	struct rootfs_discard_job *next;
+	char entry[PATH_MAX];
+};
+
+static unsigned long g_rootfs_discard_seq;
+static int g_rootfs_discard_running;
+static struct rootfs_discard_job *g_rootfs_discard_head, *g_rootfs_discard_tail;
+
+static void rootfs_discard_next(void);
+
+static int rootfs_discard_work(void *arg)
+{
+	return cix_btrfs_subvol_delete_or_rmtree(((const struct rootfs_discard_job *)arg)->entry);
+}
+
+static void rootfs_discard_done(int exit_status, void *ctx)
+{
+	struct rootfs_discard_job *job = ctx;
+
+	if (exit_status != 0)
+		logstore_write("cixd", "warn",
+		                "could not delete %s, set aside when it stopped being a container's "
+		                "rootfs -- the next daemon start tries again",
+		                job->entry);
+	free(job);
+	g_rootfs_discard_running--;
+	rootfs_discard_next();
+}
+
+/* Starts queued deletes while there is room. A job that cannot start is
+ * dropped with a warning: its entry stays in .discard, where the next
+ * daemon start's sweep finds it. */
+static void rootfs_discard_next(void)
+{
+	while (g_rootfs_discard_running < ROOTFS_DISCARD_MAX_RUNNING &&
+	       g_rootfs_discard_head != NULL) {
+		struct rootfs_discard_job *job = g_rootfs_discard_head;
+
+		g_rootfs_discard_head = job->next;
+		if (g_rootfs_discard_head == NULL)
+			g_rootfs_discard_tail = NULL;
+		if (helper_run(rootfs_discard_work, job, rootfs_discard_done, job, "rootfs discard") !=
+		    0) {
+			logstore_write("cixd", "warn",
+			                "could not start deleting %s (%s) -- the next daemon start does",
+			                job->entry, strerror(errno));
+			free(job);
+			continue;
+		}
+		g_rootfs_discard_running++;
+	}
+}
+
+/* Queues the delete of one entry already inside a .discard directory. */
+static int rootfs_discard_start(const char *entry)
+{
+	struct rootfs_discard_job *job = calloc(1, sizeof(*job));
+
+	if (job == NULL)
+		return -1;
+	snprintf(job->entry, sizeof(job->entry), "%s", entry);
+	if (g_rootfs_discard_tail != NULL)
+		g_rootfs_discard_tail->next = job;
+	else
+		g_rootfs_discard_head = job;
+	g_rootfs_discard_tail = job;
+	rootfs_discard_next();
+	return 0;
+}
+
+/* The path `leaf` takes inside `trash` when this daemon sets it aside. */
+static void rootfs_discard_entry(const char *trash, const char *leaf, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/%lld-%lu-%s", trash, (long long)g_daemon_started_at,
+	         ++g_rootfs_discard_seq, leaf);
+}
+
+/*
+ * Sets `path` aside in `trash_parent`/.discard and queues its delete.
+ * `trash_parent` must be on the same filesystem as `path`, since a
+ * rename cannot cross one: CONTAINER_ROOTFS_DIR for a rootfs, and the
+ * container root for anything in a container's base. Keeping the trash
+ * at those two levels, never inside a base, is what lets a base itself
+ * be set aside, and lets the sweeps find every entry.
+ *
+ * 0 when nothing is left at `path`: it was absent, or it is now in the
+ * trash. A delete that cannot be queued is not a failure of this call
+ * -- the tree is already out of the way, and the next start's sweep
+ * deletes it.
+ */
+static int rootfs_discard(const char *name, const char *path, const char *trash_parent)
+{
+	char trash[PATH_MAX], leaf[PATH_MAX], entry[PATH_MAX];
+	const char *slash = strrchr(path, '/');
+	struct stat st;
+
+	if (lstat(path, &st) != 0)
+		return errno == ENOENT ? 0 : -1;
+	snprintf(trash, sizeof(trash), "%s/%s", trash_parent, ROOTFS_DISCARD_DIR);
+	if (mkdir(trash, 0700) != 0 && errno != EEXIST)
+		return -1;
+	/* "<container>-<what>", so an entry says whose and which tree it was. */
+	snprintf(leaf, sizeof(leaf), "%s-%s", name, slash != NULL ? slash + 1 : path);
+	rootfs_discard_entry(trash, leaf, entry, sizeof(entry));
+	if (rename(path, entry) != 0)
+		return -1;
+	if (rootfs_discard_start(entry) != 0)
+		logstore_write("cixd", "warn",
+		                "%s: %s is set aside in %s, but its delete could not be queued (%s) -- "
+		                "the next daemon start does it",
+		                name, path, trash, strerror(errno));
+	return 0;
+}
+
+/*
+ * Deletes what an EARLIER daemon start left in `dir`'s .discard. This
+ * start's own entries are already being deleted by the helper that set
+ * them aside, so they are left alone. A stale entry is first renamed
+ * into this start's name, so a second sweep in the same start cannot
+ * hand it to a second helper.
+ */
+static void rootfs_discard_sweep(const char *dir)
+{
+	char trash[PATH_MAX], stale[PATH_MAX], entry[PATH_MAX], ours[32];
+	DIR *d;
+	struct dirent *de;
+
+	snprintf(trash, sizeof(trash), "%s/%s", dir, ROOTFS_DISCARD_DIR);
+	d = opendir(trash);
+	if (d == NULL)
+		return;
+	snprintf(ours, sizeof(ours), "%lld-", (long long)g_daemon_started_at);
+	while ((de = readdir(d)) != NULL) {
+		if (de->d_name[0] == '.' || strncmp(de->d_name, ours, strlen(ours)) == 0)
+			continue;
+		snprintf(stale, sizeof(stale), "%s/%s", trash, de->d_name);
+		rootfs_discard_entry(trash, de->d_name, entry, sizeof(entry));
+		if (rename(stale, entry) != 0 || rootfs_discard_start(entry) != 0)
+			logstore_write("cixd", "warn", "could not start deleting %s (%s)", stale,
+			                strerror(errno));
+	}
+	closedir(d);
+}
+
+/*
+ * ADR-0341's cut-over, for one container's base: a rootfs, or its seed
+ * marker, left there by a release before the rootfs moved beside its
+ * image. Set aside once, like any discarded rootfs. The container then
+ * seeds at its real location, which is one re-seed -- what ADR-0277
+ * already does at every pin move.
+ *
+ * It also sweeps the container root's trash, which is how a delete an
+ * earlier start never finished, on a disk other than the default one,
+ * gets finished: the next create on that disk.
+ */
+static int rootfs_cutover_base(const char *name, const char *container_root,
+                               const char *container_base)
+{
+	char legacy[PATH_MAX];
+
+	rootfs_discard_sweep(container_root);
+	snprintf(legacy, sizeof(legacy), "%s/rootfs.version", container_base);
+	if (unlink(legacy) != 0 && errno != ENOENT)
+		return -1;
+	snprintf(legacy, sizeof(legacy), "%s/rootfs", container_base);
+	return rootfs_discard(name, legacy, container_root);
+}
+
+/*
+ * A seed on btrfs is a snapshot only when the image version is itself a
+ * subvolume. cix_btrfs_snapshot_or_copy() makes a copy when it is not,
+ * which is correct, and which holds the loop for a whole-image copy --
+ * the cost ADR-0341 exists to remove -- so it says so, once per seed.
+ */
+static void rootfs_seed_warn_if_copy(const char *name, const char *lowerdir)
+{
+	if (cix_btrfs_is_backing(lowerdir) && !cix_btrfs_is_subvolume(lowerdir))
+		logstore_write("cixd", "warn",
+		                "container %s: image version %s is not a btrfs subvolume, so its "
+		                "rootfs is a copy made on the event loop rather than a snapshot",
+		                name, lowerdir);
+}
+
+/*
+ * Everything a deleted container leaves on disk: its rootfs beside the
+ * image store, that rootfs's seed marker, and its base. Each is set
+ * aside and deleted by a helper child, so a delete costs the loop a
+ * few renames rather than an rmtree of a whole tree -- which is what
+ * persist_remove_tree() of a base holding a copied rootfs used to be.
+ */
+static void container_storage_release(const char *name, const char *container_root,
+                                      const char *container_base)
+{
+	char rootfs[PATH_MAX], marker[PATH_MAX];
+
+	container_rootfs_dir(name, rootfs, sizeof(rootfs));
+	rootfs_seed_version_path(rootfs, marker, sizeof(marker));
+	if (unlink(marker) != 0 && errno != ENOENT)
+		logstore_write("cixd", "warn", "DELETE %s: could not remove %s: %s", name, marker,
+		                strerror(errno));
+	if (rootfs_discard(name, rootfs, CONTAINER_ROOTFS_DIR) != 0)
+		logstore_write("cixd", "warn", "DELETE %s: could not set aside %s: %s", name, rootfs,
+		                strerror(errno));
+	if (rootfs_discard(name, container_base, container_root) != 0)
+		logstore_write("cixd", "warn", "DELETE %s: could not set aside %s: %s", name,
+		                container_base, strerror(errno));
 }
 
 /*
@@ -13969,7 +14216,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 * stage_container_file() for why the id-mapped one must stay 0.
 	 */
 	uid_t stage_id_offset = 0;
-	char direct_rootfs_dir[PATH_MAX]; /* ADR-0207: <base>/rootfs when direct_mode */
+	char direct_rootfs_dir[PATH_MAX]; /* ADR-0207 direct mode: container_rootfs_dir() */
 	int direct_mode = 0;          /* ADR-0207 phase 2: snapshot/copy rootfs, no overlay */
 	struct stat st;
 	struct container_spec spec;
@@ -15372,37 +15619,67 @@ static int create_container_from_body(const char *body, size_t body_len,
 	disk_quota_bytes = jdisk_quota != NULL ? (long long)json_as_number(jdisk_quota) : 0;
 
 	/*
+	 * ADR-0341: a container's rootfs is a snapshot of its image version,
+	 * at container_rootfs_dir(), beside the image store -- not under
+	 * container_base, which may be on another disk. A rootfs a release
+	 * before this left under container_base is set aside first, once.
+	 * The directory is made here as well as at startup, because a
+	 * rebuildable-storage move leaves it behind (storagemigrate.c).
+	 */
+	if (rootfs_cutover_base(name, container_root, container_base) != 0) {
+		int err = errno;
+
+		json_free(root);
+		snprintf(err_msg, err_msg_size,
+		         "could not set aside the rootfs this container had before ADR-0341: %s",
+		         strerror(err));
+		return 500;
+	}
+	if (persist_mkdir_p(CONTAINER_ROOTFS_DIR) != 0) {
+		int err = errno;
+
+		json_free(root);
+		snprintf(err_msg, err_msg_size, "could not create %s: %s", CONTAINER_ROOTFS_DIR,
+		         strerror(err));
+		return 500;
+	}
+
+	/*
 	 * ADR-0179 phase 2c option (a): a userns container does not use an
-	 * overlay -- it gets its own per-container rootfs (a CoW copy of the
-	 * image), which container_create() id-maps and pivots into directly.
-	 * Create that copy here (host-side), the merged mountpoint the child
-	 * pivots onto, and stage the container's own files straight into the
-	 * rootfs instead of an overlay upperdir. The copy is made only on first
-	 * create (reused on restart, so writes persist).
+	 * overlay -- it gets its own per-container rootfs, which
+	 * container_create() id-maps and pivots into directly. Seed it here
+	 * (host-side), with the merged mountpoint the child pivots onto, and
+	 * stage the container's own files straight into the rootfs instead
+	 * of an overlay upperdir. It is seeded on first create and reused on
+	 * restart, so writes persist until the image pin moves.
 	 */
 	if (userns) {
 		struct stat rst;
 
-		snprintf(userns_rootfs, sizeof(userns_rootfs), "%s/rootfs", container_base);
+		container_rootfs_dir(name, userns_rootfs, sizeof(userns_rootfs));
 		/*
 		 * ADR-0277: an existing rootfs is kept only while it still
 		 * matches the image version this container is pinned to.
-		 * When the pin has moved the tree is discarded and seeded
+		 * When the pin has moved the tree is set aside and seeded
 		 * again below -- that is what makes follow_rolling actually
 		 * apply. Safe here because a userns container can always be
 		 * re-seeded: the snapshot path and the copy+chown fallback
 		 * are both below.
 		 */
 		if (stat(userns_rootfs, &rst) == 0 &&
-		    rootfs_needs_reseed(name, container_base, resolved_image_version)) {
-			if (cix_btrfs_subvol_delete_or_rmtree(userns_rootfs) != 0) {
-				json_free(root);
-				snprintf(err_msg, err_msg_size,
-				         "could not discard the rootfs seeded from the previous image "
-				         "version");
-				return 500;
-			}
+		    rootfs_needs_reseed(name, userns_rootfs, resolved_image_version) &&
+		    rootfs_discard(name, userns_rootfs, CONTAINER_ROOTFS_DIR) != 0) {
+			int err = errno;
+
+			json_free(root);
+			snprintf(err_msg, err_msg_size,
+			         "could not set aside the rootfs seeded from the previous image "
+			         "version: %s",
+			         strerror(err));
+			return 500;
 		}
+		if (stat(userns_rootfs, &rst) != 0)
+			rootfs_seed_warn_if_copy(name, lowerdir);
 		if (stat(userns_rootfs, &rst) == 0) {
 			/*
 			 * Revival: the rootfs IS this container's state; which
@@ -15414,7 +15691,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * subordinate base. No side state to drift.
 			 */
 			spec.userns_idmap = (rst.st_uid == 0);
-		} else if (cix_btrfs_is_backing(container_base) &&
+		} else if (cix_btrfs_is_backing(CONTAINER_ROOTFS_DIR) &&
 		           cix_btrfs_snapshot_or_copy(lowerdir, userns_rootfs) == 0) {
 			/*
 			 * ADR-0207 phase 3: on btrfs a userns container's rootfs
@@ -15426,7 +15703,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * sharing). One storage model, two presentations.
 			 */
 			spec.userns_idmap = 1;
-			rootfs_seed_version_write(container_base, resolved_image_version);
+			rootfs_seed_version_write(userns_rootfs, resolved_image_version);
 			if (disk_quota_bytes > 0) {
 				if (cix_btrfs_qgroup_limit_excl(userns_rootfs,
 				                                 (unsigned long long)disk_quota_bytes) !=
@@ -15453,9 +15730,22 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * what `cp -a` kept: owner, exact mode, timestamps,
 			 * symlinks and device nodes. What it drops is the reflink,
 			 * which ext4 -- the host this branch exists for -- cannot do.
+			 *
+			 * It runs on the loop, for the length of a whole-image
+			 * copy; moving it to a helper child is ADR-0341 phase 2
+			 * (#614). On btrfs this branch is a failed snapshot, which
+			 * ADR-0341 exists to make impossible -- so if it happens
+			 * anyway it says so, rather than copying in silence the
+			 * way every userns create on .95 did before (#608).
 			 */
 			long long base = 0;
+			int snap_err = errno;
 
+			if (cix_btrfs_is_backing(CONTAINER_ROOTFS_DIR))
+				logstore_write("cixd", "warn",
+				                "container %s: could not snapshot the image rootfs (%s) -- "
+				                "copying it instead, which holds the event loop",
+				                name, strerror(snap_err));
 			if (cix_tree_copy(lowerdir, userns_rootfs) != 0) {
 				int err = errno;
 
@@ -15465,7 +15755,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 				         strerror(err));
 				return 500;
 			}
-			rootfs_seed_version_write(container_base, resolved_image_version);
+			rootfs_seed_version_write(userns_rootfs, resolved_image_version);
 			if (g_test_userns_idmap) {
 				/* Leave the copy host-0-owned and id-map it: that is
 				 * byte-for-byte the presentation a btrfs snapshot gets,
@@ -15496,9 +15786,9 @@ static int create_container_from_body(const char *body, size_t body_len,
 		 * files[] (and every synthetic file: nsswitch, nslcd, dhcp)
 		 * are staged into stage_dir next, and a direct-mode container
 		 * reads its files from its rootfs, not from an overlay
-		 * upperdir it will never mount. The on-disk presence of
-		 * <base>/rootfs is the mode marker: a revived container whose
-		 * rootfs exists keeps it, PROVIDED it was seeded from the image
+		 * upperdir it will never mount. The on-disk presence of its
+		 * rootfs (container_rootfs_dir()) is the mode marker: a
+		 * revived container whose rootfs exists keeps it, PROVIDED it was seeded from the image
 		 * version this container is still pinned to -- ADR-0277, which
 		 * amended this rule after the unconditional form made
 		 * follow_rolling inert (see rootfs_needs_reseed()). When the
@@ -15507,11 +15797,14 @@ static int create_container_from_body(const char *body, size_t body_len,
 		 * is derived from its image, and anything that must outlive an
 		 * image version belongs on a volume. A fresh create on btrfs
 		 * snapshots the image's subvolume (O(1), copy-on-write);
-		 * anything else stays on the classic overlay path until phase 4. A failed snapshot (e.g. image store and
-		 * container storage on different filesystems, which
-		 * SNAP_CREATE_V2 cannot cross) falls back to overlay LOUDLY --
-		 * the overlay-on-btrfs upperdir path (ADR-0103) is still fully
-		 * functional, so the fallback is honest, not hidden.
+		 * anything else stays on the classic overlay path until phase 4.
+		 * A failed snapshot falls back to overlay LOUDLY -- the
+		 * overlay-on-btrfs upperdir path (ADR-0103) is still fully
+		 * functional, so the fallback is honest, not hidden. Until
+		 * ADR-0341 it was the ordinary case on any host whose image
+		 * store and container storage were different filesystems,
+		 * which SNAP_CREATE_V2 cannot cross; the rootfs now lives
+		 * beside the image so that it never is.
 		 */
 		struct stat rst;
 		/*
@@ -15522,23 +15815,27 @@ static int create_container_from_body(const char *body, size_t body_len,
 		 * replace would drop the container onto the overlay path with
 		 * an empty upperdir, which is worse than the staleness.
 		 */
-		int can_seed = (g_test_direct_rootfs || cix_btrfs_is_backing(container_base));
+		int can_seed = (g_test_direct_rootfs || cix_btrfs_is_backing(CONTAINER_ROOTFS_DIR));
 
-		snprintf(direct_rootfs_dir, sizeof(direct_rootfs_dir), "%s/rootfs", container_base);
+		container_rootfs_dir(name, direct_rootfs_dir, sizeof(direct_rootfs_dir));
 		if (can_seed && stat(direct_rootfs_dir, &rst) == 0 && S_ISDIR(rst.st_mode) &&
-		    rootfs_needs_reseed(name, container_base, resolved_image_version) &&
-		    cix_btrfs_subvol_delete_or_rmtree(direct_rootfs_dir) != 0) {
+		    rootfs_needs_reseed(name, direct_rootfs_dir, resolved_image_version) &&
+		    rootfs_discard(name, direct_rootfs_dir, CONTAINER_ROOTFS_DIR) != 0) {
+			int err = errno;
+
 			json_free(root);
 			snprintf(err_msg, err_msg_size,
-			         "could not discard the rootfs seeded from the previous image version");
+			         "could not set aside the rootfs seeded from the previous image version: %s",
+			         strerror(err));
 			return 500;
 		}
 		if (stat(direct_rootfs_dir, &rst) == 0 && S_ISDIR(rst.st_mode)) {
 			direct_mode = 1;
 		} else if (can_seed) {
+			rootfs_seed_warn_if_copy(name, lowerdir);
 			if (cix_btrfs_snapshot_or_copy(lowerdir, direct_rootfs_dir) == 0) {
 				direct_mode = 1;
-				rootfs_seed_version_write(container_base, resolved_image_version);
+				rootfs_seed_version_write(direct_rootfs_dir, resolved_image_version);
 			} else {
 				logstore_write("cixd", "warn",
 				                "container %s: could not snapshot the image rootfs (%s) -- "
@@ -15549,6 +15846,22 @@ static int create_container_from_body(const char *body, size_t body_len,
 		if (direct_mode) {
 			snprintf(merged, sizeof(merged), "%s", direct_rootfs_dir);
 			stage_dir = direct_rootfs_dir;
+			/*
+			 * ADR-0341's cut-over for a container that ran on the
+			 * overlay path because its snapshot could not cross a
+			 * filesystem (ntp-1 and ntp-2 on .95, #608): its upper
+			 * and work trees are no longer its storage.
+			 */
+			if (rootfs_discard(name, upperdir, container_root) != 0 ||
+			    rootfs_discard(name, workdir, container_root) != 0) {
+				int err = errno;
+
+				json_free(root);
+				snprintf(err_msg, err_msg_size,
+				         "could not set aside this container's overlay trees: %s",
+				         strerror(err));
+				return 500;
+			}
 		}
 	}
 
@@ -16247,7 +16560,14 @@ static int create_container_from_body(const char *body, size_t body_len,
 		 * quotactl-capable filesystem) keeps the existing Part 4/
 		 * ADR-0062 flow completely unchanged.
 		 */
-		if (overlay_backing_is_btrfs(container_base)) {
+		/*
+		 * ADR-0341: a direct-mode rootfs is not under container_base,
+		 * so it is ITS filesystem that decides -- the qgroup below is
+		 * set on the rootfs, and container_base may be ext4 while the
+		 * rootfs is btrfs.
+		 */
+		if (direct_mode ? cix_btrfs_is_backing(direct_rootfs_dir)
+		                : overlay_backing_is_btrfs(container_base)) {
 			spec.ov.quota_bytes = disk_quota_bytes;
 		} else {
 			uint32_t projid;
@@ -17249,18 +17569,7 @@ static void handle_delete(int fd, const char *name)
 		if (umount2(merged, MNT_DETACH) != 0 && errno != EINVAL && errno != ENOENT)
 			fprintf(stderr, "DELETE %s: umount2(%s) failed: %s\n", name, merged,
 			        strerror(errno));
-		{
-			/* ADR-0207: a direct-mode container's rootfs is a btrfs
-			 * subvolume persist_remove_tree cannot remove -- destroy it
-			 * first; a no-op (ENOENT) for overlay-mode containers. */
-			char droot[PATH_MAX];
-
-			snprintf(droot, sizeof(droot), "%s/rootfs", container_base);
-			cix_btrfs_subvol_delete_or_rmtree(droot);
-		}
-		if (persist_remove_tree(container_base) != 0)
-			fprintf(stderr, "DELETE %s: failed to remove %s: %s\n", name, container_base,
-			        strerror(errno));
+		container_storage_release(name, container_root, container_base);
 	}
 
 	/*
@@ -19514,8 +19823,7 @@ static void handle_container_file_write(int fd, const char *name, const char *re
 
 	if (!stopped)
 		container_root_for(e->disk_name, container_root, sizeof(container_root));
-	have_rootfs_base = (container_direct_rootfs(container_root, name, rootfs_base,
-	                                             sizeof(rootfs_base)) == 0);
+	have_rootfs_base = (container_direct_rootfs(name, rootfs_base, sizeof(rootfs_base)) == 0);
 	if (!stopped && e->running) {
 		char proc_root[64];
 
@@ -20456,22 +20764,12 @@ static void handle_container_migrate_storage_post(int fd, const char *name, cons
 	snprintf(target_base, sizeof(target_base), "%s/%s", target_root, name);
 
 	/*
-	 * Snapshot containers (ADR-0207) migrate too, as of ADR-0234.
-	 *
-	 * This used to refuse them outright, and the refusal was right at
-	 * the time: the copy child ran treecopy_recursive() over the whole
-	 * container directory, which would have reproduced the rootfs
-	 * subvolume as an ordinary directory -- every file present, and
-	 * nothing that could be snapshotted or qgroup-limited afterwards.
-	 * Refusing loudly beat corrupting quietly.
-	 *
-	 * The child now recognises the layout and reproduces the rootfs as
-	 * a real subvolume on the target (cix_btrfs_subvol_copy()), so the
-	 * reason to refuse is gone. What is NOT recovered is extent
-	 * sharing: it does not cross filesystems, so a migrated container
-	 * occupies its full size on the target disk. That is inherent, and
-	 * the API documents it rather than surprising the operator with a
-	 * disk that fills faster than expected.
+	 * Snapshot containers (ADR-0207) migrate too, as of ADR-0234, and
+	 * since ADR-0341 there is no rootfs to carry: it is a snapshot
+	 * beside the container's image, not in its base, so the move
+	 * copies the base and the rootfs stays where it is, still sharing
+	 * extents with its image. ADR-0234 used to copy the rootfs to the
+	 * target as a full, unshared subvolume.
 	 */
 
 	if (persist_mkdir_p(target_base) != 0) {
@@ -34034,17 +34332,7 @@ static void container_exit_finalize(struct registry_entry *entry)
 			container_root_for(disk_copy, container_root, sizeof(container_root));
 			snprintf(container_base, sizeof(container_base), "%s/%s", container_root,
 			         name_copy);
-			{
-				/* ADR-0207: same subvolume pre-destroy as the sync
-				 * delete path above. */
-				char droot[PATH_MAX];
-
-				snprintf(droot, sizeof(droot), "%s/rootfs", container_base);
-				cix_btrfs_subvol_delete_or_rmtree(droot);
-			}
-			if (persist_remove_tree(container_base) != 0)
-				fprintf(stderr, "DELETE %s (async completion): failed to remove %s: %s\n",
-				        name_copy, container_base, strerror(errno));
+			container_storage_release(name_copy, container_root, container_base);
 		}
 		return;
 	}
@@ -35391,6 +35679,7 @@ static int cixd_main(int argc, char **argv)
 	 * only needs to create the leaf subdirectory under it. */
 	if (ensure_dir(STATE_DIR) != 0 ||
 	    ensure_dir(REBUILDABLE_DIR) != 0 || ensure_dir(IMAGES_DIR) != 0 ||
+	    ensure_dir(CONTAINER_ROOTFS_DIR) != 0 ||
 	    ensure_dir(CONTAINERS_DIR) != 0 || ensure_dir(PKI_DIR) != 0 ||
 	    ensure_dir(PKI_CERTS_DIR) != 0 || ensure_dir(PKG_DIR) != 0 ||
 	    ensure_dir(ARTIFACTS_DIR) != 0 || ensure_dir(SIGNING_KEYS_DIR) != 0 ||
@@ -36118,6 +36407,11 @@ static int cixd_main(int argc, char **argv)
 			               swept);
 	}
 
+	/* ADR-0341: finish the deletes an earlier start set aside and never
+	 * completed. Before autostart, so this start's own discards are
+	 * not mistaken for them; needs g_epfd for its helper children. */
+	rootfs_discard_sweep(CONTAINER_ROOTFS_DIR);
+	rootfs_discard_sweep(CONTAINERS_DIR);
 	containerdef_autostart_all();
 	rearm_roll_watches(); /* ADR-0323 answer 4 */
 

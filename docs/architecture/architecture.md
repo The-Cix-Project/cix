@@ -99,23 +99,28 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    base["BASE_DIR<br/>the cix-containers partition"] --> imgs["images/<br/>one immutable rootfs per version"]
-    base --> ctrs["containers/<br/>per-container upperdir"]
+    base["BASE_DIR<br/>the cix-containers partition"] --> rebuild["rebuildable/<br/>its own disk when one carries rebuildable-storage"]
+    rebuild --> imgs["images/<br/>one immutable rootfs per version"]
+    rebuild --> rootfs["rootfs/<br/>each container's rootfs, a snapshot of its image version"]
+    imgs -. "snapshot, O(1), same filesystem" .-> rootfs
+    rebuild --> arts["artifacts/, pkg/<br/>hostbuild output, package cache"]
+    base --> ctrs["containers/<br/>per-container base: overlay upper, pivot mountpoint"]
     base --> vols["volumes/<br/>outlive their containers, own backups"]
-    base --> arts["artifacts/<br/>hostbuild output, package cache"]
-    base --> cfg["networks, dns, pki, ldap, ntp,<br/>pkg, site, definitions, logs"]
+    base --> cfg["networks, dns, pki, ldap, ntp,<br/>site, definitions, logs"]
 ```
 
-Everything cixd owns lives under `BASE_DIR` on the real `cix-containers` partition ([ADR-0018](../adr/0018-containers-partition-for-base-dir-persistence.md)).
+Everything cixd owns lives under `BASE_DIR` on the real `cix-containers` partition ([ADR-0018](../adr/0018-containers-partition-for-base-dir-persistence.md)), except what a storage role moves to a disk of its own.
 
 An **image** is a set of immutable, content-addressed rootfs trees, one per version, the version being a hash of the installed package set ([ADR-0107](../adr/0107-package-image-versioning.md), [ADR-0108](../adr/0108-image-version-content-hash.md)). **An image's content comes only from its packages** ([ADR-0333](../adr/0333-an-images-content-comes-only-from-packages.md)) — the platform writes nothing into one. A container pins the version current when it was created and keeps running it.
+
+**A container's rootfs is a btrfs snapshot of that version, kept beside the image store** ([ADR-0341](../adr/0341-a-containers-rootfs-is-a-snapshot-on-its-images-filesystem.md)), because a snapshot cannot cross a filesystem. A roll is one snapshot ioctl however many containers follow the image, and a discarded tree is deleted by a helper child, off the event loop.
 
 ## Container runtime library
 
 ```mermaid
 flowchart LR
     hdr["include/container.h<br/>linked into cixd and nothing else"] --> ns["Namespaces + cgroups<br/>clone3 directly, no runc"]
-    hdr --> ovl["OverlayFS<br/>or a per-container rootfs for userns"]
+    hdr --> ovl["A snapshot rootfs per container<br/>OverlayFS where storage is not btrfs"]
     hdr --> netplane["netplane<br/>rtnetlink and nl80211 directly"]
     hdr --> devcg["BPF_CGROUP_DEVICE<br/>default-deny allow-list"]
     ns --> ctr["a container"]
@@ -126,8 +131,8 @@ flowchart LR
 
 `include/container.h`, linked directly into cixd and nothing else.
 
-- **Namespaces and cgroups**, via `clone3` directly — no runc, no libcontainer. User namespaces are the default ([ADR-0179](../adr/0179-user-namespaces-by-default-subordinate-id-allocation.md), [ADR-0207](../adr/0207-btrfs-storage-substrate-userns-by-default.md)), which is why a userns container gets its own rootfs copy or an id-mapped mount rather than an overlay.
-- **OverlayFS** for a non-userns container: the image version's rootfs is the shared lower layer, the container owns its upper diff.
+- **Namespaces and cgroups**, via `clone3` directly — no runc, no libcontainer. User namespaces are the default ([ADR-0179](../adr/0179-user-namespaces-by-default-subordinate-id-allocation.md), [ADR-0207](../adr/0207-btrfs-storage-substrate-userns-by-default.md)), and a userns container sees its snapshot rootfs through an id-mapped mount rather than a per-inode chown.
+- **A btrfs snapshot** of the image version is every container's rootfs ([ADR-0207](../adr/0207-btrfs-storage-substrate-userns-by-default.md), [ADR-0341](../adr/0341-a-containers-rootfs-is-a-snapshot-on-its-images-filesystem.md)). Only where rebuildable storage is not btrfs does a non-userns container fall back to **OverlayFS**, with the image version as its shared lower layer, and a userns one to a copy.
 - **netplane** talks to the kernel over rtnetlink sockets directly, never shelling out to `ip`/iproute2 — and over `nl80211` for a radio, because a wireless netdev belongs to a wiphy and cannot move alone.
 - **`BPF_CGROUP_DEVICE`** is a default-deny allow-list ([ADR-0017](../adr/0017-ebpf-cgroup-device-filter-for-hardware-passthrough.md)): the devices a container declared plus the standard nodes, then a deny epilogue. A container declaring no devices gets no program, and so no restriction.
 

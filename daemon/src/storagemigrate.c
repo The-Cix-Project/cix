@@ -5,6 +5,7 @@
 #include "persist.h"
 #include "events.h"
 #include "treecopy.h"
+#include "daemonpaths.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -89,6 +90,19 @@ static int find_disk(const char *disk_name, const char *os_containers_dir, struc
 	return 0;
 }
 
+/*
+ * ADR-0341: what a move of this kind leaves behind. Container rootfs
+ * live under REBUILDABLE_DIR as snapshots of their images; copying one
+ * would produce a plain tree that is neither, so each container is
+ * seeded again from its image at the new location instead.
+ */
+static const char *const *copy_skip_for_kind(enum storage_kind kind)
+{
+	static const char *const rebuildable_skip[] = { REBUILDABLE_ROOTFS_SUBDIR, NULL };
+
+	return kind == STORAGE_KIND_REBUILDABLE ? rebuildable_skip : NULL;
+}
+
 enum storagemigrate_error storagemigrate_start(enum storage_kind kind, const char *source_dir,
                                                 const char *target_dir, const char *target_disk_name,
                                                 const char *os_containers_dir, pid_t *out_pid,
@@ -141,7 +155,7 @@ enum storagemigrate_error storagemigrate_start(enum storage_kind kind, const cha
 			 * as diskformat_start()'s own forked child: this is real C
 			 * logic (treecopy_recursive()), not an external binary
 			 * invocation. */
-			int rc = treecopy_recursive(source_dir, target_dir);
+			int rc = treecopy_recursive_except(source_dir, target_dir, copy_skip_for_kind(kind));
 
 			if (rc != 0) {
 				const char *why = treecopy_last_error();
@@ -235,7 +249,8 @@ int storagemigrate_finalize(enum storage_kind kind)
 		return -1;
 	job = &g_jobs[kind];
 
-	if (treecopy_recursive(job->source_dir, job->target_dir) != 0) {
+	if (treecopy_recursive_except(job->source_dir, job->target_dir, copy_skip_for_kind(kind)) !=
+	    0) {
 		migrate_job_set_state(job, STORAGEMIGRATE_STATE_FAILED);
 		snprintf(job->error, sizeof(job->error), "final synchronous copy pass failed: %s",
 		         strerror(errno));

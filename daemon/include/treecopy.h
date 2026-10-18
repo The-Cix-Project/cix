@@ -55,6 +55,21 @@
 int treecopy_recursive(const char *src_root, const char *dst_root);
 
 /*
+ * The same copy, leaving out the entries directly under src_root that
+ * `skip_top` names: a NULL-terminated list, or NULL for none.
+ *
+ * ADR-0341 is why. A rebuildable-storage move skips "rootfs": a
+ * container's rootfs is a snapshot of its image, and a plain copy of
+ * one is neither a snapshot nor something the container should resume
+ * on, so the container is seeded again from its image at its next
+ * start. A container-storage move skips a rootfs left in the base by an
+ * older release and the trees set aside in ".discard", since both are
+ * about to be deleted.
+ */
+int treecopy_recursive_except(const char *src_root, const char *dst_root,
+                              const char *const *skip_top);
+
+/*
  * Why the last treecopy_recursive() failed: "<what>: <path>: <strerror>".
  * errno alone is useless to an operator -- "No such file or directory"
  * out of a multi-gigabyte migration names neither the entry nor the

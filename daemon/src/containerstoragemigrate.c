@@ -1,8 +1,6 @@
 #include "containerstoragemigrate.h"
-#include "btrfs.h"
 #include "containerdef.h"
 #include "linux_compat.h"
-#include "persist.h"
 #include "events.h"
 #include "treecopy.h"
 
@@ -12,7 +10,6 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -131,34 +128,18 @@ enum containerstoragemigrate_error containerstoragemigrate_start(const char *con
 	if (pid == 0) {
 		/* Same reasoning as storagemigrate_start()'s own child: real C
 		 * logic, not an external binary. */
-		char src_rootfs[PATH_MAX];
-		char dst_rootfs[PATH_MAX];
-		struct stat rst;
-		int rc;
-
 		/*
-		 * A snapshot container (ADR-0207) keeps its whole state in one
-		 * btrfs subvolume, <dir>/rootfs, and nothing else lives beside
-		 * it -- unlike the overlay layout's upper/ and work/.
-		 *
-		 * treecopy_recursive() would reproduce it as an ordinary
-		 * directory: every file present, and no longer a subvolume. It
-		 * would look like it worked, and the container would break at
-		 * the first thing that needed subvolume semantics -- another
-		 * snapshot, or a qgroup disk quota. That is why this case was
-		 * refused outright rather than copied, and cix_btrfs_subvol_
-		 * copy() is what makes it safe to stop refusing: the target is
-		 * created as a real subvolume before the data lands in it.
+		 * ADR-0341: a container's rootfs is not in its base -- it is a
+		 * snapshot beside its image, and a move between container
+		 * disks leaves it where it is. What moves is the base: an
+		 * overlay container's upper and work, and the pivot
+		 * mountpoint. Two things in a base are left out because they
+		 * are about to be deleted: a rootfs an older release seeded
+		 * there, which the container's next start sets aside anyway,
+		 * and the trees already set aside in ".discard".
 		 */
-		snprintf(src_rootfs, sizeof(src_rootfs), "%s/rootfs", source_dir);
-		snprintf(dst_rootfs, sizeof(dst_rootfs), "%s/rootfs", target_dir);
-		if (stat(src_rootfs, &rst) == 0 && S_ISDIR(rst.st_mode)) {
-			rc = persist_mkdir_p(target_dir);
-			if (rc == 0)
-				rc = cix_btrfs_subvol_copy(src_rootfs, dst_rootfs);
-		} else {
-			rc = treecopy_recursive(source_dir, target_dir);
-		}
+		static const char *const skip[] = { "rootfs", ".discard", NULL };
+		int rc = treecopy_recursive_except(source_dir, target_dir, skip);
 
 		if (rc != 0) {
 			const char *why = treecopy_last_error();

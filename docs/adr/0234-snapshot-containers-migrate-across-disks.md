@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted. Lifts the phase-2 limitation recorded in
+Superseded by [ADR-0341](0341-a-containers-rootfs-is-a-snapshot-on-its-images-filesystem.md)
+in its central point, 2026-10-18: a container's rootfs is no longer in its
+base, so a migration moves the base and never copies the rootfs, and the
+extent-sharing cost this ADR accepted is gone. The record below is kept as
+it was decided. Originally: accepted. Lifts the phase-2 limitation recorded in
 [ADR-0207](0207-btrfs-storage-substrate-userns-by-default.md), which
 deferred cross-disk migration of snapshot containers to "the phase-4
 migration tooling". ADR-0207's storage model is unchanged.

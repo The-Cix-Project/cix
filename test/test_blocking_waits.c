@@ -406,14 +406,14 @@ static int check_walk_budgets(void)
  * not named below is budgeted at zero. Comment lines are skipped, so
  * prose about these functions moves no number.
  */
-struct cred_budget {
+struct call_budget {
 	const char *file; /* basename under daemon/src/ */
 	const char *call;
 	int allowed;
 	const char *why;
 };
 
-static const struct cred_budget g_cred_budgets[] = {
+static const struct call_budget g_cred_budgets[] = {
 	{ "credcheck.c", "pwhash_bcrypt_check(", 2,
 	  "the local password and the app passwords, in credcheck_work(), which runs in a "
 	  "helper child" },
@@ -441,20 +441,70 @@ static const struct cred_budget g_cred_budgets[] = {
 	  "secret must reach the container before its services start (#611)" },
 };
 
-#define CRED_BUDGET_COUNT ((int)(sizeof(g_cred_budgets) / sizeof(g_cred_budgets[0])))
-
 static const char *const g_cred_calls[] = {
 	"pwhash_bcrypt_check(",
 	"ldapclient_bind(",
 	"pwhash_bcrypt_new(",
+	NULL,
 };
 
-static int cred_allowed(const char *file, const char *call)
+/*
+ * A FOURTH COUNTED SET (ADR-0341, #608): copying or re-owning a whole
+ * tree. A container's rootfs used to be copied and chowned on the loop
+ * at every roll of a userns container whose image was on another
+ * filesystem -- 4-5 s on every hourly roll of `jump` on 192.168.15.95,
+ * measured 2026-10-18. ADR-0341 made the rootfs a snapshot beside its
+ * image, so a btrfs host never copies; these count what is left, so a
+ * new copy on the loop is a number someone has to raise. Same
+ * mechanism as the credential set: every daemon source, comments
+ * skipped, a file not named here budgeted at zero.
+ */
+static const struct call_budget g_copy_budgets[] = {
+	{ "main.c", "cix_tree_copy(", 1,
+	  "seeding a userns rootfs where rebuildable storage is not btrfs (ADR-0179's copy) -- "
+	  "on the loop until ADR-0341 phase 2 moves it to a helper child (#614)" },
+	{ "main.c", "chown_tree(", 2,
+	  "the definition, and that same non-btrfs seed's chown to the subordinate base (#614)" },
+	{ "volume.c", "chown_tree(", 3,
+	  "the definition, its recursion, and /volumes/{volume_name}/owner with recursive set: an "
+	  "operator-initiated walk of the volume, on the loop, counted so it stays visible" },
+};
+
+static const char *const g_copy_calls[] = {
+	"cix_tree_copy(",
+	"chown_tree(",
+	NULL,
+};
+
+struct call_set {
+	const char *what;
+	const struct call_budget *budgets;
+	int count;
+	const char *const *calls;
+	const char *advice; /* why a new call is a stall, and what to do instead */
+};
+
+static const struct call_set g_call_sets[] = {
+	{ "credential", g_cred_budgets, (int)(sizeof(g_cred_budgets) / sizeof(g_cred_budgets[0])),
+	  g_cred_calls,
+	  "Checking a credential costs ~350 ms of bcrypt, or up to three LDAP timeouts, and cixd "
+	  "has one event loop. Make the check through credcheck_ask() (ADR-0340), which parks the "
+	  "request and runs it in a helper child, rather than calling it here." },
+	{ "tree copy", g_copy_budgets, (int)(sizeof(g_copy_budgets) / sizeof(g_copy_budgets[0])),
+	  g_copy_calls,
+	  "Copying or re-owning a tree costs as long as the tree is big, and cixd has one event "
+	  "loop. A container's rootfs is a snapshot of its image (ADR-0341), never a copy; any "
+	  "other tree is copied in a helper_run() child." },
+};
+
+#define CALL_SET_COUNT ((int)(sizeof(g_call_sets) / sizeof(g_call_sets[0])))
+
+static int call_allowed(const struct call_set *s, const char *file, const char *call)
 {
 	int i;
 
-	for (i = 0; i < CRED_BUDGET_COUNT; i++) {
-		if (strcmp(g_cred_budgets[i].file, file) == 0 && strcmp(g_cred_budgets[i].call, call) == 0)
+	for (i = 0; i < s->count; i++) {
+		if (strcmp(s->budgets[i].file, file) == 0 && strcmp(s->budgets[i].call, call) == 0)
 			return i;
 	}
 	return -1;
@@ -476,15 +526,20 @@ static int count_calls(const char *path, const char *call)
 	return n;
 }
 
-static int check_cred_budgets(int *out_files)
+static int check_call_set(const struct call_set *s, int *out_files)
 {
 	DIR *d = opendir("daemon/src");
 	struct dirent *de;
-	int failures = 0, seen[CRED_BUDGET_COUNT];
+	int failures = 0, seen[32];
 	int i;
 
 	*out_files = 0;
 	memset(seen, 0, sizeof(seen));
+	if (s->count > (int)(sizeof(seen) / sizeof(seen[0]))) {
+		fprintf(stderr, "FAIL: the %s set has more rows than check_call_set() tracks\n",
+		        s->what);
+		return 1;
+	}
 	if (d == NULL) {
 		fprintf(stderr, "FAIL: cannot list daemon/src\n");
 		return 1;
@@ -492,16 +547,16 @@ static int check_cred_budgets(int *out_files)
 	while ((de = readdir(d)) != NULL) {
 		size_t len = strlen(de->d_name);
 		char path[512];
-		size_t c;
+		const char *const *c;
 
 		if (len < 3 || strcmp(de->d_name + len - 2, ".c") != 0)
 			continue;
 		snprintf(path, sizeof(path), "daemon/src/%s", de->d_name);
 		(*out_files)++;
-		for (c = 0; c < sizeof(g_cred_calls) / sizeof(g_cred_calls[0]); c++) {
-			int n = count_calls(path, g_cred_calls[c]);
-			int b = cred_allowed(de->d_name, g_cred_calls[c]);
-			int allowed = b >= 0 ? g_cred_budgets[b].allowed : 0;
+		for (c = s->calls; *c != NULL; c++) {
+			int n = count_calls(path, *c);
+			int b = call_allowed(s, de->d_name, *c);
+			int allowed = b >= 0 ? s->budgets[b].allowed : 0;
 
 			if (b >= 0)
 				seen[b] = 1;
@@ -516,25 +571,22 @@ static int check_cred_budgets(int *out_files)
 			if (n > allowed)
 				fprintf(stderr,
 				        "FAIL: %s has %d lines calling %s, budget is %d.\n"
-				        "      Checking a credential costs ~350 ms of bcrypt, or up to three "
-				        "LDAP timeouts, and cixd has one event loop. Make the check through "
-				        "credcheck_ask() (ADR-0340), which parks the request and runs it in a "
-				        "helper child, rather than calling it here.%s%s\n",
-				        path, n, g_cred_calls[c], allowed, b >= 0 ? "\n      Budgeted: " : "",
-				        b >= 0 ? g_cred_budgets[b].why : "");
+				        "      %s%s%s\n",
+				        path, n, *c, allowed, s->advice, b >= 0 ? "\n      Budgeted: " : "",
+				        b >= 0 ? s->budgets[b].why : "");
 			else
 				fprintf(stderr,
 				        "FAIL: %s has %d lines calling %s, budget is %d -- fewer than "
 				        "expected. Lower the budget in this same commit to lock it in.\n",
-				        path, n, g_cred_calls[c], allowed);
+				        path, n, *c, allowed);
 		}
 	}
 	closedir(d);
-	for (i = 0; i < CRED_BUDGET_COUNT; i++) {
+	for (i = 0; i < s->count; i++) {
 		if (!seen[i]) {
-			fprintf(stderr, "FAIL: credential budget names daemon/src/%s, which does not exist -- "
+			fprintf(stderr, "FAIL: %s budget names daemon/src/%s, which does not exist -- "
 			                "remove the row with the file\n",
-			        g_cred_budgets[i].file);
+			        s->what, s->budgets[i].file);
 			failures++;
 		}
 	}
@@ -543,7 +595,7 @@ static int check_cred_budgets(int *out_files)
 
 int main(void)
 {
-	int i, ok = 1, total = 0, cred_files = 0;
+	int i, ok = 1, total = 0, source_files = 0;
 
 	for (i = 0; i < BUDGET_COUNT; i++) {
 		int found = 0;
@@ -591,14 +643,15 @@ int main(void)
 
 	if (check_walk_budgets() != 0)
 		ok = 0;
-	if (check_cred_budgets(&cred_files) != 0)
-		ok = 0;
+	for (i = 0; i < CALL_SET_COUNT; i++)
+		if (check_call_set(&g_call_sets[i], &source_files) != 0)
+			ok = 0;
 
 	if (!ok)
 		return 1;
 	printf("test_blocking_waits: %d blocking waits across %d files, all within budget; "
 	       "%d files counted for unbounded tree walks; %d daemon sources counted for "
-	       "credential checks\n",
-	       total, BUDGET_COUNT, WALK_BUDGET_COUNT, cred_files);
+	       "credential checks and tree copies\n",
+	       total, BUDGET_COUNT, WALK_BUDGET_COUNT, source_files);
 	return 0;
 }
