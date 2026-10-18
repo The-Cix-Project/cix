@@ -51,6 +51,10 @@ Today the loop serialises every check, which accidentally rate-limits the whole 
 
    Each asks for a verdict. If the connection does not already carry one for that credential, the request is parked, `dispatch()` returns without a response, and the read path skips `client_conn_finish()` for a parked connection. When the helper finishes, the verdict is attached to the connection, bound to the SHA-256 of the user name and secret, so it cannot answer for a different credential. The request is then served again from the top. On the second pass the same call finds the verdict and continues as it does today.
 
+   The WebSocket upgrades reach the first place as well: `authorize_upgrade_route()` calls `resolve_request_identity()` before `dispatch()` runs. So each `try_*_upgrade()` treats a park as not yet handled, never as `CONSOLE_FAILED`, and the resume runs the upgrade again.
+
+   The request is served again from the bytes it arrived as. The parse is a local in the read path, so the resume parses `cc->http` again. This is why item 6 discards later bytes rather than feeding them into that buffer.
+
    One mechanism covers both places, and it needs no completion code per handler. `POST /v1/login` still answers 200 with the token in one round trip. A Basic-authenticated request answers as it always has, only later.
 
 5. **The read path's per-request steps move into one function that both passes use.** This is `serve_request(cc, req)`. It:
@@ -59,8 +63,9 @@ Today the loop serialises every check, which accidentally rate-limits the whole 
    - clears the stall activity;
    - finishes the connection unless the request was parked.
 
-   The resume path calls the same function. Three of today's side effects run before a park, and each is settled here:
-   - **The audit line** for a non-GET in `dispatch()` is written once, when the request arrives. A resumed request skips it, so a login is not audited twice.
+   The resume path calls the same function. Four of today's side effects can run before a park, and each is settled here:
+   - **The audit line** for a non-GET in `dispatch()` is written on the first pass that reaches it, and the request is marked as audited. A login parks after the line, so it is audited once on arrival. A Basic request parks before it, so it is audited on the resume, naming its app password through `audit_who()`. A mark meaning "resumed, skip it" would lose every first-use Basic mutation from the trail, so the mark records "audited" instead.
+   - **The throttle note** at the end of `resolve_request_identity()`'s Basic branch counts anything unverified as a failure. A parked request leaves the branch before that note, and only the parent records the result, when the check finishes (item 3). Otherwise every parked request would count once as a failure before its check ran, and again after.
    - **The stall activity** is set by `dispatch()` on each pass and cleared by `serve_request()` on each pass, so a resumed request is named as it is today.
    - **`connthrottle_auth_blocked()` and the JSON parse** have no effects and simply run again.
 
