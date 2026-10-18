@@ -2445,6 +2445,49 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 285: a credential is checked off the event loop (ADR-0340, #609, 0.2.57-538)
+
+The owner accepted ADR-0340 on 2026-10-18. Before it, a login held cixd's one event loop for the
+whole of its bcrypt check, about 350 ms on .95, and for every LDAP server's timeout before that.
+The stall record named `POST /v1/login` as a pass's slowest handler eight times, at 800 to 1070 ms (`GET /v1/system/stalls`, read 2026-10-18).
+
+**What shipped.**
+- **One check:** `credcheck_work()` (`daemon/src/credcheck.c`) is the one place a password or an
+  app password is compared. It runs in a `helper_run()` child, and its log lines travel back held
+  in its result (`logstore_hold()`/`logstore_replay()`).
+- **Park and resume:** the request is parked, then served again from the start by
+  `serve_request()` with the verdict attached, bound to the credential's SHA-256.
+- **Bounds:** half the CPUs check at once and 32 more wait; beyond that the answer is `503` with
+  `Retry-After: 1`.
+- **Gate:** `test_blocking_waits` counts every remaining call to the credential primitives.
+
+**Verified.**
+- **The gate:** `probe-cix-compile@0.2.57-542`, at commit `73a92862`, built and passed the
+  release selftest on its first build. That run includes `test_blocking_waits` and
+  `test_hostauth`, whose new cases make logins slow on purpose against an LDAP server that never
+  answers. Health answered within a second during a check, a client that left mid-check cost
+  nothing, and the login beyond the queue got the 503.
+- **The box:** 0.2.57-538 hostbuilt, self-assembled (generation 1) and booted on slot `a`.
+  Measured on 192.168.15.95, 2026-10-18:
+  - **Logins:** each answered 200 in 0.385 to 0.402 s.
+  - **Health during a login:** answered 200 in 0.55 to 0.81 ms when sent 100 ms or 250 ms into
+    the login's check.
+  - **Stall record:** no slow pass since the boot, with a worst pass of 60 ms
+    (`events-check-timer`) after six logins.
+  - **Audit trail:** each login was audited once as `- POST /v1/login`, plus
+    `claude logged in from …` by name. The resumed pass wrote no second line.
+  - **App passwords, first use:**
+    - a WebSocket upgrade (`GET /v1/pkg/build/log`) parked for 0.39 s, then passed authorization
+      to the handler's own 404 "no build in progress";
+    - the same upgrade with a wrong secret answered 401;
+    - a Basic `GET /v1/containers` answered 200 in 0.39 s while health answered in 0.75 ms;
+    - the memoized second use took 3.6 ms, and after the app password was revoked the answer
+      was 401.
+- **Not measured live:** the 503, which needs K + 32 slow checks at once. Only the test covers
+  it.
+
+Phase 2, hashing when a password is set, is #610.
+
 ## Part 284: the box says what changed (ADR-0339, #599, 0.2.57-519 to -534)
 
 The owner accepted ADR-0339 on 2026-10-17 after four reviews raised it from "push some events" to a
