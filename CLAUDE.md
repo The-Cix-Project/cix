@@ -277,6 +277,15 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **This supersedes ADR-0332 before it shipped**, and that is the lesson worth keeping: ADR-0332 gave the baseline a generation, folded it into the image-version hash, added a re-seed trigger and two gates, was implemented and went green -- and it was the wrong fix, because it versioned the fourth writer instead of removing it. **The question to ask of an unversioned thing is whether it should exist, not how to version it.** Nobody asked until the owner did.
 - **The one-list property gets tighter, not looser.** The host-side staging and `container_dev_bpf_attach()`'s allow set expand the same `CIX_BASELINE_DEVICES` macro, in one file at one moment, so a node the policy denies is not expressible. ADR-0331 exists because they diverged (#578); do not split them again.
 
+## A container's rootfs is a snapshot of its image, on the image's filesystem
+
+**A container never copies its image. Its rootfs is a btrfs snapshot of its image version, kept beside the image store under `REBUILDABLE_DIR`, so a roll is one snapshot ioctl however many containers follow the image** -- [ADR-0341](docs/adr/0341-a-containers-rootfs-is-a-snapshot-on-its-images-filesystem.md), accepted by the owner on 2026-10-18 after asking what the ideal would be for a box with hundreds of containers.
+
+- **The question was whether the copy should exist, not how to schedule it.** The first draft moved a 4–5 s per-roll copy off the event loop (#608). That still costs a full tree per container per roll. Ask that question first of any per-container cost.
+- **`container_rootfs_dir()` is the one place a rootfs path is built.** `disk` and the `container-storage` role place a container's base (state, staged files, volumes), never its rootfs.
+- **A snapshot cannot cross a filesystem**, and that is the whole cause: images were on `rebuildable-storage` and container bases on the OS disk, so every create on .95 fell back to a copy or to overlay. Never put a container's rootfs anywhere its image cannot be snapshotted to.
+- **The copy stays only where btrfs is absent**, and it goes into a helper child there (#614). Never add a copy to the btrfs path.
+
 ## One way to make an image
 
 **An image is made by `POST /v1/images` (`cixctl image create --name=NAME`) and by nothing else.** `POST /v1/pkg/install` naming an image that does not exist is a 400 naming that fix, and creates nothing (#500) -- the owner's decision of 2026-09-30, chosen over documenting the implicit create an install used to perform, which is how `--image=jump`, a typo for `jumpbox`, became a new image.

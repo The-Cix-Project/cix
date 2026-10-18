@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-18, for the owner's decision. Issue [#608](https://git.home.arpa/itdlabs/cix/issues/608).
+Accepted by the owner, 2026-10-18 ("Yes!"), as proposed the same day. Issue [#608](https://git.home.arpa/itdlabs/cix/issues/608). Phase 1 is the placement (decisions 1–3, 5 and 6), which is the whole fix on a btrfs host. Phase 2 is decision 4's copy into a helper child on a non-btrfs host ([#614](https://git.home.arpa/itdlabs/cix/issues/614)): it needs a create that can be unfinished, through every caller of `create_container_from_body()`, and no Cix host measured so far is non-btrfs.
 
 The first draft of this ADR moved the copy off the event loop. The owner then asked what the ideal would be on a box with hundreds of containers. At that scale, a roll of one image followed by 100 containers would be 100 full copies and 100 full trees, every time. The question is whether the copy should exist at all, not how to schedule it, so the draft was replaced before any decision on it. It is the ADR-0332 → ADR-0333 lesson again.
 
@@ -43,15 +43,19 @@ So every create falls back to something:
 
 3. **The rootfs quota is the snapshot's exclusive qgroup limit**, as `disk_quota_bytes` already is on the snapshot path. That limit now measures what it should: the container's divergence from its image.
 
-4. **The overlay and copy fallbacks remain only where btrfs is absent.** On an ext4 host, `cix_btrfs_is_backing()` is false and ADR-0179's copy is still the only presentation a userns container has. That copy goes into a `helper_run()` child, so it no longer holds the loop. Whether ext4 hosts keep being supported at all is ADR-0207's question, not this one's.
+4. **The overlay and copy fallbacks remain only where btrfs is absent.** On an ext4 host, `cix_btrfs_is_backing()` is false and ADR-0179's copy is still the only presentation a userns container has. That copy goes into a `helper_run()` child, so it no longer holds the loop (phase 2, #614). Whether ext4 hosts keep being supported at all is ADR-0207's question, not this one's.
 
-5. **Moving the existing trees is one discard each, off the loop.** A container's current copied tree is a plain directory on the OS disk. At its next pin move it is renamed aside, which is O(1), and deleted by a helper child, and the new rootfs is a snapshot under (1). Nothing is migrated in bulk, and the box never holds the loop for the move.
+5. **Moving the existing trees is one discard each, off the loop, at each container's first start on the release that ships this.** A container's current tree, `<base>/rootfs` or an overlay's `<base>/upper`, is on the container's own filesystem. It is renamed aside within that filesystem, which is O(1), and a helper child deletes it. The new rootfs is a snapshot under (1). Nothing is migrated in bulk, and the box never holds the loop for the move. A leftover from an interrupted delete is swept by a helper child at startup.
+
+   This is a clean cut-over, and it costs each container one re-seed. That is exactly what ADR-0277 already does at every pin move. Waiting for each container's next pin move instead would keep two places a rootfs can be, with a lookup that tries both, until the last image moved. Persistent data is on volumes: `jump`'s `/home` is the volume `jump-home`, measured 2026-10-18.
+
+   **Rollback is safe.** Booting the previous release finds no `<base>/rootfs`, so it seeds by its old copy. That works, at its old cost on the loop.
 
 6. **The silence is fixed too.** The userns branch's EXDEV fallback logs nothing, while the non-userns one logs at every create. Any fallback that remains logs, and so does the false comment in `src/btrfs.c`, which says the create path "falls back to the overlay rootfs, which ... costs nothing" — true of one branch only. And `test_blocking_waits` budgets `cix_tree_copy(` and `chown_tree(` per file, so a copy cannot drift back onto the loop.
 
-## Open before implementation
+## Open, tracked
 
-- **qgroup accounting at scale.** Cix enables full qgroups (`CIX_BTRFS_QUOTA_CTL_ENABLE`, `src/btrfs.c`). From memory, not measured here: full qgroup accounting gets more expensive as snapshots multiply and are deleted often, and btrfs's simple quotas exist for that case. `include/btrfs.h` already recognises `CIX_BTRFS_QGROUP_SIMPLE`. Before hundreds of snapshots roll hourly, a probe should establish what 7.2.11 offers and what a `SNAP_DESTROY` costs under each mode.
+- **qgroup accounting at scale ([#613](https://git.home.arpa/itdlabs/cix/issues/613)).** Cix enables full qgroups (`CIX_BTRFS_QUOTA_CTL_ENABLE`, `src/btrfs.c`). From memory, not measured here: full qgroup accounting gets more expensive as snapshots multiply and are deleted often, and btrfs's simple quotas exist for that case. `include/btrfs.h` already recognises `CIX_BTRFS_QGROUP_SIMPLE`. It does not block phase 1, whose roll is two snapshot ioctls per container where today's is a full copy. It has to be measured before hundreds of snapshots roll hourly.
 - **The rebuildable disk becomes load-bearing for running containers.** Today losing `sda` costs a rebuild of images and packages. Under (1), it also stops every container until each is re-seeded. Today a non-userns container already needs it, because its overlay lowerdir is there, while a userns copy does not. That is a real change in failure domain, so it is stated here rather than discovered.
 
 ## Consequences
