@@ -2445,6 +2445,52 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 286: a container's rootfs is a snapshot of its image, beside the image store (ADR-0341, #608, 0.2.57-540)
+
+The owner accepted ADR-0341 on 2026-10-18, after asking what the ideal would be for a box with
+hundreds of containers. Before it, a btrfs snapshot could not reach a container's rootfs: images
+sat on `rebuildable-storage` (sda) and container bases on the OS disk (vdb5). So every userns
+create copied and chowned the whole image tree on the event loop, and every roll of `jump` held the
+loop for 4 to 5 s. The stall record named `event container` as a pass's slowest work at 4038 to
+5061 ms, close to hourly, through the day before the release (`GET /v1/system/stalls`).
+
+**What shipped.**
+- **One path:** `container_rootfs_dir()` builds every rootfs path, at
+  `CONTAINER_ROOTFS_DIR/<name>` (`REBUILDABLE_DIR/rootfs`), on the image store's filesystem. The
+  seed marker is `<rootfs>.version` beside it. A missing marker means re-seed.
+- **One ioctl per create:** the userns and direct branches snapshot the image version. They log a
+  warning if they ever copy on btrfs.
+- **Discards off the loop:** a discarded tree is renamed into a `.discard` directory on its own
+  filesystem, then deleted in `helper_run()` children, two at a time. Startup sweeps
+  `CONTAINER_ROOTFS_DIR` and `CONTAINERS_DIR`.
+- **Clean cut-over:** a legacy `<base>/rootfs`, its marker, and `upper`/`work` (when going direct)
+  are set aside at first start. Storage moves skip the rootfs.
+- **Removed:** `cix_btrfs_subvol_copy()`. ADR-0234 is superseded.
+- **Gate:** `test_blocking_waits` budgets the remaining `cix_tree_copy(` and `chown_tree(` call
+  sites.
+
+**Verified.**
+- **The gate:** `probe-cix-compile@0.2.57-544`, at commit `33d69331`, built and passed the release
+  selftest. Both `test_direct_rootfs` and `test_userns_run` now check the rootfs path, that no
+  base rootfs exists, and that the rootfs is gone after delete, and both report PASS in that log.
+  `test_userns_run` also passes by skipping where no userns container can be created, and the log
+  keeps only each test's verdict, so the userns path's evidence is the live create below.
+- **The box:** 0.2.57-540 hostbuilt, self-assembled and booted on slot `a`. Measured on
+  192.168.15.95, 2026-10-18:
+  - **Cut-over at boot:** all 12 containers came back ready, with no rootfs warning and no
+    `event container` slow pass. Usage moved off the OS disk: vdb5 freed about 1 GB and sda was
+    unchanged. Afterwards vdb5 held 4,436,099,072 used bytes and sda 22,287,171,584.
+  - **Quota:** `jump`'s disk usage now comes from its qgroup (221,184 bytes).
+  - **Inside `jump`, by the owner as uid 10001:** `/home` was writable, a new file was owned 10001,
+    and `/dev/null` worked.
+  - **A create and a delete, which are the two halves of a roll:** a throwaway userns container
+    from `jumpbox` (`probe-0341`) was created in 0.123 s end to end, against 4 to 5 s before. Its
+    service ran and it went ready. It was removed in 0.010 s. Neither produced a slow pass; the only
+    new record was this measurement's own log read (#612).
+- **Not observed live:** a roll of `jump` itself. hibr's upstream did not move after the boot
+  (`pkg source-catalogue`: discovered 0.99.249, written 0.99.249-1), so no roll was triggered. A
+  roll is the same create and delete measured above.
+
 ## Part 285: a credential is checked and hashed off the event loop (ADR-0340, #609, #610, 0.2.57-538 and -539)
 
 The owner accepted ADR-0340 on 2026-10-18. Before it, a login held cixd's one event loop for the
