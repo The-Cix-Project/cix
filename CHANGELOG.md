@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### ADR-0340 proposed: a credential is checked off the event loop (#609, #610)
+
+- **Measured on .95:** one bcrypt check at cost 12 takes about 350 ms. A request signed with a
+  first-use app password took 352 ms, and the same request answered from the memo took 0.6 ms.
+  A login holds the event loop for that long, and with LDAP up to 9 s (three servers at 3 s each).
+- **Proposed:** checks run in a `helper_run()` child, and the request is parked and resumed when
+  the check finishes. `POST /v1/login` keeps its contract and gains a documented 503 when checks
+  are busy.
+- **Phase 2:** hashing on password writes (#610).
+- **Not implemented:** this awaits the owner's decision.
+
 ### A build's card charts its CPU and memory while it runs (#431)
 
 - **Each in-flight build card** on Software > In Flight now carries two small charts of its build
