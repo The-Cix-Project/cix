@@ -2445,6 +2445,29 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 290: a failed build-environment composition says why, and a shared log segment gets no summary (#606, #616, 0.2.57-546)
+
+**What shipped.**
+- **#606:** the build-environment composer child closes every descriptor it inherited before
+  it composes, the log store's segment among them, so its reasons were written nowhere. It
+  now holds its log entries and writes them, with its reason, to a per-chain report. The
+  parent replays them and puts the reason in the package's error.
+- **#616 follow-up:** a forked child that logs without `logstore_hold()` appends lines the
+  parent's summary never saw. Every child but the credential check's does. A rotation summary
+  is now written only when the segment is exactly the bytes the parent wrote, and a new
+  segment is opened for append, so another writer's line is never overwritten.
+- **Found while reading, filed as #618, not fixed:** two chains can compose one build
+  environment at once, and a failed composition deletes it without checking who else uses it.
+
+**Verified.**
+- **The gates:** `probe-cix-compile@0.2.57-551` failed in the new `test_pkg` case alone. By
+  then the shared fixture tarball was gone, so the case failed at fetch, before any
+  composition. `-552` (commit `7a2f4b4e`) stages its own tarball and passed. That case moves
+  bash's binary aside and asserts the error names the failed copy. `test_logread` appends a
+  foreign line to the open segment and asserts that segment is not summarised.
+- **Live on .95:** `0.2.57-546` booted on slot a, with 12 of 12 containers running and ready
+  and drift 0. Summary-skipped log reads answered in 19-105 ms after the reboot.
+
 ## Part 289: a filtered log read skips the segments that cannot hold a match (ADR-0342 phase 2, #616, 0.2.57-544 and -545)
 
 Phase 1 (Part 287) moved a filtered log read off the event loop. It did not make one cheaper:
