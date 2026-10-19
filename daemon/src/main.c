@@ -1519,6 +1519,19 @@ struct conn {
 	char cred_hash[PWHASH_BCRYPT_LEN + 1];
 	char cred_secret[LDAP_PROVISION_SECRET_LEN + 1];
 	int req_audited;
+	/*
+	 * ADR-0342: authorize_route() granted this request, and who it was
+	 * for. A request parked after its authorization -- a filtered log
+	 * read -- is served again from the same bytes, and asking again
+	 * would present a single-use session a second time, after the
+	 * first pass consumed it (idle_timeout_seconds 0): a 401 for a
+	 * request that was allowed. So the resumed pass takes the verdict
+	 * and the identity from here, as it takes req_audited.
+	 */
+	int req_authorized;
+	int req_basic;
+	char req_user[HOSTAUTH_USERNAME_MAX];
+	char req_app[LDAP_APP_PASSWORD_NAME_MAX];
 };
 
 /*
@@ -29205,6 +29218,14 @@ static int resolve_request_identity(const struct http_request *req)
 	g_req_user[0] = '\0';
 	g_req_app[0] = '\0';
 	g_req_basic = 0;
+	/* ADR-0342: a resumed pass of a request already authorized is who
+	 * that pass found, and is not read again (struct conn). */
+	if (g_response_conn != NULL && g_response_conn->req_authorized) {
+		snprintf(g_req_user, sizeof(g_req_user), "%s", g_response_conn->req_user);
+		snprintf(g_req_app, sizeof(g_req_app), "%s", g_response_conn->req_app);
+		g_req_basic = g_response_conn->req_basic;
+		return 1;
+	}
 	if (http_find_header(req->headers, req->headers_len, "Authorization", hdr, sizeof(hdr)) < 0)
 		return 1;
 	if (strncmp(hdr, "Basic ", 6) == 0) {
@@ -29460,6 +29481,10 @@ static int authorize_route(int fd, const struct http_request *req, const struct 
 	int is_read = route->permission != NULL && strstr(route->permission, ":read") != NULL;
 	enum hostauth_authz authz;
 
+	/* ADR-0342: granted on the pass that parked it -- the same request,
+	 * from the same bytes. A single-use session was consumed there. */
+	if (g_response_conn != NULL && g_response_conn->req_authorized)
+		return 1;
 	/* #543: an app password, already verified (or refused) once for
 	 * this request by resolve_request_identity(). */
 	if (g_req_basic != 0) {
@@ -29494,6 +29519,15 @@ static int authorize_route(int fd, const struct http_request *req, const struct 
 	}
 	switch (authz) {
 	case HOSTAUTH_AUTHZ_OK:
+		if (g_response_conn != NULL && g_response_conn->fd >= 0 &&
+		    g_response_conn->kind == CONN_CLIENT) {
+			struct conn *cc = g_response_conn;
+
+			cc->req_authorized = 1;
+			cc->req_basic = g_req_basic;
+			snprintf(cc->req_user, sizeof(cc->req_user), "%s", g_req_user);
+			snprintf(cc->req_app, sizeof(cc->req_app), "%s", g_req_app);
+		}
 		return 1;
 	case HOSTAUTH_AUTHZ_NO_SESSION:
 		if (!is_read)
@@ -33295,7 +33329,13 @@ static int client_conn_advance_handshake(struct conn *cc)
  * throttle note (left to the resumed pass, resolve_request_identity()),
  * the stall activity (set by dispatch() and cleared below, on every
  * pass), and connthrottle_auth_blocked() and the JSON parse, which have
- * no effect and simply run again.
+ * no effect and simply run again. A fifth arrived with ADR-0342, the
+ * first park that comes AFTER authorization: hostauth_authorize()
+ * consumes a single-use session, so the resumed pass takes the grant
+ * and the identity from the connection (req_authorized) rather than
+ * presenting the token again. Measured, not foreseen: test_hostauth's
+ * audit reads, made with single-use sessions, answered 401 on resume
+ * in the first gate of this change (probe-cix-compile@0.2.57-545).
  */
 static void serve_request(struct conn *cc)
 {

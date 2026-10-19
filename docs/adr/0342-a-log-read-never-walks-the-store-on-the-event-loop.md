@@ -67,6 +67,7 @@ Which of reading, parsing and matching dominates the 1533 ms is not measured, an
 - **`logstore_tail()` is removed.** It had no caller.
 - **The query is parsed once, in `logread_query_parse()`.** The handler and the subscribe check both use it, so what the stream refuses and what the handler sends to a child are the same decision.
 - **The 503 is written in `api_logs.c`, not `logread.c`,** so the reader and its query rules link into `test_logread` without the HTTP layer.
+- **A request is authorized once.** ADR-0340's parks all happen before authorization, but a log read parks after it, inside its handler. The resumed pass then presented the request's bearer token again, and with `idle_timeout_seconds` 0 a session is single-use: the first pass had consumed it, so a request that was allowed answered 401. That was measured in the first release gate of this change (`test_hostauth`, `probe-cix-compile@0.2.57-545`), not foreseen. The fix is that the connection keeps the grant and the identity (`req_authorized`, the way it keeps `req_audited`), and the resumed pass uses them. The same request is served from the same bytes, so this is the same decision, not a skipped one. A session revoked during the read does not stop its answer, just as it would not stop a request that was already running.
 - **`helper_run_pid()`** is `helper_run()` that reports the child's pid. A log read whose client left is killed through that pid; `helper_run()` itself is unchanged for every other caller.
 
 ## Phase 2, tracked separately
