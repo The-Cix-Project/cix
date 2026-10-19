@@ -744,6 +744,7 @@ static int back_next_line(struct back_reader *r, const char **line, size_t *n)
 {
 	for (;;) {
 		size_t end, i;
+		const char *nl;
 
 		if (r->len == 0) {
 			if (r->pos == 0)
@@ -755,8 +756,12 @@ static int back_next_line(struct back_reader *r, const char **line, size_t *n)
 		end = r->len;
 		if (r->buf[end - 1] == '\n')
 			end--; /* this line's own terminator */
-		for (i = end; i > 0 && r->buf[i - 1] != '\n'; i--)
-			;
+		/* memrchr, as getline() finds newlines with memchr. Measured on
+		 * 192.168.15.95 with a byte loop here: a whole-store scan took
+		 * 2.03 s, against 1533 ms for the forward reader it replaced
+		 * (#612); the transport to the child costs at most 17 ms. */
+		nl = end > 0 ? memrchr(r->buf, '\n', end) : NULL;
+		i = nl != NULL ? (size_t)(nl - r->buf) + 1 : 0;
 		if (i > 0 || r->pos == 0) {
 			*line = r->buf + i;
 			*n = end - i;
