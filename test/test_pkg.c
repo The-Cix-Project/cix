@@ -9798,7 +9798,16 @@ skip_resume:
 	{
 		static char moved[16][PATH_MAX];
 		int n_moved = 0, k;
+		/* Its own tarball: by here the shared one is gone (a 404 at
+		 * fetch, measured in probe-cix-compile@0.2.57-551). */
+		char ne_tarball[PATH_MAX], ne_sha[128];
 
+		if (stage_fixture_tarball(scratch_dir, "noenv", "1.0", ne_tarball, sizeof(ne_tarball),
+		                          ne_sha, sizeof(ne_sha)) != 0) {
+			fprintf(stderr, "FAIL: #606 could not stage the noenv tarball\n");
+			ok = 0;
+			goto skip_noenv;
+		}
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "GET", "/v1/pkg", NULL, &r) == 0 && r.status == 200) {
 			const struct json_value *packages = json_object_get(r.json, "packages");
@@ -9836,7 +9845,7 @@ skip_resume:
 			fprintf(stderr, "FAIL: #606 fixture: no image with bash installed holds "
 			                "usr/bin/bash to move aside\n");
 			ok = 0;
-		} else if (publish_cpdl_recipe(&client, "noenv", "1.0", tarball_path, sha256, NULL,
+		} else if (publish_cpdl_recipe(&client, "noenv", "1.0", ne_tarball, ne_sha, NULL,
 		                               "            compiler \"tcc\"\n"
 		                               "            tool \"bash\"\n"
 		                               "            tool \"coreutils\"\n",
@@ -9879,6 +9888,7 @@ skip_resume:
 			}
 		}
 	}
+skip_noenv:
 
 	/* #407: every build_container gate violation poll_pkg_state() saw,
 	 * across every install above. Reported as one line rather than
