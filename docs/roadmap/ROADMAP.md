@@ -2445,6 +2445,42 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 291: every daemon-linked test proves its changes were announced (ADR-0339 point 8, #607, 0.2.57-547)
+
+ADR-0339 made the roll-out wait for 24 hours of zero drift at rest on .95. On 2026-10-19 it had
+been zero for about 37 hours, since 0.2.57-535 fixed `getPkgDrift`, releases included.
+
+**What shipped.**
+- **The helper:** `test_assert_no_drift()` (`test/test_drift.c`) runs the full check and reads
+  the rolling counter. It fails on any announced read that changed without an announcement,
+  except reads a test names as changed behind the daemon's back.
+- **Where it runs:** 49 gated daemon-linked tests call it before each stop of a daemon they
+  have not killed, and `test_events` step 11 is now the same helper.
+- **Not covered:** `test_hostauth`'s main daemon, which runs gated with single-use sessions
+  (its auth-off `test_standard_groups()` daemon is checked instead), and `test_bootorder`,
+  which starts no daemon.
+
+**What the first gate found** (`probe-cix-compile@0.2.57-553`): five reads that changed without
+an announcement, reported 25 times across 16 tests. Each is fixed in the contract or the daemon:
+
+| Read | Reports | Cause | Fix |
+|---|---|---|---|
+| `listSoftware` | 18 | a view joining six reads, declared as none | `x-cix-composed-of` its six components |
+| `getSystemRoutes` | 4 | network and management-address changes move kernel routes | those four operations name it; the deferred delete of a superseded address announces it |
+| `getPipelineRuns` | 1 | it reports the retention `setPipelineConfig` sets | `setPipelineConfig` names it |
+| `listPkgRebuilds` | 1 | the queue changes with no request in front of it | the queue announces at both of its mutation points |
+| `listLdapServers` | 1 | declared server roles are registered on every create path | registration announces all four role lists; `deleteContainer` names every list its forgets change |
+
+**Verified.**
+- **The gate:** `probe-cix-compile@0.2.57-554` (commit `431692ff`) passed, with zero drift in
+  every daemon-linked test.
+- **Live on .95:** `0.2.57-547` booted on slot b with 12 of 12 containers running and ready.
+  `POST /v1/events/verify` compared 84 reads and found no drift. The rolling check, 113 reads in,
+  reports none.
+- **One unreadable read:** `getPkiIntermediate` answers 404 until an intermediate CA is
+  bootstrapped. ADR-0339 records the limit this leaves: the 404-to-200 transition itself is
+  never checked.
+
 ## Part 290: a failed build-environment composition says why, and a shared log segment gets no summary (#606, #616, 0.2.57-546)
 
 **What shipped.**
