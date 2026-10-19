@@ -2445,6 +2445,50 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 289: a filtered log read skips the segments that cannot hold a match (ADR-0342 phase 2, #616, 0.2.57-544 and -545)
+
+Phase 1 (Part 287) moved a filtered log read off the event loop. It did not make one cheaper:
+"this container's last 40 lines" for a quiet container still parsed every line of every segment.
+
+**What shipped.**
+- **Segment summaries:** each closed segment has a summary, `sum-SEQ.json`: its largest `ts`,
+  and its sources, levels and containers. A filtered read skips a segment whose summary proves
+  it has no match. A summary is used only for the exact file it was made from (seq, device,
+  inode and size). The daemon writes it at rotation for a segment it wrote whole; a filtered
+  read writes it for any closed segment it reads to the start. ADR-0342 records the details.
+- **Line prefilter:** a line in `write_entry()`'s shape is rejected on source, level, container
+  or `since` from its first bytes, before `json_parse()`. It only ever rejects. In 545 it runs
+  only when one of those filters is set, because a regex-only read parses every line anyway.
+- **Gates:** `test_logread` answers every read against what was written, both without
+  summaries and with them. It counts what each read skipped, summarised and parsed. It also
+  breaks the match three ways (a grown segment, another segment's summary, a segment reopened
+  after a restart), and each is scanned rather than trusted.
+
+**Verified.**
+- **The gates:** `probe-cix-compile@0.2.57-549` (commit `8bad4a4a`) and `-550` (`64a3dfc1`)
+  built and passed, `test_logread`, `test_logread_live`, `test_blocking_waits` and
+  `test_events` included.
+- **Live on 192.168.15.95:** 100 MB store, warm, three runs each.
+
+  | Read | 0.2.57-543 | 0.2.57-544 | 0.2.57-545 |
+  |---|---|---|---|
+  | `container=` a name with no lines, `tail=40` | 1.14-1.27 s | 13-20 ms | 12-13 ms |
+  | `since` = the last 90 s | 1.32-1.39 s | 12-20 ms | 17 ms |
+  | `level=crit&tail=40` | 1.41-1.64 s | 13-15 ms | 13-14 ms |
+  | `source=audit&tail=5000` | 0.38-0.47 s | 65-74 ms | 52-67 ms |
+  | no-match regex | 1.44-1.50 s | 1.57-1.90 s | 1.47-1.60 s warm |
+
+  - **The first summaries:** the first filtered read on 544 built them for segments written
+    before the change, in 0.94 s. On 545 the first read took 96 ms, because the summaries
+    survived the reboot, still matching their segments.
+  - **Health:** answered in 0.6 to 1.0 ms during every read.
+  - **Real containers:** every one on .95 is chatty enough that its last 40 lines are in the
+    newest segment, so those reads took 4-45 ms before and after. The win is for the quiet
+    case.
+- **The regex row:** the regex read on 544 was slower. 545 removed the head parse from that
+  path, and it is now in 543's range, measured over a different store. Whether the head
+  parse was the cause is not established.
+
 ## Part 288: an array's item with required keys is a named schema, and the gate checks it (#605, 0.2.57-543)
 
 apigen handed `test_apishape` an array's item keys only when the item was a `$ref`. So the 15
