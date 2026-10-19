@@ -46,6 +46,7 @@
 #include <limits.h>
 #include <openssl/evp.h>
 #include <sched.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -780,6 +781,14 @@ struct pkg_chain {
 	 */
 	char buildenv_image[PKG_IMAGE_NAME_MAX];
 	/*
+	 * #618: the child this chain is waiting on to compose
+	 * buildenv_image -- its own composer, or a waiter on another
+	 * chain's -- and 0 when there is none. It is what lets a second
+	 * install needing the same environment wait for the first rather
+	 * than compose it again on top of it.
+	 */
+	pid_t buildenv_composer;
+	/*
 	 * ADR-0307 clause 3: a cached .cixpkg has already been unpacked
 	 * for this job, so pkg_prepare_build_and_start() takes the fast
 	 * path when the unpack child's completion re-enters it.
@@ -1001,6 +1010,7 @@ static void chain_release(int chain_idx)
 {
 	g_chains[chain_idx].name[0] = '\0';
 	g_chains[chain_idx].dep_queue_count = 0;
+	g_chains[chain_idx].buildenv_composer = 0;
 	events_announce(EV_getSystemPkgBuildConfig);
 	events_announce(EV_listBuildEnvironments);
 }
@@ -7462,9 +7472,59 @@ static void buildenv_report_take(int chain_idx, char *reason, size_t reason_size
 	snprintf(reason, reason_size, "%s", g_buildenv_report.reason);
 }
 
+/*
+ * #618: a child that waits for another chain's composer to exit, so a
+ * chain needing the same environment is re-entered when it is ready.
+ * It watches that composer through a pidfd opened here, in the parent:
+ * the composer is the daemon's own child and is not reaped until the
+ * daemon handles its exit, which clears the chain's buildenv_composer
+ * first, so the pid cannot have been reused. 0 with the waiter's pid
+ * and pidfd, or -1 when the composer has already gone or the fork
+ * failed.
+ */
+static int buildenv_wait_for(pid_t composer, pid_t *out_pid, int *out_pidfd)
+{
+	int tfd = sys_pidfd_open(composer, 0);
+	pid_t pid;
+	int pidfd;
+
+	if (tfd < 0)
+		return -1;
+	pid = fork();
+	if (pid < 0) {
+		close(tfd);
+		return -1;
+	}
+	if (pid == 0) {
+		struct pollfd p;
+		int fd;
+
+		/* The composer child's sweep, for the same reason, keeping the
+		 * one descriptor this child exists to watch. */
+		for (fd = 3; fd < 4096; fd++)
+			if (fd != tfd)
+				close(fd);
+		p.fd = tfd;
+		p.events = POLLIN;
+		while (poll(&p, 1, -1) < 0 && errno == EINTR)
+			;
+		_exit(0);
+	}
+	close(tfd);
+	pidfd = sys_pidfd_open(pid, 0);
+	if (pidfd < 0) {
+		kill(pid, SIGKILL);
+		waitpid(pid, NULL, 0);
+		return -1;
+	}
+	*out_pid = pid;
+	*out_pidfd = pidfd;
+	return 0;
+}
+
 static int buildenv_image_for(const char *declared, char *out_image, size_t out_image_size,
                                char *err, size_t err_size, pid_t *out_pid, int *out_pidfd,
-                               const char *report_path)
+                               const char *report_path, int self_chain)
 {
 	struct buildenv_tool tools[PKG_BUILDENV_MAX_TOOLS];
 	char canonical[PKG_BUILDENV_MAX_TOOLS * (PKG_NAME_MAX + PKG_VERSION_MAX + 2)];
@@ -7530,6 +7590,35 @@ static int buildenv_image_for(const char *declared, char *out_image, size_t out_
 		    existing[0] != '\0' && strcmp(existing, empty) != 0) {
 			buildenv_touch(out_image); /* ADR-0221: reuse is a use */
 			return 0;
+		}
+	}
+	/*
+	 * #618: another chain is composing this very environment. Two
+	 * installs that declare the same tools need the same one, and
+	 * composing it twice at once ran two image_produce_new_version()
+	 * calls on one image. So this chain waits for that composer and is
+	 * re-entered when it exits -- through the same completion path as
+	 * its own composer would be, by watching a child that does nothing
+	 * but wait for that one. Then it finds the environment composed,
+	 * or, if that composition failed, composes it itself.
+	 */
+	{
+		int i;
+
+		for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+			if (i == self_chain || g_chains[i].name[0] == '\0' ||
+			    g_chains[i].buildenv_composer <= 0 ||
+			    strcmp(g_chains[i].buildenv_image, out_image) != 0)
+				continue;
+			unlink(report_path); /* a waiter writes none; never take a stale one */
+			if (buildenv_wait_for(g_chains[i].buildenv_composer, out_pid, out_pidfd) == 0) {
+				logstore_write("cixd", "info",
+				               "pkg: build environment %s is being composed for %s@%s -- "
+				               "waiting for it rather than composing it twice",
+				               out_image, g_chains[i].name, g_chains[i].image);
+				return 1;
+			}
+			break; /* that composer is already gone: compose it here */
 		}
 	}
 	{
@@ -7602,8 +7691,22 @@ static int buildenv_image_for(const char *declared, char *out_image, size_t out_
  * skips an empty image, so a leftover would be re-forked on every
  * attempt.
  */
-static void buildenv_compose_failed_cleanup(const char *env_image)
+static void buildenv_compose_failed_cleanup(int chain_idx, const char *env_image)
 {
+	int i;
+
+	/*
+	 * #618: unless another chain is using it -- waiting on this very
+	 * composition, or building in it -- the check buildenv_release()
+	 * makes for the same teardown. A waiting chain finds the image
+	 * empty and composes it itself; deleting it under a running build
+	 * would pull its lowerdir away.
+	 */
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+		if (i != chain_idx && g_chains[i].name[0] != '\0' &&
+		    strcmp(g_chains[i].buildenv_image, env_image) == 0)
+			return;
+	}
 	image_delete(env_image);
 }
 
@@ -10885,7 +10988,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		buildenv_report_path(chain_idx, report_path, sizeof(report_path));
 		envr = buildenv_image_for(declared, env_image, sizeof(env_image), env_err,
 		                          sizeof(env_err), out_compose_pid, out_compose_pidfd,
-		                          report_path);
+		                          report_path, chain_idx);
 		if (envr < 0) {
 			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD, "%s", env_err);
 			logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
@@ -10900,6 +11003,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			 * exits, and takes the fast path on that second call.
 			 */
 			chain_set_buildenv(chain_idx, env_image);
+			g_chains[chain_idx].buildenv_composer = *out_compose_pid; /* #618 */
 			return 2;
 		}
 		{
@@ -11668,6 +11772,8 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 	*out_compose_pidfd = -1;
 	/* #606: on every path, so what the child logged is never lost. */
 	buildenv_report_take(chain_idx, reason, sizeof(reason));
+	/* #618: the child this chain waited on has exited. */
+	g_chains[chain_idx].buildenv_composer = 0;
 
 	/* Same stale-slot discriminator pkg_fetch_completed() uses (issue
 	 * #98): an entry that is no longer FETCHING cannot be the one whose
@@ -11684,7 +11790,7 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 		/* Remove the created-but-empty image the failed composition
 		 * left, or every later attempt re-forks against it forever. */
 		if (g_chains[chain_idx].buildenv_image[0] != '\0')
-			buildenv_compose_failed_cleanup(g_chains[chain_idx].buildenv_image);
+			buildenv_compose_failed_cleanup(chain_idx, g_chains[chain_idx].buildenv_image);
 		chain_set_buildenv(chain_idx, "");
 		if (reason[0] != '\0')
 			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,

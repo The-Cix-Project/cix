@@ -9891,6 +9891,94 @@ skip_resume:
 	}
 skip_noenv:
 
+	/*
+	 * #618: two installs that need the same build environment at once
+	 * compose it once. Both declare a tool set no other case declares
+	 * (no linux-headers), so that environment is composed only here;
+	 * they are started back to back, and the second either waits for
+	 * the first's composer or finds the environment already made.
+	 * Before #618 it could compose the same image again on top of the
+	 * first, and a failure of either deleted it from under the other.
+	 * So: both install, and the daemon logged one composition in this
+	 * window, never two.
+	 */
+	{
+		static const char *const names[2] = { "sameenv-a", "sameenv-b" };
+		char se_tarball[PATH_MAX], se_sha[128];
+		char logpath[160];
+		long long since = 0;
+		int k, ok_setup = 1;
+
+		if (stage_fixture_tarball(scratch_dir, "sameenv", "1.0", se_tarball,
+		                          sizeof(se_tarball), se_sha, sizeof(se_sha)) != 0)
+			ok_setup = 0;
+		for (k = 0; ok_setup && k < 2; k++) {
+			char install_body[256];
+
+			snprintf(install_body, sizeof(install_body),
+			         "        mkdir \"${dest}/usr/share\" chmod 0755\n"
+			         "        write \"${dest}/usr/share/%s.txt\" \"\"\"\n"
+			         "            %s\n"
+			         "            \"\"\"\n",
+			         names[k], names[k]);
+			if (publish_cpdl_recipe(&client, names[k], "1.0", se_tarball, se_sha, NULL,
+			                        "            compiler \"tcc\"\n"
+			                        "            tool \"bash\"\n"
+			                        "            tool \"coreutils\"\n"
+			                        "            tool \"binutils\"\n",
+			                        NULL, "        run \"true\" {\n        }\n",
+			                        install_body) != 0)
+				ok_setup = 0;
+		}
+		if (!ok_setup) {
+			fprintf(stderr, "FAIL: #618 could not set up the two sameenv recipes\n");
+			ok = 0;
+		} else {
+			/* After staging and publishing, so noenv's composition just
+			 * above cannot fall inside the window. */
+			since = (long long)time(NULL);
+			for (k = 0; k < 2; k++) {
+				char body[96];
+
+				snprintf(body, sizeof(body), "{\"name\":\"%s\"}", names[k]);
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/pkg/install", body, &r) != 0 ||
+				    r.status != 202) {
+					fprintf(stderr, "FAIL: #618 POST install %s, status=%d\n", names[k],
+					        r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
+			for (k = 0; k < 2; k++) {
+				if (poll_pkg_state(&client, names[k], state, sizeof(state), 200) != 0 ||
+				    strcmp(state, "installed") != 0) {
+					fprintf(stderr, "FAIL: #618 %s ended in state '%s', not installed\n",
+					        names[k], state);
+					test_print_build_log(&client, names[k], 20);
+					ok = 0;
+				}
+			}
+			snprintf(logpath, sizeof(logpath),
+			         "/v1/system/logs?source=cixd&since=%lld&regex=composing%%20build%%20environment"
+			         "&tail=50",
+			         since);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", logpath, NULL, &r) != 0 || r.status != 200 ||
+			    r.json == NULL || r.json->type != JSON_ARRAY) {
+				fprintf(stderr, "FAIL: #618 GET %s, status=%d\n", logpath, r.status);
+				ok = 0;
+			} else if (r.json->u.array.count != 1) {
+				fprintf(stderr,
+				        "FAIL: #618 two installs needing one environment composed it %zu "
+				        "times, not once: %.600s\n",
+				        r.json->u.array.count, r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+	}
+
 	/* #407: every build_container gate violation poll_pkg_state() saw,
 	 * across every install above. Reported as one line rather than
 	 * folded into ok at the point of failure, so the count is visible

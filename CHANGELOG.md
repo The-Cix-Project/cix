@@ -6,6 +6,21 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Two installs needing one build environment compose it once (#618)
+
+- **What changed:** an install that needs a build environment another install is composing
+  right now waits for it, rather than composing the same image again on top of it. It then
+  finds the environment ready, or, if that composition failed, composes it itself. A failed
+  composition no longer deletes an environment another install is waiting on or building in,
+  the same check a finished build's teardown already made.
+- **Why:** an environment is named for its tool set, so two installs declaring the same tools
+  need the same one. Nothing stopped both forking a composer for it (found by reading while
+  working #606). Whether that caused #606's one failure is not established.
+- **How it waits:** through the completion path its own composer would use. It forks a child
+  that does nothing but watch the other composer's pidfd and exit with it, so nothing in the
+  event loop changed. `test_pkg` starts two such installs back to back and asserts both
+  install and the environment is composed once.
+
 ### Every daemon-linked test proves its changes were announced (#607, ADR-0339 point 8)
 
 - **What changed:** 49 gated daemon-linked tests now call `test_assert_no_drift()` before they
