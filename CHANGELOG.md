@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A slow announcement check names the read that took the time (#617)
+
+- **What changed for an operator:** a slow pass of the once-a-second announcement check
+  (ADR-0339 point 7) is recorded with the read that took the time, for example
+  `events check, slowest read GET /v1/storage (3200 ms) (3373 ms)`, where it used to say only
+  `event events-check-timer (3373 ms)`. A read that never returns is named by the watchdog
+  while it runs.
+- **Why:** the check held the loop for 3373 ms once on 192.168.15.95 (2026-10-19 00:01:04Z,
+  while a release gate ran), and nothing said which of its reads it was. On an idle box the
+  slowest of the 96 parameterless reads takes 82 ms (`GET /v1/pkg`). The cause is not
+  established. This is what will establish it the next time it happens.
+
 ### A filtered log read no longer holds the event loop (#612, ADR-0342)
 
 - **What changed for an operator:** `cixctl logs --container/--source/--regex/--since` no

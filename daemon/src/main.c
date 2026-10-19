@@ -32672,6 +32672,21 @@ static unsigned long g_events_check_ticks;
 static int g_events_check_cursor;
 
 /*
+ * #617: one pass of the check timer runs several reads -- every
+ * subscription sample due, every sample read due, and a state read in
+ * turn -- and a slow pass was recorded only as "event
+ * events-check-timer (3373 ms)", once, on 192.168.15.95 on 2026-10-19
+ * at 00:01:04Z, with nothing saying which read it was. On an idle box
+ * the slowest of the 96 parameterless reads took 82 ms (GET /v1/pkg),
+ * so the record has to name it itself. While the timer runs, each read
+ * is the in-flight activity, so a read that never returns is named by
+ * the watchdog; and the pass is then named by its slowest read.
+ */
+static int g_events_tick_timing;
+static long long g_events_tick_slowest_ms;
+static char g_events_tick_slowest[STALLWATCH_ACTIVITY_MAX];
+
+/*
  * Runs the GET at `path` -- query and path parameters included, as
  * dispatch() would -- into memory. Returns 0 with the 200 body in
  * *out_body (the caller frees it), or -1 when nothing matches or the
@@ -32691,6 +32706,7 @@ static int events_run_get(const char *path, char **out_body, size_t *out_len)
 	struct api_ctx ctx;
 	const char *body = NULL;
 	size_t body_len = 0;
+	long long started = 0;
 	int idx, status;
 
 	*out_body = NULL;
@@ -32722,7 +32738,23 @@ static int events_run_get(const char *path, char **out_body, size_t *out_len)
 	g_response_conn = &g_self_read_conn;
 	g_events_response_slot = -1;
 	http_reset_last_status();
+	if (g_events_tick_timing) {
+		char label[STALLWATCH_ACTIVITY_MAX];
+
+		snprintf(label, sizeof(label), "events check: GET %s", path);
+		stallwatch_activity(label);
+		started = monotonic_ms();
+	}
 	g_api_routes[idx].fn(&ctx);
+	if (g_events_tick_timing) {
+		long long took = monotonic_ms() - started;
+
+		if (took > g_events_tick_slowest_ms) {
+			g_events_tick_slowest_ms = took;
+			snprintf(g_events_tick_slowest, sizeof(g_events_tick_slowest),
+			         "events check, slowest read GET %s (%lld ms)", path, took);
+		}
+	}
 	status = http_last_status();
 	g_response_conn = saved_conn;
 	g_events_response_slot = saved_slot;
@@ -33208,13 +33240,29 @@ static void events_full_pass(struct json_writer *w)
  * minutes for the whole set, so the check never costs the loop more
  * than one handler at a time.
  */
+static void events_check_tick(void);
+
 static void handle_events_check_timer_event(struct conn *tc)
 {
 	uint64_t expirations;
-	int slot, n;
 
 	if (read(tc->fd, &expirations, sizeof(expirations)) < 0 && errno != EAGAIN)
 		perror("read (events check timerfd)");
+	g_events_tick_timing = 1;
+	g_events_tick_slowest_ms = -1;
+	g_events_tick_slowest[0] = '\0';
+	events_check_tick();
+	g_events_tick_timing = 0;
+	/* #617: the pass is named by its slowest read; the loop adds the
+	 * whole pass's time and clears this after the handler. */
+	if (g_events_tick_slowest[0] != '\0')
+		stallwatch_activity(g_events_tick_slowest);
+}
+
+static void events_check_tick(void)
+{
+	int slot, n;
+
 	g_events_check_ticks++;
 	events_subs_tick();
 	for (slot = 0; slot < EVENTS_READ_COUNT; slot++) {
