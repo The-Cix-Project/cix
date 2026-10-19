@@ -15,6 +15,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
   now that same helper, plus its own check that the comparison covered at least 50 reads.
 - **Why now:** ADR-0339 made the roll-out wait for 24 hours of zero drift at rest on
   192.168.15.95. Measured on 2026-10-19: zero since 0.2.57-535, about 37 hours.
+- **What its first gate found** (`probe-cix-compile@0.2.57-553`): five reads that changed
+  without an announcement, reported 25 times across 16 tests. All are fixed in the contract or
+  the daemon:
+  - `listSoftware` (18 reports) is a view. It now declares `x-cix-composed-of` its six
+    components: image recipes, images, package recipes, packages, deployments and containers.
+  - `getSystemRoutes` is the kernel's table. Network create, update and delete and
+    `putManagementAddress` now name it, and the deferred delete of a superseded management
+    address announces it when it runs.
+  - `getPipelineRuns` reports the retention `setPipelineConfig` sets, so that change names it.
+  - `listPkgRebuilds`: the rebuild queue announces itself whenever it gains or loses an image,
+    which the daemon does with no request in front of it.
+  - `listLdapServers`, and the DNS, NTP and syslog lists with it: a container's declared server
+    roles are registered on every create path, so the registration announces them, and
+    `deleteContainer` names every list its forgets change.
 
 ### A build environment that cannot be composed says why (#606)
 

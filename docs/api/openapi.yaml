@@ -1915,7 +1915,7 @@ paths:
         0.0.0.0/8 or 127.0.0.0/8. The default upstream route is not set
         here -- it lives in /system/routes (ADR-0067).
       operationId: putManagementAddress
-      x-cix-invalidates: [getManagementAddress]
+      x-cix-invalidates: [getManagementAddress, getSystemRoutes]
       x-cix-permission: networks:write
       x-cix-expose: [cli, web]
       requestBody:
@@ -7242,7 +7242,7 @@ paths:
         LAN-bridged network's .1 is by convention the real gateway --
         the allocator must never hand it to a container.
       operationId: createNetwork
-      x-cix-invalidates: [listNetworks, getNetwork]
+      x-cix-invalidates: [listNetworks, getNetwork, getSystemRoutes]
       x-cix-permission: networks:write
       x-cix-expose: [cli, web]
       requestBody:
@@ -7322,7 +7322,7 @@ paths:
         both on a bridged network deliberately returns it to failing
         closed rather than to allocating from the bottom of the subnet.
       operationId: updateNetwork
-      x-cix-invalidates: [listNetworks, getNetwork]
+      x-cix-invalidates: [listNetworks, getNetwork, getSystemRoutes]
       x-cix-permission: networks:write
       x-cix-expose: [cli]
       parameters:
@@ -7376,7 +7376,7 @@ paths:
     delete:
       summary: Remove a network (deletes its bridge)
       operationId: deleteNetwork
-      x-cix-invalidates: [listNetworks, getNetwork]
+      x-cix-invalidates: [listNetworks, getNetwork, getSystemRoutes]
       x-cix-permission: networks:write
       x-cix-expose: [cli, web]
       parameters:
@@ -12129,7 +12129,7 @@ paths:
         season of history for about 400 KB. Lowering it trims
         immediately, oldest first.
       operationId: setPipelineConfig
-      x-cix-invalidates: [getPipelineConfig]
+      x-cix-invalidates: [getPipelineConfig, getPipelineRuns]
       x-cix-permission: packages:write
       x-cix-expose: [cli]
       requestBody:
@@ -13361,7 +13361,7 @@ paths:
         chain on full teardown should poll this container's own GET to
         404 first.
       operationId: deleteContainer
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listVolumes, getVolume, listDevices, listDnsRecords]
+      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listVolumes, getVolume, listDevices, listDnsRecords, listDnsServers, listLdapServers, listNtpServers, listSyslogTargets, listLdapUsers, listPkiCerts]
       x-cix-permission: containers:write
       x-cix-expose: [cli, web]
       parameters:
@@ -14494,6 +14494,7 @@ paths:
         choices in it, and deleting one is destructive. This reports.
       operationId: listSoftware
       x-cix-read: state
+      x-cix-composed-of: [listImageRecipes, listImages, listPkgRecipes, listPkg, listDeployments, listContainers]
       x-cix-permission: packages:read
       x-cix-expose: [cli, web]
       responses:

@@ -5441,6 +5441,9 @@ static void handle_bind_ip_cleanup_timer_event(struct conn *cc)
 		rtnl_addr_del_ipv4(rtfd, cc->cleanup_ifname, cc->cleanup_addr_be, cc->cleanup_prefix_len);
 		rtnl_close(rtfd);
 	}
+	/* ADR-0339: the address goes, and its on-link route with it, long
+	 * after the request that superseded it was answered (#607). */
+	events_announce(EV_getSystemRoutes);
 	/* Best-effort, same as before this became a deferred timer: a
 	 * failure here leaves a harmless leftover address on the bridge,
 	 * never persisted or bound to by cixd itself. */
@@ -17377,6 +17380,23 @@ static int register_declared_server_roles(const char *body, size_t body_len,
 				rc = -1;
 			}
 		}
+	}
+	/*
+	 * ADR-0339: a binding is registered on every create path, and most
+	 * have no request in front of them -- a roll, a restart:"always"
+	 * respawn, boot revival -- so the registration announces here
+	 * rather than in createContainer's x-cix-invalidates alone. All
+	 * four when any role is declared: more than changed, never less
+	 * (#607, found by the drift check in test_container_recipe).
+	 */
+	if (json_object_get(root, "dns_server") != NULL ||
+	    json_object_get(root, "ntp_server") != NULL ||
+	    json_object_get(root, "syslog_target") != NULL ||
+	    json_object_get(root, "ldap_server") != NULL) {
+		events_announce(EV_listDnsServers);
+		events_announce(EV_listNtpServers);
+		events_announce(EV_listSyslogTargets);
+		events_announce(EV_listLdapServers);
 	}
 	json_free(root);
 	return rc;

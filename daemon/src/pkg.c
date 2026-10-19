@@ -7787,6 +7787,10 @@ static void rebuild_queue_enqueue(const char *image)
 		return; /* best-effort, matches this queue's own documented bound */
 	snprintf(g_rebuild_queue[g_rebuild_queue_count], PKG_IMAGE_NAME_MAX, "%s", image);
 	g_rebuild_queue_count++;
+	/* ADR-0339: the queue changes by itself -- a publish queues, the
+	 * drain takes -- with no request whose x-cix-invalidates could
+	 * say so. Found by #607's drift check in test_container_recipe. */
+	events_announce(EV_listPkgRebuilds);
 }
 
 /*
@@ -7827,6 +7831,7 @@ static void rebuild_queue_remove_at(int idx)
 	for (i = idx + 1; i < g_rebuild_queue_count; i++)
 		snprintf(g_rebuild_queue[i - 1], PKG_IMAGE_NAME_MAX, "%s", g_rebuild_queue[i]);
 	g_rebuild_queue_count--;
+	events_announce(EV_listPkgRebuilds); /* as rebuild_queue_enqueue() */
 }
 
 static void rebuild_queue_pop_front(void)
