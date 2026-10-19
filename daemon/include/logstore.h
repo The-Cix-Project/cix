@@ -216,9 +216,27 @@ const char *logstore_min_level(void);
  * crashing (logread_query_parse() validates and the handler 400s a
  * bad pattern before ever reaching here; this is defense in depth,
  * not the primary validation).
+ *
+ * A filtered read skips a closed segment whose summary (#616) proves it
+ * holds no match, and makes the summary of one it reads whole. A line
+ * is filtered on source, level, container and since before it is
+ * parsed. Neither changes what is returned.
  */
 void logstore_tail_ex(const char *source_filter, const char *level_filter,
                        const char *container_filter, const char *msg_regex, int64_t since,
                        int limit, struct json_writer *w);
+
+/*
+ * What the last logstore_tail_ex() in this process did, for the tests
+ * that prove a summary and the line prefilter are used (#616). Not
+ * logged: a line about a read would be found by the next read.
+ */
+struct logstore_read_stats {
+	int segments;     /* read, wholly or in part */
+	int skipped;      /* passed over by their summary */
+	int summarised;   /* read to their first byte, and a summary written */
+	long lines_parsed; /* lines that reached json_parse() */
+};
+void logstore_last_read_stats(struct logstore_read_stats *out);
 
 #endif /* LOGSTORE_H */

@@ -6,6 +6,21 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A filtered log read skips the segments that cannot hold a match (#616, ADR-0342 phase 2)
+
+- **What changed for an operator:** a read for a container, a source, a level or a time
+  (`cixctl logs --container=...`, `--since=...`) reads only the segments that can hold an
+  answer, where it read the whole store before. A regex alone still reads it all, faster.
+- **How:** each closed segment gets a summary, `sum-SEQ.json`: its largest `ts` and the
+  sources, levels and containers in it. The daemon writes it at rotation. A filtered read writes
+  it for any closed segment it reads to the start, which covers segments written before this
+  release. A summary is used only for the exact file it was made from. Separately, a line is
+  filtered on its first bytes before it is parsed, which is where a full scan spent its time.
+- **Proved by:** `test_logread`, which compares every read with what was written, with and
+  without summaries. It also counts what each read skipped and parsed, and checks that a grown
+  segment, a summary under another segment's name, and a segment reopened after a restart are
+  each scanned rather than trusted.
+
 ### An array's item that declares required keys is a named schema, and the gate checks it (#605)
 
 - **What changed:** `test_apishape` now checks the required keys of 14 more array/operation

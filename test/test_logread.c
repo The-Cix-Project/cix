@@ -297,6 +297,104 @@ static void check_bound(const char *path, int want_bounded)
 		     path);
 }
 
+static int summary_exists(const char *dir, unsigned long long seq)
+{
+	char path[512];
+	struct stat st;
+
+	snprintf(path, sizeof(path), "%s/sum-%020llu.json", dir, seq);
+	return stat(path, &st) == 0;
+}
+
+/* Runs a read and checks what it did (#616). -1 means "any". */
+static void check_stats(const char *path, int segments, int skipped, int summarised,
+                        long max_parsed)
+{
+	struct logread_query q;
+	struct json_writer w;
+	struct logstore_read_stats s;
+	char detail[400];
+
+	if (logread_query_parse(path, &q) != 0) {
+		fail("query did not parse", path);
+		return;
+	}
+	jw_init(&w);
+	logread_run(&q, &w);
+	jw_free(&w);
+	logstore_last_read_stats(&s);
+	snprintf(detail, sizeof(detail),
+	         "%s: read %d segment(s), skipped %d, summarised %d, parsed %ld lines; wanted %d, "
+	         "%d, %d, at most %ld",
+	         path, s.segments, s.skipped, s.summarised, s.lines_parsed, segments, skipped,
+	         summarised, max_parsed);
+	if ((segments >= 0 && s.segments != segments) || (skipped >= 0 && s.skipped != skipped) ||
+	    (summarised >= 0 && s.summarised != summarised) ||
+	    (max_parsed >= 0 && s.lines_parsed > max_parsed))
+		fail("a read did not use the segment summaries or the line prefilter as it should",
+		     detail);
+}
+
+/*
+ * The writer's half (#616): a segment this process wrote from its first
+ * byte gets its summary at rotation; one it reopened after a restart
+ * does not, and the first filtered read that reads it whole makes one.
+ */
+static void check_rotation(void)
+{
+	char dir[256], state[300];
+	int i;
+
+	snprintf(dir, sizeof(dir), "/tmp/cix_test_logrot_XXXXXX");
+	if (mkdtemp(dir) == NULL) {
+		fail("mkdtemp for the rotation store", "");
+		return;
+	}
+	snprintf(state, sizeof(state), "%s/state.json", dir);
+	if (logstore_init(dir, state) != 0 ||
+	    logstore_set_max_bytes(LOGSTORE_MIN_MAX_BYTES) != LOGSTORE_OK) {
+		fail("could not set up the rotation store", dir);
+		return;
+	}
+	/* 128 KB a segment: 3000 entries of ~110 bytes rotate twice. */
+	for (i = 0; i < 3000; i++) {
+		if (i % 2 == 0)
+			logstore_write_container("rot-a", "info", "rotation entry %d", i);
+		else
+			logstore_write("cixd", "info", "rotation entry %d", i);
+	}
+	if (!summary_exists(dir, 1) || !summary_exists(dir, 2))
+		fail("a segment written whole by this process got no summary at rotation", dir);
+	check_stats("/v1/system/logs?container=nosuch&tail=5", 1, 2, 0, 5);
+	check_stats("/v1/system/logs?container=&tail=5000", -1, 0, -1, -1);
+
+	/* A restart: the current segment is reopened, and what it held
+	 * before is not in this process's summary. */
+	logstore_repoint(dir, state);
+	if (logstore_init(dir, state) != 0) {
+		fail("could not reopen the rotation store", dir);
+		return;
+	}
+	for (i = 0; i < 1500; i++)
+		logstore_write_container("rot-b", "info", "after the restart %d", i);
+	if (summary_exists(dir, 3))
+		fail("a segment reopened after a restart got a summary at rotation, which cannot "
+		     "know what it held before",
+		     dir);
+	check_stats("/v1/system/logs?container=nosuch&tail=5", 2, 2, 1, -1);
+	if (!summary_exists(dir, 3))
+		fail("a filtered read that read a closed segment whole did not summarise it", dir);
+	check_stats("/v1/system/logs?container=nosuch&tail=5", 1, 3, 0, 5);
+	logstore_repoint(dir, state); /* closes the open segment before the store goes */
+	{
+		char cmd[400];
+
+		snprintf(cmd, sizeof(cmd), "rm -rf %s", dir);
+		if (system(cmd) != 0)
+			fprintf(stderr, "note: could not remove %s\n", dir);
+	}
+}
+
 /* logread_write_to() writes exactly what logread_run() produces. */
 static void check_write_to(const char *path)
 {
@@ -360,9 +458,14 @@ int main(void)
 		"/v1/system/logs?regex=long%20line&tail=5",
 		"/v1/system/logs?source=cixd&level=warn&tail=5",
 		"/v1/system/logs?regex=unterminated&tail=5",
+		/* An empty container is a real filter -- every entry that is not a
+		 * container's -- so a summary's set must hold "" too. */
+		"/v1/system/logs?container=&tail=40",
+		"/v1/system/logs?container=&tail=5000",
 	};
 	char state[300];
 	size_t i;
+	int pass;
 
 	snprintf(g_dir, sizeof(g_dir), "/tmp/cix_test_logread_XXXXXX");
 	if (mkdtemp(g_dir) == NULL) {
@@ -379,8 +482,83 @@ int main(void)
 		return 1;
 	}
 
-	for (i = 0; i < sizeof(reads) / sizeof(reads[0]); i++)
-		check_query(reads[i]);
+	/*
+	 * #616: twice. The first pass finds no summaries and makes them as
+	 * its filtered reads read closed segments whole; the second answers
+	 * the same reads with them. The answers must not change.
+	 */
+	for (pass = 0; pass < 2; pass++) {
+		for (i = 0; i < sizeof(reads) / sizeof(reads[0]); i++)
+			check_query(reads[i]);
+		if (pass == 0) {
+			unsigned long long seq;
+
+			for (seq = 1; seq <= 4; seq++) {
+				if (!summary_exists(g_dir, seq))
+					fail("a closed segment read whole by a filtered read has no summary",
+					     "");
+			}
+			if (summary_exists(g_dir, 5))
+				fail("the newest segment, the one being written, was summarised", "");
+		}
+	}
+
+	/* What the summaries and the prefilter save. Segment 3 is empty and
+	 * segment 2 holds no container's entries. The one line parsed is
+	 * segment 5's truncated one, which is in no shape the prefilter
+	 * reads. */
+	check_stats("/v1/system/logs?source=nosuchsource&tail=5", 1, 4, 0, 1);
+	check_stats("/v1/system/logs?since=99999999999&tail=40", 1, 4, 0, 1);
+	check_stats("/v1/system/logs?container=dns-1&tail=5000", 3, 2, 0, -1);
+	check_stats("/v1/system/logs?tail=40", 1, 0, 0, -1);
+
+	/*
+	 * A summary is used only for the exact file it was made from. Grow
+	 * segment 2 by one entry of a new container: its summary no longer
+	 * matches the size, so the read must find the entry, and summarise
+	 * the segment again. (After the passes above, because this entry
+	 * is out of ts order with the ones the other reads compare.)
+	 */
+	{
+		char path[512];
+		FILE *f;
+
+		snprintf(path, sizeof(path), "%s/seg-%020llu.jsonl", g_dir, 2ULL);
+		f = fopen(path, "a");
+		if (f == NULL) {
+			fail("could not append to segment 2", path);
+		} else {
+			put(f, 1792002000, "container", "info", "late-1", "written after the summary");
+			fclose(f);
+		}
+		check_stats("/v1/system/logs?container=late-1&tail=5", 2, 3, 1, -1);
+		check_query("/v1/system/logs?container=late-1&tail=5");
+	}
+	/* And only for its own segment: segment 1's summary under segment
+	 * 4's name is not segment 4's. */
+	{
+		char from[512], to[512];
+		char buf[65536];
+		FILE *in, *out;
+		size_t n;
+
+		snprintf(from, sizeof(from), "%s/sum-%020llu.json", g_dir, 1ULL);
+		snprintf(to, sizeof(to), "%s/sum-%020llu.json", g_dir, 4ULL);
+		in = fopen(from, "r");
+		out = fopen(to, "w");
+		if (in == NULL || out == NULL) {
+			fail("could not copy a summary over another", to);
+		} else {
+			n = fread(buf, 1, sizeof(buf), in);
+			fwrite(buf, 1, n, out);
+		}
+		if (in != NULL)
+			fclose(in);
+		if (out != NULL)
+			fclose(out);
+		check_stats("/v1/system/logs?container=nosuch&tail=5", 2, 3, 1, -1);
+		check_stats("/v1/system/logs?container=nosuch&tail=5", 1, 4, 0, -1);
+	}
 
 	/* The bound: only a read with no filter may run on the loop. */
 	check_bound("/v1/system/logs", 1);
@@ -403,6 +581,9 @@ int main(void)
 	check_write_to("/v1/system/logs?regex=needle&tail=5000");
 	check_write_to("/v1/system/logs?tail=3");
 
+	/* Last: it points the store at a directory of its own. */
+	check_rotation();
+
 	if (g_failures != 0) {
 		fprintf(stderr, "test_logread: %d failure(s); store left at %s\n", g_failures, g_dir);
 		return 1;
@@ -414,7 +595,9 @@ int main(void)
 		if (system(cmd) != 0)
 			fprintf(stderr, "note: could not remove %s\n", g_dir);
 	}
-	printf("test_logread: %zu reads matched what was written, every bound held\n",
+	printf("test_logread: %zu reads matched what was written, without summaries and with "
+	       "them; every bound held, and the summaries were used, made and refused as they "
+	       "should be\n",
 	       sizeof(reads) / sizeof(reads[0]));
 	return 0;
 }

@@ -295,6 +295,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **One park, not two.** A filtered read parks through ADR-0340's record, which is `struct park` with a kind. A new kind of work that makes a request wait is a new kind there, never a second park.
 - **`since` is a filter, never a stop condition.** The daemon sets the clock, so a segment can hold a backward step.
 - **Only the unfiltered log tail is a stream.** A sample runs in-process, where nothing can be parked, so a filtered log subscription is refused.
+- **A segment's summary is exact or absent, never a guess** (#616). It is used only for the file it was made from (seq, device, inode, size), it is written only when it covers the segment from its first byte, and a set too large to keep is unknown. Never add a skip that a summary cannot prove, and never read or write one on an unfiltered read, which runs on the loop.
 
 ## One way to make an image
 

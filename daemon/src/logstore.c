@@ -87,6 +87,127 @@ static int g_write_fail_errno;
 static long long g_write_fail_first_ts;
 static long g_write_fail_count;
 
+/*
+ * ADR-0342 phase 2 (#616): A SEGMENT'S SUMMARY -- its largest ts, and
+ * every source, level and container in it.
+ *
+ * A filtered read skips a closed segment its summary proves cannot hold
+ * a match: no entry at or after `since` (exact whatever the clock did,
+ * because it is the LARGEST ts, not the last), or no entry with the
+ * named source, level or container. "This container's last 40 lines"
+ * read every segment before this, and the store may be 100 GB.
+ *
+ * A summary is exact or absent, never a guess. A set too large to keep
+ * is recorded as unknown, which skips nothing; a summary is written only
+ * when it covers its segment from the first byte; and one is used only
+ * when the segment's seq, device, inode and size are the ones it was
+ * made from (summary_load()).
+ */
+#define SUM_SOURCES_MAX 32
+#define SUM_LEVELS_MAX 16
+#define SUM_CONTAINERS_MAX 256
+
+struct seg_summary {
+	int complete;     /* every entry since the segment's first byte is in it */
+	long long entries;
+	int64_t max_ts;
+	int n_src, n_lvl, n_cont;
+	int src_over, lvl_over, cont_over; /* too many, or too long, to keep: unknown */
+	char src[SUM_SOURCES_MAX][LOGSTORE_SOURCE_MAX];
+	char lvl[SUM_LEVELS_MAX][LOGSTORE_LEVEL_MAX];
+	char cont[SUM_CONTAINERS_MAX][LOGSTORE_CONTAINER_MAX];
+};
+
+/* The segment being written. */
+static struct seg_summary g_cur_sum;
+
+static void sum_reset(struct seg_summary *s, int complete)
+{
+	memset(s, 0, sizeof(*s));
+	s->complete = complete;
+}
+
+/* Adds n bytes of name to a set of `max` slots of `slot` bytes each. */
+static void sum_set_add(char *set, int *count, int *over, int max, size_t slot, const char *name,
+                        size_t n)
+{
+	int i;
+
+	if (*over)
+		return;
+	if (n >= slot) {
+		*over = 1;
+		return;
+	}
+	for (i = 0; i < *count; i++) {
+		const char *have = set + (size_t)i * slot;
+
+		if (memcmp(have, name, n) == 0 && have[n] == '\0')
+			return;
+	}
+	if (*count >= max) {
+		*over = 1;
+		return;
+	}
+	memcpy(set + (size_t)(*count) * slot, name, n);
+	set[(size_t)(*count) * slot + n] = '\0';
+	(*count)++;
+}
+
+/* One entry. A NULL field is one the entry does not have, which no
+ * filter on that field can match, so it adds nothing to that set. */
+static void sum_add(struct seg_summary *s, int64_t ts, const char *src, size_t src_n,
+                    const char *lvl, size_t lvl_n, const char *cont, size_t cont_n)
+{
+	if (s->entries == 0 || ts > s->max_ts)
+		s->max_ts = ts;
+	s->entries++;
+	if (src != NULL)
+		sum_set_add(&s->src[0][0], &s->n_src, &s->src_over, SUM_SOURCES_MAX,
+		            sizeof(s->src[0]), src, src_n);
+	if (lvl != NULL)
+		sum_set_add(&s->lvl[0][0], &s->n_lvl, &s->lvl_over, SUM_LEVELS_MAX,
+		            sizeof(s->lvl[0]), lvl, lvl_n);
+	if (cont != NULL)
+		sum_set_add(&s->cont[0][0], &s->n_cont, &s->cont_over, SUM_CONTAINERS_MAX,
+		            sizeof(s->cont[0]), cont, cont_n);
+}
+
+/* 1 if the set may hold name: an unknown set may hold anything. */
+static int sum_set_may_hold(const char *set, int count, int over, size_t slot, const char *name)
+{
+	int i;
+
+	if (over)
+		return 1;
+	for (i = 0; i < count; i++) {
+		if (strcmp(set + (size_t)i * slot, name) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+/* 1 if no entry in the summarised segment can match these filters. */
+static int sum_excludes(const struct seg_summary *s, const char *source_filter,
+                        const char *level_filter, const char *container_filter, int64_t since)
+{
+	if (s->entries == 0)
+		return 1;
+	if (since > 0 && s->max_ts < since)
+		return 1;
+	if (source_filter != NULL &&
+	    !sum_set_may_hold(&s->src[0][0], s->n_src, s->src_over, sizeof(s->src[0]), source_filter))
+		return 1;
+	if (level_filter != NULL &&
+	    !sum_set_may_hold(&s->lvl[0][0], s->n_lvl, s->lvl_over, sizeof(s->lvl[0]), level_filter))
+		return 1;
+	if (container_filter != NULL &&
+	    !sum_set_may_hold(&s->cont[0][0], s->n_cont, s->cont_over, sizeof(s->cont[0]),
+	                      container_filter))
+		return 1;
+	return 0;
+}
+
 static int save_state(void)
 {
 	struct json_writer w;
@@ -144,6 +265,166 @@ static void segment_path(uint64_t seq, char *out, size_t out_size)
 	snprintf(out, out_size, "%s/seg-%020llu.jsonl", g_dir, (unsigned long long)seq);
 }
 
+/* "sum-", not "seg-": segment_seq_list()'s sscanf() would count any
+ * name that starts with a segment's prefix and number as a segment. */
+static void summary_path(uint64_t seq, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/sum-%020llu.json", g_dir, (unsigned long long)seq);
+}
+
+static void sum_write_set(struct json_writer *w, const char *key, const char *set, int count,
+                          int over, size_t slot)
+{
+	int i;
+
+	if (over)
+		return; /* absent is unknown */
+	jw_key(w, key);
+	jw_arr_open(w);
+	for (i = 0; i < count; i++)
+		jw_str(w, set + (size_t)i * slot);
+	jw_arr_close(w);
+}
+
+/*
+ * Writes seq's summary, made from the segment file whose fstat() is st.
+ * The device and inode are strings because a JSON number is a double
+ * here, and an inode need not fit in 53 bits.
+ *
+ * Two read children may write the same summary at once, and
+ * persist_atomic_write()'s temporary name is fixed. That is safe: both
+ * summarised the same immutable bytes, so the content is identical, and
+ * a reader that meets a torn file fails json_parse() and scans.
+ */
+static int summary_write(uint64_t seq, const struct stat *st, const struct seg_summary *s)
+{
+	char path[600];
+	char num[32];
+	struct json_writer w;
+	int rc;
+
+	summary_path(seq, path, sizeof(path));
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "seq");
+	jw_int(&w, (long long)seq);
+	jw_key(&w, "dev");
+	snprintf(num, sizeof(num), "%llu", (unsigned long long)st->st_dev);
+	jw_str(&w, num);
+	jw_key(&w, "ino");
+	snprintf(num, sizeof(num), "%llu", (unsigned long long)st->st_ino);
+	jw_str(&w, num);
+	jw_key(&w, "bytes");
+	jw_int(&w, (long long)st->st_size);
+	jw_key(&w, "entries");
+	jw_int(&w, s->entries);
+	jw_key(&w, "max_ts");
+	jw_int(&w, (long long)s->max_ts);
+	sum_write_set(&w, "sources", &s->src[0][0], s->n_src, s->src_over, sizeof(s->src[0]));
+	sum_write_set(&w, "levels", &s->lvl[0][0], s->n_lvl, s->lvl_over, sizeof(s->lvl[0]));
+	sum_write_set(&w, "containers", &s->cont[0][0], s->n_cont, s->cont_over,
+	              sizeof(s->cont[0]));
+	jw_obj_close(&w);
+	rc = persist_atomic_write(path, w.buf, w.len);
+	jw_free(&w);
+	return rc;
+}
+
+static void sum_load_set(const struct json_value *v, char *set, int *count, int *over, int max,
+                         size_t slot)
+{
+	size_t i;
+
+	if (v == NULL || v->type != JSON_ARRAY) {
+		*over = 1;
+		return;
+	}
+	for (i = 0; i < v->u.array.count; i++) {
+		const char *name = json_as_string(v->u.array.items[i]);
+
+		if (name == NULL) {
+			*over = 1;
+			return;
+		}
+		sum_set_add(set, count, over, max, slot, name, strlen(name));
+	}
+}
+
+/* 0 with *s filled when seq has a summary made from exactly the file
+ * whose fstat() is st; -1 otherwise, and the segment is scanned. */
+static int summary_load(uint64_t seq, const struct stat *st, struct seg_summary *s)
+{
+	char path[600];
+	char num[32];
+	char *buf;
+	size_t len;
+	struct json_value *root;
+	const char *dev, *ino;
+	int ok;
+
+	summary_path(seq, path, sizeof(path));
+	if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)
+		return -1;
+	root = json_parse(buf, len);
+	free(buf);
+	if (root == NULL)
+		return -1;
+	dev = json_as_string(json_object_get(root, "dev"));
+	ino = json_as_string(json_object_get(root, "ino"));
+	ok = json_object_get(root, "seq") != NULL &&
+	     (uint64_t)json_as_number(json_object_get(root, "seq")) == seq &&
+	     json_object_get(root, "bytes") != NULL &&
+	     (off_t)json_as_number(json_object_get(root, "bytes")) == st->st_size &&
+	     json_object_get(root, "entries") != NULL && json_object_get(root, "max_ts") != NULL &&
+	     dev != NULL && ino != NULL;
+	if (ok) {
+		snprintf(num, sizeof(num), "%llu", (unsigned long long)st->st_dev);
+		ok = strcmp(dev, num) == 0;
+	}
+	if (ok) {
+		snprintf(num, sizeof(num), "%llu", (unsigned long long)st->st_ino);
+		ok = strcmp(ino, num) == 0;
+	}
+	if (!ok) {
+		json_free(root);
+		return -1;
+	}
+	sum_reset(s, 1);
+	s->entries = (long long)json_as_number(json_object_get(root, "entries"));
+	s->max_ts = (int64_t)json_as_number(json_object_get(root, "max_ts"));
+	sum_load_set(json_object_get(root, "sources"), &s->src[0][0], &s->n_src, &s->src_over,
+	             SUM_SOURCES_MAX, sizeof(s->src[0]));
+	sum_load_set(json_object_get(root, "levels"), &s->lvl[0][0], &s->n_lvl, &s->lvl_over,
+	             SUM_LEVELS_MAX, sizeof(s->lvl[0]));
+	sum_load_set(json_object_get(root, "containers"), &s->cont[0][0], &s->n_cont,
+	             &s->cont_over, SUM_CONTAINERS_MAX, sizeof(s->cont[0]));
+	json_free(root);
+	return 0;
+}
+
+/* Every summary older than the oldest segment kept: one whose segment
+ * was evicted, one a read child wrote after its segment was evicted,
+ * and the .tmp of one whose child was killed mid-write. */
+static void sweep_summaries(uint64_t oldest_kept)
+{
+	DIR *d = opendir(g_dir);
+	struct dirent *de;
+
+	if (d == NULL)
+		return;
+	while ((de = readdir(d)) != NULL) {
+		unsigned long long seq;
+		char path[600];
+
+		if (strncmp(de->d_name, "sum-", 4) != 0 || sscanf(de->d_name + 4, "%llu", &seq) != 1 ||
+		    seq >= oldest_kept)
+			continue;
+		snprintf(path, sizeof(path), "%s/%s", g_dir, de->d_name);
+		unlink(path);
+	}
+	closedir(d);
+}
+
 /* Every real segment file currently on disk, ascending by sequence
  * number -- a plain insertion sort, since n is always small
  * (LOGSTORE_SEGMENT_COUNT plus at most a couple of stragglers between
@@ -191,6 +472,8 @@ static void evict_old_segments(void)
 		segment_path(seqs[i], path, sizeof(path));
 		unlink(path);
 	}
+	if (n > 0)
+		sweep_summaries(seqs[n > LOGSTORE_SEGMENT_COUNT ? n - LOGSTORE_SEGMENT_COUNT : 0]);
 }
 
 static long per_segment_max_bytes(void)
@@ -214,6 +497,14 @@ static int ensure_current_segment_open(void)
 	if (g_current_fp == NULL) {
 		need_new = (g_next_seq == 1);
 	} else if (g_current_size >= per_segment_max_bytes()) {
+		/*
+		 * #616: the closing segment's summary, if this process saw the
+		 * whole of it. Every write was flushed as it was made, so the
+		 * fstat() is of the final bytes. On the loop, once per segment,
+		 * beside save_state()'s identical write-and-fsync just below.
+		 */
+		if (g_cur_sum.complete && fstat(fileno(g_current_fp), &st) == 0)
+			summary_write(g_current_seq, &st, &g_cur_sum);
 		fclose(g_current_fp);
 		g_current_fp = NULL;
 		need_new = 1;
@@ -226,6 +517,10 @@ static int ensure_current_segment_open(void)
 		if (g_current_fp == NULL)
 			return -1;
 		g_current_size = (stat(path, &st) == 0) ? (long)st.st_size : 0;
+		/* What it held before this process opened it is not in the
+		 * summary, so it gets none at rotation; a filtered read that
+		 * scans it whole makes one later. */
+		sum_reset(&g_cur_sum, g_current_size == 0);
 	}
 
 	if (need_new) {
@@ -234,10 +529,25 @@ static int ensure_current_segment_open(void)
 		if (save_state() != 0)
 			return -1;
 		segment_path(g_current_seq, path, sizeof(path));
+		/*
+		 * A seq is new unless state.json was lost, and then an old file
+		 * may carry it. Unlinked rather than truncated, so the new
+		 * segment is a new inode, and its old summary goes with it:
+		 * otherwise a summary of the old bytes could match the new file
+		 * on size alone.
+		 */
+		unlink(path);
+		{
+			char spath[600];
+
+			summary_path(g_current_seq, spath, sizeof(spath));
+			unlink(spath);
+		}
 		g_current_fp = fopen(path, "w");
 		if (g_current_fp == NULL)
 			return -1;
 		g_current_size = 0;
+		sum_reset(&g_cur_sum, 1);
 		evict_old_segments();
 	}
 	return 0;
@@ -476,6 +786,7 @@ static void write_entry(const char *source, const char *level, const char *conta
 	char lvl[LOGSTORE_LEVEL_MAX];
 	char cont[LOGSTORE_CONTAINER_MAX];
 	struct json_writer w;
+	long long now;
 
 	if (!g_initialized)
 		return;
@@ -490,10 +801,11 @@ static void write_entry(const char *source, const char *level, const char *conta
 		return;
 	}
 
+	now = (long long)time(NULL);
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "ts");
-	jw_int(&w, (long long)time(NULL));
+	jw_int(&w, now);
 	jw_key(&w, "source");
 	jw_str(&w, src);
 	jw_key(&w, "level");
@@ -539,6 +851,9 @@ static void write_entry(const char *source, const char *level, const char *conta
 			}
 			g_write_fail_count++;
 			clearerr(g_current_fp);
+			/* Some of this entry may be on disk, so the summary can no
+			 * longer say what the segment holds (#616). */
+			g_cur_sum.complete = 0;
 		} else {
 			if (g_write_fail_count != 0) {
 				/* Recovered. Say so in the store itself, now that
@@ -548,6 +863,7 @@ static void write_entry(const char *source, const char *level, const char *conta
 				g_write_fail_first_ts = 0;
 			}
 			g_current_size += (long)w.len + 1;
+			sum_add(&g_cur_sum, now, src, strlen(src), lvl, strlen(lvl), cont, strlen(cont));
 		}
 	}
 	jw_free(&w);
@@ -782,6 +1098,95 @@ static int back_next_line(struct back_reader *r, const char **line, size_t *n)
 	}
 }
 
+/*
+ * #616: AN ENTRY'S HEAD, READ WITHOUT json_parse().
+ *
+ * write_entry() writes the fields in one order --
+ * {"ts":N,"source":"..","level":"..","container":"..","msg":".. -- and
+ * a full scan spends its time in json_parse() (#612: 1.61 s for a warm
+ * 100 MB store on 192.168.15.95, with the newline search already fast).
+ * So a line in exactly that shape is filtered on source, level,
+ * container and since first, and only a line that passes is parsed.
+ *
+ * It is exact because it only ever REJECTS, and only on values equal to
+ * the ones json_parse() would give: a span with a backslash in it is
+ * escaped, so such a line falls back to json_parse(); and every other
+ * byte jw_str() writes is the byte itself. json_object_get() takes a
+ * key's first occurrence, which is the one read here. A line in any
+ * other shape -- damage, a truncated entry, a format this store never
+ * wrote -- returns 0 and is parsed as before.
+ */
+struct line_head {
+	int64_t ts;
+	const char *src, *lvl, *cont;
+	size_t src_n, lvl_n, cont_n;
+};
+
+/* key, then a string with no backslash in it; returns the byte after
+ * its closing quote, or NULL. */
+static const char *head_str(const char *q, const char *end, const char *key, const char **s,
+                            size_t *n)
+{
+	size_t k = strlen(key);
+	const char *p;
+
+	if ((size_t)(end - q) < k || memcmp(q, key, k) != 0)
+		return NULL;
+	q += k;
+	for (p = q; p < end && *p != '"'; p++) {
+		if (*p == '\\')
+			return NULL;
+	}
+	if (p >= end)
+		return NULL;
+	*s = q;
+	*n = (size_t)(p - q);
+	return p + 1;
+}
+
+static int line_head(const char *line, size_t n, struct line_head *h)
+{
+	const char *end = line + n;
+	const char *q = line;
+	int neg = 0, digits = 0;
+	int64_t v = 0;
+
+	if (n < 6 || memcmp(q, "{\"ts\":", 6) != 0)
+		return 0;
+	q += 6;
+	if (q < end && *q == '-') {
+		neg = 1;
+		q++;
+	}
+	while (q < end && *q >= '0' && *q <= '9') {
+		if (++digits > 18)
+			return 0;
+		v = v * 10 + (*q - '0');
+		q++;
+	}
+	if (digits == 0)
+		return 0;
+	h->ts = neg ? -v : v;
+	q = head_str(q, end, ",\"source\":\"", &h->src, &h->src_n);
+	if (q != NULL)
+		q = head_str(q, end, ",\"level\":\"", &h->lvl, &h->lvl_n);
+	if (q != NULL)
+		q = head_str(q, end, ",\"container\":\"", &h->cont, &h->cont_n);
+	return q != NULL && (size_t)(end - q) >= 8 && memcmp(q, ",\"msg\":\"", 8) == 0;
+}
+
+static int span_is(const char *s, size_t n, const char *want)
+{
+	return strlen(want) == n && memcmp(s, want, n) == 0;
+}
+
+static struct logstore_read_stats g_read_stats;
+
+void logstore_last_read_stats(struct logstore_read_stats *out)
+{
+	*out = g_read_stats;
+}
+
 void logstore_tail_ex(const char *source_filter, const char *level_filter,
                        const char *container_filter, const char *msg_regex, int64_t since,
                        int limit, struct json_writer *w)
@@ -796,7 +1201,10 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 	int i;
 	regex_t re;
 	int have_re = 0;
+	/* #616: one summary, reused for each segment's load or build. */
+	struct seg_summary *sum = NULL;
 
+	memset(&g_read_stats, 0, sizeof(g_read_stats));
 	if (msg_regex != NULL && msg_regex[0] != '\0') {
 		if (regcomp(&re, msg_regex, REG_EXTENDED | REG_NOSUB | REG_ICASE) != 0) {
 			/* An invalid pattern matches nothing, rather than crashing
@@ -823,6 +1231,16 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 	out_start = eff_limit;
 
 	/*
+	 * #616: summaries are read and made only by a FILTERED read, which is
+	 * the kind logread_query_bounded() sends to a helper child. A read
+	 * with no filter can skip nothing by them, and runs on the event
+	 * loop, where a lazily made summary would be a write and an fsync.
+	 */
+	if (source_filter != NULL || level_filter != NULL || container_filter != NULL || have_re ||
+	    since > 0)
+		sum = malloc(sizeof(*sum));
+
+	/*
 	 * Newest segment first, newest line first, and stop as soon as the
 	 * tail is full. The first `limit` matches met this way ARE the
 	 * store's last `limit` matches, so filling the result from its end
@@ -839,6 +1257,9 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 		struct stat st;
 		const char *line;
 		size_t n;
+		int rc = 1;
+		/* #616: making this segment's summary as it is read. */
+		int build = 0;
 
 		segment_path(seqs[i], path, sizeof(path));
 		memset(&r, 0, sizeof(r));
@@ -851,14 +1272,50 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 		}
 		r.pos = st.st_size;
 
-		while (out_start > 0 && back_next_line(&r, &line, &n) == 1) {
+		/*
+		 * The segment being written has no summary and gets none: the
+		 * newest one listed, and the one this process appends to, which
+		 * differ only if state.json was lost. A wrong answer here could
+		 * not make a read wrong -- a summary is used only for the exact
+		 * size it was made at -- only pointless.
+		 */
+		if (sum != NULL && i < seg_count - 1 &&
+		    !(g_current_fp != NULL && seqs[i] == g_current_seq)) {
+			if (summary_load(seqs[i], &st, sum) == 0) {
+				if (sum_excludes(sum, source_filter, level_filter, container_filter, since)) {
+					g_read_stats.skipped++;
+					close(r.fd);
+					continue;
+				}
+			} else {
+				sum_reset(sum, 1);
+				build = 1;
+			}
+		}
+		g_read_stats.segments++;
+
+		while (out_start > 0 && (rc = back_next_line(&r, &line, &n)) == 1) {
 			struct json_value *root;
 			const char *src, *lvl, *cont, *msg;
 			int64_t ts;
 			struct tail_entry *e;
+			struct line_head h;
+			int headed;
 
 			if (n == 0)
 				continue;
+			headed = line_head(line, n, &h);
+			if (headed) {
+				if (build)
+					sum_add(sum, h.ts, h.src, h.src_n, h.lvl, h.lvl_n, h.cont, h.cont_n);
+				if ((source_filter != NULL && !span_is(h.src, h.src_n, source_filter)) ||
+				    (level_filter != NULL && !span_is(h.lvl, h.lvl_n, level_filter)) ||
+				    (container_filter != NULL &&
+				     !span_is(h.cont, h.cont_n, container_filter)) ||
+				    (since > 0 && h.ts < since))
+					continue;
+			}
+			g_read_stats.lines_parsed++;
 			root = json_parse(line, n);
 			if (root == NULL)
 				continue;
@@ -867,6 +1324,9 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 			lvl = json_as_string(json_object_get(root, "level"));
 			cont = json_as_string(json_object_get(root, "container"));
 			msg = json_as_string(json_object_get(root, "msg"));
+			if (build && !headed)
+				sum_add(sum, ts, src, src != NULL ? strlen(src) : 0, lvl,
+				        lvl != NULL ? strlen(lvl) : 0, cont, cont != NULL ? strlen(cont) : 0);
 
 			if ((source_filter != NULL && (src == NULL || strcmp(src, source_filter) != 0)) ||
 			    (level_filter != NULL && (lvl == NULL || strcmp(lvl, level_filter) != 0)) ||
@@ -886,9 +1346,14 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 			snprintf(e->msg, sizeof(e->msg), "%s", msg != NULL ? msg : "");
 			json_free(root);
 		}
+		/* Read to its first byte: the summary covers the whole file. A
+		 * walk that stopped because the tail was full saw only part. */
+		if (build && rc == 0 && summary_write(seqs[i], &st, sum) == 0)
+			g_read_stats.summarised++;
 		free(r.buf);
 		close(r.fd);
 	}
+	free(sum);
 
 	jw_arr_open(w);
 	for (i = out_start; i < eff_limit; i++) {
