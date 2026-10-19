@@ -90,6 +90,18 @@ void stallwatch_activity_clear(void);
  */
 long long stallwatch_handler_start(void);
 void stallwatch_handler_done(const char *kind, long long started_millis);
+
+/*
+ * #619: a step inside the handler being timed. Ends the previous step,
+ * if any, and begins `name`; stallwatch_handler_done() ends the last.
+ * A handler slow enough to be the pass's slowest is then named with its
+ * slowest step as well -- "event container (1700 ms), slowest step pkg
+ * install: produce the image version (1500 ms)" -- where it used to say
+ * only "event container". The step is also the in-flight activity, so a
+ * step that never returns is named by the watchdog. Outside a timed
+ * handler it does nothing.
+ */
+void stallwatch_step(const char *name);
 /* #303: read the current in-flight activity (into shared memory), for the
  * crash handler's trace. NULL if the watchdog never started; a caller must
  * bound its read to STALL_ACTIVITY_MAX (a torn write may leave it

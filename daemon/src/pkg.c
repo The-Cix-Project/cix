@@ -35,6 +35,7 @@
 #include "treecopy.h"
 #include "pki.h"
 #include "releasekey.h"
+#include "stallwatch.h"
 #include "test_image_fixture.h"
 
 #include <archive.h>
@@ -11062,6 +11063,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	         e->build_upperdir);
 	snprintf(extra_dir, sizeof(extra_dir), "%s/build/extra", e->build_upperdir);
 
+	stallwatch_step("build prep: stage the build tree"); /* #619 */
 	{
 		char tmp_dir[PATH_MAX];
 
@@ -11327,6 +11329,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			chain_release(chain_idx);
 			return 0;
 		}
+		stallwatch_step("build prep: copy the sources into the cbs cache");
 		for (i = 0; i < recipe.source_count; i++) {
 			char src_path[PATH_MAX], cache_dst[PATH_MAX];
 
@@ -11346,6 +11349,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		}
 	}
 
+	stallwatch_step("build prep: the build command and its config");
 	/* ADR-0122: a cache hit runs a pure no-op -- dest_dir (this
 	 * container's own PKG_DEST_REL_CBS) was already populated straight
 	 * from the cache above, nothing left for the container itself to
@@ -11405,6 +11409,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		return 0;
 	}
 
+	stallwatch_step("build prep: the build container's spec");
 	return start_build_container_spec(chain_idx, e, spec_out, out_stdio_write_fd,
 	                                   recipe.build_caps);
 }
@@ -11770,6 +11775,7 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 
 	*out_compose_pid = -1;
 	*out_compose_pidfd = -1;
+	stallwatch_step("build environment composed: replay its report"); /* #619 */
 	/* #606: on every path, so what the child logged is never lost. */
 	buildenv_report_take(chain_idx, reason, sizeof(reason));
 	/* #618: the child this chain waited on has exited. */
@@ -14245,8 +14251,11 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	 * incorrect, and preferable to breaking the feature that asked for
 	 * the container to be kept in the first place.
 	 */
-	if (exit_status == 0 || !g_chains[chain_idx].keep_on_failure)
+	if (exit_status == 0 || !g_chains[chain_idx].keep_on_failure) {
+		stallwatch_step("pkg build completion: delete the build environment"); /* #619 */
 		buildenv_release(chain_idx);
+	}
+	stallwatch_step("pkg build completion: read the outcome");
 
 	/*
 	 * Issue #98: keyed on the container that actually exited. Resolving
@@ -14657,6 +14666,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	 * different failure, and the branches below report it with their
 	 * own messages rather than having this one guess.
 	 */
+	stallwatch_step("pkg install: check the staged tree");
 	if (staged_tree_has_content(dest_dir) == 0) {
 		char msg[320];
 
@@ -14715,6 +14725,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * build output tree is created fresh or it is not a build
 		 * output tree.
 		 */
+		stallwatch_step("pkg install: harvest the hostbuild");
 		if (persist_fresh_output_dir(artifact_dir) != 0 ||
 		    merge_tree(dest_dir, artifact_dir, "", e, 1) != 0) {
 			pkg_fail(e, is_upgrade, PIPELINE_INSTALL, "failed to harvest the built artifact");
@@ -14759,6 +14770,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * are the image's fault and exactly the wrong one for this,
 		 * where the package is at fault and is the thing to fix.
 		 */
+		stallwatch_step("pkg install: link and path-owner gates");
 		if (undeclared_link_gate(e, g_chains[chain_idx].image, dest_dir, refused,
 		                          sizeof(refused)) != 0) {
 			pkg_fail(e, is_upgrade, PIPELINE_INSTALL, refused);
@@ -14783,6 +14795,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		ctx.e = e;
 		ctx.is_upgrade = is_upgrade;
 		ctx.keep_privileged = 1;
+		stallwatch_step("pkg install: produce the image version");
 		if (image_produce_new_version(g_chains[chain_idx].image, install_mutate, &ctx, NULL) !=
 		    0) {
 			const char *why = pkg_last_image_produce_failure();
@@ -14811,6 +14824,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * survives while its files do not is precisely the split this
 		 * issue is about.
 		 */
+		stallwatch_step("pkg install: check the installed files");
 		{
 			char first_missing[PKG_NAME_MAX + 128];
 			int missing = installed_files_missing(g_chains[chain_idx].image, e, first_missing,
@@ -14858,6 +14872,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * failure this exists for is a broken interface shipping
 		 * quietly and surfacing later as someone else's build error.
 		 */
+		stallwatch_step("pkg install: check the header includes");
 		{
 			char first_bad[PKG_NAME_MAX + 320];
 			int bad = header_includes_unresolved(g_chains[chain_idx].image, e, first_bad,
@@ -14880,6 +14895,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * itself just extracted FROM the cache, so there's nothing new
 		 * to save -- just bump its mtime so LRU eviction correctly
 		 * treats it as recently used, not stale. */
+		stallwatch_step("pkg install: cache the artifact");
 		if (e->cache_hit) {
 			pkg_cache_touch(e->name, e->version);
 		} else {
@@ -14972,9 +14988,11 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	 * the two returns early through pkg_fail(), so reaching this line
 	 * is what makes the success final.
 	 */
+	stallwatch_step("pkg install: close the run and save state");
 	pkg_run_close(e);
 
 	save_state();
+	stallwatch_step("pkg build completion: the chain's next job");
 
 	if (g_chains[chain_idx].is_hostbuild)
 		snprintf(out_hostbuild_done_name, PKG_NAME_MAX, "%s", e->name);

@@ -6,6 +6,28 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A slow handler names its slowest step (#619, #617)
+
+- **What changed:** a handler can mark its steps with `stallwatch_step()`, and a slow pass is
+  then named by its handler and its slowest step: `event container (1749 ms), slowest step
+  pkg install: produce the image version (1500 ms)` where the record used to stop at `event
+  container`. While a step runs it is also the in-flight activity, so a step that never returns
+  is what a stall record names. Steps are marked through a build container's exit
+  (`container_exit_finalize()` and the install inside `pkg_build_completed()`) and through a
+  build's preparation after its environment is composed.
+- **Why:** four slow passes on 192.168.15.95 on 2026-10-19, 1.6–1.9 s each, fell at the
+  second a `hibr` build container exited, and one of 3305 ms during a `cix` build's
+  preparation. All five came while release gates were loading the box, and the same `hibr`
+  path stayed under the 750 ms threshold on an idle box. The record could not say which step
+  took the time, so the cause is not established.
+- **One mechanism:** #617's tracker for the announcement check, which named a slow pass `events
+  check, slowest read GET /v1/... (N ms)`, is now this. Each in-process read is a step, and the
+  record reads `event events-check-timer (N ms), slowest step GET /v1/... (M ms)`.
+  `test_stallwatch_steps` (SELFTESTS) drives stallwatch.c as the loop does. It checks that the
+  slowest step is the one named, that a handler with no steps is named as before, that a step
+  outside any handler does nothing, and that a step is the activity only while its handler
+  runs.
+
 ### Two installs needing one build environment compose it once (#618)
 
 - **What changed:** an install that needs a build environment another install is composing

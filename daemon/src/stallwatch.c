@@ -1103,17 +1103,75 @@ void stallwatch_heartbeat(void)
 	g_shared->pass_slowest_handler[0] = '\0';
 }
 
+/*
+ * #619: the steps of the handler being timed. Written and read only by
+ * the daemon, so they are not in the shared page; what the watchdog
+ * needs of them is copied into `activity` by stallwatch_step().
+ */
+static int g_step_timing;
+static long long g_step_started_millis;
+static char g_step_name[STALL_ACTIVITY_MAX];
+static long long g_step_slowest_millis;
+static char g_step_slowest[STALL_ACTIVITY_MAX];
+
+static void step_close(void)
+{
+	long long took;
+
+	if (g_step_name[0] == '\0')
+		return;
+	took = monotonic_millis() - g_step_started_millis;
+	if (took > g_step_slowest_millis) {
+		g_step_slowest_millis = took;
+		snprintf(g_step_slowest, sizeof(g_step_slowest), "%s", g_step_name);
+	}
+	g_step_name[0] = '\0';
+}
+
 long long stallwatch_handler_start(void)
 {
 	if (g_shared != NULL)
 		g_shared->handler_activity[0] = '\0';
+	g_step_timing = 1;
+	g_step_name[0] = '\0';
+	g_step_slowest[0] = '\0';
+	g_step_slowest_millis = -1;
 	return monotonic_millis();
+}
+
+void stallwatch_step(const char *name)
+{
+	if (!g_step_timing || name == NULL)
+		return;
+	step_close();
+	snprintf(g_step_name, sizeof(g_step_name), "%s", name);
+	g_step_started_millis = monotonic_millis();
+	if (g_shared == NULL)
+		return;
+	/*
+	 * The in-flight activity, so a step that never returns is what the
+	 * stall record names. Its start is left alone when something is
+	 * already in flight -- a request's age is the request's, not its
+	 * latest step's -- and set, time first as stallwatch_activity()
+	 * explains, when nothing is. The loop clears it after every
+	 * handler, so it cannot outlive this one.
+	 */
+	if (g_shared->activity[0] == '\0')
+		g_shared->activity_started_monotonic = monotonic_seconds();
+	if (g_shared->handler_activity[0] != '\0')
+		snprintf(g_shared->activity, STALL_ACTIVITY_MAX, "%s, step %s",
+		         g_shared->handler_activity, name);
+	else
+		snprintf(g_shared->activity, STALL_ACTIVITY_MAX, "step %s", name);
 }
 
 void stallwatch_handler_done(const char *kind, long long started_millis)
 {
 	long long took;
+	char base[STALL_ACTIVITY_MAX];
 
+	step_close();
+	g_step_timing = 0;
 	if (g_shared == NULL || kind == NULL)
 		return;
 	took = monotonic_millis() - started_millis;
@@ -1123,11 +1181,16 @@ void stallwatch_handler_done(const char *kind, long long started_millis)
 	/* A handler that served a request is named by it; anything else by
 	 * the kind of event it handled. */
 	if (g_shared->handler_activity[0] != '\0')
-		snprintf(g_shared->pass_slowest_handler, STALL_ACTIVITY_MAX, "%s (%lld ms)",
-		         g_shared->handler_activity, took);
+		snprintf(base, sizeof(base), "%s (%lld ms)", g_shared->handler_activity, took);
 	else
-		snprintf(g_shared->pass_slowest_handler, STALL_ACTIVITY_MAX, "event %s (%lld ms)", kind,
-		         took);
+		snprintf(base, sizeof(base), "event %s (%lld ms)", kind, took);
+	/* #619: and by its slowest step, when it had any. */
+	if (g_step_slowest[0] != '\0')
+		snprintf(g_shared->pass_slowest_handler, STALL_ACTIVITY_MAX,
+		         "%.80s, slowest step %.80s (%lld ms)", base, g_step_slowest,
+		         g_step_slowest_millis);
+	else
+		snprintf(g_shared->pass_slowest_handler, STALL_ACTIVITY_MAX, "%s", base);
 }
 
 void stallwatch_activity(const char *what)
