@@ -8,6 +8,7 @@
  */
 #include "httpclient.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -548,6 +549,15 @@ int main(void)
 		}
 	}
 
+	/* ADR-0339 point 8 (#607). Everything above goes through cixctl,
+	 * so this is the test's one client of its own. */
+	{
+		struct cix_client dc;
+
+		cix_client_init(&dc, "127.0.0.1", TEST_PORT);
+		if (test_assert_no_drift(&dc, NULL) != 0)
+			ok = 0;
+	}
 	kill(daemon_pid, SIGTERM);
 	waitpid(daemon_pid, NULL, 0);
 	test_data_dir_cleanup(g_data_dir);

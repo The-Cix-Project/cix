@@ -13,6 +13,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <limits.h>
 #include <signal.h>
@@ -732,6 +733,8 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (first instance)\n");
 		ok = 0;
@@ -1892,6 +1895,8 @@ int main(void)
 			 * because "a fresh install" is the case this exists for and
 			 * an empty PKI_DIR is what that actually looks like.
 			 */
+			if (test_assert_no_drift(&client, NULL) != 0)
+				ok = 0;
 			if (stop_daemon(daemon_pid) != 0) {
 				fprintf(stderr, "FAIL: daemon did not stop cleanly before wipe\n");
 				ok = 0;
@@ -2005,6 +2010,8 @@ pki_import_done:
 	cix_client_request(&client, "DELETE", "/v1/pki/certs/shadow3", NULL, &r);
 	cix_response_free(&r);
 
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (second instance)\n");
 		ok = 0;

@@ -19,6 +19,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <fcntl.h>
 #include <limits.h>
@@ -311,6 +312,8 @@ int main(void)
 		}
 	}
 
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	if (ok)
 		printf("HTTPS CHAIN RESULT: PASS\n");
 	else

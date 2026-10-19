@@ -29,6 +29,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <arpa/inet.h>
 #include <limits.h>
@@ -563,6 +564,8 @@ int main(void)
 	cix_client_request(&client, "PUT", "/v1/system/ntp", "{\"upstream\":[]}", &r);
 	cix_response_free(&r);
 
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	kill(daemon_pid, SIGTERM);
 	{
 		int status;

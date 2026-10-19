@@ -17,6 +17,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <sys/stat.h>
 #include <limits.h>
@@ -765,6 +766,8 @@ int main(void)
 	      "deleted volume is gone");
 	cix_response_free(&r);
 
+	check(test_assert_no_drift(&client, NULL) == 0,
+	      "nothing this test changed went unannounced (ADR-0339)");
 	kill(daemon_pid, SIGTERM);
 	waitpid(daemon_pid, NULL, 0);
 	test_data_dir_cleanup(g_data_dir);

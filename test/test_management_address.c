@@ -20,6 +20,7 @@
 #include "json.h"
 #include "rtnetlink.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <arpa/inet.h>
 #include <ifaddrs.h>
@@ -330,6 +331,8 @@ int main(void)
 		ok = 0;
 	}
 
+	if (test_assert_no_drift(&client_lo, NULL) != 0)
+		ok = 0;
 	if (ok)
 		printf("MANAGEMENT ADDRESS RESULT: PASS\n");
 	else

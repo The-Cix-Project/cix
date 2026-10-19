@@ -10,6 +10,7 @@
 #include "test_cleanup.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <limits.h>
 #include <signal.h>
@@ -637,6 +638,8 @@ int main(void)
 		cix_response_free(&r);
 
 		/* The restart. */
+		CHECK(test_assert_no_drift(&client, NULL) == 0,
+		      "nothing this test changed went unannounced (ADR-0339)");
 		CHECK(stop_daemon(daemon_pid) == 0, "daemon stopped for the pending-survives-restart check");
 		daemon_pid = start_daemon();
 		CHECK(daemon_pid > 0, "daemon restarted");
@@ -689,6 +692,8 @@ int main(void)
 	CHECK(test_cleanup_containers_and_network(&client, "crtnet") == 0,
 	      "containers and crtnet removed, leaving no host bridge behind");
 
+	CHECK(test_assert_no_drift(&client, NULL) == 0,
+	      "nothing this test changed went unannounced (ADR-0339)");
 	CHECK(stop_daemon(daemon_pid) == 0, "daemon shut down cleanly");
 	test_data_dir_cleanup(g_data_dir);
 

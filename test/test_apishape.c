@@ -50,6 +50,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include "generated/api_shapes.h"
 
@@ -301,6 +302,8 @@ int main(void)
 		ok = 0;
 	}
 
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	/* Discarded by `make selftest` on a pass -- see the comment above.
 	 * Here for a direct run, and for the failure output. */
 	printf("%s: %d operation(s) gated against their declared response shape, %d of them one "

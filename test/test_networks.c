@@ -9,6 +9,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <limits.h>
 #include <net/if.h>
@@ -522,6 +523,8 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (first instance)\n");
 		ok = 0;
@@ -558,6 +561,8 @@ int main(void)
 	 * a hand-written old-format entry into the real persisted state
 	 * file while the daemon is stopped, since the current API can no
 	 * longer produce one itself. */
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (before migration splice)\n");
 		ok = 0;
@@ -708,6 +713,8 @@ int main(void)
 		FILE *sf;
 		pid_t alloc_pid;
 
+		if (test_assert_no_drift(&client, NULL) != 0)
+			ok = 0;
 		if (stop_daemon(daemon_pid) != 0)
 			fprintf(stderr, "warning: daemon did not stop cleanly before the #137 fixture\n");
 
@@ -872,6 +879,8 @@ int main(void)
 		fprintf(stderr, "warning: could not clean up 'persisted' network, status=%d\n", r.status);
 	cix_response_free(&r);
 
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (second instance)\n");
 		ok = 0;

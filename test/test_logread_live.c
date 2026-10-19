@@ -22,6 +22,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -337,6 +338,8 @@ int main(void)
 		fail("the daemon answers after the abandoned reads", "");
 	cix_response_free(&r);
 
+	if (test_assert_no_drift(&client, NULL) != 0)
+		fail("nothing this test changed went unannounced (ADR-0339)", "");
 	kill(daemon_pid, SIGTERM);
 	waitpid(daemon_pid, NULL, 0);
 	test_data_dir_cleanup(g_data_dir);

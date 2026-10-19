@@ -27,6 +27,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <limits.h>
 #include <signal.h>
@@ -443,6 +444,8 @@ int main(void)
 		}
 	}
 
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM\n");
 		ok = 0;

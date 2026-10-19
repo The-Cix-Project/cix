@@ -21,6 +21,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <arpa/inet.h>
 #include <limits.h>
@@ -824,6 +825,14 @@ static int test_standard_groups(void)
 	}
 	cix_response_free(&r);
 
+	/*
+	 * ADR-0339 point 8 (#607), here and not before main's own stop:
+	 * this daemon runs with host auth off, so the check can ask it.
+	 * main's runs gated with single-use sessions, and verify is
+	 * system:write.
+	 */
+	if (test_assert_no_drift(&c, NULL) != 0)
+		ok = 0;
 out:
 	if (pid > 0 && stop_daemon(pid) != 0)
 		ok = 0;

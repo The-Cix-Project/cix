@@ -29,6 +29,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -769,6 +770,8 @@ int main(void)
 		failures++;
 	}
 	cix_response_free(&r);
+	if (test_assert_no_drift(&client, NULL) != 0)
+		failures++;
 	kill(daemon_pid, SIGTERM);
 	{
 		int status;
@@ -860,6 +863,8 @@ int main(void)
 	cix_client_request(&client, "DELETE", "/v1/containers/dt3", NULL, &r);
 	cix_response_free(&r);
 
+	if (test_assert_no_drift(&client, NULL) != 0)
+		failures++;
 	kill(daemon_pid, SIGTERM);
 	{
 		int status;

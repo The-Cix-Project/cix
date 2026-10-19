@@ -17,6 +17,7 @@
  */
 #include "httpclient.h"
 #include "json.h"
+#include "test_drift.h"
 #include "test_image_fixture.h"
 #include "test_ws.h"
 
@@ -678,45 +679,17 @@ int main(void)
 	 * 11. The daemon's own check (ADR-0339 point 7): after everything
 	 *     this test changed, nothing changed that was not announced.
 	 *     The baseline was taken at daemon start, so this compares the
-	 *     whole run.
+	 *     whole run. Every daemon-linked test now asks the same thing
+	 *     through test_assert_no_drift() (point 8, #607); what is this
+	 *     test's own is that the check really compares the state reads.
 	 */
+	if (test_assert_no_drift(&client, NULL) != 0)
+		fail("nothing this test did went unannounced", "");
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/events/verify", NULL, &r) != 0 ||
-	    r.status != 200 || r.json == NULL) {
-		fail("POST /v1/events/verify answers 200 with JSON", "");
-	} else {
-		const struct json_value *drift = json_object_get(r.json, "drift");
-		const struct json_value *checked = json_object_get(r.json, "checked");
-
-		if (drift == NULL || drift->type != JSON_ARRAY)
-			fail("verify lists its drift", "");
-		else if (drift->u.array.count != 0)
-			fail("nothing this test did went unannounced",
-			     drift->u.array.items[0]->type == JSON_STRING ? drift->u.array.items[0]->u.string
-			                                                   : "?");
-		if (checked == NULL || json_as_number(checked) < 50)
-			fail("verify compared the state reads", "fewer than 50");
-	}
-	cix_response_free(&r);
-	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "GET", "/v1/events/status", NULL, &r) != 0 || r.json == NULL ||
-	    json_object_get(r.json, "drift") == NULL ||
-	    json_as_number(json_object_get(r.json, "drift")) != 0) {
-		struct cix_response lr;
-
-		fail("events/status reports zero drift -- the rolling check found some during the run",
-		     "");
-		/* The daemon names each drifted read in its log store, which
-		 * this test's data directory takes with it on exit -- so read
-		 * it now, or a failure here says only that something drifted
-		 * (logstore_write() never reaches stderr). */
-		memset(&lr, 0, sizeof(lr));
-		if (cix_client_request(&client, "GET", "/v1/system/logs?source=events&tail=20", NULL,
-		                       &lr) == 0 &&
-		    lr.body != NULL)
-			fprintf(stderr, "      events log: %s\n", lr.body);
-		cix_response_free(&lr);
-	}
+	    r.json == NULL || json_object_get(r.json, "checked") == NULL ||
+	    json_as_number(json_object_get(r.json, "checked")) < 50)
+		fail("verify compared the state reads", "fewer than 50");
 	cix_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0)

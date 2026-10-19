@@ -27,6 +27,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 #include "test_floor.h"
 
 #include <limits.h>
@@ -976,6 +977,8 @@ int main(void)
 		      "and is still on it, same process, after the 10 s window -- the roll is confirmed");
 	}
 
+	CHECK(test_assert_no_drift(&client, NULL) == 0,
+	      "nothing this test changed went unannounced (ADR-0339)");
 	CHECK(stop_daemon(daemon_pid) == 0, "daemon shut down cleanly");
 	run_cmd("rm -rf '%s'", scratch_dir);
 	test_data_dir_cleanup(g_data_dir);

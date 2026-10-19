@@ -9,6 +9,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -564,6 +565,8 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (first instance)\n");
 		ok = 0;
@@ -1180,6 +1183,8 @@ int main(void)
 	cix_client_request(&client, "DELETE", "/v1/containers/ldapseed", NULL, &r);
 	cix_response_free(&r);
 
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (second instance)\n");
 		ok = 0;

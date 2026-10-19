@@ -19,6 +19,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 #include "test_cleanup.h"
 
 #include <limits.h>
@@ -1111,6 +1112,8 @@ int main(void)
 
 	/* Now the real proof: restart the daemon process itself (not just
 	 * reload in-memory state) and confirm every expectation above. */
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (first instance)\n");
 		ok = 0;
@@ -1528,6 +1531,8 @@ int main(void)
 		ok = 0;
 	cix_response_free(&r);
 
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (second instance)\n");
 		ok = 0;

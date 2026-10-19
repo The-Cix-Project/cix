@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Every daemon-linked test proves its changes were announced (#607, ADR-0339 point 8)
+
+- **What changed:** 49 gated daemon-linked tests now call `test_assert_no_drift()` before they
+  stop a daemon they have not killed. It fails on any announced read that changed without an
+  announcement, whether found by the closing full check or by the rolling check during the run.
+  So every test that changes state also proves the dashboard was told. `test_events` step 11 is
+  now that same helper, plus its own check that the comparison covered at least 50 reads.
+- **Why now:** ADR-0339 made the roll-out wait for 24 hours of zero drift at rest on
+  192.168.15.95. Measured on 2026-10-19: zero since 0.2.57-535, about 37 hours.
+
 ### A build environment that cannot be composed says why (#606)
 
 - **What changed for an operator:** a package whose build environment fails to compose now

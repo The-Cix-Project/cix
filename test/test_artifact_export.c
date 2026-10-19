@@ -25,6 +25,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <limits.h>
 #include <signal.h>
@@ -424,6 +425,8 @@ int main(void)
 		fail("artifact publish POST failed");
 	}
 
+	if (test_assert_no_drift(&c, NULL) != 0)
+		fail("something this test changed went unannounced (ADR-0339)");
 	if (stop_daemon(daemon_pid) != 0)
 		fail("daemon did not exit cleanly on SIGTERM");
 	test_data_dir_cleanup(g_data_dir);

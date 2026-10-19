@@ -15,6 +15,7 @@
 #include "json.h"
 #include "test_cleanup.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <limits.h>
 #include <signal.h>
@@ -573,6 +574,8 @@ int main(void)
 	 * remove the network, and a leaked bridge breaks the next run. */
 	expect(&client, "DELETE", "/v1/networks/selftest-dhcp2", NULL, 204, "remove the second network");
 
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	kill(daemon_pid, SIGTERM);
 	waitpid(daemon_pid, NULL, 0);
 	test_data_dir_cleanup(g_data_dir);

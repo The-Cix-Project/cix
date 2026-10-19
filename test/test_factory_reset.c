@@ -15,6 +15,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <limits.h>
 #include <signal.h>
@@ -211,6 +212,8 @@ int main(void)
 	      "the box works normally after a reset");
 	cix_response_free(&r);
 
+	check(test_assert_no_drift(&client, NULL) == 0,
+	      "nothing this test changed went unannounced (ADR-0339)");
 	kill(pid, SIGTERM);
 	waitpid(pid, NULL, 0);
 	test_data_dir_cleanup(g_data_dir);

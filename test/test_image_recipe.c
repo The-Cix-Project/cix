@@ -10,6 +10,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <limits.h>
 #include <signal.h>
@@ -491,6 +492,8 @@ int main(void)
 		CHECK(saw_unapplied, "a recipe nobody has applied is reported as declared-but-not-installed");
 	}
 
+	CHECK(test_assert_no_drift(&client, NULL) == 0,
+	      "nothing this test changed went unannounced (ADR-0339)");
 	CHECK(stop_daemon(daemon_pid) == 0, "daemon shut down cleanly");
 	test_data_dir_cleanup(g_data_dir);
 

@@ -22,6 +22,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 #include "test_ws.h"
 
 #include <stdint.h>
@@ -1363,6 +1364,8 @@ int main(void)
 	cix_client_request(&client, "DELETE", "/v1/containers/consoletest", NULL, &r);
 	cix_response_free(&r);
 
+	CHECK(test_assert_no_drift(&client, NULL) == 0,
+	      "nothing this test changed went unannounced (ADR-0339)");
 	stop_daemon(daemon_pid);
 	reset_state();
 	test_data_dir_cleanup(g_data_dir);

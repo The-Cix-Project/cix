@@ -30,6 +30,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <stdint.h>
 #include <arpa/inet.h>
@@ -570,6 +571,8 @@ int main(void)
 		}
 	}
 
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	if (ok)
 		printf("TLS THROTTLE RESULT: PASS\n");
 	else

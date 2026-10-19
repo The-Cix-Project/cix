@@ -164,6 +164,19 @@ Recorded as each step lands, where the implementation is narrower than or depart
   under #607, once `cixctl events status` on 192.168.15.95 has shown zero drift for 24 hours at rest.
   That is a measured condition rather than a promise, and it keeps one missing announcement from
   landing as forty failing tests.
+- **Rolled out (#607):** the condition was met on 2026-10-19, with about 37 hours of zero drift
+  since 0.2.57-535 fixed `getPkgDrift`, releases included. Every gated daemon-linked test now calls
+  `test_assert_no_drift()` (`test/test_drift.c`) before it stops a daemon it has not killed. The
+  helper reads both halves, because they see different drift. Verify lists what differs now. The
+  rolling check announces whatever it finds, so a drift it caught mid-run no longer differs at
+  the end and shows only in the status counter and, by name, in the events log. A test that
+  changes state behind the daemon's back names the reads it expects to drift; nothing else
+  loosens the assertion. Two are not covered: `test_hostauth`'s main daemon, which runs gated
+  with single-use sessions (its auth-off `test_standard_groups()` daemon is checked instead), and
+  `test_bootorder`, which starts no daemon.
+- **One read is unreadable by state, not by defect:** `getPkiIntermediate` answers 404 until an
+  intermediate CA is bootstrapped, as on 192.168.15.95. A slot's first readable answer is its
+  baseline, so the 404-to-200 transition itself is never checked for an announcement.
 - **The check's first catch was a misdeclared read** (step four's first build, 0.2.57-525).
   `test_events` reported drift on `getConfig` after a site change. `GET /v1/config` is, in its own
   description, *"a VIEW, derived fresh on every call"* over 33 sections, so it was declared `state` by

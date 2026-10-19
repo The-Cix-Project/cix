@@ -560,7 +560,7 @@ $(BUILD)/pty_child: test/pty_child.c | $(BUILD)
 $(BUILD)/cixd: daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c $(BUILD)/version.h $(BUILD)/generated/api_routes.h $(BUILD)/generated/events_slots.h $(BUILD)/generated/events_table.h $(BUILD)/generated/permissions.h $(BUILD)/generated/config_sections.h $(BUILD)/generated/pkg_finalize.h $(BUILD)/generated/catalogue_key.h web/api.js | $(BUILD)
 	$(CC) $(DAEMON_CFLAGS) daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c -lssl -lcrypto -larchive -lcurl -o $@
 
-$(BUILD)/test_daemon: test/test_daemon.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_daemon: test/test_daemon.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/daemon_child: test/daemon_child.c | $(BUILD)
@@ -569,10 +569,10 @@ $(BUILD)/daemon_child: test/daemon_child.c | $(BUILD)
 $(BUILD)/cixctl: cli/src/main.c client/src/console.c $(CLIENT_SRCS) $(BUILD)/generated/cix_api.h $(BUILD)/version.h | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) -I$(BUILD) cli/src/main.c client/src/console.c $(CLIENT_SRCS) -o $@
 
-$(BUILD)/test_cli: test/test_cli.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_cli: test/test_cli.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_web: test/test_web.c test/test_image_fixture.c client/src/httpclient.c daemon/src/json.c | $(BUILD)
+$(BUILD)/test_web: test/test_web.c test/test_image_fixture.c test/test_drift.c client/src/httpclient.c daemon/src/json.c | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_slow_client: test/test_slow_client.c test/test_image_fixture.c client/src/httpclient.c daemon/src/json.c | $(BUILD)
@@ -590,22 +590,22 @@ $(BUILD)/net_connect: test/net_connect.c | $(BUILD)
 $(BUILD)/test_container_net: test/test_container_net.c test/test_image_fixture.c $(LIB_SRCS) | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/test_daemon_net: test/test_daemon_net.c test/test_image_fixture.c test/test_cleanup.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_daemon_net: test/test_daemon_net.c test/test_image_fixture.c test/test_drift.c test/test_cleanup.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_networks: test/test_networks.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_networks: test/test_networks.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_network_interfaces: test/test_network_interfaces.c test/test_image_fixture.c $(CLIENT_SRCS) $(NETPLANE_SRCS) | $(BUILD)
+$(BUILD)/test_network_interfaces: test/test_network_interfaces.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) $(NETPLANE_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_images: test/test_images.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_images: test/test_images.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_esp: test/test_esp.c test/test_image_fixture.c daemon/src/esp.c daemon/src/persist.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) -Idaemon/include $^ -o $@
 
-$(BUILD)/test_artifact_export: test/test_artifact_export.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_artifact_export: test/test_artifact_export.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_childdiag: test/test_childdiag.c daemon/src/childdiag.c | $(BUILD)
@@ -614,16 +614,16 @@ $(BUILD)/test_childdiag: test/test_childdiag.c daemon/src/childdiag.c | $(BUILD)
 $(BUILD)/test_bzimage: test/test_bzimage.c daemon/src/bzimage.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@
 
-$(BUILD)/test_container_restart: test/test_container_restart.c test/test_image_fixture.c test/test_cleanup.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_container_restart: test/test_container_restart.c test/test_image_fixture.c test/test_drift.c test/test_cleanup.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/output_child: test/output_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/test_container_lifecycle: test/test_container_lifecycle.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_container_lifecycle: test/test_container_lifecycle.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_disk_quota: test/test_disk_quota.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_disk_quota: test/test_disk_quota.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_osrelease: test/test_osrelease.c daemon/src/osrelease.c | $(BUILD)
@@ -685,47 +685,47 @@ $(BUILD)/test_bootroot_args: test/test_bootroot_args.c | $(BUILD)
 $(BUILD)/test_diskpart: test/test_diskpart.c test/test_image_fixture.c daemon/src/disk.c daemon/src/diskpart.c daemon/src/diskrole.c daemon/src/partlabel.c daemon/src/persist.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_apishape: test/test_apishape.c test/test_image_fixture.c $(CLIENT_SRCS) $(BUILD)/generated/api_shapes.h | $(BUILD)
+$(BUILD)/test_apishape: test/test_apishape.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) $(BUILD)/generated/api_shapes.h | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) -I$(BUILD) $(filter %.c,$^) -o $@
 
-$(BUILD)/test_sysctl: test/test_sysctl.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_sysctl: test/test_sysctl.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_kmod: test/test_kmod.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_kmod: test/test_kmod.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_kmod_build: test/test_kmod_build.c test/test_image_fixture.c test/test_image_fixture_host.c test/test_floor.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_kmod_build: test/test_kmod_build.c test/test_image_fixture.c test/test_drift.c test/test_image_fixture_host.c test/test_floor.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_device_hotplug: test/test_device_hotplug.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_device_hotplug: test/test_device_hotplug.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_storage_placement: test/test_storage_placement.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_storage_placement: test/test_storage_placement.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_backup_config: test/test_backup_config.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_backup_config: test/test_backup_config.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_boot_console: test/test_boot_console.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_signing_keys: test/test_signing_keys.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_signing_keys: test/test_signing_keys.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_stallwatch: test/test_stallwatch.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_stallwatch: test/test_stallwatch.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 # ADR-0342 (#612): a filtered log read leaves the event loop free.
-$(BUILD)/test_logread_live: test/test_logread_live.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_logread_live: test/test_logread_live.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_container_storage_migrate: test/test_container_storage_migrate.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_container_storage_migrate: test/test_container_storage_migrate.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_container_dns_servers: test/test_container_dns_servers.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_container_dns_servers: test/test_container_dns_servers.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_hostauth: test/test_hostauth.c test/test_image_fixture.c daemon/src/base64.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_hostauth: test/test_hostauth.c test/test_image_fixture.c test/test_drift.c daemon/src/base64.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -lcrypto -o $@
 
 $(BUILD)/test_btrfs: test/test_btrfs.c src/btrfs.c | $(BUILD)
@@ -734,49 +734,49 @@ $(BUILD)/test_btrfs: test/test_btrfs.c src/btrfs.c | $(BUILD)
 $(BUILD)/test_subid: test/test_subid.c daemon/src/subid.c daemon/src/persist.c daemon/src/json.c | $(BUILD)
 	$(CC) $(DAEMON_CFLAGS) $^ -o $@
 
-$(BUILD)/test_dhcp: test/test_dhcp.c test/test_image_fixture.c test/test_cleanup.c client/src/httpclient.c daemon/src/json.c | $(BUILD)
+$(BUILD)/test_dhcp: test/test_dhcp.c test/test_image_fixture.c test/test_drift.c test/test_cleanup.c client/src/httpclient.c daemon/src/json.c | $(BUILD)
 	$(CC) $(DAEMON_CFLAGS) -Iclient/include $^ -o $@
 
 $(BUILD)/test_kernelpolicy: test/test_kernelpolicy.c daemon/src/kernelpolicy.c daemon/src/persist.c daemon/src/json.c | $(BUILD)
 	$(CC) $(DAEMON_CFLAGS) $^ -o $@
 
-$(BUILD)/test_routes: test/test_routes.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_routes: test/test_routes.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_management_address: test/test_management_address.c test/test_image_fixture.c $(CLIENT_SRCS) $(NETPLANE_SRCS) | $(BUILD)
+$(BUILD)/test_management_address: test/test_management_address.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) $(NETPLANE_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_console_exec: test/test_console_exec.c test/test_ws.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_console_exec: test/test_console_exec.c test/test_ws.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_aggressive: test/test_aggressive.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_direct_rootfs: test/test_direct_rootfs.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_direct_rootfs: test/test_direct_rootfs.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_container_files: test/test_container_files.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_container_files: test/test_container_files.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/volume_child: test/volume_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/test_userns_run: test/test_userns_run.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_userns_run: test/test_userns_run.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/run_child: test/run_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/test_factory_reset: test/test_factory_reset.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_factory_reset: test/test_factory_reset.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_volume: test/test_volume.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_volume: test/test_volume.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_system_backup: test/test_system_backup.c test/test_image_fixture.c daemon/src/persist.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_system_backup: test/test_system_backup.c test/test_image_fixture.c test/test_drift.c daemon/src/persist.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_system_update: test/test_system_update.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_system_update: test/test_system_update.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/tcp_listen_child: test/tcp_listen_child.c | $(BUILD)
@@ -788,7 +788,7 @@ $(BUILD)/dev_child: test/dev_child.c | $(BUILD)
 $(BUILD)/stats_child: test/stats_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/test_container_stats: test/test_container_stats.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_container_stats: test/test_container_stats.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_devices: test/test_devices.c test/test_image_fixture.c $(LIB_SRCS) | $(BUILD)
@@ -800,16 +800,16 @@ $(BUILD)/test_daemon_devices: test/test_daemon_devices.c test/test_image_fixture
 $(BUILD)/test_dns: test/test_dns.c test/test_image_fixture.c test/test_cleanup.c daemon/src/elfcheck.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_ntp: test/test_ntp.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_ntp: test/test_ntp.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_ldap: test/test_ldap.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_pki: test/test_pki.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_pki: test/test_pki.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_pkg: test/test_pkg.c test/test_image_fixture.c test/test_image_fixture_host.c test/test_floor.c daemon/src/base64.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_pkg: test/test_pkg.c test/test_image_fixture.c test/test_drift.c test/test_image_fixture_host.c test/test_floor.c daemon/src/base64.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -lcrypto -o $@
 
 $(BUILD)/test_pkg_build_log: test/test_pkg_build_log.c test/test_ws.c test/test_image_fixture.c test/test_image_fixture_host.c test/test_floor.c $(CLIENT_SRCS) | $(BUILD)
@@ -818,43 +818,43 @@ $(BUILD)/test_pkg_build_log: test/test_pkg_build_log.c test/test_ws.c test/test_
 $(BUILD)/test_pkg_concurrent_stress: test/test_pkg_concurrent_stress.c test/test_image_fixture.c test/test_image_fixture_host.c test/test_floor.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_pkg_sync: test/test_pkg_sync.c test/test_image_fixture.c daemon/src/persist.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_pkg_sync: test/test_pkg_sync.c test/test_image_fixture.c test/test_drift.c daemon/src/persist.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_pkg_cache: test/test_pkg_cache.c test/test_image_fixture.c test/test_image_fixture_host.c test/test_floor.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_pkg_cache: test/test_pkg_cache.c test/test_image_fixture.c test/test_drift.c test/test_image_fixture_host.c test/test_floor.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_image_recipe: test/test_image_recipe.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_image_recipe: test/test_image_recipe.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_container_recipe: test/test_container_recipe.c test/test_image_fixture.c test/test_cleanup.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_container_recipe: test/test_container_recipe.c test/test_image_fixture.c test/test_drift.c test/test_cleanup.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_rolling_restart: test/test_rolling_restart.c test/test_image_fixture.c test/test_image_fixture_host.c test/test_floor.c $(CLIENT_SRCS) $(BUILD)/daemon_child | $(BUILD)
-	$(CC) $(CLIENT_CFLAGS) test/test_rolling_restart.c test/test_image_fixture.c test/test_image_fixture_host.c test/test_floor.c $(CLIENT_SRCS) -o $@
+$(BUILD)/test_rolling_restart: test/test_rolling_restart.c test/test_image_fixture.c test/test_drift.c test/test_image_fixture_host.c test/test_floor.c $(CLIENT_SRCS) $(BUILD)/daemon_child | $(BUILD)
+	$(CC) $(CLIENT_CFLAGS) test/test_rolling_restart.c test/test_image_fixture.c test/test_drift.c test/test_image_fixture_host.c test/test_floor.c $(CLIENT_SRCS) -o $@
 
 $(BUILD)/syslog_recv_child: test/syslog_recv_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/test_syslogfwd: test/test_syslogfwd.c test/test_image_fixture.c $(CLIENT_SRCS) $(BUILD)/daemon_child $(BUILD)/output_child $(BUILD)/syslog_recv_child | $(BUILD)
-	$(CC) $(CLIENT_CFLAGS) test/test_syslogfwd.c test/test_image_fixture.c $(CLIENT_SRCS) -o $@
+$(BUILD)/test_syslogfwd: test/test_syslogfwd.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) $(BUILD)/daemon_child $(BUILD)/output_child $(BUILD)/syslog_recv_child | $(BUILD)
+	$(CC) $(CLIENT_CFLAGS) test/test_syslogfwd.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) -o $@
 
-$(BUILD)/test_hostproc: test/test_hostproc.c test/test_image_fixture.c $(CLIENT_SRCS) $(BUILD)/daemon_child | $(BUILD)
-	$(CC) $(CLIENT_CFLAGS) test/test_hostproc.c test/test_image_fixture.c $(CLIENT_SRCS) -o $@
+$(BUILD)/test_hostproc: test/test_hostproc.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) $(BUILD)/daemon_child | $(BUILD)
+	$(CC) $(CLIENT_CFLAGS) test/test_hostproc.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) -o $@
 
-$(BUILD)/test_tls_throttle: test/test_tls_throttle.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
-	$(CC) $(CLIENT_CFLAGS) test/test_tls_throttle.c test/test_image_fixture.c $(CLIENT_SRCS) -o $@
+$(BUILD)/test_tls_throttle: test/test_tls_throttle.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
+	$(CC) $(CLIENT_CFLAGS) test/test_tls_throttle.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) -o $@
 
 # ADR-0339 (#599): generations on announced reads, announcements on
 # successful changes, none on refused ones -- over plain HTTP.
-$(BUILD)/test_events: test/test_events.c test/test_ws.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
-	$(CC) $(CLIENT_CFLAGS) test/test_events.c test/test_ws.c test/test_image_fixture.c $(CLIENT_SRCS) -o $@
+$(BUILD)/test_events: test/test_events.c test/test_ws.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
+	$(CC) $(CLIENT_CFLAGS) test/test_events.c test/test_ws.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) -o $@
 
-$(BUILD)/test_https_chain: test/test_https_chain.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
-	$(CC) $(CLIENT_CFLAGS) test/test_https_chain.c test/test_image_fixture.c $(CLIENT_SRCS) -o $@
+$(BUILD)/test_https_chain: test/test_https_chain.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
+	$(CC) $(CLIENT_CFLAGS) test/test_https_chain.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) -o $@
 
-$(BUILD)/test_layout_upgrade: test/test_layout_upgrade.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
-	$(CC) $(CLIENT_CFLAGS) test/test_layout_upgrade.c test/test_image_fixture.c $(CLIENT_SRCS) -o $@
+$(BUILD)/test_layout_upgrade: test/test_layout_upgrade.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
+	$(CC) $(CLIENT_CFLAGS) test/test_layout_upgrade.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) -o $@
 
 #
 # ADR-0218: the API route extractor, and its own test.

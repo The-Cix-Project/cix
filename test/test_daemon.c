@@ -10,6 +10,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -809,6 +810,8 @@ int main(void)
 	cix_response_free(&r);
 
 	/* 9. clean shutdown */
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	kill(daemon_pid, SIGTERM);
 	{
 		int status;

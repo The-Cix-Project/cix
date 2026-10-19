@@ -13,6 +13,7 @@
 #include "json.h"
 #include "test_cleanup.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <arpa/inet.h>
 #include <limits.h>
@@ -1009,6 +1010,8 @@ int main(void)
 	if (test_cleanup_containers_and_network(&client, TEST_NETWORK_NAME2) != 0)
 		ok = 0;
 
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	kill(daemon_pid, SIGTERM);
 	{
 		int status;

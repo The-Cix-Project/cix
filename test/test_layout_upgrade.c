@@ -19,6 +19,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_drift.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -169,6 +170,8 @@ int main(void)
 	cix_response_free(&r);
 	snprintf(instance_name_before, sizeof(instance_name_before), "upgrade-test-box");
 
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon (round 1) did not exit cleanly\n");
 		ok = 0;
@@ -259,6 +262,8 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	if (test_assert_no_drift(&client, NULL) != 0)
+		ok = 0;
 	if (ok)
 		printf("LAYOUT UPGRADE RESULT: PASS\n");
 	else
