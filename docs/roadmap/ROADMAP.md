@@ -2445,6 +2445,34 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 288: an array's item with required keys is a named schema, and the gate checks it (#605, 0.2.57-543)
+
+apigen handed `test_apishape` an array's item keys only when the item was a `$ref`. So the 15
+inline items in the contract that declared `required` were checked by nothing. Twelve were in
+component schemas, two were inside inline 200 responses, and one was nested inside another inline
+item.
+
+**What shipped.**
+- **Promoted:** every one is a named schema now. The two inline responses are promoted whole
+  (`BuildEnvironments`, `PkgVerifyReport`). The two `networks` items stay two schemas
+  (`HostInterfaceStats`, `ContainerNetworkStats`), because one `name` is an interface and the
+  other a network. The edit was mechanical, and was checked by comparing the file's lines with
+  indentation ignored: 17 `$ref` lines, 17 schema names and 17 blank lines added, nothing removed.
+- **Refused:** `check_inline_item_required()` refuses an inline item `required` anywhere in the
+  contract, in its own pass keyed on indentation, with folded blocks skipped. `test_apigen` has
+  two fixtures, one in a component and one in an inline response.
+
+**Verified.**
+- **Generated here:** `api_shapes.h` went from 54 array-item entries to 68. That is the 14
+  array/operation pairs the promotion made reachable. `Device.interfaces` and `PipelineRunStage`
+  sit an array deeper than the gate walks, so they are still unchecked.
+- **The gate:** `probe-cix-compile@0.2.57-548` (commit `a6972da7`) built, and its selftest passed,
+  `test_apigen` and `test_apishape` included.
+- **Live on .95:** `0.2.57-543` booted on slot b at 09:40Z, with all 12 containers running and
+  ready. The arrays with data carry every key now gated: `/v1/pipeline/runs` (with `stages`),
+  `/v1/system/stats` networks, `/v1/pkg/drift` packages and `/v1/pkg/source-ownership` choices.
+  Sync sources, bad versions, build environments and upstream keys were empty after the reboot.
+
 ## Part 287: a filtered log read no longer holds the event loop (ADR-0342, #612, 0.2.57-541)
 
 The owner accepted ADR-0342 on 2026-10-19. Before it, a log read with a filter that found fewer
