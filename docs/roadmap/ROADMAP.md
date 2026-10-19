@@ -2445,6 +2445,42 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 293: a slow handler names its slowest step (#619, #617, 0.2.57-549 and -550)
+
+A slow loop pass was named by its handler, and a handler that served no request only by its
+event kind. Four slow passes on .95 on 2026-10-19 were `event container (1.6–1.9 s)` and
+nothing more, each at the second a `hibr` build container exited.
+
+**What shipped.**
+- **Steps:** `stallwatch_step()` marks steps inside the handler being timed. A slow pass is
+  named by its handler and its slowest step, and a running step is the in-flight activity the
+  watchdog reads.
+- **Where the steps are:** through a build container's exit, the install inside
+  `pkg_build_completed()`, `image_produce_new_version()`, and a build's preparation after its
+  environment is composed.
+- **One mechanism:** #617's slowest-read tracker for the announcement check is now this, and
+  each in-process read is a step.
+- **Only in the daemon's process:** the build environment's composer is a forked child that runs
+  `image_produce_new_version()`, so a step in any other process does nothing.
+
+**Verified on 192.168.15.95.**
+- **The gates:** `probe-cix-compile@0.2.57-557` and `-558` were green, including the new
+  `test_stallwatch_steps`.
+- **The two releases:** 549 and 550 each booted with 12 containers running and drift 0 across 84
+  checked reads.
+- **A request names its read:** after one `POST /v1/events/verify` on 549 the loop's worst pass
+  read `POST /v1/events/verify (444 ms), slowest step GET /v1/pkg (162 ms)`.
+- **What the steps found:**
+  - On 549, `hibr`'s exit at 22:00Z with no release build running: `event container (1658 ms),
+    slowest step pkg install: produce the image version (1553 ms)`. That disproved this work's
+    first reading that load decided it.
+  - On 550, the step inside that, at 22:59Z: `image version: the caller's mutate step (1293
+    ms)`. That is `install_mutate()` over 193 files (1.49 MB), about 6.7 ms a file.
+  - On 550, #617's slow pass named its read: `GET /v1/pkg/build-logs (1273 ms)`, 61 s after
+    that exit, for a read that takes 1.3 ms idle.
+- **What is not established:** the cause of either. Both are filesystem work on the loop, and
+  #619 now carries moving the install's image production into a helper child.
+
 ## Part 292: two installs needing one build environment compose it once (#618, 0.2.57-548)
 
 A build environment is named for its tool set, so two installs that declare the same tools need
