@@ -385,6 +385,43 @@ static void check_rotation(void)
 	if (!summary_exists(dir, 3))
 		fail("a filtered read that read a closed segment whole did not summarise it", dir);
 	check_stats("/v1/system/logs?container=nosuch&tail=5", 1, 3, 0, 5);
+
+	/*
+	 * A line another process appended to the open segment -- a forked
+	 * child that logs without logstore_hold() -- is not in this
+	 * process's summary, so that segment gets none at rotation, and a
+	 * read finds the line.
+	 */
+	{
+		char path[512];
+		FILE *f;
+		struct logread_query q;
+		struct json_writer w;
+
+		snprintf(path, sizeof(path), "%s/seg-%020llu.jsonl", dir, 4ULL);
+		f = fopen(path, "a");
+		if (f == NULL) {
+			fail("could not append to the open segment", path);
+		} else {
+			fputs("{\"ts\":1792000000,\"source\":\"container\",\"level\":\"info\","
+			      "\"container\":\"foreign-1\",\"msg\":\"written by another process\"}\n",
+			      f);
+			fclose(f);
+		}
+		for (i = 0; i < 1500; i++)
+			logstore_write_container("rot-c", "info", "after the foreign line %d", i);
+		if (summary_exists(dir, 4))
+			fail("a segment another process also wrote got a summary at rotation, which "
+			     "cannot hold that process's lines",
+			     dir);
+		if (logread_query_parse("/v1/system/logs?container=foreign-1&tail=5", &q) == 0) {
+			jw_init(&w);
+			logread_run(&q, &w);
+			if (w.len == 0 || memmem(w.buf, w.len, "written by another process", 26) == NULL)
+				fail("a read did not find the line another process wrote", dir);
+			jw_free(&w);
+		}
+	}
 	logstore_repoint(dir, state); /* closes the open segment before the store goes */
 	{
 		char cmd[400];

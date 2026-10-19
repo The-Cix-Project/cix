@@ -502,8 +502,17 @@ static int ensure_current_segment_open(void)
 		 * whole of it. Every write was flushed as it was made, so the
 		 * fstat() is of the final bytes. On the loop, once per segment,
 		 * beside save_state()'s identical write-and-fsync just below.
+		 *
+		 * The file must also be exactly the bytes this process wrote. A
+		 * forked child inherits the open segment, and one that logs
+		 * without logstore_hold() appends to it behind this process's
+		 * accounting -- only credcheck.c holds (grep, 2026-10-19), and
+		 * the build-environment composer, among others, does not. Its
+		 * lines are not in g_cur_sum, so a summary would let a read
+		 * skip them. Only the size can tell, and it does.
 		 */
-		if (g_cur_sum.complete && fstat(fileno(g_current_fp), &st) == 0)
+		if (g_cur_sum.complete && fstat(fileno(g_current_fp), &st) == 0 &&
+		    st.st_size == (off_t)g_current_size)
 			summary_write(g_current_seq, &st, &g_cur_sum);
 		fclose(g_current_fp);
 		g_current_fp = NULL;
@@ -543,7 +552,10 @@ static int ensure_current_segment_open(void)
 			summary_path(g_current_seq, spath, sizeof(spath));
 			unlink(spath);
 		}
-		g_current_fp = fopen(path, "w");
+		/* "a", as the reopen above: the path is new after the unlink,
+		 * so this creates it, and O_APPEND means a line anyone else
+		 * appends is never overwritten by this process's own offset. */
+		g_current_fp = fopen(path, "a");
 		if (g_current_fp == NULL)
 			return -1;
 		g_current_size = 0;
