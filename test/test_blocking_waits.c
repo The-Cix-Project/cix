@@ -224,7 +224,7 @@ static const struct budget g_budgets[] = {
 	 * handle_pkg_unpack_event() on EPOLLIN, where the process is
 	 * already gone.
 	 */
-	{ "daemon/src/pkg.c", 9, "build helpers and fetch intermediates, plus ADR-0305's `cbs explain` (a bounded parse of a local file, its pipe closed before the wait); #352 dropped one (pkg_run_capture_sha256(), no more forked sha256sum), #411 dropped another (tarball_has_common_top_dir(), no more forked tar -tf), #410 dropped three more (start_fetch_for()'s curl children, replaced by in-process curlfetch_perform())" },
+	{ "daemon/src/pkg.c", 10, "build helpers and fetch intermediates, plus #618's buildenv_wait_for() (a waiter forked a moment ago and SIGKILLed when its pidfd cannot be opened, reaped at once as the composer beside it already is), plus ADR-0305's `cbs explain` (a bounded parse of a local file, its pipe closed before the wait); #352 dropped one (pkg_run_capture_sha256(), no more forked sha256sum), #411 dropped another (tarball_has_common_top_dir(), no more forked tar -tf), #410 dropped three more (start_fetch_for()'s curl children, replaced by in-process curlfetch_perform())" },
 	{ "daemon/src/diskpart.c", 4, "sfdisk/blkid, bounded external tools" },
 	{ "daemon/src/exec.c", 2, "namespace-join intermediates" },
 	{ "daemon/src/diskformat.c", 2, "mkfs intermediate" },
@@ -276,8 +276,10 @@ static const struct budget g_budgets[] = {
  * Then 52 -> 51 for #344/ADR-0335 step 2: container_net.c's wait on the
  * interface bring-up helper, which held the reactor for 1658 ms of
  * rtnl_link_set_up() on a radio. The helper still runs; the daemon
- * reaps it through its own epoll instead of standing still for it. */
-#define TOTAL_ALLOWED 51
+ * reaps it through its own epoll instead of standing still for it.
+ * Then 51 -> 52 for #618: buildenv_wait_for() in pkg.c, the per-file
+ * entry's bounded reap of a waiter killed because it cannot be watched. */
+#define TOTAL_ALLOWED 52
 
 static int is_comment(const char *line)
 {

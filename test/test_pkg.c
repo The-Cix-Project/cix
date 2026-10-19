@@ -9968,12 +9968,36 @@ skip_noenv:
 			    r.json == NULL || r.json->type != JSON_ARRAY) {
 				fprintf(stderr, "FAIL: #618 GET %s, status=%d\n", logpath, r.status);
 				ok = 0;
-			} else if (r.json->u.array.count != 1) {
-				fprintf(stderr,
-				        "FAIL: #618 two installs needing one environment composed it %zu "
-				        "times, not once: %.600s\n",
-				        r.json->u.array.count, r.body != NULL ? r.body : "");
-				ok = 0;
+			} else {
+				/*
+				 * Per environment, not overall: probe-cix-compile@0.2.57-555
+				 * measured another job composing a different environment
+				 * (12 tools against these two's 9) inside the same window.
+				 * The defect is one NAME composed twice.
+				 */
+				size_t i, j, count = r.json->u.array.count;
+
+				for (i = 0; i < count; i++) {
+					const char *mi = json_as_string(
+					    json_object_get(r.json->u.array.items[i], "msg"));
+					const char *ni = mi != NULL ? strstr(mi, "__buildenv-") : NULL;
+
+					for (j = i + 1; ni != NULL && j < count; j++) {
+						const char *mj = json_as_string(
+						    json_object_get(r.json->u.array.items[j], "msg"));
+						const char *nj = mj != NULL ? strstr(mj, "__buildenv-") : NULL;
+						size_t li = strcspn(ni, " ");
+
+						if (nj != NULL && strcspn(nj, " ") == li &&
+						    strncmp(ni, nj, li) == 0) {
+							fprintf(stderr,
+							        "FAIL: #618 one build environment was composed twice "
+							        "at once: %.*s\n",
+							        (int)li, ni);
+							ok = 0;
+						}
+					}
+				}
 			}
 			cix_response_free(&r);
 		}
