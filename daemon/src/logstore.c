@@ -1203,6 +1203,8 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 	int have_re = 0;
 	/* #616: one summary, reused for each segment's load or build. */
 	struct seg_summary *sum = NULL;
+	int prefilter = source_filter != NULL || level_filter != NULL || container_filter != NULL ||
+	                since > 0;
 
 	memset(&g_read_stats, 0, sizeof(g_read_stats));
 	if (msg_regex != NULL && msg_regex[0] != '\0') {
@@ -1304,7 +1306,10 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 
 			if (n == 0)
 				continue;
-			headed = line_head(line, n, &h);
+			/* Only a field filter or `since` can reject on the head. A
+			 * regex-only read parses every line anyway, so it reads no
+			 * head, and a summary it builds takes the parsed fields. */
+			headed = prefilter && line_head(line, n, &h);
 			if (headed) {
 				if (build)
 					sum_add(sum, h.ts, h.src, h.src_n, h.lvl, h.lvl_n, h.cont, h.cont_n);

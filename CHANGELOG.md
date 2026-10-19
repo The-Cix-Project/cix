@@ -10,7 +10,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed for an operator:** a read for a container, a source, a level or a time
   (`cixctl logs --container=...`, `--since=...`) reads only the segments that can hold an
-  answer, where it read the whole store before. A regex alone still reads it all, faster.
+  answer, where it read the whole store before. On 192.168.15.95 (100 MB store, warm) a
+  container with no lines went from 1.14-1.27 s to 13-20 ms, the last 90 s from 1.32-1.39 s
+  to 12-20 ms, and `level=crit` from 1.41-1.64 s to 13-15 ms. A regex alone still reads the
+  whole store.
 - **How:** each closed segment gets a summary, `sum-SEQ.json`: its largest `ts` and the
   sources, levels and containers in it. The daemon writes it at rotation. A filtered read writes
   it for any closed segment it reads to the start, which covers segments written before this

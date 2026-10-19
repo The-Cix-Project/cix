@@ -559,6 +559,9 @@ int main(void)
 		check_stats("/v1/system/logs?container=nosuch&tail=5", 2, 3, 1, -1);
 		check_stats("/v1/system/logs?container=nosuch&tail=5", 1, 4, 0, -1);
 	}
+	/* A regex alone can skip only a segment with no entries (segment 3),
+	 * and parses every line of the others. */
+	check_stats("/v1/system/logs?regex=zzznomatchzzz&tail=1", 4, 1, 0, -1);
 
 	/* The bound: only a read with no filter may run on the loop. */
 	check_bound("/v1/system/logs", 1);
