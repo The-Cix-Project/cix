@@ -26,6 +26,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
     `Retry-After: 1`. A read whose client leaves is killed.
   - **A filtered log stream is refused** at subscribe, with "a filtered history is a one-shot
     GET, not a stream".
+  - **A request is authorized once.** A log read parks after authorization, so the resumed
+    pass takes its grant and identity from the connection (`req_authorized`) rather than
+    presenting a single-use session a second time. The first release gate caught it:
+    `test_hostauth`'s audit reads answered 401 on resume (`probe-cix-compile@0.2.57-545`).
 - **Gates:** `test_blocking_waits` counts the log-read call sites. `test_logread` compares
   the backward reader with what it wrote, across a clock step, a 200 KB line, 300 KB of damage
   and an unterminated last line. `test_logread_live` runs a no-match read over an 80 MB store
