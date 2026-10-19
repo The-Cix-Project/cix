@@ -2445,6 +2445,34 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 292: two installs needing one build environment compose it once (#618, 0.2.57-548)
+
+A build environment is named for its tool set, so two installs that declare the same tools need
+the same one. Nothing stopped both forking a composer for it, and a failed composition deleted
+the image without asking whether another install was using it.
+
+**What shipped.**
+- **A record of the composer:** a chain now records the child composing its environment
+  (`buildenv_composer`).
+- **Waiting instead of composing twice:** a second chain that needs the same image forks a
+  waiter. The waiter watches the first composer's pidfd and exits with it, so the second chain
+  is re-entered through its ordinary completion path. It then finds the environment ready, or,
+  if that attempt failed, composes it itself.
+- **No deletion from under another install:** `buildenv_compose_failed_cleanup()` now makes the
+  sharing check `buildenv_release()` already made.
+
+**Verified.**
+- **The gates:** `probe-cix-compile@0.2.57-555` failed two checks, neither of them the fix:
+  - the new `test_pkg` case counted every composition in its window, and another job composed a
+    different environment inside it, so the case now counts per environment;
+  - `test_blocking_waits` counted the waiter's bounded reap, so its budget rose by one, with
+    the reason.
+
+  `-556` (commit `89087fe4`) passed, and in that case both installs completed with no
+  environment composed twice.
+- **Live on .95:** `0.2.57-548` booted on slot a, with 12 of 12 containers running and ready
+  and drift 0.
+
 ## Part 291: every daemon-linked test proves its changes were announced (ADR-0339 point 8, #607, 0.2.57-547)
 
 ADR-0339 made the roll-out wait for 24 hours of zero drift at rest on .95. On 2026-10-19 it had
