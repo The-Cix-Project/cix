@@ -2316,6 +2316,89 @@ static const struct api_op *op_by_id(const char *id, size_t id_len)
 }
 
 /*
+ * #605: AN ARRAY'S ITEMS THAT DECLARE `required` INLINE ARE REFUSED,
+ * wherever in the contract they are written.
+ *
+ * emit_shapes() hands the contract-vs-daemon gate the required keys of
+ * an array's items only when those items are a `$ref` to a named
+ * schema, because `arr[].items` holds a schema NAME and an inline item
+ * has none. So an inline item's `required:` reached nothing, and the
+ * gate had never checked it. Measured 2026-10-19: 15 such lists, 12 in
+ * component schemas, two inside inline 200 responses and one nested
+ * inside another inline item; promoting them moved the shapes header
+ * from 54 array-item entries to 68.
+ *
+ * Refused rather than read, for the reason the flow-mapping refusals
+ * above give: a second store of required keys for unnamed items would
+ * be a parallel of the one named schemas already have, and the README's
+ * rule is that an object a surface reads is a named schema anyway.
+ *
+ * Its own pass over the file, keyed on indentation alone, because the
+ * three places these were written are read by three different readers
+ * here, and only one of them reaches an item's keys at all. A folded
+ * or literal block's lines are skipped, so prose cannot read as a key.
+ */
+#define APIGEN_MAX_DEPTH 64
+
+static void check_inline_item_required(const char *spec)
+{
+	FILE *f = fopen(spec, "r");
+	char line[4096];
+	char key[APIGEN_MAX_DEPTH][APIGEN_QNAME_MAX];
+	int fold = -1, lineno = 0;
+
+	if (f == NULL)
+		return;
+	memset(key, 0, sizeof(key));
+	for (;;) {
+		int first = lineno + 1;
+		const char *t, *v;
+		size_t n;
+		int ind, d, k;
+
+		if (read_spec_line(line, sizeof(line), f, spec, &lineno) == NULL)
+			break;
+		if (is_ignorable(line))
+			continue;
+		ind = indent_of(line);
+		if (fold >= 0 && ind > fold)
+			continue;
+		fold = -1;
+		if (ind % 2 != 0 || ind / 2 >= APIGEN_MAX_DEPTH)
+			continue;
+		d = ind / 2;
+		t = line + ind;
+		if (strncmp(t, "- ", 2) == 0) {
+			snprintf(key[d], sizeof(key[d]), "-");
+		} else {
+			n = strcspn(t, ":");
+			if (t[n] != ':')
+				continue;
+			if (n >= sizeof(key[d]))
+				n = sizeof(key[d]) - 1;
+			memcpy(key[d], t, n);
+			key[d][n] = '\0';
+			v = t + n + 1;
+			while (*v == ' ')
+				v++;
+			if (*v == '>' || *v == '|')
+				fold = ind;
+			if (strcmp(key[d], "required") == 0 && d >= 2 &&
+			    strcmp(key[d - 1], "items") == 0)
+				die_at(spec, first,
+				       "the items of array property \"%s\" declare `required` inline -- "
+				       "promote the item to a named schema under components/schemas and "
+				       "`$ref` it; only a named item's required keys reach the "
+				       "contract-vs-daemon gate, so these would be checked by nothing (#605)",
+				       key[d - 2]);
+		}
+		for (k = d + 1; k < APIGEN_MAX_DEPTH; k++)
+			key[k][0] = '\0';
+	}
+	fclose(f);
+}
+
+/*
  * ADR-0339 (#599): every GET says what kind of read it is, and every
  * change says which reads it makes stale -- the two facts the events
  * stream announces from. A missing one is a build failure, as a
@@ -3789,6 +3872,7 @@ int main(int argc, char **argv)
 				       g_ops[j].op_id, g_ops[i].line);
 		}
 	}
+	check_inline_item_required(spec);
 	check_read_annotations(spec);
 
 	if (emit_path != NULL)

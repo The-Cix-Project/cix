@@ -538,6 +538,60 @@ int main(void)
 	               "              - $ref: \"#/components/schemas/B\"\n",
 	               "second $ref");
 
+	/*
+	 * 5d. An array's items declaring `required` inline (#605). Only a
+	 * named item's required keys reach api_shapes.h, so these would be
+	 * checked by nothing. Refused in a component schema and in an
+	 * inline response alike -- the two places the contract had them.
+	 */
+	expect_refusal("a component array's inline item with required keys",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: getThing\n"
+	               "      x-cix-permission: public\n"
+	               "components:\n"
+	               "  schemas:\n"
+	               "    Holder:\n"
+	               "      type: object\n"
+	               "      properties:\n"
+	               "        list:\n"
+	               "          type: array\n"
+	               "          items:\n"
+	               "            type: object\n"
+	               "            required: [x]\n"
+	               "            properties:\n"
+	               "              x:\n"
+	               "                type: string\n",
+	               "\"list\" declare `required` inline");
+	expect_refusal("an inline response's array item with required keys",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: getThing\n"
+	               "      x-cix-permission: public\n"
+	               "      responses:\n"
+	               "        \"200\":\n"
+	               "          description: ok\n"
+	               "          content:\n"
+	               "            application/json:\n"
+	               "              schema:\n"
+	               "                type: object\n"
+	               "                properties:\n"
+	               "                  rows:\n"
+	               "                    type: array\n"
+	               "                    items:\n"
+	               "                      type: object\n"
+	               "                      required: [y]\n"
+	               "                      properties:\n"
+	               "                        y:\n"
+	               "                          type: string\n"
+	               "components:\n"
+	               "  schemas: {}\n",
+	               "\"rows\" declare `required` inline");
+
 	/* 6. An empty paths section. Emitting an empty table would unroute
 	 * the entire API, and a build that succeeds while doing so is worse
 	 * than one that stops. */

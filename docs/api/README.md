@@ -834,6 +834,16 @@ operation's prose and declared nowhere in the schema -- so nothing generated fro
 They are declared now. apigen emits `of: "<Schema>"` on a field that holds one of these, and the
 dashboard draws it as a group of that schema's fields, or as rows of them, instead of a JSON box.
 
+**And an array's item that declares `required` is always a named schema; apigen refuses one written
+inline** (#605). The contract-vs-daemon gate (`test_apishape`) is handed an array's item keys only when
+the item is a `$ref`, so an inline item's `required` reached nothing. Fifteen did, wherever they were
+written: twelve in component schemas, two inside inline 200 responses, which are promoted whole
+(`BuildEnvironments`, `PkgVerifyReport`), and `PipelineRun.stages`, nested one inside another. They are
+named now (`PipelineRun`, `PkgDriftEntry`, `PkgBadVersion`, `HostInterfaceStats` and the rest). The two
+`networks` items stay two schemas, because `HostInterfaceStats.name` is an interface and
+`ContainerNetworkStats.name` is a network. The gate walks one level into an array, so the item keys of
+`Device.interfaces` and `PipelineRunStage` are declared but still unchecked.
+
 ### A property's `title` is the operator's label, and its description's first sentence is the hint
 
 Two standard JSON Schema keywords doing the two jobs a form needs, so neither is an extension:

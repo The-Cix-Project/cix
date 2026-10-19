@@ -6039,38 +6039,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [buildenvs]
-                properties:
-                  buildenvs:
-                    type: array
-                    items:
-                      type: object
-                      required: [name, idle_seconds, in_use, retention_seconds]
-                      properties:
-                        name:
-                          type: string
-                        idle_seconds:
-                          type: integer
-                          description: >
-                            Seconds since a build last used this
-                            environment. An environment composed by a
-                            daemon older than ADR-0221 has no stamp and
-                            reports 0 -- deliberately "used now" rather
-                            than "never used", so an upgrade does not
-                            discard every pre-existing environment at
-                            once.
-                        in_use:
-                          type: boolean
-                          description: Whether a build is holding it right now. One that is is never reclaimed.
-                        retention_seconds:
-                          type: integer
-                          description: >
-                            How long an unused environment is kept.
-                            Fixed rather than configurable: the penalty
-                            for reclaiming too eagerly is one
-                            recomposition, so there is no operator
-                            decision here worth a knob.
+                $ref: "#/components/schemas/BuildEnvironments"
 
   /pkg/buildenv/{name}:
     delete:
@@ -11049,101 +11018,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [packages, checked, incomplete]
-                properties:
-                  packages:
-                    type: array
-                    description: Only the incomplete ones. Empty is healthy.
-                    items:
-                      type: object
-                      required: [name, image, version, missing_count, file_count, first_missing,
-                                 unresolved_includes, first_unresolved_include]
-                      properties:
-                        name:
-                          type: string
-                        image:
-                          type: string
-                        version:
-                          type: string
-                        missing_count:
-                          type: integer
-                          description: How many of this package's recorded files are absent.
-                        file_count:
-                          type: integer
-                          description: How many it recorded installing.
-                        first_missing:
-                          type: string
-                          description: >
-                            One concrete absent path, so the report names
-                            something checkable rather than only a count.
-                        unresolved_includes:
-                          type: integer
-                          description: >
-                            How many angle-bracket `#include`s in this
-                            package's own installed headers do not resolve
-                            to a file in this image's include tree (#289).
-                            A package that installs headers is shipping an
-                            interface, and an interface that cannot be
-                            included is broken whether or not anything
-                            uses it yet -- linux-pam shipped exactly that
-                            for six revisions, installing
-                            `security/pam_misc.h` while never building the
-                            `libpamc` directory its first include comes
-                            from.
-
-
-                            Unconditional includes only: one inside
-                            `#if`/`#ifdef` is frequently meant not to
-                            resolve on this platform, and flagging those
-                            would make the check noise. A file's own
-                            include guard is not treated as such a
-                            conditional, or nothing in a guarded header
-                            would be checked at all.
-
-
-                            And same-project only: the include must sit
-                            in the same directory under `usr/include/`
-                            as the header making it. That is the exact
-                            shape of the defect -- `pam_misc.h` reaching
-                            for `pam_client.h`, both under `security/`,
-                            one directory built and the other not -- and
-                            it is what a RECIPE is answerable for, since
-                            a project's own headers are the ones its own
-                            build either installs or does not.
-
-
-                            Measured before narrowing: against 202 real
-                            installed packages the unrestricted form
-                            flagged 48, essentially all `<stddef.h>` and
-                            `<stdarg.h>` -- FREESTANDING headers the
-                            compiler provides from its own directory
-                            rather than `/usr/include`, so they never
-                            resolve there and are never a defect. What
-                            this gives up in exchange is a header
-                            reaching into another PACKAGE that is not
-                            installed here; that is a dependency
-                            question, and an image-dependent one, rather
-                            than a recipe failing to build a directory
-                            whose headers it ships.
-
-
-                            Reported, never fatal to an install -- unlike
-                            the ELF undefined-symbol gate, reading C
-                            without a preprocessor cannot claim to be
-                            false-positive-free, so it says so loudly
-                            rather than refusing.
-                        first_unresolved_include:
-                          type: string
-                          description: >
-                            The first as `header: <include>`, so the
-                            report names something checkable.
-                  checked:
-                    type: integer
-                    description: Installed packages examined (hostbuilds excluded).
-                  incomplete:
-                    type: integer
-                    description: How many of them were incomplete; the length of `packages`.
+                $ref: "#/components/schemas/PkgVerifyReport"
 
   /pkg/cache:
     get:
@@ -19391,77 +19266,83 @@ components:
         runs:
           type: array
           items:
-            type: object
-            required: [name, image, started_at, ended_at, status]
-            properties:
-              name:
-                type: string
-              image:
-                type: string
-              version:
-                type: string
-                description: The version this run installed, or was trying to.
-              trigger:
-                type: string
-                enum: [request, rolling]
-              started_at:
-                type: integer
-                format: unix-seconds
-                description: Unix time the run opened -- when the job began, not when its build did.
-              ended_at:
-                type: integer
-                format: unix-seconds
-                description: Unix time the outcome became final.
-              duration_seconds:
-                type: integer
-              stages:
-                type: array
-                nullable: true
-                description: >
-                  How long each stage of this run took (#424), in the
-                  order it went through them. Each stage ends where the
-                  next began, and the last where the run ended. A stage
-                  the run never reached or skipped has no entry rather
-                  than a zero: a cache hit composes no build, so it has
-                  fetch and install only. `null` for a run recorded
-                  before stage times were kept.
-                items:
-                  type: object
-                  required: [stage, started_at, seconds]
-                  properties:
-                    stage:
-                      type: string
-                      enum: [fetch, build, install]
-                    started_at:
-                      type: integer
-                      format: unix-seconds
-                      description: When this stage started.
-                    seconds:
-                      type: integer
-              stage:
-                type: string
-                description: The stage the run ended at. Meaningful only when status is not ok.
-              status:
-                type: string
-                enum: [ok, blocked, failed, cancelled, not-implemented]
-              error:
-                type: string
-                description: A summary, empty on success. The build output is in the log, not here.
-              log:
-                type: string
-                description: Basename of the build log this run wrote, or empty if it never opened one.
-              log_available:
-                type: boolean
-                description: >
-                  Whether that log is still on disk. False is the normal
-                  case for an older run: logs are pruned at forty and
-                  runs are kept for a thousand.
+            $ref: "#/components/schemas/PipelineRun"
         total:
           type: integer
           description: Runs held in the store, before any name/image filter.
         retention:
           type: integer
           description: How many runs are kept. See PUT /system/pipeline-config.
+
+    PipelineRun:
+      type: object
+      required: [name, image, started_at, ended_at, status]
+      properties:
+        name:
+          type: string
+        image:
+          type: string
+        version:
+          type: string
+          description: The version this run installed, or was trying to.
+        trigger:
+          type: string
+          enum: [request, rolling]
+        started_at:
+          type: integer
+          format: unix-seconds
+          description: Unix time the run opened -- when the job began, not when its build did.
+        ended_at:
+          type: integer
+          format: unix-seconds
+          description: Unix time the outcome became final.
+        duration_seconds:
+          type: integer
+        stages:
+          type: array
+          nullable: true
+          description: >
+            How long each stage of this run took (#424), in the
+            order it went through them. Each stage ends where the
+            next began, and the last where the run ended. A stage
+            the run never reached or skipped has no entry rather
+            than a zero: a cache hit composes no build, so it has
+            fetch and install only. `null` for a run recorded
+            before stage times were kept.
+          items:
+            $ref: "#/components/schemas/PipelineRunStage"
+        stage:
+          type: string
+          description: The stage the run ended at. Meaningful only when status is not ok.
+        status:
+          type: string
+          enum: [ok, blocked, failed, cancelled, not-implemented]
+        error:
+          type: string
+          description: A summary, empty on success. The build output is in the log, not here.
+        log:
+          type: string
+          description: Basename of the build log this run wrote, or empty if it never opened one.
+        log_available:
+          type: boolean
+          description: >
+            Whether that log is still on disk. False is the normal
+            case for an older run: logs are pruned at forty and
+            runs are kept for a thousand.
+
+    PipelineRunStage:
+      type: object
+      required: [stage, started_at, seconds]
+      properties:
+        stage:
+          type: string
+          enum: [fetch, build, install]
+        started_at:
+          type: integer
+          format: unix-seconds
+          description: When this stage started.
+        seconds:
+          type: integer
 
     PipelineApprovals:
       type: object
@@ -19864,19 +19745,22 @@ components:
           type: array
           description: Every real interface under /sys/class/net (not scoped to containers).
           items:
-            type: object
-            required: [name, rx_bytes, tx_bytes, rx_packets, tx_packets]
-            properties:
-              name:
-                type: string
-              rx_bytes:
-                type: integer
-              tx_bytes:
-                type: integer
-              rx_packets:
-                type: integer
-              tx_packets:
-                type: integer
+            $ref: "#/components/schemas/HostInterfaceStats"
+    HostInterfaceStats:
+      type: object
+      required: [name, rx_bytes, tx_bytes, rx_packets, tx_packets]
+      properties:
+        name:
+          type: string
+        rx_bytes:
+          type: integer
+        tx_bytes:
+          type: integer
+        rx_packets:
+          type: integer
+        tx_packets:
+          type: integer
+
     HostProcess:
       type: object
       required: [pid, ppid, comm, command_line, container, state, wchan, user_id, group_id]
@@ -20103,21 +19987,24 @@ components:
         networks:
           type: array
           items:
-            type: object
-            required: [name, rx_bytes, tx_bytes, rx_packets, tx_packets]
-            properties:
-              name:
-                type: string
-                description: The network name (see Container.networks) -- never the internal host-side veth name.
-              rx_bytes:
-                type: integer
-              tx_bytes:
-                type: integer
-              rx_packets:
-                type: integer
-              tx_packets:
-                type: integer
+            $ref: "#/components/schemas/ContainerNetworkStats"
           description: One entry per network this container is attached to, same order as Container.networks.
+
+    ContainerNetworkStats:
+      type: object
+      required: [name, rx_bytes, tx_bytes, rx_packets, tx_packets]
+      properties:
+        name:
+          type: string
+          description: The network name (see Container.networks) -- never the internal host-side veth name.
+        rx_bytes:
+          type: integer
+        tx_bytes:
+          type: integer
+        rx_packets:
+          type: integer
+        tx_packets:
+          type: integer
 
     ContainerNetworkAttachment:
       type: object
@@ -20343,20 +20230,23 @@ components:
             stays the whole device regardless -- this never changes
             what "assignable"/dev_path/major/minor mean or grants.
           items:
-            type: object
-            required: [number, class, subclass, protocol]
-            properties:
-              number:
-                type: integer
-              class:
-                type: string
-                description: 2 hex digits (bInterfaceClass).
-              subclass:
-                type: string
-                description: 2 hex digits (bInterfaceSubClass).
-              protocol:
-                type: string
-                description: 2 hex digits (bInterfaceProtocol).
+            $ref: "#/components/schemas/DeviceInterface"
+
+    DeviceInterface:
+      type: object
+      required: [number, class, subclass, protocol]
+      properties:
+        number:
+          type: integer
+        class:
+          type: string
+          description: 2 hex digits (bInterfaceClass).
+        subclass:
+          type: string
+          description: 2 hex digits (bInterfaceSubClass).
+        protocol:
+          type: string
+          description: 2 hex digits (bInterfaceProtocol).
 
     StorageDevice:
       type: object
@@ -22283,24 +22173,7 @@ components:
         reclaimed:
           type: array
           items:
-            type: object
-            required: [image, version, apparent_bytes]
-            properties:
-              image:
-                type: string
-              version:
-                type: string
-              apparent_bytes:
-                type: integer
-                nullable: true
-                description: >
-                  Null unless measure was requested.
-                  Apparent size of the removed version, summed over its files.
-                  On btrfs a version is a snapshot sharing extents with its
-                  neighbours, so the space actually returned to the filesystem
-                  is typically well below this. Reported as apparent rather
-                  than omitted because an operator deciding whether to collect
-                  wants the magnitude.
+            $ref: "#/components/schemas/ImageGcReclaimed"
         collected:
           type: integer
         kept:
@@ -22325,23 +22198,46 @@ components:
             frozen by the same full disk, so the only pointer to the reason led
             somewhere that could not answer.
           items:
-            type: object
-            required: [image, version, error]
-            properties:
-              image:
-                type: string
-              version:
-                type: string
-              error:
-                type: string
-                description: >
-                  Human-readable, not an enum number. A delete or persist
-                  failure names free space on the data directory, since that
-                  is overwhelmingly the cause.
+            $ref: "#/components/schemas/ImageGcFailure"
         apparent_bytes_total:
           type: integer
           nullable: true
           description: Null unless measure was requested.
+
+    ImageGcReclaimed:
+      type: object
+      required: [image, version, apparent_bytes]
+      properties:
+        image:
+          type: string
+        version:
+          type: string
+        apparent_bytes:
+          type: integer
+          nullable: true
+          description: >
+            Null unless measure was requested.
+            Apparent size of the removed version, summed over its files.
+            On btrfs a version is a snapshot sharing extents with its
+            neighbours, so the space actually returned to the filesystem
+            is typically well below this. Reported as apparent rather
+            than omitted because an operator deciding whether to collect
+            wants the magnitude.
+
+    ImageGcFailure:
+      type: object
+      required: [image, version, error]
+      properties:
+        image:
+          type: string
+        version:
+          type: string
+        error:
+          type: string
+          description: >
+            Human-readable, not an enum number. A delete or persist
+            failure names free space on the data directory, since that
+            is overwhelmingly the cause.
 
     Deployment:
       type: object
@@ -22432,13 +22328,16 @@ components:
         choices:
           type: array
           items:
-            type: object
-            required: [item, source]
-            properties:
-              item:
-                type: string
-              source:
-                type: string
+            $ref: "#/components/schemas/PkgSourceChoice"
+
+    PkgSourceChoice:
+      type: object
+      required: [item, source]
+      properties:
+        item:
+          type: string
+        source:
+          type: string
 
     PkgSourceConflict:
       type: object
@@ -22464,23 +22363,26 @@ components:
         keys:
           type: array
           items:
-            type: object
-            required: [fingerprint, bytes, added_at, source]
-            properties:
-              fingerprint:
-                type: string
-                description: 40 hex digits, upper case
-              bytes:
-                type: integer
-                description: Size of the armored key
-              added_at:
-                type: integer
-                format: unix-seconds
-                description: Unix seconds
-              source:
-                type: string
-                nullable: true
-                description: The source whose catalogue supplied it (ADR-0326), or null for a key an operator installed
+            $ref: "#/components/schemas/PkgUpstreamKey"
+    PkgUpstreamKey:
+      type: object
+      required: [fingerprint, bytes, added_at, source]
+      properties:
+        fingerprint:
+          type: string
+          description: 40 hex digits, upper case
+        bytes:
+          type: integer
+          description: Size of the armored key
+        added_at:
+          type: integer
+          format: unix-seconds
+          description: Unix seconds
+        source:
+          type: string
+          nullable: true
+          description: The source whose catalogue supplied it (ADR-0326), or null for a key an operator installed
+
     PkgBadVersions:
       type: object
       required: [bad_versions]
@@ -22488,33 +22390,36 @@ components:
         bad_versions:
           type: array
           items:
-            type: object
-            required: [package, version, image, container, from, to, reason, at]
-            properties:
-              package:
-                type: string
-                description: A package name, or "@<image>" when the image version itself is marked
-              version:
-                type: string
-                description: The package version as the image's manifest records it, or the image version
-              image:
-                type: string
-              container:
-                type: string
-                description: The container whose failure marked it
-              from:
-                type: string
-                description: The image version it went back to
-              to:
-                type: string
-                description: The image version it failed on
-              reason:
-                description: Why the version was marked bad
-                type: string
-              at:
-                type: integer
-                format: unix-seconds
-                description: When the rollback happened.
+            $ref: "#/components/schemas/PkgBadVersion"
+    PkgBadVersion:
+      type: object
+      required: [package, version, image, container, from, to, reason, at]
+      properties:
+        package:
+          type: string
+          description: A package name, or "@<image>" when the image version itself is marked
+        version:
+          type: string
+          description: The package version as the image's manifest records it, or the image version
+        image:
+          type: string
+        container:
+          type: string
+          description: The container whose failure marked it
+        from:
+          type: string
+          description: The image version it went back to
+        to:
+          type: string
+          description: The image version it failed on
+        reason:
+          description: Why the version was marked bad
+          type: string
+        at:
+          type: integer
+          format: unix-seconds
+          description: When the rollback happened.
+
     TrustedOrigins:
       type: object
       required: [origins]
@@ -22648,29 +22553,32 @@ components:
           type: array
           description: What the most recent sync did, per source, in list order.
           items:
-            type: object
-            required: [name, fetched, added, skipped, divergent, refreshed, held, failed, error]
-            properties:
-              name:
-                type: string
-              fetched:
-                type: boolean
-                description: False when the fetch or unpack failed; the source keeps what it offered before.
-              added:
-                type: integer
-              skipped:
-                type: integer
-              divergent:
-                type: integer
-              refreshed:
-                type: integer
-              held:
-                type: integer
-              failed:
-                type: integer
-              error:
-                type: string
-                nullable: true
+            $ref: "#/components/schemas/PkgSyncSourceStatus"
+
+    PkgSyncSourceStatus:
+      type: object
+      required: [name, fetched, added, skipped, divergent, refreshed, held, failed, error]
+      properties:
+        name:
+          type: string
+        fetched:
+          type: boolean
+          description: False when the fetch or unpack failed; the source keeps what it offered before.
+        added:
+          type: integer
+        skipped:
+          type: integer
+        divergent:
+          type: integer
+        refreshed:
+          type: integer
+        held:
+          type: integer
+        failed:
+          type: integer
+        error:
+          type: string
+          nullable: true
 
     PkgCacheConfig:
       type: object
@@ -22699,23 +22607,26 @@ components:
             One entry per drifted package, in registry order. Empty when
             behind is 0.
           items:
-            type: object
-            required: [name, image, installed_version, available_version]
-            properties:
-              name:
-                type: string
-              image:
-                type: string
-                description: >
-                  Which image it is installed in. The same package is
-                  routinely installed in several, and can be behind in one and
-                  current in another, so name alone does not identify a
-                  drifted install.
-              installed_version:
-                type: string
-              available_version:
-                type: string
-                description: The pkg_version= of the recipe currently on disk.
+            $ref: "#/components/schemas/PkgDriftEntry"
+
+    PkgDriftEntry:
+      type: object
+      required: [name, image, installed_version, available_version]
+      properties:
+        name:
+          type: string
+        image:
+          type: string
+          description: >
+            Which image it is installed in. The same package is
+            routinely installed in several, and can be behind in one and
+            current in another, so name alone does not identify a
+            drifted install.
+        installed_version:
+          type: string
+        available_version:
+          type: string
+          description: The pkg_version= of the recipe currently on disk.
 
     PkgCacheStatus:
       type: object
@@ -23330,32 +23241,7 @@ components:
         replicas:
           type: array
           items:
-            type: object
-            required: [name, created]
-            properties:
-              name:
-                type: string
-              created:
-                type: string
-                enum: [created, exists, no-recipe, failed]
-                description: >
-                  "exists" is success -- this call is re-runnable by design.
-              registered:
-                type: boolean
-                description: >
-                  Whether it is registered as a DNS server. A replica that is
-                  running but unregistered receives no records, which is a
-                  silent half-configuration, so it is reported rather than
-                  assumed.
-              ip:
-                type: string
-                nullable: true
-                description: >
-                  Read back from the running container, not from the recipe --
-                  the recipe is intent, the container is fact, and only the
-                  fact is worth writing into resolv.conf.
-              error:
-                type: string
+            $ref: "#/components/schemas/DnsProvisionReplica"
         resolver:
           type: array
           nullable: true
@@ -23364,6 +23250,34 @@ components:
             type: string
         problems:
           type: integer
+
+    DnsProvisionReplica:
+      type: object
+      required: [name, created]
+      properties:
+        name:
+          type: string
+        created:
+          type: string
+          enum: [created, exists, no-recipe, failed]
+          description: >
+            "exists" is success -- this call is re-runnable by design.
+        registered:
+          type: boolean
+          description: >
+            Whether it is registered as a DNS server. A replica that is
+            running but unregistered receives no records, which is a
+            silent half-configuration, so it is reported rather than
+            assumed.
+        ip:
+          type: string
+          nullable: true
+          description: >
+            Read back from the running container, not from the recipe --
+            the recipe is intent, the container is fact, and only the
+            fact is worth writing into resolv.conf.
+        error:
+          type: string
 
     BootNext:
       type: object
@@ -23402,6 +23316,143 @@ components:
       properties:
         error:
           type: string
+
+    BuildEnvironments:
+      type: object
+      required: [buildenvs]
+      properties:
+        buildenvs:
+          type: array
+          items:
+            $ref: "#/components/schemas/BuildEnvironment"
+
+    BuildEnvironment:
+      type: object
+      required: [name, idle_seconds, in_use, retention_seconds]
+      properties:
+        name:
+          type: string
+        idle_seconds:
+          type: integer
+          description: >
+            Seconds since a build last used this
+            environment. An environment composed by a
+            daemon older than ADR-0221 has no stamp and
+            reports 0 -- deliberately "used now" rather
+            than "never used", so an upgrade does not
+            discard every pre-existing environment at
+            once.
+        in_use:
+          type: boolean
+          description: Whether a build is holding it right now. One that is is never reclaimed.
+        retention_seconds:
+          type: integer
+          description: >
+            How long an unused environment is kept.
+            Fixed rather than configurable: the penalty
+            for reclaiming too eagerly is one
+            recomposition, so there is no operator
+            decision here worth a knob.
+
+    PkgVerifyReport:
+      type: object
+      required: [packages, checked, incomplete]
+      properties:
+        packages:
+          type: array
+          description: Only the incomplete ones. Empty is healthy.
+          items:
+            $ref: "#/components/schemas/PkgVerifyEntry"
+        checked:
+          type: integer
+          description: Installed packages examined (hostbuilds excluded).
+        incomplete:
+          type: integer
+          description: How many of them were incomplete; the length of `packages`.
+
+    PkgVerifyEntry:
+      type: object
+      required: [name, image, version, missing_count, file_count, first_missing,
+                 unresolved_includes, first_unresolved_include]
+      properties:
+        name:
+          type: string
+        image:
+          type: string
+        version:
+          type: string
+        missing_count:
+          type: integer
+          description: How many of this package's recorded files are absent.
+        file_count:
+          type: integer
+          description: How many it recorded installing.
+        first_missing:
+          type: string
+          description: >
+            One concrete absent path, so the report names
+            something checkable rather than only a count.
+        unresolved_includes:
+          type: integer
+          description: >
+            How many angle-bracket `#include`s in this
+            package's own installed headers do not resolve
+            to a file in this image's include tree (#289).
+            A package that installs headers is shipping an
+            interface, and an interface that cannot be
+            included is broken whether or not anything
+            uses it yet -- linux-pam shipped exactly that
+            for six revisions, installing
+            `security/pam_misc.h` while never building the
+            `libpamc` directory its first include comes
+            from.
+
+
+            Unconditional includes only: one inside
+            `#if`/`#ifdef` is frequently meant not to
+            resolve on this platform, and flagging those
+            would make the check noise. A file's own
+            include guard is not treated as such a
+            conditional, or nothing in a guarded header
+            would be checked at all.
+
+
+            And same-project only: the include must sit
+            in the same directory under `usr/include/`
+            as the header making it. That is the exact
+            shape of the defect -- `pam_misc.h` reaching
+            for `pam_client.h`, both under `security/`,
+            one directory built and the other not -- and
+            it is what a RECIPE is answerable for, since
+            a project's own headers are the ones its own
+            build either installs or does not.
+
+
+            Measured before narrowing: against 202 real
+            installed packages the unrestricted form
+            flagged 48, essentially all `<stddef.h>` and
+            `<stdarg.h>` -- FREESTANDING headers the
+            compiler provides from its own directory
+            rather than `/usr/include`, so they never
+            resolve there and are never a defect. What
+            this gives up in exchange is a header
+            reaching into another PACKAGE that is not
+            installed here; that is a dependency
+            question, and an image-dependent one, rather
+            than a recipe failing to build a directory
+            whose headers it ships.
+
+
+            Reported, never fatal to an install -- unlike
+            the ELF undefined-symbol gate, reading C
+            without a preprocessor cannot claim to be
+            false-positive-free, so it says so loudly
+            rather than refusing.
+        first_unresolved_include:
+          type: string
+          description: >
+            The first as `header: <include>`, so the
+            report names something checkable.
 
   securitySchemes:
     bearerAuth:

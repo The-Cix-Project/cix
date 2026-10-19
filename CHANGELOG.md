@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An array's item that declares required keys is a named schema, and the gate checks it (#605)
+
+- **What changed:** `test_apishape` now checks the required keys of 14 more array/operation
+  pairs, among them `getPipelineRuns.runs`, `getPkgDrift.packages`, `listPkgBadVersions.bad_versions`,
+  `getPkgSyncStatus.sources`, `listBuildEnvironments.buildenvs` and both stats `networks`. Generated
+  `api_shapes.h` went from 54 array-item entries to 68. Nothing changes on the wire.
+- **Why:** apigen emitted an array's item keys only for a `$ref`'d item, so the 15 inline items
+  with a `required` list were checked by nothing. They are promoted to named schemas, and apigen
+  now refuses an inline item `required` anywhere in the contract, so it cannot come back unseen.
+- **Still unchecked:** `Device.interfaces` and `PipelineRunStage`, which sit two levels deep
+  where the gate does not walk.
+
 ### The backward log reader finds newlines with memrchr (#612)
 
 - A whole-store scan in the log-read child took 1.93 to 2.03 s with the reader's byte loop,
