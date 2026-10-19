@@ -2445,6 +2445,56 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 287: a filtered log read no longer holds the event loop (ADR-0342, #612, 0.2.57-541)
+
+The owner accepted ADR-0342 on 2026-10-19. Before it, a log read with a filter that found fewer
+matches than `tail` read every segment of the store on the event loop. A regex matching nothing
+held cixd for 1533 ms in the 100 MB store on .95, with `tail=1` unfiltered at 76 ms
+(2026-10-18). The store's cap may be set to 100 GB.
+
+**What shipped.**
+- **One reader, backwards:** `logstore_tail_ex()` reads each segment from its end and stops once it
+  holds `tail` entries. A read with no filter costs only what it returns, so it stays on the loop.
+  That includes the dashboard's log panel, which the daemon samples itself every 2 s.
+- **Filtered reads off the loop:** `logread_query_bounded()` decides. A filtered read parks
+  through ADR-0340's record, now `struct park` with a kind. It runs in a `helper_run()` child
+  that writes its answer into a memfd. 2 run and 16 wait; beyond that, 503 with
+  `Retry-After: 1`. A read whose client leaves is killed.
+- **A request is authorized once:** the resumed pass takes its grant and identity from the
+  connection. This was found by the first gate (below).
+- **Stream rule:** a filtered log subscription is refused.
+- **Gates:** `test_blocking_waits` counts the log-read call sites. `test_logread` checks the
+  backward reader against what it wrote. `test_logread_live` runs a no-match read over an 80 MB
+  store and checks that health stays under 50 ms, that an abandoned read is killed, and that the
+  19th concurrent read gets 503.
+
+**Verified.**
+- **The gate, twice:**
+  - `probe-cix-compile@0.2.57-545` (commit `4325ce62`) failed one test, `test_hostauth`.
+    Its audit reads use single-use sessions (`idle_timeout_seconds` 0), and on resume they
+    answered 401, because the first pass had consumed the token.
+  - `probe-cix-compile@0.2.57-546` (commit `50aeffbc`), with the request authorized once,
+    built and passed, including `test_logread`, `test_logread_live`, `test_events` and
+    `test_hostauth`.
+- **The box:** 0.2.57-541 hostbuilt, self-assembled (generation 1) and booted on slot `b`. All 12
+  containers came back ready. Measured on 192.168.15.95, 2026-10-19:
+  - **Unfiltered reads:** `tail=1` answered in 1.0 ms, and `since=0&tail=300` in 2.7 ms.
+  - **A regex never written to the store:** it answered `[]` in 3.06 s cold, just after the
+    boot, and 2.03 s warm. Health, asked five times during the cold read, answered in 0.7 to
+    1.2 ms. The stall record holds no entry for either read.
+  - **Cost:** the whole-store scan now takes longer than the 1533 ms it took on the loop, and
+    it is the child's time, not the box's. Whether the backward reader or the store's size
+    accounts for the difference is not measured. Making that scan cheaper is #616.
+  - **One container:** `cixctl logs --container=jump --tail=40` answered in 8 ms.
+  - **Streams:** `cixctl events --follow` with the dashboard's `since=0&tail=2` subscription
+    answered `subscribed` and a data frame. `source=cixd&tail=2` was refused with "a filtered
+    history is a one-shot GET, not a stream".
+- **Not measured live:** the 503 and the kill of an abandoned read. Only `test_logread_live`
+  covers them. The dashboard's code did not change, and its log panel uses the subscription
+  verified above.
+- **Found on the way:** a 3373 ms `events-check-timer` pass at 00:01:04Z on 0.2.57-540, during gate
+  545's selftest. It is unrelated to this change, and is #617.
+
 ## Part 286: a container's rootfs is a snapshot of its image, beside the image store (ADR-0341, #608, 0.2.57-540)
 
 The owner accepted ADR-0341 on 2026-10-18, after asking what the ideal would be for a box with
