@@ -191,6 +191,14 @@ static struct stall_shared *g_shared;
 static char g_records_path[PATH_MAX];
 
 static pid_t g_watchdog_pid = -1;
+/*
+ * #619: the daemon's own pid. A child forked inside a timed handler --
+ * the build environment's composer is one, and it runs code that marks
+ * steps -- inherits the step state and the shared page, and its steps
+ * would overwrite the daemon's in-flight activity. stallwatch_step()
+ * does nothing in any other process.
+ */
+static pid_t g_step_owner = -1;
 
 static long long monotonic_millis(void)
 {
@@ -1013,6 +1021,7 @@ int stallwatch_start(const char *records_path)
 		g_shared->probe_port = g_pending_probe_port;
 	}
 
+	g_step_owner = getpid();
 	pid = fork();
 	if (pid < 0) {
 		perror("stallwatch: fork");
@@ -1141,7 +1150,7 @@ long long stallwatch_handler_start(void)
 
 void stallwatch_step(const char *name)
 {
-	if (!g_step_timing || name == NULL)
+	if (!g_step_timing || name == NULL || getpid() != g_step_owner)
 		return;
 	step_close();
 	snprintf(g_step_name, sizeof(g_step_name), "%s", name);

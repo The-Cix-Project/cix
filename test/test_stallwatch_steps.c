@@ -16,7 +16,9 @@
  *      starts with none, so a handler with no steps is named exactly as
  *      before, and a step called outside any handler does nothing;
  *   3. while a step runs it is the in-flight activity the watchdog
- *      reads, so a step that never returns is what a stall names.
+ *      reads, so a step that never returns is what a stall names;
+ *   4. a child forked inside a handler, which shares the page, cannot
+ *      write that activity.
  *
  * Links stallwatch.c directly and drives it as the loop does, with no
  * daemon, so it runs in SELFTESTS on the box (#224). The watchdog it
@@ -27,6 +29,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/wait.h>
 
 #include "json.h"
 #include "stallwatch.h"
@@ -157,6 +160,37 @@ int main(void)
 			        cur != NULL ? cur : "(null)");
 			g_fail = 1;
 		}
+	}
+
+	/* 4. A child forked inside a handler -- the build environment's
+	 * composer runs image_produce_new_version(), which marks steps --
+	 * shares the page, and must not write the daemon's activity. */
+	{
+		long long started;
+		pid_t child;
+		int status;
+
+		stallwatch_heartbeat();
+		started = stallwatch_handler_start();
+		stallwatch_step("the daemon's step");
+		child = fork();
+		if (child == 0) {
+			stallwatch_step("image version: snapshot the current rootfs forward");
+			_exit(0);
+		}
+		if (child < 0 || waitpid(child, &status, 0) != child) {
+			fprintf(stderr, "FAIL: fork/wait for the child step\n");
+			g_fail = 1;
+		}
+		cur = stallwatch_current_activity();
+		if (cur == NULL || strcmp(cur, "step the daemon's step") != 0) {
+			fprintf(stderr, "FAIL: a forked child's step overwrote the activity: \"%s\"\n",
+			        cur != NULL ? cur : "(null)");
+			g_fail = 1;
+		}
+		stallwatch_handler_done("pkg-buildenv", started);
+		stallwatch_activity_clear();
+		stallwatch_pass_end();
 	}
 
 	unlink(records);

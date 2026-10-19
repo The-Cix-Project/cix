@@ -99,7 +99,8 @@ void stallwatch_handler_done(const char *kind, long long started_millis);
  * install: produce the image version (1500 ms)" -- where it used to say
  * only "event container". The step is also the in-flight activity, so a
  * step that never returns is named by the watchdog. Outside a timed
- * handler it does nothing.
+ * handler, or in any process but the daemon's own (a child forked
+ * inside a handler inherits the shared page), it does nothing.
  */
 void stallwatch_step(const char *name);
 /* #303: read the current in-flight activity (into shared memory), for the

@@ -17,16 +17,24 @@ All notable changes to this project are recorded here, **newest first**. Format 
   build's preparation after its environment is composed.
 - **Why:** four slow passes on 192.168.15.95 on 2026-10-19, 1.6–1.9 s each, fell at the
   second a `hibr` build container exited, and one of 3305 ms during a `cix` build's
-  preparation. All five came while release gates were loading the box, and the same `hibr`
-  path stayed under the 750 ms threshold on an idle box. The record could not say which step
-  took the time, so the cause is not established.
+  preparation. The record could not say which step took the time.
+- **What it found, on 0.2.57-549:** `event container (1658 ms), slowest step pkg install:
+  produce the image version (1553 ms)`, for `hibr`'s exit at 22:00Z with no release build
+  running. So "load decides it", which the first draft of this entry said, is false: the same
+  path also stayed under 750 ms three times on 548, and what differs is not established.
+  `image_produce_new_version()` now marks its own steps (snapshot forward, the mutate, hash
+  and place, record, package snapshot), so the next exit names which part.
+- **Only in the daemon's process:** the build environment's composer is a child forked inside
+  a handler, and it runs `image_produce_new_version()`. It inherits the step state and the
+  shared page, so `stallwatch_step()` does nothing in any process but the one that started
+  stallwatch. Otherwise the child's steps would overwrite the daemon's in-flight activity.
 - **One mechanism:** #617's tracker for the announcement check, which named a slow pass `events
   check, slowest read GET /v1/... (N ms)`, is now this. Each in-process read is a step, and the
   record reads `event events-check-timer (N ms), slowest step GET /v1/... (M ms)`.
   `test_stallwatch_steps` (SELFTESTS) drives stallwatch.c as the loop does. It checks that the
   slowest step is the one named, that a handler with no steps is named as before, that a step
-  outside any handler does nothing, and that a step is the activity only while its handler
-  runs.
+  outside any handler does nothing, that a step is the activity only while its handler runs,
+  and that a forked child's step leaves the daemon's activity alone.
 
 ### Two installs needing one build environment compose it once (#618)
 

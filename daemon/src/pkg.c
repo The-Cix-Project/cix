@@ -5250,6 +5250,10 @@ static int image_produce_new_version(const char *image,
 	struct stat st;
 	char why[PATH_MAX + 160];
 
+	/* #619: "pkg install: produce the image version" took 1553 ms of a
+	 * 1658 ms build-container exit on 192.168.15.95, 2026-10-19 22:00Z,
+	 * on a box with no release build running; these say which part. */
+	stallwatch_step("image version: resolve the current one");
 	ierr = image_create(image);
 	if (ierr != IMAGE_OK && ierr != IMAGE_ERR_DUPLICATE)
 		return produce_fail(image, NULL, "image_create", 0);
@@ -5273,6 +5277,7 @@ static int image_produce_new_version(const char *image,
 	 * before. Both leave `staging` a writable tree the mutate step and
 	 * the atomic rename below treat identically.
 	 */
+	stallwatch_step("image version: snapshot the current rootfs forward");
 	if (cix_btrfs_is_backing(old_rootfs)) {
 		if (cix_btrfs_snapshot_or_copy(old_rootfs, staging) != 0)
 			return produce_fail(image, NULL, "snapshotting the current rootfs forward", 1);
@@ -5284,9 +5289,11 @@ static int image_produce_new_version(const char *image,
 			                     1);
 	}
 
+	stallwatch_step("image version: the caller's mutate step");
 	if (mutate(staging, ctx) != 0)
 		return produce_fail(image, staging, "the caller's own mutate step", 0);
 
+	stallwatch_step("image version: hash the manifest and place the tree");
 	manifest_str = build_image_manifest_string(image);
 	/*
 	 * extra_identity exists for the one caller whose change is real but
@@ -5389,6 +5396,7 @@ static int image_produce_new_version(const char *image,
 			return produce_fail(image, staging, "renaming staging into place", 1);
 	}
 
+	stallwatch_step("image version: record it");
 	if (image_record_version(image, new_version) != IMAGE_OK)
 		return produce_fail(image, NULL, "recording the new version", 0);
 	/*
@@ -5405,6 +5413,7 @@ static int image_produce_new_version(const char *image,
 	 * it; losing the ability to answer "what was in this version" is
 	 * worth a logged warning, never a failed install.
 	 */
+	stallwatch_step("image version: write its package snapshot");
 	if (pkg_version_snapshot_write(image, new_version) != 0)
 		logstore_write("cixd", "warn",
 		               "image %s: could not record the package snapshot for version %s -- the "
