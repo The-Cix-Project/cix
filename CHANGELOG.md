@@ -19,7 +19,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   second a `hibr` build container exited, and one of 3305 ms during a `cix` build's
   preparation. The record could not say which step took the time.
 - **What it found, on 0.2.57-549:** `event container (1658 ms), slowest step pkg install:
-  produce the image version (1553 ms)`, for `hibr`'s exit at 22:00Z with no release build
+  produce the image version (1553 ms)`, for `hibr`'s exit at 21:59:47Z with no release build
   running. So "load decides it", which the first draft of this entry said, is false: the same
   path also stayed under 750 ms three times on 548, and what differs is not established.
   `image_produce_new_version()` now marks its own steps (snapshot forward, the mutate, hash

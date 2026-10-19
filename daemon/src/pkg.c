@@ -5251,7 +5251,7 @@ static int image_produce_new_version(const char *image,
 	char why[PATH_MAX + 160];
 
 	/* #619: "pkg install: produce the image version" took 1553 ms of a
-	 * 1658 ms build-container exit on 192.168.15.95, 2026-10-19 22:00Z,
+	 * 1658 ms build-container exit on 192.168.15.95, 2026-10-19 21:59:47Z,
 	 * on a box with no release build running; these say which part. */
 	stallwatch_step("image version: resolve the current one");
 	ierr = image_create(image);

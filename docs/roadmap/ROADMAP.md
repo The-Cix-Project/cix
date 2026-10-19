@@ -2471,11 +2471,11 @@ nothing more, each at the second a `hibr` build container exited.
 - **A request names its read:** after one `POST /v1/events/verify` on 549 the loop's worst pass
   read `POST /v1/events/verify (444 ms), slowest step GET /v1/pkg (162 ms)`.
 - **What the steps found:**
-  - On 549, `hibr`'s exit at 22:00Z with no release build running: `event container (1658 ms),
+  - On 549, `hibr`'s exit at 21:59:47Z with no release build running: `event container (1658 ms),
     slowest step pkg install: produce the image version (1553 ms)`. That disproved this work's
     first reading that load decided it.
   - On 550, the step inside that, at 22:59Z: `image version: the caller's mutate step (1293
-    ms)`. That is `install_mutate()` over 193 files (1.49 MB), about 6.7 ms a file.
+    ms)`. That is `install_mutate()` over 193 files from a 1.49 MB artifact, about 6.7 ms a file.
   - On 550, #617's slow pass named its read: `GET /v1/pkg/build-logs (1273 ms)`, 61 s after
     that exit, for a read that takes 1.3 ms idle.
 - **What is not established:** the cause of either. Both are filesystem work on the loop, and
