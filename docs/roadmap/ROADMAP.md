@@ -2482,9 +2482,15 @@ held cixd for 1533 ms in the 100 MB store on .95, with `tail=1` unfiltered at 76
   - **A regex never written to the store:** it answered `[]` in 3.06 s cold, just after the
     boot, and 2.03 s warm. Health, asked five times during the cold read, answered in 0.7 to
     1.2 ms. The stall record holds no entry for either read.
-  - **Cost:** the whole-store scan now takes longer than the 1533 ms it took on the loop, and
-    it is the child's time, not the box's. Whether the backward reader or the store's size
-    accounts for the difference is not measured. Making that scan cheaper is #616.
+  - **Cost:** the whole-store scan took longer than the 1533 ms it took on the loop, and it was
+    the child's time, not the box's. A matching read through the whole park answered in 17 ms,
+    so the transport costs at most that and the difference was the reader. Its newline search
+    was a byte loop; 0.2.57-542 uses `memrchr`, as `getline()` does with `memchr`. Measured
+    warm on the same box: 1.93 to 2.03 s on 541, and 1.61 to 1.72 s on 542 (2.68 s cold
+    after the reboot). Making the scan cheaper still is #616.
+  - **0.2.57-542, the same night:** it also carries #617's instrument. The loop's worst pass
+    since that boot reads `events check, slowest read GET /v1/storage (77 ms) (78 ms)`, where
+    it would have said `event events-check-timer`. No slow pass since either boot.
   - **One container:** `cixctl logs --container=jump --tail=40` answered in 8 ms.
   - **Streams:** `cixctl events --follow` with the dashboard's `since=0&tail=2` subscription
     answered `subscribed` and a data frame. `source=cixd&tail=2` was refused with "a filtered

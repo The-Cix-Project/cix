@@ -6,6 +6,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The backward log reader finds newlines with memrchr (#612)
+
+- A whole-store scan in the log-read child took 1.93 to 2.03 s with the reader's byte loop,
+  against 1533 ms for the forward reader it replaced, which uses `getline()` and so `memchr`.
+  With `memrchr` it takes 1.61 to 1.72 s (warm, 192.168.15.95, 0.2.57-542). The transport to
+  the child is not the cost: a matching read through the whole park answers in 17 ms.
+
 ### A slow announcement check names the read that took the time (#617)
 
 - **What changed for an operator:** a slow pass of the once-a-second announcement check
