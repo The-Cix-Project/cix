@@ -7138,6 +7138,26 @@ static int buildenv_files_identical(const char *a, const char *b)
  * success both times. Copying files is not the same as producing an
  * environment that runs.
  */
+/*
+ * #606: why a composition failed, kept in the composer child so it can
+ * be handed to the parent (see buildenv_report), as produce_fail() keeps
+ * g_produce_fail_reason. produce_fail() can say only "the caller's own
+ * mutate step failed", so every exit of buildenv_mutate() and
+ * buildenv_verify_libc_intact() records its own reason through here.
+ */
+static char g_buildenv_fail_reason[256];
+
+static int buildenv_fail(const char *fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	vsnprintf(g_buildenv_fail_reason, sizeof(g_buildenv_fail_reason), fmt, ap);
+	va_end(ap);
+	logstore_write("cixd", "error", "build environment: %s", g_buildenv_fail_reason);
+	return -1;
+}
+
 static int buildenv_verify_libc_intact(const char *staging_rootfs, const struct buildenv_ctx *ctx)
 {
 	static const char *const critical[] = {
@@ -7168,14 +7188,12 @@ static int buildenv_verify_libc_intact(const char *staging_rootfs, const struct 
 			break;
 		}
 	}
-	if (libc == NULL) {
-		logstore_write("cixd", "error",
-		               "build environment: no %s in the composed tool set -- nothing in it "
-		               "could exec", PKG_BASE_LIBC);
-		return -1;
-	}
+	if (libc == NULL)
+		return buildenv_fail("no %s in the composed tool set -- nothing in it could exec",
+		                     PKG_BASE_LIBC);
 	if (image_current_version(normalize_image(libc->image), version, sizeof(version)) != IMAGE_OK)
-		return -1;
+		return buildenv_fail("%s@%s lives in image \"%s\", which has no current version",
+		                     libc->name, libc->version, normalize_image(libc->image));
 	image_version_rootfs_path(normalize_image(libc->image), version, src_rootfs,
 	                           sizeof(src_rootfs));
 
@@ -7184,14 +7202,11 @@ static int buildenv_verify_libc_intact(const char *staging_rootfs, const struct 
 
 		snprintf(want, sizeof(want), "%s/%s", src_rootfs, critical[k]);
 		snprintf(got, sizeof(got), "%s/%s", staging_rootfs, critical[k]);
-		if (!buildenv_files_identical(want, got)) {
-			logstore_write("cixd", "error",
-			               "build environment: %s is not the copy %s@%s installed -- another "
-			               "declared tool overwrote it, and an environment holding halves of "
-			               "two C libraries cannot exec",
-			               critical[k], libc->name, libc->version);
-			return -1;
-		}
+		if (!buildenv_files_identical(want, got))
+			return buildenv_fail("%s is not the copy %s@%s installed -- another declared tool "
+			                     "overwrote it, and an environment holding halves of two C "
+			                     "libraries cannot exec",
+			                     critical[k], libc->name, libc->version);
 	}
 	return 0;
 }
@@ -7248,13 +7263,10 @@ static int buildenv_mutate(const char *staging_rootfs, void *ctx_v)
 		if ((pass == 0) == is_libc)
 			continue;
 
-		if (image_current_version(normalize_image(e->image), version, sizeof(version)) != IMAGE_OK) {
-			logstore_write("cixd", "error",
-			               "build environment: declared tool %s@%s lives in image \"%s\", "
-			               "which has no current version", e->name, e->version,
-			               normalize_image(e->image));
-			return -1;
-		}
+		if (image_current_version(normalize_image(e->image), version, sizeof(version)) != IMAGE_OK)
+			return buildenv_fail("declared tool %s@%s lives in image \"%s\", which has no "
+			                     "current version",
+			                     e->name, e->version, normalize_image(e->image));
 		image_version_rootfs_path(normalize_image(e->image), version, src_rootfs,
 		                           sizeof(src_rootfs));
 		for (f = 0; f < e->file_count; f++) {
@@ -7267,13 +7279,10 @@ static int buildenv_mutate(const char *staging_rootfs, void *ctx_v)
 			 * missing from the image is a real inconsistency and fails
 			 * the composition rather than producing a quietly
 			 * incomplete environment. */
-			if (copy_one_file_preserving(src, dst) != 0) {
-				logstore_write("cixd", "error",
-				               "build environment: copying %s from declared tool %s@%s "
-				               "(image %s) failed: %s", e->files[f], e->name, e->version,
-				               normalize_image(e->image), strerror(errno));
-				return -1;
-			}
+			if (copy_one_file_preserving(src, dst) != 0)
+				return buildenv_fail("copying %s from declared tool %s@%s (image %s) failed: %s",
+				                     e->files[f], e->name, e->version,
+				                     normalize_image(e->image), strerror(errno));
 		}
 	}
 	return buildenv_verify_libc_intact(staging_rootfs, ctx);
@@ -7361,8 +7370,101 @@ static long long buildenv_idle_seconds(const char *env_image)
  * handover: it calls this function a second time and takes the
  * already-composed fast path above.
  */
+/*
+ * #606: what a composer child reports to the parent, through the file
+ * at report_path (one per chain, which composes one environment at a
+ * time).
+ *
+ * The child closes every descriptor it inherited before composing (see
+ * the sweep below), the log store's open segment among them, so every
+ * logstore_write() it made -- including the reason a composition failed
+ * -- went nowhere. A test saw only the parent's "could not compose a
+ * build environment from the declared tools" (0.2.57-513, #606), and
+ * which exit it was could not be told. So the child holds its log
+ * entries (logstore_hold(), ADR-0340's arrangement) and writes them here
+ * with its reason; the parent replays them, so they are written by the
+ * process that accounts for the store, and puts the reason in the
+ * package's error.
+ */
+#define BUILDENV_HELD_LOG_MAX 16384
+
+struct buildenv_report {
+	char reason[256];
+	char held[BUILDENV_HELD_LOG_MAX];
+};
+
+static struct buildenv_report g_buildenv_report;
+
+static void buildenv_report_path(int chain_idx, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/.buildenv-report-%d", g_pkg_dir, chain_idx);
+}
+
+/* In the composer child, after composing: rc is its outcome. */
+static void buildenv_report_write(const char *report_path, int rc)
+{
+	int fd;
+	size_t off = 0;
+	const char *reason = NULL;
+
+	if (rc != 0)
+		reason = g_buildenv_fail_reason[0] != '\0' ? g_buildenv_fail_reason
+		                                            : pkg_last_image_produce_failure();
+	snprintf(g_buildenv_report.reason, sizeof(g_buildenv_report.reason), "%s",
+	         reason != NULL ? reason : "");
+	fd = open(report_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+	if (fd < 0)
+		return;
+	while (off < sizeof(g_buildenv_report)) {
+		ssize_t n = write(fd, (const char *)&g_buildenv_report + off,
+		                  sizeof(g_buildenv_report) - off);
+
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			break;
+		off += (size_t)n;
+	}
+	close(fd);
+}
+
+/*
+ * In the parent, once the composer has exited: replays what it logged
+ * and copies its reason into reason (empty when it gave none, or left
+ * no report -- killed, or unable to write one). Removes the report.
+ */
+static void buildenv_report_take(int chain_idx, char *reason, size_t reason_size)
+{
+	char path[PATH_MAX];
+	int fd;
+	size_t got = 0;
+
+	reason[0] = '\0';
+	buildenv_report_path(chain_idx, path, sizeof(path));
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return;
+	while (got < sizeof(g_buildenv_report)) {
+		ssize_t n = read(fd, (char *)&g_buildenv_report + got, sizeof(g_buildenv_report) - got);
+
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			break;
+		got += (size_t)n;
+	}
+	close(fd);
+	unlink(path);
+	if (got != sizeof(g_buildenv_report))
+		return;
+	g_buildenv_report.reason[sizeof(g_buildenv_report.reason) - 1] = '\0';
+	logstore_replay(g_buildenv_report.held, sizeof(g_buildenv_report.held));
+	snprintf(reason, reason_size, "%s", g_buildenv_report.reason);
+}
+
 static int buildenv_image_for(const char *declared, char *out_image, size_t out_image_size,
-                               char *err, size_t err_size, pid_t *out_pid, int *out_pidfd)
+                               char *err, size_t err_size, pid_t *out_pid, int *out_pidfd,
+                               const char *report_path)
 {
 	struct buildenv_tool tools[PKG_BUILDENV_MAX_TOOLS];
 	char canonical[PKG_BUILDENV_MAX_TOOLS * (PKG_NAME_MAX + PKG_VERSION_MAX + 2)];
@@ -7442,6 +7544,7 @@ static int buildenv_image_for(const char *declared, char *out_image, size_t out_
 		               "pkg: composing build environment %s from %d declared tool(s)", out_image,
 		               count);
 
+		unlink(report_path); /* a stale one would be taken for this child's */
 		pid = fork();
 		if (pid < 0) {
 			snprintf(err, err_size, "could not fork to compose a build environment: %s",
@@ -7450,7 +7553,11 @@ static int buildenv_image_for(const char *declared, char *out_image, size_t out_
 		}
 		if (pid == 0) {
 			int fd;
+			int rc;
 
+			/* #606: before the sweep, which closes the store's segment. */
+			logstore_hold(g_buildenv_report.held, sizeof(g_buildenv_report.held));
+			g_buildenv_fail_reason[0] = '\0';
 			/*
 			 * Every descriptor this daemon holds was inherited by the
 			 * fork, and this one never execve()s, so SOCK_CLOEXEC does
@@ -7465,8 +7572,9 @@ static int buildenv_image_for(const char *declared, char *out_image, size_t out_
 			 */
 			for (fd = 3; fd < 4096; fd++)
 				close(fd);
-			_exit(image_produce_new_version(out_image, buildenv_mutate, &ctx, canonical) == 0 ? 0
-			                                                                                  : 1);
+			rc = image_produce_new_version(out_image, buildenv_mutate, &ctx, canonical);
+			buildenv_report_write(report_path, rc);
+			_exit(rc == 0 ? 0 : 1);
 		}
 
 		pidfd = sys_pidfd_open(pid, 0);
@@ -10738,6 +10846,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		char env_image[PKG_IMAGE_NAME_MAX];
 		char env_err[256];
 		char declared[PKG_DEPENDS_MAX];
+		char report_path[PATH_MAX];
 		int envr;
 
 		/*
@@ -10768,8 +10877,10 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			return 0;
 		}
 
+		buildenv_report_path(chain_idx, report_path, sizeof(report_path));
 		envr = buildenv_image_for(declared, env_image, sizeof(env_image), env_err,
-		                          sizeof(env_err), out_compose_pid, out_compose_pidfd);
+		                          sizeof(env_err), out_compose_pid, out_compose_pidfd,
+		                          report_path);
 		if (envr < 0) {
 			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD, "%s", env_err);
 			logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
@@ -11546,9 +11657,12 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 	char recipe_path[PATH_MAX];
 	struct pkg_recipe recipe;
 	int is_final_upgrade;
+	char reason[256];
 
 	*out_compose_pid = -1;
 	*out_compose_pidfd = -1;
+	/* #606: on every path, so what the child logged is never lost. */
+	buildenv_report_take(chain_idx, reason, sizeof(reason));
 
 	/* Same stale-slot discriminator pkg_fetch_completed() uses (issue
 	 * #98): an entry that is no longer FETCHING cannot be the one whose
@@ -11567,8 +11681,15 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 		if (g_chains[chain_idx].buildenv_image[0] != '\0')
 			buildenv_compose_failed_cleanup(g_chains[chain_idx].buildenv_image);
 		chain_set_buildenv(chain_idx, "");
-		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
-		         "could not compose a build environment from the declared tools");
+		if (reason[0] != '\0')
+			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
+			         "could not compose a build environment from the declared tools: %s",
+			         reason);
+		else
+			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
+			         "could not compose a build environment from the declared tools (the "
+			         "composer exited %d and left no reason)",
+			         exit_status);
 		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
 		chain_release(chain_idx);
 		return 0;

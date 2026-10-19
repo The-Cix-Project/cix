@@ -9781,6 +9781,105 @@ skip_resume:
 		}
 	}
 
+	/*
+	 * #606: a composition that fails says why. The composer child closes
+	 * every descriptor it inherited, the log store's among them, so its
+	 * reason used to reach nowhere and the package said only "could not
+	 * compose a build environment from the declared tools". Here a
+	 * declared tool's binary is moved aside in every image that has the
+	 * tool installed -- any of them may be the one composed from -- and
+	 * the package's error must name the copy that failed.
+	 *
+	 * The tool set is one no other case declares (no linux-headers or
+	 * binutils), so its environment is composed here rather than found
+	 * already made. Last, and undone at once, because it damages images
+	 * every other case builds from.
+	 */
+	{
+		static char moved[16][PATH_MAX];
+		int n_moved = 0, k;
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/pkg", NULL, &r) == 0 && r.status == 200) {
+			const struct json_value *packages = json_object_get(r.json, "packages");
+			size_t i;
+
+			for (i = 0; packages != NULL && packages->type == JSON_ARRAY &&
+			            i < packages->u.array.count && n_moved < 16;
+			     i++) {
+				const struct json_value *item = packages->u.array.items[i];
+				const char *image = json_str_field(item, "image");
+				struct cix_response ir;
+				char ipath[256];
+
+				if (!str_eq(json_str_field(item, "name"), "bash") || image == NULL)
+					continue;
+				snprintf(ipath, sizeof(ipath), "/v1/images/%s", image);
+				memset(&ir, 0, sizeof(ir));
+				if (cix_client_request(&client, "GET", ipath, NULL, &ir) == 0 &&
+				    ir.status == 200 && json_str_field(ir.json, "current_version") != NULL) {
+					char aside[PATH_MAX + 8];
+
+					snprintf(moved[n_moved], sizeof(moved[n_moved]),
+					         "%s/rebuildable/images/%s/%s/rootfs/usr/bin/bash", g_data_dir,
+					         image, json_str_field(ir.json, "current_version"));
+					snprintf(aside, sizeof(aside), "%s.606", moved[n_moved]);
+					if (rename(moved[n_moved], aside) == 0)
+						n_moved++;
+				}
+				cix_response_free(&ir);
+			}
+		}
+		cix_response_free(&r);
+
+		if (n_moved == 0) {
+			fprintf(stderr, "FAIL: #606 fixture: no image with bash installed holds "
+			                "usr/bin/bash to move aside\n");
+			ok = 0;
+		} else if (publish_cpdl_recipe(&client, "noenv", "1.0", tarball_path, sha256, NULL,
+		                               "            compiler \"tcc\"\n"
+		                               "            tool \"bash\"\n"
+		                               "            tool \"coreutils\"\n",
+		                               NULL, "        run \"false\" {\n        }\n",
+		                               "        mkdir \"${dest}/usr/share\" chmod 0755\n") != 0) {
+			fprintf(stderr, "FAIL: #606 could not publish the noenv recipe\n");
+			ok = 0;
+		} else {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"noenv\"}",
+			                       &r) != 0 ||
+			    r.status != 202) {
+				fprintf(stderr, "FAIL: #606 POST install noenv, status=%d\n", r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			poll_pkg_state(&client, "noenv", state, sizeof(state), 200);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/noenv", NULL, &r) != 0 ||
+			    r.status != 200 || json_str_field(r.json, "error") == NULL ||
+			    strstr(json_str_field(r.json, "error"),
+			           "copying usr/bin/bash from declared tool bash@") == NULL) {
+				fprintf(stderr,
+				        "FAIL: #606 a failed composition did not say why: state=%s error=%s\n",
+				        state,
+				        r.json != NULL && json_str_field(r.json, "error") != NULL
+				            ? json_str_field(r.json, "error")
+				            : "(none)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+		for (k = 0; k < n_moved; k++) {
+			char aside[PATH_MAX + 8];
+
+			snprintf(aside, sizeof(aside), "%s.606", moved[k]);
+			if (rename(aside, moved[k]) != 0) {
+				fprintf(stderr, "FAIL: #606 could not put %s back\n", moved[k]);
+				ok = 0;
+			}
+		}
+	}
+
 	/* #407: every build_container gate violation poll_pkg_state() saw,
 	 * across every install above. Reported as one line rather than
 	 * folded into ok at the point of failure, so the count is visible

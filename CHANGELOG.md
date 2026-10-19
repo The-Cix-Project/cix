@@ -6,6 +6,26 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A build environment that cannot be composed says why (#606)
+
+- **What changed for an operator:** a package whose build environment fails to compose now
+  carries the reason in its error, for example `could not compose a build environment from
+  the declared tools: copying usr/bin/bash from declared tool bash@5.2.37-6 (image base) failed:
+  No such file or directory`. It used to stop at "from the declared tools".
+- **Why it was missing:** the composer child closes every descriptor it inherited before it
+  composes, including the log store's open segment. So each `logstore_write()` it made,
+  the reason among them, went nowhere (read from `buildenv_image_for()`, 2026-10-19). The
+  child now holds its log entries and writes them with its reason to a per-chain report.
+  The parent replays them and puts the reason in the error. The cause of #606's one failure
+  is not established; the next one will name itself.
+
+### A segment another process also wrote gets no summary at rotation (#616)
+
+- A forked child that logs without `logstore_hold()` appends lines the parent's summary
+  never saw, and every child but the credential check's is one. The summary is now written
+  only when the segment is exactly the bytes the parent wrote. A new segment is opened for
+  append after its unlink, so no other writer's line is overwritten.
+
 ### A filtered log read skips the segments that cannot hold a match (#616, ADR-0342 phase 2)
 
 - **What changed for an operator:** a read for a container, a source, a level or a time
