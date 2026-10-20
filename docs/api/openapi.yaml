@@ -7563,17 +7563,24 @@ paths:
   /images/gc:
     post:
       summary: >
-        Reclaims image versions that nothing references (ADR-0209).
+        Runs a retention pass over every image now (ADR-0209, ADR-0343).
         Every package install produces a new immutable version
-        (ADR-0107/0108) and nothing else ever removes one -- before this
-        endpoint existed there was no reclamation anywhere in the API,
-        and 66 versions of an 8 GB rootfs filled a 16 GiB partition.
+        (ADR-0107/0108); the same pass runs by itself after the last
+        package job ends for an image that got a version, and once after
+        daemon start.
 
         A version is kept if it is its image's current_version, if a
         container in the registry pins it, or if a stored container
-        definition names it (a stopped container has no registry entry
-        but will be revived from its definition, so collecting its
-        version would leave it unable to start).
+        definition names it as its version or its rollback target (a
+        stopped container has no registry entry but will be revived from
+        its definition, so collecting its version would leave it unable
+        to start). Then each image keeps its policy's `keep` newest
+        unreferenced versions; the request has no `keep` of its own. A
+        pass first repairs the image's recorded history from the disk.
+
+        `reclaimed` names versions SET ASIDE: their trees are renamed
+        out of the image and deleted by helper children off the event
+        loop, so their space comes back when those finish.
 
         Refused with 409 while any package job is in flight: a build
         holds its image's rootfs as its container's lowerdir, and
@@ -8157,6 +8164,13 @@ paths:
                 downgrade:
                   type: string
                   enum: [refuse, allow]
+                keep:
+                  type: integer
+                  minimum: 0
+                  maximum: 64
+                  description: >
+                    Unreferenced versions kept, newest first (ADR-0343).
+                    Takes effect at the next retention pass.
       responses:
         "200":
           description: The policy now in force
@@ -22175,6 +22189,19 @@ components:
           description: >
             `refuse` (default) makes an apply that moves a pin backwards a
             409 unless the request sets allow_downgrade.
+        keep:
+          type: integer
+          minimum: 0
+          maximum: 64
+          description: >
+            How many unreferenced versions the image keeps, newest first,
+            beyond its current version and every version a container or a
+            container definition (including a rollback target) names
+            (ADR-0343). Default 3. Every other version is collected by the
+            next retention pass: after the last package job ends for an
+            image that got a new version, once after daemon start, or on
+            POST /images/gc. The ceiling keeps what an image holds inside
+            its 256-entry recorded history.
 
     ImageGcResult:
       type: object

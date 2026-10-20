@@ -18,7 +18,8 @@ static struct policy_slot g_slots[IMAGEPOLICY_MAX];
 static char g_state_path[512];
 
 static const struct image_policy g_defaults = {
-	IMAGE_POLICY_RECIPE_MANUAL, IMAGE_POLICY_APPLY_DECLARE, IMAGE_POLICY_DOWNGRADE_REFUSE
+	IMAGE_POLICY_RECIPE_MANUAL, IMAGE_POLICY_APPLY_DECLARE, IMAGE_POLICY_DOWNGRADE_REFUSE,
+	IMAGE_POLICY_KEEP_DEFAULT
 };
 
 const char *imagepolicy_recipe_name(enum image_policy_recipe v)
@@ -88,7 +89,7 @@ static struct policy_slot *find(const char *name)
 static int is_default(const struct image_policy *p)
 {
 	return p->recipe == g_defaults.recipe && p->apply == g_defaults.apply &&
-	       p->downgrade == g_defaults.downgrade;
+	       p->downgrade == g_defaults.downgrade && p->keep == g_defaults.keep;
 }
 
 void imagepolicy_write_json(struct json_writer *w, const char *name, const struct image_policy *p)
@@ -102,6 +103,8 @@ void imagepolicy_write_json(struct json_writer *w, const char *name, const struc
 	jw_str(w, imagepolicy_apply_name(p->apply));
 	jw_key(w, "downgrade");
 	jw_str(w, imagepolicy_downgrade_name(p->downgrade));
+	jw_key(w, "keep");
+	jw_int(w, p->keep);
 	jw_obj_close(w);
 }
 
@@ -152,6 +155,7 @@ int imagepolicy_init(const char *path)
 		for (i = 0; i < arr->u.array.count && slot < IMAGEPOLICY_MAX; i++) {
 			const struct json_value *o = arr->u.array.items[i];
 			const char *name = json_as_string(json_object_get(o, "image"));
+			const struct json_value *jkeep = json_object_get(o, "keep");
 			struct image_policy p = g_defaults;
 
 			if (name == NULL || strlen(name) >= sizeof(g_slots[slot].name) ||
@@ -162,6 +166,14 @@ int imagepolicy_init(const char *path)
 			    imagepolicy_downgrade_parse(json_as_string(json_object_get(o, "downgrade")),
 			                                &p.downgrade) != 0)
 				continue;
+			/* ADR-0343: a policy saved before `keep` existed has none,
+			 * and takes the default -- what an unsaved policy has too. */
+			if (jkeep != NULL) {
+				if (jkeep->type != JSON_NUMBER || json_as_number(jkeep) < 0 ||
+				    json_as_number(jkeep) > IMAGE_POLICY_KEEP_MAX)
+					continue;
+				p.keep = (int)json_as_number(jkeep);
+			}
 			snprintf(g_slots[slot].name, sizeof(g_slots[slot].name), "%s", name);
 			g_slots[slot].p = p;
 			g_slots[slot].in_use = 1;

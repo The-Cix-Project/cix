@@ -9584,6 +9584,11 @@ static void pkg_completion_followup(int chained, pid_t pkg_pid, int pkg_pidfd, i
 	/* ADR-0327: a host roll waiting for this hostbuild moves on, after
 	 * the automatic assembly above so it can see that one started. */
 	hostroll_tick();
+
+	/* ADR-0343: last, after anything above that may have started the
+	 * next job -- a pass runs only when none is in flight. */
+	if (!chained)
+		image_retain_run();
 }
 
 /*
@@ -13850,6 +13855,7 @@ static int g_rootfs_discard_running;
 static struct rootfs_discard_job *g_rootfs_discard_head, *g_rootfs_discard_tail;
 
 static void rootfs_discard_next(void);
+static void quota_check_start(void); /* ADR-0343, defined below */
 
 static int rootfs_discard_work(void *arg)
 {
@@ -13868,6 +13874,10 @@ static void rootfs_discard_done(int exit_status, void *ctx)
 	free(job);
 	g_rootfs_discard_running--;
 	rootfs_discard_next();
+	/* ADR-0343: the queue just emptied, so the deletes it held may have
+	 * left quota accounting needing a rescan. */
+	if (g_rootfs_discard_running == 0 && g_rootfs_discard_head == NULL)
+		quota_check_start();
 }
 
 /* Starts queued deletes while there is room. A job that cannot start is
@@ -13983,6 +13993,148 @@ static void rootfs_discard_sweep(const char *dir)
 			                strerror(errno));
 	}
 	closedir(d);
+}
+
+/*
+ * ADR-0343: image.c's discard function. An image's trees -- a version's
+ * rootfs, a staging leftover -- are set aside into IMAGES_DIR/.discard,
+ * on the same filesystem, and deleted by this queue's helper children.
+ * The entry is named for the image, so .discard says whose tree it was.
+ */
+static int image_discard_tree(const char *image, const char *path)
+{
+	return rootfs_discard(image, path, IMAGES_DIR);
+}
+
+/*
+ * ADR-0343: the automatic retention pass. Never while a package job is
+ * in flight, since a build's hold on its image versions lives in pkg.c
+ * where the reference rule cannot see it. A mark that waits is not
+ * lost: it stays until a later call finds no job running.
+ *
+ * The first pass after start covers every image, so a mark this daemon
+ * never saw -- dropped by a restart, or made by an older release -- is
+ * covered too. On a host upgraded to the release carrying ADR-0343,
+ * that pass is the one that collects the backlog.
+ */
+static int g_image_retain_startup_pending = 1;
+
+static void image_retain_run(void)
+{
+	char names[IMAGE_LIST_MAX][PKG_IMAGE_NAME_MAX];
+	int active[PKG_MAX_CONCURRENT_JOBS];
+	int n;
+
+	if (pkg_active_chain_indices(active) > 0)
+		return;
+	if (g_image_retain_startup_pending) {
+		g_image_retain_startup_pending = 0;
+		image_retain_take_marked(names, IMAGE_LIST_MAX); /* the pass below covers them */
+		stallwatch_step("image retention: every image, at start");
+		image_gc_pass(NULL, 0, 0, 0, NULL);
+		return;
+	}
+	n = image_retain_take_marked(names, IMAGE_LIST_MAX);
+	if (n > 0) {
+		stallwatch_step("image retention: the images a job gave a version");
+		image_gc_pass(names, n, 0, 0, NULL);
+	}
+}
+
+/*
+ * ADR-0343: after a batch of deletes, whether quota accounting needs a
+ * rescan. Two helper children, because each blocks for as long as the
+ * kernel takes and a child must not write the log store (ADR-0340): the
+ * first waits for the cleaner to free every deleted subvolume and then
+ * reads the quota status (cix_btrfs_quota_settle()), and the parent logs
+ * and starts the second, which runs the rescan to its end. So the
+ * rescan's start and finish are both logged here.
+ *
+ * Started whenever the discard queue drains. One at a time; a drain
+ * while one runs asks for exactly one more afterwards, so a later batch
+ * is covered and nothing loops.
+ */
+#define QUOTA_SETTLE_WAIT_SECONDS (2 * 60 * 60)
+
+static int g_quota_check_running;
+static int g_quota_check_again;
+
+static int quota_rescan_work(void *arg)
+{
+	(void)arg;
+	return cix_btrfs_quota_rescan(REBUILDABLE_DIR) == 0 ? 0 : 1;
+}
+
+static void quota_rescan_done(int exit_status, void *ctx)
+{
+	(void)ctx;
+	if (exit_status == 0)
+		logstore_write("cixd", "info",
+		                "btrfs quota rescan finished -- disk usage reads \"accounting\": \"ok\" "
+		                "again (ADR-0343)");
+	else
+		logstore_write("cixd", "error",
+		                "btrfs quota rescan did not finish (exit %d) -- disk usage keeps reading "
+		                "\"accounting\": \"stale\" until one does",
+		                exit_status);
+	g_quota_check_running = 0;
+	if (g_quota_check_again)
+		quota_check_start();
+}
+
+static int quota_settle_work(void *arg)
+{
+	(void)arg;
+	return (int)cix_btrfs_quota_settle(REBUILDABLE_DIR, QUOTA_SETTLE_WAIT_SECONDS);
+}
+
+static void quota_settle_done(int exit_status, void *ctx)
+{
+	(void)ctx;
+	switch (exit_status) {
+	case CIX_BTRFS_SETTLE_NEEDS_RESCAN:
+		logstore_write("cixd", "warn",
+		                "btrfs quota accounting is inconsistent after the deletes settled -- "
+		                "starting a rescan; disk usage reads \"accounting\": \"stale\" until it "
+		                "finishes (ADR-0343)");
+		if (helper_run(quota_rescan_work, NULL, quota_rescan_done, NULL, "quota rescan") == 0)
+			return; /* still running; quota_rescan_done() ends it */
+		logstore_write("cixd", "error", "could not start the btrfs quota rescan (%s)",
+		                strerror(errno));
+		break;
+	case CIX_BTRFS_SETTLE_TIMEOUT:
+		logstore_write("cixd", "warn",
+		                "deleted subvolumes were still being freed after %d s -- quota accounting "
+		                "is checked again when the next deletes drain",
+		                QUOTA_SETTLE_WAIT_SECONDS);
+		break;
+	case CIX_BTRFS_SETTLE_ERROR:
+		logstore_write("cixd", "error",
+		                "could not read btrfs quota status after the deletes drained");
+		break;
+	default:
+		break; /* consistent, quotas off, or not btrfs */
+	}
+	g_quota_check_running = 0;
+	if (g_quota_check_again)
+		quota_check_start();
+}
+
+static void quota_check_start(void)
+{
+	if (g_quota_check_running) {
+		g_quota_check_again = 1;
+		return;
+	}
+	g_quota_check_again = 0;
+	if (helper_run(quota_settle_work, NULL, quota_settle_done, NULL, "quota settle") != 0) {
+		logstore_write("cixd", "warn",
+		                "could not start the btrfs quota check after deletes (%s) -- the next "
+		                "drain tries again",
+		                strerror(errno));
+		return;
+	}
+	g_quota_check_running = 1;
 }
 
 /*
@@ -36296,6 +36448,10 @@ static int cixd_main(int argc, char **argv)
 	}
 
 	image_init(IMAGES_DIR);
+	/* ADR-0343: before anything can delete an image or collect a version.
+	 * A tree set aside before the loop exists stays in .discard with its
+	 * delete unqueued; the next start's sweep deletes it. */
+	image_set_discard(image_discard_tree);
 	ensure_default_image();
 	if (boot_subsystem_init(init_mode, "containerdef", containerdef_init(CONTAINER_DEFS_STATE_PATH)) != 0)
 		return 1;
@@ -36770,8 +36926,13 @@ static int cixd_main(int argc, char **argv)
 	 * not mistaken for them; needs g_epfd for its helper children. */
 	rootfs_discard_sweep(CONTAINER_ROOTFS_DIR);
 	rootfs_discard_sweep(CONTAINERS_DIR);
+	rootfs_discard_sweep(IMAGES_DIR); /* ADR-0343 */
 	containerdef_autostart_all();
 	rearm_roll_watches(); /* ADR-0323 answer 4 */
+	/* ADR-0343: after autostart, so the registry holds every container
+	 * that will run; definitions are loaded already. Waits for the first
+	 * idle moment if a package job resumed at start. */
+	image_retain_run();
 
 	/*
 	 * #373: rebuild the rolling-rebuild queue from what is actually

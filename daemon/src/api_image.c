@@ -7,12 +7,14 @@
 #include "json.h"
 #include "logstore.h"
 #include "containerdef.h"
+#include "events.h"
 #include "image.h"
 #include "imagepolicy.h"
 #include "pkg.h"
 #include "persist.h"
 #include "registry.h"
 #include "namecheck.h"
+#include "stallwatch.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -98,46 +100,81 @@ static void write_image_version_fields(const char *name, struct json_writer *w)
 }
 
 /*
- * ADR-0209: is this image version still referenced by anything?
+ * ADR-0209: what keeps an image version from being collected.
  *
- * Four sources, and all four are needed. A running container pins the
- * version it was created with (ADR-0108), so the registry is the live
- * answer. A container that is merely stopped has no registry entry but
- * will be revived from its persisted definition, which names the same
- * version -- collecting that version would turn a stopped container
- * into one that can never start again. And current_version is what a
- * fresh container is created from.
+ * Four sources, and all four are needed. current_version is what a
+ * fresh container is created from; image_retain_plan() keeps it
+ * itself, so the set below holds the other three. A running container
+ * pins the version it was created with (ADR-0108), so the registry is
+ * the live answer. A container that is merely stopped has no registry
+ * entry but will be revived from its persisted definition, which names
+ * the same version -- collecting that version would turn a stopped
+ * container into one that can never start again.
  *
  * And ADR-0323 answer 4: a container on probation after a
  * roll goes back to roll_from if the new version fails, so that version
  * is referenced until the roll is confirmed -- collecting it inside the
  * window would leave the rollback nothing to go back to.
+ *
+ * ADR-0343: collected ONCE per pass, then asked per version. It used to
+ * be recomputed for every version -- the image's state loaded and every
+ * container definition parsed again each time -- and the dry run over
+ * 835 versions on 192.168.15.95 held the loop for 1909 ms.
  */
-static int image_version_is_referenced(const char *image, const char *version)
+struct gc_ref {
+	char image[PKG_IMAGE_NAME_MAX];
+	char version[IMAGE_VERSION_MAX];
+};
+
+struct gc_refs {
+	struct gc_ref *v;
+	int count;
+	int cap;
+};
+
+static void gc_refs_add(struct gc_refs *r, const char *image, const char *version)
+{
+	if (r->cap < 0 || image == NULL || version == NULL || image[0] == '\0' || version[0] == '\0')
+		return;
+	if (r->count == r->cap) {
+		int cap = r->cap == 0 ? 32 : r->cap * 2;
+		struct gc_ref *nv = realloc(r->v, (size_t)cap * sizeof(*nv));
+
+		/* Out of memory: a ref not recorded would make its version
+		 * collectable, so the caller treats an incomplete set as fatal. */
+		if (nv == NULL) {
+			r->cap = -1;
+			return;
+		}
+		r->v = nv;
+		r->cap = cap;
+	}
+	snprintf(r->v[r->count].image, sizeof(r->v[0].image), "%s", image);
+	snprintf(r->v[r->count].version, sizeof(r->v[0].version), "%s", version);
+	r->count++;
+}
+
+/* 0, or -1 when the set could not be completed and nothing may be collected. */
+static int gc_refs_collect(struct gc_refs *r)
 {
 	char names[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
 	char order[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
-	char current[IMAGE_VERSION_MAX];
 	int count, i;
 
-	if (image_current_version(image, current, sizeof(current)) == IMAGE_OK &&
-	    strcmp(current, version) == 0)
-		return 1;
-
+	memset(r, 0, sizeof(*r));
 	count = registry_list_names(names, REGISTRY_MAX_CONTAINERS);
-	for (i = 0; i < count; i++) {
+	for (i = 0; i < count && r->cap >= 0; i++) {
 		struct registry_entry *e = registry_find(names[i]);
 
-		if (e != NULL && strcmp(e->image, image) == 0 && strcmp(e->image_version, version) == 0)
-			return 1;
+		if (e != NULL)
+			gc_refs_add(r, e->image, e->image_version);
 	}
 
 	count = containerdef_resolve_order(order);
-	for (i = 0; i < count; i++) {
+	for (i = 0; i < count && r->cap >= 0; i++) {
 		struct container_def *def = containerdef_find(order[i]);
 		struct json_value *root;
-		const char *dimg, *dver;
-		int hit;
+		const char *dimg;
 
 		if (def == NULL || def->body == NULL)
 			continue;
@@ -145,14 +182,21 @@ static int image_version_is_referenced(const char *image, const char *version)
 		if (root == NULL)
 			continue;
 		dimg = json_as_string(json_object_get(root, "image"));
-		dver = json_as_string(json_object_get(root, "image_version"));
-		hit = dimg != NULL && strcmp(dimg, image) == 0 &&
-		      ((dver != NULL && strcmp(dver, version) == 0) ||
-		       strcmp(def->roll_from, version) == 0);
+		gc_refs_add(r, dimg, json_as_string(json_object_get(root, "image_version")));
+		gc_refs_add(r, dimg, def->roll_from);
 		json_free(root);
-		if (hit)
-			return 1;
 	}
+	return r->cap < 0 ? -1 : 0;
+}
+
+static int gc_refs_has(const char *image, const char *version, void *ctx)
+{
+	const struct gc_refs *r = ctx;
+	int i;
+
+	for (i = 0; i < r->count; i++)
+		if (strcmp(r->v[i].image, image) == 0 && strcmp(r->v[i].version, version) == 0)
+			return 1;
 	return 0;
 }
 
@@ -208,6 +252,14 @@ static const char *image_gc_error_text(enum image_error e)
  * was noticed. Every install produces a new immutable version
  * (ADR-0107/0108) and nothing ever removed one.
  *
+ * ADR-0343: one pass, shared by this endpoint, the automatic pass after
+ * the last package job ends, and the pass at daemon start. Each image
+ * keeps its referenced versions plus its policy's `keep`; the request
+ * has no `keep` of its own. A collected version's trees are set aside
+ * into IMAGES_DIR/.discard and deleted by ADR-0341's helper children,
+ * so `reclaimed` names versions set aside and their space comes back
+ * when those finish.
+ *
  * Refuses while any package job is in flight. A build holds its image's
  * rootfs as the lowerdir its container is running on, and that
  * reference lives in pkg.c rather than in the registry -- so rather
@@ -233,21 +285,196 @@ static const char *image_gc_error_text(enum image_error e)
  * would give the real figure in O(1) -- worth doing once the platform
  * is btrfs-only.)
  */
-void handle_images_gc(int fd, const char *body, size_t body_len)
+int image_gc_pass(char (*only)[PKG_IMAGE_NAME_MAX], int only_count, int dry_run, int measure,
+                  struct json_writer *w)
 {
 	char names[IMAGE_LIST_MAX][PKG_IMAGE_NAME_MAX];
-	struct json_writer w;
-	int active[PKG_MAX_CONCURRENT_JOBS];
-	int dry_run = 0;
-	int measure = 0;
+	struct gc_refs refs;
 	int image_count, i, j;
-	int collected = 0, kept = 0, failed = 0;
-	long long total_bytes = 0;
+	int collected = 0, kept = 0, failed = 0, repaired = 0;
+	long long total_bytes = 0, started;
 	struct {
 		char image[PKG_IMAGE_NAME_MAX];
 		char version[IMAGE_VERSION_MAX];
 		enum image_error err;
 	} failures[GC_FAILURE_REPORT_MAX];
+
+	stallwatch_step("image gc: collect what references a version");
+	if (gc_refs_collect(&refs) != 0) {
+		free(refs.v);
+		logstore_write("cixd", "error",
+		                "image gc: out of memory collecting what references each version -- "
+		                "nothing collected");
+		return -1;
+	}
+	if (only == NULL) {
+		image_count = image_list_names(names, IMAGE_LIST_MAX);
+		only = names;
+	} else {
+		image_count = only_count;
+	}
+
+	if (w != NULL) {
+		jw_init(w);
+		jw_obj_open(w);
+		jw_key(w, "dry_run");
+		jw_bool(w, dry_run);
+		jw_key(w, "measured");
+		jw_bool(w, measure);
+		jw_key(w, "reclaimed");
+		jw_arr_open(w);
+	}
+
+	for (i = 0; i < image_count; i++) {
+		struct image_retain_plan plan;
+		struct image_policy pol;
+		enum image_error ierr;
+
+		imagepolicy_get(only[i], &pol);
+		started = stallwatch_tally_start();
+		ierr = image_retain_plan(only[i], pol.keep, gc_refs_has, &refs, &plan);
+		stallwatch_tally("plan", started);
+		if (ierr != IMAGE_OK)
+			continue; /* deleted since it was listed, or never was an image */
+		kept += plan.kept;
+		repaired += plan.repaired;
+
+		for (j = 0; j < plan.count; j++) {
+			const char *version = plan.entries[j].v.version;
+			long long bytes = 0;
+
+			if (!plan.entries[j].drop)
+				continue;
+			if (measure) {
+				char rootfs[PATH_MAX];
+
+				image_version_rootfs_path(only[i], version, rootfs, sizeof(rootfs));
+				if (overlay_upperdir_size(rootfs, &bytes) != 0)
+					bytes = 0;
+			}
+			if (!dry_run) {
+				started = stallwatch_tally_start();
+				ierr = image_version_set_aside(only[i], version);
+				stallwatch_tally("set aside", started);
+				if (ierr != IMAGE_OK) {
+					/* Reported, not fatal: one stubborn version must not
+					 * stop the rest being reclaimed, and the operator
+					 * needs to know which one resisted. */
+					logstore_write("cixd", "error", "image gc: could not set aside %s@%s (%s)",
+					                only[i], version, image_gc_error_text(ierr));
+					/*
+					 * #503: and in the RESPONSE, not only the log.
+					 *
+					 * `failed` was a bare count whose detail lived in
+					 * the log store alone, and `image gc` tells the
+					 * operator to "see the log store" -- which, when
+					 * /var/lib/cix filled, was frozen at the second
+					 * the trouble started. A response that carries its
+					 * own failures needs nothing else to be readable.
+					 */
+					if (failed < GC_FAILURE_REPORT_MAX) {
+						snprintf(failures[failed].image, sizeof(failures[failed].image), "%s",
+						         only[i]);
+						snprintf(failures[failed].version, sizeof(failures[failed].version),
+						         "%s", version);
+						failures[failed].err = ierr;
+					}
+					failed++;
+					continue;
+				}
+			}
+			if (w != NULL) {
+				jw_obj_open(w);
+				jw_key(w, "image");
+				jw_str(w, only[i]);
+				jw_key(w, "version");
+				jw_str(w, version);
+				jw_key(w, "apparent_bytes");
+				if (measure)
+					jw_int(w, bytes);
+				else
+					jw_null(w);
+				jw_obj_close(w);
+			}
+			collected++;
+			total_bytes += bytes;
+		}
+		/* A dry run changes nothing, the history included. */
+		if (!dry_run) {
+			started = stallwatch_tally_start();
+			if (image_retain_commit(&plan) != IMAGE_OK)
+				logstore_write("cixd", "error",
+				                "image gc: could not save %s's version history -- the next "
+				                "pass repairs it from the disk",
+				                only[i]);
+			stallwatch_tally("commit", started);
+		}
+		image_retain_plan_free(&plan);
+	}
+	free(refs.v);
+
+	if (w != NULL) {
+		jw_arr_close(w);
+		jw_key(w, "collected");
+		jw_int(w, collected);
+		jw_key(w, "kept");
+		jw_int(w, kept);
+		jw_key(w, "failed");
+		jw_int(w, failed);
+		/*
+		 * #503: the detail behind that count, in the response itself.
+		 * Capped, because a pass can fail wholesale -- 77 did -- and a
+		 * reply naming every one is neither readable nor bounded;
+		 * `failed` above stays the true total.
+		 */
+		jw_key(w, "failures");
+		jw_arr_open(w);
+		{
+			int f;
+			int shown = failed < GC_FAILURE_REPORT_MAX ? failed : GC_FAILURE_REPORT_MAX;
+
+			for (f = 0; f < shown; f++) {
+				jw_obj_open(w);
+				jw_key(w, "image");
+				jw_str(w, failures[f].image);
+				jw_key(w, "version");
+				jw_str(w, failures[f].version);
+				jw_key(w, "error");
+				jw_str(w, image_gc_error_text(failures[f].err));
+				jw_obj_close(w);
+			}
+		}
+		jw_arr_close(w);
+		jw_key(w, "apparent_bytes_total");
+		if (measure)
+			jw_int(w, total_bytes);
+		else
+			jw_null(w);
+		jw_obj_close(w);
+	}
+
+	if (!dry_run && (collected > 0 || failed > 0))
+		logstore_write("cixd", "info",
+		                "image gc: set aside %d version(s) for deletion off the event loop, "
+		                "kept %d, %d could not be set aside, %d histories repaired from the "
+		                "disk (ADR-0343)",
+		                collected, kept, failed, repaired);
+	/* ADR-0339: a pass the daemon runs by itself has no request for
+	 * dispatch() to announce, so it announces what it changed. */
+	if (!dry_run && (collected > 0 || repaired > 0)) {
+		events_announce(EV_listImages);
+		events_announce(EV_getImage);
+		events_announce(EV_getImageVersionManifest);
+	}
+	return collected;
+}
+
+void handle_images_gc(int fd, const char *body, size_t body_len)
+{
+	struct json_writer w;
+	int active[PKG_MAX_CONCURRENT_JOBS];
+	int dry_run = 0;
+	int measure = 0;
 
 	if (pkg_active_chain_indices(active) > 0) {
 		respond_error(fd, 409, "Conflict",
@@ -260,7 +487,6 @@ void handle_images_gc(int fd, const char *body, size_t body_len)
 
 		if (root != NULL) {
 			const struct json_value *dr = json_object_get(root, "dry_run");
-
 			const struct json_value *me = json_object_get(root, "measure");
 
 			dry_run = dr != NULL && dr->type == JSON_BOOL && dr->u.boolean;
@@ -268,129 +494,12 @@ void handle_images_gc(int fd, const char *body, size_t body_len)
 			json_free(root);
 		}
 	}
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "dry_run");
-	jw_bool(&w, dry_run);
-	jw_key(&w, "measured");
-	jw_bool(&w, measure);
-	jw_key(&w, "reclaimed");
-	jw_arr_open(&w);
-
-	image_count = image_list_names(names, IMAGE_LIST_MAX);
-	for (i = 0; i < image_count; i++) {
-		char versions[IMAGE_MAX_VERSION_HISTORY][IMAGE_VERSION_MAX];
-		int vcount = image_ondisk_versions(names[i], versions, IMAGE_MAX_VERSION_HISTORY);
-
-		for (j = 0; j < vcount; j++) {
-			char rootfs[PATH_MAX];
-			long long bytes = 0;
-			enum image_error ierr;
-
-			if (image_version_is_referenced(names[i], versions[j])) {
-				kept++;
-				continue;
-			}
-			if (measure) {
-				image_version_rootfs_path(names[i], versions[j], rootfs, sizeof(rootfs));
-				if (overlay_upperdir_size(rootfs, &bytes) != 0)
-					bytes = 0;
-			}
-
-			if (!dry_run) {
-				ierr = image_delete_version(names[i], versions[j]);
-				if (ierr != IMAGE_OK) {
-					/* Reported, not fatal: one stubborn version must not
-					 * stop the rest being reclaimed, and the operator
-					 * needs to know which one resisted. */
-					logstore_write("cixd", "error",
-					                "image gc: could not remove %s@%s (%d)", names[i],
-					                versions[j], (int)ierr);
-					/*
-					 * #503: and in the RESPONSE, not only the log.
-					 *
-					 * `failed` was a bare count whose detail lived in
-					 * the log store alone, and `image gc` tells the
-					 * operator to "see the log store" -- which, when
-					 * /var/lib/cix filled, was frozen at the second
-					 * the trouble started. So the one message that
-					 * knew 77 versions had resisted pointed at the
-					 * one place that could not say why.
-					 *
-					 * A response that carries its own failures needs
-					 * nothing else to be readable, which is the
-					 * property that was missing.
-					 */
-					if (failed < GC_FAILURE_REPORT_MAX) {
-						snprintf(failures[failed].image, sizeof(failures[failed].image), "%s",
-						         names[i]);
-						snprintf(failures[failed].version, sizeof(failures[failed].version),
-						         "%s", versions[j]);
-						failures[failed].err = ierr;
-					}
-					failed++;
-					continue;
-				}
-			}
-			jw_obj_open(&w);
-			jw_key(&w, "image");
-			jw_str(&w, names[i]);
-			jw_key(&w, "version");
-			jw_str(&w, versions[j]);
-			jw_key(&w, "apparent_bytes");
-			if (measure)
-				jw_int(&w, bytes);
-			else
-				jw_null(&w);
-			jw_obj_close(&w);
-			collected++;
-			total_bytes += bytes;
-		}
+	if (image_gc_pass(NULL, 0, dry_run, measure, &w) < 0) {
+		respond_error(fd, 500, "Internal Server Error",
+		              "could not collect what references each image version -- nothing was "
+		              "collected");
+		return;
 	}
-	jw_arr_close(&w);
-	jw_key(&w, "collected");
-	jw_int(&w, collected);
-	jw_key(&w, "kept");
-	jw_int(&w, kept);
-	jw_key(&w, "failed");
-	jw_int(&w, failed);
-	/*
-	 * #503: the detail behind that count, in the response itself.
-	 * Capped, because a pass can fail wholesale -- 77 did -- and a
-	 * reply naming every one is neither readable nor bounded;
-	 * `failed` above stays the true total, so the two together say
-	 * "this many, and here are the first few, and why".
-	 */
-	jw_key(&w, "failures");
-	jw_arr_open(&w);
-	{
-		int f;
-		int shown = failed < GC_FAILURE_REPORT_MAX ? failed : GC_FAILURE_REPORT_MAX;
-
-		for (f = 0; f < shown; f++) {
-			jw_obj_open(&w);
-			jw_key(&w, "image");
-			jw_str(&w, failures[f].image);
-			jw_key(&w, "version");
-			jw_str(&w, failures[f].version);
-			jw_key(&w, "error");
-			jw_str(&w, image_gc_error_text(failures[f].err));
-			jw_obj_close(&w);
-		}
-	}
-	jw_arr_close(&w);
-	jw_key(&w, "apparent_bytes_total");
-	if (measure)
-		jw_int(&w, total_bytes);
-	else
-		jw_null(&w);
-	jw_obj_close(&w);
-
-	if (!dry_run && collected > 0)
-		logstore_write("cixd", "info",
-		                "image gc: reclaimed %d version(s), %lld apparent bytes, kept %d",
-		                collected, total_bytes, kept);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
@@ -982,14 +1091,27 @@ void handle_image_policy_put(int fd, const char *name, const char *body, size_t 
 		respond_error(fd, 400, "Bad Request", "downgrade must be \"refuse\" or \"allow\"");
 		return;
 	}
+	v = json_object_get(root, "keep");
+	if (v != NULL) {
+		double n = v->type == JSON_NUMBER ? json_as_number(v) : -1;
+
+		if (n < 0 || n > IMAGE_POLICY_KEEP_MAX || n != (double)(int)n) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request",
+			              "keep must be a whole number from 0 to 64 (ADR-0343)");
+			return;
+		}
+		p.keep = (int)n;
+	}
 	json_free(root);
 	if (imagepolicy_set(name, &p) != 0) {
 		respond_error(fd, 500, "Internal Server Error", "could not save the image policy");
 		return;
 	}
-	logstore_write("cixd", "info", "image %s: policy recipe=%s apply=%s downgrade=%s (ADR-0320)",
+	logstore_write("cixd", "info",
+	               "image %s: policy recipe=%s apply=%s downgrade=%s keep=%d (ADR-0320, ADR-0343)",
 	               name, imagepolicy_recipe_name(p.recipe), imagepolicy_apply_name(p.apply),
-	               imagepolicy_downgrade_name(p.downgrade));
+	               imagepolicy_downgrade_name(p.downgrade), p.keep);
 	jw_init(&w);
 	imagepolicy_write_json(&w, name, &p);
 	respond_json(fd, 200, "OK", &w);

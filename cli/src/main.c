@@ -198,11 +198,13 @@ static const char USAGE_TEXT[] =
 	        "               manifest from its recipe; installs too under apply=converge.\n"
 	        "               A pin moving backwards is refused unless allowed\n"
 	        "  image policy NAME [--recipe=manual|follow] [--apply=declare|converge]\n"
-	        "               [--downgrade=refuse|allow]  -- shows, or sets, how the\n"
-	        "               image's recipe, manifest and installs agree (ADR-0320)\n"
-	        "  image gc [--dry-run] [--measure]  -- reclaims image versions nothing\n"
-	        "               references. Every install leaves an immutable version behind\n"
-	        "               (ADR-0107/0108) and nothing else ever removes one. --measure\n"
+	        "               [--downgrade=refuse|allow] [--keep=N]  -- shows, or sets, how\n"
+	        "               the image's recipe, manifest and installs agree (ADR-0320),\n"
+	        "               and how many unreferenced versions it keeps (ADR-0343, 3)\n"
+	        "  image gc [--dry-run] [--measure]  -- runs the retention pass now: each\n"
+	        "               image keeps what references it plus its policy's keep, and\n"
+	        "               the rest is set aside and deleted off the event loop. The\n"
+	        "               same pass runs after package jobs and at start. --measure\n"
 	        "               sizes what it finds, which walks every collectable version and\n"
 	        "               can block the daemon for minutes -- off by default\n"
 	        "  device ls  -- lists host PCI/USB/GPU devices discoverable via sysfs, with\n"
@@ -11649,25 +11651,35 @@ static int cmd_image_apply_recipe(const struct cix_client *c, int json_mode, int
 
 static void fmt_image_policy(const struct json_value *v)
 {
-	printf("image %s: recipe=%s apply=%s downgrade=%s\n",
+	printf("image %s: recipe=%s apply=%s downgrade=%s keep=%lld\n",
 	       json_str_or(v, "image"), json_str_or(v, "recipe"),
 	       json_str_or(v, "apply"),
-	       json_str_or(v, "downgrade"));
+	       json_str_or(v, "downgrade"),
+	       (long long)json_as_number(json_object_get(v, "keep")));
 }
 
-/* ADR-0320: `image policy NAME` shows it; any flag sets those settings. */
+/* ADR-0320: `image policy NAME` shows it; any flag sets those settings.
+ * ADR-0343 adds --keep=N, the unreferenced versions the image keeps. */
 static int cmd_image_policy(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct cix_response r;
 	char path[256];
 	char body[256];
 	const char *name = NULL;
-	const char *recipe = NULL, *apply = NULL, *downgrade = NULL;
+	const char *recipe = NULL, *apply = NULL, *downgrade = NULL, *keep = NULL;
 	size_t off = 0;
 	int i;
 
 	for (i = 0; i < argc; i++) {
-		if (strncmp(argv[i], "--recipe=", 9) == 0)
+		if (strncmp(argv[i], "--keep=", 7) == 0) {
+			keep = argv[i] + 7;
+			/* Digits only, so the body stays valid JSON; the daemon owns the range. */
+			if (keep[0] == '\0' || strspn(keep, "0123456789") != strlen(keep) ||
+			    strlen(keep) > 3) {
+				fprintf(stderr, "cixctl: --keep wants a whole number from 0 to 64\n");
+				return 2;
+			}
+		} else if (strncmp(argv[i], "--recipe=", 9) == 0)
 			recipe = argv[i] + 9;
 		else if (strncmp(argv[i], "--apply=", 8) == 0)
 			apply = argv[i] + 8;
@@ -11682,10 +11694,10 @@ static int cmd_image_policy(const struct cix_client *c, int json_mode, int argc,
 	}
 	if (name == NULL) {
 		fprintf(stderr, "usage: cixctl image policy NAME [--recipe=manual|follow] "
-		                "[--apply=declare|converge] [--downgrade=refuse|allow]\n");
+		                "[--apply=declare|converge] [--downgrade=refuse|allow] [--keep=N]\n");
 		return 2;
 	}
-	if (recipe == NULL && apply == NULL && downgrade == NULL) {
+	if (recipe == NULL && apply == NULL && downgrade == NULL && keep == NULL) {
 		snprintf(path, sizeof(path), CIX_API_getImagePolicy, name);
 		if (cix_client_request(c, CIX_API_getImagePolicy_METHOD, path, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -11702,6 +11714,9 @@ static int cmd_image_policy(const struct cix_client *c, int json_mode, int argc,
 	if (downgrade != NULL)
 		off += (size_t)snprintf(body + off, sizeof(body) - off, "%s\"downgrade\":\"%s\"",
 		                        off > 1 ? "," : "", downgrade);
+	if (keep != NULL)
+		off += (size_t)snprintf(body + off, sizeof(body) - off, "%s\"keep\":%s",
+		                        off > 1 ? "," : "", keep);
 	if (off + 2 > sizeof(body)) {
 		fprintf(stderr, "cixctl: image policy values too long\n");
 		return 2;
@@ -12251,7 +12266,7 @@ static int cmd_image(const struct cix_client *c, int json_mode, int argc, char *
 		                "       cixctl image recipe export NAME\n"
 		                "       cixctl image apply-recipe NAME [--allow-downgrade]\n"
 		                "       cixctl image policy NAME [--recipe=manual|follow] "
-		                "[--apply=declare|converge] [--downgrade=refuse|allow]\n"
+		                "[--apply=declare|converge] [--downgrade=refuse|allow] [--keep=N]\n"
 		                "       cixctl image materialize NAME\n"
 		                "       cixctl image gc [--dry-run] [--measure]\n");
 		return 2;

@@ -571,3 +571,109 @@ int cix_btrfs_qgroup_query(const char *path, unsigned long long *used,
 	close(fd);
 	return 0;
 }
+
+/*
+ * ADR-0343: 1 while the root tree still carries an orphan item for a
+ * deleted subvolume -- one the cleaner has not finished freeing -- 0
+ * when none is left, -1 with errno set. One search with nr_items 1:
+ * the question is whether any exists, not how many.
+ */
+static int root_tree_has_orphans(int fd)
+{
+	struct cix_btrfs_ioctl_search_args sa;
+
+	memset(&sa, 0, sizeof(sa));
+	sa.key.tree_id = CIX_BTRFS_ROOT_TREE_OBJECTID;
+	sa.key.min_objectid = CIX_BTRFS_ORPHAN_OBJECTID;
+	sa.key.max_objectid = CIX_BTRFS_ORPHAN_OBJECTID;
+	sa.key.min_type = CIX_BTRFS_ORPHAN_ITEM_KEY;
+	sa.key.max_type = CIX_BTRFS_ORPHAN_ITEM_KEY;
+	sa.key.min_offset = 0;
+	sa.key.max_offset = (uint64_t)-1;
+	sa.key.min_transid = 0;
+	sa.key.max_transid = (uint64_t)-1;
+	sa.key.nr_items = 1;
+	if (ioctl(fd, CIX_BTRFS_IOC_TREE_SEARCH, &sa) != 0)
+		return -1;
+	return sa.key.nr_items > 0;
+}
+
+/* Seconds between two looks at the orphan items while drops are pending. */
+#define CIX_BTRFS_SETTLE_POLL_SECONDS 5
+
+enum cix_btrfs_settle cix_btrfs_quota_settle(const char *path, int wait_seconds)
+{
+	struct cix_btrfs_qgroup_status_item status;
+	uint32_t len;
+	int fd, waited, pending, found, saved;
+
+	if (!cix_btrfs_is_backing(path))
+		return CIX_BTRFS_SETTLE_NOT_BTRFS;
+	fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (fd < 0)
+		return CIX_BTRFS_SETTLE_ERROR;
+
+	for (waited = 0;; waited += CIX_BTRFS_SETTLE_POLL_SECONDS) {
+		pending = root_tree_has_orphans(fd);
+		if (pending < 0) {
+			close(fd);
+			return CIX_BTRFS_SETTLE_ERROR;
+		}
+		if (pending == 0)
+			break;
+		if (waited >= wait_seconds) {
+			close(fd);
+			return CIX_BTRFS_SETTLE_TIMEOUT;
+		}
+		sleep(CIX_BTRFS_SETTLE_POLL_SECONDS);
+	}
+
+	/* The status item is read from the last COMMITTED tree, which can lag
+	 * the in-memory flags by a commit interval. syncfs() commits it. */
+	if (syncfs(fd) != 0) {
+		close(fd);
+		return CIX_BTRFS_SETTLE_ERROR;
+	}
+	found = quota_tree_lookup(fd, CIX_BTRFS_QGROUP_STATUS_KEY, 0, &status, sizeof(status), &len);
+	saved = errno;
+	close(fd);
+	if (found < 0)
+		/* ENOENT: quotas were never enabled, so there is nothing to keep
+		 * consistent. */
+		return saved == ENOENT ? CIX_BTRFS_SETTLE_OK : CIX_BTRFS_SETTLE_ERROR;
+	if (found == 0 || len < 24)
+		return CIX_BTRFS_SETTLE_OK;
+	if (status.flags & CIX_BTRFS_QGROUP_STATUS_FLAG_SIMPLE_MODE)
+		return CIX_BTRFS_SETTLE_OK; /* squota is never rescanned */
+	if ((status.flags & CIX_BTRFS_QGROUP_STATUS_FLAG_INCONSISTENT) &&
+	    !(status.flags & CIX_BTRFS_QGROUP_STATUS_FLAG_RESCAN))
+		return CIX_BTRFS_SETTLE_NEEDS_RESCAN;
+	return CIX_BTRFS_SETTLE_OK;
+}
+
+int cix_btrfs_quota_rescan(const char *path)
+{
+	struct cix_btrfs_ioctl_quota_rescan_args ra;
+	int fd, saved;
+
+	fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	memset(&ra, 0, sizeof(ra));
+	/* EINPROGRESS: one is already running, which serves equally well --
+	 * the wait below waits for that one. */
+	if (ioctl(fd, CIX_BTRFS_IOC_QUOTA_RESCAN, &ra) != 0 && errno != EINPROGRESS) {
+		saved = errno;
+		close(fd);
+		errno = saved;
+		return -1;
+	}
+	if (ioctl(fd, CIX_BTRFS_IOC_QUOTA_RESCAN_WAIT) != 0) {
+		saved = errno;
+		close(fd);
+		errno = saved;
+		return -1;
+	}
+	close(fd);
+	return 0;
+}

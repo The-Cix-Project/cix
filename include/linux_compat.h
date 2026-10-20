@@ -528,6 +528,37 @@ struct cix_btrfs_qgroup_status_item {
 	uint64_t rescan;
 };
 
+/*
+ * ADR-0343: settling and rescanning quota accounting after a batch of
+ * subvolume deletes.
+ *
+ * A deleted subvolume is unlinked at once and freed later by the
+ * kernel's cleaner thread. Until it is freed, the root tree carries an
+ * orphan item for it, keyed (BTRFS_ORPHAN_OBJECTID, BTRFS_ORPHAN_ITEM_KEY,
+ * <root id>), so "are drops still pending" is a search for any such
+ * key. The constants are transcribed from <linux/btrfs_tree.h>:
+ * ROOT_TREE_OBJECTID 1, ORPHAN_OBJECTID -5ULL, ORPHAN_ITEM_KEY 48.
+ *
+ * The rescan args are transcribed from <linux/btrfs.h>: flags, progress,
+ * reserved[6], all __u64, so 64 bytes with no padding either way. The
+ * ioctl numbers are derived from _IOC(dir,type,nr,size) the same way as
+ * the ones above.
+ */
+#define CIX_BTRFS_ROOT_TREE_OBJECTID 1ULL
+#define CIX_BTRFS_ORPHAN_OBJECTID ((uint64_t)-5)
+#define CIX_BTRFS_ORPHAN_ITEM_KEY 48
+
+struct cix_btrfs_ioctl_quota_rescan_args {
+	uint64_t flags;
+	uint64_t progress;
+	uint64_t reserved[6];
+};
+
+/* _IOW(0x94, 44, struct btrfs_ioctl_quota_rescan_args) -- sizeof() 64 */
+#define CIX_BTRFS_IOC_QUOTA_RESCAN 0x4040942c
+/* _IO(0x94, 46) */
+#define CIX_BTRFS_IOC_QUOTA_RESCAN_WAIT 0x942e
+
 /* _IOWR(0x94, 17, struct btrfs_ioctl_search_args) -- sizeof() 4096 */
 #define CIX_BTRFS_IOC_TREE_SEARCH 0xd0009411
 /* _IOWR(0x94, 18, struct btrfs_ioctl_ino_lookup_args) -- sizeof() 4096 */

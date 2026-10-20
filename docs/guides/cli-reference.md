@@ -417,9 +417,9 @@ See [`networking.md`](networking.md).
 | `image recipe add --name=NAME --file=PATH` | Publish an image recipe (ADR-0123); recipe name equals image name |
 | `image recipe show NAME` / `image recipe rm NAME` / `image recipe ls` | Print / remove / list image recipes |
 | `image apply-recipe NAME [--allow-downgrade]` | Declare the image's manifest from its recipe. Installs too under `apply=converge`; a pin moving backwards is refused unless allowed (ADR-0320). `image materialize` declares and installs, waiting for each |
-| `image policy NAME [--recipe=manual\|follow] [--apply=declare\|converge] [--downgrade=refuse\|allow]` | Show the image's policy, or set any of its settings (ADR-0320) |
+| `image policy NAME [--recipe=manual\|follow] [--apply=declare\|converge] [--downgrade=refuse\|allow] [--keep=N]` | Show the image's policy, or set any of its settings (ADR-0320); `--keep` is how many unreferenced versions it keeps, 0-64, default 3 (ADR-0343) |
 | `image recipe export NAME` | Print the live manifest as an image recipe, to commit to cix-recipes |
-| `image gc [--dry-run] [--measure]` | Reclaim image versions nothing references. `--dry-run` previews. `--measure` sizes what it finds and can block the daemon for minutes. Refused while a package job runs |
+| `image gc [--dry-run] [--measure]` | Run the retention pass now: each image keeps what references it plus its policy's `keep`, and the rest is deleted off the event loop (ADR-0343). The same pass runs after package jobs and at daemon start. `--dry-run` previews. `--measure` sizes what it finds and can block the daemon for minutes. Refused while a package job runs |
 
 ## Devices
 

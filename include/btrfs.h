@@ -171,4 +171,38 @@ int cix_btrfs_qgroup_query(const char *path, unsigned long long *used,
                            unsigned long long *limit,
                            enum cix_btrfs_qgroup_state *state);
 
+/*
+ * ADR-0343: what cix_btrfs_quota_settle() found. Also its helper
+ * child's exit code, so every value fits in one byte.
+ */
+enum cix_btrfs_settle {
+	CIX_BTRFS_SETTLE_OK = 0,           /* drops done; accounting consistent, or quotas off */
+	CIX_BTRFS_SETTLE_NEEDS_RESCAN = 1, /* drops done; accounting inconsistent, no rescan running */
+	CIX_BTRFS_SETTLE_TIMEOUT = 2,      /* drops still pending after the wait */
+	CIX_BTRFS_SETTLE_ERROR = 3,
+	CIX_BTRFS_SETTLE_NOT_BTRFS = 4
+};
+
+/*
+ * Waits, up to wait_seconds, for the kernel's cleaner to finish freeing
+ * every deleted subvolume on the filesystem holding `path`, commits the
+ * transaction so the quota status item on disk is current, and says
+ * whether accounting needs a rescan. Blocking for as long as the drops
+ * take, so it runs only in a helper child (ADR-0278).
+ *
+ * Why the wait comes first: SNAP_DESTROY returns once the subvolume is
+ * unlinked, and the cleaner frees its extents afterwards. Under full
+ * qgroup accounting, that later drop is where the kernel may mark
+ * accounting inconsistent, so a check made when the deletes return can
+ * read consistent and be wrong a minute later.
+ */
+enum cix_btrfs_settle cix_btrfs_quota_settle(const char *path, int wait_seconds);
+
+/*
+ * Starts a quota rescan on the filesystem holding `path` and waits for it
+ * to finish. Blocking, so a helper child only. 0 when a rescan ran (or
+ * one was already running and has now finished), -1 with errno set.
+ */
+int cix_btrfs_quota_rescan(const char *path);
+
 #endif /* CIX_BTRFS_H */

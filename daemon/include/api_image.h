@@ -3,6 +3,9 @@
 
 #include <stddef.h>
 
+#include "json.h"
+#include "pkg.h"
+
 /*
  * api_image -- REST handlers for images, their manifests, and image
  * recipes (ADR-0107/0108).
@@ -30,6 +33,18 @@ void handle_image_recipe_delete(int fd, const char *name);
 void handle_image_recipe_get(int fd, const char *name);
 void handle_image_recipe_list(int fd);
 void handle_images_gc(int fd, const char *body, size_t body_len);
+
+/*
+ * ADR-0343: one retention pass over `only` (only_count names), or over
+ * every image when only is NULL. A dry run changes nothing. When w is
+ * not NULL it receives POST /v1/images/gc's response object, initialised
+ * here; the caller frees it. The caller makes sure no package job is in
+ * flight. Returns how many versions were set aside (or would be), or -1
+ * when what references a version could not be established and nothing
+ * was collected.
+ */
+int image_gc_pass(char (*only)[PKG_IMAGE_NAME_MAX], int only_count, int dry_run, int measure,
+                  struct json_writer *w);
 void handle_software_list(int fd);
 
 #endif /* API_IMAGE_H */

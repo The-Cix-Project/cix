@@ -30,10 +30,25 @@ enum image_policy_downgrade {
 	IMAGE_POLICY_DOWNGRADE_ALLOW,
 };
 
+/*
+ * ADR-0343: how many UNREFERENCED versions an image keeps, newest
+ * first, beyond the ones something references. 3 leaves an operator
+ * earlier versions to create a container from by hand, on top of the
+ * rollback target the reference rule already keeps.
+ *
+ * The ceiling keeps referenced + keep inside the recorded history
+ * (IMAGE_MAX_VERSION_HISTORY, 256) with room for every container a host
+ * can reference, so the history never has to forget a version that
+ * still exists.
+ */
+#define IMAGE_POLICY_KEEP_DEFAULT 3
+#define IMAGE_POLICY_KEEP_MAX 64
+
 struct image_policy {
 	enum image_policy_recipe recipe;
 	enum image_policy_apply apply;
 	enum image_policy_downgrade downgrade;
+	int keep;
 };
 
 int imagepolicy_init(const char *path);
@@ -52,7 +67,7 @@ int imagepolicy_recipe_parse(const char *s, enum image_policy_recipe *out);
 int imagepolicy_apply_parse(const char *s, enum image_policy_apply *out);
 int imagepolicy_downgrade_parse(const char *s, enum image_policy_downgrade *out);
 
-/* {"image":...,"recipe":...,"apply":...,"downgrade":...} */
+/* {"image":...,"recipe":...,"apply":...,"downgrade":...,"keep":N} */
 void imagepolicy_write_json(struct json_writer *w, const char *name, const struct image_policy *p);
 
 #endif /* IMAGEPOLICY_H */

@@ -6341,7 +6341,9 @@ async function refreshImages() {
 }
 
 /*
- * ADR-0209: image version collection.
+ * ADR-0209: image version collection, run now. Since ADR-0343 the same
+ * pass also runs by itself, and each image's policy `keep` decides how
+ * many unreferenced versions stay.
  *
  * Preview and reclaim are the same endpoint, differing only by
  * dry_run. The preview exists because the reclaim is irreversible and
@@ -6367,14 +6369,17 @@ async function runImageGc(dryRun) {
 		if (list.length === 0) {
 			const p = document.createElement("p");
 
-			p.textContent = "Nothing to reclaim — every image version is referenced ("
-				+ res.kept + " kept).";
+			p.textContent = "Nothing to reclaim — every image version is referenced or within "
+				+ "its image's keep (" + res.kept + " kept).";
 			box.appendChild(p);
 		} else {
 			for (const e of list) {
 				const p = document.createElement("p");
 
-				p.textContent = (dryRun ? "Would remove " : "Removed ")
+				/* ADR-0343: a reclaimed version is set aside at once and its
+				 * bytes are deleted in the background, so "set aside" is
+				 * what is true when this answer arrives. */
+				p.textContent = (dryRun ? "Would remove " : "Set aside ")
 					+ e.image + "@" + String(e.version).slice(0, 12)
 					+ (e.apparent_bytes === null || e.apparent_bytes === undefined
 						? "" : " — " + formatBytes(e.apparent_bytes));
@@ -6385,7 +6390,7 @@ async function runImageGc(dryRun) {
 			/* "apparent" is load-bearing, not a hedge: on btrfs a version is a
 			 * snapshot sharing extents with its neighbours, so the space
 			 * actually returned is usually well below this figure. */
-			sum.textContent = (dryRun ? "Would reclaim " : "Reclaimed ") + list.length
+			sum.textContent = (dryRun ? "Would reclaim " : "Set aside for deletion ") + list.length
 				+ " version(s)"
 				+ (res.apparent_bytes_total === null || res.apparent_bytes_total === undefined
 					? "" : ", " + formatBytes(res.apparent_bytes_total) + " apparent")

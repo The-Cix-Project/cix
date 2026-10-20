@@ -879,6 +879,42 @@ int main(void)
 		}
 		cix_response_free(&r);
 
+		/* ADR-0343: a fresh image's policy keeps 3 unreferenced versions,
+		 * keep is bounded, and keep 0 makes every unreferenced version
+		 * collectable -- which the reference assertions below need, or
+		 * the two junk versions would sit inside the default keep. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/images/gcimg/policy", NULL, &r) != 0 ||
+		    r.status != 200 || json_as_number(json_object_get(r.json, "keep")) != 3) {
+			fprintf(stderr, "FAIL: gc: a fresh image's policy should keep 3 -- status=%d body=%.200s\n",
+			        r.status, r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		cix_response_free(&r);
+		{
+			static const char *const bad[] = { "{\"keep\":65}", "{\"keep\":-1}", "{\"keep\":1.5}",
+			                                   "{\"keep\":\"2\"}" };
+			size_t b;
+
+			for (b = 0; b < sizeof(bad) / sizeof(bad[0]); b++) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "PUT", "/v1/images/gcimg/policy", bad[b], &r) != 0 ||
+				    r.status != 400) {
+					fprintf(stderr, "FAIL: gc: policy %s should be 400, got %d\n", bad[b],
+					        r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
+		}
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/images/gcimg/policy", "{\"keep\":0}", &r) != 0 ||
+		    r.status != 200 || json_as_number(json_object_get(r.json, "keep")) != 0) {
+			fprintf(stderr, "FAIL: gc: could not set keep 0, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
 		/* Two unreferenced versions and one that a container will pin.
 		 * Fabricated directly on disk: producing three real versions
 		 * would need three real installs, and what is under test here
@@ -971,6 +1007,38 @@ int main(void)
 			ok = 0;
 		}
 
+		/* ADR-0343: the set-aside trees are in the image store's trash,
+		 * not deleted on the request -- and the helper empties it. */
+		{
+			int waited;
+
+			for (waited = 0; waited < 100; waited++) {
+				if (run_cmd("test -z \"$(ls -A '%s/.discard' 2>/dev/null)\"", g_images_dir) == 0)
+					break;
+				usleep(100000);
+			}
+			if (waited == 100) {
+				fprintf(stderr, "FAIL: gc: %s/.discard was not emptied by the discard helpers\n",
+				        g_images_dir);
+				ok = 0;
+			}
+		}
+
+		/* ADR-0343: the pass repaired the history from the disk. pinnedv
+		 * was fabricated on disk, so the history never recorded it; a kept
+		 * version must now be listed, and a collected one must not. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/images/gcimg", NULL, &r) != 0 ||
+		    r.status != 200 || r.body == NULL || strstr(r.body, "\"pinnedv\"") == NULL ||
+		    strstr(r.body, "\"junk1\"") != NULL) {
+			fprintf(stderr,
+			        "FAIL: gc: history not repaired -- pinnedv should be listed and junk1 not, "
+			        "body=%.300s\n",
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		cix_response_free(&r);
+
 		/* The discriminating half: with the container gone, the very
 		 * same version becomes collectable. Without this, "kept" could
 		 * mean the scan works or could mean it never collects anything. */
@@ -1006,6 +1074,47 @@ int main(void)
 			ok = 0;
 		}
 		cix_response_free(&r);
+
+		/*
+		 * ADR-0343: keep 1 keeps the NEWEST unreferenced version. Three
+		 * made one after another, each dated by its directory since the
+		 * history has never seen them; a pass that ordered them any
+		 * other way, or ignored keep, keeps the wrong one.
+		 */
+		{
+			static const char *const made[] = { "old1", "old2", "newest" };
+			size_t m;
+
+			for (m = 0; m < sizeof(made) / sizeof(made[0]); m++) {
+				if (m > 0)
+					usleep(50000); /* distinct birth times, oldest first */
+				if (run_cmd("mkdir -p '%s/%s/rootfs/usr'", vdir, made[m]) != 0) {
+					fprintf(stderr, "FAIL: gc keep: could not fabricate %s\n", made[m]);
+					ok = 0;
+				}
+			}
+		}
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/images/gcimg/policy", "{\"keep\":1}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: gc keep: could not set keep 1, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/images/gc", "{}", &r) != 0 ||
+		    r.status != 200 || json_as_number(json_object_get(r.json, "collected")) != 2) {
+			fprintf(stderr, "FAIL: gc keep 1 should collect exactly old1 and old2, body=%.300s\n",
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		cix_response_free(&r);
+		if (run_cmd("test -d '%s/newest/rootfs'", vdir) != 0 || run_cmd("test -d '%s/old1'", vdir) == 0 ||
+		    run_cmd("test -d '%s/old2'", vdir) == 0) {
+			fprintf(stderr, "FAIL: gc keep 1 kept the wrong version -- newest must stay, old1 "
+			                "and old2 must go\n");
+			ok = 0;
+		}
 	}
 
 	/* cleanup */

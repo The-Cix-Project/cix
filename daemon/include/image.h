@@ -56,13 +56,13 @@ enum image_error {
 /* sha256 hex digest (64 chars) + NUL. */
 #define IMAGE_VERSION_MAX 65
 
-/* Real version history could in principle grow without bound (no
- * automatic pruning, ADR-0107's own stated v1 scope) -- bounded here
- * the same pragmatic way every other daemon-owned array in this
- * codebase is; a real deployment producing more than this many
- * distinct versions of one image is a future problem, not assumed
- * away silently (a full history array simply stops growing, oldest
- * entries kept, rather than wrapping/corrupting). */
+/* The bound on the recorded history array. ADR-0107's v1 scope pruned
+ * nothing, so a rolling image outgrew it: on 192.168.15.95, 2026-10-20,
+ * jumpbox's history held 256 versions while newer ones sat on disk
+ * unrecorded. ADR-0343 bounds each image to its referenced versions
+ * plus its policy's `keep` (at most IMAGE_POLICY_KEEP_MAX), far below
+ * this, and a retention pass repairs the history from the disk. A full
+ * array still stops growing rather than wrapping. */
 #define IMAGE_MAX_VERSION_HISTORY 256
 
 enum image_pkg_mode {
@@ -123,13 +123,11 @@ int image_sweep_replaced_trees(void);
  * reports a running container still referencing it. IMAGE_ERR_HAS_PACKAGES
  * if pkg_image_has_packages() reports any package still tracked against
  * it -- remove those first, avoiding orphaned pkg.c state referencing a
- * deleted rootfs. Otherwise recursively removes the image's own
- * directory -- every version it ever produced, all at once (a hand-rolled
- * nftw()-based walk, persist_remove_tree() -- shelling out to `rm -rf`
- * would be inconsistent with this project's own "hand-rolled C for
- * daemon-owned operations" posture; pkg.c's build-tool subprocess use is
- * a distinct, already-justified exception for executing untrusted build
- * scripts, not a precedent for this).
+ * deleted rootfs. Otherwise every tree in it -- each version's rootfs,
+ * and any staging leftover -- is set aside through the installed discard
+ * function (ADR-0343), and what is left, files only, is removed with the
+ * directory. The trees' bytes are freed by a helper child afterwards, so
+ * the name is free at once and the space comes back later.
  */
 enum image_error image_delete(const char *name);
 
@@ -172,30 +170,91 @@ int image_empty_manifest_version(char *out, size_t out_size);
  * not just report names over REST) -- one real directory-scan
  * implementation, not two. */
 /*
- * ADR-0209: the version directories that exist on disk for this image,
- * read from the filesystem rather than the recorded history -- the two
- * can drift (IMAGE_MAX_VERSION_HISTORY caps the list; the disk is not
- * capped), and the disk is what holds the bytes. Returns how many were
- * written to out.
+ * ADR-0343: what moves a tree out of an image's way. `path` is a
+ * directory inside IMAGES_DIR -- a version's rootfs, or another tree in
+ * a version or image directory -- and the function renames it aside and
+ * queues its delete off the event loop. 0 when nothing is left at path.
+ *
+ * main.c installs rootfs_discard() aimed at IMAGES_DIR/.discard, so an
+ * image's bytes leave through ADR-0341's queue and its helper children.
+ * With none installed nothing can be set aside, and a collection or an
+ * image delete fails rather than deleting on the caller's thread.
  */
-int image_ondisk_versions(const char *name, char out[][IMAGE_VERSION_MAX], int max);
+typedef int (*image_discard_fn)(const char *image, const char *path);
+void image_set_discard(image_discard_fn fn);
+
+/* ADR-0343: "does anything other than current_version reference this
+ * version" -- the caller's one rule, asked once per version a pass looks at. */
+typedef int (*image_referenced_fn)(const char *image, const char *version, void *ctx);
+
+struct image_retain_entry {
+	struct image_version_entry v;
+	int drop; /* 1: the pass collects it */
+};
 
 /*
- * Deletes one non-current version: its rootfs (subvolume-aware, so it
- * works on btrfs), its version directory, and its entry in the
- * recorded history.
- *
- * IMAGE_ERR_PROTECTED if version is the image's current_version --
- * removing that makes every subsequent container create fail with
- * "image rootfs does not exist". IMAGE_ERR_NOT_FOUND if the image or
- * the version directory does not exist.
- *
- * Deliberately knows nothing about who might still be USING the
- * version: reference collection needs the registry and the persisted
- * container definitions, which live above this module. Callers must
- * establish that a version is unreferenced before calling this.
+ * ADR-0343: one image's history, reconciled with its disk, and what a
+ * pass would collect from it. entries[] is oldest first and holds every
+ * version on disk -- uncapped, so an image whose recorded history
+ * stopped at IMAGE_MAX_VERSION_HISTORY is seen whole.
  */
-enum image_error image_delete_version(const char *name, const char *version);
+struct image_retain_plan {
+	char image[PKG_IMAGE_NAME_MAX];
+	struct image_retain_entry *entries;
+	int count;
+	int kept;      /* entries not dropped */
+	int dropped;   /* entries dropped */
+	int repaired;  /* 1 when the history and the disk disagreed */
+};
+
+/*
+ * Reads name's history and its version directories, and decides.
+ *
+ * The recorded history is the one source of a version's age. A version
+ * on disk that the history does not name is added, dated by its
+ * directory's statx birth time (its mtime where the filesystem has no
+ * birth time), and a history entry with no directory is dropped from
+ * the plan. Then, newest first: current_version and every version
+ * `referenced` names are kept, the next `keep` versions are kept, and
+ * the rest are marked drop.
+ *
+ * Changes nothing on disk. IMAGE_ERR_NOT_FOUND if name is not an image.
+ * Free the plan with image_retain_plan_free().
+ */
+enum image_error image_retain_plan(const char *name, int keep, image_referenced_fn referenced,
+                                   void *ctx, struct image_retain_plan *out);
+void image_retain_plan_free(struct image_retain_plan *plan);
+
+/*
+ * Moves one non-current version out of the image: every directory
+ * inside its version directory (its rootfs, and any rootfs.replaced-*)
+ * goes to the installed discard function, the files left are removed,
+ * then the directory. Never the version directory as a whole: on btrfs
+ * SNAP_DESTROY fails on a plain directory, and the fallback would be a
+ * file-by-file rmtree on the caller's thread.
+ *
+ * Leaves the recorded history alone -- image_retain_commit() writes it
+ * once per image. IMAGE_ERR_PROTECTED for current_version,
+ * IMAGE_ERR_NOT_FOUND if the version directory does not exist,
+ * IMAGE_ERR_DELETE_FAILED if anything could not be moved or removed.
+ */
+enum image_error image_version_set_aside(const char *name, const char *version);
+
+/*
+ * Writes the plan's history: every entry not dropped, plus every dropped
+ * one whose directory is somehow still there, in the plan's order. At
+ * most IMAGE_MAX_VERSION_HISTORY, newest kept. One save, and none when
+ * nothing changed.
+ */
+enum image_error image_retain_commit(const struct image_retain_plan *plan);
+
+/*
+ * ADR-0343: images that got a version since the last take. Marked by
+ * image_record_version(); taken by the automatic pass once no package
+ * job is in flight. Returns how many were written to names, and clears
+ * the marks.
+ */
+int image_retain_take_marked(char names[][PKG_IMAGE_NAME_MAX], int max);
 
 int image_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
 
