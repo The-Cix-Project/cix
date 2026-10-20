@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-20. Issue [#619](https://git.home.arpa/itdlabs/cix/issues/619). The owner chose this over a one-off `POST /v1/images/gc` as the way to test #619's hypothesis, because that call cannot be limited and does all of its deletes on the event loop. It changes how much image history a host keeps, which is hard to reverse once versions are gone, so accepting it is the owner's decision.
+Accepted by the owner, 2026-10-20 ("Accepted, go ahead and implement it"), as proposed the same day. Issue [#619](https://git.home.arpa/itdlabs/cix/issues/619). The owner chose this over a one-off `POST /v1/images/gc` as the way to test #619's hypothesis, because that call cannot be limited and does all of its deletes on the event loop. It changes how much image history a host keeps, which is hard to reverse once versions are gone, so accepting it is the owner's decision.
 
 It amends [ADR-0107](0107-package-image-versioning.md), whose v1 scope left out automatic pruning. It amends [ADR-0209](0209-derived-images-and-one-container-mechanism.md)'s collector. It adds a field to [ADR-0320](0320-an-image-policy-decides-how-its-three-copies-agree.md)'s image policy. It reuses [ADR-0341](0341-a-containers-rootfs-is-a-snapshot-on-its-images-filesystem.md)'s set-aside-and-delete, which runs in an [ADR-0278](0278-the-reactor-forks-work-it-cannot-afford-to-wait-for.md) helper child.
 

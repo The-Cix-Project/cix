@@ -297,6 +297,15 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Only the unfiltered log tail is a stream.** A sample runs in-process, where nothing can be parked, so a filtered log subscription is refused.
 - **A segment's summary is exact or absent, never a guess** (#616). It is used only for the file it was made from (seq, device, inode, size), it is written only when it covers the segment from its first byte, and a set too large to keep is unknown. Never add a skip that a summary cannot prove, and never read or write one on an unfiltered read, which runs on the loop.
 
+## An image keeps a bounded history, and a version leaves it off the loop
+
+**An image keeps every version something references, plus its newest `keep` unreferenced versions (image policy, default 3); every other version is collected, and collection never deletes on the event loop.** That is [ADR-0343](docs/adr/0343-an-image-keeps-a-bounded-history-and-a-version-leaves-it-off-the-loop.md), accepted by the owner on 2026-10-20 in place of a one-off `POST /v1/images/gc`. Measured before it on .95: `jumpbox` held 256+ versions, 813 were collectable box-wide, and the gc dry run alone held the loop for 1909 ms.
+
+- **What a version leaves through is ADR-0341's queue.** Set its subvolumes aside into `IMAGES_DIR/.discard` and queue them with `rootfs_discard_start()`. Never set aside the version directory: on a plain directory `SNAP_DESTROY` fails and the fallback is a file-by-file `rmtree()`. Never add a second delete queue.
+- **The recorded history is the one source of a version's age.** A pass repairs it from the disk first. Never order versions by a disk timestamp beside `created_at`.
+- **A pass never runs while a package job is in flight.** It runs after the last job ends for each image a job gave a new version, once after daemon start, and on `POST /v1/images/gc`. The request carries no `keep`; the policy is the only knob.
+- **The reference rule is one definition**, computed once per pass. Never add a fifth source of "referenced" anywhere but there.
+
 ## One way to make an image
 
 **An image is made by `POST /v1/images` (`cixctl image create --name=NAME`) and by nothing else.** `POST /v1/pkg/install` naming an image that does not exist is a 400 naming that fix, and creates nothing (#500) -- the owner's decision of 2026-09-30, chosen over documenting the implicit create an install used to perform, which is how `--image=jump`, a typo for `jumpbox`, became a new image.
