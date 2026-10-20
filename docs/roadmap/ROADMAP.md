@@ -2445,6 +2445,21 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 300: a filesystem UUID is a device field, and the dashboard names devices by identity (ADR-0345 step 2b, #349, 0.2.57-560)
+
+ADR-0345 as accepted said a filesystem UUID would be probed only while resolving a mapping, to keep superblock reads out of the device walk. The walk already read every superblock, to get the filesystem type. So the UUID is now read in the same open, by one reader in `disk.c`, and carried on `Device` and `StorageDevice`. The ADR is corrected in place. The dashboard also gained the rest of section 5. Probe `0.2.57-571` was green.
+
+**Measured on 192.168.15.95 after booting 0.2.57-560:**
+- **UUIDs:** `GET /v1/storage` reports `fs_uuid` for the four btrfs filesystems: `sda`, `vda`, `vdb4` and `vdb5`. `vdb1` (vfat), `vdb2` and `vdb3` (squashfs), the bare `vdb` and an empty `sr0` report `""`.
+- **Mappings:** a mapping `fs_uuid EF42D76F-...` (typed in uppercase) was stored lowercase and resolved to `disk:vda`.
+- **Cost:** 62–73 ms for `GET /v1/devices` and 55–68 ms for `GET /v1/storage`, fifteen minutes after boot. Release 559 measured 72–87 and 64–71, so reading the UUID in the walk costs nothing measurable. Within minutes of boot both reads were about 10 ms slower (86–97 and 75–79 ms), while `GET /v1/containers` took 2–3 ms. A timing taken straight after a reboot is not a baseline.
+- **Dashboard:** rendered in Chromium from the box's responses. The box's `index.html` and `app.js` are byte-identical to the release.
+  - "Used by" for a `mac` mapping on `wlan0` reads `ar-1`; on 559 it read `-`.
+  - `vda` shows its mapping's name.
+  - `vdb5` has a Name… button, which pre-fills `fs_uuid`.
+  - `sr0` has no button.
+- **Health:** no drift, duplicate-id or skipped-mapping line in the cixd log. The scratch mappings were removed afterwards.
+
 ## Part 299: a device name says which device it is; a USB id says where (ADR-0345 step 2a, #349, 0.2.57-559)
 
 Mappings gain the identity kinds and refuse ambiguity. They resolve against the grant snapshot, and a USB id now names the device's location, without its serial. Probe `0.2.57-570` was green, with `test_devicematch` in SELFTESTS covering what one dongle cannot show: two dongles sharing `123456`.
