@@ -8,7 +8,7 @@
  * held the loop. stallwatch_step() marks the steps inside a handler, and
  * the record then carries the slowest of them.
  *
- * Three things are pinned down here, each one a way it could regress
+ * Five things are pinned down here, each one a way it could regress
  * quietly:
  *
  *   1. the slowest step is the one named, not the last or the first;
@@ -18,7 +18,10 @@
  *   3. while a step runs it is the in-flight activity the watchdog
  *      reads, so a step that never returns is what a stall names;
  *   4. a child forked inside a handler, which shares the page, cannot
- *      write that activity.
+ *      write that activity;
+ *   5. a call made many times is tallied, and the two largest tallies
+ *      are named after the slowest step -- the per-file calls of an
+ *      install interleave, so no step can time them.
  *
  * Links stallwatch.c directly and drives it as the loop does, with no
  * daemon, so it runs in SELFTESTS on the box (#224). The watchdog it
@@ -191,6 +194,48 @@ int main(void)
 		stallwatch_handler_done("pkg-buildenv", started);
 		stallwatch_activity_clear();
 		stallwatch_pass_end();
+	}
+
+	/* 5. Tallies: the two kinds of call that took the most are named,
+	 * largest first, with the larger one's count -- and a tally outside
+	 * any handler counts nothing. Slower than check 2's pass, so it is
+	 * the worst pass the loop reports. */
+	stallwatch_tally("stray", stallwatch_tally_start());
+	{
+		static const long unlink_ms[] = { 30, 30, 30 };
+		static const long copy_ms[] = { 160, 160 };
+		long long started, t;
+		int i;
+
+		stallwatch_heartbeat();
+		started = stallwatch_handler_start();
+		stallwatch_step("image version: the caller's mutate step");
+		for (i = 0; i < 3; i++) {
+			t = stallwatch_tally_start();
+			sleep_ms(unlink_ms[i]);
+			stallwatch_tally("unlink", t);
+		}
+		for (i = 0; i < 2; i++) {
+			t = stallwatch_tally_start();
+			sleep_ms(copy_ms[i]);
+			stallwatch_tally("copy", t);
+		}
+		t = stallwatch_tally_start();
+		sleep_ms(10);
+		stallwatch_tally("chmod", t);
+		stallwatch_handler_done("container", started);
+		stallwatch_activity_clear();
+		stallwatch_pass_end();
+	}
+	worst_activity(got, sizeof(got));
+	if (strncmp(got, "event container (", 17) != 0 ||
+	    strstr(got, ", slowest step image version: the caller's mutate step (") == NULL ||
+	    strstr(got, " ms), most in copy (") == NULL || strstr(got, " ms, 2 calls), then unlink (") == NULL ||
+	    strstr(got, "stray") != NULL || strstr(got, "chmod") != NULL) {
+		fprintf(stderr, "FAIL: a handler with tallies was named \"%s\"; want \"..., slowest step "
+		                "image version: the caller's mutate step (N ms), most in copy (M ms, 2 "
+		                "calls), then unlink (K ms)\"\n", got);
+		g_fail = 1;
 	}
 
 	unlink(records);

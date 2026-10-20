@@ -2165,9 +2165,15 @@ static int path_owner_gate(const struct pkg_entry *self, const char *image, cons
 static void unlink_manifest_files(const struct pkg_entry *e, const char *rootfs)
 {
 	struct path_claim_index idx;
-	int i, kept = 0;
+	int i, kept = 0, built;
+	long long t;
 
-	if (path_claim_index_build(e, normalize_image(e->image), &idx) != 0) {
+	/* #619: tallied, as merge_tree()'s calls are -- this runs in the
+	 * same step, the one measured at 1293 ms of a 1713 ms exit. */
+	t = stallwatch_tally_start();
+	built = path_claim_index_build(e, normalize_image(e->image), &idx);
+	stallwatch_tally("claim index", t);
+	if (built != 0) {
 		logstore_write("cixd", "error",
 		               "pkg %s@%s: could not index the paths other packages in this image "
 		               "own (%s), so none of its %d file(s) were removed",
@@ -2176,13 +2182,19 @@ static void unlink_manifest_files(const struct pkg_entry *e, const char *rootfs)
 	}
 	for (i = 0; i < e->file_count; i++) {
 		char path[PATH_MAX];
+		const struct pkg_entry *owner;
 
-		if (path_claim_owner(&idx, e->files[i]) != NULL) {
+		t = stallwatch_tally_start();
+		owner = path_claim_owner(&idx, e->files[i]);
+		stallwatch_tally("claim lookup", t);
+		if (owner != NULL) {
 			kept++;
 			continue;
 		}
 		snprintf(path, sizeof(path), "%s/%s", rootfs, e->files[i]);
+		t = stallwatch_tally_start();
 		unlink(path);
+		stallwatch_tally("unlink", t);
 	}
 	path_claim_index_free(&idx);
 	if (kept > 0)
@@ -4499,9 +4511,19 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 	char src_dir[PATH_MAX];
 	DIR *d;
 	struct dirent *de;
+	long long t;
 
+	/*
+	 * #619: every call below that touches the filesystem is tallied,
+	 * because this walk is most of the 1293 ms an install of hibr's 193
+	 * files held the event loop on 192.168.15.95 (2026-10-19 22:59:47Z),
+	 * and no single step inside it can be timed -- the calls interleave
+	 * per file. The record names the two kinds that took the most.
+	 */
 	snprintf(src_dir, sizeof(src_dir), "%s%s%s", src_root, relpath[0] ? "/" : "", relpath);
+	t = stallwatch_tally_start();
 	d = opendir(src_dir);
+	stallwatch_tally("opendir", t);
 	if (d == NULL) {
 		/* A missing tree root is "nothing to merge", not a failure --
 		 * a package that installed no files at all is legitimate. Any
@@ -4511,25 +4533,36 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 		return merge_fail(relpath, "opendir", 1);
 	}
 
-	while ((de = readdir(d)) != NULL) {
+	for (;;) {
 		char child_rel[PATH_MAX];
 		char src_path[PATH_MAX], dst_path[PATH_MAX];
 		struct stat st;
+		int rc;
 
+		t = stallwatch_tally_start();
+		de = readdir(d);
+		stallwatch_tally("readdir", t);
+		if (de == NULL)
+			break;
 		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
 			continue;
 		snprintf(child_rel, sizeof(child_rel), "%s%s%s", relpath, relpath[0] ? "/" : "",
 		         de->d_name);
 		snprintf(src_path, sizeof(src_path), "%s/%s", src_dir, de->d_name);
 
-		if (lstat(src_path, &st) != 0) {
+		t = stallwatch_tally_start();
+		rc = lstat(src_path, &st);
+		stallwatch_tally("lstat", t);
+		if (rc != 0) {
 			closedir(d);
 			return merge_fail(child_rel, "lstat", 1);
 		}
 
 		if (S_ISDIR(st.st_mode)) {
 			snprintf(dst_path, sizeof(dst_path), "%s/%s", dst_root, child_rel);
+			t = stallwatch_tally_start();
 			persist_mkdir_p(dst_path);
+			stallwatch_tally("mkdir", t);
 			if (merge_tree(src_root, dst_root, child_rel, e, keep_privileged) != 0) {
 				closedir(d);
 				return -1; /* already reported, one level down */
@@ -4542,7 +4575,9 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 			slash = strrchr(dst_parent, '/');
 			if (slash != NULL) {
 				*slash = '\0';
+				t = stallwatch_tally_start();
 				persist_mkdir_p(dst_parent);
+				stallwatch_tally("mkdir", t);
 			}
 			/*
 			 * Replace whatever is there; never write through it.
@@ -4587,8 +4622,12 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 			 */
 			{
 				char bad_sym[128];
+				int bad;
 
-				if (elfcheck_undefined_builtin(src_path, bad_sym, sizeof(bad_sym)) == 1) {
+				t = stallwatch_tally_start();
+				bad = elfcheck_undefined_builtin(src_path, bad_sym, sizeof(bad_sym));
+				stallwatch_tally("elfcheck", t);
+				if (bad == 1) {
 					closedir(d);
 					logstore_write("cixd", "error",
 					               "pkg install: %s carries an undefined compiler builtin '%s' -- "
@@ -4599,12 +4638,19 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 				}
 			}
 
+			t = stallwatch_tally_start();
 			unlink(dst_path);
-			if (copy_file_simple(src_path, dst_path) != 0) {
+			stallwatch_tally("unlink", t);
+			t = stallwatch_tally_start();
+			rc = copy_file_simple(src_path, dst_path);
+			stallwatch_tally("copy", t);
+			if (rc != 0) {
 				closedir(d);
 				return merge_fail(child_rel, "copying a regular file", 1);
 			}
+			t = stallwatch_tally_start();
 			chmod(dst_path, st.st_mode & (keep_privileged ? 07777 : 0777));
+			stallwatch_tally("chmod", t);
 			if (pkg_entry_add_file(e, child_rel) != 0) {
 				closedir(d);
 				return merge_fail(child_rel, "recording the file in the package manifest", 0);
@@ -4626,7 +4672,9 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 			slash = strrchr(dst_parent, '/');
 			if (slash != NULL) {
 				*slash = '\0';
+				t = stallwatch_tally_start();
 				persist_mkdir_p(dst_parent);
+				stallwatch_tally("mkdir", t);
 			}
 			/*
 			 * A symlink in the source landing where the destination
@@ -4658,10 +4706,15 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 					continue;
 				}
 			}
+			t = stallwatch_tally_start();
 			unlink(dst_path); /* EEXIST tolerance for a re-install/upgrade,
 			                    * same spirit copy_file_simple()'s own
 			                    * O_CREAT|O_TRUNC already has for regular files */
-			if (symlink(target, dst_path) != 0) {
+			stallwatch_tally("unlink", t);
+			t = stallwatch_tally_start();
+			rc = symlink(target, dst_path);
+			stallwatch_tally("symlink", t);
+			if (rc != 0) {
 				closedir(d);
 				return merge_fail(child_rel, "creating a symlink", 1);
 			}
@@ -12228,19 +12281,36 @@ int pkg_build_log_list(struct pkg_build_log_entry *out, int max)
 	struct dirent *ent;
 	DIR *d;
 	int count = 0, i;
+	long long t;
 
+	/*
+	 * #617: tallied, because this read held the loop 1273 ms on
+	 * 192.168.15.95 (2026-10-19 23:00:48Z, 23 s into a container's roll)
+	 * where it takes 1.3 ms idle, and the record could not say on what.
+	 */
 	pkg_build_log_dir(dir, sizeof(dir));
+	t = stallwatch_tally_start();
 	d = opendir(dir);
+	stallwatch_tally("opendir", t);
 	if (d == NULL)
 		return 0;
-	while ((ent = readdir(d)) != NULL && count < max) {
+	while (count < max) {
 		char path[PATH_MAX];
 		struct stat st;
+		int rc;
 
+		t = stallwatch_tally_start();
+		ent = readdir(d);
+		stallwatch_tally("readdir", t);
+		if (ent == NULL)
+			break;
 		if (ent->d_name[0] == '.')
 			continue;
 		snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
-		if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
+		t = stallwatch_tally_start();
+		rc = stat(path, &st);
+		stallwatch_tally("stat", t);
+		if (rc != 0 || !S_ISREG(st.st_mode))
 			continue;
 		memset(&out[count], 0, sizeof(out[count]));
 		snprintf(out[count].file, sizeof(out[count].file), "%s", ent->d_name);
@@ -12261,8 +12331,10 @@ int pkg_build_log_list(struct pkg_build_log_entry *out, int max)
 		}
 		out[k] = tmp;
 	}
+	t = stallwatch_tally_start();
 	for (i = 0; i < count; i++)
 		build_log_attribute(&out[i]);
+	stallwatch_tally("attribute", t);
 	return count;
 }
 

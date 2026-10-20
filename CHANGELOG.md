@@ -6,6 +6,25 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A slow handler names the calls that took its time (#619, #617)
+
+- **What changed:** `stallwatch_tally()` sums the time of one kind of call over a handler, and
+  a slow pass's record names the two largest after its slowest step: `..., slowest step image
+  version: the caller's mutate step (1293 ms), most in copy (1100 ms, 193 calls), then unlink
+  (90 ms)` (the numbers here are an example, not a measurement). Every filesystem call in an
+  install's merge is tallied (`opendir`, `readdir`, `lstat`, `mkdir`, `elfcheck`, `unlink`,
+  `copy`, `chmod`, `symlink`, and the path-claim index and lookups that decide what an upgrade
+  may remove), and so are the `opendir`, `readdir` and `stat` calls of `GET /v1/pkg/build-logs`.
+- **Why:** on 0.2.57-550 the mutate step held the loop 1293 ms of a 1713 ms exit while merging
+  `hibr`'s 193 files into `jumpbox`, about 6.7 ms a file, and `GET /v1/pkg/build-logs` took
+  1273 ms 23 s into `jump`'s roll where it takes 1.3 ms idle. Which call is slow is not
+  established, and the fix depends on it: a helper child for the merge is right if the merge
+  is slow, and wrong if the filesystem is stalling every caller. A step cannot answer this,
+  because the per-file calls interleave.
+- **Same mechanism:** tallies live beside the steps in stallwatch.c, belong to the handler
+  they ran in, and do nothing where a step does nothing (outside a timed handler, or in a
+  forked child). `test_stallwatch_steps` gains a fifth check.
+
 ### A slow handler names its slowest step (#619, #617)
 
 - **What changed:** a handler can mark its steps with `stallwatch_step()`, and a slow pass is

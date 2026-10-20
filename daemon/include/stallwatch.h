@@ -103,6 +103,24 @@ void stallwatch_handler_done(const char *kind, long long started_millis);
  * inside a handler inherits the shared page), it does nothing.
  */
 void stallwatch_step(const char *name);
+
+/*
+ * #619: one kind of call that a handler makes many times, such as the
+ * unlink of every file an install replaces -- which a step cannot time,
+ * because a step is one contiguous stretch and these interleave. Each
+ * tally sums its calls' time over the handler, and a handler slow
+ * enough to be the pass's slowest is named with its two largest:
+ * "..., most in copy (1100 ms, 193 calls), then unlink (90 ms)".
+ *
+ *	long long t = stallwatch_tally_start();
+ *	unlink(path);
+ *	stallwatch_tally("unlink", t);
+ *
+ * `name` must be a string literal: the tally keeps the pointer. Both do
+ * nothing where stallwatch_step() does nothing.
+ */
+long long stallwatch_tally_start(void);
+void stallwatch_tally(const char *name, long long started);
 /* #303: read the current in-flight activity (into shared memory), for the
  * crash handler's trace. NULL if the watchdog never started; a caller must
  * bound its read to STALL_ACTIVITY_MAX (a torn write may leave it

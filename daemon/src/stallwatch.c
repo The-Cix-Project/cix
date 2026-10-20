@@ -209,6 +209,15 @@ static long long monotonic_millis(void)
 	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+static long long monotonic_micros(void)
+{
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+		return 0;
+	return (long long)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
 static long long monotonic_seconds(void)
 {
 	struct timespec ts;
@@ -1123,6 +1132,17 @@ static char g_step_name[STALL_ACTIVITY_MAX];
 static long long g_step_slowest_millis;
 static char g_step_slowest[STALL_ACTIVITY_MAX];
 
+/* #619: the handler's tallies, in microseconds, since a call they time
+ * is usually well under a millisecond. More kinds than this in one
+ * handler are not counted, which leaves the record short, never wrong. */
+#define STALL_TALLIES_MAX 12
+static struct {
+	const char *name;
+	long long micros;
+	unsigned calls;
+} g_tallies[STALL_TALLIES_MAX];
+static int g_tally_count;
+
 static void step_close(void)
 {
 	long long took;
@@ -1145,7 +1165,66 @@ long long stallwatch_handler_start(void)
 	g_step_name[0] = '\0';
 	g_step_slowest[0] = '\0';
 	g_step_slowest_millis = -1;
+	g_tally_count = 0;
 	return monotonic_millis();
+}
+
+long long stallwatch_tally_start(void)
+{
+	if (!g_step_timing || getpid() != g_step_owner)
+		return 0;
+	return monotonic_micros();
+}
+
+void stallwatch_tally(const char *name, long long started)
+{
+	long long took;
+	int i;
+
+	/* 0 is stallwatch_tally_start() saying it was not timing. */
+	if (started == 0 || !g_step_timing || name == NULL)
+		return;
+	took = monotonic_micros() - started;
+	for (i = 0; i < g_tally_count; i++)
+		if (g_tallies[i].name == name || strcmp(g_tallies[i].name, name) == 0)
+			break;
+	if (i == g_tally_count) {
+		if (g_tally_count == STALL_TALLIES_MAX)
+			return;
+		g_tallies[i].name = name;
+		g_tallies[i].micros = 0;
+		g_tallies[i].calls = 0;
+		g_tally_count++;
+	}
+	g_tallies[i].micros += took;
+	g_tallies[i].calls++;
+}
+
+/* The tallies' share of a record: their two largest, or "" when there
+ * are none. */
+static void tallies_describe(char *out, size_t out_size)
+{
+	int i, first = -1, second = -1;
+
+	out[0] = '\0';
+	for (i = 0; i < g_tally_count; i++) {
+		if (first < 0 || g_tallies[i].micros > g_tallies[first].micros) {
+			second = first;
+			first = i;
+		} else if (second < 0 || g_tallies[i].micros > g_tallies[second].micros) {
+			second = i;
+		}
+	}
+	if (first < 0)
+		return;
+	if (second < 0)
+		snprintf(out, out_size, ", most in %s (%lld ms, %u calls)", g_tallies[first].name,
+		         g_tallies[first].micros / 1000, g_tallies[first].calls);
+	else
+		snprintf(out, out_size, ", most in %s (%lld ms, %u calls), then %s (%lld ms)",
+		         g_tallies[first].name, g_tallies[first].micros / 1000,
+		         g_tallies[first].calls, g_tallies[second].name,
+		         g_tallies[second].micros / 1000);
 }
 
 void stallwatch_step(const char *name)
@@ -1178,6 +1257,7 @@ void stallwatch_handler_done(const char *kind, long long started_millis)
 {
 	long long took;
 	char base[STALL_ACTIVITY_MAX];
+	char tallies[STALL_ACTIVITY_MAX];
 
 	step_close();
 	g_step_timing = 0;
@@ -1193,13 +1273,17 @@ void stallwatch_handler_done(const char *kind, long long started_millis)
 		snprintf(base, sizeof(base), "%s (%lld ms)", g_shared->handler_activity, took);
 	else
 		snprintf(base, sizeof(base), "event %s (%lld ms)", kind, took);
-	/* #619: and by its slowest step, when it had any. */
+	/* #619: and by its slowest step and largest tallies, when it had
+	 * any. The step name is cut shorter than the base so the tallies,
+	 * which say what the time went on, still fit. */
+	tallies_describe(tallies, sizeof(tallies));
 	if (g_step_slowest[0] != '\0')
 		snprintf(g_shared->pass_slowest_handler, STALL_ACTIVITY_MAX,
-		         "%.80s, slowest step %.80s (%lld ms)", base, g_step_slowest,
-		         g_step_slowest_millis);
+		         "%.60s, slowest step %.50s (%lld ms)%.70s", base, g_step_slowest,
+		         g_step_slowest_millis, tallies);
 	else
-		snprintf(g_shared->pass_slowest_handler, STALL_ACTIVITY_MAX, "%s", base);
+		snprintf(g_shared->pass_slowest_handler, STALL_ACTIVITY_MAX, "%.100s%.80s", base,
+		         tallies);
 }
 
 void stallwatch_activity(const char *what)
