@@ -1009,6 +1009,7 @@ static const char *const n_image_apply_recipe_flags[] = {
 static const char *const n_image_policy_flags[] = {
 	"--apply=",
 	"--downgrade=",
+	"--keep=",
 	"--recipe=",
 	NULL
 };
