@@ -36,12 +36,12 @@ Everything below was measured on 192.168.15.95 on 2026-10-20 or read from the co
 
 ### 1. A record id names a location, and two present records never share one
 
-- **USB:** the id becomes `usb:<vid>:<pid>@<controller>-<version>-<devpath>`. Here `<controller>` is the root hub's own serial (the controller's name, a PCI BDF on this box), `<version>` is the root hub's product id (`0002` or `0003`), and `<devpath>` is the port path below it. The dongle becomes `usb:2357:012e@0000:07:1b.0-0002-1`.
+- **USB:** the id becomes `usb:<vid>:<pid>@<controller>-<version>-<devpath>`. Here `<controller>` is the root hub's own serial (the controller's name, a PCI BDF on this box), `<version>` is the root hub's product id, whatever it is (`0002` or `0003` on this box), and `<devpath>` is the port path below it. The dongle becomes `usb:2357:012e@0000:07:1b.0-0002-1`.
   - The serial leaves the id.
   - `busnum` leaves the id, because it is assigned in controller registration order and that order is not guaranteed.
 - **PCI** is unchanged (`pci:<bdf>`).
 - **Disk, net, GPU and PHY** ids stay as kernel names (`disk:sda`, `net:wlan0`, `gpu:0`, `phy:phy0`). The storage API and every operator tool already speak those names. This ADR leaves them as they are, and section 2 gives each of those buses an identity selector instead.
-- **A gate refuses two records with one id**, the same shape as ADR-0344's gate that refuses one node in two records. With USB ids built from a location, no present device can produce a collision, so the gate checks the rule rather than enforcing it.
+- **A gate refuses two records with one id**, the same shape as ADR-0344's gate that refuses one node in two records, and in the same two places: `test_devicestate` has a fixture with two identical-serial dongles, and the grant snapshot logs any duplicate once. With USB ids built from a location, no present device can produce a collision, so the gate checks the rule rather than enforcing it.
 
 ### 2. A mapping names a device by what that device is
 
@@ -54,6 +54,16 @@ Everything below was measured on 192.168.15.95 on 2026-10-20 or read from the co
 | `serial` | A hardware serial or WWN | usb, disk | The one present device carrying it |
 | `fs_uuid` | A filesystem UUID | disk, including partitions | The one present device carrying it, found by the same probe storage roles already use (`disk_probe_fs_uuid()`). There is no second probe. |
 | `mac` | A permanent MAC | net | The one interface carrying it, including one already moved into a container |
+
+**What each record carries for its selectors:**
+
+- A USB record keeps `serial` as a field once it leaves the id.
+- A disk record gains `serial` and `wwn`. A `serial` selector matches a device whose serial or WWN equals it. When a disk has both, as `sda` does, the dashboard preselects the WWN, because a WWN is unique by its own standard and a serial is unique only by vendor convention.
+- A net record gains `mac` and `mac_permanent`.
+- **`registry_interface_record` gains `mac` and `mac_permanent` too, written at grant time.** Once `wlan0` is inside `ar-1`, the host cannot read its address: the interface is in another netns. So a `mac` mapping finds a moved interface through the record its grant left, exactly as ADR-0344 finds its holder.
+- **`fs_uuid` is probed only while resolving an `fs_uuid` mapping, and only against disk records.** It is never probed on every enumerate. `disk_probe_fs_uuid()` opens the device and reads a superblock, and the grant gate takes a device snapshot on every create and attach. ADR-0344 measured `GET /v1/devices` at 72–86 ms, against 190–290 ms for `GET /v1/storage`, which probes. A probe in the walk would move the first toward the second.
+
+**GPUs are out of scope, and their rows get no Name… button.** `gpu:<n>` is an enumeration index, so `exact` on it would name whichever card probed first. The stable handle for a GPU is its PCI function. Naming a GPU therefore means granting ADR-0028's group (card, render node, `kfd`) through a `pci:` mapping. That is a new grant meaning, which no current spec needs, and it belongs to its own decision when a box has two GPUs.
 
 - **Each kind refuses the buses it is not valid on**, with a 400 that names the kind to use instead. `exact` on `disk:sda` is refused because `sda` is a kernel name, not a location, and the refusal names `serial` and `fs_uuid`. No mapping exists anywhere today, so tightening `exact` breaks nothing.
 - **Every kind except `vendor_model` is exclusive.** If an exclusive selector matches two present devices, the result is an error that names both, never a grant of one of them:
@@ -68,6 +78,7 @@ Everything below was measured on 192.168.15.95 on 2026-10-20 or read from the co
 
 - If a string in `interfaces[]` names a `mac` mapping, it resolves through that mapping. Otherwise it is a kernel name, exactly as today, through one resolution path. Each string has to resolve to exactly one interface. A `vendor_model` mapping there is a 400, because a grant of every match is not a grant of an interface.
 - **The interface is renamed to the mapping's name inside the container's netns**, after the move and with the link down. Interface names are unique per netns, so the new name cannot collide with anything on the host. For a radio, the PHY still moves as ADR-0265 decided, and the rename applies to its netdev inside the container. When the container gives the interface back, it returns to the host under the kernel name recorded at grant time.
+- **Teardown finds the interface by its in-container name, over netlink inside the container's netns.** That name is the mapping's name, recorded with the grant. Teardown never reads sysfs, which after `setns()` still answers from the host's mount: that is how #345 stranded a radio.
 - **A `mac` mapping's name must be a valid in-container interface name** under ADR-0259's rules: 1–15 characters, `[A-Za-z0-9._-]`, not `lo`, `.` or `..`, and not `eth<digits>`. This is checked when the mapping is created, so a name that cannot be used is never accepted in the first place.
 - So `ar-1` becomes `"interfaces": ["radio-ap"]` with `interface=radio-ap`, and neither line changes again, whatever the kernel calls the radio.
 
