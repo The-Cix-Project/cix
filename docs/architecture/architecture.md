@@ -62,6 +62,9 @@ flowchart LR
         system["System -- shutdown, reboot, update, assembly"]
         logs["Logs / Console / Stats"]
     end
+    registry -- "what each container holds or reserves" --> devstate
+    devdisk -- "the host's records and what it uses" --> devstate
+    devstate["Device state -- free, held, reserved, host, unavailable<br/>the one verdict every grant and the device list read"]
     logs -- "a filtered log read:<br/>the request parks" --> logread
     logread["Filtered log reads<br/>in helper children, 2 at a time"] -- "result: served again" --> rbac
 ```
@@ -138,7 +141,9 @@ flowchart LR
 - **netplane** talks to the kernel over rtnetlink sockets directly, never shelling out to `ip`/iproute2 — and over `nl80211` for a radio, because a wireless netdev belongs to a wiphy and cannot move alone.
 - **`BPF_CGROUP_DEVICE`** is a default-deny allow-list ([ADR-0017](../adr/0017-ebpf-cgroup-device-filter-for-hardware-passthrough.md)): the devices a container declared plus the standard nodes, then a deny epilogue. A container declaring no devices gets no program, and so no restriction.
 
-**What a container is given, and how — and the two halves are different.** The *platform* stages device nodes and the standard `/dev` set at creation ([ADR-0333](../adr/0333-an-images-content-comes-only-from-packages.md)), `/etc/nsswitch.conf`, the host CA bundle, and `/etc/os-release`, re-rendered at every create. The *operator* supplies `/etc/passwd`, `/etc/group` and `/etc/resolv.conf` — as ordinary `files[]` content and `dns_servers`, where omitting the field stages nothing at all ([ADR-0143](../adr/0143-container-dns-servers-field.md)). Nothing here guesses what accounts or resolvers a container should have. Separately, a real NIC or an entire wiphy can be **moved into its network namespace** — a different mechanism from device passthrough, where exclusivity is automatic because a moved interface stops existing on the host.
+**What a container is given, and how — and the two halves are different.** The *platform* stages device nodes and the standard `/dev` set at creation ([ADR-0333](../adr/0333-an-images-content-comes-only-from-packages.md)), `/etc/nsswitch.conf`, the host CA bundle, and `/etc/os-release`, re-rendered at every create. The *operator* supplies `/etc/passwd`, `/etc/group` and `/etc/resolv.conf` — as ordinary `files[]` content and `dns_servers`, where omitting the field stages nothing at all ([ADR-0143](../adr/0143-container-dns-servers-field.md)). Nothing here guesses what accounts or resolvers a container should have. Separately, a real NIC or an entire wiphy can be **moved into its network namespace** — a different mechanism from device passthrough.
+
+**Whether a device may be given is one verdict** ([ADR-0344](../adr/0344-a-device-is-one-record-with-one-state-and-every-grant-asks-it.md)). Every device is one record in a tree — a partition under its disk, an interface under its PHY under its USB dongle — and **device state** decides each record's state from the host's own use of it and every container's grants and reservations: free, held, reserved, host or unavailable. Creating, starting, live-attaching and hotplugging all ask it, and `GET /v1/devices` reports it, so the dashboard's list and a refusal cannot disagree. A moved interface stays in that list, held, because the grant was recorded when it was made.
 
 ## Containers
 

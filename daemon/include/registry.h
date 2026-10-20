@@ -136,6 +136,21 @@ struct registry_network_attachment {
  * /v1/containers to report, same role registry_network_attachment
  * plays for networks.
  */
+/*
+ * ADR-0344: one moved interface as it was at grant time. `granted` is
+ * the record the grant was of -- "phy:<name>" for a radio, since the PHY
+ * is what moves (ADR-0265), "net:<ifname>" for a wired interface -- and
+ * `anchor` that record's parent, so the dongle a radio belongs to stays
+ * its parent after the radio has left the host.
+ */
+struct registry_interface_record {
+	char granted[48];
+	char phy[CONTAINER_IFNAME_MAX];
+	char anchor[96];
+	char description[64];
+	char driver[32];
+};
+
 struct registry_device_attachment {
 	char id[96];
 	char dev_path[64];
@@ -380,6 +395,22 @@ struct registry_entry {
 	 */
 	char interfaces[CONTAINER_MAX_INTERFACES][CONTAINER_IFNAME_MAX];
 	int interface_count; /* 0 = no interfaces granted */
+	/*
+	 * ADR-0344: what each of interfaces[] WAS when it was granted, one
+	 * per entry, recorded while the host could still read its sysfs.
+	 * Once moved into this container's netns an interface -- and a
+	 * radio's whole PHY -- stops existing to the host's walk, and this is
+	 * the only place left that says it is held, by whom, and what it
+	 * hangs off. devicegrant.c turns it back into records for
+	 * GET /v1/devices and into the grant every later request is checked
+	 * against.
+	 */
+	struct registry_interface_record interface_records[CONTAINER_MAX_INTERFACES];
+	/* ADR-0344: the creation setting -- whether this container's devices
+	 * stay reserved for it while it is stopped. Mirrored here only for
+	 * GET to echo; the definition body is what a stopped container's
+	 * reservation is read from. */
+	int reserve_devices;
 	/*
 	 * Container-relative paths staged into this container's own
 	 * upperdir at creation time (POST /v1/containers' own "files"
@@ -893,54 +924,5 @@ int registry_name_is_internal(const char *name);
  * build should be told it is hidden, not left to conclude it is gone.
  */
 void registry_write_json_list(struct json_writer *w, int include_internal, int *out_hidden);
-
-/*
- * #356: the names of running containers whose device grants include
- * device_id. Supplied to device_write_json_list() as its
- * device_holders_fn, so GET /v1/devices can report `held_by` without
- * device.c ever learning what a container is.
- *
- * LIVE entries only, and the word "held" is chosen for that: a
- * container that is defined but not running has no cgroup and no
- * BPF_CGROUP_DEVICE program, so it is not holding anything. Its
- * definition still names the device and starting it would grant it,
- * which is a real second question -- what would conflict on start --
- * and deliberately not the one this answers.
- *
- * Matched against the RESOLVED id each grant recorded, never the text
- * an operator wrote. A spec may say "backup-drive" where the device is
- * "usb:0781:5583:...", because a named mapping (ADR-0048) is resolved
- * at creation time, and a vendor_model mapping legitimately expands to
- * several devices at once. Matching the spec string would miss every
- * one of them.
- *
- * pending_devices (ADR-0161 Phase B) are excluded: a device a container
- * is waiting for is by definition one it does not have.
- *
- * Duplicate-free per container, so a container appears once however
- * many of its grants expanded to the same id.
- */
-int registry_device_holders(const char *device_id, char out[][DEVICE_HOLDER_NAME_MAX], int max);
-
-/*
- * #356: may a new grant of device_id be made, given what it asked for?
- *
- * Returns 0 if allowed, or 1 if it conflicts -- filling out_holder with
- * the name of one running container whose grant it conflicts with, so
- * the refusal can say who rather than only that.
- *
- * Conflicts when the device is already held by a running container and
- * either side wants exclusivity: the caller did not pass want_shared,
- * or an existing holder did not declare it. Both must agree, for the
- * reason on registry_device_attachment.shared.
- *
- * Deliberately says nothing about defined-but-stopped containers. They
- * hold no device (no cgroup, no BPF program), so refusing on their
- * behalf would refuse a grant that is genuinely free right now. What
- * happens when such a container later starts is a real question and a
- * separate one -- see the endpoint's own documentation.
- */
-int registry_device_grant_conflict(const char *device_id, int want_shared, char *out_holder,
-                                    size_t out_holder_size);
 
 #endif /* REGISTRY_H */

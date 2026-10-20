@@ -614,20 +614,58 @@
 		<!-- Devices -->
 		<section class="view" id="view-devices" hidden>
 			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="devicemaps">Named Mappings</button>
-				<button type="button" class="tab-button" data-tab="devices">Discovery</button>
+				<button type="button" class="tab-button active" data-tab="devices">Devices</button>
+				<button type="button" class="tab-button" data-tab="devicemaps">Named Mappings</button>
 				<button type="button" class="tab-button" data-tab="kmod">Kernel Modules</button>
 			</div>
-<div class="tab-panel" data-tab="devicemaps">
-			
-			<p class="hint">Discovered live from host sysfs every poll -- nothing about a raw device is
-				persisted. A device is only ever granted to a container at creation time (see the
-				"Container" create action's own Devices section, where a mapping's name works exactly
-				like a raw device id); there is no separate attach step for an already-running container.</p>
-
+<div class="tab-panel" data-tab="devices">
+			<p class="hint">Every device the host has, each under the one it hangs off, with the state
+				every grant is decided by (ADR-0344): <strong>free</strong> can be given to a container;
+				<strong>held</strong> is a running container's, or sits above or below one that is;
+				<strong>reserved</strong> is kept for a stopped container that asked for it;
+				<strong>host</strong> is the host's own and cannot be given; <strong>unavailable</strong>
+				has nothing of its own to give.</p>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="usb" id="dev-tab-usb">USB</button>
+				<button type="button" class="tab-button" data-tab="pci" id="dev-tab-pci">PCI</button>
+				<button type="button" class="tab-button" data-tab="disk" id="dev-tab-disk">Disk</button>
+				<button type="button" class="tab-button" data-tab="net" id="dev-tab-net">Network</button>
+				<button type="button" class="tab-button" data-tab="gpu" id="dev-tab-gpu">GPU</button>
+			</div>
+			<div class="tab-panel" id="dev-panel-usb" data-tab="usb">
+				<table id="dev-usb">
+					<tbody><tr><td colspan="6" class="empty">Reading&hellip;</td></tr></tbody>
+				</table>
+			</div>
+			<div class="tab-panel" id="dev-panel-pci" data-tab="pci" hidden>
+				<table id="dev-pci">
+					<tbody><tr><td colspan="6" class="empty">Reading&hellip;</td></tr></tbody>
+				</table>
+			</div>
+			<div class="tab-panel" id="dev-panel-disk" data-tab="disk" hidden>
+				<p class="hint">A disk or partition is given to a container as a raw block device. One the host uses &mdash; the OS disk, one holding a storage role, one mounted &mdash; is listed and cannot be given.</p>
+				<table id="dev-disk">
+					<tbody><tr><td colspan="6" class="empty">Reading&hellip;</td></tr></tbody>
+				</table>
+			</div>
+			<div class="tab-panel" id="dev-panel-net" data-tab="net" hidden>
+				<p class="hint">An interface moves into a container's network namespace. A radio moves as its PHY, with every interface on it, and stays listed here as held once it has left the host.</p>
+				<table id="dev-net">
+					<tbody><tr><td colspan="6" class="empty">Reading&hellip;</td></tr></tbody>
+				</table>
+			</div>
+			<div class="tab-panel" id="dev-panel-gpu" data-tab="gpu" hidden>
+				<p class="hint">A GPU is granted to a container by its group id, <code>gpu:N</code>, which grants every node listed with it.</p>
+				<table id="dev-gpu">
+					<tbody><tr><td colspan="6" class="empty">Reading&hellip;</td></tr></tbody>
+				</table>
+			</div>
+			</div>
+<div class="tab-panel" data-tab="devicemaps" hidden>
 			<h3>Named mappings</h3>
 			<p class="hint">Persisted, operator-named bindings (ADR-0048) -- an exact mapping pins to
-				one specific bus location; a vendor/model mapping follows a device across USB ports.</p>
+				one specific bus location; a vendor/model mapping follows a device across USB ports. A
+				mapping's name works anywhere a device id does.</p>
 			<table id="devicemaps-table">
 				<thead>
 					<tr>
@@ -643,35 +681,6 @@
 					<tr><td colspan="6" class="empty">Reading&hellip;</td></tr>
 				</tbody>
 			</table>
-			</div>
-<div class="tab-panel" data-tab="devices" hidden><h3>Discovered hardware</h3>
-			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="usb" id="dev-tab-usb">USB</button>
-				<button type="button" class="tab-button" data-tab="pci" id="dev-tab-pci">PCI</button>
-				<button type="button" class="tab-button" data-tab="net" id="dev-tab-net">Network</button>
-				<button type="button" class="tab-button" data-tab="gpu" id="dev-tab-gpu">GPU</button>
-			</div>
-			<div class="tab-panel" id="dev-panel-usb" data-tab="usb">
-				<table id="dev-usb">
-					<tbody><tr><td colspan="6" class="empty">Reading&hellip;</td></tr></tbody>
-				</table>
-			</div>
-			<div class="tab-panel" id="dev-panel-pci" data-tab="pci" hidden>
-				<table id="dev-pci">
-					<tbody><tr><td colspan="6" class="empty">Reading&hellip;</td></tr></tbody>
-				</table>
-			</div>
-			<div class="tab-panel" id="dev-panel-net" data-tab="net" hidden>
-				<table id="dev-net">
-					<tbody><tr><td colspan="6" class="empty">Reading&hellip;</td></tr></tbody>
-				</table>
-			</div>
-			<div class="tab-panel" id="dev-panel-gpu" data-tab="gpu" hidden>
-				<p class="hint">A GPU is granted to a container by its group id, <code>gpu:N</code>, which grants every node listed with it.</p>
-				<table id="dev-gpu">
-					<tbody><tr><td colspan="6" class="empty">Reading&hellip;</td></tr></tbody>
-				</table>
-			</div>
 			</div>
 <div class="tab-panel" data-tab="kmod" hidden>
 			

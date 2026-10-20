@@ -24,13 +24,12 @@
  * failing rather than silently retrying as a literal raw id. Same
  * hardware-dependent guard as the rest of this file.
  *
- * Also covers ADR-0142's raw disk passthrough: a non-OS, role-less
- * whole disk is listed under GET /v1/devices as "disk:<name>", and
- * assigning/removing a disk role (daemon/src/diskrole.c) correctly
- * removes/restores it from that list -- proving device.c's own
- * enumerate_disk() stays in sync with the storage-placement system
- * rather than offering an already-daemon-owned disk for passthrough
- * too.
+ * Also covers ADR-0142's raw disk passthrough under ADR-0344's state:
+ * a non-OS, unmounted, role-less disk is listed under GET /v1/devices
+ * as "disk:<name>" with state "free"; assigning a role makes it "host"
+ * with reason "storage-role" -- still listed, because a disk the host
+ * uses is a fact an operator needs -- and a grant of it is then refused
+ * with 400; removing the role makes it "free" again.
  */
 #include "httpclient.h"
 #include "json.h"
@@ -75,6 +74,45 @@ static const char *json_str_field(const struct json_value *obj, const char *key)
 static int str_eq(const char *a, const char *b)
 {
 	return a != NULL && b != NULL && strcmp(a, b) == 0;
+}
+
+/*
+ * ADR-0344: one record's state and reason from GET /v1/devices. Returns
+ * 1 when the record is listed with exactly that state and reason, 0
+ * when it is listed with another (printed, so a failure says what it
+ * was), -1 when it is not listed or the request failed.
+ */
+static int device_state_is(const struct cix_client *c, const char *id, const char *state,
+                           const char *reason)
+{
+	struct cix_response r;
+	const struct json_value *devices;
+	int answer = -1;
+	size_t i;
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "GET", "/v1/devices", NULL, &r) != 0 || r.status != 200) {
+		cix_response_free(&r);
+		return -1;
+	}
+	devices = json_object_get(r.json, "devices");
+	for (i = 0; devices != NULL && devices->type == JSON_ARRAY && i < devices->u.array.count;
+	     i++) {
+		const struct json_value *d = devices->u.array.items[i];
+
+		if (!str_eq(json_str_field(d, "id"), id))
+			continue;
+		answer = str_eq(json_str_field(d, "state"), state) &&
+		         str_eq(json_str_field(d, "reason"), reason);
+		if (!answer)
+			fprintf(stderr, "  %s is %s/%s, expected %s/%s\n", id,
+			        json_str_field(d, "state") ? json_str_field(d, "state") : "?",
+			        json_str_field(d, "reason") ? json_str_field(d, "reason") : "?", state,
+			        reason);
+		break;
+	}
+	cix_response_free(&r);
+	return answer;
 }
 
 static pid_t start_daemon(void)
@@ -174,21 +212,27 @@ int main(void)
 
 			for (i = 0; i < devices->u.array.count; i++) {
 				const struct json_value *d = devices->u.array.items[i];
-				const struct json_value *jassignable = json_object_get(d, "assignable");
 				const char *id = json_str_field(d, "id");
 				const char *bus = json_str_field(d, "bus");
+				const char *state = json_str_field(d, "state");
+				const char *dev_path = json_str_field(d, "dev_path");
 
-				if (id == NULL || bus == NULL || json_object_get(d, "dev_path") == NULL ||
+				if (id == NULL || bus == NULL || dev_path == NULL ||
 				    json_object_get(d, "type") == NULL ||
 				    json_object_get(d, "major") == NULL ||
-				    json_object_get(d, "minor") == NULL || jassignable == NULL) {
+				    json_object_get(d, "minor") == NULL || state == NULL ||
+				    json_object_get(d, "reason") == NULL ||
+				    json_object_get(d, "parent") == NULL ||
+				    json_object_get(d, "held_by") == NULL ||
+				    json_object_get(d, "reserved_by") == NULL) {
 					fprintf(stderr, "FAIL: device entry %zu missing a documented field\n",
 					        i);
 					ok = 0;
 					continue;
 				}
-				if (!have_assignable && jassignable->type == JSON_BOOL &&
-				    jassignable->u.boolean) {
+				/* A grantable node: free, and a /dev node rather than an
+				 * interface, which this file's grants do not exercise. */
+				if (!have_assignable && str_eq(state, "free") && dev_path[0] != '\0') {
 					const char *vendor_id = json_str_field(d, "vendor_id");
 					const char *product_id = json_str_field(d, "product_id");
 
@@ -602,101 +646,44 @@ int main(void)
 	}
 
 	/*
-	 * 6. ADR-0142: raw disk passthrough. device_enumerate() now also
-	 * exposes every non-OS, role-less whole disk as "disk:<name>" (see
-	 * device.c's enumerate_disk()). Genuinely host-dependent (a disk-
-	 * less sandbox is theoretically possible), so this only runs if
-	 * GET /v1/storage actually reports at least one non-OS disk -- true
-	 * on every real machine this project targets, and confirmed true
-	 * in this dev sandbox itself.
+	 * 6. ADR-0142 raw disk passthrough, under ADR-0344's state. The disk
+	 * is the first one GET /v1/devices itself calls "free" -- whether a
+	 * disk is free depends on everything below it (a mounted partition
+	 * makes its disk the host's), so asking the list is the only choice
+	 * that cannot disagree with it. A host with no free disk skips.
 	 */
 	{
-		char disk_name[64] = "";
+		char disk_id[96] = "";
+		size_t i;
 
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "GET", "/v1/storage", NULL, &r) != 0 || r.status != 200) {
-			fprintf(stderr, "FAIL: GET /v1/storage, status=%d\n", r.status);
+		if (cix_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 || r.status != 200) {
+			fprintf(stderr, "FAIL: GET /v1/devices (disk scenario), status=%d\n", r.status);
 			ok = 0;
 		} else {
-			const struct json_value *disks = json_object_get(r.json, "disks");
-			size_t i;
+			const struct json_value *devices = json_object_get(r.json, "devices");
 
-			if (disks != NULL && disks->type == JSON_ARRAY) {
-				for (i = 0; i < disks->u.array.count && disk_name[0] == '\0'; i++) {
-					const struct json_value *d = disks->u.array.items[i];
-					const struct json_value *jos = json_object_get(d, "is_os_disk");
+			for (i = 0; devices != NULL && devices->type == JSON_ARRAY &&
+			            i < devices->u.array.count && disk_id[0] == '\0';
+			     i++) {
+				const struct json_value *d = devices->u.array.items[i];
 
-					if (jos != NULL && jos->type == JSON_BOOL && !jos->u.boolean) {
-						snprintf(disk_name, sizeof(disk_name), "%s",
-						         json_str_field(d, "name"));
-					}
-				}
+				if (str_eq(json_str_field(d, "bus"), "disk") &&
+				    str_eq(json_str_field(d, "state"), "free"))
+					snprintf(disk_id, sizeof(disk_id), "%s", json_str_field(d, "id"));
 			}
 		}
 		cix_response_free(&r);
 
-		if (disk_name[0] == '\0') {
-			printf("(no non-OS disk discovered on this host -- scenario 6 skipped)\n");
+		if (disk_id[0] == '\0') {
+			printf("(no free disk on this host -- scenario 6 skipped)\n");
 		} else {
-			char disk_id[80];
+			const char *disk_name = disk_id + 5; /* "disk:" */
 			char role_body[128];
 			char role_path[96];
-			int listed_before = 0, listed_after_role = 1, listed_after_delete = 0;
+			char grant_body[512];
 
-			snprintf(disk_id, sizeof(disk_id), "disk:%s", disk_name);
-
-			/* 6a. role-less: must be listed, bus:"disk", assignable, and
-			 * carry a real dev_path/major/minor (never zeroed/blank). */
-			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 ||
-			    r.status != 200) {
-				fprintf(stderr, "FAIL: GET /v1/devices (disk scenario, before role), "
-				                "status=%d\n",
-				        r.status);
-				ok = 0;
-			} else {
-				const struct json_value *devices = json_object_get(r.json, "devices");
-				size_t i;
-
-				if (devices != NULL && devices->type == JSON_ARRAY) {
-					for (i = 0; i < devices->u.array.count; i++) {
-						const struct json_value *d = devices->u.array.items[i];
-
-						if (str_eq(json_str_field(d, "id"), disk_id)) {
-							const struct json_value *jassignable =
-							        json_object_get(d, "assignable");
-							const struct json_value *jmajor =
-							        json_object_get(d, "major");
-							const char *dev_path = json_str_field(d, "dev_path");
-
-							listed_before = 1;
-							if (!str_eq(json_str_field(d, "bus"), "disk") ||
-							    jassignable == NULL ||
-							    jassignable->type != JSON_BOOL ||
-							    !jassignable->u.boolean || dev_path == NULL ||
-							    dev_path[0] == '\0' || jmajor == NULL ||
-							    jmajor->type != JSON_NUMBER) {
-								fprintf(stderr,
-								        "FAIL: %s malformed disk device "
-								        "entry\n",
-								        disk_id);
-								ok = 0;
-							}
-						}
-					}
-				}
-			}
-			cix_response_free(&r);
-			if (!listed_before) {
-				fprintf(stderr, "FAIL: %s not listed under GET /v1/devices before a "
-				                "role was assigned\n",
-				        disk_id);
-				ok = 0;
-			}
-
-			/* 6b. assigning it a role removes it from the passthrough
-			 * list -- already daemon-owned storage, never independently
-			 * grantable to a container at the same time. */
+			/* 6a. a role makes it the host's: still listed, with the reason. */
 			snprintf(role_body, sizeof(role_body), "{\"disk_name\":\"%s\",\"role\":\"backup\"}",
 			         disk_name);
 			memset(&r, 0, sizeof(r));
@@ -707,37 +694,37 @@ int main(void)
 				ok = 0;
 			}
 			cix_response_free(&r);
-
-			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 ||
-			    r.status != 200) {
-				fprintf(stderr, "FAIL: GET /v1/devices (disk scenario, after role), "
-				                "status=%d\n",
-				        r.status);
-				ok = 0;
-			} else {
-				const struct json_value *devices = json_object_get(r.json, "devices");
-				size_t i;
-
-				listed_after_role = 0;
-				if (devices != NULL && devices->type == JSON_ARRAY) {
-					for (i = 0; i < devices->u.array.count; i++) {
-						if (str_eq(json_str_field(devices->u.array.items[i], "id"),
-						           disk_id))
-							listed_after_role = 1;
-					}
-				}
-			}
-			cix_response_free(&r);
-			if (listed_after_role) {
-				fprintf(stderr,
-				        "FAIL: %s still listed under GET /v1/devices after a role "
-				        "was assigned to it\n",
+			if (device_state_is(&client, disk_id, "host", "storage-role") != 1) {
+				fprintf(stderr, "FAIL: %s is not host/storage-role after a role was assigned\n",
 				        disk_id);
 				ok = 0;
 			}
 
-			/* 6c. removing the role makes it passthrough-eligible again. */
+			/* 6b. and a grant of it is refused with 400 -- the #620 hole.
+			 * A 201 would mean a container holds a roled disk, so it is
+			 * deleted at once rather than left for the next step. */
+			snprintf(grant_body, sizeof(grant_body),
+			         "{\"name\":\"diskgrant\",\"image\":\"devicestest\","
+			         "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\","
+			         "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],\"devices\":[\"%s\"]}",
+			         disk_id);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/containers", grant_body, &r) != 0 ||
+			    r.status != 400) {
+				fprintf(stderr, "FAIL: granting roled %s answered %d, expected 400\n", disk_id,
+				        r.status);
+				ok = 0;
+				if (r.status == 201) {
+					struct cix_response dr;
+
+					memset(&dr, 0, sizeof(dr));
+					cix_client_request(&client, "DELETE", "/v1/containers/diskgrant", NULL, &dr);
+					cix_response_free(&dr);
+				}
+			}
+			cix_response_free(&r);
+
+			/* 6c. removing the role makes it free again. */
 			snprintf(role_path, sizeof(role_path), "/v1/storage-roles/%s", disk_name);
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "DELETE", role_path, NULL, &r) != 0 ||
@@ -746,31 +733,8 @@ int main(void)
 				ok = 0;
 			}
 			cix_response_free(&r);
-
-			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 ||
-			    r.status != 200) {
-				fprintf(stderr, "FAIL: GET /v1/devices (disk scenario, after role "
-				                "delete), status=%d\n",
-				        r.status);
-				ok = 0;
-			} else {
-				const struct json_value *devices = json_object_get(r.json, "devices");
-				size_t i;
-
-				if (devices != NULL && devices->type == JSON_ARRAY) {
-					for (i = 0; i < devices->u.array.count; i++) {
-						if (str_eq(json_str_field(devices->u.array.items[i], "id"),
-						           disk_id))
-							listed_after_delete = 1;
-					}
-				}
-			}
-			cix_response_free(&r);
-			if (!listed_after_delete) {
-				fprintf(stderr,
-				        "FAIL: %s not listed under GET /v1/devices again after its "
-				        "role was removed\n",
+			if (device_state_is(&client, disk_id, "free", "") != 1) {
+				fprintf(stderr, "FAIL: %s is not free again after its role was removed\n",
 				        disk_id);
 				ok = 0;
 			}

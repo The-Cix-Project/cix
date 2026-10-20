@@ -303,6 +303,14 @@ void containerdef_write_json_volumes(const struct json_value *root, struct json_
 int containerdef_resolve_order(char out_order[][REGISTRY_NAME_MAX]);
 
 /*
+ * Every definition's name, in table order, up to max; returns the count.
+ * For a reader that needs all of them and no ordering -- ADR-0344's
+ * reservations -- where containerdef_resolve_order() would skip a
+ * definition with a dependency problem and say so on stderr each call.
+ */
+int containerdef_list_names(char out[][REGISTRY_NAME_MAX], int max);
+
+/*
  * Writes one synthesized, Container-shaped JSON object (ADR-0045) for
  * every persisted definition that has NO live registry entry -- i.e.
  * every kept-but-not-running container -- letting GET /v1/containers

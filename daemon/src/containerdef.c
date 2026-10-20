@@ -22,6 +22,17 @@ struct container_def *containerdef_find(const char *name)
 	return NULL;
 }
 
+int containerdef_list_names(char out[][REGISTRY_NAME_MAX], int max)
+{
+	int i, n = 0;
+
+	for (i = 0; i < CONTAINERDEF_MAX && n < max; i++) {
+		if (g_defs[i].in_use)
+			snprintf(out[n++], REGISTRY_NAME_MAX, "%s", g_defs[i].name);
+	}
+	return n;
+}
+
 static int save_state(void)
 {
 	struct json_writer w;
@@ -476,6 +487,13 @@ static void write_stopped_def_json_one(struct container_def *d, struct json_writ
 	jw_key(w, "interfaces");
 	jw_arr_open(w);
 	jw_arr_close(w);
+	jw_key(w, "reserve_devices");
+	{
+		const struct json_value *jreserve =
+		    root != NULL ? json_object_get(root, "reserve_devices") : NULL;
+
+		jw_bool(w, jreserve != NULL && jreserve->type == JSON_BOOL && jreserve->u.boolean);
+	}
 	jw_key(w, "files");
 	jw_arr_open(w);
 	jw_arr_close(w);

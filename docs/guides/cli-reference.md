@@ -305,7 +305,7 @@ container run --name=NAME --image=IMAGE
     [--disk-quota=BYTES] [--disk=NAME] [--volume=NAME:/path[:ro] ...]
     [--network=NAME[:IP] ...] [--ip-forward] [--route=DEST/PREFIX:VIA ...]
     [--interface=IFNAME ...] [--dns-register] [--dns-server=A.B.C.D ...]
-    [--device=ID ...] [--optional-device=ID ...] [--cap-add=CAP_NAME ...]
+    [--device=ID ...] [--optional-device=ID ...] [--reserve-devices] [--cap-add=CAP_NAME ...]
     [--userns] [--ksm] [--capture-output]
     [--ldap-client] [--ldap-allow-group=NAME ...]
     [--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME] [--ldap-uid=N] [--ldap-secret-dir=PATH]
@@ -317,7 +317,7 @@ container run --name=NAME --image=IMAGE
     [--sysctl=KEY=VALUE ...] [--env=KEY=VALUE ...]
 ```
 
-A container runs its declared services, started in `--after` order by `cix-init`, which is PID 1 in every container ([ADR-0260](../adr/0260-a-container-declares-services-not-a-command.md)). A container with one daemon declares one `--service=`. `--memory-swap-max=0` forbids swapping; omitting it leaves swap unlimited. Each flag maps to a `ContainerCreateRequest` field; see [Creating a container](../api/README.md#creating-a-container) for what each means and how it is validated. `--optional-device=ID` differs from `--device=ID` in one way: an unresolvable reference still creates the container, without that grant, and is matched against hardware as it appears (ADR-0161; see [Device hotplug](administration.md#device-hotplug)).
+A container runs its declared services, started in `--after` order by `cix-init`, which is PID 1 in every container ([ADR-0260](../adr/0260-a-container-declares-services-not-a-command.md)). A container with one daemon declares one `--service=`. `--memory-swap-max=0` forbids swapping; omitting it leaves swap unlimited. Each flag maps to a `ContainerCreateRequest` field; see [Creating a container](../api/README.md#creating-a-container) for what each means and how it is validated. `--optional-device=ID` differs from `--device=ID` in one way: an unresolvable reference still creates the container, without that grant, and is matched against hardware as it appears (ADR-0161; see [Device hotplug](administration.md#device-hotplug)). `--reserve-devices` keeps the container's devices and interfaces for it while it is stopped: `device ls` shows them `reserved`, and no other container is given them ([ADR-0344](../adr/0344-a-device-is-one-record-with-one-state-and-every-grant-asks-it.md)). Without it a stopped container holds nothing, and a conflict is refused when it starts.
 
 ### Declaring a container's services and consoles
 
@@ -425,7 +425,7 @@ See [`networking.md`](networking.md).
 
 | Command | |
 |---|---|
-| `device ls` | Host PCI/USB/GPU devices from sysfs, each with its `id` (for `--device=`), whether it is assignable, and the interfaces of a composite USB device (ADR-0161) |
+| `device ls` | Every host device as a tree under its parent, each with its `id` (for `--device=`, or a `net:` name for `--interface=`), its state (`free`, `held`, `reserved`, `host:REASON`, `unavailable:REASON`) and who holds or reserves it (ADR-0344) |
 | `devicemap create --name=NAME --kind=exact\|vendor_model --selector=SELECTOR` | A persisted, named device binding usable in place of an id in `--device=` (ADR-0048). `exact` takes a device id; `vendor_model` takes `<vendor_id>:<product_id>` and follows the device across USB ports |
 | `devicemap ls` / `devicemap rm NAME` | List (with whether each resolves to hardware now) / remove |
 

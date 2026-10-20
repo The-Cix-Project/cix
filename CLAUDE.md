@@ -306,6 +306,16 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **A pass never runs while a package job is in flight.** It runs after the last job ends for each image a job gave a new version, once after daemon start, and on `POST /v1/images/gc`. The request carries no `keep`; the policy is the only knob.
 - **The reference rule is one definition**, computed once per pass. Never add a fifth source of "referenced" anywhere but there.
 
+## A device is one record with one state, and every grant asks it
+
+**A physical device is one record in `GET /v1/devices`; one pure function decides its state; every grant asks that function, and the dashboard and cixctl show the same answer.** That is [ADR-0344](docs/adr/0344-a-device-is-one-record-with-one-state-and-every-grant-asks-it.md), accepted by the owner on 2026-10-20 (*"Accepted, no reservation as default but should be a setting"*). Before it, measured on .95, the OS disk was `assignable: true`, one display adapter was two records with opposite answers, and exclusivity was a `strcmp` of ids.
+
+- **The states are `free`, `held`, `reserved`, `host` (with a reason) and `unavailable`.** Never add a grant check beside `device_grant_verdict()`, and never derive a device's state in a client.
+- **Each `/dev` node belongs to exactly one record**: the most specific walk that reaches it. Records form a tree by their nearest ancestor that is itself a record; a radio's PHY sits between its device and its interfaces. A gate refuses a node in two records.
+- **Holding follows the tree.** A grant conflicts with a grant of the same record, an ancestor or a descendant. Exclusivity is decided on ids and the tree, never on major:minor, which changes at a USB re-plug.
+- **Held state comes from the grants recorded at grant time**, never from what the host can see. An interface moved into a container is still listed, as held.
+- **Reservation is a per-container setting, `reserve_devices`, off by default.** Off, a stopped definition only appears in `reserved_by`. On, it makes the device `reserved` and refuses it to everyone else. Never make it a host-wide switch.
+
 ## One way to make an image
 
 **An image is made by `POST /v1/images` (`cixctl image create --name=NAME`) and by nothing else.** `POST /v1/pkg/install` naming an image that does not exist is a 400 naming that fix, and creates nothing (#500) -- the owner's decision of 2026-09-30, chosen over documenting the implicit create an install used to perform, which is how `--image=jump`, a typo for `jumpbox`, became a new image.

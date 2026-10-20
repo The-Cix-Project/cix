@@ -10,7 +10,7 @@
  * anything else) lives under /sys/devices/virtual/net/, which
  * enumerate_net_one() (daemon/src/device.c) deliberately excludes from
  * "net:" device discovery. That means the *positive* path -- attach a
- * real assignable interface, confirm it becomes unassignable
+ * real free interface, confirm it becomes a bridge port (state "host")
  * afterward, confirm a VLAN sub-interface becomes the actual bridge
  * port -- needs real hardware this environment doesn't have, and isn't
  * attempted here (the mechanism itself, rtnl_vlan_create()/

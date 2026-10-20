@@ -161,7 +161,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/deployments/{name}` | One deployment's full detail, including its raw, unsubstituted text |
 | DELETE | `/deployments/{name}` | Remove a deployment |
 | POST | `/deployments/{name}/apply` | Render `{name}`'s own stored recipe (substituting any `{{SECRET:KEY}}` tokens from the request's own `secrets` object, and `{{LDAP:URI}}`/`{{LDAP:BASE_DN}}`/`{{LDAP:BIND_DN}}`/`{{LDAP:BIND_PASSWORD}}` tokens from the daemon's own LDAP client config, issue #66 — no per-apply secret, no copied values. `{{LDAP:URI}}` resolves to the same **effective** list the daemon's own `nslcd.conf` rendering uses — the registered servers' live addresses unless an explicit `client_uri` overrides them, health-filtered either way — rather than to the raw stored field, so a deployment that never typed a copy of its own server list still renders a usable URI (#327)) and create the container from it (201). **If the image it names exists but has not been built yet, this returns `202` and waits for it rather than failing** — ADR-0270, see below |
-| GET | `/devices` | List host PCI/USB/net/GPU/disk devices discoverable via sysfs, available for passthrough |
+| GET | `/devices` | List host devices, each with the state every grant is decided by (ADR-0344) |
 | GET | `/devicemaps` | List persistent, operator-named device mappings |
 | POST | `/devicemaps` | Create a persistent device mapping (name -> selector) |
 | DELETE | `/devicemaps/{name}` | Remove a device mapping |
@@ -1105,7 +1105,7 @@ POST /v1/networks/internal/interfaces
 {"ifname": "eth1", "vlan_id": 0}
 ```
 
-Enslaves a real, currently-assignable host interface (`GET /devices`'s own `"net:<ifname>"` entries — not already moved into a container's netns, not already attached anywhere via this endpoint) directly into this network's bridge — the "physical ethernet on a host-managed switch" mechanism, distinct from `interfaces` on `POST /containers` (which moves a NIC straight into one container's own netns instead). `vlan_id` 0 or omitted enslaves `eth1` itself, untagged; a nonzero `vlan_id` instead creates and enslaves an 802.1q `eth1.<vlan_id>` sub-interface, leaving `eth1` free to attach (with a different `vlan_id`) to other networks too. `DELETE /v1/networks/internal/interfaces/eth1` detaches it — releasing the interface from the bridge, or deleting the VLAN sub-interface, whichever this call originally created.
+Enslaves a real host interface that is not a bridge port (`GET /devices`'s own `"net:<ifname>"` entries — not already moved into a container's netns, not already attached anywhere via this endpoint) directly into this network's bridge — the "physical ethernet on a host-managed switch" mechanism, distinct from `interfaces` on `POST /containers` (which moves a NIC straight into one container's own netns instead). `vlan_id` 0 or omitted enslaves `eth1` itself, untagged; a nonzero `vlan_id` instead creates and enslaves an 802.1q `eth1.<vlan_id>` sub-interface, leaving `eth1` free to attach (with a different `vlan_id`) to other networks too. `DELETE /v1/networks/internal/interfaces/eth1` detaches it — releasing the interface from the bridge, or deleting the VLAN sub-interface, whichever this call originally created.
 
 ## The management address and cixd's own listeners
 
@@ -2763,64 +2763,58 @@ POST /v1/containers
 }
 ```
 
-- `devices` is optional: 0–N entries, each a discovered device id from `GET /v1/devices` (`"pci:..."`, `"usb:..."`, `"gpu:N"` for a whole GPU — `gpu:N` is never itself listed by `GET /v1/devices`, only its individual member nodes are — or `"disk:<name>"` for a raw whole disk, ADR-0142), **or** the name of a persistent device mapping (below). Real `/dev` nodes are granted via a `BPF_CGROUP_DEVICE` program on the container's own cgroup (ADR-0017) — nothing else on the host can reach them once bound. A bare `gpu:N` id expands into every node that physical GPU needs in one grant (DRM `cardN`/`renderDN` plus the shared `/dev/kfd` compute node) — see ADR-0028/ADR-0029. A `"disk:<name>"` entry is any non-OS, role-less whole disk `GET /storage` reports — fresh, unlabeled media straight from a USB enclosure or a PCI-passthrough disk with no filesystem/mount concept of its own, handed to the container as a raw block device; a disk already carrying a role (`POST /storage-roles`) is never listed here, since it's already owned by this daemon's own storage-placement system.
+- `devices` is optional: 0–N entries, each a discovered device id from `GET /v1/devices` (`"pci:..."`, `"usb:..."`, `"gpu:N"` for a whole GPU — `gpu:N` is never itself listed by `GET /v1/devices`, only its individual member nodes are — or `"disk:<name>"` for a raw whole disk, ADR-0142), **or** the name of a persistent device mapping (below). Real `/dev` nodes are granted via a `BPF_CGROUP_DEVICE` program on the container's own cgroup (ADR-0017) — nothing else on the host can reach them once bound. A bare `gpu:N` id expands into every node that physical GPU needs in one grant (DRM `cardN`/`renderDN` plus the shared `/dev/kfd` compute node) — see ADR-0028/ADR-0029. A `"disk:<name>"` entry is a disk or a partition, handed to the container as a raw block device. Every disk and partition `GET /storage` reports is listed, and the ones the host uses — the OS disk and its structural partitions, a disk or partition with a storage role, anything mounted — are listed with state `host` and a reason, and refused (ADR-0344).
 - `interfaces` is optional: 0–N real host network interface names (e.g. `"eth1"`) moved directly into the container's own netns (not a veth pair) — fd-anchored teardown, correct even if the container crashes mid-move. See [ADR-0022](../adr/0022-real-nic-passthrough-netns-move.md).
 
   **This is not the same mechanism as `devices` above, and a wireless adapter deliberately uses this one.** `devices` grants a `/dev` node through a `BPF_CGROUP_DEVICE` program on the container's cgroup; `interfaces` moves a live kernel netdev between namespaces. By the time a container exists, a WiFi adapter's USB endpoint has already been claimed by its driver on the host and turned into `wlan0` — so handing the container the raw USB device would grant it something its driver has already taken, while what `hostapd` actually drives is the interface. `ar-1`'s recipe therefore says `"interfaces": ["wlan0"]` and grants no USB device at all.
 
   **A radio moves as a whole PHY, not as an interface** ([ADR-0265](../adr/0265-a-radio-moves-as-a-phy-not-as-an-interface.md), issue #341). `rtnl_link_set_netns_pid()` on a wireless interface returns `EINVAL`: the netdev belongs to a wiphy, one wiphy can own several netdevs, and the kernel refuses to let one leave alone. Cix detects this over netlink (never sysfs — a sysfs instance is bound to the namespace it was *mounted* in, so it answers about the host from inside a container, which stranded a radio for real in #345) and uses `NL80211_CMD_SET_WIPHY_NETNS` instead. Everything on that wiphy goes with it. The interface is brought **down** before the move, because `nl80211.h` requires it, and brought back **up** afterwards from inside the target namespace by a forked `setns()` helper — the kernel administratively downs a link as part of moving it either way, so "up" always belongs after the move.
 
-  **The grant is exclusive, and nothing enforces that because nothing has to.** `GET /v1/devices` is the one source of truth for which interfaces exist and are assignable, and an interface already moved into a running container's netns *does not appear there at all* — so a second container asking for it gets `400 unknown or unassignable interface` from the ordinary lookup, with no separate "already claimed" table. While `ar-1` runs, the host has no `wlan0` and cannot use that radio for anything; `DELETE`ing the container moves the PHY back and the host has it again within about a second. An interface merely enslaved to a host bridge stays visible but reports `assignable: false`, read from the kernel's own `master` symlink rather than from a second bookkeeping table.
-
-  Note this exclusivity is a property of *moving* an interface. A `devices` grant is a cgroup rule rather than a move, and the same USB/PCI/GPU device can currently be granted to several containers with nothing reporting it — see issue #356.
+  **The grant is exclusive, and `GET /v1/devices` says who has it.** The daemon records each grant when it makes it, so after `wlan0` has left the host's namespace it is still listed, as `held` by `ar-1`, under its PHY and the USB dongle it belongs to. A second container asking for it, or for the dongle's raw USB node, gets `409` naming `ar-1`. While `ar-1` runs, the host has no `wlan0`; `DELETE`ing the container moves the PHY back and the host has it again within about a second. An interface enslaved to a host bridge, or carrying the management address, is `host` and refused (ADR-0344).
 - `GET /v1/containers` echoes the real, expanded grants actually made, not an echo of what was requested.
 
 
-### Who is holding a device (#356)
+### What a device's state says (ADR-0344)
 
-Every entry from `GET /v1/devices` carries `held_by` — the names of **running** containers whose grants include it:
+Every entry from `GET /v1/devices` carries one `state`, decided by the same function every grant asks — so a device shown as `free` is one a grant would be given, and a refusal names the same reason the list shows:
+
+| `state` | Meaning | A grant is |
+|---|---|---|
+| `free` | nothing holds it, the host does not use it, and it has something to grant | given |
+| `held` | a running container holds it, an ancestor or a descendant | refused `409` naming the holder, unless both sides are `shared` |
+| `reserved` | a stopped container with `reserve_devices` claims it | refused `409` to anyone but that container |
+| `host` | the host uses it: `reason` is `os-disk`, `os-partition`, `storage-role`, `mounted`, `bridge-port` or `management-interface` | refused `400` with the reason |
+| `unavailable` | nothing on this record can be granted: `reason` is `no-driver` or `no-node` | refused `400` with the reason |
 
 ```json
-{"id": "usb:0781:5583:AA010203", "bus": "usb", "assignable": true,
- "held_by": ["backup-worker"]}
+{"id": "usb:2357:012e:123456", "bus": "usb", "parent": "pci:0000:00:1d.7",
+ "state": "held", "reason": "",
+ "held_by": [{"container": "ar-1", "granted": "phy:phy0", "shared": false}],
+ "reserved_by": []}
 ```
 
-`assignable` and `held_by` are independent, and conflating them is the mistake this field exists to stop. `assignable` answers *"does the host consider this grantable"* — a driver-bound check for USB, unconditional for PCI, a not-enslaved check for a netdev. It has never answered *"is anything already using it"*, so a device held by a container still reports `assignable: true`.
+**Records form a tree.** Each `/dev` node belongs to exactly one record, and `parent` names the nearest record above it — a partition under its disk, a disk under its PCI function, an interface under its PHY, a PHY under its USB or PCI device. Holding follows the tree: a grant conflicts with a grant of the same record, of anything above it and of anything below it, so the dongle above reads `held` because `ar-1` holds its radio, and `granted` says which record it actually holds. Siblings do not conflict — two partitions of one disk can go to two containers.
 
-That matters because **nothing refuses a second grant**. A `devices` grant is a `BPF_CGROUP_DEVICE` rule on one container's cgroup, not a move, so the same USB, PCI or GPU device can be granted to several containers and each gets its own allow rule for the same major/minor. Reporting that is deliberately separate from preventing it: a GPU granted to two containers is ordinary multi-tenant compute — ADR-0028 expands `gpu:N` into a group grant on purpose — while a serial adapter or a raw block device granted twice is data corruption, and this API cannot tell those apart from the device alone.
+**Held comes from the grants the daemon recorded**, never from what the host can see, so an interface moved into a container's netns is still listed. `held_by` is running containers only; matched against the **resolved** record each grant recorded, never the text an operator wrote (a mapping name or a `gpu:N` group).
 
-Three things it deliberately does **not** mean:
-
-- **Live containers only.** A container that is defined but not running has no cgroup and no BPF program, so it holds nothing. That its definition would grant the device on start is a real question, and a different one.
-- **Not pending grants.** A device a container is waiting for (ADR-0161 Phase B) is by definition one it does not have.
-- **Not `net`.** An interface moved into a container's netns stops being enumerated at all, so it is never in this list to be annotated — exclusivity there is the kernel's rather than a field. See the `interfaces` bullet above.
-
-Matched against the **resolved** id each grant recorded, never the text an operator wrote: a spec may say `backup-drive` where the device is `usb:0781:5583:...`, since a named mapping is resolved at creation time and a `vendor_model` mapping can expand to several devices at once. Derived fresh from live container state on every call, never persisted.
-
-**A second grant is now refused unless both sides ask to share it.**
+**Sharing.** A grant to a device a running container already holds is refused unless **both** sides set `shared` — the newcomer and every existing holder (#356):
 
 ```json
 {"devices": [{"id": "disk:sr0", "shared": true}]}
 ```
 
-Without `shared`, granting a device a running container already holds is `409`, and the message names the holder:
+If only the newcomer had to opt in, a container that asked for a device without saying `shared` would silently lose exclusive use because someone else asked nicely. Default `false`. The host-wide ROCm node `gpu:kfd` is shared by nature (ADR-0029) and never conflicts.
 
-```
-409 {"error":"device disk:sr0 is already held by container \"heldtest\" -- both grants must set \"shared\": true to share it"}
-```
+**Reservation is a per-container setting, off by default.** `reserved_by` lists the stopped definitions that name a device, and running containers waiting for it (ADR-0161 Phase B). An entry is `binding` only when its container was created with `"reserve_devices": true`: the device is then `reserved`, and only that container may be given it. Without the setting a stopped container holds nothing, and a conflict surfaces when it starts — the start is refused naming the holder. A reservation never displaces a running holder.
 
-**Both** grants must set it — the newcomer *and* every existing holder. That symmetry is the whole protection: if only the newcomer had to opt in, a container that asked for a device without saying `shared` would silently lose exclusive use because someone else asked nicely. Default `false`, because silence should read as "I need this to myself".
-
-The same rule and the same field apply to the live attach, `POST /containers/{name}/devices`, checked before anything is attached so a grouped id whose second member is contended does not leave the first granted.
-
-Checked per **resolved** device rather than per entry, since one entry can expand into several — a `vendor_model` mapping matching two identical drives, or a `gpu:N` group. A GPU shared between two containers is now explicit rather than accidental: both say `shared`, and that is a sentence someone wrote down.
+The same verdict decides `devices[]` and `interfaces[]` at create and at every start, the live attach `POST /containers/{name}/devices`, and a hotplugged device matched to a waiting container.
 
 ### Composite USB devices (ADR-0161 Phase A)
 
 The passthrough unit is always the whole device — never an individual USB interface, even for a composite device (a combo HID+storage device, say). `GET /v1/devices` still reports what such a device is actually made of, purely descriptively:
 
 ```json
-{"id": "usb:0a12:4007:...", "bus": "usb", "assignable": true,
+{"id": "usb:0a12:4007:...", "bus": "usb", "state": "free",
  "interfaces": [{"number": 0, "class": "03", "subclass": "00", "protocol": "00"},
                 {"number": 1, "class": "01", "subclass": "01", "protocol": "00"}]}
 ```
@@ -2833,7 +2827,7 @@ The passthrough unit is always the whole device — never an individual USB inte
 {"devices": [{"id": "printer-map", "optional": true}]}
 ```
 
-Alongside the bare-string shorthand (`{"id": ..., "optional": false}`), a `devices[]` entry can opt into being **optional**: if `id` doesn't currently resolve to a present, assignable device, container creation still succeeds — without that grant — instead of the usual `400`. The reference itself is remembered (`GET /containers/{name}`'s own `pending_devices` field echoes it) for later automatic hotplug attachment or a manual live-attach call (below). `optional` defaults `false`, so every existing bare-string caller's behavior is unchanged.
+Alongside the bare-string shorthand (`{"id": ..., "optional": false}`), a `devices[]` entry can opt into being **optional**: if `id` doesn't currently resolve to a present device, container creation still succeeds — without that grant — instead of the usual `400`. The reference itself is remembered (`GET /containers/{name}`'s own `pending_devices` field echoes it) for later automatic hotplug attachment or a manual live-attach call (below). `optional` defaults `false`, so every existing bare-string caller's behavior is unchanged.
 
 ### Live device attach/detach + real hotplug reaction (ADR-0161 Phases C/D)
 
@@ -2842,7 +2836,7 @@ POST /v1/containers/{name}/devices
 {"id": "usb:0a12:4007:ABCDEF0123456789"}
 ```
 
-Grants one more device to an **already-running** container, live — no recreate. Same request shape as a creation-time `devices[]` bare-string entry (a raw id or a devicemap name, resolved fresh); the underlying `BPF_CGROUP_DEVICE` program is atomically replaced (empirically verified against 2,000,000 concurrent `open()` attempts spanning the swap — see ADR-0161's own "Phase D verification" for the real probe), so there's no window where an already-granted device is briefly ungranted or unrestricted. `404` if `id` doesn't currently resolve to a present, assignable device; `409` if the container is already at the maximum device count. Deliberately live and ephemeral, the same posture `PUT .../files`/`POST .../networks` already established — never persisted into the container's own create-request body.
+Grants one more device to an **already-running** container, live — no recreate. Same request shape as a creation-time `devices[]` bare-string entry (a raw id or a devicemap name, resolved fresh); the underlying `BPF_CGROUP_DEVICE` program is atomically replaced (empirically verified against 2,000,000 concurrent `open()` attempts spanning the swap — see ADR-0161's own "Phase D verification" for the real probe), so there's no window where an already-granted device is briefly ungranted or unrestricted. `404` if `id` doesn't currently resolve to a present device; `400` if its state is `host` or `unavailable`; `409` if another container holds or reserves it, or the container is already at the maximum device count. Deliberately live and ephemeral, the same posture `PUT .../files`/`POST .../networks` already established — never persisted into the container's own create-request body.
 
 ```
 DELETE /v1/containers/{name}/devices/{id}

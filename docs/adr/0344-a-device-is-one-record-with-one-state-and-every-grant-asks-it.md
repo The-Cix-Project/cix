@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-20, after the owner asked what it would take for the Devices page to show what has been assigned, what is in use and what is free (*"I want to understand and resolve this 100% accurately"*). Issue [#620](https://git.home.arpa/itdlabs/cix/issues/620) is the safety half of it and closes with this. The decision changes device identity, which container definitions and named mappings persist, so it is hard to reverse and accepting it is the owner's decision.
+Accepted by the owner, 2026-10-20: *"Accepted, no reservation as default but should be a setting, go ahead and implement it"*. It was proposed the same day, after the owner asked what it would take for the Devices page to show what has been assigned, what is in use and what is free (*"I want to understand and resolve this 100% accurately"*). The owner's answer to the open question is recorded under [Reservation is a setting](#reservation-is-a-setting-off-by-default). Issue [#620](https://git.home.arpa/itdlabs/cix/issues/620) is the safety half of this ADR and closes with it.
 
 It amends [ADR-0022](0022-real-nic-passthrough-netns-move.md) (visibility is no longer the only record of who holds an interface), [ADR-0028](0028-gpu-passthrough-grouped-device-grants.md) (a GPU node is reported once), [ADR-0048](0048-persistent-device-name-mappings.md) (an `exact` selector names a record id from the new set) and [ADR-0161](0161-usb-hotplug-and-composite-device-extension.md) (a hotplug grant asks the same question as every other grant) and [ADR-0265](0265-a-radio-moves-as-a-phy-not-as-an-interface.md) (a radio's PHY is a record, because it is what moves). It keeps #356's exclusivity rule and its `shared` opt-in unchanged in meaning.
 
@@ -84,6 +84,7 @@ The caller fills the host-facts struct from `disk_enumerate()`, `diskrole_lookup
 |---|---|---|
 | `free` | nothing holds it, the host does not use it, and it has something to grant | yes |
 | `held` | a running container holds it, or holds an ancestor or descendant of it | only if every holder and the request are `shared` (#356, unchanged) |
+| `reserved` | nothing holds it, and a stopped definition with `reserve_devices` claims it, its ancestor or its descendant | only to that definition |
 | `host` | the host uses it, for the `reason` given | no |
 | `unavailable` | there is nothing to grant: no driver, or no node; `reason` says which | no |
 
@@ -109,7 +110,7 @@ There is no `assignable`: the state replaces it (clean cut-over).
 
 Siblings do not conflict, so two partitions of one disk can go to two containers.
 
-**`reserved_by` is reported beside the state and does not change it.** It lists the stopped definitions that name the device and the containers waiting for it (ADR-0161 phase B). This keeps #356's rule that a stopped container holds nothing. A start replays the stored definition through `create_container_from_body()` (`main.c:18078-18083` says so, and `:18159` is the call), so it asks `device_state()` and is refused with the holder's name if someone else has the device. Whether a reservation should instead block a grant is the owner's call; see Open question.
+**`reserved_by` is reported beside the state.** It lists the stopped definitions that name the device and the containers waiting for it (ADR-0161 phase B). By default it does not change the state, which keeps #356's rule that a stopped container holds nothing. A definition with `reserve_devices` makes its entries binding; see [Reservation is a setting](#reservation-is-a-setting-off-by-default). A start replays the stored definition through `create_container_from_body()` (`main.c:18078-18083` says so, and `:18159` is the call), so it asks `device_state()` and is refused with the holder's name if someone else has the device. Whether a reservation should instead block a grant is the owner's call; see Open question.
 
 **Held state comes from the registry's grants, never from what the host can see.** A grant records the record it resolved to, including its chain of parents, at the moment it is made. That is the one time the host can still read a netdev's sysfs. `GET /v1/devices` reports every granted record, so `wlan0` and `phy0` are listed as `held` by `ar-1`, under `usb:2357:012e:123456`, after it has left the host's namespace. Visibility stops being the record of who holds what (ADR-0022, amended). It stays the kernel's own enforcement of it.
 
@@ -184,9 +185,20 @@ Children are nested under their parent, so `wlan0` sits under the dongle. One fu
 - Disk names (`vda`, `sdb`) are not stable across hardware changes. That is true today of `disk:sr0`, and this ADR does not change it. It is the same question #349 asks for interfaces, and a disk gets its answer there.
 - Cost, priced in cycles: the daemon (`device.c`, `registry.c`, the four grant paths), the contract, cixctl and the page. One compile probe and one release in the ordinary case, plus a gate for the new test.
 
-## Open question for the owner
+## Reservation is a setting, off by default
 
-Should a stopped definition that names a device **reserve** it, so that granting it to anything else is refused while the definition exists? This ADR proposes **no**: report the reservation, and refuse at the stopped container's start instead. That keeps #356's rule and never refuses a device that is free right now. Reserving would protect a planned assignment and make an unused definition hold hardware indefinitely.
+The owner's answer: *"no reservation as default but should be a setting"*.
+
+**The setting is per container**: `reserve_devices`, a boolean in the container's create body, default `false`. It lives in the definition body, which already persists and replays, so it needs no new file. That is also where the intent lives: "this router owns this radio even while stopped" is a statement about one container. A host-wide switch was rejected. It would need its own persisted file, and it would make every stopped definition hold hardware, which is the cost the default exists to avoid.
+
+When `reserve_devices` is `true` and the container is stopped, every record its `devices[]` and `interfaces[]` resolve to is **reserved** by it:
+
+- **A fifth state, `reserved`.** It means no running container holds the device and a stopped definition with `reserve_devices` claims it. It is grantable only to that definition. `reserved_by` names the definition and marks the entry `binding: true`.
+- **The tree rule applies.** A reservation of a radio blocks the dongle's USB node, as a holding would.
+- **The verdict takes the requester's name**, so a definition's own start is never refused by its own reservation.
+- **A reservation never displaces a holder.** If the device is held when the reserving container tries to start, the start is refused with the holder's name, exactly as without the setting.
+
+With the setting off, a stopped definition still appears in `reserved_by`, as `binding: false`. It changes no state and refuses nothing; the conflict surfaces at its start, as proposed.
 
 ## Alternatives considered
 

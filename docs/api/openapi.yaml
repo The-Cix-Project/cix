@@ -1915,7 +1915,7 @@ paths:
         0.0.0.0/8 or 127.0.0.0/8. The default upstream route is not set
         here -- it lives in /system/routes (ADR-0067).
       operationId: putManagementAddress
-      x-cix-invalidates: [getManagementAddress, getSystemRoutes]
+      x-cix-invalidates: [getManagementAddress, getSystemRoutes, listDevices]
       x-cix-permission: networks:write
       x-cix-expose: [cli, web]
       requestBody:
@@ -1961,7 +1961,7 @@ paths:
         deliberate loopback-only state, distinct from a failed bind.
         Idempotent: resetting an already-unset address is a 200 no-op.
       operationId: deleteManagementAddress
-      x-cix-invalidates: [getManagementAddress]
+      x-cix-invalidates: [getManagementAddress, listDevices]
       x-cix-permission: networks:write
       x-cix-expose: [cli, web]
       responses:
@@ -6229,13 +6229,18 @@ paths:
 
   /devices:
     get:
-      summary: List host PCI/USB devices discoverable via sysfs, available for passthrough
+      summary: List host devices, each with the state every grant is decided by
       description: >
-        Read-only: unlike /networks, devices are real host hardware, not
-        something this daemon creates. Re-enumerated fresh from
-        /sys/bus/usb/devices and /sys/bus/pci/devices on every call, never
-        persisted. Reference a device by its `id` in a container's own
-        `devices` field (see ContainerCreateRequest) to grant it access.
+        Read-only: devices are real host hardware, not something this
+        daemon creates. Re-enumerated fresh from sysfs (USB, PCI, block,
+        DRM, wireless PHYs, network interfaces) on every call, never
+        persisted, plus every record a running container holds that the
+        host can no longer see (an interface moved into its netns). Each
+        record's `state` comes from the same function that decides every
+        grant (ADR-0344), so a record shown as "free" is one a grant
+        would be given. Reference a device by its `id` in a container's
+        own `devices` or `interfaces` field (see ContainerCreateRequest)
+        to grant it.
       operationId: listDevices
       x-cix-read: state
       x-cix-permission: devices:read
@@ -6349,7 +6354,7 @@ paths:
         also be selected explicitly per container via POST /containers'
         own `disk` field (ADR-0102, Phase D, already built).
       operationId: formatStorage
-      x-cix-invalidates: [listStorage, getStorageFormatStatus]
+      x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices]
       x-cix-permission: storage:write
       x-cix-expose: [cli, web]
       parameters:
@@ -6425,7 +6430,7 @@ paths:
         body's `confirm_disk_name` must match disk_name in the URL
         exactly.
       operationId: unmountStorage
-      x-cix-invalidates: [listStorage, getStorageFormatStatus]
+      x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices]
       x-cix-permission: storage:write
       x-cix-expose: [cli, web]
       parameters:
@@ -6582,7 +6587,7 @@ paths:
         and near-instantaneous, unlike POST .../format's mkfs, so this
         has no async job/poll shape.
       operationId: createStoragePartitionTable
-      x-cix-invalidates: [listStorage, getStorageFormatStatus]
+      x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices]
       x-cix-permission: storage:write
       x-cix-expose: [cli, web]
       parameters:
@@ -6647,7 +6652,7 @@ paths:
         deliberately-reserved free space unusable. Synchronous, same
         reasoning as partition-table creation above.
       operationId: addStoragePartition
-      x-cix-invalidates: [listStorage, getStorageFormatStatus]
+      x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices]
       x-cix-permission: storage:write
       x-cix-expose: [cli, web]
       parameters:
@@ -6733,7 +6738,7 @@ paths:
         is already the right size, so it finishes the filesystem grow
         rather than refusing as a shrink.
       operationId: resizeStoragePartition
-      x-cix-invalidates: [listStorage, getStorageFormatStatus]
+      x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices]
       x-cix-permission: storage:write
       x-cix-expose: [cli, web]
       parameters:
@@ -6814,7 +6819,7 @@ paths:
         still has a role assigned (remove the role first, POST
         /storage-roles), or is currently mounted.
       operationId: deleteStoragePartition
-      x-cix-invalidates: [listStorage, getStorageFormatStatus]
+      x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices]
       x-cix-permission: storage:write
       x-cix-expose: [cli, web]
       parameters:
@@ -7000,7 +7005,7 @@ paths:
         OS-disk layout (`is_os_disk` on GET /disks) -- it is never a
         role-assignment candidate.
       operationId: createStorageRole
-      x-cix-invalidates: [listStorageRoles]
+      x-cix-invalidates: [listStorageRoles, listDevices]
       x-cix-permission: storage:write
       x-cix-expose: [cli, web]
       requestBody:
@@ -7039,7 +7044,7 @@ paths:
     delete:
       summary: Removes a disk's role assignment
       operationId: deleteStorageRole
-      x-cix-invalidates: [listStorageRoles]
+      x-cix-invalidates: [listStorageRoles, listDevices]
       x-cix-permission: storage:write
       x-cix-expose: [cli, web]
       parameters:
@@ -7468,15 +7473,18 @@ paths:
       summary: >
         Attach a real host network interface to this network's bridge --
         the "physical ethernet on a host-managed switch" mechanism.
-        ifname must be a currently assignable "net:<ifname>" device (see
-        GET /devices) -- not already moved into a container's netns, and
-        not already attached anywhere via this endpoint. vlan_id 0/omitted
+        ifname must be a "net:<ifname>" device in GET /devices that is
+        not a bridge port -- not already moved into a container's netns,
+        and not already attached anywhere via this endpoint. This is
+        host configuration, not a container grant, so it is how the
+        management network takes its uplink and is not refused for
+        reason "management-interface". vlan_id 0/omitted
         enslaves ifname directly (untagged); a nonzero vlan_id instead
         creates and enslaves an 802.1q "<ifname>.<vlan_id>" sub-interface,
         leaving ifname itself free to attach (with a different vlan_id) to
         other networks.
       operationId: attachNetworkInterface
-      x-cix-invalidates: [listNetworks, getNetwork]
+      x-cix-invalidates: [listNetworks, getNetwork, listDevices]
       x-cix-permission: networks:write
       x-cix-expose: [cli, web]
       parameters:
@@ -7495,7 +7503,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Network"
         "400":
-          description: Unknown/unassignable interface, invalid vlan_id, or the derived name wouldn't fit IFNAMSIZ
+          description: Unknown interface or a bridge port, invalid vlan_id, or the derived name wouldn't fit IFNAMSIZ
           content:
             application/json:
               schema:
@@ -7523,7 +7531,7 @@ paths:
     delete:
       summary: Detach a previously-attached interface -- releases it from the bridge, or deletes its VLAN sub-interface
       operationId: detachNetworkInterface
-      x-cix-invalidates: [listNetworks, getNetwork]
+      x-cix-invalidates: [listNetworks, getNetwork, listDevices]
       x-cix-permission: networks:write
       x-cix-expose: [cli, web]
       parameters:
@@ -8247,7 +8255,7 @@ paths:
         interpreted beyond that one check; validity as a real container
         body is only checked when the recipe is actually applied.
       operationId: addDeployment
-      x-cix-invalidates: [listDeployments, getDeployment, listContainers, listImages]
+      x-cix-invalidates: [listDeployments, getDeployment, listContainers, listImages, listDevices]
       x-cix-permission: containers:write
       x-cix-expose: [cli, web]
       requestBody:
@@ -8307,7 +8315,7 @@ paths:
     delete:
       summary: Removes name's own container recipe. Does not affect any container already created from it.
       operationId: deleteDeployment
-      x-cix-invalidates: [listDeployments, getDeployment, listContainers]
+      x-cix-invalidates: [listDeployments, getDeployment, listContainers, listDevices]
       x-cix-permission: containers:write
       x-cix-expose: [cli, web]
       parameters:
@@ -8357,7 +8365,7 @@ paths:
         is why the readiness test compares against that version rather
         than merely checking one exists.
       operationId: applyDeployment
-      x-cix-invalidates: [listDeployments, getDeployment, listContainers, listImages, getImage]
+      x-cix-invalidates: [listDeployments, getDeployment, listContainers, listImages, getImage, listDevices]
       x-cix-permission: containers:write
       x-cix-expose: [cli, web]
       parameters:
@@ -13485,7 +13493,7 @@ paths:
         unlike boot-time autostart -- an explicit, manual start always
         means start it.
       operationId: startContainer
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork]
+      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listDevices]
       x-cix-permission: containers:operate
       x-cix-expose: [cli, web]
       parameters:
@@ -13803,7 +13811,7 @@ paths:
         being fully gone (e.g. before deleting a network it was
         attached to) should poll to status "stopped" first.
       operationId: stopContainer
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork]
+      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listDevices]
       x-cix-permission: containers:operate
       x-cix-expose: [cli, web]
       parameters:
@@ -15657,19 +15665,26 @@ paths:
               schema:
                 $ref: "#/components/schemas/Container"
         "400":
-          description: id is missing.
+          description: >
+            id is missing, or the device's state (ADR-0344) is "host" or
+            "unavailable"; the message names the reason (e.g. "vdb is
+            the OS disk").
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
-          description: No such running container, or id resolves to no currently-present, assignable device.
+          description: No such running container, or id resolves to no currently-present device.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: The container already has the maximum number of devices.
+          description: >
+            The container already has the maximum number of devices, or
+            the device is held by another running container (and either
+            side is not shared) or reserved by a stopped one; the
+            message names the container.
           content:
             application/json:
               schema:
@@ -16753,8 +16768,10 @@ components:
             ids (see GET /devices) of host PCI/USB/GPU devices to grant
             this container access to -- a bare string is shorthand for
             {"id": ..., "optional": false}. Any non-optional id not
-            currently discoverable, or not assignable (no driver bound
-            and/or no owned /dev node found), is a 400. Omit for no
+            currently discoverable, or whose state (ADR-0344, see
+            Device.state) is "host" or "unavailable", is a 400 naming the
+            reason; one held by another running container or reserved
+            by a stopped one is a 409 naming that container. Omit for no
             device passthrough at all (the same "no /dev beyond the base
             image" behavior every container had before this field
             existed). Set once at creation; not modifiable on an
@@ -16770,8 +16787,8 @@ components:
             One entry here doesn't always mean one grant: a GPU's bare
             logical id ("gpu:0", not itself listed by GET /devices --
             only its individual member nodes are, see Device.bus) atomically
-            expands into every one of that GPU's currently assignable
-            nodes (e.g. both "gpu:0:card0" and "gpu:0:renderD128" from a
+            expands into every one of that GPU's currently grantable
+            nodes, plus "gpu:kfd" when the host has one, (e.g. both "gpu:0:card0" and "gpu:0:renderD128" from a
             single "gpu:0" entry here) -- ADR-0028. GET /containers'
             own response then reflects what was actually granted (the
             expanded member ids), not a static echo of what this field
@@ -16787,8 +16804,8 @@ components:
             Device.id -- resolved first; only falls back to the raw id
             namespace if no mapping exists by that name. A mapping
             that exists but currently resolves to nothing (its device
-            is unplugged) is a 400, same as an unknown/unassignable
-            raw id -- it is not silently reinterpreted as a literal id.
+            is unplugged) is a 400, same as an unknown raw id -- it is
+            not silently reinterpreted as a literal id.
         interfaces:
           title: Host interfaces
           type: array
@@ -16799,8 +16816,12 @@ components:
             Bare kernel interface names (e.g. "wlan0") of real,
             physically-backed network interfaces to move wholesale into
             this container's own netns -- any name not currently listed
-            under a "net" bus entry in GET /devices (unknown, or already
-            attached elsewhere) is a 400. No veth, no bridge, no rename,
+            under a "net" bus entry in GET /devices is a 400, and so is
+            one whose state is "host" (a bridge port, or the interface
+            carrying the management address); one held or reserved by
+            another container is a 409 (ADR-0344). A wireless interface
+            is granted as its PHY, so every interface on that PHY goes
+            with it (ADR-0265). No veth, no bridge, no rename,
             no address configured: the interface keeps its real kernel
             name and comes up automatically, but addressing/routing is
             entirely the operator's own job inside the container (e.g.
@@ -16808,6 +16829,19 @@ components:
             is independent of, and can be combined with, networks above.
             Set once at creation; not modifiable on an already-running
             container.
+        reserve_devices:
+          title: Reserve devices while stopped
+          type: boolean
+          default: false
+          description: >
+            ADR-0344. When true, every device this container's devices[]
+            and interfaces[] resolve to is reserved for it while it is
+            stopped: GET /devices reports it as "reserved", and granting
+            it to any other container is a 409. Off by default, so a
+            stopped container holds nothing and a conflict surfaces only
+            when it starts. A reservation never displaces a running
+            holder: if the device is held when this container starts,
+            the start is refused naming the holder.
         cap_add:
           title: Extra capabilities
           type: array
@@ -17979,6 +18013,11 @@ components:
           description: >
             Bare kernel names of every real network interface moved into
             this container's own netns at creation. Empty if none.
+        reserve_devices:
+          type: boolean
+          description: >
+            The creation setting of the same name (ADR-0344): whether this
+            container's devices are reserved for it while it is stopped.
         cap_add:
           type: array
           items:
@@ -20185,37 +20224,44 @@ components:
 
     Device:
       type: object
-      required: [id, bus, vendor_id, product_id, class, description, driver, dev_path, type, major, minor, assignable, interfaces, held_by]
+      description: >
+        One physical device the host can see or a running container
+        holds (ADR-0344). Each /dev node belongs to exactly one record,
+        and records form a tree through `parent`.
+      required: [id, bus, parent, vendor_id, product_id, class, description, driver, dev_path, type, major, minor, state, reason, held_by, reserved_by, interfaces]
       properties:
         id:
           type: string
           description: >
             Stable identifier: "usb:{idVendor}:{idProduct}:{serial-or-port-path}",
-            "pci:{bdf-address}[:{node-name}]", "net:{ifname}", or
-            "gpu:{index}:{node-name}" (e.g. "gpu:0:card0",
-            "gpu:0:renderD128" for one physical GPU's two DRM nodes).
-            Never derived from USB busnum/devnum (reassigned on every
-            replug) or from anything else that changes across a
-            reboot/replug on the same physical port. GPU indices are
-            stable only within one daemon's own enumeration pass
-            (first-seen order among distinct underlying PCI addresses),
-            not a hardware-assigned number.
+            "pci:{bdf-address}" for a PCI function, "pci:{bdf-address}:{node-name}"
+            for a node of that function that no more specific walk owns
+            (an NVMe controller's own char node), "disk:{name}" for a
+            disk or a partition, "gpu:{index}:{node-name}" for a DRM
+            node, "gpu:kfd" for the one host-wide ROCm compute node,
+            "phy:{name}" for a wireless PHY, and "net:{ifname}" for a
+            network interface. A disk or DRM node is never reported
+            under a "pci:" id. Never derived from USB busnum/devnum
+            (reassigned on every replug). GPU indices are stable only
+            within one enumeration (first-seen order among distinct
+            parent devices).
         bus:
           type: string
-          enum: [usb, pci, net, gpu]
+          enum: [usb, pci, disk, gpu, phy, net]
           description: >
-            "net" entries are real, physically-backed network interfaces
-            only -- any interface the kernel itself creates (bridges,
-            veths, cix's own managed networks, ...) is never listed.
-            An interface currently attached to a running container simply
-            doesn't appear here at all (it isn't visible in this netns
-            any more) -- the same rule that makes exclusivity automatic,
-            with no separate "already claimed" state to represent.
-            "gpu" entries are DRM display/render nodes (see ADR-0028);
-            each individual node (e.g. "gpu:0:card0") is listed here,
-            but the bare logical id (e.g. "gpu:0") that grants every
-            node for that GPU at once is not itself a listed entry --
-            see ContainerCreateRequest.devices.
+            Which walk reported the record. "net" entries are real,
+            physically-backed interfaces only; an interface the kernel
+            creates (bridges, veths, Cix's own networks) is never
+            listed. "phy" is a wireless PHY, the unit a radio moves into
+            a container as (ADR-0265).
+        parent:
+          type: string
+          description: >
+            The id of the nearest sysfs ancestor that is itself a
+            record, or empty for a record with none. A PHY's interfaces
+            name the PHY. A record a running container holds keeps the
+            parent it had when the grant was made, so an interface moved
+            into a container still sits under its device.
         vendor_id:
           type: string
           description: 4 hex digits, no "0x" prefix.
@@ -20224,94 +20270,77 @@ components:
           description: 4 hex digits, no "0x" prefix.
         class:
           type: string
-          description: PCI class/subclass/progif (6 hex digits), empty for USB and net.
+          description: PCI class/subclass/progif (6 hex digits), empty for everything else.
         description:
           type: string
-          description: Human-readable label (manufacturer/product strings, or a synthesized PCI description).
+          description: Human-readable label (manufacturer/product strings, or a synthesized description).
         driver:
           type: string
           description: Kernel driver currently bound, or empty if unbound.
         dev_path:
           type: string
           description: >
-            The /dev node path this device owns, or empty if none was
-            found (see assignable). Always empty for "net" -- a network
-            interface has no /dev node at all; it's moved wholesale into
-            a container's own netns instead (see
-            ContainerCreateRequest.interfaces), not mknod()'d.
+            The /dev node this record owns, or empty when it owns none
+            (a PCI function whose nodes belong to its children, a PHY,
+            a network interface).
         type:
           type: string
           enum: [char, block]
-          description: Meaningless for "net" (no /dev node to describe).
+          description: Meaningless when dev_path is empty.
         major:
           type: integer
-          description: Meaningless for "net".
+          description: Meaningless when dev_path is empty.
         minor:
           type: integer
-          description: Meaningless for "net".
-        assignable:
-          type: boolean
+          description: Meaningless when dev_path is empty.
+        state:
+          type: string
+          enum: [free, held, reserved, host, unavailable]
           description: >
-            Whether the HOST considers this grantable -- never whether
-            anything already has it. See `held_by` for that; the two are
-            independent and a device can be `assignable: true` while a
-            container holds it.
-
-
-            USB/PCI: true only if a driver is bound AND a real /dev node
-            was found. net: true unless the interface is currently
-            enslaved to a bridge, read from the kernel's own `master`
-            symlink (an interface moved into a container's netns is not
-            listed at all -- see bus's own description). A device with
-            assignable=false still appears (so an operator can see it
-            exists and why it isn't offered), but referencing its id in
-            a container's own devices/interfaces field is a 400.
+            The one answer to "can this be granted, and if not why"
+            (ADR-0344), decided by the same function every grant asks,
+            so a grant's refusal and this field never disagree. "free":
+            grantable. "held": a running container holds it, an ancestor
+            or a descendant (see held_by); grantable only when every
+            holder and the request are shared. "reserved": a stopped
+            container with `reserve_devices` claims it, an ancestor or a
+            descendant; grantable only to that container. "host": the
+            host uses it or something above or below it (see reason).
+            "unavailable": there is nothing to grant (see reason).
+        reason:
+          type: string
+          enum: ["", os-disk, os-partition, storage-role, mounted, bridge-port, management-interface, no-driver, no-node]
+          description: >
+            Why the state is "host" or "unavailable"; empty otherwise.
+            "os-disk" and "os-partition" are the OS disk and its four
+            structural partitions; "storage-role" a disk or partition
+            holding a storage role; "mounted" one the host has mounted,
+            or with a mounted partition; "bridge-port" an interface
+            enslaved to a bridge; "management-interface" the interface
+            carrying the management address, or a port of the bridge
+            that does. "no-driver" and "no-node" mean nothing on this
+            record itself can be granted (a PCI function's nodes belong
+            to its children).
         held_by:
           type: array
-          items:
-            type: string
           description: >
-            Names of RUNNING containers whose device grants include this
-            device (issue #356). Empty for a device nothing holds, and
-            always present -- an absent key and an empty array would be
-            two different things for a client to distinguish, and only
-            one of them is ever meant.
-
-
-            This exists because `assignable` was the only signal
-            available and does not answer the question. Nothing refuses
-            a second grant of a USB, PCI or GPU device, so the same
-            device could be granted to any number of containers with no
-            way to notice. Reporting it is deliberately separate from
-            preventing it: a GPU granted to two containers is ordinary
-            multi-tenant compute (ADR-0028 expands `gpu:N` into a group
-            grant on purpose), while a serial adapter or raw block
-            device granted twice is data corruption, and this API cannot
-            tell those apart from the device alone.
-
-
-            Derived fresh from live container state on every call, never
-            persisted -- the same posture the rest of this endpoint
-            takes toward host hardware. Matched against the RESOLVED id
-            each grant recorded, not the text an operator wrote: a spec
-            may say `backup-drive` where the device is
-            `usb:0781:5583:...`, because a named mapping (ADR-0048) is
-            resolved at creation time and a `vendor_model` mapping can
-            expand to several devices at once.
-
-
-            LIVE containers only. A container that is defined but not
-            running has no cgroup and no BPF_CGROUP_DEVICE program, so it
-            holds nothing; that its definition would grant the device on
-            start is a real but different question. A device a container
-            is merely waiting for (ADR-0161 Phase B `pending_devices`) is
-            excluded for the same reason.
-
-
-            A `net` device never appears here with a holder, and that is
-            correct rather than missing: an interface moved into a
-            container's netns stops being enumerated at all, so
-            exclusivity there is the kernel's rather than a field.
+            Every RUNNING container holding this record, an ancestor or
+            a descendant, one entry per container and granted record.
+            Always present. Derived from the grants the daemon recorded
+            when it made them, never from what the host can see, so an
+            interface moved into a container's netns is listed too.
+          items:
+            $ref: "#/components/schemas/DeviceHolder"
+        reserved_by:
+          type: array
+          description: >
+            Stopped container definitions that name this record, an
+            ancestor or a descendant, and running containers waiting for
+            it (ADR-0161 phase B). An entry is `binding` only when its
+            container sets `reserve_devices`; only a binding entry
+            changes the state.
+          items:
+            $ref: "#/components/schemas/DeviceReservation"
         interfaces:
           type: array
           description: >
@@ -20320,10 +20349,40 @@ components:
             HID+storage device); empty for every non-USB device and
             for a USB device with only the one implicit interface a
             single-function device already has. The passthrough unit
-            stays the whole device regardless -- this never changes
-            what "assignable"/dev_path/major/minor mean or grants.
+            stays the whole device regardless.
           items:
             $ref: "#/components/schemas/DeviceInterface"
+
+    DeviceHolder:
+      type: object
+      required: [container, granted, shared]
+      properties:
+        container:
+          type: string
+        granted:
+          type: string
+          description: >
+            The record id the container was actually given, which is
+            this record, an ancestor or a descendant.
+        shared:
+          type: boolean
+          description: Whether that grant declared `shared` (#356).
+
+    DeviceReservation:
+      type: object
+      required: [container, claimed, binding]
+      properties:
+        container:
+          type: string
+        claimed:
+          type: string
+          description: The record id the container names, resolved now.
+        binding:
+          type: boolean
+          description: >
+            True when the container is stopped and sets
+            `reserve_devices`; the device is then granted to nobody
+            else.
 
     DeviceInterface:
       type: object
@@ -20897,7 +20956,7 @@ components:
         ifname:
           title: Interface
           type: string
-          description: A currently assignable "net:<ifname>" device (see GET /devices).
+          description: A "net:<ifname>" device in GET /devices that is not a bridge port.
         vlan_id:
           title: VLAN id
           type: integer

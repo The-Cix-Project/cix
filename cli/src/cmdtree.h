@@ -851,6 +851,7 @@ static const char *const n_container_run_flags[] = {
 	"--pki-days=",
 	"--pki-issue",
 	"--ready=",
+	"--reserve-devices",
 	"--restart-delay=",
 	"--restart=",
 	"--route=",

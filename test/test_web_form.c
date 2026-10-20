@@ -1316,7 +1316,7 @@ int main(void)
 		/*
 		 * ---- a form with groups, rows and sections (#592) ----
 		 *
-		 * New Container, the last hand-built create form: forty-seven
+		 * New Container, the last hand-built create form: forty-eight
 		 * fields, eight of them arrays of objects and two objects. The
 		 * contract names each shape (`of`), and the form draws the
 		 * shape's own fields -- a service as a row of name, command,

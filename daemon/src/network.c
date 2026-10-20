@@ -624,18 +624,22 @@ enum network_error network_attach_interface(const char *name, const char *ifname
 	    snprintf(derived, sizeof(derived), "%s.%d", ifname, vlan_id) >= (int)sizeof(derived))
 		return NETWORK_ERR_INTERFACE_NAME_TOO_LONG;
 
-	/* device_find() is the same single source of truth --interface=
-	 * passthrough (ADR-0022) already validates against; an interface
-	 * already moved into a container's netns, or already enslaved to
-	 * any master (including a previous call here), simply won't be
-	 * assignable -- see enumerate_net_one()'s master-symlink check,
-	 * daemon/src/device.c. */
-	/* NULL: this lookup only ever matches a "net:" id, never a "disk:"
-	 * one -- os_containers_dir (ADR-0142's OS-disk exclusion) has no
-	 * bearing here, see device.h's own doc comment. */
+	/*
+	 * The interface must be one the host can see -- one moved into a
+	 * container's netns is not -- and not already enslaved to any
+	 * bridge, including by a previous call here (enumerate_net_one()'s
+	 * `master` link). This is HOST configuration, not a container
+	 * grant, so it deliberately does not ask devicegrant_check(): first
+	 * boot attaches the uplink to the management network through this
+	 * very function, and that grant's verdict would call the uplink the
+	 * host's and refuse it (ADR-0344).
+	 *
+	 * NULL: this lookup only ever matches a "net:" id, so the OS disk
+	 * (os_containers_dir's only use) has no bearing here.
+	 */
 	snprintf(dev_id, sizeof(dev_id), "net:%s", ifname);
 	dev = device_find(dev_id, NULL);
-	if (dev == NULL || !dev->assignable)
+	if (dev == NULL || dev->bridge_port)
 		return NETWORK_ERR_INTERFACE_NOT_FOUND;
 
 	fd = rtnl_open();

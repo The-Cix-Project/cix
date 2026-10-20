@@ -113,7 +113,7 @@ static const char USAGE_TEXT[] =
 	        "      [--ldap-uid=N] [--ldap-secret-dir=PATH]\n"
 	        "      [--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--optional-device=ID ...]\n"
 	        "      [--volume=NAME:/path[:ro] ...] [--console=NAME=/path [args] ...]\n"
-	        "      [--interface=IFNAME ...] [--cap-add=CAP_NAME ...] [--restart=always|on-failure|unless-stopped]\n"
+	        "      [--interface=IFNAME ...] [--reserve-devices] [--cap-add=CAP_NAME ...] [--restart=always|on-failure|unless-stopped]\n"
 	        "      [--restart-delay=N] [--follow-rolling] [--follow-rolling-jitter-seconds=N]\n"
 	        "      [--depends-on=NAME ...] [--dns-server=A.B.C.D ...]\n"
 	        "      --service=NAME=/path [args] ... [--oneshot=NAME=/path [args] ...]\n"
@@ -207,12 +207,13 @@ static const char USAGE_TEXT[] =
 	        "               same pass runs after package jobs and at start. --measure\n"
 	        "               sizes what it finds, which walks every collectable version and\n"
 	        "               can block the daemon for minutes -- off by default\n"
-	        "  device ls  -- lists host PCI/USB/GPU devices discoverable via sysfs, with\n"
-	        "               each one's id (pass to run --device=ID) and whether it's\n"
-	        "               assignable. A GPU's own bare \"gpu:N\" id (not itself listed --\n"
-	        "               only its individual gpu:N:card0/gpu:N:renderD128/... member\n"
-	        "               nodes are) grants everything that GPU needs in one --device=\n"
-	        "               (see ADR-0028)\n"
+	        "  device ls  -- every host device as a tree under its parent, with its id\n"
+	        "               (pass to run --device=ID, or a net: name to --interface=), its\n"
+	        "               state -- free, held, reserved, host:REASON, unavailable:REASON --\n"
+	        "               and who holds or reserves it (ADR-0344). The state is the\n"
+	        "               daemon's; a grant is refused for exactly the reason shown. A\n"
+	        "               GPU's bare \"gpu:N\" id (not itself listed) grants everything\n"
+	        "               that GPU needs in one --device= (ADR-0028)\n"
 	        "  devicemap create --name=NAME --kind=exact|vendor_model --selector=SELECTOR\n"
 	        "               -- a persisted, named device binding (ADR-0048), usable in place\n"
 	        "               of a raw id in run --device=; \"exact\" selector is a device.id\n"
@@ -1217,32 +1218,103 @@ static void fmt_image_detail(const struct json_value *v)
 	}
 }
 
-static void fmt_device_line(const struct json_value *v)
+/*
+ * ADR-0344: one line per record, indented under its parent, and the
+ * state the daemon decided -- never derived here. The WHO column says
+ * which container holds it and through what, or who reserves it.
+ */
+static void fmt_device_line(const struct json_value *v, int depth)
 {
 	const char *id = json_str_field(v, "id");
-	const char *bus = json_str_field(v, "bus");
 	const char *description = json_str_field(v, "description");
-	const char *driver = json_str_field(v, "driver");
-	const char *dev_path = json_str_field(v, "dev_path");
-	const struct json_value *jassignable = json_object_get(v, "assignable");
-	int assignable = jassignable != NULL && jassignable->type == JSON_BOOL &&
-	                  jassignable->u.boolean;
+	const char *state = json_str_field(v, "state");
+	const char *reason = json_str_field(v, "reason");
+	const struct json_value *held = json_object_get(v, "held_by");
+	const struct json_value *reserved = json_object_get(v, "reserved_by");
+	char state_col[40];
+	char who[160] = "";
+	size_t used = 0, k;
+	int width = 44 - depth * 2;
 
-	printf("%-48s %-4s %-40s %-12s %-20s %s\n", id, bus, description != NULL ? description : "",
-	       driver != NULL && driver[0] != '\0' ? driver : "-",
-	       dev_path != NULL && dev_path[0] != '\0' ? dev_path : "-",
-	       assignable ? "assignable" : "unassignable");
+	if (reason != NULL && reason[0] != '\0')
+		snprintf(state_col, sizeof(state_col), "%s:%s", state != NULL ? state : "?", reason);
+	else
+		snprintf(state_col, sizeof(state_col), "%s", state != NULL ? state : "?");
+
+	for (k = 0; held != NULL && held->type == JSON_ARRAY && k < held->u.array.count; k++) {
+		const struct json_value *h = held->u.array.items[k];
+		const char *granted = json_str_field(h, "granted");
+		int n = snprintf(who + used, sizeof(who) - used, "%s%s%s%s", used > 0 ? ", " : "",
+		                 json_str_field(h, "container") ? json_str_field(h, "container") : "?",
+		                 granted != NULL && id != NULL && strcmp(granted, id) != 0 ? " via " : "",
+		                 granted != NULL && id != NULL && strcmp(granted, id) != 0 ? granted : "");
+
+		if (n < 0 || (size_t)n >= sizeof(who) - used)
+			break;
+		used += (size_t)n;
+	}
+	for (k = 0; reserved != NULL && reserved->type == JSON_ARRAY && k < reserved->u.array.count;
+	     k++) {
+		const struct json_value *r = reserved->u.array.items[k];
+		const struct json_value *jb = json_object_get(r, "binding");
+		int binding = jb != NULL && jb->type == JSON_BOOL && jb->u.boolean;
+		int n = snprintf(who + used, sizeof(who) - used, "%s%s %s", used > 0 ? ", " : "",
+		                 binding ? "reserved by" : "named by",
+		                 json_str_field(r, "container") ? json_str_field(r, "container") : "?");
+
+		if (n < 0 || (size_t)n >= sizeof(who) - used)
+			break;
+		used += (size_t)n;
+	}
+
+	printf("%*s%-*s %-30s %-28s %s\n", depth * 2, "", width < 8 ? 8 : width,
+	       id != NULL ? id : "?", state_col, who[0] != '\0' ? who : "-",
+	       description != NULL ? description : "");
+}
+
+/* Prints parent's children, depth-first, in the daemon's order. */
+static void fmt_device_children(const struct json_value *devices, const char *parent, int depth)
+{
+	size_t i;
+
+	if (depth > 8)
+		return;
+	for (i = 0; i < devices->u.array.count; i++) {
+		const struct json_value *d = devices->u.array.items[i];
+		const char *p = json_str_field(d, "parent");
+
+		if (p == NULL || strcmp(p, parent) != 0)
+			continue;
+		fmt_device_line(d, depth);
+		fmt_device_children(devices, json_str_field(d, "id"), depth + 1);
+	}
 }
 
 static void fmt_device_list(const struct json_value *v)
 {
 	const struct json_value *devices = json_object_get(v, "devices");
-	size_t i;
+	size_t i, j;
 
 	if (devices == NULL || devices->type != JSON_ARRAY)
 		return;
-	for (i = 0; i < devices->u.array.count; i++)
-		fmt_device_line(devices->u.array.items[i]);
+	printf("%-44s %-30s %-28s %s\n", "ID", "STATE", "WHO", "DESCRIPTION");
+	/* A root is a record whose parent is empty or not in the list. */
+	for (i = 0; i < devices->u.array.count; i++) {
+		const struct json_value *d = devices->u.array.items[i];
+		const char *p = json_str_field(d, "parent");
+		int parent_listed = 0;
+
+		for (j = 0; p != NULL && p[0] != '\0' && j < devices->u.array.count && !parent_listed;
+		     j++) {
+			const char *other = json_str_field(devices->u.array.items[j], "id");
+
+			parent_listed = other != NULL && strcmp(other, p) == 0;
+		}
+		if (parent_listed)
+			continue;
+		fmt_device_line(d, 0);
+		fmt_device_children(devices, json_str_field(d, "id"), 1);
+	}
 }
 
 static void fmt_disk_line(const struct json_value *v)
@@ -9855,6 +9927,7 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 	int volume_count = 0;
 	const char *interfaces[CLI_MAX_INTERFACES];
 	int interface_count = 0;
+	int reserve_devices = 0;
 	const char *cap_add[CLI_MAX_CAP_ADD];
 	int cap_add_count = 0;
 	const char *ldap_allow_groups[CLI_MAX_LDAP_ALLOW_GROUPS];
@@ -9994,6 +10067,8 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 				return 2;
 			}
 			interfaces[interface_count++] = argv[i] + 12;
+		} else if (strcmp(argv[i], "--reserve-devices") == 0) {
+			reserve_devices = 1;
 		} else if (strncmp(argv[i], "--cap-add=", 10) == 0) {
 			if (cap_add_count >= CLI_MAX_CAP_ADD) {
 				fprintf(stderr, "cixctl: too many --cap-add= flags (max %d)\n",
@@ -10192,7 +10267,7 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 		        "[--ldap-uid=N] [--ldap-secret-dir=PATH] "
 		        "[--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--optional-device=ID ...] "
 	        "[--volume=NAME:/path[:ro] ...] [--console=NAME=/path [args] ...] "
-		        "[--interface=IFNAME ...] "
+		        "[--interface=IFNAME ...] [--reserve-devices] "
 		        "[--restart=always|on-failure|unless-stopped] [--restart-delay=N] "
 		        "[--follow-rolling] [--follow-rolling-jitter-seconds=N] "
 		        "[--depends-on=NAME ...] "
@@ -10429,6 +10504,10 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 		for (i = 0; i < interface_count; i++)
 			jw_str(&w, interfaces[i]);
 		jw_arr_close(&w);
+	}
+	if (reserve_devices) {
+		jw_key(&w, "reserve_devices");
+		jw_bool(&w, 1);
 	}
 	if (cap_add_count > 0) {
 		jw_key(&w, "cap_add");

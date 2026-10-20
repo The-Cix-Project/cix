@@ -31,7 +31,7 @@ enum network_error {
 	NETWORK_ERR_DELETE_FAILED,
 	NETWORK_ERR_IP_OUT_OF_RANGE, /* not this network's subnet, or its reserved address/network address */
 	NETWORK_ERR_IP_TAKEN,       /* a valid, in-range address, but already assigned to a running container */
-	NETWORK_ERR_INTERFACE_NOT_FOUND,   /* not a known, currently-assignable "net:" device */
+	NETWORK_ERR_INTERFACE_NOT_FOUND,   /* not a known "net:" device, or already a bridge port */
 	NETWORK_ERR_INTERFACE_ATTACHED,    /* already attached to this network */
 	NETWORK_ERR_INTERFACE_NOT_ATTACHED, /* detach requested for one that isn't attached here */
 	NETWORK_ERR_INTERFACE_FULL,        /* this network's own interfaces[] table is full */
@@ -231,8 +231,8 @@ int network_write_routes_json(struct json_writer *w);
  * Attaches a real host network interface to name's bridge -- the
  * "physical ethernet on a host-managed switch" half of what an
  * address-less network needs to be useful for more than veth-attached
- * containers alone. ifname must currently be a known, assignable
- * "net:<ifname>" device (device_find(), daemon/src/device.c) -- not
+ * containers alone. ifname must currently be a known
+ * "net:<ifname>" device (device_find(), daemon/src/device.c), not
  * already moved into a container's netns (ADR-0022) and not already
  * enslaved to anything (including a previous call here), the same
  * sysfs-visibility-is-exclusivity rule that path already established,

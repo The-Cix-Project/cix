@@ -148,11 +148,11 @@ static int held_by_says(struct cix_client *client, const char *id, const char *c
 			found = (held->u.array.count == 0);
 			break;
 		}
+		/* ADR-0344: each entry is {container, granted, shared}. */
 		for (j = 0; j < held->u.array.count; j++) {
-			const struct json_value *n = held->u.array.items[j];
+			const char *who = json_str_field(held->u.array.items[j], "container");
 
-			if (n != NULL && n->type == JSON_STRING &&
-			    strcmp(n->u.string, container) == 0) {
+			if (who != NULL && strcmp(who, container) == 0) {
 				found = 1;
 				break;
 			}
@@ -246,9 +246,7 @@ int main(void)
 					}
 				}
 				if (str_eq(bus, "usb") && json_as_string(json_object_get(d, "id")) != NULL &&
-				    json_object_get(d, "assignable") != NULL &&
-				    json_object_get(d, "assignable")->type == JSON_BOOL &&
-				    json_object_get(d, "assignable")->u.boolean != 0 &&
+				    str_eq(json_as_string(json_object_get(d, "state")), "free") &&
 				    first_assignable_id[0] == '\0') {
 					snprintf(first_assignable_id, sizeof(first_assignable_id), "%s",
 					         json_as_string(json_object_get(d, "id")));
@@ -474,7 +472,7 @@ int main(void)
 
 			/* #356: the live attach is visible on GET /v1/devices. That is
 			 * the whole point -- before this field a device granted to a
-			 * container still reported assignable:true and said nothing at
+			 * container still reported assignable:true (since replaced by state, ADR-0344) and said nothing at
 			 * all about who had it. */
 			if (held_by_says(&client, first_assignable_id, "devlive") != 1) {
 				fprintf(stderr, "FAIL: held_by for %s does not name devlive after the attach\n",

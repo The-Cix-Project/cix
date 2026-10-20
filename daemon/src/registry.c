@@ -93,6 +93,12 @@ static void registry_announce(void)
 {
 	events_announce(EV_listContainers);
 	events_announce(EV_getContainer);
+	/* ADR-0344: a device's held_by and reserved_by follow the registry
+	 * -- a container the daemon starts, restarts or removes by itself
+	 * moves its grants from reserved to held and back -- so a registry
+	 * change is a device-list change, announced where it happens rather
+	 * than left for the drift check to find. */
+	events_announce(EV_listDevices);
 }
 
 enum registry_error registry_create(const char *name, const char *image,
@@ -909,6 +915,8 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 	for (i = 0; i < entry->interface_count; i++)
 		jw_str(w, entry->interfaces[i]);
 	jw_arr_close(w);
+	jw_key(w, "reserve_devices");
+	jw_bool(w, entry->reserve_devices);
 	jw_key(w, "files");
 	jw_arr_open(w);
 	for (i = 0; i < entry->file_count; i++)
@@ -1115,66 +1123,6 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 static int registry_name_is_live(const char *name)
 {
 	return registry_find(name) != NULL;
-}
-
-int registry_device_grant_conflict(const char *device_id, int want_shared, char *out_holder,
-                                    size_t out_holder_size)
-{
-	int i, j;
-
-	if (out_holder != NULL && out_holder_size > 0)
-		out_holder[0] = '\0';
-	if (device_id == NULL || device_id[0] == '\0')
-		return 0;
-
-	for (i = 0; i < REGISTRY_MAX_CONTAINERS; i++) {
-		const struct registry_entry *e = &g_entries[i];
-
-		if (!e->in_use)
-			continue;
-		for (j = 0; j < e->device_count; j++) {
-			if (strcmp(e->devices[j].id, device_id) != 0)
-				continue;
-			if (want_shared && e->devices[j].shared)
-				continue; /* both sides agreed */
-			if (out_holder != NULL && out_holder_size > 0)
-				snprintf(out_holder, out_holder_size, "%s", e->name);
-			return 1;
-		}
-	}
-	return 0;
-}
-
-int registry_device_holders(const char *device_id, char out[][DEVICE_HOLDER_NAME_MAX], int max)
-{
-	int i, j;
-	int count = 0;
-
-	if (device_id == NULL || device_id[0] == '\0' || out == NULL || max <= 0)
-		return 0;
-
-	for (i = 0; i < REGISTRY_MAX_CONTAINERS && count < max; i++) {
-		const struct registry_entry *e = &g_entries[i];
-
-		if (!e->in_use)
-			continue;
-		for (j = 0; j < e->device_count; j++) {
-			if (strcmp(e->devices[j].id, device_id) != 0)
-				continue;
-			/*
-			 * One entry per container, not per grant. A
-			 * vendor_model mapping can expand to several devices
-			 * and a container can name the same device twice
-			 * through two mappings; the question being answered
-			 * is "who holds this", and a name repeated tells a
-			 * reader nothing extra.
-			 */
-			snprintf(out[count], DEVICE_HOLDER_NAME_MAX, "%s", e->name);
-			count++;
-			break;
-		}
-	}
-	return count;
 }
 
 int registry_name_is_internal(const char *name)

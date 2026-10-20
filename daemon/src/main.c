@@ -6,6 +6,7 @@
 #include "nsswitch.h"
 #include "internal.h"
 #include "device.h"
+#include "devicegrant.h"
 #include "devicemap.h"
 #include "disk.h"
 #include "diskformat.h"
@@ -5053,7 +5054,7 @@ static void reconcile_pending_device_attachments(void)
 			n = devicemap_resolve(e->pending_devices[j], CONTAINERS_DIR, matches, 1);
 			if (n < 0)
 				n = device_find_group(e->pending_devices[j], CONTAINERS_DIR, matches, 1);
-			if (n <= 0 || !matches[0]->assignable)
+			if (n <= 0)
 				continue;
 			if (claim_count >= (int)(sizeof(claims) / sizeof(claims[0])))
 				continue;
@@ -5083,6 +5084,28 @@ static void reconcile_pending_device_attachments(void)
 			                "running container also claims it -- granted to neither",
 			                claims[i].e->name, claims[i].resolved_id, claims[i].ref);
 			continue;
+		}
+
+		/*
+		 * ADR-0344: the gate every other grant asks. The contention rule
+		 * above only weighs containers WAITING for the device; this is
+		 * what refuses one a running container already holds, or a
+		 * stopped one reserves, or the host uses -- which the hotplug
+		 * path never asked before. A refused claim stays pending and
+		 * says why, so a later unplug of the holder can still satisfy
+		 * it.
+		 */
+		{
+			char why[256];
+
+			if (devicegrant_check(claims[i].resolved_id, 0, claims[i].e->name, why,
+			                      sizeof(why)) != 0) {
+				logstore_write("cixd", "warning",
+				               "container %s: hotplugged device %s matches \"%s\" but is not "
+				               "granted: %s",
+				               claims[i].e->name, claims[i].resolved_id, claims[i].ref, why);
+				continue;
+			}
 		}
 
 		dd = device_find(claims[i].resolved_id, CONTAINERS_DIR);
@@ -12631,6 +12654,12 @@ static void handle_disk_format_event(struct conn *cc)
 	free(cc);
 
 	diskformat_completed(exit_status);
+	/* The job's end is a change the daemon makes by itself: the status
+	 * read moves to ready or failed, and the mount it made changes the
+	 * disk's device state (ADR-0344). Announced here, where it happens
+	 * (ADR-0339), since the POST that started it answered long ago. */
+	events_announce(EV_getStorageFormatStatus);
+	events_announce(EV_listDevices);
 	fprintf(stderr, "disk format: job finished (exit_status=%d)\n", exit_status);
 }
 
@@ -13406,7 +13435,7 @@ static const char *container_body_unknown_key(const struct json_value *root)
 {
 	static const char *const known[] = {
 		"name", "image", "image_version", "services", "networks", "ip_forward", "ksm",
-		"capture_output", "routes", "devices", "interfaces", "cap_add", "files",
+		"capture_output", "routes", "devices", "interfaces", "reserve_devices", "cap_add", "files",
 		"sysctls", "env", "dns_servers", "dns_register", "pki_issue", "pki_cert_dir",
 		/* ADR-0280/#397: deliver a pre-existing, unowned cert by name. */
 		"pki_cert",
@@ -14518,6 +14547,11 @@ static int create_container_from_body(const char *body, size_t body_len,
 	int pending_device_count = 0;
 	char interface_names[CONTAINER_MAX_INTERFACES][CONTAINER_IFNAME_MAX];
 	int interface_count = 0;
+	/* ADR-0344: what each interface was when granted, for the registry
+	 * to keep once it has left the host's view; and the setting that
+	 * makes a stopped container's devices reserved for it. */
+	struct registry_interface_record interface_records[CONTAINER_MAX_INTERFACES];
+	int reserve_devices = 0;
 	char cap_add_names[CONTAINER_MAX_CAP_ADD][CONTAINER_CAP_NAME_MAX];
 	int cap_add_count = 0;
 	char file_paths[CONTAINER_MAX_FILES][CONTAINER_FILE_PATH_MAX];
@@ -14597,6 +14631,18 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jroutes = json_object_get(root, "routes");
 	jdevices = json_object_get(root, "devices");
 	jinterfaces = json_object_get(root, "interfaces");
+	{
+		const struct json_value *jreserve = json_object_get(root, "reserve_devices");
+
+		if (jreserve != NULL) {
+			if (jreserve->type != JSON_BOOL) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size, "reserve_devices must be a boolean");
+				return 400;
+			}
+			reserve_devices = jreserve->u.boolean;
+		}
+	}
 	jcap_add = json_object_get(root, "cap_add");
 	jfiles = json_object_get(root, "files");
 	jsysctls = json_object_get(root, "sysctls");
@@ -15035,6 +15081,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 			int optional = 0;
 			int shared = 0;
 			const struct discovered_device *matches[CONTAINER_MAX_DEVICES];
+			char match_ids[CONTAINER_MAX_DEVICES][DEVICE_ID_MAX];
 			int n, j;
 
 			/*
@@ -15109,7 +15156,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 					continue;
 				}
 				json_free(root);
-				snprintf(err_msg, err_msg_size, "unknown, unassignable, or not-currently-present device");
+				snprintf(err_msg, err_msg_size, "unknown or not-currently-present device %s", id);
 				return 400;
 			}
 			if (device_count + n > CONTAINER_MAX_DEVICES) {
@@ -15119,35 +15166,43 @@ static int create_container_from_body(const char *body, size_t body_len,
 				         "more than one grant)");
 				return 400;
 			}
+			for (j = 0; j < n; j++)
+				snprintf(match_ids[j], sizeof(match_ids[j]), "%s", matches[j]->id);
 			for (j = 0; j < n; j++) {
-				const struct discovered_device *dd = matches[j];
-				char holder[REGISTRY_NAME_MAX];
+				const struct discovered_device *dd;
+				const char *dev_id = match_ids[j];
+				int verdict;
 
 				/*
-				 * #356: a device already held by a running container
-				 * is refused unless both sides said "shared".
+				 * ADR-0344: the one gate. It refuses a device the host
+				 * uses (the OS disk, a roled or mounted disk, the
+				 * management interface) with 400 and the reason, and
+				 * one another container holds or reserves -- this
+				 * record, anything above it or anything below it --
+				 * with 409 and that container's name, unless both
+				 * sides said "shared" (#356).
 				 *
-				 * Checked per RESOLVED device rather than per requested
-				 * entry, because one entry can expand into several --
-				 * a vendor_model mapping matching two identical drives,
-				 * or a gpu:N group. One of those being contended must
-				 * refuse that device rather than the whole entry
-				 * silently granting the rest.
-				 *
-				 * Before this, nothing refused a second grant at all:
-				 * both containers got their own BPF_CGROUP_DEVICE rule
-				 * for the same major/minor, which is ordinary
-				 * multi-tenant compute for a GPU and data corruption
-				 * for a serial adapter or a raw disk. Now it is a
-				 * decision someone has to make in writing.
+				 * Checked per RESOLVED device rather than per entry,
+				 * because one entry can expand into several -- a
+				 * vendor_model mapping matching two drives, or a gpu:N
+				 * group -- and one of those being contended must refuse
+				 * that device rather than silently granting the rest.
+				 * Every id was copied before the first check: the check
+				 * resolves other containers' references through the
+				 * same resolvers, which refill the cache matches[]
+				 * points into.
 				 */
-				if (registry_device_grant_conflict(dd->id, shared, holder, sizeof(holder))) {
+				verdict = devicegrant_check(dev_id, shared, name, err_msg, err_msg_size);
+				if (verdict != 0) {
 					json_free(root);
-					snprintf(err_msg, err_msg_size,
-					         "device %s is already held by container \"%s\" -- both grants must "
-					         "set \"shared\": true to share it",
-					         dd->id, holder);
-					return 409;
+					return verdict == 404 ? 400 : verdict;
+				}
+				dd = device_find(dev_id, CONTAINERS_DIR);
+				if (dd == NULL) {
+					json_free(root);
+					snprintf(err_msg, err_msg_size, "device %s went away while being granted",
+					         dev_id);
+					return 400;
 				}
 
 				/* dev_path/major/minor always come from the daemon's
@@ -15186,26 +15241,27 @@ static int create_container_from_body(const char *body, size_t body_len,
 		interface_count = (int)jinterfaces->u.array.count;
 		for (i = 0; i < (size_t)interface_count; i++) {
 			const char *ifname = json_as_string(jinterfaces->u.array.items[i]);
-			char dev_id[96];
-			const struct discovered_device *dd;
+			int verdict;
 
 			if (ifname == NULL) {
 				json_free(root);
 				snprintf(err_msg, err_msg_size, "interfaces entries must be strings");
 				return 400;
 			}
-			/* GET /v1/devices is the one source of truth for which real
-			 * interfaces exist and are currently assignable -- an
-			 * interface already moved into another running container's
-			 * netns simply doesn't appear there at all anymore, so
-			 * there is no separate "already claimed" check needed here
-			 * beyond this same lookup every other device grant uses. */
-			snprintf(dev_id, sizeof(dev_id), "net:%s", ifname);
-			dd = device_find(dev_id, CONTAINERS_DIR);
-			if (dd == NULL || !dd->assignable) {
+			/*
+			 * ADR-0344: the same gate as devices[], asked of the record
+			 * a grant of this interface is really of -- its PHY when it
+			 * is a radio (ADR-0265). A bridge port or the interface
+			 * carrying the management address is refused with 400, one
+			 * another container holds or reserves with 409. The record
+			 * comes back for the registry to keep, since once moved the
+			 * interface is gone from the host's walk.
+			 */
+			verdict = devicegrant_check_interface(ifname, name, &interface_records[i], err_msg,
+			                                      err_msg_size);
+			if (verdict != 0) {
 				json_free(root);
-				snprintf(err_msg, err_msg_size, "unknown or unassignable interface");
-				return 400;
+				return verdict;
 			}
 			snprintf(interface_names[i], sizeof(interface_names[i]), "%s", ifname);
 		}
@@ -17058,6 +17114,14 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 * from the kernel like the cgroup limits are). */
 	if (rerr == REGISTRY_OK && entry != NULL)
 		entry->disk_quota_bytes = disk_quota_bytes;
+	/* ADR-0344: the interfaces as they were at grant time -- the only
+	 * record left of them once they are in this container's netns --
+	 * and the reservation setting, for GET to echo. */
+	if (rerr == REGISTRY_OK && entry != NULL) {
+		memcpy(entry->interface_records, interface_records,
+		       sizeof(interface_records[0]) * (size_t)interface_count);
+		entry->reserve_devices = reserve_devices;
+	}
 	/* Issue #248: what this container offers as a console. Recorded
 	 * even when empty -- zero declared consoles is a real answer that
 	 * the attach path and both clients act on, not a missing value. */
@@ -19246,6 +19310,8 @@ static void handle_container_device_attach(int fd, const char *container_name, c
 	struct json_value *root;
 	const char *id;
 	const struct discovered_device *matches[CONTAINER_MAX_DEVICES];
+	char match_ids[CONTAINER_MAX_DEVICES][DEVICE_ID_MAX];
+	char match_paths[CONTAINER_MAX_DEVICES][64];
 	int n, j, attached;
 	int shared = 0;
 	struct json_writer w;
@@ -19286,8 +19352,7 @@ static void handle_container_device_attach(int fd, const char *container_name, c
 		                       CONTAINER_MAX_DEVICES - e->device_count);
 	if (n <= 0) {
 		json_free(root);
-		respond_error(fd, 404, "Not Found",
-		              "unknown, unassignable, or not-currently-present device");
+		respond_error(fd, 404, "Not Found", "unknown or not-currently-present device");
 		return;
 	}
 	if (e->device_count + n > CONTAINER_MAX_DEVICES) {
@@ -19295,36 +19360,41 @@ static void handle_container_device_attach(int fd, const char *container_name, c
 		respond_error(fd, 409, "Conflict", "container already has the maximum number of devices");
 		return;
 	}
+	/* Copied before the first check: the check resolves other
+	 * containers' references through the resolvers whose cache matches[]
+	 * points into. */
 	for (j = 0; j < n; j++) {
-		char holder[REGISTRY_NAME_MAX];
+		snprintf(match_ids[j], sizeof(match_ids[j]), "%s", matches[j]->id);
+		snprintf(match_paths[j], sizeof(match_paths[j]), "%s", matches[j]->dev_path);
+	}
+	for (j = 0; j < n; j++) {
+		char msg[256];
+		int verdict;
 
-		if (!matches[j]->assignable) {
-			json_free(root);
-			respond_error(fd, 400, "Bad Request", "device is not currently assignable");
-			return;
-		}
 		/*
-		 * #356, the same rule the create path applies: already held by
-		 * a running container means refused unless both grants say so.
-		 * Checked before anything is attached, so a grouped id whose
-		 * second member is contended does not leave the first granted.
+		 * ADR-0344, the gate the create path asks: a device the host
+		 * uses is 400 with the reason, one another container holds or
+		 * reserves is 409 naming it (#356's "both must say shared"
+		 * included). Every member is checked before anything is
+		 * attached, so a grouped id whose second member is refused
+		 * does not leave the first granted.
 		 */
-		if (registry_device_grant_conflict(matches[j]->id, shared, holder, sizeof(holder))) {
-			char msg[256];
-
-			snprintf(msg, sizeof(msg),
-			         "device %s is already held by container \"%s\" -- both grants must set "
-			         "\"shared\": true to share it",
-			         matches[j]->id, holder);
+		verdict = devicegrant_check(match_ids[j], shared, container_name, msg, sizeof(msg));
+		if (verdict != 0) {
 			json_free(root);
-			respond_error(fd, 409, "Conflict", msg);
+			respond_error(fd, verdict, verdict == 409 ? "Conflict"
+			                                          : verdict == 404 ? "Not Found"
+			                                                           : "Bad Request",
+			              msg);
 			return;
 		}
 	}
 	json_free(root);
 
 	for (attached = 0; attached < n; attached++) {
-		if (live_attach_one_device(e, matches[attached], shared) != 0)
+		const struct discovered_device *dd = device_find(match_ids[attached], CONTAINERS_DIR);
+
+		if (dd == NULL || live_attach_one_device(e, dd, shared) != 0)
 			break;
 	}
 	if (attached < n) {
@@ -19337,8 +19407,8 @@ static void handle_container_device_attach(int fd, const char *container_name, c
 		struct registry_device_attachment removed;
 
 		for (k = 0; k < attached; k++) {
-			registry_device_live_detach(e, matches[k]->id, &removed);
-			live_unlink_device(e, matches[k]->dev_path);
+			registry_device_live_detach(e, match_ids[k], &removed);
+			live_unlink_device(e, match_paths[k]);
 		}
 		respond_error(fd, 500, "Internal Server Error", "failed to attach device");
 		return;

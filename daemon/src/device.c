@@ -2,6 +2,7 @@
 
 #include "disk.h"
 #include "diskrole.h"
+#include "diskpart.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -71,6 +72,23 @@ static void read_driver_name(const char *device_dir, char *out, size_t out_size)
 	base = strrchr(resolved, '/');
 	base = (base != NULL) ? base + 1 : resolved;
 	snprintf(out, out_size, "%s", base);
+}
+
+/*
+ * ADR-0344: the canonical /sys/devices path a record's parent is found
+ * by. Every walk below reaches its device through a class or bus
+ * symlink (/sys/class/net/eth0, /sys/bus/pci/devices/...), and those
+ * are flat; the kernel's real device tree is what the symlinks resolve
+ * to, and it is the only place one device is visibly below another.
+ * Empty when it does not resolve, which leaves the record a root.
+ */
+static void canonical_sysfs(const char *path, char *out, size_t out_size)
+{
+	char resolved[PATH_MAX];
+
+	out[0] = '\0';
+	if (realpath(path, resolved) != NULL)
+		snprintf(out, out_size, "%s", resolved);
 }
 
 /* PCI's vendor/device/class sysfs files read as "0x1234"; USB's
@@ -248,7 +266,8 @@ static int enumerate_usb_one(const char *base, struct discovered_device *e)
 	e->minor = minor;
 	snprintf(e->dev_path, sizeof(e->dev_path), "/dev/bus/usb/%03u/%03u",
 	         (unsigned)strtoul(busnum, NULL, 10), (unsigned)strtoul(devnum, NULL, 10));
-	e->assignable = (e->driver[0] != '\0');
+	e->requires_driver = 1;
+	canonical_sysfs(base, e->sysfs, sizeof(e->sysfs));
 
 	{
 		const char *device_basename = strrchr(base, '/');
@@ -391,7 +410,7 @@ static void walk_pci_dev_nodes(const char *dir_path, const char *node_name,
 			e->major = major;
 			e->minor = minor;
 			snprintf(e->dev_path, sizeof(e->dev_path), "/dev/%s", node_name);
-			e->assignable = 1;
+			canonical_sysfs(dir_path, e->sysfs, sizeof(e->sysfs));
 		}
 	}
 
@@ -432,7 +451,9 @@ static void enumerate_pci_one(const char *base, const char *address, struct disc
 	struct pci_dev_ctx ctx;
 	DIR *d;
 	struct dirent *ent;
-	int before = *count;
+
+	if (*count >= cap)
+		return;
 
 	snprintf(attr, sizeof(attr), "%s/vendor", base);
 	read_sysfs_attr(attr, vendor_raw, sizeof(vendor_raw));
@@ -450,6 +471,37 @@ static void enumerate_pci_one(const char *base, const char *address, struct disc
 	ctx.product_id = product_id;
 	ctx.class_hex = class_hex;
 	ctx.driver = driver;
+
+	/*
+	 * ADR-0344: the function itself is always a record. It is the parent
+	 * its disks, DRM nodes and interfaces hang off, which is how a reader
+	 * sees that vda is the virtio disk at 0000:06:0a.0. It owns no node:
+	 * the nodes below it are its children's, or, for one no more specific
+	 * walk claims, a "pci:<bdf>:<node>" record of its own. This used to
+	 * be emitted only when no node was found and never for a network or
+	 * display controller, to avoid reporting one card twice -- the tree
+	 * is what avoids that now, since a parent is not a duplicate.
+	 */
+	{
+		struct discovered_device *e = &out[(*count)++];
+
+		memset(e, 0, sizeof(*e));
+		snprintf(e->bus, sizeof(e->bus), "pci");
+		snprintf(e->id, sizeof(e->id), "pci:%s", address);
+		snprintf(e->vendor_id, sizeof(e->vendor_id), "%s", vendor_id);
+		snprintf(e->product_id, sizeof(e->product_id), "%s", product_id);
+		snprintf(e->class_hex, sizeof(e->class_hex), "%s", class_hex);
+		snprintf(e->driver, sizeof(e->driver), "%s", driver);
+		if (driver[0] != '\0')
+			snprintf(e->description, sizeof(e->description),
+			         "PCI device %s:%s, class %s, driver %s", vendor_id, product_id,
+			         class_hex, driver);
+		else
+			snprintf(e->description, sizeof(e->description),
+			         "PCI device %s:%s, class %s, no driver bound", vendor_id, product_id,
+			         class_hex);
+		canonical_sysfs(base, e->sysfs, sizeof(e->sysfs));
+	}
 
 	d = opendir(base);
 	if (d != NULL) {
@@ -481,40 +533,6 @@ static void enumerate_pci_one(const char *base, const char *address, struct disc
 			walk_pci_dev_nodes(child_path, ent->d_name, NULL, 1, &ctx, out, cap, count);
 		}
 		closedir(d);
-	}
-
-	/* PCI class 02xxxx is "network controller" -- already represented,
-	 * correctly and once, by enumerate_net()'s own walk of
-	 * /sys/class/net (the netdev it owns, if this netns can see it at
-	 * all). Class 03xxxx is "display controller" -- same reasoning,
-	 * represented by enumerate_gpu()'s own walk of /sys/class/drm
-	 * instead. Suppressing the fallback placeholder here avoids
-	 * reporting the same physical card twice under two different bus
-	 * entries. */
-	if (*count == before && *count < cap && strncmp(class_hex, "02", 2) != 0 &&
-	    strncmp(class_hex, "03", 2) != 0) {
-		/* Nothing owned found anywhere in this device's own subtree
-		 * (a bridge, or an unbound device). Still surfaced,
-		 * unassignable, so an operator can see the device exists and
-		 * why it isn't offered. */
-		struct discovered_device *e = &out[(*count)++];
-
-		memset(e, 0, sizeof(*e));
-		snprintf(e->bus, sizeof(e->bus), "pci");
-		snprintf(e->id, sizeof(e->id), "pci:%s", address);
-		snprintf(e->vendor_id, sizeof(e->vendor_id), "%s", vendor_id);
-		snprintf(e->product_id, sizeof(e->product_id), "%s", product_id);
-		snprintf(e->class_hex, sizeof(e->class_hex), "%s", class_hex);
-		snprintf(e->driver, sizeof(e->driver), "%s", driver);
-		if (driver[0] != '\0')
-			snprintf(e->description, sizeof(e->description),
-			         "PCI device %s:%s, class %s, driver %s (no owned /dev node found)",
-			         vendor_id, product_id, class_hex, driver);
-		else
-			snprintf(e->description, sizeof(e->description),
-			         "PCI device %s:%s, class %s, no driver bound", vendor_id,
-			         product_id, class_hex);
-		e->assignable = 0;
 	}
 }
 
@@ -559,34 +577,99 @@ static int enumerate_net_one(const char *ifname, struct discovered_device *e)
 		snprintf(e->description, sizeof(e->description), "network interface %s", ifname);
 
 	read_driver_name(link_path, e->driver, sizeof(e->driver));
+	canonical_sysfs(link_path, e->sysfs, sizeof(e->sysfs));
 
 	/*
 	 * No /dev node, no BPF_CGROUP_DEVICE grant, no major:minor -- a
 	 * netdev is moved wholesale into a container's own netns instead
-	 * (container_net_host_attach_interfaces()), a wholly different
-	 * mechanism from every other bus this file enumerates. Once moved,
-	 * it simply stops appearing here at all (this walk only ever sees
-	 * this netns's own interfaces) -- the same visibility rule that
-	 * makes exclusivity automatic, with no separate "already claimed"
-	 * check needed.
+	 * (container_net_host_attach_interfaces()). Once moved it stops
+	 * appearing here, because this walk sees only the daemon's own
+	 * netns; since ADR-0344 that is no longer how anyone learns it is
+	 * held -- the grant recorded at the time is (devicegrant.c).
 	 *
-	 * The same visibility-is-exclusivity idea also covers enslavement
-	 * to a Cix-managed bridge (network_attach_interface(),
-	 * daemon/src/network.c): unlike a netns move, an enslaved
-	 * interface stays visible right here under its own name -- but
-	 * the kernel exposes a "master" symlink under its sysfs directory
-	 * for exactly as long as it's enslaved to anything. Its presence
-	 * is reused as the same kind of ground-truth signal, rather than
-	 * inventing a second, separate "already attached" table.
+	 * Enslavement to a bridge is read from the kernel's own `master`
+	 * symlink, which exists for exactly as long as the interface is
+	 * enslaved to anything, rather than from a second table of who
+	 * attached what.
 	 */
 	{
 		char master_path[PATH_MAX];
 		char master_target[PATH_MAX];
+		ssize_t m;
 
 		snprintf(master_path, sizeof(master_path), "%s/master", link_path);
-		e->assignable = (readlink(master_path, master_target, sizeof(master_target) - 1) < 0);
+		m = readlink(master_path, master_target, sizeof(master_target) - 1);
+		if (m >= 0) {
+			const char *base;
+
+			master_target[m] = '\0';
+			base = strrchr(master_target, '/');
+			snprintf(e->master, sizeof(e->master), "%s", base != NULL ? base + 1 : master_target);
+			e->bridge_port = 1;
+		}
+	}
+
+	/*
+	 * A radio's interface hangs off its PHY, which is the unit that moves
+	 * (ADR-0265): every interface on the wiphy goes with it. The kernel
+	 * names the PHY through `phy80211`, and the PHY is a sibling of the
+	 * interface in the device tree rather than its ancestor, so this is
+	 * the one parent not found by path.
+	 */
+	{
+		char phy_path[PATH_MAX];
+		char phy_target[PATH_MAX];
+		ssize_t p;
+
+		snprintf(phy_path, sizeof(phy_path), "%s/phy80211", link_path);
+		p = readlink(phy_path, phy_target, sizeof(phy_target) - 1);
+		if (p >= 0) {
+			const char *base;
+
+			phy_target[p] = '\0';
+			base = strrchr(phy_target, '/');
+			snprintf(e->parent, sizeof(e->parent), "phy:%s", base != NULL ? base + 1 : phy_target);
+		}
 	}
 	return 0;
+}
+
+/* --- phy bus: a wireless PHY, the unit a radio moves into a container
+ * as (ADR-0265). It owns no /dev node; it is granted by naming one of
+ * its interfaces in interfaces[], and its interfaces are its children. --- */
+
+#define IEEE80211_CLASS_DIR "/sys/class/ieee80211"
+
+static void enumerate_phy(struct discovered_device *out, int cap, int *count)
+{
+	DIR *d;
+	struct dirent *ent;
+
+	d = opendir(IEEE80211_CLASS_DIR);
+	if (d == NULL)
+		return;
+
+	while (*count < cap && (ent = readdir(d)) != NULL) {
+		char path[PATH_MAX];
+		char device_dir[PATH_MAX];
+		struct discovered_device *e;
+
+		if (ent->d_name[0] == '.')
+			continue;
+		if (snprintf(path, sizeof(path), "%s/%s", IEEE80211_CLASS_DIR, ent->d_name) >=
+		    (int)sizeof(path))
+			continue;
+
+		e = &out[(*count)++];
+		memset(e, 0, sizeof(*e));
+		snprintf(e->bus, sizeof(e->bus), "phy");
+		snprintf(e->id, sizeof(e->id), "phy:%s", ent->d_name);
+		snprintf(e->description, sizeof(e->description), "wireless PHY %s", ent->d_name);
+		snprintf(device_dir, sizeof(device_dir), "%s/device", path);
+		read_driver_name(device_dir, e->driver, sizeof(e->driver));
+		canonical_sysfs(path, e->sysfs, sizeof(e->sysfs));
+	}
+	closedir(d);
 }
 
 static void enumerate_net(struct discovered_device *out, int cap, int *count)
@@ -725,26 +808,26 @@ static void enumerate_gpu(struct discovered_device *out, int cap, int *count)
 		e->major = major;
 		e->minor = minor;
 		snprintf(e->dev_path, sizeof(e->dev_path), "/dev/dri/%s", ent->d_name);
-		e->assignable = (driver[0] != '\0');
+		e->requires_driver = 1;
+		canonical_sysfs(entry_path, e->sysfs, sizeof(e->sysfs));
 	}
 	closedir(d);
 
 	/*
-	 * /dev/kfd (ROCm/HSA compute) is one shared, system-wide node --
-	 * not per-card, since the kfd driver's own topology sysfs
-	 * multiplexes across however many GPUs the host has -- rather than
-	 * a DRM node this walk would otherwise find above. Emitted as a
-	 * member of EVERY discovered gpu:<idx> group (mere existence under
-	 * /sys/class/kfd already means the driver registered it -- the same
-	 * "visibility is the availability check" reasoning
-	 * enumerate_net_one() already uses for a netdev, no separate driver-
-	 * binding check needed). A container actually needs this alongside
-	 * its render node for ROCm compute to work at all; granting it via
-	 * any one gpu:<idx> group exposes KFD's queue-submission path host-
-	 * wide -- a real, known ROCm/KFD architectural property on a multi-
-	 * GPU host, not a Cix-specific gap. See ADR-0029.
+	 * /dev/kfd (ROCm/HSA compute) is one shared, system-wide node -- not
+	 * per-card, since the kfd driver's topology multiplexes across every
+	 * GPU the host has. A container needs it alongside its render node
+	 * for ROCm compute to work, and granting it exposes KFD's queue
+	 * submission host-wide, which is ROCm's own architecture (ADR-0029).
+	 *
+	 * ONE record, "gpu:kfd" (ADR-0344). It used to be emitted once per
+	 * GPU group as "gpu:<idx>:kfd" -- one node under N ids, which is what
+	 * the one-node-one-record gate exists to refuse. device_find_group()
+	 * adds it to every "gpu:<idx>" expansion instead, and always_shared
+	 * says what ADR-0029 already did: two containers each with their own
+	 * GPU both need it, so it never conflicts.
 	 */
-	if (seen_count > 0) {
+	if (seen_count > 0 && *count < cap) {
 		char attr[PATH_MAX];
 		char devbuf[32];
 		unsigned int major, minor;
@@ -752,47 +835,42 @@ static void enumerate_gpu(struct discovered_device *out, int cap, int *count)
 		snprintf(attr, sizeof(attr), "%s/dev", KFD_CLASS_DEV);
 		if (read_sysfs_attr(attr, devbuf, sizeof(devbuf)) == 0 &&
 		    sscanf(devbuf, "%u:%u", &major, &minor) == 2) {
-			int idx;
+			struct discovered_device *e = &out[(*count)++];
 
-			for (idx = 0; idx < seen_count && *count < cap; idx++) {
-				struct discovered_device *e = &out[(*count)++];
-
-				memset(e, 0, sizeof(*e));
-				snprintf(e->bus, sizeof(e->bus), "gpu");
-				snprintf(e->id, sizeof(e->id), "gpu:%d:kfd", idx);
-				snprintf(e->description, sizeof(e->description),
-				         "ROCm/HSA compute device (gpu %d, shared, %s)", idx,
-				         KFD_CLASS_DEV);
-				e->type = DEVICE_NODE_CHAR;
-				e->major = major;
-				e->minor = minor;
-				snprintf(e->dev_path, sizeof(e->dev_path), "/dev/kfd");
-				e->assignable = 1;
-			}
+			memset(e, 0, sizeof(*e));
+			snprintf(e->bus, sizeof(e->bus), "gpu");
+			snprintf(e->id, sizeof(e->id), "gpu:kfd");
+			snprintf(e->description, sizeof(e->description),
+			         "ROCm/HSA compute device (host-wide, shared, %s)", KFD_CLASS_DEV);
+			e->type = DEVICE_NODE_CHAR;
+			e->major = major;
+			e->minor = minor;
+			snprintf(e->dev_path, sizeof(e->dev_path), "/dev/kfd");
+			e->always_shared = 1;
+			canonical_sysfs(KFD_CLASS_DEV, e->sysfs, sizeof(e->sysfs));
 		}
 	}
 }
 
 /*
- * ADR-0142: raw disk passthrough. Every whole disk disk_enumerate()
- * reports that is neither the OS disk nor already carrying a role
- * (diskrole_lookup()) is exposed here as "disk:<name>" -- a disk with
- * no filesystem/mount concept of its own at all yet (fresh, unlabeled
- * media straight from a USB enclosure or a PCI passthrough disk) is
- * exactly the case this closes, alongside a role-assigned disk being
- * correctly excluded (it's already owned by this daemon's own storage-
- * placement system, not independently grantable to a container).
+ * ADR-0142 raw disk passthrough, reshaped by ADR-0344. EVERY disk and
+ * partition disk_enumerate() reports is a record, "disk:<name>", with
+ * the facts that decide whether the host is using it: the OS layout,
+ * a storage role, a mount. This walk used to skip the OS disk and any
+ * disk with a role, and the PCI walk below reached some of those anyway
+ * under another id -- so on 192.168.15.95 `vda` (roled, mounted) was
+ * offered as assignable while `sda` (roled, mounted) did not exist at
+ * all, and the OS disk `vdb` was assignable through its PCI id. A disk
+ * the host uses is a fact an operator needs; devicestate.c says it is
+ * the host's, and every grant asks devicestate.c.
  *
- * No kernel driver concept exists for a whole disk the way a USB/PCI
- * device has one -- appearing in disk_enumerate()'s own sysfs walk
- * plus a resolved major:minor is already the full availability check,
- * the same "visibility is the availability check" reasoning
- * enumerate_net_one() already uses for a netdev.
+ * No kernel driver concept exists for a disk the way a USB device has
+ * one, so a disk never requires one.
  */
 static void enumerate_disk(struct discovered_device *out, int cap, int *count,
                             const char *os_containers_dir)
 {
-	struct discovered_disk disks[DISK_ENUM_MAX];
+	static struct discovered_disk disks[DISK_ENUM_MAX];
 	int n = disk_enumerate(disks, DISK_ENUM_MAX, os_containers_dir);
 	int i;
 
@@ -801,9 +879,6 @@ static void enumerate_disk(struct discovered_device *out, int cap, int *count,
 		char devbuf[32];
 		unsigned int major, minor;
 		struct discovered_device *e;
-
-		if (disks[i].is_os_disk || diskrole_lookup(disks[i].name) != NULL)
-			continue;
 
 		snprintf(attr, sizeof(attr), "/sys/class/block/%s/dev", disks[i].name);
 		if (read_sysfs_attr(attr, devbuf, sizeof(devbuf)) != 0)
@@ -815,14 +890,24 @@ static void enumerate_disk(struct discovered_device *out, int cap, int *count,
 		memset(e, 0, sizeof(*e));
 		snprintf(e->bus, sizeof(e->bus), "disk");
 		snprintf(e->id, sizeof(e->id), "disk:%s", disks[i].name);
-		snprintf(e->description, sizeof(e->description), "%s (%lld bytes%s)",
-		         disks[i].model[0] != '\0' ? disks[i].model : disks[i].name,
-		         (long long)disks[i].size_bytes, disks[i].removable ? ", removable" : "");
+		if (disks[i].is_partition)
+			snprintf(e->description, sizeof(e->description), "partition %s of %s (%lld bytes)",
+			         disks[i].name, disks[i].parent_disk, (long long)disks[i].size_bytes);
+		else
+			snprintf(e->description, sizeof(e->description), "%s (%lld bytes%s)",
+			         disks[i].model[0] != '\0' ? disks[i].model : disks[i].name,
+			         (long long)disks[i].size_bytes, disks[i].removable ? ", removable" : "");
 		e->type = DEVICE_NODE_BLOCK;
 		e->major = major;
 		e->minor = minor;
 		snprintf(e->dev_path, sizeof(e->dev_path), "%s", disks[i].dev_path);
-		e->assignable = 1;
+		e->is_partition = disks[i].is_partition;
+		e->os_layout = diskpart_os_layout_untouchable(disks[i].name, disks[i].is_os_disk,
+		                                              disks[i].is_partition);
+		e->storage_role = diskrole_lookup(disks[i].name) != NULL;
+		e->mounted = disks[i].mounted;
+		snprintf(attr, sizeof(attr), "/sys/class/block/%s", disks[i].name);
+		canonical_sysfs(attr, e->sysfs, sizeof(e->sysfs));
 	}
 }
 
@@ -848,15 +933,88 @@ static void enumerate_pci(struct discovered_device *out, int cap, int *count)
 	closedir(d);
 }
 
+/*
+ * ADR-0344: each /dev node belongs to the most specific walk that
+ * reaches it. The PCI walk finds every node below a function -- a disk,
+ * a DRM card -- and the class walks find the same nodes as what they
+ * are, so a "pci:<bdf>:<node>" record whose node a class walk also
+ * reported is dropped. What survives under a "pci:" id is a node nothing
+ * more specific owns, such as an NVMe controller's own char node.
+ *
+ * On 192.168.15.95 this is the difference between `card0` reported once
+ * and `card0` reported twice with opposite answers (2026-10-20).
+ */
+static int drop_pci_duplicates(struct discovered_device *out, int count)
+{
+	int i, j, kept = 0;
+
+	for (i = 0; i < count; i++) {
+		int duplicate = 0;
+
+		if (strcmp(out[i].bus, "pci") == 0 && out[i].dev_path[0] != '\0') {
+			for (j = 0; j < count && !duplicate; j++) {
+				duplicate = j != i && strcmp(out[j].bus, "pci") != 0 &&
+				            out[j].dev_path[0] != '\0' && out[j].type == out[i].type &&
+				            out[j].major == out[i].major && out[j].minor == out[i].minor;
+			}
+		}
+		if (duplicate)
+			continue;
+		if (kept != i)
+			out[kept] = out[i];
+		kept++;
+	}
+	return kept;
+}
+
+/*
+ * A record's parent is the nearest record above it in the kernel's own
+ * device tree: the one whose canonical path is the longest strict
+ * prefix of its own. That is how a disk sits under its PCI function, a
+ * partition under its disk, a USB device under its host controller, a
+ * PHY under its USB device -- one rule, whatever directory the kernel
+ * chose. On 192.168.15.95 card0's `device` link names a platform
+ * framebuffer that is not a record, which is exactly why the rule walks
+ * up to the nearest RECORD rather than reading that link. A record that
+ * already has a parent -- an interface naming its PHY -- keeps it.
+ */
+static void assign_parents(struct discovered_device *out, int count)
+{
+	int i, j;
+
+	for (i = 0; i < count; i++) {
+		size_t best = 0;
+		int best_j = -1;
+
+		if (out[i].parent[0] != '\0' || out[i].sysfs[0] == '\0')
+			continue;
+		for (j = 0; j < count; j++) {
+			size_t len = strlen(out[j].sysfs);
+
+			if (j == i || len == 0 || len <= best)
+				continue;
+			if (strncmp(out[i].sysfs, out[j].sysfs, len) == 0 && out[i].sysfs[len] == '/') {
+				best = len;
+				best_j = j;
+			}
+		}
+		if (best_j >= 0)
+			snprintf(out[i].parent, sizeof(out[i].parent), "%s", out[best_j].id);
+	}
+}
+
 int device_enumerate(struct discovered_device *out, int cap, const char *os_containers_dir)
 {
 	int count = 0;
 
 	enumerate_usb(out, cap, &count);
 	enumerate_pci(out, cap, &count);
+	enumerate_phy(out, cap, &count);
 	enumerate_net(out, cap, &count);
 	enumerate_gpu(out, cap, &count);
 	enumerate_disk(out, cap, &count, os_containers_dir);
+	count = drop_pci_duplicates(out, count);
+	assign_parents(out, count);
 	return count;
 }
 
@@ -891,110 +1049,24 @@ int device_find_group(const char *id, const char *os_containers_dir,
 		}
 	}
 
-	/* No exact match -- try id as a group prefix (e.g. "gpu:0"
-	 * expanding every currently-assignable "gpu:0:<node>" member).
-	 * Inert for every other bus: no existing id scheme ever has one
-	 * full id as a strict prefix of another (usb ids end at
-	 * :serial/:port..., pci node ids end at :node_name, net ids have
-	 * no third segment at all -- see this function's own header
-	 * comment in device.h). */
+	/* No exact match -- a bare "gpu:<idx>" expands into every member
+	 * node with a driver, plus the host-wide gpu:kfd. Only "gpu:" ids
+	 * expand: a "pci:<bdf>" function is a strict prefix of its own
+	 * "pci:<bdf>:<node>" children, and naming a function must not grant
+	 * its nodes behind the tree's back. */
+	if (strncmp(id, "gpu:", 4) != 0)
+		return -1;
 	snprintf(prefix, sizeof(prefix), "%s:", id);
 	prefix_len = strlen(prefix);
 	for (i = 0; i < n && found < cap; i++) {
-		if (strncmp(cache[i].id, prefix, prefix_len) == 0 && cache[i].assignable)
+		if (strncmp(cache[i].id, prefix, prefix_len) == 0 && cache[i].driver[0] != '\0')
 			out[found++] = &cache[i];
 	}
-	return found > 0 ? found : -1;
-}
-
-void device_write_json_one(const struct discovered_device *d, struct json_writer *w,
-                            device_holders_fn holders)
-{
-	jw_obj_open(w);
-	jw_key(w, "id");
-	jw_str(w, d->id);
-	jw_key(w, "bus");
-	jw_str(w, d->bus);
-	jw_key(w, "vendor_id");
-	jw_str(w, d->vendor_id);
-	jw_key(w, "product_id");
-	jw_str(w, d->product_id);
-	jw_key(w, "class");
-	jw_str(w, d->class_hex);
-	jw_key(w, "description");
-	jw_str(w, d->description);
-	jw_key(w, "driver");
-	jw_str(w, d->driver);
-	jw_key(w, "dev_path");
-	jw_str(w, d->dev_path);
-	jw_key(w, "type");
-	jw_str(w, d->type == DEVICE_NODE_BLOCK ? "block" : "char");
-	jw_key(w, "major");
-	jw_int(w, d->major);
-	jw_key(w, "minor");
-	jw_int(w, d->minor);
-	jw_key(w, "assignable");
-	jw_bool(w, d->assignable);
-	jw_key(w, "interfaces");
-	jw_arr_open(w);
-	{
-		int i;
-
-		for (i = 0; i < d->interface_count; i++) {
-			const struct usb_interface_info *info = &d->interfaces[i];
-
-			jw_obj_open(w);
-			jw_key(w, "number");
-			jw_int(w, info->number);
-			jw_key(w, "class");
-			jw_str(w, info->class_hex);
-			jw_key(w, "subclass");
-			jw_str(w, info->subclass_hex);
-			jw_key(w, "protocol");
-			jw_str(w, info->protocol_hex);
-			jw_obj_close(w);
-		}
+	if (found == 0)
+		return -1;
+	for (i = 0; i < n && found < cap; i++) {
+		if (strcmp(cache[i].id, "gpu:kfd") == 0)
+			out[found++] = &cache[i];
 	}
-	jw_arr_close(w);
-
-	/*
-	 * #356. Always written, even when empty and even with no callback,
-	 * because an absent key and an empty array would be two different
-	 * things for a client to distinguish and only one of them is ever
-	 * meant.
-	 *
-	 * A "net" device never appears here with a holder, and that is
-	 * correct rather than an omission: an interface moved into a
-	 * container's netns stops being enumerated at all, so it is not in
-	 * this list to be annotated. Exclusivity there is the kernel's,
-	 * not a field. This answers for the buses where a grant is a
-	 * cgroup rule rather than a move -- usb, pci, gpu, disk -- and
-	 * where nothing was exclusive at all.
-	 */
-	jw_key(w, "held_by");
-	jw_arr_open(w);
-	if (holders != NULL) {
-		char names[DEVICE_HOLDERS_MAX][DEVICE_HOLDER_NAME_MAX];
-		int n = holders(d->id, names, DEVICE_HOLDERS_MAX);
-		int i;
-
-		for (i = 0; i < n && i < DEVICE_HOLDERS_MAX; i++)
-			jw_str(w, names[i]);
-	}
-	jw_arr_close(w);
-
-	jw_obj_close(w);
-}
-
-void device_write_json_list(struct json_writer *w, const char *os_containers_dir,
-                             device_holders_fn holders)
-{
-	struct discovered_device devices[DEVICE_ENUM_MAX];
-	int n = device_enumerate(devices, DEVICE_ENUM_MAX, os_containers_dir);
-	int i;
-
-	jw_arr_open(w);
-	for (i = 0; i < n; i++)
-		device_write_json_one(&devices[i], w, holders);
-	jw_arr_close(w);
+	return found;
 }

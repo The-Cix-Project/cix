@@ -28,38 +28,68 @@ struct usb_interface_info {
 	char protocol_hex[8];
 };
 
+#define DEVICE_ID_MAX 96
+
+/*
+ * One record (ADR-0344): a thing the kernel models as a device that Cix
+ * can grant or reason about -- a USB device, a PCI function, a node of a
+ * PCI function no more specific walk owns, a disk or partition, a DRM
+ * node, a wireless PHY, a network interface. Each /dev node belongs to
+ * exactly one record.
+ *
+ * The record carries FACTS, never a verdict: whether it can be granted
+ * is devicestate.c's decision, made from these fields and the grants,
+ * so that the list, the clients and every grant path read one answer.
+ */
 struct discovered_device {
-	char id[96];
-	char bus[8];		/* "usb", "pci", "net", "gpu", or "disk" */
+	char id[DEVICE_ID_MAX];
+	char bus[8];		/* "usb", "pci", "disk", "gpu", "phy" or "net" */
+	char parent[DEVICE_ID_MAX]; /* nearest ancestor that is a record; "" for none */
 	char vendor_id[16];
 	char product_id[16];
-	char class_hex[8];	/* PCI only, empty for USB */
+	char class_hex[8];	/* PCI only, empty for every other bus */
 	char description[128];
 	char driver[64];	/* empty if unbound */
-	char dev_path[64];	/* empty if no /dev node was found */
+	char dev_path[64];	/* empty if this record owns no /dev node */
 	enum device_node_type type;
 	unsigned int major;
 	unsigned int minor;
-	int assignable;		/* driver bound AND a real /dev node found */
 	struct usb_interface_info interfaces[USB_MAX_INTERFACES_REPORTED];
 	int interface_count;
+
+	/* Facts devicestate.c decides from. */
+	int requires_driver;	/* usb and DRM nodes: nothing works without one */
+	int always_shared;	/* gpu:kfd, host-wide by design (ADR-0029) */
+	int is_partition;	/* disk records only */
+	int os_layout;		/* diskpart_os_layout_untouchable(): this record only */
+	int storage_role;	/* holds a storage role; reaches below, and above as any fact does */
+	int mounted;		/* THIS device is host-mounted; reaches below. A disk whose partition is
+				 * mounted gets no fact of its own -- the partition below makes it
+				 * the host's, and a sibling partition stays free. */
+	int bridge_port;	/* net: enslaved to a bridge (the kernel's own `master` link) */
+	char master[16];	/* net: that bridge's name */
+	int management;		/* net: carries the management address, or is a port of the bridge that does */
+
+	/* Internal to enumeration: the canonical sysfs path parents are found by. */
+	char sysfs[256];
 };
 
 /*
- * Walks /sys/bus/usb/devices, /sys/bus/pci/devices, /sys/class/net,
- * /sys/class/drm, and (ADR-0142) every non-OS, role-less whole disk
- * disk_enumerate() reports, fresh, writing up to cap entries into out.
- * Returns the count written (0 if none of those sysfs trees are
- * present -- e.g. this dev environment's own kernel lacking USB support
- * entirely is a normal, non-fatal case, not an error).
+ * Walks USB, PCI, block, DRM, wireless PHY and network interfaces fresh
+ * from sysfs, writing up to cap records into out, and returns the count
+ * (0 when none of those trees exist, which is a normal answer, not an
+ * error). Every node is reported once, by the most specific walk that
+ * reaches it, and every record's parent is filled in.
  *
- * os_containers_dir is passed straight through to disk_enumerate()
- * (see disk.h) to identify and exclude the OS disk -- device.c has no
- * knowledge of main.c's own CONTAINERS_DIR global, so the caller
- * passes it in explicitly, the same convention disk.c itself already
- * established. Pass NULL from a context with no real containers
- * partition (most test/dev daemons); every disk is then a passthrough
- * candidate except ones with an assigned role.
+ * os_containers_dir is passed straight through to disk_enumerate() (see
+ * disk.h) to identify the OS disk -- device.c has no knowledge of
+ * main.c's CONTAINERS_DIR, so the caller passes it in. Pass NULL from a
+ * context with no real containers partition; no disk is then the OS
+ * disk. The OS disk is REPORTED either way (ADR-0344): hiding a disk
+ * the host uses is what made `sda` vanish while `vda` was offered.
+ *
+ * The management fact needs daemon configuration this module does not
+ * own, so it is left 0 here and set by devicegrant.c.
  */
 int device_enumerate(struct discovered_device *out, int cap, const char *os_containers_dir);
 
@@ -74,57 +104,19 @@ int device_enumerate(struct discovered_device *out, int cap, const char *os_cont
 const struct discovered_device *device_find(const char *id, const char *os_containers_dir);
 
 /*
- * Resolves id to one or more discovered devices (ADR-0028). An exact
- * id match -- covering every usb:/pci:/net: id, and a "gpu:<idx>:
- * <node>" id naming one specific GPU member node directly -- returns
- * exactly that one entry, identical to device_find(). Only a bare
+ * Resolves id to one or more records (ADR-0028). An exact id match
+ * returns exactly that record, identical to device_find(). Only a bare
  * "gpu:<idx>" logical id with no exact match falls through to
- * expansion: every currently assignable "gpu:<idx>:*" member is
- * returned, so a single grant can atomically request everything one
- * physical GPU needs (e.g. both its card and render nodes) without the
- * caller naming each one by hand. Writes up to cap pointers into out,
- * into the same kind of per-call static cache device_find() itself
- * uses -- valid until the next device_find()/device_find_group() call.
- * Returns the count written, or -1 if id resolves to nothing
- * assignable at all.
+ * expansion: every "gpu:<idx>:*" member that has a driver, plus
+ * "gpu:kfd" when the host has one, so a single grant can request
+ * everything one physical GPU needs without the caller naming each
+ * node. Whether each member may be GRANTED is not decided here --
+ * every one goes through devicegrant_check(). Writes up to cap pointers
+ * into out, into the same per-call static cache device_find() uses --
+ * valid until the next device_find()/device_find_group() call. Returns
+ * the count written, or -1 if id resolves to nothing at all.
  */
 int device_find_group(const char *id, const char *os_containers_dir,
                        const struct discovered_device *out[], int cap);
-
-/*
- * Who currently holds a device (#356).
- *
- * `assignable` answers "does the host consider this grantable" and has
- * never answered "is anything already using it" -- it is a driver-bound
- * check for USB, unconditional for PCI, and a not-enslaved check for a
- * netdev. Nothing reported the second question at all, and nothing
- * refuses a second grant, so the same USB/PCI/GPU device could be
- * granted to any number of containers with no way to notice.
- *
- * Supplied as a callback rather than looked up here, because device.c
- * knows nothing about the registry and must not learn: the same
- * dependency injection registry_write_json_list() already uses to ask
- * containerdef.c a question without either module depending on the
- * other. Pass NULL and every device reports an empty holder list, which
- * is what a context with no live containers (a test, a tool) should
- * say.
- *
- * Fills out with up to max container names and returns the count, or 0
- * for none. Names are truncated to DEVICE_HOLDER_NAME_MAX rather than
- * dropped -- a truncated name still tells an operator something is
- * holding it.
- */
-#define DEVICE_HOLDER_NAME_MAX 64
-#define DEVICE_HOLDERS_MAX 16
-
-typedef int (*device_holders_fn)(const char *device_id,
-                                  char out[][DEVICE_HOLDER_NAME_MAX], int max);
-
-void device_write_json_one(const struct discovered_device *d, struct json_writer *w,
-                            device_holders_fn holders);
-
-/* Calls device_enumerate() itself, then writes the whole list. */
-void device_write_json_list(struct json_writer *w, const char *os_containers_dir,
-                             device_holders_fn holders);
 
 #endif /* DEVICE_H */

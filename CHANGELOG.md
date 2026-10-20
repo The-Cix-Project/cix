@@ -6,6 +6,30 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A device is one record with one state, and every grant asks it (#620, ADR-0344)
+
+- **What changed:** `GET /v1/devices` lists every host device once, as a tree:
+  - each record has a `parent`, and each `/dev` node belongs to the most specific walk that reaches it;
+  - every disk and partition is now listed, including the ones the host uses;
+  - a wireless PHY is a record between its device and its interfaces.
+
+  Each record carries a `state` — `free`, `held`, `reserved`, `host` or `unavailable` — with a `reason`. It also carries `held_by` (`{container, granted, shared}`) and `reserved_by` (`{container, claimed, binding}`). `assignable` is gone. `devicestate.c` decides the state as a pure function, and `devicegrant.c` gathers its inputs. Container create and start (`devices[]` and `interfaces[]`), `POST /v1/containers/{name}/devices` and the hotplug reconcile all ask that one gate.
+  New setting: `reserve_devices` on a container (`cixctl run --reserve-devices`, off by default). With it, a stopped container's devices are kept for it.
+  The Devices page now opens on the device tables, adds a Disk tab, and shows each row's state, its holder or reason, and what it hangs off. `cixctl device ls` prints the same tree.
+- **Why:** measured on 192.168.15.95, 2026-10-20:
+  - the OS disk `vdb` and its `/boot`, `/config` and `/var/lib/cix` partitions were `assignable: true`, and no grant path checked for them;
+  - one display adapter was two records with opposite answers;
+  - `vda` was offered while `sda` was hidden, though both hold a storage role;
+  - `ar-1`'s radio vanished from the list instead of showing as held.
+
+  Read from the code: exclusivity was a `strcmp` of ids, so one node under two ids could be granted twice; and the hotplug path asked no holder at all.
+- **Rules worth knowing:**
+  - Holding follows the tree: a grant conflicts with the same record, an ancestor or a descendant. So the dongle's USB node is refused while its radio is in a container, and two partitions of one disk can still go to two containers.
+  - The OS layout does not reach an operator's own partition on the OS disk (#9).
+  - `gpu:kfd` is one record and never conflicts (ADR-0029).
+  - Bridge attach (`attachNetworkInterface`) does not ask the gate. It is host configuration, and first boot bridges the uplink through it.
+- **Contract:** storage roles, mounts, formats, bridge ports, the management address, container start/stop and deployments now invalidate `listDevices` (ADR-0339).
+
 ### A build says which phase it is in, and which phase and command failed (#388, #489, ADR-0275)
 
 - **What changed:** cixd runs `cbs build ... --events human --events-file

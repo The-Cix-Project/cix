@@ -63,7 +63,7 @@ int network_error_to_status(enum network_error err, const char **out_msg)
 		*out_msg = "ip is already assigned to another container";
 		return 409;
 	case NETWORK_ERR_INTERFACE_NOT_FOUND:
-		*out_msg = "unknown or unassignable interface (see GET /v1/devices)";
+		*out_msg = "unknown interface, or already a bridge port (see GET /v1/devices)";
 		return 400;
 	case NETWORK_ERR_INTERFACE_ATTACHED:
 		*out_msg = "interface is already attached to this network";

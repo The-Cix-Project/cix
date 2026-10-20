@@ -1,4 +1,5 @@
 #include "devicemap.h"
+#include "devicestate.h"
 #include "namecheck.h"
 #include "persist.h"
 
@@ -233,8 +234,13 @@ int devicemap_resolve(const char *name, const char *os_containers_dir,
 
 		if (split_vendor_model(m->selector, vendor, sizeof(vendor), product, sizeof(product)) != 0)
 			return 0; /* can't happen -- validated at create time */
+		/* A grant unit, not a verdict: a PCI function shares its vendor
+		 * ids with its node children and has nothing of its own to grant.
+		 * Whether a match may be granted is devicegrant_check()'s answer
+		 * (ADR-0344), so a mapping resolving to a driverless device says
+		 * why it cannot be given rather than resolving to nothing. */
 		for (i = 0; i < n && found < cap; i++) {
-			if (cache[i].assignable && strcmp(cache[i].vendor_id, vendor) == 0 &&
+			if (device_is_grant_unit(&cache[i]) && strcmp(cache[i].vendor_id, vendor) == 0 &&
 			    strcmp(cache[i].product_id, product) == 0)
 				out[found++] = &cache[i];
 		}

@@ -6265,8 +6265,11 @@ function renderNetworkDetail(name) {
 	 * the operator had just made (#592). */
 	syncForm(document.getElementById("nd-attach-form"), "attachNetworkInterface", {
 		args: [n.name],
+		/* Free interfaces only (ADR-0344): a bridge port, the
+		 * management interface, or one a container holds or reserves
+		 * is the daemon's "no" before it is asked. */
 		choices: { ifname: cache.devices
-			.filter((d) => d.bus === "net" && d.assignable)
+			.filter((d) => d.bus === "net" && d.state === "free")
 			.map((d) => ({ value: d.id.replace(/^net:/, "") })) },
 		submit: "Attach", saved: "Interface attached", clear: true,
 		failed: "Failed to attach the interface to " + n.name,
@@ -6811,7 +6814,81 @@ async function refreshDeviceMaps() {
 		renderDevices();
 }
 
-const DEVICE_BUS_TABLES = { usb: "dev-usb", pci: "dev-pci", net: "dev-net", gpu: "dev-gpu" };
+/* Which table shows which buses. A wireless PHY sits with the
+ * interfaces that hang off it, since it is what moves when one of them
+ * is granted (ADR-0265). */
+const DEVICE_BUS_TABLES = {
+	usb: { table: "dev-usb", buses: ["usb"] },
+	pci: { table: "dev-pci", buses: ["pci"] },
+	disk: { table: "dev-disk", buses: ["disk"] },
+	net: { table: "dev-net", buses: ["phy", "net"] },
+	gpu: { table: "dev-gpu", buses: ["gpu"] },
+};
+
+/* Device.reason, in words a reader of the table needs. */
+const DEVICE_REASON_TEXT = {
+	"os-disk": "the OS disk",
+	"os-partition": "an OS partition",
+	"storage-role": "holds a storage role",
+	mounted: "mounted by the host",
+	"bridge-port": "a bridge port",
+	"management-interface": "carries the management address",
+	"no-driver": "no driver bound",
+	"no-node": "nothing of its own to grant",
+};
+
+/*
+ * ADR-0344: how one device's state reads, from the daemon's own answer
+ * and nothing else -- the page derives no state, it words the one every
+ * grant is decided by. One function, as diskActionEligibility() is for
+ * a disk's actions (web-ux-guidelines.md), so a second table showing
+ * devices cannot word them differently.
+ *
+ * Returns the badge kind and the "who / why" text: the container that
+ * holds it (and through which record, when that is not this one), the
+ * one reserving it, or the reason it cannot be given.
+ */
+function deviceStateView(d) {
+	const kinds = { free: "ok", held: "paused", reserved: "paused", host: "unknown", unavailable: "unknown" };
+	const who = [];
+
+	for (const h of d.held_by || [])
+		who.push(h.container + (h.granted !== d.id ? " via " + h.granted : "") + (h.shared ? " (shared)" : ""));
+	for (const r of d.reserved_by || [])
+		if (r.binding)
+			who.push("reserved for " + r.container);
+	if (d.reason)
+		who.push(DEVICE_REASON_TEXT[d.reason] || d.reason);
+	return { kind: kinds[d.state] || "unknown", who: who.join(", ") };
+}
+
+/*
+ * A table's rows in tree order -- each record directly after the one it
+ * hangs off -- with its depth among the rows of this table, so a
+ * partition sits under its disk and an interface under its PHY.
+ */
+function deviceTreeRows(entries) {
+	const byId = new Map(entries.map((d) => [d.id, d]));
+	const children = new Map();
+	const rows = [];
+
+	for (const d of entries) {
+		const parent = byId.has(d.parent) ? d.parent : "";
+
+		if (!children.has(parent))
+			children.set(parent, []);
+		children.get(parent).push(d);
+	}
+	const walk = (parent, depth) => {
+		for (const d of children.get(parent) || []) {
+			rows.push({ d, depth });
+			if (depth < 8)
+				walk(d.id, depth + 1);
+		}
+	};
+	walk("", 0);
+	return rows;
+}
 
 /* Only "exact" mappings can be shown inline against the one device row
  * they pin to; a "vendor_model" mapping's own resolved_ids can span
@@ -6850,15 +6927,31 @@ function renderDevices() {
  * only this table had.
  */
 function renderDeviceBus(bus, mappedNames) {
-	const entries = cache.devices.filter((d) => d.bus === bus);
+	const spec = DEVICE_BUS_TABLES[bus];
+	const tree = deviceTreeRows(cache.devices.filter((d) => spec.buses.includes(d.bus)));
+	const depthOf = new Map(tree.map((t) => [t.d.id, t.depth]));
+	const entries = tree.map((t) => t.d);
 	const columns = [
-		{ field: "id", label: "ID" },
+		/* The id indented under its parent: the tree is the point of
+		 * this page (ADR-0344), and a parent column alone would make the
+		 * reader assemble it. */
+		{ field: "id", label: "ID", text: (d) => "  ".repeat(depthOf.get(d.id) || 0) +
+			((depthOf.get(d.id) || 0) > 0 ? "└ " : "") + d.id },
 		"description",
-		"driver",
-		{ field: "assignable", badge: (v) => (v ? "ok" : "unknown") },
+		/* What it hangs off when that is in another tab: a radio's PHY
+		 * under its USB dongle, a disk under its PCI function. Inside
+		 * one tab the indentation already says it. */
+		{ label: "On", text: (d) => (d.parent && !depthOf.has(d.parent) ? d.parent : FIELD_ABSENT) },
+		{ field: "state", badge: (v, d) => deviceStateView(d).kind },
+		/* Who holds or reserves it, or why it cannot be given -- one
+		 * cell, because exactly one of those is ever the answer. */
+		{ label: "Held by / why", text: (d) => deviceStateView(d).who || FIELD_ABSENT },
 		{ label: "Name", text: (d) => mappedNames[d.id] || FIELD_ABSENT },
 		{ label: "", actions: (d) => {
-			if (mappedNames[d.id])
+			/* A name is for something a grant can take, now or once its
+			 * state changes. A PCI function whose nodes are its
+			 * children's, and the OS disk's own layout, never can. */
+			if (mappedNames[d.id] || ["no-node", "os-disk", "os-partition"].includes(d.reason))
 				return [];
 
 			const btn = document.createElement("button");
@@ -6885,9 +6978,9 @@ function renderDeviceBus(bus, mappedNames) {
 
 	if (bus === "gpu") {
 		entries.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-		columns.unshift({ label: "Group", text: (d) => d.id.split(":").slice(0, 2).join(":") });
+		columns.unshift({ label: "Group", text: (d) => (d.id === "gpu:kfd" ? "every GPU" : d.id.split(":").slice(0, 2).join(":")) });
 	}
-	renderTable(document.getElementById(DEVICE_BUS_TABLES[bus]), "Device", entries, columns, {
+	renderTable(document.getElementById(spec.table), "Device", entries, columns, {
 		op: "listDevices",
 		key: "devices-" + bus,
 		/* #432: a row shows whether a mapping claims the device, so a
@@ -11916,9 +12009,10 @@ async function refreshPkgRepositories() {
  * volumes it may mount. Read fresh, because the header menu opens this
  * from any page, including one that has read none of them.
  *
- * A device is offered as what can be granted: an assignable one, and a
- * GPU as its whole group (`gpu:0`), since one of its nodes alone is not
- * the intended unit (device_find_group()). A network interface is a
+ * A device is offered as what can be granted: a free one, by the
+ * daemon's own state (ADR-0344), and a GPU as its whole group (`gpu:0`),
+ * since one of its nodes alone is not the intended unit
+ * (device_find_group(), which also adds gpu:kfd). A network interface is a
  * device on the `net` bus, offered by its bare kernel name, which is
  * what `interfaces` takes. A dependency must be a container with a
  * restart policy, which is what the contract asks of one.
@@ -11931,12 +12025,12 @@ async function containerCreateChoices() {
 		apiRequest("GET", CIX_API.listDevices()),
 		apiRequest("GET", CIX_API.listVolumes()),
 	]);
-	const assignable = (devices.devices || []).filter((d) => d.assignable);
+	const free = (devices.devices || []).filter((d) => d.state === "free");
 	const grants = [];
 	const gpuGroups = {};
 
-	for (const d of assignable) {
-		if (d.bus === "net")
+	for (const d of free) {
+		if (d.bus === "net" || d.bus === "phy" || d.id === "gpu:kfd")
 			continue;
 		if (d.bus === "gpu") {
 			const group = d.id.split(":").slice(0, 2).join(":");
@@ -11956,7 +12050,7 @@ async function containerCreateChoices() {
 			.filter((c) => c.restart && c.restart !== "no")
 			.map((c) => ({ value: c.name })),
 		"devices.id": grants,
-		interfaces: assignable
+		interfaces: free
 			.filter((d) => d.bus === "net")
 			.map((d) => ({
 				value: d.id.replace(/^net:/, ""),
@@ -11968,7 +12062,7 @@ async function containerCreateChoices() {
 
 /*
  * The New Container form's layout, which ADR-0338 leaves to a person:
- * forty-seven fields, grouped as the hand-built form grouped them. What
+ * forty-eight fields, grouped as the hand-built form grouped them. What
  * belongs to running something comes first; a field no section names
  * still appears, under "Other", so a property added to the contract is
  * offered rather than waiting to be placed here.
@@ -11984,7 +12078,7 @@ function containerFormSections() {
 		                               "cpuset_cpus", "disk_quota_bytes", "disk", "ksm"] },
 		{ title: "Networking", fields: ["networks", "routes", "dns_servers", "dns_register",
 		                                "ip_forward", "sysctls", "interfaces"] },
-		{ title: "Devices and access", fields: ["devices", "cap_add", "userns", "procfuse",
+		{ title: "Devices and access", fields: ["devices", "reserve_devices", "cap_add", "userns", "procfuse",
 		                                        "consoles", "capture_output"] },
 		{ title: "Files and storage", fields: ["files", "volumes", "env"] },
 		{ title: "Lifecycle", fields: ["restart", "restart_delay_seconds", "follow_rolling",

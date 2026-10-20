@@ -24,7 +24,7 @@ cixctl network attach-interface lan1 --interface=eth1
 cixctl network attach-interface lan1 --interface=eth1 --vlan=100
 ```
 
-Enslaves a real host interface into a network's bridge (ADR-0038) — the "physical ethernet on a host-managed switch" mechanism. The interface must be currently assignable (`cixctl device ls`'s own `net:` entries — not already inside a container's netns, not already attached elsewhere via this command). Without `--vlan=`, `eth1` itself is enslaved untagged. With `--vlan=100`, an 802.1q sub-interface `eth1.100` is created and enslaved instead, leaving bare `eth1` free to attach to a *different* network (with a different, or no, VLAN tag) at the same time — one physical NIC can back several isolated networks this way. `network detach-interface lan1 --interface=eth1` releases it — the bridge attachment or the VLAN sub-interface, whichever this command originally created.
+Enslaves a real host interface into a network's bridge (ADR-0038) — the "physical ethernet on a host-managed switch" mechanism. The interface must be one of `cixctl device ls`'s `net:` entries that is not already a bridge port — not inside a container's netns, not already attached elsewhere via this command. Without `--vlan=`, `eth1` itself is enslaved untagged. With `--vlan=100`, an 802.1q sub-interface `eth1.100` is created and enslaved instead, leaving bare `eth1` free to attach to a *different* network (with a different, or no, VLAN tag) at the same time — one physical NIC can back several isolated networks this way. `network detach-interface lan1 --interface=eth1` releases it — the bridge attachment or the VLAN sub-interface, whichever this command originally created.
 
 This is a different mechanism from a NIC passed straight into one container's own network namespace at creation time (`container run --interface=IFNAME`, ADR-0022) — that's exclusive, dedicated hardware for one container; attaching to a network's bridge is shared L2 connectivity any number of containers on that network can use.
 
@@ -40,7 +40,7 @@ Run it **from the console** (which talks to `127.0.0.1` and is unaffected). If y
 
 **First check whether a flap is even the right tool.** If the symptom is "eth0 exists but can't reach the LAN" *and* the driver loaded late at boot, the interface may simply never have been enslaved to the management bridge (its uplink attach failed and the boot continued — the address is on the bridge, the bridge has no port). `cixctl network ls` shows whether `eth0` is in the management network's interface list; if it is not, the fix is `cixctl network attach-interface <mgmt-net> --interface=eth0`, not a flap. Flap when the interface is attached and the link itself is stuck.
 
-An interface enslaved to a bridge this way stays visible on the host but reports `assignable: false` — read from the kernel's own `master` symlink, not from a bookkeeping table Cix maintains. An interface *moved* into a container disappears from the listing entirely. Both are ground truth rather than record-keeping, which is why neither can drift. (`--device=` grants are not like this: the same USB, PCI or GPU device can currently be granted to several containers with nothing reporting it — issue #356.)
+An interface enslaved to a bridge this way stays visible on the host with state `host:bridge-port` — read from the kernel's own `master` symlink, not from a bookkeeping table — and a container cannot be given it. The interface carrying the management address is `host:management-interface` for the same reason. An interface *moved* into a container stays listed too, as `held` by that container: the daemon records the grant when it makes it, because the host can no longer see the interface afterwards ([ADR-0344](../adr/0344-a-device-is-one-record-with-one-state-and-every-grant-asks-it.md)).
 
 See [Giving a container a radio](#giving-a-container-a-radio) below for the wireless case, which is a third thing again.
 
@@ -60,8 +60,8 @@ By the time a container exists, the adapter's USB endpoint has already been clai
 
 **One container owns the radio, exclusively, for as long as it exists.** This is not a Cix policy — it is what moving a PHY into a namespace means:
 
-- while the container runs, `cixctl device ls` shows no `net:wlan0` on the host, and the host cannot use that radio for anything
-- a second container asking for it is refused with `unknown or unassignable interface`, because the ordinary lookup finds nothing to give
+- while the container runs, `cixctl device ls` shows `phy:phy0` and `net:wlan0` as `held` by it, under the USB dongle they belong to, and the host cannot use that radio for anything
+- a second container asking for it — or for the dongle's raw USB node — is refused with `409`, naming the container that holds it
 - deleting the container moves the PHY back, and the host has it again in about a second
 - if you want both an AP and a client interface on one adapter, both must live in the *same* container — a wiphy cannot be split across namespaces
 
