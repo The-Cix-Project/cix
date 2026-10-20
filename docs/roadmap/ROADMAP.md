@@ -2445,6 +2445,44 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 294: an image keeps a bounded history, and a version leaves it off the event loop (ADR-0343, #619, 0.2.57-553)
+
+Nothing removed an image version unless someone asked. `jumpbox` held 256 or more, its
+recorded history had stopped at 256 and was missing the newest, 813 versions were collectable
+on .95, and `POST /v1/images/gc` could neither be limited nor run safely: its dry run alone held
+the loop 1909 ms. #619 measured `hibr`'s upgrade into `jumpbox` as `unlink` (1219 ms, 386
+calls) against 3 ms into a 4-version image.
+
+**What shipped.**
+- **Retention:** each image keeps its referenced versions (current, a registered container's, a
+  definition's version or rollback target) plus its newest `keep` unreferenced ones, a new image
+  policy field (`cixctl image policy NAME --keep=N`, 0-64, default 3).
+- **One pass, three triggers:** after the last package job ends for an image that got a version,
+  once after daemon start, and `POST /v1/images/gc`. References are collected once per pass, and
+  the history is repaired from the disk first.
+- **Off the loop:** a collected version's subvolumes are set aside into `IMAGES_DIR/.discard` and
+  deleted by ADR-0341's helper queue. `image_delete()` goes the same way.
+- **Quota accounting:** when the deletes drain, a helper waits for the kernel's cleaner, commits,
+  and reports; on "inconsistent" the daemon logs and runs a rescan in a second helper.
+
+**Verified on 192.168.15.95.**
+- **The gates:** `probe-cix-compile@0.2.57-563` green, including `test_images`' new `keep`,
+  ordering and history-repair cases. -561 had caught an undeclared function and -562 a flag
+  missing from `cmdtree.h` (`test_clitree`).
+- **The release:** 553 booted on slot b with 12 containers running.
+- **The first pass**, at start: 776 versions set aside, 77 kept, 0 failed, 7 histories repaired;
+  `jumpbox` now records 4. It ran before the loop served anything, so stallwatch did not time it.
+- **The deletes:** `sda` used went from 17.08 GB to 8.25 GB in about two minutes. `/v1/health`
+  answered in 2 ms or less throughout, and no slow pass was recorded; the worst pass since boot
+  was `event iso-assemble (455 ms)`.
+- **The rescan:** the kernel had marked accounting inconsistent once the cleaner finished; the
+  daemon's rescan started and finished 3 s later, and `accounting` reads `ok`.
+- **Live surfaces:** `image policy jumpbox` prints `keep=3`; `image gc --dry-run` reclaims 0 and
+  keeps 77.
+
+**Not yet verified:** #619's confirmation, the next `hibr` upgrade into `jumpbox` against a
+4-version history. `hibr` is still 0.99.265-1 and builds only when upstream releases.
+
 ## Part 293: a slow handler names its slowest step (#619, #617, 0.2.57-549 and -550)
 
 A slow loop pass was named by its handler, and a handler that served no request only by its

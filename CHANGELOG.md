@@ -25,8 +25,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **Measured on 0.2.57-553, 192.168.15.95, 2026-10-20:** the pass at the first start set aside
   776 versions, kept 77, failed none and repaired 7 histories; `jumpbox` now records 4. `sda`
   went from 17.08 GB to 8.25 GB used within about two minutes, `/v1/health` answered in 2 ms or
-  less throughout, and the loop's worst pass since boot was 182 ms (an ordinary `GET /v1/pkg`),
-  with no slow pass. The kernel did mark quota accounting inconsistent once the cleaner finished,
+  less throughout, and no slow pass was recorded while the deletes ran. The start-up pass itself
+  ran before the loop served anything, so stallwatch did not time it; what an automatic pass
+  costs on the loop is measured only once one runs, now over at most referenced + `keep`
+  versions per image. The kernel did mark quota accounting inconsistent once the cleaner finished,
   and the daemon's rescan started and finished three seconds later. Whether `hibr`'s next
   upgrade into `jumpbox` is now cheap is still to be read: that is #619's confirmation.
 
