@@ -149,6 +149,11 @@ struct registry_interface_record {
 	char anchor[96];
 	char description[64];
 	char driver[32];
+	/* ADR-0345: the address read at grant time. Once the interface is in
+	 * the container's netns the host cannot read it, and a mac mapping
+	 * finds a moved interface through these. */
+	char mac[32];
+	int mac_permanent;
 };
 
 struct registry_device_attachment {

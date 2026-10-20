@@ -347,6 +347,14 @@ static void write_one(struct json_writer *w, const struct discovered_device *rec
 	jw_int(w, d->major);
 	jw_key(w, "minor");
 	jw_int(w, d->minor);
+	jw_key(w, "serial");
+	jw_str(w, d->serial);
+	jw_key(w, "wwid");
+	jw_str(w, d->wwid);
+	jw_key(w, "mac");
+	jw_str(w, d->mac);
+	jw_key(w, "mac_permanent");
+	jw_bool(w, d->mac_permanent);
 	jw_key(w, "state");
 	jw_str(w, device_state_word(v.state));
 	jw_key(w, "reason");

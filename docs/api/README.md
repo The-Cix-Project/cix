@@ -2809,6 +2809,8 @@ If only the newcomer had to opt in, a container that asked for a device without 
 
 The same verdict decides `devices[]` and `interfaces[]` at create and at every start, the live attach `POST /containers/{name}/devices`, and a hotplugged device matched to a waiting container.
 
+**What a device is, as opposed to where it is (ADR-0345).** Each record also carries the facts a device mapping can select by: `serial` (USB), `wwid` (whole disks, the kernel's value verbatim), and `mac` with `mac_permanent` (interfaces). They are never part of the `id`. A USB serial names a device only together with its `vendor_id` and `product_id`, since many devices of one model report the same serial (the dongle above reports `123456`). An interface can be named by its address only when `mac_permanent` is true. Each field is empty, or `false`, on buses it does not apply to. For an interface a running container holds, `mac` is the address read when it was granted.
+
 ### Composite USB devices (ADR-0161 Phase A)
 
 The passthrough unit is always the whole device — never an individual USB interface, even for a composite device (a combo HID+storage device, say). `GET /v1/devices` still reports what such a device is actually made of, purely descriptively:

@@ -331,6 +331,13 @@ static void test_json(void)
 	claim(DEVICE_CLAIM_GRANT, "ar-1", "phy:phy0", 0, 0);
 	claim(DEVICE_CLAIM_RESERVATION, "router", "phy:phy0", 0, 1);
 
+	{
+		struct discovered_device *wlan = &g_recs[device_record_index(g_recs, g_n, "net:wlan0")];
+
+		snprintf(wlan->mac, sizeof(wlan->mac), "98:25:4a:5b:de:5b");
+		wlan->mac_permanent = 1;
+	}
+
 	jw_init(&w);
 	device_write_json_states(&w, g_recs, g_n, g_claims, g_cn);
 	snprintf(body, sizeof(body), "%.*s", (int)w.len, w.buf);
@@ -339,6 +346,16 @@ static void test_json(void)
 	if (strstr(body, "\"id\":\"disk:vdb\",\"bus\":\"disk\",\"parent\":\"pci:0000:06:0c.0\"") == NULL ||
 	    strstr(body, "\"state\":\"host\",\"reason\":\"os-disk\"") == NULL) {
 		fprintf(stderr, "  FAIL: vdb's record or state is not written as the contract says\n");
+		g_failures++;
+	}
+	/* ADR-0345: the selector facts are written for every record, empty
+	 * where they do not apply, and a permanent MAC says so. */
+	if (strstr(body, "\"serial\":\"\",\"wwid\":\"\",\"mac\":\"98:25:4a:5b:de:5b\","
+	                 "\"mac_permanent\":true,\"state\":\"held\"") == NULL ||
+	    strstr(body, "\"serial\":\"\",\"wwid\":\"\",\"mac\":\"\",\"mac_permanent\":false,"
+	                 "\"state\":\"host\",\"reason\":\"os-disk\"") == NULL) {
+		fprintf(stderr, "  FAIL: serial, wwid, mac and mac_permanent are not written as the "
+		                "contract says\n");
 		g_failures++;
 	}
 	if (strstr(body, "\"held_by\":[{\"container\":\"ar-1\",\"granted\":\"phy:phy0\","

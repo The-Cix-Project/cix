@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A device record says what the device is: serial, WWID, MAC and whether it is permanent (ADR-0345 step 1, #349)
+
+- **What changed:** every entry in `GET /v1/devices` carries `serial` (USB), `wwid` (whole disks, verbatim from sysfs), `mac` and `mac_permanent` (interfaces, from `addr_assign_type`). An interface a running container holds keeps the address read when it was granted. Nothing else changes: ids, mappings and grants are as before.
+- **Why:** ADR-0345's first gate. Nothing may be named by MAC until `mac_permanent` has been read for `eth0` and `wlan0` on .95, and no fact the mappings will select by had a field until now. The MAC was only text inside `description`.
+
 ### `cixctl storage ls` no longer calls a disk "assignable"
 
 - **What changed:** the kind column now reads `os-disk`, `partition` or `disk`. It used to read `assignable` for every whole disk that was not the OS disk.

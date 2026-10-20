@@ -237,6 +237,7 @@ static int enumerate_usb_one(const char *base, struct discovered_device *e)
 	snprintf(e->bus, sizeof(e->bus), "usb");
 	snprintf(e->vendor_id, sizeof(e->vendor_id), "%s", vendor);
 	snprintf(e->product_id, sizeof(e->product_id), "%s", product);
+	snprintf(e->serial, sizeof(e->serial), "%s", serial);
 
 	/* serial is the only field genuinely stable across a re-plug for
 	 * most real devices; busnum/devnum are reassigned on every
@@ -570,6 +571,22 @@ static int enumerate_net_one(const char *ifname, struct discovered_device *e)
 
 	snprintf(addr_attr, sizeof(addr_attr), "%s/address", link_path);
 	read_sysfs_attr(addr_attr, mac, sizeof(mac));
+	snprintf(e->mac, sizeof(e->mac), "%s", mac);
+
+	/*
+	 * Only a permanent address can name an interface (ADR-0345): one
+	 * the kernel randomised or that something set is not the device.
+	 * addr_assign_type is NET_ADDR_PERM (0) for the burned-in address,
+	 * and an unreadable attribute counts as not permanent.
+	 */
+	{
+		char assign[8] = "";
+
+		snprintf(addr_attr, sizeof(addr_attr), "%s/addr_assign_type", link_path);
+		e->mac_permanent = read_sysfs_attr(addr_attr, assign, sizeof(assign)) == 0 &&
+		                   strcmp(assign, "0") == 0;
+	}
+
 	if (mac[0] != '\0')
 		snprintf(e->description, sizeof(e->description), "network interface %s, mac %s", ifname,
 		         mac);
@@ -906,6 +923,23 @@ static void enumerate_disk(struct discovered_device *out, int cap, int *count,
 		                                              disks[i].is_partition);
 		e->storage_role = diskrole_lookup(disks[i].name) != NULL;
 		e->mounted = disks[i].mounted;
+
+		/*
+		 * The WWID a mapping can select by (ADR-0345), kept verbatim:
+		 * the kernel pads the T10 form with spaces and a selector is
+		 * compared byte for byte. SCSI and ATA disks carry it under
+		 * device/, NVMe namespaces beside dev. Measured on .95,
+		 * 2026-10-20: sda has one, vda, vdb and sr0 do not. A
+		 * partition is named by its filesystem instead.
+		 */
+		if (!disks[i].is_partition) {
+			snprintf(attr, sizeof(attr), "/sys/class/block/%s/device/wwid", disks[i].name);
+			if (read_sysfs_attr(attr, e->wwid, sizeof(e->wwid)) != 0) {
+				snprintf(attr, sizeof(attr), "/sys/class/block/%s/wwid", disks[i].name);
+				read_sysfs_attr(attr, e->wwid, sizeof(e->wwid));
+			}
+		}
+
 		snprintf(attr, sizeof(attr), "/sys/class/block/%s", disks[i].name);
 		canonical_sysfs(attr, e->sysfs, sizeof(e->sysfs));
 	}

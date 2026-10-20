@@ -97,6 +97,7 @@ static void append_moved(struct device_snapshot *s, const struct registry_entry 
 
 	for (j = 0; j < e->interface_count; j++) {
 		const struct registry_interface_record *r = &e->interface_records[j];
+		struct discovered_device *net;
 		char id[DEVICE_ID_MAX];
 
 		if (r->granted[0] == '\0')
@@ -107,9 +108,13 @@ static void append_moved(struct device_snapshot *s, const struct registry_entry 
 			snprintf(phy_desc, sizeof(phy_desc), "wireless PHY %s", r->phy);
 			append_record(s, r->granted, "phy", r->anchor, phy_desc, r->driver);
 			snprintf(id, sizeof(id), "net:%s", e->interfaces[j]);
-			append_record(s, id, "net", r->granted, r->description, r->driver);
+			net = append_record(s, id, "net", r->granted, r->description, r->driver);
 		} else {
-			append_record(s, r->granted, "net", r->anchor, r->description, r->driver);
+			net = append_record(s, r->granted, "net", r->anchor, r->description, r->driver);
+		}
+		if (net != NULL) {
+			snprintf(net->mac, sizeof(net->mac), "%s", r->mac);
+			net->mac_permanent = r->mac_permanent;
 		}
 	}
 }
@@ -355,6 +360,8 @@ int devicegrant_check_interface(const char *ifname, const char *requester,
 	snprintf(out->anchor, sizeof(out->anchor), "%s", s->recs[idx].parent);
 	snprintf(out->description, sizeof(out->description), "%s", s->recs[net_idx].description);
 	snprintf(out->driver, sizeof(out->driver), "%s", s->recs[net_idx].driver);
+	snprintf(out->mac, sizeof(out->mac), "%s", s->recs[net_idx].mac);
+	out->mac_permanent = s->recs[net_idx].mac_permanent;
 	return 0;
 }
 

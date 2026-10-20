@@ -18,7 +18,7 @@ Everything below was measured on 192.168.15.95 on 2026-10-20 or read from the co
 |---|---|---|
 | USB | The TP-Link dongle reports `2357:012e`, `serial=123456`. The QEMU tablet reports `0627:0001`, `serial=28754-0000:00:1d.7-1`. | **No, not on its own.** `123456` is a factory default, which every unit of that model reports. The tablet's serial is a bus path. A serial is unique only within its own vendor and product, and only when the vendor bothered. |
 | USB root hubs | `usb2` and `usb4` both report `serial=0000:07:1b.0`, as `1d6b:0002` and `1d6b:0003`. | The kernel sets a root hub's serial to its controller's name, and its product id to the USB major version. Together they are a location. |
-| Disk | `sda` has the serial `QM00013` and the WWN `t10.ATA QEMU HARDDISK QM00013`. `vda`, `vdb` and `sr0` have neither. | A WWN is unique by its own standard. On this box one disk of four has one. |
+| Disk | `sda` has the serial `QM00013` and the WWID `t10.ATA QEMU HARDDISK QM00013` (sysfs `device/wwid`, spaces as the probe printed them). `vda`, `vdb` and `sr0` have neither. | A WWID is the kernel's best SCSI designator for the disk: a world-wide name (NAA or EUI) when the disk reports one, otherwise the T10 vendor identification, which is vendor, model and serial together. Either form is scoped, so it is an identity. On this box one disk of four has one. |
 | Disk, formatted | Storage roles already follow a filesystem UUID (`diskrole_resolve_recorded()`, #255). They were moved to it because a role keyed by kernel name would follow `sda` to whatever disk became `sdb`. | **Yes**, for as long as the filesystem exists. This is already used. |
 | PCI | No function on this box has `serial_number`. | No. BDF plus vendor:product is a location. |
 | Net | `eth0` has `bc:24:11:42:0f:4f` and `wlan0` has `98:25:4a:5b:de:5b`, both from the record descriptions in `GET /v1/devices`. | **Not established.** Whether either MAC is the permanent one (`addr_assign_type`) has not been measured, because a container sees only its own netns. |
@@ -58,12 +58,12 @@ Everything below was measured on 192.168.15.95 on 2026-10-20 or read from the co
 | `exact` | A record id | usb, pci (the two buses whose ids are locations) | That record, if present |
 | `vendor_model` | `<vid>:<pid>` | usb, pci | **Every** present match. This is ADR-0048's group grant, unchanged. |
 | `usb_serial` | `<vid>:<pid>:<serial>` | usb | The one present device with that vendor, product and serial. `vid` and `pid` are four hex digits each, so the serial is everything after the second colon. |
-| `wwn` | A WWN | disk | The one present disk carrying it |
+| `wwid` | The kernel's WWID, verbatim | disk | The one present disk carrying it |
 | `fs_uuid` | A filesystem UUID | disk, including partitions | The one present device carrying it, found by the same probe storage roles already use (`disk_probe_fs_uuid()`). There is no second probe. |
 | `mac` | A permanent MAC | net | The one interface carrying it, including one already moved into a container |
 
-- **There is no bare `serial` kind.** A serial without its vendor and product is not an identity. If the dongle is unplugged and another vendor's device that also reports `123456` is plugged in, a bare-serial mapping would resolve to it, and the container would get the wrong hardware with no error. That is #349's failure, moved somewhere else. udev's `by-id` names carry vendor and model for the same reason. A disk's serial is likewise unique only per vendor, and a disk with a serial but no WWN is named by `fs_uuid`.
-- **Each kind refuses the buses it is not valid on**, with a 400 that names the kind to use instead. `exact` on `disk:sda` is refused because `sda` is a kernel name, not a location, and the refusal names `wwn` and `fs_uuid`. No mapping exists anywhere today, so tightening `exact` breaks nothing.
+- **There is no bare `serial` kind.** A serial without its vendor and product is not an identity. If the dongle is unplugged and another vendor's device that also reports `123456` is plugged in, a bare-serial mapping would resolve to it, and the container would get the wrong hardware with no error. That is #349's failure, moved somewhere else. udev's `by-id` names carry vendor and model for the same reason. A disk's serial is likewise unique only per vendor, and a disk with no WWID is named by `fs_uuid`.
+- **Each kind refuses the buses it is not valid on**, with a 400 that names the kind to use instead. `exact` on `disk:sda` is refused because `sda` is a kernel name, not a location, and the refusal names `wwid` and `fs_uuid`. No mapping exists anywhere today, so tightening `exact` breaks nothing.
 - **Every kind except `vendor_model` is exclusive.** If an exclusive selector matches two present devices, the result is an error that names both, never a grant of one of them:
   - `GET /v1/devicemaps` shows the mapping as `ambiguous`, listing every match.
   - A grant through it is refused with 409.
@@ -74,7 +74,7 @@ Everything below was measured on 192.168.15.95 on 2026-10-20 or read from the co
 **What each record carries for its selectors:**
 
 - A USB record keeps `serial` as a field once it leaves the id.
-- A disk record gains `wwn`.
+- A disk record gains `wwid`, read verbatim from sysfs.
 - A net record gains `mac` and `mac_permanent`, the latter true when the kernel's `addr_assign_type` is 0 (`NET_ADDR_PERM`).
 - **`registry_interface_record` gains `mac` and `mac_permanent` too, written at grant time.** Once `wlan0` is inside `ar-1`, the host cannot read its address: the interface is in another netns. So a `mac` mapping finds a moved interface through the record its grant left, exactly as ADR-0344 finds its holder.
 - **`fs_uuid` is probed only while resolving an `fs_uuid` mapping, and only against disk records.** It is never probed on every enumerate. `disk_probe_fs_uuid()` opens the device and reads a superblock, and the grant gate takes a device snapshot on every create and attach. ADR-0344 measured `GET /v1/devices` at 72–86 ms, against 190–290 ms for `GET /v1/storage`, which probes. A probe in the walk would move the first toward the second.
@@ -101,8 +101,8 @@ Everything below was measured on 192.168.15.95 on 2026-10-20 or read from the co
 ### 5. The dashboard and cixctl show a name's state, and the daemon announces it
 
 - **`listDeviceMaps` declares `x-cix-read: state`**, and every change that can move a mapping's `present`, `ambiguous` or holder announces it alongside `listDevices`: `registry_announce()`, the hotplug reconciles, and format completion (which can create or remove an `fs_uuid`). Creating or deleting a mapping invalidates `listDevices` as well as `listDeviceMaps`, because the Devices page's Name column reads mappings. This is ADR-0339's contract, and the drift check enforces it.
-- The **Name…** button opens a dialog that lists only the kinds that resolve this device uniquely right now, with the strongest identity preselected: `mac`, then `wwn`, then `usb_serial`, then `fs_uuid`, then `exact`.
-- A device with none of them gets no button. On this box that is `sr0`, which has no WWN and, with no medium, no filesystem UUID.
+- The **Name…** button opens a dialog that lists only the kinds that resolve this device uniquely right now, with the strongest identity preselected: `mac`, then `wwid`, then `usb_serial`, then `fs_uuid`, then `exact`.
+- A device with none of them gets no button. On this box that is `sr0`, which has no WWID and, with no medium, no filesystem UUID.
 - The Named Mappings tab's "Used by" column reads `held_by`, the same source the Devices page reads, instead of comparing container device lists against `resolved_ids` in the client.
 - The tab and `cixctl devicemap ls` show each mapping as present, absent or ambiguous, with what it resolved to. That comes from the daemon, which already re-derives it on every call.
 
@@ -126,7 +126,7 @@ Everything below was measured on 192.168.15.95 on 2026-10-20 or read from the co
 2. **USB ids.** `GET /v1/devices` lists the dongle as `usb:2357:012e@0000:07:1b.0-usb2-1`, and the PHY's `parent` follows it.
 3. **Ambiguity.** In `test_devicestate` and `test_daemon_devices`, two fixture devices carry one vendor, product and serial. A `usb_serial` mapping on them lists as `ambiguous` with both matches, and a grant through it is a 409 naming both. An `exact` mapping on one port grants that device and leaves the other free.
 4. **Refusals.** Each of these returns 400:
-   - `exact` on `disk:sda`, with a message naming `wwn` and `fs_uuid`;
+   - `exact` on `disk:sda`, with a message naming `wwid` and `fs_uuid`;
    - a `mac` mapping on a non-permanent address;
    - `ifname: "eth1"`, under ADR-0259's rules;
    - a `vendor_model` mapping in `interfaces[]`.
@@ -144,13 +144,13 @@ Everything below was measured on 192.168.15.95 on 2026-10-20 or read from the co
 - `vendor_model` keeps its group meaning, and only for `devices[]`.
 - Disk, net, GPU and PHY ids keep their kernel names. The operator-visible vocabulary does not change, and an identity is always a mapping, never a second id.
 - The in-container rename adds one netlink operation to the interface path, with `rtnl_link_rename()`, which already exists.
-- `openapi.yaml` and `docs/api/README.md` change together: the new kinds and the `ambiguous` state on `DeviceMap`, the object form of `interfaces[]`, `ref` on a device grant, and `wwn`, `mac` and `mac_permanent` on `Device`. `fmt_devicemap_line()` in cixctl and the dashboard's mapping table change with them.
+- `openapi.yaml` and `docs/api/README.md` change together: the new kinds and the `ambiguous` state on `DeviceMap`, the object form of `interfaces[]`, `ref` on a device grant, and `wwid`, `mac` and `mac_permanent` on `Device`. `fmt_devicemap_line()` in cixctl and the dashboard's mapping table change with them.
 
 ## Alternatives considered
 
 - **Remove mappings.** This was offered to the owner, who did not choose it. A container could then be pinned only to kernel names and serials that are not identities, which is #349's bug on every bus.
-- **Selectors inline in the container spec, with no name table** (`"devices": [{"wwn": "..."}]`). Rejected because it puts a host's hardware facts into the recipe. A recipe like `ar-1` is published to every Cix user, and the same radio has a different MAC on every host. With a name, the recipe says `radio-ap` and each host declares once what `radio-ap` is. Inline selectors would also leave the Devices page with nothing to show in its Name column, and changing hardware would mean editing every container that used it.
-- **Make the record id itself the identity**, so that a disk's id would be its WWN and an interface's its MAC. Rejected because most devices on this box have no such value: three of four disks have no WWN, and the dongle's serial is shared with every unit of its model. Every bus would then need a fallback id, the fallback would be a location, and each id would mean one of two things depending on the device. A location id plus an identity mapping means one thing each.
+- **Selectors inline in the container spec, with no name table** (`"devices": [{"wwid": "..."}]`). Rejected because it puts a host's hardware facts into the recipe. A recipe like `ar-1` is published to every Cix user, and the same radio has a different MAC on every host. With a name, the recipe says `radio-ap` and each host declares once what `radio-ap` is. Inline selectors would also leave the Devices page with nothing to show in its Name column, and changing hardware would mean editing every container that used it.
+- **Make the record id itself the identity**, so that a disk's id would be its WWID and an interface's its MAC. Rejected because most devices on this box have no such value: three of four disks have no WWID, and the dongle's serial is shared with every unit of its model. Every bus would then need a fallback id, the fallback would be a location, and each id would mean one of two things depending on the device. A location id plus an identity mapping means one thing each.
 - **Keep the serial in the USB id, and fall back to the port only when two present devices share it.** Rejected because plugging in a second dongle would then change the first dongle's id, and every grant and `exact` mapping on it would break without either device having moved.
 - **A bare `serial` kind.** Rejected for the reason given under section 2: a serial is unique only within a vendor and product.
 - **The mapping's name as the in-container name, with no `ifname`.** Rejected because ADR-0259 already made `ifname` the in-container name. Two sources for one name is the parallel the maxims forbid, and it would force every `mac` mapping name through interface-name rules for one container's sake.

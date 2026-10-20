@@ -20228,7 +20228,7 @@ components:
         One physical device the host can see or a running container
         holds (ADR-0344). Each /dev node belongs to exactly one record,
         and records form a tree through `parent`.
-      required: [id, bus, parent, vendor_id, product_id, class, description, driver, dev_path, type, major, minor, state, reason, held_by, reserved_by, interfaces]
+      required: [id, bus, parent, vendor_id, product_id, class, description, driver, dev_path, type, major, minor, serial, wwid, mac, mac_permanent, state, reason, held_by, reserved_by, interfaces]
       properties:
         id:
           type: string
@@ -20293,6 +20293,31 @@ components:
         minor:
           type: integer
           description: Meaningless when dev_path is empty.
+        serial:
+          type: string
+          description: >
+            usb only: the device's own serial, empty when it has none.
+            Not an identity on its own -- many devices of one model
+            report the same one -- so a mapping selects by it only
+            together with vendor_id and product_id (ADR-0345).
+        wwid:
+          type: string
+          description: >
+            disk only, whole disks: the kernel's WWID, verbatim (a
+            world-wide name when the disk reports one, otherwise the T10
+            vendor identification). Empty when the disk has none.
+        mac:
+          type: string
+          description: >
+            net only: the interface's hardware address. For an interface
+            a running container holds, the address read when it was
+            granted.
+        mac_permanent:
+          type: boolean
+          description: >
+            net only: the address is the burned-in one (the kernel's
+            addr_assign_type is 0). Only a permanent address can name an
+            interface (ADR-0345). False everywhere else.
         state:
           type: string
           enum: [free, held, reserved, host, unavailable]

@@ -224,11 +224,25 @@ int main(void)
 				    json_object_get(d, "reason") == NULL ||
 				    json_object_get(d, "parent") == NULL ||
 				    json_object_get(d, "held_by") == NULL ||
-				    json_object_get(d, "reserved_by") == NULL) {
+				    json_object_get(d, "reserved_by") == NULL ||
+				    json_str_field(d, "serial") == NULL || json_str_field(d, "wwid") == NULL ||
+				    json_str_field(d, "mac") == NULL ||
+				    json_object_get(d, "mac_permanent") == NULL ||
+				    json_object_get(d, "mac_permanent")->type != JSON_BOOL) {
 					fprintf(stderr, "FAIL: device entry %zu missing a documented field\n",
 					        i);
 					ok = 0;
 					continue;
+				}
+				/* ADR-0345: the selector facts belong to their own bus. A
+				 * MAC on a disk would be a mapping waiting to match the
+				 * wrong thing. */
+				if ((!str_eq(bus, "net") && json_str_field(d, "mac")[0] != '\0') ||
+				    (!str_eq(bus, "disk") && json_str_field(d, "wwid")[0] != '\0') ||
+				    (!str_eq(bus, "usb") && json_str_field(d, "serial")[0] != '\0')) {
+					fprintf(stderr, "FAIL: device %s carries a selector fact of another bus\n",
+					        id);
+					ok = 0;
 				}
 				/* A grantable node: free, and a /dev node rather than an
 				 * interface, which this file's grants do not exercise. */

@@ -70,6 +70,13 @@ struct discovered_device {
 	char master[16];	/* net: that bridge's name */
 	int management;		/* net: carries the management address, or is a port of the bridge that does */
 
+	/* What a device mapping can select by (ADR-0345). None of these is
+	 * ever part of the id, which names a location. */
+	char serial[80];	/* usb: the device's own serial; an identity only with vid:pid */
+	char wwid[128];		/* disk: the kernel's WWID, verbatim; empty when it has none */
+	char mac[32];		/* net: the current hardware address */
+	int mac_permanent;	/* net: addr_assign_type is NET_ADDR_PERM (0) */
+
 	/* Internal to enumeration: the canonical sysfs path parents are found by. */
 	char sysfs[256];
 };
