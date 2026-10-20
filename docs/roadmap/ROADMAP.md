@@ -2459,7 +2459,7 @@ Each device grant now records the `ref` it was named by. A USB unplug that revok
 - A `usb_serial` mapping `tablet` on the QEMU USB tablet (`0627:0001:28754-0000:00:1d.7-1`) resolved `present` to `usb:0627:0001@0000:00:1d.7-usb2-1`.
 - A container naming `tablet` in `devices[]` holds it as `{"id":"usb:0627:0001@0000:00:1d.7-usb2-1", …, "ref":"tablet"}`, and `device ls` lists the tablet `held` by it.
 
-**Not measured: a real unplug.** `device_grants_gone()` and the give-back path are gated by the suite, but no device on .95 can be unplugged without someone at the Proxmox host. The tablet is a QEMU `usb-tablet`, so `device_del` and `device_add` from the host's `qm monitor` would be a genuine unplug and re-plug. `tabletprobe` and the `tablet` mapping are left in place for that.
+**Not measured: a real unplug.** `device_grants_gone()` and the give-back path are gated by the suite, but no device on .95 can be unplugged without someone at the Proxmox host. The tablet is a QEMU `usb-tablet`, so `device_del` and `device_add` from the host's `qm monitor` would be a genuine unplug and re-plug. The owner chose not to run it, and `tabletprobe` and the `tablet` mapping were removed. The tablet is `free` again.
 
 **ADR-0345 is complete with this part**, and #349 closes with it. The one deliberate remainder is #623: a radio unplugged from a container that holds it through `interfaces[]`.
 
