@@ -21,6 +21,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
   (which walks shared extents' backreferences on every change) is one candidate for a slow
   unlink in a snapshot. Which mode that filesystem is in could not be read through the API,
   which was #613's remaining gap; now it can. The cause is not established.
+- **What 552 then measured:** that filesystem is in full accounting (`"accounting":"ok"`), and
+  the same `hibr` upgrade into a scratch image with 4 versions cost `unlink old files (3 ms)`
+  for 193 calls, against 1219 ms into `jumpbox`, which holds 256 or more. So full accounting
+  alone is ruled out. How many snapshots share an extent is the remaining candidate, still a
+  hypothesis (#619).
 
 ### A slow handler names the calls that took its time (#619, #617)
 
