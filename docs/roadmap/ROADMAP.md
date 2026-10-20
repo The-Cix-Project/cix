@@ -2475,7 +2475,12 @@ cbs being able to send its event stream somewhere other than stderr, which cbs v
 - **0.2.57-555**, booted slot b, 12 containers. The same probe read `current_phase: build` for
   the whole sleep, then `phase: check`, `failed_command: false`, and a run of prepare ok 2 ms,
   configure not-implemented, build ok 30004 ms, check failed 3 ms, install ok, finalize blocked.
-  `pkg ls` read `failed:build.check/failed`. No drift reported; worst loop pass 147 ms, not this.
+  `pkg ls` read `failed:build.check/failed`. No drift reported since the 555 boot; worst loop
+  pass 147 ms, not this. `test_cbsevents` now feeds a `phase-end` numbered below its commands,
+  so cix-build-system#298's shape cannot come back silently.
+- **Where cbs v0.1.107 runs:** installed in `cix-builder` and `cix-hosttools` (`pkg ls`), and the
+  floor's by the -564 gate. The host root's copy is inferred, not read back: `mkbootroot` stages
+  it from `cix-hosttools`, which held v0.1.107 before both assemblies.
 
 **Not available:** a failed command's exit code, which cbs does not emit (cix-build-system#297).
 
