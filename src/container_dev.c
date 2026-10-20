@@ -248,7 +248,10 @@ int container_dev_mknod(const char *rootfs_dir, uid_t owner_offset,
 			return -1;
 		/* The same owner rule as the baseline nodes beside it: the
 		 * subordinate base for a chowned userns copy, so the node sits
-		 * inside the container's map; untouched otherwise. */
+		 * inside the container's map; untouched otherwise. Only the node:
+		 * a directory cix_mkdir_p() made on the way (/dev/bus/usb/001)
+		 * stays host-root-owned at 0755, which the container can
+		 * traverse and read, and it creates nothing in there itself. */
 		if (owner_offset != 0 && chown(path, owner_offset, (gid_t)owner_offset) != 0)
 			return -1;
 	}

@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A device granted to a user-namespace container works (#621)
+
+- **What changed:** a userns container's granted device nodes are made by the daemon, into the container's rootfs, before clone3(). They use the same owner rule as the standard nodes ADR-0333 already moved there. `container_dev_mknod()` takes a rootfs and an owner, as `container_dev_stage_baseline()` does, and the child calls it only for a non-userns container. A live attach sets the node's owner from the rootfs's own.
+- **Why:** measured on 192.168.15.95, 0.2.57-556. Every userns container granted a device died at `child: container_dev_mknod: Operation not permitted`. Since userns is the default (ADR-0207), device passthrough did not work at all unless a container also said `"userns": false`. mknod needs CAP_MKNOD in the initial user namespace, which no userns child holds (#321).
+- **Not in this change:** the same create answered `201 running` for a container that had already died before exec. That is #622.
+
 ### A device is one record with one state, and every grant asks it (#620, ADR-0344)
 
 - **What changed:** `GET /v1/devices` lists every host device once, as a tree:

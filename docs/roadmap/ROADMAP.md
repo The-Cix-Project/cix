@@ -2445,6 +2445,20 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 297: a device granted to a user-namespace container works (#621, 0.2.57-557)
+
+Part 296's verification found it: every userns container granted a device died at `child: container_dev_mknod: Operation not permitted`. userns is the default, so passthrough did not work unless a container also said `"userns": false`. ADR-0333 had moved the standard nodes to the parent for exactly this reason, and the granted ones were left behind in the child. They now follow: the parent makes a userns container's granted nodes, with the baseline's owner rule. A live attach takes the rootfs's own owner.
+
+**Measured on 192.168.15.95 after booting 0.2.57-557:**
+- **Create.** `usernsdev` was created with no `userns` key (answered `"userns": true`) and `devices: ["disk:sr0"]`. Read from inside it over a console:
+  - `ls -ln /dev/sr0` printed `brw-rw-rw- 1 0 0 11, 0`, with `uid_map` `0 6456992 65536`;
+  - opening it answered `No medium found` — the kernel reached the drive, and this VM's DVD drive is empty, where the old failure was EPERM before exec;
+  - after the reads it was still `running`, with no exit line in the log.
+- **Live attach.** In `usernslive`, created without devices, `/dev/sr0` was `No such file or directory` before `POST /v1/containers/usernslive/devices {"id":"disk:sr0"}` (200), and `brw-rw-rw- 1 0 0 11, 0` after it.
+- The non-userns child path is gated by `test_devices` in SELFTESTS. Probe `0.2.57-568` was green.
+
+**Split out:** the create that died before exec still answered `201 running`. That is #622, because fixing it means unwinding a half-registered container.
+
 ## Part 296: a device is one record with one state, and every grant asks it (ADR-0344, #620, 0.2.57-556)
 
 The owner asked what it would take for the Devices page to show what is assigned, what is used and what is free, and wanted it resolved before anything was built. The page could not say it, and neither could the API. Measured on .95 the same day:
