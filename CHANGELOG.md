@@ -6,6 +6,30 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An image keeps a bounded history, and a version leaves it off the event loop (ADR-0343, #619)
+
+- **What changed:** each image keeps every version something references plus its newest `keep`
+  unreferenced ones, set with `cixctl image policy NAME --keep=N` (0-64, default 3). One pass
+  runs after the last package job ends for an image that got a version, once after daemon start,
+  and on `POST /v1/images/gc`, which no longer takes a `keep` of its own. A pass collects the
+  references once, repairs the image's recorded history from the disk, and sets each collected
+  version's subvolumes aside into `IMAGES_DIR/.discard`, where ADR-0341's helper children delete
+  them. `image_delete()` goes the same way, so releasing a build environment no longer destroys a
+  subvolume on the loop. When the deletes drain, a helper waits for the kernel's cleaner and a
+  second runs a btrfs quota rescan if accounting reads inconsistent.
+- **Why:** nothing removed an image version unless someone asked (ADR-0107's v1 scope).
+  `jumpbox` held 256 or more, its history had stopped recording the newest at 256, 813 were
+  collectable on .95, and `POST /v1/images/gc` could not be limited: its dry run alone held the
+  loop 1909 ms, and a real run would have deleted 813 subvolumes inline. #619 measured the cost
+  of `hibr`'s upgrade into `jumpbox` as `unlink` (1219 ms) against 3 ms into a 4-version image.
+- **Measured on 0.2.57-553, 192.168.15.95, 2026-10-20:** the pass at the first start set aside
+  776 versions, kept 77, failed none and repaired 7 histories; `jumpbox` now records 4. `sda`
+  went from 17.08 GB to 8.25 GB used within about two minutes, `/v1/health` answered in 2 ms or
+  less throughout, and the loop's worst pass since boot was 182 ms (an ordinary `GET /v1/pkg`),
+  with no slow pass. The kernel did mark quota accounting inconsistent once the cleaner finished,
+  and the daemon's rescan started and finished three seconds later. Whether `hibr`'s next
+  upgrade into `jumpbox` is now cheap is still to be read: that is #619's confirmation.
+
 ### A container's disk usage says how its filesystem accounts (#613, #619)
 
 - **What changed:** `GET /containers/{name}/stats` carries `disk.usage.accounting` when
