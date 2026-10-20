@@ -15349,11 +15349,15 @@ static int create_container_from_body(const char *body, size_t body_len,
 			         given != NULL ? given : ref);
 			if (!container_ifname_is_valid(given != NULL ? given : ref)) {
 				json_free(root);
+				/* The fix differs: a name that was given wants another
+				 * one; a default wants one given (0.2.57-562 said "give
+				 * it an ifname" to an ifname of "eth1"). */
 				snprintf(err_msg, err_msg_size,
 				         "interfaces[%d] would be named \"%s\" inside, which is not a "
 				         "valid ifname: 1-15 characters of [A-Za-z0-9._-], not \"lo\" or "
-				         "an \"eth<N>\" name -- give it an ifname",
-				         (int)i, interface_ifnames[i]);
+				         "an \"eth<N>\" name -- %s",
+				         (int)i, interface_ifnames[i],
+				         given != NULL ? "choose another ifname" : "give it an ifname");
 				return 400;
 			}
 			for (j = 0; j < i; j++) {

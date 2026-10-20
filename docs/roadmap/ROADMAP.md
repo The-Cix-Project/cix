@@ -2445,6 +2445,28 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 301: a passed-through interface can be named by a mapping and named inside (ADR-0345 step 3, #349, 0.2.57-562)
+
+**Mechanism.** `interfaces[]` takes a `mac` mapping and an `ifname`. The interface is renamed on the host before it moves and back on the host after it returns. ADR-0345 as accepted put the rename inside the container after the move; that is corrected in place, because the bring-up helper is not waited for.
+
+**Releases.** `0.2.57-561` was tagged after a green compile probe (`0.2.57-572`) and then failed its own hostbuild selftest in `test_container_net`. The release build runs that test as root, and the compile probe's `SELFTESTS` does not include it. The renamed interface was present inside but not yet up: the test never waited for the bring-up helper it is the caller of (ADR-0335 step 2), so its "up" check had been a race it happened to win. `0.2.57-562` makes it wait, and that test passed in 562's hostbuild. 561's recipe stays published, and a host roll that picks it up fails its build and changes nothing.
+
+**Measured on 192.168.15.95 after booting 0.2.57-562:**
+- **Old form still works.** `ar-1`, from its stored definition with `"interfaces": ["wlan0"]`, came back on its own, and 12 containers were running. Its interfaces read `[{"ref":"wlan0","host_ifname":"wlan0","ifname":"wlan0"}]`.
+- **Refusals,** with `ar-1` running and a `mac` mapping `radio-ap` on `98:25:4a:5b:de:5b`:
+  - `"interfaces": ["radio-ap"]` was a 409, "device phy:phy0 is already held by container "ar-1"";
+  - `{"interface":"radio-ap","ifname":"eth1"}` was a 400 naming ADR-0259's rule;
+  - a `vendor_model` mapping in `interfaces[]` was a 400, "names a device, not an interface: list it in devices[]".
+  - The `eth1` refusal also said "give it an ifname" to a request that had given one; fixed for the next release.
+- **The rename, three times.** `ar-1` was stopped, which took the AP down, and a scratch container with `"interfaces": ["radio-ap"]` was created and deleted three times. Each time:
+  - it reported `{"ref":"radio-ap","host_ifname":"wlan0","ifname":"radio-ap"}`;
+  - from inside, `/sys/class/net` listed `radio-ap` with the radio's MAC and flags `0x1003` (administratively up), and no `wlan0`;
+  - after the delete, `device ls` listed `net:wlan0` on the host again, so the rename back held.
+- **AP back.** `ar-1` was started from its stored definition. hostapd logged `wlan0: interface state UNINITIALIZED->ENABLED` and `AP-ENABLED`.
+- **Dashboard:** `ar-1`'s Hardware tab, rendered in Chromium from the box's responses, shows the interfaces table with "Name inside", "On the host" and "Asked for as".
+
+**Not done, and why.** The ADR's acceptance test proper is `ar-1` itself naming `radio-ap`, in its recipe and in `hostapd.conf`, recreated three times. That needs a new `ar-1` revision, which is a public commit to cix-recipes, and applying it needs `{{SECRET:WIFI_PASSPHRASE}}`. Both are the owner's. The `radio-ap` mapping is left on .95 for it. The ordinary-interface (rtnetlink) rename is covered by `test_container_net` in the hostbuild's suite, which is not in `SELFTESTS`.
+
 ## Part 300: a filesystem UUID is a device field, and the dashboard names devices by identity (ADR-0345 step 2b, #349, 0.2.57-560)
 
 ADR-0345 as accepted said a filesystem UUID would be probed only while resolving a mapping, to keep superblock reads out of the device walk. The walk already read every superblock, to get the filesystem type. So the UUID is now read in the same open, by one reader in `disk.c`, and carried on `Device` and `StorageDevice`. The ADR is corrected in place. The dashboard also gained the rest of section 5. Probe `0.2.57-571` was green.
