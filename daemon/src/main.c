@@ -4972,7 +4972,7 @@ static void handle_kmsg_event(struct conn *cc)
 static int live_mknod_device(const struct registry_entry *e, const struct device_spec *dev);
 static int live_unlink_device(const struct registry_entry *e, const char *dev_path);
 static int live_attach_one_device(struct registry_entry *e, const struct discovered_device *dd,
-                                   int shared);
+                                   int shared, const char *ref);
 
 /*
  * ADR-0161 Phase C: a persistent NETLINK_KOBJECT_UEVENT multicast
@@ -5019,30 +5019,51 @@ static void start_uevent_watch(void)
 /*
  * ADR-0161 Phase B/C: for every running container's own pending_
  * devices[] (an "optional": true devices[] reference that didn't
- * resolve at creation time), re-attempts resolution now that a real
- * hotplug event just fired. Contention (resolved decision): if more
- * than one running container's own pending reference resolves to the
- * SAME device, neither gets it -- logged, not silently arbitrated by
- * registry scan order. A device this pass successfully grants is
- * removed from the winning container's own pending list; every other
- * pending reference (no match, or lost a contention) is left in place
- * for the next hotplug event to retry.
+ * resolve at creation time, or since ADR-0345 one whose device was
+ * unplugged), re-attempts resolution now that a real hotplug event just
+ * fired. Contention (resolved decision): if more than one running
+ * container's own pending reference resolves to the SAME device,
+ * neither gets it -- logged, not silently arbitrated by registry scan
+ * order.
+ *
+ * ADR-0345: a reference gives back everything it names -- every member
+ * of a gpu:N group, every match of a vendor_model mapping -- not just
+ * the first, with the shared flag its devices[] entry carried, and
+ * skipping any match the container already holds (one of two matches
+ * unplugged leaves the other granted; attaching it twice is the
+ * duplicate a live attach refuses). A reference leaves the pending list
+ * only once everything it names is held; until then it waits for the
+ * next hotplug event.
  */
 struct pending_device_claim {
 	struct registry_entry *e;
 	char ref[96];
+	int shared;
 	char resolved_id[96];
 };
+
+static int container_holds_device(const struct registry_entry *e, const char *id)
+{
+	int k;
+
+	for (k = 0; k < e->device_count; k++) {
+		if (strcmp(e->devices[k].id, id) == 0)
+			return 1;
+	}
+	return 0;
+}
 
 static void reconcile_pending_device_attachments(void)
 {
 	char names[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
 	int ncount = registry_list_names(names, REGISTRY_MAX_CONTAINERS);
 	static struct pending_device_claim claims[REGISTRY_MAX_CONTAINERS * CONTAINER_MAX_DEVICES];
+	static struct pending_device_claim settled[CONTAINER_MAX_DEVICES];
+	int settled_count = 0;
 	static int warned_ambiguous;
 	/* Taken at the first waiting reference, never on a pass where
-	 * nothing waits: a snapshot is a whole device walk (72-86 ms on
-	 * .95, ADR-0344) and this runs on every hardware uevent. */
+	 * nothing waits: a snapshot is a whole device walk (62-73 ms on
+	 * .95, 0.2.57-560) and this runs on every hardware uevent. */
 	const struct device_snapshot *snap = NULL;
 	int claim_count = 0;
 	int i, j;
@@ -5053,16 +5074,17 @@ static void reconcile_pending_device_attachments(void)
 		if (e == NULL || !e->running || e->pending_device_count == 0)
 			continue;
 		for (j = 0; j < e->pending_device_count; j++) {
-			const struct discovered_device *matches[1];
+			const struct discovered_device *matches[CONTAINER_MAX_DEVICES];
+			const char *ref = e->pending_devices[j].ref;
 			char why[256];
-			int n;
+			int n, m;
 
 			/* Ids are copied below before anything refreshes the
 			 * snapshot matches[] points into. */
 			if (snap == NULL)
 				snap = devicegrant_snapshot();
-			n = devicemap_resolve(e->pending_devices[j], snap->recs, snap->n, matches, 1, why,
-			                      sizeof(why));
+			n = devicemap_resolve(ref, snap->recs, snap->n, matches, CONTAINER_MAX_DEVICES,
+			                      why, sizeof(why));
 			if (n == DEVICEMAP_AMBIGUOUS) {
 				/* Waits, like an absent device, and says why once:
 				 * every uevent runs this pass. */
@@ -5073,17 +5095,34 @@ static void reconcile_pending_device_attachments(void)
 				continue;
 			}
 			if (n == DEVICEMAP_NOT_A_MAPPING)
-				n = device_find_group(e->pending_devices[j], CONTAINERS_DIR, matches, 1);
-			if (n <= 0)
-				continue;
-			if (claim_count >= (int)(sizeof(claims) / sizeof(claims[0])))
-				continue;
-			claims[claim_count].e = e;
-			snprintf(claims[claim_count].ref, sizeof(claims[claim_count].ref), "%s",
-			         e->pending_devices[j]);
-			snprintf(claims[claim_count].resolved_id, sizeof(claims[claim_count].resolved_id), "%s",
-			         matches[0]->id);
-			claim_count++;
+				n = device_find_group(ref, CONTAINERS_DIR, matches, CONTAINER_MAX_DEVICES);
+			{
+				int held = 0;
+
+				for (m = 0; m < n; m++)
+					held += container_holds_device(e, matches[m]->id);
+				/* Everything it names is held already -- given back
+				 * some other way, a live attach say -- so it is not
+				 * waiting for anything. Cleared after this walk, which
+				 * clearing would shift. */
+				if (n > 0 && held == n && settled_count < CONTAINER_MAX_DEVICES) {
+					settled[settled_count].e = e;
+					snprintf(settled[settled_count].ref, sizeof(settled[0].ref), "%s", ref);
+					settled_count++;
+				}
+			}
+			for (m = 0; m < n; m++) {
+				if (container_holds_device(e, matches[m]->id))
+					continue;
+				if (claim_count >= (int)(sizeof(claims) / sizeof(claims[0])))
+					break;
+				claims[claim_count].e = e;
+				snprintf(claims[claim_count].ref, sizeof(claims[claim_count].ref), "%s", ref);
+				claims[claim_count].shared = e->pending_devices[j].shared;
+				snprintf(claims[claim_count].resolved_id,
+				         sizeof(claims[claim_count].resolved_id), "%s", matches[m]->id);
+				claim_count++;
+			}
 		}
 	}
 
@@ -5092,10 +5131,11 @@ static void reconcile_pending_device_attachments(void)
 		const struct discovered_device *dd;
 
 		for (j = 0; j < claim_count; j++) {
-			if (strcmp(claims[i].resolved_id, claims[j].resolved_id) == 0)
+			if (claims[j].e != claims[i].e &&
+			    strcmp(claims[i].resolved_id, claims[j].resolved_id) == 0)
 				contenders++;
 		}
-		if (contenders > 1) {
+		if (contenders > 0) {
 			/* Logged once per losing claim, not once per contending
 			 * pair -- a real operator-visible signal without becoming
 			 * noisy for a device with many contenders. */
@@ -5113,12 +5153,14 @@ static void reconcile_pending_device_attachments(void)
 		 * stopped one reserves, or the host uses -- which the hotplug
 		 * path never asked before. A refused claim stays pending and
 		 * says why, so a later unplug of the holder can still satisfy
-		 * it.
+		 * it. Asked with the shared flag the entry carried (#356), so a
+		 * shared grant that was unplugged can come back beside another
+		 * shared holder.
 		 */
 		{
 			char why[256];
 
-			if (devicegrant_check(claims[i].resolved_id, 0, claims[i].e->name, why,
+			if (devicegrant_check(claims[i].resolved_id, claims[i].shared, claims[i].e->name, why,
 			                      sizeof(why)) != 0) {
 				logstore_write("cixd", "warning",
 				               "container %s: hotplugged device %s matches \"%s\" but is not "
@@ -5132,17 +5174,7 @@ static void reconcile_pending_device_attachments(void)
 		if (dd == NULL)
 			continue; /* raced with another unplug between resolve and here */
 
-		/*
-		 * #356: a pending grant reconciled by a hotplug event is not
-		 * shared. The container named a device that did not resolve at
-		 * creation time and said nothing about sharing, and silence
-		 * reads as exclusive here exactly as it does on the create
-		 * path. The contention rule above already refuses to hand one
-		 * device to two claimants, so this is the same answer stated
-		 * once more where the grant is actually recorded.
-		 */
-		if (live_attach_one_device(claims[i].e, dd, 0) == 0) {
-			registry_clear_pending_device(claims[i].e, claims[i].ref);
+		if (live_attach_one_device(claims[i].e, dd, claims[i].shared, claims[i].ref) == 0) {
 			logstore_write("cixd", "info",
 			                "container %s: hotplug live-attached device %s (matched \"%s\")",
 			                claims[i].e->name, dd->id, claims[i].ref);
@@ -5152,6 +5184,22 @@ static void reconcile_pending_device_attachments(void)
 			                claims[i].e->name, dd->id, claims[i].ref, strerror(errno));
 		}
 	}
+
+	/* A reference leaves the list once nothing it names is left to
+	 * give: every claim made for it is held now. */
+	for (i = 0; i < claim_count; i++) {
+		int done = 1;
+
+		for (j = 0; j < claim_count; j++) {
+			if (claims[j].e == claims[i].e && strcmp(claims[j].ref, claims[i].ref) == 0 &&
+			    !container_holds_device(claims[j].e, claims[j].resolved_id))
+				done = 0;
+		}
+		if (done)
+			registry_clear_pending_device(claims[i].e, claims[i].ref);
+	}
+	for (i = 0; i < settled_count; i++)
+		registry_clear_pending_device(settled[i].e, settled[i].ref);
 }
 
 /*
@@ -5166,40 +5214,55 @@ static void reconcile_pending_device_attachments(void)
  * to touch a create-time grant, a physical unplug is not an operator
  * request and revokes it either way; registry_device_live_detach()
  * itself carries no such restriction (see its own header comment).
+ *
+ * ADR-0345: and the grant's reference goes back to pending_devices,
+ * with its shared flag, so the device is given back when something
+ * matching it returns -- in any port when it was named by a mapping.
+ * An unplug is not a decision; DELETE .../devices/{id} is, and pends
+ * nothing. Which grants are gone is device_grants_gone(), asked of one
+ * snapshot, where this used to walk the host once per granted device.
  */
 static void reconcile_live_device_revocations(void)
 {
 	char names[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
 	int ncount = registry_list_names(names, REGISTRY_MAX_CONTAINERS);
+	const struct device_snapshot *snap = NULL;
 	int i, j;
 
 	for (i = 0; i < ncount; i++) {
 		struct registry_entry *e = registry_find(names[i]);
+		const char *ids[CONTAINER_MAX_DEVICES];
+		char gone_ids[CONTAINER_MAX_DEVICES][96];
+		int gone[CONTAINER_MAX_DEVICES];
+		int gone_count;
 
-		if (e == NULL || !e->running)
+		if (e == NULL || !e->running || e->device_count == 0)
 			continue;
-		/* Iterated backward: registry_device_live_detach() shifts
-		 * later entries down by one on every successful removal, so a
-		 * forward scan would skip the entry that just slid into the
-		 * current index. */
-		for (j = e->device_count - 1; j >= 0; j--) {
-			char id_copy[96];
+		if (snap == NULL)
+			snap = devicegrant_snapshot();
+		for (j = 0; j < e->device_count; j++)
+			ids[j] = e->devices[j].id;
+		gone_count = device_grants_gone(snap->recs, snap->n, ids, e->device_count, gone);
+		/* Copied first: each detach below shifts e->devices[]. */
+		for (j = 0; j < gone_count; j++)
+			snprintf(gone_ids[j], sizeof(gone_ids[j]), "%s", e->devices[gone[j]].id);
+
+		for (j = 0; j < gone_count; j++) {
 			struct registry_device_attachment removed;
 
-			if (device_find(e->devices[j].id, CONTAINERS_DIR) != NULL)
-				continue;
-
-			snprintf(id_copy, sizeof(id_copy), "%s", e->devices[j].id);
-			if (registry_device_live_detach(e, id_copy, &removed) != 0) {
+			if (registry_device_live_detach(e, gone_ids[j], &removed) != 0) {
 				logstore_write("cixd", "error",
 				                "container %s: failed to revoke unplugged device %s: %s",
-				                e->name, id_copy, strerror(errno));
+				                e->name, gone_ids[j], strerror(errno));
 				continue;
 			}
 			live_unlink_device(e, removed.dev_path);
+			registry_add_pending_device(e, removed.ref[0] != '\0' ? removed.ref : removed.id,
+			                            removed.shared);
 			logstore_write("cixd", "info",
-			                "container %s: revoked grant for unplugged device %s", e->name,
-			                id_copy);
+			                "container %s: revoked grant for unplugged device %s; waiting for "
+			                "\"%s\" to return",
+			                e->name, gone_ids[j], removed.ref[0] != '\0' ? removed.ref : removed.id);
 		}
 	}
 }
@@ -5267,12 +5330,20 @@ static void handle_uevent_event(struct conn *cc)
 		events_announce(EV_listStorage);
 	}
 
-	if (!is_usb || !is_whole_device || (!is_add && !is_remove))
-		return;
-
-	if (is_add)
+	/*
+	 * ADR-0345: any hardware add can be what a pending reference waits
+	 * for. A USB stick's disk node, and the filesystem UUID an fs_uuid
+	 * mapping names it by, appear in a block add after the USB one,
+	 * once the SCSI probe finishes -- an add this used to ignore. The
+	 * reconcile takes its snapshot only when something waits, so a
+	 * wider trigger costs nothing otherwise. Revocation still reacts to
+	 * a USB whole-device remove only: it is lazy on any grant existing,
+	 * which is common, and a block remove during a format would pay a
+	 * device walk each time.
+	 */
+	if (is_add && is_hardware)
 		reconcile_pending_device_attachments();
-	else
+	else if (is_remove && is_usb && is_whole_device)
 		reconcile_live_device_revocations();
 }
 
@@ -14565,7 +14636,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 * "optional": true devices[] entry that didn't resolve at creation
 	 * time -- handed to registry_set_pending_devices() once entry is
 	 * known valid, below. */
-	char pending_device_refs[CONTAINER_MAX_DEVICES][96];
+	struct registry_pending_device pending_device_refs[CONTAINER_MAX_DEVICES];
 	int pending_device_count = 0;
 	char interface_names[CONTAINER_MAX_INTERFACES][CONTAINER_IFNAME_MAX];
 	/* ADR-0345: each passed-through interface's name inside, and the
@@ -15207,8 +15278,9 @@ static int create_container_from_body(const char *body, size_t body_len,
 			if (n <= 0) {
 				if (optional) {
 					if (pending_device_count < CONTAINER_MAX_DEVICES) {
-						snprintf(pending_device_refs[pending_device_count],
-						         sizeof(pending_device_refs[0]), "%s", id);
+						snprintf(pending_device_refs[pending_device_count].ref,
+						         sizeof(pending_device_refs[0].ref), "%s", id);
+						pending_device_refs[pending_device_count].shared = shared;
 						pending_device_count++;
 					}
 					continue;
@@ -15287,6 +15359,10 @@ static int create_container_from_body(const char *body, size_t body_len,
 				device_attachments[device_count].major = dd->major;
 				device_attachments[device_count].minor = dd->minor;
 				device_attachments[device_count].shared = shared;
+				/* ADR-0345: the entry this grant came from, which an
+				 * unplug sends back to pending_devices. */
+				snprintf(device_attachments[device_count].ref,
+				         sizeof(device_attachments[device_count].ref), "%s", id);
 				/* .live stays 0 (memset above) -- a create-time grant,
 				 * never independently detachable (ADR-0161 Phase D). */
 				device_count++;
@@ -19404,7 +19480,7 @@ static int live_unlink_device(const struct registry_entry *e, const char *dev_pa
  * Returns 0 on success, -1 (errno set) otherwise.
  */
 static int live_attach_one_device(struct registry_entry *e, const struct discovered_device *dd,
-                                   int shared)
+                                   int shared, const char *ref)
 {
 	struct device_spec dev;
 	struct registry_device_attachment att;
@@ -19423,6 +19499,7 @@ static int live_attach_one_device(struct registry_entry *e, const struct discove
 	att.minor = dd->minor;
 	att.live = 1;
 	att.shared = shared;
+	snprintf(att.ref, sizeof(att.ref), "%s", ref);
 
 	if (registry_device_live_attach(e, &dev, &att) != 0)
 		return -1;
@@ -19457,6 +19534,7 @@ static void handle_container_device_attach(int fd, const char *container_name, c
 	struct registry_entry *e;
 	struct json_value *root;
 	const char *id;
+	char ref[96];
 	const struct discovered_device *matches[CONTAINER_MAX_DEVICES];
 	char match_ids[CONTAINER_MAX_DEVICES][DEVICE_ID_MAX];
 	char match_paths[CONTAINER_MAX_DEVICES][64];
@@ -19481,6 +19559,9 @@ static void handle_container_device_attach(int fd, const char *container_name, c
 		respond_error(fd, 400, "Bad Request", "id is required");
 		return;
 	}
+	/* ADR-0345: the grant records what was named; root is freed before
+	 * the attach below. */
+	snprintf(ref, sizeof(ref), "%s", id);
 	{
 		const struct json_value *jshared = json_object_get(root, "shared");
 
@@ -19580,7 +19661,7 @@ static void handle_container_device_attach(int fd, const char *container_name, c
 	for (attached = 0; attached < n; attached++) {
 		const struct discovered_device *dd = device_find(match_ids[attached], CONTAINERS_DIR);
 
-		if (dd == NULL || live_attach_one_device(e, dd, shared) != 0)
+		if (dd == NULL || live_attach_one_device(e, dd, shared, ref) != 0)
 			break;
 	}
 	if (attached < n) {

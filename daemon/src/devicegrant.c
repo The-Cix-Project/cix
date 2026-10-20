@@ -310,7 +310,7 @@ const struct device_snapshot *devicegrant_snapshot(void)
 			add_claim(s, DEVICE_CLAIM_GRANT, e->name, granted, 0, 0);
 		}
 		for (j = 0; j < e->pending_device_count; j++)
-			claim_reference(s, e->name, e->pending_devices[j], 0);
+			claim_reference(s, e->name, e->pending_devices[j].ref, 0);
 	}
 
 	/* Stopped definitions: a reservation, binding only with the setting. */

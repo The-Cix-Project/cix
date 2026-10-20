@@ -103,6 +103,15 @@ int device_records_share_a_node(const struct discovered_device *recs, int n, int
  */
 int device_records_share_an_id(const struct discovered_device *recs, int n, int *a, int *b);
 
+/*
+ * ADR-0345: which granted devices are gone. Writes to out the index into
+ * ids[] of every id with no record in recs, and returns how many. An
+ * unplug revokes exactly those grants and sends each one's reference
+ * back to waiting.
+ */
+int device_grants_gone(const struct discovered_device *recs, int n, const char *const *ids,
+                       int count, int out[]);
+
 /* The whole GET /v1/devices body's array, in record order. */
 void device_write_json_states(struct json_writer *w, const struct discovered_device *recs, int n,
                               const struct device_claim *claims, int claim_count);

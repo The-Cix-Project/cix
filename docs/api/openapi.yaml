@@ -18029,15 +18029,16 @@ components:
         pending_devices:
           type: array
           items:
-            type: string
+            $ref: "#/components/schemas/ContainerPendingDevice"
           description: >
-            ADR-0161 Phase B -- ids/devicemap names from an
-            "optional": true devices[] entry (creation time) that
-            don't currently resolve to a present, assignable device.
-            Matched automatically against real hardware as it appears
-            (Phase C's hotplug listener) or a manual POST
-            .../devices call; removed from this list the moment
-            either one succeeds. Empty if none.
+            devices[] references this container is waiting for: one
+            that did not resolve at creation because it was "optional":
+            true (ADR-0161 Phase B), or one whose device was unplugged
+            while it ran (ADR-0345). Matched against hardware as it
+            appears -- a mapping in any port -- and given back with the
+            shared flag its entry carried; a reference leaves this list
+            once everything it names is held again. A device removed by
+            DELETE .../devices/{id} is not waited for. Empty if none.
         interfaces:
           type: array
           items:
@@ -20199,13 +20200,32 @@ components:
           type: string
           description: Its name inside the container.
 
+    ContainerPendingDevice:
+      type: object
+      required: [ref, shared]
+      description: One devices[] reference a running container is waiting for.
+      properties:
+        ref:
+          type: string
+          description: What the devices[] entry named -- a device mapping, an id, or a gpu:N group.
+        shared:
+          type: boolean
+          description: The entry's shared flag (#356), which its grant gets when it is given back.
+
     ContainerDeviceAttachment:
       type: object
-      required: [id, dev_path, live]
+      required: [id, dev_path, live, ref]
       properties:
         id:
           type: string
           description: The granted device's id (see GET /devices).
+        ref:
+          type: string
+          description: >
+            What the devices[] entry or live attach named for it -- a
+            device mapping, the id itself, or a gpu:N group (ADR-0345).
+            If the device is unplugged, this is what the container waits
+            for.
         dev_path:
           type: string
           description: Path the device node was mknod()'d at inside this container's own /dev.

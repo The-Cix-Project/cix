@@ -202,6 +202,24 @@ struct registry_device_attachment {
 	 * here so a later grant can ask what the earlier one wanted.
 	 */
 	int shared;
+	/*
+	 * ADR-0345: what the spec named for this grant -- a mapping, a raw
+	 * id, or a gpu:N group, several grants sharing one. An unplug sends
+	 * it back to pending_devices, so the device is given back when
+	 * something matching it returns, in any port when it is a mapping.
+	 */
+	char ref[96];
+};
+
+/*
+ * A devices[] reference a running container is waiting for (ADR-0161
+ * Phase B): one that did not resolve at create, or one whose device
+ * was unplugged (ADR-0345). It carries what its devices[] entry
+ * carried, so a shared grant comes back shared.
+ */
+struct registry_pending_device {
+	char ref[96];
+	int shared;
 };
 
 /*
@@ -392,7 +410,7 @@ struct registry_entry {
 	 * hotplug listener matches a newly-appeared device's own id against
 	 * every running container's pending list.
 	 */
-	char pending_devices[CONTAINER_MAX_DEVICES][96];
+	struct registry_pending_device pending_devices[CONTAINER_MAX_DEVICES];
 	int pending_device_count; /* 0 = nothing pending */
 	/*
 	 * Real host interface names moved into this container's netns --
@@ -839,9 +857,19 @@ int registry_network_detach(struct registry_entry *e, const char *network_name,
  * device_specs[] from). Call once, right after a successful
  * registry_create(), for every "optional": true devices[] entry that
  * didn't resolve to a present device at creation time. A no-op if
- * count == 0.
+ * count == 0. Announces (ADR-0339): pending_devices is in the
+ * container record and feeds the device list's reserved_by.
  */
-void registry_set_pending_devices(struct registry_entry *e, const char pending[][96], int count);
+void registry_set_pending_devices(struct registry_entry *e,
+                                  const struct registry_pending_device *pending, int count);
+
+/*
+ * ADR-0345: appends ref to e->pending_devices[] unless it is already
+ * there -- the grants of one gpu:N group or one vendor_model mapping
+ * share a ref, and wait as one. Called when an unplug revokes a grant.
+ * Announces.
+ */
+void registry_add_pending_device(struct registry_entry *e, const char *ref, int shared);
 
 /*
  * ADR-0161 Phase D: live-grants new_device/new_attachment to e's
@@ -899,7 +927,7 @@ int registry_device_live_detach(struct registry_entry *e, const char *id,
  * if not present), shifting later entries down and decrementing
  * pending_device_count. Called once a pending reference has either
  * been successfully live-attached (Phase C's own reconciliation pass)
- * or the operator otherwise no longer wants it tracked.
+ * or the operator otherwise no longer wants it tracked. Announces.
  */
 void registry_clear_pending_device(struct registry_entry *e, const char *ref);
 

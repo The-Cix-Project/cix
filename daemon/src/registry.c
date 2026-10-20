@@ -654,16 +654,32 @@ int registry_network_detach(struct registry_entry *e, const char *network_name,
 	return -1;
 }
 
-void registry_set_pending_devices(struct registry_entry *e, const char pending[][96], int count)
+void registry_set_pending_devices(struct registry_entry *e,
+                                  const struct registry_pending_device *pending, int count)
 {
 	int i;
 
 	e->pending_device_count = 0;
-	for (i = 0; i < count && i < CONTAINER_MAX_DEVICES; i++) {
-		snprintf(e->pending_devices[e->pending_device_count], sizeof(e->pending_devices[0]), "%s",
-		         pending[i]);
-		e->pending_device_count++;
+	for (i = 0; i < count && i < CONTAINER_MAX_DEVICES; i++)
+		e->pending_devices[e->pending_device_count++] = pending[i];
+	registry_announce();
+}
+
+void registry_add_pending_device(struct registry_entry *e, const char *ref, int shared)
+{
+	int i;
+
+	for (i = 0; i < e->pending_device_count; i++) {
+		if (strcmp(e->pending_devices[i].ref, ref) == 0)
+			return;
 	}
+	if (e->pending_device_count >= CONTAINER_MAX_DEVICES)
+		return;
+	snprintf(e->pending_devices[e->pending_device_count].ref, sizeof(e->pending_devices[0].ref),
+	         "%s", ref);
+	e->pending_devices[e->pending_device_count].shared = shared;
+	e->pending_device_count++;
+	registry_announce();
 }
 
 void registry_clear_pending_device(struct registry_entry *e, const char *ref)
@@ -671,12 +687,12 @@ void registry_clear_pending_device(struct registry_entry *e, const char *ref)
 	int i;
 
 	for (i = 0; i < e->pending_device_count; i++) {
-		if (strcmp(e->pending_devices[i], ref) != 0)
+		if (strcmp(e->pending_devices[i].ref, ref) != 0)
 			continue;
 		for (; i < e->pending_device_count - 1; i++)
-			snprintf(e->pending_devices[i], sizeof(e->pending_devices[0]), "%s",
-			         e->pending_devices[i + 1]);
+			e->pending_devices[i] = e->pending_devices[i + 1];
 		e->pending_device_count--;
+		registry_announce();
 		return;
 	}
 }
@@ -917,13 +933,24 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		jw_str(w, entry->devices[i].dev_path);
 		jw_key(w, "live");
 		jw_bool(w, entry->devices[i].live);
+		/* ADR-0345: what the spec named, so an unplug knows what to
+		 * wait for. A grant made before this field has none. */
+		jw_key(w, "ref");
+		jw_str(w, entry->devices[i].ref[0] != '\0' ? entry->devices[i].ref
+		                                            : entry->devices[i].id);
 		jw_obj_close(w);
 	}
 	jw_arr_close(w);
 	jw_key(w, "pending_devices");
 	jw_arr_open(w);
-	for (i = 0; i < entry->pending_device_count; i++)
-		jw_str(w, entry->pending_devices[i]);
+	for (i = 0; i < entry->pending_device_count; i++) {
+		jw_obj_open(w);
+		jw_key(w, "ref");
+		jw_str(w, entry->pending_devices[i].ref);
+		jw_key(w, "shared");
+		jw_bool(w, entry->pending_devices[i].shared);
+		jw_obj_close(w);
+	}
 	jw_arr_close(w);
 	/* ADR-0345: what was asked for, the host's name for what it
 	 * resolved to, and its name inside. */

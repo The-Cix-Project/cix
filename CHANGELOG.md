@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An unplugged device is given back when it returns (ADR-0345 step 4, #349)
+
+- **What changed:**
+  - **Grants:** each device grant records the `ref` its `devices[]` entry or live attach named. When a USB unplug revokes a grant from a running container, that `ref` goes back into `pending_devices` with its `shared` flag. The next matching hardware `add` gives the device back: through a mapping in any port, through a raw id in the same port. Any USB, block, PCI or SCSI add now triggers the give-back, because a USB stick's disk node, and the filesystem UUID that names it, arrive in a block add after the USB one; before, only USB whole-device adds did.
+  - **Pending entries:** a `pending_devices` entry is now `{ref, shared}`. A reference that names several devices (a `gpu:N` group or a `vendor_model` mapping) gives back all of them, not just the first, and skips any the container still holds. It leaves the list once everything it names is held again.
+  - **Announcements:** all three pending setters now announce.
+  - **Revocation cost:** the revocation asks one device snapshot through the pure `device_grants_gone()`, where it used to walk the host once per granted device.
+  - `DELETE .../devices/{id}` still pends nothing.
+- **Why:** an unplug used to end a grant for good, and nothing gave the device back. The ADR named a pending setter that announced, and none did. That is corrected in place. A radio held through `interfaces[]` is not covered; that is #623.
+
 ### A passed-through interface can be named by a mapping and named inside (ADR-0345 step 3, #349)
 
 - **What changed:**

@@ -321,6 +321,30 @@ static void test_one_node_one_record(void)
 	}
 }
 
+/*
+ * ADR-0345: an unplug revokes exactly the grants whose record is gone,
+ * and only those. The third id is a dongle no record carries -- one that
+ * was unplugged; the PHY and the optical drive are still there.
+ */
+static void test_grants_gone(void)
+{
+	const char *ids[] = { "phy:phy0", "disk:sr0", "usb:2357:012e@0000:07:1b.0-usb2-1" };
+	int gone[3];
+	int n;
+
+	build_fixture();
+	n = device_grants_gone(g_recs, g_n, ids, 3, gone);
+	if (n != 1 || gone[0] != 2) {
+		fprintf(stderr, "  FAIL: only the id no record carries should be gone, got %d\n", n);
+		g_failures++;
+	}
+	n = device_grants_gone(g_recs, g_n, ids, 2, gone);
+	if (n != 0) {
+		fprintf(stderr, "  FAIL: present grants reported gone (%d)\n", n);
+		g_failures++;
+	}
+}
+
 static void test_json(void)
 {
 	struct json_writer w;
@@ -378,6 +402,7 @@ int main(void)
 	test_sharing();
 	test_reservation();
 	test_one_node_one_record();
+	test_grants_gone();
 	test_json();
 	if (g_failures != 0) {
 		printf("test_devicestate: %d FAILED\n", g_failures);

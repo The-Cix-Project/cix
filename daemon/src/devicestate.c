@@ -313,6 +313,18 @@ int device_records_share_a_node(const struct discovered_device *recs, int n, int
 	return 0;
 }
 
+int device_grants_gone(const struct discovered_device *recs, int n, const char *const *ids,
+                       int count, int out[])
+{
+	int i, gone = 0;
+
+	for (i = 0; i < count; i++) {
+		if (device_record_index(recs, n, ids[i]) < 0)
+			out[gone++] = i;
+	}
+	return gone;
+}
+
 int device_records_share_an_id(const struct discovered_device *recs, int n, int *a, int *b)
 {
 	int i, j;

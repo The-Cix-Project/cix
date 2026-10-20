@@ -283,9 +283,14 @@ int main(void)
 			fprintf(stderr, "FAIL: POST devoptional: no pending_devices array in response\n");
 			ok = 0;
 		} else {
+			/* ADR-0345: an entry is {ref, shared}, carrying what
+			 * the devices[] entry carried. */
 			for (i = 0; i < pending->u.array.count; i++) {
-				if (str_eq(json_as_string(pending->u.array.items[i]),
-				           "usb:0000:0000:nonexistent"))
+				const struct json_value *p = pending->u.array.items[i];
+				const struct json_value *jshared = json_object_get(p, "shared");
+
+				if (str_eq(json_str_field(p, "ref"), "usb:0000:0000:nonexistent") &&
+				    jshared != NULL && jshared->type == JSON_BOOL && !jshared->u.boolean)
 					found = 1;
 			}
 			if (!found) {
@@ -482,6 +487,31 @@ int main(void)
 				ok = 0;
 			}
 
+			/* ADR-0345: the grant records what was named for it,
+			 * which an unplug would send back to pending_devices. */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/containers/devlive", NULL, &r) == 0 &&
+			    r.status == 200) {
+				const struct json_value *devs = json_object_get(r.json, "devices");
+				int named = 0;
+				size_t i;
+
+				for (i = 0; devs != NULL && devs->type == JSON_ARRAY && i < devs->u.array.count;
+				     i++) {
+					const struct json_value *d = devs->u.array.items[i];
+
+					if (str_eq(json_str_field(d, "id"), first_assignable_id) &&
+					    str_eq(json_str_field(d, "ref"), first_assignable_id))
+						named = 1;
+				}
+				if (!named) {
+					fprintf(stderr, "FAIL: devlive's grant of %s does not record its ref\n",
+					        first_assignable_id);
+					ok = 0;
+				}
+			}
+			cix_response_free(&r);
+
 			snprintf(path, sizeof(path), "/v1/containers/devlive/devices/%s", first_assignable_id);
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 200) {
@@ -499,6 +529,25 @@ int main(void)
 				        first_assignable_id);
 				ok = 0;
 			}
+
+			/* ADR-0345: a DELETE is a decision, so nothing waits for
+			 * the device afterwards -- only an unplug sends a grant
+			 * back to pending_devices. */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/containers/devlive", NULL, &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: GET devlive after the detach, status=%d\n", r.status);
+				ok = 0;
+			} else {
+				const struct json_value *pending = json_object_get(r.json, "pending_devices");
+
+				if (pending == NULL || pending->type != JSON_ARRAY ||
+				    pending->u.array.count != 0) {
+					fprintf(stderr, "FAIL: a DELETEd device is waited for in pending_devices\n");
+					ok = 0;
+				}
+			}
+			cix_response_free(&r);
 
 			/* Second delete: no longer attached -> 404. */
 			memset(&r, 0, sizeof(r));
