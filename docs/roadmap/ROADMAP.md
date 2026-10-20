@@ -2465,7 +2465,14 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 - **AP back.** `ar-1` was started from its stored definition. hostapd logged `wlan0: interface state UNINITIALIZED->ENABLED` and `AP-ENABLED`.
 - **Dashboard:** `ar-1`'s Hardware tab, rendered in Chromium from the box's responses, shows the interfaces table with "Name inside", "On the host" and "Asked for as".
 
-**Not done, and why.** The ADR's acceptance test proper is `ar-1` itself naming `radio-ap`, in its recipe and in `hostapd.conf`, recreated three times. That needs a new `ar-1` revision, which is a public commit to cix-recipes, and applying it needs `{{SECRET:WIFI_PASSPHRASE}}`. Both are the owner's. The `radio-ap` mapping is left on .95 for it. The ordinary-interface (rtnetlink) rename is covered by `test_container_net`, which is in `SELFTESTS` and passed in 562's hostbuild. For 562 the compile probe was skipped, on the stated grounds that the probe does not run that test. Those grounds were false; the hostbuild ran the full suite, so the gate was still met.
+**The ADR's acceptance test, with `ar-1` itself.** The owner approved `ar-1@1.2.0`, committed to cix-recipes as `78a4e32`. It says `"interfaces": ["radio-ap"]` and `interface=radio-ap` in `hostapd.conf`, and it was loaded into the box's deployment store. The owner applied it from their own terminal, with the passphrase, so the secret never passed through this session. Measured afterwards:
+- `ar-1` reported `{"ref":"radio-ap","host_ifname":"wlan0","ifname":"radio-ap"}`, and hostapd logged `radio-ap: interface state UNINITIALIZED->ENABLED` and `radio-ap: AP-ENABLED`.
+- **Three stop/start cycles,** each start re-running the grant, the move and the rename from the stored definition:
+  - after each stop, with `container ls` reading `stopped`, `device ls` listed `net:wlan0` on the host as `free`, named for `ar-1`;
+  - after each start, hostapd logged a new `radio-ap: AP-ENABLED` (box timestamps 1792532263, …270, …277).
+- `hostapd.conf` was not edited at any point.
+
+A first attempt at the cycles read nothing useful: its wait matched `stopped=no`, a field on every `container ls` line, so it never waited. Its device list was taken while `ar-1` still held the radio, and it is not counted. The ordinary-interface (rtnetlink) rename is covered by `test_container_net`, which is in `SELFTESTS` and passed in 562's hostbuild. For 562 the compile probe was skipped, on the stated grounds that the probe does not run that test. Those grounds were false; the hostbuild ran the full suite, so the gate was still met.
 
 ## Part 300: a filesystem UUID is a device field, and the dashboard names devices by identity (ADR-0345 step 2b, #349, 0.2.57-560)
 
