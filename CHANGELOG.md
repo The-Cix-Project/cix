@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### `cixctl storage ls` no longer calls a disk "assignable"
+
+- **What changed:** the kind column now reads `os-disk`, `partition` or `disk`. It used to read `assignable` for every whole disk that was not the OS disk.
+- **Why:** measured on 192.168.15.95, 0.2.57-557. `storage ls` printed `sda` as `assignable` while `device ls` printed it as `host` with reason `storage-role`. cixctl worked that word out in the client from `is_os_disk` alone. Whether a device may be granted is its state in `device ls` (ADR-0344), and no client works it out for itself.
+
+### ADR-0345 proposed: device names rebuilt as identities (#349)
+
+- **What changed:** the owner chose to rebuild device mappings rather than remove them. ADR-0345 is the design, awaiting acceptance; nothing is built yet.
+- **Why:** measured on 192.168.15.95. There are zero mappings, and the TP-Link dongle's USB serial is the factory default `123456`, which is already part of its record id. So two identical dongles would be two records with one id.
+
 ### A device granted to a user-namespace container works (#621)
 
 - **What changed:** a userns container's granted device nodes are made by the daemon, into the container's rootfs, before clone3(). They use the same owner rule as the standard nodes ADR-0333 already moved there. `container_dev_mknod()` takes a rootfs and an owner, as `container_dev_stage_baseline()` does, and the child calls it only for a non-userns container. A live attach sets the node's owner from the rootfs's own.

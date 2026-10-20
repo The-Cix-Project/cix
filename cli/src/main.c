@@ -459,7 +459,7 @@ static const char USAGE_TEXT[] =
 	        "               Returns immediately -- poll status for completed_generation\n"
 	        "               to pass what it read before the call\n"
 	        "  storage  -- real host block devices, including any partitions on them\n"
-	        "               (task #844); which one is the fixed OS disk vs. assignable is\n"
+	        "               (task #844); which one is the OS disk, a disk or a partition is\n"
 	        "               flagged per entry, and a partition entry names its parent disk\n"
 	        "  storage partition-table NAME  -- destructive: writes a fresh, empty GPT\n"
 	        "               partition table to a non-OS whole disk with no role or\n"
@@ -1356,14 +1356,18 @@ static void fmt_disk_line(const struct json_value *v)
 		snprintf(mount_col, sizeof(mount_col), "not-mounted");
 
 	/* "os-disk" is the whole OS disk only. Its partitions are ordinary
-	 * partitions -- several of them are assignable, and saying
-	 * "os-disk" for those is what made them look untouchable. */
+	 * partitions, and saying "os-disk" for those is what made them look
+	 * untouchable. This column is the kind of device, never whether it
+	 * may be granted: that is the device's state in `cixctl device ls`
+	 * (ADR-0344). It used to say "assignable" for every other disk, and
+	 * on 192.168.15.95 on 2026-10-20 that included sda, which holds
+	 * rebuildable-storage and is the host's. */
 	if (is_os_disk && !is_partition)
 		snprintf(kind_col, sizeof(kind_col), "os-disk");
 	else if (is_partition)
 		snprintf(kind_col, sizeof(kind_col), "partition");
 	else
-		snprintf(kind_col, sizeof(kind_col), "assignable");
+		snprintf(kind_col, sizeof(kind_col), "disk");
 
 	printf("%-12s %-16s %8.1f GiB  %-32s %-9s %-10s %-9s %s", dev_path, name, size_gib,
 	       model != NULL && model[0] != '\0' ? model : "-", removable ? "removable" : "fixed",
