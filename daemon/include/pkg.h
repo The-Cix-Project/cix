@@ -1405,6 +1405,13 @@ int pkg_build_output_fd(int chain_idx);
 int pkg_build_output_readable(int chain_idx, char *new_data, int new_data_cap, int *new_data_len);
 
 /*
+ * #388, #489 (ADR-0275): reads every in-flight CPDL build's event file,
+ * announcing any phase that moved. Returns how many builds are in
+ * flight, so main.c's timer re-arms only while there is one.
+ */
+int pkg_build_events_poll_all(void);
+
+/*
  * Copies the current sliding-window tail (up to out_cap bytes) into
  * out, for a live-log client attaching mid-build to see everything
  * captured so far before streaming further chunks. Returns the number

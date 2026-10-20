@@ -104,7 +104,7 @@ static void test_success(void)
 		fail("phase-begin did not make that phase the current one");
 	feed(&p, "phase-end", 3, "prepare", "", "", "", "", 0, 12);
 	feed(&p, "phase-begin", 4, "build", "", "", "", "", 0, 0);
-	feed(&p, "command-begin", 5, "build", "make", "-j1", "/build/cbsws/tmp/log.1", "", 0, 0);
+	feed(&p, "command-begin", 5, "build", "make", "make -j1", "/build/cbsws/tmp/log.1", "", 0, 0);
 	feed(&p, "command-end", 6, "build", "make", "", "", "", 0, 900);
 	feed(&p, "phase-end", 7, "build", "", "", "", "", 0, 950);
 	feed(&p, "phase-begin", 8, "install", "", "", "", "", 0, 0);
@@ -135,12 +135,15 @@ static void test_check_fails(void)
 	feed(&p, "phase-begin", 5, "check", "", "", "", "", 0, 0);
 	if (!p.changed)
 		fail("a phase starting did not mark the progress changed");
-	feed(&p, "command-begin", 6, "check", "make", "check", "/build/cbsws/tmp/cmd-7.log", "", 0,
-	     0);
-	feed(&p, "command-end", 7, "check", "make", "", "", "command failed", 1, 30);
+	/* `arguments` is the whole argv, program included -- the shape cbs
+	 * really emits (measured, 2026-10-20: joining it to `command` read
+	 * "false false"). */
+	feed(&p, "command-begin", 6, "check", "make", "make check", "/build/cbsws/tmp/cmd-7.log", "",
+	     0, 0);
+	feed(&p, "command-end", 7, "check", "make", "make check", "", "command failed", 1, 30);
 	/* A recipe's on_fail diagnostics run after the failure, and must not
 	 * replace the command that actually failed. */
-	feed(&p, "command-begin", 8, "check", "ls", "-1", "/build/cbsws/tmp/cmd-8.log", "", 0, 0);
+	feed(&p, "command-begin", 8, "check", "ls", "ls -1", "/build/cbsws/tmp/cmd-8.log", "", 0, 0);
 	feed(&p, "command-end", 9, "check", "ls", "", "", "command failed", 1, 1);
 	feed(&p, "phase-end", 10, "check", "", "", "", "phase failed", 1, 40);
 	feed(&p, "build-end", 11, "", "", "", "", "build failed", 1, 0);
@@ -194,17 +197,28 @@ static void test_killed_and_cancelled(void)
 		fail("a cancelled build named a failed phase");
 }
 
-static void test_replay_and_garbage(void)
+static void test_sequence_and_garbage(void)
 {
 	struct cbs_build_progress p;
 	static const char garbage[] = "not json at all\n";
 
-	cbs_progress_init(&p, BIT(CBS_PHASE_BUILD));
-	feed(&p, "phase-begin", 5, "build", "", "", "", "", 0, 0);
-	feed(&p, "phase-end", 6, "build", "", "", "", "", 0, 7);
-	/* An older sequence is a re-read, and must not reopen the phase. */
-	feed(&p, "phase-begin", 5, "build", "", "", "", "", 0, 0);
-	expect_state("replay", &p, CBS_PHASE_BUILD, CBS_PHASE_OK);
+	/*
+	 * Sequence numbers are NOT monotonic, and must not be used to drop
+	 * anything. cbs runs a phase's commands in a phase-local copy of its
+	 * context, so the commands' numbers advance on the copy and the
+	 * phase-end, emitted on the outer context, can carry a LOWER one --
+	 * the shape below, measured on 192.168.15.95, 2026-10-20, where a
+	 * reader that skipped "older" events lost every phase-end.
+	 */
+	cbs_progress_init(&p, BIT(CBS_PHASE_PREPARE) | BIT(CBS_PHASE_BUILD));
+	feed(&p, "phase-begin", 2, "prepare", "", "", "", "", 0, 0);
+	feed(&p, "command-begin", 3, "prepare", "true", "true", "", "", 0, 0);
+	feed(&p, "command-end", 4, "prepare", "true", "true", "", "", 0, 1);
+	feed(&p, "phase-end", 3, "prepare", "", "", "", "", 0, 2);
+	feed(&p, "phase-begin", 4, "build", "", "", "", "", 0, 0);
+	expect_state("non-monotonic sequence", &p, CBS_PHASE_PREPARE, CBS_PHASE_OK);
+	if (p.current != CBS_PHASE_BUILD)
+		fail("a phase-begin carrying a repeated sequence number was dropped");
 	if (cbs_progress_feed(&p, garbage, sizeof(garbage) - 1) != -1)
 		fail("a line that is not JSON was accepted");
 	if (cbs_progress_feed(&p, "", 0) != 0)
@@ -223,7 +237,7 @@ int main(void)
 	test_check_fails();
 	test_finalize_fails();
 	test_killed_and_cancelled();
-	test_replay_and_garbage();
+	test_sequence_and_garbage();
 
 	if (g_failures != 0) {
 		printf("CBS EVENTS TEST: FAIL (%d failure(s))\n", g_failures);

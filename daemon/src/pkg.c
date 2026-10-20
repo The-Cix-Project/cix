@@ -13867,14 +13867,6 @@ void pkg_check_build_stalls(void)
 	time_t quiet_since;
 	int i;
 
-	/* #388: a build quiet on its output pipe can still have moved phase,
-	 * and its last event can trail the output that announced it, so the
-	 * periodic check reads the event file too. */
-	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++)
-		if (g_build_output_entries[i] != NULL &&
-		    g_build_output_entries[i]->state == PKG_STATE_BUILDING)
-			(void)pkg_build_events_poll(i, g_build_output_entries[i]);
-
 	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
 		struct pkg_entry *e = &g_packages[i];
 
@@ -13928,13 +13920,14 @@ static void pkg_build_events_fold(struct pkg_chain *c, struct pkg_entry *e, cons
  * #388, #489 (ADR-0275): reads what cbs has added to this build's event
  * file since the last read (see PKG_CBS_EVENTS).
  *
- * Called whenever the build's output pipe is readable, from the stall
- * check, and until the file is drained at completion. cbs writes each
- * event to the human reporter on stderr first and to this file second
- * (its tee_event_sink()), so a pipe wakeup can come a moment before the
- * line it announces; the next call reads it. With nothing new it costs
- * one fstat() on a descriptor already open. Returns how many bytes it
- * read.
+ * Called whenever the build's output pipe is readable, every
+ * PKG_EVENTS_POLL_SECONDS while a build is in flight (main.c's events
+ * timer, pkg_build_events_poll_all()), and until the file is drained at
+ * completion. cbs writes each event to the human reporter on stderr
+ * first and to this file second (its tee_event_sink()), so a pipe
+ * wakeup can come a moment before the line it announces -- the timer is
+ * what makes the next read certain. With nothing new it costs one
+ * fstat() on a descriptor already open. Returns how many bytes it read.
  */
 static ssize_t pkg_build_events_poll(int chain_idx, struct pkg_entry *e)
 {
@@ -13970,6 +13963,21 @@ static ssize_t pkg_build_events_poll(int chain_idx, struct pkg_entry *e)
 		pkg_announce_jobs();
 	}
 	return n > 0 ? n : 0;
+}
+
+int pkg_build_events_poll_all(void)
+{
+	int i, in_flight = 0;
+
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+		struct pkg_entry *e = g_build_output_entries[i];
+
+		if (e == NULL || e->state != PKG_STATE_BUILDING || g_chains[i].events_path[0] == '\0')
+			continue;
+		in_flight++;
+		(void)pkg_build_events_poll(i, e);
+	}
+	return in_flight;
 }
 
 /* Starts a CPDL build's progress: the plan from the recipe, and an event

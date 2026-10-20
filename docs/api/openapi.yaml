@@ -23236,7 +23236,7 @@ components:
             a live cursor, non-null only while state is "building" and
             a phase has begun. Announced as it changes (ADR-0339), read
             from cbs's event file as the build's output arrives and at
-            least every stall-check interval.
+            least every 2 seconds while the build runs.
         phases:
           type: array
           nullable: true

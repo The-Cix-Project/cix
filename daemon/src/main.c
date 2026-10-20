@@ -1229,6 +1229,7 @@ enum conn_kind {
 	 * failure ADR-0180 exists to prevent.
 	 */
 	CONN_SERVERHEALTH_TIMER, /* permanent, re-arms itself -- fires one probe sweep per interval */
+	CONN_PKG_EVENTS_TIMER,   /* #388: one-shot, re-armed while a CPDL build is in flight */
 	CONN_SERVERHEALTH_PROBE, /* one in-flight TCP probe's own socket */
 	CONN_RESTART_TIMER,
 	CONN_ROLL_WATCH_TIMER,      /* ADR-0323 answer 4: a rolled container's probation
@@ -1324,6 +1325,7 @@ static const char *const g_conn_kind_names[CONN_KIND_COUNT] = {
 	[CONN_NTP_SYNC] = "ntp-sync",
 	[CONN_NTP_SYNC_TIMER] = "ntp-sync-timer",
 	[CONN_SERVERHEALTH_TIMER] = "serverhealth-timer",
+	[CONN_PKG_EVENTS_TIMER] = "pkg-events-timer",
 	[CONN_SERVERHEALTH_PROBE] = "serverhealth-probe",
 	[CONN_RESTART_TIMER] = "restart-timer",
 	[CONN_ROLL_WATCH_TIMER] = "roll-watch-timer",
@@ -8751,11 +8753,72 @@ static void try_start_queued_pkg_rebuild(void)
  * output_fd is -1 (pipe2() itself failed at build-spawn time, or no
  * build is in flight).
  */
+/*
+ * #388, #489 (ADR-0275): reads every in-flight CPDL build's event file
+ * every PKG_EVENTS_POLL_SECONDS, so the phase a build is in is current
+ * while it is quiet.
+ *
+ * The output pipe alone is not enough, measured on 192.168.15.95,
+ * 2026-10-20: cbs writes each event to the human reporter first and the
+ * JSONL file second, so the pipe wakeup for "prepare done, build
+ * started" arrived and was read before those two records were in the
+ * file -- and a build then sleeping 30 s reported `prepare` the whole
+ * time. One-shot and re-armed only while a build is in flight, so an
+ * idle daemon takes no wakeup for it.
+ */
+#define PKG_EVENTS_POLL_SECONDS 2
+
+static struct conn g_pkg_events_timer_conn = { .fd = -1 };
+
+static void arm_pkg_events_timer(void)
+{
+	struct itimerspec its;
+
+	if (g_pkg_events_timer_conn.fd < 0)
+		return;
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = PKG_EVENTS_POLL_SECONDS;
+	if (timerfd_settime(g_pkg_events_timer_conn.fd, 0, &its, NULL) != 0)
+		perror("timerfd_settime (pkg events)");
+}
+
+static void start_pkg_events_timer(void)
+{
+	struct cix_epoll_event ev;
+	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+
+	if (fd < 0) {
+		perror("timerfd_create (pkg events)");
+		return;
+	}
+	g_pkg_events_timer_conn.kind = CONN_PKG_EVENTS_TIMER;
+	g_pkg_events_timer_conn.fd = fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = &g_pkg_events_timer_conn;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+		close(fd);
+		g_pkg_events_timer_conn.fd = -1;
+	}
+}
+
+static void handle_pkg_events_timer_event(struct conn *cc)
+{
+	uint64_t expirations;
+
+	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
+		perror("read (pkg events timerfd)");
+	if (pkg_build_events_poll_all() > 0)
+		arm_pkg_events_timer();
+}
+
 static void register_pkg_build_output(int output_fd, int chain_idx)
 {
 	struct conn *cc;
 	struct cix_epoll_event ev;
 
+	/* #388: a build has started, so its phases are worth following. */
+	arm_pkg_events_timer();
 	if (output_fd < 0)
 		return;
 
@@ -36879,6 +36942,7 @@ static int cixd_main(int argc, char **argv)
 	start_scheduler_timer();    /* ADR-0257 -- no-op until a schedule exists */
 	start_events_timer();       /* ADR-0339 -- the event stream's heartbeat and listener */
 	start_serverhealth_timer(); /* issue #81 -- probes every registered server on an interval */
+	start_pkg_events_timer();   /* #388 -- armed by a build starting, never while idle */
 	fflush(stdout);
 
 	/* "About to serve traffic" is the honest definition of healthy this
@@ -37159,6 +37223,8 @@ static int cixd_main(int argc, char **argv)
 				handle_ntp_periodic_timer_event(cc);
 			else if (cc->kind == CONN_BUILD_STALL_TIMER)
 				handle_build_stall_timer_event(cc);
+			else if (cc->kind == CONN_PKG_EVENTS_TIMER)
+				handle_pkg_events_timer_event(cc);
 			else if (cc->kind == CONN_BOOT_CONFIRM_TIMER)
 				handle_boot_confirm_timer_event(cc);
 			else if (cc->kind == CONN_SCHEDULER_TIMER)

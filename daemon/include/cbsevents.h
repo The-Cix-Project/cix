@@ -61,9 +61,8 @@ struct cbs_build_progress {
 	 * only while that container does (keep_on_failure keeps it). */
 	char failed_log[CBS_EVENTS_LOG_MAX];
 	char failed_message[CBS_EVENTS_MESSAGE_MAX];
-	int build_end;               /* -1 unseen, 0 ok, 1 failed */
-	unsigned long long sequence; /* the last event folded in */
-	int changed;                 /* a phase or the failed command changed; the caller clears it */
+	int build_end; /* -1 unseen, 0 ok, 1 failed */
+	int changed;   /* a phase or the failed command changed; the caller clears it */
 	/* The latest command-begin, so a command-end can name what failed. */
 	char last_command[CBS_EVENTS_COMMAND_MAX];
 	char last_log[CBS_EVENTS_LOG_MAX];
@@ -95,9 +94,9 @@ int cbs_phase_state_from_word(const char *word);
 void cbs_progress_init(struct cbs_build_progress *p, unsigned planned);
 
 /*
- * Folds one line of the stream in. A line that is not a JSON object, or
- * an event older than the last one folded, changes nothing. Returns 0, or
- * -1 for a line that did not parse.
+ * Folds one line of the stream in, in file order. A line that is not a
+ * JSON object changes nothing. Returns 0, or -1 for a line that did not
+ * parse.
  */
 int cbs_progress_feed(struct cbs_build_progress *p, const char *line, size_t len);
 

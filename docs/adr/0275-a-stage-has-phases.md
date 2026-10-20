@@ -242,10 +242,24 @@ close-on-exec before it execs one (`init/src/cix_init.c`, the
 `--events human --events-file /build/cbs-events.jsonl`: the operator's
 log keeps the human reporter, and cixd reads the file host-side under
 the build overlay's upper directory. It reads on every output-pipe
-wakeup, from the stall check, and to its end when the container exits.
-cbs flushes after every event, writing the human line first and the
-JSONL line second, so a wakeup can come a moment before the record it
-announces; the next read takes it. `daemon/src/cbsevents.c` folds the
+wakeup, every 2 s while a build is in flight, and to its end when the
+container exits. cbs flushes after every event, writing the human line
+first and the JSONL line second, so a pipe wakeup can come a moment
+before the record it announces. That is why the timer exists: measured
+on 192.168.15.95 (0.2.57-554), a build that finished `prepare` and then
+slept 30 s in `build` reported `prepare` for the whole sleep, because
+the one wakeup had been read before the two records it announced.
+
+**Sequence numbers are not used.** cbs documents `sequence` as rising
+within a build, and it does not: commands run in a phase-local copy of
+the execution context (`src/runtime.c:258`), whose counter is never
+carried back, so a `phase-end` can carry a lower number than the
+commands inside it. A first version dropped "older" events and lost
+every `phase-end` (also measured on 0.2.57-554). Each line is read
+exactly once by byte offset, so file order is enough.
+
+**`arguments` is the whole argv.** A failed command is reported from it,
+program included; joining it to `command` read `false false`. `daemon/src/cbsevents.c` folds the
 records into a build's progress and is pure, gated by `test_cbsevents`
 in SELFTESTS.
 

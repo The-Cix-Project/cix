@@ -120,9 +120,7 @@ static void phase_end(struct cbs_build_progress *p, int phase, int status, long 
 int cbs_progress_feed(struct cbs_build_progress *p, const char *line, size_t len)
 {
 	struct json_value *root;
-	const struct json_value *seq;
 	const char *type;
-	unsigned long long sequence;
 	int phase, status;
 
 	if (len == 0)
@@ -132,17 +130,17 @@ int cbs_progress_feed(struct cbs_build_progress *p, const char *line, size_t len
 		json_free(root);
 		return -1;
 	}
-	seq = json_object_get(root, "sequence");
-	sequence = seq != NULL && seq->type == JSON_NUMBER ? (unsigned long long)json_as_number(seq)
-	                                                   : 0;
-	/* Sequence numbers rise within a build, so an older one is a replay,
-	 * which a reader that re-reads from an earlier offset would see. */
-	if (sequence != 0 && sequence <= p->sequence) {
-		json_free(root);
-		return 0;
-	}
-	if (sequence != 0)
-		p->sequence = sequence;
+	/*
+	 * `sequence` is deliberately not used. cbs documents it as rising
+	 * within a build, and it does not: commands run in a phase-local
+	 * COPY of the execution context (cbs v0.1.107 src/runtime.c:258,
+	 * `CbsExecutionContext local = *context;`), whose counter advances
+	 * and is never carried back, so a phase's phase-end can carry a
+	 * lower number than the commands inside it. Measured on
+	 * 192.168.15.95, 2026-10-20: dropping "older" events lost every
+	 * phase-end. Each line is read exactly once anyway -- the reader
+	 * keeps a byte offset -- so order is the file's.
+	 */
 	type = str_field(root, "type");
 	phase = cbs_phase_from_name(str_field(root, "phase"));
 	status = (int)num_field(root, "status");
@@ -152,10 +150,14 @@ int cbs_progress_feed(struct cbs_build_progress *p, const char *line, size_t len
 	} else if (strcmp(type, "phase-end") == 0 && phase >= 0) {
 		phase_end(p, phase, status, num_field(root, "duration_ms"));
 	} else if (strcmp(type, "command-begin") == 0) {
+		/* `arguments` is the whole argv, program included (cbs sets it
+		 * from the command's own argument list); `command` alone is the
+		 * program, for an event that carries no arguments. Measured: the
+		 * two joined read "false false". */
 		const char *args = str_field(root, "arguments");
 
-		snprintf(p->last_command, sizeof(p->last_command), "%s%s%s", str_field(root, "command"),
-		         args[0] != '\0' ? " " : "", args);
+		snprintf(p->last_command, sizeof(p->last_command), "%s",
+		         args[0] != '\0' ? args : str_field(root, "command"));
 		snprintf(p->last_log, sizeof(p->last_log), "%s", str_field(root, "log_path"));
 	} else if (strcmp(type, "command-end") == 0 && status != 0) {
 		/* The first failure is the one that ended the build; a later
