@@ -2445,6 +2445,40 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 295: a build says which phase it is in, and which phase and command failed (ADR-0275, #388, #489, 0.2.57-554 and -555)
+
+A CPDL build was one opaque atom: `build/failed`, and a log to read. ADR-0275 decided the model
+(a stage has phases, on the stage status axis, never reported without its stage) and waited on
+cbs being able to send its event stream somewhere other than stderr, which cbs v0.1.107 does
+(cix-build-system#282).
+
+**What shipped.**
+- **cbs v0.1.107-1**, packaged and rolled into `cix-builder` and `cix-hosttools`; the ADR-0209
+  test floor moved to it (fixture, both recipes' `extra "cbs"`, the corpus pin at `f454b9a`).
+- **The reader:** `--events-file /build/cbs-events.jsonl`, read host-side under the build
+  overlay on each output wakeup, every 2 s while a build runs, and to its end at completion.
+  `daemon/src/cbsevents.c` folds the records, pure and gated by `test_cbsevents`.
+- **The fields:** `current_phase` and `phases` on an entry while it builds; `phase` and
+  `failed_command` beside `stage`/`status` after a failure; `phases`, `phase` and
+  `failed_command` on its run. Phase changes are announced (ADR-0339).
+- **One `cbs build` command**, for a first build and a resume alike; it had been spelled twice.
+
+**Verified on 192.168.15.95.**
+- **The gates:** `probe-cix-compile@0.2.57-564` and `-565` green, including `test_cbsevents`,
+  `test_cbsrecipe`, and `test_pkg`'s new assertions on `badbuild` (failed phase `build`,
+  command `false`, the run's six-phase plan) on a floor running cbs v0.1.107.
+- **0.2.57-554**, booted slot a, 12 containers. `probe-phases@1-1` (prepare, a 30 s build,
+  a failing check) got the outcome right, `phase: check`, and found three defects: the cursor
+  stayed on `prepare` through the sleep; every `phase-end` was lost to the sequence check, since
+  cbs's sequence numbers repeat across phase-local contexts (cix-build-system#298); and the
+  command read `false false`.
+- **0.2.57-555**, booted slot b, 12 containers. The same probe read `current_phase: build` for
+  the whole sleep, then `phase: check`, `failed_command: false`, and a run of prepare ok 2 ms,
+  configure not-implemented, build ok 30004 ms, check failed 3 ms, install ok, finalize blocked.
+  `pkg ls` read `failed:build.check/failed`. No drift reported; worst loop pass 147 ms, not this.
+
+**Not available:** a failed command's exit code, which cbs does not emit (cix-build-system#297).
+
 ## Part 294: an image keeps a bounded history, and a version leaves it off the event loop (ADR-0343, #619, 0.2.57-553)
 
 Nothing removed an image version unless someone asked. `jumpbox` held 256 or more, its

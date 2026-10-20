@@ -17226,12 +17226,15 @@ static void fmt_pipeline_runs(const struct json_value *root)
 		const char *log = json_str_field(r, "log");
 		const struct json_value *avail = json_object_get(r, "log_available");
 		const char *err = json_str_field(r, "error");
-		char what[24];
+		const char *phase = json_str_field(r, "phase");
+		char what[40];
 
 		/* A failure is reported as the stage it failed at: "failed"
-		 * alone is the thing ADR-0256 exists to stop saying. */
+		 * alone is the thing ADR-0256 exists to stop saying. The phase
+		 * nests in its stage, as in `pkg ls` (#388). */
 		if (status != NULL && strcmp(status, "ok") != 0 && stage != NULL)
-			snprintf(what, sizeof(what), "%s/%s", stage, status);
+			snprintf(what, sizeof(what), "%s%s%s/%s", stage, phase != NULL ? "." : "",
+			         phase != NULL ? phase : "", status);
 		else
 			snprintf(what, sizeof(what), "%s", status != NULL ? status : "-");
 

@@ -277,6 +277,8 @@ carries status 0 or 1: whether the command exited as its recipe
 expected, never the exit code itself. So a failed command is reported
 by its program and arguments, its message and cbs's per-command log
 path, which lies inside the build container, and with no exit code.
+cix-build-system#297 asks cbs to carry the exit code and signal, and
+cix-build-system#298 records the repeating sequence numbers.
 
 **The plan is the explain document's.** `cbs explain --json` already
 runs once per published version and its output is stored beside the

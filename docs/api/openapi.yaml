@@ -23226,7 +23226,8 @@ components:
               description: >
                 cbs's own word for the failure. cbs reports only that a
                 command did not exit as its recipe expected, never the
-                exit code itself, so no exit code is given.
+                exit code itself, so no exit code is given
+                (cix-build-system#297 asks for it).
         current_phase:
           type: string
           nullable: true

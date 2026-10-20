@@ -6,6 +6,36 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A build says which phase it is in, and which phase and command failed (#388, #489, ADR-0275)
+
+- **What changed:** cixd runs `cbs build ... --events human --events-file
+  /build/cbs-events.jsonl` (cbs v0.1.107, cix-build-system#282) and folds the JSONL records
+  into a build's progress (`daemon/src/cbsevents.c`, gated by `test_cbsevents`). `GET /v1/pkg`
+  entries carry `current_phase` and `phases` (the plan, all six phases with their status and
+  duration) while building, and `phase` and `failed_command` beside `stage`/`status` after a build
+  fails; runs carry `phases`, `phase` and `failed_command`. `cixctl pkg ls` shows
+  `building:check` and `failed:build.check/failed`, `pipeline runs` lists the phases, and the
+  dashboard's build card and run history show both. `cbs@v0.1.107-1` is packaged and rolled into
+  `cix-builder` and `cix-hosttools`, and the ADR-0209 test floor moved to it.
+- **Why:** a CPDL build was one opaque atom, `build/failed` and a log to read. cixd passed
+  `--events human` because the JSONL stream could only be a dup of stderr, which is the build log
+  itself (#489). #282 gave it a destination of its own.
+- **How it reads the file:** a descriptor cannot reach cbs, since `cix-init` marks every
+  descriptor from 3 up close-on-exec before exec, so the stream goes to a file cixd reads under the
+  build overlay: on every output wakeup, every 2 s while a build runs, and to its end at completion.
+  The plan comes from the explain document stored at publish. `finalize` has no event and is
+  derived from `build-end`. cbs reports that a command did not exit as expected, never its exit
+  code, so none is given (cix-build-system#297).
+- **Measured on 192.168.15.95:** the first live build on 0.2.57-554 found three defects, fixed in
+  0.2.57-555. The cursor stayed on `prepare` through a 30 s `build`, because the one output wakeup
+  was read before cbs wrote the records it announced; every `phase-end` was lost, because cbs's
+  `sequence` numbers repeat across its phase-local contexts (cix-build-system#298) and the reader
+  dropped "older" events; and the failed command read `false false`, because `arguments` is the
+  whole argv. On 0.2.57-555 the same probe (`probe-phases@1-1`) reported `current_phase: build`
+  throughout its sleep, then `phase: check`, `failed_command: false`, and a run of prepare ok
+  2 ms, configure not-implemented, build ok 30004 ms, check failed 3 ms, install ok, finalize
+  blocked. No drift was reported, and the worst loop pass since boot was 147 ms, unrelated.
+
 ### An image keeps a bounded history, and a version leaves it off the event loop (ADR-0343, #619)
 
 - **What changed:** each image keeps every version something references plus its newest `keep`
