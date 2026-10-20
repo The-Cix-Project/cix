@@ -516,15 +516,15 @@ enum image_error image_delete(const char *name)
 		if (n < 0)
 			return IMAGE_ERR_DELETE_FAILED;
 		for (i = 0; i < n && !failed; i++) {
-			char path[PATH_MAX], rootfs[PATH_MAX];
+			char tree[PATH_MAX], rootfs[PATH_MAX];
 			struct stat rst;
 
-			snprintf(path, sizeof(path), "%s/%s", image_dir, subdirs[i].name);
-			snprintf(rootfs, sizeof(rootfs), "%s/rootfs", path);
+			snprintf(tree, sizeof(tree), "%s/%s", image_dir, subdirs[i].name);
+			snprintf(rootfs, sizeof(rootfs), "%s/rootfs", tree);
 			if (lstat(rootfs, &rst) == 0 && S_ISDIR(rst.st_mode))
-				failed = set_aside_version_dir(name, path) != IMAGE_OK;
+				failed = set_aside_version_dir(name, tree) != IMAGE_OK;
 			else
-				failed = g_discard == NULL || g_discard(name, path) != 0;
+				failed = g_discard == NULL || g_discard(name, tree) != 0;
 		}
 		free(subdirs);
 		if (failed)

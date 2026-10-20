@@ -9544,6 +9544,9 @@ static int container_root_from_def(const char *name, char *out, size_t out_size)
  * doing "the same thing" is exactly the shape that maxim warns about,
  * so there is one of them now.
  */
+/* ADR-0343: defined beside the discard queue it feeds. */
+static void image_retain_run(void);
+
 static void pkg_completion_followup(int chained, pid_t pkg_pid, int pkg_pidfd, int pkg_chain_idx,
                                      const char *hostbuild_done_name)
 {
