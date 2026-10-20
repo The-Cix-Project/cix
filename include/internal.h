@@ -266,7 +266,7 @@ int container_net_apply_sysctls_running(pid_t child_pid, const struct container_
  * Must run before ns_clone3(): CLONE_INTO_CGROUP places the child
  * into the cgroup atomically as part of that syscall, so the policy
  * has to already be attached for there to be no race window, and
- * because the child's own container_dev_mknod() calls are themselves
+ * because a non-userns child's container_dev_mknod() calls are themselves
  * subject to a BPF_DEVCG_ACC_MKNOD check under this same program. On
  * success *out_prog_fd is the loaded program's own fd, kept open for
  * the container's lifetime (closed alongside cgroup_fd/pidfd on
@@ -295,24 +295,31 @@ int container_dev_bpf_attach(int cgroup_fd, const struct device_spec *devices, i
 int container_dev_bpf_detach(int cgroup_fd, int prog_fd);
 
 /*
- * Child side, called right after mountns_pivot() succeeds -- the
- * first point the container's /dev is genuinely private (its own
- * pivoted mount namespace, no longer the host's or any sibling's).
- * mknod()s each of devices[]'s granted nodes (creating dev_path's
- * parent directories first, e.g. /dev/bus/usb/002/), mode 0666 --
- * the real access gate is the BPF program container_dev_bpf_attach()
- * already attached before clone3(), not these POSIX permission bits.
- * A no-op if device_count == 0.
+ * The nodes a container was GRANTED (devices[]), mknod()ed under
+ * rootfs_dir with their parent directories (e.g. /dev/bus/usb/002/),
+ * mode 0666 -- the real access gate is the BPF program
+ * container_dev_bpf_attach() attached before clone3(), not these POSIX
+ * bits. A no-op if device_count == 0.
  *
- * That paragraph used to justify the 0666 with "this project's
- * containers already run as full root with no user namespace", which
- * has been false since ADR-0179/ADR-0207 made user namespaces the
- * DEFAULT. The conclusion was right and the reason had rotted; the
- * reason is now just the BPF program, which is true either way. The
- * same staleness is why this function cannot do the baseline nodes --
- * see container_dev_stage_baseline() below.
+ * TWO CALLERS, and the split is container_dev_stage_baseline()'s, for
+ * the same kernel reason (#621):
+ *
+ *   - a USERNS container: the PARENT, before clone3(), into the
+ *     container's own rootfs. mknod is gated on CAP_MKNOD against the
+ *     INITIAL user namespace, which no userns child holds (#321). Until
+ *     #621 this was child-only, so every userns container granted a
+ *     device died at "child: container_dev_mknod: Operation not
+ *     permitted" -- measured on 192.168.15.95, 0.2.57-556 -- while the
+ *     baseline nodes beside it had already moved to the parent.
+ *   - a NON-USERNS container: the CHILD, after pivot_root, with
+ *     rootfs_dir "" (its own root), because the parent must not
+ *     pre-create the overlay upperdir (see container_dev_stage_baseline()).
+ *
+ * owner_offset follows the baseline's rule: the subordinate base for a
+ * chowned userns copy, 0 for an id-mapped rootfs or no userns.
  */
-int container_dev_mknod(const struct device_spec *devices, int device_count);
+int container_dev_mknod(const char *rootfs_dir, uid_t owner_offset,
+                        const struct device_spec *devices, int device_count);
 
 /*
  * PARENT side, before clone3(): the standard device nodes every

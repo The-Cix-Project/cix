@@ -371,7 +371,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	 * Before ns_clone3(): CLONE_INTO_CGROUP places the child into
 	 * cgroup_fd atomically as part of that syscall, so the device
 	 * policy must already be attached for there to be no race window,
-	 * and because the child's own container_dev_mknod() calls are
+	 * and because a non-userns child's own container_dev_mknod() calls are
 	 * themselves subject to a BPF_DEVCG_ACC_MKNOD check under this
 	 * same program.
 	 */
@@ -480,8 +480,8 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	 * pre-created here would satisfy that tolerance and silently cost
 	 * every container its quota. So the non-userns case is staged by the
 	 * child instead, where it is real root anyway -- beside
-	 * container_dev_mknod(), which does the granted nodes for the same
-	 * reason in the same place.
+	 * container_dev_mknod(), which follows the same split for the granted
+	 * nodes (#621).
 	 */
 	if (spec->userns_enabled && spec->ov.userns_rootfs != NULL &&
 	    spec->ov.userns_rootfs[0] != '\0') {
@@ -502,12 +502,24 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 * appeared not to own (test_userns_run, probe 0.2.57-490).
 		 */
 		uid_t dev_offset = spec->userns_idmap ? 0 : (uid_t)spec->userns_uid_base;
+		const char *dev_step = NULL;
 
-		if (container_dev_stage_baseline(spec->ov.userns_rootfs, dev_offset) != 0) {
+		/*
+		 * The GRANTED nodes too, for the same reason and with the same
+		 * owner: until #621 they were made by the child, which as a
+		 * userns child holds no CAP_MKNOD, so every userns container
+		 * granted a device died at container_dev_mknod with EPERM.
+		 */
+		if (container_dev_stage_baseline(spec->ov.userns_rootfs, dev_offset) != 0)
+			dev_step = "container_create: container_dev_stage_baseline";
+		else if (container_dev_mknod(spec->ov.userns_rootfs, dev_offset, spec->devices,
+		                             spec->device_count) != 0)
+			dev_step = "container_create: container_dev_mknod";
+		if (dev_step != NULL) {
 			int saved_errno = errno;
 
-			perror("container_create: container_dev_stage_baseline");
-			container_set_last_error_step("container_create: container_dev_stage_baseline");
+			perror(dev_step);
+			container_set_last_error_step(dev_step);
 			close(diag_pipe[0]);
 			close(diag_pipe[1]);
 			if (want_net) {
@@ -1065,7 +1077,11 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			child_diag(diag_pipe[1], "child: container_dev_stage_baseline");
 			_exit(137);
 		}
-		if (container_dev_mknod(spec->devices, spec->device_count) != 0) {
+		/* The granted nodes, under the same split as the baseline above:
+		 * here only for a non-userns child, which is real root; a userns
+		 * container's were made by the parent before clone3() (#621). */
+		if (!spec->userns_enabled &&
+		    container_dev_mknod("", 0, spec->devices, spec->device_count) != 0) {
 			child_diag(diag_pipe[1], "child: container_dev_mknod");
 			_exit(113);
 		}

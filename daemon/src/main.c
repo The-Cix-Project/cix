@@ -19194,16 +19194,22 @@ static void handle_container_network_detach(int fd, const char *container_name,
  * code -- it mknod()s at dev->dev_path directly, correct only when
  * already inside the target mount namespace post-pivot, which a
  * live-attach call from this daemon process never is). Real 0666
- * mode plus an explicit chmod() after mknod(), same reasoning
- * container_dev_mknod()'s own comment gives (this project's
- * containers run as full root with no user namespace, so the real
- * access gate is the BPF program, not these POSIX bits; mknod()'s
- * own requested mode is subject to this daemon's own umask).
+ * mode plus an explicit chmod() after mknod(): the access gate is the
+ * BPF program, not these POSIX bits, and mknod()'s requested mode is
+ * subject to this daemon's umask.
+ *
+ * The OWNER is the rootfs's own (#621), the rule stage_id_offset uses
+ * for every staged file: a chowned userns copy is owned by its
+ * subordinate base, and a node left at host uid 0 there would sit
+ * outside the container's map. An id-mapped or non-userns rootfs is
+ * owned by 0 and the node stays as it is.
  */
 static int live_mknod_device(const struct registry_entry *e, const struct device_spec *dev)
 {
 	char full_path[PATH_MAX];
 	char target_dir[PATH_MAX];
+	char root_path[PATH_MAX];
+	struct stat root_st;
 	char *slash;
 	mode_t mode;
 
@@ -19222,6 +19228,10 @@ static int live_mknod_device(const struct registry_entry *e, const struct device
 	if (mknod(full_path, mode, makedev(dev->major, dev->minor)) != 0 && errno != EEXIST)
 		return -1;
 	if (chmod(full_path, mode & 07777) != 0)
+		return -1;
+	container_file_host_path(e->name, e->disk_name, "/", root_path, sizeof(root_path));
+	if (root_path[0] != '\0' && stat(root_path, &root_st) == 0 && root_st.st_uid != 0 &&
+	    chown(full_path, root_st.st_uid, root_st.st_gid) != 0)
 		return -1;
 	return 0;
 }

@@ -200,16 +200,27 @@ int container_dev_bpf_detach(int cgroup_fd, int prog_fd)
 	return 0;
 }
 
-int container_dev_mknod(const struct device_spec *devices, int device_count)
+int container_dev_mknod(const char *rootfs_dir, uid_t owner_offset,
+                        const struct device_spec *devices, int device_count)
 {
 	int i;
 
+	if (rootfs_dir == NULL) {
+		errno = EINVAL;
+		return -1;
+	}
 	for (i = 0; i < device_count; i++) {
+		char path[PATH_MAX];
 		char dir[PATH_MAX];
 		char *slash;
 		mode_t mode;
 
-		if (snprintf(dir, sizeof(dir), "%s", devices[i].dev_path) >= (int)sizeof(dir)) {
+		/* "" is the caller's own root -- the non-userns child after
+		 * pivot_root -- exactly as container_dev_stage_baseline()
+		 * reads it, so the two callers share one convention. */
+		if (snprintf(path, sizeof(path), "%s%s", rootfs_dir, devices[i].dev_path) >=
+		        (int)sizeof(path) ||
+		    snprintf(dir, sizeof(dir), "%s", path) >= (int)sizeof(dir)) {
 			errno = ENAMETOOLONG;
 			return -1;
 		}
@@ -222,8 +233,7 @@ int container_dev_mknod(const struct device_spec *devices, int device_count)
 		}
 
 		mode = (mode_t)((devices[i].type == DEVICE_NODE_BLOCK ? S_IFBLK : S_IFCHR) | 0666);
-		if (mknod(devices[i].dev_path, mode,
-		          makedev(devices[i].major, devices[i].minor)) != 0 &&
+		if (mknod(path, mode, makedev(devices[i].major, devices[i].minor)) != 0 &&
 		    errno != EEXIST)
 			return -1;
 		/* mknod()'s own requested mode is subject to the calling
@@ -234,7 +244,12 @@ int container_dev_mknod(const struct device_spec *devices, int device_count)
 		 * for the live confirmation (a real /dev/null ended up 0644,
 		 * not 0666, the same class of bug this device-passthrough
 		 * path shares. */
-		if (chmod(devices[i].dev_path, mode & 07777) != 0)
+		if (chmod(path, mode & 07777) != 0)
+			return -1;
+		/* The same owner rule as the baseline nodes beside it: the
+		 * subordinate base for a chowned userns copy, so the node sits
+		 * inside the container's map; untouched otherwise. */
+		if (owner_offset != 0 && chown(path, owner_offset, (gid_t)owner_offset) != 0)
 			return -1;
 	}
 
