@@ -6,6 +6,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A device name says which device it is; a USB id says where it is (ADR-0345 step 2a, #349)
+
+- **What changed:**
+  - **Mapping kinds:** a mapping is one of `usb_serial` (vendor, product and serial), `wwid`, `fs_uuid`, `mac` (permanent addresses only), `exact` (a `usb:` or `pci:` location only) or `vendor_model` (every device of a model). `exact` on a `disk:`, `net:`, `gpu:` or `phy:` id is a 400 naming the kind to use instead.
+  - **Ambiguity:** a kind that names one device and matches several is `ambiguous`, and a grant through it is a 409 naming the matches, even for an `optional` entry.
+  - **`state` replaces `present`:** `GET /v1/devicemaps` reports `present`, `absent` or `ambiguous`.
+  - **Resolution:** mappings resolve against the grant snapshot, so they see an interface a running container holds.
+  - **USB ids:** `usb:<vid>:<pid>@<controller>-usb<N>-<port>`, for example `usb:2357:012e@0000:07:1b.0-usb2-1`. The serial and the bus number are no longer part of the id.
+  - **Gates:** two records with one id are logged once, as one node in two records already was. `test_devicematch` joins SELFTESTS.
+  - **Announcements:** every device-list announcement also announces the mapping list.
+  - **WWID:** stored without its trailing padding.
+  - **Startup:** a persisted mapping the new rules refuse is skipped and logged, rather than stopping the daemon.
+- **Why:** measured on .95. The dongle's USB serial is the factory default `123456`, and it was part of the dongle's id, so two of them would have been two records with one id. A mapping by serial alone would have followed a different vendor's device that reports the same number.
+
 ### A device record says what the device is: serial, WWID, MAC and whether it is permanent (ADR-0345 step 1, #349)
 
 - **What changed:** every entry in `GET /v1/devices` carries `serial` (USB), `wwid` (whole disks, verbatim from sysfs), `mac` and `mac_permanent` (interfaces, from `addr_assign_type`). An interface a running container holds keeps the address read when it was granted. Nothing else changes: ids, mappings and grants are as before.

@@ -5039,6 +5039,8 @@ static void reconcile_pending_device_attachments(void)
 	char names[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
 	int ncount = registry_list_names(names, REGISTRY_MAX_CONTAINERS);
 	static struct pending_device_claim claims[REGISTRY_MAX_CONTAINERS * CONTAINER_MAX_DEVICES];
+	static int warned_ambiguous;
+	const struct device_snapshot *snap = devicegrant_snapshot();
 	int claim_count = 0;
 	int i, j;
 
@@ -5049,10 +5051,23 @@ static void reconcile_pending_device_attachments(void)
 			continue;
 		for (j = 0; j < e->pending_device_count; j++) {
 			const struct discovered_device *matches[1];
+			char why[256];
 			int n;
 
-			n = devicemap_resolve(e->pending_devices[j], CONTAINERS_DIR, matches, 1);
-			if (n < 0)
+			/* Ids are copied below before anything refreshes the
+			 * snapshot matches[] points into. */
+			n = devicemap_resolve(e->pending_devices[j], snap->recs, snap->n, matches, 1, why,
+			                      sizeof(why));
+			if (n == DEVICEMAP_AMBIGUOUS) {
+				/* Waits, like an absent device, and says why once:
+				 * every uevent runs this pass. */
+				if (!warned_ambiguous) {
+					warned_ambiguous = 1;
+					logstore_write("cixd", "error", "container %s waits on %s", e->name, why);
+				}
+				continue;
+			}
+			if (n == DEVICEMAP_NOT_A_MAPPING)
 				n = device_find_group(e->pending_devices[j], CONTAINERS_DIR, matches, 1);
 			if (n <= 0)
 				continue;
@@ -5243,6 +5258,7 @@ static void handle_uevent_event(struct conn *cc)
 	 * storage on every container lifecycle event. */
 	if ((is_add || is_remove) && is_hardware) {
 		events_announce(EV_listDevices);
+		events_announce(EV_listDeviceMaps); /* a mapping's state is the devices' (ADR-0345) */
 		events_announce(EV_listStorage);
 	}
 
@@ -12660,6 +12676,7 @@ static void handle_disk_format_event(struct conn *cc)
 	 * (ADR-0339), since the POST that started it answered long ago. */
 	events_announce(EV_getStorageFormatStatus);
 	events_announce(EV_listDevices);
+	events_announce(EV_listDeviceMaps); /* a mapping's state is the devices' (ADR-0345) */
 	fprintf(stderr, "disk format: job finished (exit_status=%d)\n", exit_status);
 }
 
@@ -15140,10 +15157,32 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * (ADR-0161 Phase B): the container is then still created,
 			 * without this grant, and id is remembered in pending_
 			 * device_refs[] for Phase C/D's later hotplug matching.
+			 *
+			 * ADR-0345: a mapping is resolved against the grant
+			 * snapshot's records, and one whose kind names one device
+			 * but matches several is a 409 whether or not the entry is
+			 * optional -- ambiguous is not unplugged. A mac mapping
+			 * names an interface, which interfaces[] grants.
 			 */
-			n = devicemap_resolve(id, CONTAINERS_DIR, matches,
-			                       CONTAINER_MAX_DEVICES - device_count);
-			if (n < 0)
+			if (devicemap_names_interface(id)) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size,
+				         "device mapping %s names an interface: list it in interfaces[], "
+				         "not devices[]",
+				         id);
+				return 400;
+			}
+			{
+				const struct device_snapshot *snap = devicegrant_snapshot();
+
+				n = devicemap_resolve(id, snap->recs, snap->n, matches,
+				                      CONTAINER_MAX_DEVICES - device_count, err_msg, err_msg_size);
+			}
+			if (n == DEVICEMAP_AMBIGUOUS) {
+				json_free(root);
+				return 409;
+			}
+			if (n == DEVICEMAP_NOT_A_MAPPING)
 				n = device_find_group(id, CONTAINERS_DIR, matches,
 				                       CONTAINER_MAX_DEVICES - device_count);
 			if (n <= 0) {
@@ -19356,8 +19395,27 @@ static void handle_container_device_attach(int fd, const char *container_name, c
 		}
 	}
 
-	n = devicemap_resolve(id, CONTAINERS_DIR, matches, CONTAINER_MAX_DEVICES - e->device_count);
-	if (n < 0)
+	/* ADR-0345: resolved against the grant snapshot; ambiguity is a
+	 * 409, and a mac mapping is an interface, not a device grant. */
+	if (devicemap_names_interface(id)) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "this device mapping names an interface, which a device grant cannot take");
+		return;
+	}
+	{
+		const struct device_snapshot *snap = devicegrant_snapshot();
+		char why[256];
+
+		n = devicemap_resolve(id, snap->recs, snap->n, matches,
+		                      CONTAINER_MAX_DEVICES - e->device_count, why, sizeof(why));
+		if (n == DEVICEMAP_AMBIGUOUS) {
+			json_free(root);
+			respond_error(fd, 409, "Conflict", why);
+			return;
+		}
+	}
+	if (n == DEVICEMAP_NOT_A_MAPPING)
 		n = device_find_group(id, CONTAINERS_DIR, matches,
 		                       CONTAINER_MAX_DEVICES - e->device_count);
 	if (n <= 0) {
@@ -36695,6 +36753,8 @@ static int cixd_main(int argc, char **argv)
 	pkg_log_shell_retirement();
 	/* #562: hostauth_init() runs before the log store opens, too. */
 	hostauth_log_carried_sessions();
+	/* ADR-0345: and so does devicemap_init(). */
+	devicemap_log_skipped();
 	/*
 	 * Issue #40: after image_init (it produces a real image version)
 	 * AND after logstore_init, so what it did is visible where an

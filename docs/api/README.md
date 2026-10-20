@@ -2787,7 +2787,7 @@ Every entry from `GET /v1/devices` carries one `state`, decided by the same func
 | `unavailable` | nothing on this record can be granted: `reason` is `no-driver` or `no-node` | refused `400` with the reason |
 
 ```json
-{"id": "usb:2357:012e:123456", "bus": "usb", "parent": "pci:0000:00:1d.7",
+{"id": "usb:2357:012e@0000:07:1b.0-usb2-1", "bus": "usb", "parent": "pci:0000:07:1b.0",
  "state": "held", "reason": "",
  "held_by": [{"container": "ar-1", "granted": "phy:phy0", "shared": false}],
  "reserved_by": []}
@@ -2809,7 +2809,7 @@ If only the newcomer had to opt in, a container that asked for a device without 
 
 The same verdict decides `devices[]` and `interfaces[]` at create and at every start, the live attach `POST /containers/{name}/devices`, and a hotplugged device matched to a waiting container.
 
-**What a device is, as opposed to where it is (ADR-0345).** Each record also carries the facts a device mapping can select by: `serial` (USB), `wwid` (whole disks, the kernel's value verbatim), and `mac` with `mac_permanent` (interfaces). They are never part of the `id`. A USB serial names a device only together with its `vendor_id` and `product_id`, since many devices of one model report the same serial (the dongle above reports `123456`). An interface can be named by its address only when `mac_permanent` is true. Each field is empty, or `false`, on buses it does not apply to. For an interface a running container holds, `mac` is the address read when it was granted.
+**What a device is, as opposed to where it is (ADR-0345).** Each record also carries the facts a device mapping can select by: `serial` (USB), `wwid` (whole disks, the kernel's value without its trailing padding), and `mac` with `mac_permanent` (interfaces). They are never part of the `id`. A USB serial names a device only together with its `vendor_id` and `product_id`, since many devices of one model report the same serial (the dongle above reports `123456`). An interface can be named by its address only when `mac_permanent` is true. Each field is empty, or `false`, on buses it does not apply to. For an interface a running container holds, `mac` is the address read when it was granted.
 
 ### Composite USB devices (ADR-0161 Phase A)
 
@@ -2848,16 +2848,27 @@ The reverse — but **only for a device attached this same live way**. A device 
 
 This same live-attach/detach primitive is also what the daemon's own hotplug reaction calls internally, automatically: a persistent `NETLINK_KOBJECT_UEVENT` listener reacts to real kernel USB add/remove events. On a real `add`, every running container's own `pending_devices` entries are re-resolved against current hardware — a match live-attaches it, removing the entry from `pending_devices`. **Contention**: if more than one running container's own pending reference would resolve to the exact same newly-appeared device, it's granted to **neither** (logged, not silently arbitrated by scan order) — give the devices distinct devicemap names instead of matching the same raw vendor:product pair if this matters. On a real `remove`, every currently-granted device (creation-time or live, either one) whose underlying hardware can no longer be found has its grant **actively revoked** — never left in place as an inert grant for hardware that's gone. Every hotplug-driven grant/revoke is written to the consolidated log (`GET /system/logs`).
 
-### Persistent, named device mappings
+### Persistent, named device mappings (ADR-0345)
 
-`GET /devices`'s own ids are ephemeral — re-enumerated fresh from sysfs on every call, never persisted, and a USB device's bus/port-derived id can change if it's ever plugged into a different port. A device mapping is a real, named, persisted binding an operator creates once and references by a stable name thereafter, in a container's own `devices` field or here:
+A device's `id` says **where** it is: a USB port, a PCI slot, a kernel name. A device mapping says **which device** it is. An operator creates it once, and a container's `devices` field names it, so the spec survives a re-plug into another port, a second identical device, and a reboot that probes in a different order:
 
 ```
 POST /v1/devicemaps
-{"name": "backup-drive", "kind": "exact", "selector": "usb:1-2"}
+{"name": "radio", "kind": "usb_serial", "selector": "2357:012e:123456"}
 ```
 
-`kind` is `"exact"` (pins one specific bus/port location) or `"vendor_model"` (matches by USB vendor:product id or PCI vendor:device id, following whichever physical port the matching device is actually plugged into — the more useful choice for a device that might move ports, like a specific model of USB drive). Real and creatable even for hardware that isn't currently plugged in — an operator predefining a mapping before plugging the device in, or one that's temporarily unplugged, are both legitimate states (`"present": false` on `GET`), not errors. Each mapping is still resolved fresh against current hardware on every `GET` (`present`/`resolved_ids`), never cached — only the *mapping itself* (name → selector) persists, not a hardware snapshot. `DELETE /devicemaps/{name}` does not touch anything about a container already using this mapping's name — device grants are resolved once, at container-creation time, never re-resolved live afterward.
+| `kind` | `selector` | Names |
+|---|---|---|
+| `usb_serial` | `vendor_id:product_id:serial` | one USB device, in any port. A serial alone is not an identity: the dongle above reports `123456`, as does every unit of its model. |
+| `wwid` | a disk's `wwid` from `GET /devices` | one disk |
+| `fs_uuid` | a filesystem UUID | one disk or partition, for as long as that filesystem exists |
+| `mac` | a permanent address (`mac_permanent: true`), any case | one interface, including one a running container holds |
+| `exact` | a `usb:` or `pci:` id | whatever is in that port or slot. A `disk:`, `net:`, `gpu:` or `phy:` id is a kernel name, not a location, and is refused with the kind to use instead. |
+| `vendor_model` | `vendor_id:product_id` | every device of that model; every match is granted |
+
+`GET /devicemaps` re-resolves every mapping on every call and reports its `state`. `present` means it matches. `absent` means nothing matches now, an ordinary state for unplugged hardware. `ambiguous` means a kind that names one device matches several. An ambiguous mapping is refused with `409` naming every match, whether or not the grant is `optional`, because being ambiguous is not the same as being unplugged. The fix is a narrower mapping, usually `exact` on the port. `resolved_ids` lists what matched.
+
+A `mac` mapping names an interface, so `devices[]` refuses it with `400` naming `interfaces[]`. `DELETE /devicemaps/{name}` does not touch a container already using the name: grants are resolved when they are made.
 
 ## Disks (multi-disk management)
 

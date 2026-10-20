@@ -190,6 +190,43 @@ static void enumerate_usb_interfaces(const char *device_basename, struct discove
 	closedir(d);
 }
 
+/*
+ * The host controller and root-hub version a USB bus number stands for
+ * (ADR-0345). A bus number is assigned in controller registration order,
+ * which is not guaranteed, so an id carries what it means instead: the
+ * controller's own device name -- the root hub's parent in sysfs, a PCI
+ * address on x86 -- and the root hub's product id, which Linux sets to
+ * the USB major version. Measured on 192.168.15.95, 2026-10-20: usb2 and
+ * usb4 are both under 0000:07:1b.0, as 1d6b:0002 and 1d6b:0003, so the
+ * controller alone would not tell them apart.
+ */
+static void usb_location(const char *busnum, char *controller, size_t controller_size,
+                         char *version, size_t version_size)
+{
+	char path[PATH_MAX];
+	char resolved[PATH_MAX];
+	char product[16] = "";
+	char *slash;
+
+	snprintf(controller, controller_size, "bus%s", busnum);
+	snprintf(version, version_size, "unknown");
+	snprintf(path, sizeof(path), "%s/usb%s", USB_BUS_DIR, busnum);
+	if (realpath(path, resolved) != NULL && (slash = strrchr(resolved, '/')) != NULL) {
+		*slash = '\0';
+		slash = strrchr(resolved, '/');
+		if (slash != NULL && slash[1] != '\0')
+			snprintf(controller, controller_size, "%s", slash + 1);
+	}
+	snprintf(path, sizeof(path), "%s/usb%s/idProduct", USB_BUS_DIR, busnum);
+	if (read_sysfs_attr(path, product, sizeof(product)) == 0 && product[0] != '\0') {
+		if (strcmp(product, "0001") == 0 || strcmp(product, "0002") == 0 ||
+		    strcmp(product, "0003") == 0)
+			snprintf(version, version_size, "usb%c", product[3]);
+		else
+			snprintf(version, version_size, "%s", product);
+	}
+}
+
 static int enumerate_usb_one(const char *base, struct discovered_device *e)
 {
 	char attr[PATH_MAX];
@@ -239,16 +276,23 @@ static int enumerate_usb_one(const char *base, struct discovered_device *e)
 	snprintf(e->product_id, sizeof(e->product_id), "%s", product);
 	snprintf(e->serial, sizeof(e->serial), "%s", serial);
 
-	/* serial is the only field genuinely stable across a re-plug for
-	 * most real devices; busnum/devnum are reassigned on every
-	 * enumeration and must never be used in a stable id. The port-
-	 * topology path (devpath) is a weaker but still-real fallback for
-	 * the (common) case of a device with no serial number at all. */
-	if (serial[0] != '\0')
-		snprintf(e->id, sizeof(e->id), "usb:%s:%s:%s", vendor, product, serial);
-	else
-		snprintf(e->id, sizeof(e->id), "usb:%s:%s:port%s-%s", vendor, product, busnum,
-		         devpath);
+	/*
+	 * The id names where the device is (ADR-0345): controller, root-hub
+	 * version and port path. It used to carry the serial when there was
+	 * one, and the dongle on .95 reports 123456 like every unit of its
+	 * model, so two of them would have been two records with one id. A
+	 * serial is now a field, and an identity only through a usb_serial
+	 * mapping, which also names vendor and product. '-' separates the
+	 * parts because an id is a URL path segment (DELETE
+	 * .../devices/{id}).
+	 */
+	{
+		char controller[64], version[16];
+
+		usb_location(busnum, controller, sizeof(controller), version, sizeof(version));
+		snprintf(e->id, sizeof(e->id), "usb:%s:%s@%s-%s-%s", vendor, product, controller,
+		         version, devpath);
+	}
 
 	if (manufacturer[0] != '\0' || product_name[0] != '\0')
 		snprintf(e->description, sizeof(e->description), "%s %s", manufacturer,
@@ -925,19 +969,26 @@ static void enumerate_disk(struct discovered_device *out, int cap, int *count,
 		e->mounted = disks[i].mounted;
 
 		/*
-		 * The WWID a mapping can select by (ADR-0345), kept verbatim:
-		 * the kernel pads the T10 form with spaces and a selector is
-		 * compared byte for byte. SCSI and ATA disks carry it under
-		 * device/, NVMe namespaces beside dev. Measured on .95,
-		 * 2026-10-20: sda has one, vda, vdb and sr0 do not. A
-		 * partition is named by its filesystem instead.
+		 * The WWID a mapping can select by (ADR-0345). SCSI and ATA
+		 * disks carry it under device/, NVMe namespaces beside dev.
+		 * Measured on .95, 2026-10-20 (0.2.57-558): sda's is
+		 * "t10.ATA     QEMU HARDDISK ... QM00013" followed by 13
+		 * spaces of padding, which carry nothing and which nobody
+		 * could be asked to type, so they are removed here and from a
+		 * selector alike (devicematch.c). vda, vdb and sr0 have none.
+		 * A partition is named by its filesystem instead.
 		 */
 		if (!disks[i].is_partition) {
+			size_t wl;
+
 			snprintf(attr, sizeof(attr), "/sys/class/block/%s/device/wwid", disks[i].name);
 			if (read_sysfs_attr(attr, e->wwid, sizeof(e->wwid)) != 0) {
 				snprintf(attr, sizeof(attr), "/sys/class/block/%s/wwid", disks[i].name);
 				read_sysfs_attr(attr, e->wwid, sizeof(e->wwid));
 			}
+			wl = strlen(e->wwid);
+			while (wl > 0 && e->wwid[wl - 1] == ' ')
+				e->wwid[--wl] = '\0';
 		}
 
 		snprintf(attr, sizeof(attr), "/sys/class/block/%s", disks[i].name);

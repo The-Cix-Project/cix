@@ -1,5 +1,6 @@
 #include "devicemap.h"
-#include "devicestate.h"
+#include "disk.h"
+#include "logstore.h"
 #include "namecheck.h"
 #include "persist.h"
 
@@ -9,13 +10,26 @@
 
 struct devicemap_entry {
 	char name[DEVICEMAP_NAME_MAX];
-	enum devicemap_kind kind;
+	enum devicematch_kind kind;
 	char selector[DEVICEMAP_SELECTOR_MAX];
 	int in_use;
 };
 
 static char g_state_path[512];
 static struct devicemap_entry g_maps[DEVICEMAP_MAX];
+
+/* Persisted mappings load_state() left out. It runs before the log
+ * store opens, so devicemap_log_skipped() says it afterwards. */
+static int g_skipped;
+
+void devicemap_log_skipped(void)
+{
+	if (g_skipped > 0)
+		logstore_write("cixd", "error",
+		               "%d device mapping(s) in %s skipped at startup: not one this daemon can "
+		               "resolve, such as an exact mapping on a kernel name (ADR-0345)",
+		               g_skipped, g_state_path);
+}
 
 static struct devicemap_entry *map_find(const char *name)
 {
@@ -26,32 +40,6 @@ static struct devicemap_entry *map_find(const char *name)
 			return &g_maps[i];
 	}
 	return NULL;
-}
-
-static const char *kind_str(enum devicemap_kind kind)
-{
-	return kind == DEVICEMAP_EXACT ? "exact" : "vendor_model";
-}
-
-/* Splits "<vendor>:<product>" into two non-empty parts. Returns 0 on
- * success, -1 if selector isn't exactly that shape. */
-static int split_vendor_model(const char *selector, char *vendor, size_t vendor_size,
-                               char *product, size_t product_size)
-{
-	const char *colon = strchr(selector, ':');
-	size_t vlen;
-
-	if (colon == NULL || colon == selector || colon[1] == '\0')
-		return -1;
-	if (strchr(colon + 1, ':') != NULL)
-		return -1; /* more than one ':' -- not this shape */
-	vlen = (size_t)(colon - selector);
-	if (vlen >= vendor_size || strlen(colon + 1) >= product_size)
-		return -1;
-	memcpy(vendor, selector, vlen);
-	vendor[vlen] = '\0';
-	snprintf(product, product_size, "%s", colon + 1);
-	return 0;
 }
 
 static int save_state(void)
@@ -68,7 +56,7 @@ static int save_state(void)
 		jw_key(&w, "name");
 		jw_str(&w, g_maps[i].name);
 		jw_key(&w, "kind");
-		jw_str(&w, kind_str(g_maps[i].kind));
+		jw_str(&w, devicematch_kind_word(g_maps[i].kind));
 		jw_key(&w, "selector");
 		jw_str(&w, g_maps[i].selector);
 		jw_obj_close(&w);
@@ -99,30 +87,34 @@ static int load_state(void)
 		fprintf(stderr, "%s: malformed persisted device mappings\n", g_state_path);
 		return -1;
 	}
-	if (root->u.array.count > DEVICEMAP_MAX) {
-		json_free(root);
-		fprintf(stderr, "%s: more mappings persisted than DEVICEMAP_MAX\n", g_state_path);
-		return -1;
-	}
 
-	for (i = 0; i < root->u.array.count; i++) {
+	for (i = 0; i < root->u.array.count && count < DEVICEMAP_MAX; i++) {
 		const struct json_value *item = root->u.array.items[i];
 		const char *name = json_as_string(json_object_get(item, "name"));
-		const char *kind = json_as_string(json_object_get(item, "kind"));
+		const char *kind_word = json_as_string(json_object_get(item, "kind"));
 		const char *selector = json_as_string(json_object_get(item, "selector"));
+		enum devicematch_kind kind;
+		char normal[DEVICEMAP_SELECTOR_MAX];
+		char err[256];
 
-		if (!simple_name_is_valid(name, DEVICEMAP_NAME_MAX) || kind == NULL ||
-		    selector == NULL || strlen(selector) >= DEVICEMAP_SELECTOR_MAX ||
-		    (strcmp(kind, "exact") != 0 && strcmp(kind, "vendor_model") != 0)) {
-			json_free(root);
-			fprintf(stderr, "%s: invalid entry at index %zu\n", g_state_path, i);
-			return -1;
+		/*
+		 * Checked by the same rules a create is, with no records: a
+		 * mapping saved under older rules (an exact on a disk: id,
+		 * which ADR-0345 refuses) is said once and left out, never
+		 * allowed to stop the daemon from starting.
+		 */
+		if (!simple_name_is_valid(name, DEVICEMAP_NAME_MAX) ||
+		    devicematch_kind_parse(kind_word, &kind) != 0 ||
+		    devicematch_check_selector(kind, selector, NULL, 0, normal, sizeof(normal), err,
+		                               sizeof(err)) != 0) {
+			g_skipped++;
+			continue;
 		}
 
 		memset(&g_maps[count], 0, sizeof(g_maps[count]));
 		snprintf(g_maps[count].name, sizeof(g_maps[count].name), "%s", name);
-		g_maps[count].kind = strcmp(kind, "exact") == 0 ? DEVICEMAP_EXACT : DEVICEMAP_VENDOR_MODEL;
-		snprintf(g_maps[count].selector, sizeof(g_maps[count].selector), "%s", selector);
+		g_maps[count].kind = kind;
+		snprintf(g_maps[count].selector, sizeof(g_maps[count].selector), "%s", normal);
 		g_maps[count].in_use = 1;
 		count++;
 	}
@@ -143,32 +135,22 @@ int devicemap_init(const char *state_path)
 	return load_state();
 }
 
-enum devicemap_error devicemap_create(const char *name, const char *kind_str_in,
-                                       const char *selector)
+enum devicemap_error devicemap_create(const char *name, const char *kind_word, const char *selector,
+                                      const struct discovered_device *recs, int n, char *err,
+                                      size_t err_size)
 {
-	enum devicemap_kind kind;
+	enum devicematch_kind kind;
+	char normal[DEVICEMAP_SELECTOR_MAX];
 	int slot = -1;
 	int i;
 
 	if (!simple_name_is_valid(name, DEVICEMAP_NAME_MAX))
 		return DEVICEMAP_ERR_INVALID_NAME;
-	if (kind_str_in == NULL)
+	if (devicematch_kind_parse(kind_word, &kind) != 0)
 		return DEVICEMAP_ERR_INVALID_KIND;
-	if (strcmp(kind_str_in, "exact") == 0)
-		kind = DEVICEMAP_EXACT;
-	else if (strcmp(kind_str_in, "vendor_model") == 0)
-		kind = DEVICEMAP_VENDOR_MODEL;
-	else
-		return DEVICEMAP_ERR_INVALID_KIND;
-
-	if (selector == NULL || selector[0] == '\0' || strlen(selector) >= DEVICEMAP_SELECTOR_MAX)
+	if (devicematch_check_selector(kind, selector, recs, n, normal, sizeof(normal), err,
+	                               err_size) != 0)
 		return DEVICEMAP_ERR_INVALID_SELECTOR;
-	if (kind == DEVICEMAP_VENDOR_MODEL) {
-		char vendor[16], product[16];
-
-		if (split_vendor_model(selector, vendor, sizeof(vendor), product, sizeof(product)) != 0)
-			return DEVICEMAP_ERR_INVALID_SELECTOR;
-	}
 
 	if (map_find(name) != NULL)
 		return DEVICEMAP_ERR_DUPLICATE;
@@ -185,7 +167,7 @@ enum devicemap_error devicemap_create(const char *name, const char *kind_str_in,
 	memset(&g_maps[slot], 0, sizeof(g_maps[slot]));
 	snprintf(g_maps[slot].name, sizeof(g_maps[slot].name), "%s", name);
 	g_maps[slot].kind = kind;
-	snprintf(g_maps[slot].selector, sizeof(g_maps[slot].selector), "%s", selector);
+	snprintf(g_maps[slot].selector, sizeof(g_maps[slot].selector), "%s", normal);
 	g_maps[slot].in_use = 1;
 
 	if (save_state() != 0) {
@@ -207,89 +189,99 @@ enum devicemap_error devicemap_delete(const char *name)
 	return DEVICEMAP_OK;
 }
 
-int devicemap_resolve(const char *name, const char *os_containers_dir,
-                       const struct discovered_device *out[], int cap)
+/* Every match's index into recs, and how many there are in all. */
+static int match_all(const struct devicemap_entry *m, const struct discovered_device *recs, int n,
+                     int idx[], int cap)
 {
-	static struct discovered_device cache[DEVICE_ENUM_MAX];
-	struct devicemap_entry *m = map_find(name);
-	int n, i, found = 0;
-
-	if (m == NULL)
-		return -1;
-
-	n = device_enumerate(cache, DEVICE_ENUM_MAX, os_containers_dir);
-
-	if (m->kind == DEVICEMAP_EXACT) {
-		for (i = 0; i < n && found < cap; i++) {
-			if (strcmp(cache[i].id, m->selector) == 0) {
-				out[found++] = &cache[i];
-				break; /* exact -- at most one match by construction */
-			}
-		}
-		return found;
-	}
-
-	{
-		char vendor[16], product[16];
-
-		if (split_vendor_model(m->selector, vendor, sizeof(vendor), product, sizeof(product)) != 0)
-			return 0; /* can't happen -- validated at create time */
-		/* A grant unit, not a verdict: a PCI function shares its vendor
-		 * ids with its node children and has nothing of its own to grant.
-		 * Whether a match may be granted is devicegrant_check()'s answer
-		 * (ADR-0344), so a mapping resolving to a driverless device says
-		 * why it cannot be given rather than resolving to nothing. */
-		for (i = 0; i < n && found < cap; i++) {
-			if (device_is_grant_unit(&cache[i]) && strcmp(cache[i].vendor_id, vendor) == 0 &&
-			    strcmp(cache[i].product_id, product) == 0)
-				out[found++] = &cache[i];
-		}
-	}
-	return found;
+	return devicematch_find(m->kind, m->selector, recs, n, disk_probe_fs_uuid, idx, cap);
 }
 
-static void write_map_json_one(const struct devicemap_entry *m, const char *os_containers_dir,
-                                struct json_writer *w)
+int devicemap_resolve(const char *name, const struct discovered_device *recs, int n,
+                      const struct discovered_device *out[], int cap, char *err,
+                      size_t err_size)
 {
-	const struct discovered_device *matches[DEVICE_ENUM_MAX];
-	int n = devicemap_resolve(m->name, os_containers_dir, matches, DEVICE_ENUM_MAX);
+	static int idx[DEVICE_ENUM_MAX];
+	const struct devicemap_entry *m = map_find(name);
+	int found, k;
+
+	if (m == NULL)
+		return DEVICEMAP_NOT_A_MAPPING;
+	found = match_all(m, recs, n, idx, DEVICE_ENUM_MAX);
+	if (found > DEVICE_ENUM_MAX)
+		found = DEVICE_ENUM_MAX;
+	if (found > 1 && devicematch_exclusive(m->kind)) {
+		snprintf(err, err_size,
+		         "device mapping %s is ambiguous: its %s selector matches %s and %s%s -- name "
+		         "one of them by an exact mapping on its port or slot",
+		         m->name, devicematch_kind_word(m->kind), recs[idx[0]].id, recs[idx[1]].id,
+		         found > 2 ? " and more" : "");
+		return DEVICEMAP_AMBIGUOUS;
+	}
+	for (k = 0; k < found && k < cap; k++)
+		out[k] = &recs[idx[k]];
+	return k;
+}
+
+int devicemap_names_interface(const char *name)
+{
+	const struct devicemap_entry *m = map_find(name);
+
+	return m != NULL && m->kind == DEVICEMATCH_MAC;
+}
+
+static void write_map_json_one(const struct devicemap_entry *m, const struct discovered_device *recs,
+                               int n, struct json_writer *w)
+{
+	static int idx[DEVICE_ENUM_MAX];
+	int found = match_all(m, recs, n, idx, DEVICE_ENUM_MAX);
+	const char *state;
 	int j;
+
+	if (found > DEVICE_ENUM_MAX)
+		found = DEVICE_ENUM_MAX;
+	if (found == 0)
+		state = "absent";
+	else if (found > 1 && devicematch_exclusive(m->kind))
+		state = "ambiguous";
+	else
+		state = "present";
 
 	jw_obj_open(w);
 	jw_key(w, "name");
 	jw_str(w, m->name);
 	jw_key(w, "kind");
-	jw_str(w, kind_str(m->kind));
+	jw_str(w, devicematch_kind_word(m->kind));
 	jw_key(w, "selector");
 	jw_str(w, m->selector);
-	jw_key(w, "present");
-	jw_bool(w, n > 0);
+	jw_key(w, "state");
+	jw_str(w, state);
 	jw_key(w, "resolved_ids");
 	jw_arr_open(w);
-	for (j = 0; j < n; j++)
-		jw_str(w, matches[j]->id);
+	for (j = 0; j < found; j++)
+		jw_str(w, recs[idx[j]].id);
 	jw_arr_close(w);
 	jw_obj_close(w);
 }
 
-int devicemap_write_json_one(const char *name, const char *os_containers_dir, struct json_writer *w)
+int devicemap_write_json_one(const char *name, const struct discovered_device *recs, int n,
+                             struct json_writer *w)
 {
 	struct devicemap_entry *m = map_find(name);
 
 	if (m == NULL)
 		return 0;
-	write_map_json_one(m, os_containers_dir, w);
+	write_map_json_one(m, recs, n, w);
 	return 1;
 }
 
-void devicemap_write_json_list(struct json_writer *w, const char *os_containers_dir)
+void devicemap_write_json_list(struct json_writer *w, const struct discovered_device *recs, int n)
 {
 	int i;
 
 	jw_arr_open(w);
 	for (i = 0; i < DEVICEMAP_MAX; i++) {
 		if (g_maps[i].in_use)
-			write_map_json_one(&g_maps[i], os_containers_dir, w);
+			write_map_json_one(&g_maps[i], recs, n, w);
 	}
 	jw_arr_close(w);
 }

@@ -214,12 +214,17 @@ static const char USAGE_TEXT[] =
 	        "               daemon's; a grant is refused for exactly the reason shown. A\n"
 	        "               GPU's bare \"gpu:N\" id (not itself listed) grants everything\n"
 	        "               that GPU needs in one --device= (ADR-0028)\n"
-	        "  devicemap create --name=NAME --kind=exact|vendor_model --selector=SELECTOR\n"
-	        "               -- a persisted, named device binding (ADR-0048), usable in place\n"
-	        "               of a raw id in run --device=; \"exact\" selector is a device.id\n"
-	        "               verbatim, \"vendor_model\" selector is \"<vendor_id>:<product_id>\"\n"
-	        "               and follows the device across USB ports\n"
-	        "  devicemap ls  -- shows whether each mapping currently resolves to real hardware\n"
+	        "  devicemap create --name=NAME --kind=KIND --selector=SELECTOR\n"
+	        "               -- a name for which device it is (ADR-0345), usable in place of\n"
+	        "               a raw id in run --device=. KIND and SELECTOR:\n"
+	        "                 usb_serial  VID:PID:SERIAL   one USB device, any port\n"
+	        "                 wwid        a disk's wwid    one disk (device ls --json)\n"
+	        "                 fs_uuid     a filesystem's UUID  one disk or partition\n"
+	        "                 mac         a permanent MAC  one interface\n"
+	        "                 exact       a usb: or pci: id  whatever is in that port or slot\n"
+	        "                 vendor_model VID:PID         every device of that model\n"
+	        "  devicemap ls  -- each mapping's state: present, absent, or ambiguous (a kind\n"
+	        "               that names one device matched several, so it is refused)\n"
 	        "  devicemap rm NAME\n"
 	        "  dns record create --name=NAME --ip=A.B.C.D\n"
 	        "  dns record ls\n"
@@ -1436,8 +1441,7 @@ static void fmt_devicemap_line(const struct json_value *v)
 	const char *name = json_str_field(v, "name");
 	const char *kind = json_str_field(v, "kind");
 	const char *selector = json_str_field(v, "selector");
-	const struct json_value *jpresent = json_object_get(v, "present");
-	int present = jpresent != NULL && jpresent->type == JSON_BOOL && jpresent->u.boolean;
+	const char *state = json_str_field(v, "state");
 	const struct json_value *resolved = json_object_get(v, "resolved_ids");
 	char resolved_buf[256] = "-";
 	size_t i;
@@ -1453,8 +1457,9 @@ static void fmt_devicemap_line(const struct json_value *v)
 		}
 	}
 
-	printf("%-24s %-13s %-40s %-11s %s\n", name, kind, selector,
-	       present ? "present" : "absent", resolved_buf);
+	/* present, absent or ambiguous -- the daemon's word (ADR-0345). */
+	printf("%-24s %-13s %-40s %-10s %s\n", name, kind, selector, state != NULL ? state : "?",
+	       resolved_buf);
 }
 
 static void fmt_devicemap_list(const struct json_value *v)
@@ -12523,8 +12528,8 @@ static int cmd_devicemap_create(const struct cix_client *c, int json_mode, int a
 	}
 	if (name == NULL || kind == NULL || selector == NULL) {
 		fprintf(stderr,
-		        "usage: cixctl devicemap create --name=NAME --kind=exact|vendor_model "
-		        "--selector=SELECTOR\n");
+		        "usage: cixctl devicemap create --name=NAME "
+		        "--kind=usb_serial|wwid|fs_uuid|mac|exact|vendor_model --selector=SELECTOR\n");
 		return 2;
 	}
 
@@ -12583,8 +12588,8 @@ static int cmd_devicemap(const struct cix_client *c, int json_mode, int argc, ch
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: cixctl devicemap create --name=NAME --kind=exact|vendor_model "
-		        "--selector=SELECTOR\n"
+		        "usage: cixctl devicemap create --name=NAME "
+		        "--kind=usb_serial|wwid|fs_uuid|mac|exact|vendor_model --selector=SELECTOR\n"
 		        "       cixctl devicemap ls\n"
 		        "       cixctl devicemap rm NAME\n");
 		return 2;

@@ -313,6 +313,22 @@ int device_records_share_a_node(const struct discovered_device *recs, int n, int
 	return 0;
 }
 
+int device_records_share_an_id(const struct discovered_device *recs, int n, int *a, int *b)
+{
+	int i, j;
+
+	for (i = 0; i < n; i++) {
+		for (j = i + 1; j < n; j++) {
+			if (strcmp(recs[i].id, recs[j].id) == 0) {
+				*a = i;
+				*b = j;
+				return 1;
+			}
+		}
+	}
+	return 0;
+}
+
 static void write_one(struct json_writer *w, const struct discovered_device *recs, int n, int idx,
                       const struct device_claim *claims, int claim_count)
 {

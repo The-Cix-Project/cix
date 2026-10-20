@@ -95,6 +95,14 @@ const char *device_reason_phrase(const char *reason);
  */
 int device_records_share_a_node(const struct discovered_device *recs, int n, int *a, int *b);
 
+/*
+ * The gate that makes one id mean one record (ADR-0345): returns 1 and
+ * the two indexes when two records carry the same id, 0 when none do.
+ * An id names a location, so no present device can produce one; the
+ * gate checks the rule rather than enforcing it.
+ */
+int device_records_share_an_id(const struct discovered_device *recs, int n, int *a, int *b);
+
 /* The whole GET /v1/devices body's array, in record order. */
 void device_write_json_states(struct json_writer *w, const struct discovered_device *recs, int n,
                               const struct device_claim *claims, int claim_count);

@@ -73,7 +73,8 @@ struct discovered_device {
 	/* What a device mapping can select by (ADR-0345). None of these is
 	 * ever part of the id, which names a location. */
 	char serial[80];	/* usb: the device's own serial; an identity only with vid:pid */
-	char wwid[128];		/* disk: the kernel's WWID, verbatim; empty when it has none */
+	char wwid[256];		/* disk: the kernel's WWID, trailing padding removed; "" for none.
+				 * NVMe's fallback form (the kernel's wwid_show) spells serial and model in hex */
 	char mac[32];		/* net: the current hardware address */
 	int mac_permanent;	/* net: addr_assign_type is NET_ADDR_PERM (0) */
 

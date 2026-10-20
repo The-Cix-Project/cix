@@ -40,7 +40,7 @@ Everything below was measured on 192.168.15.95 on 2026-10-20 or read from the co
 
 ### 1. A record id names a location, and two present records never share one
 
-- **USB:** the id becomes `usb:<vid>:<pid>@<controller>-usb<N>-<devpath>`. Here `<controller>` is the root hub's own serial (the controller's name, a PCI BDF on this box). `<N>` is the USB major version, read from the root hub's product id (`0002` → `usb2`, `0003` → `usb3`); a product id outside `0001`–`0003` is used verbatim. `<devpath>` is the port path below the root hub. The dongle becomes `usb:2357:012e@0000:07:1b.0-usb2-1`.
+- **USB:** the id becomes `usb:<vid>:<pid>@<controller>-usb<N>-<devpath>`. Here `<controller>` is the host controller's device name: the root hub's parent in sysfs, which the kernel also sets as the root hub's serial (a PCI BDF on this box, measured). `<N>` is the USB major version, read from the root hub's product id (`0002` → `usb2`, `0003` → `usb3`); a product id outside `0001`–`0003` is used verbatim. `<devpath>` is the port path below the root hub. The dongle becomes `usb:2357:012e@0000:07:1b.0-usb2-1`.
   - The separators are `-`, never `/`. A device id is a path segment in `DELETE /v1/containers/{name}/devices/{id}`, and `-` is what the old port form already used. The BDF and a hub chain (`1.3`) carry `.` and `:`, which already appear in ids that work today.
   - The serial leaves the id.
   - `busnum` leaves the id, because it is assigned in controller registration order and that order is not guaranteed.
@@ -58,7 +58,7 @@ Everything below was measured on 192.168.15.95 on 2026-10-20 or read from the co
 | `exact` | A record id | usb, pci (the two buses whose ids are locations) | That record, if present |
 | `vendor_model` | `<vid>:<pid>` | usb, pci | **Every** present match. This is ADR-0048's group grant, unchanged. |
 | `usb_serial` | `<vid>:<pid>:<serial>` | usb | The one present device with that vendor, product and serial. `vid` and `pid` are four hex digits each, so the serial is everything after the second colon. |
-| `wwid` | The kernel's WWID, verbatim | disk | The one present disk carrying it |
+| `wwid` | The kernel's WWID without its trailing padding | disk | The one present disk carrying it |
 | `fs_uuid` | A filesystem UUID | disk, including partitions | The one present device carrying it, found by the same probe storage roles already use (`disk_probe_fs_uuid()`). There is no second probe. |
 | `mac` | A permanent MAC | net | The one interface carrying it, including one already moved into a container |
 
@@ -74,7 +74,7 @@ Everything below was measured on 192.168.15.95 on 2026-10-20 or read from the co
 **What each record carries for its selectors:**
 
 - A USB record keeps `serial` as a field once it leaves the id.
-- A disk record gains `wwid`, read verbatim from sysfs.
+- A disk record gains `wwid`, read from sysfs with the trailing spaces the kernel pads the T10 form with removed (13 on `sda`, measured in 0.2.57-558). A selector has them removed too, so nobody has to type them.
 - A net record gains `mac` and `mac_permanent`, the latter true when the kernel's `addr_assign_type` is 0 (`NET_ADDR_PERM`).
 - **`registry_interface_record` gains `mac` and `mac_permanent` too, written at grant time.** Once `wlan0` is inside `ar-1`, the host cannot read its address: the interface is in another netns. So a `mac` mapping finds a moved interface through the record its grant left, exactly as ADR-0344 finds its holder.
 - **`fs_uuid` is probed only while resolving an `fs_uuid` mapping, and only against disk records.** It is never probed on every enumerate. `disk_probe_fs_uuid()` opens the device and reads a superblock, and the grant gate takes a device snapshot on every create and attach. ADR-0344 measured `GET /v1/devices` at 72–86 ms, against 190–290 ms for `GET /v1/storage`, which probes. A probe in the walk would move the first toward the second.

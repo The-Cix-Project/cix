@@ -99,6 +99,7 @@ static void registry_announce(void)
 	 * change is a device-list change, announced where it happens rather
 	 * than left for the drift check to find. */
 	events_announce(EV_listDevices);
+	events_announce(EV_listDeviceMaps); /* a mapping's state is the devices' (ADR-0345) */
 }
 
 enum registry_error registry_create(const char *name, const char *image,
@@ -718,6 +719,7 @@ int registry_device_live_attach(struct registry_entry *e, const struct device_sp
 	e->device_count++;
 	registry_announce();
 	events_announce(EV_listDevices);
+	events_announce(EV_listDeviceMaps); /* a mapping's state is the devices' (ADR-0345) */
 	return 0;
 }
 
@@ -784,6 +786,7 @@ int registry_device_live_detach(struct registry_entry *e, const char *id,
 	e->device_count--;
 	registry_announce();
 	events_announce(EV_listDevices);
+	events_announce(EV_listDeviceMaps); /* a mapping's state is the devices' (ADR-0345) */
 	return 0;
 }
 

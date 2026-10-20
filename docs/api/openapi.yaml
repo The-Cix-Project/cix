@@ -1915,7 +1915,7 @@ paths:
         0.0.0.0/8 or 127.0.0.0/8. The default upstream route is not set
         here -- it lives in /system/routes (ADR-0067).
       operationId: putManagementAddress
-      x-cix-invalidates: [getManagementAddress, getSystemRoutes, listDevices]
+      x-cix-invalidates: [getManagementAddress, getSystemRoutes, listDevices, listDeviceMaps]
       x-cix-permission: networks:write
       x-cix-expose: [cli, web]
       requestBody:
@@ -1961,7 +1961,7 @@ paths:
         deliberate loopback-only state, distinct from a failed bind.
         Idempotent: resetting an already-unset address is a 200 no-op.
       operationId: deleteManagementAddress
-      x-cix-invalidates: [getManagementAddress, listDevices]
+      x-cix-invalidates: [getManagementAddress, listDevices, listDeviceMaps]
       x-cix-permission: networks:write
       x-cix-expose: [cli, web]
       responses:
@@ -6184,7 +6184,7 @@ paths:
         filter's meaning is refused, never escaped. Refused (400)
         without ldap_client, since there is nothing to restrict.
       operationId: createContainer
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listVolumes, getVolume, listDevices, listDnsRecords]
+      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listVolumes, getVolume, listDevices, listDeviceMaps, listDnsRecords]
       x-cix-permission: containers:write
       x-cix-expose: [cli, web]
       requestBody:
@@ -6354,7 +6354,7 @@ paths:
         also be selected explicitly per container via POST /containers'
         own `disk` field (ADR-0102, Phase D, already built).
       operationId: formatStorage
-      x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices]
+      x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices, listDeviceMaps]
       x-cix-permission: storage:write
       x-cix-expose: [cli, web]
       parameters:
@@ -6430,7 +6430,7 @@ paths:
         body's `confirm_disk_name` must match disk_name in the URL
         exactly.
       operationId: unmountStorage
-      x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices]
+      x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices, listDeviceMaps]
       x-cix-permission: storage:write
       x-cix-expose: [cli, web]
       parameters:
@@ -6587,7 +6587,7 @@ paths:
         and near-instantaneous, unlike POST .../format's mkfs, so this
         has no async job/poll shape.
       operationId: createStoragePartitionTable
-      x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices]
+      x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices, listDeviceMaps]
       x-cix-permission: storage:write
       x-cix-expose: [cli, web]
       parameters:
@@ -6652,7 +6652,7 @@ paths:
         deliberately-reserved free space unusable. Synchronous, same
         reasoning as partition-table creation above.
       operationId: addStoragePartition
-      x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices]
+      x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices, listDeviceMaps]
       x-cix-permission: storage:write
       x-cix-expose: [cli, web]
       parameters:
@@ -6738,7 +6738,7 @@ paths:
         is already the right size, so it finishes the filesystem grow
         rather than refusing as a shrink.
       operationId: resizeStoragePartition
-      x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices]
+      x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices, listDeviceMaps]
       x-cix-permission: storage:write
       x-cix-expose: [cli, web]
       parameters:
@@ -6819,7 +6819,7 @@ paths:
         still has a role assigned (remove the role first, POST
         /storage-roles), or is currently mounted.
       operationId: deleteStoragePartition
-      x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices]
+      x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices, listDeviceMaps]
       x-cix-permission: storage:write
       x-cix-expose: [cli, web]
       parameters:
@@ -6898,7 +6898,7 @@ paths:
         plugging the device in, or one that's temporarily unplugged,
         are both legitimate states (`present: false`), not errors.
       operationId: createDeviceMap
-      x-cix-invalidates: [listDeviceMaps]
+      x-cix-invalidates: [listDeviceMaps, listDevices]
       x-cix-permission: devices:write
       x-cix-expose: [cli, web]
       requestBody:
@@ -6941,7 +6941,7 @@ paths:
         mapping's name -- device grants are resolved once, at
         container-creation time, not re-resolved live afterward.
       operationId: deleteDeviceMap
-      x-cix-invalidates: [listDeviceMaps]
+      x-cix-invalidates: [listDeviceMaps, listDevices]
       x-cix-permission: devices:write
       x-cix-expose: [cli, web]
       parameters:
@@ -7005,7 +7005,7 @@ paths:
         OS-disk layout (`is_os_disk` on GET /disks) -- it is never a
         role-assignment candidate.
       operationId: createStorageRole
-      x-cix-invalidates: [listStorageRoles, listDevices]
+      x-cix-invalidates: [listStorageRoles, listDevices, listDeviceMaps]
       x-cix-permission: storage:write
       x-cix-expose: [cli, web]
       requestBody:
@@ -7044,7 +7044,7 @@ paths:
     delete:
       summary: Removes a disk's role assignment
       operationId: deleteStorageRole
-      x-cix-invalidates: [listStorageRoles, listDevices]
+      x-cix-invalidates: [listStorageRoles, listDevices, listDeviceMaps]
       x-cix-permission: storage:write
       x-cix-expose: [cli, web]
       parameters:
@@ -7484,7 +7484,7 @@ paths:
         leaving ifname itself free to attach (with a different vlan_id) to
         other networks.
       operationId: attachNetworkInterface
-      x-cix-invalidates: [listNetworks, getNetwork, listDevices]
+      x-cix-invalidates: [listNetworks, getNetwork, listDevices, listDeviceMaps]
       x-cix-permission: networks:write
       x-cix-expose: [cli, web]
       parameters:
@@ -7531,7 +7531,7 @@ paths:
     delete:
       summary: Detach a previously-attached interface -- releases it from the bridge, or deletes its VLAN sub-interface
       operationId: detachNetworkInterface
-      x-cix-invalidates: [listNetworks, getNetwork, listDevices]
+      x-cix-invalidates: [listNetworks, getNetwork, listDevices, listDeviceMaps]
       x-cix-permission: networks:write
       x-cix-expose: [cli, web]
       parameters:
@@ -8255,7 +8255,7 @@ paths:
         interpreted beyond that one check; validity as a real container
         body is only checked when the recipe is actually applied.
       operationId: addDeployment
-      x-cix-invalidates: [listDeployments, getDeployment, listContainers, listImages, listDevices]
+      x-cix-invalidates: [listDeployments, getDeployment, listContainers, listImages, listDevices, listDeviceMaps]
       x-cix-permission: containers:write
       x-cix-expose: [cli, web]
       requestBody:
@@ -8315,7 +8315,7 @@ paths:
     delete:
       summary: Removes name's own container recipe. Does not affect any container already created from it.
       operationId: deleteDeployment
-      x-cix-invalidates: [listDeployments, getDeployment, listContainers, listDevices]
+      x-cix-invalidates: [listDeployments, getDeployment, listContainers, listDevices, listDeviceMaps]
       x-cix-permission: containers:write
       x-cix-expose: [cli, web]
       parameters:
@@ -8365,7 +8365,7 @@ paths:
         is why the readiness test compares against that version rather
         than merely checking one exists.
       operationId: applyDeployment
-      x-cix-invalidates: [listDeployments, getDeployment, listContainers, listImages, getImage, listDevices]
+      x-cix-invalidates: [listDeployments, getDeployment, listContainers, listImages, getImage, listDevices, listDeviceMaps]
       x-cix-permission: containers:write
       x-cix-expose: [cli, web]
       parameters:
@@ -13383,7 +13383,7 @@ paths:
         chain on full teardown should poll this container's own GET to
         404 first.
       operationId: deleteContainer
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listVolumes, getVolume, listDevices, listDnsRecords, listDnsServers, listLdapServers, listNtpServers, listSyslogTargets, listLdapUsers, listPkiCerts]
+      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listVolumes, getVolume, listDevices, listDeviceMaps, listDnsRecords, listDnsServers, listLdapServers, listNtpServers, listSyslogTargets, listLdapUsers, listPkiCerts]
       x-cix-permission: containers:write
       x-cix-expose: [cli, web]
       parameters:
@@ -13427,7 +13427,7 @@ paths:
         parser here would be a parallel implementation of the same
         validation. Recreate the container to change those.
       operationId: patchContainer
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listVolumes, getVolume, listDevices]
+      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listVolumes, getVolume, listDevices, listDeviceMaps]
       x-cix-permission: containers:write
       x-cix-expose: [cli]
       parameters:
@@ -13493,7 +13493,7 @@ paths:
         unlike boot-time autostart -- an explicit, manual start always
         means start it.
       operationId: startContainer
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listDevices]
+      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listDevices, listDeviceMaps]
       x-cix-permission: containers:operate
       x-cix-expose: [cli, web]
       parameters:
@@ -13811,7 +13811,7 @@ paths:
         being fully gone (e.g. before deleting a network it was
         attached to) should poll to status "stopped" first.
       operationId: stopContainer
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listDevices]
+      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listDevices, listDeviceMaps]
       x-cix-permission: containers:operate
       x-cix-expose: [cli, web]
       parameters:
@@ -15631,7 +15631,7 @@ paths:
         pending_devices entry appears -- this endpoint is what makes
         that available to call by hand too.
       operationId: attachContainerDevice
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listDevices]
+      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listDevices, listDeviceMaps]
       x-cix-permission: containers:write
       x-cix-expose: [cli]
       parameters:
@@ -15712,7 +15712,7 @@ paths:
         stale, now-superseded program in place would silently keep
         granting the device just removed).
       operationId: detachContainerDevice
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listDevices]
+      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listDevices, listDeviceMaps]
       x-cix-permission: containers:write
       x-cix-expose: [cli]
       parameters:
@@ -20182,45 +20182,59 @@ components:
         kind:
           type: string
           title: Kind
-          enum: [exact, vendor_model]
+          enum: [exact, vendor_model, usb_serial, wwid, fs_uuid, mac]
           description: >
-            Pin one device at its current bus location, or follow any
-            device with the same vendor and product id. "exact" names
-            one specific device's own stable id -- a fixed PCI slot, or
-            one USB device by serial. "vendor_model" matches by
-            vendor:product regardless of port, so it follows a USB
-            device that moves around, and can resolve to more than one
-            currently-present device if several identical ones are
-            plugged in (all are granted, the same group-expansion
-            behaviour GPU passthrough, ADR-0028, already established).
+            How the name finds its device (ADR-0345). "usb_serial",
+            "wwid", "fs_uuid" and "mac" name one device by what it is,
+            wherever it is plugged in. "exact" names one location -- a
+            USB port or a PCI slot -- and whatever is there. "vendor_model"
+            names every device of one model, and every match is granted.
+            A kind that names one device and finds several is ambiguous,
+            and a grant through it is refused.
         selector:
           type: string
           title: Selector
+          maxLength: 255
           description: >
-            A device id from the Devices tab for "exact", or
-            "vendor_id:product_id" for "vendor/model". The first is a
-            Device.id verbatim, copied from GET /devices; the second
-            (e.g. "1058:2630") matches Device.vendor_id/product_id.
+            exact -- a usb: or pci: Device.id. vendor_model --
+            "vendor_id:product_id", e.g. "1058:2630". usb_serial --
+            "vendor_id:product_id:serial", e.g. "2357:012e:123456".
+            wwid -- a disk's Device.wwid. fs_uuid -- a filesystem
+            UUID. mac -- a permanent address (Device.mac_permanent), any
+            case. A kind given a selector of another bus is refused
+            with the kind to use instead.
 
     DeviceMap:
       type: object
-      required: [name, kind, selector, present, resolved_ids]
+      required: [name, kind, selector, state, resolved_ids]
       properties:
         name:
           type: string
         kind:
           type: string
-          enum: [exact, vendor_model]
+          enum: [exact, vendor_model, usb_serial, wwid, fs_uuid, mac]
         selector:
           type: string
-        present:
-          type: boolean
-          description: Whether this mapping currently resolves to at least one real device -- re-derived fresh on every call, never cached.
+        state:
+          type: string
+          enum: [present, absent, ambiguous]
+          description: >
+            Re-derived on every call, never cached. "present": it
+            matches what its kind allows -- one device, or for
+            vendor_model at least one. "absent": nothing matches now,
+            an ordinary state for hardware that is unplugged. "ambiguous":
+            a kind that names one device matches several, so a grant
+            through it is refused with 409 naming every match rather
+            than given to one of them (ADR-0345). resolved_ids lists
+            them.
         resolved_ids:
           type: array
           items:
             type: string
-          description: The real Device.id(s) currently matching this mapping (0, 1, or more for "vendor_model").
+          description: >
+            The Device.id(s) this mapping matches now, including an
+            interface a running container holds. Several only for
+            vendor_model, or when state is "ambiguous".
 
     Device:
       type: object
@@ -20233,8 +20247,13 @@ components:
         id:
           type: string
           description: >
-            Stable identifier: "usb:{idVendor}:{idProduct}:{serial-or-port-path}",
-            "pci:{bdf-address}" for a PCI function, "pci:{bdf-address}:{node-name}"
+            Where the device is (ADR-0345), never what it is -- a
+            serial, address or UUID is never part of an id; a device
+            mapping names identity. "usb:{idVendor}:{idProduct}@{controller}-usb{N}-{devpath}"
+            for a USB device, where {controller} is the host controller's
+            name (a PCI address), usb{N} is the root hub's USB major
+            version, and {devpath} the port path below it, e.g.
+            "usb:2357:012e@0000:07:1b.0-usb2-1". "pci:{bdf-address}" for a PCI function, "pci:{bdf-address}:{node-name}"
             for a node of that function that no more specific walk owns
             (an NVMe controller's own char node), "disk:{name}" for a
             disk or a partition, "gpu:{index}:{node-name}" for a DRM
@@ -20303,9 +20322,9 @@ components:
         wwid:
           type: string
           description: >
-            disk only, whole disks: the kernel's WWID, verbatim (a
+            disk only, whole disks: the kernel's WWID with its trailing padding removed (a
             world-wide name when the disk reports one, otherwise the T10
-            vendor identification). Empty when the disk has none.
+            vendor identification, which the kernel pads with spaces). Empty when the disk has none.
         mac:
           type: string
           description: >

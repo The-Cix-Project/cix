@@ -970,6 +970,7 @@ static void check_architecture_components(void)
 		{ "credcheck.c", "Credential checks" },
 		{ "logread.c", "Filtered log reads" },
 		{ "devicestate.c", "Device state" },
+		{ "devicematch.c", "Device mappings" },
 		{ "procfuse.c", "procfuse" },
 		{ "esp.c", "ESP" },
 	};

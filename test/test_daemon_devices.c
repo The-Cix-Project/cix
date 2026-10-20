@@ -159,6 +159,10 @@ int main(void)
 	char first_assignable_id[128];
 	char first_assignable_vendor[16] = "";
 	char first_assignable_product[16] = "";
+	/* ADR-0345: what names that device -- exact on a usb:/pci: location,
+	 * wwid on a disk that has one, nothing otherwise. */
+	char first_assignable_kind[16] = "";
+	char first_assignable_selector[256] = "";
 	int have_assignable = 0;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
@@ -257,6 +261,15 @@ int main(void)
 					if (product_id != NULL)
 						snprintf(first_assignable_product, sizeof(first_assignable_product),
 						         "%s", product_id);
+					if (str_eq(bus, "usb") || str_eq(bus, "pci")) {
+						snprintf(first_assignable_kind, sizeof(first_assignable_kind), "exact");
+						snprintf(first_assignable_selector, sizeof(first_assignable_selector),
+						         "%s", id);
+					} else if (str_eq(bus, "disk") && json_str_field(d, "wwid")[0] != '\0') {
+						snprintf(first_assignable_kind, sizeof(first_assignable_kind), "wwid");
+						snprintf(first_assignable_selector, sizeof(first_assignable_selector),
+						         "%s", json_str_field(d, "wwid"));
+					}
 					have_assignable = 1;
 				}
 				/* Phase 14 part 1 (ADR-0028): any "gpu" bus entry must be
@@ -395,24 +408,39 @@ int main(void)
 	 * scenario 3 above, same reasoning: this is genuinely
 	 * hardware-dependent, not something to fake).
 	 */
-	if (have_assignable) {
-		char body[256];
+	if (have_assignable && first_assignable_kind[0] == '\0')
+		printf("SKIP: the free device %s has nothing that names it (ADR-0345)\n",
+		       first_assignable_id);
+	if (have_assignable && first_assignable_kind[0] != '\0') {
+		char body[512];
 
-		/* exact mapping resolves to the same real id, "present": true */
-		snprintf(body, sizeof(body), "{\"name\":\"mapexact\",\"kind\":\"exact\",\"selector\":\"%s\"}",
-		         first_assignable_id);
+		/* a mapping by what names the device resolves to its real id,
+		 * "state": "present" */
+		snprintf(body, sizeof(body), "{\"name\":\"mapexact\",\"kind\":\"%s\",\"selector\":\"%s\"}",
+		         first_assignable_kind, first_assignable_selector);
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/devicemaps", body, &r) != 0 ||
 		    r.status != 201) {
-			fprintf(stderr, "FAIL: POST /v1/devicemaps (exact), status=%d\n", r.status);
+			fprintf(stderr, "FAIL: POST /v1/devicemaps (%s), status=%d\n", first_assignable_kind,
+			        r.status);
 			ok = 0;
-		} else {
-			const struct json_value *jpresent = json_object_get(r.json, "present");
+		} else if (!str_eq(json_str_field(r.json, "state"), "present")) {
+			fprintf(stderr, "FAIL: %s mapping should resolve state=present\n",
+			        first_assignable_kind);
+			ok = 0;
+		}
+		cix_response_free(&r);
 
-			if (jpresent == NULL || jpresent->type != JSON_BOOL || !jpresent->u.boolean) {
-				fprintf(stderr, "FAIL: exact mapping should resolve present=true\n");
-				ok = 0;
-			}
+		/* ADR-0345: exact names a location, so a kernel name is refused
+		 * and the refusal says what names that bus instead. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/devicemaps",
+		                       "{\"name\":\"mapdisk\",\"kind\":\"exact\",\"selector\":\"disk:sda\"}",
+		                       &r) != 0 ||
+		    r.status != 400 || r.body == NULL || strstr(r.body, "wwid or fs_uuid") == NULL) {
+			fprintf(stderr, "FAIL: exact on disk:sda should be a 400 naming wwid, status=%d\n",
+			        r.status);
+			ok = 0;
 		}
 		cix_response_free(&r);
 
@@ -542,8 +570,8 @@ int main(void)
 		cix_response_free(&r);
 
 		/* duplicate name -> 409; delete -> 204; delete again -> 404. */
-		snprintf(body, sizeof(body), "{\"name\":\"mapexact\",\"kind\":\"exact\",\"selector\":\"%s\"}",
-		         first_assignable_id);
+		snprintf(body, sizeof(body), "{\"name\":\"mapexact\",\"kind\":\"%s\",\"selector\":\"%s\"}",
+		         first_assignable_kind, first_assignable_selector);
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/devicemaps", body, &r) != 0 || r.status != 409) {
 			fprintf(stderr, "FAIL: duplicate devicemap name expected 409, got %d\n", r.status);

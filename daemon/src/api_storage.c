@@ -59,17 +59,18 @@ void handle_disk_list(int fd)
 	jw_free(&w);
 }
 
-static void respond_devicemap_error(int fd, enum devicemap_error err)
+static void respond_devicemap_error(int fd, enum devicemap_error err, const char *why)
 {
 	switch (err) {
 	case DEVICEMAP_ERR_INVALID_NAME:
 		respond_error(fd, 400, "Bad Request", "invalid name");
 		break;
 	case DEVICEMAP_ERR_INVALID_KIND:
-		respond_error(fd, 400, "Bad Request", "kind must be \"exact\" or \"vendor_model\"");
+		respond_error(fd, 400, "Bad Request",
+		              "kind must be exact, vendor_model, usb_serial, wwid, fs_uuid or mac");
 		break;
 	case DEVICEMAP_ERR_INVALID_SELECTOR:
-		respond_error(fd, 400, "Bad Request", "invalid selector");
+		respond_error(fd, 400, "Bad Request", why);
 		break;
 	case DEVICEMAP_ERR_DUPLICATE:
 		respond_error(fd, 409, "Conflict", "a device mapping with this name already exists");
@@ -87,14 +88,17 @@ static void respond_devicemap_error(int fd, enum devicemap_error err)
 	}
 }
 
+/* A mapping is resolved against the grant snapshot's records, which
+ * include an interface a running container holds (ADR-0345). */
 void handle_devicemap_list(int fd)
 {
+	const struct device_snapshot *s = devicegrant_snapshot();
 	struct json_writer w;
 
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "devicemaps");
-	devicemap_write_json_list(&w, CONTAINERS_DIR);
+	devicemap_write_json_list(&w, s->recs, s->n);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -102,9 +106,13 @@ void handle_devicemap_list(int fd)
 
 void handle_devicemap_create(int fd, const char *body, size_t body_len)
 {
+	const struct device_snapshot *s;
 	struct json_value *root;
 	const char *name, *kind, *selector;
 	enum devicemap_error derr;
+	char name_buf[DEVICEMAP_NAME_MAX];
+	char why[256] = "invalid selector";
+	struct json_writer w;
 
 	root = json_parse(body, body_len);
 	if (root == NULL) {
@@ -120,30 +128,21 @@ void handle_devicemap_create(int fd, const char *body, size_t body_len)
 		return;
 	}
 
-	{
-		/* name is a pointer into root's own parsed tree -- copied here
-		 * since devicemap_write_json_one() below needs it again after
-		 * json_free(root) makes the original dangling. */
-		char name_buf[DEVICEMAP_NAME_MAX];
-
-		snprintf(name_buf, sizeof(name_buf), "%s", name);
-		derr = devicemap_create(name, kind, selector);
-		json_free(root);
-
-		if (derr != DEVICEMAP_OK) {
-			respond_devicemap_error(fd, derr);
-			return;
-		}
-
-		{
-			struct json_writer w;
-
-			jw_init(&w);
-			devicemap_write_json_one(name_buf, CONTAINERS_DIR, &w);
-			respond_json(fd, 201, "Created", &w);
-			jw_free(&w);
-		}
+	/* name points into root's tree, and the response below needs it
+	 * after json_free(root). */
+	snprintf(name_buf, sizeof(name_buf), "%s", name);
+	s = devicegrant_snapshot();
+	derr = devicemap_create(name, kind, selector, s->recs, s->n, why, sizeof(why));
+	json_free(root);
+	if (derr != DEVICEMAP_OK) {
+		respond_devicemap_error(fd, derr, why);
+		return;
 	}
+
+	jw_init(&w);
+	devicemap_write_json_one(name_buf, s->recs, s->n, &w);
+	respond_json(fd, 201, "Created", &w);
+	jw_free(&w);
 }
 
 void handle_devicemap_delete(int fd, const char *name)
@@ -151,7 +150,7 @@ void handle_devicemap_delete(int fd, const char *name)
 	enum devicemap_error derr = devicemap_delete(name);
 
 	if (derr != DEVICEMAP_OK) {
-		respond_devicemap_error(fd, derr);
+		respond_devicemap_error(fd, derr, "");
 		return;
 	}
 	http_set_blocking(fd);

@@ -144,10 +144,13 @@ static void claim_reference(struct device_snapshot *s, const char *container, co
                             int binding)
 {
 	const struct discovered_device *matches[CONTAINER_MAX_DEVICES];
+	char err[256];
 	int n, k;
 
-	n = devicemap_resolve(ref, CONTAINERS_DIR, matches, CONTAINER_MAX_DEVICES);
-	if (n < 0)
+	/* An ambiguous mapping claims nothing: it cannot be granted until
+	 * an operator makes it name one device. */
+	n = devicemap_resolve(ref, s->recs, s->n, matches, CONTAINER_MAX_DEVICES, err, sizeof(err));
+	if (n == DEVICEMAP_NOT_A_MAPPING)
 		n = device_find_group(ref, CONTAINERS_DIR, matches, CONTAINER_MAX_DEVICES);
 	for (k = 0; k < n; k++)
 		add_claim(s, DEVICE_CLAIM_RESERVATION, container, matches[k]->id, 0, binding);
@@ -219,7 +222,7 @@ const struct device_snapshot *devicegrant_snapshot(void)
 	static char names[CONTAINERDEF_MAX > REGISTRY_MAX_CONTAINERS ? CONTAINERDEF_MAX
 	                                                             : REGISTRY_MAX_CONTAINERS]
 	                 [REGISTRY_NAME_MAX];
-	static int warned;
+	static int warned, warned_id;
 	struct device_snapshot *s = &g_snap;
 	int count, i, j, a, b;
 
@@ -227,14 +230,24 @@ const struct device_snapshot *devicegrant_snapshot(void)
 	s->claim_count = 0;
 	mark_management(s);
 
-	/* Running containers: what they hold, and what they wait for. */
+	/*
+	 * Running containers: first the records they took out of the host's
+	 * view, all of them, then what they hold and wait for. A reference
+	 * is resolved against the whole record list (ADR-0345), so an
+	 * interface another container moved must already be in it.
+	 */
 	count = registry_list_names(names, REGISTRY_MAX_CONTAINERS);
+	for (i = 0; i < count; i++) {
+		const struct registry_entry *e = registry_find(names[i]);
+
+		if (e != NULL)
+			append_moved(s, e);
+	}
 	for (i = 0; i < count; i++) {
 		const struct registry_entry *e = registry_find(names[i]);
 
 		if (e == NULL)
 			continue;
-		append_moved(s, e);
 		for (j = 0; j < e->device_count; j++)
 			add_claim(s, DEVICE_CLAIM_GRANT, e->name, e->devices[j].id, e->devices[j].shared, 0);
 		for (j = 0; j < e->interface_count; j++) {
@@ -275,6 +288,15 @@ const struct device_snapshot *devicegrant_snapshot(void)
 		               "devices %s and %s own the same /dev node %u:%u -- one of the two "
 		               "walks in device.c should have yielded it (ADR-0344)",
 		               s->recs[a].id, s->recs[b].id, s->recs[a].major, s->recs[a].minor);
+	}
+	/* And one id, one record (ADR-0345): two would be two states for
+	 * whatever a grant of that id meant. */
+	if (!warned_id && device_records_share_an_id(s->recs, s->n, &a, &b)) {
+		warned_id = 1;
+		logstore_write("cixd", "error",
+		               "two devices carry the id %s -- an id names a location, so device.c "
+		               "built one wrongly (ADR-0345)",
+		               s->recs[a].id);
 	}
 	return s;
 }

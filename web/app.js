@@ -5419,7 +5419,7 @@ function renderContainerDetail(name) {
 	 * to nowhere.
 	 */
 	{
-		const mappedNames = exactMappedNames();
+		const mappedNames = mappedDeviceNames();
 
 		renderTable(document.querySelector("#cd-devices"), "ContainerDeviceAttachment",
 		    c.devices || [], [
@@ -6838,6 +6838,35 @@ const DEVICE_REASON_TEXT = {
 };
 
 /*
+ * What the Name… button offers for one device: the strongest identity
+ * its record carries (ADR-0345) -- a permanent MAC, a WWID, a USB serial
+ * with its vendor and product -- else its port or slot when its id is a
+ * location, else nothing, and the row gets no button. Read from the
+ * record's own fields; the daemon still checks the selector.
+ */
+function deviceNameDraft(d) {
+	if (d.bus === "net")
+		return d.mac_permanent ? { kind: "mac", selector: d.mac } : null;
+	if (d.bus === "disk")
+		return d.wwid ? { kind: "wwid", selector: d.wwid } : null;
+	if (d.bus === "usb" && d.serial)
+		return { kind: "usb_serial", selector: d.vendor_id + ":" + d.product_id + ":" + d.serial };
+	if (d.bus === "usb" || d.bus === "pci")
+		return { kind: "exact", selector: d.id };
+	return null;
+}
+
+/* A device mapping's kind, as the Named Mappings table words it (ADR-0345). */
+const DEVICEMAP_KIND_TEXT = {
+	usb_serial: "USB serial",
+	wwid: "Disk WWID",
+	fs_uuid: "Filesystem UUID",
+	mac: "MAC address",
+	exact: "Port or slot",
+	vendor_model: "Every device of a model",
+};
+
+/*
  * ADR-0344: how one device's state reads, from the daemon's own answer
  * and nothing else -- the page derives no state, it words the one every
  * grant is decided by. One function, as diskActionEligibility() is for
@@ -6890,25 +6919,25 @@ function deviceTreeRows(entries) {
 	return rows;
 }
 
-/* Only "exact" mappings can be shown inline against the one device row
- * they pin to; a "vendor_model" mapping's own resolved_ids can span
- * several rows (or move between polls), so it's only ever shown in
- * the Named mappings table, never annotated per-row on a specific
- * device. Shared by the Devices page's own per-bus tables and a
- * container's own Hardware tab (its device grants use the same raw
- * ids these mappings pin to). */
-function exactMappedNames() {
+/* The device row each name stands for: a mapping whose kind names one
+ * device and which the daemon says is present resolved to exactly one
+ * id (ADR-0345). A "vendor_model" mapping names a group, and an
+ * ambiguous one names nothing yet, so both are shown only in the Named
+ * mappings table. Shared by the Devices page's own per-bus tables and
+ * a container's own Hardware tab. */
+function mappedDeviceNames() {
 	const mappedNames = {};
 
 	for (const m of cache.deviceMaps)
-		if (m.kind === "exact") mappedNames[m.selector] = m.name;
+		if (m.kind !== "vendor_model" && m.state === "present" && m.resolved_ids.length === 1)
+			mappedNames[m.resolved_ids[0]] = m.name;
 	return mappedNames;
 }
 
 function renderDevices() {
 	renderDeviceMapsTable();
 
-	const mappedNames = exactMappedNames();
+	const mappedNames = mappedDeviceNames();
 
 	for (const bus of Object.keys(DEVICE_BUS_TABLES))
 		renderDeviceBus(bus, mappedNames);
@@ -6953,6 +6982,10 @@ function renderDeviceBus(bus, mappedNames) {
 			 * children's, and the OS disk's own layout, never can. */
 			if (mappedNames[d.id] || ["no-node", "os-disk", "os-partition"].includes(d.reason))
 				return [];
+			const draft = deviceNameDraft(d);
+
+			if (draft === null)
+				return [];
 
 			const btn = document.createElement("button");
 
@@ -6961,16 +6994,16 @@ function renderDeviceBus(bus, mappedNames) {
 			gateAction(btn, "createDeviceMap");
 			/* The selector and kind are facts about the row that was
 			 * clicked, so they arrive as `values` -- a draft the
-			 * operator may still edit, which is right here: naming a
-			 * USB device "exact" pins it to this port, and switching
-			 * to vendor/model is a reasonable second thought. `fixed`
-			 * would be wrong, because nothing about this device is the
+			 * operator may still edit, which is right here: the
+			 * strongest identity is offered, and naming the port
+			 * instead is a reasonable second thought. `fixed` would be
+			 * wrong, because nothing about this device is the
 			 * request's key. */
 			btn.addEventListener("click", () =>
 				openForm("createDeviceMap", {
 					title: "Name a device",
 					submit: "Create mapping",
-					values: { kind: "exact", selector: d.id },
+					values: draft,
 				}));
 			return [btn];
 		} },
@@ -7029,7 +7062,7 @@ function renderDeviceMapsTable() {
 		row.appendChild(nameCell);
 		const kindCell = document.createElement("td");
 
-		kindCell.textContent = m.kind === "exact" ? "Exact" : "Vendor/model";
+		kindCell.textContent = DEVICEMAP_KIND_TEXT[m.kind] || m.kind;
 		row.appendChild(kindCell);
 		const selectorCell = document.createElement("td");
 
@@ -7038,8 +7071,10 @@ function renderDeviceMapsTable() {
 		const statusCell = document.createElement("td");
 		const badge = document.createElement("span");
 
-		badge.className = statusBadge(m.present ? "ok" : "unknown");
-		badge.textContent = m.present ? "present (" + m.resolved_ids.length + ")" : "not present";
+		/* The daemon's word (ADR-0345): ambiguous is a refusal, and
+		 * says what it matched. */
+		badge.className = statusBadge(m.state === "present" ? "ok" : m.state === "ambiguous" ? "error" : "unknown");
+		badge.textContent = m.state === "absent" ? "not present" : m.state + " (" + m.resolved_ids.length + ")";
 		statusCell.appendChild(badge);
 		row.appendChild(statusCell);
 
