@@ -2809,7 +2809,7 @@ If only the newcomer had to opt in, a container that asked for a device without 
 
 The same verdict decides `devices[]` and `interfaces[]` at create and at every start, the live attach `POST /containers/{name}/devices`, and a hotplugged device matched to a waiting container.
 
-**What a device is, as opposed to where it is (ADR-0345).** Each record also carries the facts a device mapping can select by: `serial` (USB), `wwid` (whole disks, the kernel's value without its trailing padding), and `mac` with `mac_permanent` (interfaces). They are never part of the `id`. A USB serial names a device only together with its `vendor_id` and `product_id`, since many devices of one model report the same serial (the dongle above reports `123456`). An interface can be named by its address only when `mac_permanent` is true. Each field is empty, or `false`, on buses it does not apply to. For an interface a running container holds, `mac` is the address read when it was granted.
+**What a device is, as opposed to where it is (ADR-0345).** Each record also carries the facts a device mapping can select by: `serial` (USB), `wwid` (whole disks, the kernel's value without its trailing padding), `fs_uuid` (disks and partitions carrying ext4 or btrfs, read with the filesystem type), and `mac` with `mac_permanent` (interfaces). They are never part of the `id`. A USB serial names a device only together with its `vendor_id` and `product_id`, since many devices of one model report the same serial (the dongle above reports `123456`). An interface can be named by its address only when `mac_permanent` is true. Each field is empty, or `false`, on buses it does not apply to. For an interface a running container holds, `mac` is the address read when it was granted.
 
 ### Composite USB devices (ADR-0161 Phase A)
 
@@ -2861,7 +2861,7 @@ POST /v1/devicemaps
 |---|---|---|
 | `usb_serial` | `vendor_id:product_id:serial` | one USB device, in any port. A serial alone is not an identity: the dongle above reports `123456`, as does every unit of its model. |
 | `wwid` | a disk's `wwid` from `GET /devices` | one disk |
-| `fs_uuid` | a filesystem UUID | one disk or partition, for as long as that filesystem exists |
+| `fs_uuid` | a filesystem UUID, the record's `fs_uuid` | one disk or partition, for as long as that filesystem exists |
 | `mac` | a permanent address (`mac_permanent: true`), any case | one interface, including one a running container holds |
 | `exact` | a `usb:` or `pci:` id | whatever is in that port or slot. A `disk:`, `net:`, `gpu:` or `phy:` id is a kernel name, not a location, and is refused with the kind to use instead. |
 | `vendor_model` | `vendor_id:product_id` | every device of that model; every match is granted |

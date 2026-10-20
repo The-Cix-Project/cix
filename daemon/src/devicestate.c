@@ -367,6 +367,8 @@ static void write_one(struct json_writer *w, const struct discovered_device *rec
 	jw_str(w, d->serial);
 	jw_key(w, "wwid");
 	jw_str(w, d->wwid);
+	jw_key(w, "fs_uuid");
+	jw_str(w, d->fs_uuid);
 	jw_key(w, "mac");
 	jw_str(w, d->mac);
 	jw_key(w, "mac_permanent");

@@ -1,5 +1,4 @@
 #include "devicemap.h"
-#include "disk.h"
 #include "logstore.h"
 #include "namecheck.h"
 #include "persist.h"
@@ -193,7 +192,7 @@ enum devicemap_error devicemap_delete(const char *name)
 static int match_all(const struct devicemap_entry *m, const struct discovered_device *recs, int n,
                      int idx[], int cap)
 {
-	return devicematch_find(m->kind, m->selector, recs, n, disk_probe_fs_uuid, idx, cap);
+	return devicematch_find(m->kind, m->selector, recs, n, idx, cap);
 }
 
 int devicemap_resolve(const char *name, const struct discovered_device *recs, int n,

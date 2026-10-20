@@ -8,10 +8,10 @@
  * adapter on PCI -- plus what .95 does not have and the rules must still
  * get right: a second dongle of the same model with the same factory
  * serial in another port, another vendor's device that also says 123456,
- * an interface whose address is not permanent, and two disks carrying
- * filesystems.
+ * an interface whose address is not permanent, and a disk cloned block
+ * for block, whose copy carries the same filesystem UUID.
  *
- * Pure: records in, matches out, with a fake superblock reader. In
+ * Pure: records in, matches out; every kind compares a record field. In
  * SELFTESTS, because no test can plug in a second dongle.
  */
 #include "devicematch.h"
@@ -56,26 +56,13 @@ static void net(const char *id, const char *mac, int permanent)
 	d->mac_permanent = permanent;
 }
 
-static void disk(const char *id, const char *dev_path, const char *wwid)
+static void disk(const char *id, const char *dev_path, const char *wwid, const char *fs_uuid)
 {
 	struct discovered_device *d = rec(id, "disk");
 
 	snprintf(d->dev_path, sizeof(d->dev_path), "%s", dev_path);
 	snprintf(d->wwid, sizeof(d->wwid), "%s", wwid);
-}
-
-static int g_probes;
-
-/* sda5 and vdb5 carry filesystems; every other node reads as none. */
-static void fake_fs_uuid(const char *dev_path, char *out, size_t out_size)
-{
-	g_probes++;
-	if (strcmp(dev_path, "/dev/sda5") == 0)
-		snprintf(out, out_size, "6F0B4E2A-91C3-4D7E-8A55-1B2C3D4E5F60");
-	else if (strcmp(dev_path, "/dev/vdb5") == 0)
-		snprintf(out, out_size, "0a1b2c3d-0000-4000-8000-00000000abcd");
-	else
-		out[0] = '\0';
+	snprintf(d->fs_uuid, sizeof(d->fs_uuid), "%s", fs_uuid);
 }
 
 static void build_fixture(void)
@@ -87,10 +74,14 @@ static void build_fixture(void)
 	net("net:eth0", "bc:24:11:42:0f:4f", 1);
 	net("net:wlan0", "98:25:4a:5b:de:5b", 1);
 	net("net:wlan1", "02:11:22:33:44:55", 0);
-	disk("disk:sda", "/dev/sda", SDA_WWID);
-	disk("disk:sda5", "/dev/sda5", "");
-	disk("disk:vdb5", "/dev/vdb5", "");
-	disk("disk:sr0", "/dev/sr0", "");
+	disk("disk:sda", "/dev/sda", SDA_WWID, "");
+	disk("disk:sda5", "/dev/sda5", "", "6f0b4e2a-91c3-4d7e-8a55-1b2c3d4e5f60");
+	disk("disk:vdb5", "/dev/vdb5", "", "0a1b2c3d-0000-4000-8000-00000000abcd");
+	disk("disk:sr0", "/dev/sr0", "", "");
+	/* A disk cloned block for block carries its source's UUID: two
+	 * filesystems, one identity, which is ambiguous rather than a pick. */
+	disk("disk:sdc1", "/dev/sdc1", "", "0a1b2c3d-0000-4000-8000-00000000beef");
+	disk("disk:sdd1", "/dev/sdd1", "", "0a1b2c3d-0000-4000-8000-00000000beef");
 	{
 		struct discovered_device *d = rec("pci:0000:00:01.0:card0", "pci");
 
@@ -116,7 +107,7 @@ static void expect(enum devicematch_kind kind, const char *selector, int count, 
 		g_failures++;
 		return;
 	}
-	found = devicematch_find(kind, normal, g_recs, g_n, fake_fs_uuid, idx, 8);
+	found = devicematch_find(kind, normal, g_recs, g_n, idx, 8);
 	if (found != count || (count == 1 && strcmp(g_recs[idx[0]].id, id) != 0)) {
 		fprintf(stderr, "  FAIL: %s %s matched %d (%s), expected %d (%s)\n",
 		        devicematch_kind_word(kind), selector, found,
@@ -180,8 +171,7 @@ static void test_mac(void)
 	{
 		int idx[2];
 
-		if (devicematch_find(DEVICEMATCH_MAC, "aa:bb:cc:dd:ee:ff", g_recs, g_n, fake_fs_uuid,
-		                     idx, 2) != 0) {
+		if (devicematch_find(DEVICEMATCH_MAC, "aa:bb:cc:dd:ee:ff", g_recs, g_n, idx, 2) != 0) {
 			fprintf(stderr, "  FAIL: a mac mapping matched an address that is not permanent\n");
 			g_failures++;
 		}
@@ -194,14 +184,13 @@ static void test_disks(void)
 	/* The padding the kernel writes is not part of the identity. */
 	expect(DEVICEMATCH_WWID, SDA_WWID "             ",
 	       1, "disk:sda");
-	expect(DEVICEMATCH_FS_UUID, "6f0b4e2a-91c3-4d7e-8a55-1b2c3d4e5f60", 1, "disk:sda5");
+	expect(DEVICEMATCH_WWID, SDA_WWID, 1, "disk:sda");
+	/* Any case, stored lowercase as the superblock reader writes it. */
+	expect(DEVICEMATCH_FS_UUID, "6F0B4E2A-91C3-4D7E-8A55-1B2C3D4E5F60", 1, "disk:sda5");
 	refused(DEVICEMATCH_FS_UUID, "not a uuid", "hex digits");
-	/* A superblock read happens only for an fs_uuid selector. */
-	g_probes = 0;
-	expect(DEVICEMATCH_WWID, SDA_WWID, 1,
-	       "disk:sda");
-	if (g_probes != 0) {
-		fprintf(stderr, "  FAIL: a wwid lookup read %d superblocks\n", g_probes);
+	expect(DEVICEMATCH_FS_UUID, "0a1b2c3d-0000-4000-8000-00000000beef", 2, NULL);
+	if (!devicematch_exclusive(DEVICEMATCH_FS_UUID)) {
+		fprintf(stderr, "  FAIL: fs_uuid is not exclusive, so a cloned disk would be granted too\n");
 		g_failures++;
 	}
 }

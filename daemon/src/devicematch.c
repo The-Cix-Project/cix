@@ -180,8 +180,9 @@ int devicematch_check_selector(enum devicematch_kind kind, const char *selector,
 				         "fs_uuid takes a filesystem UUID: hex digits and '-' only");
 				return -1;
 			}
+			out[i] = (char)tolower((unsigned char)selector[i]);
 		}
-		snprintf(out, out_size, "%s", selector);
+		out[i] = '\0';
 		return 0;
 	case DEVICEMATCH_MAC:
 		if (mac_normal(selector, out, out_size) != 0) {
@@ -205,7 +206,7 @@ int devicematch_check_selector(enum devicematch_kind kind, const char *selector,
 }
 
 static int matches(enum devicematch_kind kind, const char *selector,
-                   const struct discovered_device *d, devicematch_fs_uuid_fn probe)
+                   const struct discovered_device *d)
 {
 	char vid[5], pid[5];
 	const char *rest;
@@ -229,14 +230,8 @@ static int matches(enum devicematch_kind kind, const char *selector,
 	case DEVICEMATCH_WWID:
 		return strcmp(d->bus, "disk") == 0 && d->wwid[0] != '\0' && strcmp(d->wwid, selector) == 0;
 	case DEVICEMATCH_FS_UUID:
-		if (strcmp(d->bus, "disk") != 0 || d->dev_path[0] == '\0' || probe == NULL)
-			return 0;
-		{
-			char uuid[64];
-
-			probe(d->dev_path, uuid, sizeof(uuid));
-			return uuid[0] != '\0' && strcasecmp(uuid, selector) == 0;
-		}
+		return strcmp(d->bus, "disk") == 0 && d->fs_uuid[0] != '\0' &&
+		       strcasecmp(d->fs_uuid, selector) == 0;
 	case DEVICEMATCH_MAC:
 		return strcmp(d->bus, "net") == 0 && d->mac_permanent && strcasecmp(d->mac, selector) == 0;
 	}
@@ -244,13 +239,12 @@ static int matches(enum devicematch_kind kind, const char *selector,
 }
 
 int devicematch_find(enum devicematch_kind kind, const char *selector,
-                     const struct discovered_device *recs, int n, devicematch_fs_uuid_fn probe,
-                     int out[], int cap)
+                     const struct discovered_device *recs, int n, int out[], int cap)
 {
 	int i, found = 0;
 
 	for (i = 0; i < n; i++) {
-		if (!matches(kind, selector, &recs[i], probe))
+		if (!matches(kind, selector, &recs[i]))
 			continue;
 		if (found < cap)
 			out[found] = i;

@@ -230,6 +230,7 @@ int main(void)
 				    json_object_get(d, "held_by") == NULL ||
 				    json_object_get(d, "reserved_by") == NULL ||
 				    json_str_field(d, "serial") == NULL || json_str_field(d, "wwid") == NULL ||
+				    json_str_field(d, "fs_uuid") == NULL ||
 				    json_str_field(d, "mac") == NULL ||
 				    json_object_get(d, "mac_permanent") == NULL ||
 				    json_object_get(d, "mac_permanent")->type != JSON_BOOL) {
@@ -243,6 +244,7 @@ int main(void)
 				 * wrong thing. */
 				if ((!str_eq(bus, "net") && json_str_field(d, "mac")[0] != '\0') ||
 				    (!str_eq(bus, "disk") && json_str_field(d, "wwid")[0] != '\0') ||
+				    (!str_eq(bus, "disk") && json_str_field(d, "fs_uuid")[0] != '\0') ||
 				    (!str_eq(bus, "usb") && json_str_field(d, "serial")[0] != '\0')) {
 					fprintf(stderr, "FAIL: device %s carries a selector fact of another bus\n",
 					        id);

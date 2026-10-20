@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A device's filesystem UUID is a field, and the dashboard names devices by identity (ADR-0345 step 2b, #349)
+
+- **What changed:**
+  - **`fs_uuid` is a field.** `GET /v1/devices` and `GET /v1/storage` carry each disk's and partition's filesystem UUID. It is read in the same open as the filesystem type, through one superblock reader in `disk.c`. An `fs_uuid` mapping compares that field like every other kind, and the matcher reads no device.
+  - **The Name… button** pre-fills the strongest identity the device has that no other present device shares: a permanent MAC, a WWID, a filesystem UUID or a USB serial. Failing that it pre-fills the port or slot, and a device with none of these gets no button.
+  - **"Used by"** on the Named Mappings tab reads the daemon's `held_by` on each resolved record.
+  - **An ambiguous mapping** lists what it matched.
+  - **The tab's hint** describes ADR-0345.
+- **Why:** ADR-0345 as accepted said the UUID would be probed only while resolving a mapping, so that the device walk would not gain a superblock read. The walk already read every superblock, to get the type. On 0.2.57-559 `GET /v1/devices` took 72–87 ms and `GET /v1/storage` 64–71 ms. The ADR is corrected in place. "Used by" read `-` for a mapping `ar-1` holds, because it compared container device lists, and a moved interface is not in one.
+
 ### A refused device's name is said before the request is freed
 
 - **What changed:** container create's "unknown or not-currently-present device %s" now formats the device name before freeing the parsed request. The `devices[]` refusal of a `mac` mapping does the same.

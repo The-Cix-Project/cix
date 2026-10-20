@@ -20242,7 +20242,7 @@ components:
         One physical device the host can see or a running container
         holds (ADR-0344). Each /dev node belongs to exactly one record,
         and records form a tree through `parent`.
-      required: [id, bus, parent, vendor_id, product_id, class, description, driver, dev_path, type, major, minor, serial, wwid, mac, mac_permanent, state, reason, held_by, reserved_by, interfaces]
+      required: [id, bus, parent, vendor_id, product_id, class, description, driver, dev_path, type, major, minor, serial, wwid, fs_uuid, mac, mac_permanent, state, reason, held_by, reserved_by, interfaces]
       properties:
         id:
           type: string
@@ -20325,6 +20325,12 @@ components:
             disk only, whole disks: the kernel's WWID with its trailing padding removed (a
             world-wide name when the disk reports one, otherwise the T10
             vendor identification, which the kernel pads with spaces). Empty when the disk has none.
+        fs_uuid:
+          type: string
+          description: >
+            disk only, disks and partitions: the UUID of the filesystem
+            on it, lowercase, ext4 and btrfs only -- the same value
+            StorageDevice.fs_uuid reports. Empty when there is none.
         mac:
           type: string
           description: >
@@ -20529,6 +20535,13 @@ components:
             which is a note of what a role-assigned disk was last
             mounted as, kept to choose a mount type rather than to
             report truth.
+        fs_uuid:
+          type: string
+          description: >
+            The UUID of the filesystem on this device, read from its
+            superblock in the same read as fs_type, lowercase
+            8-4-4-4-12. ext4 and btrfs only; "" otherwise. What a
+            device mapping of kind fs_uuid names (ADR-0345).
         role:
           type: string
           nullable: true

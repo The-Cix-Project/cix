@@ -75,6 +75,7 @@ struct discovered_device {
 	char serial[80];	/* usb: the device's own serial; an identity only with vid:pid */
 	char wwid[256];		/* disk: the kernel's WWID, trailing padding removed; "" for none.
 				 * NVMe's fallback form (the kernel's wwid_show) spells serial and model in hex */
+	char fs_uuid[40];	/* disk: its filesystem's UUID, read with its type in the walk */
 	char mac[32];		/* net: the current hardware address */
 	int mac_permanent;	/* net: addr_assign_type is NET_ADDR_PERM (0) */
 

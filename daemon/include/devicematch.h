@@ -45,17 +45,13 @@ int devicematch_check_selector(enum devicematch_kind kind, const char *selector,
                                const struct discovered_device *recs, int n, char *out,
                                size_t out_size, char *err, size_t err_size);
 
-/* Reads a block device's filesystem UUID into out ("" for none). */
-typedef void (*devicematch_fs_uuid_fn)(const char *dev_path, char *out, size_t out_size);
-
 /*
  * Indexes into recs of the records <kind>/<selector> matches, at most cap
  * of them written to out. Returns how many match, which can exceed cap.
- * probe is called only for an fs_uuid selector, once per disk record
- * with a node: a superblock read is never part of enumeration.
+ * Every kind compares a field of the record, so nothing here reads a
+ * device.
  */
 int devicematch_find(enum devicematch_kind kind, const char *selector,
-                     const struct discovered_device *recs, int n, devicematch_fs_uuid_fn probe,
-                     int out[], int cap);
+                     const struct discovered_device *recs, int n, int out[], int cap);
 
 #endif /* DEVICEMATCH_H */

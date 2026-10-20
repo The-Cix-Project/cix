@@ -967,6 +967,9 @@ static void enumerate_disk(struct discovered_device *out, int cap, int *count,
 		                                              disks[i].is_partition);
 		e->storage_role = diskrole_lookup(disks[i].name) != NULL;
 		e->mounted = disks[i].mounted;
+		/* Read with fs_type in the same open, which the walk already
+		 * made for every disk and partition (ADR-0345). */
+		snprintf(e->fs_uuid, sizeof(e->fs_uuid), "%s", disks[i].fs_uuid);
 
 		/*
 		 * The WWID a mapping can select by (ADR-0345). SCSI and ATA

@@ -663,9 +663,12 @@
 			</div>
 <div class="tab-panel" data-tab="devicemaps" hidden>
 			<h3>Named mappings</h3>
-			<p class="hint">Persisted, operator-named bindings (ADR-0048) -- an exact mapping pins to
-				one specific bus location; a vendor/model mapping follows a device across USB ports. A
-				mapping's name works anywhere a device id does.</p>
+			<p class="hint">A device's id says where it is; a name says which device it is (ADR-0345),
+				so a container keeps its device across a re-plug, a second identical device and a reboot.
+				A name works anywhere a device id does. Names by USB serial, disk WWID, filesystem UUID
+				or MAC follow the device; a port or slot names whatever is there; a model names every
+				device of it. A name that matches two devices is ambiguous and is refused until it
+				names one.</p>
 			<table id="devicemaps-table">
 				<thead>
 					<tr>

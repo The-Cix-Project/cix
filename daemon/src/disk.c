@@ -262,15 +262,30 @@ static void fill_mount_status(struct discovered_disk *out, int count)
  * are recognised. Anything else reports "" -- honestly unknown, not
  * guessed. Opened O_RDONLY with no O_EXCL, so this is safe against a
  * device that is currently mounted and in use.
+ *
+ * It is the one superblock reader: the type, and for ext4 and btrfs the
+ * UUID, from one open of the device. Either output may be NULL.
+ * Enumeration asks for both, so a device walk opens each device once
+ * (ADR-0345).
  */
-void disk_probe_fs_type(const char *dev_path, char *out, size_t out_size)
+static void fs_uuid_at(int fd, off_t off, char *out, size_t out_size);
+
+static void probe_fs(const char *dev_path, char *out, size_t out_size, char *uuid,
+                     size_t uuid_size)
 {
 	unsigned char buf[4096];
+	char type_buf[16];
 	int fd;
 
+	if (out == NULL) {
+		out = type_buf;
+		out_size = sizeof(type_buf);
+	}
 	if (out_size == 0)
 		return;
 	out[0] = '\0';
+	if (uuid != NULL && uuid_size > 0)
+		uuid[0] = '\0';
 
 	fd = open(dev_path, O_RDONLY | O_CLOEXEC);
 	if (fd < 0)
@@ -312,6 +327,9 @@ void disk_probe_fs_type(const char *dev_path, char *out, size_t out_size)
 	 */
 	if (pread(fd, buf, 8, 0x10040) == 8 && memcmp(buf, "_BHRfS_M", 8) == 0) {
 		snprintf(out, out_size, "btrfs");
+		/* fsid, at +0x20 of the superblock at 0x10000. */
+		if (uuid != NULL)
+			fs_uuid_at(fd, 0x10000 + 0x20, uuid, uuid_size);
 		close(fd);
 		return;
 	}
@@ -321,6 +339,9 @@ void disk_probe_fs_type(const char *dev_path, char *out, size_t out_size)
 	 * mount(2) is given. */
 	if (pread(fd, buf, 2, 1024 + 56) == 2 && buf[0] == 0x53 && buf[1] == 0xEF) {
 		snprintf(out, out_size, "ext4");
+		/* s_uuid, at +104 of the superblock at 1024. */
+		if (uuid != NULL)
+			fs_uuid_at(fd, 1024 + 104, uuid, uuid_size);
 		close(fd);
 		return;
 	}
@@ -359,39 +380,26 @@ void disk_probe_fs_type(const char *dev_path, char *out, size_t out_size)
  * the ext4 superblock, so a converted disk still carries a convincing
  * 0xEF53 at 1024+56.
  */
-void disk_probe_fs_uuid(const char *dev_path, char *out, size_t out_size)
+static void fs_uuid_at(int fd, off_t off, char *out, size_t out_size)
 {
 	unsigned char sb[16];
-	int fd;
-	off_t off = -1;
 
-	if (out_size == 0)
-		return;
-	out[0] = '\0';
-
-	fd = open(dev_path, O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
-		return;
-
-	/* btrfs: superblock at 0x10000, magic at +0x40, fsid at +0x20. */
-	if (pread(fd, sb, 8, 0x10000 + 0x40) == 8 && memcmp(sb, "_BHRfS_M", 8) == 0)
-		off = 0x10000 + 0x20;
-	/* ext2/3/4: superblock at 1024, magic at +56, s_uuid at +104. */
-	else if (pread(fd, sb, 2, 1024 + 56) == 2 && sb[0] == 0x53 && sb[1] == 0xEF)
-		off = 1024 + 104;
-
-	if (off < 0 || pread(fd, sb, 16, off) != 16) {
-		close(fd);
-		return;
-	}
-	close(fd);
-
-	if (out_size < 37)
+	if (out_size < 37 || pread(fd, sb, 16, off) != 16)
 		return; /* refuse to emit a truncated identifier */
 	snprintf(out, out_size,
 	         "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
 	         sb[0], sb[1], sb[2], sb[3], sb[4], sb[5], sb[6], sb[7],
 	         sb[8], sb[9], sb[10], sb[11], sb[12], sb[13], sb[14], sb[15]);
+}
+
+void disk_probe_fs_type(const char *dev_path, char *out, size_t out_size)
+{
+	probe_fs(dev_path, out, out_size, NULL, 0);
+}
+
+void disk_probe_fs_uuid(const char *dev_path, char *out, size_t out_size)
+{
+	probe_fs(dev_path, NULL, 0, out, out_size);
 }
 
 
@@ -407,7 +415,7 @@ static void fill_common(struct discovered_disk *e, const char *d_name, const cha
 	memset(e, 0, sizeof(*e));
 	snprintf(e->name, sizeof(e->name), "%s", d_name);
 	snprintf(e->dev_path, sizeof(e->dev_path), "/dev/%s", d_name);
-	disk_probe_fs_type(e->dev_path, e->fs_type, sizeof(e->fs_type));
+	probe_fs(e->dev_path, e->fs_type, sizeof(e->fs_type), e->fs_uuid, sizeof(e->fs_uuid));
 	/* sysfs "size" is always in 512-byte sectors, regardless of the
 	 * device's own real logical block size. */
 	e->size_bytes = strtoull(size_str, NULL, 10) * 512ULL;
@@ -661,6 +669,8 @@ void disk_write_json_one(const struct discovered_disk *d, struct json_writer *w)
 	 */
 	jw_key(w, "fs_type");
 	jw_str(w, d->fs_type);
+	jw_key(w, "fs_uuid");
+	jw_str(w, d->fs_uuid);
 	/* Partitions only: the name in the partition table, which is what
 	 * whoever created it actually called it -- the fixed OS layout's
 	 * own cix-esp/cix-root-a/... names, or whatever POST

@@ -31,6 +31,9 @@
  */
 #define DISK_ENUM_MAX 256
 
+/* A filesystem UUID's canonical 8-4-4-4-12 string and its NUL, with room. */
+#define DISK_FS_UUID_MAX 40
+
 struct discovered_disk {
 	char name[32];		/* e.g. "vda", "sdb", "nvme0n1" -- no "/dev/" prefix */
 	char dev_path[48];	/* "/dev/<name>" */
@@ -97,6 +100,10 @@ struct discovered_disk {
 	 * used to choose a mount type rather than to report truth.
 	 */
 	char fs_type[16];
+	/* Its filesystem's UUID, ext4 and btrfs only, read in the same open as
+	 * fs_type; "" for none. What a device mapping names a disk or a
+	 * partition by (ADR-0345). */
+	char fs_uuid[DISK_FS_UUID_MAX];
 	/*
 	 * Partitions only: where this partition starts on its parent disk,
 	 * in 512-byte sectors (sysfs reports it in those units regardless
@@ -207,7 +214,6 @@ void disk_probe_fs_type(const char *dev_path, char *out, size_t out_size);
  * or "" when the filesystem has none to give (#255). out_size must be
  * at least 37 or nothing is written -- a truncated identifier is worse
  * than none. */
-#define DISK_FS_UUID_MAX 40
 void disk_probe_fs_uuid(const char *dev_path, char *out, size_t out_size);
 
 int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containers_dir);

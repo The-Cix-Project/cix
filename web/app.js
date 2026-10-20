@@ -6839,17 +6839,29 @@ const DEVICE_REASON_TEXT = {
 
 /*
  * What the Name… button offers for one device: the strongest identity
- * its record carries (ADR-0345) -- a permanent MAC, a WWID, a USB serial
- * with its vendor and product -- else its port or slot when its id is a
- * location, else nothing, and the row gets no button. Read from the
- * record's own fields; the daemon still checks the selector.
+ * its record carries (ADR-0345) -- a permanent MAC, a WWID, a filesystem
+ * UUID, a USB serial with its vendor and product -- else its port or
+ * slot when its id is a location, else nothing, and the row gets no
+ * button. Read from the record's own fields; the daemon still checks
+ * the selector.
  */
 function deviceNameDraft(d) {
+	/* An identity another present device shares would be ambiguous the
+	 * moment it was created, so it is not offered: two dongles that
+	 * both report 123456 fall through to their ports. */
+	const alone = (same) => cache.devices.filter((o) => o.bus === d.bus && same(o)).length === 1;
+
 	if (d.bus === "net")
-		return d.mac_permanent ? { kind: "mac", selector: d.mac } : null;
-	if (d.bus === "disk")
-		return d.wwid ? { kind: "wwid", selector: d.wwid } : null;
-	if (d.bus === "usb" && d.serial)
+		return d.mac_permanent && alone((o) => o.mac === d.mac) ? { kind: "mac", selector: d.mac } : null;
+	if (d.bus === "disk") {
+		if (d.wwid && alone((o) => o.wwid === d.wwid))
+			return { kind: "wwid", selector: d.wwid };
+		if (d.fs_uuid && alone((o) => o.fs_uuid === d.fs_uuid))
+			return { kind: "fs_uuid", selector: d.fs_uuid };
+		return null;
+	}
+	if (d.bus === "usb" && d.serial && alone((o) => o.vendor_id === d.vendor_id &&
+		o.product_id === d.product_id && o.serial === d.serial))
 		return { kind: "usb_serial", selector: d.vendor_id + ":" + d.product_id + ":" + d.serial };
 	if (d.bus === "usb" || d.bus === "pci")
 		return { kind: "exact", selector: d.id };
@@ -7025,17 +7037,20 @@ function renderDeviceBus(bus, mappedNames) {
 	});
 }
 
-/* Every container currently holding a device whose id is among
- * resolvedIds -- a mapping's own "present" status only says the
- * underlying hardware exists, not whether anything's actually using
- * it right now; this is the one piece client-side cross-referencing
- * (cache.containers[].devices[].id vs. cache.deviceMaps[].resolved_ids,
- * both already loaded) can answer that neither list showed on its
- * own before. */
-function containersUsingDeviceIds(resolvedIds) {
-	const idSet = new Set(resolvedIds);
+/* Who holds what a mapping resolved to: the daemon's own held_by on
+ * each resolved record (ADR-0344), so an interface a container moved
+ * counts, and a holder through an ancestor or descendant counts, which
+ * a container's devices[] list cannot say. Nothing is derived here. */
+function mappingHolders(resolvedIds) {
+	const names = new Set();
 
-	return cache.containers.filter((c) => (c.devices || []).some((d) => idSet.has(d.id))).map((c) => c.name);
+	for (const id of resolvedIds) {
+		const d = cache.devices.find((r) => r.id === id);
+
+		for (const h of (d && d.held_by) || [])
+			names.add(h.container);
+	}
+	return [...names];
 }
 
 function renderDeviceMapsTable() {
@@ -7076,10 +7091,19 @@ function renderDeviceMapsTable() {
 		badge.className = statusBadge(m.state === "present" ? "ok" : m.state === "ambiguous" ? "error" : "unknown");
 		badge.textContent = m.state === "absent" ? "not present" : m.state + " (" + m.resolved_ids.length + ")";
 		statusCell.appendChild(badge);
+		/* An ambiguous mapping is fixed by naming one of its matches, so
+		 * the matches are what the operator needs to see. */
+		if (m.state === "ambiguous") {
+			const which = document.createElement("div");
+
+			which.className = "hint";
+			which.textContent = m.resolved_ids.join(", ");
+			statusCell.appendChild(which);
+		}
 		row.appendChild(statusCell);
 
 		const usedByCell = document.createElement("td");
-		const usingNames = containersUsingDeviceIds(m.resolved_ids);
+		const usingNames = mappingHolders(m.resolved_ids);
 
 		if (usingNames.length === 0) {
 			usedByCell.textContent = "-";

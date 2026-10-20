@@ -350,11 +350,11 @@ static void test_json(void)
 	}
 	/* ADR-0345: the selector facts are written for every record, empty
 	 * where they do not apply, and a permanent MAC says so. */
-	if (strstr(body, "\"serial\":\"\",\"wwid\":\"\",\"mac\":\"98:25:4a:5b:de:5b\","
+	if (strstr(body, "\"serial\":\"\",\"wwid\":\"\",\"fs_uuid\":\"\",\"mac\":\"98:25:4a:5b:de:5b\","
 	                 "\"mac_permanent\":true,\"state\":\"held\"") == NULL ||
-	    strstr(body, "\"serial\":\"\",\"wwid\":\"\",\"mac\":\"\",\"mac_permanent\":false,"
+	    strstr(body, "\"serial\":\"\",\"wwid\":\"\",\"fs_uuid\":\"\",\"mac\":\"\",\"mac_permanent\":false,"
 	                 "\"state\":\"host\",\"reason\":\"os-disk\"") == NULL) {
-		fprintf(stderr, "  FAIL: serial, wwid, mac and mac_permanent are not written as the "
+		fprintf(stderr, "  FAIL: serial, wwid, fs_uuid, mac and mac_permanent are not written as the "
 		                "contract says\n");
 		g_failures++;
 	}
