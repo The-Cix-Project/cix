@@ -2581,6 +2581,79 @@ int main(void)
 				        kind != NULL ? kind : "(null)");
 				ok = 0;
 			}
+			/*
+			 * #388, #489 (ADR-0275): which PHASE of the build failed,
+			 * and the command it failed in, read from cbs's own event
+			 * stream rather than from the log. badbuild declares build
+			 * and install and fails at `run "false"` in build.
+			 */
+			{
+				const char *phase = json_str_field(r.json, "phase");
+				const struct json_value *fc = json_object_get(r.json, "failed_command");
+				const char *cmd = fc != NULL ? json_str_field(fc, "command") : NULL;
+
+				if (phase == NULL || strcmp(phase, "build") != 0) {
+					fprintf(stderr, "FAIL: #388 badbuild's failed phase is '%s', expected build\n",
+					        phase != NULL ? phase : "(null)");
+					ok = 0;
+				}
+				if (cmd == NULL || strncmp(cmd, "false", 5) != 0) {
+					fprintf(stderr,
+					        "FAIL: #489 badbuild's failed command is '%s', expected it to name "
+					        "false -- body=%.300s\n",
+					        cmd != NULL ? cmd : "(null)", r.body != NULL ? r.body : "");
+					ok = 0;
+				}
+			}
+		}
+		cix_response_free(&r);
+
+		/* #388: the run keeps the plan and how each phase went -- build
+		 * failed, install blocked behind it, finalize blocked, and the
+		 * three phases the recipe does not declare not-implemented. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/pipeline/runs?name=badbuild&limit=1", NULL,
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #388 GET /v1/pipeline/runs?name=badbuild, status=%d\n",
+			        r.status);
+			ok = 0;
+		} else {
+			const struct json_value *runs = json_object_get(r.json, "runs");
+			const struct json_value *run =
+			    runs != NULL && runs->type == JSON_ARRAY && runs->u.array.count > 0
+			        ? runs->u.array.items[0]
+			        : NULL;
+			const struct json_value *ph = run != NULL ? json_object_get(run, "phases") : NULL;
+			static const char *const want[][2] = {
+				{ "prepare", "not-implemented" }, { "configure", "not-implemented" },
+				{ "build", "failed" },            { "check", "not-implemented" },
+				{ "install", "blocked" },         { "finalize", "blocked" },
+			};
+			size_t k;
+
+			if (ph == NULL || ph->type != JSON_ARRAY || ph->u.array.count != 6) {
+				fprintf(stderr, "FAIL: #388 badbuild's run carries no six-phase plan -- body=%.300s\n",
+				        r.body != NULL ? r.body : "");
+				ok = 0;
+			} else {
+				for (k = 0; k < 6; k++) {
+					const struct json_value *p = ph->u.array.items[k];
+
+					if (!str_eq(json_str_field(p, "phase"), want[k][0]) ||
+					    !str_eq(json_str_field(p, "status"), want[k][1])) {
+						fprintf(stderr, "FAIL: #388 badbuild's run phase %zu is %s/%s, expected %s/%s\n",
+						        k, json_str_field(p, "phase") ? json_str_field(p, "phase") : "?",
+						        json_str_field(p, "status") ? json_str_field(p, "status") : "null",
+						        want[k][0], want[k][1]);
+						ok = 0;
+					}
+				}
+			}
+			if (run == NULL || !str_eq(json_str_field(run, "phase"), "build")) {
+				fprintf(stderr, "FAIL: #388 badbuild's run does not name build as its failed phase\n");
+				ok = 0;
+			}
 		}
 		cix_response_free(&r);
 

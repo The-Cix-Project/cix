@@ -16,6 +16,7 @@
 #include "events.h"
 #include "elfcheck.h"
 #include "namecheck.h"
+#include "cbsevents.h"
 #include "cbsrecipe.h"
 #include "forgecommit.h"
 #include "catalogue.h"
@@ -101,6 +102,17 @@ extern char **environ;
  * either original value did) reliably captured everything EXCEPT the
  * one line that mattered. */
 #define PKG_BUILD_OUTPUT_CAPTURE_MAX 3800
+/*
+ * #388, #489: one line of cbs's JSONL event stream. A record is about
+ * 600 bytes of keys plus its strings, and the longest string is a
+ * command's arguments -- a configure line with many flags is a few
+ * kilobytes. A longer line is skipped whole rather than misread
+ * (pkg_build_events_fold()); a phase is a diagnostic, never a gate.
+ */
+#define PKG_CBS_EVENTS_LINE_MAX 16384
+/* The most read from the event file per call, so one burst cannot hold
+ * the loop; the rest is read on the next call. */
+#define PKG_CBS_EVENTS_READ_MAX 65536
 /*
  * Issue #302: the longest tool name and the longest line the
  * missing-tool scanner keeps. A line longer than this is kept by its
@@ -303,6 +315,17 @@ struct pkg_entry {
 	 * survives.
 	 */
 	int cancel_requested;
+	/*
+	 * #388, #489 (ADR-0275): this build's phases and the command that
+	 * failed, folded from cbs's own JSONL event stream (cbsevents.h). 1
+	 * from the moment a CPDL build starts; a cache hit builds nothing and
+	 * a fresh attempt clears it, so a stale outcome never describes a new
+	 * run. Reported live (the plan, the running phase) while building,
+	 * and as the outcome (failed phase, failed command) beside stage and
+	 * status afterwards; the run record keeps both.
+	 */
+	struct cbs_build_progress progress;
+	int progress_known;
 };
 
 /*
@@ -378,6 +401,10 @@ struct pkg_recipe {
 	 * that was published.
 	 */
 	char artifact_format[PKG_ARTIFACT_FORMAT_MAX];
+	/* #388 (ADR-0275): which phases the recipe declares, bit (1u << enum
+	 * cbs_phase) each, read from the explain document. A build's phases
+	 * are reported against this plan. */
+	unsigned declared_phases;
 	/* source[0]/sha256[0] is the main source and the rest are extras;
 	 * cixd fetches and verifies every one host-side and hands each to
 	 * cbs as a source-cache entry named by its sha256 (ADR-0305), which
@@ -588,6 +615,16 @@ struct pkg_run {
 	int stages_known;
 	enum pipeline_stage stage;
 	enum pipeline_status status;
+	/* #388 (ADR-0275): the build's phase plan and its outcome. 0 for a
+	 * run with no CPDL build -- a cache hit, a fetch that failed, or a
+	 * record written before phases were kept -- whose phases are then
+	 * absent rather than not-implemented. */
+	int phases_known;
+	enum cbs_phase_state phase_state[CBS_PHASE_COUNT];
+	long phase_ms[CBS_PHASE_COUNT];
+	signed char failed_phase;
+	char failed_command[CBS_EVENTS_COMMAND_MAX];
+	char failed_log[CBS_EVENTS_LOG_MAX];
 };
 
 /*
@@ -756,6 +793,20 @@ struct pkg_chain {
 	 * the chain is where it belongs.
 	 */
 	char run_trigger[16];
+	/*
+	 * #388, #489: the build's event file and how far into it this daemon
+	 * has read (pkg_build_events_poll()). On the chain rather than the
+	 * entry because only a build in flight has one, and a chain is one
+	 * build. events_buf holds a line cbs has not finished writing yet;
+	 * events_skipping is set while a line too long for it is discarded.
+	 */
+	char events_path[PATH_MAX];
+	int events_open;
+	int events_fd;
+	off_t events_off;
+	char events_buf[PKG_CBS_EVENTS_LINE_MAX];
+	size_t events_len;
+	int events_skipping;
 	/* The target image the in-flight job (name above, plus every
 	 * dependency it pulls in) merges into -- always normalized (never
 	 * empty; see normalize_image()), valid exactly when name is
@@ -1009,6 +1060,12 @@ static int build_job_can_still_report(const struct pkg_entry *e)
  */
 static void chain_release(int chain_idx)
 {
+	/* #388: a slot's build is over, whichever of thirty-four paths ended
+	 * it, so its event file is too. */
+	if (g_chains[chain_idx].events_open) {
+		close(g_chains[chain_idx].events_fd);
+		g_chains[chain_idx].events_open = 0;
+	}
 	g_chains[chain_idx].name[0] = '\0';
 	g_chains[chain_idx].dep_queue_count = 0;
 	g_chains[chain_idx].buildenv_composer = 0;
@@ -1273,6 +1330,13 @@ static int package_job_in_flight(const char *package)
  * open for that chain (pkg_build_output_fd(idx) returns -1).
  */
 static struct pkg_entry *g_build_output_entries[PKG_MAX_CONCURRENT_JOBS];
+
+/* #388, #489: a CPDL build's event file -- defined beside the build
+ * output reader, used from the build's start and completion. */
+static void pkg_build_events_start(int chain_idx, struct pkg_entry *e, unsigned declared_phases);
+static void pkg_build_events_finish(int chain_idx, struct pkg_entry *e, int succeeded,
+                                    int cancelled);
+static ssize_t pkg_build_events_poll(int chain_idx, struct pkg_entry *e);
 
 /*
  * ADR-0157 Phase 2: the build container's own registry name now
@@ -2842,6 +2906,16 @@ static int parse_cbs_recipe(const char *path, struct pkg_recipe *out)
 		cbs_explain_free(ex);
 		return -1;
 	}
+	/* #388: the plan. A phase word outside ADR-0275's vocabulary cannot
+	 * occur -- CPDL's parser accepts five words -- and is skipped rather
+	 * than refused, since a phase is a diagnostic and never a gate. */
+	out->declared_phases = 0;
+	for (i = 0; i < cbs_explain_phase_count(ex); i++) {
+		int phase = cbs_phase_from_name(cbs_explain_phase_name(ex, i));
+
+		if (phase >= 0)
+			out->declared_phases |= 1u << phase;
+	}
 
 	out->build_depends[0] = '\0';
 	{
@@ -3804,23 +3878,14 @@ static int write_finalize_script(const char *upperdir)
  * link, in a path written the same afternoon that issue was filed.
  * A build that cannot say why it failed is not finished work.
  *
- * "human" rather than "jsonl": the event stream is a dup of stderr,
- * which is exactly where cixd's build log reads from, so jsonl would
- * interleave machine records into the text an operator reads. Ingesting
- * the jsonl properly -- phase timings and cache-hit counts into the
- * REST progress fields -- is worth doing and is not this.
- *
- * That remains true and it is now ASKED FOR rather than merely noted:
- * cix-build-system#282 requests `--events-fd N` (or `--events-file`),
- * so the stream can go somewhere other than stderr. CBS hard-wires it
- * at src/main.c:1672, `event_fd = dup(fileno(stderr))`, while
- * src/report.c:71 already parameterises the sink -- so it is flag
- * parsing upstream, not a redesign. Until that lands, reading the
- * events means disambiguating machine records from command output on
- * one merged fd, which is guessing which lines are the reporter: the
- * same defect cix#489 names, in a worse form. So this stays `human`
- * deliberately, and cix#489 carries the design for the day the fd
- * exists.
+ * "human" on stderr, AND the JSONL stream to a file of its own, since
+ * cbs v0.1.107 (cix-build-system#282). Before it the stream could only
+ * be a dup of stderr, which is exactly where cixd's build log reads
+ * from, so jsonl would have interleaved machine records into the text
+ * an operator reads. Now the log keeps the human reporter and
+ * `--events-file` carries the records cixd folds into a build's phases
+ * and failing command (#388, #489): see PKG_CBS_EVENTS for why a file
+ * rather than #282's `--events-fd`.
  *
  * finalize.sh is CBS's own --finalize-command rather than a shell step
  * after it (ADR-0307 clause 2). Measured at tag v0.1.29 rather than
@@ -3868,6 +3933,21 @@ static const char *pkg_host_arch(void);
 #define PKG_CBS_ARTIFACT "/" PKG_CBS_ARTIFACT_REL
 
 /*
+ * #388, #489 (ADR-0275): where cbs writes its JSONL build event stream
+ * (`--events-file`, cbs v0.1.107, cix-build-system#282), and where cixd
+ * reads it, host-side, under the build overlay's upper directory -- one
+ * string with both roots, like PKG_CBS_ARTIFACT above.
+ *
+ * A file and not `--events-fd`, which was the dependency recorded on
+ * #282: cix-init marks every descriptor from 3 up close-on-exec before
+ * it starts a service (init/src/cix_init.c, the close_range() before
+ * exec), so a descriptor handed to the build container never reaches
+ * cbs. The file needs nothing passed through PID 1.
+ */
+#define PKG_CBS_EVENTS_REL "build/cbs-events.jsonl"
+#define PKG_CBS_EVENTS "/" PKG_CBS_EVENTS_REL
+
+/*
  * A kmod-build's extra symbols reach a CPDL recipe as a CBS input
  * (#517): `cbs build --input kmod_extra=<this path>`, which the kernel
  * recipe consumes with `args input "kmod_extra"` -- a CPDL recipe
@@ -3896,6 +3976,32 @@ static const char *pkg_host_arch(void);
  * harvests are the same string with different roots.
  */
 #define PKG_DEST_REL_CBS PKG_CBS_WORKSPACE_REL "/dest"
+
+/*
+ * The one `cbs build` command, for a first build and for a resume alike
+ * (it was spelled twice, and a flag added to one would have been missing
+ * from the other). Writes e->build_argv_cmd and starts the build's event
+ * progress against the recipe's declared phases.
+ *
+ * See PKG_CBS_WORKSPACE for why the cache is pre-filled and why the
+ * finalize policy is CBS's own --finalize-command, PKG_CBS_ARTIFACT for
+ * where --output writes, and PKG_CBS_EVENTS for --events-file: the
+ * operator's log keeps the human reporter, and the phases come from the
+ * file (#388, #489).
+ */
+static void pkg_cbs_build_command(int chain_idx, struct pkg_entry *e, unsigned declared_phases)
+{
+	snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd),
+	         "set -e; cbs build /build/recipe.cbs --arch %s --staged %s --cache %s "
+	         "--output %s --finalize-command /build/finalize.sh --events human "
+	         "--events-file %s%s",
+	         pkg_host_arch(), PKG_CBS_WORKSPACE, PKG_CBS_CACHE_DIR, PKG_CBS_ARTIFACT,
+	         PKG_CBS_EVENTS,
+	         g_chains[chain_idx].hostbuild_extra_config_symbols[0] != '\0'
+	                 ? " --input " PKG_CBS_KMOD_EXTRA_INPUT
+	                 : "");
+	pkg_build_events_start(chain_idx, e, declared_phases);
+}
 
 /*
  * One file of a package's own recorded manifest, copied into a rootfs
@@ -5658,6 +5764,64 @@ static const char *pkg_state_name(enum pkg_state state)
 	}
 }
 
+/*
+ * #388 (ADR-0275): a build's phases, in the vocabulary's order, each
+ * {"phase","status","duration_ms"}. status is the stage status axis --
+ * ok, failed, blocked, cancelled, not-implemented -- and null for a phase
+ * planned but not finished; duration_ms is null until the phase ends.
+ */
+static void phases_write_json(struct json_writer *w, const enum cbs_phase_state *state,
+                              const long *duration_ms)
+{
+	int i;
+
+	jw_arr_open(w);
+	for (i = 0; i < CBS_PHASE_COUNT; i++) {
+		const char *status = cbs_phase_state_status(state[i]);
+
+		jw_obj_open(w);
+		jw_key(w, "phase");
+		jw_str(w, cbs_phase_name(i));
+		jw_key(w, "status");
+		if (status != NULL)
+			jw_str(w, status);
+		else
+			jw_null(w);
+		jw_key(w, "duration_ms");
+		if (duration_ms[i] >= 0)
+			jw_int(w, (long long)duration_ms[i]);
+		else
+			jw_null(w);
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
+}
+
+/* #489: the command a build failed in, as {"command","log_path","message"},
+ * or null. log_path is inside the build container. */
+static void failed_command_write_json(struct json_writer *w, const char *command,
+                                      const char *log_path, const char *message)
+{
+	if (command == NULL || command[0] == '\0') {
+		jw_null(w);
+		return;
+	}
+	jw_obj_open(w);
+	jw_key(w, "command");
+	jw_str(w, command);
+	jw_key(w, "log_path");
+	if (log_path != NULL && log_path[0] != '\0')
+		jw_str(w, log_path);
+	else
+		jw_null(w);
+	jw_key(w, "message");
+	if (message != NULL && message[0] != '\0')
+		jw_str(w, message);
+	else
+		jw_null(w);
+	jw_obj_close(w);
+}
+
 static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 {
 	int i;
@@ -5759,6 +5923,29 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 	else
 		jw_null(w);
 	/*
+	 * #388, #489 (ADR-0275): the phase of the build stage that failed,
+	 * and the command it failed in -- never without stage: build beside
+	 * them, since `phase: install` alone would read as the install
+	 * stage. Null under the same rule as stage and status, and null when
+	 * cbs never reported one (a failure before the first phase).
+	 */
+	{
+		int build_failed = e->status != PIPELINE_OK && e->stage == PIPELINE_BUILD &&
+		                   e->progress_known && e->state != PKG_STATE_BUILDING;
+
+		jw_key(w, "phase");
+		if (build_failed && e->progress.failed >= 0)
+			jw_str(w, cbs_phase_name(e->progress.failed));
+		else
+			jw_null(w);
+		jw_key(w, "failed_command");
+		if (build_failed)
+			failed_command_write_json(w, e->progress.failed_command, e->progress.failed_log,
+			                          e->progress.failed_message);
+		else
+			jw_null(w);
+	}
+	/*
 	 * Issue #423: when this job started, and how long it has been
 	 * going. Both clocks already existed on the entry -- ADR-0272's
 	 * run_started_at and the stall detector's build_started_at -- and
@@ -5848,6 +6035,22 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 	jw_key(w, "last_output_seconds_ago");
 	if (e->state == PKG_STATE_BUILDING && e->last_output_at > 0)
 		jw_int(w, (long long)(time(NULL) - e->last_output_at));
+	else
+		jw_null(w);
+	/*
+	 * #388, #489 (ADR-0275): the live cursor and the plan, while a CPDL
+	 * build is in flight -- null otherwise, the same gate as
+	 * last_output_seconds_ago above. A finished build's phases are
+	 * history, and live in its run record.
+	 */
+	jw_key(w, "current_phase");
+	if (e->state == PKG_STATE_BUILDING && e->progress_known && e->progress.current >= 0)
+		jw_str(w, cbs_phase_name(e->progress.current));
+	else
+		jw_null(w);
+	jw_key(w, "phases");
+	if (e->state == PKG_STATE_BUILDING && e->progress_known)
+		phases_write_json(w, e->progress.state, e->progress.duration_ms);
 	else
 		jw_null(w);
 	/*
@@ -9698,6 +9901,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	                                     * the memset() above already clears it for the
 	                                     * fresh-slot case, this covers the upgrade-reuse
 	                                     * case (e != NULL, not memset()'d) too. */
+	e->progress_known = 0; /* #388: the last attempt's phases are not this one's */
 	e->cache_hit = cache_hit;
 	/*
 	 * #375: checkpoint the open run, HERE rather than beside
@@ -11416,19 +11620,12 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	 * container's own PKG_DEST_REL_CBS) was already populated straight
 	 * from the cache above, nothing left for the container itself to
 	 * do. */
-	if (e->cache_hit)
+	if (e->cache_hit) {
 		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), ":");
-	else
-		/* See PKG_CBS_WORKSPACE for why the cache is pre-filled and
-		 * why the finalize policy is CBS's own --finalize-command,
-		 * and PKG_CBS_ARTIFACT for where --output writes. */
-		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd),
-		         "set -e; cbs build /build/recipe.cbs --arch %s --staged %s --cache %s "
-		         "--output %s --finalize-command /build/finalize.sh --events human%s",
-		         pkg_host_arch(), PKG_CBS_WORKSPACE, PKG_CBS_CACHE_DIR, PKG_CBS_ARTIFACT,
-		         g_chains[chain_idx].hostbuild_extra_config_symbols[0] != '\0'
-		                 ? " --input " PKG_CBS_KMOD_EXTRA_INPUT
-		                 : "");
+		e->progress_known = 0; /* #388: nothing builds, so no phase runs */
+	} else {
+		pkg_cbs_build_command(chain_idx, e, recipe.declared_phases);
+	}
 	/*
 	 * /usr/bin/bash, not /bin/sh -- caught empirically (ADR-0056) the
 	 * first time a hostbuild job's own build_image was one of this
@@ -12144,13 +12341,7 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	 * delete-and-recreate of dest_dir -- so a refused resume had
 	 * already destroyed the kept container's output tree on its way to
 	 * saying no. A refusal should leave what it refused alone. */
-	snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd),
-	         "set -e; cbs build /build/recipe.cbs --arch %s --staged %s --cache %s "
-	         "--output %s --finalize-command /build/finalize.sh --events human%s",
-	         pkg_host_arch(), PKG_CBS_WORKSPACE, PKG_CBS_CACHE_DIR, PKG_CBS_ARTIFACT,
-	         g_chains[chain_idx].hostbuild_extra_config_symbols[0] != '\0'
-	                 ? " --input " PKG_CBS_KMOD_EXTRA_INPUT
-	                 : "");
+	pkg_cbs_build_command(chain_idx, e, recipe.declared_phases);
 	e->build_argv[0] = "/usr/bin/bash";
 	e->build_argv[1] = "-c";
 	e->build_argv[2] = e->build_argv_cmd;
@@ -12609,6 +12800,29 @@ static void pkg_runs_render(struct json_writer *w)
 		jw_str(w, g_runs[i].log);
 		jw_key(w, "error");
 		jw_str(w, g_runs[i].error);
+		/* #388: each phase by its own state word, which keeps "pending"
+		 * and "running" apart where the reported status cannot. */
+		if (g_runs[i].phases_known) {
+			int p;
+
+			jw_key(w, "phases");
+			jw_arr_open(w);
+			for (p = 0; p < CBS_PHASE_COUNT; p++) {
+				jw_obj_open(w);
+				jw_key(w, "state");
+				jw_str(w, cbs_phase_state_word(g_runs[i].phase_state[p]));
+				jw_key(w, "ms");
+				jw_int(w, (long long)g_runs[i].phase_ms[p]);
+				jw_obj_close(w);
+			}
+			jw_arr_close(w);
+			jw_key(w, "failed_phase");
+			jw_int(w, g_runs[i].failed_phase);
+			jw_key(w, "failed_command");
+			jw_str(w, g_runs[i].failed_command);
+			jw_key(w, "failed_log");
+			jw_str(w, g_runs[i].failed_log);
+		}
 		jw_obj_close(w);
 	}
 	jw_arr_close(w);
@@ -12707,6 +12921,22 @@ static void pkg_run_close(struct pkg_entry *e)
 	 */
 	r->status = (e->state == PKG_STATE_FAILED && e->status == PIPELINE_OK) ? PIPELINE_FAILED
 	                                                                       : e->status;
+	/* #388 (ADR-0275): the plan and how it went. A cache hit built
+	 * nothing, so it keeps none, exactly as it records no build stage. */
+	r->failed_phase = -1;
+	if (e->progress_known && !e->cache_hit) {
+		int p;
+
+		r->phases_known = 1;
+		for (p = 0; p < CBS_PHASE_COUNT; p++) {
+			r->phase_state[p] = e->progress.state[p];
+			r->phase_ms[p] = e->progress.duration_ms[p];
+		}
+		r->failed_phase = (signed char)e->progress.failed;
+		snprintf(r->failed_command, sizeof(r->failed_command), "%s",
+		         e->progress.failed_command);
+		snprintf(r->failed_log, sizeof(r->failed_log), "%s", e->progress.failed_log);
+	}
 	e->run_started_at = 0;
 	e->run_trigger[0] = '\0';
 	pkg_runs_trim();
@@ -12884,6 +13114,34 @@ static void pkg_runs_load(void)
 		if (pipeline_status_from_name(json_as_string(json_object_get(o, "status")),
 		                               &r->status) != 0)
 			r->status = PIPELINE_OK;
+		/* #388: absent from a record written before phases were kept, and
+		 * from a run that built nothing; such a run reports phases null
+		 * rather than inventing any. */
+		r->failed_phase = -1;
+		{
+			const struct json_value *jp = json_object_get(o, "phases");
+
+			if (jp != NULL && jp->type == JSON_ARRAY && jp->u.array.count == CBS_PHASE_COUNT) {
+				size_t p;
+				long fp = (long)json_as_number(json_object_get(o, "failed_phase"));
+
+				r->phases_known = 1;
+				for (p = 0; p < CBS_PHASE_COUNT; p++) {
+					const struct json_value *ph = jp->u.array.items[p];
+					int st = cbs_phase_state_from_word(
+					    json_as_string(json_object_get(ph, "state")));
+
+					r->phase_state[p] = st >= 0 ? (enum cbs_phase_state)st : CBS_PHASE_PENDING;
+					r->phase_ms[p] = (long)json_as_number(json_object_get(ph, "ms"));
+				}
+				r->failed_phase = fp >= 0 && fp < CBS_PHASE_COUNT ? (signed char)fp : -1;
+				sv = json_as_string(json_object_get(o, "failed_command"));
+				snprintf(r->failed_command, sizeof(r->failed_command), "%s",
+				         sv != NULL ? sv : "");
+				sv = json_as_string(json_object_get(o, "failed_log"));
+				snprintf(r->failed_log, sizeof(r->failed_log), "%s", sv != NULL ? sv : "");
+			}
+		}
 		g_run_count++;
 	}
 	json_free(root);
@@ -13224,6 +13482,28 @@ void pkg_runs_write_json(struct json_writer *w, const char *name, const char *im
 		jw_str(w, pipeline_status_name(r->status));
 		jw_key(w, "error");
 		jw_str(w, r->error);
+		/*
+		 * #388, #489 (ADR-0275): the build's plan and how it went, the
+		 * phase that failed beside stage and status, and the command it
+		 * failed in. All null for a run with no CPDL build -- a cache
+		 * hit, a fetch that failed, a record from before phases were
+		 * kept -- since absence of a plan is not a fact about the recipe.
+		 */
+		jw_key(w, "phases");
+		if (r->phases_known)
+			phases_write_json(w, r->phase_state, r->phase_ms);
+		else
+			jw_null(w);
+		jw_key(w, "phase");
+		if (r->phases_known && r->failed_phase >= 0)
+			jw_str(w, cbs_phase_name(r->failed_phase));
+		else
+			jw_null(w);
+		jw_key(w, "failed_command");
+		if (r->phases_known)
+			failed_command_write_json(w, r->failed_command, r->failed_log, NULL);
+		else
+			jw_null(w);
 		/*
 		 * Both facts, deliberately. `log` is what this run wrote;
 		 * `log_available` is whether it is still on disk. Build logs
@@ -13587,6 +13867,14 @@ void pkg_check_build_stalls(void)
 	time_t quiet_since;
 	int i;
 
+	/* #388: a build quiet on its output pipe can still have moved phase,
+	 * and its last event can trail the output that announced it, so the
+	 * periodic check reads the event file too. */
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++)
+		if (g_build_output_entries[i] != NULL &&
+		    g_build_output_entries[i]->state == PKG_STATE_BUILDING)
+			(void)pkg_build_events_poll(i, g_build_output_entries[i]);
+
 	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
 		struct pkg_entry *e = &g_packages[i];
 
@@ -13604,6 +13892,128 @@ void pkg_check_build_stalls(void)
 			continue;
 		e->stall_reported = 1;
 		pkg_report_stalled_build(e);
+	}
+}
+
+/* Folds a chunk of the event file into e->progress, a line at a time. A
+ * line cbs has not finished writing waits in the chain's buffer for the
+ * next chunk. */
+static void pkg_build_events_fold(struct pkg_chain *c, struct pkg_entry *e, const char *data,
+                                  size_t len)
+{
+	size_t i;
+
+	for (i = 0; i < len; i++) {
+		if (data[i] != '\n') {
+			if (c->events_skipping)
+				continue;
+			if (c->events_len + 1 >= sizeof(c->events_buf)) {
+				/* Longer than any record should be: drop it whole
+				 * rather than fold half of one. */
+				c->events_len = 0;
+				c->events_skipping = 1;
+				continue;
+			}
+			c->events_buf[c->events_len++] = data[i];
+			continue;
+		}
+		if (!c->events_skipping && c->events_len > 0)
+			(void)cbs_progress_feed(&e->progress, c->events_buf, c->events_len);
+		c->events_len = 0;
+		c->events_skipping = 0;
+	}
+}
+
+/*
+ * #388, #489 (ADR-0275): reads what cbs has added to this build's event
+ * file since the last read (see PKG_CBS_EVENTS).
+ *
+ * Called whenever the build's output pipe is readable, from the stall
+ * check, and until the file is drained at completion. cbs writes each
+ * event to the human reporter on stderr first and to this file second
+ * (its tee_event_sink()), so a pipe wakeup can come a moment before the
+ * line it announces; the next call reads it. With nothing new it costs
+ * one fstat() on a descriptor already open. Returns how many bytes it
+ * read.
+ */
+static ssize_t pkg_build_events_poll(int chain_idx, struct pkg_entry *e)
+{
+	struct pkg_chain *c = &g_chains[chain_idx];
+	char chunk[PKG_CBS_EVENTS_READ_MAX];
+	struct stat st;
+	long long started;
+	ssize_t n;
+
+	if (e == NULL || !e->progress_known || c->events_path[0] == '\0')
+		return 0;
+	if (!c->events_open) {
+		int fd = open(c->events_path, O_RDONLY | O_CLOEXEC);
+
+		if (fd < 0)
+			return 0; /* cbs has not created it yet */
+		c->events_fd = fd;
+		c->events_open = 1;
+	}
+	if (fstat(c->events_fd, &st) != 0 || st.st_size <= c->events_off)
+		return 0;
+	started = stallwatch_tally_start();
+	n = pread(c->events_fd, chunk, sizeof(chunk), c->events_off);
+	if (n > 0) {
+		c->events_off += n;
+		pkg_build_events_fold(c, e, chunk, (size_t)n);
+	}
+	stallwatch_tally("build events", started);
+	/* ADR-0339: the phase is state a client reads, and nothing else
+	 * announces it, since no request is in front of a build moving on. */
+	if (e->progress.changed) {
+		e->progress.changed = 0;
+		pkg_announce_jobs();
+	}
+	return n > 0 ? n : 0;
+}
+
+/* Starts a CPDL build's progress: the plan from the recipe, and an event
+ * file from an earlier attempt removed -- a resume keeps /build, and
+ * cbs would truncate the file anyway, but the read offset would not
+ * know that. */
+static void pkg_build_events_start(int chain_idx, struct pkg_entry *e, unsigned declared_phases)
+{
+	struct pkg_chain *c = &g_chains[chain_idx];
+
+	if (c->events_open) {
+		close(c->events_fd);
+		c->events_open = 0;
+	}
+	c->events_off = 0;
+	c->events_len = 0;
+	c->events_skipping = 0;
+	snprintf(c->events_path, sizeof(c->events_path), "%s/%s", e->build_upperdir,
+	         PKG_CBS_EVENTS_REL);
+	(void)unlink(c->events_path);
+	cbs_progress_init(&e->progress, declared_phases);
+	e->progress_known = 1;
+}
+
+/* The build container exited: read what is left, then settle the phases
+ * a build that stopped never finished. */
+static void pkg_build_events_finish(int chain_idx, struct pkg_entry *e, int succeeded,
+                                    int cancelled)
+{
+	struct pkg_chain *c = &g_chains[chain_idx];
+
+	if (e == NULL || !e->progress_known)
+		return;
+	while (pkg_build_events_poll(chain_idx, e) > 0)
+		;
+	cbs_progress_finish(&e->progress, succeeded, cancelled);
+	if (c->events_open) {
+		close(c->events_fd);
+		c->events_open = 0;
+	}
+	c->events_path[0] = '\0';
+	if (e->progress.changed) {
+		e->progress.changed = 0;
+		pkg_announce_jobs();
 	}
 }
 
@@ -13632,6 +14042,9 @@ int pkg_build_output_readable(int chain_idx, char *new_data, int new_data_cap, i
 			}
 			continue;
 		}
+		/* #388: output arriving is when a build has moved, so it is when
+		 * its event file is worth a look. */
+		(void)pkg_build_events_poll(chain_idx, e);
 		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
 			return 0; /* drained everything available right now */
 		return 1;         /* EOF (n == 0) or a real read error */
@@ -14363,6 +14776,17 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 
 	is_final = (g_chains[chain_idx].dep_queue_pos + 1 >= g_chains[chain_idx].dep_queue_count);
 	is_upgrade = is_final && g_chains[chain_idx].dep_queue_is_upgrade;
+
+	/*
+	 * #388, #489: the rest of the build's events, and the phases a stopped
+	 * build never finished. Before any outcome is recorded, so the failed
+	 * phase and command are on the entry when pkg_fail() closes the run.
+	 * The overlay's upper directory -- where the file is -- is still there:
+	 * the build container is removed after this returns.
+	 */
+	stallwatch_step("pkg build completion: read the build's events");
+	pkg_build_events_finish(chain_idx, e, exit_status == 0 && !e->cancel_requested,
+	                        e->cancel_requested);
 
 	/*
 	 * Deliberately NOT gated on exit_status. A cancelled build is

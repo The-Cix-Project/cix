@@ -19291,7 +19291,7 @@ components:
 
     PipelineRun:
       type: object
-      required: [name, image, started_at, ended_at, status]
+      required: [name, image, started_at, ended_at, status, phases, phase, failed_command]
       properties:
         name:
           type: string
@@ -19326,6 +19326,45 @@ components:
             before stage times were kept.
           items:
             $ref: "#/components/schemas/PipelineRunStage"
+        phases:
+          type: array
+          nullable: true
+          description: >
+            ADR-0275 (#388): the build's plan and how each phase went,
+            one entry per phase of the closed vocabulary, in its order
+            -- read from cbs's own build event stream. `null` for a run
+            with no CPDL build: a cache hit, a run that failed before
+            its build began, or one recorded before phases were kept.
+            Absence of a plan is not a fact about the recipe, so those
+            runs report no phases rather than not-implemented ones.
+          items:
+            $ref: "#/components/schemas/BuildPhase"
+        phase:
+          type: string
+          nullable: true
+          enum: [prepare, configure, build, check, install, finalize]
+          description: >
+            ADR-0275: the phase of the build stage that failed, beside
+            `stage: build` -- same rule as PkgEntry.phase. Null when no
+            phase failed.
+        failed_command:
+          type: object
+          nullable: true
+          required: [command, log_path, message]
+          description: >
+            #489: the command this run's build failed in, as on
+            PkgEntry.failed_command. Its log_path names a file inside a
+            build container that is normally gone by the time a run is
+            read; message is not kept on the run and is always null.
+          properties:
+            command:
+              type: string
+            log_path:
+              type: string
+              nullable: true
+            message:
+              type: string
+              nullable: true
         stage:
           type: string
           description: The stage the run ended at. Meaningful only when status is not ok.
@@ -19345,6 +19384,31 @@ components:
             case for an older run: logs are pruned at forty and
             runs are kept for a thousand.
 
+    BuildPhase:
+      type: object
+      required: [phase, status, duration_ms]
+      description: >
+        ADR-0275: one phase of a build stage. The vocabulary is closed
+        at six, and every one appears, in order, so a phase a recipe
+        does not declare is reported `not-implemented` rather than left
+        out.
+      properties:
+        phase:
+          type: string
+          enum: [prepare, configure, build, check, install, finalize]
+        status:
+          type: string
+          nullable: true
+          enum: [ok, blocked, failed, cancelled, not-implemented]
+          description: >
+            The stage status axis (ADR-0256), one level down. `blocked`
+            is a declared phase that never ran because an earlier one
+            failed. Null for a declared phase with no outcome yet --
+            still to come, or running now.
+        duration_ms:
+          type: integer
+          nullable: true
+          description: How long the phase took, from cbs's phase-end. Null until it ends.
     PipelineRunStage:
       type: object
       required: [stage, started_at, seconds]
@@ -23031,7 +23095,7 @@ components:
 
     PkgEntry:
       type: object
-      required: [name, image, version, state, files]
+      required: [name, image, version, state, files, phase, failed_command, current_phase, phases]
       properties:
         name:
           type: string
@@ -23119,6 +23183,71 @@ components:
             worth retrying, a build that did not work is a real defect
             and retrying changes nothing. `stage` says which without
             anyone having to pattern-match an error string.
+        phase:
+          type: string
+          nullable: true
+          enum: [prepare, configure, build, check, install, finalize]
+          description: >
+            ADR-0275 (#388, #489): which phase of the build stage
+            failed, read from cbs's own build event stream rather than
+            from the log. Non-null only beside `stage: build` and a
+            non-ok `status` -- a phase is never reported without its
+            stage, because `phase: install` alone would read as the
+            install stage. The first five are the recipe's CPDL phases;
+            `finalize` is what cbs does after the recipe's last phase
+            (the platform's finalize command, pruning and writing the
+            artifact), which has no event of its own and is reported
+            failed when every phase ended well and the build did not.
+            Null when the build failed before its first phase began.
+        failed_command:
+          type: object
+          nullable: true
+          required: [command, log_path, message]
+          description: >
+            #489: the command the build failed in, under the same rule
+            as `phase`. Null when no command failed -- a failure in
+            cbs itself, or in finalize.
+          properties:
+            command:
+              type: string
+              description: The program and its arguments, as cbs named them.
+            log_path:
+              type: string
+              nullable: true
+              description: >
+                cbs's log of that one command. A path INSIDE the build
+                container, so it is readable only while that container
+                exists -- a build kept with keep_on_failure, through
+                GET /containers/{kept_build_container}/files. The
+                command's output is also in the build log.
+            message:
+              type: string
+              nullable: true
+              description: >
+                cbs's own word for the failure. cbs reports only that a
+                command did not exit as its recipe expected, never the
+                exit code itself, so no exit code is given.
+        current_phase:
+          type: string
+          nullable: true
+          enum: [prepare, configure, build, check, install, finalize]
+          description: >
+            ADR-0275 (#388): the phase a CPDL build is in RIGHT NOW --
+            a live cursor, non-null only while state is "building" and
+            a phase has begun. Announced as it changes (ADR-0339), read
+            from cbs's event file as the build's output arrives and at
+            least every stall-check interval.
+        phases:
+          type: array
+          nullable: true
+          description: >
+            ADR-0275 (#388): the in-flight build's plan, one entry per
+            phase of the closed vocabulary, in its order. Null unless
+            state is "building" and the build runs cbs (a cache hit
+            builds nothing). A finished build's phases are history and
+            are on its run (GET /pipeline/runs).
+          items:
+            $ref: "#/components/schemas/BuildPhase"
         run_started_at:
           type: integer
           format: unix-seconds

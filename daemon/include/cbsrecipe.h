@@ -249,4 +249,9 @@ int cbs_explain_metadata(const struct cbs_explain *ex, const char *key, char *ou
 /* How many phases the document declares (1..5). */
 int cbs_explain_phase_count(const struct cbs_explain *ex);
 
+/* The name of declared phase `index` ("prepare" .. "install"), or NULL
+ * when there is no such entry. #388: the plan a build's phases are
+ * reported against (ADR-0275). */
+const char *cbs_explain_phase_name(const struct cbs_explain *ex, int index);
+
 #endif /* CIX_CBSRECIPE_H */

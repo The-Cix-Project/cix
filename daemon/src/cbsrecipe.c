@@ -441,3 +441,15 @@ int cbs_explain_phase_count(const struct cbs_explain *ex)
 		return 0;
 	return (int)v->u.array.count;
 }
+
+const char *cbs_explain_phase_name(const struct cbs_explain *ex, int index)
+{
+	const struct json_value *v;
+
+	if (ex == NULL || index < 0)
+		return NULL;
+	v = json_object_get(ex->root, "phases");
+	if (v == NULL || v->type != JSON_ARRAY || (size_t)index >= v->u.array.count)
+		return NULL;
+	return json_as_string(json_object_get(v->u.array.items[index], "name"));
+}

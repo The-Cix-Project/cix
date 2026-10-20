@@ -228,6 +228,48 @@ succeeded. A spoofed marker misreports a diagnostic and cannot produce a
 wrong build outcome. If a phase ever becomes a gate, this mechanism is
 no longer sufficient and must be revisited before that happens.
 
+### Implemented, 2026-10-20 (cbs v0.1.107, #388, #489)
+
+cix-build-system#282 shipped in cbs v0.1.107. Two things about the
+mechanism differ from what the corrections above expected, and both
+are facts measured in the trees rather than choices.
+
+**A file, not `--events-fd`.** #282 offers both `--events-fd N` and
+`--events-file FILE`. A descriptor cannot reach cbs: the build runs as
+a service under `cix-init`, which marks every descriptor from 3 up
+close-on-exec before it execs one (`init/src/cix_init.c`, the
+`close_range(3, ~0U, CLOSE_RANGE_CLOEXEC)` before exec). So cixd passes
+`--events human --events-file /build/cbs-events.jsonl`: the operator's
+log keeps the human reporter, and cixd reads the file host-side under
+the build overlay's upper directory. It reads on every output-pipe
+wakeup, from the stall check, and to its end when the container exits.
+cbs flushes after every event, writing the human line first and the
+JSONL line second, so a wakeup can come a moment before the record it
+announces; the next read takes it. `daemon/src/cbsevents.c` folds the
+records into a build's progress and is pure, gated by `test_cbsevents`
+in SELFTESTS.
+
+**`finalize` has no event; it is derived.** cbs emits `phase-begin` and
+`phase-end` for the recipe's own phases only. The finalize command,
+pruning and writing the artifact happen after the last of them and
+before `build-end`, with no event of their own. So `finalize` is
+`ok` with a successful `build-end`, and is the failed phase when every
+recipe phase ended well and `build-end` reports a failure. That makes
+this ADR's sixth phase cover all of what cbs does after the recipe,
+which is what "ours rather than the recipe's" meant.
+
+**And one thing #489 asked for is not available.** cbs's `command-end`
+carries status 0 or 1: whether the command exited as its recipe
+expected, never the exit code itself. So a failed command is reported
+by its program and arguments, its message and cbs's per-command log
+path, which lies inside the build container, and with no exit code.
+
+**The plan is the explain document's.** `cbs explain --json` already
+runs once per published version and its output is stored beside the
+recipe. `parse_cbs_recipe()` reads its `phases` into the recipe, so the
+plan costs no fork at build time. That is the answer this ADR gave, now
+built.
+
 ## Alternatives considered
 
 **Add a `verify` stage for packages, now that it can be derived.**

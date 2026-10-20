@@ -158,6 +158,12 @@ static void test_happy_path(void)
 		expect_str("absent artifact_sha256", buf, "");
 
 	expect_int("phase count", cbs_explain_phase_count(ex), 4);
+	/* #388: the plan a build's phases are reported against. */
+	expect_str("phase 0", cbs_explain_phase_name(ex, 0), "prepare");
+	expect_str("phase 2", cbs_explain_phase_name(ex, 2), "check");
+	expect_str("phase 3", cbs_explain_phase_name(ex, 3), "install");
+	if (cbs_explain_phase_name(ex, 4) != NULL || cbs_explain_phase_name(ex, -1) != NULL)
+		fail("a phase index outside the document named a phase");
 
 	cbs_explain_free(ex);
 }
@@ -521,6 +527,8 @@ static void test_null_safety(void)
 		expect_int("metadata of NULL", cbs_explain_metadata(NULL, "k", buf, sizeof(buf)), -1);
 	}
 	expect_int("phase count of NULL", cbs_explain_phase_count(NULL), 0);
+	if (cbs_explain_phase_name(NULL, 0) != NULL)
+		fail("phase name of NULL was not NULL");
 	if (cbs_explain_version(NULL, buf, sizeof(buf)) == 0)
 		fail("version of NULL succeeded");
 	if (cbs_explain_requires(NULL, "build", "tool", buf, sizeof(buf)) == 0)

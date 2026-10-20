@@ -10385,9 +10385,12 @@ async function removePkiCert(name) {
 function pkgStateColumn() {
 	return {
 		label: "State",
+		/* #388 (ADR-0275): a failed build's phase nests in its stage,
+		 * never alone -- "build.check/failed" -- and a running build
+		 * names the phase it is in. */
 		text: (p) => (p.stage
-			? p.state + " (" + p.stage + "/" + p.status + ")"
-			: p.state),
+			? p.state + " (" + p.stage + (p.phase ? "." + p.phase : "") + "/" + p.status + ")"
+			: (p.current_phase ? p.state + " (" + p.current_phase + ")" : p.state)),
 		title: (p) => p.error,
 	};
 }
@@ -14036,16 +14039,21 @@ async function openPipelineDrawer(kind, row) {
 
 				el.className = "log-entry" + (bad ? " log-entry-error" : "");
 				status.className = "log-entry-status";
-				status.textContent = bad ? run.stage + "/" + run.status : "ok";
+				/* #388: the phase it failed in, nested in its stage. */
+				status.textContent = bad
+					? run.stage + (run.phase ? "." + run.phase : "") + "/" + run.status
+					: "ok";
 				/* The image is named on every line: a run is a
 				 * (package, image) pair, and a history that omits the
 				 * image reads as one stream of contradictory outcomes. */
 				el.appendChild(document.createTextNode(
 					when + " · " + (run.image || "-") + " · "));
 				el.appendChild(status);
+				/* #489: the command it failed in, from cbs's events. */
 				el.appendChild(document.createTextNode(
 					" · " + secs + "s" + split + " · " + (run.trigger || "-") +
-					(run.error ? " — " + run.error : "")));
+					(run.error ? " — " + run.error : "") +
+					(run.failed_command ? " — in: " + run.failed_command.command : "")));
 				runsBox.appendChild(el);
 			}
 		}
@@ -14646,6 +14654,23 @@ async function refreshBuildOverview() {
 				dd.textContent = boDuration(e.stage_seconds);
 				dl.appendChild(dt);
 				dl.appendChild(dd);
+			}
+			/* #388 (ADR-0275): the phase the build is in, named by the
+			 * daemon from cbs's own events, and the plan -- the phases the
+			 * recipe declares, in order, each with how it went. A phase the
+			 * recipe does not declare is left out of this line; it is
+			 * not-implemented, and says nothing about this build. */
+			if (e.current_phase)
+				add("phase", e.current_phase);
+			if (Array.isArray(e.phases)) {
+				const plan = e.phases
+					.filter((p) => p.status !== "not-implemented")
+					.map((p) => p.phase + " " + (p.status
+						? p.status
+						: (p.phase === e.current_phase ? "running" : "to come")));
+
+				if (plan.length > 0)
+					add("phases", plan.join(", "));
 			}
 			/* A clock, for the reason "started" above is one. */
 			if (e.build_started_at)

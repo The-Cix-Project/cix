@@ -14521,10 +14521,19 @@ static void fmt_pkg_line(const struct json_value *v)
 	 */
 	const char *stage = json_str_field(v, "stage");
 	const char *status = json_str_field(v, "status");
-	char state_shown[40];
+	/* #388 (ADR-0275): the phase nests inside its stage, never alone, and
+	 * with no space, so the row keeps its columns: `failed:build.check/
+	 * failed` after a build failed in check, `building:check` while it
+	 * runs. */
+	const char *phase = json_str_field(v, "phase");
+	const char *current = json_str_field(v, "current_phase");
+	char state_shown[48];
 
 	if (stage != NULL && stage[0] != '\0' && status != NULL && status[0] != '\0')
-		snprintf(state_shown, sizeof(state_shown), "%s:%s/%s", state, stage, status);
+		snprintf(state_shown, sizeof(state_shown), "%s:%s%s%s/%s", state, stage,
+		         phase != NULL ? "." : "", phase != NULL ? phase : "", status);
+	else if (current != NULL)
+		snprintf(state_shown, sizeof(state_shown), "%s:%s", state != NULL ? state : "-", current);
 	else
 		snprintf(state_shown, sizeof(state_shown), "%s", state != NULL ? state : "-");
 
@@ -17249,6 +17258,33 @@ static void fmt_pipeline_runs(const struct json_value *root)
 				}
 				printf("\n");
 			}
+		}
+		/* #388 (ADR-0275): the build's phases, those the recipe declares,
+		 * and the command a failed one failed in (#489). */
+		{
+			const struct json_value *ph = json_object_get(r, "phases");
+			const struct json_value *fc = json_object_get(r, "failed_command");
+			size_t k;
+			int shown = 0;
+
+			if (ph != NULL && ph->type == JSON_ARRAY) {
+				for (k = 0; k < ph->u.array.count; k++) {
+					const struct json_value *p = ph->u.array.items[k];
+					const char *pst = json_str_field(p, "status");
+					const struct json_value *ms = json_object_get(p, "duration_ms");
+
+					if (pst != NULL && strcmp(pst, "not-implemented") == 0)
+						continue;
+					printf("%s %s %s", shown++ == 0 ? "    phases:" : ",",
+					       json_str_field(p, "phase"), pst != NULL ? pst : "-");
+					if (ms != NULL && ms->type == JSON_NUMBER)
+						printf(" %ldms", (long)json_as_number(ms));
+				}
+				if (shown > 0)
+					printf("\n");
+			}
+			if (fc != NULL && fc->type == JSON_OBJECT)
+				printf("    failed command: %s\n", json_str_field(fc, "command"));
 		}
 		if (err != NULL && err[0] != '\0')
 			printf("    %s\n", err);
