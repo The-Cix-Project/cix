@@ -2445,6 +2445,17 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 298: a device record says what the device is (ADR-0345 step 1, #349, 0.2.57-558)
+
+The owner chose to rebuild device names as identities and accepted ADR-0345. Its first gate: nothing may be named by MAC until `mac_permanent` has been read for the box's interfaces. So this step adds the facts a mapping will select by, and nothing selects by them yet. Every `GET /v1/devices` entry now carries `serial`, `wwid`, `mac` and `mac_permanent`. An interface a container holds keeps the address read when it was granted.
+
+**Measured on 192.168.15.95 after booting 0.2.57-558:**
+- `net:eth0`: `mac` `bc:24:11:42:0f:4f`, `mac_permanent: true`.
+- `net:wlan0`, held by `ar-1` and read from the grant `ar-1` made at boot: `mac` `98:25:4a:5b:de:5b`, `mac_permanent: true`. **So the rtw88 radio can be named by its MAC**, which #349 had left open.
+- The TP-Link dongle: `serial` `123456`, which ADR-0345 already records as a factory default.
+- `disk:sda`: `wwid` `t10.ATA     QEMU HARDDISK                           QM00013             `, padded by the kernel and kept verbatim. `vda`, `vdb` and `sr0` have none.
+- 12 containers running and no drift report in the cixd log. Probe `0.2.57-569` was green, and `test_devicestate` in SELFTESTS gates the field layout.
+
 ## Part 297: a device granted to a user-namespace container works (#621, 0.2.57-557)
 
 Part 296's verification found it: every userns container granted a device died at `child: container_dev_mknod: Operation not permitted`. userns is the default, so passthrough did not work unless a container also said `"userns": false`. ADR-0333 had moved the standard nodes to the parent for exactly this reason, and the granted ones were left behind in the child. They now follow: the parent makes a userns container's granted nodes, with the baseline's owner rule. A live attach takes the rootfs's own owner.
