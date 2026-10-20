@@ -643,6 +643,28 @@ int main(void)
 			ok = 0;
 		}
 
+		/*
+		 * The bring-up helper is the caller's to reap (ADR-0335 step
+		 * 2): container_create() returns before it has run, and the
+		 * daemon adopts it. This test is the caller, so it waits --
+		 * without that, "up" below was a race the test happened to win
+		 * until 0.2.57-561's hostbuild lost it (result=0: present,
+		 * renamed, not yet up). Its exit status is the errno of a
+		 * bring-up that failed, which says so rather than "not up".
+		 */
+		if (h4.iface_bringup_pid > 0) {
+			int hst = 0;
+
+			if (waitpid(h4.iface_bringup_pid, &hst, 0) != h4.iface_bringup_pid ||
+			    !WIFEXITED(hst) || WEXITSTATUS(hst) != 0) {
+				fprintf(stderr, "FAIL: interface bring-up helper failed: %s\n",
+				        WIFEXITED(hst) ? strerror(WEXITSTATUS(hst)) : "killed");
+				ok = 0;
+			}
+			if (h4.iface_bringup_split_fd >= 0)
+				close(h4.iface_bringup_split_fd);
+		}
+
 		/* Visible inside the container's own netns under the name it
 		 * was given (ADR-0345), and administratively up -- both
 		 * confirmed from that exact vantage point, not inferred. */
