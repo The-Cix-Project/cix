@@ -45,10 +45,14 @@ The **dry run alone, with no deletes, held the loop for 1909 ms** (stallwatch, 0
      - a container definition's `image_version`;
      - a container definition's `roll_from`, which covers ADR-0323's rollback window.
    - `keep` is a new field of the image policy: `cixctl image policy NAME --keep=N`, beside `recipe`, `apply` and `downgrade`. It counts unreferenced versions only, newest first.
-   - The default is **3**. That leaves an operator two or three earlier versions to re-pin a container to by hand, on top of the rollback target the reference rule already keeps.
+   - The default is **3**. That keeps three earlier versions an operator can still create a container from with an explicit `image_version` on `POST /v1/containers`, on top of the rollback target the reference rule already keeps. The image policy's `downgrade` setting governs package pins in the manifest, not which image version a container is created from, so it does not stand in the way.
    - `keep` may be 0.
 
-2. **Newest is decided by the disk, not by the recorded history.** A version is ordered by when its directory was created: its `statx` birth time, or its modification time where the filesystem has no birth time. The recorded history cannot be trusted for this, because on `jumpbox` it is missing exactly the newest versions. This extends the rule `image_ondisk_versions()` already states: the disk is authoritative.
+2. **The recorded history is the one source of when a version was made, and a pass repairs it from the disk first.** Retention orders versions newest first by the history's `created_at`. On `jumpbox` the history is missing exactly the newest versions, so a pass starts by reconciling the two:
+   - a version on disk but not in the history is added, dated by its directory's `statx` birth time, or by its modification time where the filesystem has no birth time;
+   - a history entry whose directory is gone is dropped.
+
+   That repair does real work only once, on the first pass over an image that has drifted. From then on the history is correct, it is the only ordering source, and `GET /v1/images/{name}/versions` lists what is actually on disk. Reading the disk remains the repair and the drift check, never a second clock beside `created_at`. The repair works in memory with no 256 cap, so it can hold the whole drift. What it saves fits the cap, because by then retention has trimmed it (decision 6).
 
 3. **A pass decides on the loop, and the cost of deciding is bounded.**
    - The rule stays in one function. The work is restructured so a pass does each piece once:
@@ -64,12 +68,15 @@ The **dry run alone, with no deletes, held the loop for 1909 ms** (stallwatch, 0
    3. The version directory, by then holding only bookkeeping files, is removed on the loop.
    4. Each subvolume's delete is queued with `rootfs_discard_start()`, which runs at most two helper children at once.
 
+   **The queue's limit of two bounds forks, not filesystem work.** `SNAP_DESTROY` returns once the subvolume is unlinked. The kernel's cleaner thread frees the extents afterwards, asynchronously, so 813 quick ioctls can leave far more freeing queued in the kernel than two-at-a-time suggests. Whether that queued work slows the loop is the open measurement below.
+
    **What is set aside is the subvolume, never the version directory.** `cix_btrfs_subvol_delete_or_rmtree()` destroys a subvolume whole with `SNAP_DESTROY`. Given a plain directory, that ioctl fails and the call falls back to `rmtree()`. That would unlink every file of the `rootfs` one at a time, which is exactly the call #619 measured as slow. ADR-0341 sets a container's `rootfs` aside for the same reason.
 
    `rootfs_discard()` already requires its trash directory to be on the source's filesystem. `IMAGES_DIR` and `CONTAINER_ROOTFS_DIR` both sit under `REBUILDABLE_DIR`, and image and version directories are plain directories. So each rename moves a subvolume within one parent subvolume, as ADR-0341's does. Startup gains `rootfs_discard_sweep(IMAGES_DIR)` beside the two sweeps it already runs (`main.c`), so a delete interrupted by a restart is finished by the next start. `image_list_names()` already skips names that start with a dot, so `.discard` is never taken for an image.
 
 5. **A pass never runs while a package job is in flight.** This is the collector's existing rule, kept for the same reason. A build composes its environment from build-image versions, and that reference lives in `pkg.c`, where the reference check cannot see it. A pass runs at two times:
-   - **Automatically**, once for each image that got a new version, as soon as no package job is in flight. That is when the last job ends, not after each install.
+   - **Automatically**, once for each image that got a new version, as soon as no package job is in flight. `pkg_completion_followup()`, which already runs after every package job, marks the image. The pass runs when the marking job is the last one in flight, not after each install. On a host whose jobs rarely all stop, the pass waits. It never runs alongside a build, and a later idle moment serves.
+   - **Once after the daemon starts**, at the first moment no job is in flight, over every image. A mark held only in memory is lost at a restart, so this pass is what keeps the bound true across one.
    - **On request**, through `POST /v1/images/gc`, which becomes "run a pass over every image now". Each image is held to its own policy's `keep`, and the request has no `keep` of its own: one rule decides how much history an image keeps. Setting an image's policy to `keep` 0 is how to collect everything unreferenced in it. The request keeps `dry_run`, and it still answers 409 while a job is in flight. Its `reclaimed` list now names versions *set aside*. Their space comes back when the helpers finish.
 
 6. **The history cap stops being reachable in practice.** When every image holds at most its referenced versions plus `keep`, nothing approaches 256. The cap stays as the bound on a fixed array, and `image_record_version()`'s full-array branch stays. The cap no longer decides which versions are remembered.
@@ -79,7 +86,17 @@ The **dry run alone, with no deletes, held the loop for 1909 ms** (stallwatch, 0
 - **Measured:** the 1219 ms of `unlink` into `jumpbox` against 3 ms into a 4-version image; the 813 collectable versions; and the 1909 ms dry-run decision pass.
 - **Not measured:**
   - Whether two helper children deleting subvolumes under full quota accounting slow the loop *through the filesystem*, for example through transaction commits the loop's own state writes wait on. Decision 4 takes the delete off the loop; it cannot promise the filesystem stays quiet. The first pass on .95 is the measurement. Stallwatch records any pass of 750 ms or more, and its tallies name the call.
-  - **#619's cause.** An automatic pass reaches only an image that just got a new version, and `hibr` rolls only `jumpbox`. So the box-wide first pass is one explicit `POST /v1/images/gc` after the release is deployed. **That is the same deletion the owner declined as a one-off.** Accepting this ADR includes it, now off the loop and with each image's `keep` honoured. That pass sets aside about 813 versions. The next `hibr` exit into `jumpbox` then shows the `unlink` tally against a 4-version history. If it falls to milliseconds, the hypothesis holds. If it does not, the cause is still open, and this ADR stands on its own: a history that grows without limit, and a collector that blocks the loop, are defects whatever #619 turns out to be.
+  - **Quota accounting after the first pass.** Under full qgroup accounting, the kernel may mark accounting inconsistent rather than account a large shared subtree as it is dropped. That is the kernel's documented behaviour for subtrees deeper than its drop threshold; it has not been measured here. 0.2.57-552's `disk.usage.accounting` would then read `stale`. Container disk limits (`cix_btrfs_qgroup_limit_excl()`) rest on that accounting, so stale cannot be left in place. The daemon has no rescan today; `src/btrfs.c` only reads the status flag. So this ADR adds one:
+    - once the discard queue is empty, a quota status reading inconsistent starts `BTRFS_IOC_QUOTA_RESCAN`;
+    - it runs in a helper child;
+    - it starts once per drained queue, never in a loop;
+    - its start and finish are logged, and `accounting` reads `stale` until it finishes.
+
+    A rescan reads every extent. Its cost on .95 is unmeasured, and stallwatch is what will show whether it reaches the loop.
+  - **#619's cause.**
+    - The first box-wide pass is decision 5's pass at daemon start, at the first boot into the release that implements this ADR. **That is the same deletion the owner declined as a one-off.** Accepting this ADR includes it, now off the loop and with each image's `keep` honoured. It sets aside about 813 versions on .95.
+    - The next `hibr` exit into `jumpbox` then shows the `unlink` tally against a 4-version history. If it falls to milliseconds, the hypothesis holds.
+    - If it does not fall, the cause is still open. `install_mutate` would still run on the loop, and that becomes its own question, not something folded into this ADR. This ADR stands either way: a history that grows without limit, and a collector that blocks the loop, are defects whatever #619 turns out to be.
 
 ## Consequences
 
@@ -87,7 +104,9 @@ The **dry run alone, with no deletes, held the loop for 1909 ms** (stallwatch, 0
 - **Removing old versions is now automatic.** A version an operator meant to keep for later must be pinned by a container definition, or covered by `keep`. Once an operator upgrades to this release, `.95` loses about 813 versions it has never used.
 - **`measure: true` is untouched.** It is still an `nftw()` walk on the loop, which the comment above `handle_images_gc()` already warns about. Measuring a version from its quota group in O(1) is a separate change.
 - `test_images` or `test_pkg` gains a case for each of these:
-  - a pass keeps the referenced versions plus `keep`, newest by disk time;
+  - a pass first adds an on-disk version missing from the history, dated by its directory, and drops a history entry whose directory is gone;
+  - a pass keeps the referenced versions plus `keep`, newest by `created_at`;
+  - an inconsistent quota status after the discard queue drains starts exactly one rescan;
   - a pass skips while a job is in flight;
   - a set-aside version is gone after its helper exits;
   - a `.discard` entry left by an earlier start is swept.
