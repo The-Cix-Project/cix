@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container's disk usage says how its filesystem accounts (#613, #619)
+
+- **What changed:** `GET /containers/{name}/stats` carries `disk.usage.accounting` when
+  `source` is `qgroup`: `ok` (full qgroup accounting), `stale` or `simple` (squota), the field
+  and values `GET /volumes/{name}/usage` already reports. And the install's two unlink sites
+  are tallied apart, as `unlink old files` and `unlink before copy`.
+- **Why:** on 0.2.57-551 the record named the cost of `hibr`'s exit at 00:59:47Z: `most in
+  unlink (1219 ms, 386 calls), then copy (123 ms)`. The 193 reflinks are cheap, so the earlier
+  writeback guess is withdrawn; the unlinks of a fresh snapshot's files are not. The 386 is
+  two sites under one name: removing the old version's 193 files, then an unlink before each
+  copy that finds the path already gone. Container disk usage reads `source: qgroup`, so
+  quotas are on for the filesystem holding images and container rootfs, and full accounting
+  (which walks shared extents' backreferences on every change) is one candidate for a slow
+  unlink in a snapshot. Which mode that filesystem is in could not be read through the API,
+  which was #613's remaining gap; now it can. The cause is not established.
+
 ### A slow handler names the calls that took its time (#619, #617)
 
 - **What changed:** `stallwatch_tally()` sums the time of one kind of call over a handler, and

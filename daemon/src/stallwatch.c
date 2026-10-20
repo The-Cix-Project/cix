@@ -1279,7 +1279,7 @@ void stallwatch_handler_done(const char *kind, long long started_millis)
 	tallies_describe(tallies, sizeof(tallies));
 	if (g_step_slowest[0] != '\0')
 		snprintf(g_shared->pass_slowest_handler, STALL_ACTIVITY_MAX,
-		         "%.60s, slowest step %.50s (%lld ms)%.70s", base, g_step_slowest,
+		         "%.60s, slowest step %.50s (%lld ms)%.100s", base, g_step_slowest,
 		         g_step_slowest_millis, tallies);
 	else
 		snprintf(g_shared->pass_slowest_handler, STALL_ACTIVITY_MAX, "%.100s%.80s", base,

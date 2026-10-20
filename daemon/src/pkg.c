@@ -2194,7 +2194,7 @@ static void unlink_manifest_files(const struct pkg_entry *e, const char *rootfs)
 		snprintf(path, sizeof(path), "%s/%s", rootfs, e->files[i]);
 		t = stallwatch_tally_start();
 		unlink(path);
-		stallwatch_tally("unlink", t);
+		stallwatch_tally("unlink old files", t);
 	}
 	path_claim_index_free(&idx);
 	if (kept > 0)
@@ -4640,7 +4640,7 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 
 			t = stallwatch_tally_start();
 			unlink(dst_path);
-			stallwatch_tally("unlink", t);
+			stallwatch_tally("unlink before copy", t);
 			t = stallwatch_tally_start();
 			rc = copy_file_simple(src_path, dst_path);
 			stallwatch_tally("copy", t);
@@ -4710,7 +4710,7 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 			unlink(dst_path); /* EEXIST tolerance for a re-install/upgrade,
 			                    * same spirit copy_file_simple()'s own
 			                    * O_CREAT|O_TRUNC already has for regular files */
-			stallwatch_tally("unlink", t);
+			stallwatch_tally("unlink before symlink", t);
 			t = stallwatch_tally_start();
 			rc = symlink(target, dst_path);
 			stallwatch_tally("symlink", t);

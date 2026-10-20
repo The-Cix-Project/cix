@@ -19973,6 +19973,20 @@ components:
 
                     `null` when nothing has been measured yet, which pairs
                     with `bytes` being `null`.
+                accounting:
+                  type: string
+                  enum: [ok, stale, simple]
+                  description: >
+                    Present only when `source` is `qgroup`, and the same
+                    field `GET /volumes/{name}/usage` carries. `stale` means
+                    btrfs has flagged accounting inconsistent or is
+                    mid-rescan, so `bytes` may read low; `simple` means
+                    squota, where exclusive bytes are attributed on a
+                    different rule. `ok` is full qgroup accounting, which
+                    tracks every shared extent's backreferences -- the
+                    mode of the filesystem the container's rootfs and its
+                    image share, so it says how that filesystem accounts
+                    for every snapshot on it (#613, #619).
             read_bytes:
               type: integer
               description: Cumulative bytes read, from cgroup v2 io.stat (0 if no tracked block I/O has happened yet).

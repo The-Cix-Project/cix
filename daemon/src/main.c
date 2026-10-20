@@ -20271,6 +20271,7 @@ static void handle_container_stats(int fd, const char *name)
 	time_t disk_measured_at = 0;
 	int disk_known = 0;
 	const char *disk_source = NULL;
+	enum cix_btrfs_qgroup_state disk_qstate = CIX_BTRFS_QGROUP_OK;
 	long long io_rbytes, io_wbytes, io_rios, io_wios;
 	struct cgroup_pressure cpu_pressure, io_pressure, mem_pressure;
 	int i;
@@ -20362,6 +20363,7 @@ static void handle_container_stats(int fd, const char *name)
 			disk_measured_at = time(NULL);
 			disk_known = 1;
 			disk_source = "qgroup";
+			disk_qstate = qstate;
 		} else {
 			/* Serve what was last measured, then start a new
 			 * measurement if that figure has aged out. Never walks
@@ -20461,6 +20463,14 @@ static void handle_container_stats(int fd, const char *name)
 		jw_str(&w, disk_source);
 	else
 		jw_null(&w);
+	/* #613: the qgroup's accounting mode, as GET /volumes/{name}/usage
+	 * reports it -- so a container's disk figure says whether it is
+	 * full accounting, squota or mid-rescan. */
+	if (disk_source != NULL && strcmp(disk_source, "qgroup") == 0) {
+		jw_key(&w, "accounting");
+		jw_str(&w, disk_qstate == CIX_BTRFS_QGROUP_SIMPLE ? "simple"
+		            : disk_qstate == CIX_BTRFS_QGROUP_STALE ? "stale" : "ok");
+	}
 	jw_obj_close(&w);
 	jw_key(&w, "read_bytes");
 	jw_int(&w, io_rbytes);
