@@ -316,6 +316,16 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Held state comes from the grants recorded at grant time**, never from what the host can see. An interface moved into a container is still listed, as held.
 - **Reservation is a per-container setting, `reserve_devices`, off by default.** Off, a stopped definition only appears in `reserved_by`. On, it makes the device `reserved` and refuses it to everyone else. Never make it a host-wide switch.
 
+## A record id says where a device is; a mapping says which device it is
+
+**A device's id names its location, and a name (a device mapping) names its identity.** That is [ADR-0345](docs/adr/0345-a-record-id-says-where-a-device-is-a-mapping-says-which-device-it-is.md), accepted by the owner on 2026-10-20, who chose to rebuild names rather than remove them. Measured on .95 before it: zero mappings existed, and the TP-Link dongle's USB serial is the factory default `123456`, which was part of its record id.
+
+- **Never put a serial, a MAC or a UUID into a record id.** A USB id is controller, root-hub version and port path. Disk, net, GPU and PHY ids stay kernel names. An identity is always a mapping, never a second id.
+- **A selector is an identity only when it is scoped.** `usb_serial` is vendor, product and serial together; there is no bare `serial` kind. A `mac` must be permanent (`addr_assign_type` 0).
+- **An exclusive selector matching two devices is `ambiguous` and refused, never a pick.**
+- **The in-container name of a passed-through interface is `ifname` (ADR-0259)**, defaulting to the mapping's name. Never give it a second source.
+- **An unplug sends a grant back to waiting; `DELETE` is final.**
+
 ## One way to make an image
 
 **An image is made by `POST /v1/images` (`cixctl image create --name=NAME`) and by nothing else.** `POST /v1/pkg/install` naming an image that does not exist is a 400 naming that fix, and creates nothing (#500) -- the owner's decision of 2026-09-30, chosen over documenting the implicit create an install used to perform, which is how `--image=jump`, a typo for `jumpbox`, became a new image.

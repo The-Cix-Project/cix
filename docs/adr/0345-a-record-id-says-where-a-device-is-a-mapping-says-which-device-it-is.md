@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-20. The owner asked whether device names would *"ever be useful or used"*. The answer was that today they are not: `GET /v1/devicemaps` on 192.168.15.95 returns `[]` and no recipe in cix-recipes names one. Given the choice between rebuilding them and removing them, the owner chose to rebuild them. This ADR is that rebuild, written to be accepted before anything is built.
+Accepted by the owner, 2026-10-20, after an advisor review and two revisions (the owner asked: *"is it bar raising? are we doing the right way?"*). Proposed the same day. The owner asked whether device names would *"ever be useful or used"*. The answer was that today they are not: `GET /v1/devicemaps` on 192.168.15.95 returns `[]` and no recipe in cix-recipes names one. Given the choice between rebuilding them and removing them, the owner chose to rebuild them. This ADR is that rebuild, written to be accepted before anything is built.
 
 It widens [#349](https://git.home.arpa/itdlabs/cix/issues/349), which asked for one part of it: `interfaces[]` naming a mapping that selects by MAC. It supersedes [ADR-0048](0048-persistent-device-name-mappings.md) on two points: what a mapping kind may select, and when a selector that matches more than one device is an error. It amends [ADR-0161](0161-usb-hotplug-and-composite-device-extension.md) in two places, the USB id format and what an unplug does to a grant. It extends [ADR-0259](0259-an-interface-may-be-named.md)'s `ifname` to `interfaces[]`. [ADR-0344](0344-a-device-is-one-record-with-one-state-and-every-grant-asks-it.md)'s one record and one state are unchanged.
 
