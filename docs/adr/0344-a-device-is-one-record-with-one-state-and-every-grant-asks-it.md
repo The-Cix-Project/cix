@@ -67,7 +67,7 @@ Each record carries `parent`: the **nearest sysfs ancestor that is itself a reco
 - A netdev is the net walk's.
 - The PCI walk emits the function itself and keeps only nodes no class walk claims.
 
-So `pci:<bdf>:<node>` ids stop existing. `vda` is `disk:vda` with parent `pci:0000:06:0a.0`, and `card0` is `gpu:0:card0` only. The disk walk stops skipping the OS disk and roled disks. It reports them with a state that says why they cannot be granted (point 2), because a hidden disk is the state an operator cannot see.
+So a disk or DRM node is never reported under a `pci:<bdf>:<node>` id (see [What implementing it settled](#what-implementing-it-settled) for the node that still is). `vda` is `disk:vda` with parent `pci:0000:06:0a.0`, and `card0` is `gpu:0:card0` only. The disk walk stops skipping the OS disk and roled disks. It reports them with a state that says why they cannot be granted (point 2), because a hidden disk is the state an operator cannot see.
 
 **Exclusivity is decided on the record id and the tree, never on major:minor.** A USB device's minor is its device number, which changes at every re-plug (`/dev/bus/usb/001/002` becomes `001/003`), so a node is not a stable identity. A gate asserts that no node appears in two records of one enumeration. With `pci:<bdf>:<node>` gone, that gate is what makes one id mean one node.
 
@@ -129,7 +129,7 @@ Siblings do not conflict, so two partitions of one disk can go to two containers
 - `state`, `reason`, `parent`;
 - `held_by` as a list of `{container, granted, shared}`;
 - `reserved_by`;
-- `nodes` (a list of type, major, minor and path).
+- (a `nodes` list was proposed here and is not needed: a record owns one node or none -- see What implementing it settled).
 
 The `bus` enum gains `disk`, which the daemon already emits. The stale *"Nothing refuses a second grant"* text goes. **State now depends on things outside devices**, so ADR-0339's declarations have to follow. Container mutations already invalidate `listDevices` (five operations, measured). These do not:
 - `deleteStorageRole` and role assignment;
@@ -177,11 +177,22 @@ Children are nested under their parent, so `wlan0` sits under the dongle. One fu
   A create naming `vdb` is refused with 400 and its reason.
 - The page is rendered in Chromium from the box's responses, as this ADR's own context was.
 
+## What implementing it settled
+
+Six points where the code answered more exactly than the proposal did. They are recorded here, not in a new ADR, because none of them reverses the decision.
+
+- **`pci:<bdf>:<node>` survives, for a node no class walk claims.** The proposal said those ids stop existing. What stops existing is a disk or DRM node reported under one: `drop_pci_duplicates()` removes a PCI-walk node that a class walk also reported. A node nothing more specific owns, such as an NVMe controller's char node, keeps its `pci:` id, with the function as its parent. Every PCI function is now a record of its own, owning no node.
+- **A record owns one node or none, so there is no `nodes` list.** The proposal's `nodes` field would have described a record holding several nodes. No record does: a GPU is several records grouped by `gpu:N`, as before. `dev_path`, `type`, `major` and `minor` stay as they were.
+- **`gpu:kfd` is one record, `always_shared`.** It used to be emitted once per GPU group, one node under N ids. That is what the one-node-one-record gate refuses, and ADR-0029 already said the node is host-wide. `device_find_group()` adds it to every `gpu:N` expansion.
+- **`mounted` is a fact of the device that is mounted, not of its disk.** A disk with a mounted partition gets no fact of its own. The partition below makes the disk the host's through the descendant rule. Had the disk carried the fact, it would have reached down and made every sibling partition the host's too. `test_devicestate` checks this with `vdb6` beside a mounted `vdb5`.
+- **Bridge attach does not ask the gate.** `network_attach_interface()` is how first boot gives the management network its uplink, and the verdict would call that uplink `host:management-interface` and refuse it. Bridge attach is host configuration, not a container grant. So it keeps its own rule — the interface exists and is not already a bridge port — and the dashboard offers it only `free` interfaces.
+- **The registry announces `listDevices`, and so does a finished format.** `held_by` and `reserved_by` follow the registry, and a container the daemon starts, restarts or removes by itself changes them with no request in flight. Format completion mounts a disk the same way. Both announce where the change happens (ADR-0339). The format path did not announce even its own status before this.
+
 ## Consequences
 
 - An operator sees every device, why it can or cannot be granted, and who has it. The dashboard and cixctl cannot disagree with a grant's refusal, because all of them read the same verdict.
 - The host's own disks and its management interface cannot be granted, whichever id or walk reaches them.
-- `pci:<bdf>:<node>` ids, and `assignable`, are removed. A definition or an `exact` mapping naming a removed id fails to resolve, with a 400 naming the new id. None exists on .95 (measured), and per the owner's standing rule there is no alias.
+- A disk or DRM node's `pci:<bdf>:<node>` id, and `assignable`, are removed. A definition or an `exact` mapping naming a removed id fails to resolve, with a 400 naming the id that no longer resolves. None exists on .95 (measured), and per the owner's standing rule there is no alias.
 - Disk names (`vda`, `sdb`) are not stable across hardware changes. That is true today of `disk:sr0`, and this ADR does not change it. It is the same question #349 asks for interfaces, and a disk gets its answer there.
 - Cost, priced in cycles: the daemon (`device.c`, `registry.c`, the four grant paths), the contract, cixctl and the page. One compile probe and one release in the ordinary case, plus a gate for the new test.
 

@@ -19369,7 +19369,26 @@ static void handle_container_device_attach(int fd, const char *container_name, c
 	}
 	for (j = 0; j < n; j++) {
 		char msg[256];
-		int verdict;
+		int verdict, k;
+
+		/*
+		 * A device this container already holds. The gate deliberately
+		 * never refuses a container on account of its own grants -- that
+		 * is what lets a reserving definition start onto its own
+		 * reservation -- so the duplicate is named here, as the 409 it
+		 * was when #356's check counted the container itself as a
+		 * holder, rather than reaching registry_device_live_attach()'s
+		 * EEXIST and a generic 500.
+		 */
+		for (k = 0; k < e->device_count; k++) {
+			if (strcmp(e->devices[k].id, match_ids[j]) == 0) {
+				snprintf(msg, sizeof(msg), "device %s is already granted to this container",
+				         match_ids[j]);
+				json_free(root);
+				respond_error(fd, 409, "Conflict", msg);
+				return;
+			}
+		}
 
 		/*
 		 * ADR-0344, the gate the create path asks: a device the host

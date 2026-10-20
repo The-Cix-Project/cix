@@ -397,11 +397,13 @@ int main(void)
 			        0 ||
 			    r.status != 409) {
 				/*
-				 * 409, and it used to be 500. #356's exclusivity check
-				 * runs before anything is attached and refuses this as
-				 * a conflict naming the holder, so the dup no longer
-				 * reaches registry_device_live_attach()'s EEXIST and
-				 * the generic "attach failed" 500. The old comment here
+				 * 409, and it used to be 500. The attach handler refuses
+				 * a device the container already holds before anything
+				 * is attached -- since ADR-0344 explicitly, because the
+				 * one gate never counts a container's own grants against
+				 * it -- so the dup no longer reaches
+				 * registry_device_live_attach()'s EEXIST and the generic
+				 * "attach failed" 500. The old comment here
 				 * argued a dup was not "a realistic operator mistake
 				 * worth its own status code"; the same check that stops
 				 * two containers sharing a disk by accident gives it
