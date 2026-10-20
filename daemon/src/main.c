@@ -15171,11 +15171,12 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * names an interface, which interfaces[] grants.
 			 */
 			if (devicemap_names_interface(id)) {
-				json_free(root);
+				/* id points into root: say it before freeing it. */
 				snprintf(err_msg, err_msg_size,
 				         "device mapping %s names an interface: list it in interfaces[], "
 				         "not devices[]",
 				         id);
+				json_free(root);
 				return 400;
 			}
 			{
@@ -15200,8 +15201,11 @@ static int create_container_from_body(const char *body, size_t body_len,
 					}
 					continue;
 				}
-				json_free(root);
+				/* id points into root: said before it is freed. It was
+				 * formatted after, and printed garbage, until ADR-0345's
+				 * check beside it showed the shape on .95 (0.2.57-559). */
 				snprintf(err_msg, err_msg_size, "unknown or not-currently-present device %s", id);
+				json_free(root);
 				return 400;
 			}
 			if (device_count + n > CONTAINER_MAX_DEVICES) {

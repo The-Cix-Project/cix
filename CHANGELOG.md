@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A refused device's name is said before the request is freed
+
+- **What changed:** container create's "unknown or not-currently-present device %s" now formats the device name before freeing the parsed request. The `devices[]` refusal of a `mac` mapping does the same.
+- **Why:** measured on 192.168.15.95, 0.2.57-559. A create naming `nosuchdevice` answered `unknown or not-currently-present device P`, because the name pointed into the freed tree.
+
 ### A device name says which device it is; a USB id says where it is (ADR-0345 step 2a, #349)
 
 - **What changed:**

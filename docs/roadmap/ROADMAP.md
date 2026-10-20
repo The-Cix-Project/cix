@@ -2445,6 +2445,30 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 299: a device name says which device it is; a USB id says where (ADR-0345 step 2a, #349, 0.2.57-559)
+
+Mappings gain the identity kinds and refuse ambiguity. They resolve against the grant snapshot, and a USB id now names the device's location, without its serial. Probe `0.2.57-570` was green, with `test_devicematch` in SELFTESTS covering what one dongle cannot show: two dongles sharing `123456`.
+
+**Measured on 192.168.15.95 after booting 0.2.57-559:**
+- **USB id:** `device ls` shows the dongle as `usb:2357:012e@0000:07:1b.0-usb2-1`. Its PHY and `wlan0` still hang beneath it, held by `ar-1`.
+- **Mappings of every new kind resolved `present`:**
+  - `mac 98:25:4A:5B:DE:5B` was stored lowercase and resolved to `net:wlan0` **while `wlan0` was inside `ar-1`**, so resolution reads the grant snapshot rather than the host walk;
+  - `usb_serial 2357:012e:123456` resolved to the dongle;
+  - `wwid` on `sda` resolved to `disk:sda`, typed without the padding;
+  - `mac` on `eth0` resolved to `net:eth0`.
+- **Refusals:**
+  - `exact disk:sda` was a 400 with "exact names a location, and disk:sda is a kernel name: name a disk by wwid or fs_uuid".
+  - A scratch container naming `dongle` in `devices[]` was a 409 with "device usb:2357:012e@0000:07:1b.0-usb2-1 is already held by container "ar-1" through phy:phy0". The mapping path reaches the grant gate. The 409 for an ambiguous mapping needs two identical dongles, which .95 does not have.
+- **Cost:** `GET /v1/devicemaps` answered in 86 ms with four mappings, against ADR-0344's 72–86 ms for `GET /v1/devices`.
+- **Health:** no duplicate-id, shared-node or drift line in the cixd log, and 12 containers running.
+- **Dashboard:** rendered in Chromium from the box's own responses, with one mapping present:
+  - the Named Mappings tab showed "MAC address" and "present (1)";
+  - `wlan0`'s Name column read `radio-ap`;
+  - the USB table showed the new ids.
+- **Found along the way, fixed for the next release:** the create path formatted "unknown or not-currently-present device %s" after freeing the request tree. On .95 it answered `device P` for `nosuchdevice`. The new `devices[]` refusal of a `mac` mapping, written beside it, had the same shape and printed garbage for the mapping name.
+
+**Left for 2b:** the mapping tab's "Used by" still reads `-` for a mapping `ar-1` holds, and its hint text still describes ADR-0048.
+
 ## Part 298: a device record says what the device is (ADR-0345 step 1, #349, 0.2.57-558)
 
 The owner chose to rebuild device names as identities and accepted ADR-0345. Its first gate: nothing may be named by MAC until `mac_permanent` has been read for the box's interfaces. So this step adds the facts a mapping will select by, and nothing selects by them yet. Every `GET /v1/devices` entry now carries `serial`, `wwid`, `mac` and `mac_permanent`. An interface a container holds keeps the address read when it was granted.
