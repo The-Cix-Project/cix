@@ -46,7 +46,7 @@ Everything below was measured on 192.168.15.95 on 2026-10-20 or read from the co
   - `busnum` leaves the id, because it is assigned in controller registration order and that order is not guaranteed.
 - **PCI** is unchanged (`pci:<bdf>`).
 - **Disk, net, GPU and PHY** ids stay as kernel names (`disk:sda`, `net:wlan0`, `gpu:0`, `phy:phy0`). The storage API and every operator tool already speak those names. This ADR leaves them as they are, and section 2 gives each of those buses an identity selector instead.
-- **A gate refuses two records with one id**, the same shape as ADR-0344's gate that refuses one node in two records, and in the same two places: `test_devicestate` has a fixture with two identical-serial dongles, and the grant snapshot logs any duplicate once. With USB ids built from a location, no present device can produce a collision, so the gate checks the rule rather than enforcing it.
+- **A gate refuses two records with one id**, the same shape as ADR-0344's gate that refuses one node in two records, and in the same two places: `test_devicematch` has a fixture with two identical-serial dongles, and the grant snapshot logs any duplicate once. With USB ids built from a location, no present device can produce a collision, so the gate checks the rule rather than enforcing it.
 - **A raw reference means whatever has that id now.** `devices: ["disk:sda"]` re-resolves at every start, to whichever disk the kernel called `sda`. That is what a raw reference has always meant, and this ADR keeps it. Only a mapping promises identity.
 
 ### 2. A mapping names a device by what that device is
@@ -124,7 +124,7 @@ Everything below was measured on 192.168.15.95 on 2026-10-20 or read from the co
    - `hostapd.conf` is never edited;
    - hostapd reaches `AP-ENABLED`, read from inside the container over its console.
 2. **USB ids.** `GET /v1/devices` lists the dongle as `usb:2357:012e@0000:07:1b.0-usb2-1`, and the PHY's `parent` follows it.
-3. **Ambiguity.** In `test_devicestate` and `test_daemon_devices`, two fixture devices carry one vendor, product and serial. A `usb_serial` mapping on them lists as `ambiguous` with both matches, and a grant through it is a 409 naming both. An `exact` mapping on one port grants that device and leaves the other free.
+3. **Ambiguity.** In `test_devicematch`, two fixture devices carry one vendor, product and serial. A `usb_serial` selector matches both, its kind is exclusive, and an `exact` selector on one port matches that one alone. With one dongle, .95 cannot show the 409 live, so the live check is that a `usb_serial` mapping on the real dongle reaches the grant gate: a container naming it is refused, naming `ar-1`, which holds it through the PHY.
 4. **Refusals.** Each of these returns 400:
    - `exact` on `disk:sda`, with a message naming `wwid` and `fs_uuid`;
    - a `mac` mapping on a non-permanent address;

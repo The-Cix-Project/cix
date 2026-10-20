@@ -5040,7 +5040,10 @@ static void reconcile_pending_device_attachments(void)
 	int ncount = registry_list_names(names, REGISTRY_MAX_CONTAINERS);
 	static struct pending_device_claim claims[REGISTRY_MAX_CONTAINERS * CONTAINER_MAX_DEVICES];
 	static int warned_ambiguous;
-	const struct device_snapshot *snap = devicegrant_snapshot();
+	/* Taken at the first waiting reference, never on a pass where
+	 * nothing waits: a snapshot is a whole device walk (72-86 ms on
+	 * .95, ADR-0344) and this runs on every hardware uevent. */
+	const struct device_snapshot *snap = NULL;
 	int claim_count = 0;
 	int i, j;
 
@@ -5056,6 +5059,8 @@ static void reconcile_pending_device_attachments(void)
 
 			/* Ids are copied below before anything refreshes the
 			 * snapshot matches[] points into. */
+			if (snap == NULL)
+				snap = devicegrant_snapshot();
 			n = devicemap_resolve(e->pending_devices[j], snap->recs, snap->n, matches, 1, why,
 			                      sizeof(why));
 			if (n == DEVICEMAP_AMBIGUOUS) {
@@ -15149,9 +15154,10 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * validated with simple_name_is_valid() at creation time,
 			 * which forbids ':', so they can never collide with a real
 			 * id (every real id's own bus prefix always contains one).
-			 * devicemap_resolve() returns -1 (not 0) when id doesn't
-			 * name any mapping at all, which is what falls through to
-			 * the existing raw-id path below -- a mapping that DOES
+			 * devicemap_resolve() returns DEVICEMAP_NOT_A_MAPPING when
+			 * id names no mapping at all, which is what falls through
+			 * to the raw-id path below, and DEVICEMAP_AMBIGUOUS for the
+			 * case the next paragraph refuses -- a mapping that DOES
 			 * exist but currently resolves to nothing (its device is
 			 * unplugged) is a real error here, UNLESS optional is true
 			 * (ADR-0161 Phase B): the container is then still created,

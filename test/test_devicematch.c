@@ -22,6 +22,9 @@
 
 static int g_failures;
 
+/* sda's WWID on .95 without the 13 spaces the kernel pads it with. */
+#define SDA_WWID "t10.ATA     QEMU HARDDISK                           QM00013"
+
 static struct discovered_device g_recs[16];
 static int g_n;
 
@@ -84,7 +87,7 @@ static void build_fixture(void)
 	net("net:eth0", "bc:24:11:42:0f:4f", 1);
 	net("net:wlan0", "98:25:4a:5b:de:5b", 1);
 	net("net:wlan1", "02:11:22:33:44:55", 0);
-	disk("disk:sda", "/dev/sda", "t10.ATA     QEMU HARDDISK                           QM00013");
+	disk("disk:sda", "/dev/sda", SDA_WWID);
 	disk("disk:sda5", "/dev/sda5", "");
 	disk("disk:vdb5", "/dev/vdb5", "");
 	disk("disk:sr0", "/dev/sr0", "");
@@ -189,13 +192,13 @@ static void test_disks(void)
 {
 	build_fixture();
 	/* The padding the kernel writes is not part of the identity. */
-	expect(DEVICEMATCH_WWID, "t10.ATA     QEMU HARDDISK                           QM00013          ",
+	expect(DEVICEMATCH_WWID, SDA_WWID "             ",
 	       1, "disk:sda");
 	expect(DEVICEMATCH_FS_UUID, "6f0b4e2a-91c3-4d7e-8a55-1b2c3d4e5f60", 1, "disk:sda5");
 	refused(DEVICEMATCH_FS_UUID, "not a uuid", "hex digits");
 	/* A superblock read happens only for an fs_uuid selector. */
 	g_probes = 0;
-	expect(DEVICEMATCH_WWID, "t10.ATA     QEMU HARDDISK                           QM00013", 1,
+	expect(DEVICEMATCH_WWID, SDA_WWID, 1,
 	       "disk:sda");
 	if (g_probes != 0) {
 		fprintf(stderr, "  FAIL: a wwid lookup read %d superblocks\n", g_probes);
