@@ -40,7 +40,8 @@ Everything below was measured on 192.168.15.95 on 2026-10-20 or read from the co
 
 ### 1. A record id names a location, and two present records never share one
 
-- **USB:** the id becomes `usb:<vid>:<pid>@<controller>/usb<N>/<devpath>`. Here `<controller>` is the root hub's own serial (the controller's name, a PCI BDF on this box). `<N>` is the USB major version, read from the root hub's product id (`0002` → `usb2`, `0003` → `usb3`); a product id outside `0001`–`0003` is used verbatim. `<devpath>` is the port path below the root hub. The dongle becomes `usb:2357:012e@0000:07:1b.0/usb2/1`.
+- **USB:** the id becomes `usb:<vid>:<pid>@<controller>-usb<N>-<devpath>`. Here `<controller>` is the root hub's own serial (the controller's name, a PCI BDF on this box). `<N>` is the USB major version, read from the root hub's product id (`0002` → `usb2`, `0003` → `usb3`); a product id outside `0001`–`0003` is used verbatim. `<devpath>` is the port path below the root hub. The dongle becomes `usb:2357:012e@0000:07:1b.0-usb2-1`.
+  - The separators are `-`, never `/`. A device id is a path segment in `DELETE /v1/containers/{name}/devices/{id}`, and `-` is what the old port form already used. The BDF and a hub chain (`1.3`) carry `.` and `:`, which already appear in ids that work today.
   - The serial leaves the id.
   - `busnum` leaves the id, because it is assigned in controller registration order and that order is not guaranteed.
 - **PCI** is unchanged (`pci:<bdf>`).
@@ -83,15 +84,16 @@ Everything below was measured on 192.168.15.95 on 2026-10-20 or read from the co
 ### 3. A grant remembers what it was asked for, and an unplug sends it back to waiting
 
 - **`struct registry_device_attachment` gains `ref`**: the string the spec named, whether that was a mapping name or a raw id.
-- **When `reconcile_live_device_revocations()` revokes a grant because its device disappeared, the grant's `ref` goes back into `pending_devices`.** The hotplug reconcile that already serves references that were absent at create then gives the device back when something matching that reference appears. Through a mapping that means any port. Through a raw `exact` USB id it means the same port.
+- **When `reconcile_live_device_revocations()` revokes a grant because its device disappeared, the grant's `ref` goes back into `pending_devices`, through `registry_set_pending_devices()`, the setter that announces it (ADR-0339).** The hotplug reconcile that already serves references that were absent at create then gives the device back when something matching that reference appears. Through a mapping that means any port. Through a raw USB id it means the same port.
+- **Today only a reference marked `optional` waits** (ADR-0161 Phase B: `devices[]`' object form, `main.c:15139`). Under this ADR, any reference whose device was unplugged from a running container waits, whether or not it was `optional`. `optional` keeps its one meaning: being absent at create is not an error.
 - Resolution still happens only where it already happens: at create, at start, and in that reconcile. Nothing is cached across calls. The held state of the returning device follows the grant recorded under its new id (ADR-0344).
 - A grant an operator removes with `DELETE .../devices/{id}` does not go back to waiting. Only an unplug does, because an unplug is not a decision.
 
 ### 4. `interfaces[]` takes a mapping, and the in-container name is `ifname`
 
-- **An `interfaces[]` entry becomes `{"interface": "...", "ifname": "..."}`**, the same field ADR-0259 gave `networks[]`, under the same rules: 1–15 characters, `[A-Za-z0-9._-]`, not `lo`, `.` or `..`, not `eth<digits>`, and unique within the container. A bare string is shorthand for `{"interface": "<string>"}`, so every existing `ar-1` revision still parses.
+- **An `interfaces[]` entry becomes `{"interface": "...", "ifname": "..."}`.** That follows two precedents: `devices[]` already accepts a string or an object (ADR-0161's `optional`), and ADR-0259 gave `networks[]` the `ifname` field. `ifname` takes ADR-0259's rules unchanged: 1–15 characters, `[A-Za-z0-9._-]`, not `lo`, `.` or `..`, not `eth<digits>`, and unique within the container. A bare string is shorthand for `{"interface": "<string>"}`, so every existing `ar-1` revision still parses.
 - `interface` names a `mac` mapping if one has that name. Otherwise it is a kernel name, exactly as today, through one resolution path. Each entry has to resolve to exactly one interface. Any other kind of mapping there is a 400, because a grant of every match is not a grant of an interface.
-- **`ifname` has one source and one default rule.** Absent, it is the mapping's name when `interface` named a mapping, and the kernel name otherwise, which is today's behaviour. A mapping name that cannot be an interface name is a 400 at create naming `ifname` as the fix. So mapping names stay ordinary resource names, and nothing about a host-wide name is forced by one container's choice.
+- **`ifname` has one source and one default rule.** Absent, it is the mapping's name when `interface` named a mapping, and the kernel name otherwise. Either default is validated like an explicit `ifname`. That is not quite today's behaviour: passing through the host's `eth1` with no `ifname` becomes a 400, because `eth<digits>` is the namespace ADR-0259 reserves for attachments the platform names. Today the same passthrough collides silently with the container's own `eth1`. A mapping name that cannot be an interface name is a 400 at create naming `ifname` as the fix. So mapping names stay ordinary resource names, and nothing about a host-wide name is forced by one container's choice.
 - **The interface is renamed to `ifname` inside the container's netns**, after the move and with the link down. Interface names are unique per netns, so the new name cannot collide with anything on the host. For a radio, the PHY still moves as ADR-0265 decided, and the rename applies to its netdev inside the container. When the container gives the interface back, it returns to the host under the kernel name recorded at grant time.
 - **Teardown finds the interface by its `ifname`, recorded with the grant, over netlink inside the container's netns.** Teardown never reads sysfs, which after `setns()` still answers from the host's mount: that is how #345 stranded a radio.
 - So `ar-1` becomes `"interfaces": ["radio-ap"]` with `interface=radio-ap`, and neither line changes again, whatever the kernel calls the radio.
@@ -121,22 +123,24 @@ Everything below was measured on 192.168.15.95 on 2026-10-20 or read from the co
    - the interface inside is `radio-ap`;
    - `hostapd.conf` is never edited;
    - hostapd reaches `AP-ENABLED`, read from inside the container over its console.
-2. **USB ids.** `GET /v1/devices` lists the dongle as `usb:2357:012e@0000:07:1b.0/usb2/1`, and the PHY's `parent` follows it.
+2. **USB ids.** `GET /v1/devices` lists the dongle as `usb:2357:012e@0000:07:1b.0-usb2-1`, and the PHY's `parent` follows it.
 3. **Ambiguity.** In `test_devicestate` and `test_daemon_devices`, two fixture devices carry one vendor, product and serial. A `usb_serial` mapping on them lists as `ambiguous` with both matches, and a grant through it is a 409 naming both. An `exact` mapping on one port grants that device and leaves the other free.
 4. **Refusals.** Each of these returns 400:
    - `exact` on `disk:sda`, with a message naming `wwn` and `fs_uuid`;
    - a `mac` mapping on a non-permanent address;
    - `ifname: "eth1"`, under ADR-0259's rules;
    - a `vendor_model` mapping in `interfaces[]`.
-5. **Unplug and return.** In `test_device_hotplug`, a grant made through a mapping is revoked when its fixture device disappears, appears in `pending_devices`, and is re-attached when the device reappears under a different id.
-6. **Announcements.** `test_assert_no_drift()` passes in `test_daemon_devices` after mapping create and delete, a hotplug and a grant.
-7. **Dashboard.** Rendered in Chromium from the box. `sr0` has no Name… button, `wlan0`'s dialog preselects `mac`, and "Used by" for a mapping held by `ar-1` reads `ar-1`.
+5. **Unplug and return.** No test can make a device disappear: `device_enumerate()` reads the real sysfs, and `test_device_hotplug` says so in its header. So the decision is factored out as a pure function over a device snapshot, beside `device_grant_verdict()`, and `test_devicestate` checks it with fixture records. A grant whose device is missing from the snapshot gives back its `ref` for `pending_devices`. When a record matching that ref appears under a different id, that ref is claimed. The live check needs someone at the Proxmox host to move the dongle, as listed under what is not measured.
+6. **Announcements.** `test_assert_no_drift()` passes in `test_daemon_devices` after mapping create and delete, and after a grant.
+7. **Cost.** `GET /v1/devicemaps` with one `fs_uuid` mapping present is measured on .95 against ADR-0344's 72–86 ms for `GET /v1/devices`. That read is now refetched on every `listDevices` announcement, so its superblock probe lands on the loop that often.
+8. **Dashboard.** Rendered in Chromium from the box. `sr0` has no Name… button, `wlan0`'s dialog preselects `mac`, and "Used by" for a mapping held by `ar-1` reads `ar-1`.
 
 ## Consequences
 
 - An operator can write a container spec that survives a re-plug, a second identical device, and a reboot that probes in a different order. That is what the mappings were for, and today they deliver it only for PCI.
 - **The USB id format changes, as a clean cut-over.** Nothing on the box or in the corpus names a USB id. A container spec that named the old form would get a 400 naming the new one. A raw USB id now pins a port, which is what an `exact` mapping on it means, and following a device across ports is what a `usb_serial` mapping is for.
-- **A device that is unplugged and comes back is given back**, which it never was before. A container that should not get hardware back after an unplug can say so by not naming it.
+- **A device that is unplugged and comes back is given back**, which it never was before. An unplug is not a decision; `DELETE .../devices/{id}` is, and it stays final.
+- A passthrough of a host `eth<N>` needs an explicit `ifname`. Nothing on the box or in the corpus passes one through.
 - `vendor_model` keeps its group meaning, and only for `devices[]`.
 - Disk, net, GPU and PHY ids keep their kernel names. The operator-visible vocabulary does not change, and an identity is always a mapping, never a second id.
 - The in-container rename adds one netlink operation to the interface path, with `rtnl_link_rename()`, which already exists.
