@@ -34,7 +34,7 @@ That is the same 193 files and the same code, roughly 400× apart. So full quota
 - has no image filter and no count limit, and the API has no single-version delete;
 - calls `image_delete_version()` inline, which deletes each subvolume, or removes the tree where btrfs is absent.
 
-The **dry run alone, with no deletes, held the loop for 1909 ms** (stallwatch, 02:04:24Z). `image_version_is_referenced()` loads the image's state and re-parses every container definition, once per version: 835 versions times about a dozen definitions. A real run would add 813 subvolume deletes, under full quota accounting, on the one thread that serves the API. This box is shell-less, and cixd has wedged before (CLAUDE.md, the concurrent-heavy-builds rule).
+The **dry run alone, with no deletes, held the loop for 1909 ms** (stallwatch, 02:04:24Z). The code shows a likely reason: `image_version_is_referenced()` loads the image's state and re-parses every container definition, once per version, which is 835 versions times about a dozen definitions. That reason was read from the code, not measured. Decision 3's tallies will show where the time goes. A real run would add 813 subvolume deletes, under full quota accounting, on the one thread that serves the API. This box is shell-less, and cixd has wedged before (CLAUDE.md, the concurrent-heavy-builds rule).
 
 ## Decision
 
@@ -60,14 +60,17 @@ The **dry run alone, with no deletes, held the loop for 1909 ms** (stallwatch, 0
 
 4. **A version leaves through ADR-0341's mechanism, not a new one.** For each version a pass collects:
    1. It is dropped from the image's recorded history. That is one `save_state()` per image, not one per version, and it means nothing new is offered or created from that version.
-   2. Its directory is renamed into `IMAGES_DIR/.discard`, which is O(1).
-   3. Its delete is queued with `rootfs_discard_start()`, which runs at most two helper children at once.
+   2. Each **subvolume** in its directory is set aside into `IMAGES_DIR/.discard`: its `rootfs`, and any `rootfs.replaced-*` (#551). Each move is one rename, so it is O(1).
+   3. The version directory, by then holding only bookkeeping files, is removed on the loop.
+   4. Each subvolume's delete is queued with `rootfs_discard_start()`, which runs at most two helper children at once.
 
-   `rootfs_discard()` already requires its trash directory to be on the source's filesystem. `IMAGES_DIR` and `CONTAINER_ROOTFS_DIR` both sit under `REBUILDABLE_DIR`, and only a version's `rootfs` is a subvolume; its image and version directories are plain directories. So the rename moves a subvolume within one parent subvolume. Startup gains `rootfs_discard_sweep(IMAGES_DIR)` beside the two sweeps it already runs (`main.c`), so a delete interrupted by a restart is finished by the next start. `image_list_names()` already skips names that start with a dot, so `.discard` is never taken for an image.
+   **What is set aside is the subvolume, never the version directory.** `cix_btrfs_subvol_delete_or_rmtree()` destroys a subvolume whole with `SNAP_DESTROY`. Given a plain directory, that ioctl fails and the call falls back to `rmtree()`. That would unlink every file of the `rootfs` one at a time, which is exactly the call #619 measured as slow. ADR-0341 sets a container's `rootfs` aside for the same reason.
+
+   `rootfs_discard()` already requires its trash directory to be on the source's filesystem. `IMAGES_DIR` and `CONTAINER_ROOTFS_DIR` both sit under `REBUILDABLE_DIR`, and image and version directories are plain directories. So each rename moves a subvolume within one parent subvolume, as ADR-0341's does. Startup gains `rootfs_discard_sweep(IMAGES_DIR)` beside the two sweeps it already runs (`main.c`), so a delete interrupted by a restart is finished by the next start. `image_list_names()` already skips names that start with a dot, so `.discard` is never taken for an image.
 
 5. **A pass never runs while a package job is in flight.** This is the collector's existing rule, kept for the same reason. A build composes its environment from build-image versions, and that reference lives in `pkg.c`, where the reference check cannot see it. A pass runs at two times:
    - **Automatically**, once for each image that got a new version, as soon as no package job is in flight. That is when the last job ends, not after each install.
-   - **On request**, through `POST /v1/images/gc`, which becomes "run a pass over every image now". It applies each image's own `keep`; `keep: 0` is how to collect everything unreferenced. It keeps `dry_run`, and it still answers 409 while a job is in flight. Its `reclaimed` list now names versions *set aside*. Their space comes back when the helpers finish.
+   - **On request**, through `POST /v1/images/gc`, which becomes "run a pass over every image now". Each image is held to its own policy's `keep`, and the request has no `keep` of its own: one rule decides how much history an image keeps. Setting an image's policy to `keep` 0 is how to collect everything unreferenced in it. The request keeps `dry_run`, and it still answers 409 while a job is in flight. Its `reclaimed` list now names versions *set aside*. Their space comes back when the helpers finish.
 
 6. **The history cap stops being reachable in practice.** When every image holds at most its referenced versions plus `keep`, nothing approaches 256. The cap stays as the bound on a fixed array, and `image_record_version()`'s full-array branch stays. The cap no longer decides which versions are remembered.
 
@@ -76,7 +79,7 @@ The **dry run alone, with no deletes, held the loop for 1909 ms** (stallwatch, 0
 - **Measured:** the 1219 ms of `unlink` into `jumpbox` against 3 ms into a 4-version image; the 813 collectable versions; and the 1909 ms dry-run decision pass.
 - **Not measured:**
   - Whether two helper children deleting subvolumes under full quota accounting slow the loop *through the filesystem*, for example through transaction commits the loop's own state writes wait on. Decision 4 takes the delete off the loop; it cannot promise the filesystem stays quiet. The first pass on .95 is the measurement. Stallwatch records any pass of 750 ms or more, and its tallies name the call.
-  - **#619's cause.** The first pass on .95 sets aside about 813 versions. The next `hibr` exit into `jumpbox` then shows the `unlink` tally against a 4-version history. If it falls to milliseconds, the hypothesis holds. If it does not, the cause is still open, and this ADR stands on its own: a history that grows without limit, and a collector that blocks the loop, are defects whatever #619 turns out to be.
+  - **#619's cause.** An automatic pass reaches only an image that just got a new version, and `hibr` rolls only `jumpbox`. So the box-wide first pass is one explicit `POST /v1/images/gc` after the release is deployed. **That is the same deletion the owner declined as a one-off.** Accepting this ADR includes it, now off the loop and with each image's `keep` honoured. That pass sets aside about 813 versions. The next `hibr` exit into `jumpbox` then shows the `unlink` tally against a 4-version history. If it falls to milliseconds, the hypothesis holds. If it does not, the cause is still open, and this ADR stands on its own: a history that grows without limit, and a collector that blocks the loop, are defects whatever #619 turns out to be.
 
 ## Consequences
 
