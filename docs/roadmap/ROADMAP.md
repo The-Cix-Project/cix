@@ -2445,6 +2445,45 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 296: a device is one record with one state, and every grant asks it (ADR-0344, #620, 0.2.57-556)
+
+The owner asked what it would take for the Devices page to show what is assigned, what is used and what is free, and wanted it resolved before anything was built. The page could not say it, and neither could the API. Measured on .95 the same day:
+- the OS disk and its `/boot`, `/config` and `/var/lib/cix` partitions were `assignable: true`;
+- one display adapter was two records with opposite answers;
+- `vda` was offered while `sda` was hidden, though both hold a storage role;
+- `ar-1`'s radio was missing from the list instead of being shown as held.
+
+Read from the code:
+- exclusivity was a `strcmp` of ids, so one node under two ids could be granted twice;
+- the hotplug path asked about no holder at all.
+
+ADR-0344 was accepted with reservation made a per-container setting, off by default.
+
+**What shipped:**
+- Each `/dev` node belongs to one record, and records form a tree by their nearest recorded ancestor.
+- A pure `device_state()` decides `free` / `held` / `reserved` / `host` / `unavailable`, tested in SELFTESTS by `test_devicestate`.
+- `devicegrant_check()` is the one gate for create, start, live attach and hotplug.
+- Records moved into a container are kept from the grant itself.
+- `reserve_devices` is a per-container setting.
+- `cixctl device ls` prints the tree, and the Devices page opens on it, with a Disk tab.
+
+**Measured on 192.168.15.95 after booting 0.2.57-556:**
+- `device ls` shows `sda` and `vda` as `host:storage-role`.
+- `vdb` is `host:os-disk`, its four structural partitions `host:os-partition` and `vdb5` `host:mounted`.
+- `card0` is listed once, as `gpu:0:card0`, under `pci:0000:00:01.0`.
+- `eth0` is `host:management-interface`.
+- `wlan0` and `phy0` are `held` by `ar-1`, under the dongle `usb:2357:012e:123456`, which reads `held … ar-1 via phy:phy0`.
+- Four live grant requests were refused with the reason the list shows:
+  - `disk:vdb`: 400, "is the OS disk";
+  - `eth0`: 400, "carries the management address";
+  - `wlan0`: 409, held by `ar-1`;
+  - the dongle's USB node: 409, held by `ar-1` through `phy:phy0`.
+- A grant of the free `disk:sr0` was given (201). `sr0` then read `held` by the probe container, and `free` again after the delete (204).
+- All 11 containers came back after the reboot, and no drift has been reported since it.
+- The dashboard files the box serves are byte-identical to the release. Its live `/v1/devices` answer renders the Disk and Network tabs as intended, in Chromium.
+
+**What the gate caught:** the first compile probe (`0.2.57-566`) failed `test_device_hotplug`. A duplicate live attach answered 500, because #356's check had counted the container itself as a holder, and the new gate deliberately never does. The attach handler now refuses the duplicate itself, with a 409. Probe `0.2.57-567` was green.
+
 ## Part 295: a build says which phase it is in, and which phase and command failed (ADR-0275, #388, #489, 0.2.57-554 and -555)
 
 A CPDL build was one opaque atom: `build/failed`, and a log to read. ADR-0275 decided the model
