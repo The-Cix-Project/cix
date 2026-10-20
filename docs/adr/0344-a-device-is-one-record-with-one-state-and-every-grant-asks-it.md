@@ -153,7 +153,7 @@ Children are nested under their parent, so `wlan0` sits under the dongle. One fu
 
 - Measured: the records, ids, `assignable` values, the duplicate `card0`, the `vda`/`sda` split, `ar-1`'s grant, and the absence of any `devices[]` grant or mapping on .95. Also the page's columns, rendered in Chromium from those responses.
 - Read from the code, not exercised: the grant paths' missing OS-disk check, the string-keyed exclusivity that lets one node be granted twice, and the hotplug path's missing holder check. None of the three will be exercised on .95 before the fix, because each would put the host's own disk or a held device into a container.
-- Not established: whether a USB device's sysfs `device` link resolves to its USB record for every netdev class Cix will meet. The radio is the case in hand. The implementation measures it for `wlan0` on .95 and records what it finds.
+- Measured on .95 after 0.2.57-556 booted, for the radio in hand: `net:wlan0` → `phy:phy0` → `usb:2357:012e:123456` → `pci:0000:07:1b.0` (xhci), and `card0` sits under `pci:0000:00:01.0` by canonical path although its `device` link names a platform framebuffer. Other netdev classes Cix will meet are not measured; the parent rule does not depend on the class, only on the canonical path.
 
 ## Verification
 
@@ -179,13 +179,14 @@ Children are nested under their parent, so `wlan0` sits under the dongle. One fu
 
 ## What implementing it settled
 
-Six points where the code answered more exactly than the proposal did. They are recorded here, not in a new ADR, because none of them reverses the decision.
+Seven points where the code answered more exactly than the proposal did. They are recorded here, not in a new ADR, because none of them reverses the decision.
 
 - **`pci:<bdf>:<node>` survives, for a node no class walk claims.** The proposal said those ids stop existing. What stops existing is a disk or DRM node reported under one: `drop_pci_duplicates()` removes a PCI-walk node that a class walk also reported. A node nothing more specific owns, such as an NVMe controller's char node, keeps its `pci:` id, with the function as its parent. Every PCI function is now a record of its own, owning no node.
 - **A record owns one node or none, so there is no `nodes` list.** The proposal's `nodes` field would have described a record holding several nodes. No record does: a GPU is several records grouped by `gpu:N`, as before. `dev_path`, `type`, `major` and `minor` stay as they were.
 - **`gpu:kfd` is one record, `always_shared`.** It used to be emitted once per GPU group, one node under N ids. That is what the one-node-one-record gate refuses, and ADR-0029 already said the node is host-wide. `device_find_group()` adds it to every `gpu:N` expansion.
 - **`mounted` is a fact of the device that is mounted, not of its disk.** A disk with a mounted partition gets no fact of its own. The partition below makes the disk the host's through the descendant rule. Had the disk carried the fact, it would have reached down and made every sibling partition the host's too. `test_devicestate` checks this with `vdb6` beside a mounted `vdb5`.
 - **Bridge attach does not ask the gate.** `network_attach_interface()` is how first boot gives the management network its uplink, and the verdict would call that uplink `host:management-interface` and refuse it. Bridge attach is host configuration, not a container grant. So it keeps its own rule — the interface exists and is not already a bridge port — and the dashboard offers it only `free` interfaces.
+- **`Device.reason`'s enum includes `""`, and the generated `web/api.js` drops it.** The contract is right: a record whose state carries no reason reports `""`. `apigen` emits enum options for forms, and `Device` is never a form, so nothing reads the missing value today. If a form ever offers `reason`, the generator has to learn to emit an empty option first.
 - **The registry announces `listDevices`, and so does a finished format.** `held_by` and `reserved_by` follow the registry, and a container the daemon starts, restarts or removes by itself changes them with no request in flight. Format completion mounts a disk the same way. Both announce where the change happens (ADR-0339). The format path did not announce even its own status before this.
 
 ## Consequences

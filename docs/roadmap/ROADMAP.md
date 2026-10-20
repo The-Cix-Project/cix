@@ -2478,7 +2478,14 @@ ADR-0344 was accepted with reservation made a per-container setting, off by defa
   - `eth0`: 400, "carries the management address";
   - `wlan0`: 409, held by `ar-1`;
   - the dongle's USB node: 409, held by `ar-1` through `phy:phy0`.
-- A grant of the free `disk:sr0` was given (201). `sr0` then read `held` by the probe container, and `free` again after the delete (204).
+- A grant of the free `disk:sr0` was given (201), and `sr0` read `held` while the container's registry entry existed and `free` after the delete (204). **That container never ran**, though the create answered `running`: a device granted to a user-namespace container — the default — dies at `container_dev_mknod: Operation not permitted`. This is filed as #621. ADR-0344's states were correct throughout, and the grant was measured working with `"userns": false`.
+- **Reservation, with `"userns": false`:** `resvprobe` with `reserve_devices: true` and `devices: ["disk:sr0"]` read as follows:
+  - running: `held`;
+  - after `container stop`: `reserved … reserved by resvprobe`, with `reserve_devices: true` in its `GET`;
+  - a second container naming `sr0`: `409 … is reserved by container "resvprobe", which sets reserve_devices`;
+  - `container start resvprobe`: succeeded, back to `held`;
+  - delete: `free`.
+- **Cost:** `GET /v1/devices` answers in 72–86 ms over five calls, against 1–3 ms for `/v1/health`. That is the snapshot's time on the loop: the sysfs walks plus `disk_enumerate()`. `GET /v1/storage`, which walks the same disks, takes 190–290 ms on the same box.
 - All 11 containers came back after the reboot, and no drift has been reported since it.
 - The dashboard files the box serves are byte-identical to the release. Its live `/v1/devices` answer renders the Disk and Network tabs as intended, in Chromium.
 
