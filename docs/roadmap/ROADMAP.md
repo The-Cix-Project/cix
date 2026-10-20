@@ -2445,6 +2445,24 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 302: an unplugged device is given back when it returns (ADR-0345 step 4, #349, 0.2.57-563)
+
+Each device grant now records the `ref` it was named by. A USB unplug that revokes a grant sends that `ref` back to `pending_devices`, with its `shared` flag, and the next matching hardware add gives the device back: in any port when a mapping named it. A pending entry is `{ref, shared}`. A reference gives back every device it names and skips what is still held. All three pending setters announce. Revocation asks one snapshot through the pure `device_grants_gone()`, and any hardware add now runs the give-back, because a USB stick's disk node arrives in a block add after the USB one. `DELETE .../devices/{id}` pends nothing.
+
+**Gated:** compile probe `0.2.57-573` was green, and the 563 hostbuild's suite passed. Two of its tests cover this step:
+- `test_devicestate` checks `device_grants_gone()`;
+- `test_device_hotplug` checks that a live attach records its `ref`, that a DELETEd device leaves `pending_devices` empty, and that an optional entry's pending form is `{ref, shared}`.
+
+**Measured on 192.168.15.95 after booting 0.2.57-563:**
+- 12 containers running, and no drift, duplicate-id or skipped-mapping line in the cixd log.
+- A container with `{"id":"usb:0000:0000@nowhere-usb2-9","optional":true,"shared":true}` reported `"pending_devices":[{"ref":"usb:0000:0000@nowhere-usb2-9","shared":true}]`.
+- A `usb_serial` mapping `tablet` on the QEMU USB tablet (`0627:0001:28754-0000:00:1d.7-1`) resolved `present` to `usb:0627:0001@0000:00:1d.7-usb2-1`.
+- A container naming `tablet` in `devices[]` holds it as `{"id":"usb:0627:0001@0000:00:1d.7-usb2-1", …, "ref":"tablet"}`, and `device ls` lists the tablet `held` by it.
+
+**Not measured: a real unplug.** `device_grants_gone()` and the give-back path are gated by the suite, but no device on .95 can be unplugged without someone at the Proxmox host. The tablet is a QEMU `usb-tablet`, so `device_del` and `device_add` from the host's `qm monitor` would be a genuine unplug and re-plug. `tabletprobe` and the `tablet` mapping are left in place for that.
+
+**ADR-0345 is complete with this part**, and #349 closes with it. The one deliberate remainder is #623: a radio unplugged from a container that holds it through `interfaces[]`.
+
 ## Part 301: a passed-through interface can be named by a mapping and named inside (ADR-0345 step 3, #349, 0.2.57-562)
 
 **Mechanism.** `interfaces[]` takes a `mac` mapping and an `ifname`. The interface is renamed on the host before it moves and back on the host after it returns. ADR-0345 as accepted put the rename inside the container after the move; that is corrected in place, because the bring-up helper is not waited for.
