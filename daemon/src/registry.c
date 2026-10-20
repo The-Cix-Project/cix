@@ -220,7 +220,7 @@ enum registry_error registry_create(const char *name, const char *image,
 	memset(e->interfaces, 0, sizeof(e->interfaces));
 	e->interface_count = spec->interface_count;
 	for (i = 0; i < spec->interface_count; i++)
-		strncpy(e->interfaces[i], spec->interfaces[i], sizeof(e->interfaces[i]) - 1);
+		strncpy(e->interfaces[i], spec->interfaces[i].host, sizeof(e->interfaces[i]) - 1);
 	memset(e->file_paths, 0, sizeof(e->file_paths));
 	e->file_count = file_count;
 	for (i = 0; i < file_count; i++)
@@ -568,13 +568,25 @@ int registry_remove(const char *name)
 	}
 
 	if (e->interface_count > 0) {
-		const char *iface_ptrs[CONTAINER_MAX_INTERFACES];
+		struct container_interface ifs[CONTAINER_MAX_INTERFACES];
 		int i;
 
-		for (i = 0; i < e->interface_count; i++)
-			iface_ptrs[i] = e->interfaces[i];
-		container_net_teardown_interfaces(iface_ptrs, e->interface_count,
-		                                   e->handle.interfaces_netns_fd);
+		/* Moved out by its name inside, renamed back to its host name
+		 * (ADR-0345). A record with no ifname is one that was never
+		 * renamed. */
+		for (i = 0; i < e->interface_count; i++) {
+			const char *inside = e->interface_records[i].ifname;
+
+			snprintf(ifs[i].host, sizeof(ifs[i].host), "%s", e->interfaces[i]);
+			snprintf(ifs[i].ifname, sizeof(ifs[i].ifname), "%s",
+			         inside[0] != '\0' ? inside : e->interfaces[i]);
+		}
+		if (container_net_teardown_interfaces(ifs, e->interface_count,
+		                                      e->handle.interfaces_netns_fd) != 0)
+			logstore_write("cixd", "error",
+			               "container %s: an interface did not come back to the host under "
+			               "its own name",
+			               e->name);
 	}
 
 	close(e->handle.pidfd);
@@ -913,10 +925,22 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 	for (i = 0; i < entry->pending_device_count; i++)
 		jw_str(w, entry->pending_devices[i]);
 	jw_arr_close(w);
+	/* ADR-0345: what was asked for, the host's name for what it
+	 * resolved to, and its name inside. */
 	jw_key(w, "interfaces");
 	jw_arr_open(w);
-	for (i = 0; i < entry->interface_count; i++)
+	for (i = 0; i < entry->interface_count; i++) {
+		const struct registry_interface_record *r = &entry->interface_records[i];
+
+		jw_obj_open(w);
+		jw_key(w, "ref");
+		jw_str(w, r->ref[0] != '\0' ? r->ref : entry->interfaces[i]);
+		jw_key(w, "host_ifname");
 		jw_str(w, entry->interfaces[i]);
+		jw_key(w, "ifname");
+		jw_str(w, r->ifname[0] != '\0' ? r->ifname : entry->interfaces[i]);
+		jw_obj_close(w);
+	}
 	jw_arr_close(w);
 	jw_key(w, "reserve_devices");
 	jw_bool(w, entry->reserve_devices);

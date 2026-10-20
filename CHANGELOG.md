@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A passed-through interface can be named by a mapping and named inside (ADR-0345 step 3, #349)
+
+- **What changed:**
+  - **Request shape:** an `interfaces[]` entry is a string or `{"interface": ..., "ifname": ...}`. `interface` may name a `mac` mapping, which follows the interface whatever the kernel calls it.
+  - **Name inside:** the interface is named `ifname` inside the container. It defaults to the reference, under `networks[].ifname`'s rules, and must be unique among the container's interfaces and its networks' chosen names.
+  - **Mechanism:** it is renamed on the host before it moves and renamed back on the host after it returns. An ordinary interface that is renamed is downed first, as a radio always was. `cix-init` waits for the name it has inside.
+  - **Container record:** a container's `interfaces` are now `{ref, host_ifname, ifname}` objects. The dashboard's Hardware tab shows all three.
+  - **Refusals:** a mapping of another kind in `interfaces[]` is a 400 naming `devices[]`, and an ambiguous one a 409.
+- **Why:** `ar-1` named its radio `wlan0` twice, in its recipe and in `hostapd.conf`. That name is assigned in probe order, so a second radio or a different probe order would have given it other hardware with no error. ADR-0345 as accepted put the rename inside the container after the move. That is corrected in place: the bring-up helper is not waited for, so a rename inside could lose a race with hostapd looking for the name.
+- **Breaking:** passing through a host `eth<N>` now needs an `ifname`. Before, it collided with the container's own `eth<N>`. Nothing on .95 or in the corpus does it.
+
 ### A device's filesystem UUID is a field, and the dashboard names devices by identity (ADR-0345 step 2b, #349)
 
 - **What changed:**

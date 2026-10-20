@@ -403,6 +403,17 @@ struct device_spec {
 #define CONTAINER_IFNAME_MAX 16
 
 /*
+ * One passed-through interface (ADR-0345): the kernel's name for it on
+ * the host, and its name inside the container. It is renamed on the
+ * host before it moves and renamed back on the host after it returns,
+ * so neither name is ever looked for in the wrong namespace.
+ */
+struct container_interface {
+	char host[CONTAINER_IFNAME_MAX];
+	char ifname[CONTAINER_IFNAME_MAX];
+};
+
+/*
  * A generous fixed bound, same reasoning CONTAINER_MAX_DEVICES already
  * gives -- enough for a router's config file plus a startup script
  * plus a few more, without being unbounded.
@@ -616,16 +627,16 @@ struct container_spec {
 	struct device_spec devices[CONTAINER_MAX_DEVICES];
 	int device_count;
 	/*
-	 * Opt-in real network-interface passthrough: bare kernel interface
-	 * names (e.g. "wlan0"), moved into the container's own netns as-is
-	 * -- no veth, no bridge, no rename, no address configured (the
-	 * operator's own userspace inside the container, e.g. bird or
-	 * dhclient, owns addressing once installed via `pkg install`).
-	 * Independent of nets[]/net_count above -- a container can have
-	 * passthrough interfaces with zero virtual networks, or both. See
+	 * Opt-in real network-interface passthrough: real interfaces moved
+	 * into the container's own netns -- no veth, no bridge, no address
+	 * configured (the operator's own userspace inside the container,
+	 * e.g. bird or dhclient, owns addressing). Each carries the name
+	 * the kernel gave it on the host and the name it has inside, which
+	 * is the same unless the container asked for another (ADR-0345,
+	 * ADR-0259's ifname). Independent of nets[]/net_count above. See
 	 * container_net_host_attach_interfaces().
 	 */
-	char interfaces[CONTAINER_MAX_INTERFACES][CONTAINER_IFNAME_MAX];
+	struct container_interface interfaces[CONTAINER_MAX_INTERFACES];
 	int interface_count;
 	/*
 	 * Opt-in exceptions to container_caps_drop()'s own fixed default

@@ -154,6 +154,11 @@ struct registry_interface_record {
 	 * finds a moved interface through these. */
 	char mac[32];
 	int mac_permanent;
+	/* ADR-0345: what the spec named -- a mac mapping or the kernel name
+	 * -- and the interface's name inside the container. The host name
+	 * stays in registry_entry.interfaces[], which ids are built from. */
+	char ref[64];
+	char ifname[CONTAINER_IFNAME_MAX];
 };
 
 struct registry_device_attachment {

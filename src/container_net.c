@@ -230,8 +230,8 @@ int container_net_child_configure(const struct network_spec *nets, int net_count
 	return 0;
 }
 
-int container_net_host_attach_interfaces(const char *const *interfaces, int interface_count,
-                                          pid_t child_pid, int *out_netns_fd,
+int container_net_host_attach_interfaces(const struct container_interface *interfaces,
+                                          int interface_count, pid_t child_pid, int *out_netns_fd,
                                           pid_t *out_helper_pid, int *out_split_fd)
 {
 	char ns_path[64];
@@ -278,10 +278,11 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 		 * model, not a choice made here.
 		 */
 		int wireless;
+		int renamed;
 		int rc;
 
 		t0 = monotonic_millis();
-		wireless = nl80211_is_wireless(interfaces[i]);
+		wireless = nl80211_is_wireless(interfaces[i].host);
 		g_attach_ms.classify += monotonic_millis() - t0;
 
 		/*
@@ -297,10 +298,11 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 		 * of moving it either way, so "up" always belonged after the
 		 * move rather than before it.
 		 *
-		 * Only for the wireless path. An ordinary netdev needs no
-		 * such preparation, and downing one that the operator handed
-		 * over already-configured would be a change this code has no
-		 * reason to make.
+		 * An ordinary netdev used to be left as it was, because
+		 * nothing here needed it down. A rename does (ADR-0345): the
+		 * kernel refuses to rename an up link with EBUSY. So a named
+		 * one is downed too -- which changes nothing it would keep,
+		 * since the move itself downs it.
 		 */
 		/*
 		 * errno is carried across the measurement deliberately.
@@ -310,12 +312,13 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 		 * is how a step gets reported with the wrong cause, which this
 		 * file already guards against around the move below.
 		 */
-		if (wireless) {
+		renamed = strcmp(interfaces[i].host, interfaces[i].ifname) != 0;
+		if (wireless || renamed) {
 			int down_rc;
 			int down_errno;
 
 			t0 = monotonic_millis();
-			down_rc = rtnl_link_set_down(fd, interfaces[i]);
+			down_rc = rtnl_link_set_down(fd, interfaces[i].host);
 			down_errno = errno;
 			g_attach_ms.down += monotonic_millis() - t0;
 			errno = down_errno;
@@ -324,9 +327,10 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 				char step[128];
 
 				snprintf(step, sizeof(step),
-				         "container_create: radio \"%s\": could not be brought down "
-				         "before the phy move",
-				         interfaces[i]);
+				         "container_create: %s \"%s\": could not be brought down before "
+				         "the %s",
+				         wireless ? "radio" : "interface", interfaces[i].host,
+				         wireless ? "phy move" : "rename");
 				container_set_last_error_step(step);
 				rtnl_close(fd);
 				close(*out_netns_fd);
@@ -335,9 +339,31 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 			}
 		}
 
+		/*
+		 * ADR-0345: renamed here, on the host, before the move, so it
+		 * arrives in the container already named. The bring-up below is
+		 * not waited for and the container may already be running, so a
+		 * rename inside could lose a race with whatever looks for the
+		 * name. Both moves keep a name that is free in the target. A
+		 * host interface already called ifname is EEXIST, named here.
+		 */
+		if (renamed && rtnl_link_rename(fd, interfaces[i].host, interfaces[i].ifname) != 0) {
+			char step[128];
+			int e = errno;
+
+			snprintf(step, sizeof(step), "container_create: interface \"%s\": rename to \"%s\"",
+			         interfaces[i].host, interfaces[i].ifname);
+			container_set_last_error_step(step);
+			rtnl_close(fd);
+			close(*out_netns_fd);
+			*out_netns_fd = -1;
+			errno = e;
+			return -1;
+		}
+
 		t0 = monotonic_millis();
-		rc = wireless ? nl80211_move_phy_to_netns_fd(interfaces[i], *out_netns_fd)
-		              : rtnl_link_set_netns_pid(fd, interfaces[i], child_pid);
+		rc = wireless ? nl80211_move_phy_to_netns_fd(interfaces[i].ifname, *out_netns_fd)
+		              : rtnl_link_set_netns_pid(fd, interfaces[i].ifname, child_pid);
 		{
 			/* Same reasoning as the down step above: the move's own
 			 * errno is the whole diagnosis below, so the measurement
@@ -360,7 +386,7 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 			 * distinction is the first thing worth knowing.
 			 */
 			snprintf(step, sizeof(step), "container_create: %s \"%s\": %s netns move",
-			         wireless ? "radio" : "interface", interfaces[i],
+			         wireless ? "radio" : "interface", interfaces[i].ifname,
 			         wireless ? "nl80211 phy" : "rtnetlink");
 			container_set_last_error_step(step);
 			/* Preserve the errno of the move itself: rtnl_close() and
@@ -368,6 +394,9 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 			 * mechanisms refused is the whole diagnosis. */
 			int e = errno;
 
+			/* It never left: give it its host name back. */
+			if (renamed)
+				(void)rtnl_link_rename(fd, interfaces[i].ifname, interfaces[i].host);
 			rtnl_close(fd);
 			close(*out_netns_fd);
 			*out_netns_fd = -1;
@@ -449,7 +478,7 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 		split.rtnl_open = monotonic_millis() - h0;
 		for (i = 0; i < interface_count; i++) {
 			h0 = monotonic_millis();
-			if (rtnl_link_set_up(hfd, interfaces[i]) != 0) {
+			if (rtnl_link_set_up(hfd, interfaces[i].ifname) != 0) {
 				int e = errno;
 
 				rtnl_close(hfd);
@@ -524,11 +553,13 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 	return 0;
 }
 
-int container_net_teardown_interfaces(const char *const *interfaces, int interface_count,
-                                       int netns_fd)
+int container_net_teardown_interfaces(const struct container_interface *interfaces,
+                                       int interface_count, int netns_fd)
 {
 	pid_t pid;
 	int status;
+	int rc;
+	int i;
 
 	if (interface_count == 0)
 		return 0;
@@ -545,8 +576,7 @@ int container_net_teardown_interfaces(const char *const *interfaces, int interfa
 		 * moves this process itself into the container's netns. */
 		int root_fd = open("/proc/self/ns/net", O_RDONLY);
 		int fd;
-		int i;
-		int rc = 0;
+		int hrc = 0;
 
 		if (root_fd < 0 || setns(netns_fd, CLONE_NEWNET) != 0)
 			_exit(1);
@@ -562,20 +592,22 @@ int container_net_teardown_interfaces(const char *const *interfaces, int interfa
 		for (i = 0; i < interface_count; i++) {
 			/*
 			 * Same split as the inbound move: a wiphy goes back by
-			 * nl80211, everything else by rtnetlink. Checked from
-			 * inside the container, where the interface now lives --
-			 * /sys/class/net is namespaced, so this reads the right
-			 * one.
+			 * nl80211, everything else by rtnetlink, each by the name
+			 * it has in here. The classifier asks nl80211 over a socket
+			 * opened in this netns (wiphy_for()), which is why it
+			 * answers about this namespace -- sysfs would not: it
+			 * answers from the mount namespace, which setns() did not
+			 * change, and that is how #345 stranded a radio.
 			 */
-			int one = nl80211_is_wireless(interfaces[i])
-			                  ? nl80211_move_phy_to_netns_fd(interfaces[i], root_fd)
-			                  : rtnl_link_set_netns_fd(fd, interfaces[i], root_fd);
+			const char *name = interfaces[i].ifname;
+			int one = nl80211_is_wireless(name) ? nl80211_move_phy_to_netns_fd(name, root_fd)
+			                                    : rtnl_link_set_netns_fd(fd, name, root_fd);
 
 			if (one != 0)
-				rc = 1;
+				hrc = 1;
 		}
 
-		_exit(rc);
+		_exit(hrc);
 	}
 
 	/* Our own copy of netns_fd is no longer needed -- the helper
@@ -584,7 +616,27 @@ int container_net_teardown_interfaces(const char *const *interfaces, int interfa
 	close(netns_fd);
 	if (waitpid(pid, &status, 0) != pid)
 		return -1;
-	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
+	rc = (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
+
+	/*
+	 * ADR-0345: back on the host, each renamed interface takes its host
+	 * name again, here, where that name is free -- it left with the
+	 * interface. The move downed it, so the rename is allowed. One that
+	 * did not come back fails here as well, and the result says so.
+	 */
+	{
+		int fd = rtnl_open();
+
+		if (fd < 0)
+			return -1;
+		for (i = 0; i < interface_count; i++) {
+			if (strcmp(interfaces[i].host, interfaces[i].ifname) != 0 &&
+			    rtnl_link_rename(fd, interfaces[i].ifname, interfaces[i].host) != 0)
+				rc = -1;
+		}
+		rtnl_close(fd);
+	}
+	return rc;
 }
 
 /*

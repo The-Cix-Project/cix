@@ -304,7 +304,7 @@ container run --name=NAME --image=IMAGE
     [--cpu-max="QUOTA PERIOD"] [--cpuset=0-1,3]
     [--disk-quota=BYTES] [--disk=NAME] [--volume=NAME:/path[:ro] ...]
     [--network=NAME[:IP] ...] [--ip-forward] [--route=DEST/PREFIX:VIA ...]
-    [--interface=IFNAME ...] [--dns-register] [--dns-server=A.B.C.D ...]
+    [--interface=NAME ...] [--dns-register] [--dns-server=A.B.C.D ...]
     [--device=ID ...] [--optional-device=ID ...] [--reserve-devices] [--cap-add=CAP_NAME ...]
     [--userns] [--ksm] [--capture-output]
     [--ldap-client] [--ldap-allow-group=NAME ...]
@@ -425,7 +425,7 @@ See [`networking.md`](networking.md).
 
 | Command | |
 |---|---|
-| `device ls` | Every host device as a tree under its parent, each with its `id` (for `--device=`, or a `net:` name for `--interface=`), its state (`free`, `held`, `reserved`, `host:REASON`, `unavailable:REASON`) and who holds or reserves it (ADR-0344) |
+| `device ls` | Every host device as a tree under its parent, each with its `id` (for `--device=`; for `--interface=`, a `net:` id without its `net:`, or a `mac` mapping's name, ADR-0345), its state (`free`, `held`, `reserved`, `host:REASON`, `unavailable:REASON`) and who holds or reserves it (ADR-0344) |
 | `devicemap create --name=NAME --kind=KIND --selector=SELECTOR` | A name for which device it is, usable in place of an id in `--device=` (ADR-0345). `usb_serial` takes `VID:PID:SERIAL`, `wwid` a disk's `wwid` from `device ls --json`, `fs_uuid` a filesystem UUID, `mac` a permanent address (an interface), `exact` a `usb:` or `pci:` id (that port or slot), `vendor_model` `VID:PID` (every device of that model) |
 | `devicemap ls` / `devicemap rm NAME` | List each mapping with its state -- `present`, `absent`, or `ambiguous` (a kind that names one device matched several, so a grant through it is refused) -- and what it resolved to / remove |
 

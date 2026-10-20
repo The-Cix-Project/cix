@@ -16810,25 +16810,30 @@ components:
           title: Host interfaces
           type: array
           items:
-            type: string
+            oneOf:
+              - type: string
+              - $ref: "#/components/schemas/InterfaceGrantRequest"
           maxItems: 16
           description: >
-            Bare kernel interface names (e.g. "wlan0") of real,
-            physically-backed network interfaces to move wholesale into
-            this container's own netns -- any name not currently listed
-            under a "net" bus entry in GET /devices is a 400, and so is
-            one whose state is "host" (a bridge port, or the interface
-            carrying the management address); one held or reserved by
-            another container is a 409 (ADR-0344). A wireless interface
-            is granted as its PHY, so every interface on that PHY goes
-            with it (ADR-0265). No veth, no bridge, no rename,
-            no address configured: the interface keeps its real kernel
-            name and comes up automatically, but addressing/routing is
-            entirely the operator's own job inside the container (e.g.
-            bird or dhclient, once installed via `pkg install`) -- this
-            is independent of, and can be combined with, networks above.
-            Set once at creation; not modifiable on an already-running
-            container.
+            Real, physically-backed network interfaces to move wholesale
+            into this container's own netns. Each names a mac device
+            mapping (ADR-0345) or a kernel name from a "net" entry in
+            GET /devices; a bare string is shorthand for
+            {"interface": ...}. A reference that names nothing present,
+            a mapping of another kind, or an interface whose state is
+            "host" (a bridge port, or the interface carrying the
+            management address) is a 400; one held or reserved by
+            another container, or an ambiguous mapping, is a 409
+            (ADR-0344). A wireless interface is granted as its PHY, so
+            every interface on that PHY goes with it (ADR-0265). Inside,
+            it is named by its ifname: the one given, else the mapping's
+            name, else the kernel's -- under networks[].ifname's rules,
+            so an "eth<N>" kernel name needs an ifname. No veth, no
+            bridge, no address configured: it comes up automatically,
+            and addressing is the operator's own job inside the
+            container. Independent of, and combinable with, networks
+            above. Set once at creation; not modifiable on an
+            already-running container.
         reserve_devices:
           title: Reserve devices while stopped
           type: boolean
@@ -17314,6 +17319,33 @@ components:
           default: 30
           title: Probe timeout (seconds)
           description: How long the probe may fail before the service is treated as ready anyway.
+
+    InterfaceGrantRequest:
+      type: object
+      required: [interface]
+      description: >
+        One interface a container is given at creation -- the object form
+        of a ContainerCreateRequest.interfaces entry, which may also be
+        the bare reference (ADR-0345).
+      properties:
+        interface:
+          type: string
+          title: Interface
+          description: >
+            A mac device mapping's name, which follows the interface
+            whatever the kernel calls it, or a kernel name from GET
+            /devices.
+        ifname:
+          type: string
+          title: Name inside
+          pattern: '^[A-Za-z0-9._\-]{1,15}$'
+          description: >
+            Its name inside the container. Default: the mapping's name,
+            or the kernel name. 1-15 characters of [A-Za-z0-9._-], not
+            "lo" or an "eth<N>" name, and unique among this container's
+            interfaces and its networks' chosen names (ADR-0259). It is
+            renamed on the host before it moves, and back after it
+            returns.
 
     DeviceGrantRequest:
       type: object
@@ -18009,10 +18041,11 @@ components:
         interfaces:
           type: array
           items:
-            type: string
+            $ref: "#/components/schemas/ContainerInterfaceAttachment"
           description: >
-            Bare kernel names of every real network interface moved into
-            this container's own netns at creation. Empty if none.
+            Every real network interface moved into this container's own
+            netns at creation (ADR-0345). Empty if none, and on a stopped
+            definition.
         reserve_devices:
           type: boolean
           description: >
@@ -20148,6 +20181,23 @@ components:
         ip:
           type: string
           description: Assigned IPv4 address (dotted-quad) within that network.
+
+    ContainerInterfaceAttachment:
+      type: object
+      required: [ref, host_ifname, ifname]
+      description: One real interface a container holds (ADR-0345).
+      properties:
+        ref:
+          type: string
+          description: What the container asked for -- a mac device mapping's name, or a kernel name.
+        host_ifname:
+          type: string
+          description: >
+            The kernel's name for it on the host, which its Device.id
+            carries ("net:" and this). It goes back under this name.
+        ifname:
+          type: string
+          description: Its name inside the container.
 
     ContainerDeviceAttachment:
       type: object

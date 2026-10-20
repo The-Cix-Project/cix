@@ -5435,14 +5435,22 @@ function renderContainerDetail(name) {
 			empty: "No devices granted",
 		});
 	}
-	/* A list of names, with no schema behind its rows -- one state, and
-	 * nothing for a renderer to derive, so the primitive is right. */
-	simpleTableRows(
-		document.querySelector("#cd-interfaces tbody"),
-		(c.interfaces || []).map((ifname) => [ifname]),
-		1,
-		"No host interfaces attached"
-	);
+	/* ADR-0345: each interface's name inside, the host's name for it
+	 * (its device id), and what the container asked for -- a mapping's
+	 * name when it was named by one. */
+	renderTable(document.querySelector("#cd-interfaces"), "ContainerInterfaceAttachment",
+	    c.interfaces || [], [
+		{ field: "ifname", label: "Name inside" },
+		{ field: "host_ifname", label: "On the host",
+		  link: (i) => "#devices" },
+		{ field: "ref", label: "Asked for as" },
+	], {
+		op: null,
+		key: "container-detail-interfaces",
+		extra: c.name,
+		what: "interfaces",
+		empty: "No host interfaces attached",
+	});
 	renderTable(document.querySelector("#cd-networks"), "ContainerNetworkAttachment",
 	    c.networks || [], [
 		{ field: "name", label: "Network",

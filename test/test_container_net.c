@@ -594,6 +594,7 @@ int main(void)
 		struct container_handle h4;
 		const char *ifname_move = "cix-ifpt-b";
 		const char *ifname_keep = "cix-ifpt-a";
+		const char *ifname_inside = "cix-ifpt-in";
 		char *argv4[] = { "/bin/daemon_child", "2", "0", NULL };
 		int exit4 = -1;
 		int inside;
@@ -616,7 +617,11 @@ int main(void)
 			goto scenario4_cleanup;
 		}
 		spec4.interface_count = 1;
-		snprintf(spec4.interfaces[0], sizeof(spec4.interfaces[0]), "%s", ifname_move);
+		/* ADR-0345: named inside, renamed on the host before the move
+		 * and back after it returns. */
+		snprintf(spec4.interfaces[0].host, sizeof(spec4.interfaces[0].host), "%s", ifname_move);
+		snprintf(spec4.interfaces[0].ifname, sizeof(spec4.interfaces[0].ifname), "%s",
+		         ifname_inside);
 
 		if (container_create(&spec4, &h4) != 0) {
 			perror("container_create ifpt");
@@ -638,14 +643,14 @@ int main(void)
 			ok = 0;
 		}
 
-		/* Visible inside the container's own netns, still under its
-		 * real, unrenamed name, and administratively up -- both
+		/* Visible inside the container's own netns under the name it
+		 * was given (ADR-0345), and administratively up -- both
 		 * confirmed from that exact vantage point, not inferred. */
-		inside = check_iface_inside_netns(h4.interfaces_netns_fd, ifname_move);
+		inside = check_iface_inside_netns(h4.interfaces_netns_fd, ifname_inside);
 		if (inside != 1) {
 			fprintf(stderr,
 			        "FAIL: %s not visible+up inside the container's netns (result=%d)\n",
-			        ifname_move, inside);
+			        ifname_inside, inside);
 			ok = 0;
 		}
 
@@ -661,7 +666,7 @@ int main(void)
 		 * point of holding interfaces_netns_fd open since creation --
 		 * the container's own process (and, left alone, its netns) is
 		 * already gone by this point. */
-		if (container_net_teardown_interfaces((const char *const[]){ ifname_move }, 1,
+		if (container_net_teardown_interfaces(spec4.interfaces, 1,
 		                                       h4.interfaces_netns_fd) != 0) {
 			fprintf(stderr, "FAIL: container_net_teardown_interfaces() returned nonzero\n");
 			ok = 0;
@@ -689,6 +694,11 @@ int main(void)
 				fprintf(stderr,
 				        "FAIL: %s did not reappear in the root netns after teardown\n",
 				        ifname_move);
+				ok = 0;
+			}
+			if (iface_exists(ifname_inside)) {
+				fprintf(stderr, "FAIL: %s came back to the host under its inside name\n",
+				        ifname_inside);
 				ok = 0;
 			}
 		}

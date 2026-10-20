@@ -134,9 +134,12 @@ int container_net_child_configure(const struct network_spec *nets, int net_count
 /*
  * Parent side, called right after ns_clone3() returns the child's
  * pid, alongside (but independent of, no shared pipe/coordination
- * needed) container_net_host_setup() -- a passthrough interface keeps
- * its own real kernel name and gets no address from this daemon at
- * all, so there is nothing the child needs to be told. interface_count
+ * needed) container_net_host_setup() -- a passthrough interface gets
+ * no address from this daemon at all, so there is nothing the child
+ * needs to be told. Each interface is downed and, when its ifname
+ * differs, renamed ON THE HOST before it moves (ADR-0345): the kernel
+ * keeps the name across the move, so it arrives already named and no
+ * process inside ever sees the host's name. interface_count
  * == 0 is a no-op (*out_netns_fd = -1, returns 0). Otherwise: opens
  * *out_netns_fd on /proc/child_pid/ns/net FIRST, before moving
  * anything (this is the fd the caller must then keep open for the
@@ -153,9 +156,8 @@ int container_net_child_configure(const struct network_spec *nets, int net_count
  * own netns, so "up" has to happen from inside the netns the
  * interface actually landed in, the same reason
  * container_net_teardown_interfaces() below needs its own helper for
- * the reverse move. No rename, no address -- the operator's own
- * userspace inside the container owns that once installed via
- * `pkg install`.
+ * the reverse move. No address -- the operator's own userspace inside
+ * the container owns that once installed via `pkg install`.
  */
 /*
  * ADR-0335 step 2 (#344): the bring-up helper is NOT waited for. Its pid
@@ -165,8 +167,8 @@ int container_net_child_configure(const struct network_spec *nets, int net_count
  * helper was forked. See struct container_handle's own comment for why
  * neither the wait nor the pipe read can happen here.
  */
-int container_net_host_attach_interfaces(const char *const *interfaces, int interface_count,
-                                          pid_t child_pid, int *out_netns_fd,
+int container_net_host_attach_interfaces(const struct container_interface *interfaces,
+                                          int interface_count, pid_t child_pid, int *out_netns_fd,
                                           pid_t *out_helper_pid, int *out_split_fd);
 
 /*
@@ -192,9 +194,15 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
  * interface may be left in the now-orphaned netns, exactly the
  * kernel's own default fallback behavior this function exists to
  * avoid in the first place, not a new failure mode of its own).
+ *
+ * ADR-0345: the helper moves each interface out by its ifname, and the
+ * caller then renames it back to its host name from the host side,
+ * where that name is free -- it left with the interface. Renaming back
+ * inside the container first could collide with one of the
+ * container's own interfaces.
  */
-int container_net_teardown_interfaces(const char *const *interfaces, int interface_count,
-                                       int netns_fd);
+int container_net_teardown_interfaces(const struct container_interface *interfaces,
+                                       int interface_count, int netns_fd);
 
 /*
  * ADR-0156/task #861: live network attach/detach on an already-running

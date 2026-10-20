@@ -43,14 +43,17 @@ int devicegrant_check(const char *id, int want_shared, const char *requester, ch
                       size_t err_size);
 
 /*
- * interfaces[] entry <ifname>: the same check, of the record a grant of
- * it is really of -- the PHY for a radio, which moves with every
- * interface on it (ADR-0265) -- and, when it may be granted, the record
- * the registry keeps once the interface has left the host's view.
+ * interfaces[] entry <ref> -- a mac mapping or a kernel name (ADR-0345)
+ * -- resolved to the host's name for it, written to host: then the same
+ * check, of the record a grant of it is really of -- the PHY for a
+ * radio, which moves with every interface on it (ADR-0265) -- and, when
+ * it may be granted, the record the registry keeps once the interface
+ * has left the host's view. A mapping of another kind is a 400, an
+ * ambiguous one a 409. The caller sets out->ifname.
  */
-int devicegrant_check_interface(const char *ifname, const char *requester,
-                                struct registry_interface_record *out, char *err,
-                                size_t err_size);
+int devicegrant_check_interface(const char *ref, const char *requester,
+                                struct registry_interface_record *out, char *host,
+                                size_t host_size, char *err, size_t err_size);
 
 /* GET /v1/devices' `devices` array. */
 void devicegrant_write_json_list(struct json_writer *w);

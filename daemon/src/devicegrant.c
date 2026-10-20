@@ -156,6 +156,47 @@ static void claim_reference(struct device_snapshot *s, const char *container, co
 		add_claim(s, DEVICE_CLAIM_RESERVATION, container, matches[k]->id, 0, binding);
 }
 
+/*
+ * ADR-0345: an interfaces[] reference -- a mac mapping, or a kernel name
+ * as before -- to the host kernel name it means now. 0 with host set, or
+ * the HTTP status of the refusal with a sentence in err. One resolver,
+ * for a grant and for a stopped definition's claim alike.
+ */
+static int interface_host_name(const struct device_snapshot *s, const char *ref, char *host,
+                               size_t host_size, char *err, size_t err_size)
+{
+	const struct discovered_device *m[1];
+	int n = devicemap_resolve(ref, s->recs, s->n, m, 1, err, err_size);
+
+	if (n == DEVICEMAP_NOT_A_MAPPING) {
+		/* A kernel name is at most 15 bytes; a longer one would be
+		 * cut short here and then reported as some other name. */
+		if (strlen(ref) >= host_size) {
+			snprintf(err, err_size, "%s is no mapping, and too long to be a kernel interface name",
+			         ref);
+			return 400;
+		}
+		snprintf(host, host_size, "%s", ref);
+		return 0;
+	}
+	if (!devicemap_names_interface(ref)) {
+		snprintf(err, err_size,
+		         "device mapping %s names a device, not an interface: list it in devices[]",
+		         ref);
+		return 400;
+	}
+	if (n == DEVICEMAP_AMBIGUOUS)
+		return 409;
+	if (n == 0) {
+		snprintf(err, err_size, "device mapping %s matches no interface now", ref);
+		return 400;
+	}
+	/* A mac mapping matches net records only, and a net id is "net:" and
+	 * the host's name for it. */
+	snprintf(host, host_size, "%s", m[0]->id + 4);
+	return 0;
+}
+
 /* The record an interfaces[] entry is really a grant of: its PHY when
  * it is a radio, itself otherwise. */
 static const char *interface_grant_id(const struct device_snapshot *s, const char *ifname,
@@ -203,13 +244,21 @@ static void claim_definition(struct device_snapshot *s, const struct container_d
 	jinterfaces = json_object_get(root, "interfaces");
 	if (jinterfaces != NULL && jinterfaces->type == JSON_ARRAY) {
 		for (i = 0; i < jinterfaces->u.array.count; i++) {
-			const char *ifname = json_as_string(jinterfaces->u.array.items[i]);
+			const struct json_value *item = jinterfaces->u.array.items[i];
+			const char *ref = item->type == JSON_OBJECT
+			                      ? json_as_string(json_object_get(item, "interface"))
+			                      : json_as_string(item);
+			char host[CONTAINER_IFNAME_MAX];
+			char why[256];
 			char buf[DEVICE_ID_MAX];
 			const char *id;
 
-			if (ifname == NULL)
+			/* What it would be granted at start; a reference that
+			 * cannot resolve now claims nothing. */
+			if (ref == NULL ||
+			    interface_host_name(s, ref, host, sizeof(host), why, sizeof(why)) != 0)
 				continue;
-			id = interface_grant_id(s, ifname, buf, sizeof(buf));
+			id = interface_grant_id(s, host, buf, sizeof(buf));
 			if (id != NULL)
 				add_claim(s, DEVICE_CLAIM_RESERVATION, def->name, id, 0, binding);
 		}
@@ -350,17 +399,22 @@ int devicegrant_check(const char *id, int want_shared, const char *requester, ch
 	return code;
 }
 
-int devicegrant_check_interface(const char *ifname, const char *requester,
-                                struct registry_interface_record *out, char *err,
-                                size_t err_size)
+int devicegrant_check_interface(const char *ref, const char *requester,
+                                struct registry_interface_record *out, char *host,
+                                size_t host_size, char *err, size_t err_size)
 {
 	const struct device_snapshot *s = devicegrant_snapshot();
 	struct device_verdict v;
 	char net_id[DEVICE_ID_MAX];
 	char buf[DEVICE_ID_MAX];
 	const char *grant_id;
+	const char *ifname;
 	int net_idx, idx, code;
 
+	code = interface_host_name(s, ref, host, host_size, err, err_size);
+	if (code != 0)
+		return code;
+	ifname = host;
 	snprintf(net_id, sizeof(net_id), "net:%s", ifname);
 	net_idx = device_record_index(s->recs, s->n, net_id);
 	grant_id = interface_grant_id(s, ifname, buf, sizeof(buf));
@@ -384,6 +438,7 @@ int devicegrant_check_interface(const char *ifname, const char *requester,
 	snprintf(out->driver, sizeof(out->driver), "%s", s->recs[net_idx].driver);
 	snprintf(out->mac, sizeof(out->mac), "%s", s->recs[net_idx].mac);
 	out->mac_permanent = s->recs[net_idx].mac_permanent;
+	snprintf(out->ref, sizeof(out->ref), "%s", ref);
 	return 0;
 }
 
