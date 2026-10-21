@@ -2445,6 +2445,30 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 306: one policy decides every module load, and a coldplug sweep at start (ADR-0348 release one, #143, 0.2.57-568 and -569)
+
+`GET`/`PUT /v1/system/kmod-policy` holds an autoload mode, a blacklist and an allowlist. A pure `kmod_policy_verdict()` is asked by every load path: an explicit `POST /v1/system/kmod/{name}` (409 when refused), `kmod-config` autoload, the boot NIC list, and a new coldplug sweep. The blacklist refuses every origin, and any module whose `modules.dep` dependency it names. The allowlist binds only automatic loads.
+
+The sweep runs at start, before the loop serves anything, in the order NIC list, sweep, `kmod-config` autoload, boot autostart. It walks `/sys/devices` for each distinct `modalias`, resolves it with `modprobe -R`, and loads each module with its `kmod-config` options. `GET /v1/system/kmod-scan` reports every alias. `GET /v1/system/kmod` marks a loaded, blacklisted module, and the `PUT` that blacklisted it warns once. Start-up module lines are held until the log store opens: before this, they ran ahead of `logstore_init()` and were dropped, so `kmod autoload: X failed` never reached the log.
+
+**Gated:**
+- Compile probe `0.2.57-579` failed in `test_apigen`: the operation counts had to move deliberately, and `started_at` lacked `format: unix-seconds`.
+- `0.2.57-580` was green: `test_kmodpolicy` (the verdict on supplied inputs, and the store), `test_kmod` (the endpoints, the 409, the `blacklisted` mark and its warning, a `ran: false` report), `test_apigen` and `test_lint`.
+- `0.2.57-581` was green for -569's fix.
+
+**Measured on 192.168.15.95:**
+- **Baseline at 567:** 18 modules loaded. These were the NIC list's and `rtw88_8822bu`'s chain, the latter loaded by its `kmod-config` entry.
+- **568, the first sweep** (a never-saved policy, so `coldplug`): 59 aliases in 1249 ms, delaying the API's start by that much. 1 loaded (`rtw88_8822bu`, by the sweep), 24 builtin, 31 unclaimed and 3 failed. All 12 containers were running, and `ar-1` had no `restart refused` line. The module set was the same 18, so the default loaded nothing new on this host.
+- **The three failures were a bug:** `keyboard`, the vt keyboard handler, is built in and declares input aliases, so `modprobe -R` names it, but it is not in `modules.builtin`. `kmod_is_builtin()` now also reads `modules.builtin.modinfo`.
+- **569:** 59 aliases in 1281 ms, `rtw88_8822bu` loaded, no failures, 18 modules, 12 containers running, `ar-1` running.
+
+**Where this release differs from the accepted ADR text**, closed by the later releases:
+- `autoload` accepts only `off` and `coldplug`, and a never-saved host uses `coldplug`. `hotplug`, `both` and the default `both` arrive with the hotplug path.
+- An explicit `POST` still runs `modprobe` on the loop. It parks on the queue when that exists.
+- The `blacklisted` mark is in cixctl, not yet on the dashboard.
+
+**Not covered:** an explicit `POST` naming an alias rather than a module is matched against the blacklist by that name, not by the module it resolves to. The sweep resolves first. The explicit path will resolve when it moves onto the queue.
+
 ## Part 305: a container whose process dies before exec is a failed create (#622, 0.2.57-567)
 
 `container_create()` used to wait for the child's exec on the diagnostic pipe and return success whichever way the child went, so `POST /v1/containers` answered `201 running` for a child already dying (measured at 0.2.57-556 on `devgate-sr0`). Each diagnostic record now carries the child's errno, and the child writes one only on its way to `_exit()`. The non-fatal KSM note moved to the container's stderr, which is its log. The create treats a waiting record as failure: it reaps the child, takes the record as its error step and errno, and returns -1. The wait now comes before any `interfaces[]` grant is moved in, so a child that dies there has none to give back.
