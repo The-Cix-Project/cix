@@ -34297,6 +34297,10 @@ static void restart_was_refused(const char *name, const char *why)
 
 		if (deployment_image_prepare(image_copy, prep_err, sizeof(prep_err)) == DEPLOY_IMAGE_FORKED &&
 		    containerdef_set_awaiting_image(name, image_copy) == 0) {
+			/* ADR-0339: daemon-initiated, so no request's
+			 * x-cix-invalidates covers awaiting_image changing here. */
+			events_announce(EV_listContainers);
+			events_announce(EV_getContainer);
 			containerdef_set_restart_refused(name, "");
 			logstore_write("cixd", "info",
 			               "container %s: its image %s cannot run yet, so it waits for that "

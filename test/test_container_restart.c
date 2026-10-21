@@ -1666,7 +1666,7 @@ int main(void)
 
 		/* refused1's second retry is 20 s after its first. Past it, the
 		 * refusal must still have been said once. */
-		usleep(23000000);
+		usleep(26000000);
 		if (count_log_lines(&client, "refused1%3A%20restart%20refused") != 1) {
 			fprintf(stderr,
 			        "FAIL: refused1's refusal was logged %d times across two attempts, "
@@ -1678,6 +1678,14 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		cix_client_request(&client, "DELETE", "/v1/containers/squatter1", NULL, &r);
 		cix_response_free(&r);
+		/* DELETE returns with teardown under way, and an attempt during
+		 * it is refused "still shutting down" -- a new reason. Start the
+		 * clock once the address is really free. */
+		for (waited = 0; waited < 20000; waited += 250) {
+			if (container_str(&client, "squatter1", "status", got, sizeof(got)) == 404)
+				break;
+			usleep(250000);
+		}
 
 		/* Next attempt at most 30 s away (the cap); give it 45. */
 		for (waited = 0; waited < 45000; waited += 500) {
