@@ -379,13 +379,14 @@ int kmod_is_builtin(const char *name)
 	return found;
 }
 
-int kmod_resolve_alias(const char *alias, char out[][KMOD_NAME_MAX], int max)
+int kmod_resolve_alias(const char *alias, char out[][KMOD_NAME_MAX], int max, int *more)
 {
-	char buf[1024];
+	char buf[8192];
 	char *argv[4];
 	char *tok, *save = NULL;
 	int count = 0, i, dup;
 
+	*more = 0;
 	if (alias == NULL || alias[0] == '\0' || access(KMOD_MODPROBE_BIN, X_OK) != 0)
 		return -1;
 	argv[0] = (char *)"modprobe";
@@ -396,15 +397,19 @@ int kmod_resolve_alias(const char *alias, char out[][KMOD_NAME_MAX], int max)
 	 * is the ordinary answer for most devices, so the status says
 	 * nothing more than an empty output does. */
 	(void)run_kmod_tool(KMOD_MODPROBE_BIN, argv, buf, sizeof(buf));
-	for (tok = strtok_r(buf, "\n", &save); tok != NULL && count < max;
-	     tok = strtok_r(NULL, "\n", &save)) {
+	for (tok = strtok_r(buf, "\n", &save); tok != NULL; tok = strtok_r(NULL, "\n", &save)) {
 		if (!kmod_name_is_valid(tok))
 			continue;
 		dup = 0;
 		for (i = 0; i < count; i++)
 			dup |= kmod_name_eq(out[i], tok);
-		if (!dup)
-			snprintf(out[count++], KMOD_NAME_MAX, "%s", tok);
+		if (dup)
+			continue;
+		if (count == max) {
+			*more = 1;
+			break;
+		}
+		snprintf(out[count++], KMOD_NAME_MAX, "%s", tok);
 	}
 	return count;
 }

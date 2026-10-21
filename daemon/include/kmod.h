@@ -95,9 +95,11 @@ int kmod_is_builtin(const char *name);
  * Fills out with the module names modprobe prints, deduplicated, and
  * returns how many; 0 when no module claims it. -1 only when modprobe
  * could not be run at all (it is not staged), which a caller reports
- * once rather than as every alias being unclaimed.
+ * once rather than as every alias being unclaimed. *more is set when
+ * modprobe named more than max, so a caller can say the list is cut
+ * rather than silently dropping the rest.
  */
-int kmod_resolve_alias(const char *alias, char out[][KMOD_NAME_MAX], int max);
+int kmod_resolve_alias(const char *alias, char out[][KMOD_NAME_MAX], int max, int *more);
 
 /* Real `modinfo <name>` output, parsed into a JSON object -- the one
  * place modinfo's own output can't be replaced by /proc/modules, which

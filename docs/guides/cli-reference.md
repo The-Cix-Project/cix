@@ -223,6 +223,9 @@ Runbooks: [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and
 | `kmod-config [ls]` | Modules with persisted default options and/or autoload |
 | `kmod-config set NAME [--option=KEY=VALUE ...] [--autoload \| --no-autoload]` | Change only the fields given |
 | `kmod-config rm NAME` | Clear both fields; the module's loaded state is untouched |
+| `kmod-policy [show]` | The policy every module load asks: autoload, blacklist, allowlist (ADR-0348) |
+| `kmod-policy set [--autoload=off\|coldplug] [--blacklist=NAME,...] [--allowlist=NAME,...]` | Replace each field given; an empty list clears it. Blacklisting never unloads |
+| `kmod-scan [show]` | The coldplug sweep's report from this start; `--json` lists every alias |
 | `ksm show` | Kernel samepage merging (#50) |
 | `ksm set [--enable \| --disable] [--pages-to-scan=N] [--sleep-millisecs=N]` | Configure the scanner. Nothing merges until a container opts in with `container run --ksm` |
 | `zswap show` | The compressed swap cache (#51): configured intent, what the kernel reports, and the available compressors. A disagreement between the first two means the setting did not take |

@@ -18,7 +18,10 @@
  * ADR-0348's sweep and the shared load decision. See kmodscan.h.
  */
 
-#define KMODSCAN_ALIAS_MAX 256
+/* A sysfs attribute is at most one page, and a CPU's modalias, which
+ * lists every feature the CPU has, is the long one: read it whole, so
+ * the alias modprobe resolves is the device's own. */
+#define KMODSCAN_ALIAS_MAX 4096
 #define KMODSCAN_DEVICE_MAX 192
 #define KMODSCAN_REASON_MAX 256
 /* How deep under /sys/devices the sweep looks. A USB interface behind
@@ -28,10 +31,12 @@
 /* Distinct aliases a sweep records. A host past this many is reported
  * as truncated rather than silently cut. */
 #define KMODSCAN_ALIASES_MAX 4096
-#define KMODSCAN_MODULES_PER_ALIAS 8
+/* Modules recorded for one alias. A CPU's feature alias claims many;
+ * past this the entry says the list is cut. */
+#define KMODSCAN_MODULES_PER_ALIAS 64
 
 struct kmodscan_entry {
-	char alias[KMODSCAN_ALIAS_MAX];
+	int alias;  /* index into g_aliases */
 	char device[KMODSCAN_DEVICE_MAX];
 	char module[KMOD_NAME_MAX];
 	enum kmodscan_outcome outcome;
@@ -58,9 +63,10 @@ static long long g_started_at;
 static long long g_duration_ms;
 static char g_not_run[KMODSCAN_REASON_MAX] = "the sweep has not run since the daemon started";
 
-/* Aliases seen this sweep, for dedup, separate from the entries since
- * one alias can resolve to several modules. */
-static char (*g_aliases)[KMODSCAN_ALIAS_MAX];
+/* Every distinct alias the sweep met, once each, kept for the report;
+ * an entry names one by index, since one alias can resolve to several
+ * modules. */
+static char **g_aliases;
 static int g_alias_count;
 
 /* Lines said before the log store opened, in order. Bounded: a host
@@ -171,6 +177,10 @@ enum kmodscan_outcome kmodscan_load(const char *name, enum kmod_origin origin, c
 
 static void report_reset(void)
 {
+	int i;
+
+	for (i = 0; i < g_alias_count; i++)
+		free(g_aliases[i]);
 	free(g_entries);
 	free(g_aliases);
 	g_entries = NULL;
@@ -210,7 +220,7 @@ static int alias_seen(const char *alias)
 static void sweep_alias(const char *alias, const char *device)
 {
 	char mods[KMODSCAN_MODULES_PER_ALIAS][KMOD_NAME_MAX];
-	int n, i;
+	int n, i, more, idx;
 
 	if (alias_seen(alias))
 		return;
@@ -218,40 +228,49 @@ static void sweep_alias(const char *alias, const char *device)
 		g_truncated = 1;
 		return;
 	}
-	snprintf(g_aliases[g_alias_count++], KMODSCAN_ALIAS_MAX, "%s", alias);
+	if ((g_aliases[g_alias_count] = strdup(alias)) == NULL) {
+		g_truncated = 1;
+		return;
+	}
+	idx = g_alias_count++;
 
-	n = kmod_resolve_alias(alias, mods, KMODSCAN_MODULES_PER_ALIAS);
+	n = kmod_resolve_alias(alias, mods, KMODSCAN_MODULES_PER_ALIAS, &more);
 	if (n <= 0) {
 		struct kmodscan_entry *e = entry_add();
 
 		if (e == NULL)
 			return;
-		snprintf(e->alias, sizeof(e->alias), "%s", alias);
+		e->alias = idx;
 		snprintf(e->device, sizeof(e->device), "%s", device);
 		e->outcome = KMODSCAN_UNCLAIMED;
 		return;
 	}
+	if (more)
+		kmodscan_say("warning",
+		             "kmod coldplug: more than %d modules claim %s (%s); the sweep decided the "
+		             "first %d",
+		             KMODSCAN_MODULES_PER_ALIAS, alias, device, KMODSCAN_MODULES_PER_ALIAS);
 	for (i = 0; i < n; i++) {
 		struct kmodscan_entry *e = entry_add();
 
 		if (e == NULL)
 			return;
-		snprintf(e->alias, sizeof(e->alias), "%s", alias);
+		e->alias = idx;
 		snprintf(e->device, sizeof(e->device), "%s", device);
 		snprintf(e->module, sizeof(e->module), "%s", mods[i]);
 		e->outcome = kmodscan_load(mods[i], KMOD_ORIGIN_COLDPLUG, e->reason, sizeof(e->reason));
 		switch (e->outcome) {
 		case KMODSCAN_LOADED:
-			kmodscan_say("info", "kmod coldplug: loaded %s for %s (%s)", e->module, e->alias,
+			kmodscan_say("info", "kmod coldplug: loaded %s for %s (%s)", e->module, alias,
 			             e->device);
 			break;
 		case KMODSCAN_REFUSED:
-			kmodscan_say("info", "kmod coldplug: refused %s for %s (%s): %s", e->module,
-			             e->alias, e->device, e->reason);
+			kmodscan_say("info", "kmod coldplug: refused %s for %s (%s): %s", e->module, alias,
+			             e->device, e->reason);
 			break;
 		case KMODSCAN_FAILED:
-			kmodscan_say("error", "kmod coldplug: %s for %s (%s) failed: %s", e->module,
-			             e->alias, e->device, e->reason);
+			kmodscan_say("error", "kmod coldplug: %s for %s (%s) failed: %s", e->module, alias,
+			             e->device, e->reason);
 			break;
 		default:
 			break;
@@ -302,7 +321,9 @@ static void sweep_dir(char *path, size_t len, size_t cap, int depth)
 		if (de->d_type == DT_DIR) {
 			sweep_dir(path, len + 1 + nl, cap, depth + 1);
 		} else if (de->d_type == DT_REG && strcmp(de->d_name, "modalias") == 0) {
-			char alias[KMODSCAN_ALIAS_MAX];
+			/* Static: a page is too large for every frame of the
+			 * walk, and it is used up before the walk recurses. */
+			static char alias[KMODSCAN_ALIAS_MAX];
 
 			read_modalias(path, alias, sizeof(alias));
 			path[len] = '\0';
@@ -358,8 +379,6 @@ void kmodscan_boot_sweep(void)
 	g_duration_ms = monotonic_ms() - t0;
 	g_ran = 1;
 	g_not_run[0] = '\0';
-	free(g_aliases);
-	g_aliases = NULL;
 
 	for (i = 0; i < g_entry_count; i++)
 		counts[g_entries[i].outcome]++;
@@ -399,7 +418,7 @@ void kmodscan_write_json(struct json_writer *w)
 
 		jw_obj_open(w);
 		jw_key(w, "alias");
-		jw_str(w, e->alias);
+		jw_str(w, g_aliases[e->alias]);
 		jw_key(w, "device");
 		jw_str(w, e->device);
 		jw_key(w, "module");

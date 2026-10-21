@@ -57,6 +57,20 @@ A failed load or unload reports **modprobe's own words**, not a fixed sentence -
 
 Which drivers are modules at all is a deliberate split (#347): a driver for a *particular device* -- a GPU, a wireless chipset -- is a module, while everything needed to reach the root filesystem or the network is built in. That is not a stylistic preference. This platform's kernel is an EFI stub with **no initramfs**, so a storage controller or NIC driver that is not built in cannot be loaded from a disk the kernel cannot yet see.
 
+### Drivers load by themselves, and one policy decides every load
+
+```sh
+cixctl kmod-policy
+cixctl kmod-policy set --blacklist=floppy,pcspkr
+cixctl kmod-scan
+```
+
+At start, before the API serves anything, the daemon sweeps `/sys/devices` and loads the driver for each device present, with that module's `kmod-config` options, after the boot NIC drivers and before `kmod-config` autoload and container autostart ([ADR-0348](../adr/0348-a-device-gets-its-driver-and-one-policy-decides-every-module-load.md)). `kmod-scan` shows what the sweep met and what it did, unclaimed devices and modules already loaded included. Loads, refusals and failures are also in the log, once each.
+
+Every load asks `kmod-policy` first, whoever asks. **A blacklisted module never loads**: not from `kmod load` (refused with the reason), not from `kmod-config` autoload, not from the sweep, and not as a dependency of another module. **The allowlist**, when not empty, restricts only the automatic loads, since naming a module yourself is allowing it. Blacklisting a module does not unload it: `kmod ls` marks a loaded, blacklisted module, the log says so once, and `kmod unload NAME` removes it when you choose. `--autoload=off` stops the sweep. Loading on plug follows in a later release.
+
+The kernel's own route for loading a module by name (`request_module()`) loads nothing on a Cix host, and that is kept, so every module that loads is one this policy decided. A module that matches no device, such as a filesystem type, is a `kmod-config` autoload entry.
+
 ## Device hotplug
 
 ```sh
