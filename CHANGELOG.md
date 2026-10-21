@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An interface that left with its hardware is not moved back (ADR-0347, #623)
+
+- **What changed:** the reconcile that fails a container marks each interface whose anchor it found gone, and `registry_remove()` skips those when it moves interfaces back to the host. Before, the move failed for an interface that no longer exists, and an unplug logged a second error, "an interface did not come back to the host under its own name", after ADR-0347's one line. An interface that fails to come back for any other reason still logs it.
+- **Verified:** measured on .95 at 0.2.57-565, where the unplug logged both lines. Nothing in a build container can unplug, so the fix is not gated.
+
 ### A container whose interface leaves the host has failed (ADR-0347, #623)
 
 - **What changed:**

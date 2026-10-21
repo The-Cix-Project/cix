@@ -574,20 +574,29 @@ int registry_remove(const char *name)
 
 	if (e->interface_count > 0) {
 		struct container_interface ifs[CONTAINER_MAX_INTERFACES];
-		int i;
+		int i, n = 0;
 
 		/* Moved out by its name inside, renamed back to its host name
 		 * (ADR-0345). A record with no ifname is one that was never
-		 * renamed. */
+		 * renamed. One whose hardware left the host (ADR-0347) is in no
+		 * namespace any more, so it is not asked for: measured on .95,
+		 * 2026-10-21, asking for it logged the error below after an
+		 * unplug, a second error line for one failure. */
 		for (i = 0; i < e->interface_count; i++) {
 			const char *inside = e->interface_records[i].ifname;
 
-			snprintf(ifs[i].host, sizeof(ifs[i].host), "%s", e->interfaces[i]);
-			snprintf(ifs[i].ifname, sizeof(ifs[i].ifname), "%s",
+			if (e->interface_records[i].left_host)
+				continue;
+			snprintf(ifs[n].host, sizeof(ifs[n].host), "%s", e->interfaces[i]);
+			snprintf(ifs[n].ifname, sizeof(ifs[n].ifname), "%s",
 			         inside[0] != '\0' ? inside : e->interfaces[i]);
+			n++;
 		}
-		if (container_net_teardown_interfaces(ifs, e->interface_count,
-		                                      e->handle.interfaces_netns_fd) != 0)
+		if (n == 0) {
+			/* The teardown would have closed it; nothing else will. */
+			if (e->handle.interfaces_netns_fd >= 0)
+				close(e->handle.interfaces_netns_fd);
+		} else if (container_net_teardown_interfaces(ifs, n, e->handle.interfaces_netns_fd) != 0)
 			logstore_write("cixd", "error",
 			               "container %s: an interface did not come back to the host under "
 			               "its own name",

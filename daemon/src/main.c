@@ -5262,6 +5262,8 @@ static void reconcile_live_device_revocations(void)
 			if (igone_count > 0) {
 				const struct registry_interface_record *r = &e->interface_records[igone[0]];
 
+				for (j = 0; j < igone_count; j++)
+					e->interface_records[igone[j]].left_host = 1;
 				logstore_write("cixd", "error",
 				                "container %s: its interface %s (%s, on %s) left the host -- "
 				                "failed, so its restart policy brings it back when the device "

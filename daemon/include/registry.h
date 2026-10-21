@@ -167,6 +167,10 @@ struct registry_interface_record {
 	 * stays in registry_entry.interfaces[], which ids are built from. */
 	char ref[64];
 	char ifname[CONTAINER_IFNAME_MAX];
+	/* ADR-0347: set by the reconcile that found this interface's anchor
+	 * gone. The interface left with its hardware, so teardown has
+	 * nothing to bring back and does not try. */
+	int left_host;
 };
 
 struct registry_device_attachment {
