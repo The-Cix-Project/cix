@@ -57,6 +57,14 @@ struct registry_console {
  * any kind.
  */
 #define REGISTRY_TEARDOWN_MIGRATE 4
+/*
+ * ADR-0347: "this incarnation has failed, by the daemon's decision" --
+ * the hardware under one of its interfaces[] grants left the host. The
+ * stop is graceful like any other, and the exit then takes the
+ * unprompted-exit path as a failure whatever its status, so the restart
+ * policy applies as it would to a crash.
+ */
+#define REGISTRY_TEARDOWN_FAIL 5
 
 /* Issue #119: a teardown still incomplete this long after its SIGKILL is
  * almost certainly wedged in the kernel (a pidns init stuck reaping),

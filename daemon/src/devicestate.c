@@ -319,7 +319,7 @@ int device_grants_gone(const struct discovered_device *recs, int n, const char *
 	int i, gone = 0;
 
 	for (i = 0; i < count; i++) {
-		if (device_record_index(recs, n, ids[i]) < 0)
+		if (ids[i][0] != '\0' && device_record_index(recs, n, ids[i]) < 0)
 			out[gone++] = i;
 	}
 	return gone;

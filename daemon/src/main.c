@@ -5202,6 +5202,8 @@ static void reconcile_pending_device_attachments(void)
 		registry_clear_pending_device(settled[i].e, settled[i].ref);
 }
 
+static void begin_container_stop(struct registry_entry *e, int teardown_kind);
+
 /*
  * ADR-0161 Phase C: symmetric unplug reaction -- for every running
  * container's own currently-granted devices[], checks whether the
@@ -5236,10 +5238,42 @@ static void reconcile_live_device_revocations(void)
 		int gone[CONTAINER_MAX_DEVICES];
 		int gone_count;
 
-		if (e == NULL || !e->running || e->device_count == 0)
+		if (e == NULL || !e->running || (e->device_count == 0 && e->interface_count == 0))
 			continue;
 		if (snap == NULL)
 			snap = devicegrant_snapshot();
+
+		/*
+		 * ADR-0347: an interfaces[] grant is part of what the container
+		 * is, and no process can be handed a new interface, so the
+		 * hardware under one leaving fails the container. Asked of the
+		 * anchor, the host record the grant hangs off: the phy: and net:
+		 * records are rebuilt from the grant and outlive the unplug.
+		 */
+		if (e->interface_count > 0 && e->teardown_kind == REGISTRY_TEARDOWN_NONE) {
+			const char *anchors[CONTAINER_MAX_INTERFACES];
+			int igone[CONTAINER_MAX_INTERFACES];
+			int igone_count;
+
+			for (j = 0; j < e->interface_count; j++)
+				anchors[j] = e->interface_records[j].anchor;
+			igone_count =
+			    device_grants_gone(snap->recs, snap->n, anchors, e->interface_count, igone);
+			if (igone_count > 0) {
+				const struct registry_interface_record *r = &e->interface_records[igone[0]];
+
+				logstore_write("cixd", "error",
+				                "container %s: its interface %s (%s, on %s) left the host -- "
+				                "failed, so its restart policy brings it back when the device "
+				                "returns (ADR-0347)",
+				                e->name, r->ref[0] != '\0' ? r->ref : e->interfaces[igone[0]],
+				                r->granted, r->anchor);
+				begin_container_stop(e, REGISTRY_TEARDOWN_FAIL);
+				continue;
+			}
+		}
+		if (e->device_count == 0)
+			continue;
 		for (j = 0; j < e->device_count; j++)
 			ids[j] = e->devices[j].id;
 		gone_count = device_grants_gone(snap->recs, snap->n, ids, e->device_count, gone);
@@ -5289,7 +5323,7 @@ static void handle_uevent_event(struct conn *cc)
 {
 	char buf[2048];
 	ssize_t n;
-	int is_add = 0, is_remove = 0, is_usb = 0, is_whole_device = 0;
+	int is_add = 0, is_remove = 0, is_usb = 0, is_pci = 0, is_whole_device = 0;
 	int is_hardware = 0; /* ADR-0339: a subsystem the device and storage reads list */
 	size_t off;
 
@@ -5307,8 +5341,9 @@ static void handle_uevent_event(struct conn *cc)
 			is_remove = strcmp(line + 7, "remove") == 0;
 		} else if (strncmp(line, "SUBSYSTEM=", 10) == 0) {
 			is_usb = strcmp(line + 10, "usb") == 0;
-			is_hardware = is_usb || strcmp(line + 10, "block") == 0 ||
-			              strcmp(line + 10, "pci") == 0 || strcmp(line + 10, "scsi") == 0;
+			is_pci = strcmp(line + 10, "pci") == 0;
+			is_hardware = is_usb || is_pci || strcmp(line + 10, "block") == 0 ||
+			              strcmp(line + 10, "scsi") == 0;
 		} else if (strncmp(line, "DEVPATH=", 8) == 0) {
 			const char *base = strrchr(line + 8, '/');
 
@@ -5336,14 +5371,15 @@ static void handle_uevent_event(struct conn *cc)
 	 * mapping names it by, appear in a block add after the USB one,
 	 * once the SCSI probe finishes -- an add this used to ignore. The
 	 * reconcile takes its snapshot only when something waits, so a
-	 * wider trigger costs nothing otherwise. Revocation still reacts to
-	 * a USB whole-device remove only: it is lazy on any grant existing,
-	 * which is common, and a block remove during a format would pay a
-	 * device walk each time.
+	 * wider trigger costs nothing otherwise. Revocation reacts to a USB
+	 * whole-device remove and, since ADR-0347, a PCI remove: the two
+	 * buses an interface's hardware sits on. Not to a block or SCSI
+	 * remove: it is lazy on any grant existing, which is common, and a
+	 * block remove during a format would pay a device walk each time.
 	 */
 	if (is_add && is_hardware)
 		reconcile_pending_device_attachments();
-	else if (is_remove && is_usb && is_whole_device)
+	else if (is_remove && ((is_usb && is_whole_device) || is_pci))
 		reconcile_live_device_revocations();
 }
 
@@ -18050,9 +18086,18 @@ static void handle_delete(int fd, const char *name)
 	 * idempotent -- the intent is already fully recorded. A DELETE
 	 * landing while a STOP's teardown is in flight upgrades the intent
 	 * in place (records delete's own durable half now; the one pending
-	 * pidfd event completes whichever kind it finds recorded). */
+	 * pidfd event completes whichever kind it finds recorded).
+	 *
+	 * ADR-0347: so does one landing during a RESTART or a FAIL, which
+	 * would otherwise replay the definition the DELETE asked to remove
+	 * -- read from the code, not measured: a DELETE during a rolling
+	 * restart's stop returned 204 and left the definition for the replay
+	 * to bring back. A MIGRATE has its own
+	 * completion and abort path, and is left to it. */
 	if (e != NULL && e->running && e->teardown_kind != REGISTRY_TEARDOWN_NONE) {
-		if (e->teardown_kind == REGISTRY_TEARDOWN_STOP) {
+		if (e->teardown_kind == REGISTRY_TEARDOWN_STOP ||
+		    e->teardown_kind == REGISTRY_TEARDOWN_RESTART ||
+		    e->teardown_kind == REGISTRY_TEARDOWN_FAIL) {
 			dns_server_forget(name);
 			dns_record_forget_owner(name);
 			ldap_server_forget(name);
@@ -35424,14 +35469,19 @@ static void container_exit_finalize(struct registry_entry *entry)
 	}
 
 	/*
-	 * An unprompted exit (never reached for an explicit DELETE or
-	 * POST .../stop, both of which remove the pidfd from epoll
-	 * themselves before this event could ever fire -- see
-	 * registry_remove()'s own doc comment) of a restart:"always"/
-	 * "on-failure"/"unless-stopped" container. "on-failure" skips the
-	 * restart only for a clean (exit_status == 0) exit -- this decision
-	 * cannot survive a daemon restart (exit_status is never persisted),
-	 * a stated v1 boundary, see ADR-0027.
+	 * An unprompted exit of a restart:"always"/"on-failure"/
+	 * "unless-stopped" container -- or a FAIL teardown, which comes here
+	 * rather than through the teardown branch above (ADR-0347). The
+	 * other teardown kinds all return in that branch. "on-failure" skips
+	 * the restart only for a clean (exit_status == 0) exit, and a FAIL
+	 * is never clean, whatever cix-init's graceful shutdown exited with.
+	 * This decision cannot survive a daemon restart (exit_status is
+	 * never persisted), a stated v1 boundary, see ADR-0027.
+	 *
+	 * This comment used to say the path is "never reached for an
+	 * explicit DELETE or POST .../stop, both of which remove the pidfd
+	 * from epoll themselves". Since ADR-0180 every teardown completes
+	 * from the pidfd event and ends here; those two return above.
 	 */
 	/*
 	 * An unprompted exit is a finished incarnation too, and this is
@@ -35459,8 +35509,9 @@ static void container_exit_finalize(struct registry_entry *entry)
 		 * restart. They simply become an exited-but-kept definition,
 		 * startable by hand. "on-failure" still skips a clean (0) exit.
 		 */
+		int failed = exit_status != 0 || teardown_kind == REGISTRY_TEARDOWN_FAIL;
 		int should_restart = strcmp(def->restart_policy, "no") != 0 &&
-		                     !(strcmp(def->restart_policy, "on-failure") == 0 && exit_status == 0);
+		                     !(strcmp(def->restart_policy, "on-failure") == 0 && !failed);
 
 		if (should_restart) {
 			time_t uptime = time(NULL) - started_at;
@@ -35483,7 +35534,10 @@ static void container_exit_finalize(struct registry_entry *entry)
 			 * that keeps dying goes back to the version before it, now,
 			 * rather than after the window and a full backoff.
 			 */
+			/* ADR-0347: an unplug is not the image's fault, so a FAIL
+			 * teardown does not count against the roll. */
 			if (def->roll_deadline > 0 && uptime < CONTAINER_RESTART_STABILITY_SECONDS &&
+			    teardown_kind != REGISTRY_TEARDOWN_FAIL &&
 			    ++def->roll_failures >= CONTAINER_ROLLBACK_UNSTABLE_EXITS) {
 				char reason[128];
 
@@ -35495,6 +35549,15 @@ static void container_exit_finalize(struct registry_entry *entry)
 			}
 
 			arm_restart_timer(name_copy, restart_backoff_delay(def));
+		} else if (teardown_kind == REGISTRY_TEARDOWN_FAIL) {
+			/* ADR-0347: the teardown is over and the entry is kept,
+			 * below. Left at FAIL it would read as one still under way
+			 * -- the stall report after 120 s, and "still shutting
+			 * down" to a create of the same name. */
+			struct registry_entry *kept = registry_find(name_copy);
+
+			if (kept != NULL)
+				kept->teardown_kind = REGISTRY_TEARDOWN_NONE;
 		}
 		/*
 		 * else (restart:"no", or on-failure with a clean 0 exit): the

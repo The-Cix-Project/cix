@@ -108,6 +108,9 @@ int device_records_share_an_id(const struct discovered_device *recs, int n, int 
  * ids[] of every id with no record in recs, and returns how many. An
  * unplug revokes exactly those grants and sends each one's reference
  * back to waiting.
+ *
+ * ADR-0347: an interface record's anchor is asked the same question,
+ * and an empty id -- a record with no anchor -- is never gone.
  */
 int device_grants_gone(const struct discovered_device *recs, int n, const char *const *ids,
                        int count, int out[]);

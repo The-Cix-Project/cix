@@ -466,6 +466,11 @@ static void registry_mark_exited_with(struct registry_entry *entry, int status, 
 		} else if (entry->teardown_kind == REGISTRY_TEARDOWN_DELETE) {
 			logstore_write("cixd", "info", "container %s removed (%s)",
 			                entry->name, entry->last_exit_reason);
+		} else if (entry->teardown_kind == REGISTRY_TEARDOWN_FAIL) {
+			/* ADR-0347: the failure was logged at error when the
+			 * daemon decided it; this is the stop it asked for. */
+			logstore_write("cixd", "info", "container %s stopped after its interface left (%s)",
+			                entry->name, entry->last_exit_reason);
 		} else if (status != 0) {
 			logstore_write("cixd", "error", "container %s exited abnormally: %s",
 			                entry->name, entry->last_exit_reason);
@@ -614,6 +619,10 @@ void registry_begin_kill(struct registry_entry *e, int teardown_kind)
 	e->teardown_kind = teardown_kind;
 	e->teardown_started_at = time(NULL);   /* issue #119 */
 	e->teardown_stall_reported = 0;
+	/* ADR-0347: the status word changes here, and a stop the daemon
+	 * starts itself -- a rolling restart, an unplugged interface -- has
+	 * no request whose x-cix-invalidates would announce it. */
+	registry_announce();
 }
 
 int registry_network_attach(struct registry_entry *e, const struct registry_network_attachment *net)
@@ -843,7 +852,9 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 	 * during the window. */
 	jw_str(w, !entry->running ? "exited"
 	           : entry->teardown_kind == REGISTRY_TEARDOWN_DELETE ? "deleting"
-	           : entry->teardown_kind == REGISTRY_TEARDOWN_STOP   ? "stopping"
+	           : entry->teardown_kind == REGISTRY_TEARDOWN_STOP ||
+	                     entry->teardown_kind == REGISTRY_TEARDOWN_FAIL
+	                 ? "stopping"
 	           : entry->paused                                     ? "paused"
 	                                                               : "running");
 	jw_key(w, "paused");

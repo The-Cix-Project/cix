@@ -338,6 +338,16 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Said once:** `restart_refused` is set through its announcing setter only when the sentence changes, and the log follows the same rule. Never log or announce per attempt.
 - **`stop` and `DELETE` end it.** `stop` lasts until the next reboot for `restart: always`, by ADR-0027.
 
+## A container whose interface leaves the host has failed
+
+**When the hardware under an `interfaces[]` grant leaves the host, the daemon fails that container, and its restart policy and ADR-0346 bring it back when the hardware returns.** That is [ADR-0347](docs/adr/0347-a-container-whose-interface-leaves-the-host-has-failed.md), accepted by the owner on 2026-10-21 over a live re-attach and over measuring hostapd first.
+
+- **Never build a live interface re-attach.** A process cannot be handed a new interface, so restarting the container is the remedy.
+- **Ask the anchor, never `phy:` or `net:`.** Those records are rebuilt from the grant and outlive the unplug. The question goes through `device_grants_gone()`, which never reports an empty id.
+- **FAIL is a teardown kind that ends in the unprompted-exit path,** and counts as a failure whatever its exit status. It does not count against a roll's probation.
+- **Only a running container holds a device.** A kept-exited one is a stopped definition (ADR-0344's reservation rule).
+- **A daemon-initiated stop announces:** `registry_begin_kill()` does it for every kind.
+
 ## One way to make an image
 
 **An image is made by `POST /v1/images` (`cixctl image create --name=NAME`) and by nothing else.** `POST /v1/pkg/install` naming an image that does not exist is a 400 naming that fix, and creates nothing (#500) -- the owner's decision of 2026-09-30, chosen over documenting the implicit create an install used to perform, which is how `--image=jump`, a typo for `jumpbox`, became a new image.

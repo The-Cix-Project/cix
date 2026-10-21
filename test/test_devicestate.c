@@ -343,6 +343,22 @@ static void test_grants_gone(void)
 		fprintf(stderr, "  FAIL: present grants reported gone (%d)\n", n);
 		g_failures++;
 	}
+
+	/* ADR-0347: an interface record's anchor is asked the same question,
+	 * and a record with no anchor is never gone -- beside a present and
+	 * an absent id, so the empty one is not passing by accident. */
+	{
+		const char *anchors[] = { "", "phy:phy0", "usb:dead:beef@0000:00:14.0-usb2-9" };
+
+		n = device_grants_gone(g_recs, g_n, anchors, 3, gone);
+		if (n != 1 || gone[0] != 2) {
+			fprintf(stderr,
+			        "  FAIL: of an empty, a present and an absent anchor, only the absent "
+			        "one should be gone, got %d (first %d)\n",
+			        n, n > 0 ? gone[0] : -1);
+			g_failures++;
+		}
+	}
 }
 
 static void test_json(void)

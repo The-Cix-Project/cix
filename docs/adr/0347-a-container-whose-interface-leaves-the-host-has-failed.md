@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-21. It is #623's Part B: what happens to `ar-1` when its radio is unplugged while hostapd keeps running. The owner chose this remedy on 2026-10-21, over measuring hostapd first and over a live re-attach. It builds on [ADR-0346](0346-a-restart-that-cannot-be-made-is-a-failure-and-is-retried.md) (a refused restart is retried) and on [ADR-0344](0344-a-device-is-one-record-with-one-state-and-every-grant-asks-it.md)'s interface records.
+Accepted by the owner, 2026-10-21, after an advisor screen. It is #623's Part B: what happens to `ar-1` when its radio is unplugged while hostapd keeps running. The owner chose this remedy on 2026-10-21, over measuring hostapd first and over a live re-attach. It builds on [ADR-0346](0346-a-restart-that-cannot-be-made-is-a-failure-and-is-retried.md) (a refused restart is retried) and on [ADR-0344](0344-a-device-is-one-record-with-one-state-and-every-grant-asks-it.md)'s interface records.
 
 ## Context
 

@@ -289,13 +289,13 @@ const struct device_snapshot *devicegrant_snapshot(void)
 	for (i = 0; i < count; i++) {
 		const struct registry_entry *e = registry_find(names[i]);
 
-		if (e != NULL)
+		if (e != NULL && e->running)
 			append_moved(s, e);
 	}
 	for (i = 0; i < count; i++) {
 		const struct registry_entry *e = registry_find(names[i]);
 
-		if (e == NULL)
+		if (e == NULL || !e->running)
 			continue;
 		for (j = 0; j < e->device_count; j++)
 			add_claim(s, DEVICE_CLAIM_GRANT, e->name, e->devices[j].id, e->devices[j].shared, 0);
@@ -313,12 +313,19 @@ const struct device_snapshot *devicegrant_snapshot(void)
 			claim_reference(s, e->name, e->pending_devices[j].ref, 0);
 	}
 
-	/* Stopped definitions: a reservation, binding only with the setting. */
+	/*
+	 * Stopped definitions: a reservation, binding only with the setting.
+	 * ADR-0347: a container kept as exited (ADR-0181) is one of them. It
+	 * used to be skipped here and claimed as held above, though its
+	 * cgroup and netns were gone, and the contract says held_by lists
+	 * running containers only.
+	 */
 	count = containerdef_list_names(names, CONTAINERDEF_MAX);
 	for (i = 0; i < count; i++) {
 		const struct container_def *def;
+		const struct registry_entry *live = registry_find(names[i]);
 
-		if (registry_find(names[i]) != NULL)
+		if (live != NULL && live->running)
 			continue;
 		def = containerdef_find(names[i]);
 		if (def != NULL && def->body != NULL)

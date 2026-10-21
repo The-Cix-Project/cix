@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container whose interface leaves the host has failed (ADR-0347, #623)
+
+- **What changed:**
+  - **Unplugged interfaces:** when the device an `interfaces[]` grant hangs off (its anchor, such as the USB dongle under a radio's PHY) leaves the host, the daemon logs it once and stops the container with a new FAIL teardown. The exit counts as a failure, so the restart policy applies. While the interface names nothing present, ADR-0346's retry shows `restart_refused`, and it brings the container back once the device returns. Before, nothing reacted: the container ran on without its interface and `GET /v1/devices` listed a PHY that was gone. Revocation now also runs on a PCI remove.
+  - **Rolling replays:** a refused rolling replay (an image roll, or the restart a DHCP range change makes) is retried like the other two entry points. Before, it logged once and left the container down. Every successful create clears `restart_refused`.
+  - **DELETE during a teardown:** a DELETE during a RESTART or FAIL teardown now removes the definition, as one during a STOP already did. Read from the code: one during a rolling restart's stop returned 204 and left the definition to be replayed.
+  - **Held means running:** only a running container holds a device. A container kept as exited is a stopped definition (ADR-0344): it shows in `reserved_by` and blocks only with `reserve_devices`. This matches what the contract already said.
+  - **Announced:** a stop the daemon starts itself announces the container and device reads, in `registry_begin_kill()`.
+- **Verified:** `test_devicestate` gates `device_grants_gone()` never reporting an empty anchor. The unplug path itself needs a real unplug on .95, recorded in ROADMAP.
+
 ### A restart that cannot be made is retried, and says why (ADR-0346, #623)
 
 - **What changed:**
