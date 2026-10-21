@@ -971,6 +971,7 @@ static void check_architecture_components(void)
 		{ "logread.c", "Filtered log reads" },
 		{ "devicestate.c", "Device state" },
 		{ "devicematch.c", "Device mappings" },
+		{ "kmodpolicy.c", "Module policy" },
 		{ "procfuse.c", "procfuse" },
 		{ "esp.c", "ESP" },
 	};

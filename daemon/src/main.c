@@ -15,6 +15,8 @@
 #include "bootmodules.h"
 #include "kmod.h"
 #include "kmodconfig.h"
+#include "kmodpolicy.h"
+#include "kmodscan.h"
 #include "sysctlconfig.h"
 #include "storagemigrate.h"
 #include "containerstoragemigrate.h"
@@ -326,6 +328,7 @@ char SITE_CONFIG_PATH[PATH_MAX];
 char DEVICEMAP_STATE_PATH[PATH_MAX];
 char SYSCTLCONFIG_STATE_PATH[PATH_MAX]; /* ADR-0160 */
 char KMODCONFIG_STATE_PATH[PATH_MAX]; /* ADR-0159 */
+char KMODPOLICY_STATE_PATH[PATH_MAX]; /* ADR-0348 */
 char DISKROLE_STATE_PATH[PATH_MAX];
 /* ADR-0141 Phase 2: which disk (if any) is the active placement for
  * state-storage/rebuildable-storage/log-storage -- g_base_dir-relative,
@@ -510,6 +513,7 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(DEVICEMAP_STATE_PATH, sizeof(DEVICEMAP_STATE_PATH), "%s/devicemaps.json", STATE_DIR);
 	snprintf(SYSCTLCONFIG_STATE_PATH, sizeof(SYSCTLCONFIG_STATE_PATH), "%s/sysctl_config.json", STATE_DIR);
 	snprintf(KMODCONFIG_STATE_PATH, sizeof(KMODCONFIG_STATE_PATH), "%s/kmod_config.json", STATE_DIR);
+	snprintf(KMODPOLICY_STATE_PATH, sizeof(KMODPOLICY_STATE_PATH), "%s/kmod_policy.json", STATE_DIR);
 	snprintf(DAEMON_CONFIG_PATH, sizeof(DAEMON_CONFIG_PATH), "%s/daemon_config.json", STATE_DIR);
 	snprintf(QUOTAMAP_STATE_PATH, sizeof(QUOTAMAP_STATE_PATH), "%s/quota_projids.json", STATE_DIR);
 	snprintf(SIGNING_KEYS_DIR, sizeof(SIGNING_KEYS_DIR), "%s/keys", STATE_DIR);
@@ -2124,13 +2128,20 @@ static void load_boot_modules(void)
 		 * spell its path -- and only one of them would have been
 		 * found by anyone changing that.
 		 *
-		 * Return value deliberately unchecked, and output deliberately
-		 * discarded: see the function-level comment above for why "no
-		 * such hardware present" is not an error here. That is a
-		 * choice about THIS list, not about kmod_load(), which now
-		 * reports its reason everywhere the answer matters.
+		 * A failure is deliberately not logged: see the function-level
+		 * comment above for why "no such hardware present" is not an
+		 * error here. That is a choice about THIS list, not about
+		 * kmod_load(), which reports its reason everywhere the answer
+		 * matters.
+		 *
+		 * ADR-0348: the list asks the verdict like every other load
+		 * path, through kmodscan_load(), and a refusal is said, since
+		 * an operator who blacklisted a NIC driver should see it took.
 		 */
-		(void)kmod_load(boot_modules[i], NULL, NULL, 0);
+		char why[256];
+
+		if (kmodscan_load(boot_modules[i], KMOD_ORIGIN_NIC, why, sizeof(why)) == KMODSCAN_REFUSED)
+			kmodscan_say("info", "kmod boot NIC list: refused %s: %s", boot_modules[i], why);
 	}
 }
 
@@ -2174,24 +2185,33 @@ static void apply_configured_sysctls(void)
  */
 static void load_one_configured_module(const char *name, const char *options, void *ctx)
 {
-	char tool_out[256];
+	char why[256];
 
 	(void)ctx;
+	/* kmodscan_load() passes the entry's own options, read from the
+	 * same kmod-config entry this callback was handed. */
+	(void)options;
 	/*
 	 * modprobe's own words, and to the log store rather than stderr.
 	 * This ran at boot, so stderr goes nowhere an operator can read
 	 * (#132) -- an autoload that silently did not happen was
-	 * indistinguishable from one never configured.
+	 * indistinguishable from one never configured. ADR-0348: the entry
+	 * asks the verdict first, and a refusal is said as well.
+	 *
+	 * Through kmodscan_say(), which holds the line until the log store
+	 * opens. This runs before logstore_init(), and write_entry() drops
+	 * anything written before it, so the logstore_write() that stood
+	 * here reached nowhere, read from the code on 2026-10-21.
 	 */
-	if (kmod_load(name, options, tool_out, sizeof(tool_out)) != 0) {
-		size_t i;
-
-		for (i = 0; tool_out[i] != '\0'; i++) {
-			if (tool_out[i] == '\n' || tool_out[i] == '\r')
-				tool_out[i] = ' ';
-		}
-		logstore_write("cixd", "error", "kmod autoload: %s failed: %s", name,
-		               tool_out[0] != '\0' ? tool_out : "modprobe said nothing about why");
+	switch (kmodscan_load(name, KMOD_ORIGIN_CONFIG, why, sizeof(why))) {
+	case KMODSCAN_REFUSED:
+		kmodscan_say("info", "kmod autoload: refused %s: %s", name, why);
+		break;
+	case KMODSCAN_FAILED:
+		kmodscan_say("error", "kmod autoload: %s failed: %s", name, why);
+		break;
+	default:
+		break;
 	}
 }
 
@@ -27654,6 +27674,24 @@ static void op_listKmodConfig(const struct api_ctx *ctx)
 	handle_kmodconfig_list(ctx->fd);
 }
 
+/* GET /v1/system/kmod-policy (ADR-0348) */
+static void op_getKmodPolicy(const struct api_ctx *ctx)
+{
+	handle_kmodpolicy_get(ctx->fd);
+}
+
+/* PUT /v1/system/kmod-policy */
+static void op_putKmodPolicy(const struct api_ctx *ctx)
+{
+	handle_kmodpolicy_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/kmod-scan */
+static void op_getKmodScan(const struct api_ctx *ctx)
+{
+	handle_kmodscan_get(ctx->fd);
+}
+
 /* POST /v1/system/kmod-build */
 static void op_postKmodBuild(const struct api_ctx *ctx)
 {
@@ -36876,6 +36914,9 @@ static int cixd_main(int argc, char **argv)
 	 * before its own boot step" comment a second time further down. */
 	if (boot_subsystem_init(init_mode, "kmodconfig", kmodconfig_init(KMODCONFIG_STATE_PATH)) != 0)
 		return 1;
+	/* ADR-0348: before the NIC list, which asks its verdict. */
+	if (boot_subsystem_init(init_mode, "kmodpolicy", kmodpolicy_init(KMODPOLICY_STATE_PATH)) != 0)
+		return 1;
 	/*
 	 * Root-netns net.ipv4.ip_forward -- distinct from struct
 	 * container_spec's own per-container ip_forward field (which
@@ -36954,8 +36995,19 @@ static int cixd_main(int argc, char **argv)
 	 * here, after the management network rather than before it). Same
 	 * init_mode gate as its three neighbors above -- no real /usr/bin/
 	 * modprobe to run in a plain/test invocation. */
-	if (init_mode)
+	/*
+	 * ADR-0348 rule 5: the coldplug sweep, then kmod-config autoload,
+	 * in that order and before boot autostart below, so a container
+	 * never starts ahead of a driver either gives it. Both run before
+	 * the loop serves anything. A plain/test invocation runs neither,
+	 * and the scan report says why.
+	 */
+	if (init_mode) {
+		kmodscan_boot_sweep();
 		load_configured_modules();
+	} else {
+		kmodscan_not_run("start-up module loads run only on a real boot (--init-mode)");
+	}
 	/* A persisted port change (PUT /v1/system/daemon-config) survives a
 	 * real reboot -- but an explicit --port= on argv (every test/dev
 	 * invocation always passes one, to avoid colliding with other
@@ -37167,6 +37219,8 @@ static int cixd_main(int argc, char **argv)
 	hostauth_log_carried_sessions();
 	/* ADR-0345: and so does devicemap_init(). */
 	devicemap_log_skipped();
+	/* ADR-0348: and so do the start-up module loads and the sweep. */
+	kmodscan_log_held();
 	/*
 	 * Issue #40: after image_init (it produces a real image version)
 	 * AND after logstore_init, so what it did is visible where an

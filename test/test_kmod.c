@@ -353,6 +353,113 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	/* 5. ADR-0348: the policy, its refusal of an explicit load, the
+	 * blacklisted mark on a loaded module, and the scan report of a
+	 * daemon whose start-up loads do not run. */
+	memset(&r, 0, sizeof(r));
+	if (ok && (cix_client_request(&client, "GET", "/v1/system/kmod-policy", NULL, &r) != 0 ||
+	           r.status != 200 ||
+	           strcmp(json_as_string(json_object_get(r.json, "autoload")) != NULL
+	                      ? json_as_string(json_object_get(r.json, "autoload"))
+	                      : "",
+	                  "off") != 0)) {
+		fprintf(stderr, "FAIL: GET /v1/system/kmod-policy: expected 200 with the seeded "
+		                "autoload off, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (ok && (cix_client_request(&client, "PUT", "/v1/system/kmod-policy",
+	                              "{\"autoload\":\"both\"}", &r) != 0 ||
+	           r.status != 400)) {
+		fprintf(stderr, "FAIL: PUT kmod-policy with an autoload mode that has no path: "
+		                "expected 400, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	{
+		char body[192];
+
+		snprintf(body, sizeof(body), "{\"blacklist\":[\"e1000e\"%s%s%s]}",
+		         have_real_name ? ",\"" : "", have_real_name ? real_name : "",
+		         have_real_name ? "\"" : "");
+		memset(&r, 0, sizeof(r));
+		if (ok && (cix_client_request(&client, "PUT", "/v1/system/kmod-policy", body, &r) != 0 ||
+		           r.status != 200 || json_object_get(r.json, "saved") == NULL ||
+		           !json_object_get(r.json, "saved")->u.boolean)) {
+			fprintf(stderr, "FAIL: PUT kmod-policy blacklist: expected 200 saved, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+	}
+
+	memset(&r, 0, sizeof(r));
+	if (ok && (cix_client_request(&client, "POST", "/v1/system/kmod/e1000e", "{}", &r) != 0 ||
+	           r.status != 409 || json_as_string(json_object_get(r.json, "error")) == NULL ||
+	           strstr(json_as_string(json_object_get(r.json, "error")), "blacklisted") == NULL)) {
+		fprintf(stderr, "FAIL: POST of a blacklisted module: expected 409 naming the "
+		                "blacklist, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	if (ok && have_real_name) {
+		const struct json_value *arr;
+		int marked = 0;
+		size_t i;
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/system/kmod", NULL, &r) == 0 &&
+		    r.status == 200 && (arr = json_object_get(r.json, "modules")) != NULL &&
+		    arr->type == JSON_ARRAY) {
+			for (i = 0; i < arr->u.array.count; i++) {
+				const struct json_value *m = arr->u.array.items[i];
+				const char *n = json_as_string(json_object_get(m, "name"));
+				const struct json_value *b = json_object_get(m, "blacklisted");
+
+				if (n != NULL && strcmp(n, real_name) == 0 && b != NULL &&
+				    b->type == JSON_BOOL && b->u.boolean)
+					marked = 1;
+			}
+		}
+		if (!marked) {
+			fprintf(stderr, "FAIL: GET /v1/system/kmod does not mark the loaded, blacklisted "
+			                "module '%s'\n",
+			        real_name);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/system/logs?source=cixd&tail=40", NULL,
+		                       &r) != 0 ||
+		    r.status != 200 || r.body == NULL ||
+		    strstr(r.body, "is now blacklisted and is loaded") == NULL) {
+			fprintf(stderr, "FAIL: blacklisting the loaded module '%s' logged no warning\n",
+			        real_name);
+			ok = 0;
+		}
+		cix_response_free(&r);
+	}
+
+	memset(&r, 0, sizeof(r));
+	if (ok && (cix_client_request(&client, "GET", "/v1/system/kmod-scan", NULL, &r) != 0 ||
+	           r.status != 200 || json_object_get(r.json, "ran") == NULL ||
+	           json_object_get(r.json, "ran")->u.boolean ||
+	           json_as_string(json_object_get(r.json, "not_run_reason")) == NULL)) {
+		fprintf(stderr, "FAIL: GET /v1/system/kmod-scan: expected ran false with a reason in a "
+		                "daemon that is not --init-mode, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
 	if (test_assert_no_drift(&client, NULL) != 0)
 		ok = 0;
 	if (ok)

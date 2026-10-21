@@ -65,8 +65,39 @@ int kmod_is_loaded(const char *name);
  * writes a JSON array of {"name","size","used_by_count","used_by":
  * [...],"state"} for every currently-loaded module, live, never
  * cached -- matching disk.c's own "re-enumerate fresh on every call"
- * convention. */
-void kmod_write_json_loaded(struct json_writer *w);
+ * convention.
+ *
+ * ADR-0348: blacklisted, when not NULL, is asked about each module, and
+ * every entry then carries "blacklisted": a module the policy refuses
+ * that is loaded anyway, because blacklisting never unloads. kmod.c
+ * takes it as a callback so that cix-install, which links this file,
+ * does not link the policy. */
+void kmod_write_json_loaded(struct json_writer *w, int (*blacklisted)(const char *name));
+
+/*
+ * ADR-0348: what a module depends on, read from this kernel's own
+ * /lib/modules/<release>/modules.dep, which depmod writes as the full
+ * closure. Fills out with module names (the file's basename without
+ * .ko and its compression suffix) and returns how many, 0 for a module
+ * with none or one the file does not list (a builtin, or no such
+ * module), or -1 if the file cannot be read. In-process, so no modprobe
+ * run and nothing forked.
+ */
+int kmod_dependencies(const char *name, char out[][KMOD_NAME_MAX], int max);
+
+/* Whether name is built into this kernel (modules.builtin). A builtin
+ * cannot be loaded, and modprobe answers 0 for one, so a sweep reports
+ * it as builtin rather than as loaded. */
+int kmod_is_builtin(const char *name);
+
+/*
+ * ADR-0348: which modules claim a modalias, by `modprobe -R ALIAS`.
+ * Fills out with the module names modprobe prints, deduplicated, and
+ * returns how many; 0 when no module claims it. -1 only when modprobe
+ * could not be run at all (it is not staged), which a caller reports
+ * once rather than as every alias being unclaimed.
+ */
+int kmod_resolve_alias(const char *alias, char out[][KMOD_NAME_MAX], int max);
 
 /* Real `modinfo <name>` output, parsed into a JSON object -- the one
  * place modinfo's own output can't be replaced by /proc/modules, which

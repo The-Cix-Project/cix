@@ -5,9 +5,17 @@
 #include "json.h"
 #include "kmod.h"
 #include "kmodconfig.h"
+#include "kmodpolicy.h"
+#include "kmodscan.h"
+#include "logstore.h"
 
 #include <stdio.h>
 #include <string.h>
+
+static int blacklisted_now(const char *name)
+{
+	return kmod_policy_blacklists(kmodpolicy_current(), name);
+}
 
 /*
  * ADR-0159 Phase A: POST/DELETE/GET /v1/system/kmod/{name} (real
@@ -95,6 +103,25 @@ void handle_kmod_post(int fd, const char *name, const char *body, size_t body_le
 	json_free(root);
 
 	/*
+	 * ADR-0348: the blacklist beats an explicit request too, and a
+	 * blacklisted dependency would load with the module, so both are
+	 * refused before modprobe runs. The dependency list comes from
+	 * modules.dep in-process; an unreadable file leaves only the name
+	 * to decide on, and modprobe could not load anything without it.
+	 */
+	{
+		char deps[KMODPOLICY_DEPS_MAX][KMOD_NAME_MAX];
+		char why[256];
+		int ndeps = kmod_dependencies(name, deps, KMODPOLICY_DEPS_MAX);
+
+		if (kmod_policy_verdict(kmodpolicy_current(), name, deps, ndeps < 0 ? 0 : ndeps,
+		                        KMOD_ORIGIN_REQUEST, why, sizeof(why)) != KMOD_ALLOW) {
+			respond_error(fd, 409, "Conflict", why);
+			return;
+		}
+	}
+
+	/*
 	 * modprobe on an already-loaded module succeeds and does nothing.
 	 * With options that made this endpoint answer 200 and echo back
 	 * parameters the kernel had never seen -- a reported success for
@@ -158,7 +185,7 @@ void handle_kmod_list(int fd)
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "modules");
-	kmod_write_json_loaded(&w);
+	kmod_write_json_loaded(&w, blacklisted_now);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -298,3 +325,71 @@ void handle_kmodconfig_list(int fd)
 	jw_free(&w);
 }
 
+void handle_kmodpolicy_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	kmodpolicy_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * ADR-0348 rule 7: blacklisting never unloads, so a PUT that blacklists
+ * a module already loaded says so, once, naming it. "Newly" is against
+ * the policy before this PUT, so a PUT that repeats the same blacklist
+ * says nothing again.
+ */
+static void warn_newly_blacklisted_loaded(const struct kmod_policy *before,
+                                          const struct kmod_policy *after)
+{
+	int i;
+
+	for (i = 0; i < after->blacklist_count; i++) {
+		const char *name = after->blacklist[i];
+
+		if (kmod_policy_blacklists(before, name) || !kmod_is_loaded(name))
+			continue;
+		logstore_write("cixd", "warning",
+		               "kmod policy: %s is now blacklisted and is loaded; it stays loaded "
+		               "until it is unloaded (DELETE /v1/system/kmod/%s) (ADR-0348)",
+		               name, name);
+	}
+}
+
+void handle_kmodpolicy_put(int fd, const char *body, size_t body_len)
+{
+	struct kmod_policy before = *kmodpolicy_current();
+	struct kmod_policy next = before;
+	struct json_value *root;
+	char err[192];
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	if (kmodpolicy_apply_json(root, &next, err, sizeof(err)) != 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", err);
+		return;
+	}
+	json_free(root);
+	if (kmodpolicy_save(&next) != 0) {
+		respond_error(fd, 500, "Internal Server Error", "could not persist the kmod policy");
+		return;
+	}
+	warn_newly_blacklisted_loaded(&before, &next);
+	handle_kmodpolicy_get(fd);
+}
+
+void handle_kmodscan_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	kmodscan_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}

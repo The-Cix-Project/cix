@@ -590,6 +590,12 @@ static const char USAGE_TEXT[] =
 	        "  kmod-config set NAME [--option=KEY=VALUE ...] [--autoload|--no-autoload]  --\n"
 	        "               read-modify-write, only the fields given are touched\n"
 	        "  kmod-config rm NAME  -- clears both fields\n"
+	        "  kmod-policy [show]  -- the policy every module load asks (ADR-0348): autoload,\n"
+	        "               blacklist, allowlist\n"
+	        "  kmod-policy set [--autoload=off|coldplug] [--blacklist=NAME,...]\n"
+	        "               [--allowlist=NAME,...]  -- each flag given replaces that field;\n"
+	        "               an empty list clears it. Blacklisting never unloads a module\n"
+	        "  kmod-scan [show]  -- the coldplug sweep's report from this start\n"
 	        "  kmod-build [--version=VERSION] [--symbol=CONFIG_FOO ...]\n"
 	        "               [--upgrade] [--wait] [--keep-on-failure]  -- an ordinary\n"
 	        "               `pkg hostbuild kernel` under the hood, gaining extra =m module\n"
@@ -2781,7 +2787,16 @@ static void fmt_kmod_module_one(const struct json_value *v)
 		}
 		printf("]");
 	}
-	printf("  %s\n", json_str_field(v, "state"));
+	printf("  %s", json_str_field(v, "state"));
+	{
+		/* ADR-0348: loaded, and the policy refuses it. Blacklisting
+		 * never unloads, so this is the only place it shows. */
+		const struct json_value *b = json_object_get(v, "blacklisted");
+
+		if (b != NULL && b->type == JSON_BOOL && b->u.boolean)
+			printf("  BLACKLISTED (loaded; kmod unload NAME to remove)");
+	}
+	printf("\n");
 }
 
 static void fmt_kmod_list(const struct json_value *v)
@@ -2999,8 +3014,10 @@ static void fmt_kmodconfig_one(const struct json_value *v)
 {
 	printf("%s: default_options=", json_str_field(v, "name"));
 	fmt_kmod_options_obj(json_object_get(v, "default_options"));
-	printf(" autoload=%s\n",
-	       json_as_number(json_object_get(v, "autoload")) != 0 ? "yes" : "no");
+	/* json_bool_field(): autoload is a JSON boolean, and json_as_number()
+	 * answers 0 for anything but a number, so this printed "no" for
+	 * every entry until 2026-10-21. */
+	printf(" autoload=%s\n", json_bool_field(v, "autoload") ? "yes" : "no");
 }
 
 static void fmt_kmodconfig_list(const struct json_value *v)
@@ -3158,6 +3175,164 @@ static int cmd_kmodconfig(const struct cix_client *c, int json_mode, int argc, c
 	                "[--autoload|--no-autoload]\n"
 	                "       cixctl kmod-config rm NAME  -- clears both fields\n");
 	return 2;
+}
+
+/* ADR-0348: the module-load policy and the coldplug sweep's report. */
+static void fmt_name_list(const char *label, const struct json_value *arr)
+{
+	size_t i;
+
+	printf("%s:", label);
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf(" (none)\n");
+		return;
+	}
+	for (i = 0; i < arr->u.array.count; i++)
+		printf(" %s", json_as_string(arr->u.array.items[i]));
+	printf("\n");
+}
+
+static void fmt_kmodpolicy(const struct json_value *v)
+{
+	printf("autoload: %s%s\n", json_str_or(v, "autoload"),
+	       !json_bool_field(v, "saved") ? "  (default: this host has never saved a policy)" : "");
+	fmt_name_list("blacklist", json_object_get(v, "blacklist"));
+	fmt_name_list("allowlist", json_object_get(v, "allowlist"));
+}
+
+static int cmd_kmodpolicy_show(const struct cix_client *c, int json_mode)
+{
+	struct cix_response r;
+
+	if (cix_client_request(c, CIX_API_getKmodPolicy_METHOD, CIX_API_getKmodPolicy, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_kmodpolicy);
+}
+
+/* A comma-separated --blacklist=/--allowlist= value as a JSON array; an
+ * empty value is an empty list, which is how a list is cleared. */
+static void jw_name_list(struct json_writer *w, const char *csv)
+{
+	char buf[1024];
+	char *tok, *save = NULL;
+
+	snprintf(buf, sizeof(buf), "%s", csv);
+	jw_arr_open(w);
+	for (tok = strtok_r(buf, ",", &save); tok != NULL; tok = strtok_r(NULL, ",", &save)) {
+		if (tok[0] != '\0')
+			jw_str(w, tok);
+	}
+	jw_arr_close(w);
+}
+
+static int cmd_kmodpolicy_set(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	const char *autoload = NULL, *blacklist = NULL, *allowlist = NULL;
+	struct json_writer w;
+	struct cix_response r;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--autoload=", 11) == 0) {
+			autoload = argv[i] + 11;
+		} else if (strncmp(argv[i], "--blacklist=", 12) == 0) {
+			blacklist = argv[i] + 12;
+		} else if (strncmp(argv[i], "--allowlist=", 12) == 0) {
+			allowlist = argv[i] + 12;
+		} else {
+			fprintf(stderr, "cixctl: unknown kmod-policy set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (autoload == NULL && blacklist == NULL && allowlist == NULL) {
+		fprintf(stderr, "usage: cixctl kmod-policy set [--autoload=off|coldplug] "
+		                "[--blacklist=NAME,...] [--allowlist=NAME,...]\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (autoload != NULL) {
+		jw_key(&w, "autoload");
+		jw_str(&w, autoload);
+	}
+	if (blacklist != NULL) {
+		jw_key(&w, "blacklist");
+		jw_name_list(&w, blacklist);
+	}
+	if (allowlist != NULL) {
+		jw_key(&w, "allowlist");
+		jw_name_list(&w, allowlist);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (cix_client_request(c, CIX_API_putKmodPolicy_METHOD, CIX_API_putKmodPolicy, w.buf, &r) !=
+	    0) {
+		jw_free(&w);
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_kmodpolicy);
+}
+
+static int cmd_kmodpolicy(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	if (argc < 1 || strcmp(argv[0], "show") == 0)
+		return cmd_kmodpolicy_show(c, json_mode);
+	if (strcmp(argv[0], "set") == 0)
+		return cmd_kmodpolicy_set(c, json_mode, argc - 1, argv + 1);
+	fprintf(stderr, "usage: cixctl kmod-policy [show]  -- the policy every module load asks\n"
+	                "       cixctl kmod-policy set [--autoload=off|coldplug] "
+	                "[--blacklist=NAME,...] [--allowlist=NAME,...]\n");
+	return 2;
+}
+
+/* Every entry that is not unclaimed, then one count line: a host has
+ * hundreds of aliases with no driver, which --json lists in full. */
+static void fmt_kmodscan(const struct json_value *v)
+{
+	const struct json_value *arr = json_object_get(v, "entries");
+	size_t i, unclaimed = 0;
+
+	if (!json_bool_field(v, "ran")) {
+		printf("not run: %s\n", json_str_or(v, "not_run_reason"));
+		return;
+	}
+	printf("swept %.0f aliases in %.0f ms%s\n", json_as_number(json_object_get(v, "aliases")),
+	       json_as_number(json_object_get(v, "duration_ms")),
+	       json_bool_field(v, "truncated") ? " (truncated at the alias limit)" : "");
+	for (i = 0; arr != NULL && arr->type == JSON_ARRAY && i < arr->u.array.count; i++) {
+		const struct json_value *e = arr->u.array.items[i];
+		const char *outcome = json_str_or(e, "outcome");
+		const char *reason = json_as_string(json_object_get(e, "reason"));
+
+		if (strcmp(outcome, "unclaimed") == 0) {
+			unclaimed++;
+			continue;
+		}
+		printf("%-15s %-24s %s%s%s\n", outcome, json_str_or(e, "module"), json_str_or(e, "alias"),
+		       reason != NULL ? "  -- " : "", reason != NULL ? reason : "");
+	}
+	printf("%zu aliases claimed by no module (--json lists them)\n", unclaimed);
+}
+
+static int cmd_kmodscan(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+
+	if (argc > 0 && strcmp(argv[0], "show") != 0) {
+		fprintf(stderr, "usage: cixctl kmod-scan [show]  -- the coldplug sweep's report\n");
+		return 2;
+	}
+	if (cix_client_request(c, CIX_API_getKmodScan_METHOD, CIX_API_getKmodScan, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_kmodscan);
 }
 
 #define CLI_RESOLV_MAX_NAMESERVERS 3 /* mirrors daemon/include/resolv.h's own RESOLV_MAX_NAMESERVERS -- not shared via a header since this CLI never links daemon internals, only talks REST */
@@ -19482,6 +19657,10 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_kmod(client, json_mode, argc, argv);
 	if (strcmp(cmd, "kmod-config") == 0)
 		return cmd_kmodconfig(client, json_mode, argc, argv);
+	if (strcmp(cmd, "kmod-policy") == 0)
+		return cmd_kmodpolicy(client, json_mode, argc, argv);
+	if (strcmp(cmd, "kmod-scan") == 0)
+		return cmd_kmodscan(client, json_mode, argc, argv);
 	if (strcmp(cmd, "kmod-build") == 0)
 		return cmd_kmod_build(client, json_mode, argc, argv);
 	if (strcmp(cmd, "ntp") == 0)

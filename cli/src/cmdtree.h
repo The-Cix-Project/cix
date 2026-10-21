@@ -668,6 +668,24 @@ static const struct cli_node n_kmod_config_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
+static const char *const n_kmod_policy_set_flags[] = {
+	"--allowlist=",
+	"--autoload=",
+	"--blacklist=",
+	NULL
+};
+
+static const struct cli_node n_kmod_policy_subs[] = {
+	{ "set", n_kmod_policy_set_flags, NULL },
+	{ "show", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
+static const struct cli_node n_kmod_scan_subs[] = {
+	{ "show", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
 static const char *const n_kmod_build_flags[] = {
 	"--keep-on-failure",
 	"--symbol=",
@@ -1624,6 +1642,8 @@ static const struct cli_node CLI_TREE[] = {
 	{ "sysctl", NULL, n_sysctl_subs },
 	{ "kmod", NULL, n_kmod_subs },
 	{ "kmod-config", NULL, n_kmod_config_subs },
+	{ "kmod-policy", NULL, n_kmod_policy_subs },
+	{ "kmod-scan", NULL, n_kmod_scan_subs },
 	{ "kmod-build", n_kmod_build_flags, NULL },
 	{ "ntp", NULL, n_ntp_subs },
 	{ "syslog", NULL, n_syslog_subs },

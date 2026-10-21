@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### One policy decides every module load, and hardware present at boot gets its driver (ADR-0348 release one, #143)
+
+- **What changed:**
+  - **Policy:** `GET`/`PUT /v1/system/kmod-policy`, with `autoload` (`off` or `coldplug` for now), a `blacklist` and an `allowlist`, persisted in `kmod_policy.json`. A host that never saved one uses `coldplug`.
+  - **One verdict:** `kmod_policy_verdict()`, pure, asked by every load path: an explicit `POST /v1/system/kmod/{name}` (409 when refused), `kmod-config` autoload, the boot NIC list and the sweep. The blacklist refuses every origin and a module whose dependency (from `modules.dep`) is blacklisted. The allowlist binds only automatic loads.
+  - **Coldplug sweep at start:** after the NIC list and the management network, and before `kmod-config` autoload and boot autostart. It walks `/sys/devices` for each distinct `modalias`, resolves it with `modprobe -R`, and loads each module with its `kmod-config` options. `GET /v1/system/kmod-scan` reports every alias. Loads, refusals and failures log one line each, plus one summary line.
+  - **Blacklisted and loaded:** `GET /v1/system/kmod` marks such a module `blacklisted`, `cixctl kmod ls` prints it, and the `PUT` that caused it logs one warning. Nothing is unloaded.
+  - **Start-up lines reach the log:** the module loads run before `logstore_init()`, where `write_entry()` drops every line, so the existing `kmod autoload: X failed` line never reached the log store (read from the code). The start-up lines are now held and written as the store opens, as `devicemap_log_skipped()` does.
+  - **cixctl:** `kmod-policy [show|set]` and `kmod-scan [show]`. And `kmod-config ls` printed `autoload=no` for every entry, because it read a boolean as a number; it now prints the real value.
+- **Verified:** `test_kmodpolicy`, in `SELFTESTS`, checks the verdict on supplied inputs and the store's default, round trip and refusal of a malformed file. `test_kmod` checks the endpoints, the 409, the `blacklisted` mark and its warning, and a `ran: false` report. The sweep itself runs only on a real boot, and is measured on .95.
+
 ### A container whose process dies before exec is a failed create (#622)
 
 - **What changed:**

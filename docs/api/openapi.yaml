@@ -3072,7 +3072,10 @@ paths:
             live module is acceptable is the operator's call rather than
             this daemon's. A load with no `options` of something already
             loaded is still 200: idempotent, and claiming nothing
-            untrue.
+            untrue. Also 409 when kmod-policy refuses the module
+            (ADR-0348): it is blacklisted, or something it depends on
+            is. The blacklist beats an explicit request, and the
+            message names which module it was.
           content:
             application/json:
               schema:
@@ -3216,6 +3219,110 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /system/kmod-policy:
+    get:
+      summary: The policy every module load is decided by (ADR-0348)
+      description: >
+        One policy decides every module load, whoever asks for it: an
+        explicit load, a kmod-config autoload entry, the boot NIC list,
+        and the coldplug sweep at start. The blacklist refuses every
+        one of them, and a load whose dependency is blacklisted. The
+        allowlist, when not empty, binds only the automatic loads; an
+        operator naming a module has allowed it. A host that has never
+        saved a policy uses autoload `coldplug` with empty lists, and
+        `saved` says which.
+      operationId: getKmodPolicy
+      x-cix-read: state
+      x-cix-permission: config:read
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: The live policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KmodPolicy"
+    put:
+      summary: Change the module-load policy (ADR-0348)
+      description: >
+        Each field given replaces that field, and one left out is kept.
+        Blacklisting a module never unloads it: one that is loaded stays
+        loaded, is marked `blacklisted` in GET /v1/system/kmod, and the
+        log says so once.
+      operationId: putKmodPolicy
+      x-cix-invalidates: [getKmodPolicy, listKmod]
+      x-cix-permission: config:write
+      x-cix-expose: [cli]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                autoload:
+                  type: string
+                  enum: [off, coldplug]
+                  title: Autoload
+                  description: Which automatic loads run. Coldplug is the sweep at start.
+                blacklist:
+                  type: array
+                  maxItems: 64
+                  items:
+                    type: string
+                  title: Blacklist
+                  description: Modules that never load, whoever asks, and modules that depend on them.
+                allowlist:
+                  type: array
+                  maxItems: 64
+                  items:
+                    type: string
+                  title: Allowlist
+                  description: When not empty, the only modules an automatic load may load.
+      responses:
+        "200":
+          description: The policy as saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KmodPolicy"
+        "400":
+          description: Not an object, an unknown autoload mode, an invalid module name, or a name listed twice
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The policy could not be persisted; the live policy is unchanged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /system/kmod-scan:
+    get:
+      summary: The coldplug sweep's report from this start (ADR-0348)
+      description: >
+        At start, before the API serves anything, the daemon walks
+        /sys/devices for each distinct modalias, resolves it with
+        `modprobe -R`, and decides and loads each module through
+        kmod-policy. This is that sweep's report: every alias it met,
+        the device it came from, the module that claims it (null when
+        none does), and what happened. Loads, refusals and failures are
+        also logged once each; unclaimed aliases and modules already
+        loaded are in this report only. `ran` is false, with the reason,
+        when the sweep did not run: autoload excludes coldplug, or this
+        is not a real boot.
+      operationId: getKmodScan
+      x-cix-read: state
+      x-cix-permission: config:read
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: The last sweep's report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KmodScan"
   /system/kmod-build:
     post:
       summary: Build a kernel with extra in-tree modules (ADR-0159 Phase B)
@@ -18414,7 +18521,7 @@ components:
                 type: string
     KmodEntry:
       type: object
-      required: [name, size, used_by_count, used_by, state]
+      required: [name, size, used_by_count, used_by, state, blacklisted]
       properties:
         name:
           type: string
@@ -18428,6 +18535,12 @@ components:
             type: string
         state:
           type: string
+        blacklisted:
+          type: boolean
+          description: >
+            kmod-policy blacklists this module and it is loaded anyway
+            (ADR-0348). Blacklisting never unloads a module; unloading
+            it is DELETE /v1/system/kmod/{name}.
     KmodParam:
       type: object
       required: [name, type, description]
@@ -18501,6 +18614,66 @@ components:
             type: string
         autoload:
           type: boolean
+    KmodPolicy:
+      type: object
+      required: [autoload, blacklist, allowlist, saved]
+      properties:
+        autoload:
+          type: string
+          enum: [off, coldplug]
+        blacklist:
+          type: array
+          items:
+            type: string
+        allowlist:
+          type: array
+          items:
+            type: string
+        saved:
+          type: boolean
+          description: False on a host that has never saved a policy, which uses the default.
+    KmodScan:
+      type: object
+      required: [ran, entries]
+      properties:
+        ran:
+          type: boolean
+        not_run_reason:
+          type: string
+          description: Why the sweep did not run, present when ran is false.
+        started_at:
+          type: integer
+          description: Unix seconds, present when ran is true.
+        duration_ms:
+          type: integer
+        aliases:
+          type: integer
+          description: Distinct modaliases the sweep met.
+        truncated:
+          type: boolean
+          description: True when the sweep stopped recording at its alias limit (4096).
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/KmodScanEntry"
+    KmodScanEntry:
+      type: object
+      required: [alias, device, module, outcome]
+      properties:
+        alias:
+          type: string
+        device:
+          type: string
+          description: The sysfs directory the modalias was read from.
+        module:
+          type: string
+          nullable: true
+        outcome:
+          type: string
+          enum: [loaded, already_loaded, builtin, unclaimed, refused, failed]
+        reason:
+          type: string
+          description: The verdict's sentence for refused, modprobe's words for failed.
     PingStatus:
       type: object
       required: [state, host, reachable, rtt_ms, timed_out]

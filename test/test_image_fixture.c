@@ -355,6 +355,18 @@ int test_data_dir_create(char *out_path, size_t out_size)
 		fputs("{\"schedules\":[]}\n", f);
 		fclose(f);
 		/*
+		 * ADR-0348: a host with no saved module policy loads drivers
+		 * automatically. A test daemon starts as a host whose policy
+		 * was saved with autoload off, so it never sweeps or loads for
+		 * a build container's hardware.
+		 */
+		snprintf(cfg, sizeof(cfg), "%s/kmod_policy.json", cfg_dir);
+		f = fopen(cfg, "w");
+		if (f == NULL)
+			return -1;
+		fputs("{\"autoload\":\"off\",\"blacklist\":[],\"allowlist\":[]}\n", f);
+		fclose(f);
+		/*
 		 * ADR-0317 section 7 (#542): a host with no record of having
 		 * provisioned them is given cix-admins, cix-operators and
 		 * cix-readers at startup. A test daemon starts as a host that

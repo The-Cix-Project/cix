@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/utsname.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -207,7 +208,7 @@ int kmod_is_loaded(const char *name)
 	return found;
 }
 
-void kmod_write_json_loaded(struct json_writer *w)
+void kmod_write_json_loaded(struct json_writer *w, int (*blacklisted)(const char *name))
 {
 	FILE *f;
 	char line[KMOD_PROC_MODULES_LINE_MAX];
@@ -262,11 +263,150 @@ void kmod_write_json_loaded(struct json_writer *w)
 		jw_arr_close(w);
 		jw_key(w, "state");
 		jw_str(w, state);
+		if (blacklisted != NULL) {
+			jw_key(w, "blacklisted");
+			jw_bool(w, blacklisted(name));
+		}
 		jw_obj_close(w);
 	}
 	fclose(f);
 
 	jw_arr_close(w);
+}
+
+/*
+ * ADR-0348: the basename of a modules.dep or modules.builtin path,
+ * without .ko and any compression suffix after it -- the module's name
+ * as modprobe spells it. "kernel/drivers/usb/storage/usb-storage.ko.zst"
+ * is "usb-storage". -1 if it does not fit or names no .ko.
+ */
+static int module_name_of_path(const char *path, size_t path_len, char *out, size_t out_size)
+{
+	const char *base = path, *p, *ko = NULL;
+	size_t n;
+
+	for (p = path; p < path + path_len; p++) {
+		if (*p == '/')
+			base = p + 1;
+	}
+	for (p = base; p + 3 <= path + path_len; p++) {
+		if (p[0] == '.' && p[1] == 'k' && p[2] == 'o' &&
+		    (p + 3 == path + path_len || p[3] == '.')) {
+			ko = p;
+			break;
+		}
+	}
+	if (ko == NULL)
+		return -1;
+	n = (size_t)(ko - base);
+	if (n == 0 || n >= out_size)
+		return -1;
+	memcpy(out, base, n);
+	out[n] = '\0';
+	return 0;
+}
+
+/* /lib/modules/<release>/<file> for the running kernel. */
+static int modules_file_path(const char *file, char *out, size_t out_size)
+{
+	struct utsname u;
+
+	if (uname(&u) != 0)
+		return -1;
+	if (snprintf(out, out_size, "/lib/modules/%s/%s", u.release, file) >= (int)out_size)
+		return -1;
+	return 0;
+}
+
+int kmod_dependencies(const char *name, char out[][KMOD_NAME_MAX], int max)
+{
+	char path[PATH_MAX];
+	char mod[KMOD_NAME_MAX];
+	char *line = NULL;
+	size_t cap = 0;
+	ssize_t len;
+	FILE *f;
+	int count = 0;
+
+	if (!kmod_name_is_valid(name) || modules_file_path("modules.dep", path, sizeof(path)) != 0)
+		return -1;
+	f = fopen(path, "r");
+	if (f == NULL)
+		return -1;
+	/* "path: dep-path dep-path ...", one line per module. */
+	while ((len = getline(&line, &cap, f)) > 0) {
+		char *colon = strchr(line, ':');
+		char *tok, *save = NULL;
+
+		if (colon == NULL ||
+		    module_name_of_path(line, (size_t)(colon - line), mod, sizeof(mod)) != 0 ||
+		    !kmod_name_eq(mod, name))
+			continue;
+		for (tok = strtok_r(colon + 1, " \t\n", &save); tok != NULL && count < max;
+		     tok = strtok_r(NULL, " \t\n", &save)) {
+			if (module_name_of_path(tok, strlen(tok), out[count], KMOD_NAME_MAX) == 0)
+				count++;
+		}
+		break;
+	}
+	free(line);
+	fclose(f);
+	return count;
+}
+
+int kmod_is_builtin(const char *name)
+{
+	char path[PATH_MAX];
+	char mod[KMOD_NAME_MAX];
+	char line[PATH_MAX];
+	FILE *f;
+	int found = 0;
+
+	if (!kmod_name_is_valid(name) || modules_file_path("modules.builtin", path, sizeof(path)) != 0)
+		return 0;
+	f = fopen(path, "r");
+	if (f == NULL)
+		return 0;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		line[strcspn(line, "\n")] = '\0';
+		if (module_name_of_path(line, strlen(line), mod, sizeof(mod)) == 0 &&
+		    kmod_name_eq(mod, name)) {
+			found = 1;
+			break;
+		}
+	}
+	fclose(f);
+	return found;
+}
+
+int kmod_resolve_alias(const char *alias, char out[][KMOD_NAME_MAX], int max)
+{
+	char buf[1024];
+	char *argv[4];
+	char *tok, *save = NULL;
+	int count = 0, i, dup;
+
+	if (alias == NULL || alias[0] == '\0' || access(KMOD_MODPROBE_BIN, X_OK) != 0)
+		return -1;
+	argv[0] = (char *)"modprobe";
+	argv[1] = (char *)"-R";
+	argv[2] = (char *)alias;
+	argv[3] = NULL;
+	/* modprobe -R exits non-zero when nothing claims the alias, which
+	 * is the ordinary answer for most devices, so the status says
+	 * nothing more than an empty output does. */
+	(void)run_kmod_tool(KMOD_MODPROBE_BIN, argv, buf, sizeof(buf));
+	for (tok = strtok_r(buf, "\n", &save); tok != NULL && count < max;
+	     tok = strtok_r(NULL, "\n", &save)) {
+		if (!kmod_name_is_valid(tok))
+			continue;
+		dup = 0;
+		for (i = 0; i < count; i++)
+			dup |= kmod_name_eq(out[i], tok);
+		if (!dup)
+			snprintf(out[count++], KMOD_NAME_MAX, "%s", tok);
+	}
+	return count;
 }
 
 /* Trims leading/trailing whitespace in place, returns s. */
