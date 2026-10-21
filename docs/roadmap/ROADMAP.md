@@ -2713,8 +2713,11 @@ calls) against 3 ms into a 4-version image.
 - **Live surfaces:** `image policy jumpbox` prints `keep=3`; `image gc --dry-run` reclaims 0 and
   keeps 77.
 
-**Not yet verified:** #619's confirmation, the next `hibr` upgrade into `jumpbox` against a
-4-version history. `hibr` is still 0.99.265-1 and builds only when upstream releases.
+**#619 confirmed, 2026-10-21:** `hibr` went from 0.99.265-1 to 0.99.278-1 in `jumpbox` across
+releases 553 to 566. `GET /v1/system/stalls` records no `event container` pass since
+1792457988, the last one before 553 (the 1774 ms `unlink` above). `jumpbox` holds 5 versions;
+the latest upgrade landed at 1792580387, and the loop's worst pass since 566 booted is an
+unrelated `restart timer ar-1 (2360 ms)`.
 
 ## Part 293: a slow handler names its slowest step (#619, #617, 0.2.57-549 and -550)
 
